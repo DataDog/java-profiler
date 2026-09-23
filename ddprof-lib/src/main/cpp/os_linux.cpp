@@ -914,12 +914,8 @@ int OS::getCgroupCpuMillicores() {
 
 // Applies the smallest (most restrictive) memory.max found across this
 // process's cgroup v2 group and all of its ancestors up to the mount root.
-// When a limit wins, the cgroup it came from is remembered in
-// *winner_path_out: getContainerMemoryUsage() must read memory.current from
-// that same cgroup, because an ancestor-level limit also covers sibling
-// cgroups whose usage the leaf's memory.current excludes - pairing the
-// ancestor limit with leaf usage would overstate the available memory and
-// delay the OOM projection.
+// When a limit wins, the winning cgroup is remembered in *winner_path_out so
+// getContainerMemoryUsage() can read usage at the same cgroup level.
 static char g_memory_limit_cgroup_path[PATH_MAX] = {0};
 
 static long walkCgroupV2MemoryLimit(char* path, char* winner_path_out) {
@@ -952,8 +948,7 @@ static long walkCgroupV2MemoryLimit(char* path, char* winner_path_out) {
 }
 
 // Walks ancestors the same way as walkCgroupV2MemoryLimit(), but reads the
-// cgroup v1 memory controller's limit file instead. See the v2 walk's
-// comment for the winner-path bookkeeping.
+// cgroup v1 memory controller's limit file instead (same winner-path rule).
 static long walkCgroupV1MemoryLimit(char* path, char* winner_path_out) {
     size_t base_len = strlen("/sys/fs/cgroup/memory");
     long best = -1;
@@ -988,11 +983,9 @@ long OS::getContainerMemoryLimit() {
     char subpath[PATH_MAX];
     char path[PATH_MAX];
 
-    // Recomputed on every call; getContainerMemoryUsage() pairs its usage
-    // read with whatever path won here (see the winner-path comment on
-    // walkCgroupV2MemoryLimit()).
+    // Recomputed on every call; getContainerMemoryUsage() reads usage from
+    // the cgroup that won here.
     g_memory_limit_cgroup_path[0] = '\0';
-
     // Try cgroup v2 first, resolved from this process's own cgroup path.
     if (getOwnCgroupPath("", subpath, sizeof(subpath))) {
         size_t base_len = strlen("/sys/fs/cgroup");
@@ -1035,21 +1028,16 @@ long OS::getContainerMemoryLimit() {
     return -1;
 }
 
-// Reads the current usage from the same cgroup level that supplied
-// getContainerMemoryLimit()'s winning limit when one was recorded - an
-// ancestor-level limit also covers sibling cgroups, whose usage the leaf's
-// memory.current excludes, so pairing an ancestor limit with leaf usage
-// would overstate the available memory and delay the OOM projection. The
-// leaf's own memory.current DOES count everything charged to it (including
-// its descendants), so the ancestor read only matters for sibling-inclusive
-// totals.
+// Reads current usage from the same cgroup level that supplied the winning
+// limit in getContainerMemoryLimit(): an ancestor-level memory.max also
+// covers sibling cgroups whose usage the leaf's memory.current excludes.
 long OS::getContainerMemoryUsage() {
     char subpath[PATH_MAX];
     char path[PATH_MAX];
 
-    // Same cgroup the winning limit came from, if the limit walk recorded
-    // one - read its usage first, falling back to the process's own leaf.
-    // v2 names the file memory.current, v1 memory.usage_in_bytes - try both.
+    // Same cgroup the winning limit came from, if recorded; fall back to
+    // the process's own leaf. v2 names the file memory.current, v1
+    // memory.usage_in_bytes - try both.
     if (g_memory_limit_cgroup_path[0] != '\0') {
         char file[PATH_MAX];
         const char *usage_files[] = {"%s/memory.current", "%s/memory.usage_in_bytes"};

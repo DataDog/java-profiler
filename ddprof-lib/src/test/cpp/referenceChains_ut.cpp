@@ -40,16 +40,13 @@ public:
 
 static ReferenceChainsGlobalSetup global_setup;
 
-// The rc debug-log gate defaults to silent (0) so DEBUG builds are
-// pod-safe (see rcDebugLevel.h). Tests want the full diagnostics that
-// used to be unconditional: pin level 2 before any library code runs.
+// Tests need full rc debug diagnostics: pin level 2 before any library
+// code runs (the gate defaults to silent, see rcDebugLevel.h).
 [[maybe_unused]] static const bool kRcDebugLevelPinnedForTests =
     setenv("DD_PROFILING_REFERENCE_CHAINS_DEBUG", "2", 1) == 0;
 
-// ---------------------------------------------------------------------------
 // RcDebugLevelTest - the runtime debug-log gate's pure parsing + env
 // plumbing (rcDebugLevel.h). No tracker state involved.
-// ---------------------------------------------------------------------------
 TEST(RcDebugLevelTest, ParseAcceptsTrimmedSingleDigits) {
     EXPECT_EQ(parseRcDebugLevel(nullptr), -1);
     EXPECT_EQ(parseRcDebugLevel(""), -1);
@@ -91,8 +88,8 @@ TEST(RcDebugLevelTest, ReadFileParsesTrimmedAndRejectsInvalid) {
 }
 
 TEST(RcDebugLevelTest, RefreshFollowsEnvWhenNoOverrideFile) {
-    // The refresh's fixed override path is machine-global; skip rather
-    // than flake on a developer machine that happens to have the file.
+    // The refresh's override path is machine-global; skip rather than
+    // flake on a machine that happens to have the file.
     if (access("/tmp/ddprof_root/refchains_debug_level", F_OK) == 0) {
         GTEST_SKIP() << "override file present on this machine";
     }
@@ -112,33 +109,17 @@ TEST(RcDebugLevelTest, RefreshFollowsEnvWhenNoOverrideFile) {
     EXPECT_EQ(rcDebugLevel(), 2);
 }
 
-// ---------------------------------------------------------------------------
-// VMTestAccessor - friend of VM (vmEntry.h), lets tests swap VM::_jvmti for a
-// mock. This gtest binary has no live JVM attached (see jvmSupport_ut.cpp's
-// fixture comment for the same constraint on a different subsystem), but
-// ReferenceChainTracker::start()/stop() now call VM::jvmti()->
-// SetEventNotificationMode() (the lazy event-enable step), so a mock is
-// required for those calls to be exercised without crashing on a null
-// jvmtiEnv.
-// ---------------------------------------------------------------------------
+// VMTestAccessor - friend of VM (vmEntry.h): swaps VM::_jvmti for a mock so
+// start()/stop() can call SetEventNotificationMode() without a live JVM.
 class VMTestAccessor {
 public:
     static jvmtiEnv* getJvmti() { return VM::_jvmti; }
     static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
 };
 
-// ---------------------------------------------------------------------------
-// ReferenceChainsTestAccessor - same pattern as VMTestAccessor above, for the
-// same reason: ReferenceChainTracker::instance() is a process-wide singleton
-// (referenceChains.h), so the search-lifecycle fields
-// (_search_state/_search_started/_pending_expand/...) would otherwise leak
-// from one ReferenceChainsBfsTest TEST_F into the next in this same gtest
-// binary - e.g. a test that drives the search to SearchState::COMPLETED
-// would leave every later test's runPass() call a permanent no-op (see
-// runPass()'s "already terminal -> no-op" branch). reset() puts the tracker
-// back to its just-constructed state; it does not change production
-// behavior.
-// ---------------------------------------------------------------------------
+// ReferenceChainsTestAccessor - friend-accessor pattern as above: reset()
+// clears the search-lifecycle fields between tests (a terminal search state
+// would make later runPass() calls permanent no-ops).
 class ReferenceChainsTestAccessor {
 public:
     static void reset() {
@@ -147,20 +128,13 @@ public:
         t->_frontier = nullptr;
         t->_class_tags = ClassTagTable();
         t->_last_resolved_class_count = 0;
-        // Without these two, a prior test's fully-swept (or
-        // partially-swept) admitStaticFieldRoots() state survives in this
-        // process-wide singleton and can wrongly skip the sweep entirely on
-        // this test's first pass if its resolved class count happens to
-        // match whatever an earlier test last left behind - see
-        // resetForRestart()'s identical reset of these same fields for the
-        // production-restart equivalent of this same contract.
+        // Stale sweep-cursor state could wrongly skip this test's first
+        // static-field sweep when the class counts happen to match.
         t->_last_static_field_class_count = -1;
         t->_static_field_sweep_cursor = 0;
         t->_static_field_sweep_cycle_truncated = false;
         t->_next_tag = 1;
-        // Shared with LivenessTracker (classTagAllocator.h) - process-wide,
-        // not per-ReferenceChainTracker-instance, so it needs its own reset
-        // seam rather than being a plain member write.
+        // Process-wide, shared with LivenessTracker - needs its own reset seam.
         ClassTagAllocator::resetForTest();
         t->_search_started = false;
         t->_tags_released = true;
@@ -170,18 +144,8 @@ public:
         t->_pending_expand.clear();
         t->_priority_expand.clear();
         t->_priority_expand_set.clear();
-        // B' at-risk FIFO + its indexes/counters, and the round-15 fresh
-        // lane: production clears all of these on every restartSearch()/
-        // resetSearchStateForTest(), but this seam predates the FIFO and was
-        // never given the clears - until round 16 a test left at-risk
-        // entries behind and only survived because LATER tests' own
-        // runPass()s drained the residue with the full Bfs mock. A test
-        // that ends with a saturated FIFO (AtRiskFifoPerClassQuotaKeeps-
-        // FloodOut) exposed the gap: the residue drained into the NEXT
-        // fixture's runPass, whose minimal mock has a null
-        // GetObjectsWithTags (walkStaticFieldAnchors crash). The seam's
-        // contract is "empty process-wide singleton state for the next
-        // test" - state everything, assert nothing about prior residue.
+        // At-risk FIFO + fresh lane: a saturated FIFO left behind here
+        // crashes the next fixture's runPass (null GetObjectsWithTags).
         t->_static_anchor_fifo.clear();
         t->_static_anchor_fifo_set.clear();
         t->_static_anchor_fifo_klass_counts.clear();
@@ -218,21 +182,14 @@ public:
         t->_leak_parent_fanout.clear();
         t->_borrowed_budget = 0;
         t->_consecutive_under_target_passes = 0;
-        // Adaptive batch + lane state: NOT covered by anything above, and a
-        // prior test that drove expansion leaves a non-zero EMA, a live
-        // batch size, a stale pass deadline, and/or a mid-alternation lane
-        // toggle behind - all of which silently change the next test's
-        // expandFrontier() arithmetic (exact-value asserts on batch sizing
-        // only pass standalone otherwise).
+        // Stale adaptive-batch/lane state would silently change the next
+        // test's expandFrontier() arithmetic.
         t->_gotw_ema_call_ns = 0;
         t->_gotw_batch_size = 0;
         t->_pass_deadline_ns = 0;
         t->_expand_lane_prefer_priority = true;
     }
 
-    // Search restart + pain budget (SearchRestartTest below) - same
-    // rationale as the pacing accessors above: private state a test needs to
-    // drive/observe directly.
     static bool canAffordNewSearch(u64 now_ns) {
         return ReferenceChainTracker::instance()->canAffordNewSearch(now_ns);
     }
@@ -253,8 +210,6 @@ public:
         ReferenceChainTracker::instance()->setCandidateCountForTest(n);
     }
 
-    // Canary-lane backoff state wrappers - see _canary_backoff_mult's own
-    // comment (referenceChains.h).
     static int canaryBackoffMult() {
         return ReferenceChainTracker::instance()->canaryBackoffMultForTest();
     }
@@ -281,10 +236,7 @@ public:
         return ReferenceChainTracker::instance()->_search_pain_ms;
     }
 
-    // Resolved-chain cache: read-only size peek and a pass-through to the
-    // private snapshot (drainPendingChainEvents()) and insert
-    // (cacheResolvedChain()), for ResolvedChainCacheTest below - same
-    // rationale as hasResolvedChainForTag()/resolvedChainCount() below.
+    // Resolved-chain cache seam for ResolvedChainCacheTest below.
     static size_t resolvedChainCount() {
         return ReferenceChainTracker::instance()->_resolved_chains.size();
     }
@@ -303,9 +255,7 @@ public:
         return ReferenceChainTracker::MAX_RESOLVED_CHAINS;
     }
 
-    // Target-selection bridging step: read-only peeks into the resolved-chain
-    // cache, for asserting exactly which klass a chain was resolved for and
-    // the tag it was reconstructed from - see PollWatchedTargetsTest below.
+    // Read-only peeks at the resolved-chain cache for PollWatchedTargetsTest.
     static bool hasResolvedChainForTag(jlong tag) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         return t->_resolved_chains.find(tag) != t->_resolved_chains.end();
@@ -317,11 +267,8 @@ public:
         return it == t->_resolved_chains.end() ? 0 : it->second.source_tag;
     }
 
-    // Leak-tag correlation (design C): read a frontier entry's stored leak
-    // tag, and a pass-through to the private buildChainEvent(), for
-    // LeakTagInterceptionTest below - same friend-accessor rationale as
-    // hasResolvedChainForTag() above. Returns -1 when the tag is not in the
-    // frontier table.
+    // Frontier entry's stored leak tag (-1 when the tag is not in the
+    // frontier table), for LeakTagInterceptionTest below.
     static jlong frontierLeakTag(jlong tag) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         FrontierEntry entry{};
@@ -335,9 +282,6 @@ public:
         ReferenceChainTracker::instance()->setCandidateKlassIdForTest(idx, klass_id);
     }
 
-    // Round-19: the leak-tag canary found criterion (pod 289f8 — the
-    // chase was structurally unresolvable after the marker->leak-tag
-    // migration; see buildDiscoveredInstanceChains' own comment).
     static u64 candidateFoundBitsForTest() {
         return ReferenceChainTracker::instance()->_candidate_found_bits;
     }
@@ -354,7 +298,7 @@ public:
             nullptr, nullptr, klass_id, current_search_ns);
     }
 
-    // ---- pod-in-a-jar system harness (design-pod-in-a-jar-harness) ----
+    // ---- pod-in-a-jar system harness ----
     static u8 searchStateForTest() {
         return ReferenceChainTracker::instance()->_search_state;
     }
@@ -409,16 +353,13 @@ public:
         return ReferenceChainTracker::instance()->candidateDiscoveredCountForTest(slot);
     }
 
-    // recordDiscoveredInstance()/correlateAdmittedLeakTag() are the
-    // production paths for the leak-correlation tests below.
     static void recordDiscoveredInstanceForTest(u32 klass_id, jlong tag,
                                                  bool leak_correlated) {
         ReferenceChainTracker::instance()->recordDiscoveredInstance(klass_id, tag,
                                                                    leak_correlated);
     }
 
-    // Drive restartSearch() directly (the accessor base already set
-    // _tags_released, so its assert is satisfied).
+    // reset() set _tags_released, so restartSearch()'s assert is satisfied.
     static void restartSearchForTest() {
         ReferenceChainTracker::instance()->restartSearch();
     }
@@ -430,8 +371,7 @@ public:
                t->_static_anchor_index_tags.empty();
     }
 
-    // Read back discovered-instance slots (frontier tags recorded by
-    // recordDiscoveredInstance).
+    // Read back discovered-instance slots.
     static jlong discoveredTagForTest(int slot, int idx) {
         return ReferenceChainTracker::instance()
             ->_candidate_discovered_tags[slot][idx];
@@ -456,11 +396,8 @@ public:
                                                                    tag, out);
     }
 
-    // Direct expandFrontier() drive for the AIMD batch test: a full runPass()
-    // drains a small graph to completion and its rotation phase adds extra
-    // GetObjectsWithTags calls, so per-call AIMD assertions cannot be made
-    // deterministic through runPass(). Seeding _pending_expand and calling
-    // expandFrontier() directly runs exactly one batch (one AIMD update).
+    // Direct expandFrontier() drive for the AIMD batch test: per-call
+    // assertions are not deterministic through runPass().
     static void pushPendingExpandForTest(jlong tag) {
         ReferenceChainTracker::instance()->_pending_expand.push_back(tag);
     }
@@ -475,13 +412,7 @@ public:
                           &truncated, &cap_hit, &safepoint_ticks);
     }
 
-    // Pause-time pacing controller: read-only peeks at the controller's
-    // derived values, and
-    // a pass-through to the private updatePacing() itself, for
-    // ReferenceChainsPacingTest below - same rationale as
-    // hasResolvedChainForTag()/resolvedChainCount() above (the target-selection bridging step): private state a test needs to drive/
-    // observe directly, exposed via this existing friend accessor rather
-    // than adding public getters/setters to ReferenceChainTracker itself.
+    // Pause-time pacing controller seam for ReferenceChainsPacingTest below.
     static int effectiveBudget() {
         return ReferenceChainTracker::instance()->_effective_budget;
     }
@@ -496,13 +427,8 @@ public:
 
     static u64 baselineCadenceNs() { return ReferenceChainTracker::PASS_CADENCE_NS; }
 
-    // Test-only seams for PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeiling
-    // below, which needs to start from a controlled below-ceiling/above-
-    // baseline point with a freshly reset controller (see that test's own
-    // comment for why chaining directly off a prior constant-input sequence
-    // would leave _pause_pid's integral state mid-recovery from that
-    // sequence's windup, muddying this method's per-step direction
-    // assertions with a transient the test is not about).
+    // Test-only seams for PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeiling,
+    // which needs a controlled starting point and a freshly reset controller.
     static void setEffectiveBudget(int v) {
         ReferenceChainTracker::instance()->_effective_budget = v;
     }
@@ -515,10 +441,7 @@ public:
         ReferenceChainTracker::instance()->_pause_pid.reset();
     }
 
-    // Budget-borrowing (referenceChains.h's _borrowed_budget comment): the
-    // configured multiplier PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeiling
-    // below asserts convergence against, instead of hardcoding it a second
-    // time in the test itself.
+    // Borrow ceiling multiplier, asserted instead of hardcoded in the test.
     static int borrowCeilingMultiplier() {
         return ReferenceChainTracker::BORROW_CEILING_MULTIPLIER;
     }
@@ -527,10 +450,6 @@ public:
         return ReferenceChainTracker::instance()->_borrowed_budget;
     }
 
-    // MaybeRevokeBorrowForRootEnumPass* tests below: drive the borrow state
-    // directly into "already granted" before exercising the revocation-only
-    // seam, and a pass-through to that seam itself - same rationale as
-    // updatePacing()'s own accessor above.
     static void setBorrowedBudget(int64_t v) {
         ReferenceChainTracker::instance()->_borrowed_budget = v;
     }
@@ -548,19 +467,11 @@ public:
             pass_wall_ticks);
     }
 
-    // ReleaseSearchTagsFailureTest below: read-only peek at whether the
-    // tracker still owes a tag release before it can allow a restart - see
-    // _tags_released's own comment.
+    // Whether the tracker still owes a tag release (ReleaseSearchTagsFailureTest).
     static bool tagsReleased() {
         return ReferenceChainTracker::instance()->_tags_released;
     }
 
-    // ResolveLoadedClassesRescansAfterClassCountShrinksAndPartiallyRegrows
-    // below: direct pass-through to the private resolveLoadedClasses(), plus
-    // a read-only peek at the count it stashes - the same rationale as
-    // tagsReleased() above (private state/behavior a test needs to
-    // drive/observe directly, without going through a full runPass()/search
-    // lifecycle that resolveLoadedClasses() alone does not need).
     static void resolveLoadedClasses(jvmtiEnv *jvmti, JNIEnv *jni) {
         ReferenceChainTracker::instance()->resolveLoadedClasses(jvmti, jni);
     }
@@ -569,14 +480,8 @@ public:
         return ReferenceChainTracker::instance()->_last_resolved_class_count;
     }
 
-    // Durability re-verification test seams: direct pass-throughs
-    // to the private tie-break/rotation methods, plus FrontierTable::insert()
-    // itself (also private-by-convention here in the sense that production
-    // code only ever calls it via admitObject()) so tests can set up a
-    // frontier entry's exact starting root_kind/state/parent_tag without
-    // needing a live JVMTI mock for IterateOverReachableObjects/FollowReferences
-    // (neither is mocked in this file - see the file header's FollowReferences-
-    // only mock rationale).
+    // Durability re-verification seams: private tie-break/rotation methods
+    // plus FrontierTable::insert(), for exact entry setup without a walk mock.
     static bool insertFrontierEntry(FrontierTable *frontier, jlong tag,
                                      jlong parent_tag, u32 depth, u8 state,
                                      u8 root_kind, u32 referrer_klass = 0,
@@ -609,11 +514,8 @@ public:
             ->collectStaleExpandedEntriesForRotation(max_count);
     }
 
-    // Candidate-scoped reach (descendFromAnchor()/walkCandidateThreadLocals()/
-    // walkStaticFieldAnchors()): direct drives for the same reason as
-    // expandFrontierForTest() above - a full runPass() drains a small graph
-    // to completion and its other phases add interference, so the walk
-    // phases are exercised on their own.
+    // Direct drives for the walk phases: a full runPass() drains a small
+    // graph to completion, so the walks are exercised on their own.
     static void walkCandidateThreadLocalsForTest(jvmtiEnv *jvmti, JNIEnv *jni,
                                                  int budget,
                                                  int *edges_admitted) {
@@ -646,8 +548,7 @@ public:
     }
 
     // Prime the class-shape cache as if reconcileAnchorClassShapes() had
-    // classified `class_tag` (tests script shapes instead of driving the
-    // JNI interface walk, which needs real classes).
+    // classified `class_tag` (driving the JNI walk needs real classes).
     static void primeClassShapeForTest(jlong class_tag, bool container) {
         ReferenceChainTracker::instance()->_class_shape_cache[class_tag] =
             container
@@ -655,16 +556,10 @@ public:
                 : (u8)ReferenceChainTracker::AnchorClassShape::NON_CONTAINER;
     }
 
-    // B' at-risk static-anchor FIFO (see _static_anchor_fifo's declaration
-    // comment in referenceChains.h). pushStaticAnchorFifoForTest bypasses
-    // heapReferenceCallback's push predicate (kind == STATIC_FIELD onto a
-    // chain-attached entry) by calling the real pushAtRiskStaticAnchor()
-    // directly - the end-to-end push path is covered by
-    // AtRiskStaticHolderFeedsAnchorFifo below; the drive below exists so the
-    // drain/walk/requeue mechanics (and the round-16 per-class quota) can
-    // be exercised deterministically on seeded entries.
-    // Private nested names surfaced for TEST BODIES (friendship covers this
-    // class's own scope only, so test code cannot name them directly):
+    // At-risk static-anchor FIFO seams: pushStaticAnchorFifoForTest calls
+    // pushAtRiskStaticAnchor() directly so drain/walk/requeue mechanics can
+    // be exercised deterministically. Private nested names surfaced for test
+    // bodies (friendship covers only this class's scope):
     using AtRiskAnchor = ReferenceChainTracker::AtRiskAnchor;
     static constexpr u32 kAtRiskPerKlassCap =
         ReferenceChainTracker::STATIC_ANCHOR_ATRISK_PER_KLASS_CAP;
@@ -709,10 +604,8 @@ public:
                                   unwalked);
     }
 
-    // Direct candidate-slot seeding (the production path fills these via
-    // pollWatchedTargets()'s snapshot loop - see _candidate_qualifying_tids'
-    // own comment): the walk phase tests need exactly one (slot, klass, tid)
-    // combination without driving LivenessTracker's hysteresis machinery.
+    // Seeds exactly one (slot, klass, tid) combination without driving
+    // LivenessTracker's hysteresis machinery.
     static void seedCandidateSlotForTest(int slot, u32 klass_id,
                                           const jint *tids, int tid_count) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
@@ -735,33 +628,22 @@ public:
         return ReferenceChainTracker::instance()->getTag(jvmti, obj);
     }
 
-    // Snapshot of _priority_expand's current contents, in queue order - used
-    // by tests to check for duplicate tags after both rotation collectors
-    // have run against it within the same simulated pass.
+    // Snapshot of _priority_expand's contents, in queue order.
     static std::vector<jlong> priorityExpandContents() {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         return std::vector<jlong>(t->_priority_expand.begin(),
                                    t->_priority_expand.end());
     }
 
-    // StaleExpandedRotationSkipsPreexistingQueueEntries below: simulates a
-    // tag left in _priority_expand by a prior pass's truncated expandFrontier()
-    // batch (expandFrontier()'s own "leave the batch at the front of the
-    // source queue for a later pass to retry" comment) without driving a full
-    // expandFrontier()/JVMTI round-trip to produce one.
+    // Simulates a truncated expandFrontier() batch left in _priority_expand.
     static void pushPriorityExpand(jlong tag) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         t->_priority_expand.push_back(tag);
         t->_priority_expand_set.insert(tag);
     }
 
-    // Simulates expandFrontier() having fully drained _priority_expand at the
-    // end of a pass (the common case: rotation's whole selection fit within
-    // that pass's rotation_budget slice) - see
-    // StaleExpandedRotationStarvesHighTagEntryBehindLowTagPopulation below,
-    // which needs this to model collectStaleExpandedEntriesForRotation()
-    // being called fresh on each of several simulated passes, the way
-    // runPassManualWalk() actually does it once per real pass.
+    // Simulates expandFrontier() having drained _priority_expand at the end
+    // of a pass.
     static void clearPriorityExpand() {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         t->_priority_expand.clear();
@@ -788,11 +670,7 @@ public:
         return ReferenceChainTracker::instance()->_priority_expand.size();
     }
 
-    // Snapshot of _pending_expand's current contents, in queue order - used
-    // by the rolling-resume smoke test to verify that a truncated
-    // expandFrontier() batch pops fully-processed entries (mark EXPANDED)
-    // and leaves only the partially-processed and unvisited entries at the
-    // front of the queue for the next pass to retry.
+    // Snapshot of _pending_expand's contents, in queue order.
     static std::vector<jlong> pendingExpandContents() {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         return std::vector<jlong>(t->_pending_expand.begin(),
@@ -803,8 +681,7 @@ public:
         return ReferenceChainTracker::instance()->_pending_expand.size();
     }
 
-    // Self-calibrating adaptive batch size (AIMD): read/write the per-call
-    // EMA and live batch size so tests can verify the AIMD dynamics.
+    // Adaptive batch size (AIMD): EMA and live batch size seams.
     static u64 gotwEmaCallNs() {
         return ReferenceChainTracker::instance()->_gotw_ema_call_ns;
     }
@@ -821,8 +698,7 @@ public:
         ReferenceChainTracker::instance()->_gotw_batch_size = v;
     }
 
-    // Read-only peeks at the batch-control constants (private statics -
-    // friendship applies inside this class's methods, not in test bodies).
+    // Read-only peeks at the batch-control constants (private statics).
     static u64 gotwCpuBudgetNs() {
         return ReferenceChainTracker::GOTW_CPU_BUDGET_NS;
     }
@@ -848,7 +724,7 @@ public:
     }
 
     // gotwWindowNs() is a pure function of (remaining window, lane depth)
-    // and the seeded EMA - directly unit-testable without a mock JVMTI call.
+    // - directly unit-testable.
     static u64 gotwWindowNs(u64 remaining_ns, size_t lane_depth) {
         return ReferenceChainTracker::instance()->gotwWindowNs(remaining_ns,
                                                                 lane_depth);
@@ -862,8 +738,6 @@ public:
         return ReferenceChainTracker::instance()->_expand_lane_prefer_priority;
     }
 
-    // Leak-tag pool range base (private static) - same friend-access
-    // rationale as the AIMD constants above.
     static jlong leakTagBase() {
         return ReferenceChainTracker::LEAK_TAG_BASE;
     }
@@ -973,11 +847,8 @@ TEST_F(ReferenceChainsTest, FlagParsesSubOptions) {
 }
 
 // Negative/out-of-range sub-options must be floored/clamped at the parse
-// boundary (Arguments::parse(), arguments.cpp) rather than stored verbatim -
-// see that call site's own comment for why an unclamped negative hops in
-// particular is dangerous: `depth >= (u32)ctx->hop_cap` (referenceChains.cpp)
-// casts a negative int to u32, wrapping to ~4e9 and silently disabling the
-// hop cap entirely.
+// boundary: `depth >= (u32)ctx->hop_cap` casts a negative int to u32,
+// wrapping to ~4e9 and silently disabling the hop cap.
 TEST_F(ReferenceChainsTest, FlagClampsNegativeSubOptions) {
     Arguments args;
     Error error = args.parse(
@@ -985,13 +856,13 @@ TEST_F(ReferenceChainsTest, FlagClampsNegativeSubOptions) {
         "pausetarget=-1:painbudget=-10");
     EXPECT_FALSE(error);
     EXPECT_TRUE(args._reference_chains);
-    // Floored to a sane minimum (1), not left negative - a negative value
-    // cast to u32 downstream would otherwise wrap to a huge positive number.
+    // Floored to a sane minimum (1): a negative value cast to u32
+    // downstream would wrap to a huge positive number.
     EXPECT_GT(args._reference_chains_hop_cap, 0);
     EXPECT_GT(args._reference_chains_budget, 0);
     EXPECT_GT(args._reference_chains_frontier_cap, 0);
-    // ttl/pausetarget are floored at 0 (their own downstream gates already
-    // treat 0 as "disabled", so 0 - not 1 - is the correct floor).
+    // ttl/pausetarget are floored at 0: their downstream gates treat 0 as
+    // "disabled", so 0 - not 1 - is the correct floor.
     EXPECT_GE(args._reference_chains_ttl_ms, 0);
     EXPECT_GE(args._reference_chains_pause_target_ms, 0);
     // painbudget is a percentage - clamped into [0, 100].
@@ -999,9 +870,7 @@ TEST_F(ReferenceChainsTest, FlagClampsNegativeSubOptions) {
     EXPECT_LE(args._reference_chains_pain_budget_percent, 100);
 }
 
-// A too-large painbudget must be clamped down to 100, not stored verbatim -
-// the sibling of FlagClampsNegativeSubOptions above, for the upper bound
-// rather than the lower one.
+// A too-large painbudget must be clamped down to 100.
 TEST_F(ReferenceChainsTest, FlagClampsOversizedPainBudgetPercent) {
     Arguments args;
     Error error = args.parse("referencechains=true:painbudget=250");
@@ -1043,15 +912,9 @@ TEST_F(ReferenceChainsTest, StartStopEnabledDoesNotCrash) {
     tracker->stop();
 }
 
-// ---------------------------------------------------------------------------
-// GC signal (GarbageCollectionStart/Finish -> epoch counters).
-//
-// The callback trampolines (ReferenceChainTracker::GarbageCollectionStart/
-// Finish) ignore the jvmtiEnv* argument entirely - onGCStart()/onGCFinish()
-// only bump an atomic counter, per the JVMTI spec restriction documented in
-// referenceChains.h - so passing nullptr here exercises the real production
-// code path.
-// ---------------------------------------------------------------------------
+// GC signal (GarbageCollectionStart/Finish -> epoch counters). The
+// trampolines ignore jvmtiEnv* (only an atomic counter is bumped, per the
+// JVMTI spec restriction in referenceChains.h), so nullptr is valid here.
 
 TEST_F(ReferenceChainsTest, GCCallbacksIncrementEpochWhenEnabled) {
     Arguments args;
@@ -1090,22 +953,8 @@ TEST_F(ReferenceChainsTest, GCCallbacksAreNoOpWhenDisabled) {
     EXPECT_EQ(finishBefore, tracker->gcFinishEpoch());
 }
 
-// ---------------------------------------------------------------------------
-// Tag round-trip (SetTag/GetTag/clear).
-//
-// The natural smoke test ("allocate an object, tag it,
-// force a GC, confirm the tag is still readable via GetObjectsWithTags")
-// assumes a live embedded JVM. This gtest binary has no live JVM attached
-// (see jvmSupport_ut.cpp's fixture comment for the same constraint on a
-// different subsystem), so - following this repo's established pattern for
-// testing JVMTI call sites without a real JVM (objectSampler_ut.cpp's mock
-// jvmtiInterface_1_ table) - these tests exercise tagObject()/getTag()/
-// clearTag() against a mock jvmtiEnv backed by an in-memory tag map, rather
-// than a real GC. This proves the SetTag/GetTag/SetTag(obj,0) call sequence
-// and unique-tag allocation are correct; it does not prove GC-move-
-// transparency, which requires a real collector and is out of reach of this
-// native-only gtest binary.
-// ---------------------------------------------------------------------------
+// Tag round-trip (SetTag/GetTag/clear) against a mock jvmtiEnv backed by an
+// in-memory tag map (no live JVM here; GC move-transparency is out of reach).
 
 class ReferenceChainsTagTest : public ::testing::Test {
 protected:
@@ -1175,13 +1024,8 @@ TEST_F(ReferenceChainsTagTest, UntaggedObjectReadsBackZero) {
     EXPECT_EQ(0, tracker->getTag(&mock_env, reinterpret_cast<jobject>(&untagged)));
 }
 
-// ---------------------------------------------------------------------------
-// FrontierTable (tag-indexed frontier metadata table).
-//
-// No live JVM/JVMTI involvement here - FrontierTable is pure native slot
-// storage indexed by an already-issued tag value, so these tests exercise it
-// directly rather than through ReferenceChainTracker's tag helpers.
-// ---------------------------------------------------------------------------
+// FrontierTable (tag-indexed frontier metadata table): pure native slot
+// storage, exercised directly.
 
 TEST(FrontierTableTest, InsertThenLookupRoundTrips) {
     FrontierTable table(64);
@@ -1217,9 +1061,8 @@ TEST(FrontierTableTest, LookupLockedRejectsNonPositiveTag) {
     FrontierTable table(64);
     ASSERT_TRUE(table.insert(1, 0, 7, 0, FrontierEntryState::FRONTIER));
     FrontierEntry entry{};
-    // tag=0 must be rejected the same way lookup() rejects it - callers
-    // index the table with tag-1, so a `tag <= 0` check (not just `tag < 0`)
-    // is required to keep that subtraction from wrapping into a valid slot.
+    // Callers index the table with tag-1: a `tag <= 0` check (not just
+    // `tag < 0`) keeps that subtraction from wrapping into a valid slot.
     EXPECT_FALSE(table.lookupLocked(0, &entry));
     EXPECT_FALSE(table.lookupLocked(-1, &entry));
 }
@@ -1228,16 +1071,12 @@ TEST(FrontierTableTest, LookupLockedRejectsTagPastCurrentSize) {
     FrontierTable table(64);
     ASSERT_TRUE(table.insert(1, 0, 7, 0, FrontierEntryState::FRONTIER));
     FrontierEntry entry{};
-    // Only tag=1 has ever been inserted (table_size == 1); tag=2 maps to
-    // idx=1, exactly at the current size boundary, and must be rejected
-    // rather than read out of bounds.
+    // table_size == 1; tag=2 maps to idx=1, at the size boundary, and must
+    // be rejected rather than read out of bounds.
     EXPECT_FALSE(table.lookupLocked(2, &entry));
 }
 
 TEST(FrontierTableTest, ParentTagChainReconstructsAcrossHops) {
-    // Mirrors how the heap-walk engine walks parent_tag links back to a root: insert
-    // a small chain root(tag=1) <- mid(tag=2) <- leaf(tag=3) and confirm the
-    // links resolve in order.
     FrontierTable table(64);
     ASSERT_TRUE(table.insert(1, 0, 100, 0, FrontierEntryState::EDGE));
     ASSERT_TRUE(table.insert(2, 1, 200, 1, FrontierEntryState::EDGE));
@@ -1277,7 +1116,6 @@ TEST(FrontierTableTest, ClearOfNeverInsertedTagIsNoOp) {
 }
 
 TEST(FrontierTableTest, GrowsPastInitialCapacityUpToMaxCap) {
-    // Force at least one resize by inserting beyond the small max_cap.
     const int max_cap = 10;
     FrontierTable table(max_cap);
     ASSERT_LE(table.capacity(), max_cap);
@@ -1302,11 +1140,9 @@ TEST(FrontierTableTest, CapacityExhaustedReportsFailureInsteadOfCrashing) {
     for (jlong tag = 1; tag <= max_cap; tag++) {
         ASSERT_TRUE(table.insert(tag, 0, 0, 0));
     }
-    // One past max_cap must be rejected, not silently dropped-but-crashing.
     EXPECT_FALSE(table.insert(max_cap + 1, 0, 0, 0));
     EXPECT_EQ(max_cap, table.capacity());
 
-    // Existing entries remain intact after the failed insert.
     FrontierEntry entry{};
     EXPECT_TRUE(table.lookup(1, &entry));
 }
@@ -1319,7 +1155,7 @@ TEST(FrontierTableTest, ZeroMaxCapRejectsEveryInsert) {
 
 TEST(FrontierTableTest, ConcurrentInsertWhileGrowingDoesNotCrash) {
     // Small max_cap relative to thread/tag count forces repeated resizes
-    // while other threads are concurrently inserting distinct tags.
+    // while other threads are concurrently inserting.
     const int max_cap = 4096;
     const int thread_count = 8;
     const int tags_per_thread = 256;
@@ -1346,8 +1182,6 @@ TEST(FrontierTableTest, ConcurrentInsertWhileGrowingDoesNotCrash) {
             found++;
         }
     }
-    // Every tag fits well within max_cap, so all inserts must have
-    // succeeded and be independently readable.
     EXPECT_EQ(thread_count * tags_per_thread, found);
 }
 
@@ -1364,8 +1198,7 @@ TEST(FrontierTableTest, ReconstructChainWalksParentTagsAndMarksEdge) {
     EXPECT_EQ(200u, chain[1]);
     EXPECT_EQ(100u, chain[2]);
 
-    // Every hop walked must be marked EDGE - this table's degenerate
-    // EdgeStore (design doc: "on a path toward a target sample").
+    // Every hop must be marked EDGE.
     for (jlong tag = 1; tag <= 3; tag++) {
         FrontierEntry entry{};
         ASSERT_TRUE(table.lookup(tag, &entry));
@@ -1379,24 +1212,11 @@ TEST(FrontierTableTest, ReconstructChainOfNeverInsertedTagFails) {
     EXPECT_FALSE(table.reconstructChain(1, &chain));
 }
 
-// ---------------------------------------------------------------------------
-// Heap-walk engine (ReferenceChainTracker::runPass()/
-// heapReferenceCallback()/resolveLoadedClasses()).
-//
-// The design doc's suggestion is to test this against "a small live-object
-// graph in a test JVM (via JNI from the test)". This native-only gtest
-// binary has no live JVM at all (see this file's GC-signal/tag-round-trip
-// comment above, and jvmSupport_ut.cpp's fixture comment, for the same
-// pre-existing constraint) - no gtest binary in this codebase embeds a
-// JNI_CreateJavaVM-created JVM. So, exactly like ReferenceChainsTagTest above
-// mocks SetTag/GetTag with an in-memory map, these tests mock the JVMTI/JNI
-// call boundary (FollowReferences/GetLoadedClasses/GetClassSignature/
-// DeleteLocalRef) to play back a scripted synthetic object graph, and run
-// the *real* production heapReferenceCallback()/resolveLoadedClasses()/
-// reconstructChain() code against it - only the JVMTI/JNI calls are faked,
-// not the logic under test. A live-JVM end-to-end test belongs to the
-// Java-side integration suite, not this native gtest binary.
-// ---------------------------------------------------------------------------
+// Heap-walk engine (runPass()/heapReferenceCallback()/resolveLoadedClasses()).
+// No live JVM here: the JVMTI/JNI boundary is mocked to play back a scripted
+// synthetic object graph, and the *real* production callback/resolution/
+// chain-reconstruction code runs against it. A live-JVM end-to-end test
+// belongs to the Java-side integration suite.
 
 namespace {
 
@@ -1412,11 +1232,8 @@ struct ScriptedClass {
     const char *signature; // JVMTI class signature, e.g. "Lcom/example/Foo;"
 };
 
-// Retention-edge label decode fixtures (ReferenceChainsBfsTest's
-// field_decode_hierarchy + the hierarchy-introspection mock slots): a fake
-// class hierarchy the slots read, mirroring just enough JVMTI class shape
-// for the spec-ordinal decoder (own-declared fields in GetClassFields
-// order, direct superclass, directly implemented/extended interfaces).
+// Retention-edge label decode fixtures: a fake class hierarchy for the
+// spec-ordinal decoder (own-declared fields, direct superclass, interfaces).
 struct FakeField {
     void *id;       // fake jfieldID
     const char *name;
@@ -1442,54 +1259,36 @@ protected:
     std::vector<ScriptedEdge> script;
     std::vector<jlong> node_tags;
 
-    // node_tags[idx] mirrors "the object's *current* live JVMTI
-    // tag" (0 once releaseSearchTags() clears it, exactly like a real
-    // GetTag() would report after SetTag(obj, 0)). tags_ever_assigned[idx]
-    // instead remembers the tag heapReferenceCallback() ever wrote through
-    // tag_ptr for this node, and is never reset - a production consumer
-    // would capture a target sample's tag the same way (at assignment time,
-    // e.g. via its own sample-tracking), not by re-reading GetTag() after
-    // the search has already released it. Tests use this to fetch a tag for
-    // reconstructChain() without depending on whether the search released
-    // it before or after the test could observe node_tags[idx].
+    // node_tags[idx] mirrors the object's *current* live JVMTI tag (0 once
+    // releaseSearchTags() clears it). tags_ever_assigned[idx] remembers the
+    // tag the callback ever wrote through tag_ptr, never reset - capture-
+    // at-assignment semantics, so a tag can be fetched after release.
     std::vector<jlong> tags_ever_assigned;
 
-    // Tags that GetObjectsWithTags() below reports as unresolvable,
-    // simulating the referenced object having died (GC'd) between passes -
-    // see the resolve-or-drop tests.
+    // Tags GetObjectsWithTags() reports as unresolvable (object died
+    // between passes), for the resolve-or-drop tests.
     std::unordered_set<jlong> dead_tags;
 
-    // When true, mock_GetObjectsWithTags() below fails outright (as if the
-    // real JVMTI call had hit e.g. JVMTI_ERROR_OUT_OF_MEMORY), for
-    // ReleaseSearchTagsFailureTest - simulates releaseSearchTags()'s own
-    // GetObjectsWithTags() call failing rather than an individual tag
-    // failing to resolve (dead_tags above).
+    // When true, mock_GetObjectsWithTags() fails outright (simulating
+    // releaseSearchTags()'s own call failing, vs. an individual dead tag).
     bool fail_get_objects_with_tags = false;
 
-    // When non-zero, mock_GetObjectsWithTags() below busy-waits this many
-    // nanoseconds. The mock call is otherwise ~free, so a pass deadline set
-    // to a fraction of this value bounds an expandFrontier() invocation to
-    // exactly ONE batch - the production regime (one real ~25-30ms call of
-    // a 50ms window), needed by the lane-alternation test.
+    // When non-zero, mock_GetObjectsWithTags() busy-waits this long; a pass
+    // deadline below this value bounds an expandFrontier() invocation to
+    // exactly one batch.
     u64 gotw_delay_ns = 0;
 
-    // Synthetic frontier-holder arrays for expandFrontier()'s array-holder
-    // walk: mock_NewObjectArray() hands back an opaque handle,
-    // mock_SetObjectArrayElement() records its elements here, and
-    // mock_FollowReferences() treats every recorded element as an expansion
-    // seed (one hop, gated by the production callback's batch_tags) when the
-    // holder is passed as initial_object.
+    // Synthetic frontier-holder arrays for the array-holder walk:
+    // NewObjectArray hands back an opaque handle, SetObjectArrayElement
+    // records its elements here, FollowReferences treats each as an
+    // expansion seed when the holder is initial_object.
     std::unordered_map<jobject, std::vector<jobject>> holders;
     uintptr_t next_holder = 0xF00D0000;
 
-    // FindClass(name) -> registered fake class (see mock_FindClass' own
-    // comment): names descendFromAnchor()'s resolutions look up
-    // ("java/lang/ClassLoader", "java/lang/ThreadGroup",
-    // "java/security/ProtectionDomain",
-    // "java/lang/ThreadLocal$ThreadLocalMap", "java/lang/Thread").
+    // FindClass(name) -> registered fake class, for descendFromAnchor()'s
+    // name-based resolutions (java/lang/ClassLoader, java/lang/Thread, ...).
     std::unordered_map<std::string, void *> find_classes;
-    // Fake class returned by mock_GetObjectClass() for unregistered objects
-    // (walkCandidateThreadLocals()'s fresh-anchor admission path).
+    // Fake class returned by mock_GetObjectClass() for unregistered objects.
     void *thread_class = nullptr;
 
     // DeleteGlobalRef call count (see mock_DeleteGlobalRef).
@@ -1501,16 +1300,12 @@ protected:
 
     void SetUp() override {
         active_fixture = this;
-        // See ReferenceChainsTestAccessor's own comment - without this, a
-        // prior test in this suite that drove the search to
-        // SearchState::COMPLETED/ABANDONED would make every runPass() call
-        // below a permanent no-op.
+        // Without the reset, a prior test leaving a terminal search state
+        // makes every runPass() below a no-op.
         ReferenceChainsTestAccessor::reset();
         jvmti_tbl = jvmtiInterface_1_{};
-        // start() calls VM::jvmti()->SetEventNotificationMode() -
-        // stub it and swap VM::_jvmti (VMTestAccessor, declared above) the
-        // same way ReferenceChainsTest's fixture does, so start() does not
-        // dereference the real (null, no live JVM) jvmtiEnv.
+        // Stub SetEventNotificationMode and swap VM::_jvmti so start() does
+        // not dereference the real (null, no live JVM) jvmtiEnv.
         jvmti_tbl.SetEventNotificationMode = &mock_SetEventNotificationMode;
         jvmti_tbl.SetTag = &mock_SetTag;
         jvmti_tbl.GetTag = &mock_GetTag;
@@ -1550,21 +1345,15 @@ protected:
         active_fixture = nullptr;
     }
 
-    // Registers a fake class (matched by identity, not by any real JNI
-    // semantics) that resolveLoadedClasses() will discover via the mocked
-    // GetLoadedClasses(). Returns its index into `classes`.
+    // Registers a fake class (matched by identity); returns its index into
+    // `classes`.
     int addClass(void *klass, const char *signature) {
         classes.push_back({klass, signature});
         return (int)classes.size() - 1;
     }
 
-    // addClass() + a mock_FindClass(name) registry entry in one step, for
-    // the classes descendFromAnchor()'s resolution helpers look up by
-    // name (see find_classes' own comment). `name` uses FindClass's
-    // binary-name form ("java/lang/ClassLoader"), `signature` the
-    // class-signature form resolveLoadedClasses() interns
-    // ("Ljava/lang/ClassLoader;") - the production code passes each to
-    // exactly one of the two APIs.
+    // addClass() + a FindClass registry entry. `name` uses the binary-name
+    // form, `signature` the class-signature form - each goes to one API.
     int registerClassForFindClass(void *klass, const char *name,
                                    const char *signature) {
         int idx = addClass(klass, signature);
@@ -1572,21 +1361,16 @@ protected:
         return idx;
     }
 
-    // Adds an as-yet-untagged frontier node, returning its index into
-    // node_tags for use as a ScriptedEdge referrer_idx/referee_idx.
+    // Adds an untagged node; returns its index into node_tags.
     int addNode() {
         node_tags.push_back(0);
         tags_ever_assigned.push_back(0);
         return (int)node_tags.size() - 1;
     }
 
-    // Reverse lookup from a node's synthetic identity
-    // (&node_tags[idx], see mock_FollowReferences' initial_object handling
-    // below) back to its index. Returns -1 for anything else (e.g. a
-    // ScriptedClass's `klass` pointer, which never aliases node_tags'
-    // backing storage). Requires every addNode() call to happen before any
-    // runPass() call in a test, so node_tags never reallocates out from
-    // under a previously-taken address - true of every test in this file.
+    // Reverse lookup from &node_tags[idx] back to idx; -1 otherwise.
+    // addNode() must precede any runPass() so node_tags never reallocates
+    // out from under a taken address.
     int indexOfNode(jobject obj) const {
         for (size_t i = 0; i < node_tags.size(); i++) {
             if (obj == (jobject)&node_tags[i]) {
@@ -1597,13 +1381,8 @@ protected:
     }
 
     static jvmtiError JNICALL mock_SetTag(jvmtiEnv *, jobject object, jlong tag) {
-        // releaseSearchTags() calls SetTag(obj, 0) on the resolved
-        // objects GetObjectsWithTags() (below) hands back for a frontier
-        // node - route that through node_tags[idx] directly (the same
-        // storage GetObjectsWithTags's resolution and the production
-        // callback's tag_ptr writes both key off of), so the release is
-        // actually observable, not just recorded in a side map nothing else
-        // reads.
+        // releaseSearchTags() calls SetTag(obj, 0) on the resolved objects -
+        // route that through node_tags[idx] so the release is observable.
         int idx = active_fixture->indexOfNode(object);
         if (idx >= 0) {
             active_fixture->node_tags[idx] = tag;
@@ -1640,10 +1419,8 @@ protected:
         return JVMTI_ERROR_NONE;
     }
 
-    // admitStaticFieldRoots()'s app-classes-first partition (referenceChains.cpp)
-    // calls this for every loaded class. Every fixture class is "bootstrap"
-    // (null classloader) so the partition is a no-op and this suite's
-    // scripted class order/indices stay exactly as each test set them up.
+    // Every fixture class reports a null (bootstrap) classloader so the
+    // app-classes-first partition is a no-op.
     static jvmtiError JNICALL mock_GetClassLoader(jvmtiEnv *, jclass,
                                                    jobject *classloader_ptr) {
         *classloader_ptr = nullptr;
@@ -1675,22 +1452,14 @@ protected:
         // local refs.
     }
 
-    // Retention-edge label decode fixtures (fillHopEdgeLabels()/
-    // hopLabelClassFor()): a fake class hierarchy the hierarchy-introspection
-    // slots below read, plus a tag -> fake jclass map (the decoder resolves
-    // the referrer class from its raw tag via GetObjectsWithTags - the test
-    // populates field_decode_classes from resolveLoadedClasses()-minted
-    // tags, and mock_GetObjectsWithTags consults it first).
+    // Retention-edge label decode fixtures: a fake class hierarchy for the
+    // introspection slots, plus a tag -> fake jclass map.
     std::unordered_map<jlong, void *> field_decode_classes;
     std::unordered_map<void *, FakeClass> field_decode_hierarchy;
 
-    // The hierarchy-introspection slots the decoder needs (IsInterface/
-    // GetImplementedInterfaces/GetClassFields/GetFieldName on the JVMTI
-    // table, GetSuperclass on the JNI table - modern JVMTI dropped its own
-    // GetSuperclass). All lookups go through field_decode_hierarchy; an
-    // unregistered class returns a failure code so the decoder marks the
-    // class undecodable and degrades to kind labels - the exact production
-    // fail-safe shape.
+    // Hierarchy-introspection slots the decoder needs (GetSuperclass lives
+    // on the JNI table - JVMTI dropped its own). Unregistered classes return
+    // a failure code so the decoder degrades to kind labels.
     static jvmtiError JNICALL mock_IsInterface(jvmtiEnv *, jclass cls,
                                                jboolean *is_interface_ptr) {
         auto it = active_fixture->field_decode_hierarchy.find(cls);
@@ -1755,14 +1524,8 @@ protected:
         return JVMTI_ERROR_INVALID_FIELDID;
     }
 
-    // expandFrontier()/admitStaticFieldRoots() resolve java/lang/Object once
-    // as the holder array's element type - a non-null fake jclass is all it
-    // needs (the type is never introspected, only passed to NewObjectArray()).
-    // descendFromAnchor()'s class resolution (resolveNoDescendClassTags()/
-    // resolveThreadLocalMapClassTag()) additionally needs NAME lookup - the
-    // find_classes registry maps a FindClass name to a class registered via
-    // addClass() so those resolutions see the same tagged fake class the
-    // scripted graph uses.
+    // A non-null fake jclass is all the holder array's element type needs
+    // (never introspected); name-based resolutions go through find_classes.
     static jclass JNICALL mock_FindClass(JNIEnv *, const char *name) {
         auto it = active_fixture->find_classes.find(name);
         if (it != active_fixture->find_classes.end()) {
@@ -1771,25 +1534,20 @@ protected:
         return (jclass)0xC1A55;
     }
 
-    // walkCandidateThreadLocals()'s fresh-anchor admission calls
-    // GetObjectClass(thread) - unregistered classes return the fixture's
-    // fake Thread class (set_thread_class) so the anchor entry's class tag
-    // resolves through the same mocked GetTag/tagging path.
+    // Fresh-anchor admission calls GetObjectClass(thread); return the
+    // fixture's fake Thread class so the anchor's class tag resolves.
     static jclass JNICALL mock_GetObjectClass(JNIEnv *, jobject) {
         return (jclass)active_fixture->thread_class;
     }
 
 
-    // The production code wraps that fake jclass in a global ref (a real
-    // local ref would dangle across JNI-entered test seams - see
-    // _cached_object_class's own comment). This fixture's "refs" are raw
-    // fake pointers with no JNI lifetime, so identity is the correct mock.
+    // This fixture's "refs" are raw fake pointers with no JNI lifetime, so
+    // identity is the correct global-ref mock.
     static jobject JNICALL mock_NewGlobalRef(JNIEnv *, jobject obj) {
         return obj;
     }
 
-    // Counts DeleteGlobalRef calls - the deferred thread-ref teardown test
-    // (ThreadRefUnregisterDefersGlobalRefDeletion) asserts on the count.
+    // Counts DeleteGlobalRef calls.
     static void JNICALL mock_DeleteGlobalRef(JNIEnv *, jobject) {
         active_fixture->global_refs_deleted_++;
     }
@@ -1798,10 +1556,8 @@ protected:
         return JNI_OK;
     }
 
-    // expandFrontier() calls jniExceptionCheck() after every upcall that can
-    // legally throw (NewObjectArray/SetObjectArrayElement/EnsureLocalCapacity
-    // failures) - this fixture's mocks never throw, so there is never a
-    // pending exception to report or clear.
+    // expandFrontier() calls jniExceptionCheck() after upcalls that can
+    // legally throw - this fixture's mocks never throw.
     static jboolean JNICALL mock_ExceptionCheck(JNIEnv *) {
         return JNI_FALSE;
     }
@@ -1810,10 +1566,7 @@ protected:
         // no-op: mock_ExceptionCheck() never reports a pending exception.
     }
 
-    // Hands back a fresh opaque holder handle and registers it in `holders` so
-    // mock_SetObjectArrayElement()/mock_FollowReferences() can find its
-    // elements. `length`/`elementClass`/`initialElement` are unused - the
-    // fixture never reads the array back, only its recorded element list.
+    // Hands back a fresh opaque holder handle registered in `holders`.
     static jobjectArray JNICALL mock_NewObjectArray(JNIEnv *, jsize, jclass,
                                                      jobject) {
         jobject handle = (jobject)(active_fixture->next_holder++);
@@ -1825,14 +1578,8 @@ protected:
                                                     jsize idx, jobject value) {        active_fixture->holders[(jobject)array].push_back(value);
     }
 
-    // runPassManualWalk()'s root enumeration (the default, non-fallback path):
-    // reports each scripted root edge's referee to heapRootCallback() exactly
-    // as a real IterateOverReachableObjects() reports a root-held object -
-    // tag_ptr only, no oop, no transitive children (see runPassManualWalk()'s
-    // own comment). Expansion past the roots is then driven by expandFrontier()
-    // through the same mock_FollowReferences() array-holder path the resumed
-    // fallback passes use. stack_ref/object_ref callbacks are unused here - a
-    // JNI-global root (durable) is all these tests need to model.
+    // Root enumeration: reports each scripted root edge's referee to
+    // heapRootCallback() - tag_ptr only, no oop, no transitive children.
     static jvmtiError JNICALL mock_IterateOverReachableObjects(
             jvmtiEnv *, jvmtiHeapRootCallback heap_root_cb,
             jvmtiStackReferenceCallback, jvmtiObjectReferenceCallback,
@@ -1859,27 +1606,22 @@ protected:
         return JVMTI_ERROR_NONE;
     }
 
-    // Resolves each requested tag to its node's synthetic identity
-    // (&node_tags[idx]) by scanning node_tags for a matching current value -
-    // mirroring real GetObjectsWithTags()'s "only currently-live tags come
-    // back" contract. A tag in `dead_tags` is deliberately omitted even if
-    // node_tags still holds it, simulating "the object died, JVMTI forgot
-    // the tag with it" for the resolve-or-drop tests.
+    // Resolves each requested tag to &node_tags[idx]; only currently-live
+    // tags come back, like the real call. A tag in `dead_tags` is omitted
+    // even if node_tags still holds it.
     static jvmtiError JNICALL mock_GetObjectsWithTags(
             jvmtiEnv *, jint tag_count, const jlong *req_tags, jint *count_ptr,
             jobject **object_result_ptr, jlong **tag_result_ptr) {
         if (active_fixture->fail_get_objects_with_tags) {
-            // Deliberately leave *count_ptr/*object_result_ptr/*tag_result_ptr
-            // untouched - a real failed JVMTI call makes no promise about
-            // them, and releaseSearchTags() must not read them on this path.
+            // A real failed JVMTI call makes no promise about the out
+            // params; releaseSearchTags() must not read them on this path.
             return JVMTI_ERROR_OUT_OF_MEMORY;
         }
         if (active_fixture->gotw_delay_ns != 0) {
             u64 until = OS::nanotime() + active_fixture->gotw_delay_ns;
             while (OS::nanotime() < until) {
-                // busy-wait: a sleep could overshoot by scheduler latency,
-                // and the overshoot direction matters for the one-batch
-                // deadline arithmetic the callers of this knob rely on.
+                // Busy-wait: a sleep's scheduler overshoot would break the
+                // one-batch deadline arithmetic this knob is used for.
             }
         }
         std::vector<jobject> objs;
@@ -1890,8 +1632,7 @@ protected:
                 continue;
             }
             // The decoder resolves a referrer CLASS from its raw (negative)
-            // tag - no node carries one, so the tag -> fake jclass map
-            // (field_decode_classes, see its own comment) serves it.
+            // tag - no node carries one, so field_decode_classes serves it.
             auto fd = active_fixture->field_decode_classes.find(want);
             if (fd != active_fixture->field_decode_classes.end()) {
                 objs.push_back((jobject)fd->second);
@@ -1918,54 +1659,28 @@ protected:
         return JVMTI_ERROR_NONE;
     }
 
-    // Plays back `script` against the real production heap_reference_callback,
-    // modelling enough of FollowReferences' actual semantics for these
-    // heap-walk tests to be meaningful:
-    //   - "a reference from A to B is not traversed until A is visited" -
-    //     an edge whose referrer was not returned JVMTI_VISIT_OBJECTS for
-    //     (or was never itself visited) is skipped, exactly as a real
-    //     traversal would never reach it.
-    //   - a JVMTI_VISIT_ABORT return stops delivery immediately.
-    //   - when `initial_object` is non-NULL (expandFrontier()'s
-    //     resumed-pass calls), only edges reachable from that object's own
-    //     node are replayed - root edges (referrer_idx == -1) are skipped
-    //     entirely, matching FollowReferences' real "the specified object is
-    //     used instead of the heap roots" contract. `initial_object == NULL`
-    //     (the first-pass, root-seeded call) is unchanged from the original
-    //     single-pass heap-walk engine.
-    // This is not a full JVMTI implementation (real traversal order,
-    // multi-referrer objects, and primitive/array callbacks are all out of
-    // scope) - just enough fidelity to exercise the hop-cap/budget/
-    // frontier-cap/class-skip/resumption logic in heapReferenceCallback()/
-    // expandFrontier() themselves.
+    // Plays back `script` against the real production heap_reference_callback:
+    // an edge whose referrer was not visited/descended into is skipped (a
+    // real traversal would never reach it); JVMTI_VISIT_ABORT stops delivery;
+    // with non-NULL initial_object (resumed/holder walks) root edges are
+    // skipped. Not a full JVMTI implementation - just enough fidelity for
+    // the hop-cap/budget/frontier-cap/resumption logic.
     static jvmtiError JNICALL mock_FollowReferences(
             jvmtiEnv *, jint, jclass, jobject initial_object,
             const jvmtiHeapCallbacks *callbacks, const void *user_data) {
-        std::unordered_map<int, bool> expandable;        // seed_idx == -2 marks the root walk (initial_object == NULL); any
-        // other value marks an expansion walk seeded from one or more boundary
-        // objects, in which case root edges are never replayed. -1 is the
-        // array-holder walk (a whole BFS level's boundary objects at once);
-        // >= 0 is the single-object legacy per-entry walk.
+        std::unordered_map<int, bool> expandable;        // seed_idx == -2: root walk; -1: array-holder walk; >= 0: single-object.
         int seed_idx = -2;
-        // The transient holder array itself is never tagged (mirrors real
-        // production: admitStaticFieldRoots()/expandFrontier() never call
-        // SetTag on the frontier-holder array they build), so every
-        // holder->element ARRAY_ELEMENT edge below is replayed with a
+        // The transient holder array itself is never tagged (production
+        // never calls SetTag on it), so holder->element edges replay with a
         // referrer tag of 0.
         static jlong holder_tag = 0;
         if (initial_object != nullptr) {
             auto holder_it = active_fixture->holders.find(initial_object);
             if (holder_it != active_fixture->holders.end()) {
-                // Array-holder walk (expandFrontier()'s already-tagged
-                // boundary batch, or admitStaticFieldRoots()'s negative-
-                // tagged class-object seed): actually invoke the production
-                // callback for each holder->element edge, exactly like a
-                // real FollowReferences(initial_object=holder_array) call
-                // would - this is what lets heap_reference_callback()'s own
-                // tag-sign/reference_kind logic (e.g. the *tag_ptr < 0
-                // early-return and its admitStaticFieldRoots() carve-out)
-                // actually run, rather than assuming every element is
-                // expandable.
+                // Array-holder walk: invoke the production callback for each
+                // holder->element edge like a real
+                // FollowReferences(initial_object=holder_array) call, so the
+                // callback's own tag-sign logic actually runs.
                 seed_idx = -1;
                 for (jobject elem : holder_it->second) {
                     int idx = active_fixture->indexOfNode(elem);
@@ -2050,16 +1765,13 @@ TEST_F(ReferenceChainsBfsTest, ReconstructsChainForSyntheticGraph) {
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_FALSE(truncated);
 
-    // A single pass that reaches full exhaustion of the reachable
-    // graph completes the search and releases every tag it assigned - so
-    // the tag must be fetched via tags_ever_assigned (captured at
-    // assignment time), not node_tags (already reset to 0 by
-    // releaseSearchTags() by the time runPass() returns; see
-    // ReleasesTagsOnCompletion below for the release itself).
+    // A single pass that fully exhausts the reachable graph completes the
+    // search and releases every tag it assigned - fetch via
+    // tags_ever_assigned, not node_tags (already 0).
     EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
     jlong targetTag = tags_ever_assigned[nodeTarget];
     ASSERT_NE(0, targetTag);
-    EXPECT_EQ(0, node_tags[nodeTarget]); // released - see the comment above
+    EXPECT_EQ(0, node_tags[nodeTarget]); // released
 
     std::vector<u32> chain;
     ASSERT_TRUE(tracker->frontierTable()->reconstructChain(targetTag, &chain));
@@ -2079,10 +1791,8 @@ TEST_F(ReferenceChainsBfsTest, ReconstructsChainForSyntheticGraph) {
     EXPECT_EQ((u32)expectedB, chain[1]);
     EXPECT_EQ((u32)expectedA, chain[2]);
 
-    // buildChainEvent() wraps the same reconstructChain() call into
-    // the ReferenceChainEvent shape Recording::recordReferenceChain()
-    // (flightRecorder.cpp) expects - same chain/order, plus the target's own
-    // depth from FrontierEntry.
+    // buildChainEvent() wraps reconstructChain() into the ReferenceChainEvent
+    // shape recordReferenceChain() (flightRecorder.cpp) expects.
     ReferenceChainEvent event;
     ASSERT_TRUE(tracker->buildChainEvent(&mock_jvmti, &mock_jni, targetTag,
                                           &event));
@@ -2115,7 +1825,7 @@ TEST_F(ReferenceChainsBfsTest, BuildAbandonedEventFailsUnlessSearchAbandoned) {
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // Freshly started: never abandoned (never even run a pass yet).
+    // Freshly started: never abandoned.
     ReferenceChainAbandonedEvent event;
     EXPECT_FALSE(tracker->buildAbandonedEvent(&event));
 
@@ -2123,7 +1833,7 @@ TEST_F(ReferenceChainsBfsTest, BuildAbandonedEventFailsUnlessSearchAbandoned) {
     script = {{JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeA, -1}};
     bool truncated = true;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
-    // Small graph, no caps hit -> COMPLETED, not ABANDONED.
+    // Small graph, no caps hit -> COMPLETED.
     ASSERT_EQ(SearchState::COMPLETED, tracker->searchState());
     EXPECT_FALSE(tracker->buildAbandonedEvent(&event));
 
@@ -2148,10 +1858,8 @@ TEST_F(ReferenceChainsBfsTest, HopCapStopsAdmittingBeyondCap) {
     bool truncated = true;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_FALSE(truncated); // hop cap is not truncation - a normal boundary
-    // Not truncated -> graph fully explored within the hop cap -> the search
-    // completes and releases its tags in the same call (see the previous
-    // test's comment) - fetch nodeA's tag via tags_ever_assigned, not
-    // node_tags.
+    // Not truncated -> the search completes and releases tags in the same
+    // call - fetch nodeA's tag via tags_ever_assigned, not node_tags.
     EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
 
     EXPECT_NE(0, tags_ever_assigned[nodeA]);
@@ -2162,10 +1870,8 @@ TEST_F(ReferenceChainsBfsTest, HopCapStopsAdmittingBeyondCap) {
 
 TEST_F(ReferenceChainsBfsTest, BudgetExhaustionTruncatesAndIsReported) {
     Arguments args;
-    // budget=1: root enumeration and the expand phase draw from separate
-    // budget pools (see runPassManualWalk()'s own comment), each sized 1
-    // here - root enum admits nodeA, then the expand phase's own 1-unit
-    // budget admits exactly one of nodeA's two children before exhausting.
+    // budget=1: root enum and the expand phase draw from separate budget
+    // pools, each sized 1 here.
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1:firstpassbudget=1"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
@@ -2183,10 +1889,8 @@ TEST_F(ReferenceChainsBfsTest, BudgetExhaustionTruncatesAndIsReported) {
     bool truncated = false;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_TRUE(truncated);
-    // Budget exhaustion for *this pass* leaves pending work (nodeC's own
-    // edge was never even attempted) - the search stays RUNNING, not
-    // COMPLETED, so no tag release happens yet and node_tags[nodeA]/[nodeB]
-    // are still the real assigned tags.
+    // Pending work remains, so the search stays RUNNING and no tags are
+    // released yet.
     EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
 
     EXPECT_NE(0, node_tags[nodeA]);
@@ -2203,19 +1907,17 @@ TEST_F(ReferenceChainsBfsTest, PreTaggedClassObjectsAreNeverExpandedOrAdmitted) 
     ASSERT_FALSE(tracker->start(args));
 
     int classNode = addNode();
-    node_tags[classNode] = -7; // simulate a class object already tagged by
-                               // resolveLoadedClasses() before this pass -
-                               // see ClassTagTable's tag-sign convention.
+    node_tags[classNode] = -7; // class object already tagged (negative) by
+                               // resolveLoadedClasses(), per ClassTagTable's
+                               // tag-sign convention
     int fieldTargetNode = addNode();
 
     script = {
         // A root reference straight to the class object (e.g. a
         // JVMTI_HEAP_REFERENCE_SYSTEM_CLASS root edge in a real walk).
         {JVMTI_HEAP_REFERENCE_SYSTEM_CLASS, -1, classNode, -1},
-        // A static field of that class - must never be delivered by a real
-        // FollowReferences call, since the class-object edge above must not
-        // return JVMTI_VISIT_OBJECTS; mock_FollowReferences enforces this
-        // the same way a real traversal would (see its own comment).
+        // Must not be delivered: the class-object edge above must not return
+        // JVMTI_VISIT_OBJECTS (mock enforces this like a real traversal).
         {JVMTI_HEAP_REFERENCE_STATIC_FIELD, classNode, fieldTargetNode, -1},
     };
 
@@ -2223,23 +1925,19 @@ TEST_F(ReferenceChainsBfsTest, PreTaggedClassObjectsAreNeverExpandedOrAdmitted) 
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_FALSE(truncated);
 
-    EXPECT_EQ(-7, node_tags[classNode]); // untouched - never treated as a
-                                         // frontier object
-    EXPECT_EQ(0, node_tags[fieldTargetNode]); // never reached - the class
-                                               // edge above must not expand
+    EXPECT_EQ(-7, node_tags[classNode]); // untouched - never a frontier
+                                         // object
+    EXPECT_EQ(0, node_tags[fieldTargetNode]); // never reached - the class edge
+                                               // must not expand
 
     tracker->stop();
 }
 
-// Regression test for admitStaticFieldRoots(): an object retained solely by
-// a static field (no other GC root reaches it) must still be discovered.
-// The scripted class is registered via addClass() with its own node's
-// address as the jclass identity, so GetLoadedClasses()/resolveLoadedClasses()
-// (real production code, driven through the same mocked jvmti) tag it
-// negative through node_tags[classNode] exactly like a real Class object -
-// the same identity the STATIC_FIELD script edge below uses as its
-// referrer, mirroring how a real Class object is simultaneously "a loaded
-// class" and "the referrer of its own static-field edges".
+// An object retained solely by a static field (no other GC root reaches it)
+// must still be discovered. The scripted class is registered with its own
+// node's address as the jclass identity, so resolveLoadedClasses() tags it
+// negative - the same identity the STATIC_FIELD script edge uses as its
+// referrer.
 TEST_F(ReferenceChainsBfsTest, DiscoversObjectRetainedOnlyByStaticField) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -2251,8 +1949,7 @@ TEST_F(ReferenceChainsBfsTest, DiscoversObjectRetainedOnlyByStaticField) {
     addClass((void *)&node_tags[classNode], "Lcom/rc/statics/Holder;");
 
     script = {
-        // No GC-root path to fieldTargetNode at all - it is reachable only
-        // via classNode's static field.
+        // fieldTargetNode is reachable only via classNode's static field.
         {JVMTI_HEAP_REFERENCE_STATIC_FIELD, classNode, fieldTargetNode, -1},
     };
 
@@ -2260,9 +1957,8 @@ TEST_F(ReferenceChainsBfsTest, DiscoversObjectRetainedOnlyByStaticField) {
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_FALSE(truncated);
 
-    // classNode got tagged negative by the real resolveLoadedClasses() scan
-    // (not manually, unlike PreTaggedClassObjectsAreNeverExpandedOrAdmitted
-    // above), and was never itself admitted as a frontier object.
+    // classNode was tagged negative by the real resolveLoadedClasses() scan
+    // and never admitted as a frontier object.
     EXPECT_LT(node_tags[classNode], 0);
 
     jlong target_tag = tags_ever_assigned[fieldTargetNode];
@@ -2278,11 +1974,7 @@ TEST_F(ReferenceChainsBfsTest, DiscoversObjectRetainedOnlyByStaticField) {
     EXPECT_EQ((u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD, entry.root_kind);
 
     // buildChainEvent() appends the root TYPE (the declaring class) as the
-    // chain's root-side end: the frontier path's terminal element is the
-    // static field's holder instance, one hop below the root type. The
-    // declaring class is resolved from the root-attached entry's
-    // referrer_class_tag (captured from the sweep's referrer_tag_ptr, a
-    // negative class tag).
+    // chain's root-side end, resolved from referrer_class_tag (negative).
     ReferenceChainEvent event;
     ASSERT_TRUE(tracker->buildChainEvent(&mock_jvmti, &mock_jni, target_tag,
                                           &event));
@@ -2292,9 +1984,8 @@ TEST_F(ReferenceChainsBfsTest, DiscoversObjectRetainedOnlyByStaticField) {
     ASSERT_EQ(2u, event._hops.size());
     EXPECT_EQ(chain[0], event._hops[0].klass_id); // the target's own class, unchanged
     EXPECT_EQ((u32)expectedHolder, event._hops[1].klass_id);
-    // One label per hop (recordReferenceChain() drops ALL labels when any is
-    // empty); the root-type hop's own edge is the unlabeled root edge
-    // (field_index -1).
+    // One label per hop (recordReferenceChain() drops ALL labels when any
+    // is empty); the root-type hop's edge is the unlabeled root edge.
     ASSERT_EQ(2u, event._hops.size());
     EXPECT_FALSE(event._hops[0].edge_label.empty());
     EXPECT_FALSE(event._hops[1].edge_label.empty());
@@ -2302,14 +1993,10 @@ TEST_F(ReferenceChainsBfsTest, DiscoversObjectRetainedOnlyByStaticField) {
     tracker->stop();
 }
 
-// Regression test for the resolveLoadedClasses() scan-skip guard: it must
-// compare `class_count != _last_resolved_class_count`, not `class_count >
-// _last_resolved_class_count`. GetLoadedClasses()'s count is not monotonic -
-// class unloading can shrink it - so a `>` guard would stay permanently
-// skipped once the count is loaded back up to, but not past, a prior
-// historical peak, silently leaving any *different* classes loaded in that
-// regrowth untagged forever. See resolveLoadedClasses()'s own comment for
-// the full rationale.
+// The scan-skip guard must compare `!=`, not `>`: GetLoadedClasses()'s count
+// is not monotonic (class unloading shrinks it), so a `>` guard would stay
+// skipped once the count returns to a prior peak, leaving different classes
+// untagged forever.
 TEST_F(ReferenceChainsBfsTest, ResolveLoadedClassesRescansAfterClassCountShrinksAndPartiallyRegrows) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -2320,7 +2007,7 @@ TEST_F(ReferenceChainsBfsTest, ResolveLoadedClassesRescansAfterClassCountShrinks
     addClass(classA, "Lcom/rc/regress/A;");
     int idxB = addClass(classB, "Lcom/rc/regress/B;");
 
-    // Pass 1: both A and B loaded (count == 2) - both get resolved/tagged.
+    // Pass 1: both A and B loaded - both get resolved/tagged.
     ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
     EXPECT_EQ(2, ReferenceChainsTestAccessor::lastResolvedClassCount());
     ASSERT_NE(0u, tags.count(classA));
@@ -2328,18 +2015,13 @@ TEST_F(ReferenceChainsBfsTest, ResolveLoadedClassesRescansAfterClassCountShrinks
     EXPECT_NE(0, tags[classA]);
     EXPECT_NE(0, tags[classB]);
 
-    // Simulate B's classloader being GC'd: GetLoadedClasses() now reports
-    // only A (count shrinks 2 -> 1), exactly like a real class unload.
+    // Simulate B's classloader being GC'd: only A remains (count 2 -> 1).
     classes.erase(classes.begin() + idxB);
     ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
     EXPECT_EQ(1, ReferenceChainsTestAccessor::lastResolvedClassCount());
 
-    // Simulate a *different* class C loading back in, bringing the count
-    // back to 2 - the same count as pass 1's peak, but not the same class
-    // set. The buggy `>` guard (2 > 2 is false, since it never re-lowered
-    // _last_resolved_class_count on the shrink above either) would skip the
-    // scan here and leave C's tag at 0 forever; the fixed `!=` guard must
-    // still resolve it.
+    // A *different* class C brings the count back to 2 (pass 1's peak):
+    // the buggy `>` guard would skip the scan; `!=` must still resolve C.
     addClass(classC, "Lcom/rc/regress/C;");
     ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
     EXPECT_EQ(2, ReferenceChainsTestAccessor::lastResolvedClassCount());
@@ -2349,18 +2031,13 @@ TEST_F(ReferenceChainsBfsTest, ResolveLoadedClassesRescansAfterClassCountShrinks
     tracker->stop();
 }
 
-// ---------------------------------------------------------------------------
-// Incremental resumption across passes (ReferenceChainTracker::
-// expandFrontier()/releaseSearchTags()/shouldRunPass(), and runPass()'s
-// SearchState transitions).
-// ---------------------------------------------------------------------------
+// Incremental resumption across passes (expandFrontier()/
+// releaseSearchTags()/shouldRunPass(), runPass()'s SearchState transitions).
 
 TEST_F(ReferenceChainsBfsTest, MultiPassResumptionReconstructsChainAcrossPasses) {
     Arguments args;
-    // budget=1 forces each pass to admit at most one new frontier entry, so
-    // this 3-hop chain cannot be discovered within a single pass -
-    // exercising expandFrontier() (resumed passes), not just the first
-    // pass's root walk.
+    // budget=1 forces one new frontier entry per pass, so this 3-hop chain
+    // needs resumed expandFrontier() passes.
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1:firstpassbudget=1"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
@@ -2375,8 +2052,8 @@ TEST_F(ReferenceChainsBfsTest, MultiPassResumptionReconstructsChainAcrossPasses)
         {JVMTI_HEAP_REFERENCE_FIELD, nodeB, nodeTarget, -1},
     };
 
-    // Drive the search to completion one pass at a time, exactly as
-    // threadLoop() would once wired up (each call bounded by `budget`).
+    // Drive the search to completion one pass at a time (each bounded by
+    // `budget`).
     bool truncated = true;
     int passes_issued = 0;
     while (tracker->searchState() == SearchState::RUNNING && passes_issued < 20) {
@@ -2392,10 +2069,8 @@ TEST_F(ReferenceChainsBfsTest, MultiPassResumptionReconstructsChainAcrossPasses)
     ASSERT_NE(0, targetTag);
     std::vector<u32> chain;
     ASSERT_TRUE(tracker->frontierTable()->reconstructChain(targetTag, &chain));
-    // Depth/parent_tag linkage survived resumption intact - all 3 hops walk
-    // back to a root-attached (depth 0) entry, which reconstructChain()
-    // requires to succeed at all (see its own "reaching parent_tag == 0"
-    // contract).
+    // Parent_tag linkage survived resumption: all 3 hops walk back to a
+    // root-attached (depth 0) entry, which reconstructChain() requires.
     EXPECT_EQ(3u, chain.size());
 
     tracker->stop();
@@ -2419,18 +2094,13 @@ TEST_F(ReferenceChainsBfsTest, FrontierCapHitAbandonsImmediately) {
     bool truncated = false;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_TRUE(truncated);
-    // Frontier-size cap hit -- the search abandons immediately (design
-    // doc's Termination-section priority 1). Once the table is full, no
-    // new entry can ever be admitted, so the frontier can never grow
-    // again -- deferring to a separate no-progress counter would never
-    // actually observe that counter, since this same condition matches
-    // every subsequent pass too.
+    // Frontier cap hit -- the search abandons immediately: once the table
+    // is full, no entry can ever be admitted again.
     ASSERT_EQ(SearchState::ABANDONED, tracker->searchState());
     ASSERT_EQ(SearchAbandonReason::FRONTIER_CAP, tracker->abandonReason());
 
     // nodeA was admitted (frontier cap=1 allowed one entry), then its tag
-    // was released as part of this same pass's abandon handling (the mock
-    // GetObjectsWithTags() succeeds by default).
+    // was released as part of this same pass's abandon handling.
     EXPECT_NE(0, tags_ever_assigned[nodeA]);
     EXPECT_EQ(0, node_tags[nodeA]);
     // nodeB was never admitted (frontier cap hit).
@@ -2439,30 +2109,19 @@ TEST_F(ReferenceChainsBfsTest, FrontierCapHitAbandonsImmediately) {
     tracker->stop();
 }
 
-// releaseSearchTags()'s GetObjectsWithTags() call failing must NOT be treated
-// as "released" - see that method's own comment for why: marking a tag
-// ABANDONED (or resetting _next_tag on restart) while its object might still
-// be live would let a restarted search's fresh tags collide with it,
-// corrupting FrontierTable's tag-uniqueness invariant. This is the regression
-// test for that failure path (previously the return value was discarded
-// entirely).
+// A failing releaseSearchTags() GetObjectsWithTags() call must NOT count as
+// "released": marking a tag ABANDONED while its object might still be live
+// would let a restarted search's fresh tags collide with it.
 TEST_F(ReferenceChainsBfsTest, ReleaseSearchTagsFailureBlocksTagReuseUntilItSucceeds) {
     Arguments args;
-    // framecap=1 with a self-cycle: pass 1 admits nodeA (the frontier's
-    // only slot); the nodeA->nodeA edge then finds nodeA
-    // ALREADY_ADMITTED rather than hitting the frontier cap (no new slot
-    // is needed for an edge back to an already-tagged object), so the
-    // search stays RUNNING and only the no-progress detector - after
-    // NO_PROGRESS_PASS_LIMIT stale passes - can abandon it. This test
-    // verifies that the tag release on that abandonment works even when
-    // GetObjectsWithTags() fails.
+    // framecap=1 with a self-cycle: nodeA is admitted, the self-cycle edge
+    // is ALREADY_ADMITTED, so only the no-progress detector can abandon -
+    // and the tag release must work even when GetObjectsWithTags() fails.
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000:framecap=1:ttl=0"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
     int nodeA = addNode();
-    // nodeA -> nodeA self-cycle. With framecap=1, pass 1 admits nodeA;
-    // the self-cycle edge is ALREADY_ADMITTED, not a fresh frontier slot.
     script = {
         {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeA, -1},
         {JVMTI_HEAP_REFERENCE_FIELD, nodeA, nodeA, -1}, // self-cycle
@@ -2473,8 +2132,6 @@ TEST_F(ReferenceChainsBfsTest, ReleaseSearchTagsFailureBlocksTagReuseUntilItSucc
 
     fail_get_objects_with_tags = true;
     bool truncated = false;
-    // Pass 1: admits nodeA; the self-cycle keeps the pass truncated
-    // without growing the frontier further.
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_TRUE(truncated);
     ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
@@ -2486,12 +2143,11 @@ TEST_F(ReferenceChainsBfsTest, ReleaseSearchTagsFailureBlocksTagReuseUntilItSucc
       ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
       ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
     }
-    // The next pass should abandon via no-progress.
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     ASSERT_EQ(SearchState::ABANDONED, tracker->searchState());
 
-    // GetObjectsWithTags() failed - nodeA's still-live tag must NOT have been
-    // cleared, and the failure must be counted.
+    // GetObjectsWithTags() failed - nodeA's still-live tag must NOT have
+    // been cleared, and the failure must be counted.
     EXPECT_NE(0, tags_ever_assigned[nodeA]);
     EXPECT_NE(0, node_tags[nodeA]) << "tag must not be cleared when the "
                                        "release batch itself failed";
@@ -2506,7 +2162,7 @@ TEST_F(ReferenceChainsBfsTest, ReleaseSearchTagsFailureBlocksTagReuseUntilItSucc
         << "must retry the release in place, not restart, while tags are "
            "still unreleased";
 
-    // A further runPass() call retries the release; still failing.
+    // A further runPass() retries the release; still failing.
     int passesBefore = tracker->passesRun();
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_EQ(passesBefore, tracker->passesRun());
@@ -2515,7 +2171,7 @@ TEST_F(ReferenceChainsBfsTest, ReleaseSearchTagsFailureBlocksTagReuseUntilItSucc
     EXPECT_EQ(failedBefore + 2,
               Counters::getCounter(REFERENCE_CHAIN_TAG_RELEASE_FAILED));
 
-    // Once GetObjectsWithTags() starts succeeding again.
+    // Once GetObjectsWithTags() succeeds again.
     fail_get_objects_with_tags = false;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_EQ(0, node_tags[nodeA]);
@@ -2527,31 +2183,21 @@ TEST_F(ReferenceChainsBfsTest, ReleaseSearchTagsFailureBlocksTagReuseUntilItSucc
     tracker->stop();
 }
 
-// Regression test for the CANARY_STUCK/frontier-wipe convergence bug: prior
-// to this fix, runPass()'s canary-stuck branch fired purely off
-// _passes_since_last_candidate_progress, so a search whose candidate simply
-// had not been found yet was abandoned - and its frontier destructively
-// wiped by the next restartSearch() - after only CANARY_NO_PROGRESS_PASS_LIMIT
-// passes, even while the whole-graph frontier was still growing every single
-// pass. Live on-pod evidence showed exactly this: a frontier that had grown
-// to 12k-16k entries got wiped roughly every 20s while chasing a
-// confirmed-reachable candidate. The fix requires the whole-graph frontier to
-// ALSO have stalled (_passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT)
-// before CANARY_STUCK can fire - see CANARY_NO_PROGRESS_PASS_LIMIT's and
-// canaryStuckPassLimit()'s own comments.
+// CANARY_STUCK must fire only when the whole-graph frontier has ALSO stalled
+// (_passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT): a search whose
+// candidate simply has not been found yet must not be abandoned while the
+// frontier is still growing every pass.
 TEST_F(ReferenceChainsBfsTest, CanaryStuckRequiresWholeGraphFrontierAlsoStalled) {
     Arguments args;
     // budget=1: exactly one new frontier admission per pass, so the frontier
-    // grows every single pass for as long as the chain has unexplored nodes
-    // left - _passes_since_last_progress never leaves 0.
+    // grows every pass - _passes_since_last_progress never leaves 0.
     ASSERT_FALSE(args.parse(
         "referencechains=true:hops=200:budget=1:ttl=0:firstpassbudget=1"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // A chain longer than the number of passes driven below, so the frontier
-    // still has pending work - and is still growing one node per pass - at
-    // every pass this test checks.
+    // A chain longer than the number of passes driven below: the frontier
+    // still has pending work at every pass this test checks.
     constexpr int kChainLength = 50;
     std::vector<int> nodes;
     for (int i = 0; i < kChainLength; i++) {
@@ -2563,20 +2209,13 @@ TEST_F(ReferenceChainsBfsTest, CanaryStuckRequiresWholeGraphFrontierAlsoStalled)
             {JVMTI_HEAP_REFERENCE_FIELD, nodes[i - 1], nodes[i], -1});
     }
 
-    // A canary candidate that this graph never actually contains (no node is
-    // ever tagged with the candidate's marker tag) - the candidate-specific
-    // stuck counter (_passes_since_last_candidate_progress) climbs every pass
-    // with zero discovery progress, exactly like the live-pod scenario
-    // chasing a candidate deeper than the old fixed
-    // CANARY_NO_PROGRESS_PASS_LIMIT (30) passes could reach.
+    // A canary candidate this graph never contains: the candidate-specific
+    // stuck counter climbs every pass with zero discovery progress.
     ReferenceChainsTestAccessor::setCandidateCountForTest(1);
 
     bool truncated = true;
-    // One more pass than the old fixed CANARY_NO_PROGRESS_PASS_LIMIT: long
-    // enough that the pre-fix single-condition check would already have
-    // abandoned the search, but short enough that the 40-node chain still has
-    // unexplored work left, so the frontier is still genuinely growing every
-    // pass.
+    // One pass past CANARY_NO_PROGRESS_PASS_LIMIT: a single-condition check
+    // would have abandoned; the chain still has unexplored work.
     for (int i = 0; i < ReferenceChainTracker::CANARY_NO_PROGRESS_PASS_LIMIT + 2;
          i++) {
         ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
@@ -2588,33 +2227,21 @@ TEST_F(ReferenceChainsBfsTest, CanaryStuckRequiresWholeGraphFrontierAlsoStalled)
                "whole-graph frontier is still growing, even if its specific "
                "candidate has not yet been found";
     }
-    // The narrower candidate-stuck counter climbed the whole time - this is
-    // what the old, single-condition check would have abandoned on alone.
+    // The candidate-stuck counter climbed the whole time.
     EXPECT_GE(ReferenceChainsTestAccessor::passesSinceLastCandidateProgress(),
               ReferenceChainTracker::CANARY_NO_PROGRESS_PASS_LIMIT);
 
     tracker->stop();
 }
 
-// Canary-lane backoff pacing (option A): a chase with unresolved candidates
-// runs back-to-back only while it is fresh or making candidate progress;
-// each pass with NO candidate progress doubles the spacing multiplier
-// (_canary_backoff_mult) up to CANARY_BACKOFF_MULT_MAX, progress resets it
-// to 1, and the OOM urgency ramp overrides the gate entirely. Live evidence
-// this bounds (hotdog rounds 3-4): an un-findable candidate held the chase
-// open for 32 minutes at ~88 passes/min - a full core - because canary_active
-// bypassed every cadence check and threadLoop() skips its sleep whenever a
-// pass will run. Work-scaled rather than a fixed cap: hotdog's own passes
-// ran 0.7-4s, so any fixed cap below that would have changed nothing at all
-// - the loop is work-bound when the pass exceeds the cap - while a fixed 1s
-// cap starved a real deep ~200-pass chase outright (measured live).
+// Canary-lane backoff pacing: a chase runs back-to-back only while fresh or
+// making candidate progress; each no-progress pass doubles the spacing
+// multiplier up to CANARY_BACKOFF_MULT_MAX, progress resets it to 1, and the
+// OOM urgency ramp overrides the gate entirely.
 TEST_F(ReferenceChainsBfsTest, CanaryLaneBacksOffWithoutProgressAndResetsOnProgress) {
     Arguments args;
-    // Same shape as CanaryStuckRequiresWholeGraphFrontierAlsoStalled above:
-    // budget=1 with a long chain keeps the frontier growing one node per
-    // pass, so the CANARY_STUCK detector (which also requires a stalled
-    // frontier) never fires and the chase stays RUNNING through the whole
-    // loop below.
+    // Same shape as CanaryStuckRequiresWholeGraphFrontierAlsoStalled: the
+    // frontier grows one node per pass, so CANARY_STUCK never fires.
     ASSERT_FALSE(args.parse(
         "referencechains=true:hops=200:budget=1:ttl=0:firstpassbudget=1"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -2634,26 +2261,22 @@ TEST_F(ReferenceChainsBfsTest, CanaryLaneBacksOffWithoutProgressAndResetsOnProgr
     ReferenceChainsTestAccessor::setCandidateCountForTest(1);
     bool truncated = true;
 
-    // Pass 1: the candidate admission itself raises the progress mark
-    // (0 -> 1), so this counts as progress and the multiplier stays at 1 -
-    // back-to-back.
+    // Pass 1: the candidate admission raises the progress mark, so the
+    // multiplier stays at 1 - back-to-back.
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_EQ(1, ReferenceChainsTestAccessor::canaryBackoffMult());
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime()))
         << "a fresh chase must be allowed to run back-to-back";
 
-    // Pass 2: no candidate progress -> first doubling (1 -> 2). Seed a
-    // deterministic pass-cost EMA (mock passes are sub-ms, so the real EMA
-    // decays to 0) and a fresh pass timestamp so the spacing arithmetic is
-    // exact: spacing = 2 x 100ms.
+    // Pass 2: no candidate progress -> first doubling. Seed a deterministic
+    // pass-cost EMA and a fresh pass timestamp for exact spacing arithmetic.
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_EQ(2, ReferenceChainsTestAccessor::canaryBackoffMult());
     ReferenceChainsTestAccessor::setCanaryBackoffForTest(
         /*mult=*/2, /*ema_ms=*/100, OS::nanotime());
     EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime()))
         << "a no-progress canary pass must hold off the next one";
-    // Beyond the spacing, the chase is allowed again - the backoff paces,
-    // it never abandons.
+    // Beyond the spacing, the chase is allowed again.
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(
         ReferenceChainsTestAccessor::lastCanaryPassNs() +
         2ULL * 100ULL * 1000000ULL + 1))
@@ -2666,7 +2289,7 @@ TEST_F(ReferenceChainsBfsTest, CanaryLaneBacksOffWithoutProgressAndResetsOnProgr
     ReferenceChainsTestAccessor::setOomRampActive(false);
 
     // Consecutive no-progress passes double the multiplier up to the cap
-    // (seeded at 8 so one more pass reaches it, the next holds it).
+    // (seeded at 8 so one more pass reaches it).
     ReferenceChainsTestAccessor::setCanaryBackoffForTest(
         /*mult=*/8, /*ema_ms=*/100, OS::nanotime());
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
@@ -2677,8 +2300,7 @@ TEST_F(ReferenceChainsBfsTest, CanaryLaneBacksOffWithoutProgressAndResetsOnProgr
               ReferenceChainsTestAccessor::canaryBackoffMult())
         << "the multiplier must hold at its cap, not grow past it";
 
-    // Candidate progress (a new candidate admitted into a slot) resets the
-    // lane to back-to-back.
+    // Candidate progress resets the lane to back-to-back.
     ReferenceChainsTestAccessor::setCandidateCountForTest(2);
     ReferenceChainsTestAccessor::setCandidateKlassIdForTest(1, /*klass_id=*/987);
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
@@ -2691,10 +2313,9 @@ TEST_F(ReferenceChainsBfsTest, CanaryLaneBacksOffWithoutProgressAndResetsOnProgr
 
 TEST_F(ReferenceChainsBfsTest, ChainCompletesWithoutAbandonment) {
     Arguments args;
-    // budget=1 on a graph where each pass admits exactly one new edge
-    // until the chain is exhausted, then the frontier stops growing.
-    // After NO_PROGRESS_PASS_LIMIT passes with no growth, the search
-    // is abandoned (progress-based termination, not wall-clock TTL).
+    // budget=1: each pass admits exactly one new edge until the chain is
+    // exhausted, then the frontier stops growing; the no-progress detector
+    // (not wall-clock TTL) is the only abandon path.
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1:ttl=0:firstpassbudget=1"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
@@ -2704,12 +2325,9 @@ TEST_F(ReferenceChainsBfsTest, ChainCompletesWithoutAbandonment) {
     int nodeC = addNode();
     int nodeD = addNode();
 
-    // A chain one node longer than either pass's 1-edge expand budget can
-    // fully drain in a single call, so each pass still ends truncated (see
-    // mock_FollowReferences()'s own comment: an array-holder walk chains
-    // through as many script edges as it can admit before budget aborts it)
-    // and there is still pending work left for the no-progress check to catch
-    // once the chain is fully discovered.
+    // One node longer than the 1-edge expand budget can drain per call, so
+    // each pass ends truncated and pending work remains for the no-progress
+    // check once the chain is fully discovered.
     script = {
         {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeA, -1},
         {JVMTI_HEAP_REFERENCE_FIELD, nodeA, nodeB, -1},
@@ -2719,19 +2337,17 @@ TEST_F(ReferenceChainsBfsTest, ChainCompletesWithoutAbandonment) {
 
     bool truncated = false;
     // Pass 1: root enum admits nodeA, expand admits nodeB, aborts on
-    // nodeB->nodeC for lack of budget - truncated, frontier grew (progress).
+    // nodeB->nodeC for lack of budget - truncated, frontier grew.
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_TRUE(truncated);
     ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
 
-    // Pass 2: admits nodeC, aborts on nodeC->nodeD - still truncated,
-    // still growing (progress).
+    // Pass 2: admits nodeC, aborts on nodeC->nodeD - still growing.
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_TRUE(truncated);
     ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
 
-    // Pass 3: admits nodeD, chain exhausted - no longer truncated,
-    // no pending frontier, natural completion.
+    // Pass 3: admits nodeD, chain exhausted - natural completion.
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_FALSE(truncated);
     EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
@@ -2742,9 +2358,7 @@ TEST_F(ReferenceChainsBfsTest, ChainCompletesWithoutAbandonment) {
     EXPECT_NE(0, tags_ever_assigned[nodeB]);
     EXPECT_EQ(0, node_tags[nodeB]);
 
-    // No-progress (not TTL) is reported as the reason when the frontier stalls.
-    // This test uses ttl=0 to disable the wall-clock TTL, so only the
-    // no-progress detector can abandon.
+    // ttl=0 disables the wall-clock TTL.
     EXPECT_EQ(SearchAbandonReason::NONE, tracker->abandonReason());
     EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
 
@@ -2752,22 +2366,16 @@ TEST_F(ReferenceChainsBfsTest, ChainCompletesWithoutAbandonment) {
 }
 
 TEST_F(ReferenceChainsBfsTest, NoProgressAbandonsSearchAndReleasesTags) {
-    // Verify the progress-based abandonment wiring: the no-progress limit
-    // is accessible, positive, and reset to 0 by resetSearchStateForTest().
-    // The mock runPass() re-enumerates roots on every search_started=0
-    // pass, causing the frontier to oscillate rather than stabilize,
-    // so a full end-to-end no-progress abandonment can't be tested
-    // with the mock; the real JVM path is validated by a Java-side
-    // integration test.
+    // The mock's root re-enumeration makes the frontier oscillate, so a
+    // full end-to-end no-progress abandonment can't be tested with the mock;
+    // assert only the wiring.
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1:ttl=0:firstpassbudget=1"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // Verify the no-progress limit is accessible and positive.
     EXPECT_GT(ReferenceChainTracker::NO_PROGRESS_PASS_LIMIT, 0);
 
-    // Verify that a fresh search starts with zero passes since last progress.
     EXPECT_EQ(0, tracker->passesSinceLastProgressForTest());
 
     tracker->stop();
@@ -2781,11 +2389,9 @@ TEST_F(ReferenceChainsBfsTest, ResolveOrDropPrunesDeadFrontierEntries) {
 
     int nodeA = addNode();
     int nodeB = addNode();
-    // A second root that root enumeration's own 1-unit budget (firstpassbudget=1)
-    // can't reach this pass - the resulting root-enum truncation makes
-    // runPassManualWalk() return before expandFrontier() ever runs (see its
-    // own comment on frontier-cap-hit/budget-exhausted root-enum truncation),
-    // so nodeA is admitted but never gets a chance to expand nodeA->nodeB.
+    // A second root the 1-unit root-enum budget can't reach this pass; the
+    // truncation returns before expandFrontier() runs, so nodeA is admitted
+    // but never expands nodeA->nodeB.
     int decoyRoot = addNode();
 
     script = {
@@ -2801,14 +2407,13 @@ TEST_F(ReferenceChainsBfsTest, ResolveOrDropPrunesDeadFrontierEntries) {
 
     jlong aTag = tags_ever_assigned[nodeA];
     ASSERT_NE(0, aTag);
-    // Simulate nodeA dying (collected) between pass 1 and pass 2 -
-    // GetObjectsWithTags will no longer report it as live.
+    // Simulate nodeA dying between pass 1 and pass 2.
     dead_tags.insert(aTag);
 
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated)); // pass 2: resolve-or-drop
     EXPECT_FALSE(truncated);
     // The dead branch was pruned for free - with nothing else pending, the
-    // search completes rather than staying RUNNING or being ABANDONED.
+    // search completes rather than staying RUNNING.
     EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
     EXPECT_EQ(2, tracker->passesRun());
 
@@ -2816,48 +2421,24 @@ TEST_F(ReferenceChainsBfsTest, ResolveOrDropPrunesDeadFrontierEntries) {
     ASSERT_TRUE(tracker->frontierTable()->lookup(aTag, &entry));
     EXPECT_EQ(FrontierEntryState::ABANDONED, entry.state);
 
-    // nodeB was never discovered - nodeA's subtree was pruned, not expanded.
+    // nodeB was never discovered - nodeA's subtree was pruned.
     EXPECT_EQ(0, tags_ever_assigned[nodeB]);
 
     tracker->stop();
 }
 
-// ---------------------------------------------------------------------------
-// pollWatchedTargets() (design doc's Open Question 3 bridging
-// step, corrected read-only mechanism - see referenceChains.h's own
-// target-selection bridging step header comment and pollWatchedTargets()'s
-// own comment for why the step must be a read, not a SetTag seed).
-//
-// Mirrors referenceChainJfrRoundtrip_ut.cpp's FrontierTable::insert()
-// seeding style rather than driving a full scripted runPass() (this test
-// suite's gtest coverage bullet explicitly asks for reusing that seeding style over
-// writing a third pattern): a candidate's "already discovered by an
-// ordinary pass" tag is modelled directly as a FrontierTable entry plus a
-// mocked GetTag() that reports it - both reach the same FrontierTable + tag
-// state pollWatchedTargets()/buildChainEvent() read, regardless of whether a
-// scripted heap walk or direct insertion produced it.
-//
-// LivenessTracker::instance() is a second process-wide singleton (see its
-// own header comment) shared with livenessTracker_ut.cpp within this same
-// gtest binary - klassPopulationResetForTest()/setGcGenerationsForTest() at
-// SetUp/TearDown keep this suite's use of it self-contained, the same way
-// ReferenceChainsTestAccessor::reset() already isolates
-// ReferenceChainTracker::instance() above.
-// ---------------------------------------------------------------------------
+// pollWatchedTargets(): a candidate's "already discovered by an ordinary
+// pass" tag is modelled directly as a FrontierTable entry plus a mocked
+// GetTag() that reports it. LivenessTracker::instance() is a second
+// process-wide singleton; the SetUp/TearDown resets keep this suite's use
+// of it self-contained.
 
-// ===========================================================================
-// Pod-in-a-jar system harness (design node: design-pod-in-a-jar-harness;
-// meta-whackamole-analysis): the REAL tracker loop (shouldRunPass ->
-// runPass -> pollWatchedTargets, the exact threadLoop body) driven over the
-// scripted mock heap, asserting SYSTEM INVARIANTS instead of unit symptoms.
-// The topology encodes every pod-discovered shape: a static holder holding
-// a synchronized-list wrapper WITH its mutex==this self-edge (round 16
-// fix-A), the wrapper->c->chunks subtree, leak-tagged chunks (pre-seeded
-// tags model what LivenessTracker::tagLeakInstances assigns on the pod;
-// the walk's leak-tag interception path then runs for real), and flood
-// statics for anchor-tier volume. Each invariant maps 1:1 to rounds that
-// shipped a bug the 348-test unit suite could not see.
-// ===========================================================================
+// Pod-in-a-jar system harness: the real tracker loop (shouldRunPass ->
+// runPass -> pollWatchedTargets, the exact threadLoop body) over the
+// scripted mock heap, asserting system invariants instead of unit symptoms.
+// Topology: a static holder holding a synchronized-list wrapper with its
+// mutex==this self-edge, the wrapper->c->chunks subtree, pre-seeded leak
+// tags on the chunks, and flood statics for anchor-tier volume.
 class PodInAJarTest : public ReferenceChainsBfsTest {
 protected:
     struct PodTopology {
@@ -2880,15 +2461,11 @@ protected:
     void SetUp() override {
         ReferenceChainsBfsTest::SetUp();
         // resolveCandidateRepresentative() NewLocalRef()s the stored
-        // representative; the Bfs fixture never wires that JNI slot
-        // (PollWatchedTargetsTest has its own). Passthrough is right for
-        // the harness: its reps are mock node pointers with fixture
-        // lifetime, never GC'd.
+        // representative; passthrough is right here (reps are mock node
+        // pointers with fixture lifetime, never GC'd).
         jni_tbl.NewLocalRef = &mock_NewLocalRefPassthrough;
-        // NOTE: no liveness calls here - the Bfs tests run without them,
-        // and liveness state changes (setGcGenerationsForTest) alter the
-        // pass machinery's behavior; each harness test resets liveness
-        // explicitly where it wants it (resetLivenessForPod below).
+        // No liveness setup here - each harness test resets liveness
+        // explicitly where it wants it.
     }
 
     static jobject JNICALL mock_NewLocalRefPassthrough(JNIEnv *, jobject ref) {
@@ -2908,20 +2485,16 @@ protected:
         LivenessTracker::instance()->klassPopulationResetForTest();
     }
 
-    // Builds the hotdog leak topology: holder-class static -> synchronized
-    // wrapper (with its mutex==this self-edge) -> c -> K leak-tagged chunks,
-    // plus 2 flood classes x 16 static-held nodes for anchor-tier volume.
+    // Builds the leak topology: holder-class static -> synchronized wrapper
+    // (mutex==this self-edge) -> c -> K leak-tagged chunks, plus 2 flood
+    // classes x 16 static-held nodes for anchor-tier volume.
     PodTopology buildLeakPod() {
         PodTopology topo;
-        // CAPACITY FIXTURE CONTRACT: classes registered via
-        // classes.push_back({(void*)&node_tags[node], ...}) capture the
-        // node's ADDRESS as the jclass identity - std::vector growth would
-        // reallocate node_tags and dangle every captured pointer, silently
-        // making indexOfNode() fail for those classes in the static sweep
-        // (the holder array seeds no expandable class, the STATIC_FIELD
-        // edges never replay, nothing admits). Reserve the full node count
-        // up front - the topology builder never shrinks. Node total:
-        // 3 roots + 2 flood class nodes + 6 chunks + 32 flood + 300 filler.
+        // Classes registered via classes.push_back({(void*)&node_tags[n],
+        // ...}) capture the node's ADDRESS as the jclass identity - vector
+        // growth would reallocate node_tags and dangle every captured
+        // pointer (silently: nothing admits). Reserve the full node count
+        // up front.
         node_tags.reserve(600);
         tags_ever_assigned.reserve(600);
         topo.leak_cls_idx = addClass((void *)0x5001, "[B");
@@ -2933,9 +2506,8 @@ protected:
         topo.holder_class_node = addNode();
         topo.wrapper_node = addNode();
         topo.list_node = addNode();
-        // The holder class node doubles as the jclass identity (see
-        // DiscoversObjectRetainedOnlyByStaticField): register it as a loaded
-        // class so the static-field sweep admits the wrapper root-attached.
+        // The holder class node doubles as the jclass identity: register it
+        // as a loaded class so the sweep admits the wrapper root-attached.
         classes.push_back({(void *)&node_tags[topo.holder_class_node],
                            "Lcom/rc/pod/Holder;"});
         // Flood classes get their own jclass-identity nodes too, so their
@@ -2954,12 +2526,9 @@ protected:
         for (int i = 0; i < 32; i++) {
             topo.flood_nodes.push_back(addNode());
         }
-        // Backlog volume: a 300-edge deep chain under one flood root. The
-        // real pod's searches span many passes because the heap is huge;
-        // the harness needs the same property or the first pass (whose
-        // budget auto-scales 10x for the first pass, arguments.cpp) admits
-        // everything before the poll ever auto-marks, and the search
-        // completes before any chain can be cached.
+        // Backlog volume: a 300-edge chain under one flood root, so the
+        // search spans many passes (the first pass's auto-scaled 10x budget
+        // would otherwise admit everything before the poll auto-marks).
         for (int i = 0; i < 300; i++) {
             topo.filler_nodes.push_back(addNode());
         }
@@ -2968,8 +2537,8 @@ protected:
             // LEAK_BUFFER: the holder class's static field -> wrapper.
             {JVMTI_HEAP_REFERENCE_STATIC_FIELD, topo.holder_class_node,
              topo.wrapper_node, topo.wrapper_cls_idx},
-            // The synchronized wrapper's mutex == this self-edge (round-16
-            // fix-A shape: must not demote the root-attached wrapper).
+            // The wrapper's mutex==this self-edge (must not demote the
+            // root-attached wrapper).
             {JVMTI_HEAP_REFERENCE_FIELD, topo.wrapper_node, topo.wrapper_node,
              topo.wrapper_cls_idx},
             // wrapper -> c -> chunks.
@@ -3001,10 +2570,8 @@ protected:
         return topo;
     }
 
-    // Leak tags model the poll's tagLeakInstances() assignment (the pod
-    // re-tags within minutes of every restart - the verify-not-retag state
-    // machine); the walk's leak-tag interception path consumes them for
-    // real from the live node tags.
+    // Leak tags model the poll's tagLeakInstances() assignment; the walk's
+    // interception path consumes them from the live node tags.
     void reseedChunkLeakTags(const PodTopology &topo) {
         for (int i = 0; i < (int)topo.chunk_nodes.size(); i++) {
             jlong leak_tag = 1073741824LL + 100 + i;
@@ -3013,12 +2580,9 @@ protected:
         }
     }
 
-    // Resolves the leak class's tracker-side klass id from the classTags
-    // table via the SAME tag value the mock passes as the chunk edges'
-    // class_tag (tags[klass_ptr] - the sweep's negative class tag, set
-    // during phase 1's static sweep). Class tags are process-lifetime, so
-    // this survives the phase-1 search completing and releasing its
-    // frontier/tags - unlike reading node_tags, which the release zeroes.
+    // Resolves the leak class's klass id via the same negative class tag
+    // the sweep set; class tags are process-lifetime, so this survives the
+    // phase-1 tag release (unlike node_tags).
     u32 resolveLeakKlassId(const PodTopology &topo) {
         ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
         EXPECT_GT(ReferenceChainsTestAccessor::passesRunForTest(), 0)
@@ -3029,9 +2593,8 @@ protected:
         return tracker->classTags()->resolve(class_tag);
     }
 
-    // Seeds the leak-side liveness (population growth + qualifying tid +
-    // representative = the first chunk), mirroring
-    // PollWatchedTargetsTest::seedGrowingCandidate.
+    // Seeds leak-side liveness (population growth + qualifying tid +
+    // representative = the first chunk).
     void seedLeakLiveness(u32 klass_id, const PodTopology &topo) {
         int slot;
         bool created;
@@ -3054,9 +2617,8 @@ protected:
             node_tags[topo.chunk_nodes[0]];
     }
 
-    // One threadLoop iteration, fake clock: the exact body order from
-    // ReferenceChainTracker::threadLoop() (shouldRunPass -> runPass ->
-    // pollWatchedTargets, poll unconditional).
+    // One threadLoop iteration on a fake clock: shouldRunPass -> runPass ->
+    // pollWatchedTargets (poll unconditional).
     bool drivePodCycle(u64 &fake_now) {
         ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
         bool should_run = tracker->shouldRunPassForTest(fake_now);
@@ -3069,10 +2631,8 @@ protected:
         return should_run;
     }
 
-    // Seeds a throwaway candidate klass (NO instances, never matches any
-    // real class) whose only job is arming the leak signal so the phase-1
-    // pass runs: the dormancy invariant (L8) proved shouldRunPass stays
-    // false without a candidate, and the klass-id resolution needs a pass.
+    // Seeds a throwaway candidate klass (no instances, matches nothing)
+    // to arm the leak signal so the phase-1 pass runs.
     void seedThrowawayLiveness(u32 klass_id) {
         int slot;
         bool created;
@@ -3086,30 +2646,21 @@ protected:
             nullptr, klass_id, (jweak)0xBADC0DE);
     }
 
-    // Two-phase pod bring-up. Phase 1: a throwaway candidate arms the leak
-    // signal so cycle 1's pass runs - the sweep tags the classes and the
-    // walk admits the wrapper subtree, which makes the leak class's
-    // tracker-side klass id resolvable (the only reliable source of the id
-    // is the system's own resolve() over a real frontier entry). Phase 2:
-    // clean slate (population + search restart - the pod's churn), leak
-    // tags re-seeded (the poll's re-tagging after every restart), and the
-    // REAL candidate armed, so admissions auto-mark from cycle one exactly
-    // like the pod after warmup.
+    // Two-phase bring-up. Phase 1: a throwaway candidate arms the leak
+    // signal so a pass runs and the leak class's klass id becomes
+    // resolvable. Phase 2: clean slate, leak tags re-seeded, real candidate
+    // armed, so admissions auto-mark from cycle one.
     void bringUpPod(const PodTopology &topo, u32 &leak_klass_id_out,
                     u64 &fake_now) {
         ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-        // Seed the fake clock from the REAL monotonic clock: the pain
-        // budgets' _last_update_ns is OS::nanotime()-based, so a fake epoch
-        // starting at ~0 sits before every budget's initialization and
-        // canStartNow() blocks every pass (the dormancy test passes either
-        // way - no passes at all - so only the pass-running tests caught
-        // this).
+        // Seed the fake clock from the REAL monotonic clock: pain budgets'
+        // _last_update_ns is OS::nanotime()-based, so a fake epoch starting
+        // at ~0 makes canStartNow() block every pass.
         fake_now = OS::nanotime();
         resetLivenessForPod();
         seedThrowawayLiveness(/*klass_id=*/999);
-        // The candidate arms in the POLL, which runs after shouldRunPass in
-        // each cycle - so the first cycle only arms, and a pass actually
-        // runs one cycle later. Drive until a pass ran.
+        // The candidate arms in the POLL (which runs after shouldRunPass in
+        // each cycle), so a pass runs one cycle later. Drive until one ran.
         bool ran = false;
         for (int i = 0; i < 6 && !ran; i++) {
             ran = drivePodCycle(fake_now);
@@ -3119,17 +2670,13 @@ protected:
         ReferenceChainsTestAccessor::restartSearchForTest();
         reseedChunkLeakTags(topo);
         seedLeakLiveness(leak_klass_id_out, topo);
-        // Poll once BEFORE the first pass of the new search: the candidate
-        // slot registers in the poll, and the pass's admission auto-mark
-        // requires the slot to exist (heapReferenceCallback's auto-mark
-        // guards on _candidate_count > 0). This is the pod's real ordering
-        // - the poll runs for minutes arming candidates before search #1.
+        // Poll once BEFORE the first pass: the admission auto-mark requires
+        // the candidate slot to exist (_candidate_count > 0).
         tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
     }
 
     // Captures stdout per distinct ReferenceChainTracker/LivenessTracker
-    // line prefix (L4: the log-budget invariant - the round-15 800k/min
-    // flood and the round-18 tick stragglers become assertion failures).
+    // line prefix (the log-budget invariant).
     struct StdoutCapture {
         int saved_fd = -1;
         int tmp_fd = -1;
@@ -3191,8 +2738,8 @@ TEST_F(PodInAJarTest, SystemLivenessLeakChainsBuildAndCanaryResolves) {
         cycles_run++;
     }
 
-    // L1: every leak-tagged chunk's tag appears as a cached chain target
-    // (leak-correlated events - the pod's round-16 end-goal state).
+    // Every leak-tagged chunk's tag appears as a cached chain target
+    // (leak-correlated events).
     auto targets = ReferenceChainsTestAccessor::resolvedChainTargetsForTest();
     for (int i = 0; i < kChunks; i++) {
         jlong leak_tag = 1073741824LL + 100 + i;
@@ -3203,12 +2750,9 @@ TEST_F(PodInAJarTest, SystemLivenessLeakChainsBuildAndCanaryResolves) {
             << " cycles";
     }
 
-    // L2: the canary resolved for the LEAK klass (found bit set on its
-    // slot - the round-19 criterion; fails on any pre-788d7b2a7 build).
-    // Candidate slots persist across restarts BY DESIGN (see the slot
-    // registration comment: "a klass ... stops consuming pool tags even
-    // though its slot persists"), so the throwaway 999 slot from
-    // bringUpPod's phase 1 legitimately survives as an unfound slot.
+    // The canary resolved for the LEAK klass (found bit set). Candidate
+    // slots persist across restarts by design, so the throwaway 999 slot
+    // from phase 1 legitimately survives as an unfound slot.
     int leak_slot = -1;
     for (int s2 = 0; s2 < ReferenceChainsTestAccessor::candidateCountForTest();
          s2++) {
@@ -3243,10 +2787,8 @@ TEST_F(PodInAJarTest, SystemSearchCompletesNaturally) {
         cycles++;
     }
 
-    // L3: a healthy-topology search must end COMPLETED (all candidates
-    // found), never ABANDONED (TTL/frontier-cap). Pre-round-19 this line
-    // fails: the structurally unresolvable chase can only ever reach
-    // ABANDONED.
+    // A healthy-topology search must end COMPLETED (all candidates found),
+    // never ABANDONED.
     EXPECT_EQ((u8)SearchState::COMPLETED,
               ReferenceChainsTestAccessor::searchStateForTest())
         << "search did not complete naturally within " << cycles
@@ -3275,10 +2817,8 @@ TEST_F(PodInAJarTest, SystemRestartLeavesNothingBehind) {
 
     ReferenceChainsTestAccessor::restartSearchForTest();
 
-    // L6: the restart contract as a test instead of discipline. Resolved
-    // chains intentionally SURVIVE the restart (restartSearch's own
-    // comment: a chain describes a still-live sample and keeps being
-    // re-emitted across restarts) - the per-search state below must not.
+    // The restart contract: resolved chains intentionally SURVIVE the
+    // restart; the per-search state below must not.
     EXPECT_GT(ReferenceChainsTestAccessor::resolvedChainCountForTest(),
               (size_t)0)
         << "resolved chains should persist across restarts by design";
@@ -3295,14 +2835,10 @@ TEST_F(PodInAJarTest, SystemRestartLeavesNothingBehind) {
 }
 
 TEST_F(PodInAJarTest, TopologyCapacityContractStaticAdmits) {
-    // The topology-builder capacity contract as a regression: the FULL
-    // buildLeakPod topology + one direct pass must admit the wrapper
-    // static (and with it the whole leak subtree). This is the test that
-    // caught the builder's original bug: classes capturing
-    // &node_tags[node] as their jclass identity dangle when addNode()
-    // grows the vector past capacity - the sweep then seeds no class, the
-    // gate closes on an empty lap, and NOTHING admits, silently (the
-    // state machine still reports a clean COMPLETED search).
+    // The topology-builder capacity contract as a regression: classes
+    // capturing &node_tags[node] as their jclass identity dangle when the
+    // vector grows past capacity - the sweep then seeds no class and
+    // NOTHING admits, silently.
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -3327,12 +2863,10 @@ TEST_F(PodInAJarTest, SystemHealthyAppIsDormant) {
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // L8: the accidental 3h pod control, encoded - a heap with no leak
-    // candidates must produce ZERO searches (the candidate/generations
-    // gate holds the machinery dormant on a healthy app).
+    // A heap with no leak candidates must produce ZERO searches (the
+    // candidate/generations gate holds the machinery dormant).
     PodTopology topo = buildLeakPod();
-    // No seedLeakLiveness(): no candidate ever qualifies. bringUpPod is
-    // also skipped - it seeds liveness; drive raw cycles instead.
+    // No seedLeakLiveness(): no candidate ever qualifies; drive raw cycles.
     (void)topo;
     resetLivenessForPod();
     u64 fake_now = OS::nanotime();
@@ -3347,10 +2881,8 @@ TEST_F(PodInAJarTest, SystemHealthyAppIsDormant) {
 
 TEST_F(PodInAJarTest, SystemLogBudgetPerPass) {
 #ifndef DEBUG
-    // The gtest binary compiles the main sources WITHOUT DEBUG (round-16
-    // lesson: TEST_LOG is a no-op here) - the log-budget invariant can only
-    // run in a DEBUG-built test binary. Skip with the reason instead of
-    // asserting on captured output that structurally cannot exist.
+    // The gtest binary compiles the main sources WITHOUT DEBUG (TEST_LOG is
+    // a no-op here), so the log-budget invariant needs a DEBUG-built binary.
     GTEST_SKIP() << "log budget needs a DEBUG-built gtest binary";
 #else
     Arguments args;
@@ -3366,11 +2898,8 @@ TEST_F(PodInAJarTest, SystemLogBudgetPerPass) {
         drivePodCycle(fake_now);
     }
 
-    // L4: capture one full cycle (pass + poll) and bound every distinct
-    // line shape. The round-15 flood was thousands of lines/pass of a
-    // single shape; the budget catches any per-object/per-entry line that
-    // escapes its tier. The harness runs at debug level 2 (pinned by the
-    // binary's static setenv), so every gated line is live here.
+    // Capture one full cycle (pass + poll) and bound every distinct line
+    // shape; debug level 2 is pinned, so every gated line is live.
     StdoutCapture capture;
     drivePodCycle(fake_now);
     auto counts = capture.perPrefixCounts();
@@ -3448,11 +2977,9 @@ protected:
         // no-op: this fixture's fake jobject values are not real JNI refs.
     }
 
-    // pollWatchedTargets()'s diagnostic class-name lookup on the candidate's
-    // representative: this fixture's fake jobjects carry no real class
-    // identity, so a fixed non-null jclass plus a fixed signature is all
-    // GetObjectClass()/GetClassSignature() need to return for that lookup to
-    // complete without touching a real JVM.
+    // pollWatchedTargets()'s diagnostic class-name lookup on the
+    // candidate's representative: a fixed non-null jclass plus a fixed
+    // signature is all the lookup needs.
     static jclass JNICALL mock_GetObjectClass(JNIEnv *, jobject) {
         return (jclass)0xC1A55;
     }
@@ -3472,24 +2999,17 @@ protected:
         return JVMTI_ERROR_NONE;
     }
 
-    // Seeds LivenessTracker's real population table with a growing series
-    // for `klass_id` (20 strictly-increasing samples - satisfies
-    // selectLeakCandidates()'s min-fill, growth/floor magnitude, and
-    // sustained-trend hysteresis requirements, livenessTracker.h; 20 rather
-    // than the 10-sample minimum fill leaves comfortable margin past the
-    // hysteresis threshold rather than sitting exactly on its boundary) and
-    // points its representative at `rep`.
+    // Seeds a growing series for `klass_id` in LivenessTracker's real
+    // population table (satisfies selectLeakCandidates()'s hysteresis
+    // requirements, livenessTracker.h); points its representative at `rep`.
     void seedGrowingCandidate(u32 klass_id, jweak rep) {
         int slot;
         bool created;
         for (u16 i = 1; i <= 20; i++) {
             LivenessTracker::instance()->klassPopulationRecordForTest(
                 klass_id, i, i, &slot, &created);
-            // Per-(klass, tid) qualification: selectLeakCandidates() also
-            // requires a qualifying allocating thread. These fixtures have
-            // no real tracked instances (mock JVMTI, no live heap), so a
-            // fixed synthetic tid exercises the gate without pretending to
-            // match any instance's real tid.
+            // selectLeakCandidates() also requires a qualifying allocating
+            // thread; a fixed synthetic tid exercises the gate.
             LivenessTracker::instance()->tidTrendRecordForTest(
                 klass_id, /*tid=*/4242, (u32)i, (u64)i);
         }
@@ -3510,8 +3030,7 @@ TEST_F(PollWatchedTargetsTest, EmitsEventForAlreadyDiscoveredCandidate) {
     seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)obj);
 
     // Model "already discovered by an ordinary runPass()": a root-level
-    // FrontierTable entry plus a matching GetTag() result, mirroring
-    // referenceChainJfrRoundtrip_ut.cpp's seeding style.
+    // FrontierTable entry plus a matching GetTag() result.
     ASSERT_TRUE(tracker->frontierTable()->insert(
         /*tag=*/7, /*parent_tag=*/0, /*referrer_klass=*/1, /*depth=*/0,
         FrontierEntryState::EDGE));
@@ -3565,9 +3084,8 @@ TEST_F(PollWatchedTargetsTest, NoDuplicateOnRepeatPoll) {
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
     ASSERT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
 
-    // Klass 1 is still flagged (LivenessTracker's ranking doesn't know an
-    // event was already emitted for it) - a second, third, ... poll must
-    // not re-emit for the same target_tag.
+    // Klass 1 is still flagged - later polls must not re-emit for the same
+    // target_tag.
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
     EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
@@ -3599,13 +3117,9 @@ TEST_F(PollWatchedTargetsTest, SkipsCandidateWhoseWeakReferenceDied) {
     tracker->stop();
 }
 
-// A cached chain must not re-emit forever: once the klass's representative
-// stops resolving (collected, or LRU-evicted from LivenessTracker's
-// population table - klassPopulationSetRepresentativeForTest()'s ref is the
-// stand-in for either), the very next poll must prune it from
-// _resolved_chains rather than leaving a dump keep re-emitting a chain for a
-// sample that is gone (see _resolved_chains' own comment, referenceChains.h,
-// and pollWatchedTargets()'s "candidate died, or was evicted" branch).
+// A cached chain persists after its representative stops resolving: it
+// describes a path valid at resolution time and expires on search restart,
+// not on representative death.
 TEST_F(PollWatchedTargetsTest, ChainPersistsAfterRepresentativeDies) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
@@ -3625,10 +3139,8 @@ TEST_F(PollWatchedTargetsTest, ChainPersistsAfterRepresentativeDies) {
     ASSERT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
     ASSERT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(7));
 
-    // The representative died. Per-instance caching: the chain persists
-    // (it describes a reference path that was valid at resolution time).
-    // It expires naturally when the search restarts and the frontier is
-    // wiped. The backend can filter stale chains via HeapLiveObject events.
+    // The representative died: the chain persists (a path valid at
+    // resolution time) and expires on search restart.
     dead_refs.insert(obj);
 
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
@@ -3647,9 +3159,8 @@ TEST_F(PollWatchedTargetsTest, NoOpWhenGcGenerationsDisabled) {
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // Overrides this fixture's own SetUp() default - exercises the
-    // pollWatchedTargets() guard covering LivenessTracker's own
-    // _gc_generations gate (population tracking's own gate), not just this tracker's own _enabled.
+    // Overrides SetUp()'s default: exercises pollWatchedTargets()'s
+    // LivenessTracker _gc_generations gate, not just _enabled.
     LivenessTracker::instance()->setGcGenerationsForTest(false);
 
     int fake_object_storage = 0;
@@ -3666,20 +3177,9 @@ TEST_F(PollWatchedTargetsTest, NoOpWhenGcGenerationsDisabled) {
     tracker->stop();
 }
 
-// ---------------------------------------------------------------------------
-// Resolved-chain cache (ReferenceChainTracker::cacheResolvedChain()/
-// drainPendingChainEvents(), referenceChains.cpp) - the mechanism that keeps a
-// resolved chain alive across dumps so it re-emits into every JFR chunk the
-// sample survives into, and keeps the dump-time writer's blocking
-// lock-acquisition retry loop off the BFS scheduling thread (see
-// _resolved_chains' own comment, referenceChains.h). These tests drive
-// cacheResolvedChain()/drainPendingChainEvents() directly via
-// ReferenceChainsTestAccessor rather than through the full
-// pollWatchedTargets()/selectLeakCandidates() pipeline - the cache/overflow/
-// counter mechanism is independent of how a chain was produced, and driving it
-// through hundreds of real LivenessTracker candidates just to reach
-// MAX_RESOLVED_CHAINS would test the seeding helper, not this mechanism.
-// ---------------------------------------------------------------------------
+// Resolved-chain cache (cacheResolvedChain()/drainPendingChainEvents()):
+// keeps a resolved chain alive across dumps so it re-emits into every JFR
+// chunk the sample survives into. Tests drive the seam directly.
 
 class ResolvedChainCacheTest : public ::testing::Test {
 protected:
@@ -3699,10 +3199,7 @@ protected:
     }
 };
 
-// The defining property of the "stick around" model: a cached chain is
-// re-emitted on every dump, not drained once. Two successive drains with no
-// intervening change must BOTH return the cached chain, and the cache must
-// stay populated afterwards (unlike the old queue, which emptied on drain).
+// A cached chain is re-emitted on every dump, not drained once.
 TEST_F(ResolvedChainCacheTest, SnapshotReEmitsOnEveryDumpWithoutClearing) {
     ReferenceChainsTestAccessor::cacheChain(/*source_tag=*/1, makeEvent(7),
                                             /*source_tag=*/7, /*search_ns=*/0);
@@ -3722,10 +3219,8 @@ TEST_F(ResolvedChainCacheTest, SnapshotReEmitsOnEveryDumpWithoutClearing) {
     EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
 }
 
-// Re-resolving the same klass (a restart re-tags its sample, or a fresh walk
-// finds a deeper path) refreshes its single cache slot in place rather than
-// accumulating duplicates - so a dump re-emits one current chain per klass,
-// not one per resolution.
+// Re-resolving the same klass refreshes its single cache slot in place
+// rather than accumulating duplicates.
 TEST_F(ResolvedChainCacheTest, RefreshReplacesSameKlassInPlace) {
     ReferenceChainsTestAccessor::cacheChain(1, makeEvent(7), 7, 0);
     ASSERT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
@@ -3761,11 +3256,9 @@ TEST_F(ResolvedChainCacheTest, MultipleKlassesAllSnapshotTogether) {
     EXPECT_EQ((std::set<u64>{1, 2, 3}), tags);
 }
 
-// A brand-new klass arriving with the cache already at MAX_RESOLVED_CHAINS is
-// dropped (and counted via REFERENCE_CHAIN_EVENTS_DROPPED, this codebase's own
-// "dropped-event-without-counter" review lens) rather than evicting some other
-// still-live sample's chain - but refreshing a klass that is already cached
-// still succeeds even at capacity.
+// A brand-new klass at MAX_RESOLVED_CHAINS is dropped (counted via
+// REFERENCE_CHAIN_EVENTS_DROPPED) rather than evicting another live
+// sample's chain; refreshing an already-cached klass still succeeds.
 TEST_F(ResolvedChainCacheTest, OverflowDropsNewKlassButAllowsRefresh) {
     const int cap = ReferenceChainsTestAccessor::maxResolvedChains();
     long long droppedBefore = Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED);
@@ -3796,17 +3289,8 @@ TEST_F(ResolvedChainCacheTest, OverflowDropsNewKlassButAllowsRefresh) {
         << "an in-place refresh must not count as a drop";
 }
 
-// ---------------------------------------------------------------------------
-// Pause-time pacing controller: pause-time-SLO feedback loop
-// (ReferenceChainTracker::updatePacing(), referenceChains.cpp) - see that
-// method's own comment (referenceChains.h) for the full mechanism. These
-// tests drive updatePacing() directly with a synthetic sequence of "pass
-// took Xms" wall-clock durations via ReferenceChainsTestAccessor (this
-// file's existing pattern for reaching a private method/state - see the
-// target-selection bridging step's hasResolvedChainForTag()/resolvedChainCount() above),
-// reusing the ReferenceChainsTest fixture since updatePacing() itself makes
-// no JVMTI calls.
-// ---------------------------------------------------------------------------
+// Pause-time pacing controller (updatePacing()): driven directly with
+// synthetic "pass took Xms" durations; no JVMTI calls involved.
 
 TEST_F(ReferenceChainsTest, PacingHoldsSteadyWhenPassesLandExactlyOnCeiling) {
     Arguments args;
@@ -3818,9 +3302,8 @@ TEST_F(ReferenceChainsTest, PacingHoldsSteadyWhenPassesLandExactlyOnCeiling) {
     u64 startCadence = ReferenceChainsTestAccessor::effectiveCadenceNs();
     ASSERT_EQ(4000, startBudget); // starts pinned at the configured ceiling
 
-    // A pass landing exactly on the pause-time target is a zero error every
-    // call - the controller should never move away from its starting point,
-    // regardless of how many such passes are observed in a row.
+    // A pass landing exactly on the pause-time target is a zero error -
+    // the controller must never move from its starting point.
     for (int i = 0; i < 10; i++) {
         ReferenceChainsTestAccessor::updatePacing(5 * 1000000ULL); // 5ms
         EXPECT_EQ(startBudget, ReferenceChainsTestAccessor::effectiveBudget());
@@ -3840,7 +3323,7 @@ TEST_F(ReferenceChainsTest, PacingShrinksBudgetAndWidensCadenceWhenOverCeiling) 
     u64 initialCadence = ReferenceChainsTestAccessor::effectiveCadenceNs();
 
     // A pass taking 10x the pause-time ceiling, fed repeatedly (a constant
-    // input - the plan's own "does not oscillate indefinitely" scenario).
+    // input).
     int lastBudget = initialBudget;
     u64 lastCadence = initialCadence;
     for (int i = 0; i < 20; i++) {
@@ -3871,15 +3354,8 @@ TEST_F(ReferenceChainsTest, PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeili
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // Start from a controlled below-ceiling/above-baseline point (as if an
-    // earlier over-ceiling run had already shrunk/widened them - see the
-    // previous test) with a freshly reset controller, rather than chaining
-    // directly off a constant-input sequence like the previous test's own:
-    // _pause_pid's integral state would otherwise still be recovering from
-    // that sequence's windup for many iterations after switching to a
-    // smaller-magnitude error, muddying this test's per-step "moves in the
-    // correct direction every step" assertions with a transient this test
-    // is not about.
+    // Start from a controlled below-ceiling point with a freshly reset
+    // controller (prior iterations leave _pause_pid integral windup).
     ReferenceChainsTestAccessor::setEffectiveBudget(2400);
     ReferenceChainsTestAccessor::setEffectiveCadenceNs(
         2 * ReferenceChainsTestAccessor::baselineCadenceNs());
@@ -3887,15 +3363,9 @@ TEST_F(ReferenceChainsTest, PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeili
     int shrunkBudget = ReferenceChainsTestAccessor::effectiveBudget();
     u64 widenedCadence = ReferenceChainsTestAccessor::effectiveCadenceNs();
 
-    // Now feed passes comfortably under the ceiling, repeatedly (a constant
-    // input, to check convergence rather than oscillation). 200 iterations -
-    // more than PacingShrinksBudgetAndWidensCadenceWhenOverCeiling needs -
-    // because this scenario's error magnitude (pausetarget=5 vs. an
-    // effectively-instant 0ms pass) is smaller, so the cadence side takes
-    // more iterations to fully unwind down to MIN_EFFECTIVE_CADENCE_NS, and
-    // because the borrowed-budget distance to close (configured budget *
-    // (BORROW_CEILING_MULTIPLIER - 1)) scales with the configured budget
-    // while the PID's per-pass step size does not.
+    // Feed passes comfortably under the ceiling repeatedly. 200 iterations
+    // because the smaller error magnitude and the borrowed-budget distance
+    // take longer to unwind than the over-ceiling test needed.
     int lastBudget = shrunkBudget;
     u64 lastCadence = widenedCadence;
     for (int i = 0; i < 200; i++) {
@@ -3908,11 +3378,8 @@ TEST_F(ReferenceChainsTest, PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeili
         lastCadence = cadence;
     }
 
-    // Moved in the correct direction... and, since 50 identical
-    // comfortably-under-target passes is well past BORROW_WARMUP_PASSES,
-    // past the configured ceiling too - budget-borrowing lets it converge at
-    // the borrowed ceiling (configured budget * multiplier) instead of
-    // stalling at the plain configured budget.
+    // Past BORROW_WARMUP_PASSES the budget converges at the borrowed
+    // ceiling (configured budget * multiplier).
     EXPECT_GT(lastBudget, shrunkBudget);
     EXPECT_EQ(4000 * ReferenceChainsTestAccessor::borrowCeilingMultiplier(), lastBudget);
     EXPECT_LT(lastCadence, widenedCadence);
@@ -3926,8 +3393,8 @@ TEST_F(ReferenceChainsTest, PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeili
 
 TEST_F(ReferenceChainsTest, MaybeRevokeBorrowForRootEnumPassPreservesBorrowAtBoundary) {
     Arguments args;
-    // BORROW_UNDER_TARGET_FRACTION (referenceChains.h) is 0.5, so with
-    // pausetarget=10 the comfortably-under-target boundary is exactly 5ms.
+    // BORROW_UNDER_TARGET_FRACTION is 0.5, so with pausetarget=10 the
+    // comfortably-under-target boundary is exactly 5ms.
     ASSERT_FALSE(args.parse("referencechains=true:budget=1000:pausetarget=10"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
@@ -3935,8 +3402,8 @@ TEST_F(ReferenceChainsTest, MaybeRevokeBorrowForRootEnumPassPreservesBorrowAtBou
     ReferenceChainsTestAccessor::setBorrowedBudget(500);
     ReferenceChainsTestAccessor::setConsecutiveUnderTargetPasses(5);
 
-    // Exactly at the boundary: comfortably_under_target's `<=` check must
-    // still treat this as comfortably under, so the borrow is preserved.
+    // Exactly at the boundary: the `<=` check must still treat this as
+    // comfortably under, so the borrow is preserved.
     ReferenceChainsTestAccessor::maybeRevokeBorrowForRootEnumPass(5 * 1000000ULL);
     EXPECT_EQ(500, ReferenceChainsTestAccessor::borrowedBudget());
     EXPECT_EQ(5, ReferenceChainsTestAccessor::consecutiveUnderTargetPasses());
@@ -3954,10 +3421,8 @@ TEST_F(ReferenceChainsTest, MaybeRevokeBorrowForRootEnumPassRevokesJustPastBound
     ReferenceChainsTestAccessor::setConsecutiveUnderTargetPasses(5);
     ReferenceChainsTestAccessor::setEffectiveBudget(1500); // as if borrow had raised the ceiling
 
-    // Just past the boundary: no longer comfortably under target, so the
-    // grant is revoked immediately, including re-clamping _effective_budget
-    // down to the plain (non-borrowed) budget rather than leaving it
-    // borrow-inflated until the next ordinary pass's updatePacing() call.
+    // Just past the boundary the grant is revoked immediately, including
+    // re-clamping _effective_budget down to the plain budget.
     ReferenceChainsTestAccessor::maybeRevokeBorrowForRootEnumPass(6 * 1000000ULL);
     EXPECT_EQ(0, ReferenceChainsTestAccessor::borrowedBudget());
     EXPECT_EQ(0, ReferenceChainsTestAccessor::consecutiveUnderTargetPasses());
@@ -3966,13 +3431,8 @@ TEST_F(ReferenceChainsTest, MaybeRevokeBorrowForRootEnumPassRevokesJustPastBound
     tracker->stop();
 }
 
-// ---------------------------------------------------------------------------
-// PainBudget (painBudget.h) - standalone, no ReferenceChainTracker singleton
-// involved. A leaky bucket over cost (ms), not an event rate: spend()
-// records how much an operation cost, canStartNow() drains the balance by
-// elapsed wall-clock time at the configured refill rate and reports whether
-// the debt has cleared.
-// ---------------------------------------------------------------------------
+// PainBudget (painBudget.h) - standalone. A leaky bucket over cost (ms):
+// spend() records cost, canStartNow() drains the balance over time.
 
 TEST(PainBudgetTest, ClearBeforeAnythingIsEverSpent) {
     PainBudget budget(0.01);
@@ -3983,8 +3443,8 @@ TEST(PainBudgetTest, SpendCreatesDebtThatBlocksAnImmediateSecondCall) {
     PainBudget budget(0.01); // 1%
     ASSERT_TRUE(budget.canStartNow(1000)); // establishes the drain baseline
     budget.spend(100); // 100ms of debt
-    // No time has elapsed since the baseline call above - the debt cannot
-    // have drained at all yet.
+    // No time has elapsed since the baseline call - the debt cannot have
+    // drained yet.
     EXPECT_FALSE(budget.canStartNow(1000));
 }
 
@@ -4004,17 +3464,8 @@ TEST(PainBudgetTest, ZeroRefillRateNeverClearsDebt) {
     EXPECT_FALSE(budget.canStartNow(1000000000000ULL));
 }
 
-// ---------------------------------------------------------------------------
-// Search restart (referenceChains.h's own header comment: gating a
-// restarted search's first pass on LivenessTracker already reporting a leak
-// candidate, plus the PainBudget cooldown above, so a search that already
-// walked the whole reachable graph once does not do so again indefinitely
-// without a reason). Uses an "empty reachable graph" FollowReferences mock
-// (no callback invocations at all) to reach SearchState::COMPLETED in one
-// call - the simplest way to drive a search to a terminal state without
-// ReferenceChainsBfsTest's full scripted-graph machinery, which exists for
-// chain-reconstruction coverage this suite does not need.
-// ---------------------------------------------------------------------------
+// Search restart: a restarted search's first pass is gated on LivenessTracker
+// reporting a leak candidate, plus the PainBudget cooldown.
 
 class SearchRestartTest : public ::testing::Test {
 protected:
@@ -4042,11 +3493,9 @@ protected:
         VMTestAccessor::setJvmti(orig_jvmti);
         LivenessTracker::instance()->klassPopulationResetForTest();
         LivenessTracker::instance()->setGcGenerationsForTest(false);
-        // UrgentOOMProjectionBypassesCandidateGate below sets this - reset it
-        // here (TearDown always runs, even after a fatal ASSERT_* return)
-        // rather than as a trailing statement in that test body, so a failed
-        // assertion can't leak a stale max-heap value into the next test
-        // sharing this singleton.
+        // Reset here (TearDown always runs, even after a fatal ASSERT_*) so
+        // a failed assertion can't leak a stale max-heap value into the next
+        // test sharing this singleton.
         LivenessTracker::instance()->setMaxHeapBytesForTest(-1);
     }
 
@@ -4059,52 +3508,44 @@ protected:
         return JVMTI_ERROR_NONE;
     }
 
-    // ReferenceChainTracker::start() -> autoTuneDefaults() queries this
-    // whenever LivenessTracker reports a max heap > 0 - which
-    // UrgentOOMProjectionBypassesCandidateGate below sets. This fixture's
-    // table predates that query (facdc70c0, 2026-08-17): the unwired entry
-    // null-crashed that test at start() - before its subject ever ran -
-    // for every full-suite run since. A fixed single processor keeps the
-    // auto-tuned pause/pain values deterministic regardless of the host.
+    // start() -> autoTuneDefaults() queries this whenever a max heap is
+    // set; a fixed single processor keeps the auto-tuned values
+    // deterministic.
     static jvmtiError JNICALL mock_GetAvailableProcessors(jvmtiEnv *,
                                                            jint *nprocs) {
         *nprocs = 1;
         return JVMTI_ERROR_NONE;
     }
 
-    // Never invokes the callback - models a heap with nothing reachable from
-    // any root, so the very first pass completes immediately (0 admitted
-    // edges, not truncated).
+    // Models a heap with nothing reachable from any root: the first pass
+    // completes immediately (0 admitted edges, not truncated).
     static jvmtiError JNICALL mock_FollowReferences(
         jvmtiEnv *, jint, jclass, jobject, const jvmtiHeapCallbacks *,
         const void *) {
         return JVMTI_ERROR_NONE;
     }
 
-    // runPassManualWalk()'s root enumeration - never invokes the root
-    // callback, same "nothing reachable from any root" heap model as
-    // mock_FollowReferences() above, so the first pass still completes
-    // immediately with 0 admitted edges.
+    // runPassManualWalk()'s root enumeration - same empty-heap model as
+    // mock_FollowReferences() above.
     static jvmtiError JNICALL mock_IterateOverReachableObjects(
         jvmtiEnv *, jvmtiHeapRootCallback, jvmtiStackReferenceCallback,
         jvmtiObjectReferenceCallback, const void *) {
         return JVMTI_ERROR_NONE;
     }
 
-    // Same seeding helper as PollWatchedTargetsTest above (20 strictly-
+    // Seeds a growing population series for `klass_id` (20 strictly-
     // increasing samples - satisfies selectLeakCandidates()'s min-fill,
-    // growth/floor magnitude, and sustained-trend hysteresis requirements).
+    // growth/floor magnitude, and sustained-trend hysteresis requirements,
+    // livenessTracker.h) and points its representative at `rep`.
     void seedGrowingCandidate(u32 klass_id, jweak rep) {
         int slot;
         bool created;
         for (u16 i = 1; i <= 20; i++) {
             LivenessTracker::instance()->klassPopulationRecordForTest(
                 klass_id, i, i, &slot, &created);
-            // Per-(klass, tid) qualification: selectLeakCandidates() also
-            // requires a qualifying allocating thread. These fixtures have
-            // no real tracked instances (mock JVMTI, no live heap), so a
-            // fixed synthetic tid exercises the gate without pretending to
-            // match any instance's real tid.
+            // selectLeakCandidates() also requires a qualifying allocating
+            // thread; a fixed synthetic tid exercises the gate (these
+            // fixtures have no real tracked instances).
             LivenessTracker::instance()->tidTrendRecordForTest(
                 klass_id, /*tid=*/4242, (u32)i, (u64)i);
         }
@@ -4113,11 +3554,9 @@ protected:
 };
 
 TEST_F(SearchRestartTest, WithoutGenerationsSignalRestartStaysUnconditional) {
-    // gc_generations off (this fixture's SetUp default): canAffordNewSearch()
-    // has no candidate signal to gate on at all, so a terminal search is
-    // immediately eligible to restart - preserves this tracker's pre-restart
-    // behavior for a referencechains-without-generations setup (this class's
-    // own header comment, last paragraph).
+    // gc_generations off: canAffordNewSearch() has no candidate signal to
+    // gate on at all, so a terminal search is immediately eligible to
+    // restart - the referencechains-without-generations setup.
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -4135,9 +3574,8 @@ TEST_F(SearchRestartTest, WithoutGenerationsSignalRestartStaysUnconditional) {
 TEST_F(SearchRestartTest, GenerationsEnabledButNoCandidateBlocksFirstSearch) {
     // A brand-new tracker must not pay for the initial whole-heap
     // walk/tagging pass either when there is no leak candidate yet -
-    // shouldRunPass()'s !_search_started branch now shares
-    // canAffordNewSearch() with the restart gate below (this class's own
-    // header comment).
+    // shouldRunPass()'s !_search_started branch shares canAffordNewSearch()
+    // with the restart gate.
     LivenessTracker::instance()->setGcGenerationsForTest(true);
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
@@ -4191,8 +3629,8 @@ TEST_F(SearchRestartTest, RestartsOnceACandidateAppearsAndResetsPerSearchState) 
     EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
     EXPECT_EQ(0, tracker->passesRun()); // restartSearch() zeroed per-search state
 
-    // The next runPass() call takes the "first pass of a search" branch
-    // again, exactly like a brand-new tracker.
+    // The next runPass() takes the "first pass of a search" branch again,
+    // exactly like a brand-new tracker.
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, nullptr));
     EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
     EXPECT_EQ(1, tracker->passesRun());
@@ -4210,39 +3648,31 @@ TEST_F(SearchRestartTest, PainBudgetBlocksARestartUntilItDrains) {
     int fake_object_storage = 0;
     seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)&fake_object_storage);
 
-    // First-ever search: called via runPass() directly here, bypassing
-    // shouldRunPass()'s canAffordNewSearch() gate entirely - the candidate
-    // seeded above would satisfy that gate anyway (this class's own header
-    // comment).
+    // First-ever search: runPass() called directly, bypassing the
+    // canAffordNewSearch() gate (the candidate would satisfy it anyway).
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, nullptr));
     ASSERT_EQ(SearchState::COMPLETED, tracker->searchState());
 
-    // Restart #1: _safepoint_pain_budget has never had anything spent into it yet, so
-    // this is always immediately affordable regardless of this first
-    // search's own cost - the cost a search incurs only debits the *next*
-    // restart's affordability (restartSearch()'s own spend-then-reset
-    // order), not its own.
+    // Restart #1: nothing has been spent into _safepoint_pain_budget yet,
+    // so it is always affordable - a search's own cost only debits the
+    // *next* restart's affordability (spend-then-reset order).
     ASSERT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(1));
     ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, nullptr));
     ASSERT_EQ(SearchState::COMPLETED, tracker->searchState());
 
-    // Pretend this second search cost 1000ms of safepoint time - a mocked
-    // FollowReferences call in this fixture takes ~0 real wall-clock time,
-    // so this accessor stands in for what a real, expensive pass would have
-    // accumulated into _search_pain_ms on its own.
+    // Pretend this second search cost 1000ms of safepoint time (the mock
+    // pass itself takes ~0 wall-clock time).
     ReferenceChainsTestAccessor::setSearchPainMs(1000);
 
-    // Restart #2: the terminal gate charges the finished search's OWN 1000ms
-    // cost BEFORE checking affordability (canAffordNewSearch() must see the
-    // cost of the search that just ended, or an expensive search would earn
-    // one free immediate successor). At 1% refill, 1000ms of debt needs
-    // 100000ms (1e11ns) of elapsed wall-clock time to clear - 1ns later is
-    // nowhere close.
+    // Restart #2: the terminal gate charges the finished search's own
+    // 1000ms cost BEFORE checking affordability (an expensive search must
+    // not earn a free immediate successor). At 1% refill, 1000ms of debt
+    // needs 1e11ns to clear - 1ns later is nowhere close.
     EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(2));
     EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
 
-    // Well past the drain point - the debt has cleared, restart #2 proceeds.
+    // Well past the drain point - restart #2 proceeds.
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(1ULL + 200000000000ULL));
     EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, nullptr));
@@ -4251,24 +3681,17 @@ TEST_F(SearchRestartTest, PainBudgetBlocksARestartUntilItDrains) {
     tracker->stop();
 }
 
-// hasLeakSignal()'s OOM_URGENT_THRESHOLD_S fast path (referenceChains.h/.cpp):
-// a heap-wide leak growing fast enough to project exhaustion sooner than the
-// threshold must start a search immediately, without waiting for any klass
-// to clear selectLeakCandidates()'s own per-klass ring-fill/hysteresis gate -
-// this is the aggressive-leak gap GenerationsEnabledButNoCandidateBlocksFirstSearch
-// above documents for the non-urgent case. Deliberately seeds no candidate at
-// all (LivenessTracker::instance()->klassPopulationResetForTest() in SetUp
-// leaves the population table empty) so this test can only pass via the
-// heap-floor projection, never via selectLeakCandidates() falling back to a
-// real candidate.
+// hasLeakSignal()'s OOM_URGENT_THRESHOLD_S fast path: a heap-wide leak
+// projecting exhaustion sooner than the threshold must start a search
+// immediately, without waiting for any klass to clear
+// selectLeakCandidates()'s per-klass gate. No candidate is seeded, so this
+// can only pass via the heap-floor projection.
 TEST_F(SearchRestartTest, UrgentOOMProjectionBypassesCandidateGate) {
     LivenessTracker::instance()->setGcGenerationsForTest(true);
     constexpr u64 SEC_NS = 1000000000ULL;
     constexpr u64 MiB = 1ULL << 20;
-    // Same worked example as livenessTracker_ut.cpp's
-    // SecondsToOOMTest.RisingFloorProjectsExpectedSeconds: 700MiB rise over
-    // 7s against a 2800MiB max heap projects to 10s - comfortably under
-    // OOM_URGENT_THRESHOLD_S (5 minutes).
+    // 700MiB rise over 7s against a 2800MiB max heap projects to 10s,
+    // comfortably under OOM_URGENT_THRESHOLD_S (5 minutes).
     LivenessTracker::instance()->setMaxHeapBytesForTest((jlong)(2800 * MiB));
     for (int i = 0; i < 10; i++) {
         LivenessTracker::instance()->heapFloorRecordForTest(
@@ -4286,20 +3709,8 @@ TEST_F(SearchRestartTest, UrgentOOMProjectionBypassesCandidateGate) {
     tracker->stop();
 }
 
-// ---------------------------------------------------------------------------
-// Durability re-verification (correctness hardening).
-//
-// These tests drive maybeUpgradeRootAttachedRootKind()/
-// collectStaleRootKindEntriesForRotation() directly via
-// ReferenceChainsTestAccessor rather than through a full
-// IterateOverReachableObjects()-driven runPassManualWalk() pass: neither
-// IterateOverReachableObjects nor FollowReferences-as-a-safepoint-pin is
-// mocked in this file (see the fixture's own FollowReferences-only mock
-// rationale above), and both methods are pure FrontierTable/queue logic with
-// no JVMTI dependency of their own - the same rationale
-// admitObject()/rootKindDurability() being free of any callback shape
-// already established for this subsystem.
-// ---------------------------------------------------------------------------
+// Durability re-verification: pure FrontierTable/queue logic with no JVMTI
+// dependency, driven directly.
 
 TEST_F(ReferenceChainsBfsTest, StaleRootAttributionUpgradesOnRediscovery) {
     Arguments args;
@@ -4308,10 +3719,8 @@ TEST_F(ReferenceChainsBfsTest, StaleRootAttributionUpgradesOnRediscovery) {
     ASSERT_FALSE(tracker->start(args));
     FrontierTable *frontier = tracker->frontierTable();
 
-    // Synthetic stack-local root: admitted, root-attached (parent_tag == 0),
-    // its owning frame has since "gone away" from the design doc's scenario
-    // (nothing further to model here - the entry simply stays as-is until a
-    // more durable root is discovered).
+    // Stack-local root: admitted, root-attached (parent_tag == 0); it stays
+    // as-is until a more durable root is discovered.
     jlong tag = 1;
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, tag, /*parent_tag=*/0, /*depth=*/0,
@@ -4341,14 +3750,9 @@ TEST_F(ReferenceChainsBfsTest, StaleRootAttributionUpgradesOnRediscovery) {
     tracker->stop();
 }
 
-// Exercises the invariant conflict that durability re-verification exists to
-// catch: a non-root
-// entry (parent_tag != 0) rediscovered as if via a root context must never
-// have its root_kind overwritten - doing so would leave a non-zero root_kind
-// on an entry nothing else treats as root-attached (referenceChains.h's
-// FrontierEntry::root_kind comment), since this mutator never touches
-// parent_tag. This is the edge-based, non-root-Y re-expansion case the
-// option (a) resolution above exists for.
+// A non-root entry (parent_tag != 0) rediscovered as if via a root context
+// must never have its root_kind overwritten - that would leave a non-zero
+// root_kind on an entry nothing treats as root-attached.
 TEST_F(ReferenceChainsBfsTest, NonRootAttachedEntryNeverUpgraded) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -4357,8 +3761,8 @@ TEST_F(ReferenceChainsBfsTest, NonRootAttachedEntryNeverUpgraded) {
     FrontierTable *frontier = tracker->frontierTable();
 
     // Parent Y (root-attached) and child X, admitted the way frontier
-    // re-expansion admits a non-root child: non-root
-    // (parent_tag == Y's tag), root_kind == 0.
+    // re-expansion admits a non-root child (parent_tag == Y's tag,
+    // root_kind == 0).
     jlong yTag = 1;
     jlong xTag = 2;
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
@@ -4368,9 +3772,8 @@ TEST_F(ReferenceChainsBfsTest, NonRootAttachedEntryNeverUpgraded) {
         frontier, xTag, /*parent_tag=*/yTag, /*depth=*/1,
         FrontierEntryState::EXPANDED, /*root_kind=*/0));
 
-    // Re-expanding Y rediscovers an edge to X (already tracked) - even if
-    // this rediscovery is (incorrectly) attempted with a durable root_kind,
-    // it must be rejected because X is not root-attached.
+    // Re-expanding Y rediscovers the edge to X: even attempted with a
+    // durable root_kind, it must be rejected because X is not root-attached.
     EXPECT_FALSE(ReferenceChainsTestAccessor::maybeUpgradeRootAttachedRootKind(
         frontier, xTag, JVMTI_HEAP_REFERENCE_STATIC_FIELD));
     FrontierEntry entry{};
@@ -4414,16 +3817,14 @@ TEST_F(ReferenceChainsBfsTest, RotationSelectsOnlyTransientExpandedRootAttachedE
     std::sort(selected.begin(), selected.end());
     EXPECT_EQ((std::vector<jlong>{1, 5}), selected);
 
-    // Selected tags are queued for re-expansion, exactly like an ordinary
-    // admission would queue a newly-discovered tag.
+    // Selected tags are queued for re-expansion, like an ordinary admission.
     EXPECT_EQ(2u, ReferenceChainsTestAccessor::priorityExpandSize());
 
     tracker->stop();
 }
 
 // N transient-root_kind entries, rotation size R: every entry must be
-// selected at least once within ceil(N/R) calls, regardless of where the
-// cursor happened to start.
+// selected at least once within ceil(N/R) calls.
 TEST_F(ReferenceChainsBfsTest, RotationCoversAllEntriesWithinCeilNOverR) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -4453,15 +3854,11 @@ TEST_F(ReferenceChainsBfsTest, RotationCoversAllEntriesWithinCeilNOverR) {
     tracker->stop();
 }
 
-// collectStaleExpandedEntriesForRotation()'s own EXPANDED-only criterion is a
-// strict superset of collectStaleRootKindEntriesForRotation()'s (which also
-// requires parent_tag == 0 and a transient root_kind), and runPassManualWalk()
-// calls the root-kind collector first, into the very same _priority_expand
-// deque. Without a dedup check, a tag the root-kind collector already queued
-// would be queued a second time by the EXPANDED-only sweep, wasting one of
-// expandFrontier()'s per-entry batch slots on an already-EXPANDED tag every
-// pass. This drives both collectors back-to-back, the way runPassManualWalk()
-// does, and asserts _priority_expand ends up with no duplicate tags.
+// The EXPANDED-only criterion is a strict superset of the root-kind
+// collector's, and runPassManualWalk() calls both into the same
+// _priority_expand deque: without the dedup check, a tag the root-kind
+// collector already queued would be queued twice, wasting batch slots every
+// pass. Drives both collectors back-to-back and asserts no duplicates.
 TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationDoesNotDuplicateRootKindSelection) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -4470,12 +3867,12 @@ TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationDoesNotDuplicateRootKindSele
     FrontierTable *frontier = tracker->frontierTable();
 
     // Eligible for both collectors: EXPANDED, root-attached, transient
-    // root_kind - exactly the overlap collectStaleRootKindEntriesForRotation()
-    // will pick up first.
+    // root_kind.
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 1, 0, 0, FrontierEntryState::EXPANDED,
         JVMTI_HEAP_REFERENCE_STACK_LOCAL));
-    // Eligible only for the EXPANDED-only sweep: EXPANDED but not root-attached.
+    // Eligible only for the EXPANDED-only sweep: EXPANDED but not
+    // root-attached.
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 2, /*parent_tag=*/1, 1, FrontierEntryState::EXPANDED,
         /*root_kind=*/0));
@@ -4488,8 +3885,8 @@ TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationDoesNotDuplicateRootKindSele
     std::vector<jlong> stale_expanded_selected =
         ReferenceChainsTestAccessor::collectStaleExpandedEntriesForRotation(
             ReferenceChainsTestAccessor::staleExpandedRotationBudget());
-    // Tag 1 is already queued from the root-kind collector above and must not
-    // be selected again; tag 2 is newly discovered by this sweep.
+    // Tag 1 is already queued from the root-kind collector; tag 2 is newly
+    // discovered by this sweep.
     EXPECT_EQ((std::vector<jlong>{2}), stale_expanded_selected);
 
     std::vector<jlong> queued = ReferenceChainsTestAccessor::priorityExpandContents();
@@ -4500,11 +3897,9 @@ TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationDoesNotDuplicateRootKindSele
     tracker->stop();
 }
 
-// A tag left over in _priority_expand from a prior pass's truncated
-// expandFrontier() batch (see expandFrontier()'s own "leave the batch at the
-// front of the source queue for a later pass to retry" comment) must also be
-// skipped by collectStaleExpandedEntriesForRotation() - not just tags queued
-// by collectStaleRootKindEntriesForRotation() earlier in the same call.
+// A tag left over in _priority_expand from a prior pass's truncated batch
+// must also be skipped by collectStaleExpandedEntriesForRotation() - not
+// just tags queued by the root-kind collector in the same call.
 TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationSkipsPreexistingQueueEntries) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -4516,10 +3911,8 @@ TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationSkipsPreexistingQueueEntries
         frontier, 1, 0, 0, FrontierEntryState::EXPANDED,
         JVMTI_HEAP_REFERENCE_STACK_LOCAL));
 
-    // Simulate a truncated batch from a prior pass still sitting at the front
-    // of _priority_expand, without going through the root-kind collector at
-    // all - the leftover entry alone must still be enough to suppress a
-    // duplicate.
+    // A truncated batch from a prior pass still sitting at the front of
+    // _priority_expand: the leftover entry alone must suppress a duplicate.
     ReferenceChainsTestAccessor::pushPriorityExpand(1);
 
     std::vector<jlong> stale_expanded_selected =
@@ -4533,25 +3926,16 @@ TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationSkipsPreexistingQueueEntries
     tracker->stop();
 }
 
-// End-to-end proof of the prof-analyzer-hotdog-jb pod's actual leak shape:
-// a static-field-rooted collection (like ProfileAnalyzer.LEAK_BUFFER) whose
-// owning node is admitted and fully EXPANDED once, then has a *new* element
-// appended to it afterward - mirroring a Java List field being mutated in
-// place, never reassigned, well after admitStaticFieldRoots()'s one-time
-// sweep. The critical property under test is that this new element is
+// A static-field-rooted collection whose owning node is admitted and fully
+// EXPANDED once, then has a *new* element appended (a Java List mutated in
+// place, well after the one-time static sweep). The new element must be
 // discovered by collectStaleExpandedEntriesForRotation()'s rotation without
-// the overall search ever reaching SearchState::COMPLETED - i.e. without
-// requiring a full heap walk to finish, which on a multi-GiB heap can take
-// far longer than the pod can tolerate between the leaked field's own
-// growth events. A large distractor root chain (never fully drained within
-// this test's bounded pass loops) keeps the search perpetually RUNNING so
-// this property is exercised directly, not sidestepped by letting the
-// search finish and then trivially re-discovering everything from scratch.
+// the search ever reaching COMPLETED - a full heap walk takes far too long.
+// A large distractor chain keeps the search RUNNING.
 TEST_F(ReferenceChainsBfsTest, RotationDiscoversLateElementOfExpandedStaticFieldCollectionWithoutSearchCompleting) {
     Arguments args;
-    // budget=8 -> rotation_reserved_budget = min(8/2, 272) = 4, ordinary = 4:
-    // both slices non-zero, unlike a budget=1 pattern which would zero out
-    // rotation's reserved slice entirely (min(0, 272) == 0).
+    // budget=8 -> rotation_reserved_budget = min(8/2, 272) = 4: both slices
+    // non-zero (budget=1 would zero out rotation's reserved slice).
     ASSERT_FALSE(args.parse("referencechains=true:hops=5000:budget=8:firstpassbudget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
@@ -4563,9 +3947,8 @@ TEST_F(ReferenceChainsBfsTest, RotationDiscoversLateElementOfExpandedStaticField
 
     // Distractor chain: a long, independently root-seeded chain that never
     // fully drains within this test's bounded pass loops below, so the
-    // overall search always has forward progress available and never
-    // reaches SearchState::COMPLETED (nor NO_PROGRESS_PASS_LIMIT-triggered
-    // ABANDONED) purely as a side effect of this test's own loop bounds.
+    // overall search never reaches COMPLETED (nor NO_PROGRESS_PASS_LIMIT-
+    // triggered ABANDONED) as a side effect of the loop bounds.
     const int kDistractorNodes = 500;
     std::vector<int> distractor(kDistractorNodes);
     for (int i = 0; i < kDistractorNodes; i++) {
@@ -4574,8 +3957,8 @@ TEST_F(ReferenceChainsBfsTest, RotationDiscoversLateElementOfExpandedStaticField
 
     // addClass() captures classNode's address in node_tags' backing storage -
     // must come after every addNode() call above (including the distractor
-    // loop), or a later push_back reallocating node_tags would silently
-    // leave this pointer dangling (indexOfNode() would then never match it).
+    // loop), or a later push_back reallocating node_tags would leave this
+    // pointer dangling (indexOfNode() would never match it).
     addClass((void *)&node_tags[classNode], "Lcom/rc/statics/GrowingListHolder;");
 
     script = {
@@ -4591,9 +3974,8 @@ TEST_F(ReferenceChainsBfsTest, RotationDiscoversLateElementOfExpandedStaticField
         script.push_back({JVMTI_HEAP_REFERENCE_FIELD, distractor[i], distractor[i + 1], -1});
     }
 
-    // Phase 1: run passes until listNode has been fully expanded (its one
-    // pre-existing child discovered), without ever letting the search
-    // complete.
+    // Phase 1: run passes until listNode is fully expanded, without ever
+    // letting the search complete.
     bool truncated = true;
     FrontierEntry listEntry{};
     bool listExpanded = false;
@@ -4610,9 +3992,8 @@ TEST_F(ReferenceChainsBfsTest, RotationDiscoversLateElementOfExpandedStaticField
     ASSERT_NE(0, tags_ever_assigned[seedChildNode]);
     ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
 
-    // Phase 2: simulate a new element appended to the leaking static
-    // field's list *after* listNode's one-time expansion - the exact
-    // "growing collection" shape found in the real pod's leak generator.
+    // Phase 2: a new element appended to the list after its one-time
+    // expansion - the growing-collection shape.
     script.push_back({JVMTI_HEAP_REFERENCE_FIELD, listNode, lateChildNode, -1});
 
     for (int i = 0; i < 200 && tags_ever_assigned[lateChildNode] == 0; i++) {
@@ -4620,9 +4001,8 @@ TEST_F(ReferenceChainsBfsTest, RotationDiscoversLateElementOfExpandedStaticField
         ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     }
 
-    // The late element was discovered purely via rotation re-expanding
-    // listNode - and, critically, without the search ever completing (no
-    // dependency on a full heap walk finishing).
+    // The late element was discovered via rotation re-expanding listNode,
+    // without the search ever completing.
     ASSERT_NE(0, tags_ever_assigned[lateChildNode]);
     EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
 
@@ -4637,38 +4017,16 @@ TEST_F(ReferenceChainsBfsTest, RotationDiscoversLateElementOfExpandedStaticField
     tracker->stop();
 }
 
-// Proof of the fix for the actual prof-analyzer-hotdog-jb stall:
-// collectStaleExpandedEntriesForRotation() (referenceChains.cpp) used to
-// always rescan FrontierTable slots starting from tag 1, unlike its sibling
-// collectStaleRootKindEntriesForRotation() which already carried its own
-// persistent cursor. isQueuedForRotation()'s dedup check only looks at the
-// CURRENT pass's _priority_expand (drained by expandFrontier() at the end of
-// that same pass - see clearPriorityExpand()'s own comment), so without a
-// cursor, later passes had no memory of what earlier passes already
-// selected: whenever a real heap's frontier table held
-// STALE_EXPANDED_ROTATION_BUDGET (256) or more low-tag EXPANDED entries that
-// stay EXPANDED forever (long-lived infrastructure objects - exactly what
-// the sweep's own comment says it favors), that population alone filled the
-// sweep's 256-entry-per-pass cap on every single call, permanently starving
-// any EXPANDED entry with a higher tag (e.g. a static field's collection
-// node, admitted only once its owning class first loads, well after
-// startup) of ever being re-queued - a bug proved directly, before the fix,
-// by this same test (then named
-// StaleExpandedRotationStarvesHighTagEntryBehindLowTagPopulation).
-//
-// _stale_expanded_rotation_cursor now makes collectStaleExpandedEntriesForRotation()
-// resume from where the previous call left off instead of always restarting
-// at tag 1, the same wrapping-cursor guarantee
-// RotationCoversAllEntriesWithinCeilNOverR above already proves for
-// collectStaleRootKindEntriesForRotation(): every entry, including one
-// sitting behind an arbitrarily large low-tag population, gets a turn within
-// ceil(table_size / max_count) calls.
-//
-// Driven directly against collectStaleExpandedEntriesForRotation() (the same
-// unit-level style as RotationCoversAllEntriesWithinCeilNOverR above) rather
-// than through a full JVMTI-mocked BFS walk: this property is intrinsic to
-// the selection function's own tag-order scan, so it needs neither a real
-// graph nor runPass()'s pacing/budget machinery to demonstrate.
+// collectStaleExpandedEntriesForRotation() must resume from its persistent
+// cursor rather than always rescanning from tag 1: the dedup check only sees
+// the CURRENT pass's _priority_expand (drained by expandFrontier() at the
+// end of that pass), so without a cursor a population of low-tag,
+// perpetually-EXPANDED entries would fill the per-pass budget on every call,
+// permanently starving any higher-tag EXPANDED entry of ever being re-queued.
+// With the cursor, every entry gets a turn within ceil(table_size /
+// max_count) calls - the guarantee RotationCoversAllEntriesWithinCeilNOverR
+// proves for the root-kind collector. Driven directly against the selection
+// function; the property is intrinsic to its tag-order scan.
 TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationCoversHighTagEntryBehindLowTagPopulationWithinBoundedPasses) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -4677,12 +4035,10 @@ TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationCoversHighTagEntryBehindLowT
     FrontierTable *frontier = tracker->frontierTable();
 
     const int lowTagBudget = ReferenceChainsTestAccessor::staleExpandedRotationBudget();
-    // Comfortably above the 256-entry cap, so the low-tag population alone
-    // would fill every sweep before an always-from-1 scan could ever reach
-    // the high-tag entry below - mirrors a real multi-GiB heap's frontier
-    // table, which accumulates far more than 256 long-lived, perpetually-
-    // EXPANDED entries (bootstrap classes, caches, etc.) well before any one
-    // leak-candidate class even loads.
+    // Far above the per-pass cap: the low-tag population alone would fill
+    // every sweep before an always-from-1 scan could reach the high-tag
+    // entry, mirroring a real heap's long-lived EXPANDED bootstrap
+    // population.
     const int lowTagPopulation = lowTagBudget + 50;
     for (jlong tag = 1; tag <= lowTagPopulation; tag++) {
         ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
@@ -4690,16 +4046,14 @@ TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationCoversHighTagEntryBehindLowT
             JVMTI_HEAP_REFERENCE_STACK_LOCAL));
     }
 
-    // The leak candidate's own owning node - e.g. LEAK_BUFFER's list, admitted
-    // via a static field only once its class loads, well after the JVM's own
-    // bootstrap population already occupies every low tag number.
+    // The leak holder's node, admitted via a static field only once its
+    // class loads - after the bootstrap population occupies the low tags.
     const jlong highTag = lowTagPopulation + 1;
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, highTag, 0, 0, FrontierEntryState::EXPANDED,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD));
 
-    // Several simulated passes: each iteration mirrors one real pass -
-    // collectStaleExpandedEntriesForRotation() runs once, then
+    // Several simulated passes: each iteration runs the collector once, then
     // clearPriorityExpand() mirrors expandFrontier() having drained whatever
     // it selected before the next pass's sweep resumes from the cursor.
     const int table_size = lowTagPopulation + 1;
@@ -4727,17 +4081,10 @@ TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationCoversHighTagEntryBehindLowT
     tracker->stop();
 }
 
-// ---------------------------------------------------------------------------
-// trackLeakAccumulation() - the admission-time hook (called from
-// admitObject(), the single shared admission path) that aggregates by
-// (leaf_class_tag, parent_class_tag) signature and by individual parent
-// fanout - stable JVMTI class tags (classTagAllocator.h), not classMap
-// dictionary ids, precisely because that dictionary can be compacted/
-// regenerated independently, silently reassigning the same class a
-// different id at different times (found via the external-process test -
-// see class_tag's own comment, referenceChains.h). Driven directly, pure
-// FrontierTable/map logic with no JVMTI dependency of its own.
-// ---------------------------------------------------------------------------
+// trackLeakAccumulation(): the admission-time hook aggregating by
+// (leaf_class_tag, parent_class_tag) signature and parent fanout - stable
+// JVMTI class tags, not classMap dictionary ids (which can be compacted/
+// regenerated independently).
 
 TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationAggregatesBySignatureAndFanout) {
     Arguments args;
@@ -4758,9 +4105,8 @@ TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationAggregatesBySignatureAndFano
         frontier, parent2Tag, 0, 0, FrontierEntryState::EXPANDED,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParent2Klass));
 
-    // 3 children of the watched leaf klass under parent1, 1 under parent2 -
-    // each call simulates one admission (the childTag argument is only used
-    // by production code for logging/future use, not read by this method).
+    // 3 children of the watched leaf klass under parent1, 1 under parent2;
+    // each call simulates one admission.
     ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parent1Tag, 10);
     ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parent1Tag, 11);
     ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parent1Tag, 12);
@@ -4805,8 +4151,7 @@ TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationSkipsRootAttachedChild) {
 
     ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({987});
 
-    // parent_tag == 0 - a root-attached leaf itself, nothing to attribute a
-    // container to.
+    // parent_tag == 0 - a root-attached leaf itself, nothing to attribute.
     ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, 987, /*parent_tag=*/0, 10);
 
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::leakSignatureCount());
@@ -4831,12 +4176,9 @@ TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationSkipsWhenParentNotFound) {
     tracker->stop();
 }
 
-// Proof of the actual bug this design was found fixing: the classMap
-// dictionary id (referrer_klass) for the exact same class can differ
-// depending on which subsystem/generation resolved it (see class_tag's own
-// comment, referenceChains.h, for the real-world case - "[B" resolving to
-// two different classMap ids for LivenessTracker vs. ReferenceChainTracker).
-// Matching must work via class_tag regardless of what referrer_klass says.
+// The classMap dictionary id (referrer_klass) for the same class can differ
+// depending on which subsystem resolved it - matching must work via
+// class_tag regardless of what referrer_klass says.
 TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationMatchesByClassTagEvenWhenReferrerKlassDiffers) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -4846,9 +4188,8 @@ TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationMatchesByClassTagEvenWhenRef
 
     constexpr u32 kLeafClassTag = 987;
     constexpr u32 kParentClassTag = 100;
-    // Deliberately different, "wrong" classMap ids - simulating exactly the
-    // compaction/regeneration scenario that broke referrer_klass-based
-    // matching. If matching used referrer_klass at all, this test would fail.
+    // Deliberately "wrong" classMap ids - if matching used referrer_klass
+    // at all, this test would fail.
     constexpr u32 kParentStaleReferrerKlass = 555555;
     ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafClassTag});
 
@@ -4868,21 +4209,12 @@ TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationMatchesByClassTagEvenWhenRef
     tracker->stop();
 }
 
-// ---------------------------------------------------------------------------
-// collectLeakAccumulationCandidatesForRotation() - the two-tier design
-// itself (see its own header comment, referenceChains.cpp, for the full
-// rationale). Driven directly against the aggregation state
-// trackLeakAccumulation() above populates, the same unit-level style as the
-// other rotation collectors.
-// ---------------------------------------------------------------------------
+// collectLeakAccumulationCandidatesForRotation(): driven directly against
+// the aggregation state trackLeakAccumulation() populates.
 
-// The central discriminating test for the whole design (per the "ubiquitous
-// common leaf class held by many small unrelated parents" concern this
-// design exists to solve): a signature with a LARGE but FLAT total (many
-// unrelated parents, e.g. a common leaf class scattered across a real
-// classpath) must NOT outrank a signature with a SMALLER but GROWING total
-// (the actual leak) once a growth history exists - retained-size-style
-// ranking alone would pick the wrong one every time.
+// A LARGE but FLAT signature (many unrelated parents holding a common leaf
+// class) must NOT outrank a SMALLER but GROWING signature (the actual leak)
+// once a growth history exists.
 TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationPrioritizesGrowingSignatureOverLargeFlatOne) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -4901,9 +4233,9 @@ TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationPrioritizesGrowingSignatu
         frontier, growingParentTag, 0, 0, FrontierEntryState::EXPANDED,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kGrowingParentKlass));
 
-    // Signature B: 20 distinct, unrelated parents, each holding just 1-2
-    // instances of the same common leaf klass - a much LARGER total than A,
-    // but it will not grow between passes.
+    // Signature B: 20 distinct, unrelated parents, each holding 1-2
+    // instances of the same common leaf klass - a LARGER total than A, but
+    // it will not grow between passes.
     constexpr int kUbiquitousParentCount = 20;
     std::vector<jlong> ubiquitousParentTags;
     for (int i = 0; i < kUbiquitousParentCount; i++) {
@@ -4914,9 +4246,8 @@ TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationPrioritizesGrowingSignatu
         ubiquitousParentTags.push_back(tag);
         ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, tag, 1000 + i);
     }
-    // Pass 1: A has fanout 5, B has total 20 (20 parents x 1 each) - B is
-    // larger. First-ever call has no prior snapshot, so both deltas equal
-    // their totals; B legitimately wins this one call (nothing to compare
+    // Pass 1: A has fanout 5, B has total 20 - B is larger. The first call
+    // has no prior snapshot, so B legitimately wins (nothing to compare
     // growth against yet).
     for (int i = 0; i < 5; i++) {
         ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass,
@@ -5005,14 +4336,9 @@ TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationRespectsMaxCountAndDedup)
     tracker->stop();
 }
 
-// Reversed on round-4 pod evidence (ev-leaktag-onpod-round4): the previous
-// EXPANDED-only selection made the targeted tier select ZERO every pass
-// on a live leak - the growing holders are un-expanded FRONTIER-state
-// backlog entries that the starved pending lane never reaches (a 127k
-// backlog at ~120-200 objects/min). A FRONTIER-state parent must be
-// selected AND placed at the head of the priority lane so the next
-// expandFrontier() batch reaches it ahead of the stale re-walks already
-// queued (the same pod's priority deque held ~1016 entries).
+// A FRONTIER-state (un-expanded) parent must be selected AND placed at the
+// head of the priority lane, so the next expandFrontier() batch reaches it
+// ahead of the stale re-walks already queued.
 TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationSelectsUnexpandedFrontierParentAheadOfBacklog) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -5079,15 +4405,14 @@ TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationReturnsEmptyWhenNothingHa
         JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParentKlass));
     ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parentTag, 10);
 
-    // First call establishes the baseline (delta == total, since there is no
-    // prior snapshot) and selects it.
+    // First call establishes the baseline (delta == total, no prior
+    // snapshot) and selects it.
     std::vector<jlong> firstPass =
         ReferenceChainsTestAccessor::collectLeakAccumulationCandidatesForRotation(10);
     ASSERT_EQ(1u, firstPass.size());
     ReferenceChainsTestAccessor::clearPriorityExpand();
 
-    // Second call, nothing new admitted - delta is now 0 for every
-    // signature, so nothing should be selected.
+    // Second call, nothing new admitted - delta is 0 for every signature.
     std::vector<jlong> secondPass =
         ReferenceChainsTestAccessor::collectLeakAccumulationCandidatesForRotation(10);
     EXPECT_TRUE(secondPass.empty())
@@ -5109,17 +4434,9 @@ TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationReturnsEmptyWhenNoSignatu
     tracker->stop();
 }
 
-// ---------------------------------------------------------------------------
-// seedLeakAccumulationForNewlyWatchedKlass() - the cold-start fix: retroactively
-// seeds the aggregation from entries ALREADY admitted before a klass_id
-// started being watched, since trackLeakAccumulation() alone only ever sees
-// admissions happening after watching starts, and the container that
-// actually needs re-expansion is typically already fully admitted by then
-// (found via the external-process test: the delegate ArrayList sits one hop
-// below the root-attached wrapper, and admitStaticFieldRoots()'s own sweep
-// admits both in the same call, long before any leak signal can plausibly
-// have fired).
-// ---------------------------------------------------------------------------
+// seedLeakAccumulationForNewlyWatchedKlass(): retroactively seeds the
+// aggregation from entries admitted before a klass_id started being watched -
+// the container needing re-expansion is typically fully admitted by then.
 
 TEST_F(ReferenceChainsBfsTest, SeedLeakAccumulationPopulatesFromAlreadyAdmittedEntries) {
     Arguments args;
@@ -5129,9 +4446,8 @@ TEST_F(ReferenceChainsBfsTest, SeedLeakAccumulationPopulatesFromAlreadyAdmittedE
     FrontierTable *frontier = tracker->frontierTable();
 
     constexpr u32 kLeafKlass = 987, kParentKlass = 100;
-    // Entries inserted directly (as if admitted by an earlier pass), with no
-    // watched klass_id set at all yet at insertion time - trackLeakAccumulation()
-    // was never called for any of these.
+    // Entries inserted directly, as if admitted by an earlier pass -
+    // trackLeakAccumulation() was never called for any of them.
     jlong parentTag = 1;
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, parentTag, 0, 0, FrontierEntryState::EXPANDED,
@@ -5205,7 +4521,7 @@ TEST_F(ReferenceChainsBfsTest, SeedLeakAccumulationComposesWithOngoingIncrementa
     ReferenceChainsTestAccessor::seedLeakAccumulationForNewlyWatchedKlass(kLeafKlass);
     ASSERT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(parentTag));
 
-    // A genuinely new admission after watching starts must add on top of the
+    // A genuinely new admission after watching starts adds on top of the
     // retroactive baseline, not reset or double it.
     ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
     ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parentTag, 11);
@@ -5216,35 +4532,14 @@ TEST_F(ReferenceChainsBfsTest, SeedLeakAccumulationComposesWithOngoingIncrementa
     tracker->stop();
 }
 
-// ---------------------------------------------------------------------------
-// Smoke test simulating the hotdog pod conditions that starved BFS:
-//
-// 1. GetObjectsWithTags quadratic bottleneck: a large frontier backlog
-//    makes each GetObjectsWithTags call expensive. The self-calibrating
-//    adaptive batch_size must keep it bounded.
-//
-// 2. Shared deadline bug: the static-field sweep's FollowReferences ate
-//    the entire per-pass wall-clock deadline, leaving expand with zero
-//    time. The deadline split gives each sub-operation its own fresh
-//    deadline.
-//
-// 3. Rolling resume: when FollowReferences truncates mid-batch (budget
-//    exhausted), the fully-processed entries must be popped (mark
-//    EXPANDED) and only the partially-processed + unvisited entries left
-//    for retry.
-//
-// This test builds a graph with a static-field root leading to a chain of
-// objects (simulating the leaking collection), plus a small set of
-// distractor roots to keep the search RUNNING. It runs passes with a
-// small budget so expand truncates mid-batch, then verifies the rolling
-// resume and progress properties.
-// ---------------------------------------------------------------------------
+// Rolling-resume smoke test: when a batch truncates mid-way (budget
+// exhausted), fully-processed entries must be popped (mark EXPANDED) and
+// only the partially-processed + unvisited entries left for retry.
 
 TEST_F(ReferenceChainsBfsTest, RollingResumePopsProcessedEntriesOnTruncatedBatch) {
     Arguments args;
-    // budget=4: small enough that expand truncates mid-batch after admitting
-    // a few children. firstpassbudget=1000: large enough to enumerate all
-    // roots in the first pass without truncating root enum.
+    // budget=4: expand truncates mid-batch after a few children;
+    // firstpassbudget=1000 enumerates all roots without truncating.
     ASSERT_FALSE(args.parse(
         "referencechains=true:hops=5000:budget=4:firstpassbudget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -5255,17 +4550,17 @@ TEST_F(ReferenceChainsBfsTest, RollingResumePopsProcessedEntriesOnTruncatedBatch
     int classNode = addNode();
     int listNode = addNode();
 
-    // A chain of 20 children hanging off listNode. With budget=4, the
-    // callback admits 4 children then returns JVMTI_VISIT_ABORT
-    // (BUDGET_EXHAUSTED), truncating mid-batch.
+    // A chain of 20 children off listNode: with budget=4 the callback
+    // admits 4 children then returns JVMTI_VISIT_ABORT, truncating
+    // mid-batch.
     constexpr int kChainLen = 20;
     std::vector<int> chainNodes(kChainLen);
     for (int i = 0; i < kChainLen; i++) {
         chainNodes[i] = addNode();
     }
 
-    // Distractor roots: 20 independent JNI-global roots, each with one child.
-    // Enough to keep the search RUNNING but small enough to drain quickly.
+    // Distractor roots: 20 independent JNI-global roots, enough to keep the
+    // search RUNNING but small enough to drain quickly.
     constexpr int kDistractors = 20;
     std::vector<int> distractorRoots(kDistractors);
     std::vector<int> distractorChildren(kDistractors);
@@ -5337,31 +4632,25 @@ TEST_F(ReferenceChainsBfsTest, RollingResumePopsProcessedEntriesOnTruncatedBatch
     tracker->stop();
 }
 
-// Verify the AIMD adaptive batch_size: with the per-call EMA over the CPU
-// budget, expandFrontier should multiplicatively decrease the batch; under
-// the budget it should additively increase toward the cap. The mock
-// GetObjectsWithTags is instant (no real tag-map cost), so we drive the EMA
-// by hand and verify the AIMD response, not the timing.
+// AIMD adaptive batch_size: over the CPU budget the batch shrinks
+// multiplicatively; under it, it grows toward the cap. The mock
+// GetObjectsWithTags is instant, so the EMA is driven by hand.
 TEST_F(ReferenceChainsBfsTest, AdaptiveBatchSizeProportionalToWindow) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // Adaptive-batch state is zeroed by reset() (SetUp) but zeroed here too
-    // for the same reason as before: exact per-phase arithmetic below.
+    // Zeroed here for exact per-phase arithmetic below.
     ReferenceChainsTestAccessor::setGotwEmaCallNs(0);
     ReferenceChainsTestAccessor::setGotwBatchSize(0);
     ReferenceChainsTestAccessor::setPassDeadlineNs(0);
 
-    // Seed a frontier root manually (mirrors PollWatchedTargetsTest's
-    // seeding style): node carries frontier tag 1, pending expansion has
-    // exactly that tag. No runPass() - a pass would drain the tiny graph to
-    // COMPLETED and release all tags, and its rotation phase adds extra
-    // GetObjectsWithTags calls, both of which break per-call arithmetic.
-    // The script stays empty until the admission-sanity phase below, so
-    // each expandFrontier() drive runs exactly one batch (one control
-    // update) and admits nothing.
+    // Seed a frontier root manually. No runPass(): a pass would drain the
+    // tiny graph to COMPLETED and its rotation adds extra
+    // GetObjectsWithTags calls, breaking per-call arithmetic. The script
+    // stays empty until the admission-sanity phase, so each drive runs
+    // exactly one batch.
     int rootNode = addNode();
     int childNode = addNode();
     node_tags[rootNode] = 1;
@@ -5371,10 +4660,8 @@ TEST_F(ReferenceChainsBfsTest, AdaptiveBatchSizeProportionalToWindow) {
     int edges = 0;
     const u64 budget = ReferenceChainsTestAccessor::gotwCpuBudgetNs();
 
-    // --- Populate phase: first GetObjectsWithTags call. The EMA should be
-    // non-zero afterwards, and the near-zero mock call time means the
-    // window (nominal budget, no deadline) fits ~unbounded many calls -
-    // the proportion scales the batch all the way to the cap.
+    // --- Populate phase: the first call populates the EMA; the near-free
+    // mock call scales the batch to the cap.
     ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
                                                        &mock_jni, &edges);
     EXPECT_NE(0u, ReferenceChainsTestAccessor::gotwEmaCallNs())
@@ -5383,45 +4670,37 @@ TEST_F(ReferenceChainsBfsTest, AdaptiveBatchSizeProportionalToWindow) {
               ReferenceChainsTestAccessor::gotwBatchSize())
         << "near-free call should scale the batch to the cap";
 
-    // --- Shrink phase: EMA at 2x the window with no deadline -> batch
-    // halves (512 x 1 / 1.6 after the EMA update).
+    // --- Shrink phase: EMA at 2x the window -> batch halves.
     ReferenceChainsTestAccessor::setGotwEmaCallNs(budget * 2);
     ReferenceChainsTestAccessor::setGotwBatchSize(512);
     ReferenceChainsTestAccessor::pushPendingExpandForTest(1);
     ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
                                                        &mock_jni, &edges);
-    // EMA after the call: 2x window x 0.8 + mock elapsed/5 - slightly
-    // above 1.6x window, so the exact expectation is computed from the
-    // actual EMA the same way the control law does (window = nominal
-    // budget, no deadline): next = 512 x window / ema.
+    // The expectation is computed from the actual post-call EMA, the way
+    // the control law does: next = batch x window / ema.
     EXPECT_EQ((size_t)(512ULL * budget /
                        std::max(ReferenceChainsTestAccessor::gotwEmaCallNs(),
                                 1ULL)),
               ReferenceChainsTestAccessor::gotwBatchSize())
         << "EMA at ~1.6x the window should scale the batch to 512/1.6";
 
-    // --- Grow phase: EMA at half the window -> batch scales up 2.5x,
-    // i.e. the floor-dominated regime GROWS the batch (the whole point of
-    // the proportional law - the old AIMD could not grow past a fixed
-    // budget even when bigger batches were nearly free).
+    // --- Grow phase: EMA at half the window -> batch scales up
+    // proportionally (next = 64 x window / ema).
     ReferenceChainsTestAccessor::setGotwBatchSize(64);
     ReferenceChainsTestAccessor::setGotwEmaCallNs(budget / 2);
     ReferenceChainsTestAccessor::pushPendingExpandForTest(1);
     ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
                                                        &mock_jni, &edges);
-    // Same computation from the actual post-call EMA (~0.4x window):
-    // next = 64 x window / ema.
+    // Same computation from the actual post-call EMA (~0.4x window).
     EXPECT_EQ((size_t)(64ULL * budget /
                        std::max(ReferenceChainsTestAccessor::gotwEmaCallNs(),
                                 1ULL)),
               ReferenceChainsTestAccessor::gotwBatchSize())
         << "EMA under the window should scale the batch up proportionally";
 
-    // --- Deadline-window phase: with a live pass deadline the window is the
-    // REMAINING time, not the nominal budget. A deadline 10x the budget out
-    // with EMA ~ 1x budget scales the batch 10x/0.8 - past the cap, so the
-    // clamp holds it at GOTW_MAX_BATCH (robust to the nanoseconds the call
-    // itself consumes).
+    // --- Deadline-window phase: with a live pass deadline the window is
+    // the REMAINING time; a 10x-out deadline scales the batch past the cap,
+    // so the clamp holds it at GOTW_MAX_BATCH.
     ReferenceChainsTestAccessor::setPassDeadlineNs(
         OS::nanotime() + budget * 10);
     ReferenceChainsTestAccessor::setGotwBatchSize(64);
@@ -5434,8 +4713,8 @@ TEST_F(ReferenceChainsBfsTest, AdaptiveBatchSizeProportionalToWindow) {
         << "a wide remaining deadline should grow the batch to the cap";
     ReferenceChainsTestAccessor::setPassDeadlineNs(0);
 
-    // --- Admission sanity: expansion still walks the graph. Root -> child
-    // edge, one more drive, child must be admitted.
+    // --- Admission sanity: root -> child edge, one more drive, the child
+    // must be admitted.
     script.push_back({JVMTI_HEAP_REFERENCE_FIELD, rootNode, childNode, -1});
     ReferenceChainsTestAccessor::pushPendingExpandForTest(1);
     ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
@@ -5446,14 +4725,10 @@ TEST_F(ReferenceChainsBfsTest, AdaptiveBatchSizeProportionalToWindow) {
     tracker->stop();
 }
 
-// gotwWindowNs() backlog-pressure widening, unit level: the pod regime is
-// a remaining pass window (~10ms) smaller than the measured per-call floor
-// (~22-40ms at a 242k-entry tag map), against a lane 127k deep. In that
-// regime the previous window math handed the proportional law a window
-// smaller than one unavoidable call, collapsing the batch to
-// GOTW_MIN_BATCH forever (batch=8 live on every call while the backlog
-// drained at ~120-200 objects/min). The widening makes the law size the
-// batch UP instead - but ONLY under real backlog depth, so rotation
+// gotwWindowNs() backlog-pressure widening, unit level: when the remaining
+// pass window is smaller than one unavoidable per-call floor, the plain
+// window math collapses the batch to GOTW_MIN_BATCH forever. The widening
+// sizes the batch UP, but ONLY under real backlog depth, so rotation
 // fast-lane batches stay deadline-sized.
 TEST_F(ReferenceChainsBfsTest, GotwWindowWidensOnlyUnderBacklogPressure) {
     Arguments args;
@@ -5488,23 +4763,20 @@ TEST_F(ReferenceChainsBfsTest, GotwWindowWidensOnlyUnderBacklogPressure) {
               ReferenceChainsTestAccessor::gotwWindowNs(budget, depth));
     ReferenceChainsTestAccessor::setGotwEmaCallNs(floor);
 
-    // Floor above the NOMINAL window (deadline already passed, the exact
-    // pod's post-call state) at depth: still widened - the floor is paid
-    // by the next call regardless, so the batch must amortize it.
+    // Floor above the NOMINAL window (deadline already passed) at depth:
+    // still widened - the floor is paid by the next call regardless, so the
+    // batch must amortize it.
     EXPECT_EQ(floor * mult,
               ReferenceChainsTestAccessor::gotwWindowNs(0, depth));
 
     tracker->stop();
 }
 
-// The widened window in action through the real control loop: one
-// GetObjectsWithTags call whose floor (simulated by the mock's busy-wait)
-// exceeds both the remaining pass deadline and the nominal window, with
-// a backlog deeper than GOTW_BACKLOG_MIN_DEPTH, must GROW the calibrated
-// batch (calib x mult, exactly - the window scales with the measured EMA)
-// instead of collapsing it to GOTW_MIN_BATCH. This is the round-4 pod
-// failure reproduced mechanically: pre-widening, next = calib x nominal /
-// ema < calib clamps to MIN forever.
+// The widened window through the real control loop: one GetObjectsWithTags
+// call whose floor (the mock's busy-wait) exceeds the remaining pass
+// deadline, with a backlog deeper than GOTW_BACKLOG_MIN_DEPTH, must GROW
+// the calibrated batch (calib x mult) instead of collapsing to
+// GOTW_MIN_BATCH.
 TEST_F(ReferenceChainsBfsTest, AdaptiveBatchGrowsWhenFloorExceedsWindowUnderDeepBacklog) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -5512,18 +4784,14 @@ TEST_F(ReferenceChainsBfsTest, AdaptiveBatchGrowsWhenFloorExceedsWindowUnderDeep
     ASSERT_FALSE(tracker->start(args));
 
     // A pass deadline a fraction of the simulated per-call floor: the call
-    // overruns it (exactly the pod's 10ms window vs 22-40ms floor), so after
-    // the call the loop's deadline check stops the invocation with ONE
-    // control update - deterministic arithmetic for the assertion below.
+    // overruns it, so the invocation stops with exactly ONE control update.
     gotw_delay_ns = ReferenceChainsTestAccessor::gotwCpuBudgetNs(); // 25ms floor
     ReferenceChainsTestAccessor::setPassDeadlineNs(OS::nanotime() + 5000000ULL);
     ReferenceChainsTestAccessor::setGotwBatchSize(ReferenceChainsTestAccessor::gotwMinBatch());
     ReferenceChainsTestAccessor::setGotwEmaCallNs(0); // seeded by the call below
 
     // A pending lane deep enough to cross GOTW_BACKLOG_MIN_DEPTH. The tags
-    // are unresolvable (never assigned to a node): each batch resolves
-    // nothing, which is fine - this test drives the control law, not
-    // admissions.
+    // are unresolvable - this test drives the control law, not admissions.
     const size_t depth = ReferenceChainsTestAccessor::gotwBacklogMinDepth() + 1;
     for (size_t i = 0; i < depth; i++) {
         ReferenceChainsTestAccessor::pushPendingExpandForTest(
@@ -5534,11 +4802,10 @@ TEST_F(ReferenceChainsBfsTest, AdaptiveBatchGrowsWhenFloorExceedsWindowUnderDeep
     ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
                                                        &mock_jni, &edges);
 
-    // EMA after the call = the busy-wait floor (~25ms). The pass deadline is
-    // long past, so the window is widened to EMA x GOTW_BACKLOG_WINDOW_MULT,
-    // and the control law computes calib x window / ema = calib x mult -
-    // exactly, because the window is a whole multiple of the same EMA it
-    // divides by.
+    // EMA after the call = the busy-wait floor; the pass deadline is long
+    // past, so the window is widened to EMA x GOTW_BACKLOG_WINDOW_MULT, and
+    // the control law computes calib x mult exactly (the window is a whole
+    // multiple of the same EMA it divides by).
     EXPECT_EQ(ReferenceChainsTestAccessor::gotwMinBatch() *
                   ReferenceChainsTestAccessor::gotwBacklogWindowMult(),
               ReferenceChainsTestAccessor::gotwBatchSize())
@@ -5551,15 +4818,10 @@ TEST_F(ReferenceChainsBfsTest, AdaptiveBatchGrowsWhenFloorExceedsWindowUnderDeep
 }
 
 // FAIR-SHARE DRAIN persistence: the lane toggle must survive across
-// expandFrontier() invocations. With per-invocation deadlines bounding an
-// invocation to a single batch (the production regime: one ~25-30ms
-// GetObjectsWithTags call of a 50ms window), a per-invocation reset to
-// "priority first" made priority win EVERY invocation and the ordinary
-// pending lane was never drained - observed live on hotdog (pending grew
-// 109k->113k over 260 passes, every call edges=0 stale re-walks). Here:
-// invocation 1 drains the priority lane, the toggle flips to pending;
-// priority is refilled (rotation would) and invocation 2 must still drain
-// the PENDING lane despite priority being non-empty.
+// expandFrontier() invocations - with per-invocation deadlines bounding an
+// invocation to a single batch, a per-invocation reset to "priority first"
+// would make priority win every invocation and the pending lane would never
+// drain.
 TEST_F(ReferenceChainsBfsTest, FairShareLaneAlternationPersistsAcrossInvocations) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -5579,14 +4841,10 @@ TEST_F(ReferenceChainsBfsTest, FairShareLaneAlternationPersistsAcrossInvocations
     ReferenceChainsTestAccessor::pushPriorityExpand(2);
     int edges = 0;
 
-    // Mock GetObjectsWithTags calls are ~free, so without a deadline a
-    // single expandFrontier() invocation would drain BOTH lanes in one
-    // loop. A delayed mock call (gotw_delay_ns below) plus a deadline set
-    // to a fraction of that delay bounds each invocation to exactly ONE
-    // batch: the first iteration's top-of-loop check passes (the deadline
-    // is ~200us away), the delayed call burns past it, and the second
-    // iteration's check breaks - the production regime, where one real
-    // ~25-30ms call consumes a 50ms window.
+    // Mock calls are ~free; a delayed mock call plus a deadline set below
+    // that delay bounds each invocation to exactly ONE batch (the first
+    // deadline check passes, the delayed call burns past it, the second
+    // check breaks).
     gotw_delay_ns = 1 * 1000 * 1000; // 1ms
     ReferenceChainsTestAccessor::setPassDeadlineNs(OS::nanotime() + 200 * 1000);
 
@@ -5614,13 +4872,9 @@ TEST_F(ReferenceChainsBfsTest, FairShareLaneAlternationPersistsAcrossInvocations
     tracker->stop();
 }
 // FANOUT HYGIENE: a _leak_parent_fanout entry whose parent no longer
-// resolves in the frontier (pruned: dead object, or a search-restart wipe)
-// can never be re-walked, so collectStaleExpandedEntriesForRotation() must
-// erase it during selection rather than skip it forever - without the
-// erase, the fanout grows monotonically with corpses (observed live at
-// ~11k entries of overwhelmingly-dead old backing arrays), which both
-// bloats the selection scan and turns the fanout cursor's lap arithmetic
-// into mostly wasted skips.
+// resolves in the frontier can never be re-walked, so it must be erased
+// during selection - otherwise the fanout grows monotonically with corpses,
+// bloating the scan and wasting the cursor's lap arithmetic.
 TEST_F(ReferenceChainsBfsTest, StaleRotationEvictsDeadFanoutParents) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
@@ -5660,13 +4914,11 @@ TEST_F(ReferenceChainsBfsTest, StaleRotationEvictsDeadFanoutParents) {
 }
 
 
-// Leak-tag interception (design A + C): an object pre-tagged with a leak tag
-// (as LivenessTracker::tagLeakInstances() would have set on a tracked leaking
-// instance) must be admitted by converting the leak tag to a frontier tag,
-// with the leak tag preserved in the frontier entry so buildChainEvent()
-// emits it as target_tag - the ReferenceChain <-> HeapLiveObject correlation
-// key. An untagged sibling of the same class must get an ordinary admit with
-// no leak tag.
+// Leak-tag interception: an object pre-tagged with a leak tag (as
+// tagLeakInstances() sets) must be admitted by converting the leak tag to a
+// frontier tag, preserving the leak tag in the entry so buildChainEvent()
+// emits it as target_tag - the ReferenceChain <-> HeapLiveObject
+// correlation key. An untagged sibling gets an ordinary admit.
 TEST_F(ReferenceChainsBfsTest, LeakTagInterceptionConvertsToFrontierTagAndCorrelates) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -5687,16 +4939,14 @@ TEST_F(ReferenceChainsBfsTest, LeakTagInterceptionConvertsToFrontierTagAndCorrel
         {JVMTI_HEAP_REFERENCE_FIELD, rootNode, plainChild, -1},
     };
 
-    // A single pass drains this tiny graph to completion, and a completed
-    // search releases all JVMTI tags (releaseSearchTags(), "tagsReleased"
-    // in runPass's own log) - so read the tags from tags_ever_assigned,
-    // which records each tag at assignment time and is never reset (see
-    // its own comment), not from node_tags (which reads 0 after release).
+    // A single pass completes the search and releases all JVMTI tags -
+    // read tags from tags_ever_assigned (captured at assignment time), not
+    // node_tags (0 after release).
     bool truncated = true;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
 
-    // The leak-tagged child's tag was REPLACED by a frontier tag (small
-    // positive, outside the leak range).
+    // The leak-tagged child's tag was REPLACED by a frontier tag outside
+    // the leak range.
     jlong leak_ftag = tags_ever_assigned[leakChild];
     ASSERT_NE(leak_tag, leak_ftag)
         << "leak tag was never intercepted - BFS did not reach the object";
@@ -5706,14 +4956,13 @@ TEST_F(ReferenceChainsBfsTest, LeakTagInterceptionConvertsToFrontierTagAndCorrel
     // The frontier entry preserves the leak tag for correlation.
     EXPECT_EQ(leak_tag, ReferenceChainsTestAccessor::frontierLeakTag(leak_ftag));
 
-    // The untagged sibling got an ordinary admit: frontier tag assigned, but
-    // no leak tag stored.
+    // The untagged sibling got an ordinary admit, no leak tag stored.
     jlong plain_ftag = tags_ever_assigned[plainChild];
     ASSERT_GT(plain_ftag, 0);
     EXPECT_EQ(0, ReferenceChainsTestAccessor::frontierLeakTag(plain_ftag));
 
-    // Design C: buildChainEvent() reports the leak tag as target_tag for the
-    // leak-tagged instance, and the plain frontier tag for the sibling.
+    // buildChainEvent() reports the leak tag as target_tag for the
+    // leak-tagged instance, the plain frontier tag for the sibling.
     ReferenceChainEvent event;
     ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
         &mock_jvmti, &mock_jni, leak_ftag, &event));
@@ -5731,20 +4980,17 @@ TEST_F(ReferenceChainsBfsTest, LeakTagInterceptionConvertsToFrontierTagAndCorrel
 }
 
 // Candidate-scoped reach, prong 1 (walkCandidateThreadLocals()): a leak
-// held through the leaking thread's ThreadLocalMap must be intercepted
-// with its full chain by ONE bounded walk from the Thread object, no
-// matter what the ordinary BFS backlog state is - and the walk's gates
-// must keep it off the Thread's non-thread-local fields entirely.
+// held through the leaking thread's ThreadLocalMap must be intercepted with
+// its full chain by ONE bounded walk from the Thread object, and the gates
+// must keep it off the Thread's non-ThreadLocalMap fields entirely.
 TEST_F(ReferenceChainsBfsTest, ThreadWalkDescendsOnlyThreadLocalMapAndInterceptsLeak) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // The classes descendFromAnchor()'s resolutions look up by FindClass
-    // name (see registerClassForFindClass' own comment) + the scripted
-    // graph's own classes. resolveLoadedClasses() below tags every
-    // registered class, which is what makes the class-tag gates resolvable.
+    // resolveLoadedClasses() below tags every registered class, which is
+    // what makes the class-tag gates resolvable.
     void *threadCls = (void *)0x3001, *tlmapCls = (void *)0x3002,
          *loaderCls = (void *)0x3003, *holderCls = (void *)0x3004,
          *chunkCls = (void *)0x3005;
@@ -5773,9 +5019,8 @@ TEST_F(ReferenceChainsBfsTest, ThreadWalkDescendsOnlyThreadLocalMapAndIntercepts
     const jlong leak_tag = ReferenceChainsTestAccessor::leakTagBase();
     node_tags[leakChunk] = leak_tag;
 
-    // Topological order (mock_FollowReferences replays edges in script
-    // order, expanding only refs the production callback said to descend
-    // into).
+    // Topological order: edges replay in script order, expanding only refs
+    // the production callback said to descend into.
     script = {
         {JVMTI_HEAP_REFERENCE_FIELD, threadNode, tlmapNode,
          /*class_idx=*/-1},
@@ -5794,11 +5039,10 @@ TEST_F(ReferenceChainsBfsTest, ThreadWalkDescendsOnlyThreadLocalMapAndIntercepts
     script[3].class_idx = loaderIdx;
 
     // The first thread walks the REUSE path: its Thread object is already
-    // admitted (root-attached THREAD entry + JVMTI tag) exactly as it is
-    // in production after the first walk pass or root enumeration. The
-    // mock keeps the scripted tag array (node_tags, what callbacks see as
-    // tag_ptr) separate from the pointer-keyed tag map (what GetTag/SetTag
-    // see), so the pre-anchored tag must be mirrored into both.
+    // admitted (root-attached THREAD entry + JVMTI tag). The mock keeps
+    // node_tags (what callbacks see as tag_ptr) separate from the
+    // pointer-keyed tag map (what GetTag/SetTag see), so the pre-anchored
+    // tag must be mirrored into both.
     FrontierTable *frontier = tracker->frontierTable();
     jlong anchor_tag =
         tracker->tagObject(&mock_jvmti,
@@ -5811,8 +5055,7 @@ TEST_F(ReferenceChainsBfsTest, ThreadWalkDescendsOnlyThreadLocalMapAndIntercepts
 
     // Two candidate slots, two qualifying tids: tid 777's thread is
     // pre-anchored (reuse path), tid 778's is untagged (fresh-admission
-    // path - GetObjectClass + tagObject + insert, the path a never-walked
-    // thread takes in production).
+    // path).
     jint tids0[] = {777};
     jint tids1[] = {778};
     ReferenceChainsTestAccessor::seedCandidateSlotForTest(
@@ -5829,8 +5072,7 @@ TEST_F(ReferenceChainsBfsTest, ThreadWalkDescendsOnlyThreadLocalMapAndIntercepts
         &mock_jvmti, &mock_jni, 1000, &edges);
 
     // The ThreadLocalMap-held chain was admitted end-to-end and the
-    // leak-tagged chunk was intercepted (tag replaced by a frontier tag,
-    // leak tag preserved for correlation).
+    // leak-tagged chunk intercepted.
     jlong thread_ftag = anchor_tag;
     jlong tlmap_ftag = tags_ever_assigned[tlmapNode];
     ASSERT_GT(tlmap_ftag, 0) << "anchor gate did not descend into ThreadLocalMap";
@@ -5842,8 +5084,8 @@ TEST_F(ReferenceChainsBfsTest, ThreadWalkDescendsOnlyThreadLocalMapAndIntercepts
     ASSERT_GT(chunk_ftag, 0);
     EXPECT_EQ(leak_tag, ReferenceChainsTestAccessor::frontierLeakTag(chunk_ftag));
 
-    // Chain shape: Thread (root-attached, THREAD root kind) -> ThreadLocalMap
-    // -> holder -> chunk.
+    // Chain shape: Thread (root-attached, THREAD root kind) ->
+    // ThreadLocalMap -> holder -> chunk.
     FrontierEntry thread_entry{};
     ASSERT_TRUE(frontier->lookup(thread_ftag, &thread_entry));
     EXPECT_EQ(0, thread_entry.parent_tag);
@@ -5854,17 +5096,16 @@ TEST_F(ReferenceChainsBfsTest, ThreadWalkDescendsOnlyThreadLocalMapAndIntercepts
     EXPECT_EQ(3u, chunk_entry.depth);
 
     // The gates kept the walk off the metadata branches: neither the
-    // Thread's own contextClassLoader edge (anchor gate) nor a ClassLoader
-    // below ThreadLocalMap (no-descend gate) was admitted.
+    // contextClassLoader edge (anchor gate) nor a ClassLoader below
+    // ThreadLocalMap (no-descend gate) was admitted.
     EXPECT_EQ(0, tags_ever_assigned[loaderNode])
         << "anchor gate must not admit the Thread's non-ThreadLocalMap fields";
     EXPECT_EQ(0, tags_ever_assigned[loaderNode2])
         << "no-descend gate must not admit fat-metadata classes below the anchor";
 
-    // The second thread took the fresh-admission path (no prior tag/entry):
-    // its Thread object was admitted root-attached with the THREAD root
-    // kind. (Its scripted tag array entry was never set, so the minted tag
-    // is read back through the pointer-keyed tag map via getTag.)
+    // The second thread took the fresh-admission path: admitted
+    // root-attached with the THREAD root kind. (Its scripted tag entry was
+    // never set, so the minted tag is read back via getTag.)
     jlong thread2_ftag = ReferenceChainsTestAccessor::getTagForTest(
         &mock_jvmti, reinterpret_cast<jobject>(&node_tags[threadNode2]));
     ASSERT_GT(thread2_ftag, 0) << "fresh thread anchor was never admitted";
@@ -5877,11 +5118,10 @@ TEST_F(ReferenceChainsBfsTest, ThreadWalkDescendsOnlyThreadLocalMapAndIntercepts
 }
 
 // unregisterThreadObject() must defer the global-ref deletion to
-// releaseEndedThreadRefs(): walkCandidateThreadLocals() copies the jobject
-// out of _thread_objects under _thread_objects_lock, releases the lock, and
-// can still be using it as a FollowReferences anchor when a concurrent
-// ThreadEnd erases the entry - deleting there would be JNI use-after-free
-// (see _thread_refs_pending_delete's comment).
+// releaseEndedThreadRefs(): the walk copies the jobject out under
+// _thread_objects_lock and can still be using it as a FollowReferences
+// anchor when a concurrent ThreadEnd erases the entry - deleting there
+// would be JNI use-after-free.
 TEST_F(ReferenceChainsBfsTest, ThreadRefUnregisterDefersGlobalRefDeletion) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
@@ -5895,8 +5135,8 @@ TEST_F(ReferenceChainsBfsTest, ThreadRefUnregisterDefersGlobalRefDeletion) {
     // The erasing side only enqueues - no DeleteGlobalRef yet.
     EXPECT_EQ(0, global_refs_deleted_);
 
-    // The drain deletes exactly the queued ref, and draining an empty list
-    // is a no-op.
+    // The drain deletes exactly the queued ref; draining an empty list is
+    // a no-op.
     tracker->releaseEndedThreadRefs(&mock_jni);
     EXPECT_EQ(1, global_refs_deleted_);
     tracker->releaseEndedThreadRefs(&mock_jni);
@@ -5907,10 +5147,8 @@ TEST_F(ReferenceChainsBfsTest, ThreadRefUnregisterDefersGlobalRefDeletion) {
 
 // Candidate-scoped reach, prong 2 (collectStaticFieldAnchorsForRotation()/
 // walkStaticFieldAnchors()): the collector selects exactly the root-attached
-// static-holder entries with a wrapping cursor, and the walk reaches a leak
-// held 3-4 hops inside a static collection in one bounded call - the shape
-// the one-hop Tier-2 rotation demonstrably cannot reach from an un-expanded
-// FRONTIER holder on a rising heap (pod rounds 5-6).
+// static-holder entries with a wrapping cursor; the walk reaches a leak 3-4
+// hops inside a static collection in one bounded call.
 TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolders) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -5936,13 +5174,11 @@ TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolder
         {JVMTI_HEAP_REFERENCE_FIELD, entryNode, leakChunk, chunk},
     };
 
-    // Seed the frontier exactly as the static sweep admits a static field's
-    // value: root-attached, STATIC_FIELD root kind, FRONTIER state. Plus a
-    // second durable-root anchor (JNI_GLOBAL - the pod-round-7 filter
-    // extension), a TRANSIENT-root decoy the collector must skip, and a
-    // chain-attached child (table entries only - deliberately NOT mirrored
-    // into node_tags, so the walk below freshly admits those nodes instead
-    // of tripping ALREADY_ADMITTED on stale scripted tags).
+    // Seed the frontier as the static sweep would: root-attached
+    // STATIC_FIELD holder, a second durable-root anchor (JNI_GLOBAL), a
+    // transient-root decoy the collector must skip, and a chain-attached
+    // child (NOT mirrored into node_tags, so the walk freshly admits them
+    // instead of tripping ALREADY_ADMITTED).
     FrontierTable *frontier = tracker->frontierTable();
     node_tags[holderNode] = 101; // mock_GetObjectsWithTags' resolvable tag
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
@@ -5964,16 +5200,15 @@ TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolder
     std::vector<jlong> selected =
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
             4);
-    // Both DURABLE root kinds are selected (STATIC_FIELD 101, JNI_GLOBAL
-    // 104, in cursor/tag order); the transient-root decoy and the child are
-    // not. The walk below drives only 101 (the resolvable node).
+    // Both DURABLE root kinds are selected (in cursor/tag order); the
+    // transient decoy and the child are not. The walk drives only 101.
     ASSERT_EQ(2u, selected.size());
     EXPECT_EQ(101, selected[0]);
     EXPECT_EQ(104, selected[1]);
     std::vector<jlong> walk_selected = {selected[0]};
 
-    // The static anchor's whole internal structure is admitted by one
-    // bounded walk, intercepting the leak tag at depth 3 below the holder.
+    // The whole internal structure is admitted by one bounded walk,
+    // intercepting the leak tag at depth 3 below the holder.
     int edges = 0;
     ReferenceChainsTestAccessor::walkStaticFieldAnchorsForTest(
         &mock_jvmti, &mock_jni, walk_selected, 1000, &edges);
@@ -5993,13 +5228,9 @@ TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolder
     tracker->stop();
 }
 
-// Round-14 tiered selection: a container-shaped anchor (its own class
-// implements Collection/Map - the LEAK_BUFFER wrapper shape) admitted at a
-// LATE index position must leap the queue of ~28k other-tier anchors (the
-// round-13 hotdog measurement: admission-order selection put the leak
-// holder at position ~12-21k against ~4k walk coverage per search -
-// deterministically unreachable). Also the tier-0 guarantee: a leak-tagged
-// anchor leads the walk order unconditionally.
+// Tiered selection: a container-shaped anchor (its class implements
+// Collection/Map) admitted at a LATE index position must leap the ~28k
+// other-tier anchors; a leak-tagged anchor (tier 0) leads unconditionally.
 TEST_F(ReferenceChainsBfsTest, ContainerAnchorLeapsQueueAcrossLargeIndex) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -6016,8 +5247,8 @@ TEST_F(ReferenceChainsBfsTest, ContainerAnchorLeapsQueueAcrossLargeIndex) {
             JVMTI_HEAP_REFERENCE_STATIC_FIELD));
         ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
             tag, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
-        // Containers only at late positions 24000..24003 - buried behind
-        // 24k other-tier anchors under any admission-order cursor.
+        // Containers only at late positions, buried behind 24k other-tier
+        // anchors under any admission-order cursor.
         bool container = (i >= 24000 && i <= 24003);
         ReferenceChainsTestAccessor::primeClassShapeForTest(class_tag,
                                                              container);
@@ -6041,7 +5272,7 @@ TEST_F(ReferenceChainsBfsTest, ContainerAnchorLeapsQueueAcrossLargeIndex) {
     EXPECT_EQ(leak_anchor, selected[0])
         << "the leak-tagged anchor (tier 0) must lead the walk order";
     // The four container anchors are selected in this FIRST call despite
-    // positions 24000+ (tags 24100-24103).
+    // their late positions.
     for (jlong t : {24100, 24101, 24102, 24103}) {
         EXPECT_NE(std::find(selected.begin(), selected.end(), t), selected.end())
             << "container anchor " << t
@@ -6055,16 +5286,11 @@ TEST_F(ReferenceChainsBfsTest, ContainerAnchorLeapsQueueAcrossLargeIndex) {
     tracker->stop();
 }
 
-// Round-15 fresh-admission priority: the hotdog wrapper is admitted
-// LATE in a search (its holder class sits at sweep index 24627 of 33270,
-// so admission lands at the anchor-index TAIL) - behind the whole fair
-// container backlog measured at 1633 entries against 44-75-pass search
-// lifetimes (the fair container cursor would reach it at pass ~102+,
-// after the search is dead). A container admitted since the last
-// collector call must be walked in the very NEXT call, ahead of the fair
-// backlog; an unclassified fresh anchor rides the same lane (the wrapper
-// admits one pass before reconcileAnchorClassShapes can classify its
-// class), while a fresh NON-container waits in the other tier as before.
+// Fresh-admission priority: a container admitted since the last collector
+// call must be walked in the very NEXT call, ahead of the fair backlog; an
+// unclassified fresh anchor rides the same lane (classification lags one
+// pass behind admission), while a fresh NON-container waits in the other
+// tier.
 TEST_F(ReferenceChainsBfsTest, FreshContainerWalkedBeforeFairBacklog) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -6084,19 +5310,17 @@ TEST_F(ReferenceChainsBfsTest, FreshContainerWalkedBeforeFairBacklog) {
             tag, 700000 + i, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
         ReferenceChainsTestAccessor::primeClassShapeForTest(700000 + i, true);
     }
-    // First collector call: all 200 anchors are fresh (nothing has had
-    // a first look yet), the lane keeps 16 and the rest spend their
-    // first look (they fall back to the fair container tier).
+    // First collector call: all 200 anchors are fresh; the lane keeps 16
+    // and the rest spend their first look (falling back to the fair tier).
     std::vector<jlong> first =
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
             16);
     ASSERT_EQ(16u, first.size()) << "200 eligible containers at a 16 budget";
 
     // The late admission wave: a wrapper-class container at the index
-    // tail, a fresh classified NON-container (a fresh String static - it
-    // must NOT ride the fresh lane), and a fresh unclassified anchor (a
-    // genuinely new class - it must ride the lane, so the classification
-    // lag cannot lose the wrapper's fresh window).
+    // tail, a fresh classified NON-container (must NOT ride the fresh
+    // lane), and a fresh unclassified anchor (must ride the lane, so the
+    // classification lag cannot lose the wrapper's fresh window).
     const jlong wrapper_tag = 500 + kBacklog;
     const jlong fresh_string_tag = 500 + kBacklog + 1;
     const jlong fresh_unknown_tag = 500 + kBacklog + 2;
@@ -6131,11 +5355,10 @@ TEST_F(ReferenceChainsBfsTest, FreshContainerWalkedBeforeFairBacklog) {
               second.end())
         << "a fresh NON-container stays in the other tier - the fresh lane "
            "is the container lane, or fresh Strings would flood it";
-    // The fair container lap still gets the leftover budget. Call 1's
-    // fresh picks (500-515) spent the whole budget, so the fair cursor
-    // never advanced - call 2's fair picks start at tag 500 again (a
-    // benign one-call overlap: walks are idempotent, and it only
-    // happens when fresh and fair coincide at a lap boundary).
+    // The fair container lap still gets the leftover budget. Call 1's fresh
+    // picks spent the whole budget, so the fair cursor never advanced -
+    // call 2's fair picks start at tag 500 again (benign: walks are
+    // idempotent, and only at a fresh/fair lap-boundary coincidence).
     EXPECT_NE(std::find(second.begin(), second.end(), (jlong)500),
               second.end())
         << "the fair container lap must still advance with the leftover "
@@ -6146,10 +5369,9 @@ TEST_F(ReferenceChainsBfsTest, FreshContainerWalkedBeforeFairBacklog) {
                                      }))
         << "16 budget - 2 fresh picks = 14 fair-container picks";
 
-    // And the dropped fresh entries from call 1 (516-699 spent their
-    // first look) are still covered by the fair tier: a third call with
-    // no new admits must keep advancing the fair container cursor from
-    // wherever call 2 left it, not re-drain anything.
+    // The dropped fresh entries from call 1 are still covered by the fair
+    // tier: a third call keeps advancing the fair cursor from wherever
+    // call 2 left it.
     std::vector<jlong> third =
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
             16);
@@ -6162,11 +5384,9 @@ TEST_F(ReferenceChainsBfsTest, FreshContainerWalkedBeforeFairBacklog) {
     tracker->stop();
 }
 
-// Round-14 tier fairness: the other tier (everything not leak-tagged, not
-// container-shaped) still reaches full coverage across wraps - a 40-anchor
-// tier at a 16 budget covers all 40 in exactly 3 calls with no duplicates
-// within a call. Containers must not permanently starve the rest of the
-// index.
+// Tier fairness: the other tier (not leak-tagged, not container-shaped)
+// reaches full coverage across wraps; containers must not permanently
+// starve the rest of the index.
 TEST_F(ReferenceChainsBfsTest, AnchorOtherTierFairCoverageAcrossWraps) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -6209,14 +5429,11 @@ TEST_F(ReferenceChainsBfsTest, AnchorOtherTierFairCoverageAcrossWraps) {
     tracker->stop();
 }
 
-// Round-13/14 restart hygiene: discovered-instance tags are FRONTIER tags;
+// Restart hygiene: discovered-instance tags are FRONTIER tags;
 // restartSearch() resets the frontier table and _next_tag=1, so any
-// surviving discovered slot either fails reconstructChain (observed on-pod:
-// 'buildChainEvent failed ... reconstructChain failed for target_tag=8851')
-// or, worse, resolves into a live new-search entry and emits a chain event
-// for the WRONG OBJECT (the likely origin of the earlier noise-[B event).
-// restartSearch() must clear them, along with the anchor index and its
-// parallel arrays/cursors.
+// surviving discovered slot either fails reconstructChain or resolves into
+// a live new-search entry and emits a chain for the WRONG OBJECT - it must
+// be cleared, along with the anchor index and parallel arrays/cursors.
 TEST_F(ReferenceChainsBfsTest, RestartSearchClearsDiscoveredInstanceTags) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -6249,14 +5466,7 @@ TEST_F(ReferenceChainsBfsTest, RestartSearchClearsDiscoveredInstanceTags) {
     tracker->stop();
 }
 
-// Round-19 (pod 289f8 — three JVMs of "canary search, 0/1 candidates found"
-// while leak-tagged instances WERE intercepted and chains re-emitted): the
-// marker->leak-tag design migration never updated the found criterion.
-// _candidate_found_bits was set ONLY in heapReferenceCallback()'s marker-tag
-// block, and markers are never set under leak tags ("no marker tags — using
-// leak tags now"), so the chase was structurally unresolvable and every
-// search ended via frontier-cap/no-progress instead of "all candidates
-// found". The leak-tag-world criterion: a leak-tag-target chain
+// The leak-tag-world found criterion: a leak-tag-target chain
 // (target_tag >= LEAK_TAG_BASE) built for a candidate slot marks that slot
 // found and records its canary link; a noise chain (no leak tag) must NOT.
 TEST_F(ReferenceChainsBfsTest, LeakTagChainMarksCanaryFound) {
@@ -6266,16 +5476,15 @@ TEST_F(ReferenceChainsBfsTest, LeakTagChainMarksCanaryFound) {
     ASSERT_FALSE(tracker->start(args));
     FrontierTable *frontier = tracker->frontierTable();
 
-    // Slot 0: candidate klass 7 whose discovered instance carries a leak tag
-    // (entry.leak_tag set — the shape a walk + tagLeakInstances correlation
-    // produces; target_tag becomes the leak tag). Slot 1: candidate klass 9
-    // with a plain noise discovered instance, no leak tag.
+    // Slot 0: candidate klass 7 whose discovered instance carries a leak
+    // tag (target_tag becomes the leak tag). Slot 1: klass 9 with a plain
+    // noise discovered instance, no leak tag.
     ReferenceChainsTestAccessor::setCandidateCountForTest(2);
     ReferenceChainsTestAccessor::setCandidateKlassIdForTest(0, 7);
     ReferenceChainsTestAccessor::setCandidateKlassIdForTest(1, 9);
-    // depth=1 at a durable STATIC_FIELD root (root_kind 8) so the retention
-    // filter (suppressChainEvent: depth==0, or depth==1 at a transient
-    // root) keeps both chains.
+    // depth=1 at a durable STATIC_FIELD root so the retention filter
+    // (suppressChainEvent: depth==0, or depth==1 at a transient root) keeps
+    // both chains.
     ASSERT_TRUE(frontier->insert(4242, 0, 7, 1, FrontierEntryState::FRONTIER,
                                  8, /*class_tag=*/0, -1, /*kind=*/0));
     frontier->setLeakTag(4242, 1073742079);
@@ -6299,14 +5508,10 @@ TEST_F(ReferenceChainsBfsTest, LeakTagChainMarksCanaryFound) {
     tracker->stop();
 }
 
-// B' push site 1 - DEMOTION TIME (find-anchor-holder-eviction / _static_anchor_fifo):
-// when improveChain() replaces a root-attached durable (STATIC_FIELD/
-// JNI_GLOBAL) entry with a deeper chain-attached path, the entry is leaving
-// the anchor tier's eligible population at exactly that moment - the push
-// must fire right there. This matters because the sweep gate only re-laps
-// while the class count is in flux, so a post-lap demotion would otherwise
-// never see another static edge onto the entry. Driven through the REAL
-// expandFrontier batch walk (mock FollowReferences + real heapReferenceCallback).
+// At-risk FIFO push site 1 - DEMOTION: when improveChain() replaces a
+// root-attached durable (STATIC_FIELD/JNI_GLOBAL) entry with a deeper
+// chain-attached path, the push must fire exactly there - the sweep gate
+// only re-laps while the class count is in flux.
 TEST_F(ReferenceChainsBfsTest, DemotionPushFiresWhenImproveChainEvictsRootAttachedStatic) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -6321,10 +5526,9 @@ TEST_F(ReferenceChainsBfsTest, DemotionPushFiresWhenImproveChainEvictsRootAttach
         {JVMTI_HEAP_REFERENCE_FIELD, parentNode, holderNode, -1},
     };
 
-    // Seed exactly the pre-demotion shape: holder root-attached STATIC
+    // Seed the pre-demotion shape: holder root-attached STATIC
     // (anchor-eligible), parent a root-attached frontier object whose
-    // expansion delivers the deeper chain edge. node_tags make both
-    // resolvable by mock_GetObjectsWithTags for the batch walk.
+    // expansion delivers the deeper chain edge.
     FrontierTable *frontier = tracker->frontierTable();
     node_tags[holderNode] = 105;
     node_tags[parentNode] = 104;
@@ -6339,9 +5543,8 @@ TEST_F(ReferenceChainsBfsTest, DemotionPushFiresWhenImproveChainEvictsRootAttach
     int edges = 0;
     ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti, &mock_jni,
                                                         &edges);
-    // The chain edge was delivered: the holder's entry is now chain-attached
-    // (improveChain replaced the depth-0 root-attached admission), and the
-    // demotion pushed its tag into the at-risk FIFO.
+    // The chain edge was delivered: the holder's entry is now
+    // chain-attached, and the demotion pushed its tag into the FIFO.
     FrontierEntry entry{};
     ASSERT_TRUE(frontier->lookup(105, &entry));
     EXPECT_EQ(104, entry.parent_tag);
@@ -6360,12 +5563,10 @@ TEST_F(ReferenceChainsBfsTest, DemotionPushFiresWhenImproveChainEvictsRootAttach
     tracker->stop();
 }
 
-// B' push site 2 - SWEEP TIME: the static sweep's class->field edge onto an
-// already-admitted CHAIN-ATTACHED entry (the admission-order eviction shape:
-// born as a non-root child, never root-attached at all) must feed the FIFO.
-// Driven through a full runPass so the real admitStaticFieldRoots sweep (and
-// its FollowReferences) delivers the edge, and the rotation phase of the
-// SAME pass drains the FIFO - the push counter survives the drain.
+// At-risk FIFO push site 2 - SWEEP TIME: the static sweep's class->field
+// edge onto an already-admitted CHAIN-ATTACHED entry (born as a non-root
+// child) must feed the FIFO. Driven through a full runPass so the sweep
+// delivers the edge and the rotation phase of the same pass drains it.
 TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=100"));
@@ -6374,31 +5575,28 @@ TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder
 
     int classNode = addNode();
     int holderNode = addNode();
-    // A child reachable ONLY from the holder: nothing in the scripted
-    // graph walks holderNode except the FIFO-drained anchor walk, so the
-    // child's admission after runPass is the end-to-end evidence that the
-    // sweep pushed the holder, the rotation phase drained it, and
-    // walkStaticFieldAnchors walked it.
+    // A child reachable ONLY from the holder: the child's admission after
+    // runPass is the end-to-end evidence that the sweep pushed the holder,
+    // the rotation drained it, and walkStaticFieldAnchors walked it.
     int holderChildNode = addNode();
     addClass((void *)&node_tags[classNode], "Lcom/rc/statics/ChainBornHolder;");
 
     script = {
         // Only the sweep's static edge onto the holder, plus the holder's
-        // own child edge for the anchor walk to admit: nothing else reaches
-        // holderNode or holderChildNode, so the only possible push is the
-        // static-edge-onto-chain-attached site.
+        // own child edge for the anchor walk - the only possible push is
+        // the static-edge-onto-chain-attached site.
         {JVMTI_HEAP_REFERENCE_STATIC_FIELD, classNode, holderNode, -1},
         {JVMTI_HEAP_REFERENCE_FIELD, holderNode, holderChildNode, -1},
     };
 
-    // Seed the born-chain-attached shape the eviction leaves: holder already
-    // a non-root child (parent 104, depth 1). The sweep's static edge below
-    // hits maybeUpgradeRootAttachedRootKind's documented parent_tag != 0
-    // refusal and must fall into the B' push instead.
+    // Seed the born-chain-attached shape: holder already a non-root child
+    // (parent 104, depth 1). The sweep's static edge hits
+    // maybeUpgradeRootAttachedRootKind's parent_tag != 0 refusal and falls
+    // into the FIFO push instead.
     FrontierTable *frontier = tracker->frontierTable();
     node_tags[holderNode] = 105;
-    // The child is untagged (0): the anchor walk's admission assigns it a
-    // fresh frontier tag, observable via node_tags after the pass.
+    // The child is untagged: the anchor walk's admission assigns it a fresh
+    // frontier tag, observable via node_tags after the pass.
     ASSERT_EQ(0, node_tags[holderChildNode]);
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 105, 104, 1, FrontierEntryState::FRONTIER, 0));
@@ -6409,17 +5607,13 @@ TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder
     bool truncated = true;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
 
-    // The rotation phase of the same pass drained the pushed tag into the
-    // anchor walk, and the walk admitted the holder's child - the push
-    // itself left no residue in the FIFO (drained empty) and never
-    // re-attributed the holder's entry (re-rooting is the documented
-    // refusal that motivated the FIFO in the first place). The child's
-    // admission is observed via tags_ever_assigned rather than node_tags:
-    // the frontier drained empty and the search COMPLETED in this same
-    // pass, so releaseSearchTags() has already cleared every live JVMTI
-    // tag (including the child's and the holder's) by the time runPass
-    // returns - the frontier table's own records survive that, the tag
-    // map does not.
+    // The rotation phase drained the push into the anchor walk, which
+    // admitted the holder's child; the FIFO drained empty and the holder's
+    // entry was never re-attributed. The child's admission is observed via
+    // tags_ever_assigned rather than node_tags: the search COMPLETED in
+    // this pass, so releaseSearchTags() cleared every live JVMTI tag before
+    // runPass returned - the frontier table's records survive that, the
+    // tag map does not.
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
     jlong childTag = tags_ever_assigned[holderChildNode];
     ASSERT_GT(childTag, 0) << "the FIFO-drained anchor walk never admitted "
@@ -6428,8 +5622,7 @@ TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder
     ASSERT_TRUE(frontier->lookup(childTag, &childEntry));
     EXPECT_EQ(105, childEntry.parent_tag);
     EXPECT_EQ(2u, childEntry.depth);
-    // The holder's entry is untouched by the push - the B' feed records the
-    // at-risk shape, it never re-attributes the entry.
+    // The push records the at-risk shape; it never re-attributes the entry.
     FrontierEntry entry{};
     ASSERT_TRUE(frontier->lookup(105, &entry));
     EXPECT_EQ(104, entry.parent_tag);
@@ -6438,12 +5631,10 @@ TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder
     tracker->stop();
 }
 
-// B' mechanics: a chain-attached holder drained from the at-risk FIFO is
-// descend-walked and intercepts a leak chunk 3 hops below it - the repair
-// for the population the root-attached collector demonstrably cannot
-// select (the negative control below). Mirrors
-// StaticAnchorRotationWalksRootAttachedStaticHolders's walk-phase shape,
-// but with the holder chain-attached and FIFO-sourced.
+// At-risk FIFO mechanics: a chain-attached holder drained from the FIFO is
+// descend-walked and intercepts a leak chunk 3 hops below it - repairing the
+// population the root-attached collector cannot select (negative control
+// below).
 TEST_F(ReferenceChainsBfsTest, AtRiskAnchorFifoDrainAndWalkIntercept) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -6462,43 +5653,41 @@ TEST_F(ReferenceChainsBfsTest, AtRiskAnchorFifoDrainAndWalkIntercept) {
     const jlong leak_tag = ReferenceChainsTestAccessor::leakTagBase();
     node_tags[leakChunk] = leak_tag;
 
-    // Chain: parent -> holder -> table -> entry -> leak chunk. Only the
-    // holder's own subtree is scripted for the walk below (the direct
-    // walkStaticAnchors drive never runs the roots/expand phases).
+    // Chain: parent -> holder -> table -> entry -> leak chunk; only the
+    // holder's subtree is scripted (the direct drive never runs the roots/
+    // expand phases).
     script = {
         {JVMTI_HEAP_REFERENCE_FIELD, holderNode, tableNode, -1},
         {JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT, tableNode, entryNode, -1},
         {JVMTI_HEAP_REFERENCE_FIELD, entryNode, leakChunk, chunk},
     };
 
-    // Seed the holder exactly as the eviction leaves it: chain-attached
-    // (parent_tag = 104, depth 1, no root_kind). node_tags[holderNode] = 105
-    // makes the tag resolvable by mock_GetObjectsWithTags, exactly like the
-    // root-attached test's own 101 mapping.
+    // Seed the holder as the eviction leaves it: chain-attached (parent_tag
+    // = 104, depth 1, no root_kind); node_tags makes the tag resolvable.
     FrontierTable *frontier = tracker->frontierTable();
     node_tags[holderNode] = 105;
     // root_kind = 0: the entry is chain-attached, and a non-root entry's
-    // edge kind is not recorded (FrontierEntry::root_kind's own comment).
+    // edge kind is not recorded.
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 105, 104, 1, FrontierEntryState::FRONTIER, 0));
-    // The chain's root: TRANSIENT (stack local), so the collector's durable
-    // root-kind filter skips it too - the whole table is un-selectable.
+    // The chain's root is TRANSIENT (stack local), so the collector's
+    // durable root-kind filter skips it too - the whole table is
+    // un-selectable.
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
         JVMTI_HEAP_REFERENCE_STACK_LOCAL));
 
-    // Negative control: the root-attached collector selects NOTHING from a
-    // table holding only a chain-attached holder and a transient root -
-    // the pre-B' behavior that stranded the dual-reachable population.
+    // Negative control: the root-attached collector selects NOTHING here -
+    // the population only the FIFO can repair.
     std::vector<jlong> selected =
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
     ASSERT_TRUE(selected.empty());
 
-    // B': push + drain + walk reaches what the collector cannot.
+    // FIFO: push + drain + walk reaches what the collector cannot.
     ReferenceChainsTestAccessor::pushStaticAnchorFifoForTest(105, 28366);
     std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> drained;
     // 16 = ReferenceChainTracker::STATIC_ANCHOR_FIFO_DRAIN (private), the
-    // same per-pass drain cap runPassManualWalk() uses.
+    // per-pass drain cap.
     ASSERT_EQ(1, ReferenceChainsTestAccessor::drainStaticAnchorFifoForTest(
                        16, drained));
     ASSERT_EQ(1u, drained.size());
@@ -6531,11 +5720,10 @@ TEST_F(ReferenceChainsBfsTest, AtRiskAnchorFifoDrainAndWalkIntercept) {
     tracker->stop();
 }
 
-// B' requeue mechanics: a truncated anchor walk reports exactly the
-// RESOLVED-but-unwalked tags, and requeueStaticAnchorFifoFront() restores
-// them to the FIFO front in order with a consistent membership set - so
-// an at-risk holder that lost its budget turn keeps it for the next pass
-// instead of waiting for the next sweep lap.
+// Requeue mechanics: a truncated anchor walk reports exactly the
+// resolved-but-unwalked tags, and requeueStaticAnchorFifoFront() restores
+// them to the FIFO front - an at-risk holder that lost its budget turn keeps
+// it for the next pass.
 TEST_F(ReferenceChainsBfsTest, TruncatedAnchorWalkRequeuesUnwalkedFifoTags) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -6551,10 +5739,9 @@ TEST_F(ReferenceChainsBfsTest, TruncatedAnchorWalkRequeuesUnwalkedFifoTags) {
     int entryNode = addNode();
 
     // Holder A's subtree is deep enough that a budget of 2 truncates the
-    // walk after A (two edges admitted, budget exhausted on the descend);
-    // holder B then must come back unwalked. B has no scripted subtree -
-    // its walk would be a no-op anyway, which is exactly what makes the
-    // unwalked report attributable to the truncation, not to content.
+    // walk after A; holder B must come back unwalked. B has no scripted
+    // subtree, which makes the unwalked report attributable to the
+    // truncation, not to content.
     script = {
         {JVMTI_HEAP_REFERENCE_FIELD, holderANode, tableNode, -1},
         {JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT, tableNode, entryNode, -1},
@@ -6594,9 +5781,9 @@ TEST_F(ReferenceChainsBfsTest, TruncatedAnchorWalkRequeuesUnwalkedFifoTags) {
     EXPECT_NE(0, tags_ever_assigned[tableNode])
         << "holder A's walk never ran - the truncation happened too early";
 
-    // Requeue exactly what the caller-side filter in runPassManualWalk()
-    // would requeue (here: everything unwalked, both FIFO-sourced), keeping
-    // the drained entries' klass so the per-class occupancy is restored.
+    // Requeue what runPassManualWalk()'s caller-side filter would requeue
+    // (everything unwalked), keeping the drained entries' klass so the
+    // per-class occupancy is restored.
     std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> requeue;
     for (jlong unwalked_tag : unwalked) {
         for (const auto &at_risk : drained) {
@@ -6619,21 +5806,13 @@ TEST_F(ReferenceChainsBfsTest, TruncatedAnchorWalkRequeuesUnwalkedFifoTags) {
     tracker->stop();
 }
 
-// Round 16, fix A: a this-field self-edge is REAL in the heap - every
+// A this-field self-edge is REAL in the heap - every
 // java.util.Collections$Synchronized* holder carries mutex == this - so
-// walking such a holder's own subtree (rotation anchor walk or BFS descent)
-// re-reports the holder as its own child through that field. On the pod
-// (round-15 evidence, ev-leaktag-onpod-round15-results) that edge's
-// improveChain() "improvement" (depth = holder.depth + 1 > 0) overwrote the
-// LEAK_BUFFER wrapper's root-attached entry with a parent==its-own-tag
-// chain-attached one (probe: parent==tag root_kind=0 referrer_klass=<its own
-// class>) - collector-invisible ever after, because the entry left the
-// parent_tag == 0 population just as B' got cap-pinned by floods. The guard
-// refuses the self-parent (and counts it), so the entry keeps its
-// root-attached shape and stays collector-selectable. Driven through the
-// real expandFrontier batch walk, the same harness as the demotion-push
-// test above it - which also keeps proving the LEGIT deeper-path demotion
-// still works (that test must keep passing).
+// walking such a holder's own subtree re-reports the holder as its own
+// child. improveChain()'s "improvement" (depth = holder.depth + 1 > 0)
+// would overwrite the root-attached entry with a parent==its-own-tag
+// chain-attached one - collector-invisible ever after. The guard refuses
+// the self-parent, so the entry stays collector-selectable.
 TEST_F(ReferenceChainsBfsTest,
        SelfEdgeFieldDoesNotDemoteRootAttachedStaticHolder) {
     Arguments args;
@@ -6646,16 +5825,14 @@ TEST_F(ReferenceChainsBfsTest,
         addClass(holderCls, "Ljava/util/Collections$SynchronizedRandomAccessList;");
     int holderNode = addNode();
 
-    // The holder's own self-edge: referrer == referee == holder (the
-    // mutex == this field), exactly as its rotation walk re-reports it.
+    // The holder's own self-edge: referrer == referee == holder.
     script = {
         {JVMTI_HEAP_REFERENCE_FIELD, holderNode, holderNode, holderClsIdx},
     };
 
-    // Seed the pre-demotion shape: holder root-attached STATIC_FIELD
-    // (anchor-eligible), admitted at depth 0. The batch walk from its own
-    // pending-expand slot delivers the self-edge with the holder as BOTH
-    // referrer and referee.
+    // Seed the pre-demotion shape: holder root-attached STATIC_FIELD at
+    // depth 0. The batch walk from its pending-expand slot delivers the
+    // self-edge with the holder as BOTH referrer and referee.
     FrontierTable *frontier = tracker->frontierTable();
     node_tags[holderNode] = 105;
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
@@ -6664,15 +5841,14 @@ TEST_F(ReferenceChainsBfsTest,
     ReferenceChainsTestAccessor::pushPendingExpandForTest(105);
 
     // A delivered self-edge trips BOTH sibling guards: improveChain refuses,
-    // and the already-admitted block's else-if then offers the same
-    // self-parent to reparentToDurableRoot, which refuses too.
+    // and the already-admitted block then offers the same self-parent to
+    // reparentToDurableRoot, which refuses too.
     int edges = 0;
     ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti, &mock_jni,
                                                         &edges);
 
     // The self-edge was delivered and refused: the entry keeps its
-    // root-attached shape (the collector's parent_tag == 0 eligibility)
-    // and no demotion push fired.
+    // root-attached shape; no demotion push fired.
     FrontierEntry entry{};
     ASSERT_TRUE(frontier->lookup(105, &entry));
     EXPECT_EQ(0, entry.parent_tag);
@@ -6688,17 +5864,12 @@ TEST_F(ReferenceChainsBfsTest,
     tracker->stop();
 }
 
-// Round 16, fix B (pod round-15 measurement, ev-leaktag-onpod-round15-
-// results): the B' at-risk FIFO sat cap-pinned at 1024 because three
-// classes flooded it (klass 1: 1396 pushes, klass 215: 1063, klass 1733:
-// 988+), so the LEAK_BUFFER wrapper's pushes (klass 28366) were dropped at
-// the cap check and the lane designed to repair exactly its demotion never
-// carried it. The per-class quota keeps one class from owning the lane: at
-// 64 per class, a full 1024-entry FIFO necessarily holds >= 16 distinct
-// classes, the flood's excess is dropped and counted, and the wrapper's
-// fresh-class push lands. Occupancy is maintained exactly across push /
-// drain / requeue, and a saturated-but-diverse FIFO drops newcomers at the
-// cap rather than evicting anyone.
+// The per-class quota keeps one class from owning the at-risk FIFO: at 64
+// per class, a full 1024-entry FIFO necessarily holds >= 16 distinct
+// classes, so a fresh class's push lands and the flood's excess is dropped
+// and counted. Occupancy is maintained across push / drain / requeue; a
+// saturated-but-diverse FIFO drops newcomers at the cap rather than
+// evicting anyone.
 TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -6715,15 +5886,14 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
                                                                  1733);
     }
     EXPECT_EQ(quota, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
-    // The flood's first `quota` tags hold their slots and the excess is
-    // dropped at the quota check - absent from the FIFO, not queued.
+    // The flood's first `quota` tags hold their slots; the excess is
+    // dropped at the quota check.
     EXPECT_TRUE(ReferenceChainsTestAccessor::staticAnchorFifoContainsForTest(
         1000 + (int)quota - 1));
     EXPECT_FALSE(ReferenceChainsTestAccessor::staticAnchorFifoContainsForTest(
         1000 + (int)quota));
 
-    // The wrapper's push (a different class) lands despite the flood -
-    // exactly the push the pod dropped.
+    // A different class's push lands despite the flood.
     ReferenceChainsTestAccessor::pushStaticAnchorFifoForTest(2000, 28366);
     EXPECT_EQ(quota + 1,
               ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
@@ -6736,9 +5906,7 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
               ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
 
     // Full drain: order preserved (flood first, newcomer last), occupancy
-    // erased with the entries - the next flood can land again (it never
-    // owns MORE than its quota, but it is not permanently locked out
-    // either).
+    // erased with the entries.
     std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> drained;
     ASSERT_EQ((int)quota + 1,
               ReferenceChainsTestAccessor::drainStaticAnchorFifoForTest(
@@ -6755,9 +5923,7 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
     EXPECT_EQ(quota, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
 
     // Partial drain at the real per-pass rate (16/pass): the flood's
-    // occupancy is 64 - 16 = 48 after the drain, so its next push lands
-    // (refilling its share as it drains - the flood self-throttles, it
-    // never starves the lane).
+    // occupancy drops to quota - 16, so its next push lands.
     std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> partial;
     ASSERT_EQ(16, ReferenceChainsTestAccessor::drainStaticAnchorFifoForTest(
                       16, partial));
@@ -6767,11 +5933,9 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
     EXPECT_TRUE(
         ReferenceChainsTestAccessor::staticAnchorFifoContainsForTest(3000));
 
-    // Requeue restores occupancy exactly: the requeued entries occupy
-    // their slots again and drain in FIFO order. Note this may put a class
-    // momentarily ABOVE its quota - the quota gates NEW pushes, it does
-    // not evict truncated-walk requeues of entries that legitimately
-    // held their slots before the drain.
+    // Requeue restores occupancy exactly, in FIFO order. This may put a
+    // class momentarily ABOVE its quota - the quota gates NEW pushes, it
+    // does not evict truncated-walk requeues.
     std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> requeue(partial.begin(),
                                                             partial.end());
     ReferenceChainsTestAccessor::requeueStaticAnchorFifoFrontForTest(requeue);
@@ -6784,10 +5948,7 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
     EXPECT_EQ(1000, after_requeue.front().tag);
 
     // Saturated-but-diverse: 16 distinct classes at exactly their quota
-    // fill the 1024 cap, and the newcomer is dropped at the CAP (legitimate
-    // saturation - no eviction), not because of any flood. The remaining
-    // count after the drains above: 64 flood entries - 16 (partial) - 16
-    // (post-requeue) + 1 (tag 3000) = quota - 16 + 1.
+    // fill the 1024 cap; the newcomer below is dropped at the CAP.
     std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> rest;
     ASSERT_EQ((int)quota - 16 + 1,
               ReferenceChainsTestAccessor::drainStaticAnchorFifoForTest(
@@ -6800,8 +5961,7 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
     }
     EXPECT_EQ(1024u,
               ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
-    // The 16 saturated classes sit exactly at their per-class quota (no
-    // quota drop is even possible at exactly `quota` pushes), so the
+    // The 16 saturated classes sit exactly at their per-class quota, so the
     // newcomer's absence below is the CAP's doing, not the quota's.
     ReferenceChainsTestAccessor::pushStaticAnchorFifoForTest(20000, 28366);
     EXPECT_EQ(1024u,
@@ -6809,10 +5969,8 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
     EXPECT_FALSE(
         ReferenceChainsTestAccessor::staticAnchorFifoContainsForTest(20000));
 
-    // Leave the FIFO drained: this test is the one that saturates it, and
-    // the reset() seam above now clears it for the next test regardless -
-    // but a drained ending also keeps this test order-independent even if
-    // that seam ever regresses again.
+    // Leave the FIFO drained: keeps this test order-independent even if
+    // the reset() seam ever regresses.
     std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> final_drain;
     ASSERT_EQ(1024,
               ReferenceChainsTestAccessor::drainStaticAnchorFifoForTest(
@@ -6821,12 +5979,10 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
     tracker->stop();
 }
 
-// Retention-edge labels (fillHopEdgeLabels()/hopLabelClassFor()): the
-// emitted chain's per-hop labels must decode the JVMTI-SPECIFICATION field
-// ordinal captured at admission - the interface offset, the superclass-chain
-// order, the interface-referrer branch - and degrade to the edge KIND on any
-// undecodable hop, never a fabricated name (the fail-safe contract: a wrong
-// numbering on an unverified JVM degrades, it does not lie).
+// Retention-edge labels (fillHopEdgeLabels()/hopLabelClassFor()): per-hop
+// labels must decode the JVMTI-spec field ordinal captured at admission and
+// degrade to the edge KIND on any undecodable hop - never a fabricated name
+// (a wrong numbering on an unverified JVM degrades, it does not lie).
 TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -6842,11 +5998,11 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     //   interface ISink                { Object CONST_A; Object CONST_B; }
     // Spec ordinal spaces (jvmtiHeapReferenceInfoField):
     //   Holder (class branch): base = ISub(1) + IBase(1) = 2 (transitive
-    //     interfaces, each once); then the superclass chain root-first:
+    //     interfaces, each once); then superclass chain root-first:
     //     base_f@2; then own fields in GetClassFields order:
     //     holder_a@3, leakList@4.
     //   ISink (interface branch): base = superinterfaces' fields = 0; own
-    //     fields in GetClassFields order: CONST_A@0, CONST_B@1.
+    //     fields: CONST_A@0, CONST_B@1.
     void *ibase = (void *)0x5001, *isub = (void *)0x5002, *base = (void *)0x5003,
          *holder = (void *)0x5004, *isink = (void *)0x5005;
     addClass(ibase, "Lcom/rc/labels/IBase;");
@@ -6856,8 +6012,7 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     addClass(isink, "Lcom/rc/labels/ISink;");
     ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
     // resolveLoadedClasses minted each class's raw (negative) tag via the
-    // mock's tag map - read them back for the decoder's tag->class lookup
-    // and the entries' referrer_class_tag values.
+    // mock's tag map - read them back for the decoder's tag->class lookup.
     auto tagOf = [&](void *k) -> jlong { return tags[k]; };
     field_decode_classes[tagOf(holder)] = holder;
     field_decode_classes[tagOf(isink)] = isink;
@@ -6876,12 +6031,11 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
              {{(void *)0x6006, "CONST_A"}, {(void *)0x6007, "CONST_B"}}};
 
     FrontierTable *frontier = tracker->frontierTable();
-    // Chain: [chunk(3)] <- Base.base_f(ordinal 0 over Base's space) <-
-    // [value2(2), class Base] <- Holder.leakList(ordinal 4, the static root
-    // edge with the declaring class as referrer) <- [static value(1), class
-    // Holder] <- [class Holder (the ROOT TYPE - buildChainEvent() appends
-    // the root-attached entry's referrer_class_tag for static-field roots)].
-    // Interior hops decode against the PARENT entry's class_tag.
+    // Chain: [chunk(3)] <- Base.base_f(ordinal 0) <- [value2(2), class
+    // Base] <- Holder.leakList(ordinal 4, the static root edge with the
+    // declaring class as referrer) <- [static value(1), class Holder] <-
+    // [class Holder, the ROOT TYPE]. Interior hops decode against the
+    // PARENT entry's class_tag.
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 1, 0, 0, FrontierEntryState::EDGE,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD,
@@ -6901,11 +6055,10 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
         &mock_jvmti, &mock_jni, /*target_tag=*/3, &event));
     ASSERT_EQ(4u, event._hops.size());
-    // Leaf first: chunk is retained via Base.base_f (parent entry's class is
-    // Base, ordinal 0 in Base's own space), then value2 via Holder's
-    // holder_a (ordinal 3 = interface offset 2 + Base's 1 + own position 0),
-    // then the static root edge's field name leakList (ordinal 4), then the
-    // root-type hop (class Holder) - the root edge itself, kind label only.
+    // Leaf first: chunk via Base.base_f (parent entry's class is Base),
+    // then value2 via Holder's holder_a (ordinal 3 = interface offset 2 +
+    // Base's 1 + own position 0), then the static root edge's leakList
+    // (ordinal 4), then the root-type hop - kind label only.
     EXPECT_EQ("base_f", event._hops[0].edge_label);
     EXPECT_EQ("holder_a", event._hops[1].edge_label);
     EXPECT_EQ("leakList", event._hops[2].edge_label);
@@ -6916,7 +6069,7 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     EXPECT_EQ((u32)expectedRootType, event._hops[3].klass_id);
 
     // Interface-referrer branch: ISink's own-field ordinals have NO
-    // superclass-chain component (base = superinterfaces' fields only).
+    // superclass-chain component.
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 4, 0, 0, FrontierEntryState::EDGE,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD,
@@ -6926,8 +6079,8 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     ReferenceChainEvent iface_event;
     ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
         &mock_jvmti, &mock_jni, /*target_tag=*/4, &iface_event));
-    // Same root-type append as above: the root-side end gains ISink (the
-    // declaring class of the static field) plus its kind-only root edge.
+    // Same root-type append: the root-side end gains ISink plus its
+    // kind-only root edge.
     ASSERT_EQ(2u, iface_event._hops.size());
     EXPECT_EQ("CONST_B", iface_event._hops[0].edge_label);
     EXPECT_EQ("static_field", iface_event._hops[1].edge_label);
@@ -6948,8 +6101,8 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
         &mock_jvmti, &mock_jni, /*target_tag=*/5, &degraded_event));
     // Both hops degrade to kind labels: the holder hop's referrer class
-    // (IBase) is deliberately unregistered from the decoder, and the
-    // appended root-type hop (IBase itself) carries no field identity.
+    // (IBase) is unregistered from the decoder, and the appended root-type
+    // hop carries no field identity.
     ASSERT_EQ(2u, degraded_event._hops.size());
     EXPECT_EQ("static_field", degraded_event._hops[0].edge_label);
     EXPECT_EQ("static_field", degraded_event._hops[1].edge_label);
@@ -6962,10 +6115,7 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
 }
 
 // PRIORITY_EXPAND_CAP backpressure: with the fast lane at the cap, the
-// rotation collectors must stop pushing. The uncapped queue is what starved
-// the BFS on-pod (39k->103k entries while _pending_expand never drained a
-// single batch - rotation inflow 256/pass exceeded the deadline-bounded
-// drain ~150-300/pass on every pass).
+// rotation collectors must stop pushing - an uncapped queue starves the BFS.
 TEST_F(ReferenceChainsBfsTest, PriorityExpandCapStopsRotationCollectorPushes) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -6986,8 +6136,7 @@ TEST_F(ReferenceChainsBfsTest, PriorityExpandCapStopsRotationCollectorPushes) {
     EXPECT_TRUE(selected.empty())
         << "collector must stop pushing once _priority_expand hits the cap";
 
-    // With the lane drained (a pass's expand phase consumed it), the
-    // collector selects again.
+    // With the lane drained, the collector selects again.
     ReferenceChainsTestAccessor::clearPriorityExpand();
     selected =
         ReferenceChainsTestAccessor::collectStaleExpandedEntriesForRotation(10);
@@ -7000,8 +6149,8 @@ TEST_F(ReferenceChainsBfsTest, PriorityExpandCapStopsRotationCollectorPushes) {
 // The stale-expansion rotation must select leak parents from
 // _leak_parent_fanout ahead of the blind table lap: the fanout entries are
 // the EXPANDED parents that actually lead to watched leak-klass children,
-// and neither the blind lap (~table_size/budget passes, hundreds live) nor
-// the growth-gated leak-accumulation tier reaches them in steady state.
+// which neither the blind lap nor the growth-gated tier reaches in steady
+// state.
 TEST_F(ReferenceChainsBfsTest, StaleRotationPrefersLeakParentsOverBlindLap) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -7012,9 +6161,9 @@ TEST_F(ReferenceChainsBfsTest, StaleRotationPrefersLeakParentsOverBlindLap) {
     constexpr u32 kLeafKlass = 987;
     ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
 
-    // Fanout parent 1 and an unrelated stale-EXPANDED entry 3. Parent 1
-    // needs a non-zero class_tag: trackLeakAccumulation() attributes via the
-    // parent entry's class_tag and skips entries without one.
+    // Parent 1 needs a non-zero class_tag: trackLeakAccumulation()
+    // attributes via the parent entry's class_tag and skips entries
+    // without one.
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 1, 0, 0, FrontierEntryState::EXPANDED,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0,
@@ -7044,8 +6193,7 @@ TEST_F(ReferenceChainsBfsTest, StaleRotationPrefersLeakParentsOverBlindLap) {
 // reparentToDurableRoot: a depth-1 entry first admitted through a transient
 // root (stack/JNI local) is re-parented to a durable root-attached parent
 // at equal depth - the case improveChain() cannot express (it requires a
-// strictly deeper path), and exactly the hotdog shape where the singleton
-// collection is a depth-0 static root and its elements depth 1.
+// strictly deeper path).
 TEST_F(ReferenceChainsBfsTest, ReparentToDurableRootSwapsTransientForDurable) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -7089,11 +6237,9 @@ TEST_F(ReferenceChainsBfsTest, ReparentToDurableRootSwapsTransientForDurable) {
     tracker->stop();
 }
 
-// recordDiscoveredInstance eviction: noise instances fill discovery slots
-// first-come-first-served, but a leak-correlated discovery must evict a
-// noise slot when all are full - without eviction, the 8 noise instances
-// observed on-pod permanently blocked every later leak-tagged instance of
-// the watched class.
+// recordDiscoveredInstance eviction: a leak-correlated discovery must evict
+// a noise slot when all are full - otherwise noise permanently blocks every
+// later leak-tagged instance of the watched class.
 TEST_F(ReferenceChainsBfsTest, RecordDiscoveredInstanceEvictsNoiseSlots) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -7190,10 +6336,9 @@ TEST_F(ReferenceChainsBfsTest, CorrelateAdmittedLeakTagSetsEntryAndDiscovers) {
     tracker->stop();
 }
 
-// Retention-explanation gate on the discovered-instance chains (depth==0
-// always suppressed; depth==1 suppressed only for TRANSIENT roots - a
-// depth-1 chain from a durable root is the real direct-retention shape):
-// transient depth-1 must NOT be cached, durable depth-1 and depth-2 must.
+// Retention-explanation gate on the discovered-instance chains: depth==0 is
+// always suppressed; depth==1 only for TRANSIENT roots (a depth-1 chain from
+// a durable root is the real direct-retention shape).
 TEST_F(PollWatchedTargetsTest, DiscoveredChainGateSuppressesTransientDepthOne) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
@@ -7224,14 +6369,12 @@ TEST_F(PollWatchedTargetsTest, DiscoveredChainGateSuppressesTransientDepthOne) {
     // Deeper chain through the transient root: passes on depth alone.
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 10, 7, 2, FrontierEntryState::EXPANDED, /*root_kind=*/0));
-    // Depth-0 transient root: the candidate instance itself held by a live
-    // frame - suppressed like the depth-1 transient shape.
+    // Depth-0 transient root: suppressed like the depth-1 transient shape.
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 11, 0, 0, FrontierEntryState::EXPANDED,
         JVMTI_HEAP_REFERENCE_STACK_LOCAL));
     // Depth-0 durable root: the candidate instance IS the static field's
-    // value (the singleton-collection-itself shape) - a real direct-retention
-    // chain, NOT suppressible as noise.
+    // value - a real direct-retention chain, NOT suppressible as noise.
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 12, 0, 0, FrontierEntryState::EXPANDED,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD));
@@ -7261,15 +6404,10 @@ TEST_F(PollWatchedTargetsTest, DiscoveredChainGateSuppressesTransientDepthOne) {
     tracker->stop();
 }
 
-// Orphan slot sweep: a candidate that qualified long enough for the walk to
-// record discovered instances, then stopped qualifying (its trend aged out
-// of the poll's candidate list), must still get chains built for those
-// instances. The slot persists by design precisely so the klass "can still
-// be found there" - before the sweep, nothing iterated it once the klass
-// left the poll candidates, stranding every instance recorded while it
-// qualified (observed live: 8 discovered instances recorded the pass
-// after the candidate's trend aged out were never built across the
-// remaining 116 passes of the run).
+// Orphan slot sweep: a candidate that recorded discovered instances, then
+// stopped qualifying (its trend aged out of the poll's candidate list), must
+// still get chains built for those instances - the slot persists by design
+// precisely so the klass can still be found there.
 TEST_F(PollWatchedTargetsTest, OrphanedSlotBuildsDiscoveredChainsAfterCandidateDropsOut) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
@@ -7285,9 +6423,8 @@ TEST_F(PollWatchedTargetsTest, OrphanedSlotBuildsDiscoveredChainsAfterCandidateD
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
     ASSERT_EQ(0, ReferenceChainsTestAccessor::candidateDiscoveredCountForTest(0));
 
-    // The walk discovered an instance while the candidate still
-    // qualified: the real direct-retention shape (static-field root ->
-    // depth-1 instance), which the discovered-chain gate lets through.
+    // The walk discovered an instance while the candidate still qualified
+    // (the direct-retention shape the discovered-chain gate lets through).
     FrontierTable *frontier = tracker->frontierTable();
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 9, 0, 0, FrontierEntryState::EXPANDED,
@@ -7297,10 +6434,8 @@ TEST_F(PollWatchedTargetsTest, OrphanedSlotBuildsDiscoveredChainsAfterCandidateD
     ReferenceChainsTestAccessor::recordDiscoveredInstanceForTest(3, 8, false);
     ASSERT_EQ(1, ReferenceChainsTestAccessor::candidateDiscoveredCountForTest(0));
 
-    // The candidate stops qualifying: LivenessTracker's population table
-    // is wiped, so selectLeakCandidates() returns 0 on every poll from
-    // here on. Before the orphan sweep, this poll would leave the recorded
-    // instance permanently unbuildable.
+    // The candidate stops qualifying: the population table is wiped, so
+    // selectLeakCandidates() returns 0 on every poll from here on.
     LivenessTracker::instance()->klassPopulationResetForTest();
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
 

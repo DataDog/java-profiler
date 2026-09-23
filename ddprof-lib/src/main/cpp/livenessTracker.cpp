@@ -38,17 +38,13 @@ constexpr int LivenessTracker::MIN_SAMPLING_INTERVAL;
 
 namespace {
 
-// Earliest-third/recent-third mean and minimum of a chronological ring
-// window - the one computation hasQualifyingGrowth() (per-klass count_ring)
-// and heapFloorRising() (the aggregate _heap_floor_ring) both need, factored
-// out so the window/index derivation and the two aggregation loops exist in
-// exactly one place rather than three near-identical copies. Templated on
-// the reader rather than the ring's element type or storage: the per-klass
-// ring is a plain array read under the caller's already-held _table_lock,
-// while the heap-floor ring is lock-free and read via loadAcquire() (see
-// _heap_floor_ring's own comment, livenessTracker.h) - `read(i)` lets each
-// caller supply its own access discipline for physical slot `i` without
-// this shared loop needing to know which one applies.
+// Window statistics shared by hasQualifyingGrowth() (per-klass count_ring,
+// read under _table_lock) and heapFloorRising()/secondsToOOM() (the lock-free
+// _heap_floor_ring, read via loadAcquire()): least-squares fit over the
+// chronological window, giving the fitted value at the window's first and
+// last position plus the earliest (whole-window) and recent (second-half)
+// minima. The reader is templated so each caller supplies its own
+// slot-access discipline.
 struct RingThirdsStats {
   double earliest_mean;
   double recent_mean;
@@ -64,12 +60,9 @@ bool ringThirdsStats(int head, int fill, int ring_size, int min_fill,
   }
   // Chronological (oldest-first) index of the window's first sample.
   int start = (head - fill + ring_size) % ring_size;
-  // Full-window least-squares linear regression: y = a + b*x.
-  // x = sample position within the window (0 = oldest, fill-1 = newest),
-  // y = population count. This uses all samples (not just first/last
-  // halves or thirds) and is far more robust for oscillating-but-
-  // growing trends than comparing two sub-windows. O(fill) = O(30) per
-  // klass per scan — negligible.
+  // Full-window least-squares fit: y = fitted value at position x (0 = oldest,
+  // fill-1 = newest). Robust for oscillating-but-growing trends; O(fill) =
+  // O(30) per scan.
   int n = fill;
   if (n < 2) {
     return false;
@@ -103,13 +96,9 @@ bool ringThirdsStats(int head, int fill, int ring_size, int min_fill,
   return true;
 }
 
-// Recent-half corroboration for a usage ring (see secondsToOOM()'s own
-// comment): a rising full-window trend whose most recent half is flat is a
-// plateaued step change, not ongoing growth. Returns true when the recent
-// half rises (or is too sparse to corroborate - the full-window trend then
-// stands alone, matching the single-ring version's have_recent_half
-// semantics of only rejecting on a confirmed flat recent half... inverted
-// here: false means "reject").
+// Recent-half corroboration for a usage ring: a rising full-window trend
+// whose most recent half is flat is a plateaued step change, not ongoing
+// growth. True only when the recent half has enough samples and rises.
 template <typename Reader>
 bool corroborateRecentHalf(u8 head, u8 fill, int ring_size, int min_fill,
                            Reader read) {
@@ -133,21 +122,13 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
            forced, _gc_generations.load(std::memory_order_relaxed), (unsigned long long)current,
            (unsigned long long)target_gc_epoch, _table_size);
 
-  // is_epoch_owner is true iff this call is the one that moves _last_gc_epoch
-  // to target_gc_epoch - i.e. the first cleanup_table() call (forced or not)
-  // to observe this particular GC epoch transition. Population accounting
-  // below is gated on this rather than on !forced, so a forced (table-
-  // overflow) sweep still folds one sample per genuinely new epoch instead
-  // of either skipping it entirely or double-counting the same epoch across
-  // repeated forced sweeps.
-  //
-  // The authoritative claim happens BELOW, under the table lock: a forced
-  // sweep can claim a new epoch on one thread while a GC callback claims a
-  // still-newer epoch on another, and claiming up front would let the newer
-  // epoch's fold enter the population history before the older one's (lock
-  // acquisition order is not claim order), folding the same epoch range
-  // twice and skewing the trend. The check here stays as an advisory
-  // early-exit so the common no-op call never takes the lock or the JNIEnv.
+  // is_epoch_owner: this call is the first (forced or not) to observe this
+  // GC epoch transition. Population accounting is gated on this, not
+  // !forced, so a forced sweep still folds one sample per new epoch. The
+  // authoritative claim happens below under the table lock - a forced sweep
+  // and a GC callback can race, and claiming up front could fold the same
+  // epoch range twice (lock order is not claim order). This check stays an
+  // advisory early-exit so the common no-op call never takes the lock.
   u64 advisory_current = current;
   if (target_gc_epoch != advisory_current || forced) {
     JNIEnv *env = VM::jni();
@@ -160,15 +141,9 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
                                     false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
     int epoch_diff = (int)(target_gc_epoch - claimed);
 
-  // Detect a class-map reset the same way
-  // ReferenceChainTracker::resolveLoadedClasses() does (referenceChains.cpp)
-  // - see _last_class_map_generation's own comment (livenessTracker.h).
-  // cached_klass_id and _klass_population's klass_id keys are
-  // StringDictionary ids from whatever generation was current when they were
-  // resolved; once Profiler::start() clears that dictionary and restarts its
-  // id namespace, those cached ids can silently collide with a newly
-  // assigned, unrelated class. Drop every such cache before this pass reads
-  // or writes any of them.
+  // Class-map reset (see _last_class_map_generation, livenessTracker.h):
+  // cached klass ids from a cleared dictionary's generation can collide with a
+  // newly assigned class; drop every such cache first.
   u64 current_class_map_generation = Profiler::instance()->classMap()->generation();
   if (current_class_map_generation != _last_class_map_generation) {
     for (u32 i = 0; i < _table_size; i++) {
@@ -195,7 +170,6 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
     for (u32 i = 0; i < sz; i++) {
       if (_table[i].ref != nullptr &&
           !env->IsSameObject(_table[i].ref, nullptr)) {
-        // it survived one more GarbageCollectionFinish event
         u32 target = newsz++;
         if (target != i) {
           _table[target] = _table[i]; // will clone TrackingEntry at 'i'
@@ -205,50 +179,28 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
         _table[target].age += epoch_diff;
 
         if (_gc_generations.load(std::memory_order_relaxed) && is_epoch_owner) {
-          // Per-klass population tracking (design doc's Open Question 3) -
-          // gated on _gc_generations so this new cost is paid only when the
-          // caller actually asked for generation/survival-shaped data
-          // (Arguments::_gc_generations), not for every liveness-tracking
-          // session. Gated on is_epoch_owner (not !forced) so a forced
-          // (table-overflow) sweep still contributes one population sample
-          // per genuinely new GC epoch instead of silently dropping it.
+          // Per-klass population tracking, gated on _gc_generations (paid only
+          // when asked for) and on is_epoch_owner (not !forced) so a forced
+          // sweep still contributes one sample per new GC epoch.
           u32 klass_id = 0;
           if (allow_resolve) {
-            // GetObjectClass + Class.getName() + StringDictionary lookup per
-            // surviving entry, previously paid only at JFR-flush time (see
-            // flush_table() below). Only affordable off the allocation-hot
-            // path - flush_table()/stop()'s cadence and
-            // LivenessTracker::maybeForceCleanup()'s background-thread tick
-            // both pass allow_resolve=true; track()'s hot-path forced sweep
-            // does not (see cleanup_table()'s own header comment).
+            // Only affordable off the allocation-hot path (see
+            // cleanup_table()'s header comment).
             jobject ref = env->NewLocalRef(_table[target].ref);
             if (ref != nullptr) {
               klass_id = resolveKlassId(env, ref);
               if (klass_id != 0) {
-                // Cache the resolution: flush_table() runs its own
-                // GetObjectClass+Class.getName()+lookupClass() sequence for
-                // every surviving entry immediately after cleanup_table()
-                // returns (flush_table() always calls cleanup_table() first),
-                // which would otherwise repeat this exact JNI round-trip for
-                // the same object. An object's class is immutable, so this
-                // value stays valid for flush_table()'s read below, and for
-                // a later non-resolving sweep's read right below.
+                // Cache the resolution: flush_table() re-resolves every
+                // surviving entry's class right after this (an object's class
+                // is immutable); later non-resolving sweeps reuse it.
                 _table[target].cached_klass_id = klass_id;
               }
               env->DeleteLocalRef(ref);
             }
           } else {
-            // track()'s table-overflow branch calls cleanup_table(true,
-            // false) synchronously from the allocation-sampling call stack
-            // (JVMTI SampledObjectAlloc callback). resolveKlassId() calls
-            // Class.getName(), a genuine Java-bytecode upcall (unlike the
-            // plain native jvmti->GetClassSignature() call
-            // ObjectSampler::recordAllocation already makes on this same
-            // callback stack) - too costly, and too re-entrancy-prone via
-            // the String allocation it can trigger, to run from there. Reuse
-            // whatever class id an earlier resolving sweep already resolved
-            // for this entry instead; if it was never resolved, this entry's
-            // sample for this epoch is dropped rather than resolving now.
+            // resolveKlassId() is skipped here (see cleanup_table()'s
+            // header comment); reuse an earlier sweep's cached id, or drop
+            // this entry's sample for the epoch.
             klass_id = _table[target].cached_klass_id;
           }
           if (klass_id != 0) {
@@ -287,25 +239,16 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
 }
 
 u32 LivenessTracker::resolveKlassId(JNIEnv *env, jobject ref) {
-  // Deliberately NOT flush_table()'s own Class.getName()-based resolution
-  // below: the ids this returns are the CANDIDATE klass ids that
-  // ReferenceChainTracker matches discovered instances' classes against, and
-  // RCT resolves those with the GetClassSignature +
-  // ObjectSampler::normalizeClassSignature() + lookupClass() sequence
-  // (resolveClassMap(), referenceChains.cpp). StringDictionary keys its
-  // entries by the exact string, and getName()'s "com.foo.Bar" (dot
-  // notation) is a DIFFERENT key from the signature's "com/foo/Bar" (slash
-  // notation) - so a getName()-based id can never equal the signature-based
-  // id the same class resolves to on the RCT side, and every candidate vs
-  // discovered-instance comparison failed (observed live on the pod: every
-  // auto-mark "resolved but no candidate match", and locally:
-  // LivenessTracker id 63 vs ReferenceChainTracker id 2 for the same class;
-  // only array classes accidentally matched, since "[B" is notation-
-  // identical). Same sequence as ObjectSampler::recordAllocation()
-  // therefore - the third user of it, after recordAllocation() and
-  // resolveClassMap(). Also strictly cheaper than the old getName() path:
-  // a plain JVMTI call instead of a Class.getName() JNI upcall that could
-  // allocate.
+  // Signature-based resolution (slash notation), NOT flush_table()'s
+  // Class.getName()-based one: these ids must match the ids
+  // ReferenceChainTracker resolves for discovered instances via
+  // GetClassSignature + ObjectSampler::normalizeClassSignature() +
+  // lookupClass() (resolveClassMap(), referenceChains.cpp) - the same
+  // sequence as ObjectSampler::recordAllocation(). StringDictionary keys by
+  // the exact string, and getName()'s "com.foo.Bar" (dot notation) is a
+  // DIFFERENT key from the signature's "com/foo/Bar", so a getName()-based
+  // id can never match across subsystems. Also a plain JVMTI call, not a
+  // Java upcall that could allocate.
   jclass clz = env->GetObjectClass(ref);
   u32 id = 0;
   jvmtiEnv *jvmti = VM::jvmti();
@@ -333,8 +276,8 @@ u32 LivenessTracker::resolveKlassId(JNIEnv *env, jobject ref) {
 }
 
 // Inserts (sample_source, age) into scratch.oldest[], sorted by age
-// descending, capped at MAX_OLDEST_SAMPLES. Called from accumulateKlassCount()
-// to bias representative selection toward long-lived instances.
+// descending, capped at MAX_OLDEST_SAMPLES (biases representatives toward
+// long-lived instances).
 void LivenessTracker::insertOldestSample(KlassCountScratch &scratch,
                                           jweak sample_source, u32 age,
                                           jint tid) {
@@ -384,10 +327,10 @@ bool LivenessTracker::getLeakTagInfo(jlong tag, u64 *out_call_trace_id,
     return false;
   }
   int idx = (int)(tag - LEAK_TAG_BASE);
-  // releaseLeakTag() zeroes both fields, so a zero/zero slot means the tag
-  // was released (or never acquired) - any other state is in use. (A slot
-  // index comparison against _leak_tag_free_count proves nothing here: the
-  // free list is a LIFO stack of indices, not an index-bounded region.)
+  // releaseLeakTag() zeroes both fields, so a zero/zero slot means the tag was
+  // released (or never acquired) - any other state is in use. (The free list
+  // is a LIFO stack of indices, not an index-bounded region, so a
+  // _leak_tag_free_count comparison proves nothing.)
   if (_leak_tag_info[idx].call_trace_id == 0 && _leak_tag_info[idx].tid == 0) {
     return false;
   }
@@ -404,22 +347,11 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
   }
   JNIEnv *env = VM::jni();
   int tagged = 0;
-  // Tagging priority: instances from allocation sites (tids) with the
-  // clearest surviving-age diversity go first, then oldest within a tid.
-  // A continuously-leaking site keeps instances alive across many distinct
-  // GC generations (many distinct surviving ages), while a one-time burst
-  // or noise site survives at few distinct ages regardless of how old its
-  // oldest instance is. If the pool is contended or GC churn races the
-  // tagging, this ordering makes sure the strongest leak signal keeps the
-  // tags rather than whichever entry the table scan happens to reach first.
-  // The (klass, tid) MATCH below scopes this whole ranking to the leak site
-  // itself: each candidate only claims tracked instances its qualifying
-  // tids allocated (selectLeakCandidates()'s per-tid gate, livenessTracker.h),
-  // so machinery survivors of the same class from other threads never
-  // enter the ranking at all - observed on hotdog, klass-wide matching spent
-  // 247 pool tags on flat-retention machinery byte[]s with zero
-  // interceptions while the real leak-site instances churned out of the
-  // tracking table untagged.
+  // Tagging priority: clearest surviving-age diversity first (a
+  // continuously-leaking site keeps instances alive across many distinct GC
+  // generations; a one-time burst does not), then oldest within a tid - if
+  // the pool is contended, the strongest leak signal keeps the tags. The
+  // (klass, tid) match scopes ranking to the leak site.
   struct TagCandidate {
     u32 table_idx;
     jint tid;
@@ -431,15 +363,9 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
   // small live population (~hundreds); tag in scan order beyond capacity.
   TagCandidate scratch[512];
   int n_candidates = 0;
-  // Per-poll (klass_id, tid) tag summary - the per-instance logging this
-  // replaces re-logged every stable pool tag on every poll (256 lines/poll
-  // once the pool saturates with real leak instances), which flooded the
-  // pod's container log hard enough to rotate its 10MB cap inside a
-  // verification window (round 5: ~600k lines in 20 min, costing log-head
-  // from the same window). One summary line per tagged (klass, tid) group
-  // carries the same diagnostics - allocation size distinguishing real
-  // leaked chunks from machinery survivors, the age range showing the
-  // site's surviving-age diversity - at constant volume per poll.
+  // Per-poll (klass_id, tid) tag summary instead of per-instance logging,
+  // which re-logged every stable pool tag every poll (256 lines/poll once the
+  // pool saturates).
   struct TagSummary {
     u32 klass_id;
     jint tid;
@@ -455,18 +381,15 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
   _table_lock.lockShared();
   u32 sz = _table_size;
   for (u32 i = 0; i < sz; i++) {
-    // Skip slots a concurrent track() reservation has not published yet
-    // (see TrackingEntry::ready's own comment) - the lock is shared, so
-    // the reservation is visible while its payload is still being filled.
+    // Skip unpublished slots (shared lock - see TrackingEntry::ready).
     if (__atomic_load_n(&_table[i].ready, __ATOMIC_ACQUIRE) != 1) {
       continue;
     }
     if (_table[i].ref == nullptr) {
       continue;
     }
-    // Check if this entry's (class, allocating thread) matches any
-    // candidate: class alone is not enough - only the instances a
-    // candidate's QUALIFYING tids allocated are in tagging scope.
+    // (class, allocating thread) match: only instances a candidate's
+    // QUALIFYING tids allocated are in tagging scope.
     u32 kid = _table[i].cached_klass_id;
     if (kid == 0) {
       continue;
@@ -490,10 +413,9 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
     if (!match) {
       continue;
     }
-    // Entries whose record already holds a pool tag are still collected:
-    // their tag survives the JVMTI tag only until the object is admitted
-    // or the search restarts, and the state machine below must re-act on
-    // the CURRENT JVMTI tag (re-establish, correlate, or leave alone).
+    // Entries whose record already holds a pool tag are still collected: the
+    // state machine below must re-act on the object's CURRENT JVMTI tag
+    // (re-establish, correlate, or leave alone).
     if (n_candidates < (int)(sizeof(scratch) / sizeof(scratch[0]))) {
       scratch[n_candidates].table_idx = i;
       scratch[n_candidates].tid = _table[i].tid;
@@ -503,12 +425,9 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
       n_candidates++;
     }
   }
-  // Compute per-tid distinct surviving ages (matching entries only - the
-  // same diversity signal the epoch fold uses for clustering, computed here
-  // directly from the tracked entries so the ranking reflects exactly the
-  // population being tagged). Distinct-tid count is bounded by
-  // MAX_THREADS_PER_KLASS logic elsewhere but here just use a small array;
-  // beyond 32 tids, extras share the lowest priority tier.
+  // Per-tid distinct surviving ages (matching entries only, so the ranking
+  // reflects exactly the population being tagged); beyond 32 tids, extras
+  // share the lowest priority tier.
   struct TidAges {
     jint tid;
     u32 ages[32];
@@ -549,10 +468,8 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
       }
     }
   }
-  // Sort: entries whose record already holds a pool tag first (they cost
-  // no pool resources - their work below is correlate-or-re-establish, not
-  // acquire), then highest age diversity, then oldest age. Small n,
-  // insertion sort is fine (n <= 512 but in practice tens).
+  // Entries already holding a pool tag first (correlate-or-re-establish,
+  // not acquire), then highest age diversity, then oldest.
   for (int c = 1; c < n_candidates; c++) {
     TagCandidate key = scratch[c];
     int j = c - 1;
@@ -567,26 +484,19 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
     }
     scratch[j + 1] = key;
   }
-  // Per-candidate state machine on the object's CURRENT JVMTI tag. The
-  // tag on the object is shared state with ReferenceChainTracker's BFS
-  // (frontier tags) and must never be blindly overwritten: an object
-  // admitted by the BFS carries its FRONTIER tag on the object, and a
-  // SetTag(leak_tag) here would orphan that frontier entry (the BFS could
-  // never resolve it again) while making correlation depend on a parent
-  // re-walk ever happening. Instead:
-  //   - leak tag on object: already waiting for interception - just make
-  //     sure the record knows it;
-  //   - frontier tag on object: already admitted - correlate the entry
-  //     (ReferenceChainTracker stores the leak tag ON the entry and marks
-  //     the instance discovered), never retag;
+  // Per-candidate state machine on the object's CURRENT JVMTI tag, shared
+  // with the BFS's frontier tags and never blindly overwritten (a SetTag
+  // over a frontier tag would orphan that frontier entry):
+  //   - leak tag: already waiting for interception - record it;
+  //   - frontier tag: already admitted - correlate the entry, never retag;
   //   - no tag: plain SetTag (first tagging, or re-establishing after a
   //     search restart wiped all tags via releaseSearchTags()).
   for (int c = 0; c < n_candidates; c++) {
     u32 i = scratch[c].table_idx;
     jobject ref = env->NewLocalRef(_table[i].ref);
     if (ref == nullptr) {
-      // Object was collected between the null check and now - its record's
-      // tag (if any) is released by the GC cleanup path, nothing to do.
+      // Collected between the null check and now - the GC cleanup path
+      // releases the record's tag; nothing to do.
       continue;
     }
     jlong existing = 0;
@@ -594,8 +504,8 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
     jlong leak_tag = 0;
     bool need_set = false;
     if (tag_err == JVMTI_ERROR_NONE && existing >= LEAK_TAG_BASE) {
-      // Already carries a leak tag (ours, or one adopted below) - waiting
-      // for the BFS interception. Make sure the record remembers it.
+      // Already carries a leak tag - waiting for BFS interception; make
+      // sure the record remembers it.
       leak_tag = _table[i].leak_tag != 0 ? _table[i].leak_tag : existing;
     } else if (tag_err == JVMTI_ERROR_NONE && existing > 0) {
       // Frontier tag: the BFS already admitted this object. Correlate the
@@ -615,10 +525,9 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
         need_set = true;
       }
     } else {
-      // No tag: first tagging, or re-establishment after a restart wiped
-      // all tags (releaseSearchTags() clears every JVMTI tag while the
-      // record keeps its pool tag - reusing it keeps pool accounting
-      // stable across restarts).
+      // No tag: first tagging, or re-establishment after a restart wiped all
+      // tags (releaseSearchTags() clears every JVMTI tag while the record
+      // keeps its pool tag - reuse keeps pool accounting stable).
       leak_tag = _table[i].leak_tag;
       if (leak_tag == 0) {
         leak_tag = acquireLeakTag(_table[i].call_trace_id, _table[i].tid);
@@ -634,9 +543,7 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
     }
     _table[i].leak_tag = leak_tag;
     tagged++;
-    // Accumulate into the per-poll summary above instead of logging per
-    // instance - one stable-pool poll re-logged all 256 tags' identical
-    // lines every 1.4s before this.
+    // Accumulate into the per-poll summary instead of logging per instance.
     u32 tagged_kid = _table[i].cached_klass_id;
     jint tagged_tid = _table[i].tid;
     u64 tagged_age = _table[i].age;
@@ -648,8 +555,8 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
     }
     if (g == summary_count && summary_count >=
             (int)(sizeof(summary) / sizeof(summary[0]))) {
-      // Bounded groups exceeded (candidates are <= 5, qualifying tids <= 8
-      // each - 16 covers every realistic (klass, tid) pair; overflow lumps).
+      // Bounded groups exceeded (candidates <= 5, qualifying tids <= 8
+      // each); overflow lumps into the counter.
       summary_overflow++;
     } else if (g == summary_count) {
       summary[g].klass_id = tagged_kid;
@@ -695,14 +602,12 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
 
 void LivenessTracker::insertThreadGen(KlassCountScratch &scratch,
                                       jint tid, u32 age) {
-  // Find or create the thread entry for this tid
   for (int i = 0; i < scratch.thread_count; i++) {
     if (scratch.threads[i].tid == tid) {
-      // Insert age into the thread's sorted distinct-age array
       auto &t = scratch.threads[i];
-      // Every surviving object counts toward the per-tid retained-count
-      // bar (TID_RETAINED_COUNT_BAR) BEFORE the age-dedup early return
-      // below: the count is per-instance, the ages are per-cohort.
+      // Every surviving object counts toward the per-tid retained-count bar
+      // (TID_RETAINED_COUNT_BAR) BEFORE the age-dedup early return below: the
+      // count is per-instance, the ages are per-cohort.
       t.count++;
       for (u32 j = 0; j < t.age_count; j++) {
         if (t.ages[j] == age) {
@@ -710,7 +615,6 @@ void LivenessTracker::insertThreadGen(KlassCountScratch &scratch,
         }
       }
       if (t.age_count < KlassCountScratch::MAX_AGES_PER_THREAD) {
-        // Insert sorted (small array, linear scan + shift)
         u32 pos = t.age_count;
         for (u32 j = 0; j < t.age_count; j++) {
           if (age < t.ages[j]) {
@@ -734,25 +638,20 @@ void LivenessTracker::insertThreadGen(KlassCountScratch &scratch,
     scratch.threads[idx].age_count = 1;
     scratch.threads[idx].count = 1; // this object is the tid's first this epoch
   }
-  // else: thread table full — additional threads are not tracked, but
-  // the oldest[] array still captures instances from all threads.
+  // else: thread table full - additional threads are not tracked, but
+  // oldest[] still captures instances from all threads.
 }
 
 void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age,
                                            jweak sample_source,
                                            jint tid) {
-  // Count distinct GC ages (generations) per klass: group surviving
-  // tracked objects by klass, then for each klass count the
-  // number of unique age values. This is the "generation
-  // count" — if new instances keep arriving while old ones
-  // survive, the number of distinct ages grows.
+  // Count distinct GC ages (generations) per klass: if new instances keep
+  // arriving while old ones survive, the distinct-age count grows.
   for (int i = 0; i < _klass_count_scratch_size; i++) {
     if (_klass_count_scratch[i].klass_id == klass_id) {
       auto &entry = _klass_count_scratch[i];
-      // Per-class age dedup: only count each age once for the klass'
-      // generation count. But per-site tracking and oldest[] must see
-      // EVERY surviving object, not just the first per age — so those
-      // run unconditionally below, outside this dedup check.
+      // Age dedup for the generation count only - oldest[] and per-tid
+      // tracking must see EVERY surviving object.
       bool age_seen = false;
       for (u32 a : entry.ages) {
         if (a == (u32)age) {
@@ -763,15 +662,11 @@ void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age,
       if (!age_seen) {
         entry.ages.push_back((u32)age);
       }
-      // Track top-N oldest instances (Lindy bias): insert this sample
-      // into the oldest[] array, sorted by age descending, capped at
-      // MAX_OLDEST_SAMPLES. Runs for every object, not just new ages.
+      // Top-N oldest instances (Lindy bias): runs for every object, not
+      // just new ages.
       insertOldestSample(entry, sample_source, (u32)age, tid);
-      // Track per-thread distinct surviving generations (Cork/Swat
-      // heuristic): add this object's age to its thread's age set.
-      // Runs for every object — the thread's generation cardinality is
-      // the leak signal, and it must see all surviving objects to be
-      // accurate.
+      // Per-thread distinct surviving generations: the thread's generation
+      // cardinality is the leak signal, so it must see all surviving objects.
       insertThreadGen(entry, tid, (u32)age);
       return;
     }
@@ -786,20 +681,15 @@ void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age,
     insertOldestSample(slot, sample_source, (u32)age, tid);
     insertThreadGen(slot, tid, (u32)age);
   }
-  // else: this epoch's scratch snapshot already holds
-  // MAX_KLASS_POPULATION_ENTRIES distinct surviving klasses - klass_id's
-  // count for this epoch is dropped rather than growing the scratch array,
-  // the same best-effort tradeoff _klass_population's own fixed capacity
-  // already accepts.
+  // else: scratch already holds MAX_KLASS_POPULATION_ENTRIES klasses - this
+  // epoch's count for klass_id is dropped (same best-effort tradeoff
+  // _klass_population accepts).
 }
 
 jweak LivenessTracker::recordKlassPopulationSampleLocked(
     u32 klass_id, u32 count, u64 epoch, int *out_slot, bool *out_created,
     jweak *out_evicted, int *out_evicted_count, int max_evicted) {
-  // Linear scan is fine: MAX_KLASS_POPULATION_ENTRIES is small enough that a
-  // full scan is cheap, the same shape NativeSocketSampler's fd LRU
-  // (NativeSocketSampler's fd cache) and this class's own cleanup_table()
-  // pass already accept for bounded tables.
+  // Linear scan is fine: MAX_KLASS_POPULATION_ENTRIES is small enough.
   int slot = -1;
   int evict_slot = -1;
   for (int i = 0; i < _klass_population_size; i++) {
@@ -822,13 +712,10 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(
       slot = _klass_population_size++;
     } else {
       // Table full - evict the least-recently-updated entry (evict_slot is
-      // guaranteed set here since MAX_KLASS_POPULATION_ENTRIES > 0 implies
-      // at least one iteration of the loop above ran).
+      // guaranteed set: the loop above ran at least once).
       slot = evict_slot;
-      // Return evicted representatives to caller for DeleteWeakGlobalRef.
-      // recordKlassPopulationSampleLocked has no JNIEnv*, so it cannot
-      // delete them itself. The caller (foldKlassCountsLocked) has env.
-      // At most MAX_REPRESENTATIVES_PER_KLASS refs to return.
+      // Return evicted representatives to the caller (which owns the
+      // JNIEnv) for DeleteWeakGlobalRef.
       if (out_evicted != nullptr) {
         for (int r = 0; r < _klass_population[slot].representative_count &&
                 *out_evicted_count < max_evicted; r++) {
@@ -849,9 +736,7 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(
     // leak onto the new one, same as the fields above.
     _klass_population[slot].tid_trend_count = 0;
     // A reused (evicted) slot's PREVIOUS class's stable tag must not leak
-    // onto the new one - see KlassPopulationEntry::stable_class_tag's own
-    // comment. Minted lazily in foldKlassCountsLocked() once a live
-    // instance is available to resolve the class from.
+    // onto the new one; minted lazily once a live instance is available.
     _klass_population[slot].stable_class_tag = 0;
   }
 
@@ -863,12 +748,8 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(
   }
   entry.last_updated_epoch = epoch;
 
-  // Updated here (not in selectLeakCandidates()) so both the production path
-  // (foldKlassCountsLocked(), once per genuine GC epoch) and the
-  // klassPopulationRecordForTest() test seam - which calls this method
-  // directly - keep consecutive_positive in sync with the ring they just
-  // pushed, rather than requiring every caller to remember to do it (see
-  // this class's own header comment on hasQualifyingGrowth()).
+  // Updated here, not in selectLeakCandidates(), so every caller keeps
+  // consecutive_positive in sync with the ring it just pushed.
   if (hasQualifyingGrowth(entry)) {
     if (entry.consecutive_positive < UINT8_MAX) {
       entry.consecutive_positive++;
@@ -926,9 +807,7 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
                                        epoch, &slot, &created,
                                        evicted, &evicted_count,
                                        KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
-    // Per-(klass,tid) qualification fold - see recordTidTrendSamplesLocked()'s
-    // own comment: pure table work, no JNIEnv, so unlike the representative
-    // minting below it runs regardless of allow_resolve.
+  // Pure table work, no JNIEnv - runs regardless of allow_resolve.
     recordTidTrendSamplesLocked(slot, s);
     for (int r = 0; r < evicted_count; r++) {
       if (evicted[r] != nullptr) {
@@ -936,32 +815,17 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
       }
     }
     if (!allow_resolve) {
-      // track()'s table-overflow branch calls cleanup_table(true, false)
-      // synchronously from the JVMTI SampledObjectAlloc callback stack - the
-      // same reason resolveKlassId() is skipped there (cleanup_table()'s own
-      // comment above). The representative-minting NewLocalRef/
-      // NewWeakGlobalRef/DeleteLocalRef churn below is no Java-bytecode
-      // upcall, but it is still avoidable JNI work on that hot path; leaving
-      // the representative unset here is safe because the retry condition
-      // right below picks it up again on the next allow_resolve=true sweep.
+      // Minting is skipped on track()'s hot path (see cleanup_table()'s
+      // header comment); the retry below picks it up on the next
+      // allow_resolve=true sweep.
       continue;
     }
-    // Also retry minting when an existing entry's representatives are
-    // stale: either the count is zero, or all stored jweaks refer to
-    // collected objects. A jweak's pointer value never becomes nullptr
-    // just because its referent was collected, so we must probe each one.
-    // Resolving here every epoch bounds any given gap to "one epoch with
-    // no representative", not permanent.
-    //
-    // Mint up to MAX_REPRESENTATIVES_PER_KLASS representatives from the
-    // oldest surviving instances (Lindy bias: oldest = most likely to be
-    // leaks). Fresh independent jweaks are minted rather than reusing
-    // s.oldest[].ref directly — those are TrackingEntry jweaks that get
-    // deleted when cleanup_table() reaps the original entry.
+    // Also retry when an existing entry's representatives are stale (a
+    // jweak's pointer never becomes nullptr when its referent dies, so each
+    // must be probed); resolving every epoch bounds the gap to one epoch.
     bool need_mint = created ||
         _klass_population[slot].representative_count == 0;
     if (!need_mint) {
-      // Check if all representatives are stale
       bool any_live = false;
       for (int r = 0; r < _klass_population[slot].representative_count; r++) {
         jweak rep = _klass_population[slot].representatives[r];
@@ -977,17 +841,9 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
       }
       need_mint = !any_live;
     }
-    // Compute the dominant allocating thread (highest generation
-    // cardinality — most distinct surviving GC ages). This reuses
-    // the same generation-count signal that selectLeakCandidates()
-    // uses per-class, applied at per-thread granularity within a
-    // class. A thread with 12 distinct surviving ages (continuous
-    // leak) outscores a thread with 1 age (one-time burst),
-    // regardless of raw instance count or size (Cork/Swat
-    // heuristic). Thread ID is used instead of call_trace_id because
-    // lambdas fragment call_trace_id — synthetic methods produce
-    // slightly different stack hashes for what is logically one
-    // allocation site.
+    // Dominant allocating thread = highest generation cardinality. Thread
+    // id, not call_trace_id: lambda/synthetic variants of one logical site
+    // produce distinct trace ids.
     jint dominant_tid = 0;
     u32 dominant_gens = 0;
     for (int ti = 0; ti < s.thread_count; ti++) {
@@ -996,13 +852,9 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
         dominant_tid = s.threads[ti].tid;
       }
     }
-    // Re-mint if the dominant thread has >1 generation AND none of
-    // the current reps were minted from it. This handles the startup-
-    // cache problem: reps minted from noise threads during startup
-    // stay live even after the real leak thread becomes dominant,
-    // blocking re-selection because need_mint=false. By checking
-    // whether reps match the dominant thread, we replace stale reps
-    // with instances from the actual leak thread.
+    // Re-mint if the dominant thread has >1 generation AND no current rep
+    // was minted from it: startup-noise reps stay live (blocking
+    // re-selection) even after the real leak thread becomes dominant.
     if (!need_mint && dominant_gens > 1) {
       bool rep_matches_dominant = false;
       for (int r = 0; r < _klass_population[slot].representative_count; r++) {
@@ -1019,7 +871,6 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
       }
     }
     if (need_mint) {
-      // Clean up old representatives
       for (int r = 0; r < _klass_population[slot].representative_count; r++) {
         if (_klass_population[slot].representatives[r] != nullptr) {
           env->DeleteWeakGlobalRef(_klass_population[slot].representatives[r]);
@@ -1028,15 +879,12 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
         _klass_population[slot].rep_tids[r] = 0;
       }
       _klass_population[slot].representative_count = 0;
-      // Mint fresh representatives, preferring instances from the
-      // dominant allocating thread. If the dominant thread has fewer
-      // than MAX_REPRESENTATIVES_PER_KLASS instances in oldest[], fill
-      // the remaining slots with other oldest instances.
+      // Mint fresh representatives, preferring the dominant thread's
+      // instances; fill remaining slots with other oldest instances.
       bool minted_any = false;
       int minted = 0;
-      // First pass: instances from the dominant thread (only if it has
-      // >1 distinct generation — otherwise all threads are equally
-      // uninteresting and pure oldest-first is fine)
+      // First pass: dominant thread's instances (only if it has >1
+      // distinct generation - otherwise pure oldest-first is fine).
       if (dominant_gens > 1) {
         for (int r = 0; r < s.oldest_count &&
                 minted < KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS; r++) {
@@ -1056,7 +904,6 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
           }
         }
       }
-      // Second pass: fill remaining slots with other oldest instances
       for (int r = 0; r < s.oldest_count &&
               minted < KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS; r++) {
         if (dominant_gens > 1 && s.oldest[r].tid == dominant_tid) continue;
@@ -1074,9 +921,8 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
           minted++;
         }
       }
-      // else: all surviving instances for this klass died before we
-      // could mint a representative - left with representative_count=0
-      // for this epoch, retried on the next one.
+      // else: all surviving instances for this klass died before we could
+      // mint - left with representative_count=0, retried next epoch.
       TEST_LOG("LivenessTracker::foldKlassCountsLocked minted=%d for klass_id=%u "
                "dominant_tid=%d dominant_gens=%u",
                minted, s.klass_id, (int)dominant_tid, dominant_gens);
@@ -1098,9 +944,8 @@ bool LivenessTracker::hasQualifyingGrowth(const KlassPopulationEntry &entry) con
     return false;
   }
 
-  // Cached for selectLeakCandidates()'s ranking (KlassPopulationEntry::
-  // cached_slope's own comment, livenessTracker.h) - the ring only changes
-  // on push, so this is the same value a later re-scan would compute.
+  // Cached for selectLeakCandidates()'s ranking - the ring only changes on
+  // push, so this is the same value a later re-scan would compute.
   entry.cached_slope = stats.recent_mean - stats.earliest_mean;
 
   double growth_bar = LEAK_GROWTH_REL_MIN * stats.earliest_mean;
@@ -1130,9 +975,8 @@ bool LivenessTracker::hasQualifyingTidGrowth(
           [&trend](int i) { return (double)trend.ring[i]; }, &stats)) {
     return false;
   }
-  // Same growth bar as the klass gate (LEAK_GROWTH_REL_MIN/ABS_MIN):
-  // per-tid age-cardinality is the same small-integer signal the klass gate
-  // already applies these thresholds to, so they transfer unchanged.
+  // Same growth bar as the klass gate: per-tid age-cardinality is the same
+  // small-integer signal, so the thresholds transfer unchanged.
   double growth_bar = LEAK_GROWTH_REL_MIN * stats.earliest_mean;
   if (growth_bar < LEAK_GROWTH_ABS_MIN) {
     growth_bar = LEAK_GROWTH_ABS_MIN;
@@ -1142,8 +986,8 @@ bool LivenessTracker::hasQualifyingTidGrowth(
 
 bool LivenessTracker::tidPushQualifies(
     const KlassPopulationEntry::TidTrend &trend, u32 current_count) const {
-  // Second discriminator before the (usually cheaper) ring re-scan: a
-  // count over the bar qualifies without any history at all.
+  // Second discriminator before the (usually cheaper) ring re-scan: a count
+  // over the bar qualifies without any history at all.
   if (current_count >= TID_RETAINED_COUNT_BAR) {
     return true;
   }
@@ -1156,10 +1000,8 @@ void LivenessTracker::recordTidTrendSamplesLocked(
     return;
   }
   KlassPopulationEntry &entry = _klass_population[slot];
-  // Present tids first: find-or-create their trend and push this epoch's
-  // distinct-age count. (KlassCountScratch threads always carry >=1
-  // surviving instance, so every scratch thread has a real claim on a
-  // slot; a zero-count tid never reaches this fold.)
+  // Present tids: find-or-create their trend and push this epoch's
+  // distinct-age count (scratch threads always carry >=1 survivor).
   for (int ti = 0; ti < scratch.thread_count; ti++) {
     jint tid = scratch.threads[ti].tid;
     KlassPopulationEntry::TidTrend *trend = nullptr;
@@ -1170,24 +1012,17 @@ void LivenessTracker::recordTidTrendSamplesLocked(
       }
     }
     if (trend != nullptr && trend->synthetic) {
-      // Seam-owned history: the test maintains this ramp itself
-      // (seedTidTrendSample0), and a real fold interleaving its own low
-      // count for the same tid would reset the trend's hysteresis every
-      // System.gc() the scenario runs between rounds. Production data has
-      // no synthetic trends, so this exemption is inert there.
+      // Seam-owned history: a real fold interleaving its own count would
+      // reset the scenario's seeded hysteresis every System.gc().
       continue;
     }
     if (trend == nullptr) {
       if (entry.tid_trend_count < KlassPopulationEntry::MAX_TID_TRENDS) {
         trend = &entry.tid_trends[entry.tid_trend_count++];
       } else {
-        // Full: evict the WEAKEST non-synthetic trend (lowest
-        // consecutive_positive, then lowest ring_fill) - a genuinely rising
-        // leak tid accumulates hysteresis fast and resists eviction, while
-        // machinery tids never build any. Synthetic (test-seeded) trends
-        // are never evicted by real data. If every slot is synthetic, the
-        // new tid is simply dropped - production data never marks
-        // anything synthetic, so this only caps a scenario's own seeding.
+        // Full: evict the weakest non-synthetic trend (lowest
+        // consecutive_positive, then ring_fill) - a rising leak tid resists
+        // eviction. If every slot is synthetic, drop the new tid.
         int victim = -1;
         for (int i = 0; i < entry.tid_trend_count; i++) {
           if (entry.tid_trends[i].synthetic) {
@@ -1230,14 +1065,9 @@ void LivenessTracker::recordTidTrendSamplesLocked(
       trend->consecutive_positive = 0;
     }
   }
-  // Tracked tids ABSENT this epoch: a thread whose instances all died
-  // must not keep a stale rising ring - push 0 so the next
-  // hasQualifyingTidGrowth() fails and the trend's hysteresis resets (the
-  // per-tid analogue of the population simply stopping). Synthetic
-  // (test-seeded) trends are exempt: scenarios interleave real
-  // System.gc()-driven folds with their seeded ramps, and without the
-  // exemption every real fold would wipe the seeded qualification before
-  // the test could ever use it (see TidTrend::synthetic's own comment).
+  // Tracked tids ABSENT this epoch: a dead thread must not keep a stale
+  // rising ring - push 0 so hysteresis resets. Synthetic trends are exempt
+  // (see TidTrend::synthetic).
   for (int i = 0; i < entry.tid_trend_count; i++) {
     KlassPopulationEntry::TidTrend &trend = entry.tid_trends[i];
     if (trend.synthetic) {
@@ -1284,20 +1114,12 @@ void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns,
   TEST_LOG("LivenessTracker::recordHeapFloorSample used=%llu timestamp_ns=%llu container_used=%llu",
            (unsigned long long)used, (unsigned long long)timestamp_ns,
            (unsigned long long)container_used);
-  // Lock-free, single-writer-at-a-time - see _heap_floor_ring's own comment
-  // (livenessTracker.h) for why onGC() cannot take _table_lock here.
+  // Lock-free, single-writer-at-a-time (see _heap_floor_ring,
+  // livenessTracker.h, for why onGC() cannot take _table_lock here).
   //
-  // Standard SPSC publish order: the payload is a plain store, and the index
-  // that gates which slots are valid is what carries the release. A reader
-  // that loadAcquire()s the index is then guaranteed to see this payload
-  // write too, since it precedes the index's storeRelease() in program
-  // order and a release store cannot be reordered before an earlier store.
-  // (The previous version had this backwards - storeRelease() on the
-  // payload with a plain store on the index - which does not establish any
-  // ordering between "the index says this slot is valid" and "the payload
-  // for that slot is visible".) _heap_floor_time_ring's and
-  // _container_mem_ring's payload writes below are plain stores for the
-  // same reason - they precede the same storeRelease() in program order.
+  // SPSC publish order: payload is a plain store; the index that gates
+  // valid slots carries the release, so a loadAcquire() reader of the index
+  // is guaranteed to see the payload writes too.
   u8 head = load(_heap_floor_ring_head);
   store(_heap_floor_ring[head], used);
   store(_heap_floor_time_ring[head], timestamp_ns);
@@ -1310,8 +1132,8 @@ void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns,
 }
 
 bool LivenessTracker::heapFloorRising() const {
-  // Matches recordHeapFloorSample()'s storeRelease() on both index fields -
-  // loadAcquire() here is what makes the payload writes below visible.
+  // loadAcquire() here pairs with recordHeapFloorSample()'s storeRelease()
+  // on both index fields, making the payload writes below visible.
   u8 fill = loadAcquire(_heap_floor_ring_fill);
   u8 head = loadAcquire(_heap_floor_ring_head);
   RingThirdsStats stats;
@@ -1370,16 +1192,10 @@ double LivenessTracker::secondsToOOM() const {
     return -1;
   }
 
-  // Both boundaries are projected independently and the SHORTER time wins:
-  // picking a boundary by the raw limit comparison misses that container
-  // usage includes native memory, thread stacks, code cache and sibling
-  // cgroups, so a container whose limit is numerically LARGER than -Xmx can
-  // still be much closer to exhaustion than the heap itself (and vice
-  // versa). An unavailable container limit (bare metal, macOS, cgroups
-  // disabled) is treated as no boundary rather than unbounded. Both rings
-  // are filled by the same sampler, so they share one window; where a ring
-  // was never recorded (older recordings, tests that only pass used bytes)
-  // its projection simply does not fire.
+  // The SHORTER projection wins: container usage includes native memory,
+  // thread stacks, code cache and sibling cgroups, so a container limit
+  // numerically LARGER than -Xmx can still be closer to exhaustion than the
+  // heap (and vice versa). An unavailable limit is no boundary.
   u8 fill = loadAcquire(_heap_floor_ring_fill);
   u8 head = loadAcquire(_heap_floor_ring_head);
   if (fill < KLASS_POPULATION_MIN_FILL_FOR_TREND) {
@@ -1466,17 +1282,10 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
     return 0;
   }
 
-  // Kept sorted descending by slope magnitude, at most `cap` (<=
-  // MAX_LEAK_CANDIDATES == 5) entries - not one per klass - so an
-  // insertion-sort-style insert per candidate (O(cap) per insert, O(N*cap)
-  // overall for N <= MAX_KLASS_POPULATION_ENTRIES == 256 klasses) is cheaper
-  // and simpler than collecting every qualifying candidate and calling
-  // std::sort.
-  // A single call, shared by every candidate this scan considers - see
-  // LEAK_TREND_HYSTERESIS_BASE/CORROBORATED's own comment (livenessTracker.h)
-  // for why an aggregate, non-attributed signal can only raise or lower the
-  // bar uniformly, never reorder candidates against each other. Lock-free
-  // (heapFloorRising()'s own comment), so no relation to _table_lock below.
+  // Top-k insertion-style selection, at most `cap` (<= 5) entries - cheaper
+  // than collecting everything and sorting for N <= 256 klasses. One
+  // heapFloorRising() call per scan: an aggregate, non-attributed signal only
+  // moves the bar uniformly, never reorders candidates.
   const int required_hysteresis = heapFloorRising()
                                        ? LEAK_TREND_HYSTERESIS_CORROBORATED
                                        : LEAK_TREND_HYSTERESIS_BASE;
@@ -1484,23 +1293,18 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
   double best_slopes[MAX_LEAK_CANDIDATES];
   int count = 0;
 
-  // Read-only pass over _klass_population - mirrors getLiveTraceIds()'s own
-  // shared-lock read pattern above, the same table cleanup_table() writes
-  // under the exclusive lock this shared lock is taken against.
+  // Read-only pass over _klass_population - shared-lock read against
+  // cleanup_table()'s exclusive writer.
   _table_lock.lockShared();
-  // Only log when there is actually something to scan - this runs on every
-  // BFS-thread wake (once per second), so logging an empty scan turns the
-  // steady, idle state into per-second noise.
+  // This runs on every BFS-thread wake (~1s) - don't log empty scans.
   if (_klass_population_size > 0) {
     TEST_LOG("LivenessTracker::selectLeakCandidates scanning %d klass_population entries",
              _klass_population_size);
   }
   for (int i = 0; i < _klass_population_size; i++) {
     const KlassPopulationEntry &entry = _klass_population[i];
-    // cached_slope was computed by hasQualifyingGrowth() the last time this
-    // entry was pushed (recordKlassPopulationSampleLocked()) - the ring only
-    // changes on push, so re-scanning it here would just recompute the same
-    // value a moment later.
+    // cached_slope was computed at the last push; the ring only changes on
+    // push, so a re-scan here would just recompute the same value.
     bool has_trend = entry.ring_fill >= KLASS_POPULATION_MIN_FILL_FOR_TREND;
     double slope = entry.cached_slope;
     TEST_LOG("LivenessTracker::selectLeakCandidates entry[%d] klass_id=%u ring_fill=%u "
@@ -1508,19 +1312,14 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
              i, entry.klass_id, entry.ring_fill, has_trend, has_trend ? slope : 0.0,
              entry.consecutive_positive, required_hysteresis, entry.representative_count);
     if (!has_trend || slope <= 0 || entry.consecutive_positive < required_hysteresis) {
-      // Not enough history yet, flat/shrinking, or hasn't shown a
-      // qualifying rise (hasQualifyingGrowth()) for enough consecutive
-      // epochs yet to trust it over sampling/oscillation noise.
+      // Not enough history yet, flat/shrinking, or hysteresis not met.
       continue;
     }
-    // (klass,tid) qualification: the klass-level rise above is also
-    // produced by churn spread across many threads each retaining a
-    // stable handful of instances (observed live on hotdog - see
-    // KlassPopulationEntry::TidTrend's own comment), so a klass only
-    // becomes a candidate if at least ONE allocating thread's own per-tid
-    // trend has held a qualifying rise for the same hysteresis. The
-    // qualifying tids are handed to the caller so tagLeakInstances() can
-    // scope its pool tags to the leak-site instances only.
+    // (klass,tid) qualification: a klass-level rise can come from churn
+    // spread across many threads each retaining a stable handful, so at
+    // least ONE tid's own trend must have held a qualifying rise for the
+    // same hysteresis; the tids scope tagLeakInstances()'s tags to the
+    // leak-site instances.
     jint qualifying_tids[KlassPopulationEntry::MAX_TID_TRENDS];
     int qualifying_tid_count = 0;
     for (int t = 0; t < entry.tid_trend_count &&
@@ -1539,8 +1338,7 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
       continue;
     }
     if (count == cap && slope <= best_slopes[cap - 1]) {
-      // Already holding `cap` stronger (or equal) candidates - this one
-      // doesn't make the cut.
+      // Already holding `cap` stronger (or equal) candidates.
       continue;
     }
 
@@ -1576,11 +1374,8 @@ int LivenessTracker::topKlassesByGenerationCount(u32 *out, int max) {
     return 0;
   }
 
-  // Same insertion-sort-style top-k selection as selectLeakCandidates()
-  // above (small, fixed cap - cheaper than collecting everything and
-  // sorting), ranked by most-recent count_ring sample instead of slope, and
-  // with no hysteresis/trend gate at all - see this method's own header
-  // comment (livenessTracker.h).
+  // Same top-k selection as selectLeakCandidates(), ranked by most-recent
+  // count_ring sample instead of slope, with no hysteresis/trend gate.
   u32 best_counts[MAX_LEAK_CANDIDATES];
   int count = 0;
 
@@ -1588,14 +1383,12 @@ int LivenessTracker::topKlassesByGenerationCount(u32 *out, int max) {
   for (int i = 0; i < _klass_population_size; i++) {
     const KlassPopulationEntry &entry = _klass_population[i];
     if (entry.ring_fill == 0 || entry.stable_class_tag == 0) {
-      // Never sampled, or a live instance has not been resolved yet to mint
-      // its stable_class_tag from (foldKlassCountsLocked()'s own comment) -
-      // nothing usable to rank or return in either case.
+      // Never sampled, or stable_class_tag not yet minted - nothing to
+      // rank or return.
       continue;
     }
-    // ring_head is "next slot to write" (recordKlassPopulationSampleLocked(),
-    // livenessTracker.cpp) - the most recently written slot is one behind it,
-    // wrapping.
+    // ring_head is "next slot to write" - the latest written slot is one
+    // behind it, wrapping.
     u32 latest = entry.count_ring[(entry.ring_head + KLASS_POPULATION_RING_SIZE - 1) %
                                    KLASS_POPULATION_RING_SIZE];
     if (count == cap && latest <= best_counts[cap - 1]) {
@@ -1620,18 +1413,11 @@ int LivenessTracker::topKlassesByGenerationCount(u32 *out, int max) {
 }
 
 jobject LivenessTracker::resolveCandidateRepresentative(JNIEnv *env, u32 klass_id) {
-  // Shared lock excludes cleanup_table()'s exclusive lock (the only writer,
-  // and the only place that can DeleteWeakGlobalRef() an entry's
-  // representatives via foldKlassCountsLocked()'s eviction path above) for
-  // the whole lookup+resolve, so the value NewLocalRef() runs on here is
-  // always the table's current one for klass_id, never a snapshot that
-  // eviction could have invalidated in the meantime - see
-  // selectLeakCandidates()'s own comment for the race this closes.
-  //
-  // Returns the first live representative (oldest first, per the Lindy
-  // bias in KlassCountScratch::oldest[]). Callers that need all live
-  // representatives (e.g. pollWatchedTargets() tagging all of them)
-  // use resolveCandidateRepresentatives() instead.
+  // Shared lock excludes cleanup_table()'s exclusive lock (the only place
+  // that can DeleteWeakGlobalRef() representatives) for the whole
+  // lookup+resolve, so NewLocalRef() always runs on a jweak the table still
+  // owns (see selectLeakCandidates()). Returns the first live rep, oldest
+  // first; resolveCandidateRepresentatives() returns all.
   _table_lock.lockShared();
   jobject obj = nullptr;
   for (int i = 0; i < _klass_population_size; i++) {
@@ -1654,11 +1440,9 @@ jobject LivenessTracker::resolveCandidateRepresentative(JNIEnv *env, u32 klass_i
 
 int LivenessTracker::resolveCandidateRepresentatives(
     JNIEnv *env, u32 klass_id, jobject *out, int max_out) {
-  // Returns all live representatives for klass_id, oldest first.
-  // Used by pollWatchedTargets() to tag all representatives with marker
-  // tags so the canary mechanism has multiple chances to find a
-  // long-lived instance. See KlassCountScratch::oldest's comment for
-  // why multiple representatives matter.
+  // Returns all live representatives for klass_id, oldest first -
+  // pollWatchedTargets() tags all of them, giving the canary mechanism
+  // multiple chances to find a long-lived instance.
   _table_lock.lockShared();
   int count = 0;
   for (int i = 0; i < _klass_population_size; i++) {
@@ -1692,9 +1476,8 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
   JNIEnv *env = VM::jni();
   u64 start = OS::nanotime(), end;
 
-  // make sure that the tracking table is cleaned up before we start flushing it
-  // this is to make sure we are including as few false 'live' objects as
-  // possible
+  // Clean up the tracking table before flushing it, so as few falsely
+  // 'live' objects as possible are included.
   cleanup_table();
 
   _table_lock.lock();
@@ -1716,20 +1499,17 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
 
       int class_id = 0;
       if (_table[i].cached_klass_id != 0) {
-        // Already resolved by cleanup_table()'s survivor loop this epoch
-        // (resolveKlassId(), only when _gc_generations is enabled) - reuse
-        // it instead of repeating the GetObjectClass+Class.getName()+
-        // lookupClass() JNI round-trip for the same object.
+        // Already resolved by cleanup_table()'s survivor loop this epoch -
+        // reuse it instead of repeating the JNI class resolution.
         class_id = _table[i].cached_klass_id;
       } else {
         jclass clz = env->GetObjectClass(ref);
         jstring name_str = (jstring)env->CallObjectMethod(clz, _Class_getName);
         env->DeleteLocalRef(clz);
         jniExceptionCheck(env);
-        // name_str can be null if the call above threw and
-        // jniExceptionCheck() cleared the pending exception rather than
-        // propagating it - GetStringUTFChars()/ReleaseStringUTFChars()
-        // require a non-null jstring (mirrors resolveKlassId()'s own guard).
+        // name_str can be null if the call above threw and jniExceptionCheck()
+        // cleared the pending exception - GetStringUTFChars() requires a
+        // non-null jstring.
         if (name_str != nullptr) {
           const char *name = env->GetStringUTFChars(name_str, nullptr);
           if (name != nullptr) {
@@ -1740,10 +1520,9 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
         }
       }
 
-      // lookupClass() returns -1 when the class map is at capacity; do not
-      // assign it to the u32 event id (it would wrap to 0xFFFFFFFF and
-      // corrupt liveness attribution in the JFR output) — drop the sample
-      // instead, matching ObjectSampler's convention for the same failure.
+      // lookupClass() returns -1 at class-map capacity; assigning it to the
+      // u32 event id would wrap to 0xFFFFFFFF and corrupt liveness attribution
+      // - drop the sample instead.
       if (class_id >= 0) {
         event._id = class_id;
         Profiler::instance()->recordDeferredSample(_table[i].tid, _table[i].call_trace_id, BCI_LIVENESS, &event);
@@ -1776,14 +1555,12 @@ Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
     return Error("Can not track liveness for allocation samples without heap "
                  "size information.");
   }
-  // Cached for secondsToOOM() - see _max_heap_bytes' own comment
-  // (livenessTracker.h) for why this is resolved once here rather than
-  // re-querying HeapUsage::getMaxHeap() on every projection.
+  // Cached for secondsToOOM() rather than re-querying HeapUsage::getMaxHeap()
+  // on every projection (see _max_heap_bytes, livenessTracker.h).
   _max_heap_bytes = max_heap;
-  // Cached the same way and for the same reason - see _container_memory_limit's
-  // own comment (livenessTracker.h). -1 (unavailable) is a valid outcome
-  // here, unlike max_heap above: not every JVM runs under a memory-limited
-  // cgroup.
+  // Cached the same way (see _container_memory_limit, livenessTracker.h). -1
+  // (unavailable) is a valid outcome here, unlike max_heap above: not every
+  // JVM runs under a memory-limited cgroup.
   _container_memory_limit = OS::getContainerMemoryLimit();
 
   int required_table_capacity =
@@ -1809,16 +1586,11 @@ Error LivenessTracker::start(Arguments &args) {
   if (err) {
     return err;
   }
-  // Initialize leak tag free list. The tracking table survives stop()/
-  // start() (see stop()'s own comment), and a preserved entry may still own
-  // a leak tag - so reclaim those first and build the free list from the
-  // remainder. Blindly marking every tag free would let a new object
-  // receive a tag another live object still owns (corrupting leak-tag
-  // correlation for both), and the eventual second releaseLeakTag() of the
-  // duplicate would push the same index twice and write past
-  // _leak_tag_free_list. Owned tags also keep their _leak_tag_info entries
-  // (erasing them would break getLeakTagInfo() correlation for the
-  // preserved, still-live owners).
+  // The tracking table survives stop()/start(), and a preserved entry may
+  // still own a leak tag - reclaim those first (blindly freeing every tag
+  // could hand a new object a tag another live object owns; a second
+  // releaseLeakTag() would push the same index twice, writing past
+  // _leak_tag_free_list).
   bool tag_owned[LEAK_TAG_POOL_SIZE];
   memset(tag_owned, 0, sizeof(tag_owned));
   _table_lock.lock();
@@ -1873,51 +1645,34 @@ void LivenessTracker::stop() {
 Error LivenessTracker::initialize(Arguments &args) {
   _enabled = args._gc_generations || args._record_liveness;
 
-  // Gates per-klass population tracking (see the _gc_generations member's
-  // own comment in livenessTracker.h). Updated unconditionally alongside
-  // _record_heap_usage below, ahead of the _initialized guard, for the same
-  // reason: each profiler start should observe the flag it was actually
-  // started with, even though the tracking table itself persists across
-  // recordings.
+  // Gates per-klass population tracking (see _gc_generations,
+  // livenessTracker.h). Updated ahead of the _initialized guard: each start
+  // should observe the flag it was started with, even though the table
+  // persists across recordings.
   _gc_generations.store(args._gc_generations, std::memory_order_relaxed);
 
   if (!_enabled) {
     return Error::OK;
   }
 
-  // _record_heap_usage controls per-session JFR event emission only, not the
-  // tracking table. Update it before the _initialized guard so each profiler
-  // start gets the correct setting even when the table persists across recordings.
+  // _record_heap_usage controls per-session JFR event emission only;
+  // updated before the _initialized guard for the same reason.
   _record_heap_usage = args._record_heap_usage;
 
   if (_initialized) {
     // if the tracker was previously initialized return the stored result for
-    // consistency this hack also means that if the profiler is started with
-    // different arguments for liveness tracking those will be ignored it is
-    // required in order to be able to track the object liveness across many
+    // consistency; this also means liveness-tracking arguments from a later
+    // start are ignored - required to track object liveness across many
     // recordings
     return _stored_error;
   }
   _initialized = true;
 
-  // Sync the class-map-generation baseline to what it already is by this
-  // point, rather than leaving it at the constructor's 0 sentinel (see
-  // _last_class_map_generation's own comment, livenessTracker.h). By the time
-  // this runs, ObjectSampler::start() -> LivenessTracker::start() has already
-  // happened strictly after Profiler::start()'s own _class_map.clearAll()
-  // (referenceChains.cpp's own comment on this same ordering) - so
-  // classMap()->generation() here already reflects this process's first
-  // recording, not the pre-clearAll() baseline the 0 sentinel implies.
-  // Without this, cleanup_table()'s class-map-reset branch always sees a
-  // spurious mismatch (0 vs. whatever generation() has already reached) the
-  // very first time it runs after ANY start() - regardless of how much
-  // genuinely post-reset, still-valid population/leak-tracking history has
-  // already accumulated in _klass_population by then - and wipes it all,
-  // found the hard way via StaticFieldGrowingCollectionScenario silently
-  // losing its seeded candidate the moment the first post-start GC finished.
-  // A real subsequent generation bump (a later recording's own clearAll())
-  // still trips the mismatch correctly, since by then this field holds
-  // whatever value cleanup_table() last actually observed, not this sentinel.
+  // Sync the class-map-generation baseline to the current generation rather
+  // than the constructor's 0 sentinel (see _last_class_map_generation,
+  // livenessTracker.h): start() runs after Profiler::start()'s clearAll(),
+  // so the 0 sentinel would trip a spurious mismatch on the first sweep,
+  // wiping valid history.
   _last_class_map_generation = Profiler::instance()->classMap()->generation();
 
   if (VM::hotspot_version() < 11) {
@@ -1968,7 +1723,7 @@ Error LivenessTracker::initialize(Arguments &args) {
   if (_table != NULL) {
     NativeMem::record(NM_LIVENESS, (long long)sizeof(TrackingEntry) * _table_cap);
     // Uninitialized malloc storage must never look published to a
-    // shared-mode scanner (see TrackingEntry::ready's own comment).
+    // shared-mode scanner (see TrackingEntry::ready).
     for (int i = 0; i < _table_cap; i++) {
       _table[i].ready = 0;
     }
@@ -1980,37 +1735,26 @@ Error LivenessTracker::initialize(Arguments &args) {
   return _stored_error = Error::OK;
 }
 
-// The subsampling generator's state, one u64 per thread. 0 means "not seeded
-// yet": it is not a legal xorshift64 state, so it cannot collide with a live
-// stream, and the first draw on a thread seeds itself.
-//
-// Both hold a plain value with no pthread-key destructor, so nothing is freed
-// on thread exit and clearing is about meaning rather than memory: it returns
-// the slot to the unseeded sentinel, so the next JNI attachment on a reused OS
-// thread draws from a fresh stream instead of continuing the previous logical
-// thread's, and it drops that thread's skipped-bytes accumulator instead of
-// attributing it to whoever attaches next. Both are file-scope so
-// releaseThreadLocalState() can reach them from Profiler::onThreadEnd(), which
-// fires on DetachCurrentThread as well as on OS thread exit.
+// The subsampling generator's state, one u64 per thread. 0 means "not
+// seeded yet": not a legal xorshift64 state, so it cannot collide with a
+// live stream. No pthread-key destructor, so clearing
+// (releaseThreadLocalState(), from Profiler::onThreadEnd()) returns the slot
+// to the unseeded sentinel and drops the skipped-bytes accumulator.
 static ThreadLocal<u64> rng;
 static ThreadLocal<double> skipped;
 
-// track()'s admission gate: chase-phase admission boost (see
-// admitForTracking()'s declaration comment in livenessTracker.h). Both boost
-// paths precede the configured-ratio draw, so a boosted allocation never
-// consumes an RNG draw and the non-boosted path keeps the exact
-// reject-on-draw > ratio semantics (and per-thread RNG stream position drift
-// only when boosts actually happen - harmless, the streams are independent
-// per thread and probabilistic by design).
+// Chase-phase admission boost (see admitForTracking(), livenessTracker.h):
+// both boost paths precede the ratio draw, so a boosted allocation never
+// consumes an RNG draw and the non-boosted path keeps the exact reject-on-draw
+// > ratio semantics.
 bool LivenessTracker::admitForTracking(jint tid) {
   if (__atomic_load_n(&_urgent_tracking, __ATOMIC_ACQUIRE)) {
     return true;
   }
-  // Count+array two-phase publish (noteSelectedCandidates() writes the
-  // slots before release-storing the count): the acquire load pairs with
-  // that release store so every slot read below is at least as fresh as the
-  // count observed here - see the project's atomic memory ordering rule
-  // for why RELAXED is not an option on arm64.
+  // Count+array two-phase publish (noteSelectedCandidates() writes the slots
+  // before release-storing the count): this acquire load pairs with that
+  // release store, so every slot read below is at least as fresh as the
+  // observed count.
   int n = __atomic_load_n(&_watched_tid_count, __ATOMIC_ACQUIRE);
   for (int i = 0; i < n; i++) {
     if (_watched_tids[i] == tid) {
@@ -2022,12 +1766,9 @@ bool LivenessTracker::admitForTracking(jint tid) {
   }
   u64 state = rng.get();
   if (state == 0) {
-    // Seeded on a thread's first tracked allocation and kept until its TLS is
-    // released at thread end or JNI detach: the tick keeps two threads that
-    // share a tid across that boundary on different streams, and the tid
-    // separates threads alive at the same time. A thread that outlives a
-    // recording keeps its stream rather than restarting it -- there is no
-    // per-recording reseed, because stop/start does not clear the slot.
+    // Seeded on a thread's first tracked allocation, kept until its TLS is
+    // released; a thread that outlives a recording keeps its stream (no
+    // per-recording reseed - stop/start does not clear the slot).
     state = xorshift::seed(TSC::ticks(), (u64)tid);
   }
   u64 draw = xorshift::next(state);
@@ -2035,14 +1776,11 @@ bool LivenessTracker::admitForTracking(jint tid) {
   return draw < _subsample.threshold;
 }
 
-// Publishes the current poll's qualifying tids as track()'s watched-admission
-// set. Called from ReferenceChainTracker's pollWatchedTargets() with the FULL
-// candidate selection (never the hasLeakSignal() max=1 probe - that one's
-// partial view could drop tids of other still-active candidates), including
-// the zero-candidate case, which clears the set: a tid left watched after the
-// chase ends would keep admitting that thread at 100% forever (tids get
-// recycled by the OS into unrelated threads), so the set must track the
-// candidate selection exactly, poll by poll.
+// Publishes the current poll's qualifying tids as track()'s watched-
+// admission set, from pollWatchedTargets() with the FULL candidate selection
+// (never the hasLeakSignal() max=1 probe - its partial view could drop other
+// candidates' tids). The zero-candidate case clears the set: a tid left
+// watched would keep admitting at 100% (the OS reuses tids).
 void LivenessTracker::noteSelectedCandidates(const KlassCandidate *candidates,
                                               int count) {
   jint tids[KlassCandidate::MAX_QUALIFYING_TIDS];
@@ -2066,19 +1804,17 @@ void LivenessTracker::noteSelectedCandidates(const KlassCandidate *candidates,
     }
   }
 full:
-  // Copy into the live array before publishing the count (two-phase
-  // publish mirrored by admitForTracking()'s acquire load). A reader
-  // mid-scan may transiently mix old and new slot values below the OLD
-  // count - harmless: admission is advisory, and the worst case is one
-  // allocation admitted per the previous poll's set.
+  // Copy into the live array before publishing the count (two-phase publish
+  // mirrored by admitForTracking()'s acquire load). A reader mid-scan may
+  // transiently mix old and new slots below the OLD count - harmless.
   for (int i = 0; i < n; i++) {
     _watched_tids[i] = tids[i];
   }
   __atomic_store_n(&_watched_tid_count, n, __ATOMIC_RELEASE);
   if (n > 0) {
-    // TEST_LOG, not Log::debug: one line per poll on the reference-chain
-    // thread (never the allocation hot path), and pod-side verification of
-    // the boost engaging needs the tid list in the extracted lib's logs.
+    // TEST_LOG, not Log::debug: pod-side verification of the boost engaging
+    // needs the tid list in the extracted lib's logs (never the allocation hot
+    // path - one line per poll on the reference-chain thread).
     TEST_LOG("LivenessTracker::noteSelectedCandidates watched tids[%d]:",
              n);
     for (int i = 0; i < n; i++) {
@@ -2088,9 +1824,7 @@ full:
 }
 
 void LivenessTracker::setUrgentTracking(bool urgent) {
-  // Transition-only TEST_LOG (same pattern as ReferenceChainTracker::isUrgent()'s
-  // latch/release logging): the setter runs every threadLoop() iteration, so
-  // per-call logging would repeat the steady-state value line indefinitely.
+  // Transition-only TEST_LOG: the setter runs every threadLoop() iteration.
   bool prev = __atomic_exchange_n(&_urgent_tracking, urgent, __ATOMIC_ACQ_REL);
   if (prev != urgent) {
     TEST_LOG_SUMMARY("LivenessTracker::setUrgentTracking urgent=%d", (int)urgent);
@@ -2139,8 +1873,8 @@ retry:
     return;
   }
 
-  // Increment _table_size in a thread-safe manner (CAS) and store the new value
-  // in idx It bails out if _table_size would overflow _table_cap
+  // Increment _table_size via CAS and take the new index; bails out if
+  // _table_size would overflow _table_cap.
   int idx;
   do {
     idx = __atomic_load_n(&_table_size, __ATOMIC_RELAXED);
@@ -2148,9 +1882,9 @@ retry:
            !__sync_bool_compare_and_swap(&_table_size, idx, idx + 1));
 
   if (idx < _table_cap) {
-    // Unpublish first: a previous entry at this index may still be visible
-    // to shared-mode scanners (their acquire load below then skips it
-    // instead of racing the re-fill).
+    // Unpublish first: a previous entry at this index may still be visible to
+    // shared-mode scanners (their acquire load below then skips it instead of
+    // racing the re-fill).
     __atomic_store_n(&_table[idx].ready, 0, __ATOMIC_RELEASE);
     _table[idx].tid = tid;
     _table[idx].time = TSC::ticks();
@@ -2175,18 +1909,18 @@ retry:
       // guarantees we don't busy loop until memory exhaustion
       retried = true;
 
-      // try cleanup before resizing - there is a good chance it will free some
-      // space. allow_resolve=false: this runs synchronously on the
-      // allocation-sampling callback stack (see cleanup_table()'s own header
-      // comment for why resolveKlassId() is unsafe here).
+      // try cleanup before resizing - a good chance it frees space.
+      // allow_resolve=false: this runs synchronously on the
+      // allocation-sampling callback stack (see cleanup_table()'s header
+      // comment).
       cleanup_table(true, false);
 
       if (_table_cap < _table_max_cap) {
 
-        // Let's increase the size of the table
-        // This should only ever happen when sampling interval * size of table
-        // is smaller than maximum heap size. So we only support increasing
-        // the size of the table, not decreasing it.
+        // Let's increase the size of the table. This should only ever happen
+        // when sampling interval * size of table is smaller than maximum heap
+        // size, so we only support increasing the size of the table, not
+        // decreasing it.
         _table_lock.lock();
 
         // Only increase the size of the table to _table_max_cap elements
@@ -2198,9 +1932,8 @@ retry:
               NativeMem::record(NM_LIVENESS,
                   (long long)sizeof(TrackingEntry) * (newcap - _table_cap));
               // Unpublish the uninitialized growth region (see
-              // TrackingEntry::ready's own comment); the realloc happens
-              // under the exclusive table lock, so no scanner can observe
-              // the interim.
+              // TrackingEntry::ready); the realloc happens under the exclusive
+              // table lock, so no scanner can observe the interim.
               for (int i = _table_cap; i < newcap; i++) {
                 tmp[i].ready = 0;
               }
@@ -2240,12 +1973,9 @@ void LivenessTracker::maybeForceCleanup(u64 now_ns) {
     return;
   }
   if (load(_gc_epoch) == load(_last_gc_epoch)) {
-    // Nothing happened since the last sweep (organic, forced, or a prior
-    // call to this method) - re-walking an unchanged table would just
-    // re-fold the same survivor counts into this epoch's scratch, skewing
-    // the slope computed from it. Leave _last_cleanup_ns alone so the next
-    // wake keeps checking at the same ~1s cadence rather than restarting a
-    // fresh 30s wait with nothing to show for it.
+    // Nothing happened since the last sweep - re-walking an unchanged table
+    // would just re-fold the same survivor counts, skewing the slope. Leave
+    // _last_cleanup_ns alone so the next wake keeps checking at ~1s cadence.
     return;
   }
   store(_last_cleanup_ns, now_ns);
@@ -2280,7 +2010,6 @@ void LivenessTracker::onGC() {
     return;
   }
 
-  // just increment the epoch
   atomicIncRelaxed(_gc_epoch,u64(1));
 
   if (!HeapUsage::isLastGCUsageSupported()) {
@@ -2288,23 +2017,16 @@ void LivenessTracker::onGC() {
   }
 
   if (_gc_generations.load(std::memory_order_relaxed)) {
-    // Feeds heapFloorRising()'s corroboration check (selectLeakCandidates())
-    // - gated on _gc_generations, same as the per-klass population table
-    // itself, since this ring exists purely to support that feature.
-    // recordHeapFloorSample() itself checks _heap_floor_recording_disabled_for_test
-    // (debug-only) so a test can seed the ring exclusively.
+    // Feeds heapFloorRising(); gated on _gc_generations like the population
+    // table, since this ring exists purely to support that feature.
     size_t used = resolvePostGcHeapUsage(nullptr);
     TEST_LOG_SUMMARY("LivenessTracker::onGC recording heap floor used=%zu gc_epoch=%llu",
              used, (unsigned long long)load(_gc_epoch));
     if (used > 0) {
-      // A failed read (-1, e.g. transient /sys/fs/cgroup access error) is
-      // recorded as 0 rather than skipping the sample outright - see
-      // _container_mem_ring's own comment (livenessTracker.h) for why this
-      // ring must stay index-aligned with _heap_floor_ring/
-      // _heap_floor_time_ring. Harmless when _container_memory_limit is
-      // itself unavailable (secondsToOOM() never selects this ring then),
-      // and a rare, self-correcting blip otherwise (the next successful
-      // read re-establishes the real growth rate).
+  // A failed read (-1, e.g. transient /sys/fs/cgroup access error) is
+  // recorded as 0 rather than skipping the sample - this ring must stay
+  // index-aligned with the other heap-floor rings (see _container_mem_ring,
+  // livenessTracker.h).
       long container_usage = OS::getContainerMemoryUsage();
       recordHeapFloorSample((u64)used, OS::nanotime(),
                              container_usage >= 0 ? (u64)container_usage : 0);
@@ -2321,14 +2043,10 @@ void LivenessTracker::getLiveTraceIds(CallTraceIdSet& out_buffer) {
     return;
   }
   
-  // Lock the table to iterate over tracking entries
   _table_lock.lockShared();
   
-  // Reserve space to avoid reallocations during filling
-  // Note: unordered_set uses rehash for capacity management
   out_buffer.rehash(static_cast<size_t>(_table_size / 0.75f));
   
-  // Collect call_trace_id values from all live tracking entries
   for (int i = 0; i < _table_size; i++) {
     TrackingEntry* entry = &_table[i];
     // Skip unpublished slots (shared lock - see TrackingEntry::ready).

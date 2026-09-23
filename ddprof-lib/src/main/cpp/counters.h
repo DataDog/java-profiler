@@ -162,44 +162,25 @@
    * signal for spotting a recurrence. */                                     \
   X(METADATA_TREE_NULL_CHILD, "metadata_tree_null_child")                     \
   X(METADATA_TREE_DEPTH_EXCEEDED, "metadata_tree_depth_exceeded")             \
-  /* A resolved datadog.ReferenceChain could not be cached in                 \
-   * ReferenceChainTracker::_resolved_chains (referenceChains.h): a brand-new \
-   * leak-candidate klass arrived with the cache already at                   \
-   * MAX_RESOLVED_CHAINS, so its chain is dropped rather than evicting some   \
-   * other still-live sample's chain. See that constant's own comment. */     \
+  /* A resolved datadog.ReferenceChain (cache at MAX_RESOLVED_CHAINS) or a    \
+   * queued abandonment event (queue full) could not be buffered by           \
+   * ReferenceChainTracker; dropped rather than evicting a live entry. */     \
   X(REFERENCE_CHAIN_EVENTS_DROPPED, "reference_chain_events_dropped")         \
-  /* ReferenceChainTracker::releaseSearchTags() (referenceChains.cpp) failed  \
-   * to call GetObjectsWithTags() for at least one batch - the search's tag   \
-   * release is retried on a later call rather than proceeding, but this     \
-   * counts how often that retry path is taken. */                           \
+  /* releaseSearchTags() (referenceChains.cpp) failed GetObjectsWithTags()    \
+   * for a batch; the release is retried on a later call. */                  \
   X(REFERENCE_CHAIN_TAG_RELEASE_FAILED, "reference_chain_tag_release_failed") \
-  /* The profiler-side reference-chain writer could not acquire a            \
-   * sample-record lock within its bounded retry budget and dropped the      \
-   * already-dequeued datadog.ReferenceChain event for this dump - not       \
-   * permanently lost, since ReferenceChainTracker::_resolved_chains (see    \
-   * REFERENCE_CHAIN_EVENTS_DROPPED above) keeps the resolved chain cached   \
-   * and re-emits it on a later dump while the leak candidate is still      \
-   * live. */                                                                \
   X(REFERENCE_CHAIN_WRITE_DROPPED, "reference_chain_write_dropped")            \
-  /* FrontierTable's own calloc/realloc-backed storage (referenceChains.cpp) -   \
-   * outside NMT's visibility since it bypasses os::malloc, so this is the only \
-   * way to attribute its native RSS contribution. */                          \
+  /* FrontierTable's calloc/realloc-backed storage (referenceChains.cpp)      \
+   * bypasses os::malloc, so NativeMem cannot see it. */                      \
   X(REFERENCE_CHAIN_FRONTIER_TABLE_BYTES, "reference_chain_frontier_table_bytes") \
   X(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY, "reference_chain_frontier_table_capacity") \
   X(REFERENCE_CHAIN_CANDIDATE_COUNT, "reference_chain_candidate_count") \
   X(REFERENCE_CHAIN_CANDIDATES_FOUND, "reference_chain_candidates_found") \
-  /* admitStaticFieldRoots() per-class non-static quota: non-STATIC_FIELD \
-   * edges (CONSTANT_POOL, INTERFACE, SUPERCLASS, CLASS_LOADER, ...) that \
-   * were dropped because the class already hit \
-   * STATIC_FIELD_SWEEP_NON_STATIC_CAP_PER_CLASS. Total drops across all \
-   * classes/laps — compare against kind_counts (k9 total) to gauge how \
-   * much CP pressure the quota is absorbing. */ \
+  /* Non-STATIC_FIELD edges dropped by admitStaticFieldRoots()' per-class    \
+   * quota: the class already hit STATIC_FIELD_SWEEP_NON_STATIC_CAP_PER_CLASS. */ \
   X(REFERENCE_CHAIN_STATIC_SWEEP_NON_STATIC_DROPPED, "reference_chain_static_sweep_non_static_dropped") \
-  /* Incremented once per class that hit the non-static cap at least once \
-   * in a lap (on the first drop for that class). Distinguishes "a few fat \
-   * outlier classes dropping many edges" from "systematic drops across \
-   * almost all classes" — if this tracks the total class count per lap, \
-   * the cap is too low; if it stays near zero, the cap is fine. */ \
+  /* Classes that hit the non-static cap at least once in a lap (first drop   \
+   * per class): outliers dropping many edges vs systematic drops. */         \
   X(REFERENCE_CHAIN_STATIC_SWEEP_CLASSES_CAPPED, "reference_chain_static_sweep_classes_capped") \
   DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
   DD_COUNTER_TABLE_FI_DEBUG(X)                                                 \

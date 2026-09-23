@@ -45,27 +45,17 @@ const int JFR_EVENT_FLUSH_THRESHOLD = RECORDING_BUFFER_LIMIT;
 const int MAX_VAR64_LENGTH = 10;
 const int MAX_VAR32_LENGTH = 5;
 
-// Chain length Recording::recordReferenceChain() (flightRecorder.cpp) will
-// actually serialize per datadog.ReferenceChain event, independent of
-// the engine's own _hop_cap/frontier-table cap - the frontier table's
-// defensive walk bound is its maxCapacity(), which can run into the tens of
-// thousands of entries, and neither that cap nor _hop_cap is itself
-// range-validated against a buffer-safe maximum (see arguments.cpp's own
-// sub-option parsing). recordReferenceChain() truncates event->_hops to
-// this many entries before writing, so its own worst-case size never
-// depends on trusting either of those upstream caps to stay small - a chain
-// longer than this is still truncated defense-in-depth even if a caller
-// changes those caps later.
-//
-// Derived from the recording buffer's capacity, not a hand-picked constant:
-// each serialized hop costs up to one chain entry (putVar32, <=
-// MAX_VAR32_LENGTH) plus one edge label (putUtf8 = 1 encoding-tag byte + a
-// var32 length prefix + MAX_REFERENCE_CHAIN_EDGE_LABEL payload bytes), and
-// the event's fixed fields cost REFERENCE_CHAIN_EVENT_FIXED_BYTES - so a
-// full-cap event always fits inside RECORDING_BUFFER_LIMIT and the
-// reservation in recordReferenceChain() can never underflow (a fixed 4096
-// allowed a ~438 KB worst case against a 61 KB buffer - a debug assert and
-// a release-mode write past the buffer).
+// Upper bound on the hops Recording::recordReferenceChain() serializes per
+// datadog.ReferenceChain event. Neither the engine's hop cap (an operator
+// tunable, clamped only to MAX_REFERENCE_CHAINS_HOP_CAP, arguments.h) nor
+// the frontier table's maxCapacity() bounds the event size to something
+// buffer-safe, so recordReferenceChain() truncates event->_hops to this as
+// defense-in-depth. Derived from the recording buffer's capacity, not
+// hand-picked: each hop costs up to one chain entry (var32, <=
+// MAX_VAR32_LENGTH) plus one edge label (putUtf8 = tag byte + var32 length
+// + MAX_REFERENCE_CHAIN_EDGE_LABEL payload), plus the fixed fields below -
+// so a full-cap event always fits inside RECORDING_BUFFER_LIMIT and the
+// up-front reservation in recordReferenceChain() can never underflow.
 const int REFERENCE_CHAIN_EVENT_FIXED_BYTES =
     MAX_VAR32_LENGTH /* multi-byte event size prefix */ +
     3 * MAX_VAR64_LENGTH /* type id, start_time, target_tag */ +
@@ -579,23 +569,15 @@ public:
 
   void recordHeapUsage(int lock_index, long value, bool live);
 
-  // Mirrors recordHeapUsage()'s shape exactly - ReferenceChainAbandonedEvent
-  // is not stack-sample-shaped (no tid/call_trace_id), same as HeapUsage.
-  // Called from the profiler's dump-time abandoned-event drain,
-  // wired from Profiler::dump() the same way LivenessTracker::flush() is.
+  // Like recordHeapUsage(): lock_index-selected buffer, no tid/
+  // call_trace_id (ReferenceChainAbandonedEvent is not stack-sample-shaped).
   void recordReferenceChainAbandoned(int lock_index,
                                      ReferenceChainAbandonedEvent *event);
 
-  // Mirrors recordReferenceChainAbandoned() above exactly, for
-  // ReferenceChainEvent instead. Called from the profiler's dump()-time
-  // writer, itself called from Profiler::dump()'s drain loop over
-  // the engine's resolved-chain cache snapshot: the BFS
-  // scheduling thread only caches resolved chains and each dump re-emits
-  // the cache, so chain events
-  // are written on dump()'s own thread, not from the tracker thread, and
-  // unlike recordReferenceChainAbandoned() (unbounded retry budget per
-  // event) the batch shares one deadline (see the writer's contract in
-  // Profiler - the drain batch, not each event, owns the retry budget).
+  // Like recordReferenceChainAbandoned() above, for ReferenceChainEvent.
+  // The tracker caches resolved chains and each dump re-emits the cache
+  // (drainPendingChainEvents(), referenceChains.cpp), so this is a
+  // dump-time writer, not a sample-path one.
   void recordReferenceChain(int lock_index, ReferenceChainEvent *event);
 };
 

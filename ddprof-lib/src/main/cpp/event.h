@@ -89,45 +89,28 @@ public:
   u64 _skipped;
   u64 _start_time;
   u64 _age;
-  // 0 = untagged; leak tag from LivenessTracker pool. Default-initialized so
-  // every construction path (current and future) serializes a defined value -
-  // flush_table() overwrites it from the entry's own tag (track() zeroes it
-  // at insert).
+  // 0 = untagged; leak tag from LivenessTracker's pool, default-initialized
+  // so every path serializes a defined value (flush_table() overwrites it
+  // from the entry's own tag).
   int64_t leak_tag = 0;
   Context _ctx;
 };
 
-// Reporting surface for the reference-chain engine's bounded BFS.
-// `_target_tag` is the frontier tag the chain was reconstructed for;
-// `_hops`
-// holds the reconstructed chain in the same leaf(target)-to-root order:
-// hop[i].klass_id is the referrer-klass StringDictionary id and
-// hop[i].edge_label is the edge by which hop[i] is retained by its parent
-// (the field name of its parent hop for FIELD/STATIC_FIELD edges, the
-// edge-kind label otherwise, resolved by the collector filling this event).
-// For a static-field-rooted chain the root-side end is the static field's
-// holder instance followed by the declaring class (the ROOT TYPE, appended
-// by the collector from the root-attached entry's declaring-class tag) -
-// the chain then reads, root-first, as the root type retaining the holder
-// through its static field, on down to the target. `_depth` is the target
-// entry's own frontier depth (hop count from the search's root-side
-// seed). `_root_kind` is the jvmtiHeapReferenceKind of whichever edge first
-// admitted this chain into the frontier - labels *why* the
-// chain is reachable at all (JNI global, thread stack, static field, ...),
-// written out as a string (Recording::recordReferenceChain(),
-// flightRecorder.cpp) rather than a synthetic node in `_hops` itself, since
-// that array is a T_CLASS cpool array with no room for a non-class
-// placeholder.
-// Byte cap for one hop's retention-edge label in ReferenceChainHop
-// (label resolution truncates to this; recordReferenceChain() reserves
-// against it) - a shared constant so the collector and the writer cannot
-// drift apart on the worst-case event size.
+// Reporting surface for the reference-chain engine's bounded BFS. _hops
+// holds the reconstructed chain in leaf(target)-to-root order: hop[i].
+// klass_id is the referrer-klass StringDictionary id, hop[i].edge_label is
+// the edge by which hop[i] is retained by its parent (field name for
+// FIELD/STATIC_FIELD edges, edge-kind label otherwise), _depth is the
+// target entry's frontier depth. _root_kind is the jvmtiHeapReferenceKind
+// of the edge that first admitted the chain into the frontier, serialized
+// as a string (Recording::recordReferenceChain()) rather than a node in
+// _hops, which is a T_CLASS cpool array (jfrMetadata.cpp).
+// Byte cap for one hop's retention-edge label (resolution truncates to
+// this, referenceChains.h; recordReferenceChain() reserves against it).
 static constexpr size_t MAX_REFERENCE_CHAIN_EDGE_LABEL = 96;
 
-// One retained hop of a reconstructed chain. edge_label is empty when label
-// resolution is unavailable (partial mock environments); production events
-// carry either all labels or none (canary events), so the writer treats a
-// single empty label as "no labels at all".
+// One retained hop of a reconstructed chain. edge_label may be empty;
+// labels are all-or-none, so a single empty label means "no labels at all".
 struct ReferenceChainHop {
   u32 klass_id;
   std::string edge_label;
@@ -146,12 +129,11 @@ public:
 };
 
 // Search-level abandonment signal: reports why the reference-chain search
-// stopped before every frontier entry could be resolved, using the same
-// counters the search itself already maintains.
+// stopped before every frontier entry could be resolved.
 class ReferenceChainAbandonedEvent : public Event {
 public:
   u64 _start_time;
-  u8 _reason; // SearchAbandonReason (the engine's reason enum)
+  u8 _reason; // SearchAbandonReason (referenceChains.h)
   u32 _passes_run;
   u32 _frontier_size;
   int _hop_cap;

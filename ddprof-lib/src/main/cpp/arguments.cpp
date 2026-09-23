@@ -83,23 +83,14 @@ static const Multiplier UNIVERSAL[] = {
 //                          samples
 //     generations        - track surviving generations
 //     referencechains[=BOOL[:hops=N][:budget=N][:ttl=N][:framecap=N][:pausetarget=N][:painbudget=N][:firstpassbudget=N]]
-//                        - (off by default) tag/BFS-walk live-heap
-//                          samples' referrer chains back toward a GC root.
-//                          pausetarget=N (ms) is the pause-time-SLO ceiling
-//                          the engine's pacing controller adapts the effective
-//                          budget/cadence toward. painbudget=N (percent)
-//                          bounds how much
-//                          wall-clock time a *restarted* search (one begun
-//                          after a prior search already completed/abandoned)
-//                          may spend on average (the restarted-search pain budget).
-//                          firstpassbudget=N overrides just the search's
-//                          one-shot, root-seeded first pass's edge budget
-//                          (default 0 - the engine auto-scales it from
-//                          budget=N instead) since that pass alone
-//                          decides which GC roots ever enter the frontier at
-//                          all, unlike every later pass's cheap, incremental
-//                          per-node expansion.
-//                          Sub-options are placeholders pending future tuning
+//                        - (off by default) walk live-heap samples'
+//                          referrer chains back toward a GC root.
+//                          pausetarget=N (ms): pause-time-SLO ceiling per
+//                          pass. painbudget=N (percent): wall-clock share a
+//                          restarted search may spend in safepointing calls.
+//                          firstpassbudget=N: edge-budget override for the
+//                          one-shot root-seeded first pass (0 = auto-scaled
+//                          from budget=N). Sub-options are provisional.
 //     lightweight[=BOOL] - enable lightweight profiling - events without
 //     stacktraces (default: true)
 //     remotesym[=BOOL]   - enable remote symbolication for native frames
@@ -467,9 +458,8 @@ Error Arguments::parse(const char *args) {
       {
         // Sub-options are colon-delimited key=value pairs after the boolean,
         // e.g. "referencechains=true:hops=64:budget=2000". Parsed manually
-        // (not via strtok) because the outer arg loop above is itself mid
-        // strtok(..., ",") over the same buffer - a nested strtok call would
-        // clobber its saved state.
+        // because the outer loop is mid strtok(..., ",") over the same
+        // buffer - a nested strtok would clobber its state.
         char *config = value ? strchr(value, ':') : nullptr;
         if (config) {
           *(config++) = 0;
@@ -496,12 +486,9 @@ Error Arguments::parse(const char *args) {
           char *eq = strchr(cursor, '=');
           if (eq) {
             *(eq++) = 0;
-            // Floor every sub-option (and ceiling-clamp hops/budget/framecap)
-            // here: a negative hops value would wrap to ~4e9 as u32 and
-            // silently disable the hop cap, a negative budget truncates every
-            // pass to nothing, and unbounded values flow straight into loop
-            // bounds or the frontier table's allocation. One validation boundary
-            // for all sub-options instead of scattered downstream clamps.
+            // Clamp every sub-option here, once: negatives would silently
+            // disable the caps, and unbounded values flow into loop bounds
+            // or the frontier allocation.
             if (strcasecmp(cursor, "hops") == 0) {
               _reference_chains_hop_cap =
                   std::min(std::max(atoi(eq), 1), MAX_REFERENCE_CHAINS_HOP_CAP);

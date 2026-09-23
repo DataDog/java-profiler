@@ -2335,33 +2335,20 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
           ? ((event->_alloc._weight * event->_alloc._size) + event->_skipped) /
                 event->_alloc._size
           : 0);
-  // leak_tag precedes the context snapshot to match the metadata field
-  // order (jfrMetadata.cpp: leakTag is declared between weight and spanId,
-  // before || contextAttributes) - a field written on the opposite side of
-  // writeContextSnapshot() than where the metadata declares it makes every
-  // parser read it from the first context-attribute byte.
+  // Wire order must match the metadata field order: leakTag precedes the
+  // context fields (jfrMetadata.cpp).
   buf->putVar64(event->leak_tag);
   writeContextSnapshot(buf, event->_ctx);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
 
-// Maps a chain root-kind byte (a jvmtiHeapReferenceKind value recorded when
-// the chain's first hop was admitted) to a human-readable
-// label for datadog.ReferenceChain's rootKind field - only the values
-// the engine's admission callback can actually produce (a root reference's
-// own jvmtiHeapReferenceKind, or JVMTI_HEAP_REFERENCE_STATIC_FIELD for the
-// "referrer is a pre-tagged class" root-like case) have entries; anything else (including 0, root_kind's
-// "not set" default) reports "unknown" rather than crashing on an
-// out-of-range index.
-//
-// STACK_LOCAL (24) and JNI_LOCAL (25) are labeled "first_observed_via:..."
-// rather than plain "stack_local"/"jni_local": both are evidence this object was reachable from a
-// live frame/local handle at the moment a pass observed it, not a durable
-// retention reason - the frame can pop or the handle can be freed the
-// instant the pass ends, so "rooted by" would overstate what is actually
-// known. Every other kind here is durable enough for the plain "rooted by"
-// framing this field's name already implies.
+// Maps a chain root-kind byte (a jvmtiHeapReferenceKind recorded when the
+// chain's first hop was admitted) to datadog.ReferenceChain's rootKind
+// label. Only kinds the admission callback can produce have entries;
+// anything else (including 0, the "not set" default) reports "unknown".
+// STACK_LOCAL/JNI_LOCAL (24/25) are "first_observed_via:" - a live
+// frame/local handle is transient reachability, not durable retention.
 static const char *rootKindName(u8 root_kind) {
   switch (root_kind) {
   case 8:
@@ -2386,30 +2373,22 @@ static const char *rootKindName(u8 root_kind) {
 }
 
 void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
-  // event->_hops' length is bounded only by the frontier table's capacity
-  // (tens of thousands of entries) - NOT by
+  // _hops' length is bounded only by the frontier table's capacity, not by
   // MAX_JFR_EVENT_SIZE, so this event cannot use writeEventSizePrefix()'s
-  // single-byte size field (its assert(size < MAX_JFR_EVENT_SIZE) is
-  // compiled out in release builds, making an oversize chain a silent
-  // corrupt size byte rather than a caught bug) nor rely on the trailing
-  // flushIfNeeded(buf) every fixed-size event above uses (that only flushes
-  // *after* already writing past the buffer). Truncate to
-  // MAX_REFERENCE_CHAIN_EVENT_HOPS (that constant's own comment) and
-  // reserve room for the truncated worst case up front instead.
+  // single-byte size field (its assert is compiled out in release builds)
+  // nor the trailing flushIfNeeded(), which only runs after the writes.
+  // Truncate to MAX_REFERENCE_CHAIN_EVENT_HOPS and reserve the worst case
+  // up front instead.
   u32 chain_size = (u32)event->_hops.size();
   u32 emitted_size = chain_size < (u32)MAX_REFERENCE_CHAIN_EVENT_HOPS
                           ? chain_size
                           : (u32)MAX_REFERENCE_CHAIN_EVENT_HOPS;
 
-  // rootKindName() never returns a string longer than
-  // "first_observed_via:stack_local" (31 bytes) - reserve a fixed, generous
-  // 32 bytes for its putUtf8() length prefix + payload rather than computing
-  // strlen() up front.
+  // rootKindName() never returns more than "first_observed_via:stack_local".
   const char *root_kind_name = rootKindName(event->_root_kind);
-  // Per-hop edge labels: hop[i].edge_label describes the hop into hop[i],
-  // so truncation that keeps the FIRST emitted_size hops keeps their labels
-  // aligned too. Labels are all-or-none (see ReferenceChainHop), so a single
-  // empty label in the emitted range degrades the count to 0.
+  // hop[i].edge_label describes the hop INTO hop[i], so keeping the first
+  // emitted_size hops keeps their labels aligned. Labels are all-or-none,
+  // so a single empty label degrades the count to 0.
   u32 labeled = 0;
   for (u32 i = 0; i < emitted_size; i++) {
     labeled += event->_hops[i].edge_label.empty() ? 0u : 1u;
@@ -2433,29 +2412,22 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
                      : MAX_VAR32_LENGTH /* edges count, empty array */)));
 
   // Multi-byte size prefix (like writeDatadogSetting() above), not
-  // writeEventSizePrefix()'s single byte - this event's size can exceed
-  // MAX_JFR_EVENT_SIZE (255) once the chain is more than a few dozen hops.
+  // writeEventSizePrefix()'s single byte: this event can exceed 255.
   int start = buf->skip(MAX_VAR32_LENGTH);
   buf->putVar64(T_REFERENCE_CHAIN);
   buf->putVar64(event->_start_time);
   buf->putVar64(event->_target_tag);
   buf->putVar32(event->_depth);
   buf->putUtf8(root_kind_name);
-  // Original (pre-truncation) chain length, so a consumer can tell a full
-  // chain (totalHops == chain.length) from a silently truncated one -
-  // mirrors ReferenceChainAbandonedEvent's "no silent truncation" design.
+  // Pre-truncation chain length, so a consumer can detect truncation.
   buf->putVar32(chain_size);
-  // T_CLASS array field (F_CPOOL|F_ARRAY, jfrMetadata.cpp) - each entry is a
-  // StringDictionary class id, same encoding as a scalar objectClass field
-  // (e.g. recordAllocation() above), just repeated `count` times.
+  // T_CLASS cpool array field (jfrMetadata.cpp); entries are class ids.
   buf->putVar32(emitted_size);
   for (u32 i = 0; i < emitted_size; i++) {
     buf->putVar32(event->_hops[i].klass_id);
   }
-  // Edges array, LAST so its metadata position (after "chain", jfrMetadata.cpp)
-  // matches the write order. The labels pair with the chain's element order
-  // (see edge_count above); a count of 0 means label collection never ran
-  // for this event.
+  // Edges array, after "chain" to match the metadata field order; 0 means
+  // label collection did not run.
   buf->putVar32(edge_count);
   for (u32 i = 0; i < edge_count; i++) {
     buf->putUtf8(edge_labels[i]);
@@ -2469,9 +2441,8 @@ void Recording::recordReferenceChainAbandoned(
   int start = buf->skip(1);
   buf->putVar64(T_REFERENCE_CHAIN_ABANDONED);
   buf->putVar64(event->_start_time);
-  // SearchAbandonReason (the engine's reason enum) - kept as a small fixed table
-  // here rather than a T_XXX enum type, mirroring NativeSocketEvent's
-  // _operation -> kOpNames string mapping above.
+  // SearchAbandonReason (referenceChains.h), like NativeSocketEvent's
+  // kOpNames mapping above.
   static const char *const kReasons[] = {"none", "frontier_cap", "ttl", "canary_stuck"};
   buf->putUtf8(event->_reason < 4 ? kReasons[event->_reason] : "unknown");
   buf->putVar32(event->_passes_run);
