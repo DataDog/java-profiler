@@ -45,6 +45,40 @@ const int JFR_EVENT_FLUSH_THRESHOLD = RECORDING_BUFFER_LIMIT;
 const int MAX_VAR64_LENGTH = 10;
 const int MAX_VAR32_LENGTH = 5;
 
+// Chain length Recording::recordReferenceChain() (flightRecorder.cpp) will
+// actually serialize per datadog.ReferenceChain event, independent of
+// the engine's own _hop_cap/frontier-table cap - the frontier table's
+// defensive walk bound is its maxCapacity(), which can run into the tens of
+// thousands of entries, and neither that cap nor _hop_cap is itself
+// range-validated against a buffer-safe maximum (see arguments.cpp's own
+// sub-option parsing). recordReferenceChain() truncates event->_hops to
+// this many entries before writing, so its own worst-case size never
+// depends on trusting either of those upstream caps to stay small - a chain
+// longer than this is still truncated defense-in-depth even if a caller
+// changes those caps later.
+//
+// Derived from the recording buffer's capacity, not a hand-picked constant:
+// each serialized hop costs up to one chain entry (putVar32, <=
+// MAX_VAR32_LENGTH) plus one edge label (putUtf8 = 1 encoding-tag byte + a
+// var32 length prefix + MAX_REFERENCE_CHAIN_EDGE_LABEL payload bytes), and
+// the event's fixed fields cost REFERENCE_CHAIN_EVENT_FIXED_BYTES - so a
+// full-cap event always fits inside RECORDING_BUFFER_LIMIT and the
+// reservation in recordReferenceChain() can never underflow (a fixed 4096
+// allowed a ~438 KB worst case against a 61 KB buffer - a debug assert and
+// a release-mode write past the buffer).
+const int REFERENCE_CHAIN_EVENT_FIXED_BYTES =
+    MAX_VAR32_LENGTH /* multi-byte event size prefix */ +
+    3 * MAX_VAR64_LENGTH /* type id, start_time, target_tag */ +
+    3 * MAX_VAR32_LENGTH /* depth, totalHops, chain count */ +
+    32 /* rootKind string, generous */ +
+    MAX_VAR32_LENGTH /* edges count */;
+const int REFERENCE_CHAIN_EVENT_PER_HOP_BYTES =
+    MAX_VAR32_LENGTH /* chain entry */ +
+    1 + MAX_VAR32_LENGTH + MAX_REFERENCE_CHAIN_EDGE_LABEL /* edge label */;
+const int MAX_REFERENCE_CHAIN_EVENT_HOPS =
+    (RECORDING_BUFFER_LIMIT - REFERENCE_CHAIN_EVENT_FIXED_BYTES) /
+    REFERENCE_CHAIN_EVENT_PER_HOP_BYTES;
+
 #ifndef CONCURRENCY_LEVEL
 const int CONCURRENCY_LEVEL = 16;
 #endif
@@ -387,6 +421,9 @@ public:
                                 NativeSocketEvent *event);
   void recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                             ObjectLivenessEvent *event);
+  void recordReferenceChain(Buffer *buf, ReferenceChainEvent *event);
+  void recordReferenceChainAbandoned(Buffer *buf,
+                                     ReferenceChainAbandonedEvent *event);
   void recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
                             LockEvent *event);
   void recordThreadPark(Buffer *buf, int tid, u64 call_trace_id,
@@ -541,6 +578,24 @@ public:
                             const char *value, const char *unit);
 
   void recordHeapUsage(int lock_index, long value, bool live);
+
+  // Mirrors recordHeapUsage()'s shape exactly - ReferenceChainAbandonedEvent
+  // is not stack-sample-shaped (no tid/call_trace_id), same as HeapUsage.
+  // Called from Profiler::writeReferenceChainAbandoned() (profiler.cpp),
+  // wired from Profiler::dump() the same way LivenessTracker::flush() is.
+  void recordReferenceChainAbandoned(int lock_index,
+                                     ReferenceChainAbandonedEvent *event);
+
+  // Mirrors recordReferenceChainAbandoned() above exactly, for
+  // ReferenceChainEvent instead. Called from Profiler::writeReferenceChain()
+  // (profiler.cpp), itself called from Profiler::dump()'s drain loop over
+  // the engine's resolved-chain cache snapshot: the BFS
+  // scheduling thread only caches resolved chains and each dump re-emits
+  // the cache, so chain events
+  // are written on dump()'s own thread, not from the tracker thread, and
+  // unlike recordReferenceChainAbandoned() (unbounded retry budget per
+  // event) the batch shares one deadline (writeReferenceChain()'s comment).
+  void recordReferenceChain(int lock_index, ReferenceChainEvent *event);
 };
 
 #endif // _FLIGHTRECORDER_H
