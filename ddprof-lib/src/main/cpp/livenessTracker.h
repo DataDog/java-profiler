@@ -329,6 +329,10 @@ private:
   // comment below). _watched_tids is two-phase-published: slots first, then
   // _watched_tid_count with RELEASE (admitForTracking()'s ACQUIRE load pairs
   // with it) - a reader never trusts a slot beyond the count it observed.
+  // Every slot access is ATOMIC (__atomic_* builtins, relaxed): the poll
+  // thread rewrites slots while allocation threads may still read them under
+  // an acquire count load that observed the OLD count - plain accesses there
+  // are a C++ data race (UB), not just a staleness artifact.
   jint _watched_tids[KlassCandidate::MAX_QUALIFYING_TIDS];
   volatile int _watched_tid_count;
   volatile bool _urgent_tracking;
@@ -1040,6 +1044,16 @@ public:
   // live JVM and is therefore out of gtest's reach.
   int klassPopulationSizeForTest() const { return _klass_population_size; }
 
+  // Runs foldKlassCountsLocked()'s JNI-free table work only (the zero-sample
+  // pass over _klass_population): with an empty _klass_count_scratch and
+  // env == nullptr no representative-minting JNI can run, so the zero-sample
+  // pass for klasses absent from this epoch's fold is what gets exercised.
+  void foldKlassCountsZeroSampleForTest(u64 epoch) {
+    _table_lock.lock();
+    foldKlassCountsLocked(nullptr, epoch, /*allow_resolve=*/false);
+    _table_lock.unlock();
+  }
+
   // Leak-tag pool test seams - same "for testing only" rationale as the
   // klass-population seams above: the pool acquire/release/info mechanics
   // are JNI-free pure logic, so they are directly testable; only
@@ -1082,7 +1096,9 @@ public:
     return __atomic_load_n(&_watched_tid_count, __ATOMIC_ACQUIRE);
   }
 
-  jint watchedTidForTest(int i) const { return _watched_tids[i]; }
+  jint watchedTidForTest(int i) const {
+    return __atomic_load_n(&_watched_tids[i], __ATOMIC_RELAXED);
+  }
 
   static jlong leakTagBaseForTest() { return LEAK_TAG_BASE; }
 
