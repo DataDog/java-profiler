@@ -112,7 +112,7 @@ Five things are easy to get wrong:
 ## Implementation notes
 
 `SAMPLER_PERF_PROBE(SP_CPU)` declares a `SamplerPerfProbe`: the constructor takes
-a `TSC::ticks()` timestamp, the destructor adds the elapsed ticks to
+a `os::nanotime()` timestamp, the destructor adds the elapsed ticks to
 `sampler_ticks.<name>` and bumps `sampler_count.<name>`.
 
 - **Why RAII rather than a manual start/stop pair.** Every instrumented handler
@@ -120,13 +120,13 @@ a `TSC::ticks()` timestamp, the destructor adds the elapsed ticks to
   exit and would silently miss any newly added one.
 - **Async-signal safety.** All probe state is on the stack. No `thread_local` —
   one here would risk the lazy DTV-slot `malloc` that deadlocked against the
-  JVMCI compiler on Graal aarch64 (see `guards.h`). The destructor only reads the
-  TSC and issues two relaxed atomic adds, which land on separate cache lines
-  because `Counters` pads every slot to 128 bytes.
+  JVMCI compiler on Graal aarch64 (see `guards.h`). The destructor only reads
+  `OS::nanotime()` and issues two relaxed atomic adds, which land on separate
+  cache lines because `Counters` pads every slot to 128 bytes.
 - **Guard ordering.** The probe is declared *after* any `ErrnoPreserver`, which
-  must stay the first-declared local so it destructs last — `TSC::ticks()` can
-  reach `clock_gettime()` on the `OS::nanotime()` fallback path, which may set
-  `errno`. In `PerfEvents::signalHandler` the probe sits between
+  must stay the first-declared local so it destructs last — `OS::nanotime()`
+  calls `clock_gettime()`, which may set `errno`. In `PerfEvents::signalHandler`
+  the probe sits between
   `ErrnoPreserver` and `PerfFdRearmGuard` on purpose, so the guard's rearm
   `ioctl`s are inside the measured window.
 - **Crash recovery does not lose samples.** The `sigsetjmp` landing pad is inside
