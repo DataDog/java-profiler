@@ -12,6 +12,7 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
 import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.security.MessageDigest;
@@ -114,6 +115,9 @@ public class StubUnwindCpuTest extends CStackAwareAbstractProfilerTest {
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx"})
     public void testStubUnwinding(@CStack String cstack) throws Exception {
+        // HotSpot runtime stubs are the test subject; J9 and Zing do not
+        // generate them (and have no '.itable stub()' frames to sample).
+        Assumptions.assumeTrue(!Platform.isJ9() && !Platform.isZing());
         registerCurrentThreadForWallClockProfiling();
         byte[] data = new byte[4096];
         Arrays.fill(data, (byte) 0x5a);
@@ -187,9 +191,13 @@ public class StubUnwindCpuTest extends CStackAwareAbstractProfilerTest {
         }
 
         // itable/vtable stubs: the megamorphic loop must show the stub frame
-        // with the calling Java frame above it.
-        assertTrue(scan.sawItableStub, "no itable stub frames seen; scan=" + scan);
-        assertTrue(scan.sawItableUnwound, "itable stub did not unwind to a Java frame; scan=" + scan);
+        // with the calling Java frame above it. Graal compiles megamorphic
+        // invokeinterface without the shared itable stub, so no stub frames
+        // appear in the profile.
+        if (!Platform.isGraal()) {
+            assertTrue(scan.sawItableStub, "no itable stub frames seen; scan=" + scan);
+            assertTrue(scan.sawItableUnwound, "itable stub did not unwind to a Java frame; scan=" + scan);
+        }
 
         // Intrinsic stubs (hash/checksum/arraycopy): the frame must be
         // visible and unwind to a Java frame where the metadata covers it;
