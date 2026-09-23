@@ -405,6 +405,57 @@ TEST_F(KlassPopulationTest, RingBufferWrapsAroundAtThirtySamples) {
     EXPECT_EQ(entry.last_updated_epoch, RING_SIZE + 5u);
 }
 
+// A klass whose every tracked instance died never appears in
+// _klass_count_scratch, so the per-scratch fold skips it - without the
+// zero-sample pass its ring would keep the last positive count and its
+// consecutive_positive trend, keeping a dead population a leak candidate
+// until the entry is evicted. Running a fold for a later epoch with an
+// empty scratch must push a zero sample into the absent entry's ring,
+// refresh its last_updated_epoch, and reset consecutive_positive.
+TEST_F(KlassPopulationTest, FoldRecordsZeroSampleForClassesThatDisappear) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    // Seed a positive population history for klass 42 through epoch 3.
+    for (u64 epoch = 1; epoch <= 3; epoch++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(42, /*count=*/3 + (int)epoch,
+                                              epoch, &slot, &created);
+    }
+    KlassPopulationEntry entry;
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(42, &entry));
+    ASSERT_EQ(entry.last_updated_epoch, 3u);
+
+    // Every instance of klass 42 died: epoch 4's fold runs with an EMPTY
+    // scratch (no survivors at all).
+    tracker->foldKlassCountsZeroSampleForTest(/*epoch=*/4);
+
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(42, &entry));
+    // Zero sample recorded for the fold's epoch...
+    EXPECT_EQ(entry.last_updated_epoch, 4u);
+    // ...visible as the most recently pushed ring value...
+    u8 head = (u8)((entry.ring_head + 30 - 1) %
+                   30);
+    EXPECT_EQ(entry.count_ring[head], 0u);
+    // ...and the stale positive trend is cleared.
+    EXPECT_EQ(entry.consecutive_positive, 0);
+
+    // A klass that DID receive a survivor sample this epoch is not touched
+    // again by the zero-sample pass (its just-pushed count stays intact).
+    int slot;
+    bool created;
+    tracker->klassPopulationRecordForTest(43, /*count=*/2, /*epoch=*/4, &slot,
+                                           &created);
+    EXPECT_TRUE(created);
+    tracker->foldKlassCountsZeroSampleForTest(/*epoch=*/4);
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(43, &entry));
+    // The survivor sample (2) is still the entry's most recent value - not
+    // overwritten by a zero sample.
+    u8 head43 = (u8)((entry.ring_head + 30 - 1) %
+                     30);
+    EXPECT_EQ(entry.count_ring[head43], 2u);
+}
+
 // Filling the table to MAX_KLASS_POPULATION_ENTRIES and then inserting one
 // more distinct klass_id must evict the least-recently-updated entry (the
 // smallest last_updated_epoch) and return its representative jweak so the
