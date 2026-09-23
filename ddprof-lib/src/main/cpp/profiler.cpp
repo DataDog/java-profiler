@@ -31,6 +31,7 @@
 #include "objectSampler.h"
 #include "os.h"
 #include "perfEvents.h"
+#include "referenceChains.h"
 #include "safeAccess.h"
 #include "samplerPerf.h"
 #include "stackFrame.h"
@@ -1702,6 +1703,26 @@ Error Profiler::start(Arguments &args, bool reset) {
       }
     }
   }
+  if ((activated & EM_ALLOC) && args._reference_chains) {
+    // Reference-chain tracking chases LivenessTracker's leak-tagged
+    // candidates, so it only runs when allocation sampling actually
+    // activated. Must run AFTER ObjectSampler::start() ->
+    // LivenessTracker::start() (ordering noted in referenceChains.cpp) -
+    // the block above is that ordering point.
+    error = ReferenceChainTracker::instance()->start(args);
+    if (error) {
+      Log::warn("%s", error.message());
+      error = Error::OK; // recoverable - recording continues without chains
+    } else {
+      ReferenceChainTracker::instance()->startThread();
+      // Pre-existing threads must be registered from the profiler lifecycle
+      // (registerExistingThreads()'s own comment): Profiler::onThreadStart()
+      // only sees threads started after the recording began.
+      ReferenceChainTracker::instance()->registerExistingThreads(VM::jvmti(),
+                                                                 VM::jni());
+      _reference_chains_active = true;
+    }
+  }
   if (_event_mask & EM_NATIVEMEM) {
     error = malloc_tracer.start(args);
     if (error) {
@@ -1791,6 +1812,15 @@ Error Profiler::stop() {
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
+  if (_reference_chains_active) {
+    // Join the BFS thread and clear the recording-boundary state before the
+    // rest of the teardown (stopThread() wakes and joins; stop() resets the
+    // per-recording caches). Matches the Profiler::stop() order documented
+    // in referenceChains.cpp's stopThread()/stop() comments.
+    ReferenceChainTracker::instance()->stopThread();
+    ReferenceChainTracker::instance()->stop();
+    _reference_chains_active = false;
+  }
   if (_event_mask & EM_NATIVEMEM)
     malloc_tracer.stop();
   // Stop the refresher BEFORE socket unpatch: the refresher calls
@@ -1951,6 +1981,31 @@ Error Profiler::dump(const char *path, const int length) {
     // flush the liveness tracker instance and note all the threads referenced
     // by the live objects
     LivenessTracker::instance()->flush(thread_ids);
+
+    // Emit the reference-chain tracker's pending events into this dumping
+    // chunk: chain events are snapshot-and-kept (re-emitted into every chunk
+    // while the sample stays live), abandonment events are a true drain.
+    // Runs before rotateDictsAndRun() so the events land inside the chunk
+    // being written, and under a profiler lock like every other
+    // recording-buffer writer (dump runs on a normal thread holding only
+    // _state_lock; the _state_lock -> _locks order is the codebase's).
+    {
+      int dump_tid = ProfiledThread::currentTid();
+      u32 lock_index = getLockIndex(dump_tid >= 0 ? dump_tid : 0);
+      _locks[lock_index].lock();
+      std::vector<ReferenceChainEvent> chain_events;
+      ReferenceChainTracker::instance()->drainPendingChainEvents(&chain_events);
+      for (auto &event : chain_events) {
+        _jfr.recordReferenceChain(lock_index, &event);
+      }
+      std::vector<ReferenceChainAbandonedEvent> abandoned_events;
+      ReferenceChainTracker::instance()->drainPendingAbandonedEvents(
+          &abandoned_events);
+      for (auto &event : abandoned_events) {
+        _jfr.recordReferenceChainAbandoned(lock_index, &event);
+      }
+      _locks[lock_index].unlock();
+    }
 
     Libraries::instance()->refresh();
     updateJavaThreadNames();
