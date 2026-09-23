@@ -627,7 +627,7 @@ void *VM::getLibraryHandle(const char *name) {
 void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                jclass klass) {
   ProfiledThread::initCurrentThreadSignalSafe();
-  JVMSupport::loadMethodIDsIfNeeded(jvmti, jni, klass);
+  JVMSupport::loadMethodIDsIfNeeded(jvmti, jni, klass, /*force_patch=*/false);
 }
 
 void JNICALL VM::ClassLoad(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
@@ -668,11 +668,12 @@ VM::RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
       _orig_RedefineClasses(jvmti, class_count, class_definitions);
 
   if (result == 0) {
-    // jmethodIDs are invalidated after RedefineClasses
+    // jmethodIDs are invalidated after RedefineClasses -- force_patch=true;
+    // see patchClassLoaderData() for why the persisted tag can't be trusted here.
     JNIEnv *env = jni();
     for (int i = 0; i < class_count; i++) {
       if (class_definitions[i].klass != NULL) {
-        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, class_definitions[i].klass);
+        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, class_definitions[i].klass, /*force_patch=*/true);
       }
     }
   }
@@ -685,11 +686,12 @@ jvmtiError VM::RetransformClassesHook(jvmtiEnv *jvmti, jint class_count,
   jvmtiError result = _orig_RetransformClasses(jvmti, class_count, classes);
 
   if (result == 0) {
-    // jmethodIDs are invalidated after RetransformClasses
+    // Same reasoning as RedefineClassesHook above: jmethodIDs are invalidated
+    // after RetransformClasses too, so force_patch=true.
     JNIEnv *env = jni();
     for (int i = 0; i < class_count; i++) {
       if (classes[i] != NULL) {
-        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, classes[i]);
+        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, classes[i], /*force_patch=*/true);
       }
     }
   }

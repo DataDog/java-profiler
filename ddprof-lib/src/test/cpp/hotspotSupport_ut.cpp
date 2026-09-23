@@ -28,8 +28,8 @@ static HotspotSupportGlobalSetup hotspot_support_global_setup;
 // ---------------------------------------------------------------------------
 class HotspotSupportTestAccessor {
 public:
-    static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all) {
-        return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, load_all);
+    static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all, bool force_patch) {
+        return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, load_all, force_patch);
     }
 };
 
@@ -71,7 +71,7 @@ TEST_F(HotspotSupportLoadMethodIDsTest, LoadAllSucceedsAndCallsGetClassMethodsOn
     jclass fake_klass = reinterpret_cast<jclass>(0x1);
 
     bool result = HotspotSupportTestAccessor::loadMethodIDsIfNeededImpl(
-        &mock_jvmti, /*jni=*/nullptr, fake_klass, /*load_all=*/true);
+        &mock_jvmti, /*jni=*/nullptr, fake_klass, /*load_all=*/true, /*force_patch=*/false);
 
     EXPECT_TRUE(result);
     EXPECT_EQ(1, g_get_class_methods_calls)
@@ -86,14 +86,17 @@ TEST_F(HotspotSupportLoadMethodIDsTest, LoadAllSucceedsAndCallsGetClassMethodsOn
 // patchClassLoaderData() (the JDK-8062116 preallocation workaround, only
 // active on JDK 8) tags each jclass with how many of its methods have
 // already been preallocated into the ClassLoaderData-wide MethodList, so a
-// replayed ClassPrepare (loadAllMethodIDsIfNeeded() on profiler restart),
-// RedefineClasses or RetransformClasses patches only the new tail
-// [already_patched, method_count) instead of re-prepending a full set of
-// blocks every time. The test above never exercises this: it leaves
-// VM::hotspot_version() at its gtest-binary default (not 8), so
-// patchClassLoaderData() is a no-op there. These tests force hotspot_version
-// 8 and fake the VMKlass/VMClassLoaderData memory layout so the tag/resume
-// loop itself runs.
+// replayed ClassPrepare (loadAllMethodIDsIfNeeded() on profiler restart)
+// patches only the new tail [already_patched, method_count) -- or skips
+// entirely when method_count hasn't grown -- instead of re-prepending a full
+// set of blocks every time. RedefineClasses/RetransformClasses do not get
+// this tag-based skip (force_patch=true): they invalidate existing
+// jmethodIDs even when method_count is unchanged, so the tag alone cannot
+// tell patchClassLoaderData() whether fresh capacity is still needed. The
+// test above never exercises this: it leaves VM::hotspot_version() at its
+// gtest-binary default (not 8), so patchClassLoaderData() is a no-op there.
+// These tests force hotspot_version 8 and fake the VMKlass/VMClassLoaderData
+// memory layout so the tag/resume loop itself runs.
 // ---------------------------------------------------------------------------
 
 // Friend of VM: lets these tests force isHotspot()/hotspot_version()==8 and
@@ -304,10 +307,10 @@ protected:
 
     void setMethodCount(int count) { methods_header = count; }
 
-    void callPatch() {
+    void callPatch(bool force_patch = false) {
         jclass fake_jclass = reinterpret_cast<jclass>(0x1);
         HotspotSupportTestAccessor::loadMethodIDsIfNeededImpl(
-            &mock_jvmti, reinterpret_cast<JNIEnv*>(&mock_jni), fake_jclass, /*load_all=*/true);
+            &mock_jvmti, reinterpret_cast<JNIEnv*>(&mock_jni), fake_jclass, /*load_all=*/true, force_patch);
     }
 };
 
@@ -350,6 +353,33 @@ TEST_F(PatchClassLoaderDataTest, SecondCallWithUnchangedMethodCountSkipsPatchEnt
     EXPECT_EQ(0, g_lock_calls) << "the ClassLoaderData lock must not be taken when nothing needs patching";
     EXPECT_EQ(1, methodListChainLength(fake_cld.method_list_head))
         << "no new MethodList node should be prepended when nothing changed";
+}
+
+// Simulates RedefineClasses/RetransformClasses re-invoking the patch on a
+// class whose method_count hasn't changed since the first call -- see the
+// file comment above for why force_patch must bypass the tag here. A mutant
+// that let force_patch fall through to the GetTag-based skip would leave
+// this second call a no-op -- exactly the bug this test guards against.
+TEST_F(PatchClassLoaderDataTest, ForcePatchRepatchesEvenWithUnchangedMethodCount) {
+    setMethodCount(MethodList::SIZE);
+    callPatch(/*force_patch=*/false);
+    ASSERT_EQ(1, methodListChainLength(fake_cld.method_list_head));
+    ASSERT_EQ(MethodList::SIZE, g_tag);
+
+    g_get_tag_calls = 0;
+    g_set_tag_calls = 0;
+    g_lock_calls = 0;
+    g_unlock_calls = 0;
+
+    callPatch(/*force_patch=*/true);
+
+    EXPECT_EQ(0, g_get_tag_calls)
+        << "force_patch must bypass the persisted tag entirely, not just override its outcome";
+    EXPECT_EQ(1, g_lock_calls) << "a forced re-patch must take the ClassLoaderData lock";
+    EXPECT_EQ(2, methodListChainLength(fake_cld.method_list_head))
+        << "a forced re-patch must prepend fresh capacity even though method_count is unchanged";
+    EXPECT_EQ(1, g_set_tag_calls);
+    EXPECT_EQ(MethodList::SIZE, g_last_set_tag_value);
 }
 
 // Simulates a ClassPrepare replay where the class gained methods since the

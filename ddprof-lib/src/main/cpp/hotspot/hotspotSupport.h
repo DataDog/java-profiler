@@ -35,7 +35,7 @@ private:
                                  int max_depth, StackContext *java_ctx,
                                  bool *truncated);
 
-    static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all);
+    static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all, bool force_patch);
 public:
     static void initClassloaderInfo(JNIEnv* jni);
     
