@@ -111,10 +111,12 @@ def cmd_count(args):
 _NON_TEST_TASK_FAILURE_RE = re.compile(r"Execution failed for task '([^']+)'")
 
 # The JVM's own crash banner -- reliable on every platform, including musl:
-# nothing but a real crash prints this.
+# nothing but a real crash prints this. The report file name only counts with
+# an actual pid: Gradle --info also prints every test JVM's command line, whose
+# -XX:ErrorFile=...hs_err_pid%p.log template is configuration, not a crash.
 _CRASH_RE = re.compile(
     r"A fatal error has been detected by the Java Runtime Environment"
-    r"|hs_err_pid"
+    r"|hs_err_pid\d+"
 )
 
 # Gradle reporting that a forked test JVM died. Reliable for the glibc/macOS
