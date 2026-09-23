@@ -198,12 +198,6 @@ stresstest:arm64-musl:
   image: ${BUILD_IMAGE_X64_EL7}
   variables:
     TARGET: linux-x64
-    # The shared-runner default container memory limit isn't enough for this
-    # job: Gradle's own daemon/workers, gtest builds, and the JVM under test
-    # (testMaxHeap=1536m) all coexist in the same pod, and the container was
-    # getting OOMKilled (exit 137) after the test run had already finished.
-    KUBERNETES_MEMORY_REQUEST: 4Gi
-    KUBERNETES_MEMORY_LIMIT: 6Gi
   # Two independent cache entries rather than extending .cache-config-pull:
   # the JDK-under-test tarball (functional-tests.sh's JDK_CACHE_DIR) has
   # nothing to do with the Gradle/Maven cache's key or lifetime. It doesn't
