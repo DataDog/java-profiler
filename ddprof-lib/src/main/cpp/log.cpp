@@ -1,5 +1,6 @@
 /*
  * Copyright 2021 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,8 +28,8 @@ LogLevel Log::_level = LOG_NONE;
 void Log::open(Arguments &args) {
   open(args._log, args._loglevel);
 
-  if (args._unknown_arg != NULL) {
-    warn("Unknown argument: %s", args._unknown_arg);
+  for (const std::string &arg : args._unknown_args) {
+    warn("Unknown argument: %s", arg.c_str());
   }
 }
 

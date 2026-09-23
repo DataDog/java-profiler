@@ -260,7 +260,7 @@ public:
   const char* _file;
   const char* _log;
   const char* _loglevel;
-  const char* _unknown_arg;
+  std::vector<std::string> _unknown_args;
   const char* _filter;
   CStack _cstack;
   Clock _clock;
@@ -311,7 +311,7 @@ public:
         _file(NULL),
         _log(NULL),
         _loglevel(NULL),
-        _unknown_arg(NULL),
+        _unknown_args({}),
         _filter(NULL),
         _cstack(CSTACK_DEFAULT),
         _clock(CLK_DEFAULT),

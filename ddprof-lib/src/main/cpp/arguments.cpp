@@ -119,6 +119,25 @@ static const Multiplier UNIVERSAL[] = {
 //     alluser            - include only user-mode events
 //
 
+// Parses the y/yes,t/true,1 vs n/no,f/false,0 boolean convention. Returns false
+// (leaving *out untouched) when the value matches none of them, so the caller
+// can raise "Invalid <option> value" instead of coercing garbage to a default.
+static bool parseBoolOption(const char *value, bool *out) {
+  if (strcmp(value, "y") == 0 || strcmp(value, "yes") == 0 ||
+      strcmp(value, "t") == 0 || strcmp(value, "true") == 0 ||
+      strcmp(value, "1") == 0) {
+    *out = true;
+    return true;
+  }
+  if (strcmp(value, "n") == 0 || strcmp(value, "no") == 0 ||
+      strcmp(value, "f") == 0 || strcmp(value, "false") == 0 ||
+      strcmp(value, "0") == 0) {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
 Error Arguments::parse(const char *args) {
   if (args == NULL) {
     return Error::OK;
@@ -255,7 +274,13 @@ Error Arguments::parse(const char *args) {
       }
 
       CASE("generations")
-      _gc_generations = value != NULL && strcmp(value, "true") == 0;
+      if (value != NULL) {
+        if (!parseBoolOption(value, &_gc_generations)) {
+          msg = "Invalid generations value";
+        }
+      } else {
+        _gc_generations = true;
+      }
       if (_gc_generations && _memory <= 0) {
         _memory =
             4 * 1024 *
@@ -327,8 +352,10 @@ Error Arguments::parse(const char *args) {
           _cstack = CSTACK_VM;
           _features.mixed = 1;
           _features.carrier_frames = 1;
-        } else {
+        } else if (strcmp(value, "no") == 0) {
           _cstack = CSTACK_NO;
+        } else {
+          msg = "Invalid cstack value";
         }
       }
 
@@ -345,30 +372,14 @@ Error Arguments::parse(const char *args) {
       }
 
       CASE("lightweight")
-      if (value != NULL) {
-        switch (value[0]) {
-        case 'y': // yes
-        case 't': // true
-          _lightweight = true;
-          break;
-        default:
-          _lightweight = false;
-        }
+      if (value != NULL && !parseBoolOption(value, &_lightweight)) {
+        msg = "Invalid lightweight value";
       }
 
       CASE("mcleanup")
       if (value != NULL) {
-        switch (value[0]) {
-        case 'n': // no
-        case 'f': // false
-        case '0': // 0
-          _enable_method_cleanup = false;
-          break;
-        case 'y': // yes
-        case 't': // true
-        case '1': // 1
-        default:
-          _enable_method_cleanup = true;
+        if (!parseBoolOption(value, &_enable_method_cleanup)) {
+          msg = "Invalid mcleanup value";
         }
       } else {
         // No value means enable
@@ -377,17 +388,8 @@ Error Arguments::parse(const char *args) {
 
       CASE("remotesym")
       if (value != NULL) {
-        switch (value[0]) {
-        case 'n': // no
-        case 'f': // false
-        case '0': // 0
-          _remote_symbolication = false;
-          break;
-        case 'y': // yes
-        case 't': // true
-        case '1': // 1
-        default:
-          _remote_symbolication = true;
+        if (!parseBoolOption(value, &_remote_symbolication)) {
+          msg = "Invalid remotesym value";
         }
       } else {
         // No value means enable
@@ -396,14 +398,8 @@ Error Arguments::parse(const char *args) {
 
       CASE("jvmtistacks")
       if (value != NULL) {
-        switch (value[0]) {
-        case 'y': // yes
-        case 't': // true
-        case '1': // 1
-          _jvmtistacks = true;
-          break;
-        default:
-          _jvmtistacks = false;
+        if (!parseBoolOption(value, &_jvmtistacks)) {
+          msg = "Invalid jvmtistacks value";
         }
       } else {
         _jvmtistacks = true;
@@ -424,21 +420,17 @@ Error Arguments::parse(const char *args) {
                   _wallclock_sampler = JVMTI;
                   break;
               case 'a':
-              default:
                   _wallclock_sampler = ASGCT;
+                  break;
+              default:
+                  msg = "Invalid wallsampler value";
           }
       }
 
       CASE("nosanity")
       if (value != NULL) {
-        switch (value[0]) {
-        case 'n': // no
-        case 'f': // false
-        case '0': // 0
-          _skip_sanity_checks = false;
-          break;
-        default:
-          _skip_sanity_checks = true;
+        if (!parseBoolOption(value, &_skip_sanity_checks)) {
+          msg = "Invalid nosanity value";
         }
       } else {
         // A bare 'nosanity' with no value skips the checks.
@@ -474,18 +466,8 @@ Error Arguments::parse(const char *args) {
         if (config) {
           *(config++) = 0;
         }
-        if (value != NULL) {
-          switch (value[0]) {
-          case 'n': // no
-          case 'f': // false
-          case '0': // 0
-            _reference_chains = false;
-            break;
-          default:
-            _reference_chains = true;
-          }
-        } else {
-          _reference_chains = true;
+        if (value != NULL && !parseBoolOption(value, &_reference_chains)) {
+          msg = "Invalid referencechains value";
         }
         char *cursor = config;
         while (cursor != NULL) {
@@ -528,15 +510,18 @@ Error Arguments::parse(const char *args) {
               _reference_chains_first_pass_budget = std::min(
                   std::max(atoi(eq), 0), MAX_REFERENCE_CHAINS_FIRST_PASS_BUDGET);
               _reference_chains_tuned_mask |= REF_CHAINS_TUNED_FIRST_PASS_BUDGET;
+            } else {
+              _unknown_args.push_back(cursor);
             }
+          } else if (*cursor != 0) {
+            _unknown_args.push_back(cursor);
           }
           cursor = next;
         }
       }
 
       DEFAULT()
-      if (_unknown_arg == NULL)
-        _unknown_arg = arg;
+      _unknown_args.push_back(arg);
     }
   }
 
