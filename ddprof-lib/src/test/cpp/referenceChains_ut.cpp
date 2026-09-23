@@ -1351,11 +1351,11 @@ TEST(FrontierTableTest, ConcurrentInsertWhileGrowingDoesNotCrash) {
     EXPECT_EQ(thread_count * tags_per_thread, found);
 }
 
-TEST(FrontierTableTest, ReconstructChainWalksParentTagsAndMarksEdge) {
+TEST(FrontierTableTest, ReconstructChainWalksParentTagsAndPreservesState) {
     FrontierTable table(64);
     ASSERT_TRUE(table.insert(1, 0, 100, 0, FrontierEntryState::FRONTIER));
     ASSERT_TRUE(table.insert(2, 1, 200, 1, FrontierEntryState::FRONTIER));
-    ASSERT_TRUE(table.insert(3, 2, 300, 2, FrontierEntryState::FRONTIER));
+    ASSERT_TRUE(table.insert(3, 2, 300, 2, FrontierEntryState::EXPANDED));
 
     std::vector<u32> chain;
     ASSERT_TRUE(table.reconstructChain(3, &chain));
@@ -1364,13 +1364,19 @@ TEST(FrontierTableTest, ReconstructChainWalksParentTagsAndMarksEdge) {
     EXPECT_EQ(200u, chain[1]);
     EXPECT_EQ(100u, chain[2]);
 
-    // Every hop walked must be marked EDGE - this table's degenerate
-    // EdgeStore (design doc: "on a path toward a target sample").
-    for (jlong tag = 1; tag <= 3; tag++) {
+    // Every visited entry must KEEP its pre-walk state: the earlier EDGE
+    // demotion made resolved-path holders invisible to the rotation
+    // collectors (which select EXPANDED entries), so later leak instances
+    // behind a changed holder were never re-discovered. Entries stay
+    // rotation-eligible after being resolved into a chain.
+    for (jlong tag = 1; tag <= 2; tag++) {
         FrontierEntry entry{};
         ASSERT_TRUE(table.lookup(tag, &entry));
-        EXPECT_EQ(FrontierEntryState::EDGE, entry.state);
+        EXPECT_EQ(FrontierEntryState::FRONTIER, entry.state);
     }
+    FrontierEntry entry{};
+    ASSERT_TRUE(table.lookup(3, &entry));
+    EXPECT_EQ(FrontierEntryState::EXPANDED, entry.state);
 }
 
 TEST(FrontierTableTest, ReconstructChainOfNeverInsertedTagFails) {

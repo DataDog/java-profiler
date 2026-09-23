@@ -500,7 +500,12 @@ bool FrontierTable::reconstructChain(jlong target_tag,
       }
       edges.push_back(hop);
     }
-    markEdge(tag);
+    // Deliberately NOT marking the walked entries EDGE: the EDGE state was
+    // write-only "degenerate EdgeStore" bookkeeping (nothing ever reads it),
+    // while the rotation collectors select EXPANDED entries - demoting a
+    // resolved path's holders to EDGE made them permanently invisible to
+    // rotation, so later leak instances behind a changed holder were never
+    // re-discovered. Entries keep their state and stay rotation-eligible.
     root_kind = entry.root_kind;
     tag = entry.parent_tag;
   }
@@ -1831,6 +1836,19 @@ void ReferenceChainTracker::resolveLoadedClasses(jvmtiEnv *jvmti,
               jlong class_tag = tag != 0 ? tag : nextClassTag();
               if (tag != 0 ||
                   jvmti->SetTag(klass, class_tag) == JVMTI_ERROR_NONE) {
+                if (tag == 0) {
+                  // Adopt the tag actually installed on the class object:
+                  // LivenessTracker's mintStableClassTagIfNeeded() may have
+                  // installed its own tag between our GetTag and SetTag
+                  // (two SetTag calls on the same untagged class - the last
+                  // writer wins on the class). Both trackers must keep the
+                  // ONE tag the class carries.
+                  jlong installed = 0;
+                  if (jvmti->GetTag(klass, &installed) == JVMTI_ERROR_NONE &&
+                      installed != 0) {
+                    class_tag = installed;
+                  }
+                }
                 _class_tags.insert(class_tag, (u32)id);
               }
             }
@@ -1903,6 +1921,15 @@ struct PassContext {
   // FollowReferences STW for entries that need no work). 0 = no batch
   // entry visited yet this FollowReferences call.
   jlong _last_visited_batch_tag = 0;
+
+  // Batch entries the callback finished visiting before the truncation (set
+  // only by heapReferenceCallback()'s batch_tags descent gate). A batch tag
+  // is recorded here only when the NEXT batch tag's visit starts - an entry
+  // still being descended into when FollowReferences aborts stays ambiguous
+  // and is retried idempotently. Keyed by tag, not by position, because
+  // JVMTI does not promise FollowReferences visits input objects in input
+  // order - expandFrontier()'s truncated-batch resume pops exactly this set.
+  std::unordered_set<jlong> *_completed_batch_tags = nullptr;
 
   // Set only by admitStaticFieldRoots(): the seed holder array for that
   // sweep holds loaded-class objects (negative-tagged by
@@ -2509,6 +2536,14 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     // re-traversed.
     jlong my_tag = *tag_ptr;
     if (my_tag > 0 && ctx->batch_tags->count(my_tag) != 0) {
+      // The previously visited batch entry (if any) is now fully processed -
+      // record it for the order-independent truncated-batch resume (see
+      // PassContext::_completed_batch_tags' own comment).
+      if (ctx->_last_visited_batch_tag != 0 &&
+          ctx->_last_visited_batch_tag != my_tag &&
+          ctx->_completed_batch_tags != nullptr) {
+        ctx->_completed_batch_tags->insert(ctx->_last_visited_batch_tag);
+      }
       // Track this batch entry as visited for the rolling resume cursor
       // (see _last_visited_batch_tag's own comment).
       ctx->_last_visited_batch_tag = my_tag;
@@ -3173,19 +3208,16 @@ bool appendClassFieldNames(jvmtiEnv *jvmti, JNIEnv *jni, jclass cls,
   return ok;
 }
 
-// Sums the own-declared field counts of every interface transitively
-// implemented/extended by `cls`, each counted once (a diamond interface graph
-// shared by two branches must not double-count - the spec's ordinal space
-// counts interface fields once each, and HotSpot's transitive_interfaces
-// array contains each interface exactly once). `seen` dedupes by raw class
-// tag. Returns -1 on JVMTI failure.
-jlong interfaceFieldCount(jvmtiEnv *jvmti, JNIEnv *jni, jclass cls,
-                          std::unordered_set<jlong> *seen) {
-  // GetTag is safe on any jclass; the shared class-tag allocator
-  // (classTagAllocator.h) tags every class resolveLoadedClasses() sees, and
-  // classes here always come from that set.
+// Counts `iface`'s own declared fields plus every transitive superinterface's,
+// each interface counted exactly once (keyed on the shared `seen` set insert
+// - an interface's own fields go in only when its tag is newly seen, so a
+// diamond's shared parent contributes once no matter how many branches reach
+// it). Returns -1 on any JVMTI failure or untaggable interface. Deletes every
+// jclass local ref it mints, on success and failure paths alike.
+jlong interfaceSubtreeFieldCount(jvmtiEnv *jvmti, JNIEnv *jni, jclass iface,
+                                 std::unordered_set<jlong> *seen) {
   jlong tag = 0;
-  if (jvmti->GetTag(cls, &tag) != JVMTI_ERROR_NONE || tag == 0) {
+  if (jvmti->GetTag(iface, &tag) != JVMTI_ERROR_NONE || tag == 0) {
     // Untagged interface: cannot dedupe reliably - fail the whole decode
     // rather than risk double counting.
     return -1;
@@ -3193,6 +3225,50 @@ jlong interfaceFieldCount(jvmtiEnv *jvmti, JNIEnv *jni, jclass cls,
   if (!seen->insert(tag).second) {
     return 0; // already counted this interface (a shared subinterface)
   }
+  jlong total = 0;
+  jint field_count = 0;
+  jfieldID *fields = nullptr;
+  if (jvmti->GetClassFields(iface, &field_count, &fields) ==
+      JVMTI_ERROR_NONE) {
+    // This interface's own fields count toward any implementor's ordinal
+    // base - matching the spec's "count of the fields in all the interfaces
+    // implemented by C" (jvmtiHeapReferenceInfoField). Counted here, behind
+    // the seen-insert, so a shared diamond parent adds once.
+    total += field_count;
+    jvmti->Deallocate((unsigned char *)fields);
+  }
+  jint iface_count = 0;
+  jclass *supers = nullptr;
+  if (jvmti->GetImplementedInterfaces(iface, &iface_count, &supers) !=
+      JVMTI_ERROR_NONE) {
+    return -1;
+  }
+  bool ok = true;
+  for (jint i = 0; i < iface_count; i++) {
+    if (supers[i] == nullptr) {
+      continue;
+    }
+    jlong sub = interfaceSubtreeFieldCount(jvmti, jni, supers[i], seen);
+    jni->DeleteLocalRef(supers[i]);
+    if (sub < 0) {
+      ok = false;
+    } else if (ok) {
+      total += sub;
+    }
+  }
+  jvmti->Deallocate((unsigned char *)supers);
+  return ok ? total : -1;
+}
+
+// Sums the field counts of every interface transitively implemented/extended
+// by `cls`, each interface counted exactly once (see
+// interfaceSubtreeFieldCount() above - the own-field add lives behind the
+// shared seen-set insert, so an interface diamond no longer double-counts
+// its shared parent). Does NOT count cls's own declared fields:
+// appendClassFieldNames() owns that ordinal segment. Returns -1 on JVMTI
+// failure.
+jlong interfaceFieldCount(jvmtiEnv *jvmti, JNIEnv *jni, jclass cls,
+                          std::unordered_set<jlong> *seen) {
   jint iface_count = 0;
   jclass *ifaces = nullptr;
   if (jvmti->GetImplementedInterfaces(cls, &iface_count, &ifaces) !=
@@ -3200,28 +3276,21 @@ jlong interfaceFieldCount(jvmtiEnv *jvmti, JNIEnv *jni, jclass cls,
     return -1;
   }
   jlong total = 0;
+  bool ok = true;
   for (jint i = 0; i < iface_count; i++) {
     if (ifaces[i] == nullptr) {
       continue;
     }
-    // An interface's own fields count toward any implementor's ordinal
-    // base - matching the spec's "count of the fields in all the interfaces
-    // implemented by C" (jvmtiHeapReferenceInfoField).
-    jint field_count = 0;
-    jfieldID *fields = nullptr;
-    if (jvmti->GetClassFields(ifaces[i], &field_count, &fields) ==
-        JVMTI_ERROR_NONE) {
-      total += field_count;
-      jvmti->Deallocate((unsigned char *)fields);
-    }
-    total += interfaceFieldCount(jvmti, jni, ifaces[i], seen);
-    if (total < 0) {
-      return -1;
-    }
+    jlong sub = interfaceSubtreeFieldCount(jvmti, jni, ifaces[i], seen);
     jni->DeleteLocalRef(ifaces[i]);
+    if (sub < 0) {
+      ok = false;
+    } else if (ok) {
+      total += sub;
+    }
   }
   jvmti->Deallocate((unsigned char *)ifaces);
-  return total;
+  return ok ? total : -1;
 }
 
 } // namespace
@@ -3813,8 +3882,22 @@ bool ReferenceChainTracker::resolveContainerInterfaceTags(
     jlong tag = 0;
     bool ok = jvmti->GetTag(local, &tag) == JVMTI_ERROR_NONE;
     if (ok && tag == 0) {
-      tag = nextClassTag();
-      ok = jvmti->SetTag(local, tag) == JVMTI_ERROR_NONE;
+      jlong new_tag = nextClassTag();
+      if (jvmti->SetTag(local, new_tag) == JVMTI_ERROR_NONE) {
+        // Adopt-on-reread, same cross-tracker race as
+        // resolveLoadedClasses()/mintStableClassTagIfNeeded(): another
+        // tracker may have installed its own tag between our GetTag and
+        // SetTag - keep the one tag the interface object carries.
+        jlong installed = 0;
+        if (jvmti->GetTag(local, &installed) == JVMTI_ERROR_NONE &&
+            installed != 0) {
+          tag = installed;
+        } else {
+          tag = new_tag;
+        }
+      } else {
+        ok = false;
+      }
     }
     if (ok && tag != 0) {
       *iface.tag_out = tag;
@@ -3845,9 +3928,21 @@ bool ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
     work.pop_back();
     jlong cur_tag = 0;
     if (jvmti->GetTag(cur, &cur_tag) != JVMTI_ERROR_NONE || cur_tag == 0) {
+      // Early exit: the popped ref is this walk's own (GetSuperclass/
+      // GetImplementedInterfaces local, or the caller's klass) - delete it
+      // like the loop bottom does, or the long-lived engine thread leaks a
+      // JNI local ref per untagged hop.
+      if (cur != klass) {
+        jni->DeleteLocalRef(cur);
+      }
       continue;
     }
     if (visited.count(cur_tag) > 0) {
+      // Early exit: same local-ref ownership as above - delete before
+      // continuing (a hierarchy diamond revisits interfaces here).
+      if (cur != klass) {
+        jni->DeleteLocalRef(cur);
+      }
       continue;
     }
     visited.insert(cur_tag);
@@ -4179,6 +4274,13 @@ void ReferenceChainTracker::walkCandidateThreadLocals(
                              (u8)JVMTI_HEAP_REFERENCE_THREAD, class_tag)) {
           anchor_tag = fresh_tag;
         } else {
+          if (fresh_tag != 0) {
+            // Frontier insert failed (table full): the tag-release scan only
+            // touches inserted frontier entries, so an installed-but-unowned
+            // tag would survive the search and collide with a reused tag
+            // number after a restart (fresh _next_tag from 1). Clear it.
+            clearTag(jvmti, thread_obj);
+          }
           anchor_tag = 0;
         }
         jni->DeleteLocalRef(thread_class);
@@ -4392,6 +4494,47 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
     ctx->frontier_cap_hit = true;
     return JVMTI_ITERATION_ABORT;
   case AdmitResult::ALREADY_ADMITTED:
+    if (isLeakTag(*tag_ptr)) {
+      // Leak-tagged object met as a DIRECT heap root (JNI global, stack
+      // local, ...): convert the leak tag exactly like
+      // heapReferenceCallback()'s interception branch so a chain can be
+      // built when the direct root is the only retention path. Unlike the
+      // edge path there is no inline descent here (IterateOverReachableObjects
+      // reports roots, not edges), so the converted entry must ALSO be
+      // queued for expansion.
+      jlong leak_tag = *tag_ptr;
+      jlong frontier_tag = ctx->tracker->nextTag();
+      if (ctx->frontier->insert(frontier_tag, /*parent_tag=*/0, referrer_klass,
+                                /*depth=*/0, FrontierEntryState::FRONTIER,
+                                translated_root_kind, class_tag)) {
+        ctx->frontier->setLeakTag(frontier_tag, leak_tag);
+        *tag_ptr = frontier_tag;
+        ctx->edges_admitted++;
+        ctx->tracker->trackLeakAccumulation(ctx->frontier, class_tag, 0,
+                                            frontier_tag);
+        // Index maintenance, mirroring the edge path's interception branch:
+        // a leak-tagged root attached by a durable root edge is the
+        // highest-priority anchor tier.
+        if (translated_root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
+            translated_root_kind == (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
+          ctx->tracker->addToStaticAnchorIndex(frontier_tag, class_tag,
+                                               translated_root_kind);
+        }
+        if (ctx->tracker->_candidate_count > 0) {
+          u32 klass_id = ctx->tracker->classTags()->resolve(class_tag);
+          ctx->tracker->recordDiscoveredInstance(klass_id, frontier_tag, true);
+        }
+        // Queue for expandFrontier() - the plain backlog lane, mirroring
+        // admitObject()'s non-priority push tail.
+        ctx->tracker->_pending_expand.push_back(frontier_tag);
+      } else {
+        // Frontier cap hit - same outcome as admitObject()'s own failure.
+        ctx->truncated = true;
+        ctx->frontier_cap_hit = true;
+        return JVMTI_ITERATION_ABORT;
+      }
+      break;
+    }
     // Rediscovery via a second heap root - either later in this same pass's
     // root enumeration, or in a later pass re-enumerating roots entirely
     // (design doc's durability tie-break / "opportunistic upgrade" / "Fix for
@@ -4402,7 +4545,7 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
     // only (parent_tag == 0) - see maybeUpgradeRootAttachedRootKind()'s own
     // comment for why.
     ctx->tracker->maybeUpgradeRootAttachedRootKind(ctx->frontier, *tag_ptr,
-                                                    translated_root_kind);
+                                                   translated_root_kind);
     break;
   default:
     break;
@@ -4845,6 +4988,11 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
   // walk), not a prototype relative to anything else still in the codebase.
   std::unordered_set<jlong> batch_tags;
   ctx.batch_tags = &batch_tags;
+  // Completed-batch-entry tracking for the order-independent truncated-batch
+  // resume (see PassContext::_completed_batch_tags) - reset per batch along
+  // with the rolling cursor.
+  std::unordered_set<jlong> completed_batch_tags;
+  ctx._completed_batch_tags = &completed_batch_tags;
 
   jvmtiHeapCallbacks callbacks;
   memset(&callbacks, 0, sizeof(callbacks));
@@ -5063,6 +5211,7 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
           // elements (the boundary objects, in batch_tags) and "no descend" for
           // their children, so exactly one hop past the boundary is explored.
           ctx._last_visited_batch_tag = 0; // reset rolling cursor
+          completed_batch_tags.clear();
           u64 follow_start_ticks = TSC::ticks();
           jvmtiError follow_err =
               jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
@@ -5088,33 +5237,36 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
         source.pop_front();
       }
       progress = true;
-    } else if (ctx._last_visited_batch_tag != 0) {
-      // ROLLING RESUME: FollowReferences truncated mid-batch, but we know
-      // which batch entry was being visited when it stopped (tracked by
-      // the callback's batch_tags descent-gate). Pop entries that were
-      // fully processed BEFORE that entry (mark live ones EXPANDED, clear
-      // dead ones), and leave the partially-processed entry and everything
-      // after it at the front of the source queue for the next pass to
-      // retry. Same resumable-cursor pattern as admitStaticFieldRoots()'s
-      // sweep cursor — avoids re-walking already-expanded entries (and
-      // re-paying GetObjectsWithTags's O(tag_map × batch) cost for them)
-      // on every retry.
-      //
-      // The partially-visited entry (at _last_visited_batch_tag) stays:
-      // some of its children may have been admitted before the truncation,
-      // and the rest are discovered on retry (admitObject is idempotent —
-      // already-admitted children return ALREADY_ADMITTED).
-      for (size_t i = 0; i < candidate_tags.size(); i++) {
-        if (candidate_tags[i] == ctx._last_visited_batch_tag) {
-          break; // stop at the partially-visited entry
-        }
-        jlong tag = candidate_tags[i];
-        if (live.find(tag) == live.end()) {
-          _frontier->clear(tag);
+    } else if (!completed_batch_tags.empty()) {
+      // ROLLING RESUME (order-independent): FollowReferences truncated
+      // mid-batch, but the callback recorded exactly which batch entries it
+      // finished visiting (see PassContext::_completed_batch_tags). Pop
+      // those - and only those - regardless of where they sit in the input
+      // order (JVMTI does not promise FollowReferences visits input objects
+      // in input order, so a positional "everything before the cursor"
+      // rule would mark unvisited objects EXPANDED and lose their whole
+      // subtree). The partially-visited entry and everything unvisited stay
+      // queued and are retried idempotently next pass (admitObject's
+      // ALREADY_ADMITTED dedupes re-walked children).
+      std::vector<jlong> keep;
+      keep.reserve(candidate_tags.size());
+      for (jlong tag : candidate_tags) {
+        if (completed_batch_tags.count(tag) != 0) {
+          if (live.find(tag) == live.end()) {
+            _frontier->clear(tag);
+          } else {
+            _frontier->markExpanded(tag);
+          }
         } else {
-          _frontier->markExpanded(tag);
+          keep.push_back(tag);
         }
         source.pop_front();
+      }
+      // Re-queue the unvisited remainder at the front, preserving input
+      // order (push_front in reverse). Entries completed out of order are
+      // simply not re-queued - their frontier records were finalized above.
+      for (size_t i = keep.size(); i-- > 0;) {
+        source.push_front(keep[i]);
       }
     }
     // else truncated with no batch entry visited (e.g. GetObjectsWithTags
@@ -5229,6 +5381,36 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
       }
       app_boundary++;
     }
+  }
+
+  // Stable chunk order: GetLoadedClasses() returns an arbitrary order per
+  // call, so an index cursor over raw call order can MISS classes entirely
+  // within a lap (each chunk would cover a different random subset). Sort
+  // each partition ascending by JVMTI class tag: tags are handed out
+  // monotonically by the shared class-tag allocator and are stable for the
+  // JVM's lifetime, so the Nth-smallest tag is the same class in every call
+  // of a lap (classes untagged so far sort last and are picked up next lap;
+  // new mid-lap classes get larger tags and land at the partition end,
+  // visited next lap). Index-sort + copy-back keeps the JVMTI array and its
+  // Deallocate/DeleteLocalRef contract unchanged.
+  {
+    std::vector<jlong> tags((size_t)class_count, 0);
+    for (jint i = 0; i < class_count; i++) {
+      jvmti->GetTag(classes[i], &tags[i]);
+    }
+    std::vector<jint> order((size_t)class_count);
+    for (jint i = 0; i < class_count; i++) {
+      order[i] = i;
+    }
+    std::sort(order.begin(), order.begin() + app_boundary,
+              [&tags](jint a, jint b) { return tags[a] < tags[b]; });
+    std::sort(order.begin() + app_boundary, order.end(),
+              [&tags](jint a, jint b) { return tags[a] < tags[b]; });
+    std::vector<jclass> sorted((size_t)class_count);
+    for (jint i = 0; i < class_count; i++) {
+      sorted[i] = classes[order[i]];
+    }
+    memcpy(classes, sorted.data(), (size_t)class_count * sizeof(jclass));
   }
 
   if (_static_field_sweep_cursor >= class_count) {
@@ -5603,8 +5785,15 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   //      _watched_leak_klass_count clause's own comment below for why an
   //      active watch withholds completion here even with an empty pending
   //      queue.
-  //   3. TTL exceeded while work is still pending -> abandon.
-  //   4. Otherwise stay RUNNING - more pending work, no cap hit yet.
+  //   3. Operator wall-clock TTL exceeded -> abandon (a hard bound; applies
+  //      with pending work AND with an empty frontier + active watch).
+  //   4. No frontier progress for NO_PROGRESS_PASS_LIMIT passes (not urgent)
+  //      -> abandon; the canary complete/stuck checks follow. An empty
+  //      frontier with an active watch falls through to these checks every
+  //      pass - that is what bounds a rotation-only search (an earlier
+  //      comment-only else-if here consumed the control path instead, so
+  //      none of these stop checks ever ran in the empty-frontier case).
+  //   5. Otherwise stay RUNNING - more pending work, no cap hit yet.
   // Write the abandon reason (and every other detail field
   // buildAbandonedEvent() reads: _passes_run/_last_pass_ns/_search_start_ns
   // above, _frontier's size, ...) BEFORE the _search_state transition below,
@@ -5633,29 +5822,26 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
              frontier_size_after);
   } else if (!has_pending_frontier && _watched_leak_klass_count == 0) {
     storeRelease(_search_state, (u8)SearchState::COMPLETED);
-  } else if (!has_pending_frontier) {
-    // Reachable graph fully explored, but LivenessTracker still has at least
-    // one klass under active leak watch (_watched_leak_klass_count's own
-    // comment) - do NOT complete. Rotation (collectLeakAccumulationCandidates
-    // ForRotation() et al., runPassManualWalk()'s own comment) exists
-    // precisely to re-observe already-EXPANDED entries whose fields mutate
-    // after their one-time expansion - e.g. an element appended to a
-    // static-field-rooted collection well after the walk first visited it.
-    // Once every reachable object has been visited once, has_pending_frontier
-    // goes permanently false and runPass()'s terminal-state branch would
-    // otherwise make every future call to this method a no-op forever
-    // (search_state != RUNNING short-circuits before rotation ever runs
-    // again) - silently disabling the one mechanism built to catch that
-    // exact mutation. Falling through here leaves _search_state at RUNNING,
-    // so the next pass (still gated by shouldRunPass()'s normal cadence/pain
-    // budget) runs the rotation collectors again with a fresh view of
-    // whatever object identities LivenessTracker is currently watching.
-    // _passes_since_last_progress below still counts this pass as "no
-    // progress" (frontier size is genuinely unchanged), so a watch that
-    // never resolves anything still bounds out via the TTL/no-progress
-    // branch below once isUrgent() clears - this only keeps a search alive
-    // while there is an active signal to keep probing for, not forever
-    // unconditionally.
+  } else if (_ttl_ms > 0 &&
+             TSC::ticks_to_millis(OS::nanotime() - load(_search_start_ns)) >=
+                 (u64)_ttl_ms) {
+    // Operator-configured wall-clock TTL (design doc's Termination priority
+    // 3): a hard bound on how long a search may keep requesting
+    // stop-the-world heap walks, independent of frontier progress. No
+    // isUrgent() suppression - the operator limit outranks the urgency ramp
+    // (the no-progress heuristic below keeps its own urgency guard; that is
+    // a different, progress-shaped bound). _search_start_ns is stamped on
+    // every search's first pass and reset by restartSearch(); this branch is
+    // only reachable with _search_state == RUNNING, which implies a first
+    // pass already ran.
+    store(_abandon_reason, (u8)SearchAbandonReason::TTL);
+    storeRelease(_search_state, (u8)SearchState::ABANDONED);
+    enqueuePendingAbandonedEvent();
+    TEST_LOG_SUMMARY("ReferenceChainTracker::runPass ttl expired -- abandoning search "
+             "(ttl=%ldms elapsed_ms=%llu)",
+             _ttl_ms,
+             (unsigned long long)TSC::ticks_to_millis(OS::nanotime() -
+                                                      load(_search_start_ns)));
   } else if (_passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT &&
              !isUrgent()) {
     // The frontier hasn't grown for NO_PROGRESS_PASS_LIMIT consecutive
