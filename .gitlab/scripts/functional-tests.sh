@@ -80,7 +80,11 @@ CELL="el7-${TEST_JDK}-$(printf '%s' "${TEST_CONFIG}" | tr '[:upper:]' '[:lower:]
 # 2 attempts (see PR #805). Overridable via the job's own variables.
 export MAX_ATTEMPTS="${MAX_ATTEMPTS:-1}"
 
+# Compile build-logic inside the Gradle process: the default Kotlin compile
+# daemon (~660MB RSS) otherwise stays resident through the whole test run in
+# this memory-limited pod. Not set globally -- under CodeQL's Kotlin extractor
+# an in-process compile thrashes Gradle's default 512m heap.
 .github/scripts/run_tests_with_retry.sh "${CELL}" -- \
   ./gradlew -Pddprof_version="$(get_version)" -Pskip-native=ddprof-lib,malloc-shim -Pwith-libs="$(pwd)/libs" -PCI \
-  -PtestMaxHeap=1536m \
+  -PtestMaxHeap=1536m -Pkotlin.compiler.execution.strategy=in-process \
   ":ddprof-test:test${TEST_CONFIG}" --max-workers=1 --build-cache --stacktrace --info --no-watch-fs --no-daemon
