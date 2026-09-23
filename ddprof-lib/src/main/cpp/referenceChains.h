@@ -456,7 +456,9 @@ public:
 
   // Marks the slot for `tag` as EDGE in place (design doc: "on a path
   // toward a target sample (EdgeStore)"). No-op if `tag` was never
-  // inserted. Used by reconstructChain() below to mark every hop it walks.
+  // inserted. Currently unused by production code (reconstructChain() no
+  // longer demotes resolved-path entries - see its own comment); kept as
+  // the state-machine's explicit EDGE transition.
   void markEdge(jlong tag);
 
   // Marks the slot for `tag` as EXPANDED in place (design doc: "expanded;
@@ -531,10 +533,11 @@ public:
 
   // Walks parent_tag links starting at `target_tag` back to a root-attached
   // entry (parent_tag == 0), appending each visited entry's referrer_klass
-  // to *out_chain in leaf-to-root order, and marking each visited entry
-  // EDGE via markEdge() - this table's degenerate EdgeStore (design doc:
-  // "a chain can be walked back from a target sample to a root by
-  // following parent_tag across EdgeStore records"). Returns false (leaving
+  // to *out_chain in leaf-to-root order. Deliberately does NOT change any
+  // visited entry's state (an earlier version marked each hop EDGE via
+  // markEdge(), but EDGE is write-only bookkeeping nothing reads, while the
+  // rotation collectors select EXPANDED entries - the demotion made resolved
+  // holders permanently rotation-invisible). Returns false (leaving
   // *out_chain untouched) if target_tag was never inserted. Bounds the walk
   // at maxCapacity() hops as a defensive guard against a corrupted/cyclic
   // parent_tag chain - nextTag() only ever hands out a strictly larger value
