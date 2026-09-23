@@ -39,6 +39,19 @@ public class SanityCheckTest extends AbstractProcessProfilerTest {
     }
 
     /**
+     * Total physical memory in MB as seen by {@code OS::getRamSize()} (the {@code MemTotal} line
+     * of {@code /proc/meminfo}), which bounds the memory sanity check's available-memory figure.
+     */
+    private static long memTotalMb() throws Exception {
+        for (String line : Files.readAllLines(Paths.get("/proc/meminfo"))) {
+            if (line.startsWith("MemTotal:")) {
+                return Long.parseLong(line.replaceAll("[^0-9]", "")) / 1024;
+            }
+        }
+        throw new IllegalStateException("MemTotal not found in /proc/meminfo");
+    }
+
+    /**
      * nosanity=true bypasses sanity checks. The profiler must start successfully on any host.
      */
     @Test
@@ -98,7 +111,7 @@ public class SanityCheckTest extends AbstractProcessProfilerTest {
     }
 
     /**
-     * A forced -Xmx far larger than any real host's RAM makes the memory sanity check fail
+     * A forced -Xmx larger than the host's total RAM makes the memory sanity check fail
      * deterministically, regardless of the actual host resources. The check is advisory, so
      * the profiler must still start, and the JFR recording's settings must show the failure.
      */
@@ -120,7 +133,17 @@ public class SanityCheckTest extends AbstractProcessProfilerTest {
             // to a fraction of -Xmx regardless of -Xms, so -Xms8m alone still eagerly
             // commits ~28g and OOMs before the sanity check runs. G1 sizes its initial
             // commit in fixed-size regions independent of -Xmx, avoiding that.
-            LaunchResult result = launch("profiler", Arrays.asList("-XX:+UseG1GC", "-Xmx900g", "-Xms8m"),
+            //
+            // JDK 8's G1 still allocates and clears card-granularity bitmaps spanning the
+            // whole reserved heap, one per parallel GC thread: measured on 8u504, a
+            // -Xmx900g fork touches ~225MB per ParallelGCThreads on top of a ~360MB base
+            // (1.3GB at 4 threads, 4GB at 16), enough to OOM-kill a 6GB CI container.
+            // -Xmx is therefore sized just past MemTotal -- the check's upper bound never
+            // exceeds it, and its estimate is at least 1.3x -Xmx -- and a single GC thread
+            // keeps the per-thread cost bounded on hosts with a lot of RAM.
+            long xmxMb = memTotalMb() + 1024;
+            LaunchResult result = launch("profiler",
+                    Arrays.asList("-XX:+UseG1GC", "-XX:ParallelGCThreads=1", "-Xmx" + xmxMb + "m", "-Xms8m"),
                     "start,jfr,file=" + forkedJfr.toAbsolutePath(),
                     line -> LineConsumerResult.CONTINUE, line -> LineConsumerResult.CONTINUE);
             assertTrue(result.inTime, "forked JVM did not exit in time");
