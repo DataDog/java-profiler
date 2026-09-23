@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-09-23 00:59:13 EDT
+**Date:** 2026-09-23 05:40:10 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 85 |
-| Sample Rate | 1.42/sec |
-| Health Score | 89% |
-| Threads | 9 |
+| CPU Samples | 315 |
+| Sample Rate | 5.25/sec |
+| Health Score | 328% |
+| Threads | 7 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 95 |
-| Sample Rate | 1.58/sec |
-| Health Score | 99% |
-| Threads | 12 |
+| CPU Samples | 88 |
+| Sample Rate | 1.47/sec |
+| Health Score | 92% |
+| Threads | 13 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 50-50 cores)</summary>
 
 ```
-1790139264 50
-1790139269 50
-1790139274 50
-1790139279 50
-1790139284 50
-1790139289 50
-1790139294 50
-1790139299 50
-1790139304 50
-1790139309 50
-1790139314 50
-1790139319 50
-1790139324 50
-1790139329 50
-1790139334 50
-1790139339 50
-1790139345 50
-1790139350 50
-1790139355 50
-1790139360 50
+1790156121 50
+1790156126 50
+1790156131 50
+1790156136 50
+1790156141 50
+1790156146 50
+1790156151 50
+1790156156 50
+1790156161 50
+1790156166 50
+1790156171 50
+1790156176 50
+1790156181 50
+1790156186 50
+1790156191 50
+1790156196 50
+1790156201 50
+1790156206 50
+1790156211 50
+1790156216 50
 ```
 </details>
 
