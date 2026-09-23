@@ -11,6 +11,11 @@
 #include "stackFrame.h"
 #include "hotspot/vmStructs.h"
 
+// AArch64-only precomputed stub unwind metadata (hotspot/stubUnwindInfo.h);
+// always null on other architectures, where the definition never exists and
+// the pointer is only ever defaulted.
+class StubUnwindInfo;
+
 class HotspotStackFrame : public StackFrame {
 public:
     explicit HotspotStackFrame(void* ucontext): StackFrame(ucontext) {
@@ -65,10 +70,19 @@ public:
     }
 
     bool unwindStub(instruction_t* entry, const char* name) {
-        return unwindStub(entry, name, pc(), sp(), fp());
+        return unwindStub(entry, name, pc(), sp(), fp(), nullptr);
     }
 
-    bool unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
+    bool unwindStub(instruction_t* entry, const char* name, const StubUnwindInfo* info) {
+        return unwindStub(entry, name, pc(), sp(), fp(), info);
+    }
+
+    // info carries precomputed per-PC unwind phases for aarch64 runtime stubs
+    // (see hotspot/stubUnwindInfo.h); when null or without an applicable
+    // phase, the legacy name-based heuristics below apply unchanged. x64
+    // ignores it.
+    bool unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp,
+                    uintptr_t& fp, const StubUnwindInfo* info = nullptr);
 
     // TODO: this function will be removed once `vm` becomes the default stack walking mode
     bool unwindCompiled(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);

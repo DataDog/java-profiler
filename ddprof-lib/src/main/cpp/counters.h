@@ -105,6 +105,19 @@
   X(WALKVM_SAVED_ANCHOR_USED, "walkvm_saved_anchor_used")                    \
   X(WALKVM_STUB_GENERIC_UNWIND, "walkvm_stub_generic_unwind")                \
   X(WALKVM_STUB_FRAMESIZE_FALLBACK, "walkvm_stub_framesize_fallback")        \
+  /* AArch64 precomputed stub unwind info (see hotspot/stubUnwindInfo.h):      \
+   * CLASSIFIED/UNCLASSIFIED count stubs at DynamicCodeGenerated time; HIT      \
+   * counts handler unwinds that used a precomputed phase; FALLBACK counts      \
+   * handler unwinds that had info available but could not apply it (no         \
+   * registered info, PC outside the classified range, SU_UNSUPPORTED phase,    \
+   * or a failed fp/sp sanity guard) and used the legacy heuristics instead;    \
+   * REGISTRATION_FAILED counts stubs whose info could not be registered      \
+   * because the registry could not grow. */                                   \
+  X(WALKVM_STUB_INFO_CLASSIFIED, "walkvm_stub_info_classified")              \
+  X(WALKVM_STUB_INFO_UNCLASSIFIED, "walkvm_stub_info_unclassified")          \
+  X(WALKVM_STUB_INFO_HIT, "walkvm_stub_info_hit")                            \
+  X(WALKVM_STUB_INFO_FALLBACK, "walkvm_stub_info_fallback")                  \
+  X(WALKVM_STUB_INFO_REGISTRATION_FAILED, "walkvm_stub_info_registration_failed") \
   X(WALKVM_FP_CHAIN_ATTEMPT, "walkvm_fp_chain_attempt")                      \
   X(WALKVM_FP_CHAIN_REACHED_CODEHEAP, "walkvm_fp_chain_reached_codeheap")    \
   X(WALKVM_ANCHOR_NOT_IN_JAVA,  "walkvm_anchor_not_in_java")                   \
