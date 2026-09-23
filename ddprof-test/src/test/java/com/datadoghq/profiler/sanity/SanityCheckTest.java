@@ -39,16 +39,34 @@ public class SanityCheckTest extends AbstractProcessProfilerTest {
     }
 
     /**
-     * Total physical memory in MB as seen by {@code OS::getRamSize()} (the {@code MemTotal} line
-     * of {@code /proc/meminfo}), which bounds the memory sanity check's available-memory figure.
+     * An upper bound, in MB, on the memory sanity check's available-memory figure: the smaller of
+     * {@code MemTotal} ({@code OS::getRamSize()}) and this cgroup namespace's root memory limit.
+     * The native check takes the minimum over the process's whole cgroup ancestry, which includes
+     * that root, so its figure can only be smaller than this.
      */
-    private static long memTotalMb() throws Exception {
+    private static long availableMemoryUpperBoundMb() throws Exception {
+        long bytes = Long.MAX_VALUE;
         for (String line : Files.readAllLines(Paths.get("/proc/meminfo"))) {
             if (line.startsWith("MemTotal:")) {
-                return Long.parseLong(line.replaceAll("[^0-9]", "")) / 1024;
+                bytes = Long.parseLong(line.replaceAll("[^0-9]", "")) * 1024;
+                break;
             }
         }
-        throw new IllegalStateException("MemTotal not found in /proc/meminfo");
+        for (String limitFile : new String[] {
+                "/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"}) {
+            Path path = Paths.get(limitFile);
+            if (Files.isReadable(path)) {
+                String value = new String(Files.readAllBytes(path)).trim();
+                // cgroup v2 spells "unlimited" as "max"; v1 uses a near-Long.MAX_VALUE number.
+                if (value.matches("[0-9]+")) {
+                    bytes = Math.min(bytes, Long.parseLong(value));
+                }
+            }
+        }
+        if (bytes == Long.MAX_VALUE) {
+            throw new IllegalStateException("MemTotal not found in /proc/meminfo");
+        }
+        return bytes / (1024 * 1024);
     }
 
     /**
@@ -111,7 +129,7 @@ public class SanityCheckTest extends AbstractProcessProfilerTest {
     }
 
     /**
-     * A forced -Xmx larger than the host's total RAM makes the memory sanity check fail
+     * A forced -Xmx larger than the memory available to the process makes the memory sanity check fail
      * deterministically, regardless of the actual host resources. The check is advisory, so
      * the profiler must still start, and the JFR recording's settings must show the failure.
      */
@@ -138,10 +156,11 @@ public class SanityCheckTest extends AbstractProcessProfilerTest {
             // whole reserved heap, one per parallel GC thread: measured on 8u504, a
             // -Xmx900g fork touches ~225MB per ParallelGCThreads on top of a ~360MB base
             // (1.3GB at 4 threads, 4GB at 16), enough to OOM-kill a 6GB CI container.
-            // -Xmx is therefore sized just past MemTotal -- the check's upper bound never
-            // exceeds it, and its estimate is at least 1.3x -Xmx -- and a single GC thread
-            // keeps the per-thread cost bounded on hosts with a lot of RAM.
-            long xmxMb = memTotalMb() + 1024;
+            // -Xmx is therefore sized just past the check's available-memory figure (a
+            // 6GB-limited pod on a 380GB node needs ~7g, not 900g) -- its estimate is at least
+            // 1.3x -Xmx -- and a single GC thread keeps the per-thread cost bounded where
+            // that figure is large.
+            long xmxMb = availableMemoryUpperBoundMb() + 1024;
             LaunchResult result = launch("profiler",
                     Arrays.asList("-XX:+UseG1GC", "-XX:ParallelGCThreads=1", "-Xmx" + xmxMb + "m", "-Xms8m"),
                     "start,jfr,file=" + forkedJfr.toAbsolutePath(),
