@@ -133,6 +133,12 @@ private:
   alignas(DEFAULT_CACHE_LINE_SIZE) volatile u64 _sample_seq;
   alignas(DEFAULT_CACHE_LINE_SIZE) u64 _failures[ASGCT_FAILURE_TYPES];
   bool _wall_precheck = false;
+  // True between a Profiler::start() that activated the reference-chain
+  // tracker and the matching stop(): gates stopThread()/stop() in
+  // Profiler::stop() so a recording started without the tracker never tears
+  // it down (the tracker is only started when allocation sampling activated
+  // AND referencechains=true - see Profiler::start()).
+  bool _reference_chains_active = false;
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
