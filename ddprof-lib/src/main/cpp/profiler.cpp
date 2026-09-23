@@ -344,6 +344,14 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
  * symbol lookups to post-processing while still capturing marks needed for
  * correct stack walk termination.
  *
+ * The emitted pc_offset inherits whatever addressing convention the
+ * producing walker used for this frame (see StackWalker in stackWalker.h):
+ * walkFP/walkDwarf frames arrive already pointing inside the call
+ * instruction, while walkVM/walkKernel frames arrive unadjusted (their leaf
+ * is the exact interrupted pc, the frames above it raw return addresses).
+ * An off-process symbolizer that applies its own return-address adjustment
+ * therefore double-adjusts the former.
+ *
  * @param frame The ASGCT_CallFrame to populate
  * @param pc The program counter address
  * @param lib The CodeCache library containing build-ID information
@@ -1106,8 +1114,8 @@ void Profiler::setupSignalHandlers() {
       // Eagerly initialize the Counters singleton off the signal path, before any
       // handler that increments counters is installed. The crash handler
       // (crashHandlerInternal -> SafeAccess::handle_safefetch) bumps
-      // SAFEFETCH_FAILED / SAFECOPY_FAILED, and other async handlers bump the
-      // STACKWALK* counters. The first touch of the singleton lazily runs
+      // SAFEFETCH_FAILED / SAFESTORE_FAILED / SAFECOPY_FAILED, and other async
+      // handlers bump the STACKWALK* counters. The first touch of the singleton lazily runs
       // aligned_alloc + memset and takes the C++ static-init guard lock — none of
       // which are async-signal-safe. Forcing that construction here guarantees the
       // signal path only ever performs lock-free atomic increments on the
