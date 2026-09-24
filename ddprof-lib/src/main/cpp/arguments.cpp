@@ -119,20 +119,27 @@ static const Multiplier UNIVERSAL[] = {
 //     alluser            - include only user-mode events
 //
 
-// Parses the y/yes,t/true,1 vs n/no,f/false,0 boolean convention. Returns false
-// (leaving *out untouched) when the value matches none of them, so the caller
-// can raise "Invalid <option> value" instead of coercing garbage to a default.
-static bool parseBoolOption(const char *value, bool *out) {
+// Parses the y/yes,t/true,1 vs n/no,f/false,0 boolean convention. A NULL value
+// (bare option, no '=') enables the flag, matching the documented no-value-means-
+// enable convention shared by every boolean option in this file. Returns false
+// (leaving out untouched) when a non-NULL value matches none of the above, so the
+// caller can raise "Invalid <option> value" instead of coercing garbage to a
+// default. Takes out by reference since every caller passes a real bool.
+static bool parseBoolOption(const char *value, bool &out) {
+  if (value == nullptr) {
+    out = true;
+    return true;
+  }
   if (strcmp(value, "y") == 0 || strcmp(value, "yes") == 0 ||
       strcmp(value, "t") == 0 || strcmp(value, "true") == 0 ||
       strcmp(value, "1") == 0) {
-    *out = true;
+    out = true;
     return true;
   }
   if (strcmp(value, "n") == 0 || strcmp(value, "no") == 0 ||
       strcmp(value, "f") == 0 || strcmp(value, "false") == 0 ||
       strcmp(value, "0") == 0) {
-    *out = false;
+    out = false;
     return true;
   }
   return false;
@@ -274,12 +281,8 @@ Error Arguments::parse(const char *args) {
       }
 
       CASE("generations")
-      if (value != NULL) {
-        if (!parseBoolOption(value, &_gc_generations)) {
-          msg = "Invalid generations value";
-        }
-      } else {
-        _gc_generations = true;
+      if (!parseBoolOption(value, _gc_generations)) {
+        msg = "Invalid generations value";
       }
       if (_gc_generations && _memory <= 0) {
         _memory =
@@ -372,45 +375,31 @@ Error Arguments::parse(const char *args) {
       }
 
       CASE("lightweight")
-      if (value != NULL && !parseBoolOption(value, &_lightweight)) {
+      if (value != NULL && !parseBoolOption(value, _lightweight)) {
         msg = "Invalid lightweight value";
       }
 
       CASE("mcleanup")
-      if (value != NULL) {
-        if (!parseBoolOption(value, &_enable_method_cleanup)) {
-          msg = "Invalid mcleanup value";
-        }
-      } else {
-        // No value means enable
-        _enable_method_cleanup = true;
+      // No value means enable.
+      if (!parseBoolOption(value, _enable_method_cleanup)) {
+        msg = "Invalid mcleanup value";
       }
 
       CASE("remotesym")
-      if (value != NULL) {
-        if (!parseBoolOption(value, &_remote_symbolication)) {
-          msg = "Invalid remotesym value";
-        }
-      } else {
-        // No value means enable
-        _remote_symbolication = true;
+      // No value means enable.
+      if (!parseBoolOption(value, _remote_symbolication)) {
+        msg = "Invalid remotesym value";
       }
 
       CASE("jvmtistacks")
-      if (value != NULL) {
-        if (!parseBoolOption(value, &_jvmtistacks)) {
-          msg = "Invalid jvmtistacks value";
-        }
-      } else {
-        _jvmtistacks = true;
+      if (!parseBoolOption(value, _jvmtistacks)) {
+        msg = "Invalid jvmtistacks value";
       }
 
       CASE("wallprecheck")
-      if (value != NULL) {
-        _wall_precheck = strcmp(value, "false") != 0 && strcmp(value, "0") != 0;
-      } else {
-        // No value means enable
-        _wall_precheck = true;
+      // No value means enable.
+      if (!parseBoolOption(value, _wall_precheck)) {
+        msg = "Invalid wallprecheck value";
       }
 
       CASE("wallsampler")
@@ -425,13 +414,9 @@ Error Arguments::parse(const char *args) {
       }
 
       CASE("nosanity")
-      if (value != NULL) {
-        if (!parseBoolOption(value, &_skip_sanity_checks)) {
-          msg = "Invalid nosanity value";
-        }
-      } else {
-        // A bare 'nosanity' with no value skips the checks.
-        _skip_sanity_checks = true;
+      // A bare 'nosanity' with no value skips the checks.
+      if (!parseBoolOption(value, _skip_sanity_checks)) {
+        msg = "Invalid nosanity value";
       }
 
       CASE("nativemem")
@@ -463,13 +448,9 @@ Error Arguments::parse(const char *args) {
         if (config) {
           *(config++) = 0;
         }
-        if (value != NULL) {
-          if (!parseBoolOption(value, &_reference_chains)) {
-            msg = "Invalid referencechains value";
-          }
-        } else {
-          // A bare 'referencechains' with no value means enable.
-          _reference_chains = true;
+        // A bare 'referencechains' with no value means enable.
+        if (!parseBoolOption(value, _reference_chains)) {
+          msg = "Invalid referencechains value";
         }
         char *cursor = config;
         while (cursor != NULL) {
