@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk8
 
 ## musl-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-09-24 04:29:12 EDT
+**Date:** 2026-09-24 04:38:24 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,8 +28,8 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 106 |
-| Sample Rate | 1.77/sec |
+| CPU Samples | 107 |
+| Sample Rate | 1.78/sec |
 | Health Score | 111% |
 | Threads | 10 |
 | Allocations | 0 |
@@ -38,36 +38,36 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 159 |
-| Sample Rate | 2.65/sec |
-| Health Score | 166% |
-| Threads | 8 |
+| CPU Samples | 166 |
+| Sample Rate | 2.77/sec |
+| Health Score | 173% |
+| Threads | 12 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 50-50 cores)</summary>
 
 ```
-1790238282 50
-1790238287 50
-1790238292 50
-1790238297 50
-1790238302 50
-1790238307 50
-1790238312 50
-1790238317 50
-1790238322 50
-1790238327 50
-1790238332 50
-1790238337 50
-1790238342 50
-1790238347 50
-1790238352 50
-1790238357 50
-1790238362 50
-1790238367 50
-1790238372 50
-1790238377 50
+1790238886 50
+1790238891 50
+1790238897 50
+1790238902 50
+1790238907 50
+1790238912 50
+1790238917 50
+1790238922 50
+1790238927 50
+1790238932 50
+1790238937 50
+1790238942 50
+1790238947 50
+1790238952 50
+1790238957 50
+1790238962 50
+1790238967 50
+1790238972 50
+1790238977 50
+1790238982 50
 ```
 </details>
 
