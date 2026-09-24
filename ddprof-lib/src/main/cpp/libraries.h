@@ -82,6 +82,12 @@ class Libraries {
     return _native_libs;
   }
 
+  // Publishes a caller-owned CodeCache into the process-wide set so address
+  // lookups resolve against it. Test-only: CodeCacheArray is append-only, so
+  // the cache has to outlive every later lookup, and the usual population
+  // path is updateSymbols() reading the real loaded libraries.
+  bool addLibraryForTest(CodeCache *lib) { return _native_libs.add(lib); }
+
   // Delete copy constructor and assignment operator to prevent copies
   Libraries(const Libraries&) = delete;
   Libraries& operator=(const Libraries&) = delete;
