@@ -111,10 +111,12 @@ def cmd_count(args):
 _NON_TEST_TASK_FAILURE_RE = re.compile(r"Execution failed for task '([^']+)'")
 
 # The JVM's own crash banner -- reliable on every platform, including musl:
-# nothing but a real crash prints this.
+# nothing but a real crash prints this. The report file name only counts with
+# an actual pid: Gradle --info also prints every test JVM's command line, whose
+# -XX:ErrorFile=...hs_err_pid%p.log template is configuration, not a crash.
 _CRASH_RE = re.compile(
     r"A fatal error has been detected by the Java Runtime Environment"
-    r"|hs_err_pid"
+    r"|hs_err_pid\d+"
 )
 
 # Gradle reporting that a forked test JVM died. Reliable for the glibc/macOS
@@ -222,16 +224,23 @@ def cmd_report(args):
 
     other_task_failures = non_test_task_failures(args.attempt_log, args.test_task_pattern)
 
-    # Two independent signs that the final attempt stopped early rather than
-    # running to completion and failing tests: Gradle saying so in the log, and
-    # the attempt having reached fewer tests than another attempt managed. The
-    # latter needs more than one attempt to compare against, which slow suites
-    # (MAX_ATTEMPTS=1) do not have, so the log is the primary signal.
+    # Three independent signs that the final attempt stopped early rather than
+    # running to completion and failing tests: Gradle saying so in the log, the
+    # command dying to a signal, and the attempt having reached fewer tests than
+    # another attempt managed. The last needs more than one attempt to compare
+    # against, which slow suites (MAX_ATTEMPTS=1) do not have. A signal that
+    # kills Gradle itself leaves nothing alive to log a marker, so the exit
+    # status is the only evidence in that case.
     # Cell names are <libc>-<jdk>-<config>-<arch>[-slow] (quarantine.KNOWN_LIBCS);
     # the leading token is the only part cut_short_marker needs.
     final_attempt_cut_short = cut_short_marker(
         args.attempt_log, musl=args.cell.split("-", 1)[0] == "musl"
     )
+    # Shells report death by signal N as 128+N; Gradle never exits above 128 on
+    # its own, however many tests fail.
+    final_attempt_signal = None
+    if args.final_attempt_exit_code is not None and args.final_attempt_exit_code > 128:
+        final_attempt_signal = args.final_attempt_exit_code - 128
     observed_shortfall = None
     if final_attempt_ran and ran > 1:
         best_observed = max(len(seen) for _, seen, _ in attempts)
@@ -262,8 +271,9 @@ def cmd_report(args):
     #                                  must not gate.
     #   final attempt exited        -> gate only with evidence that it was cut
     #   non-zero and was cut short     short: Gradle reporting a dead test JVM,
-    #                                  or the attempt having reached fewer
-    #                                  tests than another attempt managed. A
+    #                                  the command dying to a signal, or the
+    #                                  attempt having reached fewer tests
+    #                                  than another attempt managed. A
     #                                  quarantined test that fails makes Gradle
     #                                  exit non-zero all by itself, so treating
     #                                  every non-zero exit as a crash would
@@ -310,6 +320,13 @@ def cmd_report(args):
                 "short ({!r}), so the tests missing from its results cannot be "
                 "read as quarantined"
             ).format(args.final_attempt_exit_code, final_attempt_cut_short)
+        elif final_attempt_signal is not None:
+            gates = True
+            gate_reason = (
+                "the final attempt exited {} (killed by signal {}), so it did not "
+                "run to completion and the tests missing from its results cannot "
+                "be read as quarantined"
+            ).format(args.final_attempt_exit_code, final_attempt_signal)
         elif args.final_attempt_exit_code not in (None, 0) and observed_shortfall:
             gates = True
             gate_reason = (
@@ -349,6 +366,7 @@ def cmd_report(args):
         "final_attempt_failure_count": final_attempt_failure_count,
         "other_task_failures": other_task_failures,
         "final_attempt_cut_short": final_attempt_cut_short,
+        "final_attempt_signal": final_attempt_signal,
         "final_attempt_observed_shortfall": observed_shortfall,
         "final_attempt_exit_code": args.final_attempt_exit_code,
         "gates": gates,
@@ -379,7 +397,9 @@ def cmd_report(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", default=quarantine.DEFAULT_LIST)
-    sub = parser.add_subparsers(dest="command", required=True)
+    # required=True on add_subparsers() needs Python 3.7+; this also has to
+    # run under Python 3.6 (EL7's base-repo python3), so the check is manual.
+    sub = parser.add_subparsers(dest="command")
 
     count = sub.add_parser("count", help="print the number of distinct failed tests")
     count.add_argument("--dir", required=True)
@@ -406,6 +426,8 @@ def main():
     report.set_defaults(func=cmd_report)
 
     args = parser.parse_args()
+    if args.command is None:
+        parser.error("a command is required")
     return args.func(args)
 
 

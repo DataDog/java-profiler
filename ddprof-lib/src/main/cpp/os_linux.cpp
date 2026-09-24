@@ -41,11 +41,7 @@
 #endif
 
 
-#ifdef __LP64__
-#  define MMAP_SYSCALL __NR_mmap
-#else
-#  define MMAP_SYSCALL __NR_mmap2
-#endif
+#define MMAP_SYSCALL __NR_mmap
 
 #define COMM_LEN 16
 

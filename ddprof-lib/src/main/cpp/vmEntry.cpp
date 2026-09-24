@@ -18,6 +18,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
+#include "samplerPerf.h"
 #include "threadLocalData.h"
 // Pulls in vmStructs.h plus the definitions of crashProtectionActive()/cast_to() that its inline
 // accessors odr-use here; the light vmStructs.h alone leaves those unresolved in assertion-enabled
@@ -726,6 +727,13 @@ extern "C" DLLEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
 }
 
 extern "C" DLLEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
+  Profiler *profiler = Profiler::instance();
+  if (profiler != NULL) {
+    profiler->stop();
+  }
+}
+
+extern "C" JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
   Profiler *profiler = Profiler::instance();
   if (profiler != NULL) {
     profiler->stop();

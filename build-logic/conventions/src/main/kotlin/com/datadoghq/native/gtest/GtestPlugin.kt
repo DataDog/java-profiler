@@ -113,7 +113,7 @@ class GtestPlugin : Plugin<Project> {
 
             onlyIf {
                 hasGtest &&
-                !project.hasProperty("skip-native") &&
+                !PlatformUtils.isNativeSkipped(project) &&
                 !project.hasProperty("skip-gtest") &&
                 PlatformUtils.currentPlatform == Platform.LINUX &&
                 extension.nativeLibsSourceDir.isPresent &&
@@ -171,7 +171,7 @@ class GtestPlugin : Plugin<Project> {
             onlyIf {
                 hasGtest &&
                 !project.hasProperty("skip-tests") &&
-                !project.hasProperty("skip-native") &&
+                !PlatformUtils.isNativeSkipped(project) &&
                 !project.hasProperty("skip-gtest")
             }
         }

@@ -32,6 +32,7 @@
 #include "os.h"
 #include "perfEvents.h"
 #include "safeAccess.h"
+#include "samplerPerf.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
@@ -1655,6 +1656,14 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
 
+  // Must precede every signal-based engine's start() below: SamplerPerfProbe
+  // (samplerPerf.h) calls OS::nanotime() from inside the signal handler, and
+  // on macOS that can be the lazy, non-atomic first-call init of
+  // mach_timebase_info (os_macos.cpp). Priming it here, synchronously on this
+  // thread, means it is already initialized by the time any SIGPROF/SIGALRM
+  // can fire.
+  SamplerPerf::primeClock();
+
   int activated = 0;
   if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
     error = _cpu_engine->start(args);
@@ -1843,6 +1852,11 @@ Error Profiler::stop() {
               dropped_lock, requested);
     }
   }
+
+  // Per-sampler timing report. A no-op unless built with -PenableSamplerPerf.
+  // Emitted before _jfr.stop() so the same counters are also correct in the
+  // final JFR chunk.
+  SamplerPerf::report();
 
   // writing these out before stopping the JFR recording allows to report the
   // correct counts in the recording

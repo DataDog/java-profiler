@@ -20,6 +20,7 @@
 #include "debugSupport.h"
 #include "os.h"
 #include "profiler.h"
+#include "samplerPerf.h"
 #include "signalInflight.h"
 #include "stackWalker.h"
 #include "threadLocalData.inline.h"
@@ -34,6 +35,11 @@ CStack ITimer::_cstack;
 
 void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   ErrnoPreserver errno_preserver;
+  // Declared right after ErrnoPreserver because this engine has no
+  // signal-origin check to sit behind (see the NOTE below): every SIGPROF
+  // delivered here, foreign ones included, is timed and counted. The other CPU
+  // engines place the probe past their origin check.
+  SAMPLER_PERF_PROBE(SP_CPU);
   SIGNAL_HANDLER_GUARD_OR_DROP();
   // NOTE: ITimer uses setitimer(ITIMER_PROF) which delivers signals with
   // si_code==SI_KERNEL — no sival payload is available. The signal-origin
@@ -110,6 +116,8 @@ long ITimerJvmti::_interval = 0;
 
 void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   ErrnoPreserver errno_preserver;
+  // No signal-origin check in this engine either; see ITimer::signalHandler.
+  SAMPLER_PERF_PROBE(SP_CPU);
   SIGNAL_HANDLER_GUARD_OR_DROP();
   ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
   assert(current != nullptr);

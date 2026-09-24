@@ -24,6 +24,15 @@ configure<ProfilerTestExtension> {
     "-Dddprof.disable_unsafe=true",
     "-XX:OnError=/tmp/do_stuff.sh",
   )
+
+  // Optional per-invocation heap override (-PtestMaxHeap=1536m). Appended after
+  // standardJvmArgs' default -Xmx512m, so the last -Xmx on the command line wins.
+  // Left unset everywhere except CI environments that need more headroom (e.g.
+  // the EL7 functional job's shared runner pod, see functional-tests.sh) so the
+  // shared 512m default is unaffected elsewhere.
+  (project.findProperty("testMaxHeap") as String?)?.let { maxHeap ->
+    extraJvmArgs.add("-Xmx$maxHeap")
+  }
 }
 
 // Generate JNI headers using javac

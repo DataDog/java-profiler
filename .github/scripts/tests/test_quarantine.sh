@@ -675,6 +675,29 @@ assert d['final_attempt_cut_short'], d
 " "$CASE/out.json" || fail "a dead test JVM was excused by the quarantine list"
 pass "a cut-short final attempt gates despite its failures being quarantined"
 
+# A signal that kills Gradle itself (e.g. the OOM killer taking the --no-daemon
+# build JVM) leaves nothing alive to print a marker, and with a single attempt
+# there is no earlier run to measure a shortfall against. The exit status is
+# then the only evidence the suite never finished.
+CASE="$TEMP_DIR/case-quarantined-killed-by-signal"
+mkdir -p "$CASE/flake-evidence/attempt-1"
+write_failure_xml "$CASE/flake-evidence/attempt-1" "com.dd.WobblyTest" "sometimesFails" "boom"
+cat > "$CASE/attempt.log" <<'EOS'
+> Task :ddprof-test:testRelease
+EOS
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "el7-8-release-amd64" --evidence-dir "$CASE/flake-evidence" \
+  --final-attempt 1 --attempt-log "$CASE/attempt.log" \
+  --final-attempt-exit-code 137 --test-task-pattern test \
+  --out "$CASE/out.json" >/dev/null 2>&1
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert d['gates'] is True, 'a final attempt killed by a signal must gate even with every named failure quarantined: %r' % d['gate_reason']
+" "$CASE/out.json" || fail "a final attempt killed by SIGKILL was excused by the quarantine list"
+pass "a final attempt killed by a signal gates despite its failures being quarantined"
+
 # musl runs ProfilerTestRunner through a plain Exec task, not Gradle's native
 # Test task: Gradle prints the exact same "finished with non-zero exit value"
 # line whenever that process exits non-zero for *any* reason, including an
@@ -724,6 +747,30 @@ assert d['gates'] is True, 'a real crash banner must still gate on musl: %r' % d
 assert d['final_attempt_cut_short'], d
 " "$CASE/out.json" || fail "a genuine musl crash was excused by the quarantine list"
 pass "a genuine crash banner still gates a quarantined musl failure"
+
+# Gradle --info prints each test JVM's full command line, which carries the
+# -XX:ErrorFile=...hs_err_pid%p.log template. That is configuration, not a
+# crash, and must not stop the list from excusing a quarantined failure.
+CASE="$TEMP_DIR/case-quarantined-errorfile-flag"
+mkdir -p "$CASE/flake-evidence/attempt-1"
+write_failure_xml "$CASE/flake-evidence/attempt-1" "com.dd.WobblyTest" "sometimesFails" "boom"
+cat > "$CASE/attempt.log" <<'EOS'
+Starting process 'Gradle Test Executor 1'. Command: /jdk/bin/java -XX:ErrorFile=build/hs_err_pid%p.log -Xmx1536m
+> Task :ddprof-test:testRelease FAILED
+EOS
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "el7-8-release-amd64" --evidence-dir "$CASE/flake-evidence" \
+  --final-attempt 1 --attempt-log "$CASE/attempt.log" \
+  --final-attempt-exit-code 1 --test-task-pattern test \
+  --out "$CASE/out.json" >/dev/null 2>&1
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert d['gates'] is False, 'the ErrorFile flag must not read as a crash: %r' % d['gate_reason']
+assert not d['final_attempt_cut_short'], d
+" "$CASE/out.json" || fail "the -XX:ErrorFile hs_err_pid%p template was read as a crash"
+pass "the -XX:ErrorFile hs_err_pid%p template does not gate a quarantined failure"
 
 # Same intent, without the log saying so: the final attempt reached fewer tests
 # than an earlier one managed, so it stopped early.

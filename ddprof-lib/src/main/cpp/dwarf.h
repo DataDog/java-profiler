@@ -34,18 +34,6 @@ const int LINKED_FRAME_SIZE = 2 * DW_STACK_SLOT;
 const int LINKED_FRAME_CLANG_SIZE = LINKED_FRAME_SIZE;
 const int INITIAL_PC_OFFSET = -EMPTY_FRAME_SIZE;
 
-#elif defined(__i386__)
-
-#define DWARF_SUPPORTED true
-
-const int DW_REG_FP = 5;
-const int DW_REG_SP = 4;
-const int DW_REG_PC = 8;
-const int EMPTY_FRAME_SIZE = DW_STACK_SLOT;
-const int LINKED_FRAME_SIZE = 2 * DW_STACK_SLOT;
-const int LINKED_FRAME_CLANG_SIZE = LINKED_FRAME_SIZE;
-const int INITIAL_PC_OFFSET = -EMPTY_FRAME_SIZE;
-
 #elif defined(__aarch64__)
 
 #define DWARF_SUPPORTED true

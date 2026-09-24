@@ -20,5 +20,11 @@ variables:
   # and must be one that still gets security rebuilds. The resulting .so
   # requires GLIBC_2.27. Multi-arch manifest, pinned by digest.
   BASE_IMAGE_GLIBC: almalinux:8@sha256:9f355ae942d6a6c0561f0771dc053a2cfae9580fc45fa4252756db7c7e80c09f
+  # Oracle Linux 7 (glibc 2.17) — best-maintained EL7 derivative (live CDN,
+  # both arches, working collections). Runtime-only: runs the x64 stresstest
+  # and functional suites against the AlmaLinux-8-built shipped binary, so
+  # that coverage at the actual glibc floor doesn't go to zero (PR #790).
+  # Multi-arch manifest, pinned by digest.
+  BASE_IMAGE_EL7: oraclelinux:7@sha256:767c93c07b1fa621ae56d1f5f090e8c0dce7eb452e7dda1e74bbe7546504d63f
 
   DOCKER_IMAGE: 486234852809.dkr.ecr.us-east-1.amazonaws.com/images/docker:24.0.4-gbi-focal

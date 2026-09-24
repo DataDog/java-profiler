@@ -457,9 +457,6 @@ void* SafeAccess::loadPtr(void** ptr, void* default_value) {
 #if defined(__x86_64__) || defined(__aarch64__)
   int64_t res = safefetch64_impl((int64_t*)ptr, (int64_t)reinterpret_cast<uintptr_t>(default_value));
   return (void*)static_cast<uintptr_t>(res);
-#elif defined(__i386__) || defined(__arm__) || defined(__thumb__)
-  int res = safefetch32_impl((int*)ptr, (int)default_value);
-  return (void*)res;
 #endif
   return *ptr;
 }
@@ -485,8 +482,6 @@ bool SafeAccess::storePtr(void** ptr, void* value) {
 #endif
 #if defined(__x86_64__) || defined(__aarch64__)
   return safestore64_impl((int64_t*)ptr, (int64_t)reinterpret_cast<uintptr_t>(value)) != 0;
-#elif defined(__i386__) || defined(__arm__) || defined(__thumb__)
-  return safestore32_impl((int*)ptr, (int)reinterpret_cast<uintptr_t>(value)) != 0;
 #endif
   *ptr = value;
   return true;
