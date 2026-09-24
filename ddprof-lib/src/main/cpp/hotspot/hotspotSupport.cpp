@@ -235,20 +235,36 @@ static const bool CONT_UNWIND_DISABLED = false;
 static const bool CONT_UNWIND_DISABLED = (std::getenv("DDPROF_DISABLE_CONT_UNWIND") != nullptr);
 #endif
 
+// Where a walk starts, and what the starting pc actually is. The pc and its
+// nature are one decision rather than two independent arguments: a ucontext
+// carries the exact interrupted address, while callerPC() yields a real return
+// address on every architecture whose CALLER_PC_IS_RETURN_ADDRESS says so.
+// Kept in one place so a future caller cannot pick a register set from one
+// branch and a nature from the other.
+struct WalkVMSeed {
+    void* ucontext;
+    const void* pc;
+    bool pc_is_return_address;
+    uintptr_t sp;
+    uintptr_t fp;
+};
+
+static WalkVMSeed walkVMSeed(void* ucontext) {
+    if (ucontext == NULL) {
+        return {&empty_ucontext, callerPC(), CALLER_PC_IS_RETURN_ADDRESS,
+                (uintptr_t)callerSP(), (uintptr_t)callerFP()};
+    }
+    HotspotStackFrame frame(ucontext);
+    return {ucontext, (const void*)frame.pc(), /*pc_is_return_address=*/false,
+            frame.sp(), frame.fp()};
+}
+
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type, int lock_index, bool* truncated) {
-    if (ucontext == NULL) {
-        // callerPC()'s nature is per-arch, the same distinction walkFP/walkDwarf
-        // seed themselves with.
-        return walkVM(&empty_ucontext, frames, max_depth, features, event_type,
-                      callerPC(), CALLER_PC_IS_RETURN_ADDRESS,
-                      (uintptr_t)callerSP(), (uintptr_t)callerFP(), lock_index, truncated);
-    } else {
-        HotspotStackFrame frame(ucontext);
-        return walkVM(ucontext, frames, max_depth, features, event_type,
-                      (const void*)frame.pc(), /*pc_is_return_address=*/false,
-                      frame.sp(), frame.fp(), lock_index, truncated);
-    }
+    WalkVMSeed seed = walkVMSeed(ucontext);
+    return walkVM(seed.ucontext, frames, max_depth, features, event_type,
+                  seed.pc, seed.pc_is_return_address, seed.sp, seed.fp,
+                  lock_index, truncated);
 }
 
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
