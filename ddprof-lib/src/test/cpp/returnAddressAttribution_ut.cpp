@@ -856,10 +856,14 @@ extern "C" void prof_ra_cfi_collect(void) {
 // Named trampoline so Test 3's "caller of the boundary frame" is a specific,
 // symbolizable function rather than the test body itself.
 extern "C" __attribute__((noinline)) void prof_ra_cfi_trampoline(void) {
-    // volatile to defeat tail-call/inlining folding this frame away.
+    // noinline alone is not enough: it stops this function being inlined
+    // into its caller, but at -O3 the call below still becomes a tail jump,
+    // which erases this frame at runtime. The volatile store AFTER the call
+    // is what makes the call non-tail by construction.
     volatile int guard = 1;
     (void)guard;
     prof_ra_cfi_caller();
+    guard = 2;
 }
 
 #endif  // __x86_64__ || __aarch64__
@@ -1027,9 +1031,14 @@ extern "C" void prof_ra_plt_collect(void) {
 }
 
 extern "C" __attribute__((noinline)) void prof_ra_plt_trampoline(void) {
+    // noinline alone is not enough: it stops this function being inlined
+    // into its caller, but at -O3 the call below still becomes a tail jump,
+    // which erases this frame at runtime. The volatile store AFTER the call
+    // is what makes the call non-tail by construction.
     volatile int guard = 1;
     (void)guard;
     prof_ra_plt_caller();
+    guard = 2;
 }
 
 #endif  // __x86_64__ || __aarch64__
