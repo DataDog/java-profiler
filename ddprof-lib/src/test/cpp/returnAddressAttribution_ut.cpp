@@ -856,14 +856,16 @@ extern "C" void prof_ra_cfi_collect(void) {
 // Named trampoline so Test 3's "caller of the boundary frame" is a specific,
 // symbolizable function rather than the test body itself.
 extern "C" __attribute__((noinline)) void prof_ra_cfi_trampoline(void) {
-    // noinline alone is not enough: it stops this function being inlined
-    // into its caller, but at -O3 the call below still becomes a tail jump,
-    // which erases this frame at runtime. The volatile store AFTER the call
-    // is what makes the call non-tail by construction.
-    volatile int guard = 1;
-    (void)guard;
     prof_ra_cfi_caller();
-    guard = 2;
+    // noinline only stops this function being inlined into its caller; at -O3
+    // the call above would still become a tail jump, erasing this frame at
+    // runtime. A volatile store after the call leaves the compiler something
+    // to do on return, so the call cannot be a tail call and the frame
+    // survives for the walker to attribute against. A volatile store *before*
+    // the call does not work -- the compiler emits it and then tears the frame
+    // down anyway.
+    volatile int sink = 0;
+    (void)sink;
 }
 
 #endif  // __x86_64__ || __aarch64__
@@ -1031,14 +1033,10 @@ extern "C" void prof_ra_plt_collect(void) {
 }
 
 extern "C" __attribute__((noinline)) void prof_ra_plt_trampoline(void) {
-    // noinline alone is not enough: it stops this function being inlined
-    // into its caller, but at -O3 the call below still becomes a tail jump,
-    // which erases this frame at runtime. The volatile store AFTER the call
-    // is what makes the call non-tail by construction.
-    volatile int guard = 1;
-    (void)guard;
     prof_ra_plt_caller();
-    guard = 2;
+    // Same tail-call guard as prof_ra_cfi_trampoline above.
+    volatile int sink = 0;
+    (void)sink;
 }
 
 #endif  // __x86_64__ || __aarch64__
