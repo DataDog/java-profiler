@@ -235,6 +235,29 @@ static const bool CONT_UNWIND_DISABLED = false;
 static const bool CONT_UNWIND_DISABLED = (std::getenv("DDPROF_DISABLE_CONT_UNWIND") != nullptr);
 #endif
 
+// Records a sender pc recovered by unwindPrologue/unwindEpilogue/unwindStub,
+// which disagree across architectures about what they hand back.
+//
+// x86_64 folds the attribution adjustment into the value itself, and not even
+// uniformly -- unwindPrologue's isFrameComplete branch returns the address
+// unadjusted while its two siblings subtract one. Adjusting again here would
+// double-count the ones that already did it, so the result is taken as-is.
+//
+// aarch64 subtracts nothing on any branch walkVM can reach: every assignment
+// is the link register or a saved-pc slot, both raw return addresses. (The one
+// branch that does adjust is guarded by `&pc == &this->pc()`, which only holds
+// for the AsyncGetCallTrace path, where the caller passes the frame's own pc
+// rather than a local.) So there the recovered pc still needs the adjustment.
+//
+// Unifying the two contracts removes the need for this distinction.
+static void recordUnwoundPc(WalkPc& walk_pc, const void* pc) {
+#if defined(__aarch64__)
+    walk_pc.setReturnAddress(pc);
+#else
+    walk_pc.setExactAddress(pc);
+#endif
+}
+
 // Where a walk starts, and what the starting pc actually is. The pc and its
 // nature are one decision rather than two independent arguments: a ucontext
 // carries the exact interrupted address, while callerPC() yields a real return
@@ -643,7 +666,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 if (nm->isFrameCompleteAt(walk_pc.raw())) {
                     const void* epilogue_pc = walk_pc.raw();
                     if (depth == 1 && frame.unwindEpilogue(nm, (uintptr_t&)epilogue_pc, sp, fp)) {
-                        walk_pc.setExactAddress(epilogue_pc);
+                        recordUnwoundPc(walk_pc, epilogue_pc);
                         continue;
                     }
 
@@ -687,7 +710,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     continue;
                 } else if (const void* prologue_pc = walk_pc.raw();
                            frame.unwindPrologue(nm, (uintptr_t&)prologue_pc, sp, fp)) {
-                    walk_pc.setExactAddress(prologue_pc);
+                    recordUnwoundPc(walk_pc, prologue_pc);
                     continue;
                 }
 
@@ -743,7 +766,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
                 const void* stub_pc = walk_pc.raw();
                 if (frame.unwindStub((instruction_t*)start, name, (uintptr_t&)stub_pc, sp, fp)) {
-                    walk_pc.setExactAddress(stub_pc);
+                    recordUnwoundPc(walk_pc, stub_pc);
                     continue;
                 }
 
