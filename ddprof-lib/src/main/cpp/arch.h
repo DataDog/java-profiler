@@ -20,7 +20,7 @@
 #  define LP64_ONLY(code) code
 #else // !_LP64
 #  define LP64_ONLY(code)
-#endif // _LP64
+# define LP64_ONLY(code) code
 
 #define COMMA ,
 
