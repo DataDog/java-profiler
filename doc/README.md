@@ -33,6 +33,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [EventTypeSystem](reference/EventTypeSystem.md) - Profiler event types
 - [RemoteSymbolication](reference/RemoteSymbolication.md) - Symbol resolution
 - [RemoteSymbolicationFrameTypes](reference/RemoteSymbolicationFrameTypes.md) - Frame type design for symbolication
+- [SamplerPerfCounters](reference/SamplerPerfCounters.md) - Opt-in per-sampler timing counters and the stop-time report
 - [TestFlakinessAnalysis](reference/TestFlakinessAnalysis.md) - Test flakiness investigation results
 
 ### Work State (temp/)

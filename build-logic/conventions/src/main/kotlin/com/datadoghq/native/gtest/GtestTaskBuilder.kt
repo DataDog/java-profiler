@@ -266,6 +266,10 @@ class GtestTaskBuilder(
         // (they already carry it) and would wrongly leak the deliberately-
         // faulting loads into the sanitizer configs, which install their own
         // SIGSEGV interception.
+        //
+        // -D__SAMPLER_PERF__ is omitted here for the same reason: it is applied
+        // per-config in ConfigurationPresets, so gtest inherits it from
+        // config.compilerArgs.get() under -PenableSamplerPerf.
 
         return args
     }

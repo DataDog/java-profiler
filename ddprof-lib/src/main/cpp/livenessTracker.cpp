@@ -20,6 +20,7 @@
 #include "profiler.h"
 #include "threadLocalData.h"
 #include "threadLocal.h"
+#include "samplerPerf.h"
 #include "tsc.h"
 #include "xorshift.h"
 #include <jni.h>
@@ -320,6 +321,11 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
     // we are not to store any objects
     return;
   }
+
+  // Declared past the disabled/no-capacity bail-outs. This is a nested
+  // breakdown of sampler_ticks.alloc, which already contains it -- track() is
+  // called from ObjectSampler::recordAllocation().
+  SAMPLER_PERF_PROBE(SP_LIVENESS);
 
   if (_subsample.ratio < 1.0) {
     u64 state = rng.get();
