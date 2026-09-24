@@ -101,7 +101,7 @@ afterEvaluate {
       description = "Assemble the $name build of the library"
       dependsOn(copyExternalLibs)
 
-      if (!project.hasProperty("skip-native")) {
+      if (!PlatformUtils.isNativeSkipped(project)) {
         dependsOn(copyTask)
       }
 

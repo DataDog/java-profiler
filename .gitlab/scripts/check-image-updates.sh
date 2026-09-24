@@ -40,6 +40,7 @@ IMAGE_DEFS=(
     "BUILD_IMAGE_X64|.gitlab/build-deploy/.gitlab-ci.yml|x64-base|image-base-build-x64|async-profiler-build"
     "BUILD_IMAGE_X64_GLIBC|.gitlab/build-deploy/.gitlab-ci.yml|x64-glibc-base|image-base-build-x64-glibc|async-profiler-build"
     "BUILD_IMAGE_ARM64_GLIBC|.gitlab/build-deploy/.gitlab-ci.yml|arm64-glibc-base|image-base-build-arm64-glibc|async-profiler-build"
+    "BUILD_IMAGE_X64_EL7|.gitlab/build-deploy/.gitlab-ci.yml|x64-el7-base|image-base-build-x64-el7|async-profiler-build"
     "BUILD_IMAGE_X64_MUSL|.gitlab/build-deploy/.gitlab-ci.yml|x64-musl-base|image-base-build-x64-musl|async-profiler-build"
     "BUILD_IMAGE_ARM64|.gitlab/build-deploy/.gitlab-ci.yml|arm64-base|image-base-build-arm64|async-profiler-build"
     "BUILD_IMAGE_ARM64_MUSL|.gitlab/build-deploy/.gitlab-ci.yml|arm64-musl-base|image-base-build-arm64-musl|async-profiler-build"

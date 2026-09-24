@@ -223,7 +223,7 @@ class GtestTaskBuilder(
 
     fun skipConditions(): Boolean {
         return project.hasProperty("skip-tests") ||
-               project.hasProperty("skip-native") ||
+               PlatformUtils.isNativeSkipped(project) ||
                project.hasProperty("skip-gtest")
     }
 
