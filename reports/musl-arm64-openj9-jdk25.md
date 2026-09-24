@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk25
 
 ## musl-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-09-24 04:39:31 EDT
+**Date:** 2026-09-24 04:40:55 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,26 +28,27 @@ title: musl-arm64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 540 |
-| Sample Rate | 9.00/sec |
-| Health Score | 562% |
+| CPU Samples | 106 |
+| Sample Rate | 1.77/sec |
+| Health Score | 111% |
 | Threads | 9 |
-| Allocations | 387 |
+| Allocations | 65 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 298 |
-| Sample Rate | 4.97/sec |
-| Health Score | 311% |
-| Threads | 14 |
-| Allocations | 128 |
+| CPU Samples | 795 |
+| Sample Rate | 13.25/sec |
+| Health Score | 828% |
+| Threads | 11 |
+| Allocations | 476 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 50-50 cores)</summary>
 
 ```
+1790238961 50
 1790238966 50
 1790238971 50
 1790238976 50
@@ -67,7 +68,6 @@ title: musl-arm64-openj9-jdk25
 1790239046 50
 1790239051 50
 1790239056 50
-1790239061 50
 ```
 </details>
 
