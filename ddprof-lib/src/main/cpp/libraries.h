@@ -82,11 +82,14 @@ class Libraries {
     return _native_libs;
   }
 
+#ifdef UNIT_TEST
   // Publishes a caller-owned CodeCache into the process-wide set so address
-  // lookups resolve against it. Test-only: CodeCacheArray is append-only, so
-  // the cache has to outlive every later lookup, and the usual population
-  // path is updateSymbols() reading the real loaded libraries.
+  // lookups resolve against it, letting a test build a library whose symbol
+  // layout it controls. CodeCacheArray is append-only, so the cache has to
+  // outlive every later lookup. The real population path is updateSymbols()
+  // reading the loaded libraries; compiled only into gtest binaries.
   bool addLibraryForTest(CodeCache *lib) { return _native_libs.add(lib); }
+#endif
 
   // Delete copy constructor and assignment operator to prevent copies
   Libraries(const Libraries&) = delete;

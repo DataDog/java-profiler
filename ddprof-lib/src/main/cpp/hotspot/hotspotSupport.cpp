@@ -345,8 +345,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         }
     }
 
-    const void* prev_native_pc = NULL;
-
     // The walking pc and whether it came out of a return-address slot travel
     // together, so a newly added pc source has to say which it is instead of
     // inheriting whatever the previous frame happened to set. Range-based
