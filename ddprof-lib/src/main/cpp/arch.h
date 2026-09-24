@@ -18,9 +18,7 @@
 
 #ifdef _LP64
 #  define LP64_ONLY(code) code
-#else // !_LP64
-#  define LP64_ONLY(code)
-#endif // _LP64
+#endif
 
 #define COMMA ,
 
@@ -89,7 +87,7 @@ static inline void storeRelease(volatile T& var, T value) {
 // return address), false when it is a leaf-seed instruction address instead
 // (aarch64's "adr %0, .").
 
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(__x86_64__)
 
 typedef unsigned char instruction_t;
 const instruction_t BREAKPOINT = 0xcc;
@@ -110,34 +108,6 @@ const int PERF_REG_PC = 8;  // PERF_REG_X86_IP
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        ((void**)__builtin_frame_address(0) + 2)
 
-const bool CALLER_PC_IS_RETURN_ADDRESS = true;
-
-#elif defined(__arm__) || defined(__thumb__)
-
-typedef unsigned int instruction_t;
-const instruction_t BREAKPOINT = 0xe7f001f0;
-const instruction_t BREAKPOINT_THUMB = 0xde01de01;
-const int BREAKPOINT_OFFSET = 0;
-
-const int SYSCALL_SIZE = sizeof(instruction_t);
-const int FRAME_PC_SLOT = 1;
-const int PROBE_SP_LIMIT = 0;
-const int PLT_HEADER_SIZE = 20;
-const int PLT_ENTRY_SIZE = 12;
-const int PERF_REG_PC = 15;  // PERF_REG_ARM_PC
-
-#define spinPause()       asm volatile("yield")
-#define rmb()             asm volatile("dmb ish" : : : "memory")
-#define flushCache(addr)  __builtin___clear_cache((char*)(addr), (char*)(addr) + sizeof(instruction_t))
-
-#define callerPC()        __builtin_return_address(0)
-#define callerFP()        __builtin_frame_address(1)
-#define callerSP()        __builtin_frame_address(1)
-
-// Return addresses here carry the Thumb interworking bit; stripPointer()
-// below clears it so attributionPC()'s -1 lands inside the call instruction.
-// Untested on real __arm__/__thumb__ hardware -- this repo builds and tests
-// x86_64 and aarch64 only.
 const bool CALLER_PC_IS_RETURN_ADDRESS = true;
 
 #elif defined(__aarch64__)
@@ -259,16 +229,6 @@ const unsigned long PAC_MASK = WX_MEMORY ? 0x7fffffffffffUL : 0xffffffffffffUL;
 
 static inline const void* stripPointer(const void* p) {
     return (const void*) ((unsigned long)p & PAC_MASK);
-}
-#elif defined(__arm__) || defined(__thumb__)
-// ARM/Thumb interworking: a return address taken from a stack slot or from LR
-// has bit 0 set when the target is Thumb code. Clear it so the value is the
-// instruction address itself -- what symbolication, FDE lookup and
-// attributionPC()'s -1 adjustment all assume. Without this the -1 would
-// merely clear the interworking bit and hand back the unadjusted return
-// address.
-static inline const void* stripPointer(const void* p) {
-    return (const void*) ((unsigned long)p & ~1UL);
 }
 #else
 #  define stripPointer(p)  (p)

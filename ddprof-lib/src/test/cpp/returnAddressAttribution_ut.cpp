@@ -1324,7 +1324,7 @@ TEST_F(ReturnAddressAttributionTest, Test5b_DwPcOffsetAppliesOffsetToRawPc) {
 // Test 6 -- Link-register recovery sets the flag (coverage row 7).
 //
 // Reachability, so nobody reads a green run here as coverage:
-//  - x86_64/i386: structurally unreachable. EMPTY_FRAME_SIZE > 0 makes the
+//  - x86_64: structurally unreachable. EMPTY_FRAME_SIZE > 0 makes the
 //    guard "EMPTY_FRAME_SIZE > 0 || pc_off != DW_LINK_REGISTER" always true,
 //    so the arm never executes.
 //  - aarch64: reachable only with a frame table that actually carries
@@ -1369,7 +1369,7 @@ extern "C" void prof_ra_lr_next(void);
 
 TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
 #if !defined(__aarch64__)
-    GTEST_SKIP() << "link-register recovery is unreachable where EMPTY_FRAME_SIZE > 0 (x86_64/i386)";
+    GTEST_SKIP() << "link-register recovery is unreachable where EMPTY_FRAME_SIZE > 0 (x86_64)";
 #else
     CodeCache* lib = Libraries::instance()->findLibraryByAddress((const void*)&prof_ra_lr_fn);
     if (lib == nullptr) {
