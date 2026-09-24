@@ -377,9 +377,11 @@ object PlatformUtils {
     /**
      * Whether native compilation should be skipped for [project].
      *
-     * `-Pskip-native` (bare, no value) skips it everywhere — the long-standing
-     * behavior, used when consuming a prebuilt shipped library via -Pwith-libs
-     * and never touching a compiler.
+     * `-Pskip-native` (bare, no value) or `skip-native=true` (the form
+     * gradle.properties.template documents) skips it everywhere — the
+     * long-standing behavior, used when consuming a prebuilt shipped library
+     * via -Pwith-libs and never touching a compiler. `skip-native=false` skips
+     * nothing.
      *
      * `-Pskip-native=<comma-separated project names>` skips it only for those
      * projects. This lets a caller substitute the prebuilt *shipped* library
@@ -392,9 +394,12 @@ object PlatformUtils {
         if (!project.hasProperty("skip-native")) {
             return false
         }
-        val value = project.property("skip-native") as? String
-        if (value.isNullOrEmpty()) {
+        val value = (project.property("skip-native") as? String)?.trim()
+        if (value.isNullOrEmpty() || value.equals("true", ignoreCase = true)) {
             return true
+        }
+        if (value.equals("false", ignoreCase = true)) {
+            return false
         }
         return value.split(",").map { it.trim() }.contains(project.name)
     }
