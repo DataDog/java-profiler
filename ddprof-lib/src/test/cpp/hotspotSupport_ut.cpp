@@ -12,6 +12,13 @@
 #include <cstddef>
 #include <cstdint>
 
+#ifdef __FAULT_INJECTION__
+#include "../../main/cpp/guards.h"
+#include "../../main/cpp/os.h"
+#include "../../main/cpp/profiler.h"
+#include "../../main/cpp/threadLocalData.inline.h"
+#endif
+
 static constexpr char HOTSPOT_SUPPORT_TEST_NAME[] = "HotspotSupportTest";
 class HotspotSupportGlobalSetup {
 public:
@@ -84,19 +91,25 @@ TEST_F(HotspotSupportLoadMethodIDsTest, LoadAllSucceedsAndCallsGetClassMethodsOn
 // patchClassLoaderData() tag/resume regression tests
 //
 // patchClassLoaderData() (the JDK-8062116 preallocation workaround, only
-// active on JDK 8) tags each jclass with how many of its methods have
-// already been preallocated into the ClassLoaderData-wide MethodList, so a
-// replayed ClassPrepare (loadAllMethodIDsIfNeeded() on profiler restart)
-// patches only the new tail [already_patched, method_count) -- or skips
-// entirely when method_count hasn't grown -- instead of re-prepending a full
-// set of blocks every time. RedefineClasses/RetransformClasses do not get
-// this tag-based skip (force_patch=true): they invalidate existing
-// jmethodIDs even when method_count is unchanged, so the tag alone cannot
-// tell patchClassLoaderData() whether fresh capacity is still needed. The
-// test above never exercises this: it leaves VM::hotspot_version() at its
-// gtest-binary default (not 8), so patchClassLoaderData() is a no-op there.
-// These tests force hotspot_version 8 and fake the VMKlass/VMClassLoaderData
-// memory layout so the tag/resume loop itself runs.
+// active on JDK 8) tags each jclass with the MethodList capacity boundary
+// its last patch reached -- the loop's exit value, i.e. the next block
+// boundary at or past the method count that was patched, not that method
+// count itself (see SecondCallPatchesOnlyNewMethodRange below, where a
+// method_count of 20 tags 24). This lets a replayed ClassPrepare
+// (loadAllMethodIDsIfNeeded() on profiler restart) patch only the new tail
+// [already_patched, method_count) -- or skip entirely when method_count
+// hasn't grown -- instead of re-prepending a full set of blocks every time.
+//
+// RedefineClasses/RetransformClasses do not get this tag-based skip
+// (force_patch=true): they invalidate existing jmethodIDs even when
+// method_count is unchanged, so the tag alone cannot tell
+// patchClassLoaderData() whether fresh capacity is still needed.
+//
+// The test above never exercises this: it leaves VM::hotspot_version() at
+// its gtest-binary default (not 8), so patchClassLoaderData() is a no-op
+// there. These tests force hotspot_version 8 and fake the
+// VMKlass/VMClassLoaderData memory layout so the tag/resume loop itself
+// runs.
 // ---------------------------------------------------------------------------
 
 // Friend of VM: lets these tests force isHotspot()/hotspot_version()==8 and
@@ -226,6 +239,28 @@ jvmtiError JNICALL mock_GetTag_garbage_on_error(jvmtiEnv*, jobject, jlong* tag_p
     return JVMTI_ERROR_INVALID_OBJECT;
 }
 
+// Same shape as mock_GetTag_garbage_on_error, but with a different failure
+// code -- pins the check to "any GetTag failure", not to
+// JVMTI_ERROR_INVALID_OBJECT specifically. Without this second code, a
+// mutant narrowing `!= JVMTI_ERROR_NONE` to `== JVMTI_ERROR_INVALID_OBJECT`
+// would still pass GetTagFailureIgnoresGarbageAndRestartsFromZero (both
+// sides agree there) but survive undetected.
+jvmtiError JNICALL mock_GetTag_wrong_phase_with_garbage(jvmtiEnv*, jobject, jlong* tag_ptr) {
+    g_get_tag_calls++;
+    *tag_ptr = 999999;
+    return JVMTI_ERROR_WRONG_PHASE;
+}
+
+// Simulates SetTag failing after a successful patch (e.g. JVMTI_ERROR_INVALID_CLASS
+// during unload, or an env/capability mismatch) -- deliberately does not update
+// g_tag, matching a real JVMTI implementation that leaves the tag untouched on
+// failure.
+jvmtiError JNICALL mock_SetTag_fails(jvmtiEnv*, jobject, jlong tag) {
+    g_set_tag_calls++;
+    g_last_set_tag_value = tag;
+    return JVMTI_ERROR_INVALID_CLASS;
+}
+
 FakePatchKlass* g_fake_klass_for_jni = nullptr;
 
 jlong JNICALL mock_GetLongField(JNIEnv*, jobject, jfieldID) {
@@ -307,12 +342,61 @@ protected:
 
     void setMethodCount(int count) { methods_header = count; }
 
-    void callPatch(bool force_patch = false) {
+    bool callPatch(bool force_patch = false) {
         jclass fake_jclass = reinterpret_cast<jclass>(0x1);
-        HotspotSupportTestAccessor::loadMethodIDsIfNeededImpl(
+        return HotspotSupportTestAccessor::loadMethodIDsIfNeededImpl(
             &mock_jvmti, reinterpret_cast<JNIEnv*>(&mock_jni), fake_jclass, /*load_all=*/true, force_patch);
     }
 };
+
+// Guard clause: a class with no methods has nothing to preallocate. Without
+// this test, a mutant weakening `method_count <= 0` to `method_count < 0`
+// would survive, since every other test uses a strictly positive count.
+TEST_F(PatchClassLoaderDataTest, ZeroMethodCountSkipsPatchAndSetTag) {
+    setMethodCount(0);
+
+    callPatch();
+
+    EXPECT_EQ(0, g_get_tag_calls) << "must bail out before even reading the tag";
+    EXPECT_EQ(0, g_lock_calls) << "a class with no methods has nothing to patch";
+    EXPECT_EQ(0, methodListChainLength(fake_cld.method_list_head));
+    EXPECT_EQ(0, g_set_tag_calls);
+}
+
+// Guard clause: the JDK-8062116 workaround is JDK 8-only. Every other test
+// in this fixture runs with hotspot_version()==8, so without this test a
+// mutant weakening `== 8` (e.g. to `>= 8`) would survive.
+TEST_F(PatchClassLoaderDataTest, NonJdk8HotspotVersionSkipsPatchEntirely) {
+    VMTestAccessor::setHotspotVersion(9);
+    setMethodCount(MethodList::SIZE);
+
+    callPatch();
+
+    EXPECT_EQ(0, g_lock_calls) << "the JDK-8062116 workaround must not run on a non-JDK-8 VM";
+    EXPECT_EQ(0, g_get_tag_calls);
+    EXPECT_EQ(0, g_set_tag_calls);
+    EXPECT_EQ(0, methodListChainLength(fake_cld.method_list_head));
+}
+
+// Guard clause: VMStructs must actually have resolved the ClassLoaderData
+// layout for this HotSpot build. Every other test in this fixture sets
+// has_class_loader_data=true, so without this test a mutant deleting this
+// half of the `!needs_patch || !VMStructs::hasClassLoaderData()` check would
+// survive.
+TEST_F(PatchClassLoaderDataTest, NoClassLoaderDataSupportSkipsPatchEntirely) {
+    VMStructsTestAccessor::State s = VMStructsTestAccessor::save();
+    s.has_class_loader_data = false;
+    VMStructsTestAccessor::apply(s);
+    setMethodCount(MethodList::SIZE);
+
+    callPatch();
+
+    EXPECT_EQ(0, g_lock_calls)
+        << "must bail out before touching the tag or CLD when VMStructs has no CLD layout";
+    EXPECT_EQ(0, g_get_tag_calls);
+    EXPECT_EQ(0, g_set_tag_calls);
+    EXPECT_EQ(0, methodListChainLength(fake_cld.method_list_head));
+}
 
 // The simple case: nothing patched yet (tag defaults to 0), method_count is
 // an exact multiple of MethodList::SIZE so already_patched lands exactly on
@@ -442,6 +526,24 @@ TEST_F(PatchClassLoaderDataTest, GetTagFailureIgnoresGarbageAndRestartsFromZero)
     EXPECT_EQ(MethodList::SIZE, g_last_set_tag_value);
 }
 
+// Same as GetTagFailureIgnoresGarbageAndRestartsFromZero, but with a
+// different jvmtiError so the fallback isn't pinned to
+// JVMTI_ERROR_INVALID_OBJECT specifically -- see
+// mock_GetTag_wrong_phase_with_garbage's comment.
+TEST_F(PatchClassLoaderDataTest, GetTagFailureWithDifferentErrorCodeStillRestartsFromZero) {
+    tbl.GetTag = &mock_GetTag_wrong_phase_with_garbage;
+    setMethodCount(MethodList::SIZE);
+
+    callPatch();
+
+    EXPECT_EQ(1, g_get_tag_calls);
+    EXPECT_EQ(1, g_lock_calls)
+        << "any GetTag failure, not just JVMTI_ERROR_INVALID_OBJECT, must restart from 0";
+    EXPECT_EQ(1, methodListChainLength(fake_cld.method_list_head))
+        << "patching must restart from 0, not from the garbage *tag_ptr value";
+    EXPECT_EQ(MethodList::SIZE, g_last_set_tag_value);
+}
+
 // Degraded case: VM::jvmti() is null (e.g. torn down mid-shutdown).
 // patchClassLoaderData() still preallocates capacity defensively -- the CLD
 // lock and MethodList prepend do not depend on JVMTI at all -- but it must
@@ -460,3 +562,169 @@ TEST_F(PatchClassLoaderDataTest, NullVMJvmtiStillPatchesButSkipsSetTag) {
     EXPECT_EQ(1, methodListChainLength(fake_cld.method_list_head));
     EXPECT_EQ(0, g_set_tag_calls) << "SetTag must be skipped when VM::jvmti() is null";
 }
+
+// Degraded case: SetTag() itself fails after a successful patch (e.g.
+// JVMTI_ERROR_INVALID_CLASS during unload, or an env/capability mismatch).
+// The tag-based dedup in patchClassLoaderData() depends entirely on this
+// SetTag succeeding: a silently dropped tag means the next ClassPrepare
+// replay still finds GetTag reporting the pre-patch value and re-prepends
+// the same MethodList blocks -- the unbounded growth this workaround exists
+// to prevent (see loadMethodIDsIfNeededImpl()'s comment on why the error is
+// now logged instead of ignored). A SetTag failure must not be mistaken for
+// a correctness failure, though: loadMethodIDsIfNeededImpl() reports
+// whatever loadMethodIDsImpl() returned, independent of this SetTag path.
+TEST_F(PatchClassLoaderDataTest, SetTagFailureIsSurvivedAndDoesNotAffectLoadedResult) {
+    setMethodCount(MethodList::SIZE);
+    tbl.SetTag = &mock_SetTag_fails;
+
+    bool loaded = callPatch();
+
+    EXPECT_TRUE(loaded) << "a SetTag failure must not affect loadMethodIDsIfNeededImpl()'s result";
+    EXPECT_EQ(1, g_set_tag_calls) << "SetTag must still be attempted with the freshly-patched tag";
+    EXPECT_EQ(MethodList::SIZE, g_last_set_tag_value);
+    EXPECT_EQ(1, methodListChainLength(fake_cld.method_list_head));
+
+    // The failed SetTag never actually updated the JVM-side tag (g_tag is
+    // still 0, as SetUp() left it), so a replay must not be fooled into
+    // thinking this class is already patched.
+    g_lock_calls = 0;
+    g_set_tag_calls = 0;
+    tbl.SetTag = &mock_SetTag;
+
+    EXPECT_TRUE(callPatch());
+    EXPECT_EQ(1, g_lock_calls) << "the replay must patch from scratch, not skip as already-patched";
+    EXPECT_EQ(1, g_set_tag_calls);
+    EXPECT_EQ(2, methodListChainLength(fake_cld.method_list_head));
+}
+
+#ifdef __FAULT_INJECTION__
+// ---------------------------------------------------------------------------
+// patchClassLoaderData() crash-protection regression test.
+//
+// LockState pairs cld->lock()/unlock() with the function's sigsetjmp so a
+// fault while the lock is held still unlocks it (see LockState::reset() and
+// the sigsetjmp branch at the top of patchClassLoaderData()).
+// INJECT_CRASH_LIKELY() sits right after state.lock(cld) and before the
+// MethodList-prepend loop specifically to exercise that window, but it
+// compiles to `((void)0)` outside __FAULT_INJECTION__ builds
+// (-PenableFaultInjection) -- so none of the tests above, which all run in
+// the default build, ever reach it. Without a test here, dropping
+// state.reset(), swapping the restore()/reset() order, or changing the
+// recovery path's return value all pass the rest of this file unnoticed.
+// ---------------------------------------------------------------------------
+
+static SigAction g_orig_patch_segv_handler = nullptr;
+
+static void patchCrashSignalHandler(int signo, siginfo_t* siginfo, void* context) {
+    // patchClassLoaderData()'s sigsetjmp landing branch calls
+    // SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP() to compensate for the
+    // SignalHandlerScope destructor that the siglongjmp below bypasses (see
+    // guards.h) -- mirroring segvHandler's own SIGNAL_HANDLER_GUARD_NO_SAMPLE()
+    // is required so that compensation has something to undo, or
+    // exitSignalScope() trips its "Unmatched exitSignalScope" assert.
+    SIGNAL_HANDLER_GUARD_NO_SAMPLE();
+    Profiler::checkFault(ProfiledThread::current(), siginfo, context);  // siglongjmp if protected
+    // Not protected, or PC outside the profiler's range: not our injected fault.
+    SIGNAL_HANDLER_GUARD_RELEASE();
+    if (g_orig_patch_segv_handler != nullptr) {
+        g_orig_patch_segv_handler(signo, siginfo, context);
+    } else {
+        gtestCrashHandler(signo, siginfo, context, HOTSPOT_SUPPORT_TEST_NAME);
+    }
+}
+
+class PatchClassLoaderDataCrashTest : public PatchClassLoaderDataTest {
+protected:
+    void SetUp() override {
+        PatchClassLoaderDataTest::SetUp();
+        ProfiledThread::initCurrentThread();
+        g_orig_patch_segv_handler = OS::replaceSigsegvHandler(patchCrashSignalHandler);
+    }
+
+    void TearDown() override {
+        OS::replaceSigsegvHandler(g_orig_patch_segv_handler);
+        PatchClassLoaderDataTest::TearDown();
+    }
+};
+
+// Retries the patch call with a fixed RNG seed until some INJECT_FAULT_* site
+// reachable while cld's lock is held fires -- the same retry-until-fired
+// pattern as WalkVmSigsetjmpRecoversFromInjectedFault in faultInjection_ut.cpp.
+// g_tag is reset before every attempt so each one looks like a fresh,
+// never-patched class regardless of how many prior attempts succeeded --
+// otherwise a successful attempt's SetTag would leave the class looking
+// already-patched and the next attempt would skip the lock/loop entirely,
+// never reaching a fault site again.
+//
+// Detection deliberately does not use the global FAULTS_INJECTED counter:
+// VMStructs::at() (vmStructs.inline.h) also wraps its return in
+// INJECT_FAULT_ADDRESS_RARE, and at() is on the hot path here too (inside
+// classLoaderData(), methodCount(), and methodList()) sharing the same
+// per-thread RNG stream as INJECT_CRASH_LIKELY(). Across thousands of
+// retries that RARE draw can fire on its own, most often inside
+// classLoaderData() *before* state.lock(cld) ever runs -- a real fault, but
+// the wrong window for this test (LockState::reset() is a no-op there,
+// since _cld is still null) that would otherwise register as a false
+// positive and corrupt the assertions below. A successful (non-crashing)
+// call always leaves g_set_tag_calls == 1 once the lock is taken (new_tag
+// derived from a lock/loop that actually completed is always >= 0 here);
+// landing on the lock having been taken but no tag persisted can only mean
+// the sigsetjmp recovery path ran between lock() and the tag write --
+// exactly the window this test targets, regardless of which INJECT_FAULT_*
+// site inside that window happened to fire.
+TEST_F(PatchClassLoaderDataCrashTest, FaultBetweenLockAndResetStillUnlocksAndCanRetryFromScratch) {
+    setMethodCount(MethodList::SIZE);
+    ProfiledThread::current()->setFiRng(0xC0FFEEC0FFEEULL);
+
+    bool faulted = false;
+    for (int i = 0; i < 5000 && !faulted; i++) {
+        g_tag = 0;
+        g_lock_calls = 0;
+        g_unlock_calls = 0;
+        g_set_tag_calls = 0;
+        callPatch();
+        if (g_lock_calls == 1 && g_set_tag_calls == 0) {
+            faulted = true;
+        }
+    }
+    ASSERT_TRUE(faulted) << "expected a fault to land between lock() and the tag write within 5000 retries";
+
+    EXPECT_EQ(1, g_lock_calls) << "the faulted call must still have taken the lock";
+    EXPECT_EQ(1, g_unlock_calls)
+        << "the sigsetjmp recovery path's state.reset() must unlock cld exactly once";
+    EXPECT_EQ(0, g_set_tag_calls)
+        << "a faulted patch returns -1 and must never persist a tag for capacity that was "
+           "never fully prepended";
+
+    // No tag was persisted for the faulted attempt (g_tag is still 0, as reset
+    // above), so a follow-up call must not think the class is already patched:
+    // it re-locks and rebuilds capacity from scratch, exactly like
+    // FirstCallPatchesFromZeroAndTagsMethodCount. Retried the same way as the
+    // fault-finding loop above: this call shares the same per-thread RNG
+    // stream, so it can rarely hit the same RARE at() draw itself. Recording
+    // chain_before_retry fresh on each attempt (rather than once before the
+    // loop) keeps the "+1 node" check below correct even if an earlier
+    // attempt in this loop faulted and left no node behind.
+    bool retry_clean = false;
+    int chain_before_retry = 0;
+    for (int j = 0; j < 20 && !retry_clean; j++) {
+        chain_before_retry = methodListChainLength(fake_cld.method_list_head);
+        g_lock_calls = 0;
+        g_unlock_calls = 0;
+        g_set_tag_calls = 0;
+        callPatch();
+        if (g_set_tag_calls == 1) {
+            retry_clean = true;
+        }
+    }
+    ASSERT_TRUE(retry_clean) << "expected a clean (non-faulted) retry within 20 attempts";
+
+    EXPECT_EQ(1, g_lock_calls) << "the retry must patch from scratch, not skip as already-patched";
+    EXPECT_EQ(1, g_unlock_calls);
+    EXPECT_EQ(1, g_set_tag_calls);
+    EXPECT_EQ(MethodList::SIZE, g_last_set_tag_value);
+    EXPECT_EQ(chain_before_retry + 1, methodListChainLength(fake_cld.method_list_head))
+        << "the retry must prepend exactly one fresh MethodList node, same as any "
+           "from-scratch patch";
+}
+#endif  // __FAULT_INJECTION__

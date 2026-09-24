@@ -15,6 +15,7 @@
 #include "hotspot/vmStructs.inline.h"
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
+#include "log.h"
 #include "profiler.h"
 #include "stackWalker.inline.h"
 #include "threadLocal.h"
@@ -1398,6 +1399,12 @@ static jlong patchClassLoaderData(JNIEnv* jni, jclass klass, bool force_patch) {
   // Preallocate space for jmethodIDs at the beginning of the list (rather than at the end)
   // This is relevant only for JDK 8 - later versions do not have this bug
   ProfiledThread* prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
+  // Not exercised by hotspotSupport_ut.cpp: initCurrentThreadSignalSafe()
+  // only returns null when isThreadKeyValid() is false, i.e. the process-wide
+  // pthread_key_create() in ProfiledThread's static initializer failed at
+  // library load. That key is shared by every ProfiledThread lookup in the
+  // binary, so there is no per-test seam to flip it false without also
+  // breaking TLS for every other test running in the same gtest binary.
   if (prof_thread == nullptr) {
     return -1;
   }
@@ -1412,6 +1419,9 @@ static jlong patchClassLoaderData(JNIEnv* jni, jclass klass, bool force_patch) {
   }
   jmp_scope.install(&crash_protection_ctx);
   VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
+  if (vmklass == nullptr) {
+    return -1;
+  }
   int method_count = vmklass->methodCount();
   if (method_count <= 0) {
     return -1;
@@ -1551,7 +1561,18 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
     if (loaded && new_tag >= 0) {
         jvmtiEnv* patch_jvmti = VM::jvmti();
         if (patch_jvmti != nullptr) {
-            patch_jvmti->SetTag(klass, new_tag);
+            jvmtiError tag_err = patch_jvmti->SetTag(klass, new_tag);
+            // A lost SetTag has no correctness impact (loaded is still returned
+            // as computed above), but it silently degrades patchClassLoaderData()'s
+            // tag-based dedup back to re-prepending the same MethodList blocks on
+            // every future replay of this class -- the unbounded growth the
+            // workaround exists to prevent. Log it so that degradation is
+            // diagnosable instead of invisible.
+            if (tag_err != JVMTI_ERROR_NONE) {
+                Log::warn("patchClassLoaderData: SetTag failed (jvmtiError=%d); "
+                          "this class's MethodList capacity will be re-patched on the next ClassPrepare replay",
+                          tag_err);
+            }
         }
     }
     return loaded;
