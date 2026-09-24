@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk8
 
 ## musl-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-09-24 15:41:54 EDT
+**Date:** 2026-09-24 16:31:59 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 150 |
-| Sample Rate | 2.50/sec |
-| Health Score | 156% |
+| CPU Samples | 164 |
+| Sample Rate | 2.73/sec |
+| Health Score | 171% |
 | Threads | 5 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 424 |
-| Sample Rate | 7.07/sec |
-| Health Score | 442% |
-| Threads | 10 |
+| CPU Samples | 187 |
+| Sample Rate | 3.12/sec |
+| Health Score | 195% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1790278628 32
-1790278633 32
-1790278638 32
-1790278643 32
-1790278648 32
-1790278653 32
-1790278658 32
-1790278663 32
-1790278668 32
-1790278673 32
-1790278678 32
-1790278683 32
-1790278688 32
-1790278693 32
-1790278698 32
-1790278703 32
-1790278708 32
-1790278713 32
-1790278718 32
-1790278723 32
+1790281533 32
+1790281538 32
+1790281543 32
+1790281548 32
+1790281553 32
+1790281558 32
+1790281563 32
+1790281568 32
+1790281573 32
+1790281578 32
+1790281583 32
+1790281588 32
+1790281593 32
+1790281598 32
+1790281603 32
+1790281608 32
+1790281613 32
+1790281618 32
+1790281623 32
+1790281628 32
 ```
 </details>
 
