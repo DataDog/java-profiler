@@ -105,6 +105,32 @@ TEST_F(ArgumentsTest, InvalidWallsamplerValueIsAnError) {
     EXPECT_TRUE(error);
 }
 
+// wallsampler used to switch on value[0] alone, so any value starting with 'j' or
+// 'a' was silently accepted - a typo like "junk" or "anything" must now be rejected.
+TEST_F(ArgumentsTest, InvalidWallsamplerJTypoIsAnError) {
+    Arguments args;
+    Error error = args.parse("wallsampler=junk");
+    EXPECT_TRUE(error);
+}
+
+TEST_F(ArgumentsTest, InvalidWallsamplerATypoIsAnError) {
+    Arguments args;
+    Error error = args.parse("wallsampler=anything");
+    EXPECT_TRUE(error);
+}
+
+TEST_F(ArgumentsTest, WallsamplerValidValuesStillWork) {
+    Arguments args;
+    Error error = args.parse("wallsampler=jvmti");
+    EXPECT_FALSE(error);
+    EXPECT_EQ(args._wallclock_sampler, JVMTI);
+
+    Arguments args2;
+    error = args2.parse("wallsampler=asgct");
+    EXPECT_FALSE(error);
+    EXPECT_EQ(args2._wallclock_sampler, ASGCT);
+}
+
 // mcleanup previously grouped its `default:` case with the "true" branch, so a
 // typo silently enabled the feature instead of erroring.
 TEST_F(ArgumentsTest, InvalidMcleanupValueIsAnError) {
@@ -141,6 +167,23 @@ TEST_F(ArgumentsTest, InvalidReferenceChainsBooleanValueIsAnError) {
     Arguments args;
     Error error = args.parse("referencechains=xyz");
     EXPECT_TRUE(error);
+}
+
+// A bare 'referencechains' with no '=' at all must still enable the feature - the
+// parseBoolOption rewrite must not turn the no-value case into a silent no-op.
+TEST_F(ArgumentsTest, BareReferenceChainsEnablesFeature) {
+    Arguments args;
+    Error error = args.parse("referencechains");
+    EXPECT_FALSE(error);
+    EXPECT_TRUE(args._reference_chains);
+}
+
+TEST_F(ArgumentsTest, BareReferenceChainsWithSubOptionsStillEnables) {
+    Arguments args;
+    Error error = args.parse("referencechains:hops=10");
+    EXPECT_FALSE(error);
+    EXPECT_TRUE(args._reference_chains);
+    EXPECT_EQ(args._reference_chains_hop_cap, 10);
 }
 
 TEST_F(ArgumentsTest, InvalidGenerationsValueIsAnError) {

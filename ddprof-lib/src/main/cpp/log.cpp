@@ -34,6 +34,14 @@ void Log::open(Arguments &args) {
 }
 
 void Log::open(const char *file_name, const char *level) {
+  if (file_name == NULL && level == NULL) {
+    // Nothing to reconfigure. In particular, this keeps a rejected execute0()
+    // command (which parses to _log == NULL, _loglevel == NULL when the
+    // caller didn't ask to change logging) from resetting an active custom
+    // log file back to stdout/LOG_NONE before the parse error is thrown.
+    return;
+  }
+
   if (_file != stdout && _file != stderr) {
     fclose(_file);
   }

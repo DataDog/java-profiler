@@ -415,15 +415,12 @@ Error Arguments::parse(const char *args) {
 
       CASE("wallsampler")
       if (value != NULL) {
-          switch (value[0]) {
-              case 'j':
-                  _wallclock_sampler = JVMTI;
-                  break;
-              case 'a':
-                  _wallclock_sampler = ASGCT;
-                  break;
-              default:
-                  msg = "Invalid wallsampler value";
+          if (strcasecmp(value, "jvmti") == 0) {
+              _wallclock_sampler = JVMTI;
+          } else if (strcasecmp(value, "asgct") == 0) {
+              _wallclock_sampler = ASGCT;
+          } else {
+              msg = "Invalid wallsampler value";
           }
       }
 
@@ -466,8 +463,13 @@ Error Arguments::parse(const char *args) {
         if (config) {
           *(config++) = 0;
         }
-        if (value != NULL && !parseBoolOption(value, &_reference_chains)) {
-          msg = "Invalid referencechains value";
+        if (value != NULL) {
+          if (!parseBoolOption(value, &_reference_chains)) {
+            msg = "Invalid referencechains value";
+          }
+        } else {
+          // A bare 'referencechains' with no value means enable.
+          _reference_chains = true;
         }
         char *cursor = config;
         while (cursor != NULL) {
