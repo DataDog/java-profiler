@@ -68,11 +68,11 @@ DLLEXPORT extern thread_local OtelThreadContextRecord* otel_thread_ctx_v1;
  * Each thread gets a pre-allocated OtelThreadContextRecord cached in
  * ProfiledThread. The TLS pointer otel_thread_ctx_v1 is set to the record
  * during thread initialization; detach/attach (context writes) never touch
- * it. It is nulled out on thread teardown (ProfiledThread::freeValue(), see
- * threadLocalData.cpp) before the backing ProfiledThread is deleted or
- * returned to the pool for reuse by another thread, so readers must check
- * for null on every access rather than assuming the pointer stays valid for
- * the OS thread's full lifetime.
+ * it. It is nulled out on thread teardown (ProfiledThread::unclaimAndReset()
+ * or ~ProfiledThread(), see threadLocalData.cpp/.h) before the backing
+ * ProfiledThread is deleted or returned to the pool for reuse by another
+ * thread, so readers must check for null on every access rather than
+ * assuming the pointer stays valid for the OS thread's full lifetime.
  *
  * Signal safety: signal handlers must never access
  * otel_thread_ctx_v1 directly (TLS lazy init can deadlock
