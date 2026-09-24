@@ -16,6 +16,7 @@
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
+#include "samplerPerf.h"
 #include "tsc.h"
 #include "vmEntry.h"
 
@@ -221,6 +222,12 @@ void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 
     // without re-probing, to avoid a getsockopt syscall on every I/O.  Revalidate here,
     // on sampled events only, so a closed-and-reused fd is caught before we emit an event.
     if ((op == 2 || op == 3) && !revalidateSocket(fd)) return;
+
+    // Declared past the isRunning()/shouldSample()/revalidateSocket() rejects so
+    // only emitted events are counted. Distinct from the t0/t1 pair, which is
+    // the socket operation's own duration; this measures what recording it costs.
+    SAMPLER_PERF_PROBE(SP_NATIVESOCKET);
+
 #ifdef DEBUG
     {
         uint64_t n = _record_accept_calls.fetch_add(1, std::memory_order_relaxed);

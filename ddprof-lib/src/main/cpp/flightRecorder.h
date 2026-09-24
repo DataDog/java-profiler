@@ -22,6 +22,7 @@
 #include "common.h"
 #include "countingAllocator.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "dictionary.h"
 #include "stringDictionary.h"
 #include "event.h"
@@ -43,6 +44,40 @@ const int MAX_JFR_EVENT_SIZE = 256;
 const int JFR_EVENT_FLUSH_THRESHOLD = RECORDING_BUFFER_LIMIT;
 const int MAX_VAR64_LENGTH = 10;
 const int MAX_VAR32_LENGTH = 5;
+
+// Chain length Recording::recordReferenceChain() (flightRecorder.cpp) will
+// actually serialize per datadog.ReferenceChain event, independent of
+// the engine's own _hop_cap/frontier-table cap - the frontier table's
+// defensive walk bound is its maxCapacity(), which can run into the tens of
+// thousands of entries, and neither that cap nor _hop_cap is itself
+// range-validated against a buffer-safe maximum (see arguments.cpp's own
+// sub-option parsing). recordReferenceChain() truncates event->_hops to
+// this many entries before writing, so its own worst-case size never
+// depends on trusting either of those upstream caps to stay small - a chain
+// longer than this is still truncated defense-in-depth even if a caller
+// changes those caps later.
+//
+// Derived from the recording buffer's capacity, not a hand-picked constant:
+// each serialized hop costs up to one chain entry (putVar32, <=
+// MAX_VAR32_LENGTH) plus one edge label (putUtf8 = 1 encoding-tag byte + a
+// var32 length prefix + MAX_REFERENCE_CHAIN_EDGE_LABEL payload bytes), and
+// the event's fixed fields cost REFERENCE_CHAIN_EVENT_FIXED_BYTES - so a
+// full-cap event always fits inside RECORDING_BUFFER_LIMIT and the
+// reservation in recordReferenceChain() can never underflow (a fixed 4096
+// allowed a ~438 KB worst case against a 61 KB buffer - a debug assert and
+// a release-mode write past the buffer).
+const int REFERENCE_CHAIN_EVENT_FIXED_BYTES =
+    MAX_VAR32_LENGTH /* multi-byte event size prefix */ +
+    3 * MAX_VAR64_LENGTH /* type id, start_time, target_tag */ +
+    3 * MAX_VAR32_LENGTH /* depth, totalHops, chain count */ +
+    32 /* rootKind string, generous */ +
+    MAX_VAR32_LENGTH /* edges count */;
+const int REFERENCE_CHAIN_EVENT_PER_HOP_BYTES =
+    MAX_VAR32_LENGTH /* chain entry */ +
+    1 + MAX_VAR32_LENGTH + MAX_REFERENCE_CHAIN_EDGE_LABEL /* edge label */;
+const int MAX_REFERENCE_CHAIN_EVENT_HOPS =
+    (RECORDING_BUFFER_LIMIT - REFERENCE_CHAIN_EVENT_FIXED_BYTES) /
+    REFERENCE_CHAIN_EVENT_PER_HOP_BYTES;
 
 #ifndef CONCURRENCY_LEVEL
 const int CONCURRENCY_LEVEL = 16;
@@ -246,6 +281,28 @@ private:
   Buffer _cpu_monitor_buf;
   CpuTimes _last_times;
 
+  // Per-category NativeMem state captured immediately AFTER writeCpool(), and
+  // emitted by the following chunk.
+  //
+  // The chunk's own counters are necessarily sampled before serialization: the
+  // chunk header records cpool_offset as the boundary between the event section
+  // and the constant pool, so no event may be appended once writeCpool() has
+  // run. But writeCpool() is where the method map is built and the dictionary
+  // grows -- by two orders of magnitude in a large recording -- so a consumer
+  // reading only the in-chunk values never sees the cost of serialization.
+  //
+  // The post-flush live values are the genuinely new signal here. The
+  // post-flush max is NativeMem::max(cat), a lifetime monotonic high-water
+  // mark that nothing resets in production, so it carries the same
+  // cross-flush attribution ambiguity as native_mem_max_bytes -- a per-flush
+  // peak can only be recovered by a consumer differencing
+  // post_flush_max[N] against the in-chunk native_mem_max_bytes emitted in
+  // chunk N.
+  bool _has_post_flush;
+  long long _post_flush_live[NM_NUM_CATEGORIES];
+  long long _post_flush_max[NM_NUM_CATEGORIES];
+  void capturePostFlushNativeMem();
+
   static float ratio(float value) {
     return value < 0 ? 0 : value > 1 ? 1 : value;
   }
@@ -364,6 +421,9 @@ public:
                                 NativeSocketEvent *event);
   void recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                             ObjectLivenessEvent *event);
+  void recordReferenceChain(Buffer *buf, ReferenceChainEvent *event);
+  void recordReferenceChainAbandoned(Buffer *buf,
+                                     ReferenceChainAbandonedEvent *event);
   void recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
                             LockEvent *event);
   void recordThreadPark(Buffer *buf, int tid, u64 call_trace_id,
@@ -518,6 +578,24 @@ public:
                             const char *value, const char *unit);
 
   void recordHeapUsage(int lock_index, long value, bool live);
+
+  // Mirrors recordHeapUsage()'s shape exactly - ReferenceChainAbandonedEvent
+  // is not stack-sample-shaped (no tid/call_trace_id), same as HeapUsage.
+  // Called from Profiler::writeReferenceChainAbandoned() (profiler.cpp),
+  // wired from Profiler::dump() the same way LivenessTracker::flush() is.
+  void recordReferenceChainAbandoned(int lock_index,
+                                     ReferenceChainAbandonedEvent *event);
+
+  // Mirrors recordReferenceChainAbandoned() above exactly, for
+  // ReferenceChainEvent instead. Called from Profiler::writeReferenceChain()
+  // (profiler.cpp), itself called from Profiler::dump()'s drain loop over
+  // the engine's resolved-chain cache snapshot: the BFS
+  // scheduling thread only caches resolved chains and each dump re-emits
+  // the cache, so chain events
+  // are written on dump()'s own thread, not from the tracker thread, and
+  // unlike recordReferenceChainAbandoned() (unbounded retry budget per
+  // event) the batch shares one deadline (writeReferenceChain()'s comment).
+  void recordReferenceChain(int lock_index, ReferenceChainEvent *event);
 };
 
 #endif // _FLIGHTRECORDER_H

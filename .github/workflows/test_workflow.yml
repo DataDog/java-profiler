@@ -43,6 +43,11 @@ jobs:
           echo "configs=$configs" >> $GITHUB_OUTPUT
   test-linux-glibc-amd64:
     needs: cache-jdks
+    # The default job name has no room for slow_tests -- it is a workflow
+    # input, not a matrix axis -- so two calls to this workflow in the same
+    # run (one regular, one slow) would otherwise show identical job names
+    # and be indistinguishable to generate-test-summary.sh.
+    name: test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
     strategy:
       fail-fast: false
       matrix:
@@ -61,6 +66,13 @@ jobs:
             if [[ "${{ matrix.config }}" != "release" ]] && [[ "${{ matrix.config }}" != "debug" ]]; then
               echo "enabled=false" >> $GITHUB_OUTPUT
             fi
+          fi
+          # IBM SDK 8 (OpenJ9 2.9) deadlocks inside JVMTI during the slow/e2e suite
+          # (class-unload + System.gc() + profiler.dump/stop); regular testDebug passes.
+          # Eclipse OpenJ9 8 (8-j9) and 17-j9 slow suites pass, so this is
+          # IBM-SDK-8-specific. Recurring nightly + release slow-test hangs since ~2026-08-19.
+          if [[ "${{ matrix.java_version }}" == "8-ibm" && "${{ inputs.slow_tests }}" == "true" ]]; then
+            echo "enabled=false" >> $GITHUB_OUTPUT
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.set_enabled.outputs.enabled == 'true'
@@ -93,7 +105,7 @@ jobs:
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev binutils
+          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev binutils gdb
           # Install debug symbols for system libraries
           sudo apt-get install -y libc6-dbg
           if [[ ${{ matrix.java_version }} =~ "-zing" ]]; then
@@ -124,6 +136,23 @@ jobs:
             fi
           fi
 
+          # GDB watchdog for debug config: dumps all native threads if the JVM hangs
+          # inside JVMTI (e.g. the IBM SDK 8 slow-suite deadlock) before the 180-min
+          # job timeout fires, so a thread dump lands in the test-reports artifact.
+          # prepare_reports.sh copies build/logs/gdb-watchdog.log on failure.
+          if [[ "${{ matrix.config }}" == "debug" ]]; then
+            mkdir -p build/logs
+            (
+              sleep 1200  # 20 minutes — well past the normal ~6 min runtime
+              echo "::warning::GDB watchdog triggered after 20 minutes"
+              for pid in $(pgrep -f 'java.*ddprof-test'); do
+                echo "=== Thread dump for PID $pid ===" >> build/logs/gdb-watchdog.log
+                gdb -batch -ex 'thread apply all bt full' -p "$pid" >> build/logs/gdb-watchdog.log 2>&1 || true
+              done
+            ) &
+            GDB_WATCHDOG_PID=$!
+          fi
+
           # GraalVM pre-allocates fixed memory that conflicts with ASan's shadow range
           # [0x00007fff7000-0x10007fff7fff]; vm.mmap_rnd_bits tuning does not help (google/sanitizers#856).
           if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ graal ]]; then
@@ -131,43 +160,60 @@ jobs:
             exit 0
           fi
 
-          MAX_ATTEMPTS=1
+          # Default: a failure naming no test is a build error, not worth a
+          # retry.
+          export RETRY_ON_NO_TEST_FAILURES=0
           if [[ "${{ matrix.config }}" == "asan" ]]; then
-            # ASan init can nondeterministically collide with the JVM's ASLR-influenced
-            # mmap layout (google/sanitizers#856); retry once before failing the job.
-            MAX_ATTEMPTS=2
+            # ASan init can nondeterministically collide with the JVM's
+            # ASLR-influenced mmap layout (google/sanitizers#856). The JVM
+            # aborts before any test runs, so that failure names no test and
+            # would otherwise be classed as a build error and left unretried.
+            export RETRY_ON_NO_TEST_FAILURES=1
           fi
 
-          for attempt in $(seq 1 $MAX_ATTEMPTS); do
-            mkdir -p build/logs
-            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
-              | tee -a build/test-raw.log \
-              | python3 -u .github/scripts/filter_gradle_log.py
-            EXIT_CODE=${PIPESTATUS[0]}
-
-            if [ $EXIT_CODE -eq 0 ]; then break; fi
-            if [ $attempt -lt $MAX_ATTEMPTS ]; then
-              echo "::warning::Attempt $attempt failed (exit $EXIT_CODE), retrying..."
-              ./gradlew --stop 2>/dev/null || true
+          # The slow/e2e suite already runs the best part of an hour, so a
+          # retry would risk the 180-minute job timeout, and it records
+          # failures without re-running them. ASan keeps its second attempt
+          # even when slow, but only for the init abort above (0 named
+          # failures): MAX_FAILURES_TO_RETRY=0 stops a slow ASan run that
+          # actually failed named tests from being retried too, which would
+          # re-run the full slow suite a second time and risk that same
+          # timeout.
+          export MAX_ATTEMPTS=2
+          if [[ "${{ inputs.slow_tests }}" == "true" ]]; then
+            if [[ "${{ matrix.config }}" == "asan" ]]; then
+              export MAX_FAILURES_TO_RETRY=0
+            else
+              export MAX_ATTEMPTS=1
             fi
-          done
+          fi
+
+          .github/scripts/run_tests_with_retry.sh \
+            "glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64${{ inputs.slow_tests && '-slow' || '' }}" -- \
+            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          EXIT_CODE=$?
+
+          # Kill the watchdog if tests finished before it fired
+          if [[ -n "${GDB_WATCHDOG_PID:-}" ]]; then
+            kill "$GDB_WATCHDOG_PID" 2>/dev/null || true
+          fi
 
           if [ $EXIT_CODE -ne 0 ]; then
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
             exit 1
           fi
       - name: Generate Unwinding Report
-        if: success() && matrix.config == 'debug'
+        if: success() && matrix.config == 'debug' && steps.set_enabled.outputs.enabled == 'true'
         run: |
           ./gradlew -PCI :ddprof-test:unwindingReport --no-daemon
       - name: Add Unwinding Report to Job Summary
-        if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
+        if: success() && matrix.config == 'debug' && steps.set_enabled.outputs.enabled == 'true' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
         run: |
           echo "## 🔧 Unwinding Quality Report - ${{ matrix.java_version }} (amd64)" >> $GITHUB_STEP_SUMMARY
           cat ddprof-test/build/reports/unwinding-summary.md >> $GITHUB_STEP_SUMMARY
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: success()
+        if: success() && steps.set_enabled.outputs.enabled == 'true'
         with:
           name: (build) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: build/
@@ -193,6 +239,16 @@ jobs:
         with:
           name: (test-reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: test-reports
+      # Always uploaded, unlike the reports above: a cell that went green only
+      # because of a retry produces no failure artifact, and that is exactly the
+      # run whose evidence the summary needs. The file is a few hundred bytes.
+      - name: Upload CI outcome
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: (ci-outcome) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
+          path: ci-outcome
+          if-no-files-found: ignore
       - name: Upload signal-safety violation log
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
@@ -211,6 +267,8 @@ jobs:
   test-linux-musl-amd64:
     needs: [cache-jdks, filter-musl-configs]
     if: needs.filter-musl-configs.outputs.has_configs == 'true'
+    # See the comment on test-linux-glibc-amd64's name above.
+    name: test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
     strategy:
      fail-fast: false
      matrix:
@@ -281,11 +339,12 @@ jobs:
           export JAVA_VERSION
           echo "JAVA_VERSION=${JAVA_VERSION}"
 
-          mkdir -p build/logs
-          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
-            | tee -a build/test-raw.log \
-            | python3 -u .github/scripts/filter_gradle_log.py
-          EXIT_CODE=${PIPESTATUS[0]}
+          export MAX_ATTEMPTS=${{ inputs.slow_tests && 1 || 2 }}
+
+          .github/scripts/run_tests_with_retry.sh \
+            "musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64${{ inputs.slow_tests && '-slow' || '' }}" -- \
+            ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          EXIT_CODE=$?
 
           if [ $EXIT_CODE -ne 0 ]; then
             echo "musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
@@ -328,6 +387,16 @@ jobs:
         with:
           name: (test-reports) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: test-reports
+      # Always uploaded, unlike the reports above: a cell that went green only
+      # because of a retry produces no failure artifact, and that is exactly the
+      # run whose evidence the summary needs. The file is a few hundred bytes.
+      - name: Upload CI outcome
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: (ci-outcome) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
+          path: ci-outcome
+          if-no-files-found: ignore
       - name: Upload signal-safety violation log
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
@@ -345,6 +414,8 @@ jobs:
 
   test-linux-glibc-aarch64:
     needs: cache-jdks
+    # See the comment on test-linux-glibc-amd64's name above.
+    name: test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
     strategy:
       fail-fast: false
       matrix:
@@ -454,26 +525,38 @@ jobs:
             exit 0
           fi
 
-          MAX_ATTEMPTS=1
+          # Default: a failure naming no test is a build error, not worth a
+          # retry.
+          export RETRY_ON_NO_TEST_FAILURES=0
           if [[ "${{ matrix.config }}" == "asan" ]]; then
-            # ASan init can nondeterministically collide with the JVM's ASLR-influenced
-            # mmap layout (google/sanitizers#856); retry once before failing the job.
-            MAX_ATTEMPTS=2
+            # ASan init can nondeterministically collide with the JVM's
+            # ASLR-influenced mmap layout (google/sanitizers#856). The JVM
+            # aborts before any test runs, so that failure names no test and
+            # would otherwise be classed as a build error and left unretried.
+            export RETRY_ON_NO_TEST_FAILURES=1
           fi
 
-          for attempt in $(seq 1 $MAX_ATTEMPTS); do
-            mkdir -p build/logs
-            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
-              | tee -a build/test-raw.log \
-              | python3 -u .github/scripts/filter_gradle_log.py
-            EXIT_CODE=${PIPESTATUS[0]}
-
-            if [ $EXIT_CODE -eq 0 ]; then break; fi
-            if [ $attempt -lt $MAX_ATTEMPTS ]; then
-              echo "::warning::Attempt $attempt failed (exit $EXIT_CODE), retrying..."
-              ./gradlew --stop 2>/dev/null || true
+          # The slow/e2e suite already runs the best part of an hour, so a
+          # retry would risk the 180-minute job timeout, and it records
+          # failures without re-running them. ASan keeps its second attempt
+          # even when slow, but only for the init abort above (0 named
+          # failures): MAX_FAILURES_TO_RETRY=0 stops a slow ASan run that
+          # actually failed named tests from being retried too, which would
+          # re-run the full slow suite a second time and risk that same
+          # timeout.
+          export MAX_ATTEMPTS=2
+          if [[ "${{ inputs.slow_tests }}" == "true" ]]; then
+            if [[ "${{ matrix.config }}" == "asan" ]]; then
+              export MAX_FAILURES_TO_RETRY=0
+            else
+              export MAX_ATTEMPTS=1
             fi
-          done
+          fi
+
+          .github/scripts/run_tests_with_retry.sh \
+            "glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64${{ inputs.slow_tests && '-slow' || '' }}" -- \
+            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          EXIT_CODE=$?
 
           # Kill the watchdog if tests finished before it fired
           if [[ -n "${GDB_WATCHDOG_PID:-}" ]]; then
@@ -521,6 +604,16 @@ jobs:
         with:
           name: (test-reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: test-reports
+      # Always uploaded, unlike the reports above: a cell that went green only
+      # because of a retry produces no failure artifact, and that is exactly the
+      # run whose evidence the summary needs. The file is a few hundred bytes.
+      - name: Upload CI outcome
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: (ci-outcome) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
+          path: ci-outcome
+          if-no-files-found: ignore
       - name: Upload signal-safety violation log
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
@@ -539,6 +632,8 @@ jobs:
   test-linux-musl-aarch64:
      needs: [cache-jdks, filter-musl-configs]
      if: needs.filter-musl-configs.outputs.has_configs == 'true'
+     # See the comment on test-linux-glibc-amd64's name above.
+     name: test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
      strategy:
        fail-fast: false
        matrix:
@@ -579,16 +674,18 @@ jobs:
            set +e
            # the effective JAVA_VERSION is computed in the test_alpine_aarch64.sh script
            mkdir -p build/logs
-           docker run --cpus 4 --rm -v /tmp:/tmp -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" -w "${GITHUB_WORKSPACE}" alpine:3.21 /bin/sh -c "
-             \"$GITHUB_WORKSPACE/.github/scripts/test_alpine_aarch64.sh\" \
-             \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
-             \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\" \
-             \"${{ inputs.slow_tests }}\"
-           " 2>&1 \
-             | tee -a build/test-raw.log \
-             | python3 -u .github/scripts/filter_gradle_log.py
+           export MAX_ATTEMPTS=${{ inputs.slow_tests && 1 || 2 }}
 
-           EXIT_CODE=${PIPESTATUS[0]}
+           .github/scripts/run_tests_with_retry.sh \
+             "musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64${{ inputs.slow_tests && '-slow' || '' }}" -- \
+             docker run --cpus 4 --rm -v /tmp:/tmp -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" -w "${GITHUB_WORKSPACE}" alpine:3.21 /bin/sh -c "
+               \"$GITHUB_WORKSPACE/.github/scripts/test_alpine_aarch64.sh\" \
+               \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
+               \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\" \
+               \"${{ inputs.slow_tests }}\"
+             "
+
+           EXIT_CODE=$?
 
            if [ $EXIT_CODE -ne 0 ]; then
              echo "musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
@@ -645,6 +742,16 @@ jobs:
          with:
            name: (test-reports) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
            path: test-reports
+       # Always uploaded, unlike the reports above: a cell that went green only
+       # because of a retry produces no failure artifact, and that is exactly the
+       # run whose evidence the summary needs. The file is a few hundred bytes.
+       - name: Upload CI outcome
+         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+         if: always()
+         with:
+           name: (ci-outcome) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
+           path: ci-outcome
+           if-no-files-found: ignore
        - name: Upload signal-safety violation log
          uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
          if: failure()

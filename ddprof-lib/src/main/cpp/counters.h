@@ -133,6 +133,8 @@
   X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
+  X(SAFESTORE_FAILED, "safestore_failed")                                     \
+  X(ANCHOR_RESTORE_FAILED, "anchor_restore_failed")                           \
   /* Every siglongjmp recovery, from any protected window, counted centrally  \
    * in Profiler::checkFault(). */                                            \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
@@ -164,6 +166,7 @@
   X(METADATA_TREE_DEPTH_EXCEEDED, "metadata_tree_depth_exceeded")             \
   DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
   DD_COUNTER_TABLE_FI_DEBUG(X)                                                 \
+  DD_COUNTER_TABLE_SAMPLER_PERF(X)                                             \
   DD_COUNTER_TABLE_DEBUG(X)
 
 // Fault-injection-only counter: number of faults actually injected. Only
@@ -189,6 +192,36 @@
 #define DD_COUNTER_TABLE_FI_DEBUG(X)
 #endif
 
+// Sampler-performance-only counters: per-sampler elapsed ticks and sample
+// count, accumulated by the SamplerPerfProbe RAII object (samplerPerf.h). Only
+// compiled in when __SAMPLER_PERF__ is defined, so they occupy no enum slot and
+// add no storage in normal builds.
+//
+// The two slots per sampler are emitted adjacently, in the same order as
+// DD_SAMPLER_LIST in samplerPerf.h, which addresses them by offset as
+// SAMPLER_TICKS_CPU + 2*id for the ticks and +1 for the count -- the same
+// base-plus-offset scheme the DICTIONARY_* group uses. samplerPerf.h
+// static_asserts that layout, so reordering these entries, or inserting an
+// unrelated counter between them, is a compile error rather than silent
+// misattribution.
+#ifdef __SAMPLER_PERF__
+#define DD_COUNTER_TABLE_SAMPLER_PERF(X)                                       \
+  X(SAMPLER_TICKS_CPU, "sampler_ticks.cpu")                                    \
+  X(SAMPLER_COUNT_CPU, "sampler_count.cpu")                                    \
+  X(SAMPLER_TICKS_WALL, "sampler_ticks.wallclock")                             \
+  X(SAMPLER_COUNT_WALL, "sampler_count.wallclock")                             \
+  X(SAMPLER_TICKS_ALLOC, "sampler_ticks.alloc")                                \
+  X(SAMPLER_COUNT_ALLOC, "sampler_count.alloc")                                \
+  X(SAMPLER_TICKS_LIVENESS, "sampler_ticks.liveness")                          \
+  X(SAMPLER_COUNT_LIVENESS, "sampler_count.liveness")                          \
+  X(SAMPLER_TICKS_NATIVEMEM, "sampler_ticks.nativemem")                        \
+  X(SAMPLER_COUNT_NATIVEMEM, "sampler_count.nativemem")                        \
+  X(SAMPLER_TICKS_NATIVESOCKET, "sampler_ticks.nativesocket")                  \
+  X(SAMPLER_COUNT_NATIVESOCKET, "sampler_count.nativesocket")
+#else
+#define DD_COUNTER_TABLE_SAMPLER_PERF(X)
+#endif
+
 // Debug-only counters: SafeAccess reads/copies issued while the thread is
 // already inside a walkVM siglongjmp-protected region (redundant safefetch
 // overhead). Not compiled into release builds at all, so they occupy no enum
@@ -196,7 +229,8 @@
 #ifdef DEBUG
 #define DD_COUNTER_TABLE_DEBUG(X)                                             \
   X(SAFEFETCH_WHILE_PROTECTED, "safefetch_while_protected")                   \
-  X(SAFECOPY_WHILE_PROTECTED, "safecopy_while_protected")
+  X(SAFECOPY_WHILE_PROTECTED, "safecopy_while_protected")                     \
+  X(SAFESTORE_WHILE_PROTECTED, "safestore_while_protected")
 #else
 #define DD_COUNTER_TABLE_DEBUG(X)
 #endif

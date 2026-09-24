@@ -85,12 +85,9 @@ public class TooManyContextAttributesTest extends AbstractProfilerTest {
         stopProfiler();
         assertFalse(liveObjects.isEmpty()); // keep allocations reachable through the GC/dump above
 
-        // If the pre-fix out-of-bounds read had fired, an ASan build would already have
-        // aborted the JVM above. On any build, a mismatched schema/field count would make
-        // this parse fail or throw - reaching here with samples already proves the fix.
-        JfrEvents liveObjectEvents = verifyEvents("datadog.HeapLiveObject", false);
-        assertTrue(liveObjectEvents.hasItems(), "expected datadog.HeapLiveObject samples");
-
+        // Assert the deterministic capping behaviour first: whether any datadog.HeapLiveObject
+        // sample happened to be produced on this run depends on GC/timing, so checking that
+        // last keeps a flake distinguishable from a real regression of the cap.
         Set<String> recordedContextAttributes = new HashSet<>();
         for (JfrEvent item : verifyEvents("jdk.ActiveSetting")) {
             if ("contextattribute".equals(item.getString("name"))) {
@@ -108,5 +105,11 @@ public class TooManyContextAttributesTest extends AbstractProfilerTest {
             assertFalse(recordedContextAttributes.contains("tag" + i),
                     "tag" + i + " exceeds capacity and must have been dropped");
         }
+
+        // If the pre-fix out-of-bounds read had fired, an ASan build would already have
+        // aborted the JVM above. On any build, a mismatched schema/field count would make
+        // this parse fail or throw - getting samples here proves the event path is intact.
+        JfrEvents liveObjectEvents = verifyEvents("datadog.HeapLiveObject", false);
+        assertTrue(liveObjectEvents.hasItems(), "expected datadog.HeapLiveObject samples");
     }
 }

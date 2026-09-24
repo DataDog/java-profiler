@@ -28,6 +28,8 @@
 
 extern "C" int safefetch32_cont(int* adr, int errValue);
 extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
+extern "C" int safestore32_cont(int* adr, int value);
+extern "C" int64_t safestore64_cont(int64_t* adr, int64_t value);
 
 // safecopy_impl copies `len` bytes from `src` to `dst` one byte at a time and
 // returns 1 on success. If any load from `src` faults, the signal handler
@@ -80,6 +82,12 @@ static void verify_safecopy_range() {
  The load is protected by the 'handle_safefetch` signal handler, who sets next `pc`
  to `safefetch32_cont/safefetch64_cont`, upon returning from signal handler,
  `safefetch32_cont/safefetch64_cont` returns `errValue`
+
+ Storing a 32-bit/64-bit value to a specific address works the same way, in
+ reverse: `safestore32_impl`/`safestore64_impl` write `value` to `adr` and
+ return 1. If that write faults, `handle_safefetch` redirects to
+ `safestore32_cont`/`safestore64_cont`, which return 0 instead -- so the
+ caller can tell a successful store from one that never happened.
  **/
 #if defined(__x86_64__)
   #ifdef __APPLE__
@@ -103,6 +111,28 @@ static void verify_safecopy_range() {
         .private_extern _safefetch64_cont
         _safefetch64_cont:
             movq %rsi, %rax
+            ret
+        .globl _safestore32_impl
+        .private_extern _safestore32_impl
+        _safestore32_impl:
+            movl %esi, (%rdi)
+            movl $1, %eax
+            ret
+        .globl _safestore32_cont
+        .private_extern _safestore32_cont
+        _safestore32_cont:
+            xorl %eax, %eax
+            ret
+        .globl _safestore64_impl
+        .private_extern _safestore64_impl
+        _safestore64_impl:
+            movq %rsi, (%rdi)
+            movl $1, %eax
+            ret
+        .globl _safestore64_cont
+        .private_extern _safestore64_cont
+        _safestore64_cont:
+            xorl %eax, %eax
             ret
         .globl _safecopy_impl
         .private_extern _safecopy_impl
@@ -151,6 +181,32 @@ static void verify_safecopy_range() {
         safefetch64_cont:
             movq %rsi, %rax
             ret
+        .globl safestore32_impl
+        .hidden safestore32_impl
+        .type safestore32_impl, %function
+        safestore32_impl:
+            movl %esi, (%rdi)
+            movl $1, %eax
+            ret
+        .globl safestore32_cont
+        .hidden safestore32_cont
+        .type safestore32_cont, %function
+        safestore32_cont:
+            xorl %eax, %eax
+            ret
+        .globl safestore64_impl
+        .hidden safestore64_impl
+        .type safestore64_impl, %function
+        safestore64_impl:
+            movq %rsi, (%rdi)
+            movl $1, %eax
+            ret
+        .globl safestore64_cont
+        .hidden safestore64_cont
+        .type safestore64_cont, %function
+        safestore64_cont:
+            xorl %eax, %eax
+            ret
         .globl safecopy_impl
         .hidden safecopy_impl
         .type safecopy_impl, %function
@@ -196,6 +252,28 @@ static void verify_safecopy_range() {
         .private_extern _safefetch64_cont
         _safefetch64_cont:
             mov      x0, x1
+            ret
+        .globl _safestore32_impl
+        .private_extern _safestore32_impl
+        _safestore32_impl:
+            str      w1, [x0]
+            mov      w0, #1
+            ret
+        .globl _safestore32_cont
+        .private_extern _safestore32_cont
+        _safestore32_cont:
+            mov      w0, #0
+            ret
+        .globl _safestore64_impl
+        .private_extern _safestore64_impl
+        _safestore64_impl:
+            str      x1, [x0]
+            mov      w0, #1
+            ret
+        .globl _safestore64_cont
+        .private_extern _safestore64_cont
+        _safestore64_cont:
+            mov      w0, #0
             ret
         .globl _safecopy_impl
         .private_extern _safecopy_impl
@@ -244,6 +322,32 @@ static void verify_safecopy_range() {
         safefetch64_cont:
             mov      x0, x1
             ret
+        .globl safestore32_impl
+        .hidden safestore32_impl
+        .type safestore32_impl, %function
+        safestore32_impl:
+            str      w1, [x0]
+            mov      w0, #1
+            ret
+        .globl safestore32_cont
+        .hidden safestore32_cont
+        .type safestore32_cont, %function
+        safestore32_cont:
+            mov      w0, #0
+            ret
+        .globl safestore64_impl
+        .hidden safestore64_impl
+        .type safestore64_impl, %function
+        safestore64_impl:
+            str      x1, [x0]
+            mov      w0, #1
+            ret
+        .globl safestore64_cont
+        .hidden safestore64_cont
+        .type safestore64_cont, %function
+        safestore64_cont:
+            mov      w0, #0
+            ret
         .globl safecopy_impl
         .hidden safecopy_impl
         .type safecopy_impl, %function
@@ -270,18 +374,23 @@ static void verify_safecopy_range() {
 #endif
 
 #ifdef DEBUG
-void SafeAccess::countIfLongjmpProtected(bool isCopy) {
+void SafeAccess::countIfLongjmpProtected(SafeAccessKind kind) {
   ProfiledThread* t = ProfiledThread::current();  // never allocates
   if (t != nullptr && t->isProtected()) {
-    Counters::increment(isCopy ? SAFECOPY_WHILE_PROTECTED
-                               : SAFEFETCH_WHILE_PROTECTED);
+    CounterId id;
+    switch (kind) {
+      case SafeAccessKind::Fetch: id = SAFEFETCH_WHILE_PROTECTED; break;
+      case SafeAccessKind::Store: id = SAFESTORE_WHILE_PROTECTED; break;
+      case SafeAccessKind::Copy:  id = SAFECOPY_WHILE_PROTECTED; break;
+    }
+    Counters::increment(id);
   }
 }
 #endif
 
 bool SafeAccess::safeCopy(void* dst, const void* src, size_t len) {
 #ifdef DEBUG
-  countIfLongjmpProtected(true);
+  countIfLongjmpProtected(SafeAccessKind::Copy);
 #endif
   // The copy runs entirely inside the safecopy_impl assembly stub, which
   // reads `src` one byte at a time. If a load faults, handle_safefetch
@@ -308,6 +417,14 @@ bool SafeAccess::handle_safefetch(int sig, void* context) {
       uc->current_pc = (uintptr_t)safefetch64_cont;
       Counters::increment(SAFEFETCH_FAILED);
       return true;
+    } else if (pc == (uintptr_t)safestore32_impl) {
+      uc->current_pc = (uintptr_t)safestore32_cont;
+      Counters::increment(SAFESTORE_FAILED);
+      return true;
+    } else if (pc == (uintptr_t)safestore64_impl) {
+      uc->current_pc = (uintptr_t)safestore64_cont;
+      Counters::increment(SAFESTORE_FAILED);
+      return true;
     } else if (pc >= (uintptr_t)safecopy_impl && pc < (uintptr_t)safecopy_cont) {
       // Unlike safefetch, the faulting load can be at any pc inside the copy
       // loop, so match the whole [safecopy_impl, safecopy_cont) range.
@@ -327,7 +444,7 @@ void* SafeAccess::load(void** ptr, void* default_value) {
 
 int32_t SafeAccess::load32(int32_t* ptr, int32_t default_value) {
 #ifdef DEBUG
-  countIfLongjmpProtected(false);
+  countIfLongjmpProtected(SafeAccessKind::Fetch);
 #endif
   int res = safefetch32_impl((int*)ptr, (int)default_value);
   return static_cast<int32_t>(res);
@@ -335,7 +452,7 @@ int32_t SafeAccess::load32(int32_t* ptr, int32_t default_value) {
 
 void* SafeAccess::loadPtr(void** ptr, void* default_value) {
 #ifdef DEBUG
-  countIfLongjmpProtected(false);
+  countIfLongjmpProtected(SafeAccessKind::Fetch);
 #endif
 #if defined(__x86_64__) || defined(__aarch64__)
   int64_t res = safefetch64_impl((int64_t*)ptr, (int64_t)reinterpret_cast<uintptr_t>(default_value));
@@ -345,4 +462,32 @@ void* SafeAccess::loadPtr(void** ptr, void* default_value) {
   return (void*)res;
 #endif
   return *ptr;
+}
+
+// NOINLINE implementations using safestore infrastructure -- write-side
+// counterpart to load/load32/loadPtr above. Same stable-address requirement:
+// handle_safefetch() matches faults by the exact pc of safestore32_impl /
+// safestore64_impl, so these must not be inlined into their callers.
+bool SafeAccess::store(void** ptr, void* value) {
+  return storePtr(ptr, value);
+}
+
+bool SafeAccess::store32(int32_t* ptr, int32_t value) {
+#ifdef DEBUG
+  countIfLongjmpProtected(SafeAccessKind::Store);
+#endif
+  return safestore32_impl((int*)ptr, (int)value) != 0;
+}
+
+bool SafeAccess::storePtr(void** ptr, void* value) {
+#ifdef DEBUG
+  countIfLongjmpProtected(SafeAccessKind::Store);
+#endif
+#if defined(__x86_64__) || defined(__aarch64__)
+  return safestore64_impl((int64_t*)ptr, (int64_t)reinterpret_cast<uintptr_t>(value)) != 0;
+#elif defined(__i386__) || defined(__arm__) || defined(__thumb__)
+  return safestore32_impl((int*)ptr, (int)reinterpret_cast<uintptr_t>(value)) != 0;
+#endif
+  *ptr = value;
+  return true;
 }

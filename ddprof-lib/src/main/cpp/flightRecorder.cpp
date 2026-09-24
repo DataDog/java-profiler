@@ -878,7 +878,10 @@ char *Recording::_jvm_flags = NULL;
 char *Recording::_java_command = NULL;
 
 Recording::Recording(int fd, Arguments &args)
-    : _fd(fd), _method_map() {
+    : _fd(fd), _method_map(), _has_post_flush(false) {
+
+  memset(_post_flush_live, 0, sizeof(_post_flush_live));
+  memset(_post_flush_max, 0, sizeof(_post_flush_max));
 
   args.save(_args);
   _chunk_start = lseek(_fd, 0, SEEK_END);
@@ -969,7 +972,7 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
       oSampler->_record_allocations ? oSampler->_interval : 0L,
       oSampler->_record_liveness ? oSampler->_interval : 0L,
       oSampler->_record_liveness ? LivenessTracker::instance()->_table_cap : 0L,
-      oSampler->_record_liveness ? LivenessTracker::instance()->_subsample_ratio
+      oSampler->_record_liveness ? LivenessTracker::instance()->_subsample.ratio
                                  : 0.0,
       oSampler->_gc_generations, Profiler::instance()->eventMask(),
       Profiler::instance()->cpuEngine()->name());
@@ -1056,6 +1059,14 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
     cleanupUnreferencedMethods();
   }
 
+  // Serialization (and, on this path, method-map cleanup) is complete: the
+  // dictionary has grown and any memory cleanupUnreferencedMethods() just
+  // freed is already reflected in NativeMem. Capture that state now for the
+  // next chunk to emit, and refresh the JNI-visible counter mirrors so a live
+  // process reading getDebugCounters0() after a dump() sees post-serialization
+  // values rather than pre-.
+  capturePostFlushNativeMem();
+
   if (!err) {
     // delete all local references
     for (int i = 0; i < count; i++) {
@@ -1074,6 +1085,8 @@ void Recording::switchChunk(int fd) {
   _chunk_start = finishChunk(/*end_recording=*/true, /*do_cleanup=*/true);
 
   TEST_LOG("MethodMap: %zu methods after cleanup", _method_map.size());
+  TEST_LOG("Recording::switchChunk copying [0, %lld) from _fd=%d to fd=%d",
+           (long long)_chunk_start, _fd, fd);
 
   _start_time = _stop_time;
   _start_ticks = _stop_ticks;
@@ -1419,6 +1432,7 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
 
   writeBoolSetting(buf, T_ALLOC, "enabled", args._record_allocations);
   writeBoolSetting(buf, T_HEAP_LIVE_OBJECT, "enabled", args._record_liveness);
+  writeBoolSetting(buf, T_REFERENCE_CHAIN, "enabled", args._reference_chains);
   writeBoolSetting(buf, T_MALLOC, "enabled", args._nativemem >= 0);
   if (args._nativemem >= 0) {
     writeIntSetting(buf, T_MALLOC, "nativemem", args._nativemem);
@@ -2013,6 +2027,26 @@ void Recording::writeLogLevels(Buffer *buf) {
   }
 }
 
+void Recording::capturePostFlushNativeMem() {
+  for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+    NativeMemCategory cat = (NativeMemCategory)c;
+    _post_flush_live[c] = NativeMem::live(cat);
+    _post_flush_max[c] = NativeMem::max(cat);
+  }
+  _has_post_flush = true;
+  // Deliberately NOT NativeMem::sample(): that advances a 64-tick moving
+  // average window, so calling it a second time per chunk would silently
+  // redefine avg() as a 32-chunk mean. NATIVE_MEM_AVG_BYTES is refreshed here
+  // too (to the unchanged avgTotal() from the last sample() tick, not
+  // recomputed) purely so the three JNI-visible mirrors stay a coherent
+  // triple -- callers must still be aware avg reflects the last sampled tick,
+  // not this instant, since it cannot be advanced without a second
+  // window-mutating sample().
+  Counters::set(NATIVE_MEM_LIVE_BYTES, NativeMem::liveTotal());
+  Counters::set(NATIVE_MEM_AVG_BYTES, NativeMem::avgTotal());
+  Counters::set(NATIVE_MEM_MAX_BYTES, NativeMem::maxTotal());
+}
+
 void Recording::updateNativeMemStats() {
   // Refresh the moving-window averages and the observed total peak. Per-category
   // peaks are maintained precisely at allocation time, so they are not sampled
@@ -2070,6 +2104,21 @@ void Recording::writeNativeMem(Buffer *buf) {
     }
   }
 
+  // State immediately after the PREVIOUS chunk's writeCpool(), which is the
+  // only way to see what serialization itself costs -- the in-chunk values
+  // above are necessarily sampled before it runs. Absent on the first chunk,
+  // since no flush has happened yet.
+  if (_has_post_flush) {
+    for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+      const char *name = NativeMem::categoryName((NativeMemCategory)c);
+      char label[64];
+      snprintf(label, sizeof(label), "native_mem_post_flush_live_bytes.%s", name);
+      emit(label, _post_flush_live[c]);
+      snprintf(label, sizeof(label), "native_mem_post_flush_max_bytes.%s", name);
+      emit(label, _post_flush_max[c]);
+    }
+  }
+
   // NATIVE_MEM_MAX_BYTES already carries the upper bound on the total peak (sum
   // of precise per-category peaks); here we also emit the largest observed
   // sampled total (a non-atomic per-category sum; approximate).
@@ -2115,7 +2164,7 @@ void Recording::writeContextSnapshot(Buffer *buf, Context &context) {
   buf->putVar64(context.rootSpanId);
 
   for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
-    buf->putVar32(context.get_tag(i).value);
+    buf->putVar32(context.getTag(i));
   }
 }
 
@@ -2286,7 +2335,150 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
           ? ((event->_alloc._weight * event->_alloc._size) + event->_skipped) /
                 event->_alloc._size
           : 0);
+  // leak_tag precedes the context snapshot to match the metadata field
+  // order (jfrMetadata.cpp: leakTag is declared between weight and spanId,
+  // before || contextAttributes) - a field written on the opposite side of
+  // writeContextSnapshot() than where the metadata declares it makes every
+  // parser read it from the first context-attribute byte.
+  buf->putVar64(event->leak_tag);
   writeContextSnapshot(buf, event->_ctx);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
+// Maps a chain root-kind byte (a jvmtiHeapReferenceKind value recorded when
+// the chain's first hop was admitted) to a human-readable
+// label for datadog.ReferenceChain's rootKind field - only the values
+// the engine's admission callback can actually produce (a root reference's
+// own jvmtiHeapReferenceKind, or JVMTI_HEAP_REFERENCE_STATIC_FIELD for the
+// "referrer is a pre-tagged class" root-like case) have entries; anything else (including 0, root_kind's
+// "not set" default) reports "unknown" rather than crashing on an
+// out-of-range index.
+//
+// STACK_LOCAL (24) and JNI_LOCAL (25) are labeled "first_observed_via:..."
+// rather than plain "stack_local"/"jni_local": both are evidence this object was reachable from a
+// live frame/local handle at the moment a pass observed it, not a durable
+// retention reason - the frame can pop or the handle can be freed the
+// instant the pass ends, so "rooted by" would overstate what is actually
+// known. Every other kind here is durable enough for the plain "rooted by"
+// framing this field's name already implies.
+static const char *rootKindName(u8 root_kind) {
+  switch (root_kind) {
+  case 8:
+    return "static_field";
+  case 21:
+    return "jni_global";
+  case 22:
+    return "system_class";
+  case 23:
+    return "monitor";
+  case 24:
+    return "first_observed_via:stack_local";
+  case 25:
+    return "first_observed_via:jni_local";
+  case 26:
+    return "thread";
+  case 27:
+    return "other";
+  default:
+    return "unknown";
+  }
+}
+
+void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
+  // event->_hops' length is bounded only by the frontier table's capacity
+  // (tens of thousands of entries) - NOT by
+  // MAX_JFR_EVENT_SIZE, so this event cannot use writeEventSizePrefix()'s
+  // single-byte size field (its assert(size < MAX_JFR_EVENT_SIZE) is
+  // compiled out in release builds, making an oversize chain a silent
+  // corrupt size byte rather than a caught bug) nor rely on the trailing
+  // flushIfNeeded(buf) every fixed-size event above uses (that only flushes
+  // *after* already writing past the buffer). Truncate to
+  // MAX_REFERENCE_CHAIN_EVENT_HOPS (that constant's own comment) and
+  // reserve room for the truncated worst case up front instead.
+  u32 chain_size = (u32)event->_hops.size();
+  u32 emitted_size = chain_size < (u32)MAX_REFERENCE_CHAIN_EVENT_HOPS
+                          ? chain_size
+                          : (u32)MAX_REFERENCE_CHAIN_EVENT_HOPS;
+
+  // rootKindName() never returns a string longer than
+  // "first_observed_via:stack_local" (31 bytes) - reserve a fixed, generous
+  // 32 bytes for its putUtf8() length prefix + payload rather than computing
+  // strlen() up front.
+  const char *root_kind_name = rootKindName(event->_root_kind);
+  // Per-hop edge labels: hop[i].edge_label describes the hop into hop[i],
+  // so truncation that keeps the FIRST emitted_size hops keeps their labels
+  // aligned too. Labels are all-or-none (see ReferenceChainHop), so a single
+  // empty label in the emitted range degrades the count to 0.
+  u32 labeled = 0;
+  for (u32 i = 0; i < emitted_size; i++) {
+    labeled += event->_hops[i].edge_label.empty() ? 0u : 1u;
+  }
+  const u32 edge_count = labeled == emitted_size ? emitted_size : 0u;
+  // Clamped to MAX_REFERENCE_CHAIN_EDGE_LABEL at the write site below (via
+  // strnlen) rather than trusted from the producer - the same "do not trust
+  // an upstream cap" defense this function applies to the chain length, so
+  // the reservation below stays an upper bound regardless of what the
+  // producer hands it. Reserving through the same constants
+  // MAX_REFERENCE_CHAIN_EVENT_HOPS is derived from keeps the reservation and
+  // the truncation cap from drifting apart; reserving the full per-hop label
+  // bytes even when labels are absent (edge_count == 0) can only flush the
+  // buffer earlier, never underflow it.
+  flushIfNeeded(
+      buf, RECORDING_BUFFER_LIMIT -
+               (REFERENCE_CHAIN_EVENT_FIXED_BYTES +
+                (int)emitted_size * REFERENCE_CHAIN_EVENT_PER_HOP_BYTES));
+
+  // Multi-byte size prefix (like writeDatadogSetting() above), not
+  // writeEventSizePrefix()'s single byte - this event's size can exceed
+  // MAX_JFR_EVENT_SIZE (255) once the chain is more than a few dozen hops.
+  int start = buf->skip(MAX_VAR32_LENGTH);
+  buf->putVar64(T_REFERENCE_CHAIN);
+  buf->putVar64(event->_start_time);
+  buf->putVar64(event->_target_tag);
+  buf->putVar32(event->_depth);
+  buf->putUtf8(root_kind_name);
+  // Original (pre-truncation) chain length, so a consumer can tell a full
+  // chain (totalHops == chain.length) from a silently truncated one -
+  // mirrors ReferenceChainAbandonedEvent's "no silent truncation" design.
+  buf->putVar32(chain_size);
+  // T_CLASS array field (F_CPOOL|F_ARRAY, jfrMetadata.cpp) - each entry is a
+  // StringDictionary class id, same encoding as a scalar objectClass field
+  // (e.g. recordAllocation() above), just repeated `count` times.
+  buf->putVar32(emitted_size);
+  for (u32 i = 0; i < emitted_size; i++) {
+    buf->putVar32(event->_hops[i].klass_id);
+  }
+  // Edges array, LAST so its metadata position (after "chain", jfrMetadata.cpp)
+  // matches the write order. The labels pair with the chain's element order
+  // (see edge_count above); a count of 0 means label collection never ran
+  // for this event.
+  buf->putVar32(edge_count);
+  for (u32 i = 0; i < edge_count; i++) {
+    const std::string &label = event->_hops[i].edge_label;
+    buf->putUtf8(label.c_str(),
+                 (u32)strnlen(label.c_str(), MAX_REFERENCE_CHAIN_EDGE_LABEL));
+  }
+  buf->putVar32(start, (u32)(buf->offset() - start));
+  flushIfNeeded(buf);
+}
+
+void Recording::recordReferenceChainAbandoned(
+    Buffer *buf, ReferenceChainAbandonedEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_REFERENCE_CHAIN_ABANDONED);
+  buf->putVar64(event->_start_time);
+  // SearchAbandonReason (the engine's reason enum) - kept as a small fixed table
+  // here rather than a T_XXX enum type, mirroring NativeSocketEvent's
+  // _operation -> kOpNames string mapping above.
+  static const char *const kReasons[] = {"none", "frontier_cap", "ttl", "canary_stuck"};
+  buf->putUtf8(event->_reason < 4 ? kReasons[event->_reason] : "unknown");
+  buf->putVar32(event->_passes_run);
+  buf->putVar32(event->_frontier_size);
+  buf->putVar32(event->_hop_cap);
+  buf->putVar32(event->_budget);
+  buf->putVar64(event->_ttl_ms);
+  buf->putVar64(event->_elapsed_ns / 1000000);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -2470,6 +2662,32 @@ void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
       rec->writeHeapUsage(buf, value, live);
+    }
+  }
+}
+
+void FlightRecorder::recordReferenceChainAbandoned(
+    int lock_index, ReferenceChainAbandonedEvent *event) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordReferenceChainAbandoned(buf, event);
+    }
+  }
+}
+
+void FlightRecorder::recordReferenceChain(int lock_index,
+                                          ReferenceChainEvent *event) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordReferenceChain(buf, event);
     }
   }
 }

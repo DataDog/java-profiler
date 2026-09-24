@@ -46,6 +46,14 @@ LinearAllocator::~LinearAllocator() {
 }
 
 void LinearAllocator::clear() {
+  // Both pointers are NULL only after detachChunks() could not allocate a
+  // replacement chunk, which leaves the allocator deliberately unusable rather
+  // than risking a double free. Bail out here so the whole function is
+  // null-safe: it dereferences _reserve immediately below and _tail at the end,
+  // so guarding either one alone would leave the other exposed.
+  if (_tail == NULL || _reserve == NULL) {
+    return;
+  }
   // OS::safeAlloc/safeFree use raw syscalls not intercepted by TSan, so TSan
   // never clears shadow memory on munmap.  Add explicit acquire/release around
   // every plain prev-field read so the happens-before chain from freeChunk's
@@ -102,6 +110,10 @@ void LinearAllocator::clear() {
     _reserve = current;
     _tail = current;
   }
+  // _tail is kept (not freed) but its contents are discarded here, so its
+  // consumed bytes must be un-recorded explicitly -- freeChunk() won't run
+  // for this one.
+  NativeMem::record(NM_CALLTRACE, -(long long)(_tail->offs - sizeof(Chunk)));
   _tail->offs = sizeof(Chunk);
 
   // DON'T UNPOISON HERE - let alloc() do it on-demand!
@@ -162,15 +174,17 @@ void LinearAllocator::freeChunks(ChunkList& chunks) {
     __tsan_acquire(current);
     #endif
     Chunk* prev = current->prev;
+    // Capture before safeFree unmaps the chunk -- reading current->offs after
+    // that would touch freed memory. This is exactly the byte count alloc()
+    // recorded into NM_CALLTRACE for this chunk, so the decrement is exact.
+    long long used = (long long)(current->offs - sizeof(Chunk));
     #ifdef TSAN_ENABLED
     __tsan_release(current);
     #endif
     OS::safeFree(current, chunks.chunk_size);
     Counters::decrement(LINEAR_ALLOCATOR_BYTES, chunks.chunk_size);
     Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);
-    // The LinearAllocator's only user is call-trace storage, so all of its
-    // chunk memory is attributed to the CALLTRACE category.
-    NativeMem::record(NM_CALLTRACE, -(long long)chunks.chunk_size);
+    NativeMem::record(NM_CALLTRACE, -used);
     current = prev;
   }
 
@@ -194,6 +208,11 @@ void *LinearAllocator::alloc(size_t size) {
          offs = __atomic_load_n(&chunk->offs, __ATOMIC_ACQUIRE)) {
       if (__sync_bool_compare_and_swap(&chunk->offs, offs, offs + size)) {
         void* allocated_ptr = (char *)chunk + offs;
+
+        // The LinearAllocator's only user is call-trace storage, so all of
+        // its bump-allocated bytes are attributed to the CALLTRACE category.
+        // A relaxed atomic add, safe to call from the sampling signal handler.
+        NativeMem::record(NM_CALLTRACE, (long long)size);
 
         // ASAN UNPOISONING: Unpoison ONLY the allocated region on-demand
         // This allows ASan to detect use-after-free of memory that was cleared
@@ -264,12 +283,30 @@ Chunk *LinearAllocator::allocateChunk(Chunk *current) {
 
     Counters::increment(LINEAR_ALLOCATOR_BYTES, _chunk_size);
     Counters::increment(LINEAR_ALLOCATOR_CHUNKS);
-    NativeMem::record(NM_CALLTRACE, (long long)_chunk_size);
+    // NM_CALLTRACE is NOT recorded here. Recording the full chunk size at
+    // reservation time would count virtual capacity, not residency: the
+    // chunk is mmap'd whole but filled incrementally by alloc()'s bump
+    // pointer, and reserveChunk() eagerly reserves the next chunk at 50%
+    // fill of the current one, so there is always at least one chunk that's
+    // fully counted but mostly or entirely untouched. alloc() instead
+    // records exactly the bytes actually handed out, which -- because the
+    // bump pointer advances linearly and every returned pointer is written
+    // into immediately by the caller -- tracks touched (resident) bytes
+    // directly, with no separate residency measurement needed.
   }
   return chunk;
 }
 
 void LinearAllocator::freeChunk(Chunk *current) {
+  // allocateChunk() returns NULL when the mmap fails, and detachChunks() stores
+  // that NULL into _tail, so the destructor's freeChunk(_tail) can be reached
+  // with nothing to free. Bail out rather than dereference it below.
+  if (current == NULL) {
+    return;
+  }
+  // Capture before safeFree unmaps the chunk -- see freeChunks() for why this
+  // exactly reverses what alloc() recorded for this chunk.
+  long long used = (long long)(current->offs - sizeof(Chunk));
   // Release TSan ownership before munmap so the sanitizer knows this thread is
   // done with the memory.  The mmap(MAP_FIXED) re-map in allocateChunk() resets
   // the shadow for whichever thread later reuses this VA (after OS VA reuse), so
@@ -280,7 +317,7 @@ void LinearAllocator::freeChunk(Chunk *current) {
   OS::safeFree(current, _chunk_size);
   Counters::decrement(LINEAR_ALLOCATOR_BYTES, _chunk_size);
   Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);
-  NativeMem::record(NM_CALLTRACE, -(long long)_chunk_size);
+  NativeMem::record(NM_CALLTRACE, -used);
 }
 
 void LinearAllocator::reserveChunk(Chunk *current) {
