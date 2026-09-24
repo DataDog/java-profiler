@@ -178,12 +178,20 @@ TEST_F(ArgumentsTest, BareReferenceChainsEnablesFeature) {
     EXPECT_TRUE(args._reference_chains);
 }
 
-TEST_F(ArgumentsTest, BareReferenceChainsWithSubOptionsStillEnables) {
+// Sub-options only attach after an explicit boolean ("referencechains=true:hops=10").
+// A bare "referencechains:hops=10" has no '=' right after the option name, so the
+// top-level arg/value split (which cuts at the *first* '=' in the whole token) lands
+// on the one inside "hops=10" instead - the resulting token "referencechains:hops"
+// doesn't match the CASE at all and must be captured as unknown rather than silently
+// misparsed as if hops=10 had been applied.
+TEST_F(ArgumentsTest, ReferenceChainsSubOptionsWithoutBooleanIsUnknown) {
     Arguments args;
     Error error = args.parse("referencechains:hops=10");
     EXPECT_FALSE(error);
-    EXPECT_TRUE(args._reference_chains);
-    EXPECT_EQ(args._reference_chains_hop_cap, 10);
+    EXPECT_FALSE(args._reference_chains);
+    EXPECT_EQ(args._reference_chains_hop_cap, DEFAULT_REFERENCE_CHAINS_HOP_CAP);
+    ASSERT_EQ(args._unknown_args.size(), 1u);
+    EXPECT_EQ(args._unknown_args[0], "referencechains:hops");
 }
 
 TEST_F(ArgumentsTest, InvalidGenerationsValueIsAnError) {
