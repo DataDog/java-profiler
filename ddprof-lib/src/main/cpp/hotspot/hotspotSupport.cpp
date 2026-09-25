@@ -683,15 +683,28 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     }
                 }
 
+                // One shared-lock acquisition returns the stub view plus the
+                // precomputed aarch64 unwind info (null on x64): the signal
+                // handler still takes _stubs_lock exactly once.
+                const void* start;
+                const char* name;
+                const StubUnwindInfo* stub_info = nullptr;
+#ifdef __aarch64__
+                if (!JitCodeCache::findRuntimeStubInfo(pc, &start, &name, &stub_info)) {
+                    start = nm->code();
+                    name = nm->name();
+                }
+#else
                 CodeBlob* stub = JitCodeCache::findRuntimeStub(pc);
-                const void* start = stub != NULL ? stub->_start : nm->code();
-                const char* name = stub != NULL ? stub->_name : nm->name();
+                start = stub != NULL ? stub->_start : nm->code();
+                name = stub != NULL ? stub->_name : nm->name();
+#endif
 
                 if (details) {
                     fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
                 }
 
-                if (frame.unwindStub((instruction_t*)start, name, (uintptr_t&)pc, sp, fp)) {
+                if (frame.unwindStub((instruction_t*)start, name, (uintptr_t&)pc, sp, fp, stub_info)) {
                     continue;
                 }
 
@@ -1132,13 +1145,22 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   if ((trace.num_frames == ticks_unknown_Java ||
        trace.num_frames == ticks_not_walkable_Java) &&
       !(safe_mode & UNKNOWN_JAVA) && ucontext != NULL) {
+    const void* stub_start;
+    const char* stub_name;
+    const StubUnwindInfo* stub_info = nullptr;
+#ifdef __aarch64__
+    if (JitCodeCache::findRuntimeStubInfo((const void *)frame.pc(), &stub_start, &stub_name, &stub_info)) {
+#else
     CodeBlob *stub = JitCodeCache::findRuntimeStub((const void *)frame.pc());
     if (stub != NULL) {
+      stub_start = stub->_start;
+      stub_name = stub->_name;
+#endif
       if (cstack != CSTACK_NO) {
-        max_depth -= makeFrame(trace.frames++, BCI_NATIVE_FRAME, stub->_name);
+        max_depth -= makeFrame(trace.frames++, BCI_NATIVE_FRAME, stub_name);
       }
       if (!(safe_mode & POP_STUB) &&
-          frame.unwindStub((instruction_t *)stub->_start, stub->_name) &&
+          frame.unwindStub((instruction_t *)stub_start, stub_name, stub_info) &&
           isAddressInCode((const void *)frame.pc())) {
         JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
       }
