@@ -346,7 +346,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     }
 
     jmp_scope.install(&crash_protection_ctx);
-    VMThread* vm_thread = VMThread::current();
+    // JVMThread::current() asserts its thread-local key is live, which only a
+    // JVM attach sets up. Only the Java-frame paths below need a VMThread --
+    // the native walk does not -- so ask whether one exists rather than
+    // requiring it. With a JVM attached this is always true and nothing
+    // changes; without one, the walk degrades to the NULL handling every use
+    // below already has, and WALKVM_NO_VMTHREAD still records that it did.
+    VMThread* vm_thread = JVMThread::isInitialized() ? VMThread::current() : nullptr;
     if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
         Counters::increment(WALKVM_THREAD_INACCESSIBLE);
         vm_thread = NULL;
