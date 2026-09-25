@@ -309,6 +309,15 @@ build-artifact:
     - job: gtest-tsan-arm64
       artifacts: false
       optional: true
+    # Not optional, for the same reason as the ASan jobs: these share
+    # .sanitizer_job's rules exactly, so whenever this job exists they exist
+    # too. Leaving them out of the DAG would let an -O3-only failure publish
+    # an artifact before the pipeline went red, which is the failure this
+    # gate is for.
+    - job: gtest-release-amd64
+      artifacts: false
+    - job: gtest-release-arm64
+      artifacts: false
   rules:
     - !reference [.skip-on-release, rules]
     - when: on_success
