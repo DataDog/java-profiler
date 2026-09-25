@@ -171,8 +171,27 @@ bool ReferenceChainTracker::buildCanaryChainEvent(int candidate_idx,
                        (long long)parent_tag, candidate_idx);
       return false;
     }
-    root_kind = entry.root_kind;
-    for (jlong tag = parent_tag; tag > 0;) {
+    // Bounded like every sibling walk over this same parent chain:
+    // FrontierTable::reconstructChain() bounds at maxCapacity() hops and
+    // returns false on a "cyclic or corrupt parent chain",
+    // requeueChainRootForRotation() bounds at _hop_cap, and improveChain()'s
+    // cycle guard bounds at 4096. improveChain() structurally prevents cycles
+    // (it refuses a parent whose chain routes through the entry), but the
+    // table's contents are also written by insert() with no such validation,
+    // so a corrupt chain must fail safe instead of spinning this poll-thread
+    // walk forever: every tag maps to a distinct slot (tags are never
+    // reused), so a well-formed chain can visit at most maxCapacity() entries
+    // before reaching parent_tag == 0 or repeating a slot.
+    const int hop_bound = _frontier->maxCapacity();
+    int hops = 0;
+    for (jlong tag = parent_tag; tag > 0; hops++) {
+      if (hops > hop_bound) {
+        TEST_LOG_SUMMARY("ReferenceChainTracker::buildCanaryChainEvent false: "
+                         "chain walk exceeded hop bound (%d) - cyclic or "
+                         "corrupt parent chain (candidate=%d)",
+                         hops, candidate_idx);
+        return false;
+      }
       if (!_frontier->lookup(tag, &entry)) {
         TEST_LOG_SUMMARY("ReferenceChainTracker::buildCanaryChainEvent false: "
                          "chain walk: tag=%lld not in frontier (candidate=%d)",
@@ -182,6 +201,14 @@ bool ReferenceChainTracker::buildCanaryChainEvent(int candidate_idx,
       chain.push_back(entry.referrer_klass);
       tag = entry.parent_tag;
     }
+    // The root kind describes the chain's ROOT, not the candidate-side parent:
+    // the walk's last iteration is always the root-attached entry (parent_tag
+    // == 0, root_kind != 0), so `entry` holds it here - same terminal-root
+    // semantics reconstructChain() uses for *out_root_kind. The parent-side
+    // entry read before the loop would almost always yield 0 (interior entries
+    // carry root_kind == 0), misreporting every walk-reconstructed chain and
+    // defeating suppressChainEvent()'s transient-root gate.
+    root_kind = entry.root_kind;
     terminal = entry;
   } else if (parent_tag == 0 && frontier_tag > 0) {
     // Root-referenced candidate: chain is just [candidate_klass].
@@ -305,14 +332,12 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
                  klass_id, MAX_LEAK_CANDIDATES_FROM_LT);
         continue;
       }
-      // Tag this candidate's specific representative object with a distinct marker tag
-      // (MARKER_TAG_BASE - slot) so heapReferenceCallback() can identify that exact object by
-      // identity when the walk reaches it - matching by class alone would record a chain for
-      // whichever instance of that class the walk happens to visit, not necessarily the one
-      // LivenessTracker flagged as growing.
+      // Candidate admission: the marker->leak-tag migration retired
+      // pre-tagging the representative object (the retired marker-tag decode
+      // branches are gone); this candidate is discovered when the walk or the
+      // poll intercepts one of its leak-tagged instances.
       int slot = _candidate_count;
       _candidate_klass_ids[slot] = klass_id;
-      _candidate_tags[slot] = 0; // no marker tags — using leak tags now
       _candidate_count = slot + 1;
       TEST_LOG_SUMMARY("ReferenceChainTracker::pollWatchedTargets canary: admitted klass_id=%u "
                "into slot=%d (candidate_count now %d)",
@@ -428,57 +453,19 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     // Read the existing tag; seeding here would bypass the forward walk.
     jlong tag = getTag(jvmti, obj);
 
-    // Canary search: if this candidate was pre-tagged with a marker tag (negative, set above), use
-    // the canary chain reconstruction.
-    if (tag <= MARKER_TAG_BASE) {
-      // The marker tag encodes the slot this object was pre-tagged at (MARKER_TAG_BASE - slot,
-      // mirroring heapReferenceCallback()'s own decode at its MARKER_TAG_BASE check).
-      int candidate_slot = (int)(MARKER_TAG_BASE - tag);
-      if (candidate_slot < 0 || candidate_slot >= _candidate_count) {
-        TEST_LOG_SUMMARY("ReferenceChainTracker::pollWatchedTargets canary candidate[%d] "
-                 "klass_id=%u marker_tag=%lld decodes to out-of-range slot=%d "
-                 "(candidate_count=%d) - skipping",
-                 i, klass_id, (long long)tag, candidate_slot, _candidate_count);
-        jni->DeleteLocalRef(obj);
-        continue;
-      }
-      bool need_refresh = false;
-      jlong canary_ftag = _candidate_frontier_tags[candidate_slot];
-      _resolved_chains_lock.lock();
-      auto it = _resolved_chains.find(canary_ftag);
-      need_refresh = (it == _resolved_chains.end() ||
-                      it->second.source_search_ns != current_search_ns);
-      _resolved_chains_lock.unlock();
-      TEST_LOG_SUMMARY("ReferenceChainTracker::pollWatchedTargets canary candidate[%d] "
-               "klass_id=%u marker_tag=%lld slot=%d needRefresh=%d",
-               i, klass_id, (long long)tag, candidate_slot, need_refresh);
-      if (need_refresh) {
-        ReferenceChainEvent event;
-        bool built = buildCanaryChainEvent(candidate_slot, &event);
-        TEST_LOG_SUMMARY("ReferenceChainTracker::pollWatchedTargets canary "
-                 "buildCanaryChainEvent(slot=%d) -> %d",
-                 candidate_slot, built);
-        if (built && suppressChainEvent(event)) {
-          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                   "filtered depth=%u root_kind=%d canary_ftag=%lld "
-                   "klass_id=%u (canary path)",
-                   event._depth, (int)event._root_kind,
-                   (long long)canary_ftag, klass_id);
-          built = false;
-          invalidateResolvedChain(canary_ftag);
-        }
-        if (built) {
-          event._start_time = TSC::ticks();
-          cacheResolvedChain(canary_ftag, std::move(event),
-                              canary_ftag, current_search_ns);
-        }
-      }
-      // Fall through to discovered-instances check below — the canary representative may not have
-      // been reached by BFS yet, but other instances of the same class may have been admitted and
-      // their chains can be built now.
-    }
+    // NOTE: the retired canary marker-tag decode used to live here (an object
+    // pre-tagged with MARKER_TAG_BASE - slot took the legacy canary chain
+    // reconstruction). The marker->leak-tag migration stopped pre-tagging
+    // candidate representatives entirely - no JVMTI tag in the process can
+    // ever be <= MARKER_TAG_BASE (-2^62): leak tags are positive
+    // (LEAK_TAG_BASE), frontier tags positive, class tags small negative
+    // magnitudes - so the branch was unreachable, and a stale negative tag
+    // (a class tag) could never silently take the legacy canary path.
+    // Candidate chain reconstruction now runs through the leak-tag discovery
+    // block below and the dead-representative canary path earlier in this
+    // loop.
 
-    // Normal (non-canary) path: tag > 0 means the walk visited this object and assigned it a
+    // Normal path: tag > 0 means the walk visited this object and assigned it a
     // frontier tag.
 
     // Keep the holder chain's root warm in the rotation queue: a growing container's current

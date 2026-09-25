@@ -171,14 +171,14 @@ protected:
         LivenessTracker::instance()->klassPopulationSetRepresentativeForTest(
             nullptr, klass_id, (jweak)&node_tags[topo.chunk_nodes[0]]);
         // The representative's GetTag() identity: the mock tags map is keyed by object pointer;
-        // getTag(rep) must report the rep's leak tag.
-        tags[&node_tags[topo.chunk_nodes[0]]] = topo.chunk_leak_tags.empty()
-                                                    ? 1073741924LL
-                                                    : 0; /* placeholder */
-        // (chunk_leak_tags is not kept; the tags map entry keeps the CURRENT leak tag of the rep -
-        // the reseed above made node_tags hold it.)
+        // getTag(rep) must report the rep's leak tag (the reseed in
+        // reseedChunkLeakTags() above made node_tags hold it - chunk_leak_tags
+        // itself is not kept).
         tags[&node_tags[topo.chunk_nodes[0]]] =
             node_tags[topo.chunk_nodes[0]];
+        ASSERT_NE(0, tags[&node_tags[topo.chunk_nodes[0]]])
+            << "representative's leak tag missing - L1/L2 assertions below "
+               "would silently test an untagged representative";
     }
 
     // One threadLoop iteration, fake clock: the exact body order from

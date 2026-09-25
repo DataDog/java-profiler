@@ -918,6 +918,14 @@ int OS::getCgroupCpuMillicores() {
 // delay the OOM projection.
 static char g_memory_limit_cgroup_path[PATH_MAX] = {0};
 
+// Which cgroup hierarchy (v2 or v1) supplied the winning limit recorded in
+// g_memory_limit_cgroup_path: the usage file must be read from the SAME
+// hierarchy (v2 memory.current vs v1 memory.usage_in_bytes), not probed by
+// filename order - on a hybrid system both controller files can be visible
+// for the same cgroup dir, and reading the wrong one pairs the limit with an
+// unrelated usage number.
+static bool g_memory_limit_cgroup_v2 = true;
+
 static long walkCgroupV2MemoryLimit(char* path, char* winner_path_out) {
     size_t base_len = strlen("/sys/fs/cgroup");
     long best = -1;
@@ -1002,6 +1010,7 @@ long OS::getContainerMemoryLimit() {
                 int fd = open(leaf, O_RDONLY);
                 if (fd != -1) {
                     close(fd);
+                    g_memory_limit_cgroup_v2 = true;
                     return walkCgroupV2MemoryLimit(path, g_memory_limit_cgroup_path);
                 }
             }
@@ -1022,6 +1031,7 @@ long OS::getContainerMemoryLimit() {
                 int fd = open(leaf, O_RDONLY);
                 if (fd != -1) {
                     close(fd);
+                    g_memory_limit_cgroup_v2 = false;
                     return walkCgroupV1MemoryLimit(path, g_memory_limit_cgroup_path);
                 }
             }
@@ -1045,26 +1055,24 @@ long OS::getContainerMemoryUsage() {
 
     // Same cgroup the winning limit came from, if the limit walk recorded
     // one - read its usage first, falling back to the process's own leaf.
-    // v2 names the file memory.current, v1 memory.usage_in_bytes - try both.
+    // The usage filename follows the hierarchy that supplied the limit (the
+    // recorded winner's hierarchy is authoritative, not filename order).
     if (g_memory_limit_cgroup_path[0] != '\0') {
         char file[PATH_MAX];
-        const char *usage_files[] = {"%s/memory.current", "%s/memory.usage_in_bytes"};
-        for (const char *fmt : usage_files) {
-            if ((size_t)snprintf(file, sizeof(file), fmt,
-                                 g_memory_limit_cgroup_path) >= sizeof(file)) {
-                continue;
-            }
+        const char *fmt = g_memory_limit_cgroup_v2 ? "%s/memory.current"
+                                                   : "%s/memory.usage_in_bytes";
+        if ((size_t)snprintf(file, sizeof(file), fmt,
+                             g_memory_limit_cgroup_path) < sizeof(file)) {
             int fd = open(file, O_RDONLY);
-            if (fd == -1) {
-                continue;
-            }
-            char buf[32] = {0};
-            ssize_t r = read(fd, buf, sizeof(buf) - 1);
-            close(fd);
-            if (r > 0) {
-                long usage = atol(buf);
-                if (usage >= 0) {
-                    return usage;
+            if (fd != -1) {
+                char buf[32] = {0};
+                ssize_t r = read(fd, buf, sizeof(buf) - 1);
+                close(fd);
+                if (r > 0) {
+                    long usage = atol(buf);
+                    if (usage >= 0) {
+                        return usage;
+                    }
                 }
             }
         }
