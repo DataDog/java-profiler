@@ -39,22 +39,49 @@ constexpr int LivenessTracker::MIN_SAMPLING_INTERVAL;
 
 namespace {
 
-// Earliest-third/recent-third mean and minimum of a chronological ring
-// window - the one computation hasQualifyingGrowth() (per-klass count_ring)
-// and heapFloorRising() (the aggregate _heap_floor_ring) both need, factored
-// out so the window/index derivation and the two aggregation loops exist in
-// exactly one place rather than three near-identical copies. Templated on
-// the reader rather than the ring's element type or storage: the per-klass
-// ring is a plain array read under the caller's already-held _table_lock,
-// while the heap-floor ring is lock-free and read via loadAcquire() (see
-// _heap_floor_ring's own comment, livenessTracker.h) - `read(i)` lets each
-// caller supply its own access discipline for physical slot `i` without
-// this shared loop needing to know which one applies.
+// Max surviving entries whose per-epoch JNI class resolution (resolveKlassId:
+// GetObjectClass + Class.getName() + StringDictionary lookup) a single
+// cleanup_table() sweep performs under the exclusive _table_lock. Entries
+// beyond the budget fall back to their cached class id (the exact semantics
+// the allow_resolve=false path already uses); the next epoch's sweep resolves
+// the next tranche, and cached ids accumulated across sweeps keep most
+// entries resolved anyway. Bounds the sweep's exclusive-lock window so it
+// stays proportional to table bookkeeping rather than to survivor count -
+// every shared-lock scanner (tagLeakInstances(), getLiveTraceIds()) is
+// blocked for the whole sweep otherwise.
+constexpr u32 RESOLVE_BUDGET_PER_SWEEP = 256;
+
+// Trend statistics of a chronological ring window - the one computation
+// hasQualifyingGrowth() (per-klass count_ring) and heapFloorRising() (the
+// aggregate _heap_floor_ring) both need, factored out so the window/index
+// derivation and the two aggregation loops exist in exactly one place rather
+// than three near-identical copies. Templated on the reader rather than the
+// ring's element type or storage: the per-klass ring is a plain array read
+// under the caller's already-held _table_lock, while the heap-floor ring is
+// lock-free and read via loadAcquire() (see _heap_floor_ring's own comment,
+// livenessTracker.h) - `read(i)` lets each caller supply its own access
+// discipline for physical slot `i` without this shared loop needing to know
+// which one applies.
+//
+// DESPITE THE NAME, this is not thirds statistics: the design doc's original
+// "mean of earliest third vs mean of recent third" comparison was replaced by
+// a full-window least-squares linear regression (see ringThirdsStats below),
+// which uses all samples and is far more robust for oscillating-but-growing
+// trends. The field names survive as the regression values consumers treat
+// as the window's "earliest"/"recent" levels:
+//   earliest_mean - regression value at the window's OLDEST sample (x = 0);
+//   recent_mean   - regression value at the window's NEWEST sample (x = fill-1);
+//   earliest_min  - true minimum over the FULL window;
+//   recent_min    - true minimum over the most recent HALF of the window.
+// Consumers read earliest_mean/recent_mean as a smoothed start-vs-end delta
+// (a regression slope over the window's span) and earliest_min/recent_min as
+// floor checks. Renaming the fields would touch every consumer for no
+// behavioral change, so the mapping is documented here instead.
 struct RingThirdsStats {
-  double earliest_mean;
-  double recent_mean;
-  double earliest_min;
-  double recent_min;
+  double earliest_mean; // regression value at the window's oldest sample
+  double recent_mean;   // regression value at the window's newest sample
+  double earliest_min;  // true min over the full window
+  double recent_min;    // true min over the window's most recent half
 };
 
 template <typename Reader>
@@ -106,11 +133,15 @@ bool ringThirdsStats(int head, int fill, int ring_size, int min_fill,
 
 // Recent-half corroboration for a usage ring (see secondsToOOM()'s own
 // comment): a rising full-window trend whose most recent half is flat is a
-// plateaued step change, not ongoing growth. Returns true when the recent
-// half rises (or is too sparse to corroborate - the full-window trend then
-// stands alone, matching the single-ring version's have_recent_half
-// semantics of only rejecting on a confirmed flat recent half... inverted
-// here: false means "reject").
+// plateaued step change, not ongoing growth. The recent half's own
+// regression (see ringThirdsStats) must show a strictly positive delta for
+// the full-window trend to stand. A too-sparse recent half (below min_fill)
+// REJECTS the projection rather than letting it through: false means
+// "reject". Deliberately stricter than the single-ring version's
+// have_recent_half semantics (which only rejected on a confirmed flat
+// recent half) - with the ring-fill floors the caller already enforces, a
+// sparse recent half means the recent data does not yet support the trend,
+// so the boundary projection waits for more samples.
 template <typename Reader>
 bool corroborateRecentHalf(u8 head, u8 fill, int ring_size, int min_fill,
                            Reader read) {
@@ -208,6 +239,9 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
   if (sz > 0) {
     u64 start = OS::nanotime(), end;
     u32 newsz = 0;
+    // Per-sweep JNI-resolution budget - see the survivor loop's allow_resolve
+    // comment below for why the exclusive-lock window must stay bounded.
+    u32 resolve_budget = RESOLVE_BUDGET_PER_SWEEP;
     std::set<jclass> kept_classes;
     for (u32 i = 0; i < sz; i++) {
       if (_table[i].ref != nullptr &&
@@ -230,7 +264,7 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
           // (table-overflow) sweep still contributes one population sample
           // per genuinely new GC epoch instead of silently dropping it.
           u32 klass_id = 0;
-          if (allow_resolve) {
+          if (allow_resolve && resolve_budget > 0) {
             // GetObjectClass + Class.getName() + StringDictionary lookup per
             // surviving entry, previously paid only at JFR-flush time (see
             // flush_table() below). Only affordable off the allocation-hot
@@ -238,6 +272,18 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
             // LivenessTracker::maybeForceCleanup()'s background-thread tick
             // both pass allow_resolve=true; track()'s hot-path forced sweep
             // does not (see cleanup_table()'s own header comment).
+            //
+            // Bounded per sweep (RESOLVE_BUDGET_PER_SWEEP): every resolution
+            // here runs under the EXCLUSIVE _table_lock, so an unbounded
+            // survivor count would stretch this sweep's critical section
+            // proportionally to the population (blocking every shared-lock
+            // scanner for the whole per-survivor JNI sequence). Entries past
+            // the budget fall through to the cached-id path below - the
+            // exact semantics the allow_resolve=false path already accepts -
+            // and the next epoch's sweep resolves the next tranche; the
+            // cached ids accumulated across sweeps keep most entries
+            // resolved anyway.
+            resolve_budget--;
             jobject ref = env->NewLocalRef(_table[target].ref);
             if (ref != nullptr) {
               klass_id = resolveKlassId(env, ref);
@@ -380,12 +426,23 @@ void LivenessTracker::insertOldestSample(KlassCountScratch &scratch,
 }
 
 jlong LivenessTracker::acquireLeakTag(u64 call_trace_id, jint tid) {
+  // Pool mutation is serialized by its own lock, not by _table_lock: this is
+  // called under the SHARED table lock (tagLeakInstances, BFS poll thread)
+  // while releaseLeakTag() runs under the EXCLUSIVE table lock (cleanup_table,
+  // GC-callback thread) - shared vs exclusive excludes those two from each
+  // other, but any future second shared-lock mutator would corrupt the LIFO
+  // free list. The dedicated lock keeps the pool correct independent of which
+  // table lock mode the caller holds. Lock order: _table_lock (any mode) is
+  // always acquired BEFORE _leak_tag_pool_lock, never the reverse.
+  _leak_tag_pool_lock.lock();
   if (_leak_tag_free_count <= 0) {
+    _leak_tag_pool_lock.unlock();
     return 0; // pool exhausted
   }
   int idx = _leak_tag_free_list[--_leak_tag_free_count];
   _leak_tag_info[idx].call_trace_id = call_trace_id;
   _leak_tag_info[idx].tid = tid;
+  _leak_tag_pool_lock.unlock();
   return LEAK_TAG_BASE + idx;
 }
 
@@ -394,9 +451,13 @@ void LivenessTracker::releaseLeakTag(jlong tag) {
     return;
   }
   int idx = (int)(tag - LEAK_TAG_BASE);
+  // See acquireLeakTag()'s comment for the dedicated pool lock (and the
+  // _table_lock -> _leak_tag_pool_lock ordering).
+  _leak_tag_pool_lock.lock();
   _leak_tag_info[idx].call_trace_id = 0;
   _leak_tag_info[idx].tid = 0;
   _leak_tag_free_list[_leak_tag_free_count++] = idx;
+  _leak_tag_pool_lock.unlock();
 }
 
 bool LivenessTracker::getLeakTagInfo(jlong tag, u64 *out_call_trace_id,
@@ -409,12 +470,19 @@ bool LivenessTracker::getLeakTagInfo(jlong tag, u64 *out_call_trace_id,
   // was released (or never acquired) - any other state is in use. (A slot
   // index comparison against _leak_tag_free_count proves nothing here: the
   // free list is a LIFO stack of indices, not an index-bounded region.)
-  if (_leak_tag_info[idx].call_trace_id == 0 && _leak_tag_info[idx].tid == 0) {
-    return false;
+  // Read under the pool lock (see acquireLeakTag()'s comment): the intended
+  // caller (ReferenceChainTracker's BFS poll thread) holds no table lock in
+  // its polling path, and without this lock the releaseLeakTag() zeroing on
+  // the GC-callback thread would race these reads.
+  _leak_tag_pool_lock.lock();
+  bool in_use = _leak_tag_info[idx].call_trace_id != 0 ||
+                _leak_tag_info[idx].tid != 0;
+  if (in_use) {
+    *out_call_trace_id = _leak_tag_info[idx].call_trace_id;
+    *out_tid = _leak_tag_info[idx].tid;
   }
-  *out_call_trace_id = _leak_tag_info[idx].call_trace_id;
-  *out_tid = _leak_tag_info[idx].tid;
-  return true;
+  _leak_tag_pool_lock.unlock();
+  return in_use;
 }
 
 int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
@@ -621,6 +689,24 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
     } else if (tag_err == JVMTI_ERROR_NONE && existing > 0) {
       // Frontier tag: the BFS already admitted this object. Correlate the
       // existing entry rather than retagging - see the block comment above.
+      //
+      // Lock order (enforced, asymmetric): this call runs under THIS tracker's
+      // SHARED _table_lock and takes ReferenceChainTracker-internal locks
+      // (FrontierTable's SpinLock - held only inside individual
+      // insert/lookup/setLeakTag method bodies - and _resolved_chains_lock
+      // inside invalidateResolvedChain()). Every direction that could invert
+      // this is excluded today: RCT entry points into LT
+      // (resolveCandidateRepresentative, selectLeakCandidates,
+      // tagLeakInstances from pollWatchedTargets) take the table lock before
+      // touching any shared tracker state and are called with no RCT-internal
+      // lock held, so no path acquires _table_lock while already holding an
+      // RCT-internal lock. Any new RCT -> LT call made while holding an
+      // RCT-internal lock would invert the order and deadlock against this
+      // site. (Moving the correlate call outside the shared-lock section was
+      // rejected: it needs _table[i].ref/cached_klass_id, and the table
+      // index/weak ref can be compacted or reaped by a concurrent
+      // cleanup_table() once the shared lock is released - re-touching them
+      // unlocked would read freed/moved slots.)
       leak_tag = _table[i].leak_tag;
       if (leak_tag == 0) {
         leak_tag = acquireLeakTag(_table[i].call_trace_id, _table[i].tid);
@@ -662,6 +748,17 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
     if (need_set) {
       jvmti->SetTag(ref, leak_tag);
     }
+    // Store under the SHARED table lock: the only other writers are exclusive-
+    // lock holders (cleanup_table() zeroing a dead entry, start() reclaiming
+    // owned tags), which a shared holder excludes - and tagLeakInstances()
+    // itself runs on the single BFS poll thread, so no second shared-lock
+    // writer exists. Readers under either lock mode therefore always see a
+    // value from one of those serialized writers (aligned jlong stores are
+    // atomic on all supported architectures); a shared-mode reader may observe
+    // a stale 0 and re-tag - the correlate/re-establish state machine above is
+    // idempotent for that case. If a second shared-lock scanner ever starts
+    // writing leak_tag, this store (and those reads) must move under the
+    // exclusive lock or become atomic.
     _table[i].leak_tag = leak_tag;
     tagged++;
     // Accumulate into the per-poll summary above instead of logging per
@@ -1580,7 +1677,11 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
   // for why an aggregate, non-attributed signal can only raise or lower the
   // bar uniformly, never reorder candidates against each other. Lock-free
   // (heapFloorRising()'s own comment), so no relation to _table_lock below.
-  const int required_hysteresis = heapFloorRising()
+  // Computed once: the trailing diagnostic TEST_LOG at the end of this
+  // function reuses this cached result instead of re-evaluating the full
+  // O(ring_fill) ring scan a second time per BFS-thread wake.
+  const bool heap_floor_rising = heapFloorRising();
+  const int required_hysteresis = heap_floor_rising
                                        ? LEAK_TREND_HYSTERESIS_CORROBORATED
                                        : LEAK_TREND_HYSTERESIS_BASE;
 
@@ -1669,7 +1770,7 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
   _table_lock.unlockShared();
   TEST_LOG("LivenessTracker::selectLeakCandidates returning %d candidates (required_hysteresis=%d, heapFloorRising=%d)",
            count, required_hysteresis,
-           (int)heapFloorRising());
+           (int)heap_floor_rising);
   return count;
 }
 

@@ -61,7 +61,15 @@ inline jlong next() { return -atomicIncRelaxed(magnitude(), (jlong)1); }
 // tagged gets -1") would see values keep climbing across every TEST_F in the
 // same gtest binary, since this counter is genuinely process-wide (shared
 // with LivenessTracker) rather than per-ReferenceChainTracker-instance.
-inline void resetForTest() { magnitude() = 1; }
+inline void resetForTest() {
+  // Atomic exchange, matching next()'s atomicIncRelaxed RMW on the same
+  // variable: a plain volatile store can tear or be lost against a concurrent
+  // RMW (e.g. a tracker thread from a prior TEST_F not fully quiesced), which
+  // would mint duplicate negative tags - the cross-subsystem collision this
+  // shared allocator exists to prevent. Callers must still ensure no tracker
+  // thread is live (reset in TearDown after tracker->stop()).
+  __atomic_exchange_n(&magnitude(), (jlong)1, __ATOMIC_RELAXED);
+}
 
 } // namespace ClassTagAllocator
 
