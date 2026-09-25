@@ -189,7 +189,7 @@ public:
   // Set the leak tag on a frontier entry (the JVMTI tag assigned by LivenessTracker to this
   // specific tracked leaking object).
   void setLeakTag(jlong tag, jlong leak_tag) {
-    if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
+    if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
       return;
     }
     int idx = (int)(tag - 1);

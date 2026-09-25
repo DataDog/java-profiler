@@ -97,7 +97,7 @@ bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
                             u32 depth, u8 state, u8 root_kind,
                             jlong class_tag, jint referrer_field_index,
                             u8 edge_kind, jlong referrer_class_tag) {
-  if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
+  if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
     return false;
   }
   int idx = (int)(tag - 1);
@@ -123,8 +123,14 @@ bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
   _table[idx].referrer_field_index = referrer_field_index;
   _table[idx].edge_kind = edge_kind;
   _table[idx].referrer_class_tag = referrer_class_tag;
-  _table_lock.unlock();
 
+  // Published under the same exclusive lock as the slot write: advancing
+  // _table_size only after unlock lets a concurrent insert for a higher index
+  // CAS the size past this entry's idx first, and a shared-lock reader then
+  // passes its `idx < _table_size` check on a value published outside the
+  // lock - reading this slot before its write is guaranteed visible. Keeping
+  // the write+publish pair inside the lock makes the size an exact bound on
+  // fully-written slots for every lock-ordered reader.
   int sz = _table_size.load(std::memory_order_relaxed);
   while (sz < idx + 1 &&
          !_table_size.compare_exchange_weak(sz, idx + 1,
@@ -132,11 +138,12 @@ bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
     // sz reloaded with the current value by compare_exchange_weak on failure; retry until either
     // this thread wins or another thread already advanced _table_size past idx + 1.
   }
+  _table_lock.unlock();
   return true;
 }
 
 bool FrontierTable::lookup(jlong tag, FrontierEntry *out) {
-  if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
+  if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
     return false;
   }
   int idx = (int)(tag - 1);
@@ -152,7 +159,7 @@ bool FrontierTable::lookup(jlong tag, FrontierEntry *out) {
 }
 
 bool FrontierTable::lookupLocked(jlong tag, FrontierEntry *out) const {
-  if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
+  if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
     return false;
   }
   int idx = (int)(tag - 1);
@@ -164,7 +171,7 @@ bool FrontierTable::lookupLocked(jlong tag, FrontierEntry *out) const {
 }
 
 void FrontierTable::clear(jlong tag) {
-  if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
+  if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
     return;
   }
   int idx = (int)(tag - 1);
@@ -179,7 +186,7 @@ void FrontierTable::clear(jlong tag) {
 }
 
 void FrontierTable::markEdge(jlong tag) {
-  if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
+  if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
     return;
   }
   int idx = (int)(tag - 1);
@@ -192,7 +199,7 @@ void FrontierTable::markEdge(jlong tag) {
 }
 
 void FrontierTable::markExpanded(jlong tag) {
-  if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
+  if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
     return;
   }
   int idx = (int)(tag - 1);
@@ -205,7 +212,7 @@ void FrontierTable::markExpanded(jlong tag) {
 }
 
 void FrontierTable::updateRootKind(jlong tag, u8 root_kind) {
-  if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
+  if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
     return;
   }
   int idx = (int)(tag - 1);
@@ -223,7 +230,7 @@ bool FrontierTable::improveChain(jlong tag, jlong parent_tag,
                                   u8 edge_kind, jlong referrer_class_tag) {
   // Replace a shallow root-attached entry (parent_tag == 0, depth == 0) with a deeper
   // chain-attached entry when the object is reached via a longer path.
-  if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
+  if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
     return false;
   }
   // a "chain" whose parent is the entry itself is never an improvement - it is the self-edge a
@@ -289,8 +296,8 @@ bool FrontierTable::reparentToDurableRoot(jlong tag, jlong new_parent_tag,
                                           u8 edge_kind) {
   // See the declaration's own comment (referenceChains.h) for why this exists as a sibling of
   // improveChain(): equal-depth depth-1 noise->real re-parenting.
-  if (tag <= 0 || tag - 1 > (jlong)INT_MAX || new_parent_tag <= 0 ||
-      new_parent_tag - 1 > (jlong)INT_MAX || new_parent_tag == tag) {
+  if (tag <= 0 || tag - 1 >= (jlong)INT_MAX || new_parent_tag <= 0 ||
+      new_parent_tag - 1 >= (jlong)INT_MAX || new_parent_tag == tag) {
     return false;
   }
   int idx = (int)(tag - 1);
