@@ -5,6 +5,7 @@
  */
 
 #include <setjmp.h>
+#include "dwarfStep.inline.h"
 #include "stackWalker.inline.h"
 #include "dwarf.h"
 #include "faultInjection.h"
@@ -192,91 +193,8 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         const void* attribution_pc = walk_pc.attribution();
         callchain[depth++] = attribution_pc;
 
-        uintptr_t prev_sp = sp;
-        CodeCache* cc = profiler->findLibraryByAddress(attribution_pc);
-        FrameDesc f = cc != NULL ? cc->findFrameDesc(attribution_pc) : FrameDesc::fallback_default_frame();
-
-        u8 cfa_reg = (u8)f.cfa;
-        int cfa_off = f.cfa >> 8;
-        if (cfa_reg == DW_REG_SP) {
-            sp = sp + cfa_off;
-        } else if (cfa_reg == DW_REG_FP) {
-            // Sanity-check FP before deriving CFA from it. A corrupted FP can
-            // produce a phantom CFA and cause the walk to record spurious
-            // frames before breaking. We cannot check fp < sp here because on
-            // aarch64 the frame pointer is set to SP at function entry, which
-            // is typically less than the previous CFA.
-            if (fp >= bottom || !aligned(fp)) {
-                break;
-            }
-            sp = fp + cfa_off;
-        } else if (cfa_reg == DW_REG_PLT) {
-            // Which of the stub's two CFA rules applies depends on the position
-            // within the 16-byte PLT stub, so it must be evaluated at the same
-            // address the row above was selected at (attribution_pc). Mixing the
-            // two would pair the row chosen for one stub offset with the CFA
-            // doubling decided for another.
-            sp += ((uintptr_t)attribution_pc & 15) >= 11 ? cfa_off * 2 : cfa_off;
-        } else {
-            break;
-        }
-
-        // Check if the next frame is below on the current stack
-        if (sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom) {
-            break;
-        }
-
-        // Stack pointer must be word aligned
-        if (!aligned(sp)) {
-            break;
-        }
-
-        const void* prev_pc = walk_pc.raw();
-        if (f.fp_off & DW_PC_OFFSET) {
-            // f.fp_off carries the offset of a DW_CFA_val_expression of the form
-            // DW_OP_breg<PC> + K on the return-address register column
-            // (DwarfParser::parseExpression). DW_OP_breg names the *register
-            // value*, which is the raw walking pc, so the offset is applied to
-            // that and not to the row-lookup address.
-            walk_pc.setRecoveredPc((const char*)walk_pc.raw() + (f.fp_off >> 1),
-                                   f.isSignalFrame());
-        } else {
-            if (f.fp_off != DW_SAME_FP && f.fp_off < MAX_FRAME_SIZE && f.fp_off > -MAX_FRAME_SIZE) {
-                uintptr_t fp_addr = sp + f.fp_off;
-                if (!aligned(fp_addr)) {
-                    break;
-                }
-                fp = (uintptr_t)SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp_addr));
-            }
-
-            if (EMPTY_FRAME_SIZE > 0 || f.pc_off != DW_LINK_REGISTER) {
-                uintptr_t pc_addr = sp + f.pc_off;
-                if (!aligned(pc_addr)) {
-                    break;
-                }
-                walk_pc.setRecoveredPc(
-                    stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)pc_addr))),
-                    f.isSignalFrame());
-            } else if (depth == 1) {
-                // Matches the memory-slot path above: StackFrame::link() returns
-                // the raw link register, which carries PAC bits on aarch64 and
-                // would otherwise be fed to findFrameDesc as a nonsense address.
-                walk_pc.setRecoveredPc(stripPointer((const void*)frame.link()),
-                                       f.isSignalFrame());
-            } else {
-                break;
-            }
-
-            if (EMPTY_FRAME_SIZE == 0 && cfa_off == 0 && f.fp_off != DW_SAME_FP) {
-                // AArch64 default_frame
-                sp = defaultSenderSP(sp, fp);
-                if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
-                    break;
-                }
-            }
-        }
-
-        if (inDeadZone(walk_pc.raw()) || (walk_pc.raw() == prev_pc && sp == prev_sp)) {
+        if (!advanceDwarfFrame(walk_pc, sp, fp, bottom, depth, frame,
+                               profiler)) {
             break;
         }
     }
