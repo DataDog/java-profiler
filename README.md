@@ -38,6 +38,26 @@ cd java-profiler
 
 The resulting artifact will be in `ddprof-lib/build/libs/ddprof-<version>.jar`
 
+#### Optional Build Flags
+Opt-in compile-time flags for the `release`/`debug` configurations. They are
+deliberately not applied to `asan`/`tsan`/`fuzzer` builds, but gtest builds
+inherit them automatically:
+
+- `-PenableFaultInjection` — appends `-D__FAULT_INJECTION__`, compiling in
+  deliberate fault injection used by the fault-injection test suite
+  (`faultInjection_ut.cpp`) to exercise crash-recovery paths. Never used in
+  production builds.
+- `-PenableSamplerPerf` — appends `-D__SAMPLER_PERF__`, compiling in
+  per-sampler timing counters that print a stop-time report of per-sampler
+  cost. See [doc/reference/SamplerPerfCounters.md](doc/reference/SamplerPerfCounters.md).
+
+```bash
+./gradlew buildRelease -PenableFaultInjection
+./gradlew buildDebug   -PenableFaultInjection
+./gradlew buildRelease  -PenableSamplerPerf
+./gradlew buildDebug   -PenableSamplerPerf
+```
+
 #### Gritty details
 Since the upstream code might not be 100% compatible with the current version of the project, we extend the base classes
 with Datadog-specific functionality. These extensions are integrated directly into the base files (e.g., `stackWalker.h`)
