@@ -112,9 +112,11 @@ run-benchmarks:
   variables:
     PARENT_PIPELINE_ID: "$CI_PIPELINE_ID"
     PARENT_COMMIT_SHA: "$CI_COMMIT_SHA"
-    # CI_COMMIT_BRANCH is empty for detached-HEAD trigger/api pipelines; fall
-    # back to CI_COMMIT_REF_NAME so the BP pipeline always receives a branch.
-    PARENT_COMMIT_BRANCH: "${CI_COMMIT_BRANCH:-$CI_COMMIT_REF_NAME}"
+    # GitLab trigger variables do not evaluate Bash ${VAR:-default}
+    # expansions, so a fallback must be chosen as the single variable that is
+    # always populated: CI_COMMIT_REF_NAME (unlike CI_COMMIT_BRANCH) is set
+    # for detached-HEAD trigger/api pipelines too.
+    PARENT_COMMIT_BRANCH: "$CI_COMMIT_REF_NAME"
     # Redeclared from the get-versions dotenv artifact (via needs) so they
     # reach the child pipeline as trigger-job variables — see the comment
     # above the job.
