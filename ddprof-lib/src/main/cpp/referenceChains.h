@@ -144,11 +144,12 @@ private:
   // (CANARY_NO_PROGRESS_PASS_LIMIT below) has abandoned this same candidate-chase sequence.
   int _canary_stuck_restart_count;
 
-  // Canary-search candidate set: pre-tagged with distinct marker tags (MARKER_TAG_BASE - i) before
-  // the walk, applied to each candidate's specific representative object (identity match) -
-  // matching by class alone would let the walk record a chain for an unrelated, possibly
-  // short-lived, instance of the same class instead of the one LivenessTracker actually flagged as
-  // growing.
+  // Canary-search candidate set: LivenessTracker-flagged leak klasses this
+  // tracker chases, one slot per klass. The retired marker-tag pre-tagging
+  // (each candidate's representative pre-tagged MARKER_TAG_BASE - i for an
+  // identity match in the walk) was replaced by leak-tag interception -
+  // LivenessTracker tags specific tracked instances, and discovery records
+  // _candidate_found_bits/_candidate_frontier_tags when one is resolved.
   static constexpr int MAX_LEAK_CANDIDATES_FROM_LT = 5;
 
   // How many klass_ids _watched_leak_klass_ids tracks at once - matches
@@ -163,7 +164,6 @@ private:
   // selectLeakCandidates() returns this poll already has a slot (and must not be
   // re-tagged/re-admitted) or is new (and should be admitted into the next free slot).
   u32 _candidate_klass_ids[MAX_LEAK_CANDIDATES_FROM_LT];
-  jlong _candidate_tags[MAX_LEAK_CANDIDATES_FROM_LT];
   jlong _candidate_frontier_tags[MAX_LEAK_CANDIDATES_FROM_LT];
   // Per-candidate chain link recorded at pruning time: parent_tag (referrer's frontier tag,
   // positive) and referrer_klass.
@@ -1043,10 +1043,6 @@ public:
   int _leak_tags_assigned = 0;
   int _leak_tags_resolved = 0;
 
-  // Base marker tag for canary-search candidates. Each candidate i gets MARKER_TAG_BASE - i
-  // (distinct negative values) so heapReferenceCallback() can tell which candidate was found.
-  static constexpr jlong MARKER_TAG_BASE = -(1LL << 62);
-
   // Leak tags are positive JVMTI tags in a dedicated range, assigned by LivenessTracker's tag pool
   // to specific tracked leaking objects.
   static constexpr jlong LEAK_TAG_BASE = 0x40000000LL;
@@ -1084,6 +1080,11 @@ public:
   }
   u64 candidateFoundBitsForTest() const { return _candidate_found_bits; }
   void setCandidateFrontierTagForTest(int idx, jlong tag) { _candidate_frontier_tags[idx] = tag; }
+  void setCandidateParentTagForTest(int idx, jlong tag) { _candidate_parent_tags[idx] = tag; }
+  void setCandidateReferrerKlassForTest(int idx, u32 klass_id) {
+    _candidate_referrer_klasses[idx] = klass_id;
+  }
+  void setCandidateDepthForTest(int idx, u32 depth) { _candidate_depths[idx] = depth; }
   int passesSinceLastCandidateProgressForTest() const { return _passes_since_last_candidate_progress; }
   int canaryStuckRestartCountForTest() const { return _canary_stuck_restart_count; }
 

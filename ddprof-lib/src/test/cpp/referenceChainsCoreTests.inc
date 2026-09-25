@@ -43,6 +43,28 @@ TEST(RcDebugLevelTest, ReadFileParsesTrimmedAndRejectsInvalid) {
     EXPECT_EQ(readRcDebugLevelFile(nullptr), -1);
 }
 
+TEST(RcDebugLevelTest, ReadFileRejectsSymlinkedOverride) {
+    // The knob path lives under world-writable /tmp: a symlink planted by a
+    // local user must not be followed (see readRcDebugLevelFile's lstat
+    // guard) - only regular files owned by root or the current user are read.
+    char target[] = "/tmp/rc_dbg_target_XXXXXX";
+    int fd = mkstemp(target);
+    ASSERT_GE(fd, 0);
+    ASSERT_GE(write(fd, "2\n", 2), 0);
+    close(fd);
+    char link[] = "/tmp/rc_dbg_link_XXXXXX";
+    int lfd = mkstemp(link);
+    ASSERT_GE(lfd, 0);
+    close(lfd);
+    ASSERT_EQ(unlink(link), 0);
+    ASSERT_EQ(symlink(target, link), 0);
+    EXPECT_EQ(readRcDebugLevelFile(link), -1) // symlink itself: rejected
+        << "symlinked override must not be followed";
+    EXPECT_EQ(readRcDebugLevelFile(target), 2); // plain regular file: accepted
+    unlink(link);
+    unlink(target);
+}
+
 TEST(RcDebugLevelTest, RefreshFollowsEnvWhenNoOverrideFile) {
     // The refresh's fixed override path is machine-global; skip rather than flake on a developer
     // machine that happens to have the file.
@@ -170,6 +192,15 @@ public:
 
     static void setCandidateFrontierTagForTest(int idx, jlong tag) {
         ReferenceChainTracker::instance()->setCandidateFrontierTagForTest(idx, tag);
+    }
+    static void setCandidateParentTagForTest(int idx, jlong tag) {
+        ReferenceChainTracker::instance()->setCandidateParentTagForTest(idx, tag);
+    }
+    static void setCandidateReferrerKlassForTest(int idx, u32 klass_id) {
+        ReferenceChainTracker::instance()->setCandidateReferrerKlassForTest(idx, klass_id);
+    }
+    static void setCandidateDepthForTest(int idx, u32 depth) {
+        ReferenceChainTracker::instance()->setCandidateDepthForTest(idx, depth);
     }
 
     static void setCandidateCountForTest(int n) {
@@ -485,6 +516,15 @@ public:
     // entry's exact starting root_kind/state/parent_tag without needing a live JVMTI mock for
     // IterateOverReachableObjects/FollowReferences (neither is mocked in this file - see the file
     // header's FollowReferences- only mock rationale).
+    // Direct seam for buildCanaryChainEvent() - private in production (only
+    // pollWatchedTargets() calls it), but the bounded parent-chain walk and its
+    // cycle-corruption behavior are unit-testable only through it.
+    static bool buildCanaryChainEventForTest(int candidate_idx,
+                                              ReferenceChainEvent *out) {
+        return ReferenceChainTracker::instance()->buildCanaryChainEvent(
+            candidate_idx, out);
+    }
+
     static bool insertFrontierEntry(FrontierTable *frontier, jlong tag,
                                      jlong parent_tag, u32 depth, u8 state,
                                      u8 root_kind, u32 referrer_klass = 0,

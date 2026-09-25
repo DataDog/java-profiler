@@ -1164,25 +1164,15 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
 
   if (load(_search_state) != SearchState::RUNNING) {
     _tags_released = releaseSearchTags(jvmti, jni);
-    // Release canary marker tags: use GetObjectsWithTags to find all live marker-tagged objects and
-    // clear them.
     if (_candidate_count > 0) {
-      for (int i = 0; i < _candidate_count; i++) {
-        jlong tag = _candidate_tags[i];
-        jint count = 0;
-        jobject *objects = nullptr;
-        jlong *result_tags = nullptr;
-        jvmtiError cerr = jvmti->GetObjectsWithTags(
-            1, &tag, &count, &objects, &result_tags);
-        if (cerr == JVMTI_ERROR_NONE && count > 0) {
-          for (jint j = 0; j < count; j++) {
-            jvmti->SetTag(objects[j], 0);
-            jni->DeleteLocalRef(objects[j]);
-          }
-          jvmti->Deallocate((unsigned char *)objects);
-          jvmti->Deallocate((unsigned char *)result_tags);
-        }
-      }
+      // No marker-tag release pass: the marker->leak-tag migration retired
+      // pre-tagged candidate representatives (nothing sets _candidate_tags
+      // anymore), so there are no per-candidate marker JVMTI tags to clear -
+      // releaseSearchTags() above owns every live tag this search minted.
+      // (The old GetObjectsWithTags(1, &_candidate_tags[i]) loop here was
+      // worse than dead: with every _candidate_tags[i] left at 0 it asked
+      // JVMTI to enumerate ALL UNTAGGED objects - potentially the whole
+      // heap - once per candidate slot on every search stop.)
       _candidate_count = 0;
       _candidate_found_bits = 0;
       memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
