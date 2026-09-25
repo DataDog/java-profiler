@@ -101,8 +101,9 @@ typedef struct KlassPopulationEntry {
   // without this counter it gets reported as a leak candidate almost as
   // often as a real leak does.
   u8 consecutive_positive;
-  // Slope (recent third's mean minus earliest third's mean) as of the last
-  // push, computed and cached by hasQualifyingGrowth() alongside
+  // Slope (regression value at the ring's newest sample minus the value at
+  // its oldest sample - see ringThirdsStats, livenessTracker.cpp) as of the
+  // last push, computed and cached by hasQualifyingGrowth() alongside
   // consecutive_positive above - selectLeakCandidates() reads this directly
   // for ranking instead of re-scanning the ring: the ring only changes on
   // push, so a second scan at scan time would just recompute the same
@@ -219,8 +220,8 @@ private:
   // a klass starts being tracked."
   constexpr static int KLASS_POPULATION_MIN_FILL_FOR_TREND = 10;
   // Per-tid trend gate's own minimum fill (see KlassPopulationEntry::
-  // TidTrend): 6 samples of the 16-slot ring leaves a 2-3 sample thirds
-  // comparison, small enough that a per-tid qualification (6 pushes +
+  // TidTrend): 6 samples of the 16-slot ring leaves a 2-3 sample
+  // regression, small enough that a per-tid qualification (6 pushes +
   // the 3-5 hysteresis epochs, ~9-11) completes no later than the klass
   // gate's own ~13-15-epoch latency, keeping the klass ring the sole
   // latency driver for candidate emergence.
@@ -267,11 +268,11 @@ private:
   // surviving instance count: a klass whose survivors keep spanning more
   // distinct allocation cohorts over time is one where old instances are
   // not dying as new ones arrive, which is the leak shape this gate looks
-  // for. The gate itself is a single condition - the recent third's mean
-  // generation count must exceed the earliest third's by a meaningful
+  // for. The gate itself is a single condition - the ring's regression end
+  // value must exceed its start value by a meaningful
   // margin (LEAK_GROWTH_REL_MIN/LEAK_GROWTH_ABS_MIN, whichever is larger).
-  // An earlier revision of this gate also required the recent third's
-  // *minimum* to exceed the earliest third's minimum (a floor-rise check,
+  // An earlier revision of this gate also required the recent half's
+  // *minimum* to exceed the full window's minimum (a floor-rise check,
   // to reject oscillations whose peak alone passes the growth test) - that
   // check was tuned for raw population counts (which can run into the
   // thousands) and does not transfer to generation counts, which are small
@@ -299,7 +300,7 @@ private:
   constexpr static int LEAK_TREND_HYSTERESIS_CORROBORATED = 3;
 
   // --- Aggregate post-GC heap floor (heapFloorRising() below) ---
-  // Same "mean-of-thirds growth + floor rise" shape as the per-klass test
+  // Same "regression growth + floor rise" shape as the per-klass test
   // above, applied to a single global ring of post-GC live heap size
   // instead of one klass's sampled population - see this class's own ring
   // (_heap_floor_ring below). Its own thresholds are deliberately looser
@@ -551,6 +552,15 @@ private:
   // instance of the same class) and correlate chains with HeapLiveObject.
   static constexpr int LEAK_TAG_POOL_SIZE = 256;
   static constexpr jlong LEAK_TAG_BASE = 0x40000000LL;
+  // Serializes the pool's free list and _leak_tag_info entries. NOT _table_lock:
+  // acquireLeakTag() runs under the SHARED table lock (tagLeakInstances) while
+  // releaseLeakTag() runs under the EXCLUSIVE one (cleanup_table) - a shared
+  // holder excludes the exclusive one, but only this dedicated lock makes the
+  // pool safe for any future second shared-lock mutator, and getLeakTagInfo()
+  // takes NO table lock at all (BFS poll thread). Lock order: _table_lock
+  // (any mode) is always acquired BEFORE _leak_tag_pool_lock, never the
+  // reverse; no path acquires _table_lock while holding the pool lock.
+  mutable SpinLock _leak_tag_pool_lock;
   int _leak_tag_free_list[LEAK_TAG_POOL_SIZE];
   int _leak_tag_free_count;
   // Side table: for each tag in the pool, the (call_trace_id, tid) of
@@ -697,7 +707,7 @@ private:
 
   // --- Slope computation and candidate ranking (selectLeakCandidates() below) ---
 
-  // Per-tid sustained-trend gate half #1: the same mean-of-thirds growth
+  // Per-tid sustained-trend gate half #1: the same regression growth
   // test hasQualifyingGrowth() below applies to a klass's ring, at
   // KlassPopulationEntry::TidTrend granularity (TID_TREND_MIN_FILL_FOR_TREND
   // samples of that smaller ring, same LEAK_GROWTH_REL_MIN/ABS_MIN growth
@@ -742,12 +752,13 @@ private:
 
   // The sustained-trend gate (this class's own header comment above,
   // "Sustained-trend gate") - both-required growth-magnitude and floor-rise
-  // tests, design doc's explicit "mean of thirds" choice over full
-  // least-squares regression (cheap, allocation-free, one pass over the
+  // tests, design doc's original "mean of thirds" choice since replaced by
+  // full-window least-squares regression (see ringThirdsStats,
+  // livenessTracker.cpp - cheap, allocation-free, one pass over the
   // ring, no sorting or extra storage). A single scan
   // (ringThirdsStats(), livenessTracker.cpp) both derives the pass/fail
-  // result below AND updates entry.cached_slope (recent third's mean minus
-  // earliest third's mean) for selectLeakCandidates()'s ranking, rather than
+  // result below AND updates entry.cached_slope (regression end value minus
+  // start value) for selectLeakCandidates()'s ranking, rather than
   // that method re-scanning the same unchanged ring a moment later. Returns
   // false (leaving entry.cached_slope untouched) if entry.ring_fill is below
   // KLASS_POPULATION_MIN_FILL_FOR_TREND - not enough history yet to trust a
@@ -975,7 +986,7 @@ public:
   // head/fill index, shared _heap_floor_time_ring timestamps - see
   // _container_mem_ring's own comment) so this compares _max_heap_bytes
   // against _container_memory_limit up front (the latter treated as
-  // unbounded when unavailable) and runs the "mean of thirds" rate
+  // unbounded when unavailable) and runs the regression-based rate
   // extrapolation (allocation-free, one ring scan) only once, against
   // whichever limit is smaller - not once per boundary. This matters
   // because container memory can grow from causes the heap-floor ring never
@@ -1335,7 +1346,7 @@ public:
     // reuses recordKlassPopulationSampleLocked()'s own creation branch
     // exactly; the seeded rising ramp that follows still clears
     // hasQualifyingGrowth() (a single 0 at the ring's start only lowers the
-    // earliest-third mean, which RAISES the slope).
+    // regression start value, which RAISES the slope).
     int slot = -1;
     for (int i = 0; i < _klass_population_size; i++) {
       if (_klass_population[i].klass_id == real_id) {
