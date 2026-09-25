@@ -168,59 +168,15 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     edge_referrer_class_tag = *referrer_tag_ptr;
   }
 
-  // Canary pruning: if this object is the pre-tagged representative of a leaked candidate (marker
-  // tag MARKER_TAG_BASE - i, negative), record its chain link but do NOT enqueue its children
-  // (treat as a leaf).
-  if (ctx->tracker->_candidate_count > 0 &&
-      *tag_ptr <= ReferenceChainTracker::MARKER_TAG_BASE) {
-    int candidate_idx = (int)(ReferenceChainTracker::MARKER_TAG_BASE - *tag_ptr);
-    if (candidate_idx >= 0 && candidate_idx < ctx->tracker->_candidate_count) {
-      jlong rtag = (referrer_tag_ptr != nullptr) ? *referrer_tag_ptr : 0;
-      u32 candidate_klass = ctx->tracker->classTags()->resolve(class_tag);
-      if (rtag > 0) {
-        FrontierEntry parent{};
-        if (ctx->frontier->lookup(rtag, &parent)) {
-          // Use the marker tag itself as the frontier table key - it is already a unique
-          // per-candidate value, so no nextTag() is needed.
-          jlong frontier_tag = *tag_ptr;
-          ctx->frontier->insert(frontier_tag, rtag,
-                                  parent.referrer_klass,
-                                  parent.depth + 1,
-                                  FrontierEntryState::FRONTIER,
-                                  parent.root_kind,
-                                  /*class_tag=*/0, edge_field_index,
-                                  (u8)reference_kind);
-          ctx->tracker->_candidate_parent_tags[candidate_idx] = rtag;
-          ctx->tracker->_candidate_frontier_tags[candidate_idx] = frontier_tag;
-          ctx->tracker->_candidate_referrer_klasses[candidate_idx] = candidate_klass;
-          ctx->tracker->_candidate_depths[candidate_idx] = parent.depth + 1;
-          ctx->tracker->_candidate_found_bits |= (1ULL << candidate_idx);
-          TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
-                 "pruned candidate %d (klass_id=%u frontier_tag=%lld)",
-                 candidate_idx, candidate_klass, (long long)frontier_tag);
-        }
-      } else {
-        // Root-referenced candidate.
-        jlong frontier_tag = *tag_ptr;
-        ctx->frontier->insert(frontier_tag, 0,
-                                candidate_klass, 1,
-                                FrontierEntryState::FRONTIER,
-                                (u8)reference_kind,
-                                /*class_tag=*/0, edge_field_index,
-                                /*edge_kind=*/0, edge_referrer_class_tag);
-        ctx->tracker->_candidate_parent_tags[candidate_idx] = 0;
-        ctx->tracker->_candidate_frontier_tags[candidate_idx] = frontier_tag;
-        ctx->tracker->_candidate_referrer_klasses[candidate_idx] = candidate_klass;
-        ctx->tracker->_candidate_depths[candidate_idx] = 1;
-        ctx->tracker->_candidate_found_bits |= (1ULL << candidate_idx);
-        TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
-                 "pruned root-referenced candidate %d (klass_id=%u)",
-                 candidate_idx, candidate_klass);
-      }
-      // Do NOT enqueue children for this object.
-      return 0;
-    }
-  }
+  // NOTE: the retired canary marker-tag decode used to live here (objects
+  // pre-tagged with MARKER_TAG_BASE - i were pruned as leaves and recorded as
+  // chain roots). The marker->leak-tag migration stopped pre-tagging candidate
+  // representatives entirely - no JVMTI tag in the process can ever be
+  // <= MARKER_TAG_BASE (-2^62): leak tags are positive (LEAK_TAG_BASE),
+  // frontier tags positive, class tags small negative magnitudes - so the
+  // branch was unreachable. Candidate discovery now runs exclusively through
+  // the leak-tag interception in pollWatchedTargets() (which also records
+  // _candidate_found_bits/_candidate_frontier_tags).
 
   if (*tag_ptr < 0) {
     if (ctx->static_field_seed &&

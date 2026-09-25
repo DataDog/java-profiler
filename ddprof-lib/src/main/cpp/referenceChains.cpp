@@ -24,6 +24,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <unordered_set>
 
 // Reference-chains debug-log level (see rcDebugLevel.h). Level 0 silent
@@ -76,6 +79,19 @@ int parseRcDebugLevel(const char *value) {
 
 int readRcDebugLevelFile(const char *path) {
   if (path == nullptr) {
+    return -1;
+  }
+  // The knob file lives under the world-writable /tmp (see kRcDebugLevelFile's
+  // comment): refuse anything that is not a regular file owned by root or the
+  // current user, so a local user cannot plant a symlink or a pre-created
+  // file of their own and force the DEBUG-build diagnostics on. The worst
+  // impact of a forged file is log-volume/CPU from enabled TEST_LOG in a
+  // DEBUG build, but the check is cheap and keeps the knob owner-scoped.
+  struct stat st;
+  if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+    return -1; // missing, symlink, fifo, dir - treat as "no override"
+  }
+  if (st.st_uid != 0 && st.st_uid != geteuid()) {
     return -1;
   }
   FILE *f = fopen(path, "r");
