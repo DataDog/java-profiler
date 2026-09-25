@@ -250,6 +250,94 @@ TEST_F(PollWatchedTargetsTest, ChainPersistsAfterRepresentativeDies) {
     tracker->stop();
 }
 
+// Bounded canary parent-chain walk: a cyclic/corrupt parent chain must fail
+// safe instead of spinning the poll thread (the bound mirrors
+// FrontierTable::reconstructChain()'s maxCapacity() bound), and legitimate
+// deep chains must still reconstruct fully - the bound must not cost
+// convergence.
+TEST_F(PollWatchedTargetsTest, CanaryChainWalkFailsSafeOnCyclicParentChain) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    FrontierTable *frontier = tracker->frontierTable();
+    // Corrupt chain: 1 -> 2 -> 1 (a cycle no legitimate BFS admission could
+    // produce, but insert() does not validate parent chains - exactly the
+    // failure mode reconstructChain()'s own bound guards against).
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 1, 2, 2, FrontierEntryState::EDGE, /*root_kind=*/0,
+        /*referrer_klass=*/11));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 2, 1, 3, FrontierEntryState::EDGE, /*root_kind=*/0,
+        /*referrer_klass=*/22));
+
+    ReferenceChainsTestAccessor::setCandidateCountForTest(1);
+    ReferenceChainsTestAccessor::setCandidateKlassIdForTest(0, 99);
+    ReferenceChainsTestAccessor::setCandidateParentTagForTest(0, 1);
+    ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 2);
+    ReferenceChainsTestAccessor::setCandidateReferrerKlassForTest(0, 99);
+    ReferenceChainsTestAccessor::setCandidateDepthForTest(0, 4);
+
+    ReferenceChainEvent event;
+    // The unbounded predecessor of this walk spun forever here; the bound
+    // must make it return promptly (the test itself is the termination
+    // proof - a regression to an unbounded walk hangs this test).
+    EXPECT_FALSE(ReferenceChainsTestAccessor::buildCanaryChainEventForTest(
+        0, &event));
+
+    tracker->stop();
+}
+
+TEST_F(PollWatchedTargetsTest, CanaryChainWalkStillReconstructsDeepChains) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    FrontierTable *frontier = tracker->frontierTable();
+    // A 200-hop linear chain, root-attached at tag 1 (parent_tag == 0): far
+    // past the 64-hop default _hop_cap, but the walk bounds at the FRONTIER's
+    // maxCapacity() (65536 by default), not the BFS hop cap - legitimate deep
+    // chains reconstruct exactly as before the bound.
+    const int kDepth = 200;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 1, 0, 0, FrontierEntryState::EDGE,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/1));
+    for (int i = 2; i <= kDepth; i++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, i, i - 1, i - 1, FrontierEntryState::EDGE, /*root_kind=*/0,
+            /*referrer_klass=*/(u32)i));
+    }
+
+    ReferenceChainsTestAccessor::setCandidateCountForTest(1);
+    ReferenceChainsTestAccessor::setCandidateKlassIdForTest(0, 999);
+    ReferenceChainsTestAccessor::setCandidateParentTagForTest(0, kDepth);
+    ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 1);
+    ReferenceChainsTestAccessor::setCandidateReferrerKlassForTest(0, 999);
+    ReferenceChainsTestAccessor::setCandidateDepthForTest(0, kDepth);
+
+    ReferenceChainEvent event;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::buildCanaryChainEventForTest(
+        0, &event));
+    // Candidate's own klass first, then the reversed walk: root-side hop
+    // (tag 1, klass 1) first, parent-side hop (tag 200, klass 200) last.
+    ASSERT_EQ((size_t)(kDepth + 1), event._hops.size());
+    EXPECT_EQ(999u, event._hops[0].klass_id);
+    for (int i = 1; i <= kDepth; i++) {
+        EXPECT_EQ((u32)i, event._hops[i].klass_id)
+            << "hop " << i;
+    }
+    EXPECT_EQ(1u, event._target_tag); // the candidate's frontier tag
+    EXPECT_EQ((u32)kDepth, event._depth);
+    // The root kind describes the chain's ROOT (the root-attached tag-1 entry
+    // this walk terminates at), not the candidate-side parent entry - same
+    // terminal-root semantics reconstructChain() uses.
+    EXPECT_EQ((u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD, event._root_kind);
+
+    tracker->stop();
+}
+
 TEST_F(PollWatchedTargetsTest, NoOpWhenGcGenerationsDisabled) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));

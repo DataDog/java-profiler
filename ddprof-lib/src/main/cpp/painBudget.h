@@ -41,6 +41,15 @@ private:
       _last_update_ns = now_ns;
       return;
     }
+    if (now_ns <= _last_update_ns) {
+      // Clock stepped backward (or a test passed a literal smaller than the
+      // OS::nanotime()-seeded baseline): the unsigned subtraction would wrap
+      // to ~2^64 ns and drain the entire debt in one call. The failure
+      // direction is permissive (a blocked restart becomes allowed), so clamp
+      // to zero elapsed and re-baseline instead.
+      _last_update_ns = now_ns;
+      return;
+    }
     u64 elapsed_ns = now_ns - _last_update_ns;
     double elapsed_ms = (double)elapsed_ns / 1000000.0;
     // _refill_rate == 0.0 (the default constructor argument) makes this a

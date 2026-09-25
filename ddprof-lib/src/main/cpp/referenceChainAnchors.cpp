@@ -254,6 +254,24 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
     }
     if (took > 0) {
       cursor = consumed_pos + 1 >= idx_size ? 0 : consumed_pos + 1;
+    } else {
+      // Took nothing AND no pick sits at or ahead of the cursor: this lap
+      // already passed every current member of the tier (members selected in
+      // earlier calls and since demoted out of eligibility). Without a reset
+      // the cursor never wraps again - every later call skips them all
+      // (p.pos < cursor) and the tier starves until a NEW anchor is appended
+      // at a higher pos. Treat the lap as completed-but-unproductive and
+      // restart it, matching the wrap semantics applied above.
+      bool any_ahead = false;
+      for (const TierPick &p : picks) {
+        if (p.pos >= cursor) {
+          any_ahead = true;
+          break;
+        }
+      }
+      if (!any_ahead) {
+        cursor = 0;
+      }
     }
     return took;
   };
@@ -346,10 +364,19 @@ bool ReferenceChainTracker::resolveContainerInterfaceTags(
     if (*iface.tag_out != 0) {
       continue;
     }
+    // Each interface is resolved independently: a transient JVMTI error on
+    // one of them (GetTag/SetTag/FindClass failing for exactly one) must not
+    // abort the other's resolution - the already-resolved tag stays cached in
+    // its slot either way, and a per-interface failure only leaves THAT tag
+    // at 0 for this call (the caller treats a false return as "shapes
+    // unknown this pass" and retries on the next reconcile). Failing the
+    // whole call on the first error would keep both anchors unclassified for
+    // as long as one interface keeps erroring, even though the other resolved
+    // fine.
     jclass local = jni->FindClass(iface.name);
     if (jniExceptionCheck(jni) || local == nullptr) {
       jni->ExceptionClear();
-      return false;
+      continue;
     }
     jlong tag = 0;
     bool ok = jvmti->GetTag(local, &tag) == JVMTI_ERROR_NONE;
@@ -375,9 +402,9 @@ bool ReferenceChainTracker::resolveContainerInterfaceTags(
       *iface.tag_out = tag;
     }
     jni->DeleteLocalRef(local);
-    if (!ok) {
-      return false;
-    }
+    // A per-interface GetTag/SetTag failure leaves that tag at 0 - the final
+    // check below reports false only if an interface genuinely has no tag,
+    // never as an early abort that skips the other interface.
   }
   return _collection_iface_class_tag != 0 && _map_iface_class_tag != 0;
 }
