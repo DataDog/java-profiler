@@ -16,6 +16,7 @@
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
 #include "profiler.h"
+#include "dwarfStep.inline.h"
 #include "stackWalker.inline.h"
 #include "threadLocal.h"
 #include "threadLocalData.inline.h"
@@ -235,23 +236,67 @@ static const bool CONT_UNWIND_DISABLED = false;
 static const bool CONT_UNWIND_DISABLED = (std::getenv("DDPROF_DISABLE_CONT_UNWIND") != nullptr);
 #endif
 
+// Records a sender pc recovered by unwindPrologue/unwindEpilogue/unwindStub,
+// which disagree across architectures about what they hand back.
+//
+// x86_64 folds the attribution adjustment into the value itself, and not even
+// uniformly -- unwindPrologue's isFrameComplete branch returns the address
+// unadjusted while its two siblings subtract one. Adjusting again here would
+// double-count the ones that already did it, so the result is taken as-is.
+//
+// aarch64 subtracts nothing on any branch walkVM can reach: every assignment
+// is the link register or a saved-pc slot, both raw return addresses. (The one
+// branch that does adjust is guarded by `&pc == &this->pc()`, which only holds
+// for the AsyncGetCallTrace path, where the caller passes the frame's own pc
+// rather than a local.) So there the recovered pc still needs the adjustment.
+//
+// Unifying the two contracts removes the need for this distinction.
+static void recordUnwoundPc(WalkPc& walk_pc, const void* pc) {
+#if defined(__aarch64__)
+    walk_pc.setReturnAddress(pc);
+#else
+    walk_pc.setExactAddress(pc);
+#endif
+}
+
+// Where a walk starts, and what the starting pc actually is. The pc and its
+// nature are one decision rather than two independent arguments: a ucontext
+// carries the exact interrupted address, while callerPC() yields a real return
+// address on every architecture whose CALLER_PC_IS_RETURN_ADDRESS says so.
+// Kept in one place so a future caller cannot pick a register set from one
+// branch and a nature from the other.
+struct WalkVMSeed {
+    void* ucontext;
+    const void* pc;
+    bool pc_is_return_address;
+    uintptr_t sp;
+    uintptr_t fp;
+};
+
+static WalkVMSeed walkVMSeed(void* ucontext) {
+    if (ucontext == NULL) {
+        return {&empty_ucontext, callerPC(), CALLER_PC_IS_RETURN_ADDRESS,
+                (uintptr_t)callerSP(), (uintptr_t)callerFP()};
+    }
+    HotspotStackFrame frame(ucontext);
+    return {ucontext, (const void*)frame.pc(), /*pc_is_return_address=*/false,
+            frame.sp(), frame.fp()};
+}
+
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type, int lock_index, bool* truncated) {
-    if (ucontext == NULL) {
-        return walkVM(&empty_ucontext, frames, max_depth, features, event_type,
-                      callerPC(), (uintptr_t)callerSP(), (uintptr_t)callerFP(), lock_index, truncated);
-    } else {
-        HotspotStackFrame frame(ucontext);
-        return walkVM(ucontext, frames, max_depth, features, event_type,
-                      (const void*)frame.pc(), frame.sp(), frame.fp(), lock_index, truncated);
-    }
+    WalkVMSeed seed = walkVMSeed(ucontext);
+    return walkVM(seed.ucontext, frames, max_depth, features, event_type,
+                  seed.pc, seed.pc_is_return_address, seed.sp, seed.fp,
+                  lock_index, truncated);
 }
 
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type,
-                        const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated) {
+                        const void* entry_pc, bool pc_is_return_address,
+                        uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated) {
 
-    // VMStructs is only available for hotspot JVM 
+    // VMStructs is only available for hotspot JVM
     assert(VM::isHotspot());
 
     ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
@@ -302,7 +347,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     }
 
     jmp_scope.install(&crash_protection_ctx);
-    VMThread* vm_thread = VMThread::current();
+    // JVMThread::current() asserts its thread-local key is live, which only a
+    // JVM attach sets up. Only the Java-frame paths below need a VMThread --
+    // the native walk does not -- so ask whether one exists rather than
+    // requiring it. With a JVM attached this is always true and nothing
+    // changes; without one, the walk degrades to the NULL handling every use
+    // below already has, and WALKVM_NO_VMTHREAD still records that it did.
+    VMThread* vm_thread = JVMThread::isInitialized() ? VMThread::current() : nullptr;
     if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
         Counters::increment(WALKVM_THREAD_INACCESSIBLE);
         vm_thread = NULL;
@@ -324,7 +375,22 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         }
     }
 
-    const void* prev_native_pc = NULL;
+    // The walking pc and whether it came out of a return-address slot travel
+    // together, so a newly added pc source has to say which it is instead of
+    // inheriting whatever the previous frame happened to set. Range-based
+    // lookups -- findLibraryByAddress, findFrameDesc, the DW_REG_PLT
+    // stub-offset test -- go through attribution(), otherwise a call that is
+    // the last instruction of its caller selects whatever follows the caller.
+    // Exact-address consumers (isContReturnBarrier, isContEntryReturnPc,
+    // isEntryFrame), the DW_PC_OFFSET arithmetic and the no-progress guard
+    // read raw().
+    WalkPc walk_pc;
+    walk_pc.setSeed(entry_pc, pc_is_return_address);
+
+    // The previous frame's pc, kept for the MARK_THREAD_ENTRY check, with the
+    // same distinction attached.
+    WalkPc prev_native_walk_pc;
+    bool have_prev_native_pc = false;
 
     // Last ContinuationEntry crossed; advanced via parent() for nested continuations.
     VMContinuationEntry* cont_entry = nullptr;
@@ -422,7 +488,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         }
         sp = carrier_sp;
         fp = carrier_fp;
-        pc = carrier_pc;
+        // Read out of the carrier frame's saved-pc slot.
+        walk_pc.setReturnAddress(carrier_pc);
         return true;
     };
 
@@ -430,7 +497,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
-        if (CodeHeap::contains(pc)) {
+        if (CodeHeap::contains(walk_pc.raw())) {
             Counters::increment(WALKVM_HIT_CODEHEAP);
             if (fp_chain_fallback) {
                 Counters::increment(WALKVM_FP_CHAIN_REACHED_CODEHEAP);
@@ -455,7 +522,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 fillFrame(frames[depth++], BCI_ERROR, "break_no_vmthread");
                 break;
             }
-            prev_native_pc = NULL; // we are in JVM code, no previous 'native' PC
+            have_prev_native_pc = false; // we are in JVM code, no previous 'native' PC
             // Both continuation boundary PCs are JVM stubs whose findNMethod()
             // returns NULL; detect them by exact-PC match before the nmethod
             // dispatch below.
@@ -463,17 +530,17 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             //   frames remain in the StackChunk (blocking/remounted VT).
             // cont_entry_return_pc: bottom thawed frame returns here when the
             //   continuation is fully thawed (CPU-bound VT, never yielded).
-            if (!CONT_UNWIND_DISABLED && VMStructs::isContReturnBarrier(pc)) {
+            if (!CONT_UNWIND_DISABLED && VMStructs::isContReturnBarrier(walk_pc.raw())) {
                 Counters::increment(WALKVM_CONT_BARRIER_HIT);
                 if (walkThroughContinuation(false)) continue;
                 break;
             }
-            if (!CONT_UNWIND_DISABLED && VMStructs::isContEntryReturnPc(pc)) {
+            if (!CONT_UNWIND_DISABLED && VMStructs::isContEntryReturnPc(walk_pc.raw())) {
                 Counters::increment(WALKVM_ENTER_SPECIAL_HIT);
                 if (walkThroughContinuation(true)) continue;
                 break;
             }
-            VMNMethod* nm = CodeHeap::findNMethod(pc);
+            VMNMethod* nm = CodeHeap::findNMethod(walk_pc.raw());
             if (nm == NULL) {
                 // On JDK 21+ builds, the continuation entry PC may be absent
                 // from vmStructs OR resolved but pointing to the wrong address
@@ -518,9 +585,14 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     saved_anchor_sp = anchor->lastJavaSP();
                     saved_anchor_fp = anchor->lastJavaFP();
                 }
-                if (anchor->getFrame(pc, sp, fp) && !nm->contains(pc)) {
-                    anchor = NULL;
-                    continue;  // NMethod has changed as a result of correction
+                const void* anchor_pc = walk_pc.raw();
+                if (anchor->getFrame(anchor_pc, sp, fp)) {
+                    // getFrame() redirects pc to lastJavaPC(), a return address.
+                    walk_pc.setReturnAddress(anchor_pc);
+                    if (!nm->contains(walk_pc.raw())) {
+                        anchor = NULL;
+                        continue;  // NMethod has changed as a result of correction
+                    }
                 }
                 anchor = NULL;
             } else if (anchor_eligible && cont_unwind_active) {
@@ -546,7 +618,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
                         HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
                         sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
-                        pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
+                        walk_pc.setReturnAddress(stripPointer(((void**)fp)[FRAME_PC_SLOT]));
                         fp = *(uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
                         continue;
                     }
@@ -560,11 +632,11 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id, method);
                         if (is_plausible_interpreter_frame) {
                             uintptr_t* fp_addr = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
-                            pc = stripPointer(((void**)fp_addr)[FRAME_PC_SLOT]);
+                            walk_pc.setReturnAddress(stripPointer(((void**)fp_addr)[FRAME_PC_SLOT]));
                             sp = frame.senderSP();
                             fp = *fp_addr;
                         } else {
-                            pc = stripPointer(SafeAccess::load((void**)sp));
+                            walk_pc.setReturnAddress(stripPointer(SafeAccess::load((void**)sp)));
                             sp = frame.senderSP();
                         }
                         continue;
@@ -598,12 +670,14 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 jmethodID method_id = method->id();
                 HotspotSupport::fillJavaFrame(frames[depth++], type, 0, method_id, method);
 
-                if (nm->isFrameCompleteAt(pc)) {
-                    if (depth == 1 && frame.unwindEpilogue(nm, (uintptr_t&)pc, sp, fp)) {
+                if (nm->isFrameCompleteAt(walk_pc.raw())) {
+                    const void* epilogue_pc = walk_pc.raw();
+                    if (depth == 1 && frame.unwindEpilogue(nm, (uintptr_t&)epilogue_pc, sp, fp)) {
+                        recordUnwoundPc(walk_pc, epilogue_pc);
                         continue;
                     }
 
-                    int scope_offset = nm->findScopeOffset(pc);
+                    int scope_offset = nm->findScopeOffset(walk_pc.raw());
                     if (scope_offset > 0) {
                         depth--;
                         ScopeDesc scope(nm);
@@ -620,7 +694,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     }
 
                     // Handle situations when sp is temporarily changed in the compiled code
-                    frame.adjustSP(nm->entry(), pc, sp);
+                    frame.adjustSP(nm->entry(), walk_pc.raw(), sp);
 
                     // Validate NMethod metadata before using frameSize()
                     int frame_size = nm->frameSize();
@@ -638,26 +712,32 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     }
                     sp = (uintptr_t)INJECT_FAULT_ADDRESS_UNLIKELY(sp);
                     fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
-                    pc = ((const void**)sp)[-FRAME_PC_SLOT];
+                    // Saved return address of the caller frame.
+                    walk_pc.setReturnAddress(((const void**)sp)[-FRAME_PC_SLOT]);
                     continue;
-                } else if (frame.unwindPrologue(nm, (uintptr_t&)pc, sp, fp)) {
+                } else if (const void* prologue_pc = walk_pc.raw();
+                           frame.unwindPrologue(nm, (uintptr_t&)prologue_pc, sp, fp)) {
+                    recordUnwoundPc(walk_pc, prologue_pc);
                     continue;
                 }
 
                 Counters::increment(WALKVM_BREAK_COMPILED);
                 fillFrame(frames[depth++], BCI_ERROR, "break_compiled");
                 break;
-            } else if (nm->isEntryFrame(pc) && !features.mixed) {
+            } else if (nm->isEntryFrame(walk_pc.raw()) && !features.mixed) {
                 VMJavaFrameAnchor* next_anchor = VMJavaFrameAnchor::fromEntryFrame(fp);
                 if (next_anchor == NULL) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
                     break;
                 }
                 uintptr_t prev_sp = sp;
-                if (!next_anchor->getFrame(pc, sp, fp)) {
+                const void* entry_frame_pc = walk_pc.raw();
+                if (!next_anchor->getFrame(entry_frame_pc, sp, fp)) {
                     // End of Java stack
                     break;
                 }
+                // getFrame() redirects pc to lastJavaPC(), a return address.
+                walk_pc.setReturnAddress(entry_frame_pc);
                 if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
                     break;
@@ -683,7 +763,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     }
                 }
 
-                CodeBlob* stub = JitCodeCache::findRuntimeStub(pc);
+                CodeBlob* stub = JitCodeCache::findRuntimeStub(walk_pc.raw());
                 const void* start = stub != NULL ? stub->_start : nm->code();
                 const char* name = stub != NULL ? stub->_name : nm->name();
 
@@ -691,7 +771,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
                 }
 
-                if (frame.unwindStub((instruction_t*)start, name, (uintptr_t&)pc, sp, fp)) {
+                const void* stub_pc = walk_pc.raw();
+                if (frame.unwindStub((instruction_t*)start, name, (uintptr_t&)stub_pc, sp, fp)) {
+                    recordUnwoundPc(walk_pc, stub_pc);
                     continue;
                 }
 
@@ -713,7 +795,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     }
 
                     fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
-                    pc = ((const void**)sp)[-FRAME_PC_SLOT];
+                    // Saved return address of the caller frame.
+                    walk_pc.setReturnAddress(((const void**)sp)[-FRAME_PC_SLOT]);
                     continue;
                 }
 
@@ -732,7 +815,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             }
         } else {
             // Resolve native frame (may use remote symbolication if enabled)
-            Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)pc, lock_index);
+            Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)walk_pc.raw(), walk_pc.isReturnAddress(), lock_index);
             if (resolution.is_marked()) {
                 if (resolution.mark == MARK_JAVA_PROFILER &&
                     isHookPrefixedSample(event_type)) {
@@ -764,7 +847,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             const char* method_name = resolution.method_name;
             int frame_bci = resolution.bci;
             if (method_name == NULL && details && !anchor_recovery_used
-                       && profiler->findLibraryByAddress(pc) == NULL) {
+                       && profiler->findLibraryByAddress(walk_pc.attribution()) == NULL) {
                 // Try anchor recovery — prefer live anchor, fall back to saved data
                 anchor_recovery_used = true;
                 const void* recovery_pc = NULL;
@@ -800,7 +883,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         jmethodID method_id = getMethodId(method);
                         if (method_id != JMETHODID_NOT_WALKABLE) {
                             anchor = NULL;
-                            prev_native_pc = NULL;
+                            have_prev_native_pc = false;
                             if (depth > 0 && depth + 1 < actual_max_depth) {
                                 fillFrame(frames[depth++], BCI_ERROR, "[skipped frames]");
                             }
@@ -810,7 +893,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                             int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
                             HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
                             sp = ((uintptr_t*)recovery_fp)[InterpreterFrame::sender_sp_offset];
-                            pc = stripPointer(((void**)recovery_fp)[FRAME_PC_SLOT]);
+                            walk_pc.setReturnAddress(stripPointer(((void**)recovery_fp)[FRAME_PC_SLOT]));
                             fp = *(uintptr_t*)recovery_fp;
                             continue;
                         }
@@ -819,18 +902,21 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     // Fallback: redirect via recovery SP/FP/PC
                     sp = recovery_sp;
                     fp = recovery_fp;
-                    pc = recovery_pc;
-                    if (pc != NULL && !CodeHeap::contains(pc) && sp != 0 && aligned(sp) && sp < bottom) {
-                        pc = ((const void**)sp)[-1];
+                    // lastJavaPC() records where the Java frame resumes, i.e. a
+                    // return address; so is the sp[-1] slot read just below.
+                    walk_pc.setReturnAddress(recovery_pc);
+                    if (walk_pc.raw() != NULL && !CodeHeap::contains(walk_pc.raw())
+                            && sp != 0 && aligned(sp) && sp < bottom) {
+                        walk_pc.setReturnAddress(((const void**)sp)[-1]);
                     }
-                    if (sp != 0 && pc != NULL) {
+                    if (sp != 0 && walk_pc.raw() != NULL) {
                         anchor = NULL;
                         if (sp >= bottom || !aligned(sp)) {
                             Counters::increment(WALKVM_ANCHOR_INLINE_BAD_SP);
                             fillFrame(frames[depth++], BCI_ERROR, "break_no_anchor");
                             break;
                         }
-                        prev_native_pc = NULL;
+                        have_prev_native_pc = false;
                         if (depth > 0) {
                             fillFrame(frames[depth++], BCI_ERROR, "[skipped frames]");
                         }
@@ -841,8 +927,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 // Check previous frame for thread entry points (Rust, libc/pthread)
                 // Only check marks for traditionally-resolved frames; packed remote
                 // frames store an integer in the method_name union, not a valid pointer.
-                if (prev_native_pc != NULL) {
-                    Profiler::NativeFrameResolution prev_resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)prev_native_pc, lock_index);
+                if (have_prev_native_pc) {
+                    Profiler::NativeFrameResolution prev_resolution = profiler->resolveNativeFrameForWalkVM(
+                        (uintptr_t)prev_native_walk_pc.raw(), prev_native_walk_pc.isReturnAddress(), lock_index);
                     if (prev_resolution.bci != BCI_NATIVE_FRAME_REMOTE) {
                         const char* prev_method_name = prev_resolution.method_name;
                         if (prev_method_name != NULL) {
@@ -868,84 +955,15 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         }
 
         dwarf_unwind:
-        // Known defect, deliberately not fixed here: past the leaf, `pc` is a
-        // return address for exactly the same reason it is in
-        // StackWalker::walkDwarf, so selecting a row or a symbol with it
-        // unadjusted misattributes a call that is the last instruction of its
-        // caller -- wrong CFA row, wrong sender sp, and a MARK_THREAD_ENTRY
-        // check that can miss its mark. The same -1 adjustment applies; it is
-        // deferred because walkVM interleaves Java and native frames and needs
-        // its own per-frame return-address tracking and its own tests.
-        uintptr_t prev_sp = sp;
-        CodeCache* cc = profiler->findLibraryByAddress(pc);
-        FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::fallback_default_frame();
+        // Snapshotted before the step rather than mid-way through it as the
+        // inlined copy used to: nothing between here and that point mutates
+        // walk_pc, and a stop leaves the loop, so the only reader -- the
+        // MARK_THREAD_ENTRY check on the next iteration -- sees the same value.
+        prev_native_walk_pc = walk_pc;
+        have_prev_native_pc = true;
 
-        u8 cfa_reg = (u8)f.cfa;
-        int cfa_off = f.cfa >> 8;
-
-        // If DWARF is invalid, we cannot continue unwinding reliably
-        // Thread entry points are detected earlier via MARK_THREAD_ENTRY
-        if (cfa_reg == DW_REG_INVALID || cfa_reg > DW_REG_PLT) {
-            break;
-        }
-
-        if (cfa_reg == DW_REG_SP) {
-            sp = sp + cfa_off;
-        } else if (cfa_reg == DW_REG_FP) {
-            // Sanity-check FP before deriving CFA from it. A corrupted FP can produce a
-            // phantom CFA and cause the walk to record spurious frames before breaking.
-            // We cannot check fp < sp here because on aarch64 the frame pointer is set
-            // to SP at function entry, which is typically less than the previous CFA.
-            if (fp >= bottom || !aligned(fp)) {
-                break;
-            }
-            sp = fp + cfa_off;
-        } else if (cfa_reg == DW_REG_PLT) {
-            sp += ((uintptr_t)pc & 15) >= 11 ? cfa_off * 2 : cfa_off;
-        }
-
-        // Check if the next frame is below on the current stack
-        if (sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom) {
-            break;
-        }
-
-        // Stack pointer must be word aligned
-        if (!aligned(sp)) {
-            break;
-        }
-
-        // store the previous pc before unwinding
-        prev_native_pc = pc;
-        if (f.fp_off & DW_PC_OFFSET) {
-            pc = (const char*)pc + (f.fp_off >> 1);
-        } else {
-            if (f.fp_off != DW_SAME_FP && f.fp_off < MAX_FRAME_SIZE && f.fp_off > -MAX_FRAME_SIZE) {
-                fp = (uintptr_t)SafeAccess::load((void**)(sp + f.fp_off));
-            }
-
-            if (EMPTY_FRAME_SIZE > 0 || f.pc_off != DW_LINK_REGISTER) {
-                // Verify alignment before dereferencing sp + offset
-                uintptr_t pc_addr = sp + f.pc_off;
-                if (!aligned(pc_addr)) {
-                    break;
-                }
-                pc = stripPointer(SafeAccess::load((void**)pc_addr));
-            } else if (depth == 1) {
-                pc = (const void*)frame.link();
-            } else {
-                break;
-            }
-
-            if (EMPTY_FRAME_SIZE == 0 && cfa_off == 0 && f.fp_off != DW_SAME_FP) {
-                // AArch64 default_frame
-                sp = defaultSenderSP(sp, fp);
-                if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
-                    break;
-                }
-            }
-        }
-
-        if (inDeadZone(pc) || (pc == prev_native_pc && sp == prev_sp)) {
+        if (!advanceDwarfFrame(walk_pc, sp, fp, bottom, depth, frame,
+                               profiler)) {
             break;
         }
     }
@@ -974,7 +992,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
                     HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
                     sp = ((uintptr_t*)anchor_fp)[InterpreterFrame::sender_sp_offset];
-                    pc = stripPointer(((void**)anchor_fp)[FRAME_PC_SLOT]);
+                    walk_pc.setReturnAddress(stripPointer(((void**)anchor_fp)[FRAME_PC_SLOT]));
                     fp = *(uintptr_t*)anchor_fp;
                     if (sp != 0 && sp < bottom && aligned(sp)) {
                         goto unwind_loop;
@@ -983,9 +1001,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             }
         }
         // Fallback: redirect via anchor frame and sp[-1]
-        if (anchor != NULL && anchor->getFrame(pc, sp, fp)) {
-            if (!CodeHeap::contains(pc) && sp != 0 && aligned(sp) && sp < bottom) {
-                pc = ((const void**)sp)[-1];
+        const void* fallback_pc = walk_pc.raw();
+        if (anchor != NULL && anchor->getFrame(fallback_pc, sp, fp)) {
+            // Both the anchor's lastJavaPC() and the sp[-1] slot are return addresses.
+            walk_pc.setReturnAddress(fallback_pc);
+            if (!CodeHeap::contains(walk_pc.raw()) && sp != 0 && aligned(sp) && sp < bottom) {
+                walk_pc.setReturnAddress(((const void**)sp)[-1]);
             }
             Counters::increment(WALKVM_ANCHOR_FALLBACK);
             anchor = NULL;

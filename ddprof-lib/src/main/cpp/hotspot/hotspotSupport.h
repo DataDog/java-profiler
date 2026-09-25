@@ -25,9 +25,13 @@ class HotspotSupport {
     friend class HotspotSupportTestAccessor;
 
 private:
+    // pc_is_return_address describes the seed pc: a ucontext pc is the exact
+    // interrupted address, while callerPC() is a real return address on every
+    // architecture except the one where CALLER_PC_IS_RETURN_ADDRESS is false.
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
-                      const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated);
+                      const void* pc, bool pc_is_return_address,
+                      uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated);
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
                       int lock_index, bool* truncated = nullptr);
