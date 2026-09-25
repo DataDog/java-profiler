@@ -15,6 +15,7 @@
 #include "hotspot/vmStructs.inline.h"
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
+#include "log.h"
 #include "profiler.h"
 #include "stackWalker.inline.h"
 #include "threadLocal.h"
@@ -1340,25 +1341,132 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   return 0;
 }
 
-static void patchClassLoaderData(JNIEnv* jni, jclass klass) {
+class LockState {
+private:
+    VMClassLoaderData* volatile _cld;
+public:
+    // Non-copyable
+    LockState(const LockState&) = delete;
+    LockState& operator=(const LockState&) = delete;
+
+    inline LockState() : _cld(nullptr) {}
+    inline ~LockState() { reset(); }
+    inline void lock(VMClassLoaderData* cld);
+    inline void reset();
+};
+
+void LockState::lock(VMClassLoaderData* cld) {
+    // This call can fault inside JVM, nothing we can do about it
+    cld->lock();
+    // The store must immediately follow the acquire
+    _cld = cld;
+}
+
+void LockState::reset() {
+    // Assume: if _cld->lock() did not fail, _cld->unlock() should not
+    // fail neither.
+    // The siglongjmp cannot protect _cld->lock()/unlock() calls
+    if (_cld != nullptr) {
+        _cld->unlock();
+        _cld = nullptr;
+    }
+}
+
+// Returns the tag value that should be persisted on `klass` once its
+// jmethodIDs have actually been loaded, or -1 if no tag update is needed
+// (not JDK 8, no capacity gap to fill, or the patch itself could not run).
+// The caller must not call SetTag() with this value until it has confirmed
+// the freshly-prepended capacity was put to use -- see loadMethodIDsIfNeededImpl().
+//
+// force_patch must be true for RedefineClasses/RetransformClasses callers.
+// Those invalidate this class's existing jmethodIDs even when method_count
+// is unchanged, so GetClassMethods() below is about to allocate brand new
+// jmethodID slots regardless of what the persisted tag says. Trusting the
+// tag there would skip prepending fresh MethodList capacity, and the CLD-wide
+// free list an earlier patch left behind may already have been drained by
+// other classes loaded in the meantime -- sending this reallocation onto
+// HotSpot's slow list path that this workaround exists to avoid
+// (JDK-8062116). force_patch bypasses the tag and re-patches from 0 every
+// time; the cost is leaving the old, now-orphaned blocks in place, the same
+// jmethodID growth under class churn already accepted elsewhere (see
+// JVMSupport::loadMethodIDsImpl()).
+static jlong patchClassLoaderData(JNIEnv* jni, jclass klass, bool force_patch) {
   bool needs_patch = VM::hotspot_version() == 8;
-  if (needs_patch) {
-    // Workaround for JVM bug https://bugs.openjdk.org/browse/JDK-8062116
-    // Preallocate space for jmethodIDs at the beginning of the list (rather than at the end)
-    // This is relevant only for JDK 8 - later versions do not have this bug
-    if (VMStructs::hasClassLoaderData()) {
-      VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
-      int method_count = vmklass->methodCount();
-      if (method_count > 0) {
-        VMClassLoaderData *cld = vmklass->classLoaderData();
-        cld->lock();
-        for (int i = 0; i < method_count; i += MethodList::SIZE) {
-          *cld->methodList() = new MethodList(*cld->methodList());
-        }
-        cld->unlock();
-      }
+  if (!needs_patch || !VMStructs::hasClassLoaderData()) {
+    return -1;
+  }
+  // Workaround for JVM bug https://bugs.openjdk.org/browse/JDK-8062116
+  // Preallocate space for jmethodIDs at the beginning of the list (rather than at the end)
+  // This is relevant only for JDK 8 - later versions do not have this bug
+  ProfiledThread* prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
+  // Not exercised by hotspotSupport_ut.cpp: initCurrentThreadSignalSafe()
+  // only returns null when isThreadKeyValid() is false, i.e. the process-wide
+  // pthread_key_create() in ProfiledThread's static initializer failed at
+  // library load. That key is shared by every ProfiledThread lookup in the
+  // binary, so there is no per-test seam to flip it false without also
+  // breaking TLS for every other test running in the same gtest binary.
+  if (prof_thread == nullptr) {
+    return -1;
+  }
+  JmpCtxScope jmp_scope(prof_thread);
+  sigjmp_buf crash_protection_ctx;
+  LockState state;
+  if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+    SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+    jmp_scope.restore();
+    state.reset();
+    return -1;
+  }
+  jmp_scope.install(&crash_protection_ctx);
+  VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
+  if (vmklass == nullptr) {
+    return -1;
+  }
+  int method_count = vmklass->methodCount();
+  if (method_count <= 0) {
+    return -1;
+  }
+  // patchClassLoaderData() re-runs for the same class on every ClassPrepare
+  // replay (profiler restart via loadAllMethodIDsIfNeeded()) -- which does not
+  // change method_count and does not invalidate existing jmethodIDs, so
+  // topping up only the tail [already_patched, method_count) (or skipping
+  // entirely when method_count hasn't grown) is safe. Without this tag, each
+  // replay would prepend another full set of MethodList blocks onto the
+  // classloader-wide list that nothing ever frees. The tag lives on the
+  // jclass itself, so it disappears with the class -- no separate bookkeeping
+  // to leak or to clean up on unload.
+  // RedefineClasses/RetransformClasses callers pass force_patch=true instead
+  // of relying on this tag -- see the function comment above.
+  jlong already_patched = 0;
+  if (!force_patch) {
+    jvmtiEnv* jvmti = VM::jvmti();
+    if (jvmti == nullptr || jvmti->GetTag(klass, &already_patched) != JVMTI_ERROR_NONE) {
+      already_patched = 0;
+    }
+    if (method_count <= already_patched) {
+      return -1;
     }
   }
+  VMClassLoaderData *cld = vmklass->classLoaderData();
+  if (cld == nullptr) {
+    return -1;
+  }
+  state.lock(cld);
+  // Inject fault to test _cld->unlock()
+  INJECT_CRASH_LIKELY();
+
+  jlong i;
+  for (i = already_patched; i < method_count; i += MethodList::SIZE) {
+    *cld->methodList() = new MethodList(*cld->methodList());
+  }
+  // Release cld's lock before returning to the caller, which may go on to
+  // call JVMTI entry points (GetClassMethods, SetTag): cld->lock() resolves
+  // to HotSpot's Monitor::lock_without_safepoint_check(), and those JVMTI
+  // calls do participate in safepoint polling -- calling them while holding
+  // a safepoint-check-suppressing lock is a JVM-deadlock hazard on its own,
+  // independent of any fault/siglongjmp path.
+  state.reset();
+  return i;
 }
 
 constexpr const char LAMBDA_PREFIX[] = "Ljava/lang/invoke/LambdaForm$";
@@ -1410,7 +1518,7 @@ static bool isHiddenClassBySignature(const char* signature) {
     return slash != nullptr && slash[1] >= '0' && slash[1] <= '9';
 }
 
-bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all) {
+bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all, bool force_patch) {
     if (!load_all) {
         jobject cl = nullptr;
         // Hidden/lambda classes can be unloaded, fallback to use jmethodIDs, so preload them.
@@ -1437,8 +1545,37 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
             jni->DeleteLocalRef(cl);
         }
     }
-    patchClassLoaderData(jni, klass);
-    return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
+    jlong new_tag = patchClassLoaderData(jni, klass, force_patch);
+    bool loaded = JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
+    // Only persist the tag once loadMethodIDsImpl() has actually run against
+    // the freshly-prepended capacity. Setting it unconditionally (regardless
+    // of whether GetClassMethods below succeeds) would permanently block
+    // future top-ups for a class whose own jmethodIDs were never allocated --
+    // e.g. if GetClassMethods fails here after other classes in the same CLD
+    // consume the slots just prepended, a later successful retry would find
+    // the shared free list empty with no way to top it up again, since
+    // patchClassLoaderData() would see method_count <= already_patched.
+    // Use VM::jvmti(), not the jvmti argument above -- patchClassLoaderData()
+    // reads VM::jvmti() for GetTag, so SetTag must come from the same env for
+    // the two to agree on the tag's meaning.
+    if (loaded && new_tag >= 0) {
+        jvmtiEnv* patch_jvmti = VM::jvmti();
+        if (patch_jvmti != nullptr) {
+            jvmtiError tag_err = patch_jvmti->SetTag(klass, new_tag);
+            // A lost SetTag has no correctness impact (loaded is still returned
+            // as computed above), but it silently degrades patchClassLoaderData()'s
+            // tag-based dedup back to re-prepending the same MethodList blocks on
+            // every future replay of this class -- the unbounded growth the
+            // workaround exists to prevent. Log it so that degradation is
+            // diagnosable instead of invisible.
+            if (tag_err != JVMTI_ERROR_NONE) {
+                Log::warn("patchClassLoaderData: SetTag failed (jvmtiError=%d); "
+                          "this class's MethodList capacity will be re-patched on the next ClassPrepare replay",
+                          tag_err);
+            }
+        }
+    }
+    return loaded;
 }
 
 // The three names resolve() needs, owned by resolve()'s frame. Each name has
@@ -1675,7 +1812,7 @@ static bool readMethodNames(const void* method, VMMethod** out_vm_method,
 // release call is needed), or nullptr if the method could not be found via
 // JNI/JVMTI.
 static jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& names,
-                                       bool (*loadMethodIDsIfNeededImpl)(jvmtiEnv*, JNIEnv*, jclass, bool)) {
+                                       bool (*loadMethodIDsIfNeededImpl)(jvmtiEnv*, JNIEnv*, jclass, bool, bool)) {
   jmethodID method_id = nullptr;
   const char* method_name = names.methodName();
   const char* method_signature = names.methodSignature();
@@ -1703,7 +1840,7 @@ static jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& 
         if (strcmp(method_name, "<clinit>") == 0) {
           jvmtiEnv* jvmti = VM::jvmti();
           if (jvmti != nullptr) {
-            if (loadMethodIDsIfNeededImpl(jvmti, jni, clz, true /*load all*/)) {
+            if (loadMethodIDsIfNeededImpl(jvmti, jni, clz, true /*load all*/, false /*force_patch*/)) {
               jmethodID validated = vm_method->validatedId();
               if (isValidJMethodID(validated)) {
                 method_id = validated;

@@ -43,7 +43,7 @@ private:
                                  int max_depth, StackContext *java_ctx,
                                  bool *truncated, HotspotStackFrame::RegisterSnapshot& ctx_snapshot);
 
-    static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all);
+    static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all, bool force_patch);
 
     // Runs getJavaTraceAsync() under withUcontextFaultRecovery(), then layers
     // on its two post-processing steps: resolving frame types for the top

@@ -64,7 +64,7 @@ public:
     static inline long long runtimeStubsMemoryUsage();
 
     static void loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni);
-    static bool loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
+    static bool loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool force_patch);
 
     // Resolve method pointer to jmethodID
     static inline jmethodID resolve(const void* method);
