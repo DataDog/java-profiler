@@ -1,6 +1,12 @@
-# C++ unit tests under ASan and TSan.
+# C++ unit tests under ASan, TSan, and release optimisation.
 #
 # These run on every branch push (not MR pipelines — GitHub Actions handles those).
+#
+# The release configuration is here rather than left to the label-gated Java
+# matrix because it is the only one that compiles the gtests with optimisation.
+# Both sanitizer presets pass -fno-optimize-sibling-calls and no -O, so any
+# defect that only appears once the optimiser runs -- a fixture frame folded
+# away by a tail call, say -- is invisible to every other job in the pipeline.
 #
 # Strategy: use Gradle only for compile+link (buildGtest{Config}), then run
 # each binary directly from the shell. This bypasses Gradle's daemon I/O
@@ -85,6 +91,26 @@ gtest-asan-arm64:
   variables:
     SANITIZER_CONFIG: Asan
     SANITIZER_LC: asan
+
+# Not a sanitizer, but it reuses .sanitizer_job unchanged: buildGtestRelease
+# exists alongside the sanitizer variants and emits binaries under the same
+# bin/gtest/<config>_<test>/ layout the runner loop already globs for. The
+# SANITIZER_* variable names are a misnomer here and nothing more.
+gtest-release-amd64:
+  extends: .sanitizer_job
+  tags: [ "arch:amd64" ]
+  image: $BUILD_IMAGE_X64
+  variables:
+    SANITIZER_CONFIG: Release
+    SANITIZER_LC: release
+
+gtest-release-arm64:
+  extends: .sanitizer_job
+  tags: [ "arch:arm64" ]
+  image: $BUILD_IMAGE_ARM64
+  variables:
+    SANITIZER_CONFIG: Release
+    SANITIZER_LC: release
 
 gtest-tsan-arm64:
   extends: .sanitizer_job

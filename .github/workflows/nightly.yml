@@ -15,8 +15,9 @@ jobs:
     uses: ./.github/workflows/test_workflow.yml
     with:
       configuration: '["asan"]'
-      # C++ gtests (ASan + TSan) run on every PR via native-sanitizer-tests in ci.yml.
-      # Skip them here so the nightly focuses on Java functional tests under ASan.
+      # C++ gtests run on every branch push from .gitlab/sanitizer-tests, under
+      # ASan, TSan and release. Skip them here so the nightly focuses on Java
+      # functional tests under ASan.
       skip_gtest: true
   run-slow-test:
     uses: ./.github/workflows/test_workflow.yml
@@ -28,8 +29,9 @@ jobs:
     uses: ./.github/workflows/test_workflow.yml
     with:
       configuration: '["asan"]'
-      # C++ gtests (ASan + TSan) run on every PR via native-sanitizer-tests in ci.yml.
-      # Skip them here so the nightly focuses on Java functional tests under ASan.
+      # C++ gtests run on every branch push from .gitlab/sanitizer-tests, under
+      # ASan, TSan and release. Skip them here so the nightly focuses on Java
+      # functional tests under ASan.
       skip_gtest: true
       slow_tests: true
   fuzz:
