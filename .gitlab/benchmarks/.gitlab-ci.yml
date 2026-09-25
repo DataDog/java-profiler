@@ -1,19 +1,23 @@
 variables:
   DD_OCTO_STS_IMAGE: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
 
-# Bridge job: triggers the BP pipeline and blocks until it completes.
-# Bridge jobs cannot appear in other jobs' needs: — downstream jobs use
-# stage ordering (post-benchmarks stage runs after benchmarks stage).
-benchmarks-trigger:
-  stage: benchmarks
-  # Bridge jobs cannot have before_script, so CANCELLED is checked via rules.
-  # interruptible: false prevents orphaning the BP downstream pipeline on push.
-  interruptible: false
-  needs:
-    - job: get-versions
-      artifacts: true
-    - job: deploy-artifact
-      artifacts: false
+# Benchmarks run only for the top of a PR stack. Stacked PRs chain
+# head -> base (PR_n's base is PR_{n-1}'s head branch), so a branch with an
+# open PR using it as base is below another PR in the stack. A bridge job
+# cannot run the check itself (trigger jobs have no script) and dotenv
+# variables cannot drive `rules`, so the decision is baked into which child
+# pipeline YAML generate-benchmarks-child-pipeline emits:
+#   - top of stack (or check failed open): real child pipeline that triggers
+#     the BP pipeline (.gitlab/benchmarks/child.gitlab-ci.yml)
+#   - below another PR: noop child pipeline that only logs the skip
+# This mirrors the generate-reliability-child-pipeline / run-reliability-tests
+# pattern in .gitlab-ci.yml.
+
+# Shared skip conditions for the benchmarks jobs below. Both jobs must
+# always coexist (run-benchmarks hard-needs the generate job's artifact), so
+# the never-conditions MUST stay identical for both — keep them only here.
+# This mirrors the .skip-on-release pattern in .gitlab/common.yml.
+.benchmarks-skip-rules:
   rules:
     - if: '$CANCELLED == "true"'
       when: never
@@ -24,26 +28,114 @@ benchmarks-trigger:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: never
+
+# Decide whether benchmarks run for this branch and generate the child
+# pipeline YAML accordingly.
+generate-benchmarks-child-pipeline:
+  stage: benchmarks
+  tags: ["arch:amd64"]
+  image: $DD_OCTO_STS_IMAGE
+  id_tokens:
+    DDOCTOSTS_ID_TOKEN:
+      aud: dd-octo-sts
+  needs: []
+  rules:
+    - !reference [.benchmarks-skip-rules, rules]
+    # Runs automatically in web pipelines too: run-benchmarks (manual on web)
+    # hard-needs this job's artifact, so a manual-only generate job would
+    # break the manual trigger path with an unmet-needs artifact error.
+    - when: on_success
+  script:
+    # Single canonical parse of the script's contract output: stdout is
+    # exactly one line "RUN_BENCHMARKS=<value>"; stderr (diagnostics) passes
+    # through to the job log. Fail open unless the value is unambiguously
+    # "false" — an empty, missing, or corrupted parse must never skip
+    # benchmarks.
+    - |
+      RUN_BENCHMARKS=$(bash .gitlab/benchmarks/check-stack-top.sh | tail -n 1 | sed -n 's/^RUN_BENCHMARKS=//p' | tr -d '[:space:]')
+      case "$RUN_BENCHMARKS" in
+        false) RUN_BENCHMARKS=false ;;
+        *) RUN_BENCHMARKS=true ;;
+      esac
+      echo "RUN_BENCHMARKS=$RUN_BENCHMARKS"
+      if [ "$RUN_BENCHMARKS" = "true" ]; then
+        echo "Branch is the top of its PR stack — benchmarks enabled"
+        cp .gitlab/benchmarks/child.gitlab-ci.yml generated-benchmarks.yml
+      else
+        echo "Branch is below another PR in its stack — benchmarks skipped"
+        cat > generated-benchmarks.yml << 'NOOP'
+      skip-benchmarks:
+        image: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:newest
+        tags: ["arch:amd64"]
+        script:
+          - echo "Branch is not the top of its PR stack — skipping benchmarks"
+        rules:
+          - when: always
+      NOOP
+      fi
+  artifacts:
+    paths:
+      - generated-benchmarks.yml
+    expire_in: 1 day
+
+# Bridge job: triggers the benchmarks child pipeline and blocks until it
+# completes.
+#
+# Variable forwarding to the child pipeline:
+#   - CANDIDATE_VERSION / BASELINE_VERSION: get-versions produces them as a
+#     dotenv artifact; listing get-versions in needs injects them into THIS
+#     job's variable context, and redeclaring them here makes them
+#     trigger-job variables, which are forwarded by default (yaml_variables).
+#   - BENCHMARK_ITERATIONS / BENCHMARK_MODES: manual pipeline variables,
+#     forwarded via trigger:forward: pipeline_variables: true.
+#   - PARENT_PIPELINE_ID / PARENT_COMMIT_SHA / PARENT_COMMIT_BRANCH: the
+#     child pipeline's own CI_PIPELINE_ID/CI_COMMIT_* refer to the child,
+#     so the parent values must be passed explicitly.
+run-benchmarks:
+  stage: benchmarks
+  # Bridge jobs cannot have before_script, so CANCELLED is checked via rules.
+  # interruptible: false prevents orphaning the BP downstream pipeline on push.
+  interruptible: false
+  needs:
+    - job: generate-benchmarks-child-pipeline
+      artifacts: true
+    - job: get-versions
+      artifacts: true
+    # Benchmarks benchmark the artifact published by deploy-artifact; without
+    # this gate the BP pipeline could start before the artifact exists.
+    # optional: true keeps the need satisfiable on branches where
+    # deploy-artifact is legitimately skipped (e.g. release branches), same
+    # as run-reliability-tests in .gitlab-ci.yml.
+    - job: deploy-artifact
+      artifacts: false
+      optional: true
+  variables:
+    PARENT_PIPELINE_ID: "$CI_PIPELINE_ID"
+    PARENT_COMMIT_SHA: "$CI_COMMIT_SHA"
+    # GitLab trigger variables do not evaluate Bash ${VAR:-default}
+    # expansions, so a fallback must be chosen as the single variable that is
+    # always populated: CI_COMMIT_REF_NAME (unlike CI_COMMIT_BRANCH) is set
+    # for detached-HEAD trigger/api pipelines too.
+    PARENT_COMMIT_BRANCH: "$CI_COMMIT_REF_NAME"
+    # Redeclared from the get-versions dotenv artifact (via needs) so they
+    # reach the child pipeline as trigger-job variables — see the comment
+    # above the job.
+    CANDIDATE_VERSION: "$CURRENT_VERSION"
+    BASELINE_VERSION: "$PREVIOUS_VERSION"
+  rules:
+    - !reference [.benchmarks-skip-rules, rules]
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true
-    # Run automatically and non-blocking on any other source (push/trigger/api/etc.)
     - when: on_success
       allow_failure: true
-  variables:
-    CANDIDATE_VERSION: "${CURRENT_VERSION}"
-    BASELINE_VERSION: "${PREVIOUS_VERSION}"
-    BENCHMARK_ITERATIONS: "${BENCHMARK_ITERATIONS:-5}"
-    BENCHMARK_MODES: "${BENCHMARK_MODES:-cpu,wall,alloc,memleak}"
-    DDPROF_COMMIT_SHA: "${CI_COMMIT_SHA}"
-    DDPROF_COMMIT_BRANCH: "${CI_COMMIT_BRANCH}"
-    UPSTREAM_PROJECT_NAME: "java-profiler"
-    UPSTREAM_BRANCH: "${CI_COMMIT_BRANCH}"
-    UPSTREAM_PIPELINE_ID: "${CI_PIPELINE_ID}"
   trigger:
-    project: DataDog/apm-reliability/benchmarking-platform
-    branch: java-profiler
+    include:
+      - artifact: generated-benchmarks.yml
+        job: generate-benchmarks-child-pipeline
     strategy: depend
+    forward:
+      pipeline_variables: true
 
 
 publish-benchmark-gh-pages:
