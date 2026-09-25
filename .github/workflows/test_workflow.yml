@@ -487,27 +487,6 @@ jobs:
       - name: Extract Versions
         if: steps.set_enabled.outputs.enabled == 'true'
         uses: ./.github/actions/extract_versions
-      # THROWAWAY -- revert before merge. PROF-16059 diagnostic.
-      # gtestDebug_walkVmAttribution_ut fails on every aarch64 cell and has since
-      # 66eea0c03, but which assertion fails is invisible: the Gradle daemon
-      # swallows the child's stdout, which is why .gitlab/sanitizer-tests runs its
-      # binaries straight from the shell instead. Do the same here for this one
-      # binary, before the Test step that would otherwise stop the job first.
-      # continue-on-error so this only ever adds output, never a failure.
-      - name: THROWAWAY walkVmAttribution_ut direct run (aarch64 diagnostic)
-        if: steps.set_enabled.outputs.enabled == 'true'
-        continue-on-error: true
-        run: |
-          set +e
-          echo "=== uname -m: $(uname -m) ==="
-          ./gradlew :ddprof-lib:linkGtestDebug_walkVmAttribution_ut \
-            --no-daemon --build-cache --no-watch-fs
-          BIN=$(find ddprof-lib/build/bin/gtest -type f -name walkVmAttribution_ut | head -1)
-          echo "=== binary: $BIN ==="
-          if [ -z "$BIN" ]; then echo "NOT BUILT"; exit 0; fi
-          "$BIN" --gtest_color=no
-          echo "=== exit: $? ==="
-
       - name: Test
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |

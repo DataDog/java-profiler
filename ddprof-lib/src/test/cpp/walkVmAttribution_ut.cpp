@@ -177,7 +177,26 @@ constexpr char WALKVM_TEST_NAME[] = "WalkVmNativePathTest";
 // the per-frame flag is observable from outside. Slot offsets are read back
 // from the fallback frame descriptor rather than restated, so this follows
 // whatever layout the walker itself uses on this architecture.
-void plantCallerFrame(uintptr_t frame_fp, const void* return_address) {
+//
+// `sender_fp` terminates the walk one frame further up. It cannot be 0, which
+// is the obvious choice and is wrong on Linux/aarch64: there
+// default_frame has cfa_off == 0 and EMPTY_FRAME_SIZE == 0, so the step runs
+//
+//     sp = defaultSenderSP(sp, fp)
+//
+// and defaultSenderSP returns `fp` on Linux (it returns sp + 16 on Apple).
+// A zero fp therefore becomes a zero sp, which trips the `sp < prev_sp` check
+// *in the same step that recovered the caller's pc* -- the walk stops before
+// the caller frame is ever recorded and the depth comes back 1 instead of 2.
+// The same fixture passes on Apple aarch64, where defaultSenderSP ignores fp,
+// and on x86_64, where EMPTY_FRAME_SIZE > 0 keeps that branch out of it.
+//
+// So point it at a higher, still-plausible slot in the caller's scratch and
+// let the walk stop there instead: those slots are zeroed, so the frame above
+// terminates on its own pc (dead zone on x86_64, the same sp check on aarch64)
+// after the caller has been recorded.
+void plantCallerFrame(uintptr_t frame_fp, uintptr_t sender_fp,
+                      const void* return_address) {
     // Must be the descriptor the walker will actually get, which for a cache
     // carrying no DWARF table is CodeCache::_default_frame -- always
     // FrameDesc::default_frame, not fallback_default_frame(), which differs
@@ -185,7 +204,7 @@ void plantCallerFrame(uintptr_t frame_fp, const void* return_address) {
     // slots.
     const FrameDesc& f = FrameDesc::default_frame;
     uintptr_t next_sp = frame_fp + (f.cfa >> 8);
-    *(uintptr_t*)(next_sp + f.fp_off) = 0;  // unwalkable, so the walk stops here
+    *(uintptr_t*)(next_sp + f.fp_off) = sender_fp;
     *(const void**)(next_sp + f.pc_off) = return_address;
 }
 
@@ -224,7 +243,9 @@ class WalkVmNativePathTest : public ::testing::Test {
         static uintptr_t scratch[64];
         memset(scratch, 0, sizeof(scratch));
         uintptr_t frame_fp = (uintptr_t)&scratch[16];
-        plantCallerFrame(frame_fp, caller_ra);
+        // Above frame_fp, word-aligned, and with its own slots inside scratch
+        // so the frame that terminates the walk is itself readable.
+        plantCallerFrame(frame_fp, (uintptr_t)&scratch[32], caller_ra);
 
         // A zeroed ucontext_t is only usable as-is on Linux, where uc_mcontext
         // is embedded by value. On Darwin it is a pointer, so StackFrame's very
