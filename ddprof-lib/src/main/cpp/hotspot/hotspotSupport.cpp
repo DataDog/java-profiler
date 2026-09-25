@@ -1007,7 +1007,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                                    f.isSignalFrame());
         } else {
             if (f.fp_off != DW_SAME_FP && f.fp_off < MAX_FRAME_SIZE && f.fp_off > -MAX_FRAME_SIZE) {
-                fp = (uintptr_t)SafeAccess::load((void**)(sp + f.fp_off));
+                // Verify alignment before dereferencing sp + offset, as the pc
+                // slot below already does.
+                uintptr_t fp_addr = sp + f.fp_off;
+                if (!aligned(fp_addr)) {
+                    break;
+                }
+                fp = (uintptr_t)SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp_addr));
             }
 
             if (EMPTY_FRAME_SIZE > 0 || f.pc_off != DW_LINK_REGISTER) {
@@ -1016,10 +1022,15 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 if (!aligned(pc_addr)) {
                     break;
                 }
-                walk_pc.setRecoveredPc(stripPointer(SafeAccess::load((void**)pc_addr)),
-                                       f.isSignalFrame());
+                walk_pc.setRecoveredPc(
+                    stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)pc_addr))),
+                    f.isSignalFrame());
             } else if (depth == 1) {
-                walk_pc.setRecoveredPc((const void*)frame.link(), f.isSignalFrame());
+                // Matches the memory-slot path above: StackFrame::link() returns
+                // the raw link register, which carries PAC bits on aarch64 and
+                // would otherwise be fed to findFrameDesc as a nonsense address.
+                walk_pc.setRecoveredPc(stripPointer((const void*)frame.link()),
+                                       f.isSignalFrame());
             } else {
                 break;
             }
