@@ -968,12 +968,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         u8 cfa_reg = (u8)f.cfa;
         int cfa_off = f.cfa >> 8;
 
-        // If DWARF is invalid, we cannot continue unwinding reliably
-        // Thread entry points are detected earlier via MARK_THREAD_ENTRY
-        if (cfa_reg == DW_REG_INVALID || cfa_reg > DW_REG_PLT) {
-            break;
-        }
-
+        // If DWARF is invalid we cannot continue unwinding reliably, so the
+        // chain below ends in an else that stops the walk. That covers
+        // DW_REG_INVALID and anything past DW_REG_PLT, and equally every other
+        // register number no arm implements -- cfa_reg comes off the wire as a
+        // raw DWARF register (DwarfParser's DW_CFA_def_cfa family), so a
+        // function whose CFA is based on any other register reaches here.
+        // Thread entry points are detected earlier via MARK_THREAD_ENTRY.
         if (cfa_reg == DW_REG_SP) {
             sp = sp + cfa_off;
         } else if (cfa_reg == DW_REG_FP) {
@@ -989,6 +990,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             // Tested on the address the row was selected with, so the stub
             // offset and the CFA doubling cannot be decided on different pcs.
             sp += ((uintptr_t)attribution_pc & 15) >= 11 ? cfa_off * 2 : cfa_off;
+        } else {
+            break;
         }
 
         // Check if the next frame is below on the current stack

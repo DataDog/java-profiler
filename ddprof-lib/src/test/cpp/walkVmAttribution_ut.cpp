@@ -277,3 +277,223 @@ TEST_F(WalkVmNativePathTest, CallerFrameFromReturnSlotAttributesToTheCaller) {
 }
 
 }  // namespace
+
+// ===========================================================================
+// The CFA-register hole in walkVM's DWARF step.
+//
+// walkDwarf ends its cfa_reg chain with `else break`. walkVM instead
+// pre-screens `cfa_reg == DW_REG_INVALID || cfa_reg > DW_REG_PLT` and then
+// runs the same three arms with no else, so a register that is none of
+// SP/FP/PLT and is <= DW_REG_PLT matches nothing and falls straight through
+// without breaking: sp keeps the value it had on entry to the step, and the
+// walk goes on to read the "caller's" fp and pc out of the *current* frame's
+// slots.
+//
+// Reachable from real DWARF: DwarfParser takes the register straight off the
+// wire (`cfa_reg = getLeb()` under DW_CFA_def_cfa / _def_cfa_register /
+// _def_cfa_sf) and addRecord() only rejects it above 0xFF, so nothing
+// narrows it to the three the walkers implement. A function whose CFA is
+// based on any other register -- x86_64 DWARF numbers RBX 3, R12 12, and so
+// on -- lands in the hole.
+//
+// These two tests are the same planted frame walked by each walker. walkDwarf
+// stops at the leaf; walkVM currently does not, which is the divergence that
+// has to be reconciled before the shared advanceDwarfFrame() can be a pure
+// move.
+// ===========================================================================
+
+namespace {
+
+const char* const kCfaHoleLibBase = (const char*)0x5a5c00000000ULL;
+
+// A CFA register the walkers do not implement and that the pre-screen lets
+// past: not DW_REG_SP/FP/PLT, not DW_REG_INVALID, and <= DW_REG_PLT.
+// x86_64 DWARF numbers this one RBX.
+const u32 kUnhandledCfaReg = 3;
+
+const int kHoleLeafOff    = 0x100;
+const int kHolePhantomOff = 0x200;
+const int kHoleFuncLen    = 0x10;
+
+// One past the phantom's last byte, so its attribution address (pc - 1) lands
+// inside the phantom rather than in the gap ahead of it -- the same zero-gap
+// shape the attribution tests above use.
+const int kHolePlantedPcOff = kHolePhantomOff + kHoleFuncLen;
+
+// Slot offsets for the planted frame. Both must be even: DW_PC_OFFSET is 1,
+// so an odd fp_off would send the step down the DW_OP_breg arithmetic branch
+// instead of the memory-slot one under test.
+const int kHoleFpOff = 0x10;
+const int kHolePcOff = 0x18;
+
+// Non-zero so the aarch64 `cfa_off == 0` defaultSenderSP() branch stays out of
+// this; the value is otherwise unused, because no cfa_reg arm claims it.
+const int kHoleCfaOff = 0x10;
+
+// The frame-pointer case. The fp handed to the walk is deliberately misaligned
+// by one byte; this offset is chosen so that fp + cfa_off lands back on a
+// word boundary. Without a check on fp itself the derived sp looks perfectly
+// well-formed, so the `!aligned(sp)` test further down does not catch it and
+// the walk proceeds off a frame pointer it should have rejected.
+const int kFpGuardLeafOff = 0x300;
+const int kFpGuardCfaOff = (int)sizeof(uintptr_t) - 1;
+
+void ensureCfaHoleLibRegistered() {
+    static const bool registered = [] {
+        static CodeCache hole_lib("walkvm_cfa_hole", /*lib_index=*/-1,
+                                  kCfaHoleLibBase, kCfaHoleLibBase + kLibSpan,
+                                  /*image_base=*/kCfaHoleLibBase);
+        hole_lib.setTextBase(kCfaHoleLibBase);
+        hole_lib.add(kCfaHoleLibBase + kHoleLeafOff, kHoleFuncLen, "walkvm_cfa_hole_leaf");
+        hole_lib.add(kCfaHoleLibBase + kHolePhantomOff, kHoleFuncLen, "walkvm_cfa_hole_phantom");
+        hole_lib.add(kCfaHoleLibBase + kFpGuardLeafOff, kHoleFuncLen, "walkvm_fp_guard_leaf");
+        hole_lib.sort();
+
+        // Row 0 covers the leaf and carries the unhandled CFA register.
+        // Row 1 covers everything above it with DW_REG_INVALID, so whichever
+        // walker does step past row 0 stops on the next iteration instead of
+        // running on through unplanted memory.
+        FrameDesc rows[4];
+        rows[0] = {(u32)kHoleLeafOff,
+                   (u32)(kHoleCfaOff << 8) | kUnhandledCfaReg,
+                   kHoleFpOff, kHolePcOff, 0};
+        rows[1] = {(u32)(kHoleLeafOff + 0x80),
+                   (u32)DW_REG_INVALID, kHoleFpOff, kHolePcOff, 0};
+        // Frame-pointer rule, with an offset that re-aligns a deliberately
+        // misaligned fp -- see kFpGuardCfaOff.
+        rows[2] = {(u32)kFpGuardLeafOff,
+                   (u32)(kFpGuardCfaOff << 8) | (u32)DW_REG_FP,
+                   kHoleFpOff, kHolePcOff, 0};
+        rows[3] = {(u32)(kFpGuardLeafOff + 0x80),
+                   (u32)DW_REG_INVALID, kHoleFpOff, kHolePcOff, 0};
+        FrameDesc* table = (FrameDesc*)malloc(sizeof(rows));
+        memcpy(table, rows, sizeof(rows));
+        // Before publication: setDwarfTable() asserts the cache is unpublished.
+        hole_lib.setDwarfTable(table, 4);
+
+        return Libraries::instance()->addLibraryForTest(&hole_lib);
+    }();
+    ASSERT_TRUE(registered);
+}
+
+// Lays out the frame both walkers are pointed at. The pc slot is filled at
+// sp + kHolePcOff, i.e. in the frame the walker is standing in -- if a walker
+// reads it, it did so without ever advancing sp off this frame.
+uintptr_t plantHoleFrame(uintptr_t* scratch, size_t words, const void* planted_pc) {
+    memset(scratch, 0, words * sizeof(uintptr_t));
+    uintptr_t sp = (uintptr_t)&scratch[8];
+    *(uintptr_t*)(sp + kHoleFpOff) = 0;  // unwalkable, so nothing chains past it
+    *(const void**)(sp + kHolePcOff) = planted_pc;
+    return sp;
+}
+
+}  // namespace
+
+// Baseline: walkDwarf's `else break` is what the shared helper should keep.
+TEST_F(WalkVmNativePathTest, WalkDwarfStopsOnAnUnhandledCfaRegister) {
+    ensureCfaHoleLibRegistered();
+
+    static uintptr_t scratch[64];
+    const void* planted_pc = kCfaHoleLibBase + kHolePlantedPcOff;
+    uintptr_t sp = plantHoleFrame(scratch, 64, planted_pc);
+
+    ucontext_t uc{};
+#ifdef __APPLE__
+    _STRUCT_MCONTEXT64 mc{};
+    uc.uc_mcontext = &mc;
+#endif
+    StackFrame frame(&uc);
+    frame.pc() = (uintptr_t)(kCfaHoleLibBase + kHoleLeafOff);
+    frame.sp() = sp;
+    frame.fp() = sp;
+
+    const void* callchain[kMaxDepth + 1];
+    memset(callchain, 0, sizeof(callchain));
+    StackContext java_ctx{};
+    bool truncated = false;
+    int depth = StackWalker::walkDwarf(&uc, callchain, kMaxDepth, &java_ctx, &truncated);
+
+    EXPECT_EQ(1, depth)
+        << "walkDwarf records the leaf and then breaks: the row's CFA register is "
+        << "none of SP/FP/PLT, so there is no rule to derive the caller's sp from";
+}
+
+// The divergence. Same row, same planted frame, and walkVM keeps going --
+// reading a pc out of the slot at the *leaf's* own sp, because no arm fired
+// and nothing moved sp off this frame.
+TEST_F(WalkVmNativePathTest, WalkVmAlsoStopsOnAnUnhandledCfaRegister) {
+    ensureCfaHoleLibRegistered();
+
+    static uintptr_t scratch[64];
+    const void* planted_pc = kCfaHoleLibBase + kHolePlantedPcOff;
+    uintptr_t sp = plantHoleFrame(scratch, 64, planted_pc);
+
+    ucontext_t uc{};
+#ifdef __APPLE__
+    _STRUCT_MCONTEXT64 mc{};
+    uc.uc_mcontext = &mc;
+#endif
+    StackFrame frame(&uc);
+    frame.pc() = (uintptr_t)(kCfaHoleLibBase + kHoleLeafOff);
+    frame.sp() = sp;
+    frame.fp() = sp;
+
+    ASGCT_CallFrame frames[kMaxDepth + 1];
+    memset(frames, 0, sizeof(frames));
+    StackWalkFeatures features{};
+    int depth = HotspotSupportTestAccessor::walkVM(&uc, frames, kMaxDepth, features,
+                                                   EXECUTION_SAMPLE, /*lock_index=*/0,
+                                                   /*truncated=*/nullptr);
+
+    ASSERT_GE(depth, 1);
+    EXPECT_STREQ("walkvm_cfa_hole_leaf", nameOf(frames[0]))
+        << "the leaf pc came from the ucontext and names the function it sits in";
+
+    EXPECT_EQ(1, depth)
+        << "walkVM must break on an unhandled CFA register exactly as walkDwarf does. "
+        << "It currently does not: the pre-screen passes cfa_reg=" << kUnhandledCfaReg
+        << " through, no SP/FP/PLT arm claims it, and with no else the step carries on "
+        << "with sp unchanged -- so frame " << (depth > 1 ? 1 : 0) << " below was read "
+        << "out of the leaf's own slots rather than the caller's: "
+        << (depth > 1 && nameOf(frames[1]) ? nameOf(frames[1]) : "<none>");
+}
+
+// The other half of the reconcile, in the other direction: walkVM sanity-checks
+// the frame pointer before deriving a CFA from it and walkDwarf did not. A
+// misaligned fp whose offset re-aligns the result slips past every check that
+// looks at sp, so only a check on fp itself stops the walk here.
+TEST_F(WalkVmNativePathTest, WalkDwarfRejectsAMisalignedFramePointer) {
+    ensureCfaHoleLibRegistered();
+
+    static uintptr_t scratch[64];
+    const void* planted_pc = kCfaHoleLibBase + kHolePlantedPcOff;
+    uintptr_t sp = plantHoleFrame(scratch, 64, planted_pc);
+    // Where the walk would land if it derived sp from the misaligned fp, so
+    // that letting it through produces a visible second frame rather than a
+    // silent stop somewhere further on.
+    uintptr_t derived_sp = sp + 1 + kFpGuardCfaOff;
+    *(uintptr_t*)(derived_sp + kHoleFpOff) = 0;
+    *(const void**)(derived_sp + kHolePcOff) = planted_pc;
+
+    ucontext_t uc{};
+#ifdef __APPLE__
+    _STRUCT_MCONTEXT64 mc{};
+    uc.uc_mcontext = &mc;
+#endif
+    StackFrame frame(&uc);
+    frame.pc() = (uintptr_t)(kCfaHoleLibBase + kFpGuardLeafOff);
+    frame.sp() = sp;
+    frame.fp() = sp + 1;  // misaligned by one byte
+
+    const void* callchain[kMaxDepth + 1];
+    memset(callchain, 0, sizeof(callchain));
+    StackContext java_ctx{};
+    bool truncated = false;
+    int depth = StackWalker::walkDwarf(&uc, callchain, kMaxDepth, &java_ctx, &truncated);
+
+    EXPECT_EQ(1, depth)
+        << "walkDwarf must reject a misaligned frame pointer before deriving a CFA "
+        << "from it. fp + " << kFpGuardCfaOff << " is word-aligned, so the sp checks "
+        << "below see nothing wrong and the walk records a frame read through a "
+        << "frame pointer that cannot be one";
+}

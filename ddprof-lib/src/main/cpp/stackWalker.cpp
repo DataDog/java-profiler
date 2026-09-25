@@ -201,6 +201,14 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         if (cfa_reg == DW_REG_SP) {
             sp = sp + cfa_off;
         } else if (cfa_reg == DW_REG_FP) {
+            // Sanity-check FP before deriving CFA from it. A corrupted FP can
+            // produce a phantom CFA and cause the walk to record spurious
+            // frames before breaking. We cannot check fp < sp here because on
+            // aarch64 the frame pointer is set to SP at function entry, which
+            // is typically less than the previous CFA.
+            if (fp >= bottom || !aligned(fp)) {
+                break;
+            }
             sp = fp + cfa_off;
         } else if (cfa_reg == DW_REG_PLT) {
             // Which of the stub's two CFA rules applies depends on the position
