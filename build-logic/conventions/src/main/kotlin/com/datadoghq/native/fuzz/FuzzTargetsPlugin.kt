@@ -54,13 +54,19 @@ class FuzzTargetsPlugin : Plugin<Project> {
 
     private fun configureFuzzTargets(project: Project, extension: FuzzTargetsExtension) {
         val hasFuzzer = PlatformUtils.hasFuzzer()
+        // This plugin is applied to the :ddprof-lib:fuzz subproject, whose own
+        // name ("fuzz") is not what a caller means by -Pskip-native=ddprof-lib
+        // -- fuzzing is part of ddprof-lib's native surface, not a project a
+        // caller names on its own, so the check goes through the parent
+        // project's identity instead of this one's.
+        val nativeSkipped = PlatformUtils.isNativeSkipped(project.parent ?: project)
 
         // Master fuzz task
         val fuzzAll = project.tasks.register("fuzz") {
             onlyIf {
                 hasFuzzer &&
                     !project.hasProperty("skip-tests") &&
-                    !project.hasProperty("skip-native") &&
+                    !nativeSkipped &&
                     !project.hasProperty("skip-fuzz")
             }
             group = "verification"
@@ -75,7 +81,7 @@ class FuzzTargetsPlugin : Plugin<Project> {
 
         // Build-only aggregate: compiles and links all targets without running them
         val buildFuzz = project.tasks.register("buildFuzz") {
-            onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !project.hasProperty("skip-native") && !project.hasProperty("skip-fuzz") }
+            onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !nativeSkipped && !project.hasProperty("skip-fuzz") }
             group = "build"
             description = "Build all fuzz targets without running them"
         }
@@ -113,7 +119,7 @@ class FuzzTargetsPlugin : Plugin<Project> {
         // instead of recompiling the whole profiler per target.
         val sharedObjDir = project.file("${project.layout.buildDirectory.get()}/obj/fuzz/_profiler")
         val compileProfilerTask = project.tasks.register("compileFuzzProfilerSources", NativeCompileTask::class.java) {
-            onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !project.hasProperty("skip-native") && !project.hasProperty("skip-fuzz") }
+            onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !nativeSkipped && !project.hasProperty("skip-fuzz") }
             group = "build"
             description = "Compile the profiler sources shared by all fuzz targets"
 
@@ -142,7 +148,7 @@ class FuzzTargetsPlugin : Plugin<Project> {
                 // Compile task - only compiles this target's own fuzz driver; profiler
                 // sources come from the shared compileFuzzProfilerSources task.
                 val compileTask = project.tasks.register("compileFuzz_$fuzzName", NativeCompileTask::class.java) {
-                    onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !project.hasProperty("skip-native") && !project.hasProperty("skip-fuzz") }
+                    onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !nativeSkipped && !project.hasProperty("skip-fuzz") }
                     group = "build"
                     description = "Compile the fuzz target $fuzzName"
 
@@ -155,7 +161,7 @@ class FuzzTargetsPlugin : Plugin<Project> {
 
                 // Link task
                 val linkTask = project.tasks.register("linkFuzz_$fuzzName", NativeLinkExecutableTask::class.java) {
-                    onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !project.hasProperty("skip-native") && !project.hasProperty("skip-fuzz") }
+                    onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !nativeSkipped && !project.hasProperty("skip-fuzz") }
                     dependsOn(compileProfilerTask, compileTask)
                     group = "build"
                     description = "Link the fuzz target $fuzzName"
@@ -171,7 +177,7 @@ class FuzzTargetsPlugin : Plugin<Project> {
 
                 // Execute task
                 val executeTask = project.tasks.register("fuzz_$fuzzName", Exec::class.java) {
-                    onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !project.hasProperty("skip-native") && !project.hasProperty("skip-fuzz") }
+                    onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !nativeSkipped && !project.hasProperty("skip-fuzz") }
                     dependsOn(linkTask)
                     group = "verification"
                     description = "Run the fuzz target $fuzzName for $duration seconds"

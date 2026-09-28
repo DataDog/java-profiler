@@ -4,7 +4,6 @@
  */
 
 #include <algorithm>
-#include <random>
 #include <set>
 #include <thread>
 
@@ -21,7 +20,9 @@
 #include "profiler.h"
 #include "threadLocalData.h"
 #include "threadLocal.h"
+#include "samplerPerf.h"
 #include "tsc.h"
+#include "xorshift.h"
 #include <jni.h>
 #include <string.h>
 
@@ -271,7 +272,9 @@ Error LivenessTracker::initialize(Arguments &args) {
     return _stored_error = Error::OK;
   }
 
-  _subsample_ratio = args._live_samples_ratio;
+  // Both halves replaced together; the threshold exists so the per-allocation
+  // decision in track() is an integer compare rather than a double multiply.
+  _subsample = SubsampleRate(args._live_samples_ratio);
 
   _table_size = 0;
   _table_cap =
@@ -288,47 +291,23 @@ Error LivenessTracker::initialize(Arguments &args) {
   return _stored_error = Error::OK;
 }
 
-static void* create_mt19937() {
-  // std::mt19937 itself is noexcept, but std::random_device and `new` may throw.
-  // If that happens we let the failure terminate the process (same outcome as
-  // failing thread_local initialization previously).
-  return static_cast<void*>(new std::mt19937(std::random_device{}()));
-}
-
-static void* create_uniform_real_distribution() {
-  // std::uniform_real_distribution<> construction is noexcept, but `new` may throw.
-  // If allocation fails the process is likely to abort anyway.
-  return static_cast<void*>(new std::uniform_real_distribution<>(0, 1.0));
-}
-
-static void free_mt19937(void* p) {
-  std::mt19937* mt = static_cast<std::mt19937*>(p);
-  delete mt;
-}
-
-static void free_uniform_real_distribution(void* p) {
-  std::uniform_real_distribution<>* urd = static_cast<std::uniform_real_distribution<>*>(p);
-  delete urd;
-}
-
-// File-scope (not track()-local) so releaseThreadLocalState() below can reach
-// them from Profiler::onThreadEnd(). Relying solely on these ThreadLocal's own
-// pthread-key destructors is not sufficient: pthread key destructors only fire
-// when the underlying OS thread actually exits, not when a JNI-attached thread
-// detaches via DetachCurrentThread. A reused pooled OS thread that repeatedly
-// attaches/detaches would otherwise leak one mt19937 and one
-// uniform_real_distribution allocation per attach cycle, since get() lazily
-// re-creates the value on the next track() call but nothing ever frees the
-// previous one until OS thread exit (which may never happen). Hooking explicit
-// cleanup into onThreadEnd matches how every other per-thread profiler state
-// (CPU/wall engine registration, ProfiledThread) is already torn down.
-static ThreadLocal<std::mt19937*, create_mt19937, free_mt19937> gen;
-static ThreadLocal<std::uniform_real_distribution<>*, create_uniform_real_distribution, free_uniform_real_distribution> dis;
+// The subsampling generator's state, one u64 per thread. 0 means "not seeded
+// yet": it is not a legal xorshift64 state, so it cannot collide with a live
+// stream, and the first draw on a thread seeds itself.
+//
+// Both hold a plain value with no pthread-key destructor, so nothing is freed
+// on thread exit and clearing is about meaning rather than memory: it returns
+// the slot to the unseeded sentinel, so the next JNI attachment on a reused OS
+// thread draws from a fresh stream instead of continuing the previous logical
+// thread's, and it drops that thread's skipped-bytes accumulator instead of
+// attributing it to whoever attaches next. Both are file-scope so
+// releaseThreadLocalState() can reach them from Profiler::onThreadEnd(), which
+// fires on DetachCurrentThread as well as on OS thread exit.
+static ThreadLocal<u64> rng;
 static ThreadLocal<double> skipped;
 
 void LivenessTracker::releaseThreadLocalState() {
-  gen.clear();
-  dis.clear();
+  rng.clear();
   skipped.clear();
 }
 
@@ -343,10 +322,25 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
     return;
   }
 
-  if (_subsample_ratio < 1.0) {
-    std::mt19937* genp = gen.get();
-    std::uniform_real_distribution<>* disp = dis.get();
-    if (disp->operator()(*genp) > _subsample_ratio) {
+  // Declared past the disabled/no-capacity bail-outs. This is a nested
+  // breakdown of sampler_ticks.alloc, which already contains it -- track() is
+  // called from ObjectSampler::recordAllocation().
+  SAMPLER_PERF_PROBE(SP_LIVENESS);
+
+  if (_subsample.ratio < 1.0) {
+    u64 state = rng.get();
+    if (state == 0) {
+      // Seeded on a thread's first tracked allocation and kept until its TLS is
+      // released at thread end or JNI detach: the tick keeps two threads that
+      // share a tid across that boundary on different streams, and the tid
+      // separates threads alive at the same time. A thread that outlives a
+      // recording keeps its stream rather than restarting it -- there is no
+      // per-recording reseed, because stop/start does not clear the slot.
+      state = xorshift::seed(TSC::ticks(), (u64)tid);
+    }
+    u64 draw = xorshift::next(state);
+    rng.set(state);
+    if (draw >= _subsample.threshold) {
       skipped.set(skipped.get() + static_cast<double>(event._weight) * event._size);
       return;
     }

@@ -22,9 +22,12 @@ simpleNativeLib {
 
   // Note: No optimization (-O0) to prevent inlining of static functions like do_primes()
   // which need to be visible in stack traces for profiler testing
+  //
+  // This code requires C99. Most Linux gcc/clang builds default to a C99+
+  // dialect already, but EL7's stock gcc 4.8.5 still defaults to gnu89.
   compilerArgs.set(
     when (PlatformUtils.currentPlatform) {
-      Platform.LINUX -> listOf("-fPIC")
+      Platform.LINUX -> listOf("-fPIC", "-std=gnu99")
       Platform.MACOS -> emptyList()
     },
   )

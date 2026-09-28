@@ -32,10 +32,11 @@
  */
 void ContextApi::initializeContextTLS(ProfiledThread* thrd) {
     SignalBlocker blocker;
-    // Set the TLS pointer permanently to this thread's record.
+    // Set the TLS pointer to this thread's record.
     // This first write triggers musl's TLS slot initialization (see above).
-    // The pointer remains stable for the thread's lifetime; external profilers
-    // rely solely on the valid flag for consistency, not pointer nullness.
+    // The pointer stays stable until thread teardown, when
+    // ProfiledThread::freeValue() nulls it before the record's backing
+    // ProfiledThread is deleted or returned to the pool (see threadLocalData.cpp).
     otel_thread_ctx_v1 = thrd->getOtelContextRecord();
     thrd->markContextInitialized();
 }

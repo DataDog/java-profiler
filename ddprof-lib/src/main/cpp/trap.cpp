@@ -27,11 +27,6 @@ void Trap::assign(const void* address, uintptr_t offset) {
     }
     _entry += offset;
 
-#if defined(__arm__) || defined(__thumb__)
-    _breakpoint_insn = (_entry & 1) ? BREAKPOINT_THUMB : BREAKPOINT;
-    _entry &= ~(uintptr_t)1;
-#endif
-
     _saved_insn = *(instruction_t*)_entry;
     _page_start[_id] = _entry & -OS::page_size;
 }

@@ -32,6 +32,7 @@
 #include "os.h"
 #include "perfEvents.h"
 #include "safeAccess.h"
+#include "samplerPerf.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
@@ -343,6 +344,14 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
  * symbol resolution during JFR serialization. This approach defers expensive
  * symbol lookups to post-processing while still capturing marks needed for
  * correct stack walk termination.
+ *
+ * The emitted pc_offset inherits whatever addressing convention the
+ * producing walker used for this frame (see StackWalker in stackWalker.h):
+ * walkFP/walkDwarf frames arrive already pointing inside the call
+ * instruction, while walkVM/walkKernel frames arrive unadjusted (their leaf
+ * is the exact interrupted pc, the frames above it raw return addresses).
+ * An off-process symbolizer that applies its own return-address adjustment
+ * therefore double-adjusts the former.
  *
  * @param frame The ASGCT_CallFrame to populate
  * @param pc The program counter address
@@ -1106,8 +1115,8 @@ void Profiler::setupSignalHandlers() {
       // Eagerly initialize the Counters singleton off the signal path, before any
       // handler that increments counters is installed. The crash handler
       // (crashHandlerInternal -> SafeAccess::handle_safefetch) bumps
-      // SAFEFETCH_FAILED / SAFECOPY_FAILED, and other async handlers bump the
-      // STACKWALK* counters. The first touch of the singleton lazily runs
+      // SAFEFETCH_FAILED / SAFESTORE_FAILED / SAFECOPY_FAILED, and other async
+      // handlers bump the STACKWALK* counters. The first touch of the singleton lazily runs
       // aligned_alloc + memset and takes the C++ static-init guard lock — none of
       // which are async-signal-safe. Forcing that construction here guarantees the
       // signal path only ever performs lock-free atomic increments on the
@@ -1632,6 +1641,11 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Always enable library trap to catch wasmtime loading and patch its broken sigaction
   switchLibraryTrap(true);
 
+  if (args._context_attributes.size() > DD_TAGS_CAPACITY) {
+    Log::warn("attributes: %zu attributes requested but capacity is %u; extra attributes will be ignored",
+               args._context_attributes.size(), DD_TAGS_CAPACITY);
+    args._context_attributes.resize(DD_TAGS_CAPACITY);
+  }
   JfrMetadata::reset();
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
@@ -1641,6 +1655,14 @@ Error Profiler::start(Arguments &args, bool reset) {
     _libs->stopRefresher();
     return error;
   }
+
+  // Must precede every signal-based engine's start() below: SamplerPerfProbe
+  // (samplerPerf.h) calls OS::nanotime() from inside the signal handler, and
+  // on macOS that can be the lazy, non-atomic first-call init of
+  // mach_timebase_info (os_macos.cpp). Priming it here, synchronously on this
+  // thread, means it is already initialized by the time any SIGPROF/SIGALRM
+  // can fire.
+  SamplerPerf::primeClock();
 
   int activated = 0;
   if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
@@ -1830,6 +1852,11 @@ Error Profiler::stop() {
               dropped_lock, requested);
     }
   }
+
+  // Per-sampler timing report. A no-op unless built with -PenableSamplerPerf.
+  // Emitted before _jfr.stop() so the same counters are also correct in the
+  // final JFR chunk.
+  SamplerPerf::report();
 
   // writing these out before stopping the JFR recording allows to report the
   // correct counts in the recording

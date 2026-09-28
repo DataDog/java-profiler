@@ -737,22 +737,28 @@ DECLARE(VMJavaFrameAnchor)
 
     NOADDRSANITIZE uintptr_t lastJavaSP() {
         assert(_anchor_sp_offset >= 0);
-        return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_sp_offset), nullptr);
+        return (uintptr_t) *(void**) at(_anchor_sp_offset);
     }
 
     NOADDRSANITIZE uintptr_t lastJavaFP() {
         assert(_anchor_fp_offset >= 0);
-        return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_fp_offset), nullptr);
+        return (uintptr_t) *(void**) at(_anchor_fp_offset);
     }
 
     NOADDRSANITIZE const void* lastJavaPC() {
         assert(_anchor_pc_offset >= 0);
-        return SafeAccess::loadPtr((void**) at(_anchor_pc_offset), nullptr);
+        return *(void**) at(_anchor_pc_offset);
     }
 
-    void setLastJavaPC(const void* pc) {
+    template <bool SafeStore = true>
+    bool setLastJavaPC(const void* pc) {
         assert(_anchor_pc_offset >= 0);
-        *(const void**) at(_anchor_pc_offset) = pc;
+        if (SafeStore) {
+            return SafeAccess::storePtr((void**)at(_anchor_pc_offset), (void*)pc);
+        } else {
+           *(const void**) at(_anchor_pc_offset) = pc;
+           return true;
+        }
     }
 
     NOADDRSANITIZE bool getFrame(const void*& pc, uintptr_t& sp, uintptr_t& fp) {

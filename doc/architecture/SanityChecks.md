@@ -96,14 +96,8 @@ disables both checks. Parsed in `Arguments::parse()`
 ```cpp
 CASE("nosanity")
 if (value != NULL) {
-  switch (value[0]) {
-  case 'n': // no
-  case 'f': // false
-  case '0': // 0
-    _skip_sanity_checks = false;
-    break;
-  default:
-    _skip_sanity_checks = true;
+  if (!parseBoolOption(value, &_skip_sanity_checks)) {
+    msg = "Invalid nosanity value";
   }
 } else {
   // bare 'nosanity' with no value means skip checks
@@ -111,9 +105,11 @@ if (value != NULL) {
 }
 ```
 
-A bare `nosanity` keyword, or any value not starting with `n`/`f`/`0`
-(e.g. `true`, `yes`, `1`), skips the checks; `nosanity=no`, `nosanity=false`,
-`nosanity=0` explicitly keep them enabled.
+A bare `nosanity` keyword, or an explicit `nosanity=true`/`yes`/`1`/`t`/`y`, skips the
+checks; `nosanity=no`/`false`/`0`/`f`/`n` explicitly keep them enabled. Any other value
+(e.g. a typo like `nosanity=tru`) is a hard parse error instead of being silently
+coerced to one or the other -- `parseBoolOption` (`arguments.cpp`) matches the whole
+value against these known spellings, not just its first character.
 
 ---
 

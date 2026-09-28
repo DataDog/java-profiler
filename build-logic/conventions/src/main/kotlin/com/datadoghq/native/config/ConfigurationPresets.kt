@@ -44,14 +44,26 @@ object ConfigurationPresets {
         // applied to asan/tsan/fuzzer: those configs install their own SIGSEGV
         // interception, which conflicts with the deliberately-faulting loads.
         val faultInjection = project.hasProperty("enableFaultInjection")
+
+        // Opt-in compile-time per-sampler performance counters. When
+        // -PenableSamplerPerf is passed we append -D__SAMPLER_PERF__ to the
+        // standard release/debug library builds, so the documented
+        // buildRelease / buildDebug workflows produce a libjavaProfiler.so that
+        // prints the per-sampler timing report at Profiler::stop(). Like fault
+        // injection it is not applied to asan/tsan/fuzzer, but for a different
+        // reason: those configs instrument every memory access, so the measured
+        // per-sample times say more about the sanitizer than about the sampler.
+        val samplerPerf = project.hasProperty("enableSamplerPerf")
         extension.buildConfigurations.apply {
             register("release") {
                 configureRelease(this, currentPlatform, currentArch, version)
                 if (faultInjection) compilerArgs.add("-D__FAULT_INJECTION__")
+                if (samplerPerf) compilerArgs.add("-D__SAMPLER_PERF__")
             }
             register("debug") {
                 configureDebug(this, currentPlatform, currentArch, version)
                 if (faultInjection) compilerArgs.add("-D__FAULT_INJECTION__")
+                if (samplerPerf) compilerArgs.add("-D__SAMPLER_PERF__")
             }
             register("asan") {
                 configureAsan(this, currentPlatform, currentArch, version, rootDir, compiler)

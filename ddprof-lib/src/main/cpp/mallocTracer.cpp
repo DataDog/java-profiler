@@ -17,6 +17,7 @@
 #include "os.h"
 #include "pidController.h"
 #include "profiler.h"
+#include "samplerPerf.h"
 #include "symbols.h"
 #include "threadLocalData.inline.h"
 #include "tsc.h"
@@ -339,6 +340,12 @@ void MallocTracer::updateConfiguration(u64 events, double time_coefficient) {
 // cost of recordMalloc itself. acquireCurrent()/CriticalSection are already
 // paid by then, since maybeRecord acquires them before checking shouldSample().
 void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
+    // maybeRecord() has already applied the shouldSample() gate and holds the
+    // CriticalSection, so every call here is a real sampled allocation. Distinct
+    // from event._start_time below: that is the event's own timestamp, this
+    // measures what recording it costs.
+    SAMPLER_PERF_PROBE(SP_NATIVEMEM);
+
     u64 current_interval = __atomic_load_n(&_interval, __ATOMIC_ACQUIRE);
     MallocEvent event;
     event._start_time = TSC::ticks();

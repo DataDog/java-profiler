@@ -87,6 +87,27 @@ typedef struct {
 
 class StackWalker {
   public:
+    // callchain[] must have room for max_depth + 1 entries whenever
+    // `truncated` is non-null. Both walkers deliberately walk one frame past
+    // max_depth to learn whether the stack really continued, write that frame,
+    // and only then clamp the returned depth back to max_depth -- a buffer of
+    // exactly max_depth is overflowed by one entry on any stack deep enough to
+    // reach the limit. Without a truncation flag, max_depth entries suffice.
+    //
+    // callchain[] entries from walkFP/walkDwarf are attribution addresses:
+    // pc - 1 for any frame whose pc was loaded from a return-address slot
+    // (see attributionPC in stackWalker.inline.h), the exact pc otherwise.
+    // Frames produced by walkVM/walkKernel are not adjusted this way and
+    // still carry raw addresses; callers merging chains from different
+    // walkers must not assume a single addressing convention across all
+    // entries.
+    //
+    // This reaches the wire: Profiler::populateRemoteFrame derives the
+    // remote-symbolication pc_offset straight from a callchain[] entry, so
+    // for these two walkers the emitted offset already points inside the
+    // call instruction and must not be adjusted again off-process, while
+    // walkVM/walkKernel frames in the same trace still need that
+    // adjustment. The packed field carries no bit distinguishing the two.
     static int walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
     static int walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
 };

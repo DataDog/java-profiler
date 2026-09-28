@@ -115,12 +115,12 @@ Java_com_datadoghq_profiler_JavaProfiler_execute0(JNIEnv *env, jobject unused,
   JniString command_str(env, command);
   Error error = args.parse(command_str.c_str());
 
+  Log::open(args);
+
   if (error) {
     throwNew(env, "java/lang/IllegalArgumentException", error.message());
     return NULL;
   }
-
-  Log::open(args);
 
   std::ostringstream out;
 
