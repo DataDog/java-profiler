@@ -399,8 +399,16 @@ public:
   void writeCounters(Buffer *buf);
 
   void updateNativeMemStats();
+  // True unless a replacement allocator (tcmalloc/jemalloc) has been
+  // LD_PRELOAD'd over glibc's malloc/free. __GLIBC__ alone cannot tell: it
+  // reflects the headers the binary was compiled against, not which
+  // allocator is actually serving malloc()/free() at runtime. See
+  // updateMallocArenaStats() for why this matters. Exposed for
+  // RecordingTestAccessor.
+  static bool glibcMallocActive();
   // Process-wide malloc arena state (glibc mallinfo2). Flush path only --
-  // takes every arena lock, so not async-signal-safe. No-op off glibc 2.33+.
+  // takes every arena lock, so not async-signal-safe. No-op off glibc 2.33+,
+  // and also when glibcMallocActive() reports a replacement allocator.
   void updateMallocArenaStats();
   void writeNativeMem(Buffer *buf);
 

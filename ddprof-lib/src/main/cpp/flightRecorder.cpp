@@ -6,6 +6,7 @@
 
 #include <assert.h>
 #include <inttypes.h>
+#include <dlfcn.h>
 
 // mallinfo2() replaced the int-based mallinfo() in glibc 2.33; the older struct
 // silently truncates past 2 GiB, so it is not a usable fallback for byte
@@ -2036,6 +2037,26 @@ void Recording::writeLogLevels(Buffer *buf) {
   }
 }
 
+// __GLIBC__ reflects the headers the binary was compiled against, not the
+// allocator actually serving malloc()/free() at runtime: LD_PRELOAD'ing
+// tcmalloc or jemalloc replaces those symbols process-wide while leaving
+// __GLIBC__ defined. mallinfo2() is not interposed by either replacement, so
+// it would keep reporting glibc's own arena -- which sits idle in that case
+// and returns near-empty, allocator-unrelated numbers instead of the live
+// allocator's state.
+//
+// jemalloc exports mallctl(); tcmalloc exports tc_malloc_size(). Neither is
+// a symbol glibc defines, so finding either via dlsym means malloc/free were
+// interposed and mallinfo2() cannot be trusted.
+//
+// Not cached: this is only ever called once per JFR chunk flush, so a couple
+// of dlsym() lookups are negligible, and not caching keeps this checkable
+// against a replacement allocator loaded after process start (e.g. in tests).
+bool Recording::glibcMallocActive() {
+  return dlsym(RTLD_DEFAULT, "mallctl") == nullptr &&
+         dlsym(RTLD_DEFAULT, "tc_malloc_size") == nullptr;
+}
+
 // Snapshot the process-wide malloc arena state from glibc's own accounting.
 //
 // This is NOT profiler memory. Free-but-held arena pages are mostly other
@@ -2048,8 +2069,14 @@ void Recording::writeLogLevels(Buffer *buf) {
 // Only safe on the flush path: mallinfo2() walks every arena taking each arena
 // lock, so it is neither cheap nor async-signal-safe. Must never be reached
 // from the sampling signal handler. Once per JFR chunk is negligible.
+//
+// Left unset (rather than published as zero) when a replacement allocator is
+// active: see glibcMallocActive() above.
 void Recording::updateMallocArenaStats() {
 #ifdef DD_HAVE_MALLINFO2
+  if (!glibcMallocActive()) {
+    return;
+  }
   struct mallinfo2 mi = mallinfo2();
   // arena:    bytes obtained from the OS via brk, excluding mmap'd chunks
   // uordblks: bytes currently handed out to callers

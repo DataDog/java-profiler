@@ -5,13 +5,54 @@
 
 #include <gtest/gtest.h>
 #include <cstdlib>
+#include <dlfcn.h>
 #include <vector>
+
+#include "flightRecorder.h"
 
 #if defined(__linux__) && defined(__GLIBC__) &&                                \
     (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
   #include <malloc.h>
   #define DD_HAVE_MALLINFO2 1
 #endif
+
+// Friend of Recording (see flightRecorder.h), giving this test access to the
+// private glibcMallocActive() helper. Same pattern as
+// VMTestAccessor/ProfilerTestAccessor used elsewhere in this test suite.
+class RecordingTestAccessor {
+public:
+  static bool glibcMallocActive() { return Recording::glibcMallocActive(); }
+};
+
+// Regression test for a review finding on the arena counters: LD_PRELOAD'ing
+// tcmalloc or jemalloc replaces malloc()/free() process-wide while leaving
+// __GLIBC__ defined (it comes from features.h, not from which allocator is
+// actually linked), so mallinfo2() would otherwise keep reporting glibc's own
+// idle arena during exactly the allocator-comparison runs
+// (.gitlab/reliability's ALLOCATOR=jemalloc/tcmalloc matrix) where that is
+// wrong. Detection must therefore key off a symbol each replacement actually
+// exports, not off __GLIBC__.
+//
+// This asserts the default/no-interposition case: in a plain test binary,
+// with neither allocator loaded, detection must report glibc active so the
+// counters keep working in the overwhelmingly common case. That also guards
+// against the regression this check could otherwise introduce -- checking for
+// a symbol name that turns out to be defined by something already linked into
+// every gtest binary (libc, gtest itself, etc.) would silently disable the
+// arena counters everywhere, not just under a replacement allocator.
+//
+// The actual LD_PRELOAD interposition this guards against is exercised
+// end-to-end, not simulated here: this project's gtest executables are not
+// linked with --export-dynamic, so a symbol this test defined itself would
+// not be visible to dlsym(RTLD_DEFAULT, ...) and could not stand in for a
+// preloaded library. The real scenario runs in
+// .gitlab/reliability's ALLOCATOR=jemalloc/tcmalloc CI matrix instead, where
+// mallctl()/tc_malloc_size() come from an actually LD_PRELOAD'd shared object.
+TEST(GlibcMallocActive, ReportsActiveWithNoReplacementAllocatorLoaded) {
+  EXPECT_EQ(nullptr, dlsym(RTLD_DEFAULT, "mallctl"));
+  EXPECT_EQ(nullptr, dlsym(RTLD_DEFAULT, "tc_malloc_size"));
+  EXPECT_TRUE(RecordingTestAccessor::glibcMallocActive());
+}
 
 // These tests validate the *premise* of the MALLOC_FREE_HELD_BYTES counter
 // rather than its plumbing: that allocation churn of the shape the profiler
