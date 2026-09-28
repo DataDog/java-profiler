@@ -21,11 +21,14 @@
 #include <cassert>
 #include <climits>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <unordered_set>
 
@@ -87,20 +90,37 @@ int readRcDebugLevelFile(const char *path) {
   // file of their own and force the DEBUG-build diagnostics on. The worst
   // impact of a forged file is log-volume/CPU from enabled TEST_LOG in a
   // DEBUG build, but the check is cheap and keeps the knob owner-scoped.
-  struct stat st;
-  if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
-    return -1; // missing, symlink, fifo, dir - treat as "no override"
-  }
-  if (st.st_uid != 0 && st.st_uid != geteuid()) {
+  // Open first (O_NOFOLLOW rejects a symlink swap outright) and fstat the
+  // resulting descriptor: a stat-then-open sequence would re-resolve the path
+  // after the check, leaving a TOCTOU window where the checked file is
+  // swapped for another one before the read.
+  int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) {
     return -1;
   }
-  FILE *f = fopen(path, "r");
-  if (f == nullptr) {
+  struct stat st;
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+      (st.st_uid != 0 && st.st_uid != geteuid())) {
+    close(fd);
     return -1;
   }
   char buf[16];
-  size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-  fclose(f);
+  size_t n = 0;
+  while (n < sizeof(buf) - 1) {
+    ssize_t r = read(fd, buf + n, sizeof(buf) - 1 - n);
+    if (r < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      close(fd);
+      return -1;
+    }
+    if (r == 0) {
+      break;
+    }
+    n += static_cast<size_t>(r);
+  }
+  close(fd);
   buf[n] = '\0';
   return parseRcDebugLevel(buf);
 }
