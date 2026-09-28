@@ -447,8 +447,9 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
   if (first_park && tf->registryActive()) {
     ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
     if (slot_id >= 0) {
+      WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
       current->setParkBlockToken(
-          tf->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT));
+          tracker->enterBlockedRun(tf, slot_id, OSThreadState::CONDVAR_WAIT));
     }
   }
 }
@@ -470,7 +471,8 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(park_block_token);
     if (tf->activeSlotForId(current->filterSlotId(), current->tid()) != nullptr &&
         current->filterSlotId() == slot_id) {
-      tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(park_block_token));
+      WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
+      tracker->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(park_block_token));
     }
   }
 }
@@ -504,7 +506,8 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (slot_id < 0) {
     return 0;
   }
-  return static_cast<jlong>(tf->enterBlockedRun(slot_id, decoded));
+  WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
+  return static_cast<jlong>(tracker->enterBlockedRun(tf, slot_id, decoded));
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -526,7 +529,8 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
     return;
   }
   if (tf->registryActive()) {
-    tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(block_token));
+    WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
+    tracker->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(block_token));
   }
 }
 

@@ -56,11 +56,11 @@ static inline bool hasKnownActiveTraceContext(ProfiledThread* thread) {
 
 struct WallPrecheckResult {
   bool suppress = false;
-  ThreadFilter::Slot* slot_to_arm = nullptr;
+  WallClockBlockTracker::BlockState* slot_to_arm = nullptr;
   OSThreadState state_to_arm = OSThreadState::UNKNOWN;
   OSThreadState observed_state = OSThreadState::UNKNOWN;
   bool observed_state_valid = false;
-  ThreadFilter::Slot* unowned_weight_slot = nullptr;
+  WallClockBlockTracker::BlockState* unowned_weight_slot = nullptr;
   u64 unowned_weight = 1;
   bool flush_unowned_tail = false;
   u64 flush_call_trace_id = 0;
@@ -75,7 +75,8 @@ static inline void incrementSuppressedSampledRun() {
 
 static inline bool suppressAlreadySampledBlock(const ThreadEntry& entry) {
   ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
-  if (!thread_filter->shouldSuppressOwnedBlock(entry)) {
+  WallClockBlockTracker* tracker = Profiler::instance()->blockTracker();
+  if (!tracker->shouldSuppressOwnedBlock(thread_filter, entry)) {
     return false;
   }
   incrementSuppressedSampledRun();
@@ -90,8 +91,8 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
   }
 
   ThreadFilter* registry = Profiler::instance()->threadFilter();
-  ThreadFilter::Slot* slot =
-      registry->activeSlotForId(current->filterSlotId(), current->tid());
+  ThreadFilter::SlotID slot_id = current->filterSlotId();
+  ThreadFilter::Slot* slot = registry->activeSlotForId(slot_id, current->tid());
   if (slot == nullptr) {
     ThreadFilter::RecordingEpoch epoch = registry->recordingEpoch();
     ThreadFilter::SlotID found_slot_id = -1;
@@ -104,10 +105,17 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
       // Cache it now so every later signal on this same thread takes the O(1)
       // activeSlotForId() path above instead of re-probing the tid index.
       current->setFilterSlotId(found_slot_id);
+      slot_id = found_slot_id;
       Counters::increment(WC_PRECHECK_SLOT_ID_RECOVERED);
     }
   }
   if (slot == nullptr) {
+    return result;
+  }
+
+  WallClockBlockTracker* tracker = Profiler::instance()->blockTracker();
+  WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
+  if (block_slot == nullptr) {
     return result;
   }
 
@@ -118,16 +126,16 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     return result;
   }
 
-  OSThreadState active_block_state = slot->activeBlockState();
-  BlockRunOwner active_block_owner = slot->activeBlockOwner();
+  OSThreadState active_block_state = block_slot->activeBlockState();
+  BlockRunOwner active_block_owner = block_slot->activeBlockOwner();
   bool has_owned_block =
       active_block_owner != BlockRunOwner::NONE &&
       isPrecheckSuppressionState(active_block_state) &&
       (!registry->unfilteredWallTrackingActive() ||
-       slot->activeBlockRemainedOutsideContextWindow());
+       block_slot->activeBlockRemainedOutsideContextWindow(slot));
   if (has_owned_block) {
-    if (slot->sampledThisRun() &&
-        active_block_state == slot->lastSampledState()) {
+    if (block_slot->sampledThisRun() &&
+        active_block_state == block_slot->lastSampledState()) {
       incrementSuppressedSampledRun();
       result.suppress = true;
       return result;
@@ -135,7 +143,7 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     // Arm only after the MethodSample has been successfully recorded. If the
     // JFR write is skipped due to lock contention, the next signal must retry
     // instead of losing the only stack for this blocked run.
-    result.slot_to_arm = slot;
+    result.slot_to_arm = block_slot;
     result.state_to_arm = active_block_state;
     return result;
   }
@@ -150,15 +158,15 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
   result.observed_state = getOSThreadState();
   result.observed_state_valid = true;
   if (isPrecheckSuppressionState(result.observed_state)) {
-    if (!slot->shouldRecordUnownedBlockedSample()) {
+    if (!block_slot->shouldRecordUnownedBlockedSample()) {
       Counters::increment(WC_UNOWNED_BLOCKED_SUPPRESSED);
       result.suppress = true;
       return result;
     }
-    result.unowned_weight_slot = slot;
-    result.unowned_weight = slot->consumeUnownedBlockedWeight();
+    result.unowned_weight_slot = block_slot;
+    result.unowned_weight = block_slot->consumeUnownedBlockedWeight();
   } else {
-    result.flush_unowned_tail = slot->flushUnownedBlockedTail(
+    result.flush_unowned_tail = block_slot->flushUnownedBlockedTail(
         result.flush_call_trace_id, result.flush_weight, result.flush_state);
   }
   return result;
@@ -384,10 +392,12 @@ WallClockCandidateOutcome BaseWallClock::sampleThreadCommon(
     ThreadFilter::RecordingEpoch recording_epoch) {
   if (lookup_registry_slot && entry.slot == nullptr) {
     registry_lookups++;
+    ThreadFilter::SlotID slot_id = -1;
     ThreadFilter::Slot* slot =
-        thread_filter->lookupByTid(entry.tid, recording_epoch);
+        thread_filter->lookupByTid(entry.tid, recording_epoch, &slot_id);
     if (slot != nullptr) {
       entry.slot = slot;
+      entry.slot_id = slot_id;
       entry.lifecycle_generation = slot->lifecycleGeneration();
       entry.recording_epoch = slot->recordingEpoch();
     }
@@ -449,7 +459,7 @@ void WallClockASGCT::timerLoop() {
           // enough; we also want to avoid the kill() round-trip and any
           // pending-signal accumulation).
           if (tid != OS::threadId() && tid != refresher_tid) {
-            entries.push_back({tid, nullptr, 0, 0});
+            entries.push_back({tid, nullptr, -1, 0, 0});
           }
         }
         delete thread_list;
@@ -586,7 +596,7 @@ void WallClockJvmti::timerLoop() {
         // Exclude the wallclock timer thread itself and the Libraries
         // refresher (profiler-internal).
         if (tid != OS::threadId() && tid != refresher_tid) {
-          entries.push_back({tid, nullptr, 0, 0});
+          entries.push_back({tid, nullptr, -1, 0, 0});
         }
       }
       delete thread_list;

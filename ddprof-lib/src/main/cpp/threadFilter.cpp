@@ -25,6 +25,7 @@
 #include "nativeMem.h"
 #include "os.h"
 #include "threadLocalData.h"
+#include "wallClockBlockTracker.h"
 #include <cassert>
 #include <cstdlib>
 #include <cstdio>
@@ -105,7 +106,6 @@ void ThreadFilter::initializeChunk(int chunk_idx) {
         slot.tid.store(-1, std::memory_order_relaxed);
         slot.recording_epoch.store(0, std::memory_order_relaxed);
         slot.context_window_state.store(0, std::memory_order_relaxed);
-        slot.active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
     }
 
     // Try to install it atomically
@@ -141,7 +141,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
         if (existing >= 0) {
             RecordingEpoch epoch = recordingEpoch();
             if (epoch != 0) {
-                refreshSlotForRecording(slotForId(existing), epoch);
+                refreshSlotForRecording(existing, slotForId(existing), epoch);
             }
             return existing;
         }
@@ -156,7 +156,9 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
         slot->lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
         slot->recording_epoch.store(0, std::memory_order_relaxed);
         slot->context_window_state.store(0, std::memory_order_relaxed);
-        slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
+        if (_block_tracker != nullptr) {
+            _block_tracker->resetSlot(reused_slot, OSThreadState::UNKNOWN);
+        }
         if (!indexOrRollback(*slot, reused_slot, tid)) {
             pushToFreeList(reused_slot);
             return -1;
@@ -199,7 +201,9 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
     slot->lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
     slot->recording_epoch.store(0, std::memory_order_relaxed);
     slot->context_window_state.store(0, std::memory_order_relaxed);
-    slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
+    if (_block_tracker != nullptr) {
+        _block_tracker->resetSlot(index, OSThreadState::UNKNOWN);
+    }
     if (!indexOrRollback(*slot, index, tid)) {
         pushToFreeList(index);
         return -1;
@@ -211,7 +215,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
     return index;
 }
 
-void ThreadFilter::refreshSlotForRecording(Slot* slot, RecordingEpoch epoch) {
+void ThreadFilter::refreshSlotForRecording(SlotID slot_id, Slot* slot, RecordingEpoch epoch) {
     if (slot == nullptr || epoch == 0 || slot->recordingEpoch() == epoch) {
         return;
     }
@@ -234,7 +238,9 @@ void ThreadFilter::refreshSlotForRecording(Slot* slot, RecordingEpoch epoch) {
         Counters::increment(THREAD_REGISTRY_CONTEXT_RESET_RACE_DETECTED);
     }
 
-    slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
+    if (_block_tracker != nullptr) {
+        _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
+    }
     slot->recording_epoch.store(epoch, std::memory_order_release);
 }
 
@@ -491,7 +497,9 @@ void ThreadFilter::unregisterThreadLocked(SlotID slot_id, int expected_tid) {
     slot->recording_epoch.store(0, std::memory_order_release);
     slot->tid.store(-1, std::memory_order_release);
     slot->context_window_state.store(0, std::memory_order_release);
-    slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
+    if (_block_tracker != nullptr) {
+        _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
+    }
     pushToFreeList(slot_id);
 }
 
@@ -523,8 +531,10 @@ void ThreadFilter::resetRegistrationsLocked() {
             slot.recording_epoch.store(0, std::memory_order_release);
             slot.tid.store(-1, std::memory_order_release);
             slot.context_window_state.store(0, std::memory_order_release);
-            slot.clearActiveBlockRun(OSThreadState::UNKNOWN);
         }
+    }
+    if (_block_tracker != nullptr) {
+        _block_tracker->resetAll();
     }
     for (auto& entry : _tid_index) {
         entry.store(0, std::memory_order_relaxed);
@@ -623,10 +633,12 @@ void ThreadFilter::collect(std::vector<ThreadEntry>& entries) const {
             continue;
         }
 
-        for (auto& slot : chunk->slots) {
+        for (int slot_idx = 0; slot_idx < kChunkSize; ++slot_idx) {
+            Slot& slot = chunk->slots[slot_idx];
             int slot_tid = slot.nativeTid();
             if (slot_tid != -1 && slot.inContextWindow()) {
-                entries.push_back({slot_tid, &slot, slot.lifecycleGeneration(),
+                SlotID slot_id = (chunk_idx << kChunkShift) | slot_idx;
+                entries.push_back({slot_tid, &slot, slot_id, slot.lifecycleGeneration(),
                                    slot.recordingEpoch()});
             }
         }
@@ -643,110 +655,27 @@ void ThreadFilter::clearActive() {
 
         for (auto& slot : chunk->slots) {
             slot.exitContextWindow();
-            slot.clearActiveBlockRun(OSThreadState::UNKNOWN);
         }
+    }
+    if (_block_tracker != nullptr) {
+        _block_tracker->resetAll();
     }
 }
 
 void ThreadFilter::resetSlotRunState(SlotID slot_id) {
-    if (slot_id < 0) return;
-    int chunk_idx = slot_id >> kChunkShift;
-    int slot_idx  = slot_id & kChunkMask;
-    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
-    if (chunk != nullptr) {
-        // Clear stale suppression state so a new thread in this slot cannot inherit
-        // its predecessor's active block or once-per-run sampled marker.
-        chunk->slots[slot_idx].clearActiveBlockRun(OSThreadState::UNKNOWN);
-    }
+    if (slot_id < 0 || _block_tracker == nullptr) return;
+    // Clear stale suppression state so a new thread in this slot cannot inherit
+    // its predecessor's active block or once-per-run sampled marker.
+    _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
 }
-
-u64 ThreadFilter::enterBlockedRun(SlotID slot_id, OSThreadState state,
-                                  BlockRunOwner owner) {
-    Slot* s = slotForId(slot_id);
-    if (s != nullptr) {
-        u32 generation = 0;
-        if (!s->trySetActiveBlockRun(state, owner, &generation,
-                                     unfilteredWallTrackingActive())) {
-            return 0;
-        }
-        return encodeBlockRunToken(slot_id, generation);
-    }
-    return 0;
-}
-
-void ThreadFilter::exitBlockedRun(SlotID slot_id) {
-    Slot* s = slotForId(slot_id);
-    if (s != nullptr) {
-        s->clearActiveBlockRun(OSThreadState::RUNNABLE);
-    }
-}
-
-bool ThreadFilter::exitBlockedRun(SlotID slot_id, u32 generation) {
-    Slot* s = slotForId(slot_id);
-    if (s == nullptr || generation == 0 || s->blockGeneration() != generation) {
-        return false;
-    }
-    s->clearActiveBlockRun(OSThreadState::RUNNABLE);
-    return true;
-}
-
-bool ThreadFilter::shouldSuppressOwnedBlock(const ThreadEntry& entry) const {
-    Slot* slot = entry.slot;
-    if (slot == nullptr || slot->nativeTid() != entry.tid ||
-        slot->lifecycleGeneration() != entry.lifecycle_generation) {
-        return false;
-    }
-
-    const bool unfiltered_tracking = unfilteredWallTrackingActive();
-    RecordingEpoch epoch = 0;
-    if (unfiltered_tracking) {
-        epoch = recordingEpoch();
-        if (epoch == 0 || entry.recording_epoch != epoch ||
-            slot->recordingEpoch() != epoch) {
-            return false;
-        }
-    }
 
 #ifdef UNIT_TEST
-    if (_suppression_snapshot_hook != nullptr) {
-        _suppression_snapshot_hook(_suppression_snapshot_hook_arg);
+void ThreadFilter::setSuppressionSnapshotHookForTest(void (*hook)(void*), void* arg) {
+    if (_block_tracker != nullptr) {
+        _block_tracker->setSuppressionSnapshotHookForTest(hook, arg);
     }
-#endif
-
-    u32 block_generation = slot->blockGeneration();
-    BlockRunOwner owner = slot->activeBlockOwner();
-    OSThreadState state = slot->activeBlockState();
-    bool context_eligible =
-        !unfiltered_tracking || slot->activeBlockRemainedOutsideContextWindow();
-    bool sampled = slot->sampledThisRun();
-    OSThreadState last_sampled_state =
-        sampled ? slot->lastSampledState() : OSThreadState::UNKNOWN;
-    bool suppressible_state = isPrecheckSuppressionState(state);
-    if (owner == BlockRunOwner::NONE || !context_eligible ||
-        !suppressible_state || !sampled || state != last_sampled_state) {
-        return false;
-    }
-
-    // The payload is spread across independent atomics. Accept it only if the
-    // slot still represents the lifecycle and block run captured earlier in
-    // this wall-clock timer-thread pass, when `entry` was populated — either
-    // by ThreadFilter::collect() (inside timerLoop()'s collectThreads lambda)
-    // or by the lazy registry lookup at the top of sampleThreadCommon() —
-    // both in wallClock.cpp/.h (BaseWallClock::timerLoopCommon() itself is a
-    // template defined in wallClock.h).
-    if (slot->activeBlockOwner() != owner ||
-        slot->blockGeneration() != block_generation ||
-        slot->nativeTid() != entry.tid ||
-        slot->lifecycleGeneration() != entry.lifecycle_generation) {
-        return false;
-    }
-    if (unfiltered_tracking &&
-        (recordingEpoch() != epoch || slot->recordingEpoch() != epoch ||
-         !slot->activeBlockRemainedOutsideContextWindow())) {
-        return false;
-    }
-    return true;
 }
+#endif
 
 void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
     // Preserve the legacy filter contract: every non-empty value, including

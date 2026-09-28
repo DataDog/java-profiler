@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 #include "counters.h"
 #include "threadFilter.h"
+#include "wallClockBlockTracker.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 #include <thread>
 #include <vector>
@@ -35,15 +36,19 @@ protected:
         installGtestCrashHandler<THREAD_FILTER_TEST_NAME>();
         filter = std::make_unique<ThreadFilter>();
         filter->init("enabled");  // Enable filtering with non-empty string
+        tracker = std::make_unique<WallClockBlockTracker>();
+        filter->setBlockTracker(tracker.get());
     }
 
     void TearDown() override {
         filter.reset();
+        tracker.reset();
         // Restore default signal handlers
         restoreDefaultSignalHandlers();
     }
 
     std::unique_ptr<ThreadFilter> filter;
+    std::unique_ptr<WallClockBlockTracker> tracker;
 };
 
 // Basic functionality tests
@@ -521,8 +526,8 @@ TEST_F(ThreadFilterTest, ClearActiveDropsPreviousRecordingMembership) {
 
     filter->add(1111, stale_slot);
     filter->add(2222, current_slot);
-    filter->enterBlockedRun(stale_slot, OSThreadState::SLEEPING);
-    ThreadFilter::Slot *stale = filter->slotForId(stale_slot);
+    tracker->enterBlockedRun(filter.get(), stale_slot, OSThreadState::SLEEPING);
+    WallClockBlockTracker::BlockState *stale = tracker->slotForId(stale_slot);
     ASSERT_NE(nullptr, stale);
     stale->markSampledThisRun(OSThreadState::SLEEPING);
 
@@ -543,44 +548,9 @@ TEST_F(ThreadFilterTest, ClearActiveDropsPreviousRecordingMembership) {
     EXPECT_EQ(2222, collected_tids[0]);
 }
 
-TEST_F(ThreadFilterTest, GenerationCheckedExitDoesNotClearAnotherOwner) {
-    int slot_id = filter->registerThread();
-    ASSERT_GE(slot_id, 0);
-
-    u64 first_token = filter->enterBlockedRun(slot_id, OSThreadState::SLEEPING);
-    ASSERT_NE(0ULL, first_token);
-    EXPECT_EQ(0ULL, filter->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT));
-
-    ThreadFilter::Slot *slot = filter->slotForId(slot_id);
-    ASSERT_NE(nullptr, slot);
-    EXPECT_EQ(OSThreadState::SLEEPING, slot->activeBlockState());
-
-    EXPECT_FALSE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(first_token) + 1));
-    EXPECT_EQ(OSThreadState::SLEEPING, slot->activeBlockState());
-
-    EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(first_token)));
-    EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
-}
-
-TEST_F(ThreadFilterTest, NewGenerationRejectsStaleToken) {
-    int slot_id = filter->registerThread();
-    ASSERT_GE(slot_id, 0);
-
-    u64 stale_token = filter->enterBlockedRun(slot_id, OSThreadState::SLEEPING);
-    ASSERT_NE(0ULL, stale_token);
-    EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(stale_token)));
-
-    u64 current_token = filter->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT);
-    ASSERT_NE(0ULL, current_token);
-    EXPECT_NE(ThreadFilter::tokenGeneration(stale_token),
-              ThreadFilter::tokenGeneration(current_token));
-
-    ThreadFilter::Slot *slot = filter->slotForId(slot_id);
-    ASSERT_NE(nullptr, slot);
-    EXPECT_FALSE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(stale_token)));
-    EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot->activeBlockState());
-    EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(current_token)));
-}
+// GenerationCheckedExitDoesNotClearAnotherOwner and NewGenerationRejectsStaleToken
+// moved to wallClockBlockTracker_ut.cpp - they exercise pure WallClockBlockTracker
+// generation-token behavior with no ThreadFilter-identity interaction.
 
 TEST_F(ThreadFilterTest, TokenRoundTripPreservesHighGenerationBit) {
     ThreadFilter::SlotID slot_id = 7;
@@ -597,9 +567,11 @@ class ThreadRegistryTest : public ::testing::Test {
 protected:
     void SetUp() override {
         registry.init("", true);
+        registry.setBlockTracker(&tracker);
     }
 
     ThreadFilter registry;
+    WallClockBlockTracker tracker;
 };
 
 TEST_F(ThreadRegistryTest, UnfilteredTrackingSeparatesRegistrationFromContextWindow) {
@@ -639,17 +611,19 @@ TEST_F(ThreadRegistryTest, RegisteringKnownTidReturnsExistingSlotWithoutMutation
     ThreadFilter::Slot* slot = registry.slotForId(slot_id);
     ASSERT_NE(nullptr, slot);
 
-    u64 token = registry.enterBlockedRun(slot_id, OSThreadState::SLEEPING);
+    u64 token = tracker.enterBlockedRun(&registry, slot_id, OSThreadState::SLEEPING);
     ASSERT_NE(0ULL, token);
-    slot->markSampledThisRun(OSThreadState::SLEEPING);
+    WallClockBlockTracker::BlockState* block_slot = tracker.slotForId(slot_id);
+    ASSERT_NE(nullptr, block_slot);
+    block_slot->markSampledThisRun(OSThreadState::SLEEPING);
 
     u64 lifecycle_generation = slot->lifecycleGeneration();
     EXPECT_EQ(slot_id, registry.registerThread(tid));
     EXPECT_EQ(slot, registry.lookupByTid(tid));
     EXPECT_EQ(lifecycle_generation, slot->lifecycleGeneration());
-    EXPECT_EQ(OSThreadState::SLEEPING, slot->activeBlockState());
-    EXPECT_TRUE(slot->sampledThisRun());
-    EXPECT_TRUE(registry.exitBlockedRun(
+    EXPECT_EQ(OSThreadState::SLEEPING, block_slot->activeBlockState());
+    EXPECT_TRUE(block_slot->sampledThisRun());
+    EXPECT_TRUE(tracker.exitBlockedRun(
         slot_id, ThreadFilter::tokenGeneration(token)));
 }
 
@@ -807,18 +781,20 @@ TEST_F(ThreadRegistryTest, ContextTransitionInvalidatesOwnedRunSuppression) {
     ThreadFilter::Slot* slot = registry.slotForId(slot_id);
     ASSERT_NE(nullptr, slot);
 
-    u64 token = registry.enterBlockedRun(slot_id, OSThreadState::SLEEPING);
+    u64 token = tracker.enterBlockedRun(&registry, slot_id, OSThreadState::SLEEPING);
     ASSERT_NE(0u, token);
-    slot->markSampledThisRun(OSThreadState::SLEEPING);
-    EXPECT_TRUE(slot->activeBlockRemainedOutsideContextWindow());
+    WallClockBlockTracker::BlockState* block_slot = tracker.slotForId(slot_id);
+    ASSERT_NE(nullptr, block_slot);
+    block_slot->markSampledThisRun(OSThreadState::SLEEPING);
+    EXPECT_TRUE(block_slot->activeBlockRemainedOutsideContextWindow(slot));
 
     registry.add(3333, slot_id);
     registry.remove(slot_id);
-    EXPECT_FALSE(slot->activeBlockRemainedOutsideContextWindow());
+    EXPECT_FALSE(block_slot->activeBlockRemainedOutsideContextWindow(slot));
 
-    ThreadEntry entry{3333, slot, slot->lifecycleGeneration(),
+    ThreadEntry entry{3333, slot, slot_id, slot->lifecycleGeneration(),
                       slot->recordingEpoch()};
-    EXPECT_FALSE(registry.shouldSuppressOwnedBlock(entry));
+    EXPECT_FALSE(tracker.shouldSuppressOwnedBlock(&registry, entry));
 }
 
 TEST_F(ThreadRegistryTest, UnfilteredSuppressionValidatesIdentityAndLifecycle) {
@@ -827,23 +803,25 @@ TEST_F(ThreadRegistryTest, UnfilteredSuppressionValidatesIdentityAndLifecycle) {
     ThreadFilter::Slot* slot = registry.slotForId(slot_id);
     ASSERT_NE(nullptr, slot);
 
-    u64 token = registry.enterBlockedRun(slot_id, OSThreadState::SLEEPING);
+    u64 token = tracker.enterBlockedRun(&registry, slot_id, OSThreadState::SLEEPING);
     ASSERT_NE(0u, token);
-    slot->markSampledThisRun(OSThreadState::SLEEPING);
-    ThreadEntry entry{4444, slot, slot->lifecycleGeneration(),
+    WallClockBlockTracker::BlockState* block_slot = tracker.slotForId(slot_id);
+    ASSERT_NE(nullptr, block_slot);
+    block_slot->markSampledThisRun(OSThreadState::SLEEPING);
+    ThreadEntry entry{4444, slot, slot_id, slot->lifecycleGeneration(),
                       slot->recordingEpoch()};
-    EXPECT_TRUE(registry.shouldSuppressOwnedBlock(entry));
+    EXPECT_TRUE(tracker.shouldSuppressOwnedBlock(&registry, entry));
 
-    ThreadEntry wrong_tid{4445, slot, entry.lifecycle_generation,
+    ThreadEntry wrong_tid{4445, slot, slot_id, entry.lifecycle_generation,
                           entry.recording_epoch};
-    EXPECT_FALSE(registry.shouldSuppressOwnedBlock(wrong_tid));
-    ThreadEntry stale_generation{4444, slot, entry.lifecycle_generation + 1,
+    EXPECT_FALSE(tracker.shouldSuppressOwnedBlock(&registry, wrong_tid));
+    ThreadEntry stale_generation{4444, slot, slot_id, entry.lifecycle_generation + 1,
                                  entry.recording_epoch};
-    EXPECT_FALSE(registry.shouldSuppressOwnedBlock(stale_generation));
+    EXPECT_FALSE(tracker.shouldSuppressOwnedBlock(&registry, stale_generation));
 
-    EXPECT_TRUE(registry.exitBlockedRun(
+    EXPECT_TRUE(tracker.exitBlockedRun(
         slot_id, ThreadFilter::tokenGeneration(token)));
-    EXPECT_FALSE(registry.shouldSuppressOwnedBlock(entry));
+    EXPECT_FALSE(tracker.shouldSuppressOwnedBlock(&registry, entry));
 }
 
 TEST_F(ThreadRegistryTest, ContextFilteredSuppressionPreservesHistoricalEligibility) {
@@ -854,12 +832,14 @@ TEST_F(ThreadRegistryTest, ContextFilteredSuppressionPreservesHistoricalEligibil
     ThreadFilter::Slot* slot = registry.slotForId(slot_id);
     ASSERT_NE(nullptr, slot);
 
-    u64 token = registry.enterBlockedRun(slot_id, OSThreadState::SLEEPING);
+    u64 token = tracker.enterBlockedRun(&registry, slot_id, OSThreadState::SLEEPING);
     ASSERT_NE(0u, token);
-    slot->markSampledThisRun(OSThreadState::SLEEPING);
-    ThreadEntry entry{5555, slot, slot->lifecycleGeneration(),
+    WallClockBlockTracker::BlockState* block_slot = tracker.slotForId(slot_id);
+    ASSERT_NE(nullptr, block_slot);
+    block_slot->markSampledThisRun(OSThreadState::SLEEPING);
+    ThreadEntry entry{5555, slot, slot_id, slot->lifecycleGeneration(),
                       slot->recordingEpoch()};
-    EXPECT_TRUE(registry.shouldSuppressOwnedBlock(entry));
+    EXPECT_TRUE(tracker.shouldSuppressOwnedBlock(&registry, entry));
 }
 
 TEST_F(ThreadRegistryTest, ConcurrentTidReuseInvalidatesSuppressionSnapshot) {
@@ -868,9 +848,9 @@ TEST_F(ThreadRegistryTest, ConcurrentTidReuseInvalidatesSuppressionSnapshot) {
     ASSERT_GE(slot_id, 0);
     ThreadFilter::Slot* slot = registry.slotForId(slot_id);
     ASSERT_NE(nullptr, slot);
-    ASSERT_NE(0u, registry.enterBlockedRun(slot_id, OSThreadState::SLEEPING));
-    slot->markSampledThisRun(OSThreadState::SLEEPING);
-    ThreadEntry stale{tid, slot, slot->lifecycleGeneration(),
+    ASSERT_NE(0u, tracker.enterBlockedRun(&registry, slot_id, OSThreadState::SLEEPING));
+    tracker.slotForId(slot_id)->markSampledThisRun(OSThreadState::SLEEPING);
+    ThreadEntry stale{tid, slot, slot_id, slot->lifecycleGeneration(),
                       slot->recordingEpoch()};
 
     struct SnapshotPause {
@@ -889,7 +869,7 @@ TEST_F(ThreadRegistryTest, ConcurrentTidReuseInvalidatesSuppressionSnapshot) {
 
     std::atomic<bool> suppressed{true};
     std::thread reader([&] {
-        suppressed.store(registry.shouldSuppressOwnedBlock(stale),
+        suppressed.store(tracker.shouldSuppressOwnedBlock(&registry, stale),
                          std::memory_order_release);
     });
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -907,9 +887,9 @@ TEST_F(ThreadRegistryTest, ConcurrentTidReuseInvalidatesSuppressionSnapshot) {
     registry.unregisterThread(slot_id, tid);
     int reused_id = registry.registerThread(tid);
     ThreadFilter::Slot* reused = registry.slotForId(reused_id);
-    u64 new_token = registry.enterBlockedRun(reused_id, OSThreadState::SLEEPING);
+    u64 new_token = tracker.enterBlockedRun(&registry, reused_id, OSThreadState::SLEEPING);
     if (reused != nullptr && new_token != 0) {
-        reused->markSampledThisRun(OSThreadState::SLEEPING);
+        tracker.slotForId(reused_id)->markSampledThisRun(OSThreadState::SLEEPING);
     }
 
     pause.resume.store(true, std::memory_order_release);
@@ -961,12 +941,12 @@ TEST_F(ThreadRegistryTest, NewUnfilteredRecordingReclaimsRetainedSlot) {
     ASSERT_NE(0u, first_epoch);
     EXPECT_EQ(slot, registry.lookupByTid(tid, first_epoch));
 
-    u64 token = registry.enterBlockedRun(slot_id, OSThreadState::SLEEPING);
+    u64 token = tracker.enterBlockedRun(&registry, slot_id, OSThreadState::SLEEPING);
     ASSERT_NE(0u, token);
-    slot->markSampledThisRun(OSThreadState::SLEEPING);
-    ThreadEntry stale{tid, slot, slot->lifecycleGeneration(),
+    tracker.slotForId(slot_id)->markSampledThisRun(OSThreadState::SLEEPING);
+    ThreadEntry stale{tid, slot, slot_id, slot->lifecycleGeneration(),
                       slot->recordingEpoch()};
-    ASSERT_TRUE(registry.shouldSuppressOwnedBlock(stale));
+    ASSERT_TRUE(tracker.shouldSuppressOwnedBlock(&registry, stale));
 
     registry.init("", true);
     ThreadFilter::RecordingEpoch second_epoch = registry.recordingEpoch();
@@ -976,13 +956,14 @@ TEST_F(ThreadRegistryTest, NewUnfilteredRecordingReclaimsRetainedSlot) {
     EXPECT_EQ(nullptr, registry.lookupByTid(tid));
     EXPECT_EQ(-1, slot->nativeTid());
     EXPECT_GT(slot->lifecycleGeneration(), first_lifecycle_generation);
-    EXPECT_FALSE(registry.shouldSuppressOwnedBlock(stale));
+    EXPECT_FALSE(tracker.shouldSuppressOwnedBlock(&registry, stale));
 
     EXPECT_EQ(slot_id, registry.registerThread(tid));
     EXPECT_EQ(slot, registry.lookupByTid(tid, second_epoch));
-    EXPECT_FALSE(slot->sampledThisRun());
-    EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
-    EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
+    WallClockBlockTracker::BlockState* block_slot = tracker.slotForId(slot_id);
+    EXPECT_FALSE(block_slot->sampledThisRun());
+    EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
+    EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
 }
 
 TEST_F(ThreadRegistryTest, NewUnfilteredRecordingReclaimsFullCapacity) {

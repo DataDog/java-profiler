@@ -28,6 +28,7 @@
 #include "threadInfo.h"
 #include "trap.h"
 #include "vmEntry.h"
+#include "wallClockBlockTracker.h"
 #include <atomic>
 #include <iostream>
 #include <map>
@@ -112,6 +113,7 @@ private:
   // JavaProfiler.execute / ContextValueCache.
   std::atomic<bool> _context_value_dict_reset{false};
   ThreadFilter _thread_filter;
+  WallClockBlockTracker _block_tracker;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
   Engine *_cpu_engine;
@@ -235,6 +237,7 @@ public:
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       _calltrace_buffer[i] = NULL;
     }
+    _thread_filter.setBlockTracker(&_block_tracker);
   }
 
   static inline Profiler *instance() {
@@ -304,6 +307,7 @@ public:
   }
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
+  WallClockBlockTracker *blockTracker() { return &_block_tracker; }
 
   const char* cstack() const;
   int lookupClass(const char *key, size_t length);
