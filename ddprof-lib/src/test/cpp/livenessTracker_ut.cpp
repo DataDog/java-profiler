@@ -1563,3 +1563,191 @@ TEST_F(AdmissionBoostTest, ZeroCandidatePollClearsWatchedSet) {
     EXPECT_EQ(tracker->watchedTidCountForTest(), 0);
     EXPECT_FALSE(tracker->admitForTrackingForTest(77));
 }
+
+// ---------------------------------------------------------------------------
+// C2 chaos: hammer admitForTracking() from many threads while a publisher
+// thread flips the boost state (noteSelectedCandidates()/setUrgentTracking())
+// round by round, modeling the BFS poll thread republishing the watched set
+// while allocation-sampling threads run the gate.
+//
+// With the fixture's ratio pinned to 0, the gate is a pure function of the
+// boost state (admissionResetForTest() makes unboosted draws deterministically
+// reject - see AdmissionBoostTest's determinism note), which makes the
+// concurrent behavior decidable:
+//   W1. Window consistency - within a round (publisher quiesced between two
+//       barriers) every probe result must equal expected(tid) = urgent ||
+//       watched. A watched tid must admit on EVERY call: the watched scan
+//       returns true before any RNG draw, so even one false means the gate
+//       observed a torn boost publish (the count+array two-phase hazard -
+//       noteSelectedCandidates() writes slots then release-stores the count;
+//       a relaxed count load on arm64 could pair a fresh count with stale
+//       slots).
+//   W2. No stale boost after a clear - after the publisher publishes the
+//       zero-candidate poll and urgency off, no tid from ANY earlier round's
+//       watched set may admit (the analog of an OS tid being recycled into an
+//       unrelated thread still hitting a leftover watched entry).
+//
+// tid ranges are disjoint per round ([r*64, r*64+64)) so a stale watched
+// entry can be detected simply by re-probing earlier rounds' watched tids
+// after the clear. Violations tally in atomics; gtest asserts run on the
+// main thread after join. Run under testTsan.
+namespace {
+
+constexpr int kAdmHammers = 8;
+constexpr int kAdmRounds = 60;
+constexpr int kAdmIter = 100;
+constexpr int kAdmMaxWatched = 4;   // <= KlassCandidate::MAX_QUALIFYING_TIDS
+constexpr int kAdmRange = 64;       // per-round tid range; watched tids are
+                                    // drawn from [base+1, base+61), probes
+                                    // for unwatched use [base+61, base+65)
+
+struct AdmChaosState {
+    TagChaosBarrier *barrier; // 9 parties: 8 hammers + publisher
+    // Publisher -> hammers round plans, written before the round's entry
+    // barrier (the barrier's acq_rel fetch_add/release-store pair orders the
+    // handoff); index [r] is fixed once written.
+    jint watched[kAdmRounds][kAdmMaxWatched];
+    jint watched_count[kAdmRounds];
+    bool urgent[kAdmRounds];
+    // Hammer -> main tallies.
+    std::atomic<int> window_violations{0}; // W1
+    std::atomic<int> stale_admitted{0};    // W2
+    std::atomic<int> stale_probes{0};      // diagnostics: W2 must not be vacuous
+    std::atomic<int> first_bad_tid{-1};
+};
+
+void admRecordViolation(AdmChaosState &state, jint tid) {
+    state.window_violations.fetch_add(1, std::memory_order_relaxed);
+    int nobody = -1;
+    state.first_bad_tid.compare_exchange_strong(nobody, tid,
+                                                std::memory_order_relaxed);
+}
+
+void admPublisher(AdmChaosState &state) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    u64 seed = 0xA24BAED4963EE407ULL;
+    auto next = [&seed]() {
+        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        return (int)((seed >> 33) & 0x7fffffff);
+    };
+    for (int r = 0; r < kAdmRounds; r++) {
+        // Publish round r's boost state BEFORE the entry barrier.
+        int count = next() % (kAdmMaxWatched + 1); // 0..4, 0 exercises the
+                                                   // zero-candidate clear path
+        state.watched_count[r] = count;
+        for (int w = 0; w < count; w++) {
+            state.watched[r][w] = (jint)(r * kAdmRange + 1 + next() % 60);
+        }
+        state.urgent[r] = (next() % 3) == 2;
+        // Publish via the production seams - the watched set through
+        // noteSelectedCandidates() (one candidate carrying all tids; the
+        // dedup/cap logic is pinned by the sequential tests above), urgency
+        // through setUrgentTracking().
+        KlassCandidate kc;
+        if (count > 0) {
+            kc.klass_id = 1;
+            kc.representative = reinterpret_cast<jweak>(0x1);
+            for (int w = 0; w < count; w++) {
+                kc.qualifying_tids[w] = state.watched[r][w];
+            }
+            kc.qualifying_tid_count = count;
+            tracker->noteSelectedCandidates(&kc, 1);
+        } else {
+            tracker->noteSelectedCandidates(nullptr, 0);
+        }
+        tracker->setUrgentTracking(state.urgent[r]);
+
+        state.barrier->wait(); // A: window open
+        state.barrier->wait(); // B: window probes done
+        // Clear phase: exactly what a chase teardown does.
+        tracker->noteSelectedCandidates(nullptr, 0);
+        tracker->setUrgentTracking(false);
+        state.barrier->wait(); // C: clear published
+        state.barrier->wait(); // D: stale probes done, next round
+    }
+}
+
+void admHammer(int slot, AdmChaosState &state) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    for (int r = 0; r < kAdmRounds; r++) {
+        state.barrier->wait(); // A
+        // W1: within the window the gate must be a pure function of the
+        // published (urgent, watched) state - every call, any thread.
+        bool urgent = state.urgent[r];
+        jint base = (jint)(r * kAdmRange);
+        for (int it = 0; it < kAdmIter; it++) {
+            for (int w = 0; w < state.watched_count[r]; w++) {
+                if (!tracker->admitForTrackingForTest(state.watched[r][w])) {
+                    admRecordViolation(state, state.watched[r][w]);
+                }
+            }
+            for (int u = 0; u < 4; u++) {
+                bool admitted =
+                    tracker->admitForTrackingForTest(base + 61 + u);
+                if (admitted != urgent) { // unwatched: false; urgent: true
+                    admRecordViolation(state, base + 61 + u);
+                }
+            }
+        }
+        state.barrier->wait(); // B
+        state.barrier->wait(); // C (clear published by the publisher)
+        // W2: after the clear, nothing may admit - probed tids include every
+        // tid watched in the last five rounds (plus the current unwatched
+        // probes), so a leftover watched entry from any of them trips here.
+        for (int it = 0; it < kAdmIter; it++) {
+            for (int back = 0; back <= 5 && back <= r; back++) {
+                int rr = r - back;
+                for (int w = 0; w < state.watched_count[rr]; w++) {
+                    state.stale_probes.fetch_add(1, std::memory_order_relaxed);
+                    if (tracker->admitForTrackingForTest(state.watched[rr][w])) {
+                        state.stale_admitted.fetch_add(1,
+                                                       std::memory_order_relaxed);
+                        admRecordViolation(state, state.watched[rr][w]);
+                    }
+                }
+            }
+            for (int u = 0; u < 4; u++) {
+                if (tracker->admitForTrackingForTest(base + 61 + u)) {
+                    state.stale_admitted.fetch_add(1, std::memory_order_relaxed);
+                    admRecordViolation(state, base + 61 + u);
+                }
+            }
+        }
+        state.barrier->wait(); // D
+        (void)slot;
+    }
+}
+
+} // namespace
+
+TEST_F(AdmissionBoostTest, ConcurrentBoostPublishAndGateProbesStayConsistent) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    AdmChaosState state;
+    memset(state.watched, 0, sizeof(state.watched));
+    memset(state.watched_count, 0, sizeof(state.watched_count));
+    memset(state.urgent, 0, sizeof(state.urgent));
+    TagChaosBarrier barrier(kAdmHammers + 1);
+    state.barrier = &barrier;
+
+    std::vector<std::thread> threads;
+    threads.reserve(kAdmHammers + 1);
+    threads.emplace_back(admPublisher, std::ref(state));
+    for (int slot = 0; slot < kAdmHammers; slot++) {
+        threads.emplace_back(admHammer, slot, std::ref(state));
+    }
+    for (auto &t : threads) {
+        t.join();
+    }
+
+    EXPECT_EQ(0, state.window_violations.load())
+        << "gate result diverged from the published boost state (first bad "
+        << "tid: " << state.first_bad_tid.load() << ")";
+    EXPECT_EQ(0, state.stale_admitted.load())
+        << "tid admitted after the boost was cleared - stale watched entry";
+    // The stale check must not be vacuous: over 60 rounds the publisher
+    // emits mostly non-empty watched sets, so re-probes of previously
+    // watched tids are guaranteed to have happened.
+    EXPECT_GT(state.stale_probes.load(), 0)
+        << "no previously-watched tid was ever re-probed after a clear";
+}
