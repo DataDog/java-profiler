@@ -385,7 +385,12 @@ long OS::getContainerMemoryLimit() {
 }
 
 long OS::getContainerMemoryUsage() {
-    return -1; // macOS has no cgroup support.
+    // Contract mirror of the Linux implementation: "no boundary available"
+    // is -1 (treated by LivenessTracker::secondsToOOM() as no projection,
+    // never as unbounded), not 0 - a 0 here would read as a container at
+    // zero usage and skew the container-boundary ring's slope toward
+    // noise. macOS has no cgroup support.
+    return -1;
 }
 
 u64 OS::getProcessCpuTime(u64* utime, u64* stime) {
