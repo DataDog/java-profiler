@@ -103,11 +103,11 @@ struct SingleInfo {
 
 bool decodeSingle(uint32_t insn, SingleInfo& s) {
     if ((insn & 0xffc00000) == 0xf9000000) {  // STR unsigned imm
-        s = { false, 0, sext((insn >> 10) & 0xfff, 12) * 8, rn(insn) };
+        s = { false, 0, static_cast<int32_t>((insn >> 10) & 0xfff) * 8, rn(insn) };
         return true;
     }
     if ((insn & 0xffc00000) == 0xf9400000) {  // LDR unsigned imm
-        s = { true, 0, sext((insn >> 10) & 0xfff, 12) * 8, rn(insn) };
+        s = { true, 0, static_cast<int32_t>((insn >> 10) & 0xfff) * 8, rn(insn) };
         return true;
     }
     if ((insn & 0xffe00c00) == 0xf8000c00) {  // STR pre-index (bits 11:10 = 11)
@@ -310,7 +310,7 @@ const StubUnwindPhase* StubUnwindInfo::findPhase(int insn_index) const {
     return &_phases[lo];
 }
 
-StubUnwindInfo* analyzeStubUnwind(const void* start, int length, bool model_epilogue) {
+StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
     if (start == nullptr || length <= 0 || length > MAX_STUB_BYTES ||
         (length & (INSN_SIZE - 1)) != 0) {
         return nullptr;
@@ -393,11 +393,13 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length, bool model_epil
                     int a = rt1(insn), b = rt2(insn);
                     if (pair.load) {
                         if (a == 30 || b == 30) {
-                            if (next.ret == RET_STACK && !model_epilogue) {
-                                // Epilogue transitions are not modeled in this
-                                // build: keep trusting the stack slot (still
-                                // exact) instead of switching to lr.
-                            } else if (next.ret != RET_CONT) {
+                            if (next.ret != RET_CONT) {
+                                // The restored lr holds the return address:
+                                // switch to it. The abandoned stack slot lies
+                                // below the restored sp and AArch64 has no red
+                                // zone, so signal delivery and the handler may
+                                // have overwritten it -- the lr captured in the
+                                // sampled ucontext is authoritative.
                                 next.ret = RET_LR;
                             }
                         }
@@ -432,14 +434,12 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length, bool model_epil
                 int t = rd(insn);  // Rt field for loads/stores
                 if (t == 30) {
                     if (single.load) {
-                        if (next.ret == RET_STACK && !model_epilogue) {
-                            // see above: keep trusting the stack slot
-                        } else if (next.ret == RET_CONT) {
-                            // sticky: the loaded value may be a call continuation
-                        } else if (rn(insn) == 31) {
+                        if (next.ret != RET_CONT) {
+                            // RET_CONT is sticky: the loaded value may be a
+                            // call continuation. Otherwise the restored lr
+                            // holds the return address (same reasoning as the
+                            // pair path above); rn is always sp here.
                             next.ret = RET_LR;
-                        } else {
-                            next.ret = RET_UNKNOWN;
                         }
                     } else if (rn(insn) == 31) {
                         next.ret = RET_STACK;
@@ -528,6 +528,19 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length, bool model_epil
                 if ((insn >> 22) & 1) {
                     if (rd(insn) == 30 && next.ret == RET_LR) next.ret = RET_UNKNOWN;
                 }
+            } else if ((insn & 0x38000000) == 0x38000000 && rn(insn) == 31) {
+                // An undecoded load/store with an sp base: the immediate
+                // load/store encoding space (bits 29:27 = 111) covers SIMD
+                // single-register pre/post-index forms ('str q0, [sp, #-16]!'),
+                // unscaled LDUR/STUR, and narrower GPR sizes -- any of them can
+                // write back sp or move x30 between lr and memory. The scanned
+                // state can no longer be trusted: truncate everything from the
+                // next boundary on (SU_UNSUPPORTED -> legacy heuristics), the
+                // same degradation as a mid-stub br. Branches, system
+                // instructions, pairs, exclusive forms, and literal loads all
+                // have bits 29:27 != 111; LDTR/STTR were handled above.
+                if (i + 1 < truncate_at) truncate_at = i + 1;
+                transitions_frozen = true;
             } else {
                 bool uncond_exit;
                 int target = decodeBranch(insn, i, count, uncond_exit);

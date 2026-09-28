@@ -89,9 +89,9 @@ inline uint32_t jumpReg(int rn) { return 0xd61f0000 | (uint32_t)rn << 5; }
 class StubUnwindTest : public ::testing::Test {
 protected:
     // Classifies an instruction sequence; frees the info on scope exit.
-    StubUnwindInfo* analyze(const std::vector<uint32_t>& code, bool model_epilogue = false) {
+    StubUnwindInfo* analyze(const std::vector<uint32_t>& code) {
         StubUnwindInfo* info =
-            analyzeStubUnwind(code.data(), (int)code.size() * 4, model_epilogue);
+            analyzeStubUnwind(code.data(), (int)code.size() * 4);
         _owned.push_back(info);
         return info;
     }
@@ -109,11 +109,11 @@ protected:
 };
 
 TEST_F(StubUnwindTest, InvalidInputs) {
-    EXPECT_EQ(analyzeStubUnwind(nullptr, 64, false), nullptr);
+    EXPECT_EQ(analyzeStubUnwind(nullptr, 64), nullptr);
     std::vector<uint32_t> code = {NOP, RET};
-    EXPECT_EQ(analyzeStubUnwind(code.data(), 0, false), nullptr);
-    EXPECT_EQ(analyzeStubUnwind(code.data(), 3, false), nullptr);   // not a whole insn
-    EXPECT_EQ(analyzeStubUnwind(code.data(), -8, false), nullptr);
+    EXPECT_EQ(analyzeStubUnwind(code.data(), 0), nullptr);
+    EXPECT_EQ(analyzeStubUnwind(code.data(), 3), nullptr);   // not a whole insn
+    EXPECT_EQ(analyzeStubUnwind(code.data(), -8), nullptr);
 }
 
 // Classic FP frame: entry state, mid-prologue state, steady state.
@@ -262,8 +262,9 @@ TEST_F(StubUnwindTest, MidStubBrDegrades) {
     expectPhase(info, 2, SU_UNSUPPORTED, 0);
 }
 
-// Canonical straight-line epilogue: with epilogue modeling disabled the stack
-// slot keeps holding the return address, so the rules stay exact.
+// Canonical straight-line epilogue: after the sp-restoring ldp the return
+// address lives in the restored lr -- the abandoned stack slot lies below the
+// restored sp (no red zone on AArch64) and must not be trusted.
 TEST_F(StubUnwindTest, EpiloguePostIndexLdp) {
     // 0: stp x29,x30,[sp,#-16]!
     // 1: mov x29,sp
@@ -271,16 +272,17 @@ TEST_F(StubUnwindTest, EpiloguePostIndexLdp) {
     // 3: ldp x29,x30,[sp],#16
     // 4: ret
     StubUnwindInfo* info =
-        analyze({stpPre64(29, 30, -16), 0x910003fd, NOP, ldpPost64(29, 30, 16), RET},
-                /*model_epilogue=*/false);
+        analyze({stpPre64(29, 30, -16), 0x910003fd, NOP, ldpPost64(29, 30, 16), RET});
     ASSERT_NE(info, nullptr);
     expectPhase(info, 2, SU_FP_FRAME, 16, 8);
     expectPhase(info, 3, SU_FP_FRAME, 16, 8);   // ldp not yet executed
-    // after ldp: sp restored (delta 0), x30 slot still 8 bytes above old sp
-    expectPhase(info, 4, SU_FP_PROLOGUE, 0, -8);
+    // after ldp: sp restored (delta 0), return address back in lr
+    expectPhase(info, 4, SU_PC_TO_LR, 0);
 }
 
-// Shape-B epilogue: ldp with offset, sp restored by a later add.
+// Shape-B epilogue: ldp with offset, sp restored by a later add. After the
+// offset ldp the rule is the sp delta (return address in lr); after the add
+// it is plain pc-to-lr.
 TEST_F(StubUnwindTest, EpilogueOffsetLdpThenAdd) {
     // 0: stp x29,x30,[sp,#-32]!
     // 1: mov x29,sp
@@ -293,10 +295,10 @@ TEST_F(StubUnwindTest, EpilogueOffsetLdpThenAdd) {
     ASSERT_NE(info, nullptr);
     expectPhase(info, 2, SU_FP_FRAME, 32, 8);
     expectPhase(info, 3, SU_FP_FRAME, 32, 8);
-    // after ldp: fp/lr restored, sp still framed (delta 48); slot at abs 24
-    expectPhase(info, 4, SU_FP_PROLOGUE, 48, 24);
+    // after ldp: fp/lr restored, sp still framed (delta 48)
+    expectPhase(info, 4, SU_SP_DELTA_LR, 48);
     // after add: sp back to caller
-    expectPhase(info, 5, SU_FP_PROLOGUE, 0, -24);
+    expectPhase(info, 5, SU_PC_TO_LR, 0);
 }
 
 // A branch jumping from the body into the epilogue makes the linear state
@@ -351,7 +353,7 @@ TEST_F(StubUnwindTest, MovSpX29) {
     expectPhase(info, 2, SU_FP_FRAME, 16, 8);
     expectPhase(info, 3, SU_FP_FRAME, 16, 8);
     expectPhase(info, 4, SU_FP_FRAME, 16, 8);
-    expectPhase(info, 5, SU_FP_PROLOGUE, 0, -8);
+    expectPhase(info, 5, SU_PC_TO_LR, 0);
 }
 
 // add sp, x29, #imm restores sp from the frame pointer.
@@ -433,7 +435,8 @@ TEST_F(StubUnwindTest, ArraycopyShape) {
     expectPhase(info, 1, SU_FP_PROLOGUE, 16, 8);
     expectPhase(info, 2, SU_FP_FRAME, 16, 8);
     expectPhase(info, 3, SU_FP_FRAME, 16, 8);
-    expectPhase(info, 4, SU_FP_PROLOGUE, 0, -8);
+    // after ldp: return address back in lr, sp restored
+    expectPhase(info, 4, SU_PC_TO_LR, 0);
 }
 
 // movk x30 with hw != 0 (a real lr clobber) must degrade the frameless state
@@ -585,16 +588,15 @@ TEST_F(StubUnwindTest, PostIndexUntrackedBaseLdrX30Degrades) {
     expectPhase(info, 2, SU_UNSUPPORTED, 0);
 }
 
-// With epilogue modeling enabled, a sp-relative ldp of x29/x30 switches the
-// return address to the restored lr and drops the fp rule.
+// With epilogue modeling unconditional, a sp-relative ldp of x29/x30
+// switches the return address to the restored lr and drops the fp rule.
 TEST_F(StubUnwindTest, ModelEpilogueSwitchesToLr) {
     // 0: stp x29,x30,[sp,#-16]!
     // 1: mov x29,sp
     // 2: ldp x29,x30,[sp],#16
     // 3: ret
     StubUnwindInfo* info =
-        analyze({stpPre64(29, 30, -16), 0x910003fd, ldpPost64(29, 30, 16), RET},
-                /*model_epilogue=*/true);
+        analyze({stpPre64(29, 30, -16), 0x910003fd, ldpPost64(29, 30, 16), RET});
     ASSERT_NE(info, nullptr);
     expectPhase(info, 2, SU_FP_FRAME, 16, 8);
     // after ldp: lr holds the return address, sp restored to the caller
@@ -605,12 +607,91 @@ TEST_F(StubUnwindTest, ModelEpilogueSwitchesToLr) {
 // delta; after the add it is plain pc-to-lr.
 TEST_F(StubUnwindTest, ModelEpilogueOffsetLdpThenAdd) {
     StubUnwindInfo* info = analyze({stpPre64(29, 30, -32), 0x910003fd, subSp(16),
-                                    ldpOff64(29, 30, 16), addSp(48), RET},
-                                   /*model_epilogue=*/true);
+                                    ldpOff64(29, 30, 16), addSp(48), RET});
     ASSERT_NE(info, nullptr);
     expectPhase(info, 3, SU_FP_FRAME, 32, 8);
     expectPhase(info, 4, SU_SP_DELTA_LR, 48);
     expectPhase(info, 5, SU_PC_TO_LR, 0);
+}
+
+// Unsigned-offset immediates are zero-extended: imm12 = 0x7ff (16376 bytes)
+// must record the slot exactly 16376 bytes above the current sp. A sign
+// extension bug would decode it as -8 bytes and put the slot below sp.
+TEST_F(StubUnwindTest, UnsignedImm12Boundary0x7ff) {
+    // 0: sub sp,sp,#2048
+    // 1: str x30, [sp, #16376]
+    // 2: ret
+    StubUnwindInfo* info =
+        analyze({subSp(2048), 0xf90003e0 | (uint32_t)(16376 / 8) << 10 | 30, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 2048);
+    expectPhase(info, 2, SU_FP_PROLOGUE, 2048, 16376);
+}
+
+// Same boundary at imm12 = 0x800: the offset is +16384 bytes, never negative.
+TEST_F(StubUnwindTest, UnsignedImm12Boundary0x800) {
+    // 0: sub sp,sp,#2048
+    // 1: str x30, [sp, #16384]
+    // 2: ret
+    StubUnwindInfo* info =
+        analyze({subSp(2048), 0xf90003e0 | (uint32_t)(16384 / 8) << 10 | 30, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 2048);
+    expectPhase(info, 2, SU_FP_PROLOGUE, 2048, 16384);
+}
+
+// An unsigned-offset LDR with a >= 16 KiB offset decodes without degrading:
+// the load restores lr from the (correctly addressed) slot.
+TEST_F(StubUnwindTest, UnsignedImm12LdrBoundary) {
+    // 0: sub sp,sp,#2048
+    // 1: ldr x30, [sp, #16384]
+    // 2: ret
+    StubUnwindInfo* info =
+        analyze({subSp(2048), 0xf94003e0 | (uint32_t)(16384 / 8) << 10 | 30, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 2048);
+    expectPhase(info, 2, SU_SP_DELTA_LR, 2048);
+}
+
+// A SIMD single-register pre-index store with an sp base ('str q0,
+// [sp, #-16]!') is outside the decoded forms but writes back sp: everything
+// from the next boundary on must degrade to fallback instead of being
+// treated as neutral with a stale sp.
+TEST_F(StubUnwindTest, UndecodedSpBaseSimdStoreDegrades) {
+    // 0: str q0, [sp, #-16]!   = 0x3d9f0fe0
+    // 1: nop
+    // 2: ret
+    StubUnwindInfo* info = analyze({0x3d9f0fe0, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    EXPECT_TRUE(info->_classified);  // entry state is still PC_TO_LR
+    expectPhase(info, 0, SU_PC_TO_LR, 0);
+    expectPhase(info, 1, SU_UNSUPPORTED, 0);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+}
+
+// An unscaled LDUR of x30 with an sp base is likewise undecoded but can move
+// the return address out of lr: degrade instead of staying neutral.
+TEST_F(StubUnwindTest, UndecodedSpBaseLdurX30Degrades) {
+    // 0: nop
+    // 1: ldur x30, [sp, #-8]   = 0xf85f83fe (unscaled: bits 11:10 = 00)
+    // 2: ret
+    StubUnwindInfo* info = analyze({NOP, 0xf85f83fe, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_PC_TO_LR, 0);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+}
+
+// Negative control: the degrade triggers on the sp base register, not on the
+// encoding class -- an unsigned-offset load through an untracked base stays
+// neutral.
+TEST_F(StubUnwindTest, UntrackedBaseUnsignedOffsetStaysNeutral) {
+    // 0: sub sp,sp,#16
+    // 1: ldr x4, [x0, #8]      = 0xf9400804
+    // 2: ret
+    StubUnwindInfo* info = analyze({subSp(16), 0xf9400804, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 2, SU_SP_DELTA_LR, 16);
 }
 
 }  // namespace

@@ -82,13 +82,19 @@ public:
 
 // Analyzes the machine code in [start, start + length) -- a range received
 // through JVMTI DynamicCodeGenerated -- and produces a compact phase table.
-// Allocates the result with malloc; the caller registers it and it is never
-// freed (same lifetime as the stub name strings held by JitCodeCache).
-// Must not be called from a signal handler. Returns NULL if length is not a
-// whole number of instructions; a stub whose entry state cannot be classified
-// yields an info with _classified == false and a single SU_UNSUPPORTED phase,
-// so that the "unclassifiable" outcome is observable through the counters.
-StubUnwindInfo* analyzeStubUnwind(const void* start, int length, bool model_epilogue);
+// A sp-relative restore of x30 always switches the return address to the
+// restored lr (the lr captured in the sampled ucontext is authoritative; the
+// abandoned stack slot lies below the restored sp and AArch64 has no red
+// zone), and load/store instructions with an sp base that the decoder does
+// not recognize degrade the affected range to SU_UNSUPPORTED instead of
+// being assumed neutral. Allocates the result with malloc; the caller
+// registers it and it is never freed (same lifetime as the stub name strings
+// held by JitCodeCache). Must not be called from a signal handler. Returns
+// NULL if length is not a whole number of instructions; a stub whose entry
+// state cannot be classified yields an info with _classified == false and a
+// single SU_UNSUPPORTED phase, so that the "unclassifiable" outcome is
+// observable through the counters.
+StubUnwindInfo* analyzeStubUnwind(const void* start, int length);
 
 #endif // __aarch64__
 

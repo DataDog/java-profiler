@@ -39,12 +39,11 @@ static bool shouldAnalyzeStub(const char* name) {
     return strcmp(name, "call_stub") != 0 && strcmp(name, "Interpreter") != 0;
 }
 
-// With epilogue modeling off, a sp-relative restore of x30 keeps the return
-// address attributed to its stack slot (which stays exact through the
-// canonical epilogues) instead of switching to the restored lr register. The
-// model_epilogue=true scan paths are exercised by stubUnwindInfo_ut, so the
-// toggle is ready to flip.
-static const bool MODEL_STUB_EPILOGUE = false;
+// A sp-relative restore of x30 switches the return address to the restored
+// lr register: the old stack slot lies below the restored sp, and AArch64
+// provides no red zone, so signal delivery and the handler may have
+// overwritten it before unwindStub() reads it. The lr captured in the
+// sampled ucontext is authoritative.
 #endif
 
 // CompiledMethodLoad is also needed to enable DebugNonSafepoints info by
@@ -68,7 +67,7 @@ void JNICALL JitCodeCache::DynamicCodeGenerated(jvmtiEnv *jvmti, const char *nam
   // reader that finds the stub always finds its info.
   StubUnwindInfo* stub_info = nullptr;
   if (shouldAnalyzeStub(name)) {
-    stub_info = analyzeStubUnwind(address, length, MODEL_STUB_EPILOGUE);
+    stub_info = analyzeStubUnwind(address, length);
     Counters::increment(stub_info != nullptr && stub_info->_classified
                             ? WALKVM_STUB_INFO_CLASSIFIED
                             : WALKVM_STUB_INFO_UNCLASSIFIED);
