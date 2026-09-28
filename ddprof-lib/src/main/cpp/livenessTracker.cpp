@@ -13,6 +13,7 @@
 #include "common.h"
 #include "context.h"
 #include "context_api.h"
+#include "counters.h"
 #include "hotspot/vmStructs.h"
 #include "hotspot/vmStructs.inline.h"
 #include "incbin.h"
@@ -63,12 +64,12 @@ constexpr u32 RESOLVE_BUDGET_PER_SWEEP = 256;
 // discipline for physical slot `i` without this shared loop needing to know
 // which one applies.
 //
-// DESPITE THE NAME, this is not thirds statistics: the design doc's original
-// "mean of earliest third vs mean of recent third" comparison was replaced by
-// a full-window least-squares linear regression (see ringThirdsStats below),
-// which uses all samples and is far more robust for oscillating-but-growing
-// trends. The field names survive as the regression values consumers treat
-// as the window's "earliest"/"recent" levels:
+// Not thirds statistics: an earlier "mean of earliest third vs mean of
+// recent third" comparison was replaced by a full-window least-squares linear
+// regression (see ringWindowStats below), which uses all samples and is far
+// more robust for oscillating-but-growing trends. The field names survive as
+// the regression values consumers treat as the window's "earliest"/"recent"
+// levels:
 //   earliest_mean - regression value at the window's OLDEST sample (x = 0);
 //   recent_mean   - regression value at the window's NEWEST sample (x = fill-1);
 //   earliest_min  - true minimum over the FULL window;
@@ -77,7 +78,7 @@ constexpr u32 RESOLVE_BUDGET_PER_SWEEP = 256;
 // (a regression slope over the window's span) and earliest_min/recent_min as
 // floor checks. Renaming the fields would touch every consumer for no
 // behavioral change, so the mapping is documented here instead.
-struct RingThirdsStats {
+struct RingWindowStats {
   double earliest_mean; // regression value at the window's oldest sample
   double recent_mean;   // regression value at the window's newest sample
   double earliest_min;  // true min over the full window
@@ -85,8 +86,8 @@ struct RingThirdsStats {
 };
 
 template <typename Reader>
-bool ringThirdsStats(int head, int fill, int ring_size, int min_fill,
-                      Reader read, RingThirdsStats *out) {
+bool ringWindowStats(int head, int fill, int ring_size, int min_fill,
+                      Reader read, RingWindowStats *out) {
   if (fill < min_fill) {
     return false;
   }
@@ -134,7 +135,7 @@ bool ringThirdsStats(int head, int fill, int ring_size, int min_fill,
 // Recent-half corroboration for a usage ring (see secondsToOOM()'s own
 // comment): a rising full-window trend whose most recent half is flat is a
 // plateaued step change, not ongoing growth. The recent half's own
-// regression (see ringThirdsStats) must show a strictly positive delta for
+// regression (see ringWindowStats) must show a strictly positive delta for
 // the full-window trend to stand. A too-sparse recent half (below min_fill)
 // REJECTS the projection rather than letting it through: false means
 // "reject". Deliberately stricter than the single-ring version's
@@ -146,8 +147,8 @@ template <typename Reader>
 bool corroborateRecentHalf(u8 head, u8 fill, int ring_size, int min_fill,
                            Reader read) {
   int half_fill = fill / 2;
-  RingThirdsStats recent_half_stats;
-  bool have_half = ringThirdsStats(head, half_fill, ring_size, min_fill, read,
+  RingWindowStats recent_half_stats;
+  bool have_half = ringWindowStats(head, half_fill, ring_size, min_fill, read,
                                    &recent_half_stats);
   double half_delta = have_half
       ? recent_half_stats.recent_mean - recent_half_stats.earliest_mean
@@ -157,7 +158,8 @@ bool corroborateRecentHalf(u8 head, u8 fill, int ring_size, int min_fill,
 
 } // namespace
 
-void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
+void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
+                                    bool account_epoch) {
   u64 current = load(_last_gc_epoch);
   u64 target_gc_epoch = load(_gc_epoch);
   TEST_LOG_SUMMARY("LivenessTracker::cleanup_table forced=%d gc_generations=%d current_epoch=%llu "
@@ -197,16 +199,25 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
     // caller whose target is strictly newer claims; a stale snapshot skips
     // epoch accounting entirely (its survivors are still swept, their ages
     // simply do not move for this no-op epoch).
-    bool is_epoch_owner = target_gc_epoch > claimed &&
+    //
+    // account_epoch=false (track()'s table-overflow branch) makes this a
+    // pure reaper: it must NOT claim the epoch (otherwise the background
+    // sweep's fold for this epoch would be suppressed by the claimed
+    // _last_gc_epoch while this call never folds it - the epoch's population
+    // sample would be lost), must not age survivors (that accounting belongs
+    // to the epoch owner), and must not touch the klass-population scratch
+    // (no fold will consume it here). It only reaps collected entries, which
+    // is what the overflow path needs to free table slots.
+    bool is_epoch_owner = account_epoch && target_gc_epoch > claimed &&
         __atomic_compare_exchange_n(&_last_gc_epoch, &claimed, target_gc_epoch,
                                     false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
-    // On a lost CAS race `claimed` holds the actual current epoch (>= our
-    // stale target), so the raw diff is <= 0 for every non-owner; clamp so a
-    // survivor's unsigned age can never wrap.
-    int epoch_diff = (int)(target_gc_epoch - claimed);
-    if (epoch_diff < 0) {
-      epoch_diff = 0;
-    }
+    // Only the epoch owner ages survivors. On a lost CAS race `claimed` holds
+    // the actual current epoch (>= our stale target), so the raw diff is <= 0
+    // for every such non-owner; an account_epoch=false sweep never attempts
+    // the claim, so its raw diff can be positive and would otherwise age
+    // survivors that the epoch owner ages again. Zero for every non-owner so
+    // a survivor's unsigned age can never wrap or be double-advanced.
+    int epoch_diff = is_epoch_owner ? (int)(target_gc_epoch - claimed) : 0;
 
   // Detect a class-map reset the same way
   // ReferenceChainTracker::resolveLoadedClasses() does (referenceChains.cpp)
@@ -1279,8 +1290,8 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
 }
 
 bool LivenessTracker::hasQualifyingGrowth(const KlassPopulationEntry &entry) const {
-  RingThirdsStats stats;
-  if (!ringThirdsStats(
+  RingWindowStats stats;
+  if (!ringWindowStats(
           entry.ring_head, entry.ring_fill, KLASS_POPULATION_RING_SIZE,
           KLASS_POPULATION_MIN_FILL_FOR_TREND,
           [&entry](int i) { return (double)entry.count_ring[i]; }, &stats)) {
@@ -1315,8 +1326,8 @@ bool LivenessTracker::hasQualifyingGrowth(const KlassPopulationEntry &entry) con
 
 bool LivenessTracker::hasQualifyingTidGrowth(
     const KlassPopulationEntry::TidTrend &trend) const {
-  RingThirdsStats stats;
-  if (!ringThirdsStats(
+  RingWindowStats stats;
+  if (!ringWindowStats(
           trend.ring_head, trend.ring_fill,
           KlassPopulationEntry::TID_TREND_RING_SIZE,
           TID_TREND_MIN_FILL_FOR_TREND,
@@ -1507,8 +1518,8 @@ bool LivenessTracker::heapFloorRising() const {
   // loadAcquire() here is what makes the payload writes below visible.
   u8 fill = loadAcquire(_heap_floor_ring_fill);
   u8 head = loadAcquire(_heap_floor_ring_head);
-  RingThirdsStats stats;
-  if (!ringThirdsStats(
+  RingWindowStats stats;
+  if (!ringWindowStats(
           head, fill, KLASS_POPULATION_RING_SIZE,
           KLASS_POPULATION_MIN_FILL_FOR_TREND,
           [this](int i) { return (double)load(_heap_floor_ring[i]); },
@@ -1580,8 +1591,8 @@ double LivenessTracker::secondsToOOM() const {
              (int)fill, KLASS_POPULATION_MIN_FILL_FOR_TREND);
     return -1;
   }
-  RingThirdsStats time_stats;
-  if (!ringThirdsStats(
+  RingWindowStats time_stats;
+  if (!ringWindowStats(
           head, fill, KLASS_POPULATION_RING_SIZE,
           KLASS_POPULATION_MIN_FILL_FOR_TREND,
           [this](int i) { return (double)load(_heap_floor_time_ring[i]); },
@@ -1599,45 +1610,57 @@ double LivenessTracker::secondsToOOM() const {
   const char *best_source = "none";
   double best_recent_mean = 0;
 
-  RingThirdsStats heap_bytes;
+  RingWindowStats heap_bytes;
   if (max_heap > 0 &&
-      ringThirdsStats(head, fill, KLASS_POPULATION_RING_SIZE,
+      ringWindowStats(head, fill, KLASS_POPULATION_RING_SIZE,
                       KLASS_POPULATION_MIN_FILL_FOR_TREND,
                       [this](int i) { return (double)load(_heap_floor_ring[i]); },
                       &heap_bytes) &&
       corroborateRecentHalf(head, fill, KLASS_POPULATION_RING_SIZE,
                             HEAP_FLOOR_RECENT_HALF_MIN_FILL,
                             [this](int i) { return (double)load(_heap_floor_ring[i]); })) {
-    double remaining = (double)max_heap - heap_bytes.recent_mean;
-    double secs = remaining <= 0
-        ? 0
-        : (remaining * time_delta_ns) /
-              (heap_bytes.recent_mean - heap_bytes.earliest_mean) / 1e9;
-    if (best_seconds < 0 || secs < best_seconds) {
-      best_seconds = secs;
-      best_source = "heap";
-      best_recent_mean = heap_bytes.recent_mean;
+    // Denominator is the full-window byte delta (endpoints of the fitted
+    // line). A dip-then-recover window can pass corroborateRecentHalf()
+    // (its recent half rises) while the full-window endpoints agree, making
+    // this delta ~0 - an unguarded division projects +inf seconds (or a
+    // negative value for a falling window). Skip the boundary instead: no
+    // usable rate, no projection.
+    double heap_delta = heap_bytes.recent_mean - heap_bytes.earliest_mean;
+    if (heap_delta > 0) {
+      double remaining = (double)max_heap - heap_bytes.recent_mean;
+      double secs = remaining <= 0
+          ? 0
+          : (remaining * time_delta_ns) / heap_delta / 1e9;
+      if (best_seconds < 0 || secs < best_seconds) {
+        best_seconds = secs;
+        best_source = "heap";
+        best_recent_mean = heap_bytes.recent_mean;
+      }
     }
   }
 
-  RingThirdsStats container_bytes;
+  RingWindowStats container_bytes;
   if (container_limit > 0 &&
-      ringThirdsStats(head, fill, KLASS_POPULATION_RING_SIZE,
+      ringWindowStats(head, fill, KLASS_POPULATION_RING_SIZE,
                       KLASS_POPULATION_MIN_FILL_FOR_TREND,
                       [this](int i) { return (double)load(_container_mem_ring[i]); },
                       &container_bytes) &&
       corroborateRecentHalf(head, fill, KLASS_POPULATION_RING_SIZE,
                             HEAP_FLOOR_RECENT_HALF_MIN_FILL,
                             [this](int i) { return (double)load(_container_mem_ring[i]); })) {
-    double remaining = (double)container_limit - container_bytes.recent_mean;
-    double secs = remaining <= 0
-        ? 0
-        : (remaining * time_delta_ns) /
-              (container_bytes.recent_mean - container_bytes.earliest_mean) / 1e9;
-    if (best_seconds < 0 || secs < best_seconds) {
-      best_seconds = secs;
-      best_source = "container";
-      best_recent_mean = container_bytes.recent_mean;
+    // Same zero-denominator guard as the heap boundary above.
+    double container_delta =
+        container_bytes.recent_mean - container_bytes.earliest_mean;
+    if (container_delta > 0) {
+      double remaining = (double)container_limit - container_bytes.recent_mean;
+      double secs = remaining <= 0
+          ? 0
+          : (remaining * time_delta_ns) / container_delta / 1e9;
+      if (best_seconds < 0 || secs < best_seconds) {
+        best_seconds = secs;
+        best_source = "container";
+        best_recent_mean = container_bytes.recent_mean;
+      }
     }
   }
 
@@ -2195,7 +2218,22 @@ static ThreadLocal<double> skipped;
 // per thread and probabilistic by design).
 bool LivenessTracker::admitForTracking(jint tid) {
   if (__atomic_load_n(&_urgent_tracking, __ATOMIC_ACQUIRE)) {
-    return true;
+    // Volume backstop for the urgency boost (100% admission, bypassing even
+    // the subsample draw): once the table is at its high-water mark the
+    // boost's own cost - track()'s overflow branch firing a forced sweep on
+    // the SampledObjectAlloc callback stack, per admission - outweighs the
+    // extra diagnostic coverage. Fall back to the watched-tid-only boost
+    // below, which keeps 100% admission exactly where the leak data value is
+    // (the candidate sites) while every other thread goes back to the
+    // configured subsample ratio. Admissions at the high-water mark are
+    // still counted so the degradation is observable in production.
+    if (_table_max_cap > 0 &&
+        __atomic_load_n(&_table_size, __ATOMIC_RELAXED) >= _table_max_cap) {
+      Counters::increment(LIVENESS_URGENT_BOOST_BACKED_OFF);
+    } else {
+      Counters::increment(LIVENESS_URGENT_BOOST_ADMITS);
+      return true;
+    }
   }
   // Count+array two-phase publish (noteSelectedCandidates() writes the
   // slots before release-storing the count): the acquire load pairs with
@@ -2379,7 +2417,13 @@ retry:
       // space. allow_resolve=false: this runs synchronously on the
       // allocation-sampling callback stack (see cleanup_table()'s own header
       // comment for why resolveKlassId() is unsafe here).
-      cleanup_table(true, false);
+      // account_epoch=false: pure reaper - no epoch claim, no survivor
+      // aging, no population fold. The fold's nested per-(klass,tid) loops
+      // would otherwise run on this hot callback stack under the exclusive
+      // table lock; the background/GC sweeps (which claim the epoch) do the
+      // full accounting, so the overflow path only pays for the reaping it
+      // actually needs.
+      cleanup_table(true, false, false);
 
       if (_table_cap < _table_max_cap) {
 

@@ -1213,7 +1213,7 @@ Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
   if (jvmti == nullptr) {
     return;
   }
-  ReferenceChainTracker::instance()->pollWatchedTargetsSerialized(jvmti, env);
+  ReferenceChainTracker::instance()->finishLoopIterationSerialized(jvmti, env);
 }
 
 extern "C" DLLEXPORT jint JNICALL
@@ -1263,7 +1263,7 @@ Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingSizeForTest0(
 // input), bypassing the real GarbageCollectionFinish callback - lets a test
 // build an arbitrary rising/flat heap-usage-over-time history without
 // waiting on real GCs. timestampNs values are only ever compared against
-// each other (secondsToOOM()'s own ringThirdsStats() deltas), never against
+// each other (secondsToOOM()'s own ringWindowStats() deltas), never against
 // a real wall clock, so a test may use any self-consistent, strictly
 // increasing sequence.
 extern "C" DLLEXPORT void JNICALL

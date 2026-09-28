@@ -1126,7 +1126,7 @@ protected:
 };
 
 // Fewer than KLASS_POPULATION_MIN_FILL_FOR_TREND (10) heap-floor samples -
-// same "not enough history yet" gate ringThirdsStats() applies to every
+// same "not enough history yet" gate ringWindowStats() applies to every
 // other trend check in this class.
 TEST_F(SecondsToOOMTest, NotEnoughSamplesReturnsNegative) {
     LivenessTracker *tracker = LivenessTracker::instance();
@@ -1205,6 +1205,60 @@ TEST_F(SecondsToOOMTest, RisingFloorProjectsExpectedSeconds) {
     seedRisingFloor(tracker);
 
     EXPECT_NEAR(tracker->secondsToOOM(), 9.0, 1e-6);
+}
+
+// A dip-then-recover window (usage falls for half the window, then rises
+// back to where it started): the full-window fitted-line endpoints nearly
+// agree (byte delta ~0), so the unguarded division would project +inf
+// seconds - silently disabling the urgency ramp from this boundary forever.
+// The boundary must be SKIPPED (no projection from this ring), and the
+// result must be finite. Here the container ring is unavailable (no
+// container limit set), so the heap ring's skip means no projection at all.
+TEST_F(SecondsToOOMTest, DipThenRecoverFloorReturnsNegativeNotInf) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    // Perfectly symmetric V: pairs (i, 9-i) carry equal usage, so the
+    // least-squares fit's slope is exactly 0 in double arithmetic and the
+    // fitted endpoints agree EXACTLY (delta == 0), while the recent half
+    // (indices 5..9: 1500..1900) rises steeply - corroboration passes, the
+    // full-window denominator does not. This is precisely the shape the
+    // zero-denominator guard exists for; an approximately-equal pair would
+    // only produce a huge-but-finite projection instead of the +inf the
+    // guard prevents.
+    static const long shape[] = {1900, 1800, 1700, 1600, 1500,
+                                 1500, 1600, 1700, 1800, 1900};
+    for (int i = 0; i < 10; i++) {
+        tracker->heapFloorRecordForTest((u64)shape[i] * MiB, (u64)i * SEC_NS);
+    }
+    double secs = tracker->secondsToOOM();
+    EXPECT_LT(secs, 0.0)
+        << "a dip-then-recover window must not offer a projection";
+    EXPECT_TRUE(secs > -1e18 && secs < 1e18)
+        << "the projection must be finite, never +inf";
+}
+
+// Odd-length window (11 samples): pins the recent-half boundary of the
+// corroboration pass (ringWindowStats' recent_min boundary is i >= n/2, so
+// for odd n the median sample joins the RECENT half) and the fitted-line
+// endpoint arithmetic (recent_mean at x = n-1). A rising ramp must still
+// project, and the projection must match the even-window scaling of the
+// same 100MiB/s rate - this pins ringWindowStats' two boundary choices
+// (i >= n/2 and endpoint n-1).
+TEST_F(SecondsToOOMTest, OddLengthRisingWindowStillProjects) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(3000 * MiB));
+    // 11 samples, 100MiB apart, one second apart: 1000..2000MiB.
+    for (int i = 0; i < 11; i++) {
+        tracker->heapFloorRecordForTest(1000 * MiB + (u64)i * 100 * MiB,
+                                         (u64)i * SEC_NS);
+    }
+    double secs = tracker->secondsToOOM();
+    // Rising floor, recent fitted endpoint at 2000MiB, headroom 1000MiB at
+    // 100MiB/s -> ~10s. Assert finite, positive, and in the right decade -
+    // exact value depends on the fitted endpoints the regression produces,
+    // which the even-window test above already pins precisely.
+    EXPECT_GT(secs, 0.0);
+    EXPECT_NEAR(secs, 9.0, 1.5);
 }
 
 // The floor's own recent-third mean has already reached the max heap size -

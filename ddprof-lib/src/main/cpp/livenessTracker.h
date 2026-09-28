@@ -103,7 +103,7 @@ typedef struct KlassPopulationEntry {
   // often as a real leak does.
   u8 consecutive_positive;
   // Slope (regression value at the ring's newest sample minus the value at
-  // its oldest sample - see ringThirdsStats, livenessTracker.cpp) as of the
+  // its oldest sample - see ringWindowStats, livenessTracker.cpp) as of the
   // last push, computed and cached by hasQualifyingGrowth() alongside
   // consecutive_positive above - selectLeakCandidates() reads this directly
   // for ranking instead of re-scanning the ring: the ring only changes on
@@ -601,8 +601,11 @@ private:
   // thread (referenceChains.cpp), not the allocation hot path, so the same
   // upcalls flush_table() already makes safely are just as safe there - see
   // that method's own comment for why a third caller needs both bypassing
-  // the early-exit *and* resolution.
-  void cleanup_table(bool force = false, bool allow_resolve = true);
+  // the early-exit *and* resolution. account_epoch=false (track()'s
+  // table-overflow branch) turns the sweep into a pure reaper: no epoch
+  // claim, no survivor aging, no population fold.
+  void cleanup_table(bool force = false, bool allow_resolve = true,
+                     bool account_epoch = true);
 
   void flush_table(std::set<int> *tracked_thread_ids);
 
@@ -755,10 +758,10 @@ private:
   // The sustained-trend gate (this class's own header comment above,
   // "Sustained-trend gate") - both-required growth-magnitude and floor-rise
   // tests, design doc's original "mean of thirds" choice since replaced by
-  // full-window least-squares regression (see ringThirdsStats,
+  // full-window least-squares regression (see ringWindowStats,
   // livenessTracker.cpp - cheap, allocation-free, one pass over the
   // ring, no sorting or extra storage). A single scan
-  // (ringThirdsStats(), livenessTracker.cpp) both derives the pass/fail
+  // (ringWindowStats(), livenessTracker.cpp) both derives the pass/fail
   // result below AND updates entry.cached_slope (regression end value minus
   // start value) for selectLeakCandidates()'s ranking, rather than
   // that method re-scanning the same unchanged ring a moment later. Returns

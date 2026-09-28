@@ -210,6 +210,15 @@
    * and re-emits it on a later dump while the leak candidate is still      \
    * live. */                                                                \
   X(REFERENCE_CHAIN_WRITE_DROPPED, "reference_chain_write_dropped")            \
+  /* LivenessTracker urgency-boost observability (admitForTracking()):      \
+   * ADMITS counts every 100% admission made while _urgent_tracking is set  \
+   * and the table is below its cap; BACKED_OFF counts admissions at the    \
+   * high-water mark, where the boost degrades to watched-tid-only and the  \
+   * thread falls back to the configured subsample ratio. A persistently    \
+   * rising BACKED_OFF means the urgency window is outpacing the cleanup    \
+   * reaper. */                                                              \
+  X(LIVENESS_URGENT_BOOST_ADMITS, "liveness_urgent_boost_admits")             \
+  X(LIVENESS_URGENT_BOOST_BACKED_OFF, "liveness_urgent_boost_backed_off")     \
   /* FrontierTable's own calloc/realloc-backed storage (referenceChains.cpp) -   \
    * outside NMT's visibility since it bypasses os::malloc, so this is the only \
    * way to attribute its native RSS contribution. */                          \
