@@ -12,6 +12,7 @@
 #include "objectSampler.h"
 #include "pidController.h"
 #include "profiler.h"
+#include "samplerPerf.h"
 #include "threadLocalData.h"
 #include <jni.h>
 #include <limits.h>
@@ -66,6 +67,12 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   if (jvmti == NULL) {
     return;
   }
+
+  // Declared past the inactive/no-jvmti bail-outs so only real allocation
+  // callbacks are counted. Note this window encloses LivenessTracker::track(),
+  // so sampler_ticks.alloc contains sampler_ticks.liveness -- liveness is a
+  // nested breakdown of alloc, not a sibling to add to it.
+  SAMPLER_PERF_PROBE(SP_ALLOC);
 
   int tid = ProfiledThread::currentTid();
 

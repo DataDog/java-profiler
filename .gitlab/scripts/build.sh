@@ -60,3 +60,17 @@ set -x
 
 mkdir -p "${REPO_ROOT}/libs"
 cp -r "${REPO_ROOT}/ddprof-lib/build/native/release/META-INF/native-libs/"* "${REPO_ROOT}/libs/"
+
+# Assert what the artifact requires from the host that will load it. musl
+# targets carry no glibc symbol versions, so the check does not apply to them.
+case "${TARGET}" in
+  *-musl)
+    echo "Skipping ABI floor check for ${TARGET} (musl)"
+    ;;
+  *)
+    source "${REPO_ROOT}/.gitlab/config.env"
+    "${HERE}/check-abi-floor.sh" \
+      "${REPO_ROOT}/libs/${TARGET}/libjavaProfiler.so" \
+      "${SHIPPED_GLIBC_FLOOR}"
+    ;;
+esac

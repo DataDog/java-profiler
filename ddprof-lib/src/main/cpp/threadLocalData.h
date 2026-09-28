@@ -14,6 +14,7 @@
 #include "threadLocal.h"
 #include "threadState.h"
 #include "unwindStats.h"
+#include "xorshift.h"
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -89,7 +90,7 @@ private:
   u64 _park_block_token;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
-  volatile uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
+  volatile int _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
   // Debug only due to memory overhead
   DEBUG_ONLY(UnwindFailures _unwind_failures;)
   // xorshift64 PRNG state for compile-time fault injection (faultInjection.h).
@@ -114,15 +115,19 @@ private:
         _otel_ctx_initialized(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {
 #ifdef __FAULT_INJECTION__
-    // Seed like PoissonSampler: instance address XOR a hash of the tid, forced
-    // non-zero (0 is a fixed point of xorshift64). 0x9e37... is the Knuth
-    // multiplicative constant (see common.h KNUTH_MULTIPLICATIVE_CONSTANT).
-    _fi_rng = ((u64)(uintptr_t)this) ^ (0x9e3779b97f4a7c15ULL * (u64)tid);
-    if (_fi_rng == 0) _fi_rng = 1;
+    _fi_rng = xorshift::seed((u64)(uintptr_t)this, (u64)tid);
 #endif
   };
 
-  virtual ~ProfiledThread() { }
+  virtual ~ProfiledThread() {
+    // Mirrors unclaimAndReset()'s otel_thread_ctx_v1 null-out (see
+    // threadLocalData.cpp) for the sibling teardown path: this runs when
+    // ThreadLocalDataPool::release() (called from freeValue() or
+    // deleteForTest()) reports the instance isn't pool-owned and falls back
+    // to `delete pt` instead. Always the current thread's own ProfiledThread,
+    // for the same reason given there.
+    __atomic_store_n(&otel_thread_ctx_v1, nullptr, __ATOMIC_SEQ_CST);
+  }
 
   inline bool isClaimed() const {
     return (__atomic_load_n(&_misc_flags, __ATOMIC_RELAXED) & FLAG_CLAIMED) == FLAG_CLAIMED;
@@ -192,7 +197,7 @@ public:
     u64 park_block_token;
     int filter_slot_id;
     uint8_t init_window;
-    uint8_t signal_depth;
+    int signal_depth;
     bool in_critical_section;
     bool otel_ctx_initialized;
     u64 otel_local_root_span_id;
@@ -314,21 +319,18 @@ public:
 
   // Signal-handler depth counter used by SignalHandlerScope (guards.h).
   // Atomic operations to prevent another signal interrupt load-modify-store.
-  inline uint8_t signalDepth() const { return __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED); }
+  inline int signalDepth() const { return __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED); }
   inline void enterSignalScope()    { __atomic_fetch_add(&_signal_depth, 1, __ATOMIC_RELAXED); }
-  inline void exitSignalScope()     { if (signalDepth() > 0) __atomic_fetch_sub(&_signal_depth, 1, __ATOMIC_RELAXED); }
+  inline void exitSignalScope()     {
+    int depth = __atomic_fetch_sub(&_signal_depth, 1, __ATOMIC_RELAXED);
+    assert(depth > 0 && "Unmatched exitSignalScope");
+  }
 
 #ifdef __FAULT_INJECTION__
-  // One xorshift64 step (Marsaglia 2003), matching PoissonSampler::nextExp.
   // Plain member r/w is AS-safe: signals are delivered to the owning thread.
-  inline u64 nextFiRandom() {
-    _fi_rng ^= _fi_rng << 13;
-    _fi_rng ^= _fi_rng >> 7;
-    _fi_rng ^= _fi_rng << 17;
-    return _fi_rng;
-  }
+  inline u64 nextFiRandom() { return xorshift::next(_fi_rng); }
   // Test hook: force a deterministic PRNG stream for rate/recovery assertions.
-  inline void setFiRng(u64 seed) { _fi_rng = seed ? seed : 1; }
+  inline void setFiRng(u64 seed) { _fi_rng = xorshift::nonZero(seed); }
 #endif
 
 #ifdef DEBUG

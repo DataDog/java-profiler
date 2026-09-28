@@ -20,11 +20,10 @@ jint MethodInfo::getLineNumber(jint bci) {
 
     int i = 1;
     while (i < _line_number_table->_size &&
-           bci >= ((jvmtiLineNumberEntry *)_line_number_table->_ptr)[i]
-                      .start_location) {
+           bci >= (_line_number_table->_table)[i].start_location) {
       i++;
     }
-    return ((jvmtiLineNumberEntry *)_line_number_table->_ptr)[i - 1]
+    return (_line_number_table->_table)[i - 1]
         .line_number;
 }
 

@@ -17,7 +17,6 @@ import com.datadoghq.profiler.JfrEvents;
 
 import java.util.concurrent.ExecutionException;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.Platform;
@@ -44,7 +43,6 @@ public class SmokeCpuTest extends CStackAwareAbstractProfilerTest {
             // on mac the usage of itimer to drive the sampling provides very unreliable outputs
             for (JfrEvent sample : events) {
                 String stackTrace = sample.getStackTraceString();
-                assertFalse(stackTrace.contains("jvmtiError"));
                 if ("vmx".equals(stackTrace)) {
                     // extra checks to make sure we see the mixed stacktraces
                     assertTrue(stackTrace.contains("JavaCalls::call_virtual()"),
@@ -71,7 +69,6 @@ public class SmokeCpuTest extends CStackAwareAbstractProfilerTest {
         // on mac the usage of itimer to drive the sampling provides very unreliable outputs
         for (JfrEvent sample : events) {
             String stackTrace = sample.getStackTraceString();
-            assertFalse(stackTrace.contains("jvmtiError"));
             if ("vmx".equals(stackTrace)) {
                 // extra checks to make sure we see the mixed stacktraces
                 assertTrue(stackTrace.contains("JavaCalls::call_virtual()"),

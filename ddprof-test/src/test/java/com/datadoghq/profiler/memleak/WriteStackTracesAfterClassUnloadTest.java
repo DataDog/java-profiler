@@ -26,11 +26,12 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * Regression test for a SIGSEGV in {@code Profiler::processCallTraces} during
  * {@code Recording::writeStackTraces} triggered by class unload.
  *
- * <p><b>Bug:</b> {@code MethodInfo::_line_number_table->_ptr} held a raw pointer to JVMTI-allocated
- * memory returned by {@code GetLineNumberTable}. When the underlying class was unloaded, the JVM
- * freed that memory, leaving {@code _ptr} dangling. The crash manifested when
- * {@code MethodInfo::getLineNumber(bci)} dereferenced the freed memory while
- * {@code writeStackTraces} iterated traces that still referenced the now-unloaded method.
+ * <p><b>Bug:</b> {@code MethodInfo::_line_number_table->_table} held a raw pointer to JVMTI-allocated
+ * memory returned by {@code GetLineNumberTable}, with no validation of that pointer at capture
+ * time. When the underlying class was unloaded, the JVM freed that memory, leaving the pointer
+ * dangling. The crash manifested when {@code MethodInfo::getLineNumber(bci)} dereferenced the
+ * freed memory while {@code writeStackTraces} iterated traces that still referenced the
+ * now-unloaded method.
  *
  * <p><b>Test scenario (timing-sensitive — catches the bug aggressively under ASan):</b>
  * <ol>
@@ -43,13 +44,18 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *       traces are still in {@code call_trace_storage} when {@code writeStackTraces} runs.</li>
  *   <li>The lambda inside {@code processCallTraces} resolves the unloaded method via
  *       {@code Lookup::resolveMethod} and calls {@code MethodInfo::getLineNumber(bci)} on a
- *       {@code MethodInfo} whose {@code _line_number_table->_ptr} was freed by the JVM →
+ *       {@code MethodInfo} whose {@code _line_number_table->_table} was freed by the JVM →
  *       SIGSEGV without the fix.</li>
  * </ol>
  *
- * <p>With the fix, {@code SharedLineNumberTable} owns a malloc'd copy of the entries
- * (the JVMTI allocation is deallocated immediately at capture time inside
- * {@code Lookup::fillJavaMethodInfo}), so {@code _ptr} stays valid regardless of class unload.
+ * <p>With the fix, {@code Lookup::fillJavaMethodInfo} validates the JVMTI-returned
+ * (pointer, size) pair once, at capture time (a sanity bound on the size plus a
+ * {@code SafeAccess} readability probe), then holds that exact buffer directly in
+ * {@code SharedLineNumberTable} -- no private copy. Per the JVMTI spec, {@code
+ * GetLineNumberTable()}'s returned array is a fresh, caller-owned allocation decoupled
+ * from the {@code Method}'s lifetime, so once validated it stays readable regardless of
+ * class unload; {@code ~SharedLineNumberTable()} frees it with {@code jvmti->Deallocate()}
+ * (not {@code free()}) only when the row is finally evicted from {@code method_map}.
  *
  * <p><b>Limitations:</b>
  * <ul>
@@ -108,7 +114,9 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractDynamicClassTe
         // 3. Immediately dump several times. The first dump runs writeStackTraces over
         //    the trace_buffer that still contains the unloaded method's traces; subsequent
         //    dumps cover the rotation tail. With the bug, getLineNumber dereferences the
-        //    freed JVMTI memory → SIGSEGV. With the fix, _ptr is a malloc'd copy → safe.
+        //    freed JVMTI memory → SIGSEGV. With the fix, the buffer was validated once at
+        //    capture time and (per the JVMTI spec) is decoupled from the Method's lifetime,
+        //    so it stays readable → safe.
         for (int i = 0; i < 4; i++) {
           profiler.dump(dumpFile);
           Thread.sleep(10);

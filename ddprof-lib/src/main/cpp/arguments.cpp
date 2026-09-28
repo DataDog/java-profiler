@@ -18,6 +18,7 @@
 #include "arguments.h"
 #include "vmEntry.h"
 
+#include <algorithm>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -81,6 +82,24 @@ static const Multiplier UNIVERSAL[] = {
 //                          and keep the liveness track of 10% of the allocation
 //                          samples
 //     generations        - track surviving generations
+//     referencechains[=BOOL[:hops=N][:budget=N][:ttl=N][:framecap=N][:pausetarget=N][:painbudget=N][:firstpassbudget=N]]
+//                        - (off by default) tag/BFS-walk live-heap
+//                          samples' referrer chains back toward a GC root.
+//                          pausetarget=N (ms) is the pause-time-SLO ceiling
+//                          the engine's pacing controller adapts the effective
+//                          budget/cadence toward. painbudget=N (percent)
+//                          bounds how much
+//                          wall-clock time a *restarted* search (one begun
+//                          after a prior search already completed/abandoned)
+//                          may spend on average (the restarted-search pain budget).
+//                          firstpassbudget=N overrides just the search's
+//                          one-shot, root-seeded first pass's edge budget
+//                          (default 0 - the engine auto-scales it from
+//                          budget=N instead) since that pass alone
+//                          decides which GC roots ever enter the frontier at
+//                          all, unlike every later pass's cheap, incremental
+//                          per-node expansion.
+//                          Sub-options are placeholders pending future tuning
 //     lightweight[=BOOL] - enable lightweight profiling - events without
 //     stacktraces (default: true)
 //     remotesym[=BOOL]   - enable remote symbolication for native frames
@@ -99,6 +118,32 @@ static const Multiplier UNIVERSAL[] = {
 //     allkernel          - include only kernel-mode events
 //     alluser            - include only user-mode events
 //
+
+// Parses the y/yes,t/true,1 vs n/no,f/false,0 boolean convention. A NULL value
+// (bare option, no '=') enables the flag, matching the documented no-value-means-
+// enable convention shared by every boolean option in this file. Returns false
+// (leaving out untouched) when a non-NULL value matches none of the above, so the
+// caller can raise "Invalid <option> value" instead of coercing garbage to a
+// default. Takes out by reference since every caller passes a real bool.
+static bool parseBoolOption(const char *value, bool &out) {
+  if (value == nullptr) {
+    out = true;
+    return true;
+  }
+  if (strcmp(value, "y") == 0 || strcmp(value, "yes") == 0 ||
+      strcmp(value, "t") == 0 || strcmp(value, "true") == 0 ||
+      strcmp(value, "1") == 0) {
+    out = true;
+    return true;
+  }
+  if (strcmp(value, "n") == 0 || strcmp(value, "no") == 0 ||
+      strcmp(value, "f") == 0 || strcmp(value, "false") == 0 ||
+      strcmp(value, "0") == 0) {
+    out = false;
+    return true;
+  }
+  return false;
+}
 
 Error Arguments::parse(const char *args) {
   if (args == NULL) {
@@ -236,7 +281,9 @@ Error Arguments::parse(const char *args) {
       }
 
       CASE("generations")
-      _gc_generations = value != NULL && strcmp(value, "true") == 0;
+      if (!parseBoolOption(value, _gc_generations)) {
+        msg = "Invalid generations value";
+      }
       if (_gc_generations && _memory <= 0) {
         _memory =
             4 * 1024 *
@@ -308,8 +355,10 @@ Error Arguments::parse(const char *args) {
           _cstack = CSTACK_VM;
           _features.mixed = 1;
           _features.carrier_frames = 1;
-        } else {
+        } else if (strcmp(value, "no") == 0) {
           _cstack = CSTACK_NO;
+        } else {
+          msg = "Invalid cstack value";
         }
       }
 
@@ -326,104 +375,48 @@ Error Arguments::parse(const char *args) {
       }
 
       CASE("lightweight")
-      if (value != NULL) {
-        switch (value[0]) {
-        case 'y': // yes
-        case 't': // true
-          _lightweight = true;
-          break;
-        default:
-          _lightweight = false;
-        }
+      if (value != NULL && !parseBoolOption(value, _lightweight)) {
+        msg = "Invalid lightweight value";
       }
 
       CASE("mcleanup")
-      if (value != NULL) {
-        switch (value[0]) {
-        case 'n': // no
-        case 'f': // false
-        case '0': // 0
-          _enable_method_cleanup = false;
-          break;
-        case 'y': // yes
-        case 't': // true
-        case '1': // 1
-        default:
-          _enable_method_cleanup = true;
-        }
-      } else {
-        // No value means enable
-        _enable_method_cleanup = true;
+      // No value means enable.
+      if (!parseBoolOption(value, _enable_method_cleanup)) {
+        msg = "Invalid mcleanup value";
       }
 
       CASE("remotesym")
-      if (value != NULL) {
-        switch (value[0]) {
-        case 'n': // no
-        case 'f': // false
-        case '0': // 0
-          _remote_symbolication = false;
-          break;
-        case 'y': // yes
-        case 't': // true
-        case '1': // 1
-        default:
-          _remote_symbolication = true;
-        }
-      } else {
-        // No value means enable
-        _remote_symbolication = true;
+      // No value means enable.
+      if (!parseBoolOption(value, _remote_symbolication)) {
+        msg = "Invalid remotesym value";
       }
 
       CASE("jvmtistacks")
-      if (value != NULL) {
-        switch (value[0]) {
-        case 'y': // yes
-        case 't': // true
-        case '1': // 1
-          _jvmtistacks = true;
-          break;
-        default:
-          _jvmtistacks = false;
-        }
-      } else {
-        _jvmtistacks = true;
+      if (!parseBoolOption(value, _jvmtistacks)) {
+        msg = "Invalid jvmtistacks value";
       }
 
       CASE("wallprecheck")
-      if (value != NULL) {
-        _wall_precheck = strcmp(value, "false") != 0 && strcmp(value, "0") != 0;
-      } else {
-        // No value means enable
-        _wall_precheck = true;
+      // No value means enable.
+      if (!parseBoolOption(value, _wall_precheck)) {
+        msg = "Invalid wallprecheck value";
       }
 
       CASE("wallsampler")
       if (value != NULL) {
-          switch (value[0]) {
-              case 'j':
-                  _wallclock_sampler = JVMTI;
-                  break;
-              case 'a':
-              default:
-                  _wallclock_sampler = ASGCT;
+          if (strcasecmp(value, "jvmti") == 0) {
+              _wallclock_sampler = JVMTI;
+          } else if (strcasecmp(value, "asgct") == 0) {
+              _wallclock_sampler = ASGCT;
+          } else {
+              msg = "Invalid wallsampler value";
           }
       }
 
       CASE("nosanity")
-      if (value != NULL) {
-        switch (value[0]) {
-        case 'n': // no
-        case 'f': // false
-        case '0': // 0
-          _skip_sanity_checks = false;
-          break;
-        default:
-          _skip_sanity_checks = true;
-        }
-      } else {
-        // A bare 'nosanity' with no value skips the checks.
-        _skip_sanity_checks = true;
+      // A bare 'nosanity' with no value skips the checks.
+      if (!parseBoolOption(value, _skip_sanity_checks)) {
+        msg = "Invalid nosanity value";
       }
 
       CASE("nativemem")
@@ -444,9 +437,74 @@ Error Arguments::parse(const char *args) {
         _nativesocket = true;
       }
 
+      CASE("referencechains")
+      {
+        // Sub-options are colon-delimited key=value pairs after the boolean,
+        // e.g. "referencechains=true:hops=64:budget=2000". Parsed manually
+        // (not via strtok) because the outer arg loop above is itself mid
+        // strtok(..., ",") over the same buffer - a nested strtok call would
+        // clobber its saved state.
+        char *config = value ? strchr(value, ':') : nullptr;
+        if (config) {
+          *(config++) = 0;
+        }
+        // A bare 'referencechains' with no value means enable.
+        if (!parseBoolOption(value, _reference_chains)) {
+          msg = "Invalid referencechains value";
+        }
+        char *cursor = config;
+        while (cursor != NULL) {
+          char *next = strchr(cursor, ':');
+          if (next) {
+            *(next++) = 0;
+          }
+          char *eq = strchr(cursor, '=');
+          if (eq) {
+            *(eq++) = 0;
+            // Floor every sub-option (and ceiling-clamp hops/budget/framecap)
+            // here: a negative hops value would wrap to ~4e9 as u32 and
+            // silently disable the hop cap, a negative budget truncates every
+            // pass to nothing, and unbounded values flow straight into loop
+            // bounds or the frontier table's allocation. One validation boundary
+            // for all sub-options instead of scattered downstream clamps.
+            if (strcasecmp(cursor, "hops") == 0) {
+              _reference_chains_hop_cap =
+                  std::min(std::max(atoi(eq), 1), MAX_REFERENCE_CHAINS_HOP_CAP);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_HOP_CAP;
+            } else if (strcasecmp(cursor, "budget") == 0) {
+              _reference_chains_budget =
+                  std::min(std::max(atoi(eq), 1), MAX_REFERENCE_CHAINS_BUDGET);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_BUDGET;
+            } else if (strcasecmp(cursor, "ttl") == 0) {
+              _reference_chains_ttl_ms = std::max(atol(eq), 0L);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_TTL;
+            } else if (strcasecmp(cursor, "framecap") == 0) {
+              _reference_chains_frontier_cap = std::min(
+                  std::max(atoi(eq), 1), MAX_REFERENCE_CHAINS_FRONTIER_CAP);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_FRONTIER_CAP;
+            } else if (strcasecmp(cursor, "pausetarget") == 0) {
+              _reference_chains_pause_target_ms = std::max(atol(eq), 0L);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_PAUSE_TARGET;
+            } else if (strcasecmp(cursor, "painbudget") == 0) {
+              _reference_chains_pain_budget_percent =
+                  std::min(std::max(atoi(eq), 0), 100);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_PAIN_BUDGET;
+            } else if (strcasecmp(cursor, "firstpassbudget") == 0) {
+              _reference_chains_first_pass_budget = std::min(
+                  std::max(atoi(eq), 0), MAX_REFERENCE_CHAINS_FIRST_PASS_BUDGET);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_FIRST_PASS_BUDGET;
+            } else {
+              _unknown_args.push_back(cursor);
+            }
+          } else if (*cursor != 0) {
+            _unknown_args.push_back(cursor);
+          }
+          cursor = next;
+        }
+      }
+
       DEFAULT()
-      if (_unknown_arg == NULL)
-        _unknown_arg = arg;
+      _unknown_args.push_back(arg);
     }
   }
 

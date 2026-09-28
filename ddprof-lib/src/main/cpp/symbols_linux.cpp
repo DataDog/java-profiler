@@ -284,7 +284,6 @@ struct SharedLibrary {
 };
 
 
-#ifdef __LP64__
 const unsigned char ELFCLASS_SUPPORTED = ELFCLASS64;
 typedef Elf64_Ehdr ElfHeader;
 typedef Elf64_Shdr ElfSection;
@@ -295,28 +294,10 @@ typedef Elf64_Rel  ElfRelocation;
 typedef Elf64_Dyn  ElfDyn;
 #define ELF_R_TYPE ELF64_R_TYPE
 #define ELF_R_SYM  ELF64_R_SYM
-#else
-const unsigned char ELFCLASS_SUPPORTED = ELFCLASS32;
-typedef Elf32_Ehdr ElfHeader;
-typedef Elf32_Shdr ElfSection;
-typedef Elf32_Phdr ElfProgramHeader;
-typedef Elf32_Nhdr ElfNote;
-typedef Elf32_Sym  ElfSymbol;
-typedef Elf32_Rel  ElfRelocation;
-typedef Elf32_Dyn  ElfDyn;
-#define ELF_R_TYPE ELF32_R_TYPE
-#define ELF_R_SYM  ELF32_R_SYM
-#endif // __LP64__
 
 #if defined(__x86_64__)
 #  define R_GLOB_DAT R_X86_64_GLOB_DAT
 #  define R_ABS64 R_X86_64_64
-#elif defined(__i386__)
-#  define R_GLOB_DAT R_386_GLOB_DAT
-#  define R_ABS64 -1
-#elif defined(__arm__) || defined(__thumb__)
-#  define R_GLOB_DAT R_ARM_GLOB_DAT
-#  define R_ABS64 -1
 #elif defined(__aarch64__)
 #  define R_GLOB_DAT R_AARCH64_GLOB_DAT
 #  define R_ABS64 R_AARCH64_ABS64
@@ -575,7 +556,15 @@ void ElfParser::calcVirtualLoadAddress() {
     for (int i = 0; i < _header->e_phnum; i++) {
         ElfProgramHeader* pheader = phdrAt(i);
         if (pheader != NULL && pheader->p_type == PT_LOAD) {
-            _vaddr_diff = _base - pheader->p_vaddr;
+            // p_vaddr is an unrelated virtual address, not an offset within the
+            // _base allocation - subtracting it via pointer arithmetic can wrap
+            // to (or through) a null representation, which UBSan flags even
+            // though the resulting bit pattern is only ever used as an offset
+            // to add back later (at()/base()/dyn_ptr() above). Do the
+            // subtraction in integer space and reinterpret, matching this
+            // file's existing "validate in integer space before forming a
+            // pointer" pattern (see phdrAt() above).
+            _vaddr_diff = (const char*)((uintptr_t)_base - (uintptr_t)pheader->p_vaddr);
             return;
         }
     }
@@ -598,7 +587,9 @@ void ElfParser::parseDynamicSection() {
         uint32_t nsyms = 0;
 
         const char* dyn_start = at(dynamic);
-        const char* dyn_end = dyn_start + dynamic->p_memsz;
+        // at(dynamic) is NULL when dynamic->p_vaddr == 0 - same null-base
+        // pointer-arithmetic UB as the other fixes in this file.
+        const char* dyn_end = (const char*)((uintptr_t)dyn_start + dynamic->p_memsz);
         for (ElfDyn* dyn = (ElfDyn*)dyn_start; dyn < (ElfDyn*)dyn_end; dyn++) {
             switch (dyn->d_tag) {
                 case DT_SYMTAB:
@@ -665,7 +656,11 @@ void ElfParser::parseDynamicSection() {
             loadSymbolTable(symtab, syment * nsyms, syment, strtab, strsz);
         }
 
-        const char* base = this->base();
+        // base() is NULL for ET_EXEC (non-PIE) images - adding r->r_offset to it
+        // via pointer arithmetic is UB (base + r->r_offset on a null base), even
+        // though the intent is just "sym addresses are already absolute". Do the
+        // addition in integer space, same fix as the .plt case above.
+        uintptr_t base_addr = (uintptr_t)this->base();
         if (jmprel != NULL && pltrelsz != 0) {
             // Parse .rela.plt table
             for (size_t offs = 0; offs < pltrelsz; offs += relent) {
@@ -674,7 +669,7 @@ void ElfParser::parseDynamicSection() {
                 if (sym->st_name != 0) {
                     const char* sym_name = strAt(strtab, strsz, sym->st_name);
                     if (sym_name != NULL) {
-                        _cc->addImport((void**)(base + r->r_offset), sym_name);
+                        _cc->addImport((void**)(base_addr + r->r_offset), sym_name);
                     }
                 }
             }
@@ -691,7 +686,7 @@ void ElfParser::parseDynamicSection() {
                     if (sym->st_name != 0) {
                         const char* sym_name = strAt(strtab, strsz, sym->st_name);
                         if (sym_name != NULL) {
-                            _cc->addImport((void**)(base + r->r_offset), sym_name);
+                            _cc->addImport((void**)(base_addr + r->r_offset), sym_name);
                         }
                     }
                 }
@@ -736,7 +731,10 @@ void ElfParser::parseDwarfInfo() {
             for (int i = 0; i < _header->e_phnum; i++) {
                 ElfProgramHeader* ph = phdrAt(i);
                 if (ph != NULL && ph->p_type == PT_LOAD) {
-                    const char* seg_end = at(ph) + ph->p_memsz;
+                    // at(ph) is NULL when ph->p_vaddr == 0 (a real, if rare, case for
+                    // the first LOAD segment of some binaries) - same null-base
+                    // pointer-arithmetic UB as the other fixes in this file.
+                    const char* seg_end = (const char*)((uintptr_t)at(ph) + ph->p_memsz);
                     if (seg_end > image_end) image_end = seg_end;
                 }
             }
@@ -792,7 +790,12 @@ void ElfParser::loadSymbols(bool use_debug) {
             _cc->setPlt(plt->sh_addr, plt->sh_size);
             ElfSection* reltab = findSection(SHT_RELA, ".rela.plt");
             if (reltab != NULL || (reltab = findSection(SHT_REL, ".rel.plt")) != NULL) {
-                addRelocationSymbols(reltab, base() + plt->sh_addr + PLT_HEADER_SIZE);
+                // base() is NULL for ET_EXEC (non-PIE) images - adding a non-zero
+                // offset to it via pointer arithmetic is UB even though the intent
+                // is just "no adjustment needed, sh_addr is already absolute".
+                // Compute in integer space and cast once, same fix as
+                // calcVirtualLoadAddress()'s _vaddr_diff computation above.
+                addRelocationSymbols(reltab, (const char*)((uintptr_t)base() + (uintptr_t)plt->sh_addr + PLT_HEADER_SIZE));
             }
         }
     }

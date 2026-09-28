@@ -387,15 +387,12 @@ void VMStructs::resolveOffsets() {
             && _klass != NULL
             && _lock_func != NULL && _unlock_func != NULL;
 
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(__x86_64__)
     _interpreter_frame_bcp_offset = VM::hotspot_version() >= 11 ? -8 : VM::hotspot_version() == 8 ? -7 : 0;
 #elif defined(__aarch64__)
     _interpreter_frame_bcp_offset = VM::hotspot_version() >= 11 ? -9 : VM::hotspot_version() == 8 ? -7 : 0;
     // The constant is missing on ARM, but fortunately, it has been stable for years across all JDK versions
     _frame_entry_frame_call_wrapper_offset = -64;
-#elif defined(__arm__) || defined(__thumb__)
-    _interpreter_frame_bcp_offset = VM::hotspot_version() >= 11 ? -8 : 0;
-    _frame_entry_frame_call_wrapper_offset = 0;
 #endif
 
     // JDK-8292758 has slightly changed ScopeDesc encoding
@@ -1126,8 +1123,8 @@ HeapUsage HeapUsage::get(bool allow_jmx) {
         if (_heap_usage_func != NULL) {
             // this is the JDK 17+ path
             usage = _heap_usage_func(*(char**)_collected_heap_addr);
-            usage._used_at_last_gc =
-                ((CollectedHeapWrapper *)*(char**)_collected_heap_addr)->_used_at_last_gc;
+            usage._used_at_last_gc = collectedHeapUsedAtLastGc(
+                *(char**)_collected_heap_addr, VM::java_version());
         } else if (_gc_heap_summary_func != NULL) {
             // this is the JDK 11 path
             // we need to collect GCHeapSummary information first

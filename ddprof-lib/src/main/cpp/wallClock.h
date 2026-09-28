@@ -19,6 +19,7 @@
 #include "tsc.h"
 #include "wallClockCandidateSelector.h"
 #include "wallClockCounters.h"
+#include "xorshift.h"
 
 class BaseWallClock : public Engine {
   private:
@@ -66,10 +67,10 @@ class BaseWallClock : public Engine {
 
       // Dither the sampling interval to introduce some randomness and prevent step-locking
       const double stddev = ((double)_interval) / 10.0;  // 10% standard deviation
-      // Set up random engine and normal distribution
-      std::random_device rd;
-      std::mt19937 generator(rd());
-      std::normal_distribution<double> distribution(interval, stddev);
+      // One generator for the life of the loop; the start tick varies the
+      // stream between recordings without needing an entropy source.
+      u64 rng = xorshift::seed((u64)(uintptr_t)this, TSC::ticks());
+
       std::mt19937 candidate_generator;
       if (lazyBackfill) {
         std::random_device candidate_rd;
@@ -97,7 +98,7 @@ class BaseWallClock : public Engine {
       u64 startTime = TSC::ticks();
       WallClockEpochEvent epoch(startTime);
 
-      ReservoirSampler<ThreadType> reservoir(reservoirSize);
+      ReservoirSampler<ThreadType> reservoir(reservoirSize, TSC::ticks());
 
       while (_running.load(std::memory_order_relaxed)) {
         collectThreads(threads);
@@ -169,7 +170,9 @@ class BaseWallClock : public Engine {
         // Get a random sleep duration
         // clamp the random interval to <1,2N-1>
         // the probability of clamping is extremely small, close to zero
-        OS::sleep(std::min(std::max((long int)1, static_cast<long int>(distribution(generator))), ((_interval * 2) - 1)));
+        OS::sleep(std::min(std::max((long int)1,
+                                    static_cast<long int>(xorshift::nextNormal(rng, (double)interval, stddev))),
+                           ((_interval * 2) - 1)));
       }
 
       // `threads` goes out of scope (and frees its buffer) when this function

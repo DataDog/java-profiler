@@ -95,10 +95,6 @@ static const otel_process_ctx_data empty_data = {
     #define __NR_memfd_create 319
   #elif defined(__aarch64__)
     #define __NR_memfd_create 279
-  #elif defined(__arm__)
-    #define __NR_memfd_create 385
-  #elif defined(__i386__)
-    #define __NR_memfd_create 356
   #endif
 #endif
 

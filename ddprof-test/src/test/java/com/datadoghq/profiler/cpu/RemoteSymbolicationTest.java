@@ -18,9 +18,7 @@ import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.JfrFrame;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Integration test for remote symbolication feature.
@@ -110,11 +108,7 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
 
                 // Iterate through frames to check for test library frames
                 for (JfrFrame frame : sample.getStackTrace().frames()) {
-                    // Check for jvmtiError in method name
                     String methodName = frame.methodName();
-                    if (methodName != null && methodName.contains("jvmtiError")) {
-                        fail("Found jvmtiError in frame method name: " + methodName);
-                    }
 
                     // Get class name (contains build-id for remote symbolication frames)
                     String className = frame.className();

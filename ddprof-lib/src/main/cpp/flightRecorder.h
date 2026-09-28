@@ -22,6 +22,7 @@
 #include "common.h"
 #include "countingAllocator.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "dictionary.h"
 #include "stringDictionary.h"
 #include "event.h"
@@ -35,6 +36,7 @@
 #include "vmEntry.h"
 
 class VMSymbol;  // hotspot/vmStructs.h
+class ProfiledThread;
 
 const u64 MAX_JLONG = 0x7fffffffffffffffULL;
 const u64 MIN_JLONG = 0x8000000000000000ULL;
@@ -42,6 +44,40 @@ const int MAX_JFR_EVENT_SIZE = 256;
 const int JFR_EVENT_FLUSH_THRESHOLD = RECORDING_BUFFER_LIMIT;
 const int MAX_VAR64_LENGTH = 10;
 const int MAX_VAR32_LENGTH = 5;
+
+// Chain length Recording::recordReferenceChain() (flightRecorder.cpp) will
+// actually serialize per datadog.ReferenceChain event, independent of
+// the engine's own _hop_cap/frontier-table cap - the frontier table's
+// defensive walk bound is its maxCapacity(), which can run into the tens of
+// thousands of entries, and neither that cap nor _hop_cap is itself
+// range-validated against a buffer-safe maximum (see arguments.cpp's own
+// sub-option parsing). recordReferenceChain() truncates event->_hops to
+// this many entries before writing, so its own worst-case size never
+// depends on trusting either of those upstream caps to stay small - a chain
+// longer than this is still truncated defense-in-depth even if a caller
+// changes those caps later.
+//
+// Derived from the recording buffer's capacity, not a hand-picked constant:
+// each serialized hop costs up to one chain entry (putVar32, <=
+// MAX_VAR32_LENGTH) plus one edge label (putUtf8 = 1 encoding-tag byte + a
+// var32 length prefix + MAX_REFERENCE_CHAIN_EDGE_LABEL payload bytes), and
+// the event's fixed fields cost REFERENCE_CHAIN_EVENT_FIXED_BYTES - so a
+// full-cap event always fits inside RECORDING_BUFFER_LIMIT and the
+// reservation in recordReferenceChain() can never underflow (a fixed 4096
+// allowed a ~438 KB worst case against a 61 KB buffer - a debug assert and
+// a release-mode write past the buffer).
+const int REFERENCE_CHAIN_EVENT_FIXED_BYTES =
+    MAX_VAR32_LENGTH /* multi-byte event size prefix */ +
+    3 * MAX_VAR64_LENGTH /* type id, start_time, target_tag */ +
+    3 * MAX_VAR32_LENGTH /* depth, totalHops, chain count */ +
+    32 /* rootKind string, generous */ +
+    MAX_VAR32_LENGTH /* edges count */;
+const int REFERENCE_CHAIN_EVENT_PER_HOP_BYTES =
+    MAX_VAR32_LENGTH /* chain entry */ +
+    1 + MAX_VAR32_LENGTH + MAX_REFERENCE_CHAIN_EDGE_LABEL /* edge label */;
+const int MAX_REFERENCE_CHAIN_EVENT_HOPS =
+    (RECORDING_BUFFER_LIMIT - REFERENCE_CHAIN_EVENT_FIXED_BYTES) /
+    REFERENCE_CHAIN_EVENT_PER_HOP_BYTES;
 
 #ifndef CONCURRENCY_LEVEL
 const int CONCURRENCY_LEVEL = 16;
@@ -67,12 +103,14 @@ struct CpuTimes {
 class SharedLineNumberTable {
 public:
   int _size;
-  // Owned malloc'd buffer holding a copy of the JVMTI line number table.
-  // Owning the memory (instead of holding the JVMTI-allocated pointer
-  // directly) keeps lifetime independent of class unload.
-  void *_ptr;
+  // The buffer jvmti->GetLineNumberTable() returned, held directly (not a
+  // copy) and freed via jvmti->Deallocate() (see ~SharedLineNumberTable())
+  // so native-memory-tracking accounting stays correct. Per the JVMTI spec
+  // this array is a fresh, caller-owned allocation decoupled from the
+  // Method's lifetime, so holding onto it is safe across class unload.
+  jvmtiLineNumberEntry* _table;
 
-  SharedLineNumberTable(int size, void *ptr) : _size(size), _ptr(ptr) {}
+  SharedLineNumberTable(int size, jvmtiLineNumberEntry *ptr) : _size(size), _table(ptr) {}
   ~SharedLineNumberTable();
 };
 
@@ -171,8 +209,23 @@ public:
     }
   }
 
+  // Pool id for Lookup::_unknown_method, the shared row for frames that could
+  // not be resolved. That row deliberately lives outside this map (see
+  // Lookup::unknownMethod()), so it needs an id that no map entry can ever be
+  // given: drawn from the same counter so it cannot collide, but drawn only
+  // once for the life of the recording and never recycled, since
+  // cleanupUnreferencedMethods() only ever erases -- and frees the ids of --
+  // actual map entries.
+  u32 unknownMethodId() {
+    if (_unknown_method_id == 0) {
+      _unknown_method_id = allocId();
+    }
+    return _unknown_method_id;
+}
+
 private:
   u32 _id_high_water = 0;
+  u32 _unknown_method_id = 0;
   std::vector<u32> _free_ids;
 };
 
@@ -227,6 +280,28 @@ private:
   bool _cpu_monitor_enabled;
   Buffer _cpu_monitor_buf;
   CpuTimes _last_times;
+
+  // Per-category NativeMem state captured immediately AFTER writeCpool(), and
+  // emitted by the following chunk.
+  //
+  // The chunk's own counters are necessarily sampled before serialization: the
+  // chunk header records cpool_offset as the boundary between the event section
+  // and the constant pool, so no event may be appended once writeCpool() has
+  // run. But writeCpool() is where the method map is built and the dictionary
+  // grows -- by two orders of magnitude in a large recording -- so a consumer
+  // reading only the in-chunk values never sees the cost of serialization.
+  //
+  // The post-flush live values are the genuinely new signal here. The
+  // post-flush max is NativeMem::max(cat), a lifetime monotonic high-water
+  // mark that nothing resets in production, so it carries the same
+  // cross-flush attribution ambiguity as native_mem_max_bytes -- a per-flush
+  // peak can only be recovered by a consumer differencing
+  // post_flush_max[N] against the in-chunk native_mem_max_bytes emitted in
+  // chunk N.
+  bool _has_post_flush;
+  long long _post_flush_live[NM_NUM_CATEGORIES];
+  long long _post_flush_max[NM_NUM_CATEGORIES];
+  void capturePostFlushNativeMem();
 
   static float ratio(float value) {
     return value < 0 ? 0 : value > 1 ? 1 : value;
@@ -346,6 +421,9 @@ public:
                                 NativeSocketEvent *event);
   void recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                             ObjectLivenessEvent *event);
+  void recordReferenceChain(Buffer *buf, ReferenceChainEvent *event);
+  void recordReferenceChainAbandoned(Buffer *buf,
+                                     ReferenceChainAbandonedEvent *event);
   void recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
                             LockEvent *event);
   void recordThreadPark(Buffer *buf, int tid, u64 call_trace_id,
@@ -359,6 +437,7 @@ private:
   void cleanupUnreferencedMethods();
 };
 
+class ResolveMethodState;
 class Lookup {
 public:
   Recording *_rec;
@@ -376,12 +455,31 @@ public:
   Dictionary _packages;
   Dictionary _symbols;
 
+  // The single row every frame that could not be resolved collapses onto.
+  //
+  // Deliberately NOT a MethodMap entry: resolveMethod()'s siglongjmp landing pad
+  // hands this row back with crash protection already disarmed, so it must be
+  // reachable without touching the map, whose operator[] allocates a node and
+  // can throw std::bad_alloc.
+  //
+  // Because it is outside the map, the map walk in writeMethods() cannot see it,
+  // so writeMethods() emits it separately. It has to reach the method pool:
+  // writeStackTraces() writes its _key for every frame that resolved to it, and
+  // a _key with no matching pool entry is a dangling reference in the chunk.
+  // Public for that reason, matching _method_map/_symbols above.
+  MethodInfo _unknown_method;
+
 private:
   void fillNativeMethodInfo(MethodInfo *mi, const char *name,
-                            const char *lib_name);
+                            const char *lib_name, ResolveMethodState& state);
   void fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi);
   void cutArguments(char *func);
-  void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time);
+  // Returns false without writing any of mi's fields when there was nothing
+  // to fill (JNI PushLocalFrame failed, or the JVM isn't in JVMTI_PHASE_START/
+  // JVMTI_PHASE_LIVE) -- callers must not mark/allocate a key for mi in that
+  // case. Every other path (including the "<unloaded>" stale-jmethodID
+  // sentinel) fully populates mi and returns true.
+  bool fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time, ResolveMethodState& state);
   bool has_prefix(const char *str, const char *prefix) const {
     return strncmp(str, prefix, strlen(prefix)) == 0;
   }
@@ -408,6 +506,28 @@ private:
   // bytes) returns the sentinel "<unresolved_vtable_receiver>" class_id and
   // increments VTABLE_RECEIVER_RESOLVE_FAILED.
   u32 resolveVTableReceiverCached(void *sym);
+
+  // The MethodMap entry `frame` belongs to. Factored out so resolveMethod()'s
+  // unprotected fast path and fillMethod()'s protected slow path can never
+  // disagree about which entry a frame maps to -- ASGCT_CallFrame's method_id /
+  // native_function_name / packed_remote_frame / method fields are a union, so
+  // the bci branching below is the only thing that gives the payload a meaning.
+  //
+  // Reads the union's *value* only: MethodMap::makeKey() hashes a pointer, it
+  // never dereferences it. So for every bci except BCI_VTABLE_RECEIVER -- whose
+  // class_id the caller must resolve from a VMSymbol* first -- computing a key
+  // touches no VM metadata and cannot fault.
+  unsigned long methodKey(const ASGCT_CallFrame &frame, jmethodID method_id,
+                          jint bci, u32 vtable_class_id);
+  // Resolves and fills in the MethodInfo for `frame`. This is the part that
+  // reads VM metadata and may therefore fault; resolveMethod() wraps it in the
+  // sigsetjmp/siglongjmp window.
+  MethodInfo *fillMethod(ASGCT_CallFrame &frame, jmethodID method_id, jint bci,
+                         ProfiledThread* const prof_thread);
+
+  // Materializes _unknown_method for this dump (filling it on first use) and
+  // returns it.
+  MethodInfo *unknownMethod();
 
 public:
   Lookup(Recording *rec, MethodMap *method_map, StringDictionary *classes)
@@ -458,6 +578,24 @@ public:
                             const char *value, const char *unit);
 
   void recordHeapUsage(int lock_index, long value, bool live);
+
+  // Mirrors recordHeapUsage()'s shape exactly - ReferenceChainAbandonedEvent
+  // is not stack-sample-shaped (no tid/call_trace_id), same as HeapUsage.
+  // Called from Profiler::writeReferenceChainAbandoned() (profiler.cpp),
+  // wired from Profiler::dump() the same way LivenessTracker::flush() is.
+  void recordReferenceChainAbandoned(int lock_index,
+                                     ReferenceChainAbandonedEvent *event);
+
+  // Mirrors recordReferenceChainAbandoned() above exactly, for
+  // ReferenceChainEvent instead. Called from Profiler::writeReferenceChain()
+  // (profiler.cpp), itself called from Profiler::dump()'s drain loop over
+  // the engine's resolved-chain cache snapshot: the BFS
+  // scheduling thread only caches resolved chains and each dump re-emits
+  // the cache, so chain events
+  // are written on dump()'s own thread, not from the tracker thread, and
+  // unlike recordReferenceChainAbandoned() (unbounded retry budget per
+  // event) the batch shares one deadline (writeReferenceChain()'s comment).
+  void recordReferenceChain(int lock_index, ReferenceChainEvent *event);
 };
 
 #endif // _FLIGHTRECORDER_H

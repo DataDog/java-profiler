@@ -34,6 +34,17 @@
 //
 //   return INJECT_FAULT_BOOL_LIKELY(dlopen(name, flags) != nullptr);
 //
+// INJECT_CRASH_* goes at the same kind of site as INJECT_FAULT_ADDRESS_*, but it
+// is a statement rather than an expression wrapper: it takes no argument and
+// yields no value.  Instead of substituting a poison address for the caller to
+// dereference -- which a downstream recovery path (SafeAccess safefetch, a
+// sigsetjmp/siglongjmp window) may absorb without a signal ever being raised --
+// it raises the SIGSEGV itself, right at the call site.  Use it to exercise the
+// sigsetjmp/siglongjmp window enclosing the call site, or the top-level crash
+// handler where there is no such window:
+//
+//   INJECT_CRASH_LIKELY();
+//
 // The four tiers name their firing frequency: RARE 0.01%, UNLIKELY 0.1%,
 // LIKELY 1%, HIGH 10%.  See faultInjection.cpp for the poison-address and PRNG
 // details.
@@ -42,6 +53,14 @@
 #define _FAULT_INJECTION_H
 
 #include <cassert>
+
+#if defined(__FAULT_INJECTION__) || defined(DEBUG) 
+// Deliberately dereferences nullptr to raise a real SIGSEGV right now,
+// unconditionally (no probability gate, no shouldFire() draw). For exercising
+// crash-handler / recovery paths on demand (e.g. from a test), never from a
+// production code path.
+[[noreturn]] void crashNow();
+#endif 
 
 #ifdef __FAULT_INJECTION__
 
@@ -88,6 +107,22 @@ inline T injectAddress(T ptr, u64 threshold, const char* fn) {
   return ptr;
 }
 
+// Like injectAddress(), but instead of substituting a poison pointer into the
+// expression (leaving recovery to whatever the caller does with it downstream
+// -- SafeAccess safefetch, walkVM's sigsetjmp/siglongjmp), this crashes right
+// here, right now, when the tier fires. Whatever encloses the call site is what
+// gets exercised: the nearest sigsetjmp/siglongjmp window if there is one, the
+// top-level crash handler otherwise.
+//
+// Unlike injectAddress() this wraps no expression -- it takes no pointer and
+// returns nothing, so it is a statement, not a drop-in for an
+// INJECT_FAULT_ADDRESS_* site. It does nothing when the tier does not fire.
+inline void injectCrash(u64 threshold, const char* fn) {
+    if (__builtin_expect(shouldFire(threshold, fn), 0)) {
+        crashNow();
+    }
+}
+
 // Returns orig unchanged, or `faulty` when the tier fires. Unlike
 // injectAddress() (which fakes an input about to be dereferenced), this fakes
 // the *outcome* of a call that already ran for real — e.g. making a
@@ -120,6 +155,15 @@ inline T injectValue(T orig, T faulty, u64 threshold, const char* fn) {
 #define INJECT_FAULT_BOOL_HIGH(v) \
     ::faultinj::injectValue((v), false, ::faultinj::PROB_HIGH, __func__)
 
+#define INJECT_CRASH_RARE() \
+    ::faultinj::injectCrash(::faultinj::PROB_RARE, __func__)
+#define INJECT_CRASH_UNLIKELY() \
+    ::faultinj::injectCrash(::faultinj::PROB_UNLIKELY, __func__)
+#define INJECT_CRASH_LIKELY() \
+    ::faultinj::injectCrash(::faultinj::PROB_LIKELY, __func__)
+#define INJECT_CRASH_HIGH() \
+    ::faultinj::injectCrash(::faultinj::PROB_HIGH, __func__)
+
 #else  // __FAULT_INJECTION__ not defined — strict identity, zero cost.
 
 #define INJECT_FAULT_ADDRESS_RARE(ptr)     (ptr)
@@ -131,6 +175,14 @@ inline T injectValue(T orig, T faulty, u64 threshold, const char* fn) {
 #define INJECT_FAULT_BOOL_UNLIKELY(v) (v)
 #define INJECT_FAULT_BOOL_LIKELY(v)   (v)
 #define INJECT_FAULT_BOOL_HIGH(v)     (v)
+
+// ((void)0) rather than nothing, so `INJECT_CRASH_LIKELY();` stays a
+// well-formed expression statement in every context (e.g. as the sole body of
+// an unbraced if/else) instead of collapsing to a stray semicolon.
+#define INJECT_CRASH_RARE()     ((void)0)
+#define INJECT_CRASH_UNLIKELY() ((void)0)
+#define INJECT_CRASH_LIKELY()   ((void)0)
+#define INJECT_CRASH_HIGH()     ((void)0)
 
 #define NO_INJECTION_ASSERT(a) (assert(a))
 

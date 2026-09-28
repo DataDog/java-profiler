@@ -32,6 +32,7 @@
 #include "os.h"
 #include "perfEvents.h"
 #include "safeAccess.h"
+#include "samplerPerf.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
@@ -347,6 +348,14 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
  * symbol resolution during JFR serialization. This approach defers expensive
  * symbol lookups to post-processing while still capturing marks needed for
  * correct stack walk termination.
+ *
+ * The emitted pc_offset inherits whatever addressing convention the
+ * producing walker used for this frame (see StackWalker in stackWalker.h):
+ * walkFP/walkDwarf frames arrive already pointing inside the call
+ * instruction, while walkVM/walkKernel frames arrive unadjusted (their leaf
+ * is the exact interrupted pc, the frames above it raw return addresses).
+ * An off-process symbolizer that applies its own return-address adjustment
+ * therefore double-adjusts the former.
  *
  * @param frame The ASGCT_CallFrame to populate
  * @param pc The program counter address
@@ -1103,8 +1112,8 @@ void Profiler::setupSignalHandlers() {
       // Eagerly initialize the Counters singleton off the signal path, before any
       // handler that increments counters is installed. The crash handler
       // (crashHandlerInternal -> SafeAccess::handle_safefetch) bumps
-      // SAFEFETCH_FAILED / SAFECOPY_FAILED, and other async handlers bump the
-      // STACKWALK* counters. The first touch of the singleton lazily runs
+      // SAFEFETCH_FAILED / SAFESTORE_FAILED / SAFECOPY_FAILED, and other async
+      // handlers bump the STACKWALK* counters. The first touch of the singleton lazily runs
       // aligned_alloc + memset and takes the C++ static-init guard lock — none of
       // which are async-signal-safe. Forcing that construction here guarantees the
       // signal path only ever performs lock-free atomic increments on the
@@ -1597,6 +1606,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   _cstack = args._cstack;
+  _force_jmethodID = args._force_jmethodID;
   if (_cstack == CSTACK_DEFAULT) {
     if (VMStructs::hasStackStructs() && OS::isLinux()) {
       _cstack = CSTACK_VM;
@@ -1642,6 +1652,11 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Always enable library trap to catch wasmtime loading and patch its broken sigaction
   switchLibraryTrap(true);
 
+  if (args._context_attributes.size() > DD_TAGS_CAPACITY) {
+    Log::warn("attributes: %zu attributes requested but capacity is %u; extra attributes will be ignored",
+               args._context_attributes.size(), DD_TAGS_CAPACITY);
+    args._context_attributes.resize(DD_TAGS_CAPACITY);
+  }
   JfrMetadata::reset();
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
@@ -1652,6 +1667,14 @@ Error Profiler::start(Arguments &args, bool reset) {
     _libs->stopRefresher();
     return error;
   }
+
+  // Must precede every signal-based engine's start() below: SamplerPerfProbe
+  // (samplerPerf.h) calls OS::nanotime() from inside the signal handler, and
+  // on macOS that can be the lazy, non-atomic first-call init of
+  // mach_timebase_info (os_macos.cpp). Priming it here, synchronously on this
+  // thread, means it is already initialized by the time any SIGPROF/SIGALRM
+  // can fire.
+  SamplerPerf::primeClock();
 
   int activated = 0;
   if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
@@ -1852,6 +1875,11 @@ Error Profiler::stop() {
     }
   }
 
+  // Per-sampler timing report. A no-op unless built with -PenableSamplerPerf.
+  // Emitted before _jfr.stop() so the same counters are also correct in the
+  // final JFR chunk.
+  SamplerPerf::report();
+
   // writing these out before stopping the JFR recording allows to report the
   // correct counts in the recording
   _thread_info.reportCounters();
@@ -1910,8 +1938,18 @@ Error Profiler::check(Arguments &args) {
 
 void Profiler::updateNativeLibMemStats() {
   // CodeCache here is the profiler's native-symbol tables (not the JVM code
-  // cache). memoryUsage() is a recomputed gauge; read it once and publish the
-  // counters plus the NativeMem gauge (NATIVE_SYMBOLS) as absolutes.
+  // cache). memoryUsage() is now an O(1) read of each library's running
+  // total (see CodeCache::_memory_usage), not a rescan, so reading it here
+  // for the Counters:: mirrors below is cheap even though this itself is
+  // only called from stop()/dump().
+  //
+  // Deliberately does NOT also write NM_NATIVE_SYMBOLS here: that gauge is
+  // maintained incrementally at publish time (CodeCacheArray::add(), an
+  // atomic add per library). Overwriting it with a fresh recompute from this
+  // function -- which can run concurrently with the background refresher
+  // thread publishing a new library, since neither takes a common lock --
+  // would reintroduce exactly the stale-overwrite race the publish-time
+  // accounting was built to avoid.
   const CodeCacheArray& native_libs = _libs->native_libs();
   long long usage = (long long)native_libs.memoryUsage();
   Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
@@ -1921,7 +1959,6 @@ void Profiler::updateNativeLibMemStats() {
   // behind the VM abstraction (0 on J9/Zing).
   Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
                 JVMSupport::runtimeStubsMemoryUsage());
-  NativeMem::setLive(NM_NATIVE_SYMBOLS, usage);
 }
 
 Error Profiler::dump(const char *path, const int length) {

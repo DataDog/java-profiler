@@ -368,6 +368,12 @@ class ProfilerTestPlugin : Plugin<Project> {
                     allArgs.add("-D$key=$value")
                 }
 
+                // Same build/test-results/<taskName> layout Gradle's own Test task uses,
+                // so run_tests_with_retry.sh's TEST-*.xml scan finds musl's results the
+                // same way it finds every other cell's.
+                val reportsDir = project.layout.buildDirectory.dir("test-results/$taskName").get().asFile
+                allArgs.add("-Dtest.reportsDir=${reportsDir.absolutePath}")
+
                 // UNIFIED INTERFACE: Test filter from -Ptests property
                 val testsFilter = project.findProperty("tests") as String?
                 if (testsFilter != null) {

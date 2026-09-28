@@ -7,7 +7,7 @@ plugins {
   java
   `maven-publish`
   signing
-  id("com.github.ben-manes.versions") version "0.61.0"
+  id("com.github.ben-manes.versions") version "0.64.0"
   id("de.undercouch.download") version "5.7.0"
   id("com.datadoghq.native-build")
   id("com.datadoghq.gtest")
@@ -101,7 +101,7 @@ afterEvaluate {
       description = "Assemble the $name build of the library"
       dependsOn(copyExternalLibs)
 
-      if (!project.hasProperty("skip-native")) {
+      if (!PlatformUtils.isNativeSkipped(project)) {
         dependsOn(copyTask)
       }
 

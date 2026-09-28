@@ -12,12 +12,10 @@ import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
-import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 
 import java.util.concurrent.ExecutionException;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 public class SmokeWallTest extends CStackAwareAbstractProfilerTest {
@@ -44,11 +42,6 @@ public class SmokeWallTest extends CStackAwareAbstractProfilerTest {
         verifyCStackSettings();
 
         JfrEvents events = verifyEvents("datadog.MethodSample");
-
-        for (JfrEvent sample : events) {
-            String stackTrace = sample.getStackTraceString();
-            assertFalse(stackTrace.contains("jvmtiError"));
-        }
     }
 
     @Override

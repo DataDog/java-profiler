@@ -60,6 +60,20 @@ end:
 void Libraries::updateSymbols(bool kernel_symbols) {
   Symbols::parseLibraries(&_native_libs, kernel_symbols);
   LibraryPatcher::patch_libraries();
+  // NM_NATIVE_SYMBOLS accounting happens per-library, at the moment each
+  // CodeCache is published (CodeCacheArray::add(), codeCache.h) -- not here.
+  //
+  // A periodic recompute-and-overwrite from this function would have two
+  // problems. First, it would turn every dlopen refresh into an O(total
+  // symbols across every loaded library) rescan instead of O(new symbols
+  // only). Second, a dump()-triggered refresh (Profiler::dump()) can run
+  // concurrently with the background refresher thread's own refresh() --
+  // neither takes a common lock -- so whichever recompute-and-overwrite
+  // finishes last would win even if it started first with a smaller, stale
+  // total. The publish-time NativeMem::record() approach has neither
+  // problem: each publish is an O(1) atomic add of that one library's
+  // already-computed total, so there is nothing to rescan and nothing to
+  // race.
 }
 
 void Libraries::refresh() {
