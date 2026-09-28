@@ -1236,8 +1236,8 @@ TEST_F(LeakTagPoolTest, ReleaseOutsidePoolRangeIsIgnored) {
 //       tid) the owning thread passed - the side table write and the free-
 //       list pop are one atomic unit under the pool lock.
 //   I3. Exhaustion returns 0 (never a garbage/reused tag) once the pool is
-//       empty - forced every round by total demand (threads * burst) far
-//       exceeding the 256-tag pool.
+//       empty - forced every round by slot 0's burst exceeding the whole
+//       pool on its own (scheduling-independent - see kTagChaosBurstMax).
 //   I4. No cross-epoch leak - at every round's quiescence barrier every tag
 //       has been released, so the free count must be back to pool size, and
 //       after the run every info slot reads as not-in-use.
@@ -1253,7 +1253,13 @@ namespace {
 
 constexpr int kTagChaosThreads = 12;
 constexpr int kTagChaosRounds = 100;
-constexpr int kTagChaosBurstMax = 40;
+// Slot 0's burst must exceed the whole pool on its own: under ASan the
+// instrumented acquire path effectively serializes the threads' burst loops,
+// so "total demand > pool" only guarantees exhaustion if one thread can
+// drain the pool single-handedly (a 30-40 burst held by one thread at a time
+// never reaches 256). Others keep small bursts so overlaps still occur when
+// the scheduler interleaves them.
+constexpr int kTagChaosBurstMax = 300;
 
 // Spin barrier: all workers sync at each round boundary. The elected thread
 // (exactly one per generation, the last to arrive) performs the whole-pool
@@ -1303,8 +1309,10 @@ void tagChaosWorker(int slot, TagChaosState &state) {
     const jlong base = tracker->leakTagBaseForTest();
     const int pool = tracker->leakTagPoolSizeForTest();
     // Per-thread LCG so burst sizes vary round to round without <random>
-    // machinery; demand per round is 30..40 per thread, so 12 threads always
-    // overshoot the 256-tag pool and the exhaustion branch (I3) is hit.
+    // machinery. Slot 0 bursts 260..289 (> the 256-tag pool, see
+    // kTagChaosBurstMax's comment - I3 must not depend on scheduling);
+    // the rest burst 30..40 so concurrent partial exhaustion still occurs
+    // when bursts overlap.
     u64 seed = 0x9E3779B97F4A7C15ULL * (u64)(slot + 1);
     auto next = [&seed]() {
         seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
@@ -1313,7 +1321,8 @@ void tagChaosWorker(int slot, TagChaosState &state) {
 
     jlong held[kTagChaosBurstMax];
     for (int round = 0; round < kTagChaosRounds; round++) {
-        int burst = 30 + next() % (kTagChaosBurstMax - 30 + 1);
+        int burst = (slot == 0) ? 260 + next() % 30
+                                : 30 + next() % 11;
         int n = 0;
         for (int k = 0; k < burst; k++) {
             // call_trace_id must be nonzero: 0/0 in _leak_tag_info means
@@ -1394,9 +1403,9 @@ TEST_F(LeakTagPoolTest, ConcurrentAcquireReleaseAcrossEpochsIsConsistent) {
     EXPECT_EQ(0, state.violations.load())
         << "pool invariants broken (first offending slot: "
         << state.violation_slot.load() << ")";
-    // The exhaustion branch must actually have been exercised (I3): with 12
-    // threads bursting 30..40 tags into a 256-tag pool every round, a run
-    // without a single 0 return would mean the bursts never contended.
+    // The exhaustion branch must actually have been exercised (I3): slot 0's
+    // burst alone exceeds the pool every round, so a run without a single 0
+    // return would mean acquireLeakTag() never observed an empty free list.
     EXPECT_GT(state.exhausted_hits.load(), 0)
         << "pool exhaustion never hit - chaos did not oversubscribe";
 
