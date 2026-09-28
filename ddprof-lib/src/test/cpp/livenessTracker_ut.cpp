@@ -17,8 +17,12 @@
 #include <gtest/gtest.h>
 #include "livenessTracker.h"
 #include "../../main/cpp/gtest_crash_handler.h"
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <thread>
+#include <vector>
 
 // Test name for crash handler
 static constexpr char LIVENESS_TRACKER_TEST_NAME[] = "LivenessTrackerTest";
@@ -1142,8 +1146,11 @@ TEST_F(SecondsToOOMTest, FloorAtMaxHeapReturnsZero) {
 class LeakTagPoolTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
         LivenessTracker::instance()->leakTagPoolResetForTest();
     }
+
+    void TearDown() override { restoreDefaultSignalHandlers(); }
 };
 
 TEST_F(LeakTagPoolTest, AcquireReturnsTagsInLeakRange) {
@@ -1205,6 +1212,221 @@ TEST_F(LeakTagPoolTest, ReleaseOutsidePoolRangeIsIgnored) {
 
     EXPECT_EQ(free_before, tracker->leakTagFreeCountForTest())
         << "out-of-range releases must not corrupt the free list";
+}
+
+// ---------------------------------------------------------------------------
+// C1 chaos: concurrent acquire/release across forced epoch rotations. The
+// single-threaded tests above pin the sequential mechanics; this one attacks
+// the dedicated _leak_tag_pool_lock itself - in production acquireLeakTag()
+// runs under the SHARED table lock (tagLeakInstances, BFS poll thread) while
+// releaseLeakTag() runs under the EXCLUSIVE one (cleanup_table, GC-callback
+// thread), so the pool lock is the ONLY thing serializing the LIFO free list
+// once a second shared-lock mutator exists (see acquireLeakTag()'s own
+// comment - that is the regression "Serialize the leak-tag pool" fixed).
+//
+// Each worker round models one GC epoch: the thread acquires a burst of tags
+// (holding several at once, like one table's worth of tagged instances),
+// verifies ownership, then releases everything before a full-quiescence
+// barrier. Invariants checked:
+//   I1. No tag to two live owners - an external per-tag owner registry
+//       (CAS -1 -> slot on acquire, slot -> -1 on release) never sees a tag
+//       already owned by another live thread. This is what breaks if the
+//       pool lock stops serializing the pop/push pair.
+//   I2. getLeakTagInfo() on a held tag reports exactly the (call_trace_id,
+//       tid) the owning thread passed - the side table write and the free-
+//       list pop are one atomic unit under the pool lock.
+//   I3. Exhaustion returns 0 (never a garbage/reused tag) once the pool is
+//       empty - forced every round by total demand (threads * burst) far
+//       exceeding the 256-tag pool.
+//   I4. No cross-epoch leak - at every round's quiescence barrier every tag
+//       has been released, so the free count must be back to pool size, and
+//       after the run every info slot reads as not-in-use.
+//   I5. The free list carries no duplicates - after the chaos, a sequential
+//       full drain must yield all pool_size tags exactly once (a duplicated
+//       LIFO push would surface here as a missing/duplicate tag) and the
+//       pool must then be exactly exhausted.
+//
+// Invariant failures are recorded in atomics and asserted after join: gtest
+// EXPECT_* is not safe to call from non-main threads. Run under testTsan:
+// the pool lock's acquire/release pairing is what TSan validates here.
+namespace {
+
+constexpr int kTagChaosThreads = 12;
+constexpr int kTagChaosRounds = 100;
+constexpr int kTagChaosBurstMax = 40;
+
+// Spin barrier: all workers sync at each round boundary. The elected thread
+// (exactly one per generation, the last to arrive) performs the whole-pool
+// quiescence assertion while the others wait, so the count check cannot race
+// the next round's acquires.
+class TagChaosBarrier {
+public:
+    explicit TagChaosBarrier(int n) : n_(n) {}
+    bool wait() { // true for exactly the one caller that closes the generation
+        int gen = generation_.load(std::memory_order_acquire);
+        int arrived = count_.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (arrived == n_) {
+            count_.store(0, std::memory_order_relaxed);
+            generation_.fetch_add(1, std::memory_order_release);
+            return true;
+        }
+        while (generation_.load(std::memory_order_acquire) == gen) {
+            std::this_thread::yield();
+        }
+        return false;
+    }
+
+private:
+    const int n_;
+    std::atomic<int> count_{0};
+    std::atomic<int> generation_{0};
+};
+
+struct TagChaosState {
+    // owner[i]: -1 free, else the worker slot that holds tag base+i.
+    std::atomic<int> *owner;
+    TagChaosBarrier *barrier;
+    std::atomic<int> violations{0};
+    std::atomic<int> violation_slot{-1};
+    std::atomic<int> exhausted_hits{0};
+};
+
+void tagChaosRecordViolation(TagChaosState &state, int slot) {
+    state.violations.fetch_add(1, std::memory_order_relaxed);
+    int nobody = -1;
+    state.violation_slot.compare_exchange_strong(nobody, slot,
+                                                 std::memory_order_relaxed);
+}
+
+void tagChaosWorker(int slot, TagChaosState &state) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    const jlong base = tracker->leakTagBaseForTest();
+    const int pool = tracker->leakTagPoolSizeForTest();
+    // Per-thread LCG so burst sizes vary round to round without <random>
+    // machinery; demand per round is 30..40 per thread, so 12 threads always
+    // overshoot the 256-tag pool and the exhaustion branch (I3) is hit.
+    u64 seed = 0x9E3779B97F4A7C15ULL * (u64)(slot + 1);
+    auto next = [&seed]() {
+        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        return (int)((seed >> 33) & 0x7fffffff);
+    };
+
+    jlong held[kTagChaosBurstMax];
+    for (int round = 0; round < kTagChaosRounds; round++) {
+        int burst = 30 + next() % (kTagChaosBurstMax - 30 + 1);
+        int n = 0;
+        for (int k = 0; k < burst; k++) {
+            // call_trace_id must be nonzero: 0/0 in _leak_tag_info means
+            // "released/never acquired", so a zero id would fake a free slot.
+            u64 ctid = ((u64)(slot + 1) << 32) | (u64)(round * 1000 + k);
+            jint mytid = (jint)(1000 + slot);
+            jlong tag = tracker->acquireLeakTagForTest(ctid, mytid);
+            if (tag == 0) {
+                state.exhausted_hits.fetch_add(1, std::memory_order_relaxed);
+                break; // pool empty - legal, stop bursting this round
+            }
+            if (tag < base || tag >= base + pool) {
+                tagChaosRecordViolation(state, slot);
+                break;
+            }
+            int idx = (int)(tag - base);
+            int expected = -1;
+            if (!state.owner[idx].compare_exchange_strong(expected, slot,
+                                                          std::memory_order_acq_rel)) {
+                tagChaosRecordViolation(state, slot); // I1: already owned
+            }
+            held[n++] = tag;
+            u64 got_ctid = 0;
+            jint got_tid = 0;
+            if (!tracker->getLeakTagInfo(tag, &got_ctid, &got_tid) ||
+                got_ctid != ctid || got_tid != mytid) {
+                tagChaosRecordViolation(state, slot); // I2: side table mismatch
+            }
+        }
+        // Quiescence: everyone must drop this epoch's tags before the count
+        // check, so releases happen BEFORE the barrier, acquires after.
+        for (int j = 0; j < n; j++) {
+            int idx = (int)(held[j] - base);
+            int expected = slot;
+            if (!state.owner[idx].compare_exchange_strong(expected, -1,
+                                                          std::memory_order_acq_rel)) {
+                tagChaosRecordViolation(state, slot); // I1: owner bookkeeping lost
+            }
+            tracker->releaseLeakTagForTest(held[j]);
+        }
+        bool elected = state.barrier->wait();
+        if (elected) {
+            // I4: every tag of this epoch was released before the barrier -
+            // the free list must be whole again, nothing leaked across epochs.
+            if (tracker->leakTagFreeCountForTest() != pool) {
+                tagChaosRecordViolation(state, slot);
+            }
+        }
+        state.barrier->wait(); // hold workers until the elected check is done
+    }
+}
+
+} // namespace
+
+TEST_F(LeakTagPoolTest, ConcurrentAcquireReleaseAcrossEpochsIsConsistent) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    const int pool = tracker->leakTagPoolSizeForTest();
+    const jlong base = tracker->leakTagBaseForTest();
+
+    std::vector<std::atomic<int>> owner(pool);
+    for (int i = 0; i < pool; i++) {
+        owner[i].store(-1, std::memory_order_relaxed);
+    }
+    TagChaosBarrier barrier(kTagChaosThreads);
+    TagChaosState state;
+    state.owner = owner.data();
+    state.barrier = &barrier;
+
+    std::vector<std::thread> threads;
+    threads.reserve(kTagChaosThreads);
+    for (int slot = 0; slot < kTagChaosThreads; slot++) {
+        threads.emplace_back(tagChaosWorker, slot, std::ref(state));
+    }
+    for (auto &t : threads) {
+        t.join();
+    }
+
+    EXPECT_EQ(0, state.violations.load())
+        << "pool invariants broken (first offending slot: "
+        << state.violation_slot.load() << ")";
+    // The exhaustion branch must actually have been exercised (I3): with 12
+    // threads bursting 30..40 tags into a 256-tag pool every round, a run
+    // without a single 0 return would mean the bursts never contended.
+    EXPECT_GT(state.exhausted_hits.load(), 0)
+        << "pool exhaustion never hit - chaos did not oversubscribe";
+
+    // I4 (final): after full quiescence every info slot reads as released.
+    for (int i = 0; i < pool; i++) {
+        u64 ctid = 0;
+        jint tid = 0;
+        EXPECT_FALSE(tracker->getLeakTagInfo(base + i, &ctid, &tid))
+            << "tag index " << i << " still reports in-use after teardown";
+    }
+
+    // I5: drain the whole pool sequentially - every tag exactly once, then
+    // exact exhaustion. A duplicated free-list entry shows up as a repeated
+    // tag (and, with pool_size acquires total, as some index never seen).
+    std::vector<bool> seen(pool, false);
+    for (int i = 0; i < pool; i++) {
+        jlong tag = tracker->acquireLeakTagForTest((u64)(i + 1), (jint)i);
+        ASSERT_NE(0, tag) << "pool exhausted after only " << i << " acquires";
+        int idx = (int)(tag - base);
+        ASSERT_GE(idx, 0);
+        ASSERT_LT(idx, pool);
+        EXPECT_FALSE(seen[idx]) << "tag index " << idx << " handed out twice";
+        seen[idx] = true;
+    }
+    EXPECT_EQ(0, tracker->acquireLeakTagForTest(1, 1))
+        << "pool not exactly exhausted after draining pool_size tags";
+    for (int i = 0; i < pool; i++) {
+        tracker->releaseLeakTagForTest(base + i);
+    }
+    EXPECT_EQ(pool, tracker->leakTagFreeCountForTest());
 }
 
 // ---------------------------------------------------------------------------
