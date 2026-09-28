@@ -259,36 +259,25 @@ static void recordUnwoundPc(WalkPc& walk_pc, const void* pc) {
 #endif
 }
 
-// Where a walk starts, and what the starting pc actually is. The pc and its
-// nature are one decision rather than two independent arguments: a ucontext
-// carries the exact interrupted address, while callerPC() yields a real return
-// address on every architecture whose CALLER_PC_IS_RETURN_ADDRESS says so.
-// Kept in one place so a future caller cannot pick a register set from one
-// branch and a nature from the other.
-struct WalkVMSeed {
-    void* ucontext;
-    const void* pc;
-    bool pc_is_return_address;
-    uintptr_t sp;
-    uintptr_t fp;
-};
-
-static WalkVMSeed walkVMSeed(void* ucontext) {
-    if (ucontext == NULL) {
-        return {&empty_ucontext, callerPC(), CALLER_PC_IS_RETURN_ADDRESS,
-                (uintptr_t)callerSP(), (uintptr_t)callerFP()};
-    }
-    HotspotStackFrame frame(ucontext);
-    return {ucontext, (const void*)frame.pc(), /*pc_is_return_address=*/false,
-            frame.sp(), frame.fp()};
-}
-
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type, int lock_index, bool* truncated) {
-    WalkVMSeed seed = walkVMSeed(ucontext);
-    return walkVM(seed.ucontext, frames, max_depth, features, event_type,
-                  seed.pc, seed.pc_is_return_address, seed.sp, seed.fp,
-                  lock_index, truncated);
+    // callerPC/callerSP/callerFP describe whichever frame evaluates them --
+    // they are __builtin_return_address/__builtin_frame_address underneath --
+    // so they have to be read here, in the function whose caller the walk is
+    // meant to start from. Moving them into a helper seeds the walk one frame
+    // too deep wherever that helper is not inlined, which is precisely the
+    // debug and sanitizer builds: the walk then burns a profiler frame before
+    // reaching the MARK_JAVA_PROFILER boundary, and a shallow malloc/socket
+    // sample can run out of depth before it gets there. Keep them inline.
+    if (ucontext == NULL) {
+        return walkVM(&empty_ucontext, frames, max_depth, features, event_type,
+                      callerPC(), CALLER_PC_IS_RETURN_ADDRESS,
+                      (uintptr_t)callerSP(), (uintptr_t)callerFP(), lock_index, truncated);
+    }
+    HotspotStackFrame frame(ucontext);
+    return walkVM(ucontext, frames, max_depth, features, event_type,
+                  (const void*)frame.pc(), /*pc_is_return_address=*/false,
+                  frame.sp(), frame.fp(), lock_index, truncated);
 }
 
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
@@ -715,10 +704,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     // Saved return address of the caller frame.
                     walk_pc.setReturnAddress(((const void**)sp)[-FRAME_PC_SLOT]);
                     continue;
-                } else if (const void* prologue_pc = walk_pc.raw();
-                           frame.unwindPrologue(nm, (uintptr_t&)prologue_pc, sp, fp)) {
-                    recordUnwoundPc(walk_pc, prologue_pc);
-                    continue;
+                } else {
+                    const void* prologue_pc = walk_pc.raw();
+                    if (frame.unwindPrologue(nm, (uintptr_t&)prologue_pc, sp, fp)) {
+                        recordUnwoundPc(walk_pc, prologue_pc);
+                        continue;
+                    }
                 }
 
                 Counters::increment(WALKVM_BREAK_COMPILED);
