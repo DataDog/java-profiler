@@ -119,7 +119,15 @@ private:
 #endif
   };
 
-  virtual ~ProfiledThread() { }
+  virtual ~ProfiledThread() {
+    // Mirrors unclaimAndReset()'s otel_thread_ctx_v1 null-out (see
+    // threadLocalData.cpp) for the sibling teardown path: this runs when
+    // ThreadLocalDataPool::release() (called from freeValue() or
+    // deleteForTest()) reports the instance isn't pool-owned and falls back
+    // to `delete pt` instead. Always the current thread's own ProfiledThread,
+    // for the same reason given there.
+    __atomic_store_n(&otel_thread_ctx_v1, nullptr, __ATOMIC_SEQ_CST);
+  }
 
   inline bool isClaimed() const {
     return (__atomic_load_n(&_misc_flags, __ATOMIC_RELAXED) & FLAG_CLAIMED) == FLAG_CLAIMED;
