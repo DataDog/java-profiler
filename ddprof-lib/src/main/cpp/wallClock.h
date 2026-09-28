@@ -73,10 +73,8 @@ class BaseWallClock : public Engine {
 
       std::mt19937 candidate_generator;
       if (lazyBackfill) {
-        std::random_device candidate_rd;
-        std::seed_seq candidate_seed{candidate_rd(), candidate_rd(),
-                                     candidate_rd(), candidate_rd()};
-        candidate_generator.seed(candidate_seed);
+        candidate_generator.seed(
+            xorshift::seed((u64)(uintptr_t)&candidate_generator, TSC::ticks()));
       }
 
       std::vector<ThreadType> threads;
