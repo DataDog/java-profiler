@@ -1093,6 +1093,16 @@ public:
   // live JVM and is therefore out of gtest's reach.
   int klassPopulationSizeForTest() const { return _klass_population_size; }
 
+  // Runs foldKlassCountsLocked()'s JNI-free table work only (the zero-sample
+  // pass over _klass_population): with an empty _klass_count_scratch and
+  // env == nullptr no representative-minting JNI can run, so the zero-sample
+  // pass for klasses absent from this epoch's fold is what gets exercised.
+  void foldKlassCountsZeroSampleForTest(u64 epoch) {
+    _table_lock.lock();
+    foldKlassCountsLocked(nullptr, epoch, /*allow_resolve=*/false);
+    _table_lock.unlock();
+  }
+
   // Leak-tag pool test seams - same "for testing only" rationale as the
   // klass-population seams above: the pool acquire/release/info mechanics
   // are JNI-free pure logic, so they are directly testable; only
