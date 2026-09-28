@@ -1726,7 +1726,7 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
 
 void Recording::writeFrameTypes(Buffer *buf) {
   buf->putVar32(T_FRAME_TYPE);
-  buf->putVar32(7);
+  buf->putVar32(8);
   buf->putVar32(FRAME_INTERPRETED);
   buf->putUtf8("Interpreted");
   buf->putVar32(FRAME_JIT_COMPILED);
@@ -1741,6 +1741,8 @@ void Recording::writeFrameTypes(Buffer *buf) {
   buf->putUtf8("Kernel");
   buf->putVar32(FRAME_C1_COMPILED);
   buf->putUtf8("C1 compiled");
+  buf->putVar32(FRAME_NATIVE_REMOTE);
+  buf->putUtf8("Native (remote)");
   flushIfNeeded(buf);
 }
 
