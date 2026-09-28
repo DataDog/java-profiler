@@ -317,8 +317,12 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
 
     TEST_LOG_SUMMARY("LivenessTracker::cleanup_table survivors=%u klass_count_scratch_size=%d",
              newsz, _klass_count_scratch_size);
-    if (_gc_generations.load(std::memory_order_relaxed) && is_epoch_owner &&
-        _klass_count_scratch_size > 0) {
+    if (_gc_generations.load(std::memory_order_relaxed) && is_epoch_owner) {
+      // Runs even when _klass_count_scratch is empty: foldKlassCountsLocked()
+      // records zero population samples for klasses whose every tracked
+      // instance died this epoch (they never appear in the scratch, and
+      // without a zero sample a dead population would stay a leak candidate
+      // until its entry is evicted).
       foldKlassCountsLocked(env, target_gc_epoch, allow_resolve);
     }
 
@@ -1302,6 +1306,35 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
     }
   }
   klassCountScratchReset();
+
+  // Zero-sample pass: a klass whose every tracked instance died this epoch
+  // never appears in _klass_count_scratch, so the loop above never refreshes
+  // its population entry - its ring keeps the last positive count and
+  // consecutive_positive keeps its old trend, keeping a dead population a
+  // leak candidate until the entry is evicted. Record a zero sample for every
+  // entry this epoch's fold did not touch (pure table work, no JNI; the
+  // klass_id is always found, so no eviction can displace a later iteration's
+  // target - the klass_id snapshot below is belt-and-braces for that
+  // invariant).
+  for (int i = 0; i < _klass_population_size; i++) {
+    u32 klass_id = _klass_population[i].klass_id;
+    if (_klass_population[i].last_updated_epoch == epoch) {
+      continue;
+    }
+    int zero_slot;
+    bool zero_created;
+    jweak zero_evicted[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
+    int zero_evicted_count = 0;
+    recordKlassPopulationSampleLocked(klass_id, 0, epoch, &zero_slot,
+                                      &zero_created, zero_evicted,
+                                      &zero_evicted_count,
+                                      KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
+    for (int r = 0; r < zero_evicted_count; r++) {
+      if (env != nullptr && zero_evicted[r] != nullptr) {
+        env->DeleteWeakGlobalRef(zero_evicted[r]);
+      }
+    }
+  }
 }
 
 bool LivenessTracker::hasQualifyingGrowth(const KlassPopulationEntry &entry) const {
