@@ -190,11 +190,6 @@ Error ObjectSampler::start(Arguments &args) {
     // (freshly-set, correct) flags left LivenessTracker's flags stuck at
     // whatever the previous recording in this process last set them to,
     // since it never got a chance to observe this recording's request at all.
-    error = LivenessTracker::instance()->start(args);
-    if (error) {
-      return error;
-    }
-
     jvmtiEnv *jvmti = VM::jvmti();
     // JVMTI Object Sampler is a 'solo' feature, meaning that it can only be
     // used by one JVMTI environment. Therefore, we can rely on the fact that if
@@ -204,9 +199,18 @@ Error ObjectSampler::start(Arguments &args) {
                                     JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
     __atomic_store_n(&_active, true, __ATOMIC_RELEASE);
     __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
+    // Started LAST, after every step that can fail above: the old order
+    // (tracker first) left LivenessTracker started-but-never-driven if the
+    // JVMTI enabling failed - its GC-callback machinery and table would run
+    // with no sampler feeding it until the next stop(). stop() still stops
+    // it unconditionally (LivenessTracker::stop() self-guards on _enabled).
     // need to reset the running sum in order for 'updateConfiguration' to be
     // able to generate proper diffs
     _alloc_event_count = 0;
+    error = LivenessTracker::instance()->start(args);
+    if (error) {
+      return error;
+    }
   }
 
   return Error::OK;

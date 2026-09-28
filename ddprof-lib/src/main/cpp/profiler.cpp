@@ -2230,6 +2230,12 @@ Error Profiler::dump(const char *path, const int length) {
       __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
     });
     if (err) {
+      // Log::debug, not just TEST_LOG: TEST_LOG is compiled out of release
+      // builds entirely, so a JFR dump failure - the event stream this
+      // whole subsystem exists to produce - would fail silently in
+      // production. debug-level logging keeps it out of the steady-state
+      // log while still being reachable when someone turns debug on.
+      Log::debug("Profiler::dump _jfr.dump failed: %s", err.message());
       TEST_LOG("Profiler::dump _jfr.dump failed: %s", err.message());
     }
 
