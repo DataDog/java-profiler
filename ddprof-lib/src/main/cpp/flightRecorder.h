@@ -400,7 +400,8 @@ public:
 
   void updateNativeMemStats();
   // True unless a replacement allocator (tcmalloc/jemalloc) has been
-  // LD_PRELOAD'd over glibc's malloc/free. __GLIBC__ alone cannot tell: it
+  // LD_PRELOAD'd over glibc's malloc/free, or this is an ASan/TSan build
+  // (whose runtime allocator replaces glibc's). __GLIBC__ alone cannot tell: it
   // reflects the headers the binary was compiled against, not which
   // allocator is actually serving malloc()/free() at runtime. See
   // updateMallocArenaStats() for why this matters. Exposed for

@@ -2049,12 +2049,20 @@ void Recording::writeLogLevels(Buffer *buf) {
 // a symbol glibc defines, so finding either via dlsym means malloc/free were
 // interposed and mallinfo2() cannot be trusted.
 //
-// Not cached: this is only ever called once per JFR chunk flush, so a couple
-// of dlsym() lookups are negligible, and not caching keeps this checkable
-// against a replacement allocator loaded after process start (e.g. in tests).
+// ASan and TSan builds are the same situation, known at compile time: their
+// runtimes serve malloc()/free() from their own allocator and intercept
+// mallinfo2(), which then reports all zeros. Neither runtime exports
+// mallctl/tc_malloc_size, so the dlsym probe alone would miss them.
+//
+// Not cached: called once per JFR chunk flush, so two dlsym() lookups are
+// negligible.
 bool Recording::glibcMallocActive() {
+#if defined(ASAN_ENABLED) || defined(TSAN_ENABLED)
+  return false;
+#else
   return dlsym(RTLD_DEFAULT, "mallctl") == nullptr &&
          dlsym(RTLD_DEFAULT, "tc_malloc_size") == nullptr;
+#endif
 }
 
 // Snapshot the process-wide malloc arena state from glibc's own accounting.

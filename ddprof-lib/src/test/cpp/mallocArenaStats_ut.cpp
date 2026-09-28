@@ -33,26 +33,29 @@ public:
 // wrong. Detection must therefore key off a symbol each replacement actually
 // exports, not off __GLIBC__.
 //
-// This asserts the default/no-interposition case: in a plain test binary,
-// with neither allocator loaded, detection must report glibc active so the
-// counters keep working in the overwhelmingly common case. That also guards
-// against the regression this check could otherwise introduce -- checking for
-// a symbol name that turns out to be defined by something already linked into
-// every gtest binary (libc, gtest itself, etc.) would silently disable the
-// arena counters everywhere, not just under a replacement allocator.
+// The gtest configurations cover both outcomes. ASan/TSan builds run under
+// the sanitizer's own allocator, whose mallinfo2() interceptor reports all
+// zeros, so detection must report glibc inactive there. Plain builds run on
+// glibc malloc, so detection must report it active -- which also guards
+// against probing for a symbol that something already linked into every
+// gtest binary defines, which would silently disable the counters everywhere.
 //
-// The actual LD_PRELOAD interposition this guards against is exercised
-// end-to-end, not simulated here: this project's gtest executables are not
-// linked with --export-dynamic, so a symbol this test defined itself would
-// not be visible to dlsym(RTLD_DEFAULT, ...) and could not stand in for a
-// preloaded library. The real scenario runs in
-// .gitlab/reliability's ALLOCATOR=jemalloc/tcmalloc CI matrix instead, where
-// mallctl()/tc_malloc_size() come from an actually LD_PRELOAD'd shared object.
+// The LD_PRELOAD'd jemalloc/tcmalloc case is not simulated here: gtest
+// executables are not linked with --export-dynamic, so a symbol this test
+// defined itself would not be visible to dlsym(RTLD_DEFAULT, ...). That case
+// runs in .gitlab/reliability's ALLOCATOR=jemalloc/tcmalloc CI matrix, where
+// mallctl()/tc_malloc_size() come from an actually preloaded shared object.
+#if defined(ASAN_ENABLED) || defined(TSAN_ENABLED)
+TEST(GlibcMallocActive, ReportsInactiveUnderSanitizerAllocator) {
+  EXPECT_FALSE(RecordingTestAccessor::glibcMallocActive());
+}
+#else
 TEST(GlibcMallocActive, ReportsActiveWithNoReplacementAllocatorLoaded) {
   EXPECT_EQ(nullptr, dlsym(RTLD_DEFAULT, "mallctl"));
   EXPECT_EQ(nullptr, dlsym(RTLD_DEFAULT, "tc_malloc_size"));
   EXPECT_TRUE(RecordingTestAccessor::glibcMallocActive());
 }
+#endif
 
 // These tests validate the *premise* of the MALLOC_FREE_HELD_BYTES counter
 // rather than its plumbing: that allocation churn of the shape the profiler
@@ -73,12 +76,20 @@ TEST(GlibcMallocActive, ReportsActiveWithNoReplacementAllocatorLoaded) {
 static const size_t SBTABLE_SIZE = 6144;   // sizeof(SBTable), measured
 static const int    FLUSH_BLOCKS = 26450;  // allocations in one observed flush
 
+// These premises are about glibc's arena. Under any other allocator the
+// churn below never reaches it, so there is nothing to measure.
+#define SKIP_UNLESS_GLIBC_MALLOC()                                             \
+  if (!RecordingTestAccessor::glibcMallocActive()) {                           \
+    GTEST_SKIP() << "glibc malloc is not the allocator in force";              \
+  }
+
 // Churn alone does NOT strand memory. 26,450 blocks allocated contiguously and
 // then all freed coalesce into one large free region at the arena top, which
 // glibc returns to the OS -- measured: arena 163 MB back down to 905 KB. So a
 // flush burst is not, by itself, an explanation for retained memory. The next
 // test shows what is actually required.
 TEST(MallocArenaStats, ContiguousChurnIsReturnedToTheOS) {
+  SKIP_UNLESS_GLIBC_MALLOC();
   {
     std::vector<void *> warm;
     for (int i = 0; i < 1000; i++) warm.push_back(malloc(SBTABLE_SIZE));
@@ -128,6 +139,7 @@ TEST(MallocArenaStats, ContiguousChurnIsReturnedToTheOS) {
 // total free-but-held, and why arena slack is a property of the whole process's
 // allocation *pattern* rather than of any one subsystem's allocations.
 TEST(MallocArenaStats, InterleavedSurvivorsStrandFreeChunksBeyondTrim) {
+  SKIP_UNLESS_GLIBC_MALLOC();
   std::vector<void *> survivors, churn;
   for (int i = 0; i < 20000; i++) {
     void *a = malloc(SBTABLE_SIZE);
