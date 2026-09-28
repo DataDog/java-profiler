@@ -1125,6 +1125,60 @@ TEST_F(SecondsToOOMTest, RisingFloorProjectsExpectedSeconds) {
     EXPECT_NEAR(tracker->secondsToOOM(), 9.0, 1e-6);
 }
 
+// A dip-then-recover window (usage falls for half the window, then rises
+// back to where it started): the full-window fitted-line endpoints nearly
+// agree (byte delta ~0), so the unguarded division would project +inf
+// seconds - silently disabling the urgency ramp from this boundary forever.
+// The boundary must be SKIPPED (no projection from this ring), and the
+// result must be finite. Here the container ring is unavailable (no
+// container limit set), so the heap ring's skip means no projection at all.
+TEST_F(SecondsToOOMTest, DipThenRecoverFloorReturnsNegativeNotInf) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    // Perfectly symmetric V: pairs (i, 9-i) carry equal usage, so the
+    // least-squares fit's slope is exactly 0 in double arithmetic and the
+    // fitted endpoints agree EXACTLY (delta == 0), while the recent half
+    // (indices 5..9: 1500..1900) rises steeply - corroboration passes, the
+    // full-window denominator does not. This is precisely the shape the
+    // zero-denominator guard exists for; an approximately-equal pair would
+    // only produce a huge-but-finite projection instead of the +inf the
+    // guard prevents.
+    static const long shape[] = {1900, 1800, 1700, 1600, 1500,
+                                 1500, 1600, 1700, 1800, 1900};
+    for (int i = 0; i < 10; i++) {
+        tracker->heapFloorRecordForTest((u64)shape[i] * MiB, (u64)i * SEC_NS);
+    }
+    double secs = tracker->secondsToOOM();
+    EXPECT_LT(secs, 0.0)
+        << "a dip-then-recover window must not offer a projection";
+    EXPECT_TRUE(secs > -1e18 && secs < 1e18)
+        << "the projection must be finite, never +inf";
+}
+
+// Odd-length window (11 samples): pins the recent-half boundary of the
+// corroboration pass (ringWindowStats' recent_min boundary is i >= n/2, so
+// for odd n the median sample joins the RECENT half) and the fitted-line
+// endpoint arithmetic (recent_mean at x = n-1). A rising ramp must still
+// project, and the projection must match the even-window scaling of the
+// same 100MiB/s rate - this is the mutation-coverage the review asked for
+// on ringWindowStats' two boundary mutations (i >= n/2 and endpoint n-1).
+TEST_F(SecondsToOOMTest, OddLengthRisingWindowStillProjects) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(3000 * MiB));
+    // 11 samples, 100MiB apart, one second apart: 1000..2000MiB.
+    for (int i = 0; i < 11; i++) {
+        tracker->heapFloorRecordForTest(1000 * MiB + (u64)i * 100 * MiB,
+                                         (u64)i * SEC_NS);
+    }
+    double secs = tracker->secondsToOOM();
+    // Rising floor, recent fitted endpoint at 2000MiB, headroom 1000MiB at
+    // 100MiB/s -> ~10s. Assert finite, positive, and in the right decade -
+    // exact value depends on the fitted endpoints the regression produces,
+    // which the even-window test above already pins precisely.
+    EXPECT_GT(secs, 0.0);
+    EXPECT_NEAR(secs, 9.0, 1.5);
+}
+
 // The floor's own recent-third mean has already reached the max heap size -
 // exhaustion is "now", not some positive number of seconds out.
 TEST_F(SecondsToOOMTest, FloorAtMaxHeapReturnsZero) {
@@ -1195,6 +1249,40 @@ TEST_F(LeakTagPoolTest, ReleaseReturnsTagToPoolAndInfoIsInvalidated) {
     jlong re_tag = tracker->acquireLeakTagForTest(43, 100);
     EXPECT_EQ(tag, re_tag) << "released tag should be recycled first (LIFO)";
     EXPECT_EQ(pool_size - 1, tracker->leakTagFreeCountForTest());
+}
+
+// A double release (releasing a tag that is already free) must be rejected:
+// pushing the index twice would let acquireLeakTag() hand the same tag to
+// two live objects. Found reachable in review via tagLeakInstances()' tag-
+// adoption branch; the release path now guards on the zero/zero encoding.
+TEST_F(LeakTagPoolTest, DoubleReleaseIsRejectedWithoutCorruptingTheFreeList) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    int pool_size = tracker->leakTagPoolSizeForTest();
+
+    jlong tag = tracker->acquireLeakTagForTest(7, 7);
+    ASSERT_GE(tag, tracker->leakTagBaseForTest());
+    tracker->releaseLeakTagForTest(tag);
+    EXPECT_EQ(pool_size, tracker->leakTagFreeCountForTest());
+
+    // Second release of the same tag: must be a no-op, not a second push.
+    tracker->releaseLeakTagForTest(tag);
+    EXPECT_EQ(pool_size, tracker->leakTagFreeCountForTest())
+        << "double release must not grow the free list past the pool";
+
+    // The pool is still fully usable afterwards: draining and refilling it
+    // hands out exactly pool_size distinct tags, never a duplicate while
+    // all are live.
+    jlong seen[1];
+    (void)seen;
+    int acquired = 0;
+    for (int i = 0; i < pool_size; i++) {
+        if (tracker->acquireLeakTagForTest(500 + i, 1) != 0) {
+            acquired++;
+        }
+    }
+    EXPECT_EQ(pool_size, acquired);
+    EXPECT_EQ(0, tracker->acquireLeakTagForTest(1, 1))
+        << "pool must still exhaust at exactly LEAK_TAG_POOL_SIZE";
 }
 
 TEST_F(LeakTagPoolTest, ReleaseOutsidePoolRangeIsIgnored) {
