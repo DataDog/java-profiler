@@ -441,6 +441,34 @@ public:
         return ReferenceChainTracker::instance()->_tags_released;
     }
 
+    // LifecycleChurn test: stopThread()'s abort request minus the pthread mechanics - the flag it
+    // sets before pthread_kill() is the part an in-flight runPass() actually observes (the walk
+    // callbacks abort at their next invocation, referenceChainWalk.cpp/referenceChainTraversal.cpp).
+    // Cleared by startThread() in production; the test clears it at the join-equivalent point.
+    static void setAbortPassRequestedForTest(bool v) {
+        ReferenceChainTracker::instance()->_abort_pass_requested.store(
+            v, std::memory_order_relaxed);
+    }
+
+    // LifecycleChurn test: read side of the flag above - lets the pass thread
+    // record that a runPass() overlapped a stopThread-style abort request
+    // (the request is held until the pass boundary, so a post-pass read is
+    // conservative: it can only over-count by never, under-count by a pulse
+    // whose set raced the pass's very last callback batch).
+    static bool abortPassRequested() {
+        return ReferenceChainTracker::instance()->_abort_pass_requested.load(
+            std::memory_order_relaxed);
+    }
+
+    // LifecycleChurn test: read-only peeks at the per-search accounting counters restartSearch()
+    // must zero (referenceChains.cpp's restartSearch() reset sites).
+    static int leakTagsAssigned() {
+        return ReferenceChainTracker::instance()->_leak_tags_assigned;
+    }
+    static int leakTagsResolved() {
+        return ReferenceChainTracker::instance()->_leak_tags_resolved;
+    }
+
     // ResolveLoadedClassesRescansAfterClassCountShrinksAndPartiallyRegrows below: direct
     // pass-through to the private resolveLoadedClasses(), plus a read-only peek at the count it
     // stashes - the same rationale as tagsReleased() above (private state/behavior a test needs to
