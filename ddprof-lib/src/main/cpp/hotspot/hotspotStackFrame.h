@@ -60,6 +60,23 @@ public:
         }
     };
 
+    // UNWIND HELPER CONTRACT
+    //
+    // On success each of these replaces `pc` with the sender's *raw* return
+    // address -- the address control returns to, exactly as it sat in the
+    // stack slot or the link register. None of them applies the attribution
+    // adjustment; that is the caller's decision, because only the caller
+    // knows what it is about to do with the address.
+    //
+    // x86_64 used to subtract one inside the helper, and not on every branch
+    // (unwindPrologue's isFrameComplete arm omitted it), while aarch64 never
+    // did. A caller could not tell which it had been handed, so walkVM
+    // guessed from the target architecture. Exact-address consumers on the
+    // far side -- isContReturnBarrier, isContEntryReturnPc, isEntryFrame,
+    // all comparing against genuine return addresses -- were silently
+    // failing on x86_64 as a result.
+    //
+    // unwindHelperContract_ut.cpp pins this.
     bool unwindCompiled(VMNMethod* nm) {
         return unwindCompiled(nm, pc(), sp(), fp());
     }
