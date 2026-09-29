@@ -94,6 +94,12 @@ void ProfiledThread::freeValue(void* value) {
   // ProfiledThread that cannot be released - memory leak
   blockProfilingForExit();
 
+  // otel_thread_ctx_v1 (a genuine thread_local, not the custom ThreadLocal
+  // above) is nulled by ThreadLocalDataPool::release() below -- via
+  // unclaimAndReset() on the pool-reuse path, or via ~ProfiledThread() on the
+  // delete path it falls back to -- rather than here, so the invariant holds
+  // for every teardown route (including deleteForTest()) and not just this
+  // call site.
   ProfiledThread* pt = reinterpret_cast<ProfiledThread*>(value);
   if (!ThreadLocalDataPool::release(pt)) {
     // Sole deletion site for a ProfiledThread (invoked by the ThreadLocal
@@ -170,6 +176,20 @@ void ProfiledThread::unclaimAndReset() {
   for (int index = 0; index < DD_TAGS_CAPACITY; index++) {
     _otel_tag_encodings[index] = 0;
   }
+
+  // otel_thread_ctx_v1 is a genuine thread_local pointer (not the custom
+  // ThreadLocal in this file) that external OTel profilers dereference
+  // directly via its exported address (see otel_context.h). It points into
+  // this instance's _otel_ctx_record, which the FLAG_CLAIMED release store
+  // below makes eligible for another thread to claim and overwrite. Null it
+  // first -- while still running on this (dying) thread -- so a racing
+  // external reader observes "no context" instead of dereferencing memory
+  // that now belongs to a different thread. This is always the current
+  // thread's own ProfiledThread: unclaimAndReset() is only reached via
+  // ThreadLocalDataPool::unclaim(), called from freeValue() (the pthread-key
+  // destructor, run on the dying thread) or deleteForTest() (which mirrors
+  // that same call).
+  __atomic_store_n(&otel_thread_ctx_v1, nullptr, __ATOMIC_SEQ_CST);
 
   DEBUG_ONLY(_unwind_failures.reset();)
   FAULT_INJECTION_ONLY(_fi_rng = 0;)

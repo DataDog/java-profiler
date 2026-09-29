@@ -35,6 +35,7 @@
 #include "samplerPerf.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
+#include "stackWalker.inline.h"
 #include "symbols.h"
 #include "threadLocalData.inline.h"
 #include "tsc.h"
@@ -388,14 +389,21 @@ void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCac
  * - Checks marks after symbol resolution (same O(log n) + O(1) cost)
  * - If no symbol found but PC is in a known library, packs as
  *   BCI_NATIVE_FRAME_REMOTE for library-relative rendering ([lib+0xoffset])
+ *
+ * Range-based lookups (findLibraryByAddress, binarySearch) key off the
+ * attribution address, so a call that is the last instruction of its caller
+ * still selects the caller rather than whatever follows it. The emitted
+ * pc_offset keeps using the raw pc: it is the remote-symbolication wire value
+ * and its meaning is a cross-team contract, not a local lookup detail.
  */
-Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index) {
-  CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
+Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t pc, bool pc_is_return_address, int lock_index) {
+  const void* lookup_pc = attributionPC((const void*)pc, pc_is_return_address);
+  CodeCache* lib = _libs->findLibraryByAddress(lookup_pc);
 
   if (_remote_symbolication && lib != nullptr && lib->hasBuildId()) {
     // Get symbol name and check mark
     const char *method_name = nullptr;
-    lib->binarySearch((void*)pc, &method_name);
+    lib->binarySearch(lookup_pc, &method_name);
     char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
     if (mark != 0) {
@@ -413,7 +421,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
   // Traditional symbol resolution
   const char *method_name = nullptr;
   if (lib != nullptr) {
-    lib->binarySearch((void*)pc, &method_name);
+    lib->binarySearch(lookup_pc, &method_name);
   }
   if (method_name != nullptr) {
     char mark = NativeFunc::read_mark(method_name);
@@ -1921,9 +1929,10 @@ void Profiler::updateNativeLibMemStats() {
   // for the Counters:: mirrors below is cheap even though this itself is
   // only called from stop()/dump().
   //
-  // Deliberately does NOT also write NM_NATIVE_SYMBOLS here: that gauge is
-  // maintained incrementally at publish time (CodeCacheArray::add(), an
-  // atomic add per library). Overwriting it with a fresh recompute from this
+  // Deliberately does NOT also write NM_NATIVE_SYMBOLS, or its allocator
+  // overhead, here: both are maintained incrementally at publish time
+  // (CodeCacheArray::add(), an atomic add per library). Overwriting either with
+  // a fresh recompute from this
   // function -- which can run concurrently with the background refresher
   // thread publishing a new library, since neither takes a common lock --
   // would reintroduce exactly the stale-overwrite race the publish-time
