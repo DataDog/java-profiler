@@ -35,7 +35,7 @@ fuzz-build-and-soak:
   script:
     - ./gradlew :ddprof-lib:fuzz:buildFuzz --no-daemon --parallel --build-cache
     - |
-      if ! find ddprof-lib/fuzz/build/bin/fuzz -maxdepth 1 -type f -executable | grep -q .; then
+      if ! find ddprof-lib/fuzz/build/bin/fuzz -maxdepth 2 -type f -executable | grep -q .; then
         echo "No fuzz binaries produced - the libFuzzer availability probe must have failed; failing the compile gate"
         exit 1
       fi
