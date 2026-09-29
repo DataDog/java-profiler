@@ -129,13 +129,10 @@ public:
     bool unfilteredWallTrackingActive() const;
     RecordingEpoch recordingEpoch() const;
     // Hot path methods - slot_id MUST be from registerThread(), undefined behavior otherwise.
-    // add() is lock-free in the common case (slot already indexed by registerThread()).
-    // It falls back to acquiring _registry_lock - no longer strictly lock-free - only
-    // when it observes the slot's tid cleared to -1 by a concurrent registry reset
-    // (e.g. a recording restart racing this call). Returns false if the thread could
-    // not be placed in the context window (e.g. the lazy indexSlot() fallback failed
-    // because the tid index is exhausted); callers must not assume membership on
-    // failure and should clear any cached slot id so it is re-derived.
+    // add() is lock-free. It returns false, without touching the slot, when the slot no
+    // longer belongs to `tid` (its cached slot id went stale, e.g. an unfiltered
+    // recording restart reset the registry); callers must not assume membership on
+    // failure and should clear any cached slot id so registerThread() re-derives it.
     bool accept(SlotID slot_id) const;
     bool add(int tid, SlotID slot_id);
     void remove(SlotID slot_id);
@@ -156,9 +153,10 @@ public:
     void setBlockTracker(WallClockBlockTracker* tracker) { _block_tracker = tracker; }
 
 #ifdef UNIT_TEST
-    // Invoked by registerThread() right after the pre-lock _registry_active
-    // check passes, before _registry_lock is acquired - lets tests inject a
-    // deactivation into the exact TOCTOU window being fixed.
+    // Invoked by registerThread() immediately before _registry_lock is
+    // acquired, once the pre-lock _registry_active and capacity checks have
+    // passed - lets tests inject a deactivation into the exact TOCTOU window
+    // being fixed, and observe whether a call reached the lock at all.
     using PostActiveCheckHook = void (*)(void*);
     void setPostActiveCheckHookForTest(PostActiveCheckHook hook, void* arg) {
         _post_active_check_hook = hook;
@@ -192,7 +190,9 @@ public:
         return chunk != nullptr ? &chunk->slots[slot_idx] : nullptr;
     }
 
-    SlotID registerThread(int tid = -1);
+    // Returns the slot owned by native thread `tid` (allocating one if needed),
+    // or -1 if tid < 0, the registry is inactive, or it is full.
+    SlotID registerThread(int tid);
     void unregisterThread(SlotID slot_id, int expected_tid = -1);
     void unregisterThreadByTid(int tid);
     Slot* lookupByTid(int tid, SlotID* out_slot_id = nullptr) const;
@@ -226,6 +226,13 @@ private:
     // Lock-free slot allocation
     std::atomic<SlotID> _next_index{0};
     std::unique_ptr<FreeListNode[]> _free_list;
+    // Number of slots currently linked into the free list. Maintained only by
+    // pushToFreeList()/popFromFreeList()/initFreeList(), all of which run under
+    // _registry_lock (or single-threaded construction), so it is exact under
+    // the lock and a hint outside it. Together with _next_index it lets
+    // registerThread() reject registrations against a full registry without
+    // taking _registry_lock (see capacityExhausted()).
+    std::atomic<int> _free_count{0};
     // Entries contain slot_id + 1. Zero terminates a lookup probe; -1 is a
     // tombstone left by unregister. The slot's published TID is the key.
     std::array<std::atomic<int>, kTidIndexSize> _tid_index;
@@ -250,6 +257,12 @@ private:
     void initializeChunk(int chunk_idx);
     bool pushToFreeList(SlotID slot_id);
     SlotID popFromFreeList();
+    // Lock-free hint: true when every slot index has been handed out and none
+    // is waiting in the free list, i.e. a new registration cannot succeed.
+    inline bool capacityExhausted() const {
+        return _next_index.load(std::memory_order_acquire) >= kMaxThreads &&
+               _free_count.load(std::memory_order_acquire) == 0;
+    }
     bool indexSlot(SlotID slot_id, int tid);
     void unindexSlot(SlotID slot_id, int tid);
     void rollbackFailedIndex(Slot& slot);

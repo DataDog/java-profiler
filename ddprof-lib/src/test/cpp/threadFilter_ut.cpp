@@ -55,10 +55,10 @@ protected:
 TEST_F(ThreadFilterTest, BasicRegisterAndAccept) {
     EXPECT_TRUE(filter->enabled());
     
-    int slot_id = filter->registerThread();
+    int slot_id = filter->registerThread(1234);
     EXPECT_GE(slot_id, 0);
     
-    // Initially should not accept (no tid added)
+    // Initially should not accept (not yet in the context window)
     EXPECT_FALSE(filter->accept(slot_id));
     
     // Add tid and test accept
@@ -92,7 +92,7 @@ TEST_F(ThreadFilterTest, EmptyStringDisablesFilter) {
     EXPECT_TRUE(empty_filter.accept(999999));
 
     // When disabled, registerThread() blocks new registrations
-    EXPECT_EQ(empty_filter.registerThread(), -1);
+    EXPECT_EQ(empty_filter.registerThread(1234), -1);
 }
 
 TEST_F(ThreadFilterTest, InvalidSlotHandling) {
@@ -112,7 +112,7 @@ TEST_F(ThreadFilterTest, ValidSlotIDContract) {
     std::vector<int> slot_ids;
     
     for (int i = 0; i < 100; i++) {
-        int slot_id = filter->registerThread();
+        int slot_id = filter->registerThread(i + 10000);
         ASSERT_GE(slot_id, 0) << "registerThread() returned invalid slot_id: " << slot_id;
         ASSERT_LT(slot_id, ThreadFilter::kMaxThreads) << "slot_id out of range: " << slot_id;
         
@@ -136,10 +136,10 @@ TEST_F(ThreadFilterTest, MaxCapacityReached) {
     
     // Register up to the maximum
     for (int i = 0; i < ThreadFilter::kMaxThreads; i++) {
-        int slot_id = filter->registerThread();
+        int slot_id = filter->registerThread(i + 1000);  // Use unique tids
         if (slot_id >= 0) {
             slot_ids.push_back(slot_id);
-            filter->add(i + 1000, slot_id);  // Use unique tids
+            filter->add(i + 1000, slot_id);
         }
     }
     
@@ -154,7 +154,7 @@ TEST_F(ThreadFilterTest, MaxCapacityReached) {
     long long capacity_failures_before =
         Counters::getCounter(THREAD_REGISTRY_CAPACITY_EXHAUSTED);
 #endif
-    int overflow_slot = filter->registerThread();
+    int overflow_slot = filter->registerThread(1000 + ThreadFilter::kMaxThreads);
     EXPECT_EQ(overflow_slot, -1);
 #ifdef COUNTERS
     EXPECT_EQ(capacity_failures_before + 1,
@@ -177,14 +177,14 @@ TEST_F(ThreadFilterTest, RecoveryAfterMaxCapacity) {
     
     // Fill to capacity
     for (int i = 0; i < ThreadFilter::kMaxThreads; i++) {
-        int slot_id = filter->registerThread();
+        int slot_id = filter->registerThread(i + 2000);
         ASSERT_GE(slot_id, 0);
         slot_ids.push_back(slot_id);
         filter->add(i + 2000, slot_id);
     }
     
     // Should fail to register more
-    EXPECT_EQ(filter->registerThread(), -1);
+    EXPECT_EQ(filter->registerThread(100000), -1);
     
     // Unregister half the slots
     int slots_to_free = ThreadFilter::kMaxThreads / 2;
@@ -196,7 +196,7 @@ TEST_F(ThreadFilterTest, RecoveryAfterMaxCapacity) {
     // Should be able to register new slots again
     std::vector<int> new_slot_ids;
     for (int i = 0; i < slots_to_free; i++) {
-        int slot_id = filter->registerThread();
+        int slot_id = filter->registerThread(i + 5000);
         EXPECT_GE(slot_id, 0) << "Failed to register slot " << i << " after freeing";
         new_slot_ids.push_back(slot_id);
         // Keep replacement identities disjoint from the still-live 3024..4047
@@ -208,7 +208,7 @@ TEST_F(ThreadFilterTest, RecoveryAfterMaxCapacity) {
     EXPECT_EQ(new_slot_ids.size(), slots_to_free);
     
     // Should fail again when at capacity
-    EXPECT_EQ(filter->registerThread(), -1);
+    EXPECT_EQ(filter->registerThread(100001), -1);
     
     // Verify collect works correctly
     std::vector<int> collected_tids;
@@ -226,7 +226,7 @@ TEST_F(ThreadFilterTest, FreeListStressTest) {
         
         // Register a batch
         for (int i = 0; i < batch_size; i++) {
-            int slot_id = filter->registerThread();
+            int slot_id = filter->registerThread(iter * batch_size + i);
             ASSERT_GE(slot_id, 0);
             slot_ids.push_back(slot_id);
             filter->add(iter * batch_size + i, slot_id);
@@ -263,7 +263,7 @@ TEST_F(ThreadFilterTest, ConcurrentMaxCapacityStress) {
     for (int t = 0; t < num_threads; t++) {
         threads.emplace_back([&, t]() {
             for (int i = 0; i < slots_per_thread + 10; i++) {  // Try to over-register
-                int slot_id = filter->registerThread();
+                int slot_id = filter->registerThread(t * 1000 + i);
                 if (slot_id >= 0) {
                     thread_slots[t].push_back(slot_id);
                     filter->add(t * 1000 + i, slot_id);
@@ -302,7 +302,7 @@ TEST_F(ThreadFilterTest, ChunkBoundaryBehavior) {
     int slots_to_register = ThreadFilter::kChunkSize * 3 + 10;  // 3+ chunks
     
     for (int i = 0; i < slots_to_register; i++) {
-        int slot_id = filter->registerThread();
+        int slot_id = filter->registerThread(i + 5000);
         ASSERT_GE(slot_id, 0) << "Failed at slot " << i;
         slot_ids.push_back(slot_id);
         filter->add(i + 5000, slot_id);
@@ -333,7 +333,7 @@ TEST_F(ThreadFilterTest, ConcurrentAddRemoveAccept) {
     // Pre-register slots for each thread
     std::vector<int> slot_ids(num_threads);
     for (int i = 0; i < num_threads; i++) {
-        slot_ids[i] = filter->registerThread();
+        slot_ids[i] = filter->registerThread(i + 6000);
         ASSERT_GE(slot_ids[i], 0);
     }
     
@@ -389,7 +389,7 @@ TEST_F(ThreadFilterTest, FreeListExhaustionRecovery) {
     
     // Register many slots
     for (int i = 0; i < ThreadFilter::kFreeListSize + 100; i++) {
-        int slot_id = filter->registerThread();
+        int slot_id = filter->registerThread(i + 7000);
         if (slot_id >= 0) {
             slot_ids.push_back(slot_id);
             filter->add(i + 7000, slot_id);
@@ -406,7 +406,7 @@ TEST_F(ThreadFilterTest, FreeListExhaustionRecovery) {
     // Try to register new slots - should reuse from free list
     std::vector<int> new_slot_ids;
     for (int i = 0; i < 100; i++) {
-        int slot_id = filter->registerThread();
+        int slot_id = filter->registerThread(i + 8000);
         EXPECT_GE(slot_id, 0) << "Failed to reuse slot " << i;
         new_slot_ids.push_back(slot_id);
         filter->add(i + 8000, slot_id);
@@ -430,7 +430,7 @@ TEST_F(ThreadFilterTest, PerformanceRegression) {
     // Pre-register slots
     std::vector<int> slot_ids;
     for (int i = 0; i < 100; i++) {
-        int slot_id = filter->registerThread();
+        int slot_id = filter->registerThread(i);
         ASSERT_GE(slot_id, 0);
         slot_ids.push_back(slot_id);
     }
@@ -440,7 +440,7 @@ TEST_F(ThreadFilterTest, PerformanceRegression) {
     // Perform many add/accept/remove operations
     for (int i = 0; i < num_operations; i++) {
         int slot_id = slot_ids[i % slot_ids.size()];
-        filter->add(i, slot_id);
+        filter->add(i % slot_ids.size(), slot_id);
         bool accepted = filter->accept(slot_id);
         EXPECT_TRUE(accepted);
         filter->remove(slot_id);
@@ -463,13 +463,14 @@ TEST_F(ThreadFilterTest, PerformanceRegression) {
 TEST_F(ThreadFilterTest, ContextWindowEnterExitPerformance) {
     const int num_operations = 1000000;
 
-    int slot_id = filter->registerThread();
+    constexpr int tid = 4242;
+    int slot_id = filter->registerThread(tid);
     ASSERT_GE(slot_id, 0);
 
     auto start = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < num_operations; i++) {
-        filter->add(i, slot_id);
+        filter->add(tid, slot_id);
         filter->remove(slot_id);
     }
 
@@ -494,7 +495,7 @@ TEST_F(ThreadFilterTest, CollectMixedStates) {
     
     // Register slots and add some tids, leave others empty
     for (int i = 0; i < 50; i++) {
-        int slot_id = filter->registerThread();
+        int slot_id = filter->registerThread(i + 9000);
         ASSERT_GE(slot_id, 0);
         slot_ids.push_back(slot_id);
         
@@ -519,8 +520,8 @@ TEST_F(ThreadFilterTest, CollectMixedStates) {
 }
 
 TEST_F(ThreadFilterTest, ClearActiveDropsPreviousRecordingMembership) {
-    int stale_slot = filter->registerThread();
-    int current_slot = filter->registerThread();
+    int stale_slot = filter->registerThread(1111);
+    int current_slot = filter->registerThread(2222);
     ASSERT_GE(stale_slot, 0);
     ASSERT_GE(current_slot, 0);
 
@@ -669,34 +670,72 @@ TEST_F(ThreadRegistryTest, LookupByTidPopulatesOutSlotId) {
     EXPECT_EQ(-1, found_slot_id);
 }
 
-// Exercises a defensive-only code path: under the current self-registration
-// invariant (a thread only ever registers/adds its own tid) and correct
-// _tid_index cleanup on both resetRegistrationsLocked() and
-// unregisterThreadLocked(), add() cannot observe a live duplicate-tid mapping
-// in production. This test drives that branch directly by forcing a slot's
-// cached tid back to -1 (simulating a slot invalidated out from under a stale
-// cached slot id) and confirms add() fails closed instead of letting a second
-// slot claim a tid another slot already owns.
-TEST_F(ThreadRegistryTest, AddRejectsDuplicateTidMappedToDifferentSlot) {
+// add() validates ownership against the slot's published tid. The two tests
+// below cover the ways a cached slot id goes stale: the slot belongs to another
+// thread, or an unfiltered init() reset it (and it may since have been handed
+// out again).
+TEST_F(ThreadRegistryTest, AddRejectsSlotOwnedByAnotherTid) {
     constexpr int tid = 5555;
     int slot_a = registry.registerThread(tid);
-    ASSERT_GE(slot_a, 0);
-    ASSERT_EQ(registry.slotForId(slot_a), registry.lookupByTid(tid));
-
     int slot_b = registry.registerThread(tid + 1);
+    ASSERT_GE(slot_a, 0);
     ASSERT_GE(slot_b, 0);
     ASSERT_NE(slot_a, slot_b);
     ThreadFilter::Slot* slot_b_ptr = registry.slotForId(slot_b);
     ASSERT_NE(nullptr, slot_b_ptr);
-    slot_b_ptr->tid.store(-1, std::memory_order_release);
+    u64 state_before = slot_b_ptr->rawContextWindowState();
 
-    long long failures_before = Counters::getCounter(THREAD_REGISTRY_INDEX_FAILURES);
+    // A stale cached slot id must never let one thread write another
+    // thread's context-window state.
     EXPECT_FALSE(registry.add(tid, slot_b));
-
-    // add() must not let slot_b claim a tid already owned by slot_a.
-    EXPECT_EQ(registry.slotForId(slot_a), registry.lookupByTid(tid));
     EXPECT_FALSE(slot_b_ptr->inContextWindow());
-    EXPECT_GT(Counters::getCounter(THREAD_REGISTRY_INDEX_FAILURES), failures_before);
+    EXPECT_EQ(state_before, slot_b_ptr->rawContextWindowState());
+    EXPECT_EQ(registry.slotForId(slot_a), registry.lookupByTid(tid));
+    EXPECT_EQ(slot_b_ptr, registry.lookupByTid(tid + 1));
+
+    EXPECT_TRUE(registry.add(tid + 1, slot_b));
+    EXPECT_TRUE(slot_b_ptr->inContextWindow());
+}
+
+TEST_F(ThreadRegistryTest, StaleAddAfterUnfilteredResetDoesNotResurrectSlot) {
+    constexpr int stale_tid = 7001;
+    constexpr int new_tid = 7002;
+    int stale_slot = registry.registerThread(stale_tid);
+    ASSERT_GE(stale_slot, 0);
+    ThreadFilter::Slot* slot = registry.slotForId(stale_slot);
+    ASSERT_NE(nullptr, slot);
+
+    // A new unfiltered recording resets every registration; the thread still
+    // holds its old slot id in TLS.
+    registry.init("", true);
+    ASSERT_EQ(-1, slot->nativeTid());
+
+    // The allocator now considers the slot free: add() must not re-publish
+    // the stale tid into it.
+    EXPECT_FALSE(registry.add(stale_tid, stale_slot));
+    EXPECT_EQ(-1, slot->nativeTid());
+    EXPECT_EQ(nullptr, registry.lookupByTid(stale_tid));
+    EXPECT_FALSE(slot->inContextWindow());
+
+    // Once the slot is handed to another thread, the stale owner still must
+    // not mark it in-context.
+    int reassigned = registry.registerThread(new_tid);
+    ASSERT_EQ(stale_slot, reassigned);
+    EXPECT_FALSE(registry.add(stale_tid, stale_slot));
+    EXPECT_EQ(new_tid, slot->nativeTid());
+    EXPECT_FALSE(slot->inContextWindow());
+    EXPECT_EQ(nullptr, registry.lookupByTid(stale_tid));
+
+    // The stale thread re-registers into a slot of its own.
+    int fresh = registry.registerThread(stale_tid);
+    ASSERT_GE(fresh, 0);
+    EXPECT_NE(stale_slot, fresh);
+    EXPECT_TRUE(registry.add(stale_tid, fresh));
+}
+
+TEST_F(ThreadRegistryTest, RegisterThreadRejectsNegativeTid) {
+    EXPECT_EQ(-1, registry.registerThread(-1));
+    EXPECT_FALSE(registry.add(-1, 0));
 }
 
 TEST_F(ThreadRegistryTest, ConcurrentSameTidRegistrationConvergesOnOneSlot) {
@@ -1019,4 +1058,96 @@ TEST_F(ThreadRegistryTest, RegisterThreadRechecksActiveAfterLockAcquired) {
     registry.setPostActiveCheckHookForTest(nullptr, nullptr);
 
     EXPECT_EQ(-1, slot_id);
+}
+
+// Counts registerThread() calls that reach _registry_lock acquisition.
+static void countLockAttempt(void* arg) {
+    static_cast<std::atomic<int>*>(arg)->fetch_add(1, std::memory_order_relaxed);
+}
+
+static void fillRegistry(ThreadFilter& registry, int first_tid, std::vector<int>* slot_ids = nullptr) {
+    for (int i = 0; i < ThreadFilter::kMaxThreads; ++i) {
+        int slot_id = registry.registerThread(first_tid + i);
+        ASSERT_GE(slot_id, 0) << "tid index=" << i;
+        if (slot_ids != nullptr) {
+            slot_ids->push_back(slot_id);
+        }
+    }
+}
+
+TEST_F(ThreadRegistryTest, FullRegistryRejectsUnknownTidWithoutLocking) {
+    fillRegistry(registry, 10000);
+
+    std::atomic<int> lock_attempts{0};
+    registry.setPostActiveCheckHookForTest(countLockAttempt, &lock_attempts);
+#ifdef COUNTERS
+    long long capacity_failures_before =
+        Counters::getCounter(THREAD_REGISTRY_CAPACITY_EXHAUSTED);
+#endif
+    // Threads past capacity retry on every hook call; none may reach the lock.
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_EQ(-1, registry.registerThread(20000 + (i % 4)));
+    }
+    registry.setPostActiveCheckHookForTest(nullptr, nullptr);
+
+    EXPECT_EQ(0, lock_attempts.load());
+#ifdef COUNTERS
+    // Rejections stay observable even though they skip the locked path.
+    EXPECT_EQ(capacity_failures_before + 100,
+              Counters::getCounter(THREAD_REGISTRY_CAPACITY_EXHAUSTED));
+#endif
+}
+
+TEST_F(ThreadRegistryTest, FullRegistryStillReturnsExistingSlotForKnownTid) {
+    std::vector<int> slot_ids;
+    fillRegistry(registry, 10000, &slot_ids);
+
+    // A thread whose cached slot id was cleared must still recover its own
+    // slot through the locked path while the registry is full.
+    EXPECT_EQ(slot_ids[5], registry.registerThread(10005));
+    EXPECT_EQ(slot_ids[ThreadFilter::kMaxThreads - 1],
+              registry.registerThread(10000 + ThreadFilter::kMaxThreads - 1));
+}
+
+TEST_F(ThreadRegistryTest, FreedSlotReopensRegistrationAfterExhaustion) {
+    fillRegistry(registry, 10000);
+    ASSERT_EQ(-1, registry.registerThread(20000));
+
+    registry.unregisterThreadByTid(10000);
+    int reused = registry.registerThread(20000);
+    EXPECT_GE(reused, 0);
+    EXPECT_NE(nullptr, registry.lookupByTid(20000));
+
+    // Full again once the freed slot has been taken.
+    std::atomic<int> lock_attempts{0};
+    registry.setPostActiveCheckHookForTest(countLockAttempt, &lock_attempts);
+    EXPECT_EQ(-1, registry.registerThread(20001));
+    registry.setPostActiveCheckHookForTest(nullptr, nullptr);
+    EXPECT_EQ(0, lock_attempts.load());
+}
+
+TEST_F(ThreadRegistryTest, UnfilteredResetReopensRegistrationAfterExhaustion) {
+    fillRegistry(registry, 10000);
+    ASSERT_EQ(-1, registry.registerThread(20000));
+
+    registry.init("", true);
+
+    std::atomic<int> lock_attempts{0};
+    registry.setPostActiveCheckHookForTest(countLockAttempt, &lock_attempts);
+    EXPECT_GE(registry.registerThread(20000), 0);
+    registry.setPostActiveCheckHookForTest(nullptr, nullptr);
+    EXPECT_EQ(1, lock_attempts.load());
+}
+
+TEST_F(ThreadFilterTest, FullContextFilterRejectsWithoutLocking) {
+    // The default context-filter mode shares the same registry and retry path.
+    for (int i = 0; i < ThreadFilter::kMaxThreads; ++i) {
+        ASSERT_GE(filter->registerThread(30000 + i), 0) << "tid index=" << i;
+    }
+
+    std::atomic<int> lock_attempts{0};
+    filter->setPostActiveCheckHookForTest(countLockAttempt, &lock_attempts);
+    EXPECT_EQ(-1, filter->registerThread(40000));
+    filter->setPostActiveCheckHookForTest(nullptr, nullptr);
+    EXPECT_EQ(0, lock_attempts.load());
 }

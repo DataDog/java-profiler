@@ -44,7 +44,7 @@ protected:
 };
 
 TEST_F(WallClockBlockTrackerTest, GenerationCheckedExitDoesNotClearAnotherOwner) {
-    int slot_id = filter->registerThread();
+    int slot_id = filter->registerThread(1234);
     ASSERT_GE(slot_id, 0);
 
     u64 first_token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING);
@@ -63,7 +63,7 @@ TEST_F(WallClockBlockTrackerTest, GenerationCheckedExitDoesNotClearAnotherOwner)
 }
 
 TEST_F(WallClockBlockTrackerTest, NewGenerationRejectsStaleToken) {
-    int slot_id = filter->registerThread();
+    int slot_id = filter->registerThread(1234);
     ASSERT_GE(slot_id, 0);
 
     u64 stale_token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING);

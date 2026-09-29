@@ -186,10 +186,13 @@ static ThreadFilter::SlotID ensureCurrentThreadFilterSlot(
   // parkEnter0, blockEnter0) can block on _registry_lock. It's bounded to at
   // most once per thread lifetime (cold TLS) plus once per recording-epoch
   // transition this thread observes (stale cached slot) - not a per-call cost.
-  // THREAD_REGISTRY_JAVACRITICAL_REREGISTRATION makes that bound observable;
-  // if it starts firing per-sample rather than per-thread/per-recording, the
-  // "provably rare" assumption has broken and the JavaCritical dispatch should
-  // be revisited.
+  // A thread that cannot get a slot because the registry is full retries here
+  // on every call, but registerThread() rejects it without taking the lock.
+  // THREAD_REGISTRY_JAVACRITICAL_REREGISTRATION counts every attempt,
+  // including those lock-free rejections (tracked separately by
+  // THREAD_REGISTRY_CAPACITY_EXHAUSTED). If it fires per call while
+  // THREAD_REGISTRY_CAPACITY_EXHAUSTED stays flat, the "provably rare"
+  // assumption has broken and the JavaCritical dispatch should be revisited.
   Counters::increment(THREAD_REGISTRY_JAVACRITICAL_REREGISTRATION);
   slot_id = thread_filter->registerThread(tid);
   if (slot_id >= 0) {
@@ -224,8 +227,9 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     return;  // Failed to register thread
   }
   if (unlikely(!thread_filter->add(tid, slot_id))) {
-    // The cached slot_id was rejected (lazy tid-index fallback failed under
-    // this thread's own registry reset race, or the tid index is exhausted).
+    // The cached slot_id went stale between ensureCurrentThreadFilterSlot()
+    // and add(): an unfiltered recording restart reset the registry, so the
+    // slot no longer carries this thread's tid.
     // Clear the cache so the next filterThreadAdd0()/parkEnter0()/blockEnter0()
     // call re-runs ensureCurrentThreadFilterSlot()'s registerThread() path
     // instead of leaving this thread permanently outside the context window.

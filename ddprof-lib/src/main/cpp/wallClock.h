@@ -7,6 +7,7 @@
 #ifndef _WALLCLOCK_H
 #define _WALLCLOCK_H
 
+#include <algorithm>
 #include <cassert>
 #include "engine.h"
 #include "nativeMem.h"
@@ -56,11 +57,14 @@ class BaseWallClock : public Engine {
         int& permission_denied, int& registry_lookups, bool lookup_registry_slot,
         bool precheck, ThreadFilter* thread_filter,
         ThreadFilter::RecordingEpoch recording_epoch);
+    // Timer-thread precheck: true when an explicit lifecycle hook still owns an
+    // already-sampled blocked run for this thread, so no signal is needed.
+    static bool suppressAlreadySampled(const ThreadEntry& entry);
 
     template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc, typename CleanThreadFunc>
     void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads,
                          CleanThreadFunc cleanThreads, int reservoirSize, u64 interval,
-                         bool lazyBackfill = false) {
+                         bool precheck = false, bool lazyBackfill = false) {
       if (!_enabled.load(std::memory_order_acquire)) {
         return;
       }
@@ -101,6 +105,17 @@ class BaseWallClock : public Engine {
       while (_running.load(std::memory_order_relaxed)) {
         collectThreads(threads);
         NativeMem::setLive(NM_WALLCLOCK, (long long)threads.capacity() * sizeof(ThreadType));
+        // The epoch's samplePoolSize counts every candidate, including threads
+        // the precheck suppresses below, so it means the same in both precheck
+        // modes: lazy backfill only discovers suppression while visiting.
+        const u32 num_samplable_threads = static_cast<u32>(threads.size());
+        if (precheck && !lazyBackfill) {
+          // Drop suppressed threads before reservoir sampling so they do not
+          // consume reservoir slots.
+          threads.erase(std::remove_if(threads.begin(), threads.end(),
+                                       suppressAlreadySampled),
+                        threads.end());
+        }
 
         int num_failures = 0;
         int threads_already_exited = 0;
@@ -145,7 +160,7 @@ class BaseWallClock : public Engine {
           Counters::increment(WC_PRECHECK_REGISTRY_LOOKUPS, registry_lookups);
         }
 
-        epoch.updateNumSamplableThreads(threads.size());
+        epoch.updateNumSamplableThreads(num_samplable_threads);
         epoch.updateNumFailedSamples(num_failures);
         epoch.updateNumSuccessfulSamples(num_successful_samples);
         epoch.addNumSuppressedSampledRun(WallClockCounters::drainSuppressedSampledRun());

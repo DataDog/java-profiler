@@ -72,7 +72,7 @@ static inline void incrementSuppressedSampledRun() {
   WallClockCounters::incrementSuppressedSampledRun();
 }
 
-static inline bool suppressAlreadySampledBlock(const ThreadEntry& entry) {
+bool BaseWallClock::suppressAlreadySampled(const ThreadEntry& entry) {
   ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
   WallClockBlockTracker* tracker = Profiler::instance()->blockTracker();
   if (!tracker->shouldSuppressOwnedBlock(thread_filter, entry)) {
@@ -92,22 +92,7 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
   ThreadFilter* registry = Profiler::instance()->threadFilter();
   ThreadFilter::SlotID slot_id = current->filterSlotId();
   ThreadFilter::Slot* slot = registry->activeSlotForId(slot_id, current->tid());
-  if (slot == nullptr) {
-    ThreadFilter::RecordingEpoch epoch = registry->recordingEpoch();
-    ThreadFilter::SlotID found_slot_id = -1;
-    slot = epoch != 0
-               ? registry->lookupByTid(current->tid(), epoch, &found_slot_id)
-               : registry->lookupByTid(current->tid(), &found_slot_id);
-    if (slot != nullptr) {
-      // The slot was found by tid rather than by this thread's own cached id
-      // (e.g. it was registered on this thread's behalf at recording start).
-      // Cache it now so every later signal on this same thread takes the O(1)
-      // activeSlotForId() path above instead of re-probing the tid index.
-      current->setFilterSlotId(found_slot_id);
-      slot_id = found_slot_id;
-      Counters::increment(WC_PRECHECK_SLOT_ID_RECOVERED);
-    }
-  }
+
   if (slot == nullptr) {
     return result;
   }
@@ -410,7 +395,7 @@ WallClockCandidateOutcome BaseWallClock::sampleThreadCommon(
   // only when an explicit lifecycle hook still owns an already-sampled blocked
   // run. Raw OS thread state is intentionally not used here because the timer
   // thread cannot prove run boundaries for the target thread.
-  if (precheck && suppressAlreadySampledBlock(entry)) {
+  if (precheck && suppressAlreadySampled(entry)) {
     return WallClockCandidateOutcome::PRECHECK_REJECTED;
   }
   if (!OS::sendSignalWithCookie(entry.tid, SIGVTALRM, SignalCookie::wallclock())) {
@@ -468,11 +453,6 @@ void WallClockASGCT::timerLoop() {
         }
         delete thread_list;
       }
-      if (_precheck && !lazy_backfill) {
-        entries.erase(std::remove_if(entries.begin(), entries.end(),
-                                     suppressAlreadySampledBlock),
-                      entries.end());
-      }
     };
 
     auto sampleThreads = [&](ThreadEntry entry, int& num_failures,
@@ -488,7 +468,8 @@ void WallClockASGCT::timerLoop() {
     };
 
     timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, doNothing,
-                                 _reservoir_size, _interval, lazy_backfill);
+                                 _reservoir_size, _interval, _precheck,
+                                 lazy_backfill);
 }
 
 // WallClockJvmti: mirrors WallClockASGCT's dispatch, but the signal handler
@@ -603,11 +584,6 @@ void WallClockJvmti::timerLoop() {
       }
       delete thread_list;
     }
-    if (_precheck && !lazy_backfill) {
-      entries.erase(std::remove_if(entries.begin(), entries.end(),
-                                   suppressAlreadySampledBlock),
-                    entries.end());
-    }
   };
 
   auto sampleThreads = [&](ThreadEntry entry, int &num_failures,
@@ -622,5 +598,6 @@ void WallClockJvmti::timerLoop() {
   auto doNothing = []() {};
 
   timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, doNothing,
-                               _reservoir_size, _interval, lazy_backfill);
+                               _reservoir_size, _interval, _precheck,
+                               lazy_backfill);
 }

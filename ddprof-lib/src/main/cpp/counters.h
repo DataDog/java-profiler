@@ -75,7 +75,6 @@
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
   X(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN, "wc_signals_suppressed_sampled_run")     \
   X(WC_PRECHECK_REGISTRY_LOOKUPS, "wc_precheck_registry_lookups")             \
-  X(WC_PRECHECK_SLOT_ID_RECOVERED, "wc_precheck_slot_id_recovered")           \
   X(WC_PRECHECK_CANDIDATES_REJECTED, "wc_precheck_candidates_rejected")       \
   X(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED, "wc_precheck_lookup_budget_exhausted") \
   X(WC_UNOWNED_BLOCKED_SUPPRESSED, "wc_unowned_blocked_suppressed")            \

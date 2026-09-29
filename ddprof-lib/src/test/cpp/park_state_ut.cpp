@@ -328,7 +328,7 @@ TEST(WallClockOncePerRunFilterTest, FilterHelpersManageActiveBlockState) {
   WallClockBlockTracker tracker;
   filter.setBlockTracker(&tracker);
   filter.init("1");
-  ThreadFilter::SlotID slot_id = filter.registerThread();
+  ThreadFilter::SlotID slot_id = filter.registerThread(1234);
 
   tracker.enterBlockedRun(&filter, slot_id, OSThreadState::CONDVAR_WAIT);
   WallClockBlockTracker::BlockState *slot = tracker.slotForId(slot_id);
@@ -353,7 +353,7 @@ TEST(WallClockOncePerRunFilterTest, ResetClearsArmedFlagOnSlotReuse) {
   WallClockBlockTracker tracker;
   filter.setBlockTracker(&tracker);
   filter.init("1");
-  ThreadFilter::SlotID slot_id = filter.registerThread();
+  ThreadFilter::SlotID slot_id = filter.registerThread(1234);
   tracker.enterBlockedRun(&filter, slot_id, OSThreadState::CONDVAR_WAIT);
   WallClockBlockTracker::BlockState *slot = tracker.slotForId(slot_id);
   ASSERT_NE(nullptr, slot);

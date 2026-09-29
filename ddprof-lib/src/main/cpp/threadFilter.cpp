@@ -120,7 +120,19 @@ void ThreadFilter::initializeChunk(int chunk_idx) {
 }
 
 ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
-    if (!_registry_active.load(std::memory_order_acquire)) {
+    // A slot's identity is its owner's native tid: add() and activeSlotForId()
+    // validate ownership against it, so a slot without one is unusable.
+    if (tid < 0 || !_registry_active.load(std::memory_order_acquire)) {
+        return -1;
+    }
+    // Callers retry registration on every hook call while they hold no slot
+    // (see ensureCurrentThreadFilterSlot() in javaApi.cpp), so once the
+    // registry is full, threads past capacity would otherwise serialize on
+    // _registry_lock on every JavaCritical filterThreadAdd0/blockEnter0 call.
+    // Reject them lock-free instead. A tid that is already indexed must still
+    // reach the locked path, which returns (and refreshes) its existing slot.
+    if (unlikely(capacityExhausted()) && lookupSlotIdByTid(tid) < 0) {
+        Counters::increment(THREAD_REGISTRY_CAPACITY_EXHAUSTED);
         return -1;
     }
 #ifdef UNIT_TEST
@@ -136,15 +148,13 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
         return -1;
     }
 
-    if (tid >= 0) {
-        SlotID existing = lookupSlotIdByTid(tid);
-        if (existing >= 0) {
-            RecordingEpoch epoch = recordingEpoch();
-            if (epoch != 0) {
-                refreshSlotForRecording(existing, slotForId(existing), epoch);
-            }
-            return existing;
+    SlotID existing = lookupSlotIdByTid(tid);
+    if (existing >= 0) {
+        RecordingEpoch epoch = recordingEpoch();
+        if (epoch != 0) {
+            refreshSlotForRecording(existing, slotForId(existing), epoch);
         }
+        return existing;
     }
 
     RecordingEpoch epoch = recordingEpoch();
@@ -329,7 +339,7 @@ void ThreadFilter::rollbackFailedIndex(Slot& slot) {
 
 bool ThreadFilter::indexOrRollback(Slot& slot, SlotID slot_id, int tid) {
     slot.tid.store(tid, std::memory_order_release);
-    if (tid >= 0 && !indexSlot(slot_id, tid)) {
+    if (!indexSlot(slot_id, tid)) {
         rollbackFailedIndex(slot);
         return false;
     }
@@ -404,6 +414,7 @@ void ThreadFilter::initFreeList() {
     for (int s = 0; s < kShardCount; ++s) {
         _free_heads[s].head.store(-1, std::memory_order_relaxed);
     }
+    _free_count.store(0, std::memory_order_release);
 }
 
 bool ThreadFilter::accept(SlotID slot_id) const {
@@ -436,24 +447,26 @@ bool ThreadFilter::add(int tid, SlotID slot_id) {
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (likely(chunk != nullptr)) {
         Slot& slot = chunk->slots[slot_idx];
-        if (unlikely(slot.nativeTid() == -1)) {
-            std::lock_guard<std::mutex> lock(_registry_lock);
-            if (slot.nativeTid() == -1) {
-                // Defensive: mirrors registerThread()'s dedup check. Under the
-                // current self-registration invariant (a thread only ever
-                // registers its own tid) and correct index cleanup on both
-                // resetRegistrationsLocked() and unregisterThreadLocked(), this
-                // branch should be unreachable in production; it guards against
-                // a stale/duplicate tid mapping if that invariant ever changes.
-                SlotID existing = lookupSlotIdByTid(tid);
-                if (existing >= 0 && existing != slot_id) {
-                    Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
-                    return false;
-                }
-                if (!indexOrRollback(slot, slot_id, tid)) {
-                    return false;
-                }
-            }
+        // registerThread() publishes the owner's tid before returning the slot,
+        // so a mismatch means the caller's cached slot_id went stale: an
+        // unfiltered init() reset the registry (clearing the tid) and the slot
+        // may since have been handed to another thread. Never write to it -
+        // enterContextWindow() relies on the owning thread being the only
+        // writer - and never re-publish the tid here, since after a reset the
+        // allocator considers this slot free and will hand it out again.
+        // The caller clears its cached slot_id and re-registers.
+        //
+        // A reset landing between this check and the store below can still let
+        // one stray transition through. That only happens in unfiltered mode
+        // (context-filter recordings never reset registrations), where context
+        // membership only gates owned-block suppression, and it only errs
+        // towards more samples: if the slot is still unassigned,
+        // registerThread() zeroes context_window_state before handing it out;
+        // if it already has a new owner, that owner is treated as in-context
+        // and the epoch bump disqualifies its in-flight owned block run, both
+        // of which disable suppression rather than enable it.
+        if (unlikely(tid < 0 || slot.nativeTid() != tid)) {
+            return false;
         }
         slot.enterContextWindow();
         return true;
@@ -559,6 +572,7 @@ bool ThreadFilter::pushToFreeList(SlotID slot_id) {
                 _free_list[i].next.store(old_head, std::memory_order_relaxed);
             } while (!head.compare_exchange_weak(old_head, i,
                        std::memory_order_release, std::memory_order_relaxed));
+            _free_count.fetch_add(1, std::memory_order_release);
             return true;
         }
     }
@@ -586,6 +600,7 @@ ThreadFilter::SlotID ThreadFilter::popFromFreeList() {
                 int id = _free_list[node].value.exchange(-1,
                               std::memory_order_relaxed);
                 _free_list[node].next.store(-1, std::memory_order_relaxed);
+                _free_count.fetch_sub(1, std::memory_order_release);
                 return id;
             }
         }
