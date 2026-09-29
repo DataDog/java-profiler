@@ -287,6 +287,39 @@ public:
         return ReferenceChainTracker::instance()->_search_state;
     }
 
+    static u8 searchAbandonReasonForTest() {
+        return ReferenceChainTracker::instance()->_abandon_reason;
+    }
+
+    // Recording-boundary test: seed an abandoned search into the pending-event queue.
+    // enqueuePendingAbandonedEvent() is private (called by runPass() right after it writes
+    // SearchState::ABANDONED, while buildAbandonedEvent()'s source fields are still valid), and
+    // the queue peek avoids consuming the event - drainPendingAbandonedEvents() is a true drain.
+    static void markSearchAbandonedForTest(u8 reason) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_search_state = SearchState::ABANDONED;
+        t->_abandon_reason = reason;
+    }
+
+    static void enqueueAbandonedEventForTest() {
+        ReferenceChainTracker::instance()->enqueuePendingAbandonedEvent();
+    }
+
+    static size_t pendingAbandonedEventCountForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_pending_abandoned_events_lock.lock();
+        size_t n = t->_pending_abandoned_events.size();
+        t->_pending_abandoned_events_lock.unlock();
+        return n;
+    }
+
+    // Canary-stuck escalation law: the per-restart-sequence pass limit the CANARY_STUCK detector
+    // compares against (doubles per consecutive CANARY_STUCK restart, capped - see
+    // canaryStuckPassLimit()'s own comment).
+    static int canaryStuckPassLimitForTest() {
+        return ReferenceChainTracker::instance()->canaryStuckPassLimit();
+    }
+
     static int sweepGateResolvedCountForTest() {
         return ReferenceChainTracker::instance()->_last_resolved_class_count;
     }
