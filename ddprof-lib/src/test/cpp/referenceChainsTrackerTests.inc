@@ -250,6 +250,57 @@ TEST_F(PollWatchedTargetsTest, ChainPersistsAfterRepresentativeDies) {
     tracker->stop();
 }
 
+// Recording-boundary hygiene (start()'s comment, referenceChains.cpp): a new recording must not
+// inherit the previous one's cached resolved chains or queued abandoned events - both would
+// re-emit into the new recording's JFR chunks with StringDictionary ids from the wiped class
+// dictionary generation. The test seeds both states, restarts through the real stop()/start()
+// path (NOT resetSearchStateForTest(), which is an out-of-band reset that also clears this state
+// itself), and asserts both are gone while the resolve path still works in the new recording.
+TEST_F(PollWatchedTargetsTest, RestartDropsPriorRecordingsChainsAndAbandonedEvents) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int fake_object_storage = 0;
+    jobject obj = reinterpret_cast<jobject>(&fake_object_storage);
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)obj);
+
+    ASSERT_TRUE(tracker->frontierTable()->insert(
+        7, 0, 1, 0, FrontierEntryState::EDGE));
+    tags[obj] = 7;
+    ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 7);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
+
+    // A search abandoned at the tail of recording 1, its event still queued for dump().
+    ReferenceChainsTestAccessor::markSearchAbandonedForTest(SearchAbandonReason::TTL);
+    ReferenceChainsTestAccessor::enqueueAbandonedEventForTest();
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingAbandonedEventCountForTest());
+
+    tracker->stop();
+    ASSERT_FALSE(tracker->start(args));
+
+    std::vector<ReferenceChainEvent> chain_events;
+    tracker->drainPendingChainEvents(&chain_events);
+    std::vector<ReferenceChainAbandonedEvent> abandoned_events;
+    tracker->drainPendingAbandonedEvents(&abandoned_events);
+    EXPECT_EQ(0u, chain_events.size())
+        << "a new recording must not re-emit the previous recording's resolved chains";
+    EXPECT_EQ(0u, abandoned_events.size())
+        << "a new recording must not emit the previous recording's abandoned-search events";
+
+    // The new recording's own resolve path is intact.
+    ASSERT_TRUE(tracker->frontierTable()->insert(
+        9, 0, 1, 0, FrontierEntryState::EDGE));
+    tags[obj] = 9;
+    ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 9);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
+
+    tracker->stop();
+}
+
 // Bounded canary parent-chain walk: a cyclic/corrupt parent chain must fail
 // safe instead of spinning the poll thread (the bound mirrors
 // FrontierTable::reconstructChain()'s maxCapacity() bound), and legitimate
