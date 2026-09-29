@@ -437,7 +437,7 @@ public:
   };
 
   void populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCache* lib, char mark);
-  NativeFrameResolution resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index);
+  NativeFrameResolution resolveNativeFrameForWalkVM(uintptr_t pc, bool pc_is_return_address, int lock_index);
   int convertNativeTrace(int native_frames, const void **callchain,
                          ASGCT_CallFrame *frames, int lock_index,
                          bool skip_hook_prefix);
