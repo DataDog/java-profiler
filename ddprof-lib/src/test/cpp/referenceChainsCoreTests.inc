@@ -3,6 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <dirent.h>
+#include <fcntl.h>
+#include <string>
+#include <sys/stat.h>
+
 #include "referenceChainsTestAccessors.h"
 #include "referenceChainsMockHeap.h"
 
@@ -88,6 +93,199 @@ TEST(RcDebugLevelTest, RefreshFollowsEnvWhenNoOverrideFile) {
     setenv("DD_PROFILING_REFERENCE_CHAINS_DEBUG", "2", 1);
     rcDebugLevelRefresh(true);
     EXPECT_EQ(rcDebugLevel(), 2);
+}
+
+// Counts open descriptors by listing /proc/self/fd (Linux only; -1 elsewhere).
+// Used as a leak sentinel around the chaos test: readRcDebugLevelFile() has
+// several early-return paths and a missing close() on any of them surfaces as
+// descriptor growth over thousands of concurrent reads.
+static int countOpenFdsViaProc() {
+    DIR *d = opendir("/proc/self/fd");
+    if (d == nullptr) {
+        return -1;
+    }
+    int n = 0;
+    while (readdir(d) != nullptr) {
+        ++n;
+    }
+    closedir(d);
+    return n; // includes ".", ".." and the DIR's own descriptor; consistent across calls
+}
+
+// Removes the knob path whatever node type currently sits there. Only the
+// renamer thread below mutates the path, so this cannot race a concurrent
+// mutation - it races the readers, which is exactly the chaos under test.
+static void removeKnobNode(const char *path) {
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        return; // already gone
+    }
+    if (S_ISDIR(st.st_mode)) {
+        rmdir(path);
+    } else {
+        unlink(path);
+    }
+}
+
+TEST(RcDebugLevelTest, ReadFileConcurrentSwapChaos) {
+    // C3 knob-file swap chaos: a renamer thread cycles the knob path through
+    // every node type it can legally take (valid regular, garbage regular,
+    // symlink, directory, missing) while reader threads hammer
+    // readRcDebugLevelFile(). The reader contract is deliberately weak -
+    // "outcome is one of the documented values, and no descriptor is
+    // leaked" - because the path can swap between the open() and any later
+    // step inside the reader; the fstat-on-fd guard (see
+    // readRcDebugLevelFile) is what keeps every intermediate observation
+    // safe, and a swap racing the read must degrade to a normal rejection
+    // (-1), never to a crash, a wrong parse, or a stuck descriptor.
+    // A foreign-owner regular file (the remaining fstat branch) cannot be
+    // staged from an unprivileged test process and stays covered by the
+    // static rejection tests.
+    char path[] = "/tmp/rc_dbg_chaos_XXXXXX";
+    int fd = mkstemp(path);
+    ASSERT_GE(fd, 0);
+    ASSERT_GE(write(fd, "1\n", 2), 0);
+    ASSERT_EQ(close(fd), 0);
+
+    char stage[] = "/tmp/rc_dbg_stage_XXXXXX";
+    int sfd = mkstemp(stage);
+    ASSERT_GE(sfd, 0);
+    ASSERT_GE(write(sfd, "2\n", 2), 0); // valid symlink target
+    ASSERT_EQ(close(sfd), 0);
+    char stageLink[] = "/tmp/rc_dbg_stage_link_XXXXXX";
+    int lfd = mkstemp(stageLink);
+    ASSERT_GE(lfd, 0);
+    ASSERT_EQ(close(lfd), 0);
+    ASSERT_EQ(unlink(stageLink), 0); // mkstemp created a file; the renamer stages a fresh symlink here per cycle
+    char stageDir[] = "/tmp/rc_dbg_stage_dir_XXXXXX";
+    ASSERT_NE(mkstemp(stageDir), -1);
+    ASSERT_EQ(unlink(stageDir), 0); // the renamer stages a fresh directory here per cycle
+
+    const int kSwapCycles = 1000; // per state; the renamer runs the full cycle set
+    std::atomic<bool> stop{false};
+    // seen[v + 1] counts outcomes: index 0 => -1 (missing/rejected), 1..3 => 0/1/2.
+    std::atomic<int> seen[4] = {{0}, {0}, {0}, {0}};
+    std::atomic<int> contractViolations{0};
+
+    auto reader = [&]() {
+        // Run until the renamer has completed its entire swap sequence (or a
+        // runaway cap), so every staged state is guaranteed to be read by
+        // someone while it exists.
+        for (int i = 0; i < 100000000 && !stop.load(std::memory_order_relaxed); ++i) {
+            int lvl = readRcDebugLevelFile(path);
+            if (lvl < -1 || lvl > 2) {
+                contractViolations.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            seen[lvl + 1].fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    auto renamer = [&]() {
+        // Staging nodes are re-created every cycle: rename(2) MOVES them onto
+        // the knob path, so a one-time setup outside the loop would leave them
+        // gone from cycle 1 on. Any staging failure ends the run early with
+        // stop raised (so the readers do not spin to their cap) - the state
+        // machine below is order-dependent and a failed transition would
+        // corrupt every later one. GTEST_NONFATAL_FAILURE_ instead of ASSERT:
+        // fatal gtest macros in a non-main thread have undefined flow.
+        auto fail = [&](const char *what, int err) {
+            GTEST_NONFATAL_FAILURE_((std::string(what) + " failed with errno=" +
+                                     std::to_string(err)).c_str());
+            stop.store(true, std::memory_order_relaxed);
+        };
+        for (int cycle = 0; cycle < kSwapCycles && !stop.load(std::memory_order_relaxed); ++cycle) {
+            // valid regular file, fresh content each cycle
+            unlink(stage);
+            int wfd = open(stage, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (wfd < 0) {
+                fail("open(stage)", errno);
+                return;
+            }
+            const char *v = cycle % 2 == 0 ? "0\n" : "2\n";
+            ssize_t ignored = write(wfd, v, 2);
+            (void) ignored;
+            close(wfd);
+            removeKnobNode(path);
+            if (rename(stage, path) != 0) {
+                fail("rename valid", errno);
+                return;
+            }
+
+            // garbage regular file
+            unlink(stage);
+            wfd = open(stage, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (wfd < 0) {
+                fail("open(stage garbage)", errno);
+                return;
+            }
+            ignored = write(wfd, "x", 1);
+            (void) ignored;
+            close(wfd);
+            removeKnobNode(path);
+            if (rename(stage, path) != 0) {
+                fail("rename garbage", errno);
+                return;
+            }
+
+            // symlink (must be rejected by O_NOFOLLOW)
+            unlink(stageLink);
+            if (symlink(stage, stageLink) != 0) {
+                fail("symlink", errno);
+                return;
+            }
+            removeKnobNode(path);
+            if (rename(stageLink, path) != 0) {
+                fail("rename symlink", errno);
+                return;
+            }
+
+            // directory (open succeeds, fstat's !S_ISREG must reject)
+            if (mkdir(stageDir, 0700) != 0 && errno != EEXIST) {
+                fail("mkdir", errno);
+                return;
+            }
+            removeKnobNode(path);
+            if (rename(stageDir, path) != 0) {
+                fail("rename dir", errno);
+                return;
+            }
+
+            // missing
+            removeKnobNode(path);
+        }
+        stop.store(true, std::memory_order_relaxed);
+    };
+
+    int fdsBefore = countOpenFdsViaProc();
+
+    std::thread r1(reader), r2(reader), r3(reader);
+    std::thread ren(renamer);
+    ren.join();
+    r1.join();
+    r2.join();
+    r3.join();
+
+    removeKnobNode(path);
+    unlink(stage);
+    unlink(stageLink);
+    removeKnobNode(stageDir);
+
+    EXPECT_EQ(contractViolations.load(), 0) << "reader returned a value outside {-1,0,1,2}";
+    // Non-vacuous pass: the readers must have both accepted at least one valid
+    // level and exercised at least one rejection (-1). The readers only stop
+    // after the renamer's full sequence, so a zero here means the test never
+    // actually interleaved, not that the reader is correct.
+    EXPECT_GT(seen[1].load() + seen[2].load() + seen[3].load(), 0) << "no valid level ever read";
+    EXPECT_GT(seen[0].load(), 0) << "no rejection ever observed";
+    int fdsAfter = countOpenFdsViaProc();
+    if (fdsBefore >= 0 && fdsAfter >= 0) {
+        // Leak direction is growth: every reader iteration would leak one
+        // descriptor if any early-return path missed its close(). A benign
+        // background close (e.g. an earlier suite's deferred cleanup) can
+        // only lower the count, so equality is too strict.
+        EXPECT_LE(fdsAfter, fdsBefore) << "descriptor leak: " << fdsBefore << " -> " << fdsAfter;
+    }
 }
 
 
