@@ -643,9 +643,18 @@ TEST_F(ReferenceChainsBfsTest, CanaryStuckLimitDoublesPerRestartAndResetsOnClean
     EXPECT_EQ(ReferenceChainTracker::CANARY_NO_PROGRESS_PASS_LIMIT,
               ReferenceChainsTestAccessor::canaryStuckPassLimitForTest());
 
+    // This test deliberately reaches states the fixtures' SetUp reset() cannot fully neutralize
+    // for a *latched* tracker: the urgency latch (isUrgent() keeps bypassing the candidate gate
+    // until it releases on its own, breaking later tests' gate expectations under shuffled
+    // order), the watched-leak-klass list (restartSearch() does not clear it), and whatever
+    // candidate/found state the last runPass() left. Restore all of it - the same seam the
+    // fixtures use in SetUp, applied to the leaked half.
     LivenessTracker::instance()->setMaxHeapBytesForTest(-1);
     LivenessTracker::instance()->setGcGenerationsForTest(false);
     tracker->stop();
+    ReferenceChainsTestAccessor::resetUrgencyForTest();
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({});
+    ReferenceChainsTestAccessor::reset();
 }
 
 // Canary-lane backoff pacing (option A): a chase with unresolved candidates runs back-to-back only
