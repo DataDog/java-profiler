@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk8
 
 ## musl-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-09-29 02:36:47 EDT
+**Date:** 2026-09-29 03:05:54 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 160 |
-| Sample Rate | 2.67/sec |
-| Health Score | 167% |
-| Threads | 5 |
+| CPU Samples | 403 |
+| Sample Rate | 6.72/sec |
+| Health Score | 420% |
+| Threads | 7 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 428 |
-| Sample Rate | 7.13/sec |
-| Health Score | 446% |
-| Threads | 9 |
+| CPU Samples | 203 |
+| Sample Rate | 3.38/sec |
+| Health Score | 211% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1790663455 81
-1790663460 81
-1790663465 81
-1790663470 81
-1790663475 81
-1790663480 81
-1790663485 81
-1790663490 81
-1790663495 81
-1790663500 81
-1790663505 81
-1790663510 81
-1790663515 81
-1790663520 81
-1790663525 81
-1790663530 81
-1790663535 81
-1790663540 81
-1790663545 81
-1790663550 81
+1790665304 81
+1790665309 81
+1790665314 81
+1790665319 81
+1790665324 81
+1790665329 81
+1790665334 81
+1790665339 81
+1790665344 81
+1790665349 81
+1790665354 81
+1790665359 81
+1790665364 81
+1790665369 81
+1790665374 81
+1790665379 81
+1790665384 81
+1790665389 81
+1790665394 81
+1790665399 81
 ```
 </details>
 
