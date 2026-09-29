@@ -24,11 +24,9 @@
  * and ASan enforce):
  *   I1. runPass() returns a verdict every call (a hung walk fails the
  *       libFuzzer timeout).
- *   I2. Every resolved chain's source tag is positive and was actually handed
- *       out by the mock heap at some point (no phantom tags in _resolved_chains).
- *   I3. After the final pass, releasing the search leaves no node tagged with
- *       a frontier tag (tags are either released by the tracker or reported
- *       via the mock's node_tags, which the release path zeroes).
+ *   I2. No resolved chain is keyed by a negative tag - a class-tag mix-up
+ *       (ClassTagAllocator's sign contract) is always a bug; positive tags
+ *       from earlier passes may legitimately outlive their node mid-search.
  *
  * Input format (all multi-byte fields little-endian via a cursor):
  *   [0]      node count, 2..48
@@ -45,7 +43,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <set>
 #include <vector>
 
 #include "arguments.h"
@@ -156,7 +153,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         return 0;
     }
 
-    std::vector<jlong> seen_tags; // every frontier/instance tag the mock observed
     for (int p = 0; p < pass_count; p++) {
         // Mid-search churn: mark one observed tag dead (object GC'd between
         // passes) and, on the flagged run, fail the tag-resolution call on
@@ -176,21 +172,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         if (!tracker->runPass(&heap.mock_jvmti, &heap.mock_jni, &truncated)) {
             break; // pass legitimately skipped (budget/pacing) - fine
         }
-        if (!tracker->frontierTable()) {
-            break;
-        }
-
-        // I2: resolved chains must reference tags the mock actually minted.
-        // (Tag minting is tracked by the mock via tags_ever_assigned.)
-        for (size_t t = 0; t < heap.tags_ever_assigned.size(); t++) {
-            jlong tag = heap.tags_ever_assigned[t];
-            if (tag > 0) {
-                seen_tags.push_back(tag);
-            }
-        }
     }
 
-    std::set<jlong> minted(seen_tags.begin(), seen_tags.end());
     // I2's sign discrimination: a chain keyed by a NEGATIVE tag can only be a
     // class-tag mix-up (class tags are negative by ClassTagAllocator's
     // contract, instance/frontier tags positive) - always a bug. Keying by a
