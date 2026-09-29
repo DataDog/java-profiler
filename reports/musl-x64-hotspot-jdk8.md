@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk8
 
 ## musl-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-09-29 00:59:54 EDT
+**Date:** 2026-09-29 02:36:47 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 174 |
-| Sample Rate | 2.90/sec |
-| Health Score | 181% |
+| CPU Samples | 160 |
+| Sample Rate | 2.67/sec |
+| Health Score | 167% |
 | Threads | 5 |
 | Allocations | 0 |
 
@@ -38,9 +38,9 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 421 |
-| Sample Rate | 7.02/sec |
-| Health Score | 439% |
+| CPU Samples | 428 |
+| Sample Rate | 7.13/sec |
+| Health Score | 446% |
 | Threads | 9 |
 | Allocations | 0 |
 
@@ -48,26 +48,26 @@ title: musl-x64-hotspot-jdk8
 <summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1790657684 81
-1790657689 81
-1790657694 81
-1790657699 81
-1790657704 81
-1790657709 81
-1790657714 81
-1790657719 81
-1790657724 81
-1790657729 81
-1790657734 81
-1790657739 81
-1790657744 81
-1790657749 81
-1790657754 81
-1790657759 81
-1790657764 81
-1790657769 81
-1790657774 81
-1790657779 81
+1790663455 81
+1790663460 81
+1790663465 81
+1790663470 81
+1790663475 81
+1790663480 81
+1790663485 81
+1790663490 81
+1790663495 81
+1790663500 81
+1790663505 81
+1790663510 81
+1790663515 81
+1790663520 81
+1790663525 81
+1790663530 81
+1790663535 81
+1790663540 81
+1790663545 81
+1790663550 81
 ```
 </details>
 
