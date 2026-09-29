@@ -1087,6 +1087,30 @@ public:
   void setCandidateDepthForTest(int idx, u32 depth) { _candidate_depths[idx] = depth; }
   int passesSinceLastCandidateProgressForTest() const { return _passes_since_last_candidate_progress; }
   int canaryStuckRestartCountForTest() const { return _canary_stuck_restart_count; }
+  void setCandidateFoundBitsForTest(u64 bits) { _candidate_found_bits = bits; }
+  void setSearchStartedForTest(bool v) { _search_started = v; }
+  // OOM-urgency hysteresis state (isUrgent()'s latch/release machine,
+  // referenceChains.cpp) - the whole point of C5's chaos assertions is this
+  // state's reaction to a projected-exhaustion sequence, so tests need both
+  // the drive (isUrgentForTest()) and the raw latch/tick/entitlement reads.
+  bool isUrgentForTest() const { return isUrgent(); }
+  bool urgentLatchedForTest() const { return _urgent_latched; }
+  int urgentReleaseTicksForTest() const { return _urgent_release_ticks; }
+  bool urgentSearchSpentForTest() const { return _urgent_search_spent; }
+  void resetUrgencyForTest() {
+    _urgent_latched = false;
+    _urgent_release_ticks = 0;
+    _urgent_search_spent = false;
+  }
+  // Applied vs configured CPU pain-budget refill rate: shouldRunPass() raises
+  // the applied rate CANARY_PAIN_BUDGET_REFILL_MULTIPLIER-fold only while a
+  // canary chase is open - the engage/disengage pair the refill test asserts.
+  double cpuPainBudgetRefillRateForTest() const {
+    return _cpu_pain_budget.refillRate();
+  }
+  double basePainBudgetRefillRateForTest() const {
+    return _pain_budget_refill_rate;
+  }
 
   ReferenceChainTracker(const ReferenceChainTracker &) = delete;
   ReferenceChainTracker &operator=(const ReferenceChainTracker &) = delete;

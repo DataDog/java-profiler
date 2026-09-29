@@ -165,6 +165,39 @@ public:
         return ReferenceChainTracker::instance()->canaryStuckRestartCountForTest();
     }
 
+    // OOM-urgency hysteresis (C5): drive isUrgent()'s latch/release machine
+    // and read its raw state - same friend-accessor rationale as the canary
+    // wrappers above.
+    static bool isUrgentForTest() {
+        return ReferenceChainTracker::instance()->isUrgentForTest();
+    }
+    static bool urgentLatchedForTest() {
+        return ReferenceChainTracker::instance()->urgentLatchedForTest();
+    }
+    static int urgentReleaseTicksForTest() {
+        return ReferenceChainTracker::instance()->urgentReleaseTicksForTest();
+    }
+    static bool urgentSearchSpentForTest() {
+        return ReferenceChainTracker::instance()->urgentSearchSpentForTest();
+    }
+    static void resetUrgencyForTest() {
+        ReferenceChainTracker::instance()->resetUrgencyForTest();
+    }
+    // Applied vs configured CPU pain-budget refill rate (shouldRunPass()'s
+    // canary-refill raise).
+    static double cpuPainBudgetRefillRateForTest() {
+        return ReferenceChainTracker::instance()->cpuPainBudgetRefillRateForTest();
+    }
+    static double basePainBudgetRefillRateForTest() {
+        return ReferenceChainTracker::instance()->basePainBudgetRefillRateForTest();
+    }
+    static void setCandidateFoundBitsForTest(u64 bits) {
+        ReferenceChainTracker::instance()->setCandidateFoundBitsForTest(bits);
+    }
+    static void setSearchStartedForTest(bool v) {
+        ReferenceChainTracker::instance()->setSearchStartedForTest(v);
+    }
+
     static u64 searchPainMs() {
         return ReferenceChainTracker::instance()->_search_pain_ms;
     }

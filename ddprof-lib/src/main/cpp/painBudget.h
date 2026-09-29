@@ -96,6 +96,11 @@ public:
     drain(now_ns);
     _refill_rate = refill_rate;
   }
+
+  // Test/introspection only - the rate set by the constructor or the last
+  // setRefillRate() call, without draining (the rate itself is not
+  // time-dependent).
+  double refillRate() const { return _refill_rate; }
 };
 
 #endif // _PAINBUDGET_H
