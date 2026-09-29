@@ -137,10 +137,17 @@ TEST_F(WalkVmAttributionTest, AddressInsideAFunctionResolvesTheSameEitherWay) {
     EXPECT_STREQ("walkvm_attr_first", as_ra.method_name);
 }
 
-// The wire contract: the lookup may move, the emitted offset may not. This is
-// what keeps walkVM out of the unresolved cross-team question about what
-// pc_offset means to the backend symbolizer.
-TEST_F(WalkVmAttributionTest, PcOffsetStaysDerivedFromTheRawPc) {
+// The wire contract: the emitted offset is the attribution address minus the
+// image base, the same address the lookups used, so an off-process symbolizer
+// can resolve it without knowing how the frame was recovered -- and must not
+// adjust it again.
+//
+// This assertion was inverted once. It previously pinned the offset to the raw
+// pc, because walkFP/walkDwarf had already moved to attribution addresses and
+// changing walkVM too would have made the emitted value differ from what a
+// consumer might be relying on. No service consumed it, so the three walkers
+// were converged on the one convention instead of preserving the split.
+TEST_F(WalkVmAttributionTest, PcOffsetUsesTheAttributionAddress) {
     const char* pc = kBareLibBase + kUnnamedOff;
 
     Profiler::NativeFrameResolution exact = resolve(pc, /*pc_is_ra=*/false);
@@ -152,10 +159,11 @@ TEST_F(WalkVmAttributionTest, PcOffsetStaysDerivedFromTheRawPc) {
     uintptr_t exact_off = Profiler::RemoteFramePacker::unpackPcOffset(exact.packed_remote_frame);
     uintptr_t as_ra_off = Profiler::RemoteFramePacker::unpackPcOffset(as_ra.packed_remote_frame);
 
-    EXPECT_EQ((uintptr_t)kUnnamedOff, exact_off);
-    EXPECT_EQ((uintptr_t)kUnnamedOff, as_ra_off)
-        << "flagging the pc as a return address must not shift the emitted offset -- "
-        << "the attribution address is a lookup detail and must not reach the wire";
+    EXPECT_EQ((uintptr_t)kUnnamedOff, exact_off)
+        << "an exact pc is already the instruction to symbolize, so it is emitted as-is";
+    EXPECT_EQ((uintptr_t)kUnnamedOff - 1, as_ra_off)
+        << "a return address is emitted as the address the call was made from, "
+        << "so the symbolizer resolves the caller without adjusting anything itself";
 }
 
 // ===========================================================================

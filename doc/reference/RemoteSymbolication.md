@@ -37,8 +37,27 @@ Added fields to store build-id information:
   - Library index: 17 bits = 131K libraries max
 - **RemoteFrameInfo**: Structure for JFR serialization (vmEntry.h):
   - `build_id`: Library build-id string
-  - `pc_offset`: PC offset within library
+  - `pc_offset`: PC offset within library — see the addressing contract below
   - `lib_index`: Library table index
+
+### Addressing contract for `pc_offset`
+
+`pc_offset` is an **attribution** address minus the image base: it names the
+instruction that transferred control, not the one execution resumes at. For a
+frame whose pc was read out of a return-address slot that is `pc - 1`; for an
+interrupted leaf it is the pc itself.
+
+**An off-process symbolizer must not apply its own return-address adjustment.**
+Subtracting one again steps off the front of the call instruction and can
+attribute the frame to whatever precedes it.
+
+Every walker emits this convention — `walkFP`, `walkDwarf`, `walkVM` and
+`walkKernel` — so all frames in a trace mean the same thing. LBR entries are
+recorded unadjusted, which is the same rule rather than an exception: branch
+endpoints already name the instruction to symbolize.
+
+The packed field carries no version bit, so this section and the comment on
+`StackWalker` in `stackWalker.h` are the contract.
 - **BCI_NATIVE_FRAME_REMOTE**: Frame encoding (-19) indicates packed remote data
 
 ### 4. **Enhanced Frame Collection** (`profiler.cpp`, `stackWalker.h`)
@@ -65,7 +84,7 @@ Modified frame collection to support dual modes:
 
 **Stack Walker Integration**:
 - **walkFP/walkDwarf**: Return raw PCs → `convertNativeTrace()` → `populateRemoteFrame()`
-- **walkVM/walkVMX**: Directly call `resolveNativeFrameForWalkVM(pc, pc_is_return_address, lock_index)` during stack walk. `pc_is_return_address` says whether the walker took this pc out of a return-address slot: the symbol and library lookups then key off the attribution address (`pc - 1`), while the emitted `pc_offset` keeps deriving from the raw pc, so the wire value is unchanged.
+- **walkVM/walkVMX**: Directly call `resolveNativeFrameForWalkVM(pc, pc_is_return_address, lock_index)` during stack walk. `pc_is_return_address` says whether the walker took this pc out of a return-address slot; both the symbol/library lookups and the emitted `pc_offset` are then derived from the attribution address, per the contract above.
 
 ### 5. **JFR Serialization** (`flightRecorder.cpp/h`)
 

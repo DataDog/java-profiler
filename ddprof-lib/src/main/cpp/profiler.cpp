@@ -393,8 +393,9 @@ void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCac
  * Range-based lookups (findLibraryByAddress, binarySearch) key off the
  * attribution address, so a call that is the last instruction of its caller
  * still selects the caller rather than whatever follows it. The emitted
- * pc_offset keeps using the raw pc: it is the remote-symbolication wire value
- * and its meaning is a cross-team contract, not a local lookup detail.
+ * pc_offset is derived from that same address, which is what makes every
+ * frame in a trace mean the same thing: see the convention note on
+ * StackWalker in stackWalker.h.
  */
 Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t pc, bool pc_is_return_address, int lock_index) {
   const void* lookup_pc = attributionPC((const void*)pc, pc_is_return_address);
@@ -411,7 +412,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     }
 
     // Pack remote symbolication data using utility struct
-    uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
+    uintptr_t pc_offset = (uintptr_t)lookup_pc - (uintptr_t)lib->imageBase();
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
 
@@ -434,7 +435,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
   // Reuses BCI_NATIVE_FRAME_REMOTE encoding; resolveMethod() in flightRecorder.cpp
   // distinguishes remote vs local rendering via hasBuildId() && isRemoteSymbolication().
   if (method_name == nullptr && lib != nullptr) {
-    uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
+    uintptr_t pc_offset = (uintptr_t)lookup_pc - (uintptr_t)lib->imageBase();
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, 0, lib_index);
     return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE);
