@@ -82,6 +82,11 @@ class WalkPc {
     // The address to symbolize with or to select an unwind row with.
     const void* attribution() const { return attributionPC(_pc, _is_return_address); }
 
+    // For handing the pair to a callee that derives the attribution address on
+    // its own. Reading the flag is fine; it is assigning the pc without
+    // restating its nature that the mutators below exist to prevent.
+    bool isReturnAddress() const { return _is_return_address; }
+
     // A pc read out of a return-address slot, a link register, or a
     // DW_CFA_val_expression on the return-address register column.
     void setReturnAddress(const void* pc) {
