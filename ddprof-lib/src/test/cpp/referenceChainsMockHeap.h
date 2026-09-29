@@ -10,8 +10,6 @@
 // copy. The mock callbacks model FollowReferences/GetObjectsWithTags
 // semantics - their comments are the contract; do not weaken them here
 // without checking the production code's assumptions.
-// Needs referenceChainsTestAccessors.h included first (the mock's setUp()
-// calls ReferenceChainsTestAccessor::reset()).
 
 #ifndef REFERENCE_CHAINS_MOCK_HEAP_H
 #define REFERENCE_CHAINS_MOCK_HEAP_H
@@ -27,6 +25,7 @@
 #include <vector>
 
 #include "os.h"
+#include "referenceChainsTestAccessors.h"
 
 namespace {
 struct ScriptedEdge {
