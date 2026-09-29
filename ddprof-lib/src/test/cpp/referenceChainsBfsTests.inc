@@ -537,6 +537,117 @@ TEST_F(ReferenceChainsBfsTest, CanaryStuckRequiresWholeGraphFrontierAlsoStalled)
     tracker->stop();
 }
 
+// CANARY_STUCK escalation: each consecutive CANARY_STUCK restart of a candidate-chase sequence
+// doubles the pass limit canaryStuckPassLimit() compares against (30 -> 60 -> 120, capped at 2^8
+// doublings), so a repeatedly-unfindable candidate gets progressively more passes before the
+// detector gives up on it; a terminal outcome of any other kind (including a natural completion)
+// resets the escalation so the next fresh chase starts back at the base limit. Driven through the
+// real runPass()/restartSearch() path, not the accessors.
+TEST_F(ReferenceChainsBfsTest, CanaryStuckLimitDoublesPerRestartAndResetsOnCleanCompletion) {
+    Arguments args;
+    // The whole graph is exhausted within the first pass or two, so the frontier is stalled from
+    // then on; the seeded watched-leak klass keeps the search from completing naturally, and the
+    // seeded urgency suppresses the ordinary whole-graph stall branch (same frontier-stall
+    // precondition, checked first - CANARY_STUCK is deliberately NOT urgent-suppressed, that is
+    // the one window where it is reachable).
+    ASSERT_FALSE(args.parse(
+        "referencechains=true:hops=200:budget=1000:ttl=0:firstpassbudget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    // CANARY_STUCK is only reachable while urgent: the ordinary whole-graph stall branch (same
+    // frontier-stall precondition, checked first) is deliberately suppressed by isUrgent(), and
+    // at the base limit both conditions would fire on the same pass. Seed a ~224s-to-OOM
+    // projection the same way referenceChainsOomTests.inc does (linear ramp over synthetic
+    // timestamps); restored at the end so later tests see default heap state.
+    constexpr u64 SEC_NS = 1000000000ULL;
+    constexpr u64 MiB = 1ULL << 20;
+    constexpr u64 MAX_HEAP_TEST = 1024 * MiB;
+    LivenessTracker::instance()->setMaxHeapBytesForTest((jlong)MAX_HEAP_TEST);
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+#ifdef DEBUG
+    LivenessTracker::instance()->setHeapFloorRecordingForTest(false);
+#endif
+    {
+        u64 clock_ns = 0;
+        u64 last_used = MAX_HEAP_TEST - 224 * MiB;
+        for (int i = 0; i < 30; i++) {
+            LivenessTracker::instance()->heapFloorRecordForTest(
+                last_used - MiB * (u64)(29 - i), clock_ns, 0);
+            clock_ns += SEC_NS;
+        }
+    }
+    ASSERT_NEAR(LivenessTracker::instance()->secondsToOOM(), 224.0, 1.0);
+
+    constexpr int kChainLength = 10;
+    std::vector<int> nodes;
+    for (int i = 0; i < kChainLength; i++) {
+        nodes.push_back(addNode());
+    }
+    script.push_back({JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodes[0], -1});
+    for (int i = 1; i < kChainLength; i++) {
+        script.push_back(
+            {JVMTI_HEAP_REFERENCE_FIELD, nodes[i - 1], nodes[i], -1});
+    }
+
+    // A canary candidate this graph never contains, plus a watched-leak klass so the exhausted
+    // frontier cannot complete the search out from under the CANARY_STUCK detector.
+    ReferenceChainsTestAccessor::setCandidateCountForTest(1);
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({1});
+
+    auto driveUntilTerminal = [this, &tracker]() -> int {
+        bool truncated = true;
+        int passes = 0;
+        while (tracker->searchState() == SearchState::RUNNING && passes < 1000) {
+            // EXPECT (not ASSERT): gtest assertion macros return void, which cannot appear in an
+            // int-returning lambda; the state check below governs the loop either way.
+            EXPECT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+            passes++;
+        }
+        return passes;
+    };
+
+    // Chase 1: abandoned by the CANARY_STUCK detector at the base limit.
+    int chase1_passes = driveUntilTerminal();
+    EXPECT_EQ(SearchState::ABANDONED, tracker->searchState());
+    EXPECT_EQ((u8)SearchAbandonReason::CANARY_STUCK,
+              ReferenceChainsTestAccessor::searchAbandonReasonForTest());
+    EXPECT_EQ(1, ReferenceChainsTestAccessor::canaryStuckRestartCount());
+    EXPECT_EQ(ReferenceChainTracker::CANARY_NO_PROGRESS_PASS_LIMIT,
+              ReferenceChainsTestAccessor::canaryStuckPassLimitForTest() >> 1);
+
+    // Chase 2: a consecutive CANARY_STUCK restart keeps the escalation - the doubled limit must
+    // give this chase strictly more passes than chase 1 got before abandoning it.
+    ReferenceChainsTestAccessor::restartSearchForTest();
+    ReferenceChainsTestAccessor::setCandidateCountForTest(1);
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({1});
+    int chase2_passes = driveUntilTerminal();
+    EXPECT_EQ(SearchState::ABANDONED, tracker->searchState());
+    EXPECT_EQ((u8)SearchAbandonReason::CANARY_STUCK,
+              ReferenceChainsTestAccessor::searchAbandonReasonForTest());
+    EXPECT_EQ(2, ReferenceChainsTestAccessor::canaryStuckRestartCount());
+    EXPECT_EQ(ReferenceChainTracker::CANARY_NO_PROGRESS_PASS_LIMIT << 2,
+              ReferenceChainsTestAccessor::canaryStuckPassLimitForTest());
+    EXPECT_GT(chase2_passes, chase1_passes)
+        << "the doubled limit must give the second chase more passes, not fewer";
+
+    // A terminal outcome of a different kind resets the escalation: mark the candidate found, so
+    // the next pass completes naturally and the fresh-chase limit goes back to the base.
+    ReferenceChainsTestAccessor::restartSearchForTest();
+    ReferenceChainsTestAccessor::setCandidateCountForTest(1);
+    ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(1);
+    bool truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
+    EXPECT_EQ(0, ReferenceChainsTestAccessor::canaryStuckRestartCount());
+    EXPECT_EQ(ReferenceChainTracker::CANARY_NO_PROGRESS_PASS_LIMIT,
+              ReferenceChainsTestAccessor::canaryStuckPassLimitForTest());
+
+    LivenessTracker::instance()->setMaxHeapBytesForTest(-1);
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+    tracker->stop();
+}
+
 // Canary-lane backoff pacing (option A): a chase with unresolved candidates runs back-to-back only
 // while it is fresh or making candidate progress; each pass with NO candidate progress doubles the
 // spacing multiplier (_canary_backoff_mult) up to CANARY_BACKOFF_MULT_MAX, progress resets it to 1,
