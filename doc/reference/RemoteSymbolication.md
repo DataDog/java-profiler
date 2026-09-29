@@ -50,7 +50,7 @@ Modified frame collection to support dual modes:
 **Key Functions**:
 - `populateRemoteFrame()`: Packs pc_offset, mark, and lib_index into jmethodID field
 - `resolveNativeFrameForWalkVM()`: Resolves native frames for walkVM/walkVMX modes
-  - Performs binarySearch() to get symbol name
+  - Performs binarySearch() to get symbol name, keyed off the attribution address
   - Extracts mark via NativeFunc::read_mark() (O(1))
   - Packs data using RemoteFramePacker::pack()
 - `convertNativeTrace()`: Converts raw PCs to frames for walkFP/walkDwarf modes
@@ -65,7 +65,7 @@ Modified frame collection to support dual modes:
 
 **Stack Walker Integration**:
 - **walkFP/walkDwarf**: Return raw PCs → `convertNativeTrace()` → `populateRemoteFrame()`
-- **walkVM/walkVMX**: Directly call `resolveNativeFrameForWalkVM(pc, lock_index)` during stack walk (patched via gradle/patching.gradle)
+- **walkVM/walkVMX**: Directly call `resolveNativeFrameForWalkVM(pc, pc_is_return_address, lock_index)` during stack walk. `pc_is_return_address` says whether the walker took this pc out of a return-address slot: the symbol and library lookups then key off the attribution address (`pc - 1`), while the emitted `pc_offset` keeps deriving from the raw pc, so the wire value is unchanged.
 
 ### 5. **JFR Serialization** (`flightRecorder.cpp/h`)
 
@@ -109,7 +109,7 @@ Patches async-profiler's `stackWalker.h` and `stackWalker.cpp` to integrate remo
 
 **Implementation Patches (stackWalker.cpp)**:
 - Updates all `walkVM` signatures to accept and propagate `lock_index`
-- **Critical patch at line 454**: Replaces `profiler->findNativeMethod(pc)` with `profiler->resolveNativeFrameForWalkVM(pc, lock_index)`
+- **Critical patch at line 454**: Replaces `profiler->findNativeMethod(pc)` with `profiler->resolveNativeFrameForWalkVM(pc, pc_is_return_address, lock_index)`
 - Adds dynamic BCI selection (BCI_NATIVE_FRAME vs BCI_NATIVE_FRAME_REMOTE)
 - Adds `fillFrame()` overload for void* method_id to support both symbol names and RemoteFrameInfo pointers
 - Handles marked C++ interpreter frames (terminates scan if detected)

@@ -73,6 +73,7 @@ CodeCache::CodeCache(const char *name, short lib_index,
 
   _memory_usage = (long long)_capacity * sizeof(CodeBlob) +
                   (long long)NativeFunc::allocSize(_name);
+  _name_overhead = (long long)NativeFunc::nameOverhead(_name);
 
   _published.store(false, std::memory_order_relaxed);
 }
@@ -132,6 +133,10 @@ void CodeCache::copyFrom(const CodeCache& other) {
   // no need to recompute (and `other` may itself already be published, whose
   // _blobs this copy must not depend on after construction).
   _memory_usage = other._memory_usage;
+  // Likewise for the overhead: the name strings above are fresh allocations,
+  // but of exactly the same sizes, and overhead is a function of the requested
+  // size, so `other`'s total describes this copy just as well.
+  _name_overhead = other._name_overhead;
 
   // A copy is a fresh, not-yet-registered cache.
   _published.store(false, std::memory_order_relaxed);
@@ -209,6 +214,9 @@ void CodeCache::add(const void *start, int length, const char *name,
          "add() on a published CodeCache races memoryUsage()");
   char *name_copy = NativeFunc::create(name, _lib_index);
   _memory_usage += (long long)NativeFunc::allocSize(name);
+  // Measured off the block just handed back, while the pointer is in hand: the
+  // gauge is published as a total at add() time, with no pointer left to probe.
+  _name_overhead += (long long)NativeFunc::nameOverhead(name_copy);
   // Replace non-printable characters
   for (char *s = name_copy; *s != 0; s++) {
     if (*s < ' ')
