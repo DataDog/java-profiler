@@ -77,18 +77,39 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
     constexpr int kAbortCycles = 30;
 
     std::atomic<bool> stop_flag{false};
+    std::atomic<bool> pass_done{false};
     std::atomic<int> restarts{0};
     std::atomic<int> aborted_passes{0};
+    // Pass counter shared with the abort thread is not needed for the handshake (that one waits
+    // on aborted_passes); this one only carries the kMaxPasses wedge bound across the lambda.
+    std::atomic<int> total_passes{0};
 
     u64 gc_start_before = tracker->gcStartEpoch();
     u64 gc_finish_before = tracker->gcFinishEpoch();
+    // Opened by the abort thread right after its first flag store; the pass thread waits for it
+    // before its first pass. Without this, a fast runner can push the pass thread through all
+    // kMaxSearches before the abort thread's first store lands (the CI failure mode): the
+    // pass thread then exits with pass_done set, every window short-circuits, and the "abort
+    // was exercised" guard fails with zero overlap despite no defect. With it, pass 1 always
+    // runs under an open window, so at least one post-pass read observes the request by
+    // construction.
+    std::atomic<bool> first_window_open{false};
 
     std::thread pass_thread([&] {
-        int total_passes = 0;
+        // Deterministic window 1: do not start passes until the abort thread's first store is
+        // visible (see first_window_open's comment). Bounded so a dead abort thread cannot hang
+        // the test.
+        int wait_spins = 0;
+        while (!first_window_open.load(std::memory_order_relaxed) && wait_spins < 1000) {
+            usleep(100);
+            wait_spins++;
+        }
         for (int searches = 0;
-             searches < kMaxSearches && total_passes < kMaxPasses;
+             searches < kMaxSearches &&
+             total_passes.load(std::memory_order_relaxed) < kMaxPasses &&
+             !stop_flag.load(std::memory_order_relaxed);
              /* advanced by the restart below */) {
-            total_passes++;
+            total_passes.fetch_add(1, std::memory_order_relaxed);
             bool truncated = true;
             // I1: always returns - an abort request makes the walk give up at
             // its next callback, never wedges. The abort thread holds requests
@@ -118,7 +139,7 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
             if (!ReferenceChainsTestAccessor::tagsReleased()) {
                 bool release_ok =
                     tracker->runPass(&mock_jvmti, &mock_jni, &truncated);
-                total_passes++;
+                total_passes.fetch_add(1, std::memory_order_relaxed);
                 if (!release_ok || !ReferenceChainsTestAccessor::tagsReleased()) {
                     // Release still unconfirmed (a failing mock release is a
                     // dedicated test's business) - retry on the next spin.
@@ -137,6 +158,7 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
             searches++;
         }
         stop_flag.store(true, std::memory_order_relaxed);
+        pass_done.store(true, std::memory_order_relaxed);
     });
 
     std::thread gc_thread([&] {
@@ -151,20 +173,38 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
     });
 
     std::thread abort_thread([&] {
-        // stopThread()'s observable part: the abort request, held long enough
-        // that passes running concurrently observe it at their next callback
-        // batch, then cleared the way startThread() does for the next
-        // recording. Timed holds instead of a pass-boundary handshake: a
-        // real stopThread() fires at an arbitrary moment, and holding the
-        // request for a fixed window guarantees the request/walk overlap the
-        // handshake could miss when passes complete in microseconds.
+        // stopThread()'s observable part: the abort request, held until a pass's post-pass read
+        // has actually observed it, then cleared the way startThread() does for the next
+        // recording. The hold is a handshake on the pass thread's aborted_passes counter, not a
+        // timed window: a fixed usleep hold made the flag/pass overlap a race - a fast runner
+        // could push the pass thread through all kMaxSearches before the first window opened,
+        // leaving aborted_passes at 0 and failing the "abort was exercised" guard below. With
+        // the handshake, a window only closes once the guard's own counter moved, so the guard
+        // holds by construction; the walk still runs - and gets cut short - under the flag the
+        // same way it does under a real stopThread(). Bounded spin: a wedged walk (what the
+        // kMaxPasses bound guards against) cannot hang the abort thread either - it gives up on
+        // the window after the spin budget.
         for (int i = 0; i < kAbortCycles; i++) {
+            if (pass_done.load(std::memory_order_relaxed)) {
+                break;
+            }
+            int before = aborted_passes.load(std::memory_order_relaxed);
             ReferenceChainsTestAccessor::setAbortPassRequestedForTest(true);
-            usleep(1000);
+            if (i == 0) {
+                first_window_open.store(true, std::memory_order_relaxed);
+            }
+            int spins = 0;
+            while (
+                aborted_passes.load(std::memory_order_relaxed) == before &&
+                !pass_done.load(std::memory_order_relaxed) && spins < 1000) {
+                usleep(100);
+                spins++;
+            }
             ReferenceChainsTestAccessor::setAbortPassRequestedForTest(false);
             usleep(100);
         }
         ReferenceChainsTestAccessor::setAbortPassRequestedForTest(false);
+        stop_flag.store(true, std::memory_order_relaxed);
     });
 
     pass_thread.join();
