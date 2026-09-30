@@ -40,6 +40,18 @@ constexpr int LivenessTracker::MIN_SAMPLING_INTERVAL;
 
 namespace {
 
+// Max surviving entries whose per-epoch JNI class resolution (resolveKlassId:
+// GetObjectClass + Class.getName() + StringDictionary lookup) a single
+// cleanup_table() sweep performs under the exclusive _table_lock. Entries
+// beyond the budget fall back to their cached class id (the exact semantics
+// the allow_resolve=false path already uses); the next epoch's sweep resolves
+// the next tranche, and cached ids accumulated across sweeps keep most
+// entries resolved anyway. Bounds the sweep's exclusive-lock window so it
+// stays proportional to table bookkeeping rather than to survivor count -
+// every shared-lock scanner (tagLeakInstances(), getLiveTraceIds()) is
+// blocked for the whole sweep otherwise.
+constexpr u32 RESOLVE_BUDGET_PER_SWEEP = 256;
+
 // Window aggregation for a chronological ring - the one computation
 // hasQualifyingGrowth() (per-klass count_ring) and heapFloorRising() (the
 // aggregate _heap_floor_ring) both need, factored out so the window/index
@@ -226,6 +238,9 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
   if (sz > 0) {
     u64 start = OS::nanotime(), end;
     u32 newsz = 0;
+    // Per-sweep JNI-resolution budget - see the survivor loop's allow_resolve
+    // comment below for why the exclusive-lock window must stay bounded.
+    u32 resolve_budget = RESOLVE_BUDGET_PER_SWEEP;
     std::set<jclass> kept_classes;
     for (u32 i = 0; i < sz; i++) {
       if (_table[i].ref != nullptr &&
@@ -250,7 +265,8 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
           // account_epoch=false sweeps never reach this (is_epoch_owner is
           // forced false there).
           u32 klass_id = 0;
-          if (allow_resolve && _table[target].cached_klass_id == 0) {
+          if (allow_resolve && resolve_budget > 0 &&
+              _table[target].cached_klass_id == 0) {
             // GetObjectClass + Class.getName() + StringDictionary lookup per
             // surviving entry, previously paid only at JFR-flush time (see
             // flush_table() below). Only affordable off the allocation-hot
@@ -269,6 +285,20 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
             // per-survivor round-trip ran on EVERY sweep for entries whose
             // resolution failed, and for every entry whenever
             // _gc_generations was re-enabled.
+            //
+            // Bounded per sweep (RESOLVE_BUDGET_PER_SWEEP): the gate alone
+            // still lets a single sweep run the full JNI round-trip for the
+            // ENTIRE table when the class-map generation reset above has
+            // just zeroed every cached id (or when resolutions persistently
+            // fail) - stretching this sweep's exclusive-lock critical
+            // section proportionally to the population and blocking every
+            // shared-lock scanner for the whole per-survivor JNI sequence.
+            // Entries past the budget fall through to the cached-id path
+            // below - the exact semantics the allow_resolve=false path
+            // already accepts - and the next epoch's sweep resolves the
+            // next tranche; the cached ids accumulated across sweeps keep
+            // most entries resolved anyway.
+            resolve_budget--;
             jobject ref = env->NewLocalRef(_table[target].ref);
             if (ref != nullptr) {
               klass_id = resolveKlassId(env, ref);
@@ -291,9 +321,10 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
             // allocation-sampling call stack - JVMTI SampledObjectAlloc
             // callback; resolveKlassId() calls Class.getName(), a genuine
             // Java-bytecode upcall, too costly and re-entrancy-prone from
-            // there), or an already-resolved entry on a resolving sweep.
-            // Reuse the cached id; if it was never resolved, this entry's
-            // sample for this epoch is dropped rather than resolving now.
+            // there), an already-resolved entry on a resolving sweep, or an
+            // entry past this sweep's RESOLVE_BUDGET_PER_SWEEP. Reuse the
+            // cached id; if it was never resolved, this entry's sample for
+            // this epoch is dropped rather than resolving now.
             klass_id = _table[target].cached_klass_id;
           }
           if (klass_id != 0) {
@@ -751,6 +782,15 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
         // fall back to plain tagging.
         need_set = true;
       }
+    } else if (tag_err == JVMTI_ERROR_NONE && existing < 0) {
+      // Negative tag: a stable class tag from the shared class-tag allocator
+      // (classTagAllocator.h) - the candidate is a java.lang.Class mirror.
+      // Replacing it with a positive leak tag would break class resolution
+      // and frontier matching for the represented class. Preserve the
+      // installed class tag untouched; the entry's pool-tag bookkeeping
+      // stays as it is.
+      leak_tag = sc.recorded_leak_tag;
+      need_set = false;
     } else {
       // No tag: first tagging, or re-establishment after a restart wiped
       // all tags (releaseSearchTags() clears every JVMTI tag while the
@@ -1103,8 +1143,30 @@ void LivenessTracker::mintStableClassTagIfNeeded(JNIEnv *env, int slot,
     jlong tag = 0;
     if (jvmti->GetTag(klass, &tag) == JVMTI_ERROR_NONE) {
       if (tag == 0) {
-        tag = ClassTagAllocator::next();
-        jvmti->SetTag(klass, tag);
+        jlong new_tag = ClassTagAllocator::next();
+        if (jvmti->SetTag(klass, new_tag) == JVMTI_ERROR_NONE) {
+          // Adopt the tag actually installed on the class object: the
+          // reference-chain tracker's resolveLoadedClasses() may have
+          // installed its own tag between our GetTag and SetTag (two SetTag
+          // calls on the same untagged class - the last writer wins on the
+          // class object). Re-read so both trackers keep the ONE tag the
+          // class carries; publishing our own minted tag otherwise would
+          // permanently disconnect this entry's leak correlation from the
+          // class tag the reference-chain side keys off of.
+          jlong installed = 0;
+          if (jvmti->GetTag(klass, &installed) == JVMTI_ERROR_NONE &&
+              installed != 0) {
+            tag = installed;
+          } else {
+            tag = new_tag;
+          }
+        } else {
+          // SetTag failed: publish nothing. stable_class_tag stays 0 and
+          // the next fold's minting retry (the need_mint stale-representative
+          // probe) calls this method again - a tag that is not on the class
+          // object must never be cached as the stable tag.
+          tag = 0;
+        }
       }
       _klass_population[slot].stable_class_tag = tag;
     }
