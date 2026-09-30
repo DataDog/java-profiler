@@ -68,22 +68,24 @@ public:
     // adjustment; that is the caller's decision, because only the caller
     // knows what it is about to do with the address.
     //
-    // x86_64 used to subtract one inside the helper, and not on every branch
-    // (unwindPrologue's isFrameComplete arm omitted it), while aarch64 never
-    // did. A caller could not tell which it had been handed, so walkVM
-    // guessed from the target architecture. Exact-address consumers on the
-    // far side -- isContReturnBarrier, isContEntryReturnPc, isEntryFrame,
-    // all comparing against genuine return addresses -- were silently
-    // failing on x86_64 as a result.
+    // Returning the raw address on every architecture and every branch lets a
+    // caller rely on one meaning without knowing the target. Some consumers
+    // need the genuine return address: isContReturnBarrier,
+    // isContEntryReturnPc and isEntryFrame compare it for equality against
+    // known addresses, so a value already reduced by one never matches.
+    // Consumers that symbolize derive the attribution address from the raw one
+    // (see attributionPC in stackWalker.inline.h); applying the adjustment
+    // inside a helper would make that a second subtraction.
     //
     // unwindHelperContract_ut.cpp pins this.
+    //
     // The overloads below without explicit registers write the sender into the
     // real ucontext for an AsyncGetCallTrace retry, which has no WalkPc to
     // apply the attribution adjustment afterwards. On x86_64 HotSpot
     // attributes the recovered caller to the instruction the pc points at, so
     // the raw return address would select the bytecode after the call; step
-    // back into the call here. aarch64 has always handed AsyncGetCallTrace
-    // the raw return address and keeps doing so.
+    // back into the call here. aarch64 passes the raw return address to
+    // AsyncGetCallTrace unchanged.
     bool unwindCompiled(VMNMethod* nm) {
         bool ok = unwindCompiled(nm, pc(), sp(), fp());
         return ok && stepIntoCallForAsgct();

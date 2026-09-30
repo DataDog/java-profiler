@@ -7,13 +7,12 @@
 // return address, on every architecture and every branch, with no attribution
 // adjustment applied.
 //
-// They used to disagree. x86_64 subtracted one inside the helper, and not even
-// on every branch -- unwindPrologue's isFrameComplete arm returned the address
-// untouched while its two siblings adjusted it -- while aarch64 never did. A
-// caller could not tell which it had been handed, so walkVM guessed from the
-// target architecture, and the exact-address consumers on the far side
-// (isContReturnBarrier, isContEntryReturnPc, isEntryFrame) silently stopped
-// matching on x86_64.
+// The raw address is the right thing to return because callers differ in what
+// they need from it. Exact-address consumers (isContReturnBarrier,
+// isContEntryReturnPc, isEntryFrame) compare it against known return
+// addresses, and symbolizing callers derive the attribution address from it
+// themselves; a helper that adjusted internally would break the former and
+// double-adjust for the latter.
 //
 // These tests drive the helpers directly: a fabricated frame, a few bytes of
 // synthetic code, and -- for unwindPrologue/unwindEpilogue, which take a
@@ -117,8 +116,8 @@ uintptr_t UnwindHelperContractTest::_code[kCodeWords];
 uintptr_t UnwindHelperContractTest::_stack[kStackWords];
 
 // The shared entry branch: pc sitting exactly on the stub's first
-// instruction. Both arches take it, and both now hand back a raw address --
-// they differ only in where the sender pc lives on that architecture.
+// instruction. Both arches take it and hand back a raw address; they differ
+// only in where the sender pc lives on that architecture.
 TEST_F(UnwindHelperContractTest, UnwindStubAtEntryRecoversTheRawSenderPc) {
     HotspotStackFrame frame(&_uc);
 
@@ -149,8 +148,7 @@ TEST_F(UnwindHelperContractTest, UnwindStubAtEntryRecoversTheRawSenderPc) {
 // The property that matters to a caller, stated without reference to which
 // architecture this is: whatever the helper returns is a raw return address,
 // so the caller can apply the attribution adjustment itself and be right
-// everywhere. Before the contract was unified this could not be written --
-// the answer depended on the target.
+// everywhere.
 TEST_F(UnwindHelperContractTest, HelperNeverAppliesTheAdjustmentItself) {
     HotspotStackFrame frame(&_uc);
 
@@ -164,8 +162,8 @@ TEST_F(UnwindHelperContractTest, HelperNeverAppliesTheAdjustmentItself) {
     ASSERT_TRUE(frame.unwindStub(code(), "someStub", pc, sp, fp));
 
     // Whichever slot this architecture sources the sender pc from, it comes
-    // back unmodified. An off-by-one here means someone reintroduced a folded
-    // adjustment, and walkVM would then subtract a second one.
+    // back unmodified. An off-by-one here means the helper applied the
+    // adjustment itself, and walkVM would then subtract a second one.
     const bool is_raw = (pc == kSenderRa) || (pc == kLinkReg);
     EXPECT_TRUE(is_raw)
         << "expected an unmodified return address, got pc=0x" << std::hex << pc
@@ -286,9 +284,9 @@ TEST_F(UnwindNMethodHelperContractTest, UnwindPrologueAtEntryRecoversTheRawSende
 }
 
 // One instruction further in, past the push/stp that saved the caller's fp:
-// both architectures now source the sender pc from the *second* stack slot and
-// pop two. This is the branch where x86_64's folded adjustment used to sit at a
-// different slot than its sibling's, so it is worth pinning separately.
+// both architectures source the sender pc from the *second* stack slot and pop
+// two, a different slot than the branch above reads, so it is pinned
+// separately.
 TEST_F(UnwindNMethodHelperContractTest, UnwindPrologueAfterFrameSetupRecoversTheRawSenderPc) {
     HotspotStackFrame frame(&_uc);
 
