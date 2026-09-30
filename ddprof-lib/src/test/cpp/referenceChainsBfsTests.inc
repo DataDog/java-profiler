@@ -5,6 +5,7 @@
 
 #include "referenceChainsTestAccessors.h"
 #include "referenceChainsMockHeap.h"
+#include "tsc.h"
 
 
 
@@ -787,6 +788,84 @@ TEST_F(ReferenceChainsBfsTest, ChainCompletesWithoutAbandonment) {
     // No-progress (not TTL) is reported as the reason when the frontier stalls.
     EXPECT_EQ(SearchAbandonReason::NONE, tracker->abandonReason());
     EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
+
+    tracker->stop();
+}
+
+// TSC's clock state is private and only set by TSC::enable() from the JVM's JFR tick frequency,
+// which a gtest process never has. The TTL test below needs a TSC frequency other than 1 GHz, so it
+// reaches the two statics through the explicit-instantiation access rule (an explicit template
+// instantiation may name private members), without a production seam.
+template <typename Tag, typename Tag::type M>
+struct TscPrivateAccess {
+    friend typename Tag::type tscPrivate(Tag) { return M; }
+};
+struct TscEnabledTag {
+    typedef bool *type;
+    friend type tscPrivate(TscEnabledTag);
+};
+struct TscFrequencyTag {
+    typedef u64 *type;
+    friend type tscPrivate(TscFrequencyTag);
+};
+template struct TscPrivateAccess<TscEnabledTag, &TSC::_enabled>;
+template struct TscPrivateAccess<TscFrequencyTag, &TSC::_frequency>;
+
+// Forces TSC::frequency() to `frequency` for its scope and restores the original state on exit.
+struct ScopedTscFrequency {
+    bool saved_enabled;
+    u64 saved_frequency;
+    explicit ScopedTscFrequency(u64 frequency)
+        : saved_enabled(*tscPrivate(TscEnabledTag())),
+          saved_frequency(*tscPrivate(TscFrequencyTag())) {
+        *tscPrivate(TscEnabledTag()) = true;
+        *tscPrivate(TscFrequencyTag()) = frequency;
+    }
+    ~ScopedTscFrequency() {
+        *tscPrivate(TscEnabledTag()) = saved_enabled;
+        *tscPrivate(TscFrequencyTag()) = saved_frequency;
+    }
+};
+
+// _search_start_ns is an OS::nanotime() timestamp, so the TTL check must convert the elapsed time
+// as nanoseconds. Converting it as TSC ticks is only right when TSC::frequency() happens to be
+// 1 GHz; with a 100 GHz tick rate, 5 s of nanotime would read as 50 ms and the TTL would never
+// fire. On platforms without TSC_SUPPORTED, TSC::frequency() is always 1 GHz and this only checks
+// the abandonment itself.
+TEST_F(ReferenceChainsBfsTest, TtlMeasuresElapsedNanotimeIndependentOfTscFrequency) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1:ttl=1000:firstpassbudget=1"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int nodeA = addNode();
+    int nodeB = addNode();
+    int nodeC = addNode();
+    int nodeD = addNode();
+    // Same chain as ChainCompletesWithoutAbandonment: pass 1 ends truncated with pending work, so
+    // the next pass reaches the TTL check instead of completing.
+    script = {
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeA, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeA, nodeB, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeB, nodeC, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeC, nodeD, -1},
+    };
+
+    bool truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ASSERT_TRUE(truncated);
+    ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+
+    // 5 s of search time against a 1000 ms TTL.
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(OS::nanotime() -
+                                                        5000ULL * 1000 * 1000);
+    {
+        ScopedTscFrequency tsc(100ULL * 1000 * 1000 * 1000);
+        ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    }
+    EXPECT_EQ(SearchState::ABANDONED, tracker->searchState())
+        << "5 s elapsed must exceed the 1000 ms TTL regardless of TSC::frequency()";
+    EXPECT_EQ(SearchAbandonReason::TTL, tracker->abandonReason());
 
     tracker->stop();
 }

@@ -16,12 +16,17 @@
 
 #include <gtest/gtest.h>
 #include "livenessTracker.h"
+#include "arguments.h"
+#include "objectSampler.h"
+#include "profiler.h"
+#include "referenceChainsTestAccessors.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 // Test name for crash handler
@@ -1140,8 +1145,8 @@ TEST_F(SecondsToOOMTest, FloorAtMaxHeapReturnsZero) {
 // ---------------------------------------------------------------------------
 // The pool hands out JVMTI tags in [LEAK_TAG_BASE, LEAK_TAG_BASE + 256) and
 // recycles them when the tracked object dies. These tests exercise the pure
-// pool mechanics (acquire/release/info); tagLeakInstances() itself needs a
-// live JVM (SetTag) and is verified on-pod.
+// pool mechanics (acquire/release/info); tagLeakInstances() is driven against
+// a mock JVM in LivenessTrackerMockJvmTest below.
 
 class LeakTagPoolTest : public ::testing::Test {
 protected:
@@ -1750,4 +1755,357 @@ TEST_F(AdmissionBoostTest, ConcurrentBoostPublishAndGateProbesStayConsistent) {
     // watched tids are guaranteed to have happened.
     EXPECT_GT(state.stale_probes.load(), 0)
         << "no previously-watched tid was ever re-probed after a clear";
+}
+
+// ---------------------------------------------------------------------------
+// LivenessTracker driven through its public start()/track()/onGC()/
+// maybeForceCleanup()/tagLeakInstances() API against a minimal mock JVM: a
+// JavaVM whose GetEnv() hands out a mock JNIEnv, and a mock jvmtiEnv, swapped
+// into VM's statics via VMTestAccessor. Objects are entries of a fixed array;
+// a jweak/local ref is the object's own address, and "collecting" an object
+// just flips its alive flag (IsSameObject(ref, nullptr) and NewLocalRef()
+// report it dead from then on).
+//
+// start() initializes the tracking table only once per process (the table
+// deliberately survives recordings), so every test here must leave the table
+// empty: TearDown() kills all mock objects and runs one more sweep to reap
+// their rows before the mock JVM goes away.
+
+namespace {
+
+struct MockJvmObject {
+    bool alive;
+    void *klass; // fake jclass: the address of a MockJvm class marker
+};
+
+struct MockJvm {
+    static constexpr int kMaxObjects = 1024;
+
+    JNIInvokeInterface_ vm_tbl{};
+    JavaVM_ vm{};
+    JNINativeInterface_ jni_tbl{};
+    JNIEnv_ jni{};
+    jvmtiInterface_1_ jvmti_tbl{};
+    _jvmtiEnv jvmti{};
+
+    // Reserved up front and never grown, so object addresses stay stable.
+    std::vector<MockJvmObject> objects;
+    std::unordered_map<const void *, jlong> tags;
+    // Fake jclass -> JVMTI class signature.
+    std::unordered_map<const void *, const char *> class_signatures;
+
+    // Address-only markers standing in for classes and objects the tracker's
+    // initialization resolves (java.lang.Runtime, java.lang.Class, the
+    // Runtime instance) and for the tracked objects' classes.
+    char runtime_class, class_class, runtime_object;
+    char retained_class, trailing_class;
+
+    MockJvmObject *asObject(const void *p) {
+        if (objects.empty()) {
+            return nullptr;
+        }
+        const MockJvmObject *first = objects.data();
+        const MockJvmObject *last = first + objects.size();
+        const MockJvmObject *o = static_cast<const MockJvmObject *>(p);
+        return (o >= first && o < last) ? const_cast<MockJvmObject *>(o) : nullptr;
+    }
+
+    jobject newObject(void *klass) {
+        objects.push_back({true, klass});
+        return reinterpret_cast<jobject>(&objects.back());
+    }
+};
+
+MockJvm *g_mock_jvm = nullptr;
+
+jint JNICALL mockGetEnv(JavaVM *, void **penv, jint) {
+    *penv = &g_mock_jvm->jni;
+    return JNI_OK;
+}
+
+jclass JNICALL mockFindClass(JNIEnv *, const char *name) {
+    if (strcmp(name, "java/lang/Runtime") == 0) {
+        return reinterpret_cast<jclass>(&g_mock_jvm->runtime_class);
+    }
+    if (strcmp(name, "java/lang/Class") == 0) {
+        return reinterpret_cast<jclass>(&g_mock_jvm->class_class);
+    }
+    return nullptr;
+}
+
+jmethodID JNICALL mockGetMethodID(JNIEnv *, jclass clazz, const char *, const char *) {
+    return reinterpret_cast<jmethodID>(clazz);
+}
+
+jobject JNICALL mockCallStaticObjectMethodV(JNIEnv *, jclass, jmethodID, va_list) {
+    return reinterpret_cast<jobject>(&g_mock_jvm->runtime_object);
+}
+
+// Runtime.maxMemory(): large enough that the tracking table's capacity is not
+// the limiting factor for any test here.
+jlong JNICALL mockCallLongMethodV(JNIEnv *, jobject, jmethodID, va_list) {
+    return 64LL * 1024 * 1024 * 1024;
+}
+
+jboolean JNICALL mockExceptionCheck(JNIEnv *) { return JNI_FALSE; }
+void JNICALL mockExceptionClear(JNIEnv *) {}
+void JNICALL mockExceptionDescribe(JNIEnv *) {}
+
+jweak JNICALL mockNewWeakGlobalRef(JNIEnv *, jobject obj) {
+    return reinterpret_cast<jweak>(obj);
+}
+void JNICALL mockDeleteWeakGlobalRef(JNIEnv *, jweak) {}
+
+jobject JNICALL mockNewLocalRef(JNIEnv *, jobject ref) {
+    MockJvmObject *o = g_mock_jvm->asObject(ref);
+    return (o != nullptr && !o->alive) ? nullptr : ref;
+}
+void JNICALL mockDeleteLocalRef(JNIEnv *, jobject) {}
+
+jboolean JNICALL mockIsSameObject(JNIEnv *, jobject a, jobject b) {
+    if (b == nullptr) {
+        MockJvmObject *o = g_mock_jvm->asObject(a);
+        return (a == nullptr || (o != nullptr && !o->alive)) ? JNI_TRUE : JNI_FALSE;
+    }
+    return a == b ? JNI_TRUE : JNI_FALSE;
+}
+
+jclass JNICALL mockGetObjectClass(JNIEnv *, jobject obj) {
+    MockJvmObject *o = g_mock_jvm->asObject(obj);
+    return reinterpret_cast<jclass>(o != nullptr ? o->klass : &g_mock_jvm->class_class);
+}
+
+jvmtiError JNICALL mockSetEventNotificationMode(jvmtiEnv *, jvmtiEventMode, jvmtiEvent,
+                                                jthread, ...) {
+    return JVMTI_ERROR_NONE;
+}
+
+jvmtiError JNICALL mockGetTag(jvmtiEnv *, jobject obj, jlong *tag) {
+    auto it = g_mock_jvm->tags.find(obj);
+    *tag = it != g_mock_jvm->tags.end() ? it->second : 0;
+    return JVMTI_ERROR_NONE;
+}
+
+jvmtiError JNICALL mockSetTag(jvmtiEnv *, jobject obj, jlong tag) {
+    g_mock_jvm->tags[obj] = tag;
+    return JVMTI_ERROR_NONE;
+}
+
+jvmtiError JNICALL mockGetClassSignature(jvmtiEnv *, jclass klass, char **signature,
+                                         char **generic) {
+    auto it = g_mock_jvm->class_signatures.find(klass);
+    if (it == g_mock_jvm->class_signatures.end()) {
+        return JVMTI_ERROR_INVALID_CLASS;
+    }
+    *signature = strdup(it->second);
+    if (generic != nullptr) {
+        *generic = nullptr;
+    }
+    return JVMTI_ERROR_NONE;
+}
+
+jvmtiError JNICALL mockDeallocate(jvmtiEnv *, unsigned char *mem) {
+    free(mem);
+    return JVMTI_ERROR_NONE;
+}
+
+constexpr const char *kRetainedSignature = "Lcom/datadoghq/lt/Retained;";
+constexpr const char *kTrailingSignature = "Lcom/datadoghq/lt/Trailing;";
+
+// The class id resolveKlassId() produces for `signature`: same
+// normalizeClassSignature() + Profiler::lookupClass() sequence.
+u32 classIdOf(const char *signature) {
+    const char *name = nullptr;
+    size_t len = 0;
+    if (!ObjectSampler::normalizeClassSignature(signature, &name, &len)) {
+        return 0;
+    }
+    int id = Profiler::instance()->lookupClass(name, len);
+    return id > 0 ? (u32)id : 0;
+}
+
+} // namespace
+
+class LivenessTrackerMockJvmTest : public ::testing::Test {
+protected:
+    MockJvm jvm;
+    JavaVM *saved_vm = nullptr;
+    jvmtiEnv *saved_jvmti = nullptr;
+    bool saved_hotspot = false;
+    int saved_hotspot_version = 0;
+
+    // maybeForceCleanup() only sweeps once 30s have passed since its last
+    // sweep. The tracker keeps that timestamp across tests, so the fake clock
+    // is process-wide and only moves forward.
+    static u64 fake_now_ns;
+
+    void SetUp() override {
+        installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
+        jvm.objects.reserve(MockJvm::kMaxObjects);
+        jvm.class_signatures[&jvm.retained_class] = kRetainedSignature;
+        jvm.class_signatures[&jvm.trailing_class] = kTrailingSignature;
+
+        jvm.vm_tbl.GetEnv = &mockGetEnv;
+        jvm.vm.functions = &jvm.vm_tbl;
+
+        jvm.jni_tbl.FindClass = &mockFindClass;
+        jvm.jni_tbl.GetMethodID = &mockGetMethodID;
+        jvm.jni_tbl.GetStaticMethodID = &mockGetMethodID;
+        jvm.jni_tbl.CallStaticObjectMethodV = &mockCallStaticObjectMethodV;
+        jvm.jni_tbl.CallLongMethodV = &mockCallLongMethodV;
+        jvm.jni_tbl.ExceptionCheck = &mockExceptionCheck;
+        jvm.jni_tbl.ExceptionClear = &mockExceptionClear;
+        jvm.jni_tbl.ExceptionDescribe = &mockExceptionDescribe;
+        jvm.jni_tbl.NewWeakGlobalRef = &mockNewWeakGlobalRef;
+        jvm.jni_tbl.DeleteWeakGlobalRef = &mockDeleteWeakGlobalRef;
+        jvm.jni_tbl.NewLocalRef = &mockNewLocalRef;
+        jvm.jni_tbl.DeleteLocalRef = &mockDeleteLocalRef;
+        jvm.jni_tbl.IsSameObject = &mockIsSameObject;
+        jvm.jni_tbl.GetObjectClass = &mockGetObjectClass;
+        jvm.jni.functions = &jvm.jni_tbl;
+
+        jvm.jvmti_tbl.SetEventNotificationMode = &mockSetEventNotificationMode;
+        jvm.jvmti_tbl.GetTag = &mockGetTag;
+        jvm.jvmti_tbl.SetTag = &mockSetTag;
+        jvm.jvmti_tbl.GetClassSignature = &mockGetClassSignature;
+        jvm.jvmti_tbl.Deallocate = &mockDeallocate;
+        jvm.jvmti.functions = &jvm.jvmti_tbl;
+
+        g_mock_jvm = &jvm;
+        saved_vm = VMTestAccessor::getVm();
+        saved_jvmti = VMTestAccessor::getJvmti();
+        saved_hotspot = VMTestAccessor::getHotspot();
+        saved_hotspot_version = VMTestAccessor::getHotspotVersion();
+        VMTestAccessor::setVm(&jvm.vm);
+        VMTestAccessor::setJvmti(&jvm.jvmti);
+        // initialize() disables tracking below Java 11.
+        VMTestAccessor::setHotspot(true);
+        VMTestAccessor::setHotspotVersion(17);
+
+        LivenessTracker *tracker = LivenessTracker::instance();
+        tracker->klassPopulationResetForTest();
+        tracker->leakTagPoolResetForTest();
+        Arguments args;
+        ASSERT_FALSE(args.parse("generations=true"));
+        ASSERT_FALSE(tracker->start(args));
+        // Track every allocation handed to track().
+        tracker->setSubsampleRatioForTest(1.0);
+    }
+
+    void TearDown() override {
+        for (MockJvmObject &o : jvm.objects) {
+            o.alive = false;
+        }
+        LivenessTracker *tracker = LivenessTracker::instance();
+        sweep();
+        tracker->klassPopulationResetForTest();
+        tracker->leakTagPoolResetForTest();
+        tracker->admissionResetForTest();
+        tracker->setSubsampleRatioForTest(0.1);
+        tracker->setGcGenerationsForTest(false);
+        VMTestAccessor::setVm(saved_vm);
+        VMTestAccessor::setJvmti(saved_jvmti);
+        VMTestAccessor::setHotspot(saved_hotspot);
+        VMTestAccessor::setHotspotVersion(saved_hotspot_version);
+        g_mock_jvm = nullptr;
+        restoreDefaultSignalHandlers();
+    }
+
+    jobject trackNew(void *klass, jint tid) {
+        jobject obj = jvm.newObject(klass);
+        track(obj, tid);
+        return obj;
+    }
+
+    void track(jobject obj, jint tid) {
+        AllocEvent event;
+        event._size = 16;
+        LivenessTracker::instance()->track(&jvm.jni, event, tid, obj,
+                                           /*call_trace_id=*/1);
+    }
+
+    // One GC (the JVMTI GarbageCollectionFinish callback, which bumps the GC
+    // epoch) followed by the background-thread sweep for it
+    // (cleanup_table(force=true, allow_resolve=true)).
+    void sweep() {
+        LivenessTracker *tracker = LivenessTracker::instance();
+        LivenessTracker::GarbageCollectionFinish(&jvm.jvmti);
+        fake_now_ns += 60ULL * 1000 * 1000 * 1000;
+        tracker->maybeForceCleanup(fake_now_ns);
+    }
+};
+
+u64 LivenessTrackerMockJvmTest::fake_now_ns = 0;
+
+// Each sweep resolves the class of at most RESOLVE_BUDGET_PER_SWEEP (256,
+// livenessTracker.cpp) survivors. Survivors keep their table order across
+// compaction, so the budget must go to entries that have no cached class id
+// yet; spending it on the same leading entries every sweep would leave every
+// entry past the first 256 unresolved - and uncounted - forever.
+TEST_F(LivenessTrackerMockJvmTest, ResolveBudgetReachesSurvivorsPastTheFirstSweep) {
+    constexpr int kResolveBudgetPerSweep = 256;
+    constexpr int kTrailing = 8;
+    LivenessTracker *tracker = LivenessTracker::instance();
+    u32 retained_id = classIdOf(kRetainedSignature);
+    u32 trailing_id = classIdOf(kTrailingSignature);
+    ASSERT_NE(0u, retained_id);
+    ASSERT_NE(0u, trailing_id);
+
+    for (int i = 0; i < kResolveBudgetPerSweep; i++) {
+        trackNew(&jvm.retained_class, /*tid=*/1);
+    }
+    for (int i = 0; i < kTrailing; i++) {
+        trackNew(&jvm.trailing_class, /*tid=*/1);
+    }
+
+    KlassPopulationEntry entry{};
+    sweep();
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(retained_id, &entry));
+    ASSERT_FALSE(tracker->klassPopulationLookupForTest(trailing_id, &entry))
+        << "the first sweep's budget should be used up by the leading entries";
+
+    sweep();
+    EXPECT_TRUE(tracker->klassPopulationLookupForTest(trailing_id, &entry))
+        << "the second sweep must spend its budget on the still-unresolved "
+           "trailing entries, not re-resolve the cached leading ones";
+}
+
+// Two table rows can hold weak refs to the same object (the same allocation
+// recorded twice). Only the first row to tag the object may own its pool tag:
+// if the second row adopted the tag it found on the object, both rows would
+// release the same pool index when the object dies, pushing it onto the free
+// list twice.
+TEST_F(LivenessTrackerMockJvmTest, SharedObjectLeakTagHasSingleOwner) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    const int pool = tracker->leakTagPoolSizeForTest();
+    u32 retained_id = classIdOf(kRetainedSignature);
+    ASSERT_NE(0u, retained_id);
+
+    constexpr jint kTid = 7;
+    jobject obj = trackNew(&jvm.retained_class, kTid);
+    track(obj, kTid);
+    // Resolves both rows' cached class id, which tagLeakInstances() matches on.
+    sweep();
+
+    // Held by the test so the pool is never full: a duplicate release then
+    // shows up as an over-count instead of writing past the free list.
+    // TearDown()'s leakTagPoolResetForTest() returns it.
+    ASSERT_NE(0, tracker->acquireLeakTagForTest(/*call_trace_id=*/1, /*tid=*/1));
+
+    KlassCandidate candidate{};
+    candidate.klass_id = retained_id;
+    candidate.qualifying_tids[0] = kTid;
+    candidate.qualifying_tid_count = 1;
+    EXPECT_EQ(1, tracker->tagLeakInstances(&jvm.jvmti, &candidate, 1))
+        << "only one of the two rows sharing the object may take its leak tag";
+    EXPECT_EQ(pool - 2, tracker->leakTagFreeCountForTest());
+    jlong tag = 0;
+    mockGetTag(&jvm.jvmti, obj, &tag);
+    EXPECT_GE(tag, tracker->leakTagBaseForTest());
+
+    // Object dies: its rows are reaped, releasing the tag exactly once.
+    g_mock_jvm->asObject(obj)->alive = false;
+    sweep();
+    EXPECT_EQ(pool - 1, tracker->leakTagFreeCountForTest())
+        << "the object's leak tag must go back to the pool exactly once";
 }

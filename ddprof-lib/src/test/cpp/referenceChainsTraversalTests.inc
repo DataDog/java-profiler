@@ -96,6 +96,74 @@ TEST_F(ReferenceChainsBfsTest, RollingResumePopsProcessedEntriesOnTruncatedBatch
     tracker->stop();
 }
 
+// Truncated-batch completion must follow the REFERRER of admitted child edges, not the order in
+// which top-level batch entries are visited: FollowReferences over the holder array reports every
+// batch entry (holder -> element) before any entry's own children (mirrored by
+// mock_FollowReferences()), so a batch entry visited early may still have children the truncation
+// cut off. Marking it EXPANDED would drop those children from the search for good.
+TEST_F(ReferenceChainsBfsTest, TruncatedBatchKeepsEntryWhoseChildrenWereCutOff) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::setPassDeadlineNs(0);
+    FrontierTable *frontier = tracker->frontierTable();
+
+    // Three boundary entries, two children each.
+    int e[3];
+    int c[3][2];
+    for (int i = 0; i < 3; i++) {
+        e[i] = addNode();
+        c[i][0] = addNode();
+        c[i][1] = addNode();
+    }
+    jlong etag[3];
+    for (int i = 0; i < 3; i++) {
+        // tagObject() draws from the tracker's own tag counter, so the children admitted below
+        // can never collide with these seed tags.
+        etag[i] = tracker->tagObject(&mock_jvmti, (jobject)&node_tags[e[i]]);
+        ASSERT_NE(0, etag[i]);
+        ASSERT_TRUE(frontier->insert(etag[i], 0, 1, 0, FrontierEntryState::EDGE));
+        ReferenceChainsTestAccessor::pushPendingExpandForTest(etag[i]);
+        script.push_back({JVMTI_HEAP_REFERENCE_FIELD, e[i], c[i][0], -1});
+        script.push_back({JVMTI_HEAP_REFERENCE_FIELD, e[i], c[i][1], -1});
+    }
+
+    // Budget 3: admits c[0][0], c[0][1], c[1][0], then aborts on c[1][1]. Only e[0] has had all of
+    // its children reported.
+    int edges = 0;
+    bool truncated = false;
+    ReferenceChainsTestAccessor::expandFrontierWithBudgetForTest(
+        &mock_jvmti, &mock_jni, 3, &edges, &truncated);
+    ASSERT_TRUE(truncated);
+    EXPECT_EQ(3, edges);
+    EXPECT_EQ(0, tags_ever_assigned[c[1][1]]);
+
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(etag[0], &entry));
+    EXPECT_EQ(FrontierEntryState::EXPANDED, entry.state)
+        << "e[0] had all its children reported and should be EXPANDED";
+    ASSERT_TRUE(frontier->lookup(etag[1], &entry));
+    EXPECT_NE(FrontierEntryState::EXPANDED, entry.state)
+        << "e[1]'s second child was cut off by the truncation - it must stay unexpanded";
+    // The admitted children are appended behind them.
+    std::vector<jlong> pending = ReferenceChainsTestAccessor::pendingExpandContents();
+    ASSERT_GE(pending.size(), 2u);
+    EXPECT_EQ((std::vector<jlong>{etag[1], etag[2]}),
+              std::vector<jlong>(pending.begin(), pending.begin() + 2))
+        << "e[1] and e[2] must be re-queued at the front for the next pass";
+
+    // The next drive with room to spare admits the children the truncation cut off.
+    ReferenceChainsTestAccessor::expandFrontierWithBudgetForTest(
+        &mock_jvmti, &mock_jni, 1000, &edges, &truncated);
+    EXPECT_FALSE(truncated);
+    EXPECT_NE(0, tags_ever_assigned[c[1][1]]);
+    EXPECT_NE(0, tags_ever_assigned[c[2][0]]);
+    EXPECT_NE(0, tags_ever_assigned[c[2][1]]);
+
+    tracker->stop();
+}
+
 // Verify the AIMD adaptive batch_size: with the per-call EMA over the CPU budget, expandFrontier
 // should multiplicatively decrease the batch; under the budget it should additively increase toward
 // the cap.

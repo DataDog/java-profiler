@@ -26,6 +26,14 @@ class VMTestAccessor {
 public:
     static jvmtiEnv* getJvmti() { return VM::_jvmti; }
     static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
+    // VM::jni() goes through VM::_vm, and VM::hotspot_version() reports -1 unless VM::_hotspot is
+    // set - both are needed to drive LivenessTracker::start() against a mock JVM.
+    static JavaVM* getVm() { return VM::_vm; }
+    static void setVm(JavaVM* vm) { VM::_vm = vm; }
+    static bool getHotspot() { return VM::_hotspot; }
+    static void setHotspot(bool v) { VM::_hotspot = v; }
+    static int getHotspotVersion() { return VM::_hotspot_version; }
+    static void setHotspotVersion(int v) { VM::_hotspot_version = v; }
 };
 
 // ReferenceChainsTestAccessor - same pattern as VMTestAccessor above, for the
@@ -431,6 +439,25 @@ public:
         u64 safepoint_ticks = 0;
         t->expandFrontier(jvmti, jni, t->_hop_cap, 1000, edges_admitted,
                           &truncated, &cap_hit, &safepoint_ticks);
+    }
+
+    // Same drive with a caller-chosen admission budget and the truncated flag reported back, for
+    // tests that need expandFrontier() to stop mid-batch.
+    static void expandFrontierWithBudgetForTest(jvmtiEnv *jvmti, JNIEnv *jni,
+                                                int budget, int *edges_admitted,
+                                                bool *truncated) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        bool cap_hit = false;
+        u64 safepoint_ticks = 0;
+        *truncated = false;
+        t->expandFrontier(jvmti, jni, t->_hop_cap, budget, edges_admitted,
+                          truncated, &cap_hit, &safepoint_ticks);
+    }
+
+    // Backdates the search start (an OS::nanotime() timestamp, see runPass()) so runPass()'s TTL
+    // check can be exercised without sleeping.
+    static void setSearchStartNsForTest(u64 ns) {
+        ReferenceChainTracker::instance()->_search_start_ns = ns;
     }
 
     // Pause-time pacing controller: read-only peeks at the controller's derived values, and a
