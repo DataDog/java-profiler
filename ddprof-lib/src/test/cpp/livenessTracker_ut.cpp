@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -1780,6 +1781,12 @@ struct MockJvmObject {
 
 struct MockJvm {
     static constexpr int kMaxObjects = 1024;
+    // One distinct class per trailing entry in the resolve-budget test.
+    // Together with the retained class this fills the tracker's klass
+    // population and per-sweep klass-count scratch exactly
+    // (MAX_KLASS_POPULATION_ENTRIES == 256, livenessTracker.h), so no class
+    // is evicted or dropped.
+    static constexpr int kTrailingClasses = 255;
 
     JNIInvokeInterface_ vm_tbl{};
     JavaVM_ vm{};
@@ -1798,7 +1805,9 @@ struct MockJvm {
     // initialization resolves (java.lang.Runtime, java.lang.Class, the
     // Runtime instance) and for the tracked objects' classes.
     char runtime_class, class_class, runtime_object;
-    char retained_class, trailing_class;
+    char retained_class;
+    char trailing_classes[kTrailingClasses];
+    std::vector<std::string> trailing_signatures;
 
     MockJvmObject *asObject(const void *p) {
         if (objects.empty()) {
@@ -1910,7 +1919,6 @@ jvmtiError JNICALL mockDeallocate(jvmtiEnv *, unsigned char *mem) {
 }
 
 constexpr const char *kRetainedSignature = "Lcom/datadoghq/lt/Retained;";
-constexpr const char *kTrailingSignature = "Lcom/datadoghq/lt/Trailing;";
 
 // The class id resolveKlassId() produces for `signature`: same
 // normalizeClassSignature() + Profiler::lookupClass() sequence.
@@ -1943,7 +1951,13 @@ protected:
         installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
         jvm.objects.reserve(MockJvm::kMaxObjects);
         jvm.class_signatures[&jvm.retained_class] = kRetainedSignature;
-        jvm.class_signatures[&jvm.trailing_class] = kTrailingSignature;
+        jvm.trailing_signatures.reserve(MockJvm::kTrailingClasses);
+        for (int i = 0; i < MockJvm::kTrailingClasses; i++) {
+            jvm.trailing_signatures.push_back("Lcom/datadoghq/lt/Trailing" +
+                                              std::to_string(i) + ";");
+            jvm.class_signatures[&jvm.trailing_classes[i]] =
+                jvm.trailing_signatures.back().c_str();
+        }
 
         jvm.vm_tbl.GetEnv = &mockGetEnv;
         jvm.vm.functions = &jvm.vm_tbl;
@@ -2042,32 +2056,57 @@ u64 LivenessTrackerMockJvmTest::fake_now_ns = 0;
 // compaction, so the budget must go to entries that have no cached class id
 // yet; spending it on the same leading entries every sweep would leave every
 // entry past the first 256 unresolved - and uncounted - forever.
+//
+// 512 leading entries share one class, so they take the first two sweeps'
+// budgets; each of the 255 trailing entries has a class of its own, so the
+// klass population shows exactly which trailing entries have been resolved.
 TEST_F(LivenessTrackerMockJvmTest, ResolveBudgetReachesSurvivorsPastTheFirstSweep) {
     constexpr int kResolveBudgetPerSweep = 256;
-    constexpr int kTrailing = 8;
+    constexpr int kLeading = 2 * kResolveBudgetPerSweep;
+    constexpr int kTrailing = MockJvm::kTrailingClasses;
+    // With the budget going only to unresolved entries, every entry is
+    // resolved after this many sweeps (3).
+    constexpr int kSweepsToResolveAll =
+        (kLeading + kTrailing + kResolveBudgetPerSweep - 1) / kResolveBudgetPerSweep;
     LivenessTracker *tracker = LivenessTracker::instance();
     u32 retained_id = classIdOf(kRetainedSignature);
-    u32 trailing_id = classIdOf(kTrailingSignature);
     ASSERT_NE(0u, retained_id);
-    ASSERT_NE(0u, trailing_id);
+    std::vector<u32> trailing_ids;
+    for (int i = 0; i < kTrailing; i++) {
+        trailing_ids.push_back(classIdOf(jvm.trailing_signatures[i].c_str()));
+        ASSERT_NE(0u, trailing_ids.back());
+    }
 
-    for (int i = 0; i < kResolveBudgetPerSweep; i++) {
+    for (int i = 0; i < kLeading; i++) {
         trackNew(&jvm.retained_class, /*tid=*/1);
     }
     for (int i = 0; i < kTrailing; i++) {
-        trackNew(&jvm.trailing_class, /*tid=*/1);
+        trackNew(&jvm.trailing_classes[i], /*tid=*/1);
     }
 
     KlassPopulationEntry entry{};
-    sweep();
-    ASSERT_TRUE(tracker->klassPopulationLookupForTest(retained_id, &entry));
-    ASSERT_FALSE(tracker->klassPopulationLookupForTest(trailing_id, &entry))
-        << "the first sweep's budget should be used up by the leading entries";
+    auto countResolvedTrailing = [&]() {
+        int resolved = 0;
+        for (u32 id : trailing_ids) {
+            if (tracker->klassPopulationLookupForTest(id, &entry)) {
+                resolved++;
+            }
+        }
+        return resolved;
+    };
 
     sweep();
-    EXPECT_TRUE(tracker->klassPopulationLookupForTest(trailing_id, &entry))
-        << "the second sweep must spend its budget on the still-unresolved "
-           "trailing entries, not re-resolve the cached leading ones";
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(retained_id, &entry));
+    ASSERT_EQ(0, countResolvedTrailing())
+        << "the first sweep's budget should be used up by the leading entries";
+
+    for (int sweeps = 1; sweeps < kSweepsToResolveAll; sweeps++) {
+        sweep();
+    }
+    EXPECT_EQ(kTrailing, countResolvedTrailing())
+        << "after " << kSweepsToResolveAll << " sweeps every trailing entry must be "
+           "resolved; the budget must go to still-unresolved entries, not re-resolve "
+           "the cached leading ones";
 }
 
 // Two table rows can hold weak refs to the same object (the same allocation

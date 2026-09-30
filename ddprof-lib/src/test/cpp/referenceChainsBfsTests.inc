@@ -870,6 +870,48 @@ TEST_F(ReferenceChainsBfsTest, TtlMeasuresElapsedNanotimeIndependentOfTscFrequen
     tracker->stop();
 }
 
+// The opposite direction of the test above: with a tick rate below 1 GHz (24 MHz, the usual
+// arm64 generic-timer rate), converting nanotime as TSC ticks inflates the elapsed time, so 50 ms
+// of search would read as ~2083 ms and abandon the search long before its 1000 ms TTL. On platforms
+// without TSC_SUPPORTED this only checks that the search is not abandoned early.
+TEST_F(ReferenceChainsBfsTest, TtlDoesNotFireEarlyWithSlowTscFrequency) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1:ttl=1000:firstpassbudget=1"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int nodeA = addNode();
+    int nodeB = addNode();
+    int nodeC = addNode();
+    int nodeD = addNode();
+    // Same chain as TtlMeasuresElapsedNanotimeIndependentOfTscFrequency: both passes end
+    // truncated with pending work, so pass 2 reaches the TTL check.
+    script = {
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeA, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeA, nodeB, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeB, nodeC, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeC, nodeD, -1},
+    };
+
+    bool truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ASSERT_TRUE(truncated);
+    ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+
+    // 50 ms of search time against a 1000 ms TTL: pass 2 itself would have to take over 950 ms of
+    // real time for the TTL to legitimately expire.
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(OS::nanotime() -
+                                                        50ULL * 1000 * 1000);
+    {
+        ScopedTscFrequency tsc(24ULL * 1000 * 1000);
+        ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    }
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState())
+        << "50 ms elapsed must stay under the 1000 ms TTL regardless of TSC::frequency()";
+
+    tracker->stop();
+}
+
 TEST_F(ReferenceChainsBfsTest, NoProgressAbandonsSearchAndReleasesTags) {
     // Verify the progress-based abandonment wiring: the no-progress limit is accessible, positive,
     // and reset to 0 by resetSearchStateForTest().
