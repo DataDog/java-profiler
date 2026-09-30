@@ -101,9 +101,8 @@ typedef struct KlassPopulationEntry {
   // without this counter it gets reported as a leak candidate almost as
   // often as a real leak does.
   u8 consecutive_positive;
-  // Slope (regression value at the ring's newest sample minus the value at
-  // its oldest sample - see ringThirdsStats, livenessTracker.cpp) as of the
-  // last push, computed and cached by hasQualifyingGrowth() alongside
+  // Slope (recent third's mean minus earliest third's mean) as of the last
+  // push, computed and cached by hasQualifyingGrowth() alongside
   // consecutive_positive above - selectLeakCandidates() reads this directly
   // for ranking instead of re-scanning the ring: the ring only changes on
   // push, so a second scan at scan time would just recompute the same
@@ -113,6 +112,13 @@ typedef struct KlassPopulationEntry {
   // existed.
   mutable double cached_slope;
   u64 last_updated_epoch; // _gc_epoch value as of the last write, for LRU
+  // Epoch of the last representative-staleness JNI probe (foldKlassCounts
+  // Locked()'s NewLocalRef check of each stored jweak). The probe is
+  // amortized: without this field it ran for every klass with survivors on
+  // EVERY epoch (up to 256 klasses x 3 jweaks of JNI churn per sweep) even
+  // when a representative is long-lived and nothing changed. See
+  // REP_PROBE_EPOCH_INTERVAL.
+  u64 last_rep_probe_epoch;
                           // eviction when the table is full
   // Stable per-class identifier, from the process-wide, negative-tag
   // allocator shared with ReferenceChainTracker (classTagAllocator.h) - NOT
@@ -220,8 +226,8 @@ private:
   // a klass starts being tracked."
   constexpr static int KLASS_POPULATION_MIN_FILL_FOR_TREND = 10;
   // Per-tid trend gate's own minimum fill (see KlassPopulationEntry::
-  // TidTrend): 6 samples of the 16-slot ring leaves a 2-3 sample
-  // regression, small enough that a per-tid qualification (6 pushes +
+  // TidTrend): 6 samples of the 16-slot ring leaves a 2-3 sample thirds
+  // comparison, small enough that a per-tid qualification (6 pushes +
   // the 3-5 hysteresis epochs, ~9-11) completes no later than the klass
   // gate's own ~13-15-epoch latency, keeping the klass ring the sole
   // latency driver for candidate emergence.
@@ -268,11 +274,11 @@ private:
   // surviving instance count: a klass whose survivors keep spanning more
   // distinct allocation cohorts over time is one where old instances are
   // not dying as new ones arrive, which is the leak shape this gate looks
-  // for. The gate itself is a single condition - the ring's regression end
-  // value must exceed its start value by a meaningful
+  // for. The gate itself is a single condition - the recent third's mean
+  // generation count must exceed the earliest third's by a meaningful
   // margin (LEAK_GROWTH_REL_MIN/LEAK_GROWTH_ABS_MIN, whichever is larger).
-  // An earlier revision of this gate also required the recent half's
-  // *minimum* to exceed the full window's minimum (a floor-rise check,
+  // An earlier revision of this gate also required the recent third's
+  // *minimum* to exceed the earliest third's minimum (a floor-rise check,
   // to reject oscillations whose peak alone passes the growth test) - that
   // check was tuned for raw population counts (which can run into the
   // thousands) and does not transfer to generation counts, which are small
@@ -300,7 +306,7 @@ private:
   constexpr static int LEAK_TREND_HYSTERESIS_CORROBORATED = 3;
 
   // --- Aggregate post-GC heap floor (heapFloorRising() below) ---
-  // Same "regression growth + floor rise" shape as the per-klass test
+  // Same "mean-of-thirds growth + floor rise" shape as the per-klass test
   // above, applied to a single global ring of post-GC live heap size
   // instead of one klass's sampled population - see this class's own ring
   // (_heap_floor_ring below). Its own thresholds are deliberately looser
@@ -330,10 +336,6 @@ private:
   // comment below). _watched_tids is two-phase-published: slots first, then
   // _watched_tid_count with RELEASE (admitForTracking()'s ACQUIRE load pairs
   // with it) - a reader never trusts a slot beyond the count it observed.
-  // Every slot access is ATOMIC (__atomic_* builtins, relaxed): the poll
-  // thread rewrites slots while allocation threads may still read them under
-  // an acquire count load that observed the OLD count - plain accesses there
-  // are a C++ data race (UB), not just a staleness artifact.
   jint _watched_tids[KlassCandidate::MAX_QUALIFYING_TIDS];
   volatile int _watched_tid_count;
   volatile bool _urgent_tracking;
@@ -469,9 +471,23 @@ private:
   typedef struct KlassCountScratch {
     u32 klass_id;
     // Distinct GC ages (generations) of surviving tracked instances
-    // of this klass at this epoch. The size of this vector
-    // is the klass' generation count.
-    std::vector<u32> ages;
+    // of this klass at this epoch. The count (ages_count, saturated
+    // at MAX_DISTINCT_AGES) is the klass' generation count.
+    //
+    // Fixed-size (was a std::vector<u32>): push_back ran while the
+    // EXCLUSIVE table lock is held, including on the forced
+    // cleanup_table(true, false) path invoked synchronously from
+    // track()'s table-overflow branch on the JVMTI SampledObjectAlloc
+    // callback stack - a malloc there is exactly what the project's
+    // allocation-free GC-path preference forbids. The generation-count
+    // signal saturates: a klass with >= MAX_DISTINCT_AGES distinct
+    // surviving ages in a single epoch is already an extreme leak
+    // signal, and the population ring it feeds is only 30 samples
+    // (KLASS_POPULATION_RING_SIZE).
+    static constexpr int MAX_DISTINCT_AGES = 64;
+    u32 ages[MAX_DISTINCT_AGES];
+    int ages_count;
+    bool ages_saturated;  // set once ages_count hits MAX_DISTINCT_AGES
     // Top-N oldest surviving instances of this klass seen this epoch,
     // sorted by age descending. Used by foldKlassCountsLocked() to mint
     // representatives biased toward long-lived instances (Lindy effect:
@@ -516,6 +532,26 @@ private:
   } KlassCountScratch;
   KlassCountScratch _klass_count_scratch[MAX_KLASS_POPULATION_ENTRIES];
   int _klass_count_scratch_size;
+  // Open-addressed direct index over _klass_count_scratch, keyed by
+  // klass_id: slot value is scratch_index + 1 (0 = empty), hashed by the
+  // same mix() convention the frontier uses. accumulateKlassCount() runs
+  // once per SURVIVING table entry (up to MAX_TRACKING_TABLE_SIZE = 262144)
+  // while the exclusive table lock is held; the old linear scan over the
+  // 256 scratch entries made a fully-populated sweep O(entries x klasses).
+  // With the index each accumulate is one probe chain. Rebuilt by
+  // klassCountScratchReset(); MAX_KLASS_POPULATION_ENTRIES = 256 entries
+  // in a 512-slot table keeps the load factor at 0.5.
+  static constexpr int KLASS_COUNT_INDEX_SLOTS = MAX_KLASS_POPULATION_ENTRIES * 2;
+  u16 _klass_count_index[KLASS_COUNT_INDEX_SLOTS];
+
+  // Zeroes the scratch (size + every KlassCountScratch field the fold
+  // reads) and the direct index. Every _klass_count_scratch_size = 0 site
+  // must go through this so the index can never name a stale slot.
+  void klassCountScratchReset();
+
+  // Index lookup: returns the scratch slot for klass_id or nullptr (and
+  // takes an empty slot when `allocate` and scratch has capacity).
+  KlassCountScratch *klassCountScratchSlot(u32 klass_id, bool allocate);
 
   // Profiler::classMap()'s generation as of the last cleanup_table() call
   // that checked it, mirroring ReferenceChainTracker::_last_class_map_generation
@@ -552,15 +588,15 @@ private:
   // instance of the same class) and correlate chains with HeapLiveObject.
   static constexpr int LEAK_TAG_POOL_SIZE = 256;
   static constexpr jlong LEAK_TAG_BASE = 0x40000000LL;
-  // Serializes the pool's free list and _leak_tag_info entries. NOT _table_lock:
-  // acquireLeakTag() runs under the SHARED table lock (tagLeakInstances) while
-  // releaseLeakTag() runs under the EXCLUSIVE one (cleanup_table) - a shared
-  // holder excludes the exclusive one, but only this dedicated lock makes the
-  // pool safe for any future second shared-lock mutator, and getLeakTagInfo()
-  // takes NO table lock at all (BFS poll thread). Lock order: _table_lock
-  // (any mode) is always acquired BEFORE _leak_tag_pool_lock, never the
-  // reverse; no path acquires _table_lock while holding the pool lock.
-  mutable SpinLock _leak_tag_pool_lock;
+  // Own lock for the pool state below (free list + info slots). The pool
+  // is mutated from cleanup_table()'s reaper pass (under the EXCLUSIVE
+  // table lock), tagLeakInstances()'s tagging state machine (deliberately
+  // run OUTSIDE the table lock - see its phase comment), and read by
+  // getLeakTagInfo() from ReferenceChainTracker's coverage path. A dedicated
+  // tiny spinlock keeps those contexts independent of _table_lock ordering
+  // (taking _table_lock inside/outside inconsistently would risk lock-order
+  // inversion); the critical sections are a few integer ops, no JNI.
+  SpinLock _leak_tag_pool_lock;
   int _leak_tag_free_list[LEAK_TAG_POOL_SIZE];
   int _leak_tag_free_count;
   // Side table: for each tag in the pool, the (call_trace_id, tid) of
@@ -600,7 +636,8 @@ private:
   // upcalls flush_table() already makes safely are just as safe there - see
   // that method's own comment for why a third caller needs both bypassing
   // the early-exit *and* resolution.
-  void cleanup_table(bool force = false, bool allow_resolve = true);
+  void cleanup_table(bool force = false, bool allow_resolve = true,
+                     bool account_epoch = true);
 
   void flush_table(std::set<int> *tracked_thread_ids);
 
@@ -707,7 +744,7 @@ private:
 
   // --- Slope computation and candidate ranking (selectLeakCandidates() below) ---
 
-  // Per-tid sustained-trend gate half #1: the same regression growth
+  // Per-tid sustained-trend gate half #1: the same mean-of-thirds growth
   // test hasQualifyingGrowth() below applies to a klass's ring, at
   // KlassPopulationEntry::TidTrend granularity (TID_TREND_MIN_FILL_FOR_TREND
   // samples of that smaller ring, same LEAK_GROWTH_REL_MIN/ABS_MIN growth
@@ -752,13 +789,12 @@ private:
 
   // The sustained-trend gate (this class's own header comment above,
   // "Sustained-trend gate") - both-required growth-magnitude and floor-rise
-  // tests, design doc's original "mean of thirds" choice since replaced by
-  // full-window least-squares regression (see ringThirdsStats,
-  // livenessTracker.cpp - cheap, allocation-free, one pass over the
+  // tests, design doc's explicit "mean of thirds" choice over full
+  // least-squares regression (cheap, allocation-free, one pass over the
   // ring, no sorting or extra storage). A single scan
-  // (ringThirdsStats(), livenessTracker.cpp) both derives the pass/fail
-  // result below AND updates entry.cached_slope (regression end value minus
-  // start value) for selectLeakCandidates()'s ranking, rather than
+  // (ringWindowStats(), livenessTracker.cpp) both derives the pass/fail
+  // result below AND updates entry.cached_slope (recent third's mean minus
+  // earliest third's mean) for selectLeakCandidates()'s ranking, rather than
   // that method re-scanning the same unchanged ring a moment later. Returns
   // false (leaving entry.cached_slope untouched) if entry.ring_fill is below
   // KLASS_POPULATION_MIN_FILL_FOR_TREND - not enough history yet to trust a
@@ -921,9 +957,11 @@ public:
 
   // Look up the (call_trace_id, tid) recorded for a leak tag. Returns
   // false if the tag is not a valid leak tag or has been returned to the
-  // pool. Used by ReferenceChainTracker for coverage tracking.
+  // pool. Used by ReferenceChainTracker for coverage tracking. Takes the
+  // table lock in shared mode: the slot fields are written under the
+  // exclusive lock from several distinct threads (GC reaper paths).
   bool getLeakTagInfo(jlong tag, u64 *out_call_trace_id,
-                      jint *out_tid) const;
+                      jint *out_tid);
 
   // Reads _klass_population and writes up to `max` STABLE CLASS TAGS
   // (KlassPopulationEntry::stable_class_tag - NOT the classMap dictionary
@@ -986,7 +1024,7 @@ public:
   // head/fill index, shared _heap_floor_time_ring timestamps - see
   // _container_mem_ring's own comment) so this compares _max_heap_bytes
   // against _container_memory_limit up front (the latter treated as
-  // unbounded when unavailable) and runs the regression-based rate
+  // unbounded when unavailable) and runs the "mean of thirds" rate
   // extrapolation (allocation-free, one ring scan) only once, against
   // whichever limit is smaller - not once per boundary. This matters
   // because container memory can grow from causes the heap-floor ring never
@@ -1107,9 +1145,7 @@ public:
     return __atomic_load_n(&_watched_tid_count, __ATOMIC_ACQUIRE);
   }
 
-  jint watchedTidForTest(int i) const {
-    return __atomic_load_n(&_watched_tids[i], __ATOMIC_RELAXED);
-  }
+  jint watchedTidForTest(int i) const { return _watched_tids[i]; }
 
   static jlong leakTagBaseForTest() { return LEAK_TAG_BASE; }
 
@@ -1346,7 +1382,7 @@ public:
     // reuses recordKlassPopulationSampleLocked()'s own creation branch
     // exactly; the seeded rising ramp that follows still clears
     // hasQualifyingGrowth() (a single 0 at the ring's start only lowers the
-    // regression start value, which RAISES the slope).
+    // earliest-third mean, which RAISES the slope).
     int slot = -1;
     for (int i = 0; i < _klass_population_size; i++) {
       if (_klass_population[i].klass_id == real_id) {
@@ -1445,7 +1481,7 @@ public:
   void klassPopulationResetForTest() {
     _table_lock.lock();
     _klass_population_size = 0;
-    _klass_count_scratch_size = 0;
+    klassCountScratchReset();
     _test_klass_alias_count = 0;
     _table_lock.unlock();
     // Also reset the heap-floor ring: it is a sibling piece of the same

@@ -2,7 +2,7 @@
  * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  *
- * libFuzzer fuzz target for FrontierTable (referenceChainFrontier.h).
+ * libFuzzer fuzz target for FrontierTable (referenceChains.h).
  *
  * The fuzzer interprets each input as a sequence of table operations and
  * verifies them against an exact semantic shadow model - a byte-for-byte
@@ -74,7 +74,7 @@
 #include <cstdlib>
 #include <vector>
 
-#include "referenceChainFrontier.h"
+#include "referenceChains.h"
 
 // Reports the diverging check before dying: __builtin_trap() alone gives no
 // usable trace under the fuzz task's output capture.

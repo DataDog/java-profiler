@@ -35,6 +35,7 @@
 #include "guards.h"
 #include "log.h"
 #include "os.h"
+#include "spinLock.h"
 
 #ifndef __musl__
 #include <malloc.h>
@@ -916,8 +917,19 @@ int OS::getCgroupCpuMillicores() {
 // cgroups whose usage the leaf's memory.current excludes - pairing the
 // ancestor limit with leaf usage would overstate the available memory and
 // delay the OOM projection.
+//
+// Both globals below are written by getContainerMemoryLimit() (called from
+// LivenessTracker::start() on the profiler-start thread and from
+// SanityCheckTest's setup) and read by getContainerMemoryUsage() (from the
+// JVMTI GarbageCollectionFinish callback, on whatever thread triggered
+// GC) - genuinely concurrent threads, so every access is serialized by
+// g_container_mem_lock. Without it the reader could observe a torn,
+// half-overwritten path string. The usage-leaf cache additionally keeps
+// the per-GC cost at one open/read/close: getContainerMemoryUsage() reads
+// the remembered leaf directly instead of re-deriving it via
+// getOwnCgroupPath() (/proc/self/cgroup parsing) on every GC.
+static SpinLock g_container_mem_lock;
 static char g_memory_limit_cgroup_path[PATH_MAX] = {0};
-
 // Which cgroup hierarchy (v2 or v1) supplied the winning limit recorded in
 // g_memory_limit_cgroup_path: the usage file must be read from the SAME
 // hierarchy (v2 memory.current vs v1 memory.usage_in_bytes), not probed by
@@ -925,6 +937,10 @@ static char g_memory_limit_cgroup_path[PATH_MAX] = {0};
 // for the same cgroup dir, and reading the wrong one pairs the limit with an
 // unrelated usage number.
 static bool g_memory_limit_cgroup_v2 = true;
+// The leaf whose memory.current/memory.usage_in_bytes pairs with the
+// winning limit (the winner cgroup itself, or - when unconstrained - the
+// process's own leaf). Empty until the first successful limit walk.
+static char g_usage_leaf_path[PATH_MAX] = {0};
 
 static long walkCgroupV2MemoryLimit(char* path, char* winner_path_out) {
     size_t base_len = strlen("/sys/fs/cgroup");
@@ -991,11 +1007,17 @@ static long walkCgroupV1MemoryLimit(char* path, char* winner_path_out) {
 long OS::getContainerMemoryLimit() {
     char subpath[PATH_MAX];
     char path[PATH_MAX];
+    // Local winner/usage-leaf bookkeeping, published under the lock at the
+    // end - never write the shared globals directly (the usage reader runs
+    // concurrently on GC-callback threads).
+    char winner[PATH_MAX] = {0};
+    char usage_leaf[PATH_MAX] = {0};
+    bool v2 = true;
+    long result;
 
     // Recomputed on every call; getContainerMemoryUsage() pairs its usage
     // read with whatever path won here (see the winner-path comment on
     // walkCgroupV2MemoryLimit()).
-    g_memory_limit_cgroup_path[0] = '\0';
 
     // Try cgroup v2 first, resolved from this process's own cgroup path.
     if (getOwnCgroupPath("", subpath, sizeof(subpath))) {
@@ -1010,8 +1032,13 @@ long OS::getContainerMemoryLimit() {
                 int fd = open(leaf, O_RDONLY);
                 if (fd != -1) {
                     close(fd);
-                    g_memory_limit_cgroup_v2 = true;
-                    return walkCgroupV2MemoryLimit(path, g_memory_limit_cgroup_path);
+                    result = walkCgroupV2MemoryLimit(path, winner);
+                    // The usage read pairs with the winner cgroup when the
+                    // walk found a limit; otherwise the process's own leaf.
+                    snprintf(usage_leaf, sizeof(usage_leaf), "%s",
+                             winner[0] != '\0' ? winner : path);
+                    v2 = true;
+                    goto publish;
                 }
             }
         }
@@ -1031,14 +1058,29 @@ long OS::getContainerMemoryLimit() {
                 int fd = open(leaf, O_RDONLY);
                 if (fd != -1) {
                     close(fd);
-                    g_memory_limit_cgroup_v2 = false;
-                    return walkCgroupV1MemoryLimit(path, g_memory_limit_cgroup_path);
+                    result = walkCgroupV1MemoryLimit(path, winner);
+                    snprintf(usage_leaf, sizeof(usage_leaf), "%s",
+                             winner[0] != '\0' ? winner : path);
+                    v2 = false;
+                    goto publish;
                 }
             }
         }
     }
 
-    return -1;
+    // Unconstrained or unavailable - remember that (empty paths) so the
+    // usage reader skips straight to its own leaf re-derivation.
+    result = -1;
+    winner[0] = '\0';
+    usage_leaf[0] = '\0';
+
+publish:
+    g_container_mem_lock.lock();
+    memcpy(g_memory_limit_cgroup_path, winner, sizeof(winner));
+    memcpy(g_usage_leaf_path, usage_leaf, sizeof(usage_leaf));
+    g_memory_limit_cgroup_v2 = v2;
+    g_container_mem_lock.unlock();
+    return result;
 }
 
 // Reads the current usage from the same cgroup level that supplied
@@ -1053,26 +1095,51 @@ long OS::getContainerMemoryUsage() {
     char subpath[PATH_MAX];
     char path[PATH_MAX];
 
+    // Fast path: the leaf remembered by the last limit walk (winner cgroup,
+    // or the process's own leaf when unconstrained). Snapshot under the
+    // lock - the walk may be republishing concurrently, and an unsynchronized
+    // read could observe a torn half-written path. This keeps the per-GC
+    // cost at one open/read/close instead of re-deriving the cgroup path
+    // via getOwnCgroupPath() (/proc/self/cgroup parsing) on every GC.
+    char leaf[PATH_MAX] = {0};
+    g_container_mem_lock.lock();
+    if (g_usage_leaf_path[0] != '\0') {
+        memcpy(leaf, g_usage_leaf_path, sizeof(leaf));
+    } else if (g_memory_limit_cgroup_path[0] != '\0') {
+        memcpy(leaf, g_memory_limit_cgroup_path, sizeof(leaf));
+    }
+    g_container_mem_lock.unlock();
+
     // Same cgroup the winning limit came from, if the limit walk recorded
     // one - read its usage first, falling back to the process's own leaf.
     // The usage filename follows the hierarchy that supplied the limit (the
-    // recorded winner's hierarchy is authoritative, not filename order).
-    if (g_memory_limit_cgroup_path[0] != '\0') {
+    // recorded winner's hierarchy is authoritative, not filename order - on
+    // a hybrid system both controller files can be visible for the same
+    // cgroup dir); the other hierarchy's file is only a fallback for a leaf
+    // remembered before the hierarchy flag existed.
+    if (leaf[0] != '\0') {
         char file[PATH_MAX];
-        const char *fmt = g_memory_limit_cgroup_v2 ? "%s/memory.current"
-                                                   : "%s/memory.usage_in_bytes";
-        if ((size_t)snprintf(file, sizeof(file), fmt,
-                             g_memory_limit_cgroup_path) < sizeof(file)) {
+        g_container_mem_lock.lock();
+        bool limit_was_v2 = g_memory_limit_cgroup_v2;
+        g_container_mem_lock.unlock();
+        const char *fmts[2] = {
+            limit_was_v2 ? "%s/memory.current" : "%s/memory.usage_in_bytes",
+            limit_was_v2 ? "%s/memory.usage_in_bytes" : "%s/memory.current"};
+        for (const char *fmt : fmts) {
+            if ((size_t)snprintf(file, sizeof(file), fmt, leaf) >= sizeof(file)) {
+                continue;
+            }
             int fd = open(file, O_RDONLY);
-            if (fd != -1) {
-                char buf[32] = {0};
-                ssize_t r = read(fd, buf, sizeof(buf) - 1);
-                close(fd);
-                if (r > 0) {
-                    long usage = atol(buf);
-                    if (usage >= 0) {
-                        return usage;
-                    }
+            if (fd == -1) {
+                continue;
+            }
+            char buf[32] = {0};
+            ssize_t r = read(fd, buf, sizeof(buf) - 1);
+            close(fd);
+            if (r > 0) {
+                long usage = atol(buf);
+                if (usage >= 0) {
+                    return usage;
                 }
             }
         }
