@@ -490,7 +490,7 @@ public:
   // Set the leak tag on a frontier entry (the JVMTI tag assigned by
   // LivenessTracker to this specific tracked leaking object).
   void setLeakTag(jlong tag, jlong leak_tag) {
-    if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
+    if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
       return;
     }
     int idx = (int)(tag - 1);
@@ -3165,6 +3165,11 @@ public:
   }
   u64 candidateFoundBitsForTest() const { return _candidate_found_bits; }
   void setCandidateFrontierTagForTest(int idx, jlong tag) { _candidate_frontier_tags[idx] = tag; }
+  void setCandidateParentTagForTest(int idx, jlong tag) { _candidate_parent_tags[idx] = tag; }
+  void setCandidateReferrerKlassForTest(int idx, u32 klass_id) {
+    _candidate_referrer_klasses[idx] = klass_id;
+  }
+  void setCandidateDepthForTest(int idx, u32 depth) { _candidate_depths[idx] = depth; }
   int passesSinceLastCandidateProgressForTest() const { return _passes_since_last_candidate_progress; }
   int canaryStuckRestartCountForTest() const { return _canary_stuck_restart_count; }
   void setCandidateFoundBitsForTest(u64 bits) { _candidate_found_bits = bits; }
