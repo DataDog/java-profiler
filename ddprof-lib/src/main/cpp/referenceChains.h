@@ -383,6 +383,15 @@ private:
     }
 
     // Idempotent: returns false if `tag` is already indexed.
+    // Occupancy-bounded: a completely full table (2048/2048) would make
+    // the linear-probe loop wrap forever - a livelock on the engine
+    // thread inside rotation collection or rebuildFrom(). The external
+    // invariant (deque <= PRIORITY_EXPAND_CAP by construction) normally
+    // prevents this, but the invariant is enforced only at push sites;
+    // the occupancy check makes insert() self-terminating even if a
+    // future call site breaks it (insert returns false - the tag is
+    // treated as not-queued, the same degradation a full deque push
+    // already accepts).
     bool insert(jlong tag) {
       u64 i = mix(tag) >> (64 - SLOT_SHIFT);
       while (_used[i]) {
@@ -390,6 +399,10 @@ private:
           return false;
         }
         i = (i + 1) & SLOT_MASK;
+        // Wrapped all 2048 slots without an empty one: table full.
+        if (i == (mix(tag) >> (64 - SLOT_SHIFT))) {
+          return false;
+        }
       }
       _used[i] = 1;
       _keys[i] = tag;
@@ -566,6 +579,14 @@ private:
   // Keyed by frontier tag (individual instance identity), NOT by klass_id.
   std::unordered_map<jlong, CachedChain> _resolved_chains;
   SpinLock _resolved_chains_lock;
+
+  // Resolved-chain evictions deferred by the FollowReferences heap callback
+  // (see deferResolvedChainInvalidation()). Small: each callback-side
+  // improveChain/re-parent/root-upgrade evicts at most one entry, and the
+  // pending set is drained outside any walk (runPassManualWalk()'s start and
+  // end, pollWatchedTargets()'s entry).
+  std::vector<jlong> _pending_chain_invalidations;
+  SpinLock _pending_chain_invalidations_lock;
 
   // Abandoned-search events awaiting Profiler::dump() (profiler.cpp).
   static constexpr int MAX_PENDING_ABANDONED_EVENTS = 16;
@@ -971,6 +992,20 @@ private:
 
   // Remove a cached chain so pollWatchedTargets rebuilds it on the next poll.
   void invalidateResolvedChain(jlong source_tag);
+
+  // Record a resolved-chain eviction from inside the FollowReferences heap
+  // callback WITHOUT taking _resolved_chains_lock: the callback runs inside
+  // the JVMTI FollowReferences stop-the-world pause, and the lock is also
+  // held across drainPendingChainEvents()'s full-cache copy on the JFR dump
+  // thread, so locking here can stall the walk behind the dump thread.
+  // drainPendingChainInvalidations() applies the recorded evictions on the
+  // BFS thread, outside any walk.
+  void deferResolvedChainInvalidation(jlong source_tag);
+
+  // Apply the evictions deferResolvedChainInvalidation() recorded - called
+  // only from runPassManualWalk()'s start/end and pollWatchedTargets()'s
+  // entry, always outside any FollowReferences walk.
+  void drainPendingChainInvalidations();
 
   // Snapshots the just-abandoned search into _pending_abandoned_events - called from runPass()
   // (referenceChains.cpp) immediately after it writes SearchState::ABANDONED, while

@@ -257,6 +257,11 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     return;
   }
 
+  // Best-effort drain of any deferred resolved-chain invalidations that a pass ending between
+  // polls did not already apply (see runPassManualWalk()'s end-of-pass drain): chains rebuilt
+  // this poll must not be gated by a stale cache entry the callback asked to drop.
+  drainPendingChainInvalidations();
+
   // Stamp every entry this poll refreshes with the current search generation.
   const u64 current_search_ns = load(_search_start_ns);
 
@@ -584,6 +589,24 @@ void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
              (long long)source_tag);
   }
   _resolved_chains_lock.unlock();
+}
+
+void ReferenceChainTracker::deferResolvedChainInvalidation(jlong source_tag) {
+  _pending_chain_invalidations_lock.lock();
+  _pending_chain_invalidations.push_back(source_tag);
+  _pending_chain_invalidations_lock.unlock();
+}
+
+void ReferenceChainTracker::drainPendingChainInvalidations() {
+  std::vector<jlong> pending;
+  {
+    _pending_chain_invalidations_lock.lock();
+    pending.swap(_pending_chain_invalidations);
+    _pending_chain_invalidations_lock.unlock();
+  }
+  for (size_t i = 0; i < pending.size(); i++) {
+    invalidateResolvedChain(pending[i]);
+  }
 }
 
 // Builds and caches chain events for every auto-marked discovered instance recorded against a slot

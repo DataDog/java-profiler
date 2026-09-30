@@ -14,6 +14,8 @@
 #ifndef REFERENCE_CHAINS_TEST_ACCESSORS_H
 #define REFERENCE_CHAINS_TEST_ACCESSORS_H
 
+#include <deque>
+#include <gtest/gtest.h>
 #include <cstring>
 #include <vector>
 
@@ -223,11 +225,23 @@ public:
         ReferenceChainTracker::instance()->drainPendingChainEvents(out);
     }
 
+        // Faithful pass-through: cacheResolvedChain() keys _resolved_chains by
+    // source_tag and records source_tag_val as the entry's source tag (the
+    // frontier tag the chain was resolved from), so both are forwarded
+    // unchanged.
     static void cacheChain(jlong source_tag, ReferenceChainEvent event,
                            jlong source_tag_val, u64 source_search_ns) {
         ReferenceChainTracker::instance()->cacheResolvedChain(
             source_tag, std::move(event), source_tag_val, source_search_ns);
     }
+
+    // HEAD's collapsed form - what the inline (pre-merge) ut accessor
+    // exposed; kept so both call shapes compile against this one class.
+    static void cacheChain(jlong source_tag, ReferenceChainEvent event,
+                           u64 source_search_ns) {
+        cacheChain(source_tag, std::move(event), source_tag, source_search_ns);
+    }
+
 
     static int maxResolvedChains() {
         return ReferenceChainTracker::MAX_RESOLVED_CHAINS;
@@ -888,6 +902,24 @@ public:
         ReferenceChainTracker::instance()
             ->seedLeakAccumulationForNewlyWatchedKlass(klass_id);
     }
+    // PriorityExpandSet drives (the set type is private; the friend class
+    // reaches it for the PriorityExpandSet unit tests).
+    static void pesClear() {
+        ReferenceChainTracker::instance()->_priority_expand_set.clear();
+    }
+
+    static bool pesContains(jlong tag) {
+        return ReferenceChainTracker::instance()->_priority_expand_set.contains(tag);
+    }
+
+    static bool pesInsert(jlong tag) {
+        return ReferenceChainTracker::instance()->_priority_expand_set.insert(tag);
+    }
+
+    static void pesRebuildFrom(const std::deque<jlong> &queue) {
+        ReferenceChainTracker::instance()->_priority_expand_set.rebuildFrom(queue);
+    }
+
 };
 
 #endif // REFERENCE_CHAINS_TEST_ACCESSORS_H

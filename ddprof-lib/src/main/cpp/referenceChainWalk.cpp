@@ -420,7 +420,10 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                                        (u8)reference_kind)) {
         // Chain was improved — invalidate any cached chain for this tag so pollWatchedTargets
         // rebuilds it with the deeper path.
-        ctx->tracker->invalidateResolvedChain(*tag_ptr);
+        // Deferred (see deferResolvedChainInvalidation()): this runs inside the FollowReferences
+        // stop-the-world pause; taking _resolved_chains_lock here can block the walk behind
+        // drainPendingChainEvents()'s full-cache copy on the JFR dump thread.
+        ctx->tracker->deferResolvedChainInvalidation(*tag_ptr);
         if (was_root_attached_durable) {
           // Demotion push (B'): the replaced entry's static/JNI-global attribution was its only
           // anchor-tier eligibility, and it is gone now.
@@ -433,7 +436,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         // Equal-depth re-parent from a transient root to a durable one (improveChain() cannot
         // express it - see its declaration) - same cache invalidation so the rebuilt chain uses the
         // durable root.
-        ctx->tracker->invalidateResolvedChain(*tag_ptr);
+        // Deferred: same STW-lock rationale as the improveChain branch.
+        ctx->tracker->deferResolvedChainInvalidation(*tag_ptr);
       }
     } else {
       // Already-admitted entry reached via a NEW root-like edge (parent_tag == 0): the static-field
@@ -443,7 +447,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       if (ctx->tracker->maybeUpgradeRootAttachedRootKind(ctx->frontier,
                                                           *tag_ptr,
                                                           (u8)reference_kind)) {
-        ctx->tracker->invalidateResolvedChain(*tag_ptr);
+        // Deferred: same STW-lock rationale as the improveChain branch.
+        ctx->tracker->deferResolvedChainInvalidation(*tag_ptr);
       } else if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
         // The upgrade refused (maybeUpgradeRootAttachedRootKind returns false for parent_tag != 0
         // by design), so this STATIC_FIELD edge just proved an at-risk static attachment the anchor
