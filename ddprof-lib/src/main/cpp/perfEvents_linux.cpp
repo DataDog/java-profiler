@@ -36,6 +36,7 @@
 #include "spinLock.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
+#include "stackWalker.inline.h"
 #include "symbols.h"
 #include "threadLocalData.inline.h"
 #include "threadState.inline.h"
@@ -1072,6 +1073,13 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
       struct perf_event_header *hdr = ring.seek(tail);
       if (hdr->type == PERF_RECORD_SAMPLE) {
         u64 nr = ring.next();
+        // perf_callchain_user hands back the interrupted pc first and return
+        // addresses after it, so everything past the leaf is recorded as the
+        // address the call was made from -- the convention walkFP, walkDwarf
+        // and walkVM already put into callchain[]. java_ctx->pc keeps the exact
+        // address in every case: it is a resume point handed to the JVM, not
+        // something anyone symbolizes.
+        bool is_leaf = true;
         while (nr-- > 0) {
           u64 ip = ring.next();
           if (ip < PERF_CONTEXT_MAX) {
@@ -1081,10 +1089,15 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
               java_ctx->pc = iptr;
               goto stack_complete;
             }
-            callchain[depth++] = iptr;
+            callchain[depth++] = attributionPC(iptr, !is_leaf);
+            is_leaf = false;
           }
         }
 
+        // Deliberately unadjusted below: LBR records branch endpoints, not
+        // return addresses. `from` is the branch instruction itself and `to`
+        // is its target, so both already name the instruction to symbolize;
+        // subtracting one would step off the front of it.
         if (_cstack == CSTACK_LBR) {
           u64 bnr = ring.next();
 

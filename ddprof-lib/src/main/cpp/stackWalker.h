@@ -94,20 +94,29 @@ class StackWalker {
     // exactly max_depth is overflowed by one entry on any stack deep enough to
     // reach the limit. Without a truncation flag, max_depth entries suffice.
     //
-    // callchain[] entries from walkFP/walkDwarf are attribution addresses:
-    // pc - 1 for any frame whose pc was loaded from a return-address slot
-    // (see attributionPC in stackWalker.inline.h), the exact pc otherwise.
-    // Frames produced by walkVM/walkKernel are not adjusted this way and
-    // still carry raw addresses; callers merging chains from different
-    // walkers must not assume a single addressing convention across all
-    // entries.
+    // ADDRESSING CONVENTION -- one rule, every walker, in-process and on the
+    // wire.
     //
-    // This reaches the wire: Profiler::populateRemoteFrame derives the
-    // remote-symbolication pc_offset straight from a callchain[] entry, so
-    // for these two walkers the emitted offset already points inside the
-    // call instruction and must not be adjusted again off-process, while
-    // walkVM/walkKernel frames in the same trace still need that
-    // adjustment. The packed field carries no bit distinguishing the two.
+    // A recorded frame address is an *attribution* address: pc - 1 wherever
+    // the pc came out of a return-address slot, the exact pc otherwise (see
+    // attributionPC in stackWalker.inline.h). It names the instruction that
+    // transferred control, not the one execution would resume at, so a call
+    // that is the last instruction of its caller still resolves to the caller.
+    //
+    // This holds for walkFP, walkDwarf, walkVM and walkKernel alike. LBR
+    // entries are the one thing left unadjusted, and are not an exception to
+    // the rule: branch endpoints already name the instruction to symbolize.
+    //
+    // StackContext::pc is deliberately *not* adjusted -- it is a resume point
+    // handed to the JVM, not something to symbolize.
+    //
+    // It reaches the wire unchanged: the remote-symbolication pc_offset is
+    // this address minus the image base, whether it is packed by
+    // populateRemoteFrame or by resolveNativeFrameForWalkVM. An off-process
+    // symbolizer must therefore NOT apply its own return-address adjustment;
+    // doing so would step off the front of the call instruction. The packed
+    // field carries no version bit, so this comment and
+    // doc/reference/RemoteSymbolication.md are the contract.
     static int walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
     static int walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
 };
