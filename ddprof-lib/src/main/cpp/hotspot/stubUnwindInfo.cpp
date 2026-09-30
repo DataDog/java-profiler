@@ -45,8 +45,10 @@ inline int rd(uint32_t insn)  { return insn & 31; }
 // stp d8,d9,[sp,#-16]! = 0x6dbf27e8, stp x29,x30,[sp],#16 = 0xa8817bfd,
 // ldp x29,x30,[sp],#16 = 0xa8c17bfd, ldp x29,x30,[sp,#8] = 0xa940fbfd,
 // ldp d8,d9,[sp],#16 = 0x6cc127e8):
-//   bits31-27 = opc(2) 101, bit26 = V, bit25-24 = 10 (offset/pre) or 00 (post),
-//   bit23 = 1 for pre-index, bit22 = L (1 = load), imm7 at bits21-15,
+//   bits31-27 = opc(2) 101, bit26 = V,
+//   bits25-23 = addressing mode (000 no-allocate STNP/LDNP, 001 post-index,
+//   010 offset, 011 pre-index; no-allocate forms use offset addressing only),
+//   bit22 = L (1 = load), imm7 at bits21-15,
 //   Rt2 at bits14-10, Rn at bits9-5, Rt at bits4-0.
 //   GPR pairs scale imm7 by 8; SIMD q pairs by 16.
 // hotspotStackFrame_aarch64.cpp isSTP() masks (0xa9a003e0 / 0x6da003e0) are
@@ -62,24 +64,30 @@ struct PairInfo {
 bool decodePair(uint32_t insn, PairInfo& p) {
     static const struct { uint32_t mask, value; int scale; } forms[] = {
         // value = fixed bits 31-22; imm7/Rt2/Rn/Rt left free (Rn filtered below)
-        { 0xffc00000, 0xa8000000, 8 },   // GPR post-index STP  ..., [Xn], #imm
+        { 0xffc00000, 0xa8800000, 8 },   // GPR post-index STP  ..., [Xn], #imm
         { 0xffc00000, 0xa8c00000, 8 },   // GPR post-index LDP
         { 0xffc00000, 0xa9000000, 8 },   // GPR offset     STP  ..., [Xn, #imm]
         { 0xffc00000, 0xa9400000, 8 },   // GPR offset     LDP
         { 0xffc00000, 0xa9800000, 8 },   // GPR pre-index  STP  ..., [Xn, #imm]!
         { 0xffc00000, 0xa9c00000, 8 },   // GPR pre-index  LDP
+        { 0xffc00000, 0xa8000000, 8 },   // GPR offset     STNP ..., [Xn, #imm]
+        { 0xffc00000, 0xa8400000, 8 },   // GPR offset     LDNP ..., [Xn, #imm]
         { 0xffc00000, 0x6c800000, 8 },   // SIMD d post-index STP
         { 0xffc00000, 0x6cc00000, 8 },   // SIMD d post-index LDP
         { 0xffc00000, 0x6d000000, 8 },   // SIMD d offset  STP
         { 0xffc00000, 0x6d400000, 8 },   // SIMD d offset  LDP
         { 0xffc00000, 0x6d800000, 8 },   // SIMD d pre-index STP
         { 0xffc00000, 0x6dc00000, 8 },   // SIMD d pre-index LDP
+        { 0xffc00000, 0x6c000000, 8 },   // SIMD d offset  STNP
+        { 0xffc00000, 0x6c400000, 8 },   // SIMD d offset  LDNP
         { 0xffc00000, 0xac800000, 16 },  // SIMD q post-index STP
         { 0xffc00000, 0xacc00000, 16 },  // SIMD q post-index LDP
         { 0xffc00000, 0xad000000, 16 },  // SIMD q offset  STP
         { 0xffc00000, 0xad400000, 16 },  // SIMD q offset  LDP
         { 0xffc00000, 0xad800000, 16 },  // SIMD q pre-index STP
         { 0xffc00000, 0xadc00000, 16 },  // SIMD q pre-index LDP
+        { 0xffc00000, 0xac000000, 16 },  // SIMD q offset  STNP
+        { 0xffc00000, 0xac400000, 16 },  // SIMD q offset  LDNP
     };
     for (const auto& f : forms) {
         if ((insn & f.mask) != f.value) continue;
@@ -154,17 +162,34 @@ bool decodeAddSubSp(uint32_t insn, bool& is_sub, int32_t& imm) {
     return true;
 }
 
-// ADD (immediate), 64-bit: returns Rd/Rn/imm. The lsl #12 shift form is
-// accepted (bit 22 is excluded from the mask) and applied to imm -- a shifted
-// 'add sp, Xn, #imm' must update the tracked sp exactly, not fall through to
-// the undecodable-neutral assumption while sp actually moves.
-bool decodeAddImm(uint32_t insn, int& rdn, int& rnn, int32_t& imm) {
-    if ((insn & 0xff800000) != 0x91000000) return false;
+// ADD/SUB (immediate), 64-bit: returns Rd/Rn/imm and the op. The lsl #12
+// shift form is accepted (bit 22 is excluded from the mask) and applied to
+// imm -- a shifted 'add/sub sp, Xn, #imm' must update the tracked sp exactly,
+// not fall through to the undecodable-neutral assumption while sp actually
+// moves. (Rn=Rd=sp is matched earlier by decodeAddSubSp.)
+bool decodeAddSubImm(uint32_t insn, bool& is_sub, int& rdn, int& rnn, int32_t& imm) {
+    uint32_t op = insn & 0xff800000;
+    if (op == 0x91000000) {
+        is_sub = false;
+    } else if (op == 0xd1000000) {
+        is_sub = true;
+    } else {
+        return false;
+    }
     rdn = rd(insn);
     rnn = rn(insn);
     imm = (insn >> 10) & 0xfff;
     if ((insn >> 22) & 1) imm <<= 12;
     return true;
+}
+
+// An unmodeled 64-bit add/subtract register-form write to sp (shifted or
+// extended: 0x8b...... / 0xcb......; the S bit in the mask excludes the
+// flag-setting ADDS/SUBS forms, whose Rd=31 is a discarded XZR) makes the
+// tracked sp untrustworthy -- degrade, never guess. Logical and move-wide
+// forms are not covered: per the ARM ARM their Rd=31 is XZR, not SP.
+bool isAddSubRegSp(uint32_t insn) {
+    return (insn & 0xbf000000) == 0x8b000000 && rd(insn) == 31;
 }
 
 // mov Xd, Xm (ORR shifted register; Rn=xzr for the plain MOV alias, but any
@@ -187,18 +212,17 @@ bool isMoveWide(uint32_t insn) {
 }
 
 // Branches. Returns the target instruction index for in-range targets,
-// or -1. unconditional_exit is set for B.
-int decodeBranch(uint32_t insn, int index, int count, bool& unconditional_exit) {
-    unconditional_exit = false;
+// or -1.
+int decodeBranch(uint32_t insn, int index, int count) {
     int64_t off;
     if ((insn >> 26) == 0x05) {  // B
         off = sext(insn & 0x03ffffff, 26);
-        unconditional_exit = true;
     } else if ((insn & 0xff000010) == 0x54000000) {  // B.cond
         off = sext((insn >> 5) & 0x7ffff, 19);
-    } else if ((insn & 0x7f000000) == 0x34000000) {  // CBZ/CBNZ
+    } else if ((insn & 0x7e000000) == 0x34000000) {  // CBZ/CBNZ (bits 30:25;
+        // bit 24 is the Z/NZ polarity and must stay free)
         off = sext((insn >> 5) & 0x7ffff, 19);
-    } else if ((insn & 0x7f000000) == 0x36000000) {  // TBZ/TBNZ
+    } else if ((insn & 0x7e000000) == 0x36000000) {  // TBZ/TBNZ
         off = sext((insn >> 5) & 0x3fff, 14);
     } else {
         return -1;  // not a branch (BL/BLR/BR/RET handled by the caller)
@@ -243,10 +267,23 @@ struct ScanState {
             }
             return;
         }
-        if (fp_est) {
+        if (fp_est && fp_abs > sp) {
+            // The frame record lies below the live sp: the stub no longer
+            // owns that memory and nothing guarantees it is preserved, so a
+            // signal may have overwritten it. Degrade instead of pointing the
+            // handler at it. (Reachable for pops that stay at/below the entry
+            // sp; a pop beyond it clears sp_known and takes the branch above.)
+            p.kind = SU_UNSUPPORTED;
+            p.arg = p.arg2 = 0;
+        } else if (fp_est) {
             p.kind = SU_FP_FRAME;
             p.arg = fp_abs;             // caller sp = fp + arg
             p.arg2 = fp_abs - x30_abs;  // pc slot = [fp + arg2]
+        } else if (ret == RET_STACK && x30_abs > sp) {
+            // Same ownership rule for the saved return-address slot: below
+            // the live sp it is unowned memory.
+            p.kind = SU_UNSUPPORTED;
+            p.arg = p.arg2 = 0;
         } else if (ret == RET_STACK) {
             // Return address spilled to the stack (mid-prologue, or a stub
             // that spills x30 without setting up fp). The rule stays exact
@@ -458,20 +495,22 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
             if (decodeAddSubSp(insn, is_sub, imm)) {
                 next.sp += is_sub ? imm : -imm;
                 if (next.sp < 0) next.sp_known = false;
-            } else if (decodeAddImm(insn, rdn, rnn, aimm)) {
+            } else if (decodeAddSubImm(insn, is_sub, rdn, rnn, aimm)) {
                 if (rdn == 31) {
-                    // add sp, sp, #imm / add sp, Xn, #imm ("mov sp, x29")
+                    // add/sub sp, Xn, #imm ("mov sp, x29"). (Rn=Rd=sp is
+                    // matched earlier; the rnn == 31 sub-branch below is
+                    // unreachable in practice and kept defensively.)
                     if (rnn == 31) {
-                        next.sp -= aimm;
+                        next.sp += is_sub ? aimm : -aimm;
                     } else if (rnn == 29 && next.fp_est) {
-                        next.sp = next.fp_abs - aimm;
+                        next.sp = is_sub ? next.fp_abs + aimm : next.fp_abs - aimm;
                     } else {
                         next.sp_known = false;
                     }
                     if (next.sp < 0) next.sp_known = false;
                 } else if (rdn == 29) {
-                    // mov x29, sp / add x29, sp, #imm, or x29 from elsewhere
-                    int32_t cand = next.sp - aimm;
+                    // mov x29, sp / add/sub x29, sp, #imm, or x29 from elsewhere
+                    int32_t cand = is_sub ? next.sp + aimm : next.sp - aimm;
                     if (rnn == 31 && next.sp_known && next.ret == RET_STACK &&
                         next.x30_abs == cand - 8) {
                         // x29 lands exactly on the saved-x29 slot: frame established
@@ -541,9 +580,12 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                 // have bits 29:27 != 111; LDTR/STTR were handled above.
                 if (i + 1 < truncate_at) truncate_at = i + 1;
                 transitions_frozen = true;
+            } else if (isAddSubRegSp(insn)) {
+                // Unmodeled register-form sp write (e.g. 'add sp, sp, x0'):
+                // the tracked sp can no longer be trusted.
+                next.sp_known = false;
             } else {
-                bool uncond_exit;
-                int target = decodeBranch(insn, i, count, uncond_exit);
+                int target = decodeBranch(insn, i, count);
                 if (target >= 0) {
                     if (edge_count < MAX_BRANCHES) {
                         edges[edge_count++] = { i, target };

@@ -40,8 +40,8 @@ inline uint32_t stpPreQ(int rt, int rt2, int imm) {
     return 0xad8003e0 | (uint32_t)((imm / 16) & 0x7f) << 15 | (uint32_t)rt2 << 10 | (uint32_t)rt;
 }
 inline uint32_t stpPost64(int rt, int rt2, int imm) {
-    // stp Xt, Xt2, [sp], #imm
-    return 0xa80003e0 | (uint32_t)((imm / 8) & 0x7f) << 15 | (uint32_t)rt2 << 10 | (uint32_t)rt;
+    // stp Xt, Xt2, [sp], #imm  (post-index: bits 25:23 = 001)
+    return 0xa88003e0 | (uint32_t)((imm / 8) & 0x7f) << 15 | (uint32_t)rt2 << 10 | (uint32_t)rt;
 }
 inline uint32_t ldpPost64(int rt, int rt2, int imm) {
     // ldp Xt, Xt2, [sp], #imm
@@ -82,6 +82,25 @@ inline uint32_t ldpX29BasePost(int rt, int rt2, int imm) {
 inline uint32_t branch(int offInsns) { return 0x14000000 | (uint32_t)(offInsns & 0x03ffffff); }
 inline uint32_t branchCond(int offInsns) { return 0x54000000 | (uint32_t)((offInsns & 0x7ffff) << 5); }
 inline uint32_t cbz(int rt, int offInsns) { return 0xb4000000 | (uint32_t)((offInsns & 0x7ffff) << 5) | (uint32_t)rt; }
+// CBNZ/TBNZ: same classes with the Z/NZ polarity bit (bit 24) set (64-bit forms).
+inline uint32_t cbnz(int rt, int offInsns) { return 0xb5000000 | (uint32_t)((offInsns & 0x7ffff) << 5) | (uint32_t)rt; }
+inline uint32_t tbnz(int rt, int bit, int offInsns) { return 0xb7000000 | (uint32_t)bit << 19 | (uint32_t)((offInsns & 0x3fff) << 5) | (uint32_t)rt; }
+// STNP/LDNP: non-temporal pairs, no-allocate mode (bits 25:23 = 000, offset
+// addressing only, no writeback).
+inline uint32_t stnpOff64(int rt, int rt2, int imm) {
+    return 0xa80003e0 | (uint32_t)((imm / 8) & 0x7f) << 15 | (uint32_t)rt2 << 10 | (uint32_t)rt;
+}
+inline uint32_t ldnpOff64(int rt, int rt2, int imm) {
+    return 0xa84003e0 | (uint32_t)((imm / 8) & 0x7f) << 15 | (uint32_t)rt2 << 10 | (uint32_t)rt;
+}
+inline uint32_t stnpQ(int rt, int rt2, int imm) {
+    return 0xac0003e0 | (uint32_t)((imm / 16) & 0x7f) << 15 | (uint32_t)rt2 << 10 | (uint32_t)rt;
+}
+inline uint32_t ldnpQ(int rt, int rt2, int imm) {
+    return 0xac4003e0 | (uint32_t)((imm / 16) & 0x7f) << 15 | (uint32_t)rt2 << 10 | (uint32_t)rt;
+}
+// sub sp, Xn, #imm (Rd=sp, Rn != sp)
+inline uint32_t subSpRnImm(int rn, int imm) { return 0xd1000000 | 0x1f | (uint32_t)rn << 5 | (uint32_t)imm << 10; }
 inline uint32_t call(int offInsns) { return 0x94000000 | (uint32_t)(offInsns & 0x03ffffff); }
 inline uint32_t callReg(int rn) { return 0xd63f0000 | (uint32_t)rn << 5; }
 inline uint32_t jumpReg(int rn) { return 0xd61f0000 | (uint32_t)rn << 5; }
@@ -494,13 +513,19 @@ TEST_F(StubUnwindTest, PostIndexLdrRestoresLr) {
 
 TEST_F(StubUnwindTest, PostIndexStrSpills) {
     // str x30, [sp, #-16]! has its own test (FramelessX30Spill); here the
-    // post-index store form after a frame push keeps the slot exact.
+    // post-index store form pops sp above the slot it just wrote: the slot
+    // (depth 32) ends up below the live sp (depth 16), i.e. in unowned
+    // memory, so the stack-slot rule must degrade instead of pointing the
+    // handler at it.
     // 0: sub sp,sp,#32
     // 1: str x30, [sp], #16   (store at the pushed slot, then sp moves up 16)
+    // 2: nop
+    // 3: ret
     StubUnwindInfo* info = analyze({subSp(32), strPostSp(30, 16), NOP, RET});
     ASSERT_NE(info, nullptr);
-    // the store happened at sp=32 below entry; sp is now 16 below entry
-    expectPhase(info, 2, SU_FP_PROLOGUE, 16, -16);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 32);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+    expectPhase(info, 3, SU_UNSUPPORTED, 0);
 }
 
 // ldtr (unprivileged load, bits 11:10 = 10) into x30 clobbers lr: degrade.
@@ -692,6 +717,224 @@ TEST_F(StubUnwindTest, UntrackedBaseUnsignedOffsetStaysNeutral) {
     ASSERT_NE(info, nullptr);
     expectPhase(info, 1, SU_SP_DELTA_LR, 16);
     expectPhase(info, 2, SU_SP_DELTA_LR, 16);
+}
+
+// STNP (no-allocate pair, bits 25:23 = 000) uses offset addressing only:
+// sp must not move and the x30 spill is recorded at its exact slot. (Pre-fix
+// the mode classification happened to route this encoding to the offset
+// branch too -- this test pins that the explicit decode keeps it exact.)
+TEST_F(StubUnwindTest, StnpOffsetPairNoWriteback) {
+    // 0: sub sp,sp,#16
+    // 1: stnp x29,x30,[sp,#0]
+    // 2: nop
+    // 3: ret
+    StubUnwindInfo* info = analyze({subSp(16), stnpOff64(29, 30, 0), NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 0, SU_PC_TO_LR, 0);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 2, SU_FP_PROLOGUE, 16, 8);
+    expectPhase(info, 3, SU_FP_PROLOGUE, 16, 8);
+}
+
+// Genuine post-index STP (bits 25:23 = 001, 0xa88.....) moves sp and is no
+// longer invisible: pre-fix the encoding was undecoded (treated neutral),
+// leaving a stale tracked sp after the pair's writeback.
+TEST_F(StubUnwindTest, PostIndexStpTracksSp) {
+    // 0: sub sp,sp,#32
+    // 1: stp x19,x20,[sp],#16
+    // 2: nop
+    // 3: ret
+    StubUnwindInfo* info = analyze({subSp(32), stpPost64(19, 20, 16), NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 32);
+    expectPhase(info, 2, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 3, SU_SP_DELTA_LR, 16);
+}
+
+// A post-index STP spilling x30 records the exact slot (post-index with a
+// negative immediate: the store happens first, then sp moves further down, so
+// the slot stays above the live sp and stays owned).
+TEST_F(StubUnwindTest, PostIndexStpSpillExactSlot) {
+    // 0: sub sp,sp,#16
+    // 1: stp x29,x30,[sp],#-16
+    // 2: nop
+    // 3: ret
+    StubUnwindInfo* info = analyze({subSp(16), stpPost64(29, 30, -16), NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 2, SU_FP_PROLOGUE, 32, 24);
+    expectPhase(info, 3, SU_FP_PROLOGUE, 32, 24);
+}
+
+// LDNP (non-temporal pair load) must decode like its LDP sibling: loading x30
+// switches the return address to the restored lr; loading x29 drops the fp
+// rule (same as ldp). Pre-fix the encoding was neutral.
+TEST_F(StubUnwindTest, LdnpRestoresLr) {
+    // 0: stp x29,x30,[sp,#-16]!
+    // 1: mov x29,sp
+    // 2: ldnp x29,x30,[sp,#0]
+    // 3: ret
+    StubUnwindInfo* info =
+        analyze({stpPre64(29, 30, -16), 0x910003fd, ldnpOff64(29, 30, 0), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 2, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 3, SU_SP_DELTA_LR, 16);
+}
+
+// SIMD non-temporal pairs decode as offset-mode with no writeback and no GPR
+// side effects: sp stays put and no x29/x30 tracking occurs.
+TEST_F(StubUnwindTest, SimdNonTemporalPairsNeutral) {
+    // 0: sub sp,sp,#64
+    // 1: stnp q0,q1,[sp,#-32]
+    // 2: ldnp q2,q3,[sp,#32]
+    // 3: add sp,sp,#64
+    // 4: ret
+    StubUnwindInfo* info =
+        analyze({subSp(64), stnpQ(0, 1, -32), ldnpQ(2, 3, 32), addSp(64), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 64);
+    expectPhase(info, 2, SU_SP_DELTA_LR, 64);
+    expectPhase(info, 3, SU_SP_DELTA_LR, 64);
+    expectPhase(info, 4, SU_PC_TO_LR, 0);
+}
+
+// CBNZ/TBNZ (bit 24 = Z/NZ polarity, so the mask must leave it free) must be
+// collected like CBZ/TBZ: an edge into a boundary with a different unwind
+// rule degrades from the target on. Pre-fix CBNZ/TBNZ were invisible and the
+// divergent edge went unvalidated.
+TEST_F(StubUnwindTest, CbnzEdgeValidated) {
+    // 0: nop
+    // 1: cbnz x0, .+2   (target 3; the sub at insn 2 makes boundary 3 --
+    // 2: sub sp,sp,#16    the target's boundary -- diverge from insn 1's rule)
+    // 3: nop
+    // 4: ret
+    StubUnwindInfo* info = analyze({NOP, cbnz(0, 2), subSp(16), NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 0, SU_PC_TO_LR, 0);
+    expectPhase(info, 1, SU_PC_TO_LR, 0);
+    expectPhase(info, 2, SU_PC_TO_LR, 0);
+    expectPhase(info, 3, SU_UNSUPPORTED, 0);
+    expectPhase(info, 4, SU_UNSUPPORTED, 0);
+}
+
+TEST_F(StubUnwindTest, TbnzEdgeValidated) {
+    // 0: nop
+    // 1: tbnz x0, #0, .+2  (target 3; divergence at the target's boundary)
+    // 2: sub sp,sp,#16
+    // 3: nop
+    // 4: ret
+    StubUnwindInfo* info = analyze({NOP, tbnz(0, 0, 2), subSp(16), NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 0, SU_PC_TO_LR, 0);
+    expectPhase(info, 1, SU_PC_TO_LR, 0);
+    expectPhase(info, 2, SU_PC_TO_LR, 0);
+    expectPhase(info, 3, SU_UNSUPPORTED, 0);
+    expectPhase(info, 4, SU_UNSUPPORTED, 0);
+}
+
+// Negative control: a CBNZ edge whose target boundary has the same unwind
+// rule is consistent and must not truncate anything.
+TEST_F(StubUnwindTest, CbnzConsistentEdgeNoTruncation) {
+    // 0: sub sp,sp,#16
+    // 1: nop
+    // 2: cbnz x0, .+1   (target 3)
+    // 3: add sp,sp,#16
+    // 4: ret
+    StubUnwindInfo* info = analyze({subSp(16), NOP, cbnz(0, 1), addSp(16), RET});
+    ASSERT_NE(info, nullptr);
+    EXPECT_TRUE(info->_classified);
+    expectPhase(info, 2, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 3, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 4, SU_PC_TO_LR, 0);
+}
+
+// fp_est with the frame record below the live sp (sp popped past it, staying
+// inside the entry frame): the fp-based slot lies below sp in unowned memory
+// and must degrade instead of being handed to the signal handler.
+TEST_F(StubUnwindTest, FpOwnershipGuardDegrades) {
+    // 0: stp x29,x30,[sp,#-32]!
+    // 1: mov x29,sp
+    // 2: add sp,sp,#16   (sp above the frame record, still below entry sp)
+    // 3: ret
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -32), 0x910003fd, addSp(16), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_FP_PROLOGUE, 32, 8);
+    expectPhase(info, 2, SU_FP_FRAME, 32, 8);
+    expectPhase(info, 3, SU_UNSUPPORTED, 0);
+}
+
+// Same ownership rule for the RET_STACK slot: a pop that leaves the saved
+// return address below the live sp must degrade.
+TEST_F(StubUnwindTest, StackSlotOwnershipGuardDegrades) {
+    // 0: str x30,[sp,#-32]!
+    // 1: add sp,sp,#16
+    // 2: ret
+    StubUnwindInfo* info = analyze({strPreSp(30, -32), addSp(16), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_FP_PROLOGUE, 32, 0);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+}
+
+// sub sp, x29, #imm with fp established tracks sp exactly (mirror of the ADD
+// case); the exact delta becomes visible once fp is clobbered. Pre-fix the
+// encoding was neutral, leaving a stale sp.
+TEST_F(StubUnwindTest, SubSpFromFpExact) {
+    // 0: stp x29,x30,[sp,#-32]!
+    // 1: mov x29,sp
+    // 2: sub sp,x29,#16
+    // 3: mov x29,x0        (clobber fp: expose the tracked sp)
+    // 4: ret
+    StubUnwindInfo* info =
+        analyze({stpPre64(29, 30, -32), 0x910003fd, subSpRnImm(29, 16), movReg(29, 0), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 2, SU_FP_FRAME, 32, 8);
+    expectPhase(info, 3, SU_FP_FRAME, 32, 8);
+    expectPhase(info, 4, SU_FP_PROLOGUE, 48, 24);
+}
+
+// sub sp, x0, #imm (unknown source register): sp becomes unknown and the
+// range degrades instead of keeping a stale sp. Pre-fix: neutral.
+TEST_F(StubUnwindTest, SubSpUnknownSourceDegrades) {
+    // 0: nop
+    // 1: sub sp,x0,#16
+    // 2: nop
+    // 3: ret
+    StubUnwindInfo* info = analyze({NOP, subSpRnImm(0, 16), NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_PC_TO_LR, 0);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+    expectPhase(info, 3, SU_UNSUPPORTED, 0);
+}
+
+// A register-form add writing sp (add sp, sp, x0) is unmodeled: sp becomes
+// unknown and the range degrades instead of keeping a stale sp. Pre-fix: the
+// encoding fell through to the neutral assumption.
+TEST_F(StubUnwindTest, AddSubRegSpDegrades) {
+    // 0: sub sp,sp,#16
+    // 1: add sp,sp,x0     = 0x8b0003ff
+    // 2: nop
+    // 3: ret
+    StubUnwindInfo* info = analyze({subSp(16), 0x8b0003ff, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+    expectPhase(info, 3, SU_UNSUPPORTED, 0);
+}
+
+// Negative control: flag-setting (ADDS) and logical (ORR) forms write XZR/NZCV
+// at Rd=31, not SP -- they must stay neutral (no degradation).
+TEST_F(StubUnwindTest, AddsAndLogicalXzrStayNeutral) {
+    // 0: sub sp,sp,#16
+    // 1: adds xzr, xzr, x0  = 0xab0003ff
+    // 2: orr xzr, xzr, x0   = 0xaa0003ff
+    // 3: add sp,sp,#16
+    // 4: ret
+    StubUnwindInfo* info = analyze({subSp(16), 0xab0003ff, 0xaa0003ff, addSp(16), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 2, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 3, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 4, SU_PC_TO_LR, 0);
 }
 
 }  // namespace
