@@ -225,8 +225,38 @@ public:
 
     static void cacheChain(jlong source_tag, ReferenceChainEvent event,
                            jlong source_tag_val, u64 source_search_ns) {
+        // source_tag_val (rc-3's separate frontier-tag value) is inert at
+        // HEAD: CachedChain stores the cache key as its source_tag and no
+        // reader distinguishes the two, so the 4-arg form forwards to the
+        // collapsed 3-arg cacheResolvedChain().
+        (void)source_tag_val;
         ReferenceChainTracker::instance()->cacheResolvedChain(
-            source_tag, std::move(event), source_tag_val, source_search_ns);
+            source_tag, std::move(event), source_search_ns);
+    }
+
+    // HEAD's collapsed form - what the inline (pre-merge) ut accessor
+    // exposed; kept so both call shapes compile against this one class.
+    static void cacheChain(jlong source_tag, ReferenceChainEvent event,
+                           u64 source_search_ns) {
+        cacheChain(source_tag, std::move(event), source_tag, source_search_ns);
+    }
+
+    // PriorityExpandSet drives (the set type is private; the friend class
+    // reaches it for the PriorityExpandSet unit tests).
+    static void pesClear() {
+        ReferenceChainTracker::instance()->_priority_expand_set.clear();
+    }
+
+    static bool pesContains(jlong tag) {
+        return ReferenceChainTracker::instance()->_priority_expand_set.contains(tag);
+    }
+
+    static bool pesInsert(jlong tag) {
+        return ReferenceChainTracker::instance()->_priority_expand_set.insert(tag);
+    }
+
+    static void pesRebuildFrom(const std::deque<jlong> &queue) {
+        ReferenceChainTracker::instance()->_priority_expand_set.rebuildFrom(queue);
     }
 
     static int maxResolvedChains() {
