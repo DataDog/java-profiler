@@ -7,8 +7,8 @@
 // HotspotSupport::walkVM relies on for every non-Java frame: range lookups
 // (findLibraryByAddress/binarySearch) key off the attribution address so a
 // call that is the last instruction of its caller still resolves to the
-// caller, while the remote-symbolication pc_offset keeps deriving from the
-// raw pc because its meaning is a cross-team wire contract.
+// caller, while the remote-symbolication pc_offset is derived from that same
+// attribution address because its meaning is a cross-team wire contract.
 //
 // These use synthetic CodeCaches rather than the test binary's own symbols,
 // so unlike returnAddressAttribution_ut.cpp they need no GNU-as/ELF-CFI asm
@@ -141,12 +141,6 @@ TEST_F(WalkVmAttributionTest, AddressInsideAFunctionResolvesTheSameEitherWay) {
 // image base, the same address the lookups used, so an off-process symbolizer
 // can resolve it without knowing how the frame was recovered -- and must not
 // adjust it again.
-//
-// This assertion was inverted once. It previously pinned the offset to the raw
-// pc, because walkFP/walkDwarf had already moved to attribution addresses and
-// changing walkVM too would have made the emitted value differ from what a
-// consumer might be relying on. No service consumed it, so the three walkers
-// were converged on the one convention instead of preserving the split.
 TEST_F(WalkVmAttributionTest, PcOffsetUsesTheAttributionAddress) {
     const char* pc = kBareLibBase + kUnnamedOff;
 
