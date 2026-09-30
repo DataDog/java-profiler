@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <cstdlib>
 #include <cstring>
 #include <set>
@@ -55,3 +56,4 @@ static ReferenceChainsGlobalSetup global_setup;
 #include "referenceChainsTraversalTests.inc"
 #include "referenceChainsAnchorTests.inc"
 #include "referenceChainsEventTests.inc"
+#include "referenceChainsCoreTestsPorted.inc"
