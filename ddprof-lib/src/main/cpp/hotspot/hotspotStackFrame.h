@@ -77,12 +77,21 @@ public:
     // failing on x86_64 as a result.
     //
     // unwindHelperContract_ut.cpp pins this.
+    // The overloads below without explicit registers write the sender into the
+    // real ucontext for an AsyncGetCallTrace retry, which has no WalkPc to
+    // apply the attribution adjustment afterwards. On x86_64 HotSpot
+    // attributes the recovered caller to the instruction the pc points at, so
+    // the raw return address would select the bytecode after the call; step
+    // back into the call here. aarch64 has always handed AsyncGetCallTrace
+    // the raw return address and keeps doing so.
     bool unwindCompiled(VMNMethod* nm) {
-        return unwindCompiled(nm, pc(), sp(), fp());
+        bool ok = unwindCompiled(nm, pc(), sp(), fp());
+        return ok && stepIntoCallForAsgct();
     }
 
     bool unwindStub(instruction_t* entry, const char* name) {
-        return unwindStub(entry, name, pc(), sp(), fp());
+        bool ok = unwindStub(entry, name, pc(), sp(), fp());
+        return ok && stepIntoCallForAsgct();
     }
 
     bool unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
@@ -94,6 +103,14 @@ public:
     bool unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
 
     static bool unwindAtomicStub(const StackFrame& frame, const void*& pc);
+
+private:
+    bool stepIntoCallForAsgct() {
+#if defined(__x86_64__)
+        pc() -= 1;
+#endif
+        return true;
+    }
 };
 
 #endif // _HOTSPOT_HOTSPOTSTACKFRAME_H

@@ -172,6 +172,29 @@ TEST_F(UnwindHelperContractTest, HelperNeverAppliesTheAdjustmentItself) {
         << " (saved slot 0x" << kSenderRa << ", link register 0x" << kLinkReg << ")";
 }
 
+// The register-less overload is what getJavaTraceAsync() calls: it rewrites
+// the real ucontext and hands it straight to AsyncGetCallTrace, with no
+// WalkPc to adjust afterwards. On x86_64 the ucontext must therefore carry
+// the address inside the call instruction; aarch64 keeps the raw one.
+TEST_F(UnwindHelperContractTest, AsgctOverloadLeavesUcontextReadyForAsyncGetCallTrace) {
+    HotspotStackFrame frame(&_uc);
+
+    uintptr_t* slot = stackSlot();
+    *slot = kSenderRa;
+
+    frame.pc() = (uintptr_t)code();
+    frame.sp() = (uintptr_t)slot;
+    frame.fp() = (uintptr_t)slot;
+
+    ASSERT_TRUE(frame.unwindStub(code(), "someStub"));
+
+#if defined(__x86_64__)
+    EXPECT_EQ(kSenderRa - 1, frame.pc());
+#else
+    EXPECT_EQ(kLinkReg, frame.pc());
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // unwindPrologue / unwindEpilogue
 //
