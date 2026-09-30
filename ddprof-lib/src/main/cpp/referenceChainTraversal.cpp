@@ -1089,17 +1089,22 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   } else if (!has_pending_frontier && _watched_leak_klass_count == 0) {
     storeRelease(_search_state, (u8)SearchState::COMPLETED);
   } else if (_ttl_ms > 0 &&
-             TSC::ticks_to_millis(OS::nanotime() - load(_search_start_ns)) >=
+             (OS::nanotime() - load(_search_start_ns)) / 1000000 >=
                  (u64)_ttl_ms) {
     // TTL bounds stop-the-world work independently of frontier progress.
+    // _search_start_ns is a plain OS::nanotime() timestamp (see its assignment
+    // above), not a TSC tick count, so the elapsed time must be converted with
+    // a straight ns-to-ms division rather than TSC::ticks_to_millis() (which
+    // divides by TSC::frequency() and would misconvert whenever that
+    // frequency differs from 1 GHz).
     store(_abandon_reason, (u8)SearchAbandonReason::TTL);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
     enqueuePendingAbandonedEvent();
     TEST_LOG_SUMMARY("ReferenceChainTracker::runPass ttl expired -- abandoning search "
              "(ttl=%ldms elapsed_ms=%llu)",
              _ttl_ms,
-             (unsigned long long)TSC::ticks_to_millis(OS::nanotime() -
-                                                      load(_search_start_ns)));
+             (unsigned long long)((OS::nanotime() -
+                                   load(_search_start_ns)) / 1000000));
   } else if (_passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT &&
              !isUrgent()) {
     // The frontier hasn't grown for NO_PROGRESS_PASS_LIMIT consecutive passes — the search is

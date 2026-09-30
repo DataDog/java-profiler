@@ -263,8 +263,13 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
           // session. Gated on is_epoch_owner (not !forced) so a forced
           // (table-overflow) sweep still contributes one population sample
           // per genuinely new GC epoch instead of silently dropping it.
-          u32 klass_id = 0;
-          if (allow_resolve && resolve_budget > 0) {
+          // Reuse an already-resolved id first so the per-sweep budget is
+          // spent only on entries that actually need resolving; otherwise
+          // compaction keeps survivor order stable and the budget would
+          // keep re-resolving the same leading entries every sweep, starving
+          // everything past RESOLVE_BUDGET_PER_SWEEP.
+          u32 klass_id = _table[target].cached_klass_id;
+          if (klass_id == 0 && allow_resolve && resolve_budget > 0) {
             // GetObjectClass + Class.getName() + StringDictionary lookup per
             // surviving entry, previously paid only at JFR-flush time (see
             // flush_table() below). Only affordable off the allocation-hot
@@ -278,11 +283,9 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
             // survivor count would stretch this sweep's critical section
             // proportionally to the population (blocking every shared-lock
             // scanner for the whole per-survivor JNI sequence). Entries past
-            // the budget fall through to the cached-id path below - the
-            // exact semantics the allow_resolve=false path already accepts -
-            // and the next epoch's sweep resolves the next tranche; the
-            // cached ids accumulated across sweeps keep most entries
-            // resolved anyway.
+            // the budget stay at klass_id 0 for this epoch - the same
+            // semantics the allow_resolve=false path already accepts - and
+            // a later sweep resolves them once budget is available again.
             resolve_budget--;
             jobject ref = env->NewLocalRef(_table[target].ref);
             if (ref != nullptr) {
@@ -300,20 +303,15 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
               }
               env->DeleteLocalRef(ref);
             }
-          } else {
-            // track()'s table-overflow branch calls cleanup_table(true,
-            // false) synchronously from the allocation-sampling call stack
-            // (JVMTI SampledObjectAlloc callback). resolveKlassId() calls
-            // Class.getName(), a genuine Java-bytecode upcall (unlike the
-            // plain native jvmti->GetClassSignature() call
-            // ObjectSampler::recordAllocation already makes on this same
-            // callback stack) - too costly, and too re-entrancy-prone via
-            // the String allocation it can trigger, to run from there. Reuse
-            // whatever class id an earlier resolving sweep already resolved
-            // for this entry instead; if it was never resolved, this entry's
-            // sample for this epoch is dropped rather than resolving now.
-            klass_id = _table[target].cached_klass_id;
           }
+          // else: klass_id already cached above, or track()'s table-overflow
+          // branch (cleanup_table(true, false), called synchronously from the
+          // allocation-sampling call stack) forbids resolving here -
+          // resolveKlassId() calls Class.getName(), a genuine Java-bytecode
+          // upcall, too costly and too re-entrancy-prone via the String
+          // allocation it can trigger to run from that callback stack. If
+          // this entry was never resolved, its sample for this epoch is
+          // dropped rather than resolving now.
           if (klass_id != 0) {
             accumulateKlassCount(klass_id, _table[target].age, _table[target].ref,
                                  _table[target].tid);
@@ -683,9 +681,27 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
     jlong leak_tag = 0;
     bool need_set = false;
     if (tag_err == JVMTI_ERROR_NONE && existing >= LEAK_TAG_BASE) {
-      // Already carries a leak tag (ours, or one adopted below) - waiting
-      // for the BFS interception. Make sure the record remembers it.
-      leak_tag = _table[i].leak_tag != 0 ? _table[i].leak_tag : existing;
+      if (_table[i].leak_tag != 0) {
+        // This row already owns the tag on the object (recorded by this same
+        // single-writer poll thread on an earlier poll) - just re-affirm it,
+        // waiting for the BFS interception.
+        leak_tag = _table[i].leak_tag;
+      } else {
+        // _table[i].leak_tag == 0 but the object already carries a leak tag:
+        // since this poll thread is the only writer of leak_tag (see the
+        // store comment below) and it always stores immediately after
+        // acquiring/SetTag-ing a tag, this row can never have set `existing`
+        // itself. Some OTHER live row's jweak must refer to this exact same
+        // object (a second recording of the same allocation) and already
+        // owns this pool slot. Adopting it here too would give the same
+        // pool index two independent owners; each dying independently would
+        // call releaseLeakTag() on it twice, pushing the same free-list
+        // index twice and eventually writing past _leak_tag_free_list.
+        // Leave this row untagged and let the true owner's row carry the
+        // correlation instead.
+        env->DeleteLocalRef(ref);
+        continue;
+      }
     } else if (tag_err == JVMTI_ERROR_NONE && existing > 0) {
       // Frontier tag: the BFS already admitted this object. Correlate the
       // existing entry rather than retagging - see the block comment above.

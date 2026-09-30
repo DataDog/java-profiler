@@ -461,19 +461,29 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
 
   if (ctx->batch_tags != nullptr) {
     // ARRAY-HOLDER BATCHING one-hop descent control (see ReferenceChainPassContext:: batch_tags).
+    //
+    // Completion tracking is driven by the REFERRER of each edge, not by which batch entry is
+    // currently being visited: HotSpot's iterate_over_array() (jvmtiTagMap.cpp) reports every
+    // top-level batch entry (referrer == the transient holder array, not a batch tag) before
+    // descending into any of their children, so a transition between top-level visits happens
+    // long before those entries' own children are reported and would mark them complete too
+    // early (see _last_visited_batch_tag's own comment).
+    if (referrer_tag_ptr != nullptr) {
+      jlong referrer_tag = *referrer_tag_ptr;
+      if (referrer_tag > 0 && ctx->batch_tags->count(referrer_tag) != 0 &&
+          referrer_tag != ctx->_last_visited_batch_tag) {
+        // The referrer changed to a different batch entry: the previous one (if any) has had
+        // every child edge FollowReferences will ever report for it delivered already.
+        if (ctx->_last_visited_batch_tag != 0 &&
+            ctx->_completed_batch_tags != nullptr) {
+          ctx->_completed_batch_tags->insert(ctx->_last_visited_batch_tag);
+        }
+        ctx->_last_visited_batch_tag = referrer_tag;
+      }
+    }
+
     jlong my_tag = *tag_ptr;
     if (my_tag > 0 && ctx->batch_tags->count(my_tag) != 0) {
-      // The previously visited batch entry (if any) is now fully processed - record it for the
-      // order-independent truncated-batch resume (see
-      // ReferenceChainPassContext::_completed_batch_tags' own comment).
-      if (ctx->_last_visited_batch_tag != 0 &&
-          ctx->_last_visited_batch_tag != my_tag &&
-          ctx->_completed_batch_tags != nullptr) {
-        ctx->_completed_batch_tags->insert(ctx->_last_visited_batch_tag);
-      }
-      // Track this batch entry as visited for the rolling resume cursor (see
-      // _last_visited_batch_tag's own comment).
-      ctx->_last_visited_batch_tag = my_tag;
       return JVMTI_VISIT_OBJECTS;
     }
     return 0;

@@ -33,12 +33,19 @@ struct ReferenceChainPassContext {
   // call.
   std::unordered_set<jlong> *batch_tags = nullptr;
 
-  // Rolling resume cursor for expandFrontier(): tracks the tag of the last batch entry that
-  // FollowReferences visited (the callback at the batch_tags descent-gate updates this).
+  // Rolling resume cursor for expandFrontier(): tracks the tag of the batch entry that is
+  // currently the REFERRER of the child edges FollowReferences is delivering (updated by the
+  // callback at the batch_tags descent-gate). HotSpot's iterate_over_array() reports every
+  // top-level batch entry (referrer == the transient holder array, not a batch tag) before
+  // descending into any of their children, so a top-level-visit transition cannot signal that an
+  // entry's own children are done; only a change in the referrer of an admitted child edge can.
   jlong _last_visited_batch_tag = 0;
 
-  // Batch entries the callback finished visiting before the truncation (set only by
-  // heapReferenceCallback()'s batch_tags descent gate).
+  // Batch entries whose own children are known to have been fully reported before the truncation
+  // (set only by heapReferenceCallback()'s batch_tags descent gate, on referrer transitions - see
+  // _last_visited_batch_tag's own comment). An entry with zero children is never inserted here;
+  // callers must be prepared to re-visit it on a later pass rather than assume absence means
+  // "still has unreported children".
   std::unordered_set<jlong> *_completed_batch_tags = nullptr;
 
   // Set only by admitStaticFieldRoots(): the seed holder array for that sweep holds loaded-class
