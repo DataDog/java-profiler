@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 #include "counters.h"
+#include "nativeMem.h"
 #include "threadFilter.h"
 #include "wallClockBlockTracker.h"
 #include "../../main/cpp/gtest_crash_handler.h"
@@ -1150,4 +1151,52 @@ TEST_F(ThreadFilterTest, FullContextFilterRejectsWithoutLocking) {
     EXPECT_EQ(-1, filter->registerThread(40000));
     filter->setPostActiveCheckHookForTest(nullptr, nullptr);
     EXPECT_EQ(0, lock_attempts.load());
+}
+
+// The tid index lives inside the process-lifetime Profiler's ThreadFilter, so
+// embedding it would keep it resident from library load even for recordings
+// that never activate the registry (no context filter, no unfiltered precheck).
+static constexpr long long kTidIndexBytes =
+    (long long)(ThreadFilter::kTidIndexSize * sizeof(std::atomic<int>));
+
+TEST(ThreadFilterTidIndexStorageTest, FilterEmbedsNoTidIndex) {
+    EXPECT_LT((long long)sizeof(ThreadFilter), kTidIndexBytes);
+}
+
+TEST(ThreadFilterTidIndexStorageTest, TidIndexIsAllocatedOnFirstRegistryActivationOnly) {
+    ThreadFilter filter;
+    const long long constructed = NativeMem::live(NM_THREAD_FILTER);
+
+    filter.init("");  // no context filter, no unfiltered tracking: registry stays inactive
+    ASSERT_FALSE(filter.registryActive());
+    EXPECT_EQ(constructed, NativeMem::live(NM_THREAD_FILTER));
+
+    filter.init("1");
+    ASSERT_TRUE(filter.registryActive());
+    EXPECT_EQ(constructed + kTidIndexBytes, NativeMem::live(NM_THREAD_FILTER));
+
+    // Later activations, in either registry mode, reuse the same index.
+    filter.init("", true);
+    ASSERT_TRUE(filter.registryActive());
+    filter.init("1");
+    EXPECT_EQ(constructed + kTidIndexBytes, NativeMem::live(NM_THREAD_FILTER));
+
+    ThreadFilter::SlotID slot_id = filter.registerThread(9001);
+    ASSERT_GE(slot_id, 0);
+    ThreadFilter::SlotID found = -1;
+    EXPECT_NE(nullptr, filter.lookupByTid(9001, &found));
+    EXPECT_EQ(slot_id, found);
+}
+
+TEST(ThreadFilterTidIndexStorageTest, TidLookupsBeforeActivationFindNothing) {
+    ThreadFilter filter;
+    const long long constructed = NativeMem::live(NM_THREAD_FILTER);
+    ThreadFilter::SlotID found = 123;
+
+    EXPECT_EQ(nullptr, filter.lookupByTid(9101, &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(nullptr, filter.lookupByTid(9101, 1, &found));
+    filter.unregisterThreadByTid(9101);  // ThreadEnd path, runs for every exiting thread
+    EXPECT_EQ(-1, filter.registerThread(9101));
+    EXPECT_EQ(constructed, NativeMem::live(NM_THREAD_FILTER));
 }

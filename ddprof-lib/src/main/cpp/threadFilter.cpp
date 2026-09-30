@@ -42,9 +42,6 @@ ThreadFilter::ThreadFilter()
         _chunks[i].store(nullptr, std::memory_order_relaxed);
     }
     _free_list = std::make_unique<FreeListNode[]>(kFreeListSize);
-    for (auto& entry : _tid_index) {
-        entry.store(0, std::memory_order_relaxed);
-    }
     NativeMem::record(NM_THREAD_FILTER,
                       (long long)(kFreeListSize * sizeof(FreeListNode)));
 
@@ -71,8 +68,11 @@ ThreadFilter::~ThreadFilter() {
         _free_list[i].value.store(-1, std::memory_order_relaxed);
         _free_list[i].next.store(-1, std::memory_order_relaxed);
     }
-    for (auto& entry : _tid_index) {
-        entry.store(0, std::memory_order_relaxed);
+    std::atomic<int>* tid_index = _tid_index.exchange(nullptr, std::memory_order_acquire);
+    if (tid_index != nullptr) {
+        delete[] tid_index;
+        NativeMem::record(NM_THREAD_FILTER,
+                          -(long long)(kTidIndexSize * sizeof(std::atomic<int>)));
     }
     // Publish 0 chunks to stop range scans (collect)
     _num_chunks.store(0, std::memory_order_release);
@@ -276,12 +276,14 @@ void ThreadFilter::refreshSlotForRecording(SlotID slot_id, Slot* slot, Recording
 // stopping only at a true empty slot (value == 0, by the invariant above) or
 // a match.
 bool ThreadFilter::indexSlot(SlotID slot_id, int tid) {
+    std::atomic<int>* tid_index = _tid_index.load(std::memory_order_acquire);
+    if (tid_index == nullptr) return false;
     unsigned start = hashTid(tid) & kTidIndexMask;
     for (int probe = 0; probe < kTidIndexSize; ++probe) {
         int index = (start + probe) & kTidIndexMask;
-        int value = _tid_index[index].load(std::memory_order_acquire);
+        int value = tid_index[index].load(std::memory_order_acquire);
         if (value <= 0) {
-            _tid_index[index].store(slot_id + 1, std::memory_order_release);
+            tid_index[index].store(slot_id + 1, std::memory_order_release);
             return true;
         }
         if (value > 0) {
@@ -295,11 +297,12 @@ bool ThreadFilter::indexSlot(SlotID slot_id, int tid) {
 }
 
 void ThreadFilter::unindexSlot(SlotID slot_id, int tid) {
-    if (tid < 0) return;
+    std::atomic<int>* tid_index = _tid_index.load(std::memory_order_acquire);
+    if (tid < 0 || tid_index == nullptr) return;
     unsigned start = hashTid(tid) & kTidIndexMask;
     for (int probe = 0; probe < kTidIndexSize; ++probe) {
         int index = (start + probe) & kTidIndexMask;
-        int value = _tid_index[index].load(std::memory_order_acquire);
+        int value = tid_index[index].load(std::memory_order_acquire);
         if (value == 0) return;
         if (value == slot_id + 1) {
             // Deleting `index`: by the invariant above, `next == 0` already
@@ -311,8 +314,8 @@ void ThreadFilter::unindexSlot(SlotID slot_id, int tid) {
             // `index` must stay a tombstone (-1) in that case.
             int next = (index + 1) & kTidIndexMask;
             int replacement =
-                _tid_index[next].load(std::memory_order_acquire) == 0 ? 0 : -1;
-            _tid_index[index].store(replacement, std::memory_order_release);
+                tid_index[next].load(std::memory_order_acquire) == 0 ? 0 : -1;
+            tid_index[index].store(replacement, std::memory_order_release);
             if (replacement == 0) {
                 // `index` is now 0, satisfying the invariant for it. Walk
                 // backward and reclaim any run of tombstones (-1) immediately
@@ -322,8 +325,8 @@ void ThreadFilter::unindexSlot(SlotID slot_id, int tid) {
                 // This keeps probe chains from growing unboundedly long as
                 // tids churn.
                 int previous = (index - 1) & kTidIndexMask;
-                while (_tid_index[previous].load(std::memory_order_acquire) == -1) {
-                    _tid_index[previous].store(0, std::memory_order_release);
+                while (tid_index[previous].load(std::memory_order_acquire) == -1) {
+                    tid_index[previous].store(0, std::memory_order_release);
                     previous = (previous - 1) & kTidIndexMask;
                 }
             }
@@ -347,11 +350,12 @@ bool ThreadFilter::indexOrRollback(Slot& slot, SlotID slot_id, int tid) {
 }
 
 ThreadFilter::SlotID ThreadFilter::lookupSlotIdByTid(int tid) const {
-    if (tid < 0) return -1;
+    std::atomic<int>* tid_index = _tid_index.load(std::memory_order_acquire);
+    if (tid < 0 || tid_index == nullptr) return -1;
     unsigned start = hashTid(tid) & kTidIndexMask;
     for (int probe = 0; probe < kTidIndexSize; ++probe) {
         int index = (start + probe) & kTidIndexMask;
-        int value = _tid_index[index].load(std::memory_order_acquire);
+        int value = tid_index[index].load(std::memory_order_acquire);
         if (value == 0) return -1;
         if (value > 0) {
             Slot* slot = slotForId(value - 1);
@@ -549,11 +553,27 @@ void ThreadFilter::resetRegistrationsLocked() {
     if (_block_tracker != nullptr) {
         _block_tracker->resetAll();
     }
-    for (auto& entry : _tid_index) {
-        entry.store(0, std::memory_order_relaxed);
+    std::atomic<int>* tid_index = _tid_index.load(std::memory_order_acquire);
+    if (tid_index != nullptr) {
+        for (int i = 0; i < kTidIndexSize; ++i) {
+            tid_index[i].store(0, std::memory_order_relaxed);
+        }
     }
     _next_index.store(0, std::memory_order_relaxed);
     initFreeList();
+}
+
+void ThreadFilter::ensureTidIndexLocked() {
+    if (_tid_index.load(std::memory_order_acquire) != nullptr) return;
+    std::atomic<int>* tid_index = new std::atomic<int>[kTidIndexSize];
+    for (int i = 0; i < kTidIndexSize; ++i) {
+        tid_index[i].store(0, std::memory_order_relaxed);
+    }
+    // Pairs with the acquire loads in the lock-free lookups, which must see
+    // the zeroed entries rather than uninitialized memory.
+    _tid_index.store(tid_index, std::memory_order_release);
+    NativeMem::record(NM_THREAD_FILTER,
+                      (long long)(kTidIndexSize * sizeof(std::atomic<int>)));
 }
 
 bool ThreadFilter::pushToFreeList(SlotID slot_id) {
@@ -706,6 +726,9 @@ void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
     {
         std::lock_guard<std::mutex> lock(_registry_lock);
         _registry_active.store(false, std::memory_order_release);
+        if (unfiltered_tracking || context_filter) {
+            ensureTidIndexLocked();
+        }
         if (unfiltered_tracking) {
             resetRegistrationsLocked();
         }

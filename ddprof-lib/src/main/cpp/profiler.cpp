@@ -1603,13 +1603,15 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Java threads are still registered lazily via those hooks or ThreadStart
   // callbacks (both filter modes) - proactive registration here is only for
   // the one thread that cannot update its own TLS from another thread's start().
+  // A cached slot id is not proof of registration: an unfiltered restart resets
+  // the registry, leaving it pointing at a free slot or one now owned by another
+  // thread. activeSlotForId() rejects both (tid and recording-epoch mismatch).
   if (_thread_filter.registryActive()) {
     ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);
-    int slot_id = current->filterSlotId();
-    if (slot_id < 0) {
-      slot_id = _thread_filter.registerThread(current->tid());
-      current->setFilterSlotId(slot_id);
+    int tid = current->tid();
+    if (_thread_filter.activeSlotForId(current->filterSlotId(), tid) == nullptr) {
+      current->setFilterSlotId(_thread_filter.registerThread(tid));
     }
   }
 

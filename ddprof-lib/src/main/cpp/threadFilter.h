@@ -235,7 +235,12 @@ private:
     std::atomic<int> _free_count{0};
     // Entries contain slot_id + 1. Zero terminates a lookup probe; -1 is a
     // tombstone left by unregister. The slot's published TID is the key.
-    std::array<std::atomic<int>, kTidIndexSize> _tid_index;
+    // Allocated (kTidIndexSize entries) by the first init() that activates the
+    // registry and kept until destruction, so processes that never use a
+    // context filter or unfiltered precheck don't pay for it. Null until then:
+    // lookups find nothing, and nothing can be indexed while it is null because
+    // registration requires an active registry.
+    std::atomic<std::atomic<int>*> _tid_index{nullptr};
     // Registration and teardown never run in a signal handler. Serializing
     // writers prevents duplicate TID mappings while lookups remain lock-free.
     std::mutex _registry_lock;
@@ -269,6 +274,7 @@ private:
     bool indexOrRollback(Slot& slot, SlotID slot_id, int tid);
     void refreshSlotForRecording(SlotID slot_id, Slot* slot, RecordingEpoch epoch);
     void resetRegistrationsLocked();
+    void ensureTidIndexLocked();
     void unregisterThreadLocked(SlotID slot_id, int expected_tid = -1);
     SlotID lookupSlotIdByTid(int tid) const;
     static inline unsigned hashTid(int tid) {
