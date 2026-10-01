@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -18,6 +18,7 @@ import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.JfrFrame;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -120,6 +121,10 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
                         foundTestLibRemoteFrame = true;
                         testLibFrameCount++;
                         foundTestLibFrame = true;
+
+                        // Regression: FRAME_NATIVE_REMOTE must have a label in the FrameType constant pool
+                        assertEquals("Native (remote)", frame.typeDescription(),
+                            "Remote frame type is missing from the jdk.types.FrameType constant pool");
 
                         // Print first remote frame for debugging
                         if (printCount == 0) {
