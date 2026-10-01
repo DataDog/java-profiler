@@ -236,18 +236,14 @@ public:
 
   // _table_cap/_table_max_cap are plain ints, not atomics like _table_size, and
   // resetCapacityForTest() (debug-only test seam, see its own comment) rewrites both under
-  // _table_lock after freeing/reallocating _table.
+  // _table_lock (exclusive) after freeing/reallocating _table. Readers only need the shared lock.
   int capacity() const {
-    _table_lock.lock();
-    int cap = _table_cap;
-    _table_lock.unlock();
-    return cap;
+    SharedLockGuard guard(&_table_lock);
+    return _table_cap;
   }
   int maxCapacity() const {
-    _table_lock.lock();
-    int max_cap = _table_max_cap;
-    _table_lock.unlock();
-    return max_cap;
+    SharedLockGuard guard(&_table_lock);
+    return _table_max_cap;
   }
 
   // Current upper bound on assigned slots (mirrors _table_size's own comment: "1 + highest index

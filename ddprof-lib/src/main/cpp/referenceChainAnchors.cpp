@@ -15,7 +15,6 @@
 #include "os.h"
 #include "profiler.h"
 #include "rcDebugLevel.h"
-#include "tsc.h"
 #include "vmEntry.h"
 #include <algorithm>
 #include <cassert>
@@ -81,7 +80,7 @@ void ReferenceChainTracker::descendFromAnchor(
     jvmtiEnv *jvmti, JNIEnv *jni, jobject anchor, jlong anchor_tag,
     u32 anchor_depth, jlong anchor_descend_class_tag, int budget,
     int *edges_admitted, bool *truncated, bool *frontier_cap_hit,
-    u64 *safepoint_ticks) {
+    u64 *safepoint_ns) {
   ReferenceChainPassContext ctx;
   ctx.tracker = this;
   ctx.frontier = _frontier;
@@ -104,9 +103,9 @@ void ReferenceChainTracker::descendFromAnchor(
   jvmtiHeapCallbacks callbacks;
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.heap_reference_callback = heapReferenceCallback;
-  u64 follow_start_ticks = TSC::ticks();
+  u64 follow_start_ns = OS::nanotime();
   jvmti->FollowReferences(0, nullptr, anchor, &callbacks, &ctx);
-  *safepoint_ticks += TSC::ticks() - follow_start_ticks;
+  *safepoint_ns += OS::nanotime() - follow_start_ns;
   *edges_admitted += ctx.edges_admitted;
   *truncated = *truncated || ctx.truncated;
   *frontier_cap_hit = *frontier_cap_hit || ctx.frontier_cap_hit;
@@ -604,7 +603,7 @@ void ReferenceChainTracker::requeueStaticAnchorFifoFront(
 void ReferenceChainTracker::walkStaticFieldAnchors(
     jvmtiEnv *jvmti, JNIEnv *jni, const std::vector<jlong> &anchor_tags,
     int budget, int *edges_admitted, bool *truncated, bool *frontier_cap_hit,
-    u64 *safepoint_ticks, std::vector<jlong> *unwalked) {
+    u64 *safepoint_ns, std::vector<jlong> *unwalked) {
   if (anchor_tags.empty()) {
     return;
   }
@@ -644,7 +643,7 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
     int edges_before = *edges_admitted;
     descendFromAnchor(jvmti, jni, objects[i], resolved_tags[i], entry.depth,
                       /*anchor_descend_class_tag=*/0, remaining, edges_admitted,
-                      truncated, frontier_cap_hit, safepoint_ticks);
+                      truncated, frontier_cap_hit, safepoint_ns);
     TEST_LOG("ReferenceChainTracker::walkStaticFieldAnchors anchor walk "
              "outcome tag=%lld edges=%d truncated=%d cap_hit=%d",
              (long long)resolved_tags[i], *edges_admitted - edges_before,
@@ -683,7 +682,7 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
 
 void ReferenceChainTracker::walkCandidateThreadLocals(
     jvmtiEnv *jvmti, JNIEnv *jni, int budget, int *edges_admitted,
-    bool *truncated, bool *frontier_cap_hit, u64 *safepoint_ticks) {
+    bool *truncated, bool *frontier_cap_hit, u64 *safepoint_ns) {
   if (_candidate_count <= 0) {
     return;
   }
@@ -765,7 +764,7 @@ void ReferenceChainTracker::walkCandidateThreadLocals(
         if (remaining > 0) {
           descendFromAnchor(jvmti, jni, thread_obj, anchor_tag, anchor_depth,
                             descend_class_tag, remaining, edges_admitted,
-                            truncated, frontier_cap_hit, safepoint_ticks);
+                            truncated, frontier_cap_hit, safepoint_ns);
           walked++;
         }
       }

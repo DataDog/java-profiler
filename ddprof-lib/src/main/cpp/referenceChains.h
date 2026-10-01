@@ -129,7 +129,7 @@ private:
   // constant.
   int _canary_backoff_mult;
   // 0.8/0.2 EMA of each pass's whole-call wall duration in ms
-  // (TSC::ticks_to_millis(pass_wall_ticks), runPass()), updated every pass - kept warm regardless
+  // (pass_wall_ns / 1000000, runPass()), updated every pass - kept warm regardless
   // of canary state so a chase that opens on a known-cost crawl sizes correctly from its first
   // held-off decision.
   u64 _canary_pass_ema_ms;
@@ -234,6 +234,10 @@ private:
   struct LeakParentFanoutEntry {
     u64 signature_key;
     u32 fanout;
+    // True once trackLeakAccumulation()'s ancestor walk has run past this entry, so its ancestors
+    // are recorded too. seedLeakAccumulationForNewlyWatchedKlass() records parents without that
+    // walk and leaves it false.
+    bool ancestors_recorded;
   };
   std::unordered_map<jlong, LeakParentFanoutEntry> _leak_parent_fanout;
 
@@ -764,7 +768,7 @@ private:
   // expands each with FollowReferences.
   void expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni, int hop_cap, int budget,
                        int *edges_admitted, bool *truncated,
-                       bool *frontier_cap_hit, u64 *safepoint_ticks);
+                       bool *frontier_cap_hit, u64 *safepoint_ns);
 
   // Static-field counterpart to heapRootCallback()'s GC-root enumeration:
   // IterateOverReachableObjects's root/stack-ref callbacks never report a class's static fields
@@ -776,7 +780,7 @@ private:
   void admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni, int hop_cap,
                               int budget, int *edges_admitted,
                               bool *truncated, bool *frontier_cap_hit,
-                              bool *cycle_complete, u64 *safepoint_ticks);
+                              bool *cycle_complete, u64 *safepoint_ns);
 
   // Clears every live JVMTI tag this search still owns; frontier metadata is kept so
   // reconstructChain() keeps working.
@@ -784,13 +788,13 @@ private:
 
   // Feeds the measured pass duration into _pause_pid and rescales the effective budget and
   // cadence; _budget remains the hard ceiling.
-  void updatePacing(u64 pass_wall_ticks);
+  void updatePacing(u64 pass_wall_ns);
 
   // Root/stack-ref enumeration passes never reach updatePacing() (runPass()'s own comment: their
   // fixed dispatch cost would wrongly throttle _effective_budget for every unrelated later pass),
   // but a slow one still spends real pause-time-SLO budget the borrow ceiling promised was safe to
   // hand out.
-  void maybeRevokeBorrowForRootEnumPass(u64 pass_wall_ticks);
+  void maybeRevokeBorrowForRootEnumPass(u64 pass_wall_ns);
 
   // Tags every not-yet-tagged loaded class (GetLoadedClasses()) with a fresh nextClassTag() and
   // resolves its name into _class_tags, via the same GetClassSignature + normalizeClassSignature +
@@ -890,7 +894,7 @@ private:
                          jlong anchor_tag, u32 anchor_depth,
                          jlong anchor_descend_class_tag, int budget,
                          int *edges_admitted, bool *truncated,
-                         bool *frontier_cap_hit, u64 *safepoint_ticks);
+                         bool *frontier_cap_hit, u64 *safepoint_ns);
 
   // Prong 1 of the candidate-scoped reach design (thread-retained taxonomy: ThreadLocal-held caches
   // and thread-owned collections): per pass, walk up to THREAD_WALK_MAX_ANCHORS of the current
@@ -898,7 +902,7 @@ private:
   // descendFromAnchor() (anchor-gated to ThreadLocalMap, see above).
   void walkCandidateThreadLocals(jvmtiEnv *jvmti, JNIEnv *jni, int budget,
                                  int *edges_admitted, bool *truncated,
-                                 bool *frontier_cap_hit, u64 *safepoint_ticks);
+                                 bool *frontier_cap_hit, u64 *safepoint_ns);
 
   // Selects root-attached durable entries with a tiered cursor: leak-tagged, fresh, container-shaped,
   // then everything else fairly.
@@ -941,7 +945,7 @@ private:
   void walkStaticFieldAnchors(jvmtiEnv *jvmti, JNIEnv *jni,
                               const std::vector<jlong> &anchor_tags,
                               int budget, int *edges_admitted, bool *truncated,
-                              bool *frontier_cap_hit, u64 *safepoint_ticks,
+                              bool *frontier_cap_hit, u64 *safepoint_ns,
                               std::vector<jlong> *unwalked = nullptr);
 
   // jvmtiHeapRootCallback/jvmtiStackReferenceCallback for runPassManualWalk()'s
@@ -961,7 +965,7 @@ private:
   void runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni, bool run_root_enum,
                           int root_enum_budget, int expand_budget,
                           int *edges_admitted, bool *truncated,
-                          bool *frontier_cap_hit, u64 *safepoint_ticks);
+                          bool *frontier_cap_hit, u64 *safepoint_ns);
 
   // Inserts (or refreshes) klass_id's resolved chain in _resolved_chains, recording the
   // source_tag/source_search_ns it was reconstructed from so a later poll can tell a stale entry

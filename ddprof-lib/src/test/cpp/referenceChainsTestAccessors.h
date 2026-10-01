@@ -436,9 +436,9 @@ public:
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         bool truncated = false;
         bool cap_hit = false;
-        u64 safepoint_ticks = 0;
+        u64 safepoint_ns = 0;
         t->expandFrontier(jvmti, jni, t->_hop_cap, 1000, edges_admitted,
-                          &truncated, &cap_hit, &safepoint_ticks);
+                          &truncated, &cap_hit, &safepoint_ns);
     }
 
     // Same drive with a caller-chosen admission budget and the truncated flag reported back, for
@@ -448,10 +448,10 @@ public:
                                                 bool *truncated) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         bool cap_hit = false;
-        u64 safepoint_ticks = 0;
+        u64 safepoint_ns = 0;
         *truncated = false;
         t->expandFrontier(jvmti, jni, t->_hop_cap, budget, edges_admitted,
-                          truncated, &cap_hit, &safepoint_ticks);
+                          truncated, &cap_hit, &safepoint_ns);
     }
 
     // Backdates the search start (an OS::nanotime() timestamp, see runPass()) so runPass()'s TTL
@@ -523,9 +523,9 @@ public:
         ReferenceChainTracker::instance()->_consecutive_under_target_passes = v;
     }
 
-    static void maybeRevokeBorrowForRootEnumPass(u64 pass_wall_ticks) {
+    static void maybeRevokeBorrowForRootEnumPass(u64 pass_wall_ns) {
         ReferenceChainTracker::instance()->maybeRevokeBorrowForRootEnumPass(
-            pass_wall_ticks);
+            pass_wall_ns);
     }
 
     // ReleaseSearchTagsFailureTest below: read-only peek at whether the tracker still owes a tag
@@ -632,9 +632,9 @@ public:
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         bool truncated = false;
         bool cap_hit = false;
-        u64 safepoint_ticks = 0;
+        u64 safepoint_ns = 0;
         t->walkCandidateThreadLocals(jvmti, jni, budget, edges_admitted,
-                                     &truncated, &cap_hit, &safepoint_ticks);
+                                     &truncated, &cap_hit, &safepoint_ns);
     }
 
     static void walkStaticFieldAnchorsForTest(jvmtiEnv *jvmti, JNIEnv *jni,
@@ -706,9 +706,9 @@ public:
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         bool truncated = false;
         bool cap_hit = false;
-        u64 safepoint_ticks = 0;
+        u64 safepoint_ns = 0;
         t->walkStaticFieldAnchors(jvmti, jni, tags, budget, edges_admitted,
-                                  &truncated, &cap_hit, &safepoint_ticks,
+                                  &truncated, &cap_hit, &safepoint_ns,
                                   unwalked);
     }
 
@@ -905,6 +905,10 @@ public:
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         auto it = t->_leak_parent_fanout.find(parent_tag);
         return it != t->_leak_parent_fanout.end() ? it->second.fanout : 0;
+    }
+
+    static void eraseLeakParentFanout(jlong parent_tag) {
+        ReferenceChainTracker::instance()->_leak_parent_fanout.erase(parent_tag);
     }
 
     static size_t leakSignatureCount() {

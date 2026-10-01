@@ -202,6 +202,7 @@ typedef struct KlassCandidate {
 // Required because this class contains SpinLock _table_lock member
 class alignas(alignof(SpinLock)) LivenessTracker {
   friend Recording;
+  friend class LivenessTrackerTestAccessor;
 
 private:
   // pre-c++17 we should mark these inline(or out of class)
@@ -430,6 +431,12 @@ private:
   // macOS, cgroups disabled) - secondsToOOM() treats -1 as "unbounded" so
   // this boundary never wins over the heap-based one.
   jlong _container_memory_limit;
+  // Release-published by initialize_table() right after it calls
+  // OS::getContainerMemoryLimit(); onGC() acquires it before calling
+  // OS::getContainerMemoryUsage(). The limit call writes the cgroup path
+  // globals the usage call reads (os_linux.cpp). onGC() cannot use
+  // _initialized for this: initialize() sets it before initialize_table().
+  volatile bool _container_limit_resolved;
 
 #ifdef DEBUG
   // Mirrors _max_heap_bytes_for_test above for the same reason: lets a test
@@ -822,6 +829,7 @@ public:
         _last_cleanup_ns(0), _used_after_last_gc(0),
         _heap_floor_ring_head(0), _heap_floor_ring_fill(0),
         _max_heap_bytes(-1), _container_memory_limit(-1),
+        _container_limit_resolved(false),
         _gc_generations(false),
         _klass_population_size(0), _klass_count_scratch_size(0),
         _last_class_map_generation(0),

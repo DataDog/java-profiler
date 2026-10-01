@@ -576,7 +576,7 @@ void ReferenceChainTracker::trackLeakAccumulation(FrontierTable *frontier,
              "parent_tag=%lld parent_class_tag=%lld child_class_tag=%lld",
              (long long)parent_tag, (long long)parent_entry.class_tag,
              (long long)class_tag);
-    _leak_parent_fanout.emplace(parent_tag, LeakParentFanoutEntry{key, 1});
+    _leak_parent_fanout.emplace(parent_tag, LeakParentFanoutEntry{key, 1, true});
   } else {
     // The signature key for a given parent_tag is fixed once recorded (parent_entry.class_tag never
     // changes once admitted; the LEAF side of the key is fixed by which klass_id is currently
@@ -586,24 +586,38 @@ void ReferenceChainTracker::trackLeakAccumulation(FrontierTable *frontier,
     // reflect the most recently observed watched klass_id for this parent).
     it->second.signature_key = key;
     it->second.fanout++;
+    it->second.ancestors_recorded = true; // the ancestor walk below runs for it now
   }
   // ANCESTOR FANOUT: the direct parent is not necessarily the part of the holder chain that STAYS
   // LIVE.
+  // Runs inside the FollowReferences callback, so the walk holds the frontier's shared lock once
+  // rather than once per hop. Existing ancestor entries only get ancestors_recorded set here, never
+  // their fanout or signature_key; missing ones are added, and every walk adds the whole remaining
+  // chain up to _hop_cap. So the first ancestor whose ancestors_recorded is set means the rest of
+  // the chain was added by an earlier walk: stop there. Siblings under one container then cost one
+  // hop each instead of the full chain depth. Near _hop_cap an earlier walk may have stopped closer
+  // to the root than this one would.
   jlong ancestor = parent_entry.parent_tag;
-  int hops = 0;
-  while (ancestor != 0 && hops++ < _hop_cap) {
-    FrontierEntry ancestor_entry{};
-    if (!_frontier->lookup(ancestor, &ancestor_entry)) {
-      break;
+  frontier->withSharedLock([&](const FrontierTable *locked) {
+    int hops = 0;
+    while (ancestor != 0 && hops++ < _hop_cap) {
+      FrontierEntry ancestor_entry{};
+      if (!locked->lookupLocked(ancestor, &ancestor_entry)) {
+        break;
+      }
+      auto inserted = _leak_parent_fanout.emplace(ancestor, LeakParentFanoutEntry{key, 1, true});
+      if (!inserted.second) {
+        if (inserted.first->second.ancestors_recorded) {
+          break; // its ancestors were recorded with it
+        }
+        inserted.first->second.ancestors_recorded = true;
+      }
+      if (ancestor_entry.parent_tag == 0) {
+        break; // root-attached: the holder chain ends here
+      }
+      ancestor = ancestor_entry.parent_tag;
     }
-    if (_leak_parent_fanout.find(ancestor) == _leak_parent_fanout.end()) {
-      _leak_parent_fanout.emplace(ancestor, LeakParentFanoutEntry{key, 1});
-    }
-    if (ancestor_entry.parent_tag == 0) {
-      break; // root-attached: the holder chain ends here
-    }
-    ancestor = ancestor_entry.parent_tag;
-  }
+  });
 }
 
 void ReferenceChainTracker::seedLeakAccumulationForNewlyWatchedKlass(
@@ -621,9 +635,8 @@ void ReferenceChainTracker::seedLeakAccumulationForNewlyWatchedKlass(
   // matching entry) deliberately: this whole scan already holds _frontier's shared lock for its
   // duration (matching collectStaleExpandedEntriesForRotation()'s own lockShared() rationale - a
   // per-tag SpinLock acquisition would double the cost of this O(table_size) sweep), and
-  // trackLeakAccumulation() takes that same lock itself via frontier->lookup() - calling it from
-  // inside an already-held shared section would risk a reentrant-lock deadlock if a writer is ever
-  // concurrently pending, so this uses lookupLocked() throughout instead.
+  // trackLeakAccumulation() takes that same lock again itself - re-acquiring it per matching entry
+  // would add that cost back, so this uses lookupLocked() throughout instead.
   _frontier->withSharedLock([&](const FrontierTable *frontier) {
     for (jlong tag = 1; tag <= table_size; tag++) {
       FrontierEntry entry{};
@@ -642,7 +655,7 @@ void ReferenceChainTracker::seedLeakAccumulationForNewlyWatchedKlass(
       auto it = _leak_parent_fanout.find(entry.parent_tag);
       if (it == _leak_parent_fanout.end()) {
         _leak_parent_fanout.emplace(entry.parent_tag,
-                                     LeakParentFanoutEntry{key, 1});
+                                     LeakParentFanoutEntry{key, 1, false});
       } else {
         it->second.signature_key = key;
         it->second.fanout++;

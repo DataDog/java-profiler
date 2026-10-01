@@ -8,13 +8,14 @@
 #define _REFERENCECHAININTERNAL_H
 
 #include "arch.h"
+#include "common.h"
 #include <jni.h>
 #include <unordered_set>
 
 class FrontierTable;
 class ReferenceChainTracker;
 
-extern thread_local bool t_inGCCallback;
+ASSERT_ONLY(extern thread_local bool t_inGCCallback;)
 
 struct ReferenceChainPassContext {
   ReferenceChainTracker *tracker;

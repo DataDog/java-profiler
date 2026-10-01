@@ -347,7 +347,8 @@ bool FrontierTable::reconstructChain(jlong target_tag,
   // Bounded by maxCapacity(): every tag maps to a distinct slot (this table's "tags/slots are never
   // reused" invariant, see the class comment above), so a well-formed parent_tag chain can visit at
   // most maxCapacity() slots before either reaching parent_tag == 0 or repeating a slot.
-  for (; hops <= maxCapacity() && tag != 0; hops++) {
+  const int hop_bound = maxCapacity();
+  for (; hops <= hop_bound && tag != 0; hops++) {
     if (!lookup(tag, &entry)) {
       // parent_tag pointed at a tag that was never inserted - should not happen for a chain built
       // entirely within one BFS pass, but do not fabricate a partial chain silently.

@@ -916,6 +916,11 @@ int OS::getCgroupCpuMillicores() {
 // cgroups whose usage the leaf's memory.current excludes - pairing the
 // ancestor limit with leaf usage would overstate the available memory and
 // delay the OOM projection.
+// Threading: this and g_memory_limit_cgroup_v2 are written only by
+// getContainerMemoryLimit(). LivenessTracker::onGC() reads them via
+// getContainerMemoryUsage() only after acquiring the flag that
+// LivenessTracker::initialize_table() release-publishes after its
+// getContainerMemoryLimit() call.
 static char g_memory_limit_cgroup_path[PATH_MAX] = {0};
 
 // Which cgroup hierarchy (v2 or v1) supplied the winning limit recorded in

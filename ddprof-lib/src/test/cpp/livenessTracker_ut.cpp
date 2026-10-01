@@ -1039,6 +1039,37 @@ TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountEmptyTableReturnsZer
 // uses for heapFloorRising(), plus setMaxHeapBytesForTest() to avoid the
 // JNI-dependent HeapUsage::getMaxHeap() call this suite has no live JVM for.
 // ---------------------------------------------------------------------------
+// Reaches the private state onGC()'s container-usage gate depends on.
+class LivenessTrackerTestAccessor {
+public:
+    // Runs one onGC() with the given _container_limit_resolved value and returns the
+    // container usage it recorded. Restores the touched fields afterwards.
+    static u64 containerUsageRecordedByOnGC(LivenessTracker *t, bool limit_resolved) {
+        bool saved_initialized = t->_initialized;
+        bool saved_resolved = t->_container_limit_resolved;
+#ifdef DEBUG
+        bool saved_disabled =
+            t->_heap_floor_recording_disabled_for_test.load(std::memory_order_acquire);
+        t->_heap_floor_recording_disabled_for_test.store(false, std::memory_order_release);
+#endif
+        t->_initialized = true;
+        t->_container_limit_resolved = limit_resolved;
+        u8 fill_before = t->_heap_floor_ring_fill;
+        t->onGC();
+        EXPECT_EQ(fill_before + 1, t->_heap_floor_ring_fill) << "onGC() recorded no sample";
+        constexpr int ring = LivenessTracker::KLASS_POPULATION_RING_SIZE;
+        u8 last = (u8)((t->_heap_floor_ring_head + ring - 1) % ring);
+        u64 recorded = t->_container_mem_ring[last];
+        t->_initialized = saved_initialized;
+        t->_container_limit_resolved = saved_resolved;
+#ifdef DEBUG
+        t->_heap_floor_recording_disabled_for_test.store(saved_disabled,
+                                                         std::memory_order_release);
+#endif
+        return recorded;
+    }
+};
+
 class SecondsToOOMTest : public ::testing::Test {
 protected:
     static constexpr u64 SEC_NS = 1000000000ULL;
@@ -1093,6 +1124,24 @@ TEST_F(SecondsToOOMTest, FlatFloorReturnsNegative) {
         tracker->heapFloorRecordForTest(1000 * MiB, (u64)i * SEC_NS);
     }
     EXPECT_LT(tracker->secondsToOOM(), 0.0);
+}
+
+// onGC() must not read container usage before initialize_table() has published
+// the container limit: that read depends on the cgroup path globals the limit
+// call writes. Unpublished, the sample records 0 (the same value as a failed
+// read). Only observable where OS::getContainerMemoryUsage() returns a real
+// value (Linux with cgroups); on other platforms it is -1 either way.
+TEST_F(SecondsToOOMTest, OnGCSkipsContainerUsageUntilLimitResolved) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    EXPECT_EQ(0u, LivenessTrackerTestAccessor::containerUsageRecordedByOnGC(tracker, false));
+
+    u64 resolved = LivenessTrackerTestAccessor::containerUsageRecordedByOnGC(tracker, true);
+    if (OS::getContainerMemoryUsage() > 0) {
+        EXPECT_GT(resolved, 0u);
+    } else {
+        EXPECT_EQ(0u, resolved);
+    }
 }
 
 // No heap-floor history is ever recorded outside _gc_generations (onGC()'s

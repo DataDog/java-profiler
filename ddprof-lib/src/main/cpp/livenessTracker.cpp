@@ -2005,6 +2005,7 @@ Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
   // here, unlike max_heap above: not every JVM runs under a memory-limited
   // cgroup.
   _container_memory_limit = OS::getContainerMemoryLimit();
+  storeRelease(_container_limit_resolved, true);
 
   int required_table_capacity =
       sampling_interval > 0 ? max_heap / sampling_interval : max_heap;
@@ -2538,7 +2539,9 @@ void LivenessTracker::onGC() {
       // itself unavailable (secondsToOOM() never selects this ring then),
       // and a rare, self-correcting blip otherwise (the next successful
       // read re-establishes the real growth rate).
-      long container_usage = OS::getContainerMemoryUsage();
+      long container_usage = loadAcquire(_container_limit_resolved)
+                                 ? OS::getContainerMemoryUsage()
+                                 : -1;
       recordHeapFloorSample((u64)used, OS::nanotime(),
                              container_usage >= 0 ? (u64)container_usage : 0);
     } else {

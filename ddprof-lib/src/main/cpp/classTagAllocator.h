@@ -68,7 +68,7 @@ inline void resetForTest() {
   // would mint duplicate negative tags - the cross-subsystem collision this
   // shared allocator exists to prevent. Callers must still ensure no tracker
   // thread is live (reset in TearDown after tracker->stop()).
-  __atomic_exchange_n(&magnitude(), (jlong)1, __ATOMIC_RELAXED);
+  atomicExchangeRelaxed(magnitude(), (jlong)1);
 }
 
 } // namespace ClassTagAllocator

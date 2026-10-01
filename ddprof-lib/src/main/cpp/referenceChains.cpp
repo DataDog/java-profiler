@@ -143,14 +143,14 @@ void rcDebugLevelRefresh(bool force) {
 // ReferenceChainTracker
 
 // Marks the calling thread as executing inside the GarbageCollectionStart/ Finish JVMTI callback
-// for the duration of the guard's lifetime.
-thread_local bool t_inGCCallback = false;
+// for the duration of the guard's lifetime. Only read by assert(), so it compiles out with it.
+ASSERT_ONLY(thread_local bool t_inGCCallback = false;)
 
 namespace {
 class GCCallbackGuard {
 public:
-  GCCallbackGuard() { t_inGCCallback = true; }
-  ~GCCallbackGuard() { t_inGCCallback = false; }
+  GCCallbackGuard() { ASSERT_ONLY(t_inGCCallback = true;) }
+  ~GCCallbackGuard() { ASSERT_ONLY(t_inGCCallback = false;) }
 };
 } // namespace
 

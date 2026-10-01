@@ -15,7 +15,6 @@
 #include "os.h"
 #include "profiler.h"
 #include "rcDebugLevel.h"
-#include "tsc.h"
 #include "vmEntry.h"
 #include <algorithm>
 #include <cassert>
@@ -146,7 +145,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
                                                int *edges_admitted,
                                                bool *truncated,
                                                bool *frontier_cap_hit,
-                                               u64 *safepoint_ticks) {
+                                               u64 *safepoint_ns) {
   assert(!t_inGCCallback &&
          "IterateOverReachableObjects/FollowReferences are JVMTI "
          "Heap-category calls and must not be made from "
@@ -158,7 +157,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // walk holds them.
   releaseEndedThreadRefs(jni);
 
-  *safepoint_ticks = 0;
+  *safepoint_ns = 0;
 
   // Shared wall-clock ceiling for this whole call's static-field sweep, expandFrontier(), and
   // rotation sub-calls below (see _pass_deadline_ns's own comment) - deliberately NOT applied to
@@ -197,11 +196,11 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     ctx.truncated = false;
     ctx.frontier_cap_hit = false;
 
-    u64 root_enum_start_ticks = TSC::ticks();
+    u64 root_enum_start_ns = OS::nanotime();
     jvmtiError root_err = jvmti->IterateOverReachableObjects(
         heapRootCallback, stackRefCallback, /*object_ref_callback=*/nullptr,
         &ctx);
-    *safepoint_ticks += TSC::ticks() - root_enum_start_ticks;
+    *safepoint_ns += OS::nanotime() - root_enum_start_ns;
 
     // expand_budget is spent independently of root_enum_budget below (see
     // ROOT_ENUM_MIN_INTERVAL_NS's own comment) - ctx.edges_admitted is written straight into
@@ -246,7 +245,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
                             : 0;
     walkCandidateThreadLocals(jvmti, jni, budget, &thread_walk_edges_admitted,
                               &thread_walk_truncated,
-                              &thread_walk_frontier_cap_hit, safepoint_ticks);
+                              &thread_walk_frontier_cap_hit, safepoint_ns);
     expand_phase_edges_admitted += thread_walk_edges_admitted;
     *edges_admitted += thread_walk_edges_admitted;
     if (thread_walk_frontier_cap_hit) {
@@ -277,7 +276,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     admitStaticFieldRoots(jvmti, jni, _hop_cap, static_field_budget,
                           &static_field_edges_admitted, &static_field_truncated,
                           &static_field_frontier_cap_hit,
-                          &static_field_cycle_complete, safepoint_ticks);
+                          &static_field_cycle_complete, safepoint_ns);
     expand_phase_edges_admitted += static_field_edges_admitted;
     *edges_admitted += static_field_edges_admitted;
     if (static_field_truncated) {
@@ -311,7 +310,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
                           : 0;
   expandFrontier(jvmti, jni, _hop_cap, remaining_budget,
                  &expand_edges_admitted, &expand_truncated,
-                 &expand_frontier_cap_hit, safepoint_ticks);
+                 &expand_frontier_cap_hit, safepoint_ns);
   expand_phase_edges_admitted += expand_edges_admitted;
   *edges_admitted += expand_edges_admitted;
   *truncated = *truncated || expand_truncated;
@@ -383,7 +382,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     walkStaticFieldAnchors(jvmti, jni, static_anchor_tags, rotation_budget,
                            &static_anchor_edges_admitted,
                            &static_anchor_truncated,
-                           &static_anchor_frontier_cap_hit, safepoint_ticks,
+                           &static_anchor_frontier_cap_hit, safepoint_ns,
                            &static_anchor_unwalked);
     rotation_edges_admitted += static_anchor_edges_admitted;
     rotation_budget -= static_anchor_edges_admitted;
@@ -420,7 +419,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   int queue_tier_edges_admitted = 0;
   expandFrontier(jvmti, jni, _hop_cap, rotation_budget,
                  &queue_tier_edges_admitted, &rotation_truncated,
-                 &rotation_frontier_cap_hit, safepoint_ticks);
+                 &rotation_frontier_cap_hit, safepoint_ns);
   rotation_edges_admitted += queue_tier_edges_admitted;
   *edges_admitted += rotation_edges_admitted;
   // OR, not overwrite: the ordinary expand phase above may have already set these to true (real
@@ -451,7 +450,7 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
                                             int *edges_admitted,
                                             bool *truncated,
                                             bool *frontier_cap_hit,
-                                            u64 *safepoint_ticks) {
+                                            u64 *safepoint_ns) {
   assert(!t_inGCCallback &&
          "GetObjectsWithTags/FollowReferences are JVMTI Heap-category calls "
          "and must not be made from GarbageCollectionStart/Finish");
@@ -623,10 +622,10 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
           // stop-the-world HeapWalkOperation (instead of one per frontier entry).
           ctx._last_visited_batch_tag = 0; // reset rolling cursor
           completed_batch_tags.clear();
-          u64 follow_start_ticks = TSC::ticks();
+          u64 follow_start_ns = OS::nanotime();
           jvmtiError follow_err =
               jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
-          *safepoint_ticks += TSC::ticks() - follow_start_ticks;
+          *safepoint_ns += OS::nanotime() - follow_start_ns;
           if (follow_err != JVMTI_ERROR_NONE) {
             ctx.truncated = true;
           }
@@ -719,7 +718,7 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
                                                    bool *truncated,
                                                    bool *frontier_cap_hit,
                                                    bool *cycle_complete,
-                                                   u64 *safepoint_ticks) {
+                                                   u64 *safepoint_ns) {
   assert(!t_inGCCallback &&
          "GetLoadedClasses/FollowReferences are JVMTI Heap-category calls "
          "and must not be made from GarbageCollectionStart/Finish");
@@ -880,10 +879,10 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   jvmtiHeapCallbacks callbacks;
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.heap_reference_callback = heapReferenceCallback;
-  u64 follow_start_ticks = TSC::ticks();
+  u64 follow_start_ns = OS::nanotime();
   jvmtiError follow_err =
       jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
-  *safepoint_ticks += TSC::ticks() - follow_start_ticks;
+  *safepoint_ns += OS::nanotime() - follow_start_ns;
   jni->DeleteLocalRef(holder);
   if (follow_err != JVMTI_ERROR_NONE) {
     return;
@@ -1009,12 +1008,12 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   // Whole-call wall-clock duration of runPassManualWalk() below - includes root/stack-ref
   // enumeration dispatch, frontier-table bookkeeping, and rotation-candidate collection, in
   // addition to the actual in-safepoint JVMTI calls.
-  u64 pass_wall_ticks = 0;
+  u64 pass_wall_ns = 0;
   // Genuine in-safepoint cost of this pass, accumulated by runPassManualWalk() across every
   // IterateOverReachableObjects/ FollowReferences call it makes (root enum, static-field sweep,
   // ordinary expansion, rotation re-expansion) - explicitly excluding GetObjectsWithTags (not a
   // safepoint call) and every bookkeeping line in between.
-  u64 safepoint_ticks = 0;
+  u64 safepoint_ns = 0;
 
   // Every pass is driven by the manual walk (runPassManualWalk() - IterateOverReachableObjects for
   // roots, then a batched array-holder FollowReferences per BFS level in expandFrontier()), on
@@ -1034,17 +1033,18 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
 
   int frontier_size_before_pass = _frontier != nullptr ? _frontier->size() : 0;
 
-  u64 call_start_ticks = TSC::ticks();
+  u64 call_start_ns = OS::nanotime();
   runPassManualWalk(jvmti, jni, run_root_enum, _first_pass_budget,
                      _effective_budget, &edges_admitted, &truncated,
-                     &frontier_cap_hit, &safepoint_ticks);
-  pass_wall_ticks = TSC::ticks() - call_start_ticks;
-  // TSC::ticks() is monotonic but not necessarily free of measurement noise between the outer
-  // call_start_ticks snapshot and the several inner TSC::ticks() snapshots safepoint_ticks is built
-  // from - clamp rather than underflow if the accumulated safepoint portion ever reads back larger
-  // than the whole-call wall time it's a subset of.
-  u64 non_safepoint_ticks =
-      pass_wall_ticks > safepoint_ticks ? pass_wall_ticks - safepoint_ticks : 0;
+                     &frontier_cap_hit, &safepoint_ns);
+  pass_wall_ns = OS::nanotime() - call_start_ns;
+  // Pass durations use OS::nanotime() (a monotonic clock), not TSC::ticks(): raw TSC is not
+  // guaranteed to be synchronized across cores, and a backward step between two reads would wrap
+  // these unsigned deltas into a bogus multi-week pain debt. Each read brackets a whole JVMTI heap
+  // walk, so the clock's cost is irrelevant here. The clamp below is purely defensive: safepoint_ns
+  // is a sum of sub-intervals of this call, so it cannot exceed pass_wall_ns on a monotonic clock.
+  u64 non_safepoint_ns =
+      pass_wall_ns > safepoint_ns ? pass_wall_ns - safepoint_ns : 0;
   err = JVMTI_ERROR_NONE;
 
   store(_passes_run, load(_passes_run) + 1);
@@ -1056,23 +1056,23 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     // (expandFrontier()'s cheap, per-node expansion calls), so feeding it in here would throttle
     // _effective_budget down for every one of those unrelated later passes based on a single,
     // deliberately oversized outlier.
-    updatePacing(safepoint_ticks);
+    updatePacing(safepoint_ns);
   } else {
     // Excluded from the budget/cadence controller above, but not from the borrow ceiling's
     // revocation check (see maybeRevokeBorrowForRootEnumPass()'s own comment) - a root-enum pass's
     // in-safepoint cost is real pause time and must still be able to revoke a borrowed-budget grant
     // the pacing controller would otherwise keep believing is safe.
-    maybeRevokeBorrowForRootEnumPass(safepoint_ticks);
+    maybeRevokeBorrowForRootEnumPass(safepoint_ns);
   }
   // accumulate this pass's own in-safepoint cost toward the running total restartSearch() will
-  // spend into _safepoint_pain_budget once the search reaches a terminal state - same
-  // TSC::ticks_to_millis() conversion updatePacing() already uses for its own pass-duration signal.
-  _search_pain_ms += TSC::ticks_to_millis(safepoint_ticks);
+  // spend into _safepoint_pain_budget once the search reaches a terminal state - same ns-to-ms
+  // conversion updatePacing() already uses for its own pass-duration signal.
+  _search_pain_ms += safepoint_ns / 1000000;
   // Independent leaky bucket for the non-safepoint remainder of this pass (root/stack-ref
   // enumeration dispatch, frontier-table admission, rotation-candidate collection) - see
   // _cpu_pain_budget's own comment (referenceChains.h) for why this needs to be tracked separately
-  // from both _safepoint_pain_budget above and _pause_pid's safepoint_ticks signal.
-  _cpu_pain_budget.spend(TSC::ticks_to_millis(non_safepoint_ticks));
+  // from both _safepoint_pain_budget above and _pause_pid's safepoint_ns signal.
+  _cpu_pain_budget.spend(non_safepoint_ns / 1000000);
 
   // Apply terminal conditions in priority order.
   bool has_pending_frontier = truncated;
@@ -1143,7 +1143,7 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   // Track canary-specific progress separately - see _passes_since_last_candidate_progress's own
   // comment for why frontier growth above does not substitute for this.
   {
-    u64 pass_wall_ms = (u64)TSC::ticks_to_millis(pass_wall_ticks);
+    u64 pass_wall_ms = pass_wall_ns / 1000000;
     _canary_pass_ema_ms = _canary_pass_ema_ms == 0
         ? pass_wall_ms
         : _canary_pass_ema_ms * 4 / 5 + pass_wall_ms / 5;
@@ -1217,12 +1217,12 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
 
 // Pause-time-SLO feedback loop (see this method's declaration in
 
-void ReferenceChainTracker::updatePacing(u64 pass_wall_ticks) {
+void ReferenceChainTracker::updatePacing(u64 pass_wall_ns) {
   // Truncating to whole milliseconds matches every other PidController usage in this codebase
   // (ObjectSampler/MallocTracer/NativeSocketSampler all feed it integer counts, pidController.h's
   // `compute(u64 input, ...)`) - sub-ms precision is not meaningful against a millisecond-scale
   // target anyway.
-  u64 pass_ms = TSC::ticks_to_millis(pass_wall_ticks);
+  u64 pass_ms = pass_wall_ns / 1000000;
   // time_delta_coefficient is deliberately 1.0, not a real-elapsed-time ratio - unlike
   // ObjectSampler's usage (objectSampler.cpp), which rescales an event count accumulated over a
   // variable-length real-time window against a fixed-real-time target, _pause_pid was constructed
@@ -1287,11 +1287,11 @@ void ReferenceChainTracker::updatePacing(u64 pass_wall_ticks) {
 // on why its wall-clock cost is excluded from the per-pass PID/effective-budget signal), but it
 // still spends real pause-time-SLO time.
 void ReferenceChainTracker::maybeRevokeBorrowForRootEnumPass(
-    u64 pass_wall_ticks) {
+    u64 pass_wall_ns) {
   if (_effective_pause_target_ms <= 0) {
     return;
   }
-  u64 pass_ms = TSC::ticks_to_millis(pass_wall_ticks);
+  u64 pass_ms = pass_wall_ns / 1000000;
   bool comfortably_under_target =
       (double)pass_ms <= (double)_effective_pause_target_ms * BORROW_UNDER_TARGET_FRACTION;
   if (!comfortably_under_target) {

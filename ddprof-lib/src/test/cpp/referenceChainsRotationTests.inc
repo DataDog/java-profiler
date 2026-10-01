@@ -789,6 +789,92 @@ TEST_F(ReferenceChainsBfsTest, SeedLeakAccumulationSkipsNonMatchingAndNonExpande
     tracker->stop();
 }
 
+// trackLeakAccumulation()'s ancestor walk stops at the first ancestor whose ancestors were already
+// recorded. A seeded entry has not had its ancestors recorded, so the walk must continue past it.
+TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationWalksPastSeededAncestor) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr u32 kLeafKlass = 987, kParentKlass = 100, kMidKlass = 200, kRootKlass = 300;
+    // root(1) <- mid(2) <- parent(3); leaf(4) hangs directly off mid.
+    jlong rootTag = 1, midTag = 2, parentTag = 3, leafUnderMidTag = 4;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, rootTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kRootKlass));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, midTag, rootTag, 1, FrontierEntryState::EXPANDED,
+        /*root_kind=*/0, /*referrer_klass=*/0, kMidKlass));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, parentTag, midTag, 2, FrontierEntryState::EXPANDED,
+        /*root_kind=*/0, /*referrer_klass=*/0, kParentKlass));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, leafUnderMidTag, midTag, 2, FrontierEntryState::EXPANDED,
+        /*root_kind=*/0, /*referrer_klass=*/0, kLeafKlass));
+
+    // Seed adds mid as a direct parent without walking its ancestors.
+    ReferenceChainsTestAccessor::seedLeakAccumulationForNewlyWatchedKlass(kLeafKlass);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(midTag));
+    ASSERT_EQ(0u, ReferenceChainsTestAccessor::leakParentFanout(rootTag));
+
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parentTag, 10);
+
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(parentTag));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(midTag))
+        << "the ancestor walk adds missing entries only, it does not bump existing ones";
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(rootTag))
+        << "the walk must not stop at the seeded mid entry";
+
+    tracker->stop();
+}
+
+// Once an ancestor walk has passed an entry, later walks through it stop there; the chain recorded
+// for siblings is the same as with a full walk. Erasing root after the first walk makes the stop
+// observable: a later walk that went past mid would add root back.
+TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationSiblingsShareRecordedAncestors) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr u32 kLeafKlass = 987, kParentKlass = 100, kMidKlass = 200, kRootKlass = 300;
+    // root(1) <- mid(2) <- parent1(3), parent2(4)
+    jlong rootTag = 1, midTag = 2, parent1Tag = 3, parent2Tag = 4;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, rootTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kRootKlass));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, midTag, rootTag, 1, FrontierEntryState::EXPANDED,
+        /*root_kind=*/0, /*referrer_klass=*/0, kMidKlass));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, parent1Tag, midTag, 2, FrontierEntryState::EXPANDED,
+        /*root_kind=*/0, /*referrer_klass=*/0, kParentKlass));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, parent2Tag, midTag, 2, FrontierEntryState::EXPANDED,
+        /*root_kind=*/0, /*referrer_klass=*/0, kParentKlass));
+
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parent1Tag, 10);
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parent1Tag, 11);
+    ASSERT_EQ(2u, ReferenceChainsTestAccessor::leakParentFanout(parent1Tag));
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(midTag));
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(rootTag));
+
+    ReferenceChainsTestAccessor::eraseLeakParentFanout(rootTag);
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parent2Tag, 20);
+
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(parent2Tag));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(midTag));
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::leakParentFanout(rootTag))
+        << "the walk from parent2 must stop at mid, whose ancestors were already recorded";
+
+    tracker->stop();
+}
+
 TEST_F(ReferenceChainsBfsTest, SeedLeakAccumulationComposesWithOngoingIncrementalUpdates) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
