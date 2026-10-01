@@ -40,7 +40,7 @@ constexpr int LivenessTracker::MIN_SAMPLING_INTERVAL;
 namespace {
 
 // Max surviving entries whose per-epoch JNI class resolution (resolveKlassId:
-// GetObjectClass + Class.getName() + StringDictionary lookup) a single
+// GetObjectClass + GetClassSignature + StringDictionary lookup) a single
 // cleanup_table() sweep performs under the exclusive _table_lock. Entries
 // beyond the budget fall back to their cached class id (the exact semantics
 // the allow_resolve=false path already uses); the next epoch's sweep resolves
@@ -252,6 +252,19 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
           _table[target] = _table[i]; // will clone TrackingEntry at 'i'
           _table[i].ref = nullptr;    // will nullify the original ref
           _table[i].call_trace_id = 0;
+          // The struct copy above duplicated leak_tag/cached_klass_id/ready
+          // onto 'i' as well as 'target' - ownership (leak_tag) and identity
+          // (cached_klass_id) now belong solely to 'target'. 'i' moves to or
+          // past newsz once compaction finishes, at which point a later
+          // track() call can legitimately claim it; leaving this stale
+          // duplicate in place would otherwise violate the "every slot >=
+          // _table_size has ready == 0 (or at least no live leak_tag/
+          // cached_klass_id)" invariant TrackingEntry::ready's comment
+          // documents, even though track() currently always overwrites both
+          // fields before republishing ready=1.
+          _table[i].leak_tag = 0;
+          _table[i].cached_klass_id = 0;
+          __atomic_store_n(&_table[i].ready, 0, __ATOMIC_RELEASE);
         }
         _table[target].age += epoch_diff;
 
@@ -270,7 +283,7 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
           // everything past RESOLVE_BUDGET_PER_SWEEP.
           u32 klass_id = _table[target].cached_klass_id;
           if (klass_id == 0 && allow_resolve && resolve_budget > 0) {
-            // GetObjectClass + Class.getName() + StringDictionary lookup per
+            // GetObjectClass + GetClassSignature + StringDictionary lookup per
             // surviving entry, previously paid only at JFR-flush time (see
             // flush_table() below). Only affordable off the allocation-hot
             // path - flush_table()/stop()'s cadence and
@@ -291,9 +304,8 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
             if (ref != nullptr) {
               klass_id = resolveKlassId(env, ref);
               if (klass_id != 0) {
-                // Cache the resolution: flush_table() runs its own
-                // GetObjectClass+Class.getName()+lookupClass() sequence for
-                // every surviving entry immediately after cleanup_table()
+                // Cache the resolution: flush_table() calls resolveKlassId()
+                // for every entry without a cached id right after cleanup_table()
                 // returns (flush_table() always calls cleanup_table() first),
                 // which would otherwise repeat this exact JNI round-trip for
                 // the same object. An object's class is immutable, so this
@@ -307,9 +319,8 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
           // else: klass_id already cached above, or track()'s table-overflow
           // branch (cleanup_table(true, false), called synchronously from the
           // allocation-sampling call stack) forbids resolving here -
-          // resolveKlassId() calls Class.getName(), a genuine Java-bytecode
-          // upcall, too costly and too re-entrancy-prone via the String
-          // allocation it can trigger to run from that callback stack. If
+          // resolveKlassId() makes JVMTI/JNI calls and can insert into the
+          // class map (which allocates), kept off that callback stack. If
           // this entry was never resolved, its sample for this epoch is
           // dropped rather than resolving now.
           if (klass_id != 0) {
@@ -326,6 +337,8 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
           releaseLeakTag(_table[i].leak_tag);
           _table[i].leak_tag = 0;
         }
+        _table[i].cached_klass_id = 0;
+        __atomic_store_n(&_table[i].ready, 0, __ATOMIC_RELEASE);
       }
     }
 
@@ -352,8 +365,8 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
 }
 
 u32 LivenessTracker::resolveKlassId(JNIEnv *env, jobject ref) {
-  // Deliberately NOT flush_table()'s own Class.getName()-based resolution
-  // below: the ids this returns are the CANDIDATE klass ids that
+  // Deliberately NOT a Class.getName()-based resolution: the ids this
+  // returns (also used by flush_table()) are the CANDIDATE klass ids that
   // ReferenceChainTracker matches discovered instances' classes against, and
   // RCT resolves those with the GetClassSignature +
   // ObjectSampler::normalizeClassSignature() + lookupClass() sequence
@@ -423,7 +436,7 @@ void LivenessTracker::insertOldestSample(KlassCountScratch &scratch,
   }
 }
 
-jlong LivenessTracker::acquireLeakTag(u64 call_trace_id, jint tid) {
+jlong LivenessTracker::acquireLeakTag() {
   // Pool mutation is serialized by its own lock, not by _table_lock: this is
   // called under the SHARED table lock (tagLeakInstances, BFS poll thread)
   // while releaseLeakTag() runs under the EXCLUSIVE table lock (cleanup_table,
@@ -437,8 +450,7 @@ jlong LivenessTracker::acquireLeakTag(u64 call_trace_id, jint tid) {
     return 0; // pool exhausted
   }
   int idx = _leak_tag_free_list[--_leak_tag_free_count];
-  _leak_tag_info[idx].call_trace_id = call_trace_id;
-  _leak_tag_info[idx].tid = tid;
+  _leak_tag_in_use[idx] = true;
   return LEAK_TAG_BASE + idx;
 }
 
@@ -450,33 +462,14 @@ void LivenessTracker::releaseLeakTag(jlong tag) {
   // See acquireLeakTag()'s comment for the dedicated pool lock (and the
   // _table_lock -> _leak_tag_pool_lock ordering).
   ExclusiveLockGuard guard(&_leak_tag_pool_lock);
-  _leak_tag_info[idx].call_trace_id = 0;
-  _leak_tag_info[idx].tid = 0;
+  if (!_leak_tag_in_use[idx]) {
+    // A repeated release of a tag that was not re-acquired. Pushing it again
+    // would list the index twice, so two later acquires would hand the same
+    // tag to two objects (and a full list would be written past its end).
+    return;
+  }
+  _leak_tag_in_use[idx] = false;
   _leak_tag_free_list[_leak_tag_free_count++] = idx;
-}
-
-bool LivenessTracker::getLeakTagInfo(jlong tag, u64 *out_call_trace_id,
-                                     jint *out_tid) const {
-  if (tag < LEAK_TAG_BASE || tag >= LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE) {
-    return false;
-  }
-  int idx = (int)(tag - LEAK_TAG_BASE);
-  // releaseLeakTag() zeroes both fields, so a zero/zero slot means the tag
-  // was released (or never acquired) - any other state is in use. (A slot
-  // index comparison against _leak_tag_free_count proves nothing here: the
-  // free list is a LIFO stack of indices, not an index-bounded region.)
-  // Read under the pool lock (see acquireLeakTag()'s comment): the intended
-  // caller (ReferenceChainTracker's BFS poll thread) holds no table lock in
-  // its polling path, and without this lock the releaseLeakTag() zeroing on
-  // the GC-callback thread would race these reads.
-  ExclusiveLockGuard guard(&_leak_tag_pool_lock);
-  bool in_use = _leak_tag_info[idx].call_trace_id != 0 ||
-                _leak_tag_info[idx].tid != 0;
-  if (in_use) {
-    *out_call_trace_id = _leak_tag_info[idx].call_trace_id;
-    *out_tid = _leak_tag_info[idx].tid;
-  }
-  return in_use;
 }
 
 int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
@@ -536,6 +529,15 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
   int summary_count = 0;
   int summary_overflow = 0;
   _table_lock.lockShared();
+  if (Profiler::instance()->classMap()->generation() !=
+      _last_class_map_generation) {
+    // The class map was reset after cached_klass_id was resolved, so the
+    // cached ids belong to the previous id namespace and can name a different
+    // class now. cleanup_table() drops them on its next sweep; tag nothing
+    // until then.
+    _table_lock.unlockShared();
+    return 0;
+  }
   u32 sz = _table_size;
   for (u32 i = 0; i < sz; i++) {
     // Skip slots a concurrent track() reservation has not published yet
@@ -721,7 +723,7 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
       // unlocked would read freed/moved slots.)
       leak_tag = _table[i].leak_tag;
       if (leak_tag == 0) {
-        leak_tag = acquireLeakTag(_table[i].call_trace_id, _table[i].tid);
+        leak_tag = acquireLeakTag();
         if (leak_tag == 0) {
           env->DeleteLocalRef(ref);
           continue; // pool exhausted - other candidates may still correlate
@@ -749,7 +751,7 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
       // stable across restarts).
       leak_tag = _table[i].leak_tag;
       if (leak_tag == 0) {
-        leak_tag = acquireLeakTag(_table[i].call_trace_id, _table[i].tid);
+        leak_tag = acquireLeakTag();
         if (leak_tag == 0) {
           env->DeleteLocalRef(ref);
           break; // pool exhausted
@@ -1683,6 +1685,14 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
   // shared-lock read pattern above, the same table cleanup_table() writes
   // under the exclusive lock this shared lock is taken against.
   _table_lock.lockShared();
+  if (Profiler::instance()->classMap()->generation() !=
+      _last_class_map_generation) {
+    // _klass_population's klass_id keys belong to the class map before its
+    // reset and can name a different class now. cleanup_table() drops them on
+    // its next sweep; select nothing until then.
+    _table_lock.unlockShared();
+    return 0;
+  }
   // Only log when there is actually something to scan - this runs on every
   // BFS-thread wake (once per second), so logging an empty scan turns the
   // steady, idle state into per-second noise.
@@ -1824,11 +1834,16 @@ jobject LivenessTracker::resolveCandidateRepresentative(JNIEnv *env, u32 klass_i
   // selectLeakCandidates()'s own comment for the race this closes.
   //
   // Returns the first live representative (oldest first, per the Lindy
-  // bias in KlassCountScratch::oldest[]). Callers that need all live
-  // representatives (e.g. pollWatchedTargets() tagging all of them)
-  // use resolveCandidateRepresentatives() instead.
+  // bias in KlassCountScratch::oldest[]).
   _table_lock.lockShared();
   jobject obj = nullptr;
+  if (Profiler::instance()->classMap()->generation() !=
+      _last_class_map_generation) {
+    // klass_id and the _klass_population keys may come from different class
+    // map generations (see selectLeakCandidates()).
+    _table_lock.unlockShared();
+    return nullptr;
+  }
   for (int i = 0; i < _klass_population_size; i++) {
     if (_klass_population[i].klass_id == klass_id) {
       for (int r = 0; r < _klass_population[i].representative_count; r++) {
@@ -1845,34 +1860,6 @@ jobject LivenessTracker::resolveCandidateRepresentative(JNIEnv *env, u32 klass_i
   }
   _table_lock.unlockShared();
   return obj;
-}
-
-int LivenessTracker::resolveCandidateRepresentatives(
-    JNIEnv *env, u32 klass_id, jobject *out, int max_out) {
-  // Returns all live representatives for klass_id, oldest first.
-  // Used by pollWatchedTargets() to tag all representatives with marker
-  // tags so the canary mechanism has multiple chances to find a
-  // long-lived instance. See KlassCountScratch::oldest's comment for
-  // why multiple representatives matter.
-  _table_lock.lockShared();
-  int count = 0;
-  for (int i = 0; i < _klass_population_size; i++) {
-    if (_klass_population[i].klass_id == klass_id) {
-      for (int r = 0; r < _klass_population[i].representative_count &&
-              count < max_out; r++) {
-        jweak rep = _klass_population[i].representatives[r];
-        if (rep != nullptr) {
-          jobject obj = env->NewLocalRef(rep);
-          if (obj != nullptr) {
-            out[count++] = obj;
-          }
-        }
-      }
-      break;
-    }
-  }
-  _table_lock.unlockShared();
-  return count;
 }
 
 void LivenessTracker::flush(std::set<int> &tracked_thread_ids) {
@@ -1892,6 +1879,18 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
   // possible
   cleanup_table();
 
+  // cleanup_table() only reaches its class-map-generation check (and thus
+  // only clears stale cached_klass_id values) when target_gc_epoch !=
+  // _last_gc_epoch or forced=true (its advisory early-exit above). A
+  // Profiler::start() class-map reset that lands between two GCs of the same
+  // epoch is otherwise invisible to it, so cached_klass_id can still be a
+  // StringDictionary id from the PREVIOUS generation's namespace - checked
+  // again here, independent of whether cleanup_table() actually ran its
+  // locked block this call.
+  bool class_map_generation_matches =
+      Profiler::instance()->classMap()->generation() ==
+      _last_class_map_generation;
+
   _table_lock.lock();
 
   u32 sz;
@@ -1910,36 +1909,30 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
       event.leak_tag = _table[i].leak_tag;
 
       int class_id = 0;
-      if (_table[i].cached_klass_id != 0) {
+      if (_table[i].cached_klass_id != 0 && class_map_generation_matches) {
         // Already resolved by cleanup_table()'s survivor loop this epoch
         // (resolveKlassId(), only when _gc_generations is enabled) - reuse
-        // it instead of repeating the GetObjectClass+Class.getName()+
-        // lookupClass() JNI round-trip for the same object.
+        // it instead of repeating the resolution JNI round-trip for the same
+        // object.
         class_id = _table[i].cached_klass_id;
       } else {
-        jclass clz = env->GetObjectClass(ref);
-        jstring name_str = (jstring)env->CallObjectMethod(clz, _Class_getName);
-        env->DeleteLocalRef(clz);
-        jniExceptionCheck(env);
-        // name_str can be null if the call above threw and
-        // jniExceptionCheck() cleared the pending exception rather than
-        // propagating it - GetStringUTFChars()/ReleaseStringUTFChars()
-        // require a non-null jstring (mirrors resolveKlassId()'s own guard).
-        if (name_str != nullptr) {
-          const char *name = env->GetStringUTFChars(name_str, nullptr);
-          if (name != nullptr) {
-            class_id = Profiler::instance()->lookupClass(name, strlen(name));
-            env->ReleaseStringUTFChars(name_str, name);
-          }
-          env->DeleteLocalRef(name_str);
-        }
+        // Use resolveKlassId() rather than a separate GetObjectClass +
+        // Class.getName() sequence: getName() returns dot notation
+        // ("com.foo.Bar"), which StringDictionary treats as a different key
+        // from resolveKlassId()'s GetClassSignature + normalizeClassSignature()
+        // slash notation ("com/foo/Bar") - the same class would resolve to two
+        // different ids depending on which path happened to run, and
+        // ReferenceChainTracker's candidate matching (which resolves via the
+        // slash-notation path, see resolveKlassId()'s own comment) would never
+        // match an id produced here.
+        class_id = (int)resolveKlassId(env, ref);
       }
 
-      // lookupClass() returns -1 when the class map is at capacity; do not
-      // assign it to the u32 event id (it would wrap to 0xFFFFFFFF and
-      // corrupt liveness attribution in the JFR output) — drop the sample
-      // instead, matching ObjectSampler's convention for the same failure.
-      if (class_id >= 0) {
+      // class_id 0 means "unresolved" (resolveKlassId()/lookupClass() never
+      // return 0 for a real class - see TrackingEntry::cached_klass_id's own
+      // comment) - drop the sample instead of misattributing it, matching
+      // ObjectSampler's convention for the same failure.
+      if (class_id != 0) {
         event._id = class_id;
         Profiler::instance()->recordDeferredSample(_table[i].tid, _table[i].call_trace_id, BCI_LIVENESS, &event);
       }
@@ -2012,9 +2005,8 @@ Error LivenessTracker::start(Arguments &args) {
   // receive a tag another live object still owns (corrupting leak-tag
   // correlation for both), and the eventual second releaseLeakTag() of the
   // duplicate would push the same index twice and write past
-  // _leak_tag_free_list. Owned tags also keep their _leak_tag_info entries
-  // (erasing them would break getLeakTagInfo() correlation for the
-  // preserved, still-live owners).
+  // _leak_tag_free_list. Both locks are held across the scan and the rebuild
+  // so no table entry can gain or drop a tag in between.
   bool tag_owned[LEAK_TAG_POOL_SIZE];
   memset(tag_owned, 0, sizeof(tag_owned));
   _table_lock.lock();
@@ -2024,18 +2016,17 @@ Error LivenessTracker::start(Arguments &args) {
       tag_owned[_table[i].leak_tag - LEAK_TAG_BASE] = true;
     }
   }
-  _table_lock.unlock();
+  _leak_tag_pool_lock.lock();
   int free_w = 0;
   for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
-    if (tag_owned[i]) {
-      continue;
+    _leak_tag_in_use[i] = tag_owned[i];
+    if (!tag_owned[i]) {
+      _leak_tag_free_list[free_w++] = i;
     }
-    _leak_tag_free_list[free_w] = i;
-    _leak_tag_info[i].call_trace_id = 0;
-    _leak_tag_info[i].tid = 0;
-    free_w++;
   }
   _leak_tag_free_count = free_w;
+  _leak_tag_pool_lock.unlock();
+  _table_lock.unlock();
   if (!_enabled) {
     // disabled
     return Error::OK;

@@ -98,6 +98,14 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   }
   if (thread != NULL) {
     updateThreadName(jvmti, jni, thread, true);
+    if (_reference_chains_active) {
+      // Register this thread's live java.lang.Thread object so a leak
+      // candidate whose tid belongs to a thread started after recording
+      // start still has a _thread_objects entry for
+      // walkCandidateThreadLocals() to walk (see referenceChains.h's
+      // _thread_objects comment).
+      ReferenceChainTracker::instance()->registerThreadObject(jni, tid, thread);
+    }
   }
 
   _cpu_engine->registerThread(tid);
@@ -120,6 +128,13 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     }
 
     updateThreadName(jvmti, jni, thread, false);
+    if (_reference_chains_active) {
+      // Queue this thread's global ref for deferred deletion so a dead
+      // thread's ref doesn't pin the Thread object or anchor a reused tid
+      // (see referenceChains.h's _thread_objects/_thread_refs_pending_delete
+      // comments).
+      ReferenceChainTracker::instance()->unregisterThreadObject(jni, tid);
+    }
     // Block profiling signals around engine unregistration + TLS release to
     // close the window where a wall-clock/CPU signal could sample a
     // partially-torn-down thread (PROF-14674).
@@ -141,6 +156,9 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   }
 
   updateThreadName(jvmti, jni, thread, false);
+  if (_reference_chains_active) {
+    ReferenceChainTracker::instance()->unregisterThreadObject(jni, tid);
+  }
   _cpu_engine->unregisterThread(tid);
   _wall_engine->unregisterThread(tid);
   LivenessTracker::instance()->releaseThreadLocalState();
@@ -1722,11 +1740,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       error = Error::OK; // recoverable - recording continues without chains
     } else {
       ReferenceChainTracker::instance()->startThread();
-      // Pre-existing threads must be registered from the profiler lifecycle
-      // (registerExistingThreads()'s own comment): Profiler::onThreadStart()
-      // only sees threads started after the recording began.
-      ReferenceChainTracker::instance()->registerExistingThreads(VM::jvmti(),
-                                                                 VM::jni());
+      // Pre-existing threads are registered below, once thread events are on.
       _reference_chains_active = true;
     }
   }
@@ -1761,6 +1775,18 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
+
+    if (_reference_chains_active) {
+      // Pre-existing threads must be registered from the profiler lifecycle
+      // (registerExistingThreads()'s own comment): onThreadStart() only sees
+      // threads started after the recording began. Runs after thread events
+      // are enabled so a thread started after the GetAllThreads() snapshot is
+      // registered by onThreadStart() and a snapshot thread that exits is
+      // unregistered by onThreadEnd(); a thread seen by both is re-registered
+      // under the same tid, which registerThreadObject() handles.
+      ReferenceChainTracker::instance()->registerExistingThreads(VM::jvmti(),
+                                                                 VM::jni());
+    }
 
     // Initialize this thread
     // Note: passing all nullptrs results in not able to resolve the thread name here.
@@ -1820,13 +1846,20 @@ Error Profiler::stop() {
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
   if (_reference_chains_active) {
+    // Cleared first so new onThreadStart()/onThreadEnd() calls skip the
+    // thread-object registry; a call that already read the flag is handled
+    // by releaseAllThreadObjects() closing the registry.
+    _reference_chains_active = false;
     // Join the BFS thread and clear the recording-boundary state before the
     // rest of the teardown (stopThread() wakes and joins; stop() resets the
     // per-recording caches). Matches the Profiler::stop() order documented
     // in referenceChains.cpp's stopThread()/stop() comments.
     ReferenceChainTracker::instance()->stopThread();
     ReferenceChainTracker::instance()->stop();
-    _reference_chains_active = false;
+    // BFS thread is joined by stopThread() above, so no walk can be holding a
+    // copied ref: every registered/pending Thread global ref can be deleted
+    // now instead of leaking until (and across) the next recording.
+    ReferenceChainTracker::instance()->releaseAllThreadObjects(VM::jni());
   }
   if (_event_mask & EM_NATIVEMEM)
     malloc_tracer.stop();
@@ -1997,7 +2030,11 @@ Error Profiler::dump(const char *path, const int length) {
     // being written, and under a profiler lock like every other
     // recording-buffer writer (dump runs on a normal thread holding only
     // _state_lock; the _state_lock -> _locks order is the codebase's).
-    {
+    if (_reference_chains_active) {
+      // Guarded so a recording that did not activate reference chains (flag
+      // off, or allocation sampling off) never re-emits a prior recording's
+      // cached chains/abandonments; stop() also clears both queues, so this
+      // is a belt-and-braces check against emitting a stale cache.
       int dump_tid = ProfiledThread::currentTid();
       u32 lock_index = getLockIndex(dump_tid >= 0 ? dump_tid : 0);
       _locks[lock_index].lock();

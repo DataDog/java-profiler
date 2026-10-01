@@ -258,6 +258,10 @@ Error ReferenceChainTracker::start(Arguments &args) {
     ExclusiveLockGuard guard(&_pending_abandoned_events_lock);
     _pending_abandoned_events.clear();
   }
+  {
+    MutexLocker ml(_thread_objects_lock);
+    _thread_objects_open = true;
+  }
   _urgency_budget_boosted = false;
 
   // Auto-tune defaults that the operator did not set explicitly, based on max heap size and
@@ -375,6 +379,21 @@ void ReferenceChainTracker::stop() {
     return;
   }
   Log::info("Reference chain tracking stopped");
+
+  // Clear the resolved-chain cache and any queued-but-undrained abandonment
+  // events now, not just on the next start(): a later recording that does
+  // not activate reference chains (or has allocation sampling off) would
+  // otherwise have dump()'s drain re-emit this recording's cached chains
+  // against a _class_map that Profiler::start() has since reset, naming
+  // missing or unrelated classes. Same clear as start()'s own hygiene block.
+  {
+    ExclusiveLockGuard guard(&_resolved_chains_lock);
+    _resolved_chains.clear();
+  }
+  {
+    ExclusiveLockGuard guard(&_pending_abandoned_events_lock);
+    _pending_abandoned_events.clear();
+  }
 
   // Do not disable GC notifications here - LivenessTracker follows the same rule since the JVMTI
   // env and its tracker singletons are expected to survive across multiple start/stop recording
@@ -539,9 +558,7 @@ void ReferenceChainTracker::threadLoop() {
                (unsigned long long)(now_ns - _last_pass_ns));
       runPassSerialized(jvmti, jni);
     }
-    // Target-selection bridging step: poll once per scheduling cycle, after runPass() - so this
-    // poll always sees the most recent pass's tagging (see pollWatchedTargets()'s own comment).
-    pollWatchedTargetsSerialized(jvmti, jni);
+    finishLoopIterationSerialized(jvmti, jni);
   }
 }
 
@@ -950,8 +967,6 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
   memset(_candidate_qualifying_tid_count, 0,
          sizeof(_candidate_qualifying_tid_count));
-  // _candidate_parent_tags/_candidate_referrer_klasses/_candidate_depths will be filled at pruning
-  // time.
   {
     ExclusiveLockGuard guard(&_resolved_chains_lock);
     _resolved_chains.clear();

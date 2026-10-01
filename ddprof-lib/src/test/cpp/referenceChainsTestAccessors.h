@@ -63,6 +63,9 @@ public:
         t->_search_state = SearchState::RUNNING;
         t->_abandon_reason = SearchAbandonReason::NONE;
         t->_search_start_ns = 0;
+        // A latched urgency episode suppresses the no-progress abandon until it releases.
+        t->resetUrgencyForTest();
+        t->_class_tags_at_capacity.clear();
         t->_pending_expand.clear();
         t->_priority_expand.clear();
         t->_priority_expand_set.clear();
@@ -82,6 +85,11 @@ public:
         t->_candidate_count = 0;
         t->_candidate_found_bits = 0;
         memset(t->_candidate_discovered_count, 0, sizeof(t->_candidate_discovered_count));
+        // Production only reads these behind _candidate_count/_candidate_found_bits, but tests
+        // assert on the raw slots.
+        memset(t->_candidate_klass_ids, 0, sizeof(t->_candidate_klass_ids));
+        memset(t->_candidate_frontier_tags, 0, sizeof(t->_candidate_frontier_tags));
+        memset(t->_candidate_discovered_tags, 0, sizeof(t->_candidate_discovered_tags));
         t->_passes_since_last_candidate_progress = 0;
         t->_last_candidate_progress_mark = 0;
         t->_canary_stuck_restart_count = 0;
@@ -134,15 +142,6 @@ public:
 
     static void setCandidateFrontierTagForTest(int idx, jlong tag) {
         ReferenceChainTracker::instance()->setCandidateFrontierTagForTest(idx, tag);
-    }
-    static void setCandidateParentTagForTest(int idx, jlong tag) {
-        ReferenceChainTracker::instance()->setCandidateParentTagForTest(idx, tag);
-    }
-    static void setCandidateReferrerKlassForTest(int idx, u32 klass_id) {
-        ReferenceChainTracker::instance()->setCandidateReferrerKlassForTest(idx, klass_id);
-    }
-    static void setCandidateDepthForTest(int idx, u32 depth) {
-        ReferenceChainTracker::instance()->setCandidateDepthForTest(idx, depth);
     }
 
     static void setCandidateCountForTest(int n) {
@@ -581,14 +580,6 @@ public:
     // entry's exact starting root_kind/state/parent_tag without needing a live JVMTI mock for
     // IterateOverReachableObjects/FollowReferences (neither is mocked in this file - see the file
     // header's FollowReferences- only mock rationale).
-    // Direct seam for buildCanaryChainEvent() - private in production (only
-    // pollWatchedTargets() calls it), but the bounded parent-chain walk and its
-    // cycle-corruption behavior are unit-testable only through it.
-    static bool buildCanaryChainEventForTest(int candidate_idx,
-                                              ReferenceChainEvent *out) {
-        return ReferenceChainTracker::instance()->buildCanaryChainEvent(
-            candidate_idx, out);
-    }
 
     static bool insertFrontierEntry(FrontierTable *frontier, jlong tag,
                                      jlong parent_tag, u32 depth, u8 state,
@@ -727,6 +718,25 @@ public:
         if (slot + 1 > t->_candidate_count) {
             t->_candidate_count = slot + 1;
         }
+    }
+
+    // tid -> Thread registry observers (_thread_objects / _thread_refs_pending_delete): the
+    // Profiler thread-lifecycle wiring test asserts registration/unregistration through these.
+    static jobject threadObjectForTest(int tid) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        MutexLocker ml(t->_thread_objects_lock);
+        auto it = t->_thread_objects.find(tid);
+        return it == t->_thread_objects.end() ? nullptr : it->second;
+    }
+
+    static size_t classTagsAtCapacityForTest() {
+        return ReferenceChainTracker::instance()->_class_tags_at_capacity.size();
+    }
+
+    static size_t pendingThreadRefDeletesForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        MutexLocker ml(t->_thread_objects_lock);
+        return t->_thread_refs_pending_delete.size();
     }
 
     static int candidateQualifyingTidCountForTest(int slot) {

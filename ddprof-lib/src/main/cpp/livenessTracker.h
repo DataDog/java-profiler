@@ -36,9 +36,10 @@ typedef struct TrackingEntry {
   // _gc_generations is enabled (0 otherwise, or if resolution failed - 0 is
   // StringDictionary's own "no entry" sentinel, so a real id is never 0).
   // flush_table() reuses this instead of re-resolving the same object's
-  // class via a second GetObjectClass+Class.getName()+lookupClass() JNI
-  // round-trip - an object's class never changes, so a value resolved here
-  // stays valid for flush_table()'s later read of the same entry. track()
+  // class via a second resolveKlassId() JNI round-trip - an object's class
+  // never changes, so a value resolved here stays valid for flush_table()'s
+  // later read of the same entry, as long as the class map was not reset
+  // in between (flush_table() checks the class-map generation). track()
   // resets this to 0 for every newly tracked entry.
   u32 cached_klass_id;
   // Publication flag for the slot payload. track() holds only the shared
@@ -360,11 +361,11 @@ private:
   // heapFloorRising() below - same shape as KlassPopulationEntry::count_ring
   // but a single global instance rather than one per klass, and lock-free
   // rather than _table_lock-guarded: onGC() runs from the JVMTI
-  // GarbageCollectionFinish callback, which can fire synchronously mid-way
-  // through a JNI upcall this class itself is making while already holding
-  // _table_lock (e.g. cleanup_table()'s Class.getName() call, if that
-  // allocation triggers a GC) - taking the same lock here would risk a
-  // self-deadlock on a non-reentrant SpinLock. GC completions are never
+  // GarbageCollectionFinish callback, which the JVM sends while it is still
+  // stopped for the GC. cleanup_table() makes JNI calls (NewLocalRef(),
+  // resolveKlassId()) under the exclusive _table_lock on another thread, and
+  // such a call can wait for that stop to end - spinning on _table_lock here
+  // would then never return. GC completions are never
   // concurrent with each other (HotSpot never runs two GCs at once), so
   // onGC() is always a single writer at a time, matching the existing
   // lock-free _gc_epoch/_used_after_last_gc fields' own assumption - see
@@ -560,27 +561,21 @@ private:
   // instance of the same class) and correlate chains with HeapLiveObject.
   static constexpr int LEAK_TAG_POOL_SIZE = 256;
   static constexpr jlong LEAK_TAG_BASE = 0x40000000LL;
-  // Serializes the pool's free list and _leak_tag_info entries. NOT _table_lock:
+  // Serializes the pool's free list and _leak_tag_in_use entries. NOT _table_lock:
   // acquireLeakTag() runs under the SHARED table lock (tagLeakInstances) while
   // releaseLeakTag() runs under the EXCLUSIVE one (cleanup_table) - a shared
   // holder excludes the exclusive one, but only this dedicated lock makes the
-  // pool safe for any future second shared-lock mutator, and getLeakTagInfo()
-  // takes NO table lock at all (BFS poll thread). Lock order: _table_lock
+  // pool safe for any future second shared-lock mutator. Lock order: _table_lock
   // (any mode) is always acquired BEFORE _leak_tag_pool_lock, never the
   // reverse; no path acquires _table_lock while holding the pool lock.
   mutable SpinLock _leak_tag_pool_lock;
   int _leak_tag_free_list[LEAK_TAG_POOL_SIZE];
   int _leak_tag_free_count;
-  // Side table: for each tag in the pool, the (call_trace_id, tid) of
-  // the tracked object it was assigned to. Used by ReferenceChainTracker
-  // for coverage tracking (adaptive CPU budget).
-  struct LeakTagInfo {
-    u64 call_trace_id;
-    jint tid;
-  };
-  LeakTagInfo _leak_tag_info[LEAK_TAG_POOL_SIZE];
+  // Per-tag ownership: set by acquireLeakTag(), cleared by releaseLeakTag(),
+  // so a repeated release of a tag that was not re-acquired is ignored.
+  bool _leak_tag_in_use[LEAK_TAG_POOL_SIZE];
 
-  jlong acquireLeakTag(u64 call_trace_id, jint tid);
+  jlong acquireLeakTag();
   void releaseLeakTag(jlong tag);
 
   Error initialize(Arguments &args);
@@ -592,9 +587,8 @@ private:
   // (_gc_generations) runs on both paths, once per genuinely new GC epoch
   // (see "is_epoch_owner" in livenessTracker.cpp).
   //
-  // allow_resolve gates resolveKlassId() - a real Class.getName()
-  // Java-bytecode upcall, unlike the plain native JVMTI calls already made
-  // elsewhere on track()'s callback stack - independently of force: force
+  // allow_resolve gates resolveKlassId() - GetClassSignature plus a class-map
+  // lookup that can insert (and allocate) - independently of force: force
   // only says "bypass the epoch-unchanged early-exit", it says nothing about
   // which call stack this is running on. track()'s hot-path call passes
   // force=true, allow_resolve=false (too costly/re-entrancy-prone to resolve
@@ -630,9 +624,9 @@ private:
 
   // --- Per-klass population tracking (cleanup_table()'s epoch-advance pass only) ---
 
-  // Resolves the StringDictionary id for `ref`'s class, mirroring
-  // flush_table()'s existing class-name resolution above (GetObjectClass +
-  // Class.getName() + Profiler::lookupClass()) - this is the "genuinely new
+  // Resolves the StringDictionary id for `ref`'s class (GetObjectClass +
+  // GetClassSignature + Profiler::lookupClass(), also used by flush_table())
+  // - this is the "genuinely new
   // cost on an existing pass" the design doc flags, previously paid only at
   // JFR-flush time. Returns 0 (StringDictionary's own "no entry" sentinel)
   // if the name could not be resolved or interned.
@@ -928,12 +922,6 @@ public:
   int tagLeakInstances(jvmtiEnv *jvmti, const KlassCandidate *candidates,
                        int candidate_count);
 
-  // Look up the (call_trace_id, tid) recorded for a leak tag. Returns
-  // false if the tag is not a valid leak tag or has been returned to the
-  // pool. Used by ReferenceChainTracker for coverage tracking.
-  bool getLeakTagInfo(jlong tag, u64 *out_call_trace_id,
-                      jint *out_tid) const;
-
   // Reads _klass_population and writes up to `max` STABLE CLASS TAGS
   // (KlassPopulationEntry::stable_class_tag - NOT the classMap dictionary
   // klass_id selectLeakCandidates() above deals in; see that field's own
@@ -974,8 +962,6 @@ public:
   // jweak returns null in that case, JNI spec). Mirrors the shared-lock read
   // pattern selectLeakCandidates()/getLiveTraceIds() already use.
   jobject resolveCandidateRepresentative(JNIEnv *env, u32 klass_id);
-  int resolveCandidateRepresentatives(JNIEnv *env, u32 klass_id,
-                                       jobject *out, int max_out);
 
   // Exposes the _gc_generations gate (see that member's own comment) so a
   // caller outside this class - ReferenceChainTracker::pollWatchedTargets()
@@ -1075,26 +1061,49 @@ public:
   }
 
   // Leak-tag pool test seams - same "for testing only" rationale as the
-  // klass-population seams above: the pool acquire/release/info mechanics
+  // klass-population seams above: the pool acquire/release mechanics
   // are JNI-free pure logic, so they are directly testable; only
   // tagLeakInstances() itself needs a live JVM (SetTag/NewLocalRef) and stays
   // out of gtest's reach.
   void leakTagPoolResetForTest() {
     for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
       _leak_tag_free_list[i] = i;
-      _leak_tag_info[i].call_trace_id = 0;
-      _leak_tag_info[i].tid = 0;
+      _leak_tag_in_use[i] = false;
     }
     _leak_tag_free_count = LEAK_TAG_POOL_SIZE;
   }
 
-  jlong acquireLeakTagForTest(u64 call_trace_id, jint tid) {
-    return acquireLeakTag(call_trace_id, tid);
+  jlong acquireLeakTagForTest() { return acquireLeakTag(); }
+
+  bool leakTagInUseForTest(jlong tag) const {
+    if (tag < LEAK_TAG_BASE || tag >= LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE) {
+      return false;
+    }
+    _leak_tag_pool_lock.lock();
+    bool in_use = _leak_tag_in_use[tag - LEAK_TAG_BASE];
+    _leak_tag_pool_lock.unlock();
+    return in_use;
   }
 
   void releaseLeakTagForTest(jlong tag) { releaseLeakTag(tag); }
 
   int leakTagFreeCountForTest() const { return _leak_tag_free_count; }
+
+  u32 tableSizeForTest() const { return _table_size; }
+
+  // Reads slot `idx`'s publication flag, leak tag and cached class id,
+  // including slots at or past _table_size. Returns false if idx is outside
+  // the allocated table.
+  bool trackingSlotForTest(u32 idx, int *ready, jlong *leak_tag,
+                           u32 *cached_klass_id) const {
+    if (_table == nullptr || idx >= (u32)_table_cap) {
+      return false;
+    }
+    *ready = _table[idx].ready;
+    *leak_tag = _table[idx].leak_tag;
+    *cached_klass_id = _table[idx].cached_klass_id;
+    return true;
+  }
 
   // Admission-boost test seams - same "for testing only" rationale as the
   // leak-tag pool seams above: admitForTracking()/noteSelectedCandidates()
@@ -1307,11 +1316,12 @@ public:
   // ref per call.
   void klassPopulationSetRepresentativeForTest(JNIEnv *env, u32 klass_id, jweak rep) {
     // ALIAS RESOLUTION (see _test_klass_aliases' own comment above): resolve
-    // the representative's real klass id BEFORE taking _table_lock, so the
-    // Class.getName() JNI upcall never runs under the lock. Needs a live JVM
-    // (a valid Class.getName methodID and a resolvable representative); in
-    // gtest (env == nullptr or _Class_getName == 0) the alias is skipped and
-    // the old synthetic-only behavior applies.
+    // the representative's real klass id BEFORE taking _table_lock, so
+    // resolveKlassId()'s JNI calls never run under the lock. Needs a live JVM
+    // and a resolvable representative. _Class_getName is set only by
+    // initialize() against a live JVM, so it serves as that check; in gtest
+    // (env == nullptr or _Class_getName == 0) the alias is skipped and the
+    // old synthetic-only behavior applies.
     u32 real_id = klass_id;
     jobject strong = nullptr;
     if (env != nullptr && rep != nullptr && _Class_getName != nullptr) {
@@ -1431,6 +1441,14 @@ public:
     }
     _table_lock.unlock();
   }
+  // Lets a test that seeds _klass_population directly (no cleanup_table()
+  // sweep) mark it as belonging to the given class-map generation.
+  void classMapGenerationSetForTest(u64 generation) {
+    _table_lock.lock();
+    _last_class_map_generation = generation;
+    _table_lock.unlock();
+  }
+
   // Unlike the other klassPopulation*ForTest() seams above, this one is
   // also called from a live-JVM test (not just gtest) while the BFS thread
   // (ReferenceChainTracker::threadLoop()) may concurrently be inside
@@ -1493,6 +1511,16 @@ public:
 #else
     _max_heap_bytes = v;
 #endif
+  }
+
+  // Restores the "never resolved" limits that a start() against a mock JVM
+  // overwrites in initialize_table(). The DEBUG setters above only clear their
+  // override, so secondsToOOM() would fall back to those resolved values.
+  void heapLimitsResetForTest() {
+    _max_heap_bytes = -1;
+    _container_memory_limit = -1;
+    setMaxHeapBytesForTest(-1);
+    setContainerMemoryLimitForTest(-1);
   }
 
   // Mirrors setMaxHeapBytesForTest() above, for secondsToOOM()'s container

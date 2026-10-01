@@ -503,6 +503,10 @@ public:
     // Current id-namespace generation; see _generation's own comment.
     u64 generation() const { return _generation.load(std::memory_order_acquire); }
 
+    // Entry count of the active buffer - the count bounded_lookup() checks size_limit against.
+    // Needs no RefCountGuard: _a/_b/_c are members, never freed.
+    int activeSize() const { return _rot.active()->size(); }
+
     // Insert into active buffer; returns globally stable id.  NOT signal-safe.
     u32 lookup(const char* key, size_t len) {
         if (!_accepting.load(std::memory_order_acquire)) return 0;

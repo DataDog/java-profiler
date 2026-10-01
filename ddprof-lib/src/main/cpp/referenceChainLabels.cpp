@@ -244,35 +244,51 @@ ReferenceChainTracker::hopLabelClassFor(jvmtiEnv *jvmti, JNIEnv *jni,
           ok = appendClassFieldNames(jvmti, jni, cls, &names);
         }
       } else {
-        // The spec's CLASS branch: base = fields of all interfaces implemented by C, then the
-        // superclass chain root-first (java.lang.Object's fields first, C's own last), each class's
-        // fields in GetClassFields() order.
+        // The spec's CLASS branch: base = fields of every interface implemented by C, INCLUDING
+        // interfaces implemented only by C's superclasses (and their superinterfaces) - the JVMTI
+        // spec is explicit that C "implements all interfaces directly implemented by its
+        // superclasses; as well as all superinterfaces of these interfaces"
+        // (jvmtiHeapReferenceInfoField), and HotSpot's ClassFieldMap counts the same way over
+        // transitive_interfaces(). Then the superclass chain root-first (java.lang.Object's fields
+        // first, C's own last), each class's fields in GetClassFields() order.
+        // GetSuperclass walks UP, so gather the chain first and reuse it both to sum the base
+        // (below) and to append in reverse (root first).
+        jclass supers[128];
+        int depth = 0;
+        jclass k = cls;
+        while (k != nullptr &&
+               depth < (int)(sizeof(supers) / sizeof(supers[0]))) {
+          supers[depth++] = k;
+          k = jni->GetSuperclass(k);
+        }
+        ok = (k == nullptr); // deeper than 128 classes: fail rather than
+                            // misname
         std::unordered_set<jlong> seen;
-        jlong base = interfaceFieldCount(jvmti, jni, cls, &seen);
-        if (base >= 0) {
-          names.resize((size_t)base);
-          // GetSuperclass walks UP, so gather then append in reverse (root first).
-          jclass supers[128];
-          int depth = 0;
-          jclass k = cls;
-          while (k != nullptr &&
-                 depth < (int)(sizeof(supers) / sizeof(supers[0]))) {
-            supers[depth++] = k;
-            k = jni->GetSuperclass(k);
+        jlong base = 0;
+        for (int i = 0; ok && i < depth; i++) {
+          jlong sub = interfaceFieldCount(jvmti, jni, supers[i], &seen);
+          if (sub < 0) {
+            ok = false;
+          } else {
+            base += sub;
           }
-          ok = (k == nullptr); // deeper than 128 classes: fail rather than
-                              // misname
+        }
+        if (ok) {
+          names.resize((size_t)base);
           for (int i = depth - 1; ok && i >= 0; i--) {
             ok = appendClassFieldNames(jvmti, jni, supers[i], &names);
           }
-          for (int i = 0; i < depth; i++) {
-            jni->DeleteLocalRef(supers[i]);
-          }
-          // supers[0] IS cls - the loop above already deleted it. Null it so the shared cleanup
-          // below does not delete the same local ref a second time (checked JNI reports an invalid
-          // local ref and aborts).
-          cls = nullptr;
         }
+        // Unconditional cleanup, regardless of whether base computation or name-appending failed
+        // above - same contract as the interface branch's shared cleanup below, just gathered here
+        // since supers[] is local to this branch.
+        for (int i = 0; i < depth; i++) {
+          jni->DeleteLocalRef(supers[i]);
+        }
+        // supers[0] IS cls - the loop above already deleted it. Null it so the shared cleanup
+        // below does not delete the same local ref a second time (checked JNI reports an invalid
+        // local ref and aborts).
+        cls = nullptr;
       }
     }
     if (cls != nullptr) {

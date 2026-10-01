@@ -164,6 +164,73 @@ TEST_F(ReferenceChainsBfsTest, TruncatedBatchKeepsEntryWhoseChildrenWereCutOff) 
     tracker->stop();
 }
 
+// Leak-tag interception respects the pass budget like any other admission (the leak-tagged object
+// keeps its leak tag and is intercepted on a later pass), and an intercepted object is queued for
+// expansion, so a walk that stops right after it still admits its subtree on the next pass.
+TEST_F(ReferenceChainsBfsTest, LeakTagInterceptionRespectsBudgetAndQueuesExpansion) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::setPassDeadlineNs(0);
+    FrontierTable *frontier = tracker->frontierTable();
+
+    int entry = addNode();
+    int other = addNode();
+    int leak = addNode();
+    int child = addNode();
+    const jlong leak_tag = ReferenceChainsTestAccessor::leakTagBase();
+    node_tags[leak] = leak_tag;
+
+    jlong etag = tracker->tagObject(&mock_jvmti, (jobject)&node_tags[entry]);
+    ASSERT_NE(0, etag);
+    ASSERT_TRUE(frontier->insert(etag, 0, 1, 0, FrontierEntryState::EDGE));
+    ReferenceChainsTestAccessor::pushPendingExpandForTest(etag);
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, entry, other, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, entry, leak, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, leak, child, -1},
+    };
+
+    // Budget 1: `other` takes the only admission; the leak-tagged object must not overshoot it.
+    int edges = 0;
+    bool truncated = false;
+    ReferenceChainsTestAccessor::expandFrontierWithBudgetForTest(
+        &mock_jvmti, &mock_jni, 1, &edges, &truncated);
+    ASSERT_TRUE(truncated);
+    EXPECT_EQ(1, edges);
+    EXPECT_NE(0, tags_ever_assigned[other]);
+    EXPECT_EQ(leak_tag, node_tags[leak])
+        << "leak-tagged object was intercepted past the exhausted budget";
+
+    // Next pass, budget 1 again: the leak-tagged object takes the only admission and the walk
+    // stops before its child. It must stay queued for expansion.
+    edges = 0;
+    ReferenceChainsTestAccessor::expandFrontierWithBudgetForTest(
+        &mock_jvmti, &mock_jni, 1, &edges, &truncated);
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(1, edges);
+    jlong leak_ftag = node_tags[leak];
+    ASSERT_NE(leak_tag, leak_ftag) << "leak-tagged object was never intercepted";
+    EXPECT_EQ(leak_tag, ReferenceChainsTestAccessor::frontierLeakTag(leak_ftag));
+    std::vector<jlong> pending = ReferenceChainsTestAccessor::pendingExpandContents();
+    EXPECT_NE(std::find(pending.begin(), pending.end(), leak_ftag), pending.end())
+        << "intercepted leak-tagged object was not queued for expansion";
+    EXPECT_EQ(0, tags_ever_assigned[child]);
+
+    // The pass after that expands it and admits the child under it.
+    edges = 0;
+    ReferenceChainsTestAccessor::expandFrontierWithBudgetForTest(
+        &mock_jvmti, &mock_jni, 1000, &edges, &truncated);
+    jlong child_ftag = tags_ever_assigned[child];
+    ASSERT_NE(0, child_ftag) << "leak-tagged object's subtree was never expanded";
+    FrontierEntry child_entry{};
+    ASSERT_TRUE(frontier->lookup(child_ftag, &child_entry));
+    EXPECT_EQ(leak_ftag, child_entry.parent_tag);
+
+    tracker->stop();
+}
+
 // Verify the AIMD adaptive batch_size: with the per-call EMA over the CPU budget, expandFrontier
 // should multiplicatively decrease the batch; under the budget it should additively increase toward
 // the cap.
@@ -663,6 +730,144 @@ TEST_F(ReferenceChainsBfsTest, ThreadRefUnregisterDefersGlobalRefDeletion) {
     EXPECT_EQ(1, global_refs_deleted_);
     tracker->releaseEndedThreadRefs(&mock_jni);
     EXPECT_EQ(1, global_refs_deleted_);
+
+    tracker->stop();
+}
+
+// No pass runs while the tracker is idle, so threadLoop()'s per-iteration tail must drain the refs
+// of threads that ended in the meantime - otherwise thread churn keeps queueing refs that are never
+// deleted.
+TEST_F(ReferenceChainsBfsTest, LoopIterationDrainsEndedThreadRefsWithoutPass) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int threadNode1 = addNode();
+    int threadNode2 = addNode();
+    tracker->registerThreadObject(
+            &mock_jni, 556, reinterpret_cast<jthread>(&node_tags[threadNode1]));
+    tracker->registerThreadObject(
+            &mock_jni, 557, reinterpret_cast<jthread>(&node_tags[threadNode2]));
+    tracker->unregisterThreadObject(&mock_jni, 556);
+    tracker->unregisterThreadObject(&mock_jni, 557);
+    ASSERT_EQ(2u, ReferenceChainsTestAccessor::pendingThreadRefDeletesForTest());
+
+    tracker->finishLoopIterationSerialized(&mock_jvmti, &mock_jni);
+    EXPECT_EQ(2, global_refs_deleted_);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingThreadRefDeletesForTest());
+
+    tracker->stop();
+}
+
+// An onThreadStart() that read Profiler::_reference_chains_active before Profiler::stop() cleared it
+// can call registerThreadObject() after releaseAllThreadObjects(); the registry is closed by then,
+// so the new global ref is deleted instead of surviving into a later recording.
+TEST_F(ReferenceChainsBfsTest, ThreadRefRegistrationAfterReleaseAllIsDropped) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    tracker->releaseAllThreadObjects(&mock_jni);
+
+    int threadNode = addNode();
+    int deleted_before = global_refs_deleted_;
+    tracker->registerThreadObject(
+            &mock_jni, 556, reinterpret_cast<jthread>(&node_tags[threadNode]));
+    EXPECT_EQ(nullptr, ReferenceChainsTestAccessor::threadObjectForTest(556))
+        << "registerThreadObject() registered into a released registry";
+    EXPECT_EQ(deleted_before + 1, global_refs_deleted_)
+        << "the rejected registration's global ref was not deleted";
+
+    // The next recording's start() reopens the registry.
+    ASSERT_FALSE(tracker->start(args));
+    tracker->registerThreadObject(
+            &mock_jni, 556, reinterpret_cast<jthread>(&node_tags[threadNode]));
+    EXPECT_NE(nullptr, ReferenceChainsTestAccessor::threadObjectForTest(556));
+
+    tracker->releaseAllThreadObjects(&mock_jni);
+    tracker->stop();
+}
+
+// ProfilerTestAccessor - friend of Profiler (profiler.h), defined per translation unit like the
+// identically-named classes in faultInjection_ut.cpp and referenceChainJfrRoundtrip_ut.cpp. Drives
+// the private JVMTI thread-lifecycle handlers with no-op engines (both engines are NULL until
+// Profiler::start(), which needs a live JVM).
+class ProfilerTestAccessor {
+public:
+    static void setCpuEngine(Profiler *p, Engine *e) { p->_cpu_engine = e; }
+    static void setWallEngine(Profiler *p, Engine *e) { p->_wall_engine = e; }
+    static void setReferenceChainsActive(Profiler *p, bool v) { p->_reference_chains_active = v; }
+    static void onThreadStart(Profiler *p, jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
+        p->onThreadStart(jvmti, jni, thread);
+    }
+    static void onThreadEnd(Profiler *p, jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
+        p->onThreadEnd(jvmti, jni, thread);
+    }
+};
+
+// updateThreadName(self=true) in onThreadStart() queries GetThreadInfo(); failing it skips the
+// name bookkeeping, which this test does not exercise.
+static jvmtiError JNICALL mock_GetThreadInfoUnavailable(jvmtiEnv *, jthread, jvmtiThreadInfo *) {
+    return JVMTI_ERROR_THREAD_NOT_ALIVE;
+}
+
+// A thread started after recording start must reach the tid -> Thread registry through
+// Profiler::onThreadStart() (registerExistingThreads() only snapshots threads alive at start),
+// otherwise walkCandidateThreadLocals() never walks its thread-locals; onThreadEnd() must hand the
+// ref to deferred deletion so a dead thread is not pinned or anchored under a reused tid.
+TEST_F(ReferenceChainsBfsTest, ProfilerThreadLifecycleRegistersLateThreadObject) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    // Earlier tests leave thread refs registered (the tracker singleton outlives them); start from
+    // an empty registry so the counts below are exact. start() reopens it.
+    tracker->releaseAllThreadObjects(&mock_jni);
+    ASSERT_FALSE(tracker->start(args));
+    jvmti_tbl.GetThreadInfo = &mock_GetThreadInfoUnavailable;
+
+    Profiler *profiler = Profiler::instance();
+    Engine noop_engine;
+    Engine *orig_cpu_engine = profiler->cpuEngine();
+    Engine *orig_wall_engine = profiler->wallEngine();
+    ProfilerTestAccessor::setCpuEngine(profiler, &noop_engine);
+    ProfilerTestAccessor::setWallEngine(profiler, &noop_engine);
+    ProfilerTestAccessor::setReferenceChainsActive(profiler, true);
+
+    int threadNode = addNode();
+    jthread thread_obj = reinterpret_cast<jthread>(&node_tags[threadNode]);
+    int tid = -1;
+    jobject registered = nullptr;
+    jobject after_end = nullptr;
+    size_t pending_after_end = 0;
+    // A fresh native thread: onThreadEnd() releases the calling thread's ProfiledThread.
+    std::thread late([&]() {
+        ProfilerTestAccessor::onThreadStart(profiler, &mock_jvmti, &mock_jni, thread_obj);
+        tid = ProfiledThread::currentTid();
+        registered = ReferenceChainsTestAccessor::threadObjectForTest(tid);
+        ProfilerTestAccessor::onThreadEnd(profiler, &mock_jvmti, &mock_jni, thread_obj);
+        after_end = ReferenceChainsTestAccessor::threadObjectForTest(tid);
+        pending_after_end = ReferenceChainsTestAccessor::pendingThreadRefDeletesForTest();
+    });
+    late.join();
+
+    ProfilerTestAccessor::setReferenceChainsActive(profiler, false);
+    ProfilerTestAccessor::setCpuEngine(profiler, orig_cpu_engine);
+    ProfilerTestAccessor::setWallEngine(profiler, orig_wall_engine);
+
+    ASSERT_GE(tid, 0);
+    EXPECT_EQ(reinterpret_cast<jobject>(thread_obj), registered)
+        << "onThreadStart() did not register the late thread's Thread object";
+    EXPECT_EQ(nullptr, after_end)
+        << "onThreadEnd() left the dead thread's Thread object registered";
+    EXPECT_EQ(1u, pending_after_end)
+        << "onThreadEnd() must queue exactly one ref for deferred deletion";
+
+    // releaseAllThreadObjects() (Profiler::stop()'s teardown) deletes every queued ref.
+    int deleted_before = global_refs_deleted_;
+    tracker->releaseAllThreadObjects(&mock_jni);
+    EXPECT_EQ(deleted_before + 1, global_refs_deleted_);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingThreadRefDeletesForTest());
 
     tracker->stop();
 }

@@ -46,6 +46,7 @@ void ReferenceChainTracker::resolveLoadedClasses(jvmtiEnv *jvmti,
     // count - -1 can never equal `class_count` (always >= 0), unlike 0 which is a legitimate "no
     // classes loaded yet" starting value.
     _last_resolved_class_count = -1;
+    _class_tags_at_capacity.clear();
     _last_class_map_generation = current_generation;
   }
 
@@ -56,22 +57,35 @@ void ReferenceChainTracker::resolveLoadedClasses(jvmtiEnv *jvmti,
     return;
   }
 
-  // Skip the per-class GetTag()/GetClassSignature() scan entirely once the loaded-class count has
-  // not CHANGED since the last time this ran it: every already-tagged class stays tagged forever
-  // (tags are never cleared once assigned - see _class_tags' own comment), so a resumed pass with
-  // no newly-loaded classes has nothing left to resolve.
-  if (class_count != _last_resolved_class_count) {
+  // Always run the per-class GetTag() scan (below) rather than skipping it whenever the
+  // loaded-class count matches the last scan: a pure count comparison misses both net-zero churn
+  // (one class unloads while another loads between passes, or a lookupClass() failure that never
+  // gets retried) and a class LivenessTracker::mintStableClassTagIfNeeded() tags directly (via
+  // SetTag, bypassing _class_tags) in the gap between two resolveLoadedClasses() calls - GetTag()
+  // is cheap, and the expensive GetClassSignature()/lookupClass() work below still only runs for a
+  // class that is actually unresolved (see the per-class condition immediately below).
+  {
+    // Entries not re-stamped with this scan's epoch belong to unloaded classes and are erased below.
+    const u32 scan_epoch = ++_class_scan_epoch;
     for (jint i = 0; i < class_count; i++) {
       jclass klass = classes[i];
       jlong tag = 0;
-      // Resolve if not yet tagged (ordinary case: a newly-loaded class), or unconditionally on a
+      // Resolve if not yet tagged (ordinary case: a newly-loaded class), unconditionally on a
       // class-map reset (class_map_reset above) - a class already tagged from a prior generation
       // still carries that same JVMTI tag (untouched by clearAll()), but the dictionary id it used
-      // to map to is gone, so its name must be re-resolved into the new generation too.
-      // A positive tag is never a class tag (see ClassTagAllocator::getOrMint()), so it is not
-      // re-resolved on a class-map reset either.
-      if (jvmti->GetTag(klass, &tag) == JVMTI_ERROR_NONE &&
-          (tag == 0 || (class_map_reset && tag < 0))) {
+      // to map to is gone, so its name must be re-resolved into the new generation too - or when
+      // this class already carries a tag but that tag has no entry in _class_tags yet (minted by
+      // LivenessTracker, or a previous resolve attempt that failed lookupClass()).
+      // A positive tag is never a class tag (see ClassTagAllocator::getOrMint()), so it is never
+      // re-resolved. A tag in _class_tags_at_capacity is not retried (see its comment).
+      bool tagged = jvmti->GetTag(klass, &tag) == JVMTI_ERROR_NONE;
+      auto at_capacity = tagged && tag < 0 ? _class_tags_at_capacity.find(tag)
+                                           : _class_tags_at_capacity.end();
+      if (at_capacity != _class_tags_at_capacity.end()) {
+        at_capacity->second = scan_epoch;
+      } else if (tagged &&
+                 (tag == 0 ||
+                  (tag < 0 && (class_map_reset || _class_tags.resolve(tag) == 0)))) {
         // Resolve its name now, via the same GetClassSignature + normalizeClassSignature +
         // Profiler::lookupClass sequence ObjectSampler::recordAllocation() already uses
         // (objectSampler.cpp:76-90), reused rather than re-derived.
@@ -96,6 +110,13 @@ void ReferenceChainTracker::resolveLoadedClasses(jvmtiEnv *jvmti,
               if (class_tag != 0) {
                 _class_tags.insert(class_tag, (u32)id);
               }
+            } else if (Profiler::instance()->classMap()->activeSize() >=
+                       Profiler::maxClassMapSize()) {
+              // Mint a tag for a not-yet-tagged class so it can be remembered as unresolvable.
+              jlong class_tag = tag != 0 ? tag : ClassTagAllocator::getOrMint(jvmti, klass);
+              if (class_tag != 0) {
+                _class_tags_at_capacity[class_tag] = scan_epoch;
+              }
             }
           }
           jvmti->Deallocate((unsigned char *)class_name);
@@ -108,13 +129,14 @@ void ReferenceChainTracker::resolveLoadedClasses(jvmtiEnv *jvmti,
         jni->DeleteLocalRef(klass);
       }
     }
-    _last_resolved_class_count = class_count;
-  } else if (jni != nullptr) {
-    // Still owe DeleteLocalRef for every fresh local ref GetLoadedClasses() just handed back, even
-    // though the scan above was skipped.
-    for (jint i = 0; i < class_count; i++) {
-      jni->DeleteLocalRef(classes[i]);
+    for (auto it = _class_tags_at_capacity.begin(); it != _class_tags_at_capacity.end();) {
+      if (it->second != scan_epoch) {
+        it = _class_tags_at_capacity.erase(it);
+      } else {
+        ++it;
+      }
     }
+    _last_resolved_class_count = class_count;
   }
   jvmti->Deallocate((unsigned char *)classes);
 }
@@ -257,6 +279,12 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
   // Leak tag: this object was directly tagged by LivenessTracker's tagLeakInstances() because it's
   // a tracked leaking object.
   if (isLeakTag(*tag_ptr)) {
+    // Same budget gate as admitObject(): an object skipped here keeps its leak tag, so a later pass
+    // that reaches it again still intercepts it.
+    if (ctx->edges_admitted >= ctx->budget) {
+      ctx->truncated = true;
+      return JVMTI_VISIT_ABORT;
+    }
     jlong leak_tag = *tag_ptr;
     // Allocate a frontier tag for this object
     jlong frontier_tag = ctx->tracker->nextTag();
@@ -271,6 +299,12 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       ctx->frontier->setLeakTag(frontier_tag, leak_tag);
       *tag_ptr = frontier_tag;
       ctx->edges_admitted++;
+      // Queue for expandFrontier() like admitObject() does: FollowReferences usually descends into
+      // this object inline (same callback), but if the walk aborts (budget/frontier-cap/deadline)
+      // after this leak object is reported and before its children are, nothing else would ever
+      // expand it - it already carries a positive tag so it is never re-admitted, and it is not a
+      // batch entry so the rolling batch resume does not re-queue it either.
+      ctx->tracker->_pending_expand.push_back(frontier_tag);
       TEST_LOG("ReferenceChainTracker::heapReferenceCallback leak-tag "
                "intercepted: leak_tag=%lld -> frontier_tag=%lld depth=%u "
                "parent_tag=%lld",
@@ -292,6 +326,12 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       if (ctx->tracker->_candidate_count > 0) {
         u32 klass_id = ctx->tracker->classTags()->resolve(class_tag);
         ctx->tracker->recordDiscoveredInstance(klass_id, frontier_tag, true);
+      }
+      if (ctx->batch_tags != nullptr) {
+        // Same batching gate as the ordinary admission path below: under array-holder batching,
+        // descent stays gated on _pending_expand's own re-walk of this entry, not on inline
+        // descent from this callback.
+        return 0;
       }
     } else {
       // Frontier cap hit

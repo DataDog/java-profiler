@@ -65,12 +65,22 @@ private:
   // Profiler::classMap()'s generation as of the last resolveLoadedClasses() call.
   u64 _last_class_map_generation;
 
-  // GetLoadedClasses() count as of the last resolveLoadedClasses() call that actually ran its
-  // per-class GetTag()/GetClassSignature() scan - lets that method skip the scan entirely on a
-  // resumed pass where the loaded-class count has not CHANGED (see resolveLoadedClasses()'s own
-  // comment for why this must be an equality check, not just a "grew" check: the count is not
-  // monotonic once class unloading is in play).
+  // GetLoadedClasses() count as of the last resolveLoadedClasses() call - compared against
+  // _last_static_field_class_count by runPassManualWalk() to decide whether admitStaticFieldRoots()
+  // has new classes to enumerate.
   int _last_resolved_class_count;
+
+  // Tags of loaded classes whose Profiler::lookupClass() failed with the class map at
+  // MAX_CLASS_MAP_SIZE, each mapped to the last resolveLoadedClasses() scan (_class_scan_epoch)
+  // that saw it loaded; entries of unloaded classes are erased after each scan, and all of them on
+  // a class-map generation change. resolveLoadedClasses() does not retry these: the
+  // class map only shrinks via clearAll(), which bumps the generation, so every retry before that
+  // would fail again (and bump CLASS_MAP_AT_CAPACITY) on every pass. Per class, not one flag: a
+  // name already in the class map still resolves at capacity (bounded_lookup() finds it before
+  // the size check). A failure below capacity (RefCountGuard slot or insert allocation failure)
+  // is not recorded, so that class is retried on the next pass.
+  std::unordered_map<jlong, u32> _class_tags_at_capacity;
+  u32 _class_scan_epoch = 0;
 
   // GetLoadedClasses() count as of the last runPassManualWalk() call whose admitStaticFieldRoots()
   // sweep actually ran (i.e. was not skipped by the guard below) AND completed without being
@@ -167,11 +177,6 @@ private:
   // re-tagged/re-admitted) or is new (and should be admitted into the next free slot).
   u32 _candidate_klass_ids[MAX_LEAK_CANDIDATES_FROM_LT];
   jlong _candidate_frontier_tags[MAX_LEAK_CANDIDATES_FROM_LT];
-  // Per-candidate chain link recorded at pruning time: parent_tag (referrer's frontier tag,
-  // positive) and referrer_klass.
-  jlong _candidate_parent_tags[MAX_LEAK_CANDIDATES_FROM_LT];
-  u32 _candidate_referrer_klasses[MAX_LEAK_CANDIDATES_FROM_LT];
-  u32 _candidate_depths[MAX_LEAK_CANDIDATES_FROM_LT];
 
   // Per-SLOT snapshot of the qualifying allocating-thread tids
   // LivenessTracker::selectLeakCandidates() reported for that slot's klass this poll, refreshed by
@@ -190,8 +195,14 @@ private:
   // DeleteGlobalRef() directly: walkCandidateThreadLocals() copies the jobject out of
   // _thread_objects under _thread_objects_lock, releases the lock, and can still be using it as a
   // FollowReferences anchor when a concurrent ThreadEnd erases the entry - deleting there would be
-  // JNI use-after-free (once deleted, a global ref is invalid for every other JNI call).
+  // JNI use-after-free (once deleted, a global ref is invalid for every other JNI call). Drained by
+  // releaseEndedThreadRefs() at the start of every pass and by finishLoopIterationSerialized().
   std::vector<jobject> _thread_refs_pending_delete;
+  // Guarded by _thread_objects_lock. Opened by start(), closed by releaseAllThreadObjects(): an
+  // onThreadStart() that read Profiler::_reference_chains_active before Profiler::stop() cleared it
+  // can reach registerThreadObject() after releaseAllThreadObjects() emptied the registry, and must
+  // not leave a global ref behind for a later recording.
+  bool _thread_objects_open = false;
 
   // Auto-marked instances: when the BFS walk discovers ANY object whose class matches a watched
   // leak class (not just the pre-tagged representative), its frontier tag is recorded here so
@@ -999,8 +1010,8 @@ public:
   // member's comment for why the deletion is deferred).
   void releaseEndedThreadRefs(JNIEnv *jni);
 
-  // Recording-stop cleanup: delete EVERY remaining registered Thread global ref (dead threads'
-  // queued refs first, then the live registry) and empty the registry.
+  // Recording-stop cleanup: delete EVERY remaining Thread global ref (the live registry and the
+  // queued refs of ended threads), empty the registry and close it until the next start().
   void releaseAllThreadObjects(JNIEnv *jni);
 
   // One-time sweep over the JVM's CURRENTLY LIVE threads at recording start, registering each into
@@ -1087,11 +1098,6 @@ public:
   }
   u64 candidateFoundBitsForTest() const { return _candidate_found_bits; }
   void setCandidateFrontierTagForTest(int idx, jlong tag) { _candidate_frontier_tags[idx] = tag; }
-  void setCandidateParentTagForTest(int idx, jlong tag) { _candidate_parent_tags[idx] = tag; }
-  void setCandidateReferrerKlassForTest(int idx, u32 klass_id) {
-    _candidate_referrer_klasses[idx] = klass_id;
-  }
-  void setCandidateDepthForTest(int idx, u32 depth) { _candidate_depths[idx] = depth; }
   int passesSinceLastCandidateProgressForTest() const { return _passes_since_last_candidate_progress; }
   int canaryStuckRestartCountForTest() const { return _canary_stuck_restart_count; }
   void setCandidateFoundBitsForTest(u64 bits) { _candidate_found_bits = bits; }
@@ -1148,8 +1154,7 @@ public:
   // JVMTI tag helpers used by the heap-walk callbacks.
   jlong nextTag() { return atomicIncRelaxed(_next_tag, (jlong)1); }
 
-  // Serializes runPass()+pollWatchedTargets() between threadLoop() and the test seams - see
-  // runPassForTest()'s comment.
+  // Held by runPassSerialized() and finishLoopIterationSerialized() around the engine work.
   Mutex _engine_lock;
   jlong tagObject(jvmtiEnv *jvmti, jobject obj);
   jlong getTag(jvmtiEnv *jvmti, jobject obj);
@@ -1172,16 +1177,21 @@ public:
   // defeating the point of a per-pass budget).
   bool runPass(jvmtiEnv *jvmti, JNIEnv *jni, bool *out_truncated = nullptr);
 
-  // Serialized entry points for the two engine drivers: the real BFS thread (threadLoop(), below)
-  // and the debug seams (javaApi.cpp's runReferenceChainPass0()/pollReferenceChainTargets0()).
+  // Serialized entry points used by threadLoop(), the BFS thread.
   bool runPassSerialized(jvmtiEnv *jvmti, JNIEnv *jni) {
     MutexLocker engine_guard(_engine_lock);
     return runPass(jvmti, jni);
   }
 
-  void pollWatchedTargetsSerialized(jvmtiEnv *jvmti, JNIEnv *jni) {
+  // threadLoop()'s per-iteration tail, run whether or not a pass ran this iteration.
+  void finishLoopIterationSerialized(jvmtiEnv *jvmti, JNIEnv *jni) {
     MutexLocker engine_guard(_engine_lock);
+    // Target-selection bridging step: poll once per scheduling cycle, after runPass() - so this
+    // poll always sees the most recent pass's tagging (see pollWatchedTargets()'s own comment).
     pollWatchedTargets(jvmti, jni);
+    // Also drained at the start of every pass, but no pass runs while the tracker is idle - without
+    // this, thread churn during an idle stretch would keep queueing refs that are never deleted.
+    releaseEndedThreadRefs(jni);
   }
 
   // Search-level outcome (SearchState's constants) - see runPass()'s comment for exactly when this
@@ -1237,11 +1247,6 @@ public:
   void appendStaticFieldRootType(const FrontierEntry &terminal,
                                  std::vector<u32> *chain,
                                  std::vector<ChainHopEdge> *edges);
-
-  // Canary-search chain reconstruction: builds the chain for a canary candidate from the
-  // per-candidate chain link recorded at pruning time (_candidate_parent_tags[] etc.), walking
-  // parent_tag through the frontier table (positive tags, so lookup() works).
-  bool buildCanaryChainEvent(int candidate_idx, ReferenceChainEvent *out);
 
   // Reports a search's termination state without needing a target tag.
   bool buildAbandonedEvent(ReferenceChainAbandonedEvent *out) {

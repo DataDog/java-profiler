@@ -21,6 +21,9 @@ protected:
         ReferenceChainsTestAccessor::reset();
         LivenessTracker::instance()->klassPopulationResetForTest();
         LivenessTracker::instance()->setGcGenerationsForTest(true);
+        // The seeded population belongs to the current class map.
+        LivenessTracker::instance()->classMapGenerationSetForTest(
+            Profiler::instance()->classMap()->generation());
 
         jvmti_tbl = jvmtiInterface_1_{};
         jvmti_tbl.SetEventNotificationMode = &mock_SetEventNotificationMode;
@@ -129,8 +132,6 @@ TEST_F(PollWatchedTargetsTest, EmitsEventForAlreadyDiscoveredCandidate) {
         /*tag=*/7, /*parent_tag=*/0, /*referrer_klass=*/1, /*depth=*/0,
         FrontierEntryState::EDGE));
     tags[obj] = 7;
-    // With class-tag matching, _candidate_frontier_tags must be set so buildCanaryChainEvent() can
-    // reconstruct the chain.
     ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 7);
 
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
@@ -301,89 +302,141 @@ TEST_F(PollWatchedTargetsTest, RestartDropsPriorRecordingsChainsAndAbandonedEven
     tracker->stop();
 }
 
-// Bounded canary parent-chain walk: a cyclic/corrupt parent chain must fail
-// safe instead of spinning the poll thread (the bound mirrors
-// FrontierTable::reconstructChain()'s maxCapacity() bound), and legitimate
-// deep chains must still reconstruct fully - the bound must not cost
-// convergence.
-TEST_F(PollWatchedTargetsTest, CanaryChainWalkFailsSafeOnCyclicParentChain) {
+// stop() itself must drop the cached chains and queued abandoned events: dump() drains them after
+// a recording ends, and a following recording that never calls start() (reference chains or
+// allocation sampling off) would otherwise re-emit them against a reset class map.
+TEST_F(PollWatchedTargetsTest, StopDropsCachedChainsAndAbandonedEvents) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    FrontierTable *frontier = tracker->frontierTable();
-    // Corrupt chain: 1 -> 2 -> 1 (a cycle no legitimate BFS admission could
-    // produce, but insert() does not validate parent chains - exactly the
-    // failure mode reconstructChain()'s own bound guards against).
-    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
-        frontier, 1, 2, 2, FrontierEntryState::EDGE, /*root_kind=*/0,
-        /*referrer_klass=*/11));
-    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
-        frontier, 2, 1, 3, FrontierEntryState::EDGE, /*root_kind=*/0,
-        /*referrer_klass=*/22));
+    ReferenceChainEvent cached;
+    cached._target_tag = 7;
+    ReferenceChainsTestAccessor::cacheChain(7, std::move(cached), 7, 0);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
 
-    ReferenceChainsTestAccessor::setCandidateCountForTest(1);
-    ReferenceChainsTestAccessor::setCandidateKlassIdForTest(0, 99);
-    ReferenceChainsTestAccessor::setCandidateParentTagForTest(0, 1);
-    ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 2);
-    ReferenceChainsTestAccessor::setCandidateReferrerKlassForTest(0, 99);
-    ReferenceChainsTestAccessor::setCandidateDepthForTest(0, 4);
+    ReferenceChainsTestAccessor::markSearchAbandonedForTest(SearchAbandonReason::TTL);
+    ReferenceChainsTestAccessor::enqueueAbandonedEventForTest();
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingAbandonedEventCountForTest());
 
-    ReferenceChainEvent event;
-    // The unbounded predecessor of this walk spun forever here; the bound
-    // must make it return promptly (the test itself is the termination
-    // proof - a regression to an unbounded walk hangs this test).
-    EXPECT_FALSE(ReferenceChainsTestAccessor::buildCanaryChainEventForTest(
-        0, &event));
+    tracker->stop();
+
+    std::vector<ReferenceChainEvent> chain_events;
+    tracker->drainPendingChainEvents(&chain_events);
+    std::vector<ReferenceChainAbandonedEvent> abandoned_events;
+    tracker->drainPendingAbandonedEvents(&abandoned_events);
+    EXPECT_EQ(0u, chain_events.size())
+        << "a stopped tracker must not re-emit its resolved chains";
+    EXPECT_EQ(0u, abandoned_events.size())
+        << "a stopped tracker must not emit queued abandoned-search events";
+}
+
+// The representative's chain is cached under the representative's own frontier tag, so its
+// freshness must be judged on that entry. With no discovered instance recorded for the slot, the
+// first poll that sees the representative tagged must build and cache its chain.
+TEST_F(PollWatchedTargetsTest, RepresentativeChainBuiltWithoutDiscoveredInstances) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int fake_object_storage = 0;
+    jobject obj = reinterpret_cast<jobject>(&fake_object_storage);
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)obj);
+    ASSERT_TRUE(tracker->frontierTable()->insert(
+        7, 0, 1, 0, FrontierEntryState::EDGE));
+    tags[obj] = 7;
+
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+
+    EXPECT_EQ(0, ReferenceChainsTestAccessor::candidateDiscoveredCountForTest(0));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(7))
+        << "the representative's chain must be built even before any "
+           "discovered-instance chain exists for its slot";
 
     tracker->stop();
 }
 
-TEST_F(PollWatchedTargetsTest, CanaryChainWalkStillReconstructsDeepChains) {
+// A current-generation chain cached for some other tag of the slot (a discovered instance) says
+// nothing about the representative's own entry: if that entry is missing (never built, or
+// invalidated by improveChain()/reparentToDurableRoot()), the poll must rebuild it.
+TEST_F(PollWatchedTargetsTest, RepresentativeChainRebuiltWhenOnlyDiscoveredChainIsFresh) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
+    int fake_object_storage = 0;
+    jobject obj = reinterpret_cast<jobject>(&fake_object_storage);
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)obj);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::candidateKlassIdForTest(0));
+
+    const u64 kSearchNs = 12345;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    ReferenceChainEvent discovered;
+    discovered._target_tag = 9;
+    ReferenceChainsTestAccessor::cacheChain(9, std::move(discovered), 9, kSearchNs);
+    ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 9);
+
+    ASSERT_TRUE(tracker->frontierTable()->insert(
+        7, 0, 1, 0, FrontierEntryState::EDGE));
+    tags[obj] = 7;
+
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(7))
+        << "a fresh discovered-instance chain must not mask the "
+           "representative's own missing chain";
+
+    tracker->stop();
+}
+
+// Dead representative, candidate already found at frontier tag L: the chain is rebuilt from L's
+// frontier entry, so it carries every hop up to the root and the root's kind - not just the
+// candidate's own class.
+TEST_F(PollWatchedTargetsTest, DeadRepresentativeRebuildsFullChainFromFoundTag) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int fake_object_storage = 0;
+    jobject obj = reinterpret_cast<jobject>(&fake_object_storage);
+    seedGrowingCandidate(/*klass_id=*/3, /*rep=*/(jweak)obj);
+    dead_refs.insert(obj);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    ASSERT_EQ(3u, ReferenceChainsTestAccessor::candidateKlassIdForTest(0));
+    ASSERT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount());
+
+    // root(STATIC, tag 1) -> A (tag 2) -> B (tag 3) -> L (tag 4).
     FrontierTable *frontier = tracker->frontierTable();
-    // A 200-hop linear chain, root-attached at tag 1 (parent_tag == 0): far
-    // past the 64-hop default _hop_cap, but the walk bounds at the FRONTIER's
-    // maxCapacity() (65536 by default), not the BFS hop cap - legitimate deep
-    // chains reconstruct exactly as before the bound.
-    const int kDepth = 200;
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
-        frontier, 1, 0, 0, FrontierEntryState::EDGE,
-        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/1));
-    for (int i = 2; i <= kDepth; i++) {
-        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
-            frontier, i, i - 1, i - 1, FrontierEntryState::EDGE, /*root_kind=*/0,
-            /*referrer_klass=*/(u32)i));
-    }
+        frontier, 1, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/11));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 2, 1, 1, FrontierEntryState::EXPANDED, 0, /*referrer_klass=*/22));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 3, 2, 2, FrontierEntryState::EXPANDED, 0, /*referrer_klass=*/33));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 4, 3, 3, FrontierEntryState::EXPANDED, 0, /*referrer_klass=*/3));
+    ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(1ULL << 0);
+    ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 4);
 
-    ReferenceChainsTestAccessor::setCandidateCountForTest(1);
-    ReferenceChainsTestAccessor::setCandidateKlassIdForTest(0, 999);
-    ReferenceChainsTestAccessor::setCandidateParentTagForTest(0, kDepth);
-    ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 1);
-    ReferenceChainsTestAccessor::setCandidateReferrerKlassForTest(0, 999);
-    ReferenceChainsTestAccessor::setCandidateDepthForTest(0, kDepth);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
 
-    ReferenceChainEvent event;
-    ASSERT_TRUE(ReferenceChainsTestAccessor::buildCanaryChainEventForTest(
-        0, &event));
-    // Candidate's own klass first, then the reversed walk: root-side hop
-    // (tag 1, klass 1) first, parent-side hop (tag 200, klass 200) last.
-    ASSERT_EQ((size_t)(kDepth + 1), event._hops.size());
-    EXPECT_EQ(999u, event._hops[0].klass_id);
-    for (int i = 1; i <= kDepth; i++) {
-        EXPECT_EQ((u32)i, event._hops[i].klass_id)
-            << "hop " << i;
-    }
-    EXPECT_EQ(1u, event._target_tag); // the candidate's frontier tag
-    EXPECT_EQ((u32)kDepth, event._depth);
-    // The root kind describes the chain's ROOT (the root-attached tag-1 entry
-    // this walk terminates at), not the candidate-side parent entry - same
-    // terminal-root semantics reconstructChain() uses.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(4));
+    std::vector<ReferenceChainEvent> events;
+    tracker->drainPendingChainEvents(&events);
+    ASSERT_EQ(1u, events.size());
+    const ReferenceChainEvent &event = events[0];
+    ASSERT_EQ(4u, event._hops.size());
+    EXPECT_EQ(3u, event._hops[0].klass_id);
+    EXPECT_EQ(33u, event._hops[1].klass_id);
+    EXPECT_EQ(22u, event._hops[2].klass_id);
+    EXPECT_EQ(11u, event._hops[3].klass_id);
+    EXPECT_EQ(3u, event._depth);
     EXPECT_EQ((u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD, event._root_kind);
 
     tracker->stop();
@@ -525,6 +578,30 @@ TEST_F(ResolvedChainCacheTest, OverflowDropsNewKlassButAllowsRefresh) {
     EXPECT_EQ(999, ReferenceChainsTestAccessor::resolvedChainSourceTag(0));
     EXPECT_EQ(droppedBefore + 1, Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED))
         << "an in-place refresh must not count as a drop";
+}
+
+// A full cache holding only chains from an earlier search generation must make room for a chain
+// the current generation resolves: the earlier generation's entries are evicted and no longer
+// drained, and the new chain is cached without counting a drop.
+TEST_F(ResolvedChainCacheTest, FullCacheEvictsPreviousGenerationForCurrentChain) {
+    const int cap = ReferenceChainsTestAccessor::maxResolvedChains();
+    const u64 kGenA = 100;
+    const u64 kGenB = 200;
+    for (int i = 0; i < cap; i++) {
+        ReferenceChainsTestAccessor::cacheChain((jlong)i, makeEvent((u64)i), (jlong)i, kGenA);
+    }
+    ASSERT_EQ((size_t)cap, ReferenceChainsTestAccessor::resolvedChainCount());
+    long long droppedBefore = Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED);
+
+    const jlong kNewTag = 10000;
+    ReferenceChainsTestAccessor::cacheChain(kNewTag, makeEvent((u64)kNewTag), kNewTag, kGenB);
+
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(kNewTag));
+    EXPECT_EQ(droppedBefore, Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED));
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(1u, dump.size()) << "earlier-generation chains must no longer be drained";
+    EXPECT_EQ((u64)kNewTag, dump[0]._target_tag);
 }
 
 // Pause-time pacing controller: pause-time-SLO feedback loop
@@ -719,6 +796,9 @@ protected:
         ReferenceChainsTestAccessor::reset();
         LivenessTracker::instance()->klassPopulationResetForTest();
         LivenessTracker::instance()->setGcGenerationsForTest(false);
+        // The seeded population belongs to the current class map.
+        LivenessTracker::instance()->classMapGenerationSetForTest(
+            Profiler::instance()->classMap()->generation());
 
         jvmti_tbl = jvmtiInterface_1_{};
         jvmti_tbl.SetEventNotificationMode = &mock_SetEventNotificationMode;

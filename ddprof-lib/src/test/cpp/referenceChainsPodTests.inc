@@ -40,6 +40,9 @@ protected:
         LivenessTracker::instance()->klassPopulationResetForTest();
         LivenessTracker::instance()->setGcGenerationsForTest(true);
         LivenessTracker::instance()->leakTagPoolResetForTest();
+        // The seeded population belongs to the current class map.
+        LivenessTracker::instance()->classMapGenerationSetForTest(
+            Profiler::instance()->classMap()->generation());
     }
 
     void TearDown() override {
@@ -297,10 +300,22 @@ TEST_F(PodInAJarTest, SystemLivenessLeakChainsBuildAndCanaryResolves) {
     u64 fake_now;
     bringUpPod(topo, leak_klass_id, fake_now);
 
+    // Count only chains targeting the chunk leak tags: the flood and filler nodes share the leak
+    // class ([B), so their auto-marked chains are cached too and would otherwise end the loop
+    // before the leak chunks are reached under the pass budget.
+    auto leakChainTargets = [&]() {
+        auto t = ReferenceChainsTestAccessor::resolvedChainTargetsForTest();
+        int n = 0;
+        for (int i = 0; i < kChunks; i++) {
+            if (std::find(t.begin(), t.end(), (u64)(1073741824LL + 100 + i)) !=
+                t.end()) {
+                n++;
+            }
+        }
+        return n;
+    };
     int cycles_run = 0;
-    while (cycles_run < 120 &&
-           ReferenceChainsTestAccessor::resolvedChainCountForTest() <
-               (size_t)kChunks &&
+    while (cycles_run < 120 && leakChainTargets() < kChunks &&
            ReferenceChainsTestAccessor::searchStateForTest() ==
                SearchState::RUNNING) {
         drivePodCycle(fake_now);

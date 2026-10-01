@@ -117,6 +117,9 @@ public:
     // DeleteGlobalRef call count (see mock_DeleteGlobalRef).
     int global_refs_deleted_ = 0;
 
+    // GetClassSignature call count (see mock_GetClassSignature).
+    int class_signature_calls_ = 0;
+
     jvmtiEnv *orig_jvmti = nullptr;
 
     // One live harness per process (the production callbacks are static members
@@ -261,6 +264,7 @@ public:
     static jvmtiError JNICALL mock_GetClassSignature(jvmtiEnv *, jclass klass,
                                                        char **signature_ptr,
                                                        char **generic_ptr) {
+        active_fixture->class_signature_calls_++;
         for (auto &c : active_fixture->classes) {
             if (c.klass == (void *)klass) {
                 *signature_ptr = strdup(c.signature);

@@ -17,7 +17,6 @@
 #include "rcDebugLevel.h"
 #include "tsc.h"
 #include "vmEntry.h"
-#include <algorithm>
 #include <cassert>
 #include <climits>
 #include <cmath>
@@ -141,113 +140,6 @@ void ReferenceChainTracker::appendStaticFieldRootType(
     root_edge.referrer_class_tag = 0;
     edges->push_back(root_edge);
   }
-}
-
-// Canary chain reconstruction (out of line for the same reason).
-bool ReferenceChainTracker::buildCanaryChainEvent(int candidate_idx,
-                                                  ReferenceChainEvent *out) {
-  if (_frontier == nullptr || out == nullptr || candidate_idx < 0 ||
-      candidate_idx >= _candidate_count) {
-    TEST_LOG_SUMMARY("ReferenceChainTracker::buildCanaryChainEvent false: "
-                     "frontier=%p out=%p idx=%d count=%d",
-                     (void *)_frontier, (void *)out, candidate_idx,
-                     _candidate_count);
-    return false;
-  }
-  jlong parent_tag = _candidate_parent_tags[candidate_idx];
-  u32 candidate_klass = _candidate_referrer_klasses[candidate_idx];
-  jlong frontier_tag = _candidate_frontier_tags[candidate_idx];
-  std::vector<u32> chain;
-  u8 root_kind = 0;
-  // The root-attached entry the walk ends at - both branches below leave `entry` holding it (the
-  // walk's last lookup, or the candidate's own entry for a root-referenced candidate).
-  FrontierEntry terminal{};
-  if (parent_tag > 0) {
-    // Walk parent_tag back to root through the frontier table.
-    FrontierEntry entry{};
-    if (!_frontier->lookup(parent_tag, &entry)) {
-      TEST_LOG_SUMMARY("ReferenceChainTracker::buildCanaryChainEvent false: "
-                       "parent_tag=%lld not in frontier (candidate=%d)",
-                       (long long)parent_tag, candidate_idx);
-      return false;
-    }
-    // Bounded like every sibling walk over this same parent chain:
-    // FrontierTable::reconstructChain() bounds at maxCapacity() hops and
-    // returns false on a "cyclic or corrupt parent chain",
-    // requeueChainRootForRotation() bounds at _hop_cap, and improveChain()'s
-    // cycle guard bounds at 4096. improveChain() structurally prevents cycles
-    // (it refuses a parent whose chain routes through the entry), but the
-    // table's contents are also written by insert() with no such validation,
-    // so a corrupt chain must fail safe instead of spinning this poll-thread
-    // walk forever: every tag maps to a distinct slot (tags are never
-    // reused), so a well-formed chain can visit at most maxCapacity() entries
-    // before reaching parent_tag == 0 or repeating a slot.
-    const int hop_bound = _frontier->maxCapacity();
-    int hops = 0;
-    for (jlong tag = parent_tag; tag > 0; hops++) {
-      if (hops > hop_bound) {
-        TEST_LOG_SUMMARY("ReferenceChainTracker::buildCanaryChainEvent false: "
-                         "chain walk exceeded hop bound (%d) - cyclic or "
-                         "corrupt parent chain (candidate=%d)",
-                         hops, candidate_idx);
-        return false;
-      }
-      if (!_frontier->lookup(tag, &entry)) {
-        TEST_LOG_SUMMARY("ReferenceChainTracker::buildCanaryChainEvent false: "
-                         "chain walk: tag=%lld not in frontier (candidate=%d)",
-                         (long long)tag, candidate_idx);
-        return false;
-      }
-      chain.push_back(entry.referrer_klass);
-      tag = entry.parent_tag;
-    }
-    // The root kind describes the chain's ROOT, not the candidate-side parent:
-    // the walk's last iteration is always the root-attached entry (parent_tag
-    // == 0, root_kind != 0), so `entry` holds it here - same terminal-root
-    // semantics reconstructChain() uses for *out_root_kind. The parent-side
-    // entry read before the loop would almost always yield 0 (interior entries
-    // carry root_kind == 0), misreporting every walk-reconstructed chain and
-    // defeating suppressChainEvent()'s transient-root gate.
-    root_kind = entry.root_kind;
-    terminal = entry;
-  } else if (parent_tag == 0 && frontier_tag > 0) {
-    // Root-referenced candidate: chain is just [candidate_klass].
-    FrontierEntry entry{};
-    if (!_frontier->lookup(frontier_tag, &entry)) {
-      TEST_LOG_SUMMARY("ReferenceChainTracker::buildCanaryChainEvent false: "
-                       "frontier_tag=%lld not in frontier (candidate=%d)",
-                       (long long)frontier_tag, candidate_idx);
-      return false;
-    }
-    root_kind = entry.root_kind;
-    terminal = entry;
-  } else {
-    TEST_LOG_SUMMARY("ReferenceChainTracker::buildCanaryChainEvent false: "
-                     "never pruned (candidate=%d parent_tag=%lld frontier_tag=%lld)",
-                     candidate_idx, (long long)parent_tag,
-                     (long long)frontier_tag);
-    return false; // never pruned (candidate not reached)
-  }
-  // Prepend the candidate's own referrer_klass.
-  chain.push_back(candidate_klass);
-  // The chain was built root-to-parent; reverse to get candidate-to-root.
-  std::reverse(chain.begin(), chain.end());
-  // Same root-type element buildChainEvent() appends: the canary walk's terminal entry is the
-  // root-attached entry, and for a static-field root the declaring class belongs at the chain's
-  // root-side end (after the reverse).
-  appendStaticFieldRootType(terminal, &chain, nullptr);
-  out->_target_tag = (u64)frontier_tag;
-  out->_depth = _candidate_depths[candidate_idx];
-  out->_root_kind = root_kind;
-  const size_t chain_size = chain.size();
-  out->_hops.resize(chain_size);
-  for (size_t i = 0; i < chain.size(); i++) {
-    out->_hops[i].klass_id = chain[i];
-  }
-  TEST_LOG_SUMMARY("ReferenceChainTracker::buildCanaryChainEvent candidate=%d "
-                   "parent_tag=%lld chain_size=%zu",
-                   candidate_idx, (long long)parent_tag, chain_size);
-  return true;
 }
 
 void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
@@ -407,10 +299,12 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
           }
           if (need) {
             ReferenceChainEvent event;
-            built_from_canary = buildCanaryChainEvent(s, &event);
+            // canary_ftag's frontier entry carries the full parent chain, so the
+            // dead representative is not needed to reconstruct it.
+            built_from_canary = buildChainEvent(jvmti, jni, canary_ftag, &event);
             TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                     "buildCanaryChainEvent(dead rep, slot=%d) -> %d",
-                     s, (int)built_from_canary);
+                     "buildChainEvent(dead rep, slot=%d, canary_ftag=%lld) -> %d",
+                     s, (long long)canary_ftag, (int)built_from_canary);
             if (built_from_canary && suppressChainEvent(event)) {
               TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
                        "filtered depth=%u root_kind=%d canary_ftag=%lld "
@@ -480,17 +374,15 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     // Reconstruct only when this klass has no current chain cached: either nothing cached yet, or
     // what is cached was built from a different tag or an earlier search generation (see
     // current_search_ns above).
+    // The representative's chain is cached under its OWN tag (see
+    // cacheResolvedChain(tag, ...) below) - checking freshness under
+    // anything else (e.g. a discovered-instance slot's frontier tag) either
+    // never finds the representative's own entry (leaving it unbuilt) or
+    // tracks the wrong entry's freshness.
     bool need_refresh = false;
-    jlong rep_chain_key = 0;
-    for (int s = 0; s < _candidate_count; s++) {
-      if (_candidate_klass_ids[s] == klass_id) {
-        rep_chain_key = _candidate_frontier_tags[s];
-        break;
-      }
-    }
-    if (rep_chain_key != 0) {
+    if (tag > 0) {
       ExclusiveLockGuard guard(&_resolved_chains_lock);
-      auto it = _resolved_chains.find(rep_chain_key);
+      auto it = _resolved_chains.find(tag);
       need_refresh = (it == _resolved_chains.end() ||
                       it->second.source_search_ns != current_search_ns);
     }
@@ -558,6 +450,24 @@ bool ReferenceChainTracker::cacheResolvedChain(jlong source_tag,
   {
     ExclusiveLockGuard guard(&_resolved_chains_lock);
     auto it = _resolved_chains.find(source_tag);
+    if (it == _resolved_chains.end() &&
+        (int)_resolved_chains.size() >= MAX_RESOLVED_CHAINS) {
+      // The cache is full and this is a chain the CURRENT search resolved -
+      // evict previous-generation entries (source_search_ns from a search that
+      // has since restarted) before giving up on it. Without this, a
+      // persistent leak that keeps triggering restarts fills the cache with
+      // stale, possibly long-dead chains that are never evicted (restartSearch()
+      // deliberately keeps _resolved_chains intact), and every chain the
+      // current search resolves is then dropped for the rest of the search.
+      for (auto cache_it = _resolved_chains.begin();
+           cache_it != _resolved_chains.end();) {
+        if (cache_it->second.source_search_ns != source_search_ns) {
+          cache_it = _resolved_chains.erase(cache_it);
+        } else {
+          ++cache_it;
+        }
+      }
+    }
     if (it != _resolved_chains.end() ||
         (int)_resolved_chains.size() < MAX_RESOLVED_CHAINS) {
       CachedChain &slot = _resolved_chains[source_tag];
@@ -649,22 +559,21 @@ for (int s = 0; s < _candidate_count; s++) {
       // Coverage accounting below must only advance for a chain that was actually stored - a
       // cache-full drop would let the search report the candidate as found without ever emitting
       // its chain.
+      // Read before the move below hands event to the cache.
+      const u64 target_tag = event._target_tag;
       if (cacheResolvedChain(disc_tag, std::move(event), disc_tag,
                              current_search_ns)) {
       // Track coverage for adaptive CPU budget
-      if (event._target_tag >= (u64)LEAK_TAG_BASE) {
+      if (target_tag >= (u64)LEAK_TAG_BASE) {
         _leak_tags_resolved++;
         // A qualifying thread must discover at least one candidate instance.
         if (!(_candidate_found_bits & (1ULL << s))) {
           _candidate_found_bits |= (1ULL << s);
           _candidate_frontier_tags[s] = disc_tag;
-          _candidate_parent_tags[s] = 0;
-          _candidate_depths[s] = event._depth;
-          _candidate_referrer_klasses[s] = klass_id;
           TEST_LOG_SUMMARY("ReferenceChainTracker::pollWatchedTargets canary "
                    "found: klass_id=%u slot=%d leak chain target_tag=%llu "
                    "via disc_tag=%lld (%d/%d candidates found)",
-                   klass_id, s, (unsigned long long)event._target_tag,
+                   klass_id, s, (unsigned long long)target_tag,
                    (long long)disc_tag,
                    __builtin_popcountll(_candidate_found_bits),
                    _candidate_count);
@@ -673,7 +582,7 @@ for (int s = 0; s < _candidate_count; s++) {
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
                "auto-marked chain for klass_id=%u tag=%lld target_tag=%llu",
                klass_id, (long long)disc_tag,
-               (unsigned long long)event._target_tag);
+               (unsigned long long)target_tag);
       }
     } else {
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets "

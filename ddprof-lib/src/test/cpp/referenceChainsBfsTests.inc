@@ -319,6 +319,158 @@ TEST_F(ReferenceChainsBfsTest, ResolveLoadedClassesRescansAfterClassCountShrinks
     tracker->stop();
 }
 
+// A class that already carries a tag minted directly from ClassTagAllocator (as
+// LivenessTracker::mintStableClassTagIfNeeded() does, bypassing _class_tags) must still be resolved
+// by the next resolveLoadedClasses() scan, not skipped as "already tagged".
+TEST_F(ReferenceChainsBfsTest, ResolveLoadedClassesResolvesExternallyTaggedClass) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    void *classA = (void *)0x3101;
+    addClass(classA, "Lcom/rc/regress/MintedA;");
+    jlong minted = ClassTagAllocator::next();
+    tags[classA] = minted;
+    ASSERT_EQ(0, tracker->classTags()->resolve(minted));
+
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+    EXPECT_EQ(minted, tags[classA]); // the minted tag is kept, not replaced
+    int expected = Profiler::instance()->lookupClass(
+        "com/rc/regress/MintedA", strlen("com/rc/regress/MintedA"));
+    ASSERT_NE(-1, expected);
+    EXPECT_EQ((u32)expected, tracker->classTags()->resolve(minted));
+
+    tracker->stop();
+}
+
+// Net-zero class churn between two scans (one class unloads while another loads, so the loaded-class
+// count is unchanged) must still resolve the newly loaded class.
+TEST_F(ReferenceChainsBfsTest, ResolveLoadedClassesResolvesClassAfterNetZeroChurn) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    void *classA = (void *)0x3201, *classB = (void *)0x3202, *classC = (void *)0x3203;
+    addClass(classA, "Lcom/rc/regress/ChurnA;");
+    int idxB = addClass(classB, "Lcom/rc/regress/ChurnB;");
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+    ASSERT_NE(0, tags[classA]);
+    ASSERT_NE(0, tags[classB]);
+
+    // B unloads and C loads before the next scan: still two loaded classes.
+    classes.erase(classes.begin() + idxB);
+    addClass(classC, "Lcom/rc/regress/ChurnC;");
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+    ASSERT_NE(0u, tags.count(classC));
+    jlong tagC = tags[classC];
+    ASSERT_NE(0, tagC);
+    int expected = Profiler::instance()->lookupClass(
+        "com/rc/regress/ChurnC", strlen("com/rc/regress/ChurnC"));
+    ASSERT_NE(-1, expected);
+    EXPECT_EQ((u32)expected, tracker->classTags()->resolve(tagC));
+
+    tracker->stop();
+}
+
+// Fills Profiler::classMap() to MAX_CLASS_MAP_SIZE from empty, so a later lookupClass() of any
+// name not inserted here fails at capacity.
+static void fillClassMapToCapacity() {
+    StringDictionary *class_map = Profiler::instance()->classMap();
+    class_map->clearAll();
+    char name[32];
+    for (int i = 0; i < Profiler::maxClassMapSize(); i++) {
+        int len = snprintf(name, sizeof(name), "rc/fill/C%d", i);
+        ASSERT_NE(-1, Profiler::instance()->lookupClass(name, (size_t)len));
+    }
+    ASSERT_EQ(Profiler::maxClassMapSize(), class_map->activeSize());
+}
+
+// Empties Profiler::classMap() on scope exit - including an early ASSERT return - so a full class
+// map does not leak into later tests, which then fail to resolve their own class names.
+struct ClassMapClearOnExit {
+    ~ClassMapClearOnExit() { Profiler::instance()->classMap()->clearAll(); }
+};
+
+// A class whose lookupClass() failed because the class map is at MAX_CLASS_MAP_SIZE is not retried
+// on every later scan (each retry would only repeat GetClassSignature() and fail again), but is
+// retried once the class map is reset.
+TEST_F(ReferenceChainsBfsTest, ResolveLoadedClassesSkipsRetryWhileClassMapFull) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ClassMapClearOnExit clear_class_map;
+    ASSERT_NO_FATAL_FAILURE(fillClassMapToCapacity());
+
+    void *classA = (void *)0x3301;
+    addClass(classA, "Lcom/rc/regress/FullMapA;");
+    class_signature_calls_ = 0;
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+    EXPECT_EQ(1, class_signature_calls_);
+    ASSERT_LT(tags[classA], 0);
+    EXPECT_EQ(0u, tracker->classTags()->resolve(tags[classA]));
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+    EXPECT_EQ(1, class_signature_calls_);
+    // A skipping scan re-stamps the entry, so it survives that scan's prune.
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+    EXPECT_EQ(1, class_signature_calls_);
+
+    Profiler::instance()->classMap()->clearAll();
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+    EXPECT_EQ(2, class_signature_calls_);
+    EXPECT_NE(0u, tracker->classTags()->resolve(tags[classA]));
+
+    tracker->stop();
+}
+
+// At capacity a name already in the class map still resolves (bounded_lookup() finds it before the
+// size check), so one class failing at capacity must not stop the classes after it from resolving.
+TEST_F(ReferenceChainsBfsTest, ResolveLoadedClassesResolvesKnownNameAfterCapacityFailure) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ClassMapClearOnExit clear_class_map;
+    ASSERT_NO_FATAL_FAILURE(fillClassMapToCapacity());
+
+    void *classMissing = (void *)0x3401, *classKnown = (void *)0x3402;
+    addClass(classMissing, "Lcom/rc/regress/NotInMap;");
+    addClass(classKnown, "Lrc/fill/C7;");
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+    ASSERT_LT(tags[classKnown], 0);
+    int expected = Profiler::instance()->lookupClass("rc/fill/C7", strlen("rc/fill/C7"));
+    ASSERT_NE(-1, expected);
+    EXPECT_EQ((u32)expected, tracker->classTags()->resolve(tags[classKnown]));
+
+    tracker->stop();
+}
+
+// A capacity failure is only remembered while its class stays loaded.
+TEST_F(ReferenceChainsBfsTest, ResolveLoadedClassesForgetsCapacityFailureOfUnloadedClass) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ClassMapClearOnExit clear_class_map;
+    ASSERT_NO_FATAL_FAILURE(fillClassMapToCapacity());
+
+    // A second, still-loaded class: with none left, GetLoadedClasses() returns no array and the
+    // scan returns early.
+    addClass((void *)0x3502, "Lrc/fill/C8;");
+    void *classA = (void *)0x3501;
+    int idxA = addClass(classA, "Lcom/rc/regress/UnloadedA;");
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::classTagsAtCapacityForTest());
+
+    classes.erase(classes.begin() + idxA);
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::classTagsAtCapacityForTest());
+
+    tracker->stop();
+}
+
 // Incremental resumption across passes (ReferenceChainTracker::
 
 TEST_F(ReferenceChainsBfsTest, MultiPassResumptionReconstructsChainAcrossPasses) {

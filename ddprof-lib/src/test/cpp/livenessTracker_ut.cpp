@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -525,6 +526,10 @@ protected:
     void SetUp() override {
         installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
         LivenessTracker::instance()->klassPopulationResetForTest();
+        // The seeded population belongs to the current class map (other tests
+        // in this binary reset it).
+        LivenessTracker::instance()->classMapGenerationSetForTest(
+            Profiler::instance()->classMap()->generation());
     }
 
     void TearDown() override {
@@ -585,6 +590,25 @@ TEST_F(SelectLeakCandidatesTest, GrowingPopulationIsSelected) {
     ASSERT_EQ(count, 1);
     EXPECT_EQ(out[0].klass_id, 1u);
     EXPECT_EQ(out[0].representative, rep);
+}
+
+// After a class-map reset the population's klass ids belong to the previous
+// id namespace and can name a different class now, so nothing is selected
+// until cleanup_table() has dropped them.
+TEST_F(SelectLeakCandidatesTest, NothingSelectedAfterClassMapReset) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    u16 growing[20];
+    for (int i = 0; i < 20; i++) {
+        growing[i] = (u16)(i + 1);
+    }
+    seedSeries(tracker, /*klass_id=*/1, growing, 20, /*start_epoch=*/1);
+    KlassCandidate out[5];
+    ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
+
+    Profiler::instance()->classMap()->clearAll();
+    EXPECT_EQ(0, tracker->selectLeakCandidates(out, 5))
+        << "klass ids from the previous class map were selected";
 }
 
 // A klass with a flat population (zero slope) is not a growth candidate -
@@ -1215,42 +1239,33 @@ TEST_F(LeakTagPoolTest, AcquireReturnsTagsInLeakRange) {
     LivenessTracker *tracker = LivenessTracker::instance();
     jlong base = tracker->leakTagBaseForTest();
     for (int i = 0; i < tracker->leakTagPoolSizeForTest(); i++) {
-        jlong tag = tracker->acquireLeakTagForTest(/*call_trace_id=*/100 + i,
-                                                  /*tid=*/7 + i);
+        jlong tag = tracker->acquireLeakTagForTest();
         EXPECT_GE(tag, base) << "tag below pool range at acquire " << i;
         EXPECT_LT(tag, base + tracker->leakTagPoolSizeForTest())
             << "tag above pool range at acquire " << i;
     }
     // Pool exhausted: further acquires fail with 0.
-    EXPECT_EQ(0, tracker->acquireLeakTagForTest(1, 1));
+    EXPECT_EQ(0, tracker->acquireLeakTagForTest());
     EXPECT_EQ(0, tracker->leakTagFreeCountForTest());
 }
 
-TEST_F(LeakTagPoolTest, ReleaseReturnsTagToPoolAndInfoIsInvalidated) {
+TEST_F(LeakTagPoolTest, ReleaseReturnsTagToPoolAndClearsOwnership) {
     LivenessTracker *tracker = LivenessTracker::instance();
     int pool_size = tracker->leakTagPoolSizeForTest();
 
-    jlong tag = tracker->acquireLeakTagForTest(42, 99);
+    jlong tag = tracker->acquireLeakTagForTest();
     ASSERT_GE(tag, tracker->leakTagBaseForTest());
-
-    u64 call_trace_id = 0;
-    jint tid = 0;
-    EXPECT_TRUE(tracker->getLeakTagInfo(tag, &call_trace_id, &tid));
-    EXPECT_EQ(42u, call_trace_id);
-    EXPECT_EQ(99, tid);
+    EXPECT_TRUE(tracker->leakTagInUseForTest(tag));
 
     tracker->releaseLeakTagForTest(tag);
-    // Released tags must not report stale info.
-    u64 stale_ctid = 12345;
-    jint stale_tid = 12345;
-    EXPECT_FALSE(tracker->getLeakTagInfo(tag, &stale_ctid, &stale_tid))
-        << "released tag still reports info";
+    EXPECT_FALSE(tracker->leakTagInUseForTest(tag))
+        << "released tag still reports in use";
 
     // The released tag can be acquired again (reusable pool), and the free
     // count was restored: pool_size-1 after the acquire, back to pool_size
     // after the release, pool_size-1 again after the re-acquire.
     EXPECT_EQ(pool_size, tracker->leakTagFreeCountForTest());
-    jlong re_tag = tracker->acquireLeakTagForTest(43, 100);
+    jlong re_tag = tracker->acquireLeakTagForTest();
     EXPECT_EQ(tag, re_tag) << "released tag should be recycled first (LIFO)";
     EXPECT_EQ(pool_size - 1, tracker->leakTagFreeCountForTest());
 }
@@ -1272,6 +1287,43 @@ TEST_F(LeakTagPoolTest, ReleaseOutsidePoolRangeIsIgnored) {
         << "out-of-range releases must not corrupt the free list";
 }
 
+// Releasing the same tag twice while every other tag is free must not push a
+// second copy: the free list holds exactly the pool size, so the extra push
+// would write past its end.
+TEST_F(LeakTagPoolTest, DoubleReleaseCannotOverflowFreeList) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    int pool_size = tracker->leakTagPoolSizeForTest();
+
+    jlong tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(tag, tracker->leakTagBaseForTest());
+    tracker->releaseLeakTagForTest(tag);
+    ASSERT_EQ(pool_size, tracker->leakTagFreeCountForTest());
+
+    tracker->releaseLeakTagForTest(tag);
+    EXPECT_EQ(pool_size, tracker->leakTagFreeCountForTest())
+        << "a repeated release must not grow the free list past the pool size";
+}
+
+// Releasing the same tag twice while another tag is still held must not list
+// it twice: two later acquires would then hand the same tag to two objects.
+TEST_F(LeakTagPoolTest, DoubleReleaseWithFreeRoomListsTagOnce) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    int pool_size = tracker->leakTagPoolSizeForTest();
+
+    jlong held = tracker->acquireLeakTagForTest();
+    jlong tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(held, tracker->leakTagBaseForTest());
+    ASSERT_GE(tag, tracker->leakTagBaseForTest());
+    tracker->releaseLeakTagForTest(tag);
+    tracker->releaseLeakTagForTest(tag);
+    EXPECT_EQ(pool_size - 1, tracker->leakTagFreeCountForTest())
+        << "a repeated release must not list the tag a second time";
+
+    jlong first = tracker->acquireLeakTagForTest();
+    jlong second = tracker->acquireLeakTagForTest();
+    EXPECT_NE(first, second) << "the same tag was handed out twice";
+}
+
 // ---------------------------------------------------------------------------
 // C1 chaos: concurrent acquire/release across forced epoch rotations. The
 // single-threaded tests above pin the sequential mechanics; this one attacks
@@ -1290,15 +1342,14 @@ TEST_F(LeakTagPoolTest, ReleaseOutsidePoolRangeIsIgnored) {
 //       (CAS -1 -> slot on acquire, slot -> -1 on release) never sees a tag
 //       already owned by another live thread. This is what breaks if the
 //       pool lock stops serializing the pop/push pair.
-//   I2. getLeakTagInfo() on a held tag reports exactly the (call_trace_id,
-//       tid) the owning thread passed - the side table write and the free-
+//   I2. A held tag reports in use - the ownership bit write and the free-
 //       list pop are one atomic unit under the pool lock.
 //   I3. Exhaustion returns 0 (never a garbage/reused tag) once the pool is
 //       empty - forced every round by slot 0's burst exceeding the whole
 //       pool on its own (scheduling-independent - see kTagChaosBurstMax).
 //   I4. No cross-epoch leak - at every round's quiescence barrier every tag
 //       has been released, so the free count must be back to pool size, and
-//       after the run every info slot reads as not-in-use.
+//       after the run every tag reads as not-in-use.
 //   I5. The free list carries no duplicates - after the chaos, a sequential
 //       full drain must yield all pool_size tags exactly once (a duplicated
 //       LIFO push would surface here as a missing/duplicate tag) and the
@@ -1383,11 +1434,7 @@ void tagChaosWorker(int slot, TagChaosState &state) {
                                 : 30 + next() % 11;
         int n = 0;
         for (int k = 0; k < burst; k++) {
-            // call_trace_id must be nonzero: 0/0 in _leak_tag_info means
-            // "released/never acquired", so a zero id would fake a free slot.
-            u64 ctid = ((u64)(slot + 1) << 32) | (u64)(round * 1000 + k);
-            jint mytid = (jint)(1000 + slot);
-            jlong tag = tracker->acquireLeakTagForTest(ctid, mytid);
+            jlong tag = tracker->acquireLeakTagForTest();
             if (tag == 0) {
                 state.exhausted_hits.fetch_add(1, std::memory_order_relaxed);
                 break; // pool empty - legal, stop bursting this round
@@ -1403,11 +1450,8 @@ void tagChaosWorker(int slot, TagChaosState &state) {
                 tagChaosRecordViolation(state, slot); // I1: already owned
             }
             held[n++] = tag;
-            u64 got_ctid = 0;
-            jint got_tid = 0;
-            if (!tracker->getLeakTagInfo(tag, &got_ctid, &got_tid) ||
-                got_ctid != ctid || got_tid != mytid) {
-                tagChaosRecordViolation(state, slot); // I2: side table mismatch
+            if (!tracker->leakTagInUseForTest(tag)) {
+                tagChaosRecordViolation(state, slot); // I2: held tag not in use
             }
         }
         // Quiescence: everyone must drop this epoch's tags before the count
@@ -1467,11 +1511,9 @@ TEST_F(LeakTagPoolTest, ConcurrentAcquireReleaseAcrossEpochsIsConsistent) {
     EXPECT_GT(state.exhausted_hits.load(), 0)
         << "pool exhaustion never hit - chaos did not oversubscribe";
 
-    // I4 (final): after full quiescence every info slot reads as released.
+    // I4 (final): after full quiescence every tag reads as released.
     for (int i = 0; i < pool; i++) {
-        u64 ctid = 0;
-        jint tid = 0;
-        EXPECT_FALSE(tracker->getLeakTagInfo(base + i, &ctid, &tid))
+        EXPECT_FALSE(tracker->leakTagInUseForTest(base + i))
             << "tag index " << i << " still reports in-use after teardown";
     }
 
@@ -1480,7 +1522,7 @@ TEST_F(LeakTagPoolTest, ConcurrentAcquireReleaseAcrossEpochsIsConsistent) {
     // tag (and, with pool_size acquires total, as some index never seen).
     std::vector<bool> seen(pool, false);
     for (int i = 0; i < pool; i++) {
-        jlong tag = tracker->acquireLeakTagForTest((u64)(i + 1), (jint)i);
+        jlong tag = tracker->acquireLeakTagForTest();
         ASSERT_NE(0, tag) << "pool exhausted after only " << i << " acquires";
         int idx = (int)(tag - base);
         ASSERT_GE(idx, 0);
@@ -1488,7 +1530,7 @@ TEST_F(LeakTagPoolTest, ConcurrentAcquireReleaseAcrossEpochsIsConsistent) {
         EXPECT_FALSE(seen[idx]) << "tag index " << idx << " handed out twice";
         seen[idx] = true;
     }
-    EXPECT_EQ(0, tracker->acquireLeakTagForTest(1, 1))
+    EXPECT_EQ(0, tracker->acquireLeakTagForTest())
         << "pool not exactly exhausted after draining pool_size tags";
     for (int i = 0; i < pool; i++) {
         tracker->releaseLeakTagForTest(base + i);
@@ -1936,6 +1978,25 @@ jclass JNICALL mockGetObjectClass(JNIEnv *, jobject obj) {
     return reinterpret_cast<jclass>(o != nullptr ? o->klass : &g_mock_jvm->class_class);
 }
 
+// Class.getName(): the dot-notation name of the class, standing in for the
+// returned jstring. Lets a test detect a dot-notation lookup in the class map.
+constexpr const char *kRetainedDotName = "com.datadoghq.lt.Retained";
+
+jobject JNICALL mockCallObjectMethodV(JNIEnv *, jobject obj, jmethodID, va_list) {
+    return obj == reinterpret_cast<jobject>(&g_mock_jvm->retained_class)
+               ? reinterpret_cast<jobject>(const_cast<char *>(kRetainedDotName))
+               : nullptr;
+}
+
+const char *JNICALL mockGetStringUTFChars(JNIEnv *, jstring str, jboolean *is_copy) {
+    if (is_copy != nullptr) {
+        *is_copy = JNI_FALSE;
+    }
+    return reinterpret_cast<const char *>(str);
+}
+
+void JNICALL mockReleaseStringUTFChars(JNIEnv *, jstring, const char *) {}
+
 jvmtiError JNICALL mockSetEventNotificationMode(jvmtiEnv *, jvmtiEventMode, jvmtiEvent,
                                                 jthread, ...) {
     return JVMTI_ERROR_NONE;
@@ -2028,6 +2089,9 @@ protected:
         jvm.jni_tbl.DeleteLocalRef = &mockDeleteLocalRef;
         jvm.jni_tbl.IsSameObject = &mockIsSameObject;
         jvm.jni_tbl.GetObjectClass = &mockGetObjectClass;
+        jvm.jni_tbl.CallObjectMethodV = &mockCallObjectMethodV;
+        jvm.jni_tbl.GetStringUTFChars = &mockGetStringUTFChars;
+        jvm.jni_tbl.ReleaseStringUTFChars = &mockReleaseStringUTFChars;
         jvm.jni.functions = &jvm.jni_tbl;
 
         jvm.jvmti_tbl.SetEventNotificationMode = &mockSetEventNotificationMode;
@@ -2069,6 +2133,8 @@ protected:
         tracker->admissionResetForTest();
         tracker->setSubsampleRatioForTest(0.1);
         tracker->setGcGenerationsForTest(false);
+        // start() resolved the heap limits from the mock JVM.
+        tracker->heapLimitsResetForTest();
         VMTestAccessor::setVm(saved_vm);
         VMTestAccessor::setJvmti(saved_jvmti);
         VMTestAccessor::setHotspot(saved_hotspot);
@@ -2088,6 +2154,20 @@ protected:
         event._size = 16;
         LivenessTracker::instance()->track(&jvm.jni, event, tid, obj,
                                            /*call_trace_id=*/1);
+    }
+
+    // Read-only probe of the class map: the id `name` has, or 0 if absent.
+    static u32 classMapIdOf(const char *name) {
+        return Profiler::instance()->classMap()->bounded_lookup(name, strlen(name));
+    }
+
+    static u32 cachedKlassIdAt(u32 idx) {
+        int ready = 0;
+        jlong leak_tag = 0;
+        u32 cached = 0;
+        EXPECT_TRUE(LivenessTracker::instance()->trackingSlotForTest(
+            idx, &ready, &leak_tag, &cached));
+        return cached;
     }
 
     // One GC (the JVMTI GarbageCollectionFinish callback, which bumps the GC
@@ -2181,7 +2261,7 @@ TEST_F(LivenessTrackerMockJvmTest, SharedObjectLeakTagHasSingleOwner) {
     // Held by the test so the pool is never full: a duplicate release then
     // shows up as an over-count instead of writing past the free list.
     // TearDown()'s leakTagPoolResetForTest() returns it.
-    ASSERT_NE(0, tracker->acquireLeakTagForTest(/*call_trace_id=*/1, /*tid=*/1));
+    ASSERT_NE(0, tracker->acquireLeakTagForTest());
 
     KlassCandidate candidate{};
     candidate.klass_id = retained_id;
@@ -2199,4 +2279,152 @@ TEST_F(LivenessTrackerMockJvmTest, SharedObjectLeakTagHasSingleOwner) {
     sweep();
     EXPECT_EQ(pool - 1, tracker->leakTagFreeCountForTest())
         << "the object's leak tag must go back to the pool exactly once";
+}
+
+// Profiler::start() resets the class map, restarting its ids at 1, while the
+// tracking table and its cached class ids survive. A flush before the next GC
+// must resolve the class again instead of emitting the cached id, which now
+// names a different class. The test refills the new namespace so the stale id
+// belongs to another class, then checks that the flush resolved the tracked
+// class into the new namespace.
+TEST_F(LivenessTrackerMockJvmTest, FlushAfterClassMapResetDoesNotReuseStaleCachedId) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    u32 stale_id = classIdOf(kRetainedSignature);
+    ASSERT_NE(0u, stale_id);
+    trackNew(&jvm.retained_class, /*tid=*/7);
+    sweep();
+    ASSERT_EQ(1u, tracker->tableSizeForTest());
+    ASSERT_EQ(stale_id, cachedKlassIdAt(0));
+
+    Profiler::instance()->classMap()->clearAll();
+    for (u32 i = 1; i <= stale_id; i++) {
+        std::string decoy = "com/datadoghq/lt/Decoy" + std::to_string(i);
+        ASSERT_EQ(i, (u32)Profiler::instance()->lookupClass(decoy.c_str(), decoy.size()));
+    }
+    ASSERT_EQ(0u, classMapIdOf("com/datadoghq/lt/Retained"));
+
+    // No GC since the sweep, so flush()'s own cleanup_table() exits early.
+    std::set<int> tids;
+    tracker->flush(tids);
+    u32 fresh_id = classMapIdOf("com/datadoghq/lt/Retained");
+    EXPECT_NE(0u, fresh_id)
+        << "flush must resolve the class in the new class map, not emit the cached id";
+    EXPECT_NE(stale_id, fresh_id);
+}
+
+// A flush resolves entries without a cached class id itself. It must use the
+// same slash-notation name as the cached ids, or the same class is emitted
+// under two ids (a Class.getName() lookup would add "com.datadoghq.lt.Retained").
+TEST_F(LivenessTrackerMockJvmTest, FlushResolvesCachedAndUncachedEntriesToSameId) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    u32 id = classIdOf(kRetainedSignature);
+    ASSERT_NE(0u, id);
+    trackNew(&jvm.retained_class, /*tid=*/7);
+    sweep();
+    trackNew(&jvm.retained_class, /*tid=*/7);
+    ASSERT_EQ(2u, tracker->tableSizeForTest());
+    ASSERT_EQ(id, cachedKlassIdAt(0));
+    ASSERT_EQ(0u, cachedKlassIdAt(1));
+    ASSERT_EQ(0u, classMapIdOf(kRetainedDotName));
+
+    std::set<int> tids;
+    tracker->flush(tids);
+    EXPECT_EQ(0u, classMapIdOf(kRetainedDotName))
+        << "the uncached entry must resolve to the cached entry's slash-notation id";
+    EXPECT_EQ(id, classMapIdOf("com/datadoghq/lt/Retained"));
+}
+
+// tagLeakInstances() matches candidates against cached class ids. After a
+// class-map reset those ids are from the previous namespace, so it must not
+// tag anything until the next sweep has dropped and re-resolved them.
+TEST_F(LivenessTrackerMockJvmTest, TagLeakInstancesSkipsCachedIdsFromPreviousClassMap) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    constexpr jint kTid = 7;
+    u32 stale_id = classIdOf(kRetainedSignature);
+    ASSERT_NE(0u, stale_id);
+    jobject obj = trackNew(&jvm.retained_class, kTid);
+    sweep();
+    ASSERT_EQ(stale_id, cachedKlassIdAt(0));
+
+    Profiler::instance()->classMap()->clearAll();
+    KlassCandidate candidate{};
+    candidate.klass_id = stale_id;
+    candidate.qualifying_tids[0] = kTid;
+    candidate.qualifying_tid_count = 1;
+    EXPECT_EQ(0, tracker->tagLeakInstances(&jvm.jvmti, &candidate, 1));
+    jlong tag = 0;
+    mockGetTag(&jvm.jvmti, obj, &tag);
+    EXPECT_EQ(0, tag);
+
+    // The next sweep drops the stale ids and resolves the entry again.
+    sweep();
+    u32 fresh_id = classIdOf(kRetainedSignature);
+    ASSERT_EQ(fresh_id, cachedKlassIdAt(0));
+    candidate.klass_id = fresh_id;
+    EXPECT_EQ(1, tracker->tagLeakInstances(&jvm.jvmti, &candidate, 1));
+}
+
+// The representative lookup keys on klass ids too: after a class-map reset an
+// id from the new namespace must not match a population entry keyed by the
+// previous one.
+TEST_F(LivenessTrackerMockJvmTest, RepresentativeLookupSkipsPopulationFromPreviousClassMap) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    u32 id = classIdOf(kRetainedSignature);
+    ASSERT_NE(0u, id);
+    trackNew(&jvm.retained_class, /*tid=*/7);
+    sweep();
+    jobject rep = tracker->resolveCandidateRepresentative(&jvm.jni, id);
+    ASSERT_NE(nullptr, rep) << "setup: the sweep should record a representative";
+
+    Profiler::instance()->classMap()->clearAll();
+    EXPECT_EQ(nullptr, tracker->resolveCandidateRepresentative(&jvm.jni, id));
+
+    // The next sweep drops the stale population and rebuilds it.
+    sweep();
+    u32 fresh_id = classIdOf(kRetainedSignature);
+    EXPECT_NE(nullptr, tracker->resolveCandidateRepresentative(&jvm.jni, fresh_id));
+}
+
+// Every slot at or past _table_size must read as unpublished, with no leak tag
+// and no cached class id: track() reuses those slots while shared-lock
+// scanners may read them. Compaction leaves two kinds behind: slots whose
+// entry moved down and slots whose object died.
+TEST_F(LivenessTrackerMockJvmTest, SlotsPastTableSizeAreClearedAfterCompaction) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    constexpr jint kTid = 7;
+    u32 id = classIdOf(kRetainedSignature);
+    ASSERT_NE(0u, id);
+    jobject objs[4];
+    for (jobject &o : objs) {
+        o = trackNew(&jvm.retained_class, kTid);
+    }
+    sweep();
+    KlassCandidate candidate{};
+    candidate.klass_id = id;
+    candidate.qualifying_tids[0] = kTid;
+    candidate.qualifying_tid_count = 1;
+    ASSERT_EQ(4, tracker->tagLeakInstances(&jvm.jvmti, &candidate, 1));
+
+    // Rows 0 and 2 die; rows 1 and 3 move down to 0 and 1, so slot 2 is a dead
+    // slot and slot 3 is a moved-from slot.
+    g_mock_jvm->asObject(objs[0])->alive = false;
+    g_mock_jvm->asObject(objs[2])->alive = false;
+    sweep();
+    ASSERT_EQ(2u, tracker->tableSizeForTest());
+
+    for (u32 i = 0; i < 4; i++) {
+        int ready = 0;
+        jlong leak_tag = 0;
+        u32 cached = 0;
+        ASSERT_TRUE(tracker->trackingSlotForTest(i, &ready, &leak_tag, &cached));
+        if (i < 2) {
+            EXPECT_EQ(1, ready) << "survivor slot " << i;
+            EXPECT_GE(leak_tag, tracker->leakTagBaseForTest()) << "survivor slot " << i;
+            EXPECT_EQ(id, cached) << "survivor slot " << i;
+        } else {
+            EXPECT_EQ(0, ready) << "slot " << i;
+            EXPECT_EQ(0, leak_tag) << "slot " << i;
+            EXPECT_EQ(0u, cached) << "slot " << i;
+        }
+    }
 }

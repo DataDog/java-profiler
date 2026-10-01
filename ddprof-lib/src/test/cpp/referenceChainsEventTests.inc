@@ -126,6 +126,65 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     tracker->stop();
 }
 
+// Class-branch field ordinals must count interfaces implemented only by a superclass: for
+//   interface I { int K = 1; } class Base implements I { Object x; }
+//   class Sub extends Base { Object a; Object b; }
+// Sub's space is K@0 (I, via Base), x@1, a@2, b@3. Counting only Sub's own (empty) interface list
+// shifts every label by one: a@2 decodes as b, x@1 as a, and b@3 falls off the end. Instance-field
+// and static-field edges share the same per-class table, so both are checked.
+TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsCountSuperclassInterfaces) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    void *iface = (void *)0x5101, *base = (void *)0x5102, *sub = (void *)0x5103;
+    addClass(iface, "Lcom/rc/labels/I;");
+    addClass(base, "Lcom/rc/labels/Base;");
+    addClass(sub, "Lcom/rc/labels/Sub;");
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+    auto tagOf = [&](void *k) -> jlong { return tags[k]; };
+    field_decode_classes[tagOf(sub)] = sub;
+    field_decode_hierarchy[iface] = {true, nullptr, {}, {{(void *)0x6101, "K"}}};
+    field_decode_hierarchy[base] = {false, nullptr, {iface}, {{(void *)0x6102, "x"}}};
+    field_decode_hierarchy[sub] =
+            {false, base, {}, {{(void *)0x6103, "a"}, {(void *)0x6104, "b"}}};
+
+    FrontierTable *frontier = tracker->frontierTable();
+    // Chain, root first: static Sub.a (ordinal 2) -> [1, Sub] -x@1-> [2, Sub] -a@2-> [3, Sub]
+    // -b@3-> [4]. Each instance edge is decoded over its parent entry's class (Sub).
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 1, 0, 0, FrontierEntryState::EDGE,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD,
+        /*referrer_klass=*/0, /*class_tag=*/tagOf(sub),
+        /*referrer_field_index=*/2, /*edge_kind=*/0,
+        /*referrer_class_tag=*/tagOf(sub)));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 2, 1, 1, FrontierEntryState::EDGE, /*root_kind=*/0,
+        /*referrer_klass=*/0, /*class_tag=*/tagOf(sub),
+        /*referrer_field_index=*/1, JVMTI_HEAP_REFERENCE_FIELD));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 3, 2, 2, FrontierEntryState::EDGE, /*root_kind=*/0,
+        /*referrer_klass=*/0, /*class_tag=*/tagOf(sub),
+        /*referrer_field_index=*/2, JVMTI_HEAP_REFERENCE_FIELD));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 4, 3, 3, FrontierEntryState::EDGE, /*root_kind=*/0,
+        /*referrer_klass=*/0, /*class_tag=*/tagOf(sub),
+        /*referrer_field_index=*/3, JVMTI_HEAP_REFERENCE_FIELD));
+
+    ReferenceChainEvent event;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
+        &mock_jvmti, &mock_jni, /*target_tag=*/4, &event));
+    ASSERT_EQ(5u, event._hops.size());
+    EXPECT_EQ("b", event._hops[0].edge_label);
+    EXPECT_EQ("a", event._hops[1].edge_label);
+    EXPECT_EQ("x", event._hops[2].edge_label);
+    EXPECT_EQ("a", event._hops[3].edge_label); // static-field root edge
+    EXPECT_EQ("static_field", event._hops[4].edge_label);
+
+    tracker->stop();
+}
+
 // PRIORITY_EXPAND_CAP backpressure: with the fast lane at the cap, the rotation collectors must
 // stop pushing.
 TEST_F(ReferenceChainsBfsTest, PriorityExpandCapStopsRotationCollectorPushes) {

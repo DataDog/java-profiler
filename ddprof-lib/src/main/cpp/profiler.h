@@ -137,8 +137,9 @@ private:
   // tracker and the matching stop(): gates stopThread()/stop() in
   // Profiler::stop() so a recording started without the tracker never tears
   // it down (the tracker is only started when allocation sampling activated
-  // AND referencechains=true - see Profiler::start()).
-  bool _reference_chains_active = false;
+  // AND referencechains=true - see Profiler::start()). Atomic: also read by
+  // onThreadStart()/onThreadEnd() on JVMTI thread-lifecycle callbacks.
+  std::atomic<bool> _reference_chains_active{false};
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];

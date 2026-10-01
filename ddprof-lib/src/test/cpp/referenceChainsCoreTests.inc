@@ -790,5 +790,29 @@ TEST(FrontierTableTest, ReconstructChainOfNeverInsertedTagFails) {
     EXPECT_FALSE(table.reconstructChain(1, &chain));
 }
 
+TEST(FrontierTableTest, ReconstructChainOfCycleFails) {
+    FrontierTable table(64);
+    ASSERT_TRUE(table.insert(1, 2, 100, 0, FrontierEntryState::FRONTIER));
+    ASSERT_TRUE(table.insert(2, 1, 200, 1, FrontierEntryState::FRONTIER));
+
+    std::vector<u32> chain;
+    EXPECT_FALSE(table.reconstructChain(2, &chain));
+}
+
+TEST(FrontierTableTest, ReconstructChainWalksDeepChainToRoot) {
+    constexpr int HOPS = 200;
+    FrontierTable table(HOPS);
+    for (jlong tag = 1; tag <= HOPS; tag++) {
+        ASSERT_TRUE(table.insert(tag, tag - 1, (u32)(100 + tag), (u32)(tag - 1),
+                                 FrontierEntryState::FRONTIER));
+    }
+
+    std::vector<u32> chain;
+    ASSERT_TRUE(table.reconstructChain(HOPS, &chain));
+    ASSERT_EQ((size_t)HOPS, chain.size());
+    EXPECT_EQ((u32)(100 + HOPS), chain.front());
+    EXPECT_EQ(101u, chain.back());
+}
+
 // Heap-walk engine (ReferenceChainTracker::runPass()/
 

@@ -802,14 +802,21 @@ void ReferenceChainTracker::registerThreadObject(JNIEnv *jni, int tid,
   if (ref == nullptr) {
     return;
   }
-  MutexLocker ml(_thread_objects_lock);
-  auto it = _thread_objects.find(tid);
-  if (it != _thread_objects.end()) {
-    // Same deferred-deletion rule as unregisterThreadObject(): a walk may still hold a copy of the
-    // replaced ref.
-    _thread_refs_pending_delete.push_back(it->second);
+  {
+    MutexLocker ml(_thread_objects_lock);
+    if (_thread_objects_open) {
+      auto it = _thread_objects.find(tid);
+      if (it != _thread_objects.end()) {
+        // Same deferred-deletion rule as unregisterThreadObject(): a walk may still hold a copy of
+        // the replaced ref.
+        _thread_refs_pending_delete.push_back(it->second);
+      }
+      _thread_objects[tid] = ref;
+      return;
+    }
   }
-  _thread_objects[tid] = ref;
+  // Registry closed by releaseAllThreadObjects() (see _thread_objects_open's comment).
+  jni->DeleteGlobalRef(ref);
 }
 
 void ReferenceChainTracker::unregisterThreadObject(JNIEnv *jni, int tid) {
@@ -852,6 +859,7 @@ void ReferenceChainTracker::releaseAllThreadObjects(JNIEnv *jni) {
   std::vector<jobject> pending;
   {
     MutexLocker ml(_thread_objects_lock);
+    _thread_objects_open = false;
     for (auto &kv : _thread_objects) {
       pending.push_back(kv.second);
     }
