@@ -50,12 +50,14 @@ public:
     // (ChunkStorage is process-lifetime), so a captured Slot* is always dereferenceable.
     struct alignas(DEFAULT_CACHE_LINE_SIZE) Slot {
         // Packed as (epoch << 1) | in_context_window so a transition and its
-        // epoch change are observed atomically by block admission and exit.
+        // epoch change are observed atomically by owned-block admission and by
+        // the wall-clock suppression check.
         std::atomic<u64>           context_window_state{0};
         std::atomic<u64>           lifecycle_generation{0};
         // Per-recording publication flag. A retained TID mapping is eligible for
         // unfiltered suppression only when this value matches the registry's
-        // active recording epoch. The payload is reset before the epoch is
+        // active recording epoch. The slot's context-window state and its
+        // WallClockBlockTracker::BlockState are reset before the epoch is
         // release-published.
         std::atomic<u64>           recording_epoch{0};
         // Native identity and context-window membership are independent so an
@@ -83,18 +85,20 @@ public:
         inline u64 contextWindowEpoch() const {
             return context_window_state.load(std::memory_order_acquire) >> 1;
         }
-        // add()/remove() (and therefore these) are only ever called by the slot's
-        // own owning thread transitioning its own context window, so there is no
-        // writer-writer race to protect against here. A CAS is unnecessary: the
-        // load and store below are never interleaved with another writer's RMW,
-        // only observed by concurrent readers via the acquire load in
-        // inContextWindow()/contextWindowEpoch(), for which the release store is
-        // sufficient. (unregisterThreadLocked()/resetRegistrationsLocked() can
-        // also zero this field from another thread, but only as part of tearing
-        // down or resetting the slot entirely, a case where clobbering an
-        // in-flight transition from the exiting/reset thread is already
-        // tolerated.) Avoiding the CAS turns a locked RMW into a plain store on
-        // every context-filtered enter/exit.
+        // add()/remove() only ever call these on the calling thread's own slot,
+        // so on that path there is no writer-writer race and the release store
+        // is sufficient for concurrent readers using the acquire loads in
+        // inContextWindow()/contextWindowEpoch(). Avoiding a CAS turns a locked
+        // RMW into a plain store on every context-filtered enter/exit.
+        //
+        // Other threads can also write this field:
+        // - unregisterThreadLocked()/resetRegistrationsLocked() zero it while
+        //   tearing down or resetting the slot entirely.
+        // - clearActive() calls exitContextWindow() from the thread running
+        //   Profiler::start(). Racing an owner's exit+enter, its store can move
+        //   the epoch backwards. This is benign: clearActive() only runs in
+        //   context-filter mode, and the epoch is only compared in unfiltered
+        //   mode (WallClockBlockTracker's outside-context checks).
         inline bool enterContextWindow() {
             u64 current = context_window_state.load(std::memory_order_relaxed);
             if ((current & 1) != 0) return false;
@@ -108,9 +112,8 @@ public:
             return true;
         }
         // Exposes the raw packed context-window state to WallClockBlockTracker,
-        // which needs it (twice, around a CAS) to validate that an owned block
-        // run did not span a context-window transition, but no longer stores
-        // context-window state itself. See wallClockBlockTracker.h.
+        // which reads it (twice, around its owner CAS) to validate that an owned
+        // block run did not span a context-window transition.
         inline u64 rawContextWindowState() const {
             return context_window_state.load(std::memory_order_acquire);
         }
@@ -141,33 +144,28 @@ public:
     // Clears per-recording membership and suppression state while keeping
     // process-lifetime slot ownership intact. Threads must opt in again with add().
     void clearActive();
-    // Forwards to WallClockBlockTracker::resetSlot(); kept on ThreadFilter
-    // since it addresses a slot by SlotID, a ThreadFilter concept.
+    // Forwards to WallClockBlockTracker::resetSlot(). Not called from
+    // production code (registry-lifecycle paths call the tracker directly);
+    // only park_state_ut uses it.
     void resetSlotRunState(SlotID slot_id);
 
     // Non-owning; wired up once by Profiler so ThreadFilter's own
     // registry-lifecycle resets (registerThread/unregisterThread/
-    // resetRegistrationsLocked/clearActive) can clear the tracker's
-    // parallel per-slot state at the same points that used to call
-    // Slot::clearActiveBlockRun() directly. See wallClockBlockTracker.h.
+    // resetRegistrationsLocked/clearActive) also clear the tracker's
+    // parallel per-slot state. See wallClockBlockTracker.h.
     void setBlockTracker(WallClockBlockTracker* tracker) { _block_tracker = tracker; }
 
 #ifdef UNIT_TEST
     // Invoked by registerThread() immediately before _registry_lock is
     // acquired, once the pre-lock _registry_active and capacity checks have
-    // passed - lets tests inject a deactivation into the exact TOCTOU window
-    // being fixed, and observe whether a call reached the lock at all.
+    // passed - lets tests inject a deactivation between the lock-free
+    // _registry_active check and the in-lock recheck, and observe whether a
+    // call reached the lock at all.
     using PostActiveCheckHook = void (*)(void*);
     void setPostActiveCheckHookForTest(PostActiveCheckHook hook, void* arg) {
         _post_active_check_hook = hook;
         _post_active_check_hook_arg = arg;
     }
-    // Forwards to WallClockBlockTracker::setSuppressionSnapshotHookForTest()
-    // so existing test call sites don't need to change now that
-    // shouldSuppressOwnedBlock() lives on WallClockBlockTracker. Defined in
-    // threadFilter.cpp (not inline here) since WallClockBlockTracker's full
-    // definition isn't visible in this header - it includes threadFilter.h.
-    void setSuppressionSnapshotHookForTest(void (*hook)(void*), void* arg);
 #endif
 
     // Returns nullptr if slot_id is invalid or its chunk has not been allocated.

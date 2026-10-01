@@ -53,8 +53,9 @@ public:
   virtual long interval() const { return 0L; }
 
   // Whether this engine can keep the ThreadFilter registry populated and
-  // tracked even with no explicit filter (e.g. to support wall-clock
-  // prechecks).
+  // tracked when context filtering is disabled with an explicit empty
+  // `filter=` (e.g. to support wall-clock prechecks). Without a filter
+  // argument the filter defaults to "0", which enables context filtering.
   virtual bool supportsUnfilteredThreadRegistryTracking() const { return false; }
 
   virtual int registerThread(int tid) { return -1; }

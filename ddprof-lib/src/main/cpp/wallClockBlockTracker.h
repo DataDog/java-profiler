@@ -38,7 +38,7 @@ enum class BlockRunOwner : int {
 // threadFilter.h for the registry itself. Methods that need registry facts
 // (context-window state, unfiltered-tracking mode) take a ThreadFilter
 // pointer/Slot pointer as an explicit parameter rather than storing one, so
-// this class stays trivially testable without a live ThreadFilter.
+// tests can pair a tracker with any ThreadFilter instance.
 class WallClockBlockTracker {
 public:
     // One cache line per slot, mirroring ThreadFilter::Slot's own
@@ -141,8 +141,8 @@ public:
             }
             return true;
         }
-        // identity_slot supplies the ThreadFilter-owned context-window state this
-        // struct no longer stores. See ThreadFilter::Slot::rawContextWindowState().
+        // identity_slot supplies the context-window state, which lives on
+        // ThreadFilter::Slot. See ThreadFilter::Slot::rawContextWindowState().
         inline bool trySetActiveBlockRun(ThreadFilter::Slot* identity_slot, OSThreadState state,
                                          BlockRunOwner owner, u32* generation_out,
                                          bool outside_context_required) {
@@ -176,8 +176,8 @@ public:
             resetSampledRun(state);
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
         }
-        // identity_slot supplies the ThreadFilter-owned context-window state this
-        // struct no longer stores. See ThreadFilter::Slot::rawContextWindowState().
+        // identity_slot supplies the context-window state, which lives on
+        // ThreadFilter::Slot. See ThreadFilter::Slot::rawContextWindowState().
         inline bool activeBlockRemainedOutsideContextWindow(ThreadFilter::Slot* identity_slot) const {
             u64 context_state = identity_slot->rawContextWindowState();
             return (context_state & 1) == 0 &&
@@ -216,9 +216,9 @@ public:
 
     u64 enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
                         OSThreadState state, BlockRunOwner owner = BlockRunOwner::JAVA);
-    // Unconditional cleanup for reset/unregister paths only. Normal block
-    // lifecycles must use the generation-checked overload so they cannot clear
-    // another owner.
+    // Unconditional cleanup, used only by tests and the fuzzer (registry
+    // reset/unregister paths use resetSlot()). Normal block lifecycles must
+    // use the generation-checked overload so they cannot clear another owner.
     void exitBlockedRun(ThreadFilter::SlotID slot_id);
     bool exitBlockedRun(ThreadFilter::SlotID slot_id, u32 generation);
     // Clears stale suppression state so a new/reused slot cannot inherit a

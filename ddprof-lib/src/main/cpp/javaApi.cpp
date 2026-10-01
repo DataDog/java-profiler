@@ -179,21 +179,22 @@ static ThreadFilter::SlotID ensureCurrentThreadFilterSlot(
     current->setFilterSlotId(-1);
   }
 
-  // Startup can register this TID centrally, but it cannot update another
-  // pthread's TLS. registerThread(tid) reuses that existing slot.
+  // Threads that existed before the recording started (and so never received
+  // a ThreadStart callback) bind their slot lazily here. If the tid is already
+  // indexed, registerThread(tid) returns that existing slot.
   //
-  // This is the only place a JavaCritical fast path (filterThreadAdd0,
-  // parkEnter0, blockEnter0) can block on _registry_lock. It's bounded to at
+  // This is the only place the filterThreadAdd0 (JavaCritical), parkEnter0
+  // and blockEnter0 hooks can block on _registry_lock. It's bounded to at
   // most once per thread lifetime (cold TLS) plus once per recording-epoch
   // transition this thread observes (stale cached slot) - not a per-call cost.
   // A thread that cannot get a slot because the registry is full retries here
   // on every call, but registerThread() rejects it without taking the lock.
-  // THREAD_REGISTRY_JAVACRITICAL_REREGISTRATION counts every attempt,
-  // including those lock-free rejections (tracked separately by
+  // THREAD_REGISTRY_HOOK_REREGISTRATION counts every attempt, including those
+  // lock-free rejections (tracked separately by
   // THREAD_REGISTRY_CAPACITY_EXHAUSTED). If it fires per call while
   // THREAD_REGISTRY_CAPACITY_EXHAUSTED stays flat, the "provably rare"
-  // assumption has broken and the JavaCritical dispatch should be revisited.
-  Counters::increment(THREAD_REGISTRY_JAVACRITICAL_REREGISTRATION);
+  // assumption has broken and these hooks should be revisited.
+  Counters::increment(THREAD_REGISTRY_HOOK_REREGISTRATION);
   slot_id = thread_filter->registerThread(tid);
   if (slot_id >= 0) {
     current->setFilterSlotId(slot_id);
@@ -256,7 +257,8 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1 ||
                thread_filter->activeSlotForId(slot_id, tid) == nullptr)) {
-    // Thread doesn't have a slot ID yet - nothing to remove
+    // No slot yet, or a cached slot left over from an earlier recording -
+    // either way this thread is not in the context window, nothing to remove
     return;
   }
   thread_filter->remove(slot_id);

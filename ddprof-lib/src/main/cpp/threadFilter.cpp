@@ -128,7 +128,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
     // Callers retry registration on every hook call while they hold no slot
     // (see ensureCurrentThreadFilterSlot() in javaApi.cpp), so once the
     // registry is full, threads past capacity would otherwise serialize on
-    // _registry_lock on every JavaCritical filterThreadAdd0/blockEnter0 call.
+    // _registry_lock on every filterThreadAdd0/parkEnter0/blockEnter0 call.
     // Reject them lock-free instead. A tid that is already indexed must still
     // reach the locked path, which returns (and refreshes) its existing slot.
     if (unlikely(capacityExhausted()) && lookupSlotIdByTid(tid) < 0) {
@@ -522,9 +522,10 @@ void ThreadFilter::unregisterThreadLocked(SlotID slot_id, int expected_tid) {
 
 void ThreadFilter::unregisterThreadByTid(int tid) {
     // Lock-free pre-check: avoids the mutex for the common case where this tid
-    // was never registered (e.g. plain CPU profiling, or filtered recordings
-    // where this thread never matched). A hit here is always re-confirmed
-    // under the lock before anything is mutated.
+    // was never registered (e.g. the registry was never activated, so
+    // _tid_index is null, or registration failed because the registry was
+    // full). A hit here is always re-confirmed under the lock before anything
+    // is mutated.
     if (lookupSlotIdByTid(tid) < 0) {
         return;
     }
@@ -703,14 +704,6 @@ void ThreadFilter::resetSlotRunState(SlotID slot_id) {
     // its predecessor's active block or once-per-run sampled marker.
     _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
 }
-
-#ifdef UNIT_TEST
-void ThreadFilter::setSuppressionSnapshotHookForTest(void (*hook)(void*), void* arg) {
-    if (_block_tracker != nullptr) {
-        _block_tracker->setSuppressionSnapshotHookForTest(hook, arg);
-    }
-}
-#endif
 
 void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
     // Preserve the legacy filter contract: every non-empty value, including

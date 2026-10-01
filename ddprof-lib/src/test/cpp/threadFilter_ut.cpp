@@ -897,7 +897,7 @@ TEST_F(ThreadRegistryTest, ConcurrentTidReuseInvalidatesSuppressionSnapshot) {
         std::atomic<bool> reached{false};
         std::atomic<bool> resume{false};
     } pause;
-    registry.setSuppressionSnapshotHookForTest(
+    tracker.setSuppressionSnapshotHookForTest(
         [](void* raw) {
             SnapshotPause* pause = static_cast<SnapshotPause*>(raw);
             pause->reached.store(true, std::memory_order_release);
@@ -920,7 +920,7 @@ TEST_F(ThreadRegistryTest, ConcurrentTidReuseInvalidatesSuppressionSnapshot) {
     if (!pause.reached.load(std::memory_order_acquire)) {
         pause.resume.store(true, std::memory_order_release);
         reader.join();
-        registry.setSuppressionSnapshotHookForTest(nullptr, nullptr);
+        tracker.setSuppressionSnapshotHookForTest(nullptr, nullptr);
         GTEST_FAIL() << "Suppression reader did not reach the snapshot barrier";
     }
 
@@ -934,7 +934,7 @@ TEST_F(ThreadRegistryTest, ConcurrentTidReuseInvalidatesSuppressionSnapshot) {
 
     pause.resume.store(true, std::memory_order_release);
     reader.join();
-    registry.setSuppressionSnapshotHookForTest(nullptr, nullptr);
+    tracker.setSuppressionSnapshotHookForTest(nullptr, nullptr);
 
     ASSERT_EQ(slot_id, reused_id);
     ASSERT_NE(nullptr, reused);
