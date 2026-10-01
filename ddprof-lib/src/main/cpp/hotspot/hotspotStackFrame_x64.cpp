@@ -19,7 +19,7 @@ __attribute__((no_sanitize("address"))) bool HotspotStackFrame::unwindStub(instr
         || strncmp(name, "vtable", 6) == 0
         || strcmp(name, "InlineCacheBuffer") == 0)
     {
-        pc = ((uintptr_t*)sp)[0] - 1;
+        pc = ((uintptr_t*)sp)[0];
         sp += 8;
         return true;
     } else if (entry != NULL && ([&] { unsigned int val; memcpy(&val, entry, sizeof(val)); return val; }()) == 0xec8b4855) {
@@ -27,13 +27,13 @@ __attribute__((no_sanitize("address"))) bool HotspotStackFrame::unwindStub(instr
         //   push rbp
         //   mov  rbp, rsp
         if (ip == entry + 1) {
-            pc = ((uintptr_t*)sp)[1] - 1;
+            pc = ((uintptr_t*)sp)[1];
             sp += 16;
             return true;
         } else if (withinCurrentStack(fp)) {
             sp = fp + 16;
             fp = ((uintptr_t*)sp)[-2];
-            pc = ((uintptr_t*)sp)[-1] - 1;
+            pc = ((uintptr_t*)sp)[-1];
             return true;
         }
     }
@@ -101,26 +101,24 @@ bool HotspotStackFrame::unwindCompiled(VMNMethod* nm, uintptr_t& pc, uintptr_t& 
         || ip[-1] == 0x5d                                                       // after pop rbp
         || (ip[0] == 0x41 && ip[1] == 0x85 && ip[2] == 0x02 && ip[3] == 0xc3))  // poll return
     {
-        // Subtract 1 for PC to point to the call instruction,
-        // otherwise it may be attributed to a wrong bytecode
-        pc = ((uintptr_t*)sp)[0] - 1;
+        pc = ((uintptr_t*)sp)[0];
         sp += 8;
         return true;
     } else if (*ip == 0x5d) {
         // pop rbp
         fp = ((uintptr_t*)sp)[0];
-        pc = ((uintptr_t*)sp)[1] - 1;
+        pc = ((uintptr_t*)sp)[1];
         sp += 16;
         return true;
     } else if (ip <= entry + 15 && ((uintptr_t)ip & 0xfff) && ip[-1] == 0x55) {
         // push rbp
-        pc = ((uintptr_t*)sp)[1] - 1;
+        pc = ((uintptr_t*)sp)[1];
         sp += 16;
         return true;
     } else if (ip <= entry + 7 && ip[0] == 0x48 && ip[1] == 0x89 && ip[2] == 0x6c && ip[3] == 0x24) {
         // mov [rsp + #off], rbp
         sp += ip[4] + 16;
-        pc = ((uintptr_t*)sp)[-1] - 1;
+        pc = ((uintptr_t*)sp)[-1];
         return true;
     } else if ((ip[0] == 0x41 && ip[1] == 0x81 && ip[2] == 0x7f && *(u32*)(ip + 4) == 1) ||
                (ip >= entry + 8 && ip[-8] == 0x41 && ip[-7] == 0x81 && ip[-6] == 0x7f && *(u32*)(ip - 4) == 1)) {
@@ -142,11 +140,11 @@ bool HotspotStackFrame::unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& 
     instruction_t* ip = (instruction_t*)pc;
     instruction_t* entry = (instruction_t*)nm->entry();
     if (ip <= entry || *ip == 0x55 || nm->frameSize() == 0) {  // push rbp
-        pc = ((uintptr_t*)sp)[0] - 1;
+        pc = ((uintptr_t*)sp)[0];
         sp += 8;
         return true;
     } else if (ip <= entry + 15 && ip[-1] == 0x55) {  // right after push rbp
-        pc = ((uintptr_t*)sp)[1] - 1;
+        pc = ((uintptr_t*)sp)[1];
         sp += 16;
         return true;
     } else if (ip <= entry + 31 && isFrameComplete(entry, ip)) {
@@ -165,12 +163,12 @@ bool HotspotStackFrame::unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& 
     //  ret
     instruction_t* ip = (instruction_t*)pc;
     if (*ip == 0xc3 || isPollReturn(ip)) {  // ret
-        pc = ((uintptr_t*)sp)[0] - 1;
+        pc = ((uintptr_t*)sp)[0];
         sp += 8;
         return true;
     } else if (*ip == 0x5d) {  // pop rbp
         fp = ((uintptr_t*)sp)[0];
-        pc = ((uintptr_t*)sp)[1] - 1;
+        pc = ((uintptr_t*)sp)[1];
         sp += 16;
         return true;
     }
