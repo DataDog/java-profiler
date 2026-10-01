@@ -12,7 +12,8 @@
 // for crashProtectionActive() / cast_to() so assertion-enabled builds link.
 #include "hotspot/vmStructs.inline.h"
 
-__attribute__((no_sanitize("address"))) bool HotspotStackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+__attribute__((no_sanitize("address"))) bool HotspotStackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp, const StubUnwindInfo* info) {
+    (void)info;  // precomputed stub metadata exists only on aarch64
     instruction_t* ip = (instruction_t*)pc;
     if (ip == entry || *ip == 0xc3
         || strncmp(name, "itable", 6) == 0
