@@ -382,7 +382,12 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                 return;  // same rule as the open phase: extend it
             }
         }
-        if (n >= StubUnwindInfo::MAX_PHASES) {
+        // Reserve the last slot for the SU_UNSUPPORTED terminator the
+        // truncation step writes at the cut. If the table filled up
+        // completely, truncation could not append the terminator and PCs
+        // past the cut would resolve to the last real phase -- a stale rule
+        // silently applied instead of degrading to fallback.
+        if (n >= StubUnwindInfo::MAX_PHASES - 1) {
             // Too many state transitions to tabulate: keep only what was
             // recorded before this boundary.
             if (offset < truncate_at) truncate_at = offset;
@@ -632,8 +637,11 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
         while (keep < info->_phase_count && info->_phases[keep].insn_offset < truncate_at) {
             keep++;
         }
-        if (keep < StubUnwindInfo::MAX_PHASES &&
-            (keep == 0 || info->_phases[keep - 1].insn_offset < truncate_at)) {
+        // keep < MAX_PHASES always holds here: emit() reserves the last
+        // slot, so at most MAX_PHASES - 1 real phases are stored and the
+        // terminator always fits. The loop has also already verified that
+        // every counted phase starts below the cut.
+        if (keep < StubUnwindInfo::MAX_PHASES) {
             StubUnwindPhase& p = info->_phases[keep];
             p.insn_offset = (uint16_t)truncate_at;
             p.kind = SU_UNSUPPORTED;

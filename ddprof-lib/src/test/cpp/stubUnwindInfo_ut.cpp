@@ -222,6 +222,34 @@ TEST_F(StubUnwindTest, EntryPcBeforePush) {
     expectPhase(info, 0, SU_PC_TO_LR, 0);
 }
 
+// More distinct phases than the table holds: the scan must truncate while
+// reserving one slot, so the SU_UNSUPPORTED terminator at the cut always
+// lands. Without the reserved slot the table stayed full and PCs past the cut
+// silently resolved to the last real phase (a stale rule, counted as a hit).
+TEST_F(StubUnwindTest, PhaseTableOverflowKeepsTerminator) {
+    // Each sub with a distinct immediate is a distinct phase; 20 of them
+    // exceed the 16-slot table with room to spare.
+    std::vector<uint32_t> code;
+    for (int i = 1; i <= 20; i++) {
+        code.push_back(subSp(8 * i));
+    }
+    code.push_back(NOP);
+    code.push_back(RET);
+    StubUnwindInfo* info = analyze(code);
+    ASSERT_NE(info, nullptr);
+    // 15 real phases (entry + 14 subs); the 16th slot is the terminator.
+    // Local constexpr copy: the header declares MAX_PHASES without a
+    // definition, so passing it to EXPECT_EQ (by reference) would be an
+    // ODR-use with no symbol to link against.
+    static constexpr int kMaxPhases = StubUnwindInfo::MAX_PHASES;
+    EXPECT_EQ(info->_phase_count, kMaxPhases);
+    // After 14 subs the sp delta is cumulative: 8*(1+2+...+14).
+    expectPhase(info, 14, SU_SP_DELTA_LR, 8 * (14 * 15) / 2);
+    // The cut and everything past it degrades instead of guessing.
+    expectPhase(info, 15, SU_UNSUPPORTED, 0);
+    expectPhase(info, 20, SU_UNSUPPORTED, 0);
+}
+
 // A call from a frameless stub makes lr-dependent unwinding impossible.
 TEST_F(StubUnwindTest, FramelessCallDegrades) {
     // 0: nop
