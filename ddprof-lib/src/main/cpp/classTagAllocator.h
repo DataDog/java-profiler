@@ -7,7 +7,8 @@
 #define _CLASS_TAG_ALLOCATOR_H
 
 #include "arch.h"
-#include <jni.h>
+#include "mutex.h"
+#include <jvmti.h>
 
 // Process-wide, negative JVMTI class-object tag allocator, shared by
 // ReferenceChainTracker (which tags every loaded class's own jclass object
@@ -55,6 +56,32 @@ inline volatile jlong &magnitude() {
 // for why negative, and why this must be the only place in the process that
 // mints one.
 inline jlong next() { return -atomicIncRelaxed(magnitude(), (jlong)1); }
+
+// Returns the class tag klass carries, first installing a fresh next() tag if
+// it carries none. Returns 0 if GetTag or SetTag fails, or if klass carries a
+// positive tag: that is never a class tag (heapReferenceCallback() admits a
+// not-yet-class-tagged class object reached over a non-CLASS edge as an
+// ordinary frontier object), and adopting it would break the sign convention
+// above. JVMTI has no compare-and-set for tags, so two unserialized GetTag == 0
+// -> SetTag sequences on one class would both install a tag and the caller
+// whose SetTag landed first would keep a tag the class no longer carries. Every
+// class-tag install goes through here, so this leaf mutex (no other lock is
+// taken while it is held) closes that window. A blocking mutex rather than a
+// SpinLock: it is held across JVMTI calls, and callers include application
+// threads.
+inline jlong getOrMint(jvmtiEnv *jvmti, jclass klass) {
+  static Mutex mint_lock;
+  MutexLocker locker(mint_lock);
+  jlong tag = 0;
+  if (jvmti->GetTag(klass, &tag) != JVMTI_ERROR_NONE) {
+    return 0;
+  }
+  if (tag != 0) {
+    return tag < 0 ? tag : 0;
+  }
+  tag = next();
+  return jvmti->SetTag(klass, tag) == JVMTI_ERROR_NONE ? tag : 0;
+}
 
 // Test-only: resets the shared counter back to its starting value. Without
 // this, gtest cases that assert on exact tag values (e.g. "the first class

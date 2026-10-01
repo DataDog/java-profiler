@@ -432,15 +432,13 @@ jlong LivenessTracker::acquireLeakTag(u64 call_trace_id, jint tid) {
   // free list. The dedicated lock keeps the pool correct independent of which
   // table lock mode the caller holds. Lock order: _table_lock (any mode) is
   // always acquired BEFORE _leak_tag_pool_lock, never the reverse.
-  _leak_tag_pool_lock.lock();
+  ExclusiveLockGuard guard(&_leak_tag_pool_lock);
   if (_leak_tag_free_count <= 0) {
-    _leak_tag_pool_lock.unlock();
     return 0; // pool exhausted
   }
   int idx = _leak_tag_free_list[--_leak_tag_free_count];
   _leak_tag_info[idx].call_trace_id = call_trace_id;
   _leak_tag_info[idx].tid = tid;
-  _leak_tag_pool_lock.unlock();
   return LEAK_TAG_BASE + idx;
 }
 
@@ -451,11 +449,10 @@ void LivenessTracker::releaseLeakTag(jlong tag) {
   int idx = (int)(tag - LEAK_TAG_BASE);
   // See acquireLeakTag()'s comment for the dedicated pool lock (and the
   // _table_lock -> _leak_tag_pool_lock ordering).
-  _leak_tag_pool_lock.lock();
+  ExclusiveLockGuard guard(&_leak_tag_pool_lock);
   _leak_tag_info[idx].call_trace_id = 0;
   _leak_tag_info[idx].tid = 0;
   _leak_tag_free_list[_leak_tag_free_count++] = idx;
-  _leak_tag_pool_lock.unlock();
 }
 
 bool LivenessTracker::getLeakTagInfo(jlong tag, u64 *out_call_trace_id,
@@ -472,14 +469,13 @@ bool LivenessTracker::getLeakTagInfo(jlong tag, u64 *out_call_trace_id,
   // caller (ReferenceChainTracker's BFS poll thread) holds no table lock in
   // its polling path, and without this lock the releaseLeakTag() zeroing on
   // the GC-callback thread would race these reads.
-  _leak_tag_pool_lock.lock();
+  ExclusiveLockGuard guard(&_leak_tag_pool_lock);
   bool in_use = _leak_tag_info[idx].call_trace_id != 0 ||
                 _leak_tag_info[idx].tid != 0;
   if (in_use) {
     *out_call_trace_id = _leak_tag_info[idx].call_trace_id;
     *out_tid = _leak_tag_info[idx].tid;
   }
-  _leak_tag_pool_lock.unlock();
   return in_use;
 }
 
@@ -1034,36 +1030,15 @@ void LivenessTracker::mintStableClassTagIfNeeded(JNIEnv *env, int slot,
   jvmtiEnv *jvmti = VM::jvmti();
   jclass klass = env->GetObjectClass(instance);
   if (jvmti != nullptr && klass != nullptr) {
-    jlong tag = 0;
-    if (jvmti->GetTag(klass, &tag) == JVMTI_ERROR_NONE) {
-      if (tag == 0) {
-        jlong new_tag = ClassTagAllocator::next();
-        if (jvmti->SetTag(klass, new_tag) == JVMTI_ERROR_NONE) {
-          // Adopt the tag actually installed on the class object: the
-          // reference-chain tracker's resolveLoadedClasses() may have
-          // installed its own tag between our GetTag and SetTag (two SetTag
-          // calls on the same untagged class - the last writer wins on the
-          // class object). Re-read so both trackers keep the ONE tag the
-          // class carries; publishing our own minted tag otherwise would
-          // permanently disconnect this entry's leak correlation from the
-          // class tag the reference-chain side keys off of.
-          jlong installed = 0;
-          if (jvmti->GetTag(klass, &installed) == JVMTI_ERROR_NONE &&
-              installed != 0) {
-            tag = installed;
-          } else {
-            tag = new_tag;
-          }
-        } else {
-          // SetTag failed: publish nothing. stable_class_tag stays 0 and
-          // the next fold's minting retry (the need_mint stale-representative
-          // probe) calls this method again - a tag that is not on the class
-          // object must never be cached as the stable tag.
-          tag = 0;
-        }
-      }
-      _klass_population[slot].stable_class_tag = tag;
-    }
+    // getOrMint() serializes with the reference-chain tracker's own class
+    // tagging, so both trackers key off the one tag the class object carries.
+    // When it returns 0 (a JVMTI failure, or a positive tag that is not a
+    // class tag - see its comment), stable_class_tag stays 0 and
+    // the next fold's minting retry (the need_mint stale-representative
+    // probe) calls this method again - a tag that is not on the class object
+    // must never be cached as the stable tag.
+    _klass_population[slot].stable_class_tag =
+        ClassTagAllocator::getOrMint(jvmti, klass);
   }
   if (klass != nullptr) {
     env->DeleteLocalRef(klass);

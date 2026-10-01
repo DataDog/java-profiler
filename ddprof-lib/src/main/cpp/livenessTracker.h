@@ -433,9 +433,10 @@ private:
   jlong _container_memory_limit;
   // Release-published by initialize_table() right after it calls
   // OS::getContainerMemoryLimit(); onGC() acquires it before calling
-  // OS::getContainerMemoryUsage(). The limit call writes the cgroup path
-  // globals the usage call reads (os_linux.cpp). onGC() cannot use
-  // _initialized for this: initialize() sets it before initialize_table().
+  // OS::getContainerMemoryUsage(). The first limit call picks the usage file
+  // the usage call reads (os_linux.cpp), and initialize_table()'s call may be
+  // that first one. onGC() cannot use _initialized for this: initialize()
+  // sets it before initialize_table().
   volatile bool _container_limit_resolved;
 
 #ifdef DEBUG

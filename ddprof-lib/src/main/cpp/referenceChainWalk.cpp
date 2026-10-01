@@ -68,8 +68,10 @@ void ReferenceChainTracker::resolveLoadedClasses(jvmtiEnv *jvmti,
       // class-map reset (class_map_reset above) - a class already tagged from a prior generation
       // still carries that same JVMTI tag (untouched by clearAll()), but the dictionary id it used
       // to map to is gone, so its name must be re-resolved into the new generation too.
+      // A positive tag is never a class tag (see ClassTagAllocator::getOrMint()), so it is not
+      // re-resolved on a class-map reset either.
       if (jvmti->GetTag(klass, &tag) == JVMTI_ERROR_NONE &&
-          (tag == 0 || class_map_reset)) {
+          (tag == 0 || (class_map_reset && tag < 0))) {
         // Resolve its name now, via the same GetClassSignature + normalizeClassSignature +
         // Profiler::lookupClass sequence ObjectSampler::recordAllocation() already uses
         // (objectSampler.cpp:76-90), reused rather than re-derived.
@@ -88,20 +90,10 @@ void ReferenceChainTracker::resolveLoadedClasses(jvmtiEnv *jvmti,
               // Reuse the existing tag if this class was already tagged by a prior generation -
               // only the resolved id needs refreshing, not the tag identity heapReferenceCallback()
               // keys off of.
-              jlong class_tag = tag != 0 ? tag : nextClassTag();
-              if (tag != 0 ||
-                  jvmti->SetTag(klass, class_tag) == JVMTI_ERROR_NONE) {
-                if (tag == 0) {
-                  // Adopt the tag actually installed on the class object: LivenessTracker's
-                  // mintStableClassTagIfNeeded() may have installed its own tag between our GetTag
-                  // and SetTag (two SetTag calls on the same untagged class - the last writer wins
-                  // on the class).
-                  jlong installed = 0;
-                  if (jvmti->GetTag(klass, &installed) == JVMTI_ERROR_NONE &&
-                      installed != 0) {
-                    class_tag = installed;
-                  }
-                }
+              // getOrMint() returns the tag LivenessTracker's mintStableClassTagIfNeeded()
+              // installed if it got there after our GetTag above.
+              jlong class_tag = tag != 0 ? tag : ClassTagAllocator::getOrMint(jvmti, klass);
+              if (class_tag != 0) {
                 _class_tags.insert(class_tag, (u32)id);
               }
             }

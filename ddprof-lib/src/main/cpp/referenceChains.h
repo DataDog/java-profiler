@@ -39,7 +39,9 @@ class ReferenceChainTracker {
   friend class ReferenceChainsTestAccessor;
 
 private:
-  bool _enabled;
+  // Written by start() on the control thread, read by the GC callbacks and other threads via
+  // enabled(): release/acquire through the arch.h helpers.
+  volatile bool _enabled;
 
   // Frontier metadata table. Constructed lazily on the first start() with the flag enabled, sized
   // from args._reference_chains_frontier_cap; like LivenessTracker's table (LivenessTracker's own
@@ -460,7 +462,7 @@ private:
 
   // java/util/Collection and java/util/Map class tags, resolved once lazily by
   // resolveContainerInterfaceTags() (0 = not yet resolved; a resolved value is NEGATIVE - class
-  // tags are a negative namespace, see nextClassTag()'s own comment).
+  // tags are a negative namespace, see classTagAllocator.h's header comment).
   jlong _collection_iface_class_tag = 0;
   jlong _map_iface_class_tag = 0;
 
@@ -796,10 +798,11 @@ private:
   // hand out.
   void maybeRevokeBorrowForRootEnumPass(u64 pass_wall_ns);
 
-  // Tags every not-yet-tagged loaded class (GetLoadedClasses()) with a fresh nextClassTag() and
-  // resolves its name into _class_tags, via the same GetClassSignature + normalizeClassSignature +
-  // Profiler::lookupClass sequence ObjectSampler::recordAllocation() already uses
-  // (objectSampler.cpp:76-90) - reusing that normalization helper rather than re-deriving it.
+  // Tags every not-yet-tagged loaded class (GetLoadedClasses()) with a
+  // ClassTagAllocator::getOrMint() tag and resolves its name into _class_tags, via the same
+  // GetClassSignature + normalizeClassSignature + Profiler::lookupClass sequence
+  // ObjectSampler::recordAllocation() already uses (objectSampler.cpp:76-90) - reusing that
+  // normalization helper rather than re-deriving it.
   void resolveLoadedClasses(jvmtiEnv *jvmti, JNIEnv *jni);
 
   // jvmtiHeapReferenceCallback for runPass()'s FollowReferences call (see runPass() below for the
@@ -1137,7 +1140,7 @@ public:
   // installed unconditionally in vmEntry.cpp, so no extra signal setup is needed here.
   void stopThread();
 
-  bool enabled() const { return _enabled; }
+  bool enabled() const { return loadAcquire(_enabled); }
 
   u64 gcStartEpoch() { return load(_gc_start_epoch); }
   u64 gcFinishEpoch() { return load(_gc_finish_epoch); }
@@ -1151,11 +1154,6 @@ public:
   jlong tagObject(jvmtiEnv *jvmti, jobject obj);
   jlong getTag(jvmtiEnv *jvmti, jobject obj);
   void clearTag(jvmtiEnv *jvmti, jobject obj);
-
-  // Hands out a fresh negative class tag, from the shared, process-wide counter both this class and
-  // LivenessTracker mint from - see classTagAllocator.h's own header comment for why this must be
-  // shared rather than a private counter here.
-  jlong nextClassTag() { return ClassTagAllocator::next(); }
 
   // Returns the frontier metadata table, or nullptr if the subsystem was never started with the
   // flag enabled.

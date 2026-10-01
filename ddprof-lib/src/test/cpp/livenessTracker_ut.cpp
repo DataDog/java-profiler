@@ -1127,12 +1127,15 @@ TEST_F(SecondsToOOMTest, FlatFloorReturnsNegative) {
 }
 
 // onGC() must not read container usage before initialize_table() has published
-// the container limit: that read depends on the cgroup path globals the limit
-// call writes. Unpublished, the sample records 0 (the same value as a failed
-// read). Only observable where OS::getContainerMemoryUsage() returns a real
-// value (Linux with cgroups); on other platforms it is -1 either way.
+// the container limit: that read depends on the usage file the first limit
+// call picks. Unpublished, the sample records 0 (the same value as a failed
+// read). The limit is resolved up front so that, with the gate removed, the
+// unpublished sample would record real usage. Only observable where
+// OS::getContainerMemoryUsage() returns a real value (Linux with cgroups); on
+// other platforms it is -1 either way.
 TEST_F(SecondsToOOMTest, OnGCSkipsContainerUsageUntilLimitResolved) {
     LivenessTracker *tracker = LivenessTracker::instance();
+    OS::getContainerMemoryLimit();
 
     EXPECT_EQ(0u, LivenessTrackerTestAccessor::containerUsageRecordedByOnGC(tracker, false));
 

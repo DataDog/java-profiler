@@ -349,10 +349,10 @@ bool ReferenceChainTracker::resolveContainerInterfaceTags(
     return true;
   }
   // resolveLoadedClasses() tags every loaded class (including these bootstrap interfaces) with its
-  // class-tag-allocator tag (a NEGATIVE value - see nextClassTag()'s own comment) before any anchor
-  // can be admitted, but classify defensively: if an interface object somehow carries no tag yet,
-  // mint one via the shared allocator (same sequence resolveLoadedClasses() itself uses) so the
-  // comparison below is well-defined.
+  // class-tag-allocator tag (a NEGATIVE value - see classTagAllocator.h's header comment) before
+  // any anchor can be admitted, but classify defensively: if an interface object somehow carries
+  // no tag yet, mint one via ClassTagAllocator::getOrMint() (as resolveLoadedClasses() does) so
+  // the comparison below is well-defined.
   struct Iface {
     const char *name;
     jlong *tag_out;
@@ -377,27 +377,8 @@ bool ReferenceChainTracker::resolveContainerInterfaceTags(
       jni->ExceptionClear();
       continue;
     }
-    jlong tag = 0;
-    bool ok = jvmti->GetTag(local, &tag) == JVMTI_ERROR_NONE;
-    if (ok && tag == 0) {
-      jlong new_tag = nextClassTag();
-      if (jvmti->SetTag(local, new_tag) == JVMTI_ERROR_NONE) {
-        // Adopt-on-reread, same cross-tracker race as
-        // resolveLoadedClasses()/mintStableClassTagIfNeeded(): another tracker may have installed
-        // its own tag between our GetTag and SetTag - keep the one tag the interface object
-        // carries.
-        jlong installed = 0;
-        if (jvmti->GetTag(local, &installed) == JVMTI_ERROR_NONE &&
-            installed != 0) {
-          tag = installed;
-        } else {
-          tag = new_tag;
-        }
-      } else {
-        ok = false;
-      }
-    }
-    if (ok && tag != 0) {
+    jlong tag = ClassTagAllocator::getOrMint(jvmti, local);
+    if (tag != 0) {
       *iface.tag_out = tag;
     }
     jni->DeleteLocalRef(local);
@@ -785,7 +766,7 @@ void ReferenceChainTracker::walkCandidateThreadLocals(
 
 void ReferenceChainTracker::registerExistingThreads(jvmtiEnv *jvmti,
                                                      JNIEnv *jni) {
-  if (!_enabled || jvmti == nullptr || jni == nullptr) {
+  if (!enabled() || jvmti == nullptr || jni == nullptr) {
     return;
   }
   // onThreadStart() cannot register threads that predate profiler attachment.
@@ -814,7 +795,7 @@ void ReferenceChainTracker::registerExistingThreads(jvmtiEnv *jvmti,
 
 void ReferenceChainTracker::registerThreadObject(JNIEnv *jni, int tid,
                                                  jthread thread) {
-  if (!_enabled || jni == nullptr || thread == nullptr) {
+  if (!enabled() || jni == nullptr || thread == nullptr) {
     return;
   }
   jobject ref = jni->NewGlobalRef(thread);

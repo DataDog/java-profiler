@@ -238,9 +238,9 @@ void ReferenceChainTracker::autoTuneDefaults(Arguments &args) {
 }
 
 Error ReferenceChainTracker::start(Arguments &args) {
-  _enabled = args._reference_chains;
+  storeRelease(_enabled, args._reference_chains);
 
-  if (!_enabled) {
+  if (!args._reference_chains) {
     Log::info("Reference chain tracking is disabled");
     return Error::OK;
   }
@@ -250,12 +250,14 @@ Error ReferenceChainTracker::start(Arguments &args) {
   // prior recording carry StringDictionary ids from a wiped generation - re-emitting them into the
   // new recording would write missing or newly-reassigned class ids for chains that describe the
   // previous recording's objects.
-  _resolved_chains_lock.lock();
-  _resolved_chains.clear();
-  _resolved_chains_lock.unlock();
-  _pending_abandoned_events_lock.lock();
-  _pending_abandoned_events.clear();
-  _pending_abandoned_events_lock.unlock();
+  {
+    ExclusiveLockGuard guard(&_resolved_chains_lock);
+    _resolved_chains.clear();
+  }
+  {
+    ExclusiveLockGuard guard(&_pending_abandoned_events_lock);
+    _pending_abandoned_events.clear();
+  }
   _urgency_budget_boosted = false;
 
   // Auto-tune defaults that the operator did not set explicitly, based on max heap size and
@@ -369,7 +371,7 @@ Error ReferenceChainTracker::start(Arguments &args) {
 }
 
 void ReferenceChainTracker::stop() {
-  if (!_enabled) {
+  if (!enabled()) {
     return;
   }
   Log::info("Reference chain tracking stopped");
@@ -380,7 +382,7 @@ void ReferenceChainTracker::stop() {
 }
 
 void ReferenceChainTracker::startThread() {
-  if (!_enabled || _running.load(std::memory_order_acquire)) {
+  if (!enabled() || _running.load(std::memory_order_acquire)) {
     return;
   }
   // Reset from any previous stopThread() call - a dynamic-attach profiler can go through multiple
@@ -552,7 +554,7 @@ void JNICALL ReferenceChainTracker::GarbageCollectionFinish(jvmtiEnv *jvmti_env)
 }
 
 void ReferenceChainTracker::onGCStart() {
-  if (!_enabled) {
+  if (!enabled()) {
     return;
   }
   // JVMTI spec: only Memory Management category calls (Allocate/Deallocate) are allowed from inside
@@ -562,7 +564,7 @@ void ReferenceChainTracker::onGCStart() {
 }
 
 void ReferenceChainTracker::onGCFinish() {
-  if (!_enabled) {
+  if (!enabled()) {
     return;
   }
   GCCallbackGuard guard;
@@ -950,12 +952,14 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
          sizeof(_candidate_qualifying_tid_count));
   // _candidate_parent_tags/_candidate_referrer_klasses/_candidate_depths will be filled at pruning
   // time.
-  _resolved_chains_lock.lock();
-  _resolved_chains.clear();
-  _resolved_chains_lock.unlock();
-  _pending_abandoned_events_lock.lock();
-  _pending_abandoned_events.clear();
-  _pending_abandoned_events_lock.unlock();
+  {
+    ExclusiveLockGuard guard(&_resolved_chains_lock);
+    _resolved_chains.clear();
+  }
+  {
+    ExclusiveLockGuard guard(&_pending_abandoned_events_lock);
+    _pending_abandoned_events.clear();
+  }
 
   // Restart the BFS thread against this freshly reset state - startThread() itself clears
   // _abort_pass_requested, so the new thread's very first pass is not instantly aborted by the flag

@@ -519,6 +519,77 @@ TEST_F(ReferenceChainsTagTest, UntaggedObjectReadsBackZero) {
     EXPECT_EQ(0, tracker->getTag(&mock_env, reinterpret_cast<jobject>(&untagged)));
 }
 
+TEST_F(ReferenceChainsTagTest, GetOrMintMintsOnceAndRejectsPositiveTags) {
+    int untagged = 0, frontier_tagged = 0;
+    jclass a = reinterpret_cast<jclass>(&untagged);
+    jclass b = reinterpret_cast<jclass>(&frontier_tagged);
+
+    jlong minted = ClassTagAllocator::getOrMint(&mock_env, a);
+    EXPECT_LT(minted, 0);
+    EXPECT_EQ(minted, tags[a]);
+    EXPECT_EQ(minted, ClassTagAllocator::getOrMint(&mock_env, a)) << "existing class tag reused";
+
+    tags[b] = 42;
+    EXPECT_EQ(0, ClassTagAllocator::getOrMint(&mock_env, b));
+    EXPECT_EQ(42, tags[b]) << "a positive tag must be left alone, not adopted or overwritten";
+}
+
+// Every concurrent getOrMint() on one untagged class must return the single tag the class ends up
+// carrying. The mock widens the GetTag == 0 -> SetTag window, so without the mint lock several
+// callers would each install (and return) their own tag.
+class ClassTagGetOrMintRaceTest : public ::testing::Test {
+protected:
+    static std::atomic<jlong> class_tag;
+
+    static jvmtiError JNICALL slow_GetTag(jvmtiEnv *, jobject, jlong *tag_ptr) {
+        *tag_ptr = class_tag.load();
+        if (*tag_ptr == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return JVMTI_ERROR_NONE;
+    }
+
+    static jvmtiError JNICALL slow_SetTag(jvmtiEnv *, jobject, jlong tag) {
+        class_tag.store(tag);
+        return JVMTI_ERROR_NONE;
+    }
+};
+
+std::atomic<jlong> ClassTagGetOrMintRaceTest::class_tag{0};
+
+TEST_F(ClassTagGetOrMintRaceTest, ConcurrentCallersAgreeOnOneTag) {
+    jvmtiInterface_1_ tbl{};
+    tbl.GetTag = &slow_GetTag;
+    tbl.SetTag = &slow_SetTag;
+    _jvmtiEnv env{};
+    env.functions = &tbl;
+    class_tag.store(0);
+    int klass_storage = 0;
+    jclass klass = reinterpret_cast<jclass>(&klass_storage);
+
+    constexpr int THREADS = 8;
+    jlong results[THREADS] = {};
+    std::atomic<int> ready{0};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < THREADS; i++) {
+        threads.emplace_back([&, i]() {
+            ready.fetch_add(1);
+            while (ready.load() < THREADS) {
+            }
+            results[i] = ClassTagAllocator::getOrMint(&env, klass);
+        });
+    }
+    for (std::thread &t : threads) {
+        t.join();
+    }
+    jlong installed = class_tag.load();
+    EXPECT_LT(installed, 0);
+    for (int i = 0; i < THREADS; i++) {
+        EXPECT_EQ(installed, results[i])
+            << "caller " << i << " kept a tag the class does not carry";
+    }
+}
+
 // FrontierTable (tag-indexed frontier metadata table).
 
 TEST(FrontierTableTest, InsertThenLookupRoundTrips) {

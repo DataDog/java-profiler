@@ -973,9 +973,9 @@ bool ReferenceChainTracker::releaseSearchTags(jvmtiEnv *jvmti, JNIEnv *jni) {
 
 bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
                                      bool *out_truncated) {
-  if (!_enabled || jvmti == nullptr || _frontier == nullptr) {
+  if (!enabled() || jvmti == nullptr || _frontier == nullptr) {
     TEST_LOG_SUMMARY("ReferenceChainTracker::runPass early-exit: enabled=%d jvmti=%p frontier=%p",
-             _enabled, (void *)jvmti, (void *)_frontier);
+             enabled(), (void *)jvmti, (void *)_frontier);
     return false;
   }
 

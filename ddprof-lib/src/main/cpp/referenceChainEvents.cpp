@@ -251,7 +251,7 @@ bool ReferenceChainTracker::buildCanaryChainEvent(int candidate_idx,
 }
 
 void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
-  if (!_enabled || jvmti == nullptr || jni == nullptr ||
+  if (!enabled() || jvmti == nullptr || jni == nullptr ||
       !LivenessTracker::instance()->gcGenerationsEnabled()) {
     // Avoid candidate-table work when generation tracking is disabled.
     return;
@@ -400,9 +400,11 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
         if ((_candidate_found_bits & (1ULL << s)) &&
             _candidate_frontier_tags[s] != 0) {
           jlong canary_ftag = _candidate_frontier_tags[s];
-          _resolved_chains_lock.lock();
-          bool need = (_resolved_chains.find(canary_ftag) == _resolved_chains.end());
-          _resolved_chains_lock.unlock();
+          bool need;
+          {
+            ExclusiveLockGuard guard(&_resolved_chains_lock);
+            need = (_resolved_chains.find(canary_ftag) == _resolved_chains.end());
+          }
           if (need) {
             ReferenceChainEvent event;
             built_from_canary = buildCanaryChainEvent(s, &event);
@@ -487,11 +489,10 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
       }
     }
     if (rep_chain_key != 0) {
-      _resolved_chains_lock.lock();
+      ExclusiveLockGuard guard(&_resolved_chains_lock);
       auto it = _resolved_chains.find(rep_chain_key);
       need_refresh = (it == _resolved_chains.end() ||
                       it->second.source_search_ns != current_search_ns);
-      _resolved_chains_lock.unlock();
     }
     TEST_LOG("ReferenceChainTracker::pollWatchedTargets candidate[%d] klass_id=%u tag=%lld "
              "needRefresh=%d",
@@ -554,36 +555,35 @@ bool ReferenceChainTracker::cacheResolvedChain(jlong source_tag,
                                                ReferenceChainEvent &&event,
                                                jlong source_tag_val,
                                                u64 source_search_ns) {
-  _resolved_chains_lock.lock();
-  auto it = _resolved_chains.find(source_tag);
-  if (it == _resolved_chains.end() &&
-      (int)_resolved_chains.size() >= MAX_RESOLVED_CHAINS) {
-    _resolved_chains_lock.unlock();
-    Counters::increment(REFERENCE_CHAIN_EVENTS_DROPPED);
-    TEST_LOG("ReferenceChainTracker::cacheResolvedChain dropped new source_tag=%lld, "
-             "cache full (at MAX_RESOLVED_CHAINS=%d)",
-             (long long)source_tag, MAX_RESOLVED_CHAINS);
-    return false;
+  {
+    ExclusiveLockGuard guard(&_resolved_chains_lock);
+    auto it = _resolved_chains.find(source_tag);
+    if (it != _resolved_chains.end() ||
+        (int)_resolved_chains.size() < MAX_RESOLVED_CHAINS) {
+      CachedChain &slot = _resolved_chains[source_tag];
+      slot.event = std::move(event);
+      slot.source_tag = source_tag_val;
+      slot.source_search_ns = source_search_ns;
+      TEST_LOG("ReferenceChainTracker::cacheResolvedChain source_tag=%lld cache_size=%d",
+               (long long)source_tag, (int)_resolved_chains.size());
+      return true;
+    }
   }
-  CachedChain &slot = _resolved_chains[source_tag];
-  slot.event = std::move(event);
-  slot.source_tag = source_tag_val;
-  slot.source_search_ns = source_search_ns;
-  TEST_LOG("ReferenceChainTracker::cacheResolvedChain source_tag=%lld cache_size=%d",
-           (long long)source_tag, (int)_resolved_chains.size());
-  _resolved_chains_lock.unlock();
-  return true;
+  Counters::increment(REFERENCE_CHAIN_EVENTS_DROPPED);
+  TEST_LOG("ReferenceChainTracker::cacheResolvedChain dropped new source_tag=%lld, "
+           "cache full (at MAX_RESOLVED_CHAINS=%d)",
+           (long long)source_tag, MAX_RESOLVED_CHAINS);
+  return false;
 }
 
 void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
-  _resolved_chains_lock.lock();
+  ExclusiveLockGuard guard(&_resolved_chains_lock);
   auto it = _resolved_chains.find(source_tag);
   if (it != _resolved_chains.end()) {
     _resolved_chains.erase(it);
     TEST_LOG("ReferenceChainTracker::invalidateResolvedChain source_tag=%lld",
              (long long)source_tag);
   }
-  _resolved_chains_lock.unlock();
 }
 
 // Builds and caches chain events for every auto-marked discovered instance recorded against a slot
@@ -616,12 +616,13 @@ for (int s = 0; s < _candidate_count; s++) {
     // tag from an earlier search describes a different object and must not suppress the rebuild
     // (the generation check mirrors the rep-refresh paths in pollWatchedTargets()).
     const u64 current_search_ns = load(_search_start_ns);
-    _resolved_chains_lock.lock();
-    auto cached_it = _resolved_chains.find(disc_tag);
-    bool already_cached = (cached_it != _resolved_chains.end() &&
-                           cached_it->second.source_search_ns ==
-                               current_search_ns);
-    _resolved_chains_lock.unlock();
+    bool already_cached;
+    {
+      ExclusiveLockGuard guard(&_resolved_chains_lock);
+      auto cached_it = _resolved_chains.find(disc_tag);
+      already_cached = (cached_it != _resolved_chains.end() &&
+                        cached_it->second.source_search_ns == current_search_ns);
+    }
     if (already_cached) {
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
                "already_cached disc_tag=%lld klass_id=%u slot=%d idx=%d",
@@ -765,12 +766,13 @@ void ReferenceChainTracker::drainPendingChainEvents(
   // the dumping chunk's window) while the cache itself is left intact, so the same live sample's
   // chain re-emits into every chunk it survives into (see _resolved_chains' comment).
   u64 now = TSC::ticks();
-  _resolved_chains_lock.lock();
-  for (const auto &kv : _resolved_chains) {
-    out->push_back(kv.second.event);
-    out->back()._start_time = now;
+  {
+    ExclusiveLockGuard guard(&_resolved_chains_lock);
+    for (const auto &kv : _resolved_chains) {
+      out->push_back(kv.second.event);
+      out->back()._start_time = now;
+    }
   }
-  _resolved_chains_lock.unlock();
   TEST_LOG_SUMMARY("ReferenceChainTracker::drainPendingChainEvents re-emitted=%d",
            (int)out->size());
 }
@@ -786,20 +788,20 @@ void ReferenceChainTracker::enqueuePendingAbandonedEvent() {
   // Stamp when the search actually stopped, not when a later dump writes the queued event - an
   // abandon is a point-in-time occurrence and dump() can lag it by a whole chunk rotation.
   event._start_time = TSC::ticks();
-  _pending_abandoned_events_lock.lock();
-  if ((int)_pending_abandoned_events.size() >= MAX_PENDING_ABANDONED_EVENTS) {
-    _pending_abandoned_events_lock.unlock();
-    Counters::increment(REFERENCE_CHAIN_EVENTS_DROPPED);
-    TEST_LOG_SUMMARY("ReferenceChainTracker::enqueuePendingAbandonedEvent dropped, "
-             "queue full (at MAX_PENDING_ABANDONED_EVENTS=%d)",
-             MAX_PENDING_ABANDONED_EVENTS);
-    return;
+  {
+    ExclusiveLockGuard guard(&_pending_abandoned_events_lock);
+    if ((int)_pending_abandoned_events.size() < MAX_PENDING_ABANDONED_EVENTS) {
+      _pending_abandoned_events.push_back(event);
+      TEST_LOG_SUMMARY("ReferenceChainTracker::enqueuePendingAbandonedEvent reason=%d "
+               "queue_size=%d",
+               (int)event._reason, (int)_pending_abandoned_events.size());
+      return;
+    }
   }
-  _pending_abandoned_events.push_back(event);
-  TEST_LOG_SUMMARY("ReferenceChainTracker::enqueuePendingAbandonedEvent reason=%d "
-           "queue_size=%d",
-           (int)event._reason, (int)_pending_abandoned_events.size());
-  _pending_abandoned_events_lock.unlock();
+  Counters::increment(REFERENCE_CHAIN_EVENTS_DROPPED);
+  TEST_LOG_SUMMARY("ReferenceChainTracker::enqueuePendingAbandonedEvent dropped, "
+           "queue full (at MAX_PENDING_ABANDONED_EVENTS=%d)",
+           MAX_PENDING_ABANDONED_EVENTS);
 }
 
 void ReferenceChainTracker::drainPendingAbandonedEvents(
@@ -810,11 +812,12 @@ void ReferenceChainTracker::drainPendingAbandonedEvents(
   // True drain, unlike drainPendingChainEvents() above: each queued event describes a discrete past
   // occurrence, not an ongoing live sample, so once Profiler::dump() (profiler.cpp) has emitted it
   // there is nothing left to re-report on the next dump.
-  _pending_abandoned_events_lock.lock();
-  out->insert(out->end(), _pending_abandoned_events.begin(),
-              _pending_abandoned_events.end());
-  _pending_abandoned_events.clear();
-  _pending_abandoned_events_lock.unlock();
+  {
+    ExclusiveLockGuard guard(&_pending_abandoned_events_lock);
+    out->insert(out->end(), _pending_abandoned_events.begin(),
+                _pending_abandoned_events.end());
+    _pending_abandoned_events.clear();
+  }
   TEST_LOG_SUMMARY("ReferenceChainTracker::drainPendingAbandonedEvents drained=%d",
            (int)out->size());
 }

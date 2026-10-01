@@ -193,11 +193,10 @@ public:
       return;
     }
     int idx = (int)(tag - 1);
-    _table_lock.lock();
+    ExclusiveLockGuard guard(&_table_lock);
     if (idx < _table_size) {
       _table[idx].leak_tag = leak_tag;
     }
-    _table_lock.unlock();
   }
 
   // Replace a shallow root-attached entry (parent_tag == 0, depth == 0) with a deeper
@@ -226,9 +225,8 @@ public:
   // sequence restarts at 1, reusing these same slot indices, so lookup()/insert() must not read
   // back the previous search's now-irrelevant entries for them.
   void resetForRestart() {
-    _table_lock.lock();
+    ExclusiveLockGuard guard(&_table_lock);
     _table_size.store(0, std::memory_order_relaxed);
-    _table_lock.unlock();
   }
 
   // Debug-only test seam (ReferenceChainTracker::resetSearchStateForTest()).
@@ -251,7 +249,7 @@ public:
   int size() const { return _table_size.load(std::memory_order_relaxed); }
 };
 
-// Tag-indexed table mapping a *class* tag (see ReferenceChainTracker::nextClassTag() - always
+// Tag-indexed table mapping a *class* tag (see ClassTagAllocator::next() - always
 // negative, a namespace disjoint from the positive FrontierTable object tags above so a raw tag
 // value alone always tells the heap-walk callback which table it belongs to) to the
 // StringDictionary id of that class's resolved name (Profiler::classMap(), the same interning table

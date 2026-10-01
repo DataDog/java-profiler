@@ -36,7 +36,7 @@ FrontierTable::~FrontierTable() {
 }
 
 void FrontierTable::resetCapacityForTest(int max_cap) {
-  _table_lock.lock();
+  ExclusiveLockGuard guard(&_table_lock);
   Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_BYTES,
                        -(jlong)_table_cap * sizeof(FrontierEntry));
   Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY, -_table_cap);
@@ -54,7 +54,6 @@ void FrontierTable::resetCapacityForTest(int max_cap) {
                        (jlong)_table_cap * sizeof(FrontierEntry));
   Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY, _table_cap);
   _table_size.store(0, std::memory_order_relaxed);
-  _table_lock.unlock();
 }
 
 bool FrontierTable::growLocked(int required_cap) {
@@ -105,41 +104,43 @@ bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
   // Exclusive lock for the whole write (growLocked() already requires it) - a shared lock here
   // would not exclude lookup()'s own shared-mode read of the same slot, letting a concurrent reader
   // observe a torn entry.
-  _table_lock.lock();
-  if (idx >= _table_cap && !growLocked(idx + 1)) {
-    _table_lock.unlock();
-    Log::debug("ReferenceChains: frontier table capacity exhausted "
-               "(cap=%d, max=%d, tag=%lld)",
-               _table_cap, _table_max_cap, (long long)tag);
-    return false;
-  }
-  _table[idx].parent_tag = parent_tag;
-  _table[idx].referrer_klass = referrer_klass;
-  _table[idx].depth = depth;
-  _table[idx].state = state;
-  _table[idx].root_kind = root_kind;
-  _table[idx].class_tag = class_tag;
-  _table[idx].leak_tag = 0;
-  _table[idx].referrer_field_index = referrer_field_index;
-  _table[idx].edge_kind = edge_kind;
-  _table[idx].referrer_class_tag = referrer_class_tag;
+  int cap_seen;
+  {
+    ExclusiveLockGuard guard(&_table_lock);
+    if (idx < _table_cap || growLocked(idx + 1)) {
+      _table[idx].parent_tag = parent_tag;
+      _table[idx].referrer_klass = referrer_klass;
+      _table[idx].depth = depth;
+      _table[idx].state = state;
+      _table[idx].root_kind = root_kind;
+      _table[idx].class_tag = class_tag;
+      _table[idx].leak_tag = 0;
+      _table[idx].referrer_field_index = referrer_field_index;
+      _table[idx].edge_kind = edge_kind;
+      _table[idx].referrer_class_tag = referrer_class_tag;
 
-  // Published under the same exclusive lock as the slot write: advancing
-  // _table_size only after unlock lets a concurrent insert for a higher index
-  // CAS the size past this entry's idx first, and a shared-lock reader then
-  // passes its `idx < _table_size` check on a value published outside the
-  // lock - reading this slot before its write is guaranteed visible. Keeping
-  // the write+publish pair inside the lock makes the size an exact bound on
-  // fully-written slots for every lock-ordered reader.
-  int sz = _table_size.load(std::memory_order_relaxed);
-  while (sz < idx + 1 &&
-         !_table_size.compare_exchange_weak(sz, idx + 1,
-                                             std::memory_order_relaxed)) {
-    // sz reloaded with the current value by compare_exchange_weak on failure; retry until either
-    // this thread wins or another thread already advanced _table_size past idx + 1.
+      // Published under the same exclusive lock as the slot write: advancing
+      // _table_size only after unlock lets a concurrent insert for a higher index
+      // CAS the size past this entry's idx first, and a shared-lock reader then
+      // passes its `idx < _table_size` check on a value published outside the
+      // lock - reading this slot before its write is guaranteed visible. Keeping
+      // the write+publish pair inside the lock makes the size an exact bound on
+      // fully-written slots for every lock-ordered reader.
+      int sz = _table_size.load(std::memory_order_relaxed);
+      while (sz < idx + 1 &&
+             !_table_size.compare_exchange_weak(sz, idx + 1,
+                                                 std::memory_order_relaxed)) {
+        // sz reloaded with the current value by compare_exchange_weak on failure; retry until
+        // either this thread wins or another thread already advanced _table_size past idx + 1.
+      }
+      return true;
+    }
+    cap_seen = _table_cap;
   }
-  _table_lock.unlock();
-  return true;
+  Log::debug("ReferenceChains: frontier table capacity exhausted "
+             "(cap=%d, max=%d, tag=%lld)",
+             cap_seen, _table_max_cap, (long long)tag);
+  return false;
 }
 
 bool FrontierTable::lookup(jlong tag, FrontierEntry *out) {
@@ -149,12 +150,11 @@ bool FrontierTable::lookup(jlong tag, FrontierEntry *out) {
   int idx = (int)(tag - 1);
 
   bool found = false;
-  _table_lock.lockShared();
+  SharedLockGuard guard(&_table_lock);
   if (idx < _table_size) {
     *out = _table[idx];
     found = true;
   }
-  _table_lock.unlockShared();
   return found;
 }
 
@@ -178,11 +178,10 @@ void FrontierTable::clear(jlong tag) {
 
   // Exclusive lock: this mutates a slot lookup() may be reading concurrently under its own shared
   // lock (see insert()'s own comment above).
-  _table_lock.lock();
+  ExclusiveLockGuard guard(&_table_lock);
   if (idx < _table_size) {
     _table[idx].state = FrontierEntryState::ABANDONED;
   }
-  _table_lock.unlock();
 }
 
 void FrontierTable::markEdge(jlong tag) {
@@ -191,11 +190,10 @@ void FrontierTable::markEdge(jlong tag) {
   }
   int idx = (int)(tag - 1);
 
-  _table_lock.lock();
+  ExclusiveLockGuard guard(&_table_lock);
   if (idx < _table_size) {
     _table[idx].state = FrontierEntryState::EDGE;
   }
-  _table_lock.unlock();
 }
 
 void FrontierTable::markExpanded(jlong tag) {
@@ -204,11 +202,10 @@ void FrontierTable::markExpanded(jlong tag) {
   }
   int idx = (int)(tag - 1);
 
-  _table_lock.lock();
+  ExclusiveLockGuard guard(&_table_lock);
   if (idx < _table_size) {
     _table[idx].state = FrontierEntryState::EXPANDED;
   }
-  _table_lock.unlock();
 }
 
 void FrontierTable::updateRootKind(jlong tag, u8 root_kind) {
@@ -217,11 +214,10 @@ void FrontierTable::updateRootKind(jlong tag, u8 root_kind) {
   }
   int idx = (int)(tag - 1);
 
-  _table_lock.lock();
+  ExclusiveLockGuard guard(&_table_lock);
   if (idx < _table_size) {
     _table[idx].root_kind = root_kind;
   }
-  _table_lock.unlock();
 }
 
 bool FrontierTable::improveChain(jlong tag, jlong parent_tag,
@@ -274,7 +270,7 @@ bool FrontierTable::improveChain(jlong tag, jlong parent_tag,
 
   int idx = (int)(tag - 1);
 
-  _table_lock.lock();
+  ExclusiveLockGuard guard(&_table_lock);
   bool improved = false;
   if (idx < _table_size && depth > _table[idx].depth) {
     _table[idx].parent_tag = parent_tag;
@@ -286,7 +282,6 @@ bool FrontierTable::improveChain(jlong tag, jlong parent_tag,
     _table[idx].referrer_class_tag = referrer_class_tag;
     improved = true;
   }
-  _table_lock.unlock();
   return improved;
 }
 
@@ -303,7 +298,7 @@ bool FrontierTable::reparentToDurableRoot(jlong tag, jlong new_parent_tag,
   int idx = (int)(tag - 1);
   int new_par_idx = (int)(new_parent_tag - 1);
 
-  _table_lock.lock();
+  ExclusiveLockGuard guard(&_table_lock);
   bool swapped = false;
   if (idx < _table_size && _table[idx].depth == 1 &&
       _table[idx].parent_tag > 0 && _table[idx].parent_tag != new_parent_tag) {
@@ -325,7 +320,6 @@ bool FrontierTable::reparentToDurableRoot(jlong tag, jlong new_parent_tag,
       swapped = true;
     }
   }
-  _table_lock.unlock();
   return swapped;
 }
 
