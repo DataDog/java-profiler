@@ -55,7 +55,7 @@ static void block_run_churn_worker(ThreadFilter* filter, WallClockBlockTracker* 
         // Either exit path may lose the race against a concurrent registry
         // reset (which is expected and fine); neither may crash or corrupt.
         if (i & 1) {
-          tracker->exitBlockedRun(slot, ThreadFilter::tokenGeneration(token));
+          tracker->exitBlockedRun(slot, WallClockBlockTracker::tokenGeneration(token));
         } else {
           tracker->exitBlockedRun(slot);
         }

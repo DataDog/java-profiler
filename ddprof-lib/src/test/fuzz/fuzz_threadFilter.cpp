@@ -148,7 +148,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         auto tok_it = g_last_token.find(it->second);
         if (tok_it != g_last_token.end()) {
           uint8_t corruption_byte = nextByte();
-          u32 correct_generation = ThreadFilter::tokenGeneration(tok_it->second);
+          u32 correct_generation = WallClockBlockTracker::tokenGeneration(tok_it->second);
           bool corrupt = (corruption_byte & 0x1) != 0;
           u32 generation = corrupt
               ? correct_generation + 1 + (corruption_byte >> 1)

@@ -32,7 +32,7 @@ enum class ExecutionMode : int {
 inline ExecutionMode getThreadExecutionMode();
 inline OSThreadState getOSThreadState();
 
-// Shared by BaseWallClock's precheck path and ThreadFilter::shouldSuppressOwnedBlock():
+// Shared by BaseWallClock's precheck path and WallClockBlockTracker::shouldSuppressOwnedBlock():
 // both need the same set of blocked/waiting states eligible for once-per-run suppression.
 inline bool isPrecheckSuppressionState(OSThreadState state) {
   return state == OSThreadState::SLEEPING ||

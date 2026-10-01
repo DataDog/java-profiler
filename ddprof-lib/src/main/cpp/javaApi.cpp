@@ -472,11 +472,11 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
   }
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (tf->registryActive()) {
-    ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(park_block_token);
+    ThreadFilter::SlotID slot_id = WallClockBlockTracker::tokenSlotId(park_block_token);
     if (tf->activeSlotForId(current->filterSlotId(), current->tid()) != nullptr &&
         current->filterSlotId() == slot_id) {
       WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
-      tracker->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(park_block_token));
+      tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(park_block_token));
     }
   }
 }
@@ -527,14 +527,14 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
     return;
   }
   ThreadFilter *tf = Profiler::instance()->threadFilter();
-  ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(block_token);
+  ThreadFilter::SlotID slot_id = WallClockBlockTracker::tokenSlotId(block_token);
   if (current->filterSlotId() != slot_id ||
       tf->activeSlotForId(slot_id, current->tid()) == nullptr) {
     return;
   }
   if (tf->registryActive()) {
     WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
-    tracker->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(block_token));
+    tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(block_token));
   }
 }
 

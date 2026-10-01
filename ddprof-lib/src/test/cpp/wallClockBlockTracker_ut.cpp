@@ -55,10 +55,10 @@ TEST_F(WallClockBlockTrackerTest, GenerationCheckedExitDoesNotClearAnotherOwner)
     ASSERT_NE(nullptr, block_slot);
     EXPECT_EQ(OSThreadState::SLEEPING, block_slot->activeBlockState());
 
-    EXPECT_FALSE(tracker->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(first_token) + 1));
+    EXPECT_FALSE(tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(first_token) + 1));
     EXPECT_EQ(OSThreadState::SLEEPING, block_slot->activeBlockState());
 
-    EXPECT_TRUE(tracker->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(first_token)));
+    EXPECT_TRUE(tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(first_token)));
     EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
 }
 
@@ -68,18 +68,18 @@ TEST_F(WallClockBlockTrackerTest, NewGenerationRejectsStaleToken) {
 
     u64 stale_token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING);
     ASSERT_NE(0ULL, stale_token);
-    EXPECT_TRUE(tracker->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(stale_token)));
+    EXPECT_TRUE(tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(stale_token)));
 
     u64 current_token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::CONDVAR_WAIT);
     ASSERT_NE(0ULL, current_token);
-    EXPECT_NE(ThreadFilter::tokenGeneration(stale_token),
-              ThreadFilter::tokenGeneration(current_token));
+    EXPECT_NE(WallClockBlockTracker::tokenGeneration(stale_token),
+              WallClockBlockTracker::tokenGeneration(current_token));
 
     WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
     ASSERT_NE(nullptr, block_slot);
-    EXPECT_FALSE(tracker->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(stale_token)));
+    EXPECT_FALSE(tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(stale_token)));
     EXPECT_EQ(OSThreadState::CONDVAR_WAIT, block_slot->activeBlockState());
-    EXPECT_TRUE(tracker->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(current_token)));
+    EXPECT_TRUE(tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(current_token)));
 }
 
 // The four tests below verify that ThreadFilter's registry-lifecycle reset

@@ -27,7 +27,7 @@ u64 WallClockBlockTracker::enterBlockedRun(ThreadFilter* registry, ThreadFilter:
                                           registry->unfilteredWallTrackingActive())) {
         return 0;
     }
-    return ThreadFilter::encodeBlockRunToken(slot_id, generation);
+    return WallClockBlockTracker::encodeBlockRunToken(slot_id, generation);
 }
 
 void WallClockBlockTracker::exitBlockedRun(ThreadFilter::SlotID slot_id) {

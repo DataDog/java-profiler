@@ -196,11 +196,22 @@ public:
 
     // Returns nullptr if slot_id is out of range. Storage is a single eager
     // allocation sized to ThreadFilter::kMaxThreads (unlike ThreadFilter's own
-    // lazily-chunked storage - see the design notes in the implementation plan),
-    // so lookup is a direct array index.
+    // lazily-chunked storage), so lookup is a direct array index.
     inline BlockState* slotForId(ThreadFilter::SlotID slot_id) const {
         if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return nullptr;
         return const_cast<BlockState*>(&_slots[slot_id]);
+    }
+
+    // Block-run tokens returned by enterBlockedRun() pack the generation in the
+    // upper 32 bits and slot_id + 1 in the lower 32 bits, so 0 means "no run".
+    static inline u64 encodeBlockRunToken(ThreadFilter::SlotID slot_id, u32 generation) {
+        return (static_cast<u64>(generation) << 32) | static_cast<u32>(slot_id + 1);
+    }
+    static inline ThreadFilter::SlotID tokenSlotId(u64 token) {
+        return static_cast<ThreadFilter::SlotID>(static_cast<u32>(token) - 1);
+    }
+    static inline u32 tokenGeneration(u64 token) {
+        return static_cast<u32>(token >> 32);
     }
 
     u64 enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,

@@ -557,12 +557,12 @@ TEST_F(ThreadFilterTest, ClearActiveDropsPreviousRecordingMembership) {
 TEST_F(ThreadFilterTest, TokenRoundTripPreservesHighGenerationBit) {
     ThreadFilter::SlotID slot_id = 7;
     u32 generation = 0x80000001u;
-    u64 token = ThreadFilter::encodeBlockRunToken(slot_id, generation);
+    u64 token = WallClockBlockTracker::encodeBlockRunToken(slot_id, generation);
     int64_t java_token = static_cast<int64_t>(token);
 
     EXPECT_LT(java_token, 0);
-    EXPECT_EQ(slot_id, ThreadFilter::tokenSlotId(static_cast<u64>(java_token)));
-    EXPECT_EQ(generation, ThreadFilter::tokenGeneration(static_cast<u64>(java_token)));
+    EXPECT_EQ(slot_id, WallClockBlockTracker::tokenSlotId(static_cast<u64>(java_token)));
+    EXPECT_EQ(generation, WallClockBlockTracker::tokenGeneration(static_cast<u64>(java_token)));
 }
 
 class ThreadRegistryTest : public ::testing::Test {
@@ -626,7 +626,7 @@ TEST_F(ThreadRegistryTest, RegisteringKnownTidReturnsExistingSlotWithoutMutation
     EXPECT_EQ(OSThreadState::SLEEPING, block_slot->activeBlockState());
     EXPECT_TRUE(block_slot->sampledThisRun());
     EXPECT_TRUE(tracker.exitBlockedRun(
-        slot_id, ThreadFilter::tokenGeneration(token)));
+        slot_id, WallClockBlockTracker::tokenGeneration(token)));
 }
 
 TEST_F(ThreadRegistryTest, UnregisterByTidForUnknownTidIsNoOp) {
@@ -860,7 +860,7 @@ TEST_F(ThreadRegistryTest, UnfilteredSuppressionValidatesIdentityAndLifecycle) {
     EXPECT_FALSE(tracker.shouldSuppressOwnedBlock(&registry, stale_generation));
 
     EXPECT_TRUE(tracker.exitBlockedRun(
-        slot_id, ThreadFilter::tokenGeneration(token)));
+        slot_id, WallClockBlockTracker::tokenGeneration(token)));
     EXPECT_FALSE(tracker.shouldSuppressOwnedBlock(&registry, entry));
 }
 

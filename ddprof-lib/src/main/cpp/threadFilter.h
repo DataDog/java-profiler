@@ -170,16 +170,6 @@ public:
     void setSuppressionSnapshotHookForTest(void (*hook)(void*), void* arg);
 #endif
 
-    static inline u64 encodeBlockRunToken(SlotID slot_id, u32 generation) {
-        return (static_cast<u64>(generation) << 32) | static_cast<u32>(slot_id + 1);
-    }
-    static inline SlotID tokenSlotId(u64 token) {
-        return static_cast<SlotID>(static_cast<u32>(token) - 1);
-    }
-    static inline u32 tokenGeneration(u64 token) {
-        return static_cast<u32>(token >> 32);
-    }
-
     // Returns nullptr if slot_id is invalid or its chunk has not been allocated.
     inline Slot* slotForId(SlotID slot_id) const {
         if (slot_id < 0) return nullptr;
