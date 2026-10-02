@@ -90,6 +90,24 @@ TEST(ReturnAddressAttributionCharacterizationTest, AttributionPcArithmetic) {
     EXPECT_EQ((const void*)((const char*)p - 1), attributionPC(p, true));
 }
 
+// An optimistic unwind can read garbage such as 0 or 1 from a return-address
+// slot and hand it to attributionPC(). Offsetting a pointer to or from null is
+// undefined behavior, which the asan config's -fsanitize=pointer-overflow with
+// -fno-sanitize-recover=all turns into an abort; outside sanitizer builds this
+// pins the wrapped values. The inputs go through volatile so the arithmetic
+// runs at run time where UBSan instruments it.
+TEST(ReturnAddressAttributionCharacterizationTest, AttributionPcOfGarbageNearNullIsDefined) {
+    volatile uintptr_t zero = 0;
+    volatile uintptr_t one = 1;
+    const void* null_pc = (const void*)zero;
+    const void* one_pc = (const void*)one;
+
+    EXPECT_EQ(null_pc, attributionPC(null_pc, false));
+    EXPECT_EQ(one_pc, attributionPC(one_pc, false));
+    EXPECT_EQ((const void*)UINTPTR_MAX, attributionPC(null_pc, true));
+    EXPECT_EQ(nullptr, attributionPC(one_pc, true));
+}
+
 // Supporting characterization (not gating): pins findFrameDesc's and
 // binarySearch's row-selection semantics directly, independent of the live
 // walker. These do NOT change with the fix -- they document why Test 3's
