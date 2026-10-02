@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk8
 
 ## musl-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-10-02 00:58:00 EDT
+**Date:** 2026-10-02 04:21:39 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 51 |
-| CPU Cores (end) | 51 |
+| CPU Cores (start) | 32 |
+| CPU Cores (end) | 32 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 463 |
-| Sample Rate | 7.72/sec |
-| Health Score | 482% |
-| Threads | 13 |
+| CPU Samples | 155 |
+| Sample Rate | 2.58/sec |
+| Health Score | 161% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
+<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1790916860 51
-1790916865 51
-1790916870 51
-1790916875 51
-1790916880 51
-1790916885 51
-1790916890 51
-1790916895 51
-1790916900 51
-1790916905 51
-1790916910 51
-1790916915 51
-1790916920 51
-1790916925 51
-1790916930 51
-1790916935 51
-1790916940 51
-1790916945 51
-1790916950 51
-1790916955 51
+1790929028 32
+1790929033 32
+1790929038 32
+1790929043 32
+1790929048 32
+1790929053 32
+1790929058 32
+1790929063 32
+1790929068 32
+1790929073 32
+1790929078 32
+1790929083 32
+1790929088 32
+1790929093 32
+1790929098 32
+1790929103 32
+1790929108 32
+1790929113 32
+1790929118 32
+1790929123 32
 ```
 </details>
 

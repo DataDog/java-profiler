@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk25
 
 ## musl-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-10-02 00:58:00 EDT
+**Date:** 2026-10-02 04:21:39 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 81 |
-| Sample Rate | 1.35/sec |
-| Health Score | 84% |
+| CPU Samples | 84 |
+| Sample Rate | 1.40/sec |
+| Health Score | 87% |
 | Threads | 10 |
-| Allocations | 40 |
+| Allocations | 58 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 95 |
-| Sample Rate | 1.58/sec |
-| Health Score | 99% |
-| Threads | 13 |
-| Allocations | 41 |
+| CPU Samples | 84 |
+| Sample Rate | 1.40/sec |
+| Health Score | 87% |
+| Threads | 12 |
+| Allocations | 61 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1790916819 32
-1790916824 32
-1790916829 32
-1790916834 32
-1790916839 32
-1790916844 32
-1790916849 32
-1790916854 32
-1790916859 32
-1790916864 32
-1790916869 32
-1790916874 32
-1790916879 32
-1790916884 32
-1790916889 32
-1790916894 32
-1790916899 32
-1790916904 32
-1790916910 32
-1790916915 32
+1790929025 32
+1790929030 32
+1790929035 32
+1790929040 32
+1790929045 32
+1790929050 32
+1790929055 32
+1790929060 32
+1790929065 32
+1790929070 32
+1790929075 32
+1790929080 32
+1790929085 32
+1790929090 32
+1790929095 32
+1790929100 32
+1790929105 32
+1790929110 32
+1790929115 32
+1790929120 32
 ```
 </details>
 
