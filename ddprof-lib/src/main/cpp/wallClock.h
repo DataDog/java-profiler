@@ -7,6 +7,7 @@
 #ifndef _WALLCLOCK_H
 #define _WALLCLOCK_H
 
+#include <algorithm>
 #include <cassert>
 #include "engine.h"
 #include "nativeMem.h"
@@ -17,6 +18,7 @@
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
+#include "wallClockCandidateSelector.h"
 #include "wallClockCounters.h"
 #include "xorshift.h"
 
@@ -25,6 +27,9 @@ class BaseWallClock : public Engine {
     static std::atomic<bool> _enabled;
     std::atomic<bool> _running;
   protected:
+    // Backfill rejected candidates without letting a population of already-
+    // suppressed blockers restore O(N) registry lookups on every wall tick.
+    static constexpr size_t PRECHECK_VISIT_BUDGET_MULTIPLIER = 4;
     long _interval;
     // Maximum number of threads sampled in one iteration. This limit serves as a
     // throttle when generating profiling signals. Otherwise applications with too
@@ -32,7 +37,6 @@ class BaseWallClock : public Engine {
     // limit low enough helps to avoid contention on a spin lock inside
     // Profiler::recordSample().
     int _reservoir_size;
-
     pthread_t _thread;
     virtual void timerLoop() = 0;
     virtual void initialize(Arguments& args) {};
@@ -45,8 +49,22 @@ class BaseWallClock : public Engine {
     bool isEnabled() const;
     static bool inSyscall(void* ucontext);
 
+    // Shared by WallClockASGCT::timerLoop() and WallClockJvmti::timerLoop(): both
+    // engines resolve a registry slot, check precheck suppression, and send the
+    // sampling signal identically; only collectThreads() differs between them.
+    WallClockCandidateOutcome sampleThreadCommon(
+        ThreadEntry entry, int& num_failures, int& threads_already_exited,
+        int& permission_denied, int& registry_lookups, bool lookup_registry_slot,
+        bool precheck, ThreadFilter* thread_filter,
+        ThreadFilter::RecordingEpoch recording_epoch);
+    // Timer-thread precheck: true when an explicit lifecycle hook still owns an
+    // already-sampled blocked run for this thread, so no signal is needed.
+    static bool suppressAlreadySampled(const ThreadEntry& entry);
+
     template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc, typename CleanThreadFunc>
-    void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads, CleanThreadFunc cleanThreads, int reservoirSize, u64 interval) {
+    void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads,
+                         CleanThreadFunc cleanThreads, int reservoirSize, u64 interval,
+                         bool precheck = false, bool lazyBackfill = false) {
       if (!_enabled.load(std::memory_order_acquire)) {
         return;
       }
@@ -56,6 +74,12 @@ class BaseWallClock : public Engine {
       // One generator for the life of the loop; the start tick varies the
       // stream between recordings without needing an entropy source.
       u64 rng = xorshift::seed((u64)(uintptr_t)this, TSC::ticks());
+
+      std::mt19937 candidate_generator;
+      if (lazyBackfill) {
+        candidate_generator.seed(
+            xorshift::seed((u64)(uintptr_t)&candidate_generator, TSC::ticks()));
+      }
 
       std::vector<ThreadType> threads;
       threads.reserve(reservoirSize);
@@ -81,19 +105,62 @@ class BaseWallClock : public Engine {
       while (_running.load(std::memory_order_relaxed)) {
         collectThreads(threads);
         NativeMem::setLive(NM_WALLCLOCK, (long long)threads.capacity() * sizeof(ThreadType));
+        // The epoch's samplePoolSize counts every candidate, including threads
+        // the precheck suppresses below, so it means the same in both precheck
+        // modes: lazy backfill only discovers suppression while visiting.
+        const u32 num_samplable_threads = static_cast<u32>(threads.size());
+        if (precheck && !lazyBackfill) {
+          // Drop suppressed threads before reservoir sampling so they do not
+          // consume reservoir slots.
+          threads.erase(std::remove_if(threads.begin(), threads.end(),
+                                       suppressAlreadySampled),
+                        threads.end());
+        }
 
         int num_failures = 0;
         int threads_already_exited = 0;
         int permission_denied = 0;
+        int registry_lookups = 0;
         u32 num_successful_samples = 0;
-        std::vector<ThreadType> sample = reservoir.sample(threads);
-        for (ThreadType thread : sample) {
-          if (sampleThreads(thread, num_failures, threads_already_exited, permission_denied)) {
-            num_successful_samples++;
+        if (lazyBackfill) {
+          WallClockCandidateStats stats = selectWallClockCandidates(
+              threads,
+              static_cast<size_t>(reservoirSize),
+              static_cast<size_t>(reservoirSize) *
+                  PRECHECK_VISIT_BUDGET_MULTIPLIER,
+              candidate_generator,
+              [&](ThreadType thread) {
+                WallClockCandidateOutcome outcome = sampleThreads(
+                    thread, num_failures, threads_already_exited,
+                    permission_denied, registry_lookups, true);
+                if (outcome == WallClockCandidateOutcome::SIGNAL_SENT) {
+                  num_successful_samples++;
+                }
+                return outcome;
+              });
+          if (stats.precheck_rejected > 0) {
+            Counters::increment(WC_PRECHECK_CANDIDATES_REJECTED,
+                                stats.precheck_rejected);
+          }
+          if (stats.visit_limit_reached) {
+            Counters::increment(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED);
+          }
+        } else {
+          std::vector<ThreadType> sample = reservoir.sample(threads);
+          for (ThreadType thread : sample) {
+            WallClockCandidateOutcome outcome = sampleThreads(
+                thread, num_failures, threads_already_exited,
+                permission_denied, registry_lookups, false);
+            if (outcome == WallClockCandidateOutcome::SIGNAL_SENT) {
+              num_successful_samples++;
+            }
           }
         }
+        if (registry_lookups > 0) {
+          Counters::increment(WC_PRECHECK_REGISTRY_LOOKUPS, registry_lookups);
+        }
 
-        epoch.updateNumSamplableThreads(threads.size());
+        epoch.updateNumSamplableThreads(num_samplable_threads);
         epoch.updateNumFailedSamples(num_failures);
         epoch.updateNumSuccessfulSamples(num_successful_samples);
         epoch.addNumSuppressedSampledRun(WallClockCounters::drainSuppressedSampledRun());
@@ -150,6 +217,18 @@ public:
 
     Error start(Arguments& args);
     void stop();
+
+#if defined(UNIT_TEST) || defined(DEBUG)
+    static void setForceStartFailureForTest(bool force) {
+        _force_start_failure_for_test.store(force, std::memory_order_release);
+    }
+    static bool isForceStartFailureForTest() {
+        return _force_start_failure_for_test.load(std::memory_order_acquire);
+    }
+  private:
+    static std::atomic<bool> _force_start_failure_for_test;
+  public:
+#endif
 };
 
 class WallClockASGCT : public BaseWallClock {
@@ -168,6 +247,7 @@ class WallClockASGCT : public BaseWallClock {
     const char* name() override {
         return "WallClock (ASGCT)";
     }
+    bool supportsUnfilteredThreadRegistryTracking() const override { return true; }
 };
 
 // Wall-clock engine that uses BaseWallClock's pthread reservoir sampling loop
@@ -189,6 +269,7 @@ class WallClockJvmti : public BaseWallClock {
     const char* name() override {
         return "WallClock (JVMTI)";
     }
+    bool supportsUnfilteredThreadRegistryTracking() const override { return true; }
 };
 
 #endif // _WALLCLOCK_H

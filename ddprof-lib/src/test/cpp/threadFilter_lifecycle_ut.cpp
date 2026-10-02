@@ -60,7 +60,7 @@ TEST(ThreadFilterLifecycle, UnregisterRacesClearActive) {
                     ProfiledThread::release();
                     continue;
                 }
-                ThreadFilter::SlotID slot = filter.registerThread();
+                ThreadFilter::SlotID slot = filter.registerThread(self->tid());
                 if (slot >= 0) {
                     filter.add(self->tid(), slot);
                     filter.remove(slot);
@@ -113,7 +113,7 @@ TEST(ThreadFilterLifecycle, RegisterRacesInit) {
                     ProfiledThread::release();
                     continue;
                 }
-                ThreadFilter::SlotID slot = filter.registerThread();
+                ThreadFilter::SlotID slot = filter.registerThread(self->tid());
                 if (slot >= 0) {
                     // filter may have been disabled between the enabled() check and
                     // registerThread(); the slot is still valid and must be released.

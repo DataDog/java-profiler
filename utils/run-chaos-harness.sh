@@ -137,11 +137,11 @@ case $CONFIG in
   profiler)
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=false"
     # @Trace is a no-op without the tracer, so trace-context is excluded here.
-    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm,reapply-context-value"
+    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm,reapply-context-value,park-block-churn"
     ;;
   profiler+tracer)
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=true"
-    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm,reapply-context-value"
+    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm,reapply-context-value,park-block-churn"
     ;;
   *)
     echo "Unknown configuration: $CONFIG (valid: profiler, profiler+tracer)" >&2

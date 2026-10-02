@@ -34,6 +34,7 @@
 #include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "vmEntry.h"
+#include "wallClock.h"
 #include <errno.h>
 #include <fstream>
 #include <sstream>
@@ -163,6 +164,44 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 
 // some duplication between add and remove, though we want to avoid having an extra branch in the hot path
 
+static ThreadFilter::SlotID ensureCurrentThreadFilterSlot(
+    ThreadFilter *thread_filter, ProfiledThread *current) {
+  int tid = current->tid();
+  if (unlikely(tid < 0)) {
+    return -1;
+  }
+
+  ThreadFilter::SlotID slot_id = current->filterSlotId();
+  if (likely(slot_id >= 0)) {
+    if (likely(thread_filter->activeSlotForId(slot_id, tid) != nullptr)) {
+      return slot_id;
+    }
+    current->setFilterSlotId(-1);
+  }
+
+  // Threads that existed before the recording started (and so never received
+  // a ThreadStart callback) bind their slot lazily here. If the tid is already
+  // indexed, registerThread(tid) returns that existing slot.
+  //
+  // This is the only place the filterThreadAdd0 (JavaCritical), parkEnter0
+  // and blockEnter0 hooks can block on _registry_lock. It's bounded to at
+  // most once per thread lifetime (cold TLS) plus once per recording-epoch
+  // transition this thread observes (stale cached slot) - not a per-call cost.
+  // A thread that cannot get a slot because the registry is full retries here
+  // on every call, but registerThread() rejects it without taking the lock.
+  // THREAD_REGISTRY_HOOK_REREGISTRATION counts every attempt, including those
+  // lock-free rejections (tracked separately by
+  // THREAD_REGISTRY_CAPACITY_EXHAUSTED). If it fires per call while
+  // THREAD_REGISTRY_CAPACITY_EXHAUSTED stays flat, the "provably rare"
+  // assumption has broken and these hooks should be revisited.
+  Counters::increment(THREAD_REGISTRY_HOOK_REREGISTRATION);
+  slot_id = thread_filter->registerThread(tid);
+  if (slot_id >= 0) {
+    current->setFilterSlotId(slot_id);
+  }
+  return slot_id;
+}
+
 // JavaCritical is faster JNI, but more restrictive - parameters and return value have to be
 // primitives or arrays of primitive types.
 // We direct corresponding JNI calls to JavaCritical to make sure the parameters/return value
@@ -180,25 +219,23 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  if (unlikely(!thread_filter->enabled())) {
+  if (unlikely(!thread_filter->registryActive())) {
     return;
   }
   
-  int slot_id = current->filterSlotId();
-  if (unlikely(slot_id == -1)) {
-    // Thread doesn't have a slot ID yet (e.g., main thread), so register it
-    // Happens when we are not enabled before thread start
-    slot_id = thread_filter->registerThread();
-    current->setFilterSlotId(slot_id);
-  }
-
-  if (unlikely(slot_id == -1)) {
+  int slot_id = ensureCurrentThreadFilterSlot(thread_filter, current);
+  if (unlikely(slot_id < 0)) {
     return;  // Failed to register thread
   }
-  // Reset suppression state so a new thread occupying this slot does not inherit
-  // stale state from its predecessor. Must happen before add().
-  thread_filter->resetSlotRunState(slot_id);
-  thread_filter->add(tid, slot_id);
+  if (unlikely(!thread_filter->add(tid, slot_id))) {
+    // The cached slot_id went stale between ensureCurrentThreadFilterSlot()
+    // and add(): an unfiltered recording restart reset the registry, so the
+    // slot no longer carries this thread's tid.
+    // Clear the cache so the next filterThreadAdd0()/parkEnter0()/blockEnter0()
+    // call re-runs ensureCurrentThreadFilterSlot()'s registerThread() path
+    // instead of leaving this thread permanently outside the context window.
+    current->setFilterSlotId(-1);
+  }
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -213,13 +250,15 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  if (unlikely(!thread_filter->enabled())) {
+  if (unlikely(!thread_filter->registryActive())) {
     return;
   }
 
   int slot_id = current->filterSlotId();
-  if (unlikely(slot_id == -1)) {
-    // Thread doesn't have a slot ID yet - nothing to remove
+  if (unlikely(slot_id == -1 ||
+               thread_filter->activeSlotForId(slot_id, tid) == nullptr)) {
+    // No slot yet, or a cached slot left over from an earlier recording -
+    // either way this thread is not in the context window, nothing to remove
     return;
   }
   thread_filter->remove(slot_id);
@@ -308,6 +347,34 @@ Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(
 }
 
 extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfilerTestSupport_setForceWallStartFailureForTest0(
+    JNIEnv *env, jclass unused, jboolean force) {
+#ifdef DEBUG
+  BaseWallClock::setForceStartFailureForTest(force);
+#endif // DEBUG
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfilerTestSupport_isForceWallStartFailureArmedForTest0(
+    JNIEnv *env, jclass unused) {
+#ifdef DEBUG
+  return BaseWallClock::isForceStartFailureForTest() ? JNI_TRUE : JNI_FALSE;
+#else
+  // The setForceWallStartFailureForTest0 hook above is a no-op outside DEBUG,
+  // so the forced-failure toggle can never be armed here. Returning false lets
+  // callers (e.g. UnfilteredWallPrecheckFallbackTest) self-skip via
+  // Assumptions.assumeTrue rather than fail spuriously in release builds.
+  return JNI_FALSE;
+#endif // DEBUG
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfilerTestSupport_isThreadRegistryActiveForTest0(
+    JNIEnv *env, jclass unused) {
+  return Profiler::instance()->threadFilter()->registryActive();
+}
+
+extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
     JNIEnv *env, jclass unused, jstring name, jstring value, jstring unit) {
   // Initialize thread TLS if it has not yet done
@@ -383,11 +450,12 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
 
   bool first_park = current->parkEnter();
   ThreadFilter *tf = Profiler::instance()->threadFilter();
-  if (first_park && tf->enabled()) {
-    ThreadFilter::SlotID slot_id = current->filterSlotId();
+  if (first_park && tf->registryActive()) {
+    ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
     if (slot_id >= 0) {
+      WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
       current->setParkBlockToken(
-          tf->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT));
+          tracker->enterBlockedRun(tf, slot_id, OSThreadState::CONDVAR_WAIT));
     }
   }
 }
@@ -405,10 +473,12 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     return;
   }
   ThreadFilter *tf = Profiler::instance()->threadFilter();
-  if (tf->enabled()) {
-    ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(park_block_token);
-    if (current->filterSlotId() == slot_id) {
-      tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(park_block_token));
+  if (tf->registryActive()) {
+    ThreadFilter::SlotID slot_id = WallClockBlockTracker::tokenSlotId(park_block_token);
+    if (tf->activeSlotForId(current->filterSlotId(), current->tid()) != nullptr &&
+        current->filterSlotId() == slot_id) {
+      WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
+      tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(park_block_token));
     }
   }
 }
@@ -435,14 +505,15 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
     return 0;
   }
   ThreadFilter *tf = Profiler::instance()->threadFilter();
-  if (!tf->enabled()) {
+  if (!tf->registryActive()) {
     return 0;
   }
-  ThreadFilter::SlotID slot_id = current->filterSlotId();
+  ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
   if (slot_id < 0) {
     return 0;
   }
-  return static_cast<jlong>(tf->enterBlockedRun(slot_id, decoded));
+  WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
+  return static_cast<jlong>(tracker->enterBlockedRun(tf, slot_id, decoded));
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -457,14 +528,15 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
   if (current == nullptr) {
     return;
   }
-
-  ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(block_token);
-  if (current->filterSlotId() != slot_id) {
+  ThreadFilter *tf = Profiler::instance()->threadFilter();
+  ThreadFilter::SlotID slot_id = WallClockBlockTracker::tokenSlotId(block_token);
+  if (current->filterSlotId() != slot_id ||
+      tf->activeSlotForId(slot_id, current->tid()) == nullptr) {
     return;
   }
-  ThreadFilter *tf = Profiler::instance()->threadFilter();
-  if (tf->enabled()) {
-    tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(block_token));
+  if (tf->registryActive()) {
+    WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
+    tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(block_token));
   }
 }
 

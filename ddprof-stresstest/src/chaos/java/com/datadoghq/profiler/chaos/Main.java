@@ -94,6 +94,8 @@ public final class Main {
                 return new DumpStormAntagonist();
             case "reapply-context-value":
                 return new ReapplyContextValueAntagonist();
+            case "park-block-churn":
+                return new ParkBlockChurnAntagonist();
             // Deferred: dlopen-churn (needs per-arch dummy .so built in CI prep).
             default:
                 throw new IllegalArgumentException("unknown antagonist: " + name);
