@@ -55,11 +55,11 @@ inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, jmethod
 // value; callers that need the exact resume/executed address (JIT handoff,
 // no-progress guards, pc arithmetic) must keep using the raw walking pc.
 //
-// Only walkFP/walkDwarf produce adjusted addresses. walkVM/walkKernel still
-// hand out raw addresses and are therefore still subject to the boundary
-// misattribution this function fixes: CodeCache::binarySearch's fallback
-// rescues only the padding-gap and zero-size-symbol cases, not zero-gap
-// adjacency (see BinarySearchPicksNextSymbolAtZeroGapBoundary).
+// walkFP, walkDwarf, walkVM and walkKernel all record this adjusted address.
+// CodeCache::binarySearch's fallback rescues only the padding-gap and
+// zero-size-symbol cases, not zero-gap adjacency (see
+// BinarySearchPicksNextSymbolAtZeroGapBoundary), which is why the adjustment
+// is needed.
 inline const void* attributionPC(const void* pc, bool pc_is_return_address) {
     // A null walking pc (a zeroed return-address slot read during an optimistic
     // unwind) has no code to attribute: findLibraryByAddress(nullptr) fails and
