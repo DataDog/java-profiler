@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk11
 
 ## musl-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-10-03 04:34:58 EDT
+**Date:** 2026-10-03 05:48:26 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 46 |
-| CPU Cores (end) | 46 |
+| CPU Cores (start) | 17 |
+| CPU Cores (end) | 28 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 591 |
-| Sample Rate | 9.85/sec |
-| Health Score | 616% |
+| CPU Samples | 512 |
+| Sample Rate | 8.53/sec |
+| Health Score | 533% |
 | Threads | 8 |
-| Allocations | 373 |
+| Allocations | 370 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 786 |
-| Sample Rate | 13.10/sec |
-| Health Score | 819% |
-| Threads | 10 |
-| Allocations | 481 |
+| CPU Samples | 739 |
+| Sample Rate | 12.32/sec |
+| Health Score | 770% |
+| Threads | 9 |
+| Allocations | 480 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 46-46 cores)</summary>
+<summary>CPU Timeline (3 unique values: 17-30 cores)</summary>
 
 ```
-1791016232 46
-1791016237 46
-1791016242 46
-1791016247 46
-1791016252 46
-1791016257 46
-1791016262 46
-1791016267 46
-1791016272 46
-1791016277 46
-1791016282 46
-1791016287 46
-1791016292 46
-1791016297 46
-1791016302 46
-1791016307 46
-1791016312 46
-1791016317 46
-1791016322 46
-1791016327 46
+1791020603 17
+1791020608 17
+1791020613 17
+1791020618 17
+1791020623 17
+1791020628 17
+1791020633 17
+1791020638 17
+1791020643 17
+1791020648 17
+1791020653 17
+1791020658 17
+1791020663 17
+1791020668 17
+1791020673 17
+1791020678 30
+1791020683 30
+1791020688 30
+1791020693 30
+1791020698 30
 ```
 </details>
 
