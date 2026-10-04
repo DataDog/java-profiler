@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-10-03 05:48:22 EDT
+**Date:** 2026-10-04 01:00:29 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 56 |
-| Sample Rate | 0.93/sec |
-| Health Score | 58% |
-| Threads | 7 |
+| CPU Samples | 197 |
+| Sample Rate | 3.28/sec |
+| Health Score | 205% |
+| Threads | 10 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 64 |
-| Sample Rate | 1.07/sec |
-| Health Score | 67% |
-| Threads | 10 |
+| CPU Samples | 55 |
+| Sample Rate | 0.92/sec |
+| Health Score | 57% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 10-10 cores)</summary>
 
 ```
-1791020575 10
-1791020580 10
-1791020585 10
-1791020590 10
-1791020595 10
-1791020600 10
-1791020605 10
-1791020610 10
-1791020615 10
-1791020620 10
-1791020625 10
-1791020630 10
-1791020635 10
-1791020640 10
-1791020645 10
-1791020650 10
-1791020655 10
-1791020660 10
-1791020665 10
-1791020670 10
+1791089702 10
+1791089707 10
+1791089712 10
+1791089717 10
+1791089722 10
+1791089727 10
+1791089732 10
+1791089737 10
+1791089742 10
+1791089747 10
+1791089752 10
+1791089757 10
+1791089762 10
+1791089767 10
+1791089772 10
+1791089777 10
+1791089782 10
+1791089787 10
+1791089792 10
+1791089797 10
 ```
 </details>
 
