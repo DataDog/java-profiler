@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -30,6 +31,15 @@ class Symbols {
     static void clearParsingCaches();
     // Fast range check: does this PC lie in libc or libpthread?
     static bool isLibcOrPthreadAddress(uintptr_t pc);
+#ifdef __linux__
+    // Fingerprint of a loaded ELF image: its program header table plus its
+    // PT_NOTE segments, which carry the GNU build-id. The same build loaded at
+    // the same address has the same fingerprint. phdrs points to phnum program
+    // headers, p_vaddr 0 maps to load_bias, and only [lo, hi) may be read.
+    // Returns 0 if part of the image to hash lies outside [lo, hi).
+    static u64 imageFingerprint(const void* phdrs, int phnum, uintptr_t load_bias,
+                                uintptr_t lo, uintptr_t hi);
+#endif
 };
 
 class UnloadProtection {

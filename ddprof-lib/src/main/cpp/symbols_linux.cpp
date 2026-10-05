@@ -544,8 +544,19 @@ void ElfParser::parseProgramHeaders(CodeCache* cc, const char* base, const char*
         size_t phdrs_size = elf._header->e_phnum * sizeof(ElfProgramHeader);
         if (elf._header->e_phentsize == sizeof(ElfProgramHeader)
             && phdrs_size <= (size_t)(end - base) - elf._header->e_phoff) {
-            cc->setProgramHeadersHash(
-                CodeCache::hashProgramHeaders(base + elf._header->e_phoff, phdrs_size));
+            // base is where the lowest PT_LOAD starts, rounded down to a page.
+            const ElfProgramHeader* phdrs = (const ElfProgramHeader*)(base + elf._header->e_phoff);
+            uintptr_t min_vaddr = UINTPTR_MAX;
+            for (int i = 0; i < elf._header->e_phnum; i++) {
+                if (phdrs[i].p_type == PT_LOAD && phdrs[i].p_vaddr < min_vaddr) {
+                    min_vaddr = phdrs[i].p_vaddr;
+                }
+            }
+            if (min_vaddr != UINTPTR_MAX) {
+                uintptr_t load_bias = (uintptr_t)base - (min_vaddr & ~OS::page_mask);
+                cc->setImageFingerprint(Symbols::imageFingerprint(
+                    phdrs, elf._header->e_phnum, load_bias, (uintptr_t)base, (uintptr_t)end));
+            }
         }
         cc->setTextBase(base);
         elf.calcVirtualLoadAddress();
@@ -1267,6 +1278,33 @@ UnloadProtection::~UnloadProtection() {
     if (_lib_handle != NULL) {
         dlclose(_lib_handle);
     }
+}
+
+static u64 fnv1a(const void* data, size_t size, u64 hash) {
+    for (size_t i = 0; i < size; i++) {
+        hash = (hash ^ ((const unsigned char*)data)[i]) * 1099511628211ULL;
+    }
+    return hash;
+}
+
+u64 Symbols::imageFingerprint(const void* phdrs, int phnum, uintptr_t load_bias,
+                              uintptr_t lo, uintptr_t hi) {
+    const ElfProgramHeader* ph = (const ElfProgramHeader*)phdrs;
+    u64 hash = fnv1a(ph, phnum * sizeof(ElfProgramHeader), 14695981039346656037ULL);
+    for (int i = 0; i < phnum; i++) {
+        if (ph[i].p_type != PT_NOTE) continue;
+        uintptr_t start = load_bias + ph[i].p_vaddr;
+        // Only notes inside a file-backed PT_LOAD are mapped.
+        bool mapped = false;
+        for (int j = 0; j < phnum && !mapped; j++) {
+            mapped = ph[j].p_type == PT_LOAD && ph[i].p_vaddr >= ph[j].p_vaddr
+                     && ph[i].p_vaddr + ph[i].p_filesz <= ph[j].p_vaddr + ph[j].p_filesz;
+        }
+        if (!mapped) continue;
+        if (start < lo || start >= hi || ph[i].p_filesz > hi - start) return 0;
+        hash = fnv1a((const void*)start, ph[i].p_filesz, hash);
+    }
+    return hash != 0 ? hash : 1;
 }
 
 void Symbols::initLibraryRanges() {

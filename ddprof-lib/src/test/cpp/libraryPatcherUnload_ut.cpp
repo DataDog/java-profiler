@@ -29,6 +29,7 @@
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "nativeSocketSampler.h"
+#include "symbols.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -60,6 +61,7 @@ enum ChildExit {
   CHILD_NO_IMPORT = 12,
   CHILD_SLOT_NOT_HOOKED = 14,
   CHILD_NOT_RESTORED = 15,  // the DSO is mapped but unpatching did not restore its slot
+  CHILD_NO_FINGERPRINT = 16,
 };
 
 const unsigned char SENTINEL = 0xA5;
@@ -214,6 +216,7 @@ void runInChild(Scenario scenario) {
   ASSERT_NE(code, CHILD_CORRUPTED) << "stale GOT write corrupted the mapping that reused the address";
   ASSERT_NE(code, CHILD_NOT_RESTORED) << "DSO is still mapped but its slot was not restored";
   ASSERT_NE(code, CHILD_SLOT_NOT_HOOKED) << "patching did not hook the loaded DSO";
+  ASSERT_NE(code, CHILD_NO_FINGERPRINT) << "the test DSO's CodeCache has no image fingerprint";
   ASSERT_EQ(code, CHILD_OK) << "child precondition failed with exit code " << code;
 }
 
@@ -356,21 +359,28 @@ static void copyLibToTemp(char* path_out, size_t size) {
   close(out);
 }
 
+// The name a library is loaded by.
+enum LoadName { BY_PATH, BY_RELATIVE_PATH, BY_SYMLINK };
+
 // Loads a temporary copy of the test DSO and unlinks the file, before or
 // after Libraries parses it, like JNI loaders that extract to a temporary
-// file. With relative, the copy is loaded as "./<name>" from its directory.
-static LoadedLib loadUnlinkedLib(bool unlink_before_parse, bool relative) {
+// file. The loader keeps the name it was given, while /proc/self/maps has
+// the resolved absolute path.
+static LoadedLib loadUnlinkedLib(bool unlink_before_parse, LoadName load_name) {
   char path[64];
   copyLibToTemp(path, sizeof(path));
-  void* handle;
-  if (relative) {
-    char name[64];
+  char name[96];
+  if (load_name == BY_RELATIVE_PATH) {
     snprintf(name, sizeof(name), "./%s", strrchr(path, '/') + 1);
     if (chdir("/tmp") != 0) _exit(CHILD_DLOPEN_FAILED);
-    handle = dlopen(name, RTLD_NOW);
+  } else if (load_name == BY_SYMLINK) {
+    snprintf(name, sizeof(name), "%s.link.so", path);
+    if (symlink(path, name) != 0) _exit(CHILD_DLOPEN_FAILED);
   } else {
-    handle = dlopen(path, RTLD_NOW);
+    snprintf(name, sizeof(name), "%s", path);
   }
+  void* handle = dlopen(name, RTLD_NOW);
+  if (load_name == BY_SYMLINK) unlink(name);
   if (handle == nullptr) _exit(CHILD_DLOPEN_FAILED);
   if (unlink_before_parse) unlink(path);
   Libraries::instance()->updateSymbols(false);
@@ -384,18 +394,18 @@ static LoadedLib loadUnlinkedLib(bool unlink_before_parse, bool relative) {
 
 // The hooks of an unlinked library must still be installed and restored: the
 // file identity check cannot stat() the file any more and has to go by path.
-static void patchAndRestoreUnlinkedLibrary(bool unlink_before_parse, bool relative) {
-  LoadedLib lib = loadUnlinkedLib(unlink_before_parse, relative);
+static void patchAndRestoreUnlinkedLibrary(bool unlink_before_parse, LoadName load_name) {
+  LoadedLib lib = loadUnlinkedLib(unlink_before_parse, load_name);
   patchAndVerify(SOCKET, lib);
   unpatchAndVerifyRestored(SOCKET, lib);
 }
 
 TEST_F(LibraryPatcherIdentityTest, PatchesLibraryUnlinkedBeforeParsing) {
-  runInChild([]() { patchAndRestoreUnlinkedLibrary(true, false); });
+  runInChild([]() { patchAndRestoreUnlinkedLibrary(true, BY_PATH); });
 }
 
 TEST_F(LibraryPatcherIdentityTest, PatchesLibraryUnlinkedAfterParsing) {
-  runInChild([]() { patchAndRestoreUnlinkedLibrary(false, false); });
+  runInChild([]() { patchAndRestoreUnlinkedLibrary(false, BY_PATH); });
 }
 
 // /proc/self/maps records the absolute path, the loader keeps "./<name>".
@@ -403,72 +413,122 @@ TEST_F(LibraryPatcherIdentityTest, PatchesLibraryUnlinkedAfterParsing) {
 // relatively loaded library (UnloadProtection's dlopen by the absolute path
 // fails) and never reads its imports, so there would be nothing to patch.
 TEST_F(LibraryPatcherIdentityTest, PatchesLibraryLoadedByRelativePathAndUnlinked) {
-  runInChild([]() { patchAndRestoreUnlinkedLibrary(false, true); });
+  runInChild([]() { patchAndRestoreUnlinkedLibrary(false, BY_RELATIVE_PATH); });
+}
+
+// Loaded through a symlink that is gone, and the file behind it unlinked.
+TEST_F(LibraryPatcherIdentityTest, PatchesLibraryLoadedBySymlinkAndUnlinked) {
+  runInChild([]() { patchAndRestoreUnlinkedLibrary(false, BY_SYMLINK); });
 }
 
 // Registers a CodeCache that claims the test DSO's image base, with the given
-// file identity and a write() import pointing at *slot.
-static void addCacheAtLibraryBase(CodeCache* real, const char* name, u64 file_id,
-                                  u64 phdr_hash, void** slot) {
-  CodeCache* cc = new CodeCache(name, -1, real->minAddress(), real->maxAddress(),
+// file and image identity and a write() import pointing at *slot.
+static void addCacheAtLibraryBase(CodeCache* real, u64 file_id, u64 fingerprint, void** slot) {
+  if (real->imageFingerprint() == 0) _exit(CHILD_NO_FINGERPRINT);
+  CodeCache* cc = new CodeCache("fake-at-same-base", -1, real->minAddress(), real->maxAddress(),
                                 real->imageBase(), /*imports_patchable=*/true);
   cc->setFileId(file_id);
-  cc->setProgramHeadersHash(phdr_hash);
+  cc->setImageFingerprint(fingerprint);
   cc->addImport(slot, "write");
   Libraries::instance()->addLibraryForTest(cc);
 }
 
+// Patches with a fake cache at the test DSO's base and reports whether the
+// fake's slot was written. The real DSO must be hooked either way.
+static bool patchWritesFakeCache(const LoadedLib& lib, u64 file_id, u64 fingerprint) {
+  CodeCache* real = Libraries::instance()->findLibraryByName("libpatchtarget");
+  static void* word = (void*)&SENTINEL;
+  addCacheAtLibraryBase(real, file_id, fingerprint, &word);
+  LibraryPatcher::patch_socket_functions();
+  if (*lib.slot != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
+  return word != (void*)&SENTINEL;
+}
+
+static CodeCache* realCache() {
+  return Libraries::instance()->findLibraryByName("libpatchtarget");
+}
+
 // A stale CodeCache whose library was replaced by a different one at the
 // same base must not be patched: the slot address now belongs to the new
-// library. Base and file identity must both match.
-TEST_F(LibraryPatcherIdentityTest, PatchSkipsCacheOfDifferentFileAtSameBase) {
+// library. It has neither the file nor the image identity of the new one.
+TEST_F(LibraryPatcherIdentityTest, PatchSkipsCacheOfDifferentImageAtSameBase) {
   runInChild([]() {
     LoadedLib lib = loadLib(SOCKET);
-    CodeCache* real = Libraries::instance()->findLibraryByName("libpatchtarget");
-    static void* word = (void*)&SENTINEL;
-    addCacheAtLibraryBase(real, "fake-at-same-base", real->fileId() + 1, real->programHeadersHash(), &word);
-    LibraryPatcher::patch_socket_functions();
-    if (*lib.slot != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
-    if (word != (void*)&SENTINEL) _exit(CHILD_CORRUPTED);
+    if (patchWritesFakeCache(lib, realCache()->fileId() + 1, realCache()->imageFingerprint() + 1)) {
+      _exit(CHILD_CORRUPTED);
+    }
   });
 }
 
-// Control for the test above: the same setup with a matching file identity
-// is patched, so the skip there is due to the identity check.
+// Controls for the test above: either identity alone is enough.
 TEST_F(LibraryPatcherIdentityTest, PatchAcceptsCacheOfSameFileAtSameBase) {
   runInChild([]() {
-    loadLib(SOCKET);
-    CodeCache* real = Libraries::instance()->findLibraryByName("libpatchtarget");
-    static void* word = (void*)&SENTINEL;
-    addCacheAtLibraryBase(real, "fake-at-same-base", real->fileId(), real->programHeadersHash(), &word);
-    LibraryPatcher::patch_socket_functions();
-    if (word != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
+    LoadedLib lib = loadLib(SOCKET);
+    if (!patchWritesFakeCache(lib, realCache()->fileId(), realCache()->imageFingerprint() + 1)) {
+      _exit(CHILD_SLOT_NOT_HOOKED);
+    }
   });
 }
 
-// A stale cache of an unlinked library whose path is now used by a different
-// unlinked library at the same base: the path matches, the layout does not.
-TEST_F(LibraryPatcherIdentityTest, PatchSkipsUnlinkedCacheWithDifferentLayout) {
+TEST_F(LibraryPatcherIdentityTest, PatchAcceptsCacheOfSameImageAtSameBase) {
   runInChild([]() {
-    LoadedLib lib = loadUnlinkedLib(true, false);
-    CodeCache* real = Libraries::instance()->findLibraryByName("libpatchtarget");
-    static void* word = (void*)&SENTINEL;
-    addCacheAtLibraryBase(real, real->name(), real->fileId(), real->programHeadersHash() + 1, &word);
-    LibraryPatcher::patch_socket_functions();
-    if (*lib.slot != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
-    if (word != (void*)&SENTINEL) _exit(CHILD_CORRUPTED);
+    LoadedLib lib = loadLib(SOCKET);
+    if (!patchWritesFakeCache(lib, realCache()->fileId() + 1, realCache()->imageFingerprint())) {
+      _exit(CHILD_SLOT_NOT_HOOKED);
+    }
   });
 }
 
-// Control for the test above: the same setup with a matching layout is patched.
-TEST_F(LibraryPatcherIdentityTest, PatchAcceptsUnlinkedCacheWithSameLayout) {
+// An unlinked library cannot be stat()ed, so only the image identity is left:
+// a stale cache of a different image at the same base is still rejected.
+TEST_F(LibraryPatcherIdentityTest, PatchSkipsUnlinkedCacheOfDifferentImage) {
   runInChild([]() {
-    loadUnlinkedLib(true, false);
-    CodeCache* real = Libraries::instance()->findLibraryByName("libpatchtarget");
-    static void* word = (void*)&SENTINEL;
-    addCacheAtLibraryBase(real, real->name(), real->fileId(), real->programHeadersHash(), &word);
-    LibraryPatcher::patch_socket_functions();
-    if (word != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
+    LoadedLib lib = loadUnlinkedLib(true, BY_PATH);
+    if (patchWritesFakeCache(lib, realCache()->fileId(), realCache()->imageFingerprint() + 1)) {
+      _exit(CHILD_CORRUPTED);
+    }
+  });
+}
+
+struct FingerprintQuery {
+  const char* suffix;
+  u64 fingerprint;
+  const ElfW(Phdr)* phdrs;
+  int phnum;
+};
+
+static int fingerprintLoadedObject(struct dl_phdr_info* info, size_t, void* data) {
+  FingerprintQuery* query = (FingerprintQuery*)data;
+  size_t len = strlen(info->dlpi_name), suffix_len = strlen(query->suffix);
+  if (len < suffix_len || strcmp(info->dlpi_name + len - suffix_len, query->suffix) != 0) return 0;
+  query->fingerprint = Symbols::imageFingerprint(info->dlpi_phdr, info->dlpi_phnum,
+                                                 info->dlpi_addr, 0, UINTPTR_MAX);
+  query->phdrs = info->dlpi_phdr;
+  query->phnum = info->dlpi_phnum;
+  return 1;
+}
+
+// Two builds that differ only in their build-id have identical program
+// headers; the fingerprint must still tell them apart, through the notes.
+TEST_F(LibraryPatcherIdentityTest, FingerprintCoversBuildId) {
+  runInChild([]() {
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s", g_lib_path);
+    *strrchr(dir, '/') = '\0';
+    FingerprintQuery queries[] = {{"/libbuildid-a.so", 0, nullptr, 0},
+                                  {"/libbuildid-b.so", 0, nullptr, 0}};
+    for (FingerprintQuery& query : queries) {
+      char path[PATH_MAX + 32];
+      snprintf(path, sizeof(path), "%s%s", dir, query.suffix);
+      if (dlopen(path, RTLD_NOW) == nullptr) _exit(CHILD_DLOPEN_FAILED);
+      if (dl_iterate_phdr(fingerprintLoadedObject, &query) != 1) _exit(CHILD_LIB_NOT_FOUND);
+      if (query.fingerprint == 0) _exit(CHILD_NO_FINGERPRINT);
+    }
+    if (queries[0].phnum != queries[1].phnum
+        || memcmp(queries[0].phdrs, queries[1].phdrs, queries[0].phnum * sizeof(ElfW(Phdr))) != 0) {
+      _exit(CHILD_SKIP);  // the toolchain laid the two builds out differently
+    }
+    if (queries[0].fingerprint == queries[1].fingerprint) _exit(CHILD_CORRUPTED);
   });
 }
 
