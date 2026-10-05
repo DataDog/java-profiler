@@ -43,9 +43,11 @@ static bool has_entry_for(const PatchEntry* entries, int size, CodeCache* lib) {
   return false;
 }
 
-// True if cache_name, a path from /proc/self/maps, names loaded_path. The
-// kernel appends " (deleted)" once the file is unlinked, so the cache carries
-// it if the library was parsed after the unlink.
+// True if cache_name, an absolute path from /proc/self/maps, names
+// loaded_path, the name the library was loaded by. The kernel appends
+// " (deleted)" once the file is unlinked, so the cache carries it if the
+// library was parsed after the unlink. A relative loaded_path ("./x.so",
+// "lib/x.so") must be a trailing part of the absolute one.
 static bool is_same_path(const char* cache_name, const char* loaded_path) {
   static const char DELETED[] = " (deleted)";
   const size_t deleted_len = sizeof(DELETED) - 1;
@@ -53,7 +55,15 @@ static bool is_same_path(const char* cache_name, const char* loaded_path) {
   if (cache_len >= deleted_len && strcmp(cache_name + cache_len - deleted_len, DELETED) == 0) {
     cache_len -= deleted_len;
   }
-  return strlen(loaded_path) == cache_len && strncmp(cache_name, loaded_path, cache_len) == 0;
+  if (loaded_path[0] == '/') {
+    return strlen(loaded_path) == cache_len && strncmp(cache_name, loaded_path, cache_len) == 0;
+  }
+  while (loaded_path[0] == '.' && loaded_path[1] == '/') {
+    loaded_path += 2;
+  }
+  size_t len = strlen(loaded_path);
+  return len > 0 && len < cache_len && cache_name[cache_len - len - 1] == '/'
+      && strncmp(cache_name + cache_len - len, loaded_path, len) == 0;
 }
 
 void LibraryPatcher::add_live_candidate(CodeCache* lib, int tag) {
@@ -110,23 +120,33 @@ int LibraryPatcher::visit_loaded_object(struct dl_phdr_info* info, size_t size, 
   // can occupy its image base.
   bool main_executable = info->dlpi_name == nullptr || info->dlpi_name[0] == '\0';
   // stat() fails when the file was unlinked after loading, which JNI loaders
-  // that extract to a temporary file commonly do. Fall back to the path then.
+  // that extract to a temporary file commonly do. Fall back to the path then,
+  // plus the program header table, so that a different library that was
+  // loaded from the same path and unlinked too is not taken for the old one.
   bool unlinked = false;
   u64 file_id = 0;
+  u64 phdr_hash = 0;
   if (!main_executable) {
     struct stat st;
     if (stat(info->dlpi_name, &st) == 0) {
       file_id = CodeCache::makeFileId(major(st.st_dev) << 8 | minor(st.st_dev), st.st_ino);
     } else {
       unlinked = true;
+      phdr_hash = CodeCache::hashProgramHeaders(info->dlpi_phdr,
+                                                info->dlpi_phnum * sizeof(ElfW(Phdr)));
     }
   }
   LiveLibraryVisitor visit = *(LiveLibraryVisitor*)data;
   for (; ref != end && ref->_base == base; ref++) {
     bool same_file = main_executable
         || (unlinked ? is_same_path(ref->_lib->name(), info->dlpi_name)
+                       && ref->_lib->programHeadersHash() == phdr_hash
                      : ref->_lib->fileId() == file_id);
     if (same_file) {
+      // The library may be a reload at the same address that is still
+      // represented by this CodeCache (a reload is not re-parsed, its inode
+      // has been seen), so its writability state cannot be trusted.
+      ref->_lib->makeImportsWritable();
       visit(ref->_lib, ref->_tag);
     }
   }

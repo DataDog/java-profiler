@@ -34,6 +34,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <link.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -168,6 +169,24 @@ bool sentinelIntact(const unsigned char* page) {
   return true;
 }
 
+// Reloads the test DSO after unload(). Skips unless it lands at its old base,
+// which is what the scenarios using this need.
+void* reloadAtSameBase(void* old_base) {
+  void* handle = dlopen(g_lib_path, RTLD_NOW);
+  if (handle == nullptr) _exit(CHILD_DLOPEN_FAILED);
+  struct link_map* map = nullptr;
+  if (dlinfo(handle, RTLD_DI_LINKMAP, &map) != 0 || (void*)map->l_addr != old_base) {
+    _exit(CHILD_SKIP);
+  }
+  return handle;
+}
+
+void* loadBaseOf(void* handle) {
+  struct link_map* map = nullptr;
+  if (dlinfo(handle, RTLD_DI_LINKMAP, &map) != 0) _exit(CHILD_DLOPEN_FAILED);
+  return (void*)map->l_addr;
+}
+
 // Runs scenario in a forked child (patching is process-global and the bug can
 // crash) and turns the outcome into a gtest result.
 template <typename Scenario>
@@ -268,6 +287,43 @@ TEST_P(LibraryPatcherUnloadTest, RepatchDoesNotWriteIntoReusedMapping) {
   });
 }
 
+// The same file reloaded at the same base is still represented by the old
+// CodeCache: the reload is not re-parsed, since its inode was seen before. Its
+// saved slots are valid for the identical layout, but the test DSO has full
+// RELRO, so the new mapping's GOT is read-only again. Re-installing the hooks
+// on the next start must make it writable rather than trust the old state.
+TEST_P(LibraryPatcherUnloadTest, RepatchAfterReloadAtSameBase) {
+  const PatchKind& kind = *GetParam();
+  runInChild([&]() {
+    LoadedLib lib = loadLib(kind);
+    void* base = loadBaseOf(lib.handle);
+    patchAndVerify(kind, lib);
+    kind.unpatch();
+    if (!unload(lib.handle, lib.slot)) return;  // still mapped: nothing was reloaded
+    lib.handle = reloadAtSameBase(base);
+    lib.orig = *lib.slot;
+    patchAndVerify(kind, lib);
+    unpatchAndVerifyRestored(kind, lib);
+  });
+}
+
+// As above, but the reload happens while patched: stopping must restore the
+// new mapping's read-only slot.
+TEST_P(LibraryPatcherUnloadTest, UnpatchAfterReloadAtSameBase) {
+  const PatchKind& kind = *GetParam();
+  runInChild([&]() {
+    LoadedLib lib = loadLib(kind);
+    void* base = loadBaseOf(lib.handle);
+    patchAndVerify(kind, lib);
+    if (!unload(lib.handle, lib.slot)) return unpatchAndVerifyRestored(kind, lib);
+    lib.handle = reloadAtSameBase(base);
+    // With -z now the reload resolves the slot to the same function, which is
+    // also the value saved when patching.
+    if (*lib.slot != lib.orig) _exit(CHILD_SKIP);
+    unpatchAndVerifyRestored(kind, lib);
+  });
+}
+
 // The liveness check must not get in the way of a DSO that is still loaded.
 TEST_P(LibraryPatcherUnloadTest, UnpatchRestoresLoadedLibrary) {
   const PatchKind& kind = *GetParam();
@@ -302,12 +358,19 @@ static void copyLibToTemp(char* path_out, size_t size) {
 
 // Loads a temporary copy of the test DSO and unlinks the file, before or
 // after Libraries parses it, like JNI loaders that extract to a temporary
-// file. Its hooks must still be installed and restored: the file identity
-// check cannot stat() the file any more and has to go by path.
-static void patchAndRestoreUnlinkedLibrary(bool unlink_before_parse) {
+// file. With relative, the copy is loaded as "./<name>" from its directory.
+static LoadedLib loadUnlinkedLib(bool unlink_before_parse, bool relative) {
   char path[64];
   copyLibToTemp(path, sizeof(path));
-  void* handle = dlopen(path, RTLD_NOW);
+  void* handle;
+  if (relative) {
+    char name[64];
+    snprintf(name, sizeof(name), "./%s", strrchr(path, '/') + 1);
+    if (chdir("/tmp") != 0) _exit(CHILD_DLOPEN_FAILED);
+    handle = dlopen(name, RTLD_NOW);
+  } else {
+    handle = dlopen(path, RTLD_NOW);
+  }
   if (handle == nullptr) _exit(CHILD_DLOPEN_FAILED);
   if (unlink_before_parse) unlink(path);
   Libraries::instance()->updateSymbols(false);
@@ -316,25 +379,41 @@ static void patchAndRestoreUnlinkedLibrary(bool unlink_before_parse) {
   if (cc == nullptr) _exit(CHILD_LIB_NOT_FOUND);
   void** slot = cc->findImport(im_write);
   if (slot == nullptr) _exit(CHILD_NO_IMPORT);
-  LoadedLib lib = {handle, slot, *slot};
+  return {handle, slot, *slot};
+}
+
+// The hooks of an unlinked library must still be installed and restored: the
+// file identity check cannot stat() the file any more and has to go by path.
+static void patchAndRestoreUnlinkedLibrary(bool unlink_before_parse, bool relative) {
+  LoadedLib lib = loadUnlinkedLib(unlink_before_parse, relative);
   patchAndVerify(SOCKET, lib);
   unpatchAndVerifyRestored(SOCKET, lib);
 }
 
 TEST_F(LibraryPatcherIdentityTest, PatchesLibraryUnlinkedBeforeParsing) {
-  runInChild([]() { patchAndRestoreUnlinkedLibrary(true); });
+  runInChild([]() { patchAndRestoreUnlinkedLibrary(true, false); });
 }
 
 TEST_F(LibraryPatcherIdentityTest, PatchesLibraryUnlinkedAfterParsing) {
-  runInChild([]() { patchAndRestoreUnlinkedLibrary(false); });
+  runInChild([]() { patchAndRestoreUnlinkedLibrary(false, false); });
+}
+
+// /proc/self/maps records the absolute path, the loader keeps "./<name>".
+// Unlinked after parsing: before it, Symbols::parseLibraries cannot verify a
+// relatively loaded library (UnloadProtection's dlopen by the absolute path
+// fails) and never reads its imports, so there would be nothing to patch.
+TEST_F(LibraryPatcherIdentityTest, PatchesLibraryLoadedByRelativePathAndUnlinked) {
+  runInChild([]() { patchAndRestoreUnlinkedLibrary(false, true); });
 }
 
 // Registers a CodeCache that claims the test DSO's image base, with the given
 // file identity and a write() import pointing at *slot.
-static void addCacheAtLibraryBase(CodeCache* real, u64 file_id, void** slot) {
-  CodeCache* cc = new CodeCache("fake-at-same-base", -1, real->minAddress(), real->maxAddress(),
+static void addCacheAtLibraryBase(CodeCache* real, const char* name, u64 file_id,
+                                  u64 phdr_hash, void** slot) {
+  CodeCache* cc = new CodeCache(name, -1, real->minAddress(), real->maxAddress(),
                                 real->imageBase(), /*imports_patchable=*/true);
   cc->setFileId(file_id);
+  cc->setProgramHeadersHash(phdr_hash);
   cc->addImport(slot, "write");
   Libraries::instance()->addLibraryForTest(cc);
 }
@@ -347,7 +426,7 @@ TEST_F(LibraryPatcherIdentityTest, PatchSkipsCacheOfDifferentFileAtSameBase) {
     LoadedLib lib = loadLib(SOCKET);
     CodeCache* real = Libraries::instance()->findLibraryByName("libpatchtarget");
     static void* word = (void*)&SENTINEL;
-    addCacheAtLibraryBase(real, real->fileId() + 1, &word);
+    addCacheAtLibraryBase(real, "fake-at-same-base", real->fileId() + 1, real->programHeadersHash(), &word);
     LibraryPatcher::patch_socket_functions();
     if (*lib.slot != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
     if (word != (void*)&SENTINEL) _exit(CHILD_CORRUPTED);
@@ -361,7 +440,33 @@ TEST_F(LibraryPatcherIdentityTest, PatchAcceptsCacheOfSameFileAtSameBase) {
     loadLib(SOCKET);
     CodeCache* real = Libraries::instance()->findLibraryByName("libpatchtarget");
     static void* word = (void*)&SENTINEL;
-    addCacheAtLibraryBase(real, real->fileId(), &word);
+    addCacheAtLibraryBase(real, "fake-at-same-base", real->fileId(), real->programHeadersHash(), &word);
+    LibraryPatcher::patch_socket_functions();
+    if (word != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
+  });
+}
+
+// A stale cache of an unlinked library whose path is now used by a different
+// unlinked library at the same base: the path matches, the layout does not.
+TEST_F(LibraryPatcherIdentityTest, PatchSkipsUnlinkedCacheWithDifferentLayout) {
+  runInChild([]() {
+    LoadedLib lib = loadUnlinkedLib(true, false);
+    CodeCache* real = Libraries::instance()->findLibraryByName("libpatchtarget");
+    static void* word = (void*)&SENTINEL;
+    addCacheAtLibraryBase(real, real->name(), real->fileId(), real->programHeadersHash() + 1, &word);
+    LibraryPatcher::patch_socket_functions();
+    if (*lib.slot != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
+    if (word != (void*)&SENTINEL) _exit(CHILD_CORRUPTED);
+  });
+}
+
+// Control for the test above: the same setup with a matching layout is patched.
+TEST_F(LibraryPatcherIdentityTest, PatchAcceptsUnlinkedCacheWithSameLayout) {
+  runInChild([]() {
+    loadUnlinkedLib(true, false);
+    CodeCache* real = Libraries::instance()->findLibraryByName("libpatchtarget");
+    static void* word = (void*)&SENTINEL;
+    addCacheAtLibraryBase(real, real->name(), real->fileId(), real->programHeadersHash(), &word);
     LibraryPatcher::patch_socket_functions();
     if (word != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
   });

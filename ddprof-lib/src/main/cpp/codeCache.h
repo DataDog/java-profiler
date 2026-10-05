@@ -166,6 +166,7 @@ private:
   size_t _build_id_len;      // Build-id length in bytes (raw, not hex string length)
   uintptr_t _load_bias;      // Load bias (image_base - file_base address)
   u64 _file_id;              // Backing file identity, see makeFileId(); 0 if unknown
+  u64 _phdr_hash;            // hashProgramHeaders() of the mapped image; 0 if unknown
 
   void **_imports[NUM_IMPORTS][NUM_IMPORT_TYPES];
   bool _imports_patchable;
@@ -277,6 +278,18 @@ public:
   u64 fileId() const { return _file_id; }
   void setFileId(u64 file_id) { _file_id = file_id; }
 
+  // FNV-1a over a program header table. Identifies the layout of a loaded
+  // image when its file can no longer be stat()ed. Never 0.
+  static u64 hashProgramHeaders(const void* phdrs, size_t size) {
+    u64 hash = 14695981039346656037ULL;
+    for (size_t i = 0; i < size; i++) {
+      hash = (hash ^ ((const unsigned char*)phdrs)[i]) * 1099511628211ULL;
+    }
+    return hash != 0 ? hash : 1;
+  }
+  u64 programHeadersHash() const { return _phdr_hash; }
+  void setProgramHeadersHash(u64 hash) { _phdr_hash = hash; }
+
   // Mark this cache as published into a CodeCacheArray. Call before the array
   // makes the pointer visible to readers; afterwards add()/expand()/
   // setDwarfTable() must not be called (see _published).
@@ -313,6 +326,13 @@ public:
   // Like findImport(), but never makes the GOT writable, so it does not touch
   // the library's memory. For bookkeeping only; patch through findImport().
   void **peekImport(ImportId id) const { return _imports[id][PRIMARY]; }
+  // Makes the import slots writable even if they were made so before: when the
+  // library was unloaded and reloaded at the same address, the new mapping's
+  // GOT is read-only again under full RELRO.
+  void makeImportsWritable() {
+    makeImportsPatchable();
+    _imports_patchable = true;
+  }
   void patchImport(ImportId, void *hook_func);
 
   CodeBlob *findBlob(const char *name);

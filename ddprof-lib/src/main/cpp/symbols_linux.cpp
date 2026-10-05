@@ -541,6 +541,12 @@ bool ElfParser::parseFile(CodeCache* cc, const char* base, const char* file_name
 void ElfParser::parseProgramHeaders(CodeCache* cc, const char* base, const char* end, bool relocate_dyn) {
     ElfParser elf(cc, base, base, (size_t)(end - base), NULL, relocate_dyn);
     if (elf.validHeader() && base + elf._header->e_phoff < end) {
+        size_t phdrs_size = elf._header->e_phnum * sizeof(ElfProgramHeader);
+        if (elf._header->e_phentsize == sizeof(ElfProgramHeader)
+            && phdrs_size <= (size_t)(end - base) - elf._header->e_phoff) {
+            cc->setProgramHeadersHash(
+                CodeCache::hashProgramHeaders(base + elf._header->e_phoff, phdrs_size));
+        }
         cc->setTextBase(base);
         elf.calcVirtualLoadAddress();
         elf.parseDynamicSection();
