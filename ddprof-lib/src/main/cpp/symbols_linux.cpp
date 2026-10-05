@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -1117,7 +1118,7 @@ static void collectSharedLibraries(std::unordered_map<u64, SharedLibrary>& libs,
             continue;
         }
 
-        u64 inode = u64(map.dev()) << 32 | map.inode();
+        u64 inode = CodeCache::makeFileId(map.dev(), map.inode());
         if (_parsed_inodes.find(inode) != _parsed_inodes.end()) {
             continue;  // shared object is already parsed
         }
@@ -1182,6 +1183,7 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
 
         SharedLibrary& lib = it.second;
         CodeCache* cc = new CodeCache(lib.file, array->count(), lib.map_start, lib.map_end, lib.image_base);
+        cc->setFileId(inode);
 
         if (strchr(lib.file, ':') != NULL) {
             // Do not try to parse pseudofiles like anon_inode:name, /memfd:name

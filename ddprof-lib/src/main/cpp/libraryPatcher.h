@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #ifndef _LIBRARYPATCHER_H
 #define _LIBRARYPATCHER_H
 
@@ -6,6 +11,8 @@
 #include <atomic>
 
 #ifdef __linux__
+
+struct dl_phdr_info;
 
 // Patch libraries' @plt entries
 typedef struct _patchEntry {
@@ -16,6 +23,14 @@ typedef struct _patchEntry {
   void*  _func;
 } PatchEntry;
 
+// A library to visit with LibraryPatcher::visit_live_libraries()
+typedef struct _libraryRef {
+  uintptr_t  _base;  // lib->imageBase(), the sort key
+  CodeCache* _lib;
+  int        _tag;   // caller-defined, passed back to the visitor
+} LibraryRef;
+
+typedef void (*LiveLibraryVisitor)(CodeCache* lib, int tag);
 
 class LibraryPatcher {
   friend class LibraryPatcherTestAccessor;
@@ -41,6 +56,21 @@ private:
   static PatchEntry  _socket_entries[4 * MAX_NATIVE_LIBS];
   static int         _socket_size;
 
+  // Candidates for visit_live_libraries(), filled by add_live_candidate().
+  // Guarded by _lock.
+  static LibraryRef  _live_refs[MAX_NATIVE_LIBS];
+  static int         _live_count;
+
+  static void add_live_candidate(CodeCache* lib, int tag);
+  // Calls visit(lib, tag) for every candidate whose library is still loaded,
+  // then clears the candidates. Every write through a saved GOT slot must go
+  // through here: patched libraries are not pinned and can be dlclose()d.
+  static void visit_live_libraries(LiveLibraryVisitor visit);
+  static int visit_loaded_object(struct dl_phdr_info* info, size_t size, void* data);
+  static bool needs_socket_patch(CodeCache* lib);
+  static void patch_socket_slots(CodeCache* lib);
+  static void patch_socket_slot(void** location, void* hook_fn, const char* fn_name, CodeCache* lib);
+  static bool excluded_from_pthread_create_patch(CodeCache* lib);
   static void patch_library_unlocked(CodeCache* lib);
   static void patch_pthread_create();
   static void patch_pthread_setspecific();

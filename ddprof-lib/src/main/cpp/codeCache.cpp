@@ -59,6 +59,7 @@ CodeCache::CodeCache(const char *name, short lib_index,
   _build_id = nullptr;
   _build_id_len = 0;
   _load_bias = 0;
+  _file_id = 0;
 
   memset(_imports, 0, sizeof(_imports));
   _imports_patchable = imports_patchable;
@@ -102,6 +103,7 @@ void CodeCache::copyFrom(const CodeCache& other) {
     _build_id = nullptr;
   }
   _load_bias = other._load_bias;
+  _file_id = other._file_id;
 
   memset(_imports, 0, sizeof(_imports));
   _imports_patchable = other._imports_patchable;

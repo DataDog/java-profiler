@@ -165,6 +165,7 @@ private:
   char *_build_id;           // GNU build-id (hex string, null if not available)
   size_t _build_id_len;      // Build-id length in bytes (raw, not hex string length)
   uintptr_t _load_bias;      // Load bias (image_base - file_base address)
+  u64 _file_id;              // Backing file identity, see makeFileId(); 0 if unknown
 
   void **_imports[NUM_IMPORTS][NUM_IMPORT_TYPES];
   bool _imports_patchable;
@@ -268,6 +269,14 @@ public:
   void setBuildId(const char* build_id, size_t build_id_len);
   void setLoadBias(uintptr_t load_bias) { _load_bias = load_bias; }
 
+  // Identity of the file backing a mapping. dev is encoded as in
+  // /proc/self/maps parsing: major << 8 | minor.
+  static u64 makeFileId(unsigned long dev, unsigned long inode) {
+    return u64(dev) << 32 | inode;
+  }
+  u64 fileId() const { return _file_id; }
+  void setFileId(u64 file_id) { _file_id = file_id; }
+
   // Mark this cache as published into a CodeCacheArray. Call before the array
   // makes the pointer visible to readers; afterwards add()/expand()/
   // setDwarfTable() must not be called (see _published).
@@ -301,6 +310,9 @@ public:
 
   void addImport(void **entry, const char *name);
   void **findImport(ImportId id);
+  // Like findImport(), but never makes the GOT writable, so it does not touch
+  // the library's memory. For bookkeeping only; patch through findImport().
+  void **peekImport(ImportId id) const { return _imports[id][PRIMARY]; }
   void patchImport(ImportId, void *hook_func);
 
   CodeBlob *findBlob(const char *name);
