@@ -312,6 +312,32 @@ public:
         ReferenceChainTracker::instance()->enqueuePendingAbandonedEvent();
     }
 
+    // Recording-boundary tests: put the tracker into the exact state an in-flight search has when
+    // Profiler::stop() reaches ReferenceChainTracker::stop() - a started, still-RUNNING search
+    // with a stale TTL clock and unreleased tags (stopThread() has already joined the BFS thread
+    // by then, so no pass can be in flight; the fields hold what the last pass left behind).
+    static void setInFlightSearchForTest(u64 stale_start_ns) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_search_state = SearchState::RUNNING;
+        t->_abandon_reason = SearchAbandonReason::NONE;
+        t->_search_started = true;
+        t->_search_start_ns = stale_start_ns;
+        t->_tags_released = false;
+    }
+
+    // Recording-boundary tests: seed a latched urgency episode (the state the OOM-projection
+    // machine leaves behind) without driving LivenessTracker's heap-floor history.
+    static void setUrgencyEpisodeForTest(bool latched, int ticks, bool spent) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_urgent_latched = latched;
+        t->_urgent_release_ticks = ticks;
+        t->_urgent_search_spent = spent;
+    }
+
+    static u64 searchStartNsForTest() {
+        return ReferenceChainTracker::instance()->_search_start_ns;
+    }
+
     static size_t pendingAbandonedEventCountForTest() {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         t->_pending_abandoned_events_lock.lock();

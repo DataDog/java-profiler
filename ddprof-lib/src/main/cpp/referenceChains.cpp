@@ -380,6 +380,49 @@ void ReferenceChainTracker::stop() {
   }
   Log::info("Reference chain tracking stopped");
 
+  // Recording-boundary search teardown: stopThread() has already joined the BFS thread, so no
+  // pass can be in flight here, but a search may still be RUNNING. Ending it now - rather than
+  // letting the next recording inherit it - because nothing about it survives the boundary
+  // intact:
+  // - _search_start_ns still holds the previous recording's clock, so the entire stopped gap
+  //   would count toward the new recording's TTL and could abandon "its" search on the first
+  //   pass with a spurious abandonment event for a search the new recording never started;
+  // - _urgent_latched/_urgent_release_ticks/_urgent_search_spent would carry the previous
+  //   recording's urgency episode into the new one;
+  // - the frontier's referrer_klass slots hold StringDictionary ids from a _class_map that
+  //   Profiler::start() is about to wipe (ids restart at 1) - they cannot be remapped, so a
+  //   chain built from a surviving entry after the boundary would name whichever class the new
+  //   recording assigned that id to.
+  // Forcing the terminal state here routes the next recording through the existing
+  // release-then-restart sequence: its first BFS pass hits shouldRunPass()'s terminal gate
+  // (tags are deliberately NOT released in stop() - the next start()'s search does it via that
+  // gate, before pollWatchedTargets() runs in the same iteration) and the restartSearch() that
+  // follows it resets the frontier content and _next_tag, so every chain built afterwards uses
+  // fresh-admission ids from the new _class_map generation.
+  if (_search_started &&
+      load(_search_state) == (u8)SearchState::RUNNING) {
+    // Terminal WITHOUT an abandonment event: the recording ended, which is not a search-level
+    // outcome the JFR stream should report (and the pending-event queue is cleared right below
+    // anyway).
+    store(_abandon_reason, (u8)SearchAbandonReason::RECORDING_END);
+    storeRelease(_search_state, (u8)SearchState::ABANDONED);
+  }
+  store(_search_start_ns, (u64)0);
+  _urgent_latched = false;
+  _urgent_release_ticks = 0;
+  _urgent_search_spent = false;
+  // Same per-search candidate/discovered canary state runPass()'s terminal branch and
+  // restartSearch() clear - zeroing the counts here closes the stale-chain windows in
+  // pollWatchedTargets() (dead-representative canary path, discovered-instances path) for the
+  // gap before the next recording's search restarts. The payload arrays (_candidate_klass_ids,
+  // _candidate_frontier_tags, _candidate_discovered_tags, _candidate_qualifying_tids) are
+  // unreachable once the counts are zero, so they need no memset.
+  _candidate_count = 0;
+  _candidate_found_bits = 0;
+  memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
+  memset(_candidate_qualifying_tid_count, 0,
+         sizeof(_candidate_qualifying_tid_count));
+
   // Clear the resolved-chain cache and any queued-but-undrained abandonment
   // events now, not just on the next start(): a later recording that does
   // not activate reference chains (or has allocation sampling off) would

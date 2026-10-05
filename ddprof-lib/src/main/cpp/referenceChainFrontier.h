@@ -39,6 +39,12 @@ constexpr u8 FRONTIER_CAP = 1; // frontier-size cap hit
 constexpr u8 TTL = 2;          // wall-clock TTL exceeded with work still pending
 // Canary candidate-discovery has made no progress for NO_PROGRESS_PASS_LIMIT consecutive passes.
 constexpr u8 CANARY_STUCK = 3;
+// The recording ended (Profiler::stop()) while the search was still RUNNING. Not a search-level
+// outcome: no abandonment event is ever enqueued for this reason - it only marks the terminal
+// state ReferenceChainTracker::stop() forces at the recording boundary so the next recording
+// starts from a brand-new-search shape (release-then-restart, fresh TTL clock, no urgency
+// carry-over).
+constexpr u8 RECORDING_END = 4;
 } // namespace SearchAbandonReason
 
 // Metadata for one tagged frontier object.

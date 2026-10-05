@@ -258,3 +258,162 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
 
     tracker->stop();
 }
+
+// ---------------------------------------------------------------------------
+// Recording-boundary search teardown: Profiler::stop() -> ReferenceChainTracker::stop()
+// must end an in-flight search (referenceChains.cpp's stop() teardown) so the next
+// recording starts from a brand-new-search shape - a fresh TTL clock, no urgency
+// carry-over, no candidate/discovered canary state, and a frontier that goes through the
+// existing release-then-restart sequence (which resets its content) before any chain is
+// built from it. Without the teardown, a search left RUNNING at the boundary continues
+// into the next recording with a _search_start_ns that predates the stop (the stopped gap
+// counts toward the new recording's TTL and can abandon "its" search with a spurious
+// abandonment event), the previous recording's urgency episode stays latched, and frontier
+// entries keep referrer_klass ids from a _class_map generation Profiler::start() has since
+// wiped - so a chain built from a surviving entry names whichever class the new recording
+// assigned that id to.
+// ---------------------------------------------------------------------------
+
+class ReferenceChainsRecordingBoundaryTest : public ::testing::Test,
+                                            public ReferenceChainsMockHeap {
+protected:
+    void SetUp() override {
+        setUp();
+        // setUp() already resets the tracker; pin the LivenessTracker-facing knobs too (an
+        // earlier suite in this binary may have left generations enabled, which would gate
+        // shouldRunPass()'s restart on a seeded candidate).
+        LivenessTracker::instance()->klassPopulationResetForTest();
+        LivenessTracker::instance()->setGcGenerationsForTest(false);
+        LivenessTracker::instance()->classMapGenerationSetForTest(
+            Profiler::instance()->classMap()->generation());
+    }
+    void TearDown() override {
+        LivenessTracker::instance()->klassPopulationResetForTest();
+        LivenessTracker::instance()->setGcGenerationsForTest(false);
+        tearDown();
+    }
+};
+
+TEST_F(ReferenceChainsRecordingBoundaryTest,
+       StopWithSearchInFlightEndsSearchAndClearsBoundaryState) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    // A search still in flight when the profiler stops: started, RUNNING, a TTL clock that
+    // predates the stop, a latched urgency episode, and live canary candidate state.
+    ReferenceChainsTestAccessor::setInFlightSearchForTest(1ULL << 40);
+    ReferenceChainsTestAccessor::setUrgencyEpisodeForTest(/*latched=*/true, /*ticks=*/2,
+                                                          /*spent=*/true);
+    ReferenceChainsTestAccessor::setCandidateCountForTest(2);
+    ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(0x1);
+    ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 42);
+
+    tracker->stop();
+
+    // The search was ended at the boundary - terminal with the recording-end reason - and no
+    // abandonment event was enqueued for it: the recording ended, which is not a search-level
+    // outcome the JFR stream should report.
+    EXPECT_EQ(SearchState::ABANDONED,
+              ReferenceChainsTestAccessor::searchStateForTest());
+    EXPECT_EQ(SearchAbandonReason::RECORDING_END,
+              ReferenceChainsTestAccessor::searchAbandonReasonForTest());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingAbandonedEventCountForTest());
+    // The TTL clock is zeroed: the stopped gap must not count toward the next recording's TTL.
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::searchStartNsForTest());
+    // The urgency episode does not carry over into the next recording.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest());
+    EXPECT_EQ(0, ReferenceChainsTestAccessor::urgentReleaseTicksForTest());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentSearchSpentForTest());
+    // The canary/discovered candidate state is cleared with the search that owned it.
+    EXPECT_EQ(0, ReferenceChainsTestAccessor::candidateCountForTest());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::candidateFoundBitsForTest());
+    // Unchanged boundary shape: stop() still does not release the search's tags itself - the
+    // next recording's first pass does, via the terminal gate.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::tagsReleased());
+}
+
+TEST_F(ReferenceChainsRecordingBoundaryTest,
+       RestartAfterBoundaryReleasesTagsThenStartsFreshSearch) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    // In-flight search at the boundary (no frontier entries, so the terminal gate's release
+    // finds nothing to release and confirms immediately).
+    ReferenceChainsTestAccessor::setInFlightSearchForTest(1ULL << 40);
+    tracker->stop();
+    ASSERT_EQ(SearchState::ABANDONED,
+              ReferenceChainsTestAccessor::searchStateForTest());
+    ASSERT_FALSE(ReferenceChainsTestAccessor::tagsReleased());
+
+    // The next recording: the boundary state survives start() - the search stays terminal -
+    // and the FIRST pass must go through the terminal gate (release the previous search's
+    // tags before anything else), not continue the old search.
+    ASSERT_FALSE(tracker->start(args));
+    EXPECT_EQ(SearchState::ABANDONED,
+              ReferenceChainsTestAccessor::searchStateForTest());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(1000));
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::tagsReleased());
+    EXPECT_EQ(SearchState::ABANDONED,
+              ReferenceChainsTestAccessor::searchStateForTest());
+    // The release pass was the terminal no-op: no walk ran.
+    EXPECT_EQ(0, tracker->passesRun());
+
+    // With generations disabled (this fixture's SetUp), canAffordNewSearch() is unconditional,
+    // so the next shouldRunPass() restarts the search - exactly like a brand-new tracker.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2000));
+    EXPECT_EQ(SearchState::RUNNING,
+              ReferenceChainsTestAccessor::searchStateForTest());
+    // Fresh TTL clock: the restarted search has not stamped its own start yet.
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::searchStartNsForTest());
+    // No spurious abandonment event was emitted for a search the new recording never started.
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingAbandonedEventCountForTest());
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsRecordingBoundaryTest, NoStaleFrontierIdsAfterRecordingBoundary) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    // A frontier entry carrying a referrer_klass dict id from this recording's _class_map
+    // generation, backed by a resolvable live tag (mock_GetObjectsWithTags resolves
+    // node_tags entries).
+    int node = addNode();
+    node_tags[node] = 101;
+    FrontierTable *frontier = tracker->frontierTable();
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 101, 0, 0, FrontierEntryState::FRONTIER, 0,
+        /*referrer_klass=*/777));
+
+    ReferenceChainsTestAccessor::setInFlightSearchForTest(1ULL << 40);
+    tracker->stop();
+    tracker->start(args);
+
+    // The boundary state survives start(): the search stays terminal, so the next recording
+    // is routed through release-then-restart instead of continuing a search whose frontier
+    // still holds the wiped generation's ids.
+    EXPECT_EQ(SearchState::ABANDONED,
+              ReferenceChainsTestAccessor::searchStateForTest());
+
+    // First pass: the terminal gate releases the previous search's live tag ...
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::tagsReleased());
+    // ... and the restart that follows resets the frontier content, so no chain can ever be
+    // built from the previous _class_map generation's ids (which cannot be remapped: the
+    // dictionary contents are gone and its id namespace restarts at 1).
+    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2000));
+    EXPECT_EQ(SearchState::RUNNING,
+              ReferenceChainsTestAccessor::searchStateForTest());
+    EXPECT_EQ(0, tracker->frontierTable()->size());
+    FrontierEntry entry{};
+    EXPECT_FALSE(tracker->frontierTable()->lookup(101, &entry));
+
+    tracker->stop();
+}

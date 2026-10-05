@@ -1855,6 +1855,30 @@ Error Profiler::stop() {
     // per-recording caches). Matches the Profiler::stop() order documented
     // in referenceChains.cpp's stopThread()/stop() comments.
     ReferenceChainTracker::instance()->stopThread();
+    // Write the tracker's still-undrained events into the final chunk before stop() clears
+    // the queues - otherwise abandonment events queued since the last dump() are dropped for
+    // good, and the final chunk's live-object/leak-tag events (written by
+    // LivenessTracker::stop() via _alloc_engine->stop() above) have no ReferenceChain events
+    // to match. Same writer shape as dump(): per-lock lock, drain, record, unlock; runs after
+    // SignalInflight::drain() so no signal-path writer can contend, and the BFS thread is
+    // already joined by stopThread() above so no new events can appear mid-drain.
+    {
+      int dump_tid = ProfiledThread::currentTid();
+      u32 lock_index = getLockIndex(dump_tid >= 0 ? dump_tid : 0);
+      _locks[lock_index].lock();
+      std::vector<ReferenceChainEvent> chain_events;
+      ReferenceChainTracker::instance()->drainPendingChainEvents(&chain_events);
+      for (auto &event : chain_events) {
+        _jfr.recordReferenceChain(lock_index, &event);
+      }
+      std::vector<ReferenceChainAbandonedEvent> abandoned_events;
+      ReferenceChainTracker::instance()->drainPendingAbandonedEvents(
+          &abandoned_events);
+      for (auto &event : abandoned_events) {
+        _jfr.recordReferenceChainAbandoned(lock_index, &event);
+      }
+      _locks[lock_index].unlock();
+    }
     ReferenceChainTracker::instance()->stop();
     // BFS thread is joined by stopThread() above, so no walk can be holding a
     // copied ref: every registered/pending Thread global ref can be deleted
