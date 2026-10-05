@@ -29,6 +29,7 @@
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "nativeSocketSampler.h"
+#include "os.h"
 #include "symbols.h"
 
 #include <dlfcn.h>
@@ -482,6 +483,9 @@ TEST_F(LibraryPatcherIdentityTest, PatchAcceptsCacheOfSameImageAtSameBase) {
 // An unlinked library cannot be stat()ed, so only the image identity is left:
 // a stale cache of a different image at the same base is still rejected.
 TEST_F(LibraryPatcherIdentityTest, PatchSkipsUnlinkedCacheOfDifferentImage) {
+  // musl's dlclose() never unmaps, so there are no stale caches and the
+  // patcher does not check identity there.
+  if (OS::isMusl()) GTEST_SKIP() << "no identity check on musl";
   runInChild([]() {
     LoadedLib lib = loadUnlinkedLib(true, BY_PATH);
     if (patchWritesFakeCache(lib, realCache()->fileId(), realCache()->imageFingerprint() + 1)) {
