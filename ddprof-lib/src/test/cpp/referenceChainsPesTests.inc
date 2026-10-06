@@ -1,18 +1,12 @@
 // PriorityExpandSet and ClassTagAllocator tests.
 
-// PriorityExpandSet (referenceChains.h) - the fixed-capacity open-addressed
-// set behind _priority_expand. Covers the probe/insert/clear/rebuildFrom paths
-// and the full-table self-termination directly. Driven through the test
-// accessor (the class is a private member of the tracker singleton); all
-// operations here are pure in-process logic, no JVMTI.
-// ---------------------------------------------------------------------------
 TEST(PriorityExpandSetTest, InsertContainsClearRoundTrip) {
     ReferenceChainsTestAccessor::pesClear();
 
     EXPECT_FALSE(ReferenceChainsTestAccessor::pesContains(42));
     EXPECT_TRUE(ReferenceChainsTestAccessor::pesInsert(42));
     EXPECT_TRUE(ReferenceChainsTestAccessor::pesContains(42));
-    // Idempotent insert: already present returns false.
+    // Already present.
     EXPECT_FALSE(ReferenceChainsTestAccessor::pesInsert(42));
     EXPECT_TRUE(ReferenceChainsTestAccessor::pesInsert(43));
     EXPECT_TRUE(ReferenceChainsTestAccessor::pesContains(43));
@@ -22,7 +16,6 @@ TEST(PriorityExpandSetTest, InsertContainsClearRoundTrip) {
         << "clear must empty the set";
     EXPECT_FALSE(ReferenceChainsTestAccessor::pesContains(43));
 
-    // Re-insert after clear (slot reuse must work).
     EXPECT_TRUE(ReferenceChainsTestAccessor::pesInsert(42));
     EXPECT_TRUE(ReferenceChainsTestAccessor::pesContains(42));
     ReferenceChainsTestAccessor::pesClear();
@@ -38,8 +31,6 @@ TEST(PriorityExpandSetTest, RebuildFromMatchesQueueContents) {
     EXPECT_TRUE(ReferenceChainsTestAccessor::pesContains(30));
     EXPECT_FALSE(ReferenceChainsTestAccessor::pesContains(40));
 
-    // Pop the front (rotation collection's ordinary shape) and rebuild:
-    // membership must track the queue exactly - 10 is gone.
     queue.pop_front();
     ReferenceChainsTestAccessor::pesRebuildFrom(queue);
     EXPECT_FALSE(ReferenceChainsTestAccessor::pesContains(10))
@@ -49,36 +40,21 @@ TEST(PriorityExpandSetTest, RebuildFromMatchesQueueContents) {
     ReferenceChainsTestAccessor::pesClear();
 }
 
-// A completely full table must not livelock the linear-probe loop: insert()
-// is required to be self-terminating (returning false - the same "treated
-// as not-queued" degradation a full deque push already accepts) even if a
-// call site breaks the external "<= PRIORITY_EXPAND_CAP by construction"
-// invariant. Fills to capacity with DISTINCT tags, then asserts one more
-// insert on a fresh tag terminates (and returns false), and that a
-// duplicate of an existing member still returns false via the key match.
+// insert() on a full table must return false instead of probing forever.
 TEST(PriorityExpandSetTest, InsertOnFullTableTerminatesWithoutLivelock) {
     ReferenceChainsTestAccessor::pesClear();
 
     const int capacity = 1 << 11; // 2048 slots (SLOT_SHIFT == 11)
     for (int i = 0; i < capacity; i++) {
-        // Distinct tags; once slots start colliding, probing wraps past
-        // the end of the table.
         ASSERT_TRUE(ReferenceChainsTestAccessor::pesInsert(1000 + (jlong)i * 7919))
             << "insert must succeed until the table is full (i=" << i << ")";
     }
-    // Table full: a fresh tag must return false promptly (no hang).
     EXPECT_FALSE(ReferenceChainsTestAccessor::pesInsert(987654321));
-    // A duplicate of an existing member still returns false via the key
-    // match (found while probing).
     EXPECT_FALSE(ReferenceChainsTestAccessor::pesInsert(1000));
     ReferenceChainsTestAccessor::pesClear();
     EXPECT_FALSE(ReferenceChainsTestAccessor::pesContains(1000));
 }
 
-// ClassTagAllocator (classTagAllocator.h) - the process-wide negative
-// class-object tag allocator shared by ReferenceChainTracker and
-// LivenessTracker. resetForTest() makes each test's minting sequence
-// deterministic despite the process-wide counter.
 TEST(ClassTagAllocatorTest, MintsStrictlyNegativeStrictlyDecreasingTags) {
     ClassTagAllocator::resetForTest();
     jlong first = ClassTagAllocator::next();

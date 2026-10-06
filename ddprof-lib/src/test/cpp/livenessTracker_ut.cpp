@@ -1095,20 +1095,12 @@ public:
         return recorded;
     }
 
-    // Sets the two fields admitForTracking()'s volume backstop reads directly,
-    // bypassing track()'s real table-growth path - lets a test drive the
-    // backstop's >= comparison at specific boundary values without actually
-    // filling the tracking table.
     static void setTableCapsForTest(LivenessTracker *t, int table_size,
                                      int table_max_cap) {
         t->_table_size = table_size;
         t->_table_max_cap = table_max_cap;
     }
 
-    // Invokes the private cleanup_table() directly - safe to call with
-    // table_size==0 (no survivor loop runs, so no JNI call beyond VM::jni()
-    // itself is made) to isolate the epoch-claim/aging gating this class's
-    // own account_epoch parameter controls.
     static void callCleanupTableForTest(LivenessTracker *t, bool forced,
                                          bool allow_resolve, bool account_epoch) {
         t->cleanup_table(forced, allow_resolve, account_epoch);
@@ -1127,10 +1119,7 @@ public:
     }
 };
 
-// VMTestAccessor is already defined by referenceChainsTestAccessors.h
-// (included above) - reused here as-is. cleanup_table()'s forced path
-// unconditionally calls VM::jni(), which dereferences VM::_vm - NULL by
-// default in this live-JVM-less gtest binary.
+// cleanup_table() calls VM::jni(), so install a fake JavaVM.
 static JNIEnv_ g_cleanup_table_mock_jni_env{};
 
 static jint JNICALL cleanupTableMockGetEnv(JavaVM *, void **penv, jint) {
@@ -1138,9 +1127,7 @@ static jint JNICALL cleanupTableMockGetEnv(JavaVM *, void **penv, jint) {
     return 0; // JNI_OK
 }
 
-// Exercises cleanup_table()'s account_epoch parameter (livenessTracker.cpp)
-// directly via the friend accessor above, with an empty tracking table so no
-// survivor-loop JNI call beyond VM::jni() itself is needed.
+// Empty table, so cleanup_table() makes no JNI calls beyond VM::jni().
 class CleanupTableAccountEpochTest : public ::testing::Test {
 protected:
     JNIInvokeInterface_ vm_tbl{};
@@ -1171,11 +1158,6 @@ protected:
     }
 };
 
-// account_epoch=false (track()'s table-overflow reaper) must not claim the
-// GC epoch even when _gc_epoch is strictly ahead of _last_gc_epoch - the
-// background/GC-callback sweep (account_epoch=true) still needs to see this
-// epoch as unclaimed so it folds the population sample instead of silently
-// losing it.
 TEST_F(CleanupTableAccountEpochTest, AccountEpochFalseSkipsEpochClaim) {
     LivenessTracker *tracker = LivenessTracker::instance();
     LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 5);
@@ -1186,14 +1168,11 @@ TEST_F(CleanupTableAccountEpochTest, AccountEpochFalseSkipsEpochClaim) {
     EXPECT_EQ(0u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker))
         << "account_epoch=false must not claim the GC epoch";
 
-    // Repeated calls stay a no-op for epoch claiming.
     LivenessTrackerTestAccessor::callCleanupTableForTest(
         tracker, /*forced=*/true, /*allow_resolve=*/false, /*account_epoch=*/false);
     EXPECT_EQ(0u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
 }
 
-// account_epoch=true (the default; the epoch-owning sweep) claims a strictly
-// newer _gc_epoch - the behavior account_epoch=false above must NOT exhibit.
 TEST_F(CleanupTableAccountEpochTest, AccountEpochTrueClaimsEpoch) {
     LivenessTracker *tracker = LivenessTracker::instance();
     LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 5);
@@ -1205,11 +1184,6 @@ TEST_F(CleanupTableAccountEpochTest, AccountEpochTrueClaimsEpoch) {
         << "account_epoch=true must claim the newer GC epoch";
 }
 
-// A pure-reaper sweep (account_epoch=false) followed by the real epoch-owner
-// sweep (account_epoch=true) for the SAME epoch still claims it exactly
-// once - confirming account_epoch=false left the epoch genuinely unclaimed
-// rather than merely skipping the counted side effects of a claim it still
-// made.
 TEST_F(CleanupTableAccountEpochTest, EpochOwnerStillClaimsAfterReaperSweep) {
     LivenessTracker *tracker = LivenessTracker::instance();
     LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 7);
@@ -1336,24 +1310,12 @@ TEST_F(SecondsToOOMTest, RisingFloorProjectsExpectedSeconds) {
     EXPECT_NEAR(tracker->secondsToOOM(), 9.0, 1e-6);
 }
 
-// A dip-then-recover window (usage falls for half the window, then rises
-// back to where it started): the full-window fitted-line endpoints nearly
-// agree (byte delta ~0), so the unguarded division would project +inf
-// seconds - silently disabling the urgency ramp from this boundary forever.
-// The boundary must be SKIPPED (no projection from this ring), and the
-// result must be finite. Here the container ring is unavailable (no
-// container limit set), so the heap ring's skip means no projection at all.
+// Dip-then-recover: the recent half rises but the full-window delta is 0, so
+// there must be no projection (and no +inf). No container limit is set.
 TEST_F(SecondsToOOMTest, DipThenRecoverFloorReturnsNegativeNotInf) {
     LivenessTracker *tracker = LivenessTracker::instance();
     tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
-    // Perfectly symmetric V: pairs (i, 9-i) carry equal usage, so the
-    // least-squares fit's slope is exactly 0 in double arithmetic and the
-    // fitted endpoints agree EXACTLY (delta == 0), while the recent half
-    // (indices 5..9: 1500..1900) rises steeply - corroboration passes, the
-    // full-window denominator does not. This is precisely the shape the
-    // zero-denominator guard exists for; an approximately-equal pair would
-    // only produce a huge-but-finite projection instead of the +inf the
-    // guard prevents.
+    // Symmetric V: the fitted slope is exactly 0.
     static const long shape[] = {1900, 1800, 1700, 1600, 1500,
                                  1500, 1600, 1700, 1800, 1900};
     for (int i = 0; i < 10; i++) {
@@ -1366,26 +1328,16 @@ TEST_F(SecondsToOOMTest, DipThenRecoverFloorReturnsNegativeNotInf) {
         << "the projection must be finite, never +inf";
 }
 
-// Odd-length window (11 samples): pins the recent-half boundary of the
-// corroboration pass (ringWindowStats' recent_min boundary is i >= n/2, so
-// for odd n the median sample joins the RECENT half) and the fitted-line
-// endpoint arithmetic (recent_mean at x = n-1). A rising ramp must still
-// project, and the projection must match the even-window scaling of the
-// same 100MiB/s rate - this pins ringWindowStats' two boundary choices
-// (i >= n/2 and endpoint n-1).
+// Odd-length window: for odd n the median sample is in the recent half.
 TEST_F(SecondsToOOMTest, OddLengthRisingWindowStillProjects) {
     LivenessTracker *tracker = LivenessTracker::instance();
     tracker->setMaxHeapBytesForTest((jlong)(3000 * MiB));
-    // 11 samples, 100MiB apart, one second apart: 1000..2000MiB.
+    // 1000..2000MiB, 100MiB/s.
     for (int i = 0; i < 11; i++) {
         tracker->heapFloorRecordForTest(1000 * MiB + (u64)i * 100 * MiB,
                                          (u64)i * SEC_NS);
     }
     double secs = tracker->secondsToOOM();
-    // Rising floor, recent fitted endpoint at 2000MiB, headroom 1000MiB at
-    // 100MiB/s -> ~10s. Assert finite, positive, and in the right decade -
-    // exact value depends on the fitted endpoints the regression produces,
-    // which the even-window test above already pins precisely.
     EXPECT_GT(secs, 0.0);
     EXPECT_NEAR(secs, 9.0, 1.5);
 }
@@ -1847,17 +1799,13 @@ TEST_F(AdmissionBoostTest, ZeroCandidatePollClearsWatchedSet) {
     EXPECT_FALSE(tracker->admitForTrackingForTest(77));
 }
 
-// Volume backstop (admitForTracking()'s "Volume backstop for the urgency
-// boost" comment, livenessTracker.cpp): once the tracking table reaches its
-// high-water mark, urgency stops admitting at 100% and falls back to the
-// watched-tid-only boost, with the degradation observable via the
-// LIVENESS_URGENT_BOOST_* counters.
+// At the table cap the urgency boost stops admitting everything; watched tids
+// are still admitted.
 TEST_F(AdmissionBoostTest, VolumeBackstopCapsUrgencyAdmission) {
     LivenessTracker *tracker = LivenessTracker::instance();
     tracker->setUrgentTracking(true);
 
-    // _table_max_cap == 0 is the "backstop disabled" sentinel: urgency keeps
-    // admitting at 100% no matter how large table_size is.
+    // max_cap == 0 disables the backstop.
     LivenessTrackerTestAccessor::setTableCapsForTest(tracker, /*table_size=*/999,
                                                        /*table_max_cap=*/0);
     long long admits = Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS);
@@ -1866,7 +1814,7 @@ TEST_F(AdmissionBoostTest, VolumeBackstopCapsUrgencyAdmission) {
     EXPECT_EQ(admits + 1, Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS));
     EXPECT_EQ(backed_off, Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF));
 
-    // table_size strictly below max_cap: still admits.
+    // Below the cap.
     LivenessTrackerTestAccessor::setTableCapsForTest(tracker, /*table_size=*/5,
                                                        /*table_max_cap=*/10);
     admits = Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS);
@@ -1875,23 +1823,20 @@ TEST_F(AdmissionBoostTest, VolumeBackstopCapsUrgencyAdmission) {
     EXPECT_EQ(backed_off, Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF));
     admits = Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS);
 
-    // table_size == max_cap (the >= boundary): backs off and falls through to
-    // the unboosted ratio gate, which admissionResetForTest()'s ratio=0
-    // deterministically rejects for an unwatched tid.
+    // At the cap: falls back to the ratio gate, which is 0 here.
     LivenessTrackerTestAccessor::setTableCapsForTest(tracker, /*table_size=*/10,
                                                        /*table_max_cap=*/10);
     EXPECT_FALSE(tracker->admitForTrackingForTest(3));
     EXPECT_EQ(admits, Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS));
     EXPECT_EQ(backed_off + 1, Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF));
 
-    // table_size above max_cap: also backs off.
+    // Above the cap.
     LivenessTrackerTestAccessor::setTableCapsForTest(tracker, /*table_size=*/11,
                                                        /*table_max_cap=*/10);
     EXPECT_FALSE(tracker->admitForTrackingForTest(4));
     EXPECT_EQ(backed_off + 2, Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF));
 
-    // The backstop only gates the urgency path - a watched tid is still
-    // admitted via the separate, unconditional watched-tid boost below it.
+    // A watched tid is still admitted.
     KlassCandidate kc;
     fillCandidate(&kc, 5);
     tracker->noteSelectedCandidates(&kc, 1);

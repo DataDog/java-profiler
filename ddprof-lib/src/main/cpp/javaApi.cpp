@@ -1104,15 +1104,9 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
   TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);
 }
 
-// LivenessTracker/ReferenceChainTracker test seams. Unlike
-// testlog()/dumpContext() above (harmless no-ops in release, via TEST_LOG's
-// own release-mode expansion to nothing), these mutate real tracker state
-// (tagging objects, seeding population history) - shipping them into a
-// release build would let a caller corrupt the actual leak-detection state,
-// not just add a silent no-op. Guarded out entirely instead, so they only
-// exist in the debug build ddprof-test's `testdebug` Gradle task loads
-// (`-DDEBUG`, see ConfigurationPresets.kt's configureDebug()) - never in the
-// `-DNDEBUG` release build.
+// LivenessTracker/ReferenceChainTracker test seams. They mutate real tracker
+// state, so they are only implemented in DEBUG builds; release builds get the
+// no-op stubs below.
 #ifdef DEBUG
 #include "livenessTracker.h"
 #include "referenceChains.h"
@@ -1134,9 +1128,7 @@ Java_com_datadoghq_profiler_JavaProfiler_seedKlassPopulationSample0(
       (u32)klassId, (u16)count, (u64)epoch, &slot, &created);
 }
 
-// Seeds one per-(klass, tid) trend sample - see tidTrendRecordForTest()'s
-// own comment (livenessTracker.h) for the synthetic-flag exemption and the
-// real-tid requirement scenarios must honor.
+// See tidTrendRecordForTest() (livenessTracker.h) for the tid requirements.
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_seedTidTrendSample0(
     JNIEnv *env, jclass unused, jint klassId, jint tid, jint count,
@@ -1145,15 +1137,9 @@ Java_com_datadoghq_profiler_JavaProfiler_seedTidTrendSample0(
       (u32)klassId, (jint)tid, (u32)count, (u64)epoch);
 }
 
-// Wires a real, caller-chosen live object in as klassId's leak-candidate
-// representative, so a test-seeded slope signal (seedKlassPopulationSample0
-// above) and a directly-tagged frontier root (tagAsReferenceChainRoot0
-// below) can be joined into one deterministic end-to-end run of
-// pollWatchedTargets()'s bridging step - without either LivenessTracker's
-// real allocation sampler or ReferenceChainTracker's root-seeded walk ever
-// running. Takes its own weak global ref (klassPopulationSetRepresentativeForTest()'s
-// own contract, livenessTracker.h) rather than aliasing any handle the
-// caller manages.
+// Makes `representative` klassId's leak-candidate representative, so a seeded
+// population sample and a tagged root can drive pollWatchedTargets() without
+// the real sampler or walk. The tracker owns the weak global ref created here.
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setKlassPopulationRepresentativeForTest0(
     JNIEnv *env, jclass unused, jint klassId, jobject representative) {
@@ -1234,12 +1220,8 @@ Java_com_datadoghq_profiler_JavaProfiler_resetReferenceChainSearchForTest0(
   ReferenceChainTracker::instance()->resetSearchStateForTest(jvmti, env);
 }
 
-// Diagnostic-only: reads target's existing JVMTI tag (does NOT tag it -
-// unlike tagAsReferenceChainRoot0 above, a target the real search has not
-// reached yet must be left untagged) and reports its FIFO distance from the
-// front of ReferenceChainTracker's pending-expansion queue. See
-// ReferenceChainTracker::pendingExpandPositionForTest()'s own comment for
-// the return-value contract.
+// Reads target's existing tag without tagging it. Return values are described
+// at pendingExpandPositionForTest().
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingPositionForTest0(
     JNIEnv *env, jclass unused, jobject target) {
@@ -1262,13 +1244,8 @@ Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingSizeForTest0(
   return (jlong)ReferenceChainTracker::instance()->pendingExpandSizeForTest();
 }
 
-// Seeds one heap-floor-ring sample directly (LivenessTracker::secondsToOOM()'s
-// input), bypassing the real GarbageCollectionFinish callback - lets a test
-// build an arbitrary rising/flat heap-usage-over-time history without
-// waiting on real GCs. timestampNs values are only ever compared against
-// each other (secondsToOOM()'s own ringWindowStats() deltas), never against
-// a real wall clock, so a test may use any self-consistent, strictly
-// increasing sequence.
+// Seeds one heap-floor sample for secondsToOOM() without waiting for a GC.
+// Timestamps are only compared with each other, so any increasing sequence works.
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_heapFloorRecordForTest0(
     JNIEnv *env, jclass unused, jlong usedBytes, jlong timestampNs) {
@@ -1276,31 +1253,21 @@ Java_com_datadoghq_profiler_JavaProfiler_heapFloorRecordForTest0(
                                                         (u64)timestampNs);
 }
 
-// Bypasses initialize_table()'s JNI-dependent HeapUsage::getMaxHeap() call so
-// secondsToOOM() can be exercised against a test-chosen fake max heap size,
-// independent of whatever -Xmx this JVM's own shared, no-forkEvery fork
-// happens to run with.
+// Overrides the max heap size secondsToOOM() projects against.
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setMaxHeapBytesForTest0(
     JNIEnv *env, jclass unused, jlong maxHeapBytes) {
   LivenessTracker::instance()->setMaxHeapBytesForTest((jlong)maxHeapBytes);
 }
 
-// Temporarily disables onGC()'s own recordHeapFloorSample() call so a test
-// can seed the heap-floor ring exclusively via heapFloorRecordForTest0()
-// without a real GC interleaving a sample with a real OS::nanotime()
-// timestamp and real heap usage, corrupting secondsToOOM()'s projection.
+// Stops real GCs from recording heap-floor samples while a test seeds them.
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setHeapFloorRecordingForTest0(
     JNIEnv *env, jclass unused, jboolean enabled) {
   LivenessTracker::instance()->setHeapFloorRecordingForTest(enabled == JNI_TRUE);
 }
 
-// Exposes ReferenceChainTracker::shouldRunPass() directly (see that seam's
-// own comment, referenceChains.h) - unlike runReferenceChainPass0() above,
-// which calls runPass() unconditionally, this reports whether the
-// search-restart gate itself (canAffordNewSearch() -> hasLeakSignal()) would
-// currently allow a fresh/terminal search to start.
+// Whether the search-restart gate would currently allow a new search.
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_shouldRunPassForTest0(JNIEnv *env,
                                                                 jclass unused) {
@@ -1310,12 +1277,7 @@ Java_com_datadoghq_profiler_JavaProfiler_shouldRunPassForTest0(JNIEnv *env,
              : JNI_FALSE;
 }
 
-// Exposes ReferenceChainTracker::passesRun() directly - not itself DEBUG-gated on the native side
-// (used by production JFR event fields too), but exposed here only for test use: lets a test note
-// the current pass count before creating an object, then wait for that count to advance before
-// trusting any match against it - the only way to be certain a match came from a pass whose own
-// expandFrontier() (and therefore collectStaleExpandedEntriesForRotation()) ran strictly after the
-// object existed, rather than from the same pass racing the object's creation.
+// Lets a test wait for a pass that started after it created an object.
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_referenceChainPassesRunForTest0(
     JNIEnv *env, jclass unused) {
@@ -1324,10 +1286,7 @@ Java_com_datadoghq_profiler_JavaProfiler_referenceChainPassesRunForTest0(
 
 #else // !DEBUG
 
-// Release-build stubs for the DEBUG-only test seams above: calling one of
-// these JNI methods must not throw UnsatisfiedLinkError in a release native
-// build, matching the "no-op returning false/0/an empty array in release
-// builds" contract documented on the Java side.
+// Release builds: no-op stubs so the Java natives still link.
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setGcGenerationsEnabled0(
     JNIEnv *env, jclass unused, jboolean enabled) {

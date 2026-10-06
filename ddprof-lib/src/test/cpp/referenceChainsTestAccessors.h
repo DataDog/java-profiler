@@ -232,10 +232,6 @@ public:
         ReferenceChainTracker::instance()->drainPendingChainEvents(out);
     }
 
-        // Faithful pass-through: cacheResolvedChain() keys _resolved_chains by
-    // source_tag and records source_tag_val as the entry's source tag (the
-    // frontier tag the chain was resolved from), so both are forwarded
-    // unchanged.
     static void cacheChain(jlong source_tag, ReferenceChainEvent event,
                            jlong source_tag_val, u64 source_search_ns) {
         ReferenceChainTracker::instance()->cacheResolvedChain(
@@ -961,8 +957,7 @@ public:
         ReferenceChainTracker::instance()
             ->seedLeakAccumulationForNewlyWatchedKlass(klass_id);
     }
-    // PriorityExpandSet drives (the set type is private; the friend class
-    // reaches it for the PriorityExpandSet unit tests).
+
     static void pesClear() {
         ReferenceChainTracker::instance()->_priority_expand_set.clear();
     }
@@ -978,7 +973,6 @@ public:
     static void pesRebuildFrom(const std::deque<jlong> &queue) {
         ReferenceChainTracker::instance()->_priority_expand_set.rebuildFrom(queue);
     }
-
 };
 
 #endif // REFERENCE_CHAINS_TEST_ACCESSORS_H

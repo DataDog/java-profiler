@@ -149,9 +149,7 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     return;
   }
 
-  // Best-effort drain of any deferred resolved-chain invalidations that a pass ending between
-  // polls did not already apply (see runPassManualWalk()'s end-of-pass drain): chains rebuilt
-  // this poll must not be gated by a stale cache entry the callback asked to drop.
+  // Don't rebuild chains against cache entries the heap callback asked to drop.
   drainPendingChainInvalidations();
 
   // Stamp every entry this poll refreshes with the current search generation.
@@ -504,12 +502,10 @@ void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
 void ReferenceChainTracker::invalidateResolvedChains(
     const std::vector<jlong> &source_tags) {
   ExclusiveLockGuard guard(&_resolved_chains_lock);
-  for (size_t i = 0; i < source_tags.size(); i++) {
-    auto it = _resolved_chains.find(source_tags[i]);
-    if (it != _resolved_chains.end()) {
-      _resolved_chains.erase(it);
+  for (jlong tag : source_tags) {
+    if (_resolved_chains.erase(tag) > 0) {
       TEST_LOG("ReferenceChainTracker::invalidateResolvedChains source_tag=%lld",
-               (long long)source_tags[i]);
+               (long long)tag);
     }
   }
 }

@@ -601,8 +601,7 @@ private:
   // thread (referenceChains.cpp), not the allocation hot path, so the same
   // upcalls flush_table() already makes safely are just as safe there - see
   // that method's own comment for why a third caller needs both bypassing
-  // the early-exit *and* resolution. account_epoch=false (track()'s
-  // table-overflow branch) turns the sweep into a pure reaper: no epoch
+  // the early-exit *and* resolution. account_epoch=false only reaps: no epoch
   // claim, no survivor aging, no population fold.
   void cleanup_table(bool force = false, bool allow_resolve = true,
                      bool account_epoch = true);

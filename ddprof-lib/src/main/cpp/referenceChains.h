@@ -400,15 +400,8 @@ private:
     }
 
     // Idempotent: returns false if `tag` is already indexed.
-    // Occupancy-bounded: a completely full table (2048/2048) would make
-    // the linear-probe loop wrap forever - a livelock on the engine
-    // thread inside rotation collection or rebuildFrom(). The external
-    // invariant (deque <= PRIORITY_EXPAND_CAP by construction) normally
-    // prevents this, but the invariant is enforced only at push sites;
-    // the occupancy check makes insert() self-terminating even if a
-    // future call site breaks it (insert returns false - the tag is
-    // treated as not-queued, the same degradation a full deque push
-    // already accepts).
+    // Returns false on a full table instead of probing forever; callers
+    // already cap the deque at PRIORITY_EXPAND_CAP.
     bool insert(jlong tag) {
       const u64 start = mix(tag) >> (64 - SLOT_SHIFT);
       u64 i = start;
@@ -417,7 +410,7 @@ private:
           return false;
         }
         i = (i + 1) & SLOT_MASK;
-        // Wrapped all 2048 slots without an empty one: table full.
+        // Wrapped around: table full.
         if (i == start) {
           return false;
         }
@@ -598,11 +591,8 @@ private:
   std::unordered_map<jlong, CachedChain> _resolved_chains;
   SpinLock _resolved_chains_lock;
 
-  // Resolved-chain evictions deferred by the FollowReferences heap callback
-  // (see deferResolvedChainInvalidation()). Small: each callback-side
-  // improveChain/re-parent/root-upgrade evicts at most one entry, and the
-  // pending set is drained outside any walk (runPassManualWalk()'s start and
-  // end, pollWatchedTargets()'s entry).
+  // Chain evictions deferred by the heap callback; see
+  // deferResolvedChainInvalidation().
   std::vector<jlong> _pending_chain_invalidations;
   SpinLock _pending_chain_invalidations_lock;
 
@@ -1012,24 +1002,15 @@ private:
   // Remove a cached chain so pollWatchedTargets rebuilds it on the next poll.
   void invalidateResolvedChain(jlong source_tag);
 
-  // Same as invalidateResolvedChain() but for a whole batch under a single
-  // _resolved_chains_lock critical section - used by
-  // drainPendingChainInvalidations() so a pass/poll with many deferred
-  // evictions pays one lock/unlock round-trip instead of one per tag.
+  // Batch form of invalidateResolvedChain(); takes the lock once.
   void invalidateResolvedChains(const std::vector<jlong> &source_tags);
 
-  // Record a resolved-chain eviction from inside the FollowReferences heap
-  // callback WITHOUT taking _resolved_chains_lock: the callback runs inside
-  // the JVMTI FollowReferences stop-the-world pause, and the lock is also
-  // held across drainPendingChainEvents()'s full-cache copy on the JFR dump
-  // thread, so locking here can stall the walk behind the dump thread.
-  // drainPendingChainInvalidations() applies the recorded evictions on the
-  // BFS thread, outside any walk.
+  // Queues an eviction from the heap callback. The callback runs inside the
+  // FollowReferences pause and must not wait on _resolved_chains_lock, which
+  // drainPendingChainEvents() holds while copying the cache for a JFR dump.
   void deferResolvedChainInvalidation(jlong source_tag);
 
-  // Apply the evictions deferResolvedChainInvalidation() recorded - called
-  // only from runPassManualWalk()'s start/end and pollWatchedTargets()'s
-  // entry, always outside any FollowReferences walk.
+  // Applies queued evictions; only called outside a walk.
   void drainPendingChainInvalidations();
 
   // Snapshots the just-abandoned search into _pending_abandoned_events - called from runPass()

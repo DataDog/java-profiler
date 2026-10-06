@@ -199,24 +199,13 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
     // caller whose target is strictly newer claims; a stale snapshot skips
     // epoch accounting entirely (its survivors are still swept, their ages
     // simply do not move for this no-op epoch).
-    //
-    // account_epoch=false (track()'s table-overflow branch) makes this a
-    // pure reaper: it must NOT claim the epoch (otherwise the background
-    // sweep's fold for this epoch would be suppressed by the claimed
-    // _last_gc_epoch while this call never folds it - the epoch's population
-    // sample would be lost), must not age survivors (that accounting belongs
-    // to the epoch owner), and must not touch the klass-population scratch
-    // (no fold will consume it here). It only reaps collected entries, which
-    // is what the overflow path needs to free table slots.
+    // account_epoch=false only reaps: claiming the epoch here would make the
+    // background sweep skip its population fold for it.
     bool is_epoch_owner = account_epoch && target_gc_epoch > claimed &&
         __atomic_compare_exchange_n(&_last_gc_epoch, &claimed, target_gc_epoch,
                                     false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
-    // Only the epoch owner ages survivors. On a lost CAS race `claimed` holds
-    // the actual current epoch (>= our stale target), so the raw diff is <= 0
-    // for every such non-owner; an account_epoch=false sweep never attempts
-    // the claim, so its raw diff can be positive and would otherwise age
-    // survivors that the epoch owner ages again. Zero for every non-owner so
-    // a survivor's unsigned age can never wrap or be double-advanced.
+    // Only the epoch owner ages survivors; otherwise ages could wrap (lost
+    // CAS race) or advance twice (account_epoch=false).
     int epoch_diff = is_epoch_owner ? (int)(target_gc_epoch - claimed) : 0;
 
   // Detect a class-map reset the same way
@@ -1619,12 +1608,8 @@ double LivenessTracker::secondsToOOM() const {
       corroborateRecentHalf(head, fill, KLASS_POPULATION_RING_SIZE,
                             HEAP_FLOOR_RECENT_HALF_MIN_FILL,
                             [this](int i) { return (double)load(_heap_floor_ring[i]); })) {
-    // Denominator is the full-window byte delta (endpoints of the fitted
-    // line). A dip-then-recover window can pass corroborateRecentHalf()
-    // (its recent half rises) while the full-window endpoints agree, making
-    // this delta ~0 - an unguarded division projects +inf seconds (or a
-    // negative value for a falling window). Skip the boundary instead: no
-    // usable rate, no projection.
+    // A dip-then-recover window passes corroborateRecentHalf() but can have a
+    // zero or negative full-window delta; no projection then.
     double heap_delta = heap_bytes.recent_mean - heap_bytes.earliest_mean;
     if (heap_delta > 0) {
       double remaining = (double)max_heap - heap_bytes.recent_mean;
@@ -1648,7 +1633,7 @@ double LivenessTracker::secondsToOOM() const {
       corroborateRecentHalf(head, fill, KLASS_POPULATION_RING_SIZE,
                             HEAP_FLOOR_RECENT_HALF_MIN_FILL,
                             [this](int i) { return (double)load(_container_mem_ring[i]); })) {
-    // Same zero-denominator guard as the heap boundary above.
+    // Same guard as for the heap.
     double container_delta =
         container_bytes.recent_mean - container_bytes.earliest_mean;
     if (container_delta > 0) {
@@ -2218,15 +2203,9 @@ static ThreadLocal<double> skipped;
 // per thread and probabilistic by design).
 bool LivenessTracker::admitForTracking(jint tid) {
   if (__atomic_load_n(&_urgent_tracking, __ATOMIC_ACQUIRE)) {
-    // Volume backstop for the urgency boost (100% admission, bypassing even
-    // the subsample draw): once the table is at its high-water mark the
-    // boost's own cost - track()'s overflow branch firing a forced sweep on
-    // the SampledObjectAlloc callback stack, per admission - outweighs the
-    // extra diagnostic coverage. Fall back to the watched-tid-only boost
-    // below, which keeps 100% admission exactly where the leak data value is
-    // (the candidate sites) while every other thread goes back to the
-    // configured subsample ratio. Admissions at the high-water mark are
-    // still counted so the degradation is observable in production.
+    // Volume backstop for the urgency boost: with a full table every admission
+    // forces a sweep on the allocation callback, so fall back to the
+    // watched-tid boost and the subsample ratio.
     if (_table_max_cap > 0 &&
         __atomic_load_n(&_table_size, __ATOMIC_RELAXED) >= _table_max_cap) {
       Counters::increment(LIVENESS_URGENT_BOOST_BACKED_OFF);
@@ -2417,12 +2396,7 @@ retry:
       // space. allow_resolve=false: this runs synchronously on the
       // allocation-sampling callback stack (see cleanup_table()'s own header
       // comment for why resolveKlassId() is unsafe here).
-      // account_epoch=false: pure reaper - no epoch claim, no survivor
-      // aging, no population fold. The fold's nested per-(klass,tid) loops
-      // would otherwise run on this hot callback stack under the exclusive
-      // table lock; the background/GC sweeps (which claim the epoch) do the
-      // full accounting, so the overflow path only pays for the reaping it
-      // actually needs.
+      // Reap only; the population fold is too heavy for the allocation callback.
       cleanup_table(true, false, false);
 
       if (_table_cap < _table_max_cap) {

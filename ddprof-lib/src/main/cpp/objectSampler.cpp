@@ -182,14 +182,8 @@ Error ObjectSampler::start(Arguments &args) {
     return error;
   }
   if (_interval > 0) {
-    // Always call through, even when this start's own args request neither
-    // liveness recording nor gc generations: LivenessTracker::start() ->
-    // initialize() refreshes its own _gc_generations/_enabled from args
-    // unconditionally (see that method's own comment) and is a no-op beyond
-    // that when disabled. Gating this call on ObjectSampler's own
-    // (freshly-set, correct) flags left LivenessTracker's flags stuck at
-    // whatever the previous recording in this process last set them to,
-    // since it never got a chance to observe this recording's request at all.
+    // LivenessTracker is started unconditionally (below) so it picks up this
+    // recording's flags instead of keeping the previous recording's.
     jvmtiEnv *jvmti = VM::jvmti();
     // JVMTI Object Sampler is a 'solo' feature, meaning that it can only be
     // used by one JVMTI environment. Therefore, we can rely on the fact that if
@@ -199,20 +193,12 @@ Error ObjectSampler::start(Arguments &args) {
                                     JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
     __atomic_store_n(&_active, true, __ATOMIC_RELEASE);
     __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
-    // Started LAST, after every step that can fail above: the old order
-    // (tracker first) left LivenessTracker started-but-never-driven if the
-    // JVMTI enabling failed - its GC-callback machinery and table would run
-    // with no sampler feeding it until the next stop(). stop() still stops
-    // it unconditionally (LivenessTracker::stop() self-guards on _enabled).
+    // Started last so a JVMTI failure above doesn't leave it running unfed.
     // need to reset the running sum in order for 'updateConfiguration' to be
     // able to generate proper diffs
     _alloc_event_count = 0;
     error = LivenessTracker::instance()->start(args);
     if (error) {
-      // Roll back every side effect committed above: a failed start() must
-      // leave the sampler exactly as if it was never started, otherwise
-      // _active stays true and JVMTI keeps firing SampledObjectAlloc into
-      // recordAllocation() even though the caller sees a non-OK Error.
       __atomic_store_n(&_active, false, __ATOMIC_RELEASE);
       jvmti->SetEventNotificationMode(JVMTI_DISABLE,
                                       JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
@@ -229,8 +215,7 @@ void ObjectSampler::stop() {
   jvmti->SetEventNotificationMode(JVMTI_DISABLE,
                                   JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
 
-  // See start()'s own comment on why this call is unconditional -
-  // LivenessTracker::stop() already self-guards on its own _enabled.
+  // No-op when the tracker is not enabled.
   LivenessTracker::instance()->stop();
 }
 

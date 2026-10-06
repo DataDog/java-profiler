@@ -259,8 +259,7 @@ TEST_F(ReferenceChainsCanaryRefillTest, BackoffGateHoldsUnlessOomRampActive) {
     ReferenceChainsTestAccessor::setSearchStartedForTest(true);
 
     // Open chase with the backoff engaged: mult=4 x ema=100ms = 400ms
-    // spacing, and only 50ms since the last pass. (HEAD's canary EMA is
-    // stored in ns - the sweep's ms->ns rename - so the seam takes ns.)
+    // spacing, and only 50ms since the last pass. The EMA is in ns.
     ReferenceChainsTestAccessor::setCandidateCountForTest(2);
     ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(0x1);
     u64 now = 6000000000ULL; // 6s into the test's synthetic clock

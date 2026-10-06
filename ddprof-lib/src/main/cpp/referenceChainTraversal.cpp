@@ -157,9 +157,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // walk holds them.
   releaseEndedThreadRefs(jni);
 
-  // Same safe point for the heap callback's deferred resolved-chain invalidations: applying them
-  // here (outside any walk) keeps _resolved_chains_lock traffic off the FollowReferences pause
-  // entirely.
+  // Apply deferred chain invalidations outside any walk.
   drainPendingChainInvalidations();
 
   *safepoint_ns = 0;
@@ -435,10 +433,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   *truncated = *truncated || rotation_truncated;
   *frontier_cap_hit = *frontier_cap_hit || rotation_frontier_cap_hit;
 
-  // End-of-pass drain for the heap callback's deferred resolved-chain invalidations
-  // (improveChain/re-parent/root-upgrade evictions recorded during the walks): applying them here
-  // keeps _resolved_chains_lock traffic outside the FollowReferences pauses entirely, and ensures
-  // the next pollWatchedTargets() never rebuilds from a stale cached chain.
+  // Apply invalidations deferred during this pass's walks.
   drainPendingChainInvalidations();
 }
 
