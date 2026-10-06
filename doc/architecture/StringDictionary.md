@@ -125,67 +125,71 @@ Caller                        clearAll() / rotate()
    → count-- (release)
    → clear active_ptr (release)
 
-                              waitForAllRefCountsToClear():
-                              scan all slots; block until
-                              every count == 0 or active_ptr
-                              does not match target buffer
+                              tryWaitForRefCountsToClear(_a,_b,_c):
+                              scan all slots; block until no
+                              slot references any of this
+                              dictionary's buffers (~500ms cap)
 
-                              → then arena.reset() + memset root table
+                              → drained: free overflow nodes and
+                                extra arena chunks, memset root table
+                              → timed out: touch nothing, return false
 ```
 
-### Why there is no seq_cst recheck
+### The seq_cst recheck after guard creation
 
 On weakly-ordered CPUs (ARM64) there is a TOCTOU window between step 1 and step 3:
+a caller can load `_accepting == true`, and its guard can become visible only after
+`clearAll()`'s drain has scanned its slot.  The caller therefore re-loads `_accepting`
+(seq_cst) after creating the guard and returns 0 if it is false, before touching any
+buffer data:
 
 ```
 Thread A (caller)          Thread B (clearAll)
 ─────────────────          ───────────────────
-load _accepting → true     (not yet)
+load _accepting → true
 active = _rot.active()
                            _accepting.store(false, seq_cst)
-                           waitForAllRefCountsToClear()
-                           → sees count = 0 for A (count++ not yet visible)
-                           → returns
-                           arena.reset() + memset root table
+                           drain → sees no guard for A → returns
+                           free overflow nodes / extra arena chunks
 RefCountGuard guard(...)
-count++ (release)
-active->lookup(...)
-  → reads zeroed root table slot → null key → returns 0
+load _accepting (seq_cst) → false → return 0   ← never reads the buffer
 ```
 
-With the arena, Thread A's read after the memset lands on the zeroed root table and
-returns 0 — no UAF because the arena memory is still physically valid. A seq_cst
-recheck after step 3 would close the window more tightly (guaranteeing the drain sees
-the guard), but at the cost of a barrier on every signal-handler lookup. Since
-`clearAll()` is called only at profiler restart (virtually never in production), the
-benign-miss trade-off is correct: the recheck was removed.
-
----
+Without the recheck Thread A could read freed overflow nodes or arena chunks: only
+the root table and the first arena chunk survive `clear()`.
 
 ## clearAll() Protocol
 
 ```
-clearAll()
+clearAll() -> bool
   1. _accepting.store(false, seq_cst)
        ↳ subsequent lookup() / bounded_lookup() callers fail their
          _accepting acquire-load and return 0 immediately
-  2. RefCountGuard::waitForAllRefCountsToClear()
-       ↳ drains every caller already past the _accepting load.  The
-         drain is best-effort: a racing caller may slip through, but
-         it then reads from the memset-zeroed root table (step 3) and
-         returns 0 — no UAF because the arena memory is still valid
-         (see "Why there is no seq_cst recheck" above).
+  2. RefCountGuard::tryWaitForRefCountsToClear({&_a, &_b, &_c})
+       ↳ drains every caller already past the _accepting load.  Only
+         guards on this dictionary's buffers count, so traffic on other
+         dictionaries (Profiler::start() resets three back to back) can
+         neither delay nor fail it.  A caller whose guard the drain
+         missed is caught by the seq_cst recheck (see above).
+       ↳ timeout (~500ms): _accepting.store(true), return false.
+         Nothing is reset - a guarded caller may still be using the
+         storage.  The reset is all-or-nothing: restarting _next_id
+         without clearing would reissue ids existing entries use.
   3. _a.clear(); _b.clear(); _c.clear()
-       ↳ freeTable() on each buffer — safe because no guard is live
+       ↳ frees overflow nodes and extra arena chunks, memsets root table
   4. _rot.reset()
   5. _next_id.store(1, relaxed)
-  6. reset counters
+  6. reset counters, bump generation()
   7. _accepting.store(true, release)
        ↳ callers can create new guards again
+  8. return true
 ```
 
 `clearAll()` is self-contained: no external lock is required. `Profiler::start()`
-calls it without `lockAll()`.
+calls it without `lockAll()`, logs a warning for a dictionary that was not reset
+and continues; an unreset dictionary stays consistent (ids valid, generation
+unchanged), and the Java `ContextValueCache` is only invalidated when the
+context-value dictionary was actually reset.
 
 ---
 
@@ -239,9 +243,15 @@ rotateDictsAndRun(jfr_op):
   unlockAll()
 
   _class_map.clearStandby()      ┐
-  _string_label_map.clearStandby()├ clears scratch; resets per-dump counters
+  _string_label_map.clearStandby()├ drains + clears scratch; resets per-dump counters
   _context_value_map.clearStandby()┘
 ```
+
+`clearStandby()` drains its target buffer before clearing it: a caller whose guard
+on the then-active buffer outlived `rotate()`'s drain may still be using it two
+rotations later.  If that drain times out the clear is skipped; the buffer becomes
+active on the next `rotate()` with its old entries (harmless - ids are only
+reassigned by `clearAll()`) and is cleared the next time it is the clear target.
 
 `rotate()` and `lockAll()` are deliberately separated:
 
@@ -256,7 +266,8 @@ rotateDictsAndRun(jfr_op):
 
 | Invariant | Enforced by |
 |-----------|-------------|
-| No UAF during `clearAll()` reset | Arena keeps key memory valid; drain ensures no reader is mid-table when memset runs |
+| No UAF during `clearAll()` reset | Per-dictionary drain + seq_cst `_accepting` recheck; on drain timeout nothing is reset |
+| No UAF during `clearStandby()` | Drain of the clear target; on timeout the clear is skipped |
 | No entry lost during `rotate()` | Two-phase copy + `waitForRefCountToClear(old_active)` drains late JNI insertors |
 | No profiling signal inserts into `old_active` between Phase 1 and 2 (dump thread) | `SignalBlocker` in `rotateDictsAndRun()` |
 | `writeCpool()` sees a stable dump snapshot | `rotate()` completes (including drain) before `jfr_op()` starts |

@@ -378,7 +378,7 @@ TEST_F(ReferenceChainsBfsTest, ResolveLoadedClassesResolvesClassAfterNetZeroChur
 // name not inserted here fails at capacity.
 static void fillClassMapToCapacity() {
     StringDictionary *class_map = Profiler::instance()->classMap();
-    class_map->clearAll();
+    ASSERT_TRUE(class_map->clearAll());
     char name[32];
     for (int i = 0; i < Profiler::maxClassMapSize(); i++) {
         int len = snprintf(name, sizeof(name), "rc/fill/C%d", i);
@@ -390,7 +390,7 @@ static void fillClassMapToCapacity() {
 // Empties Profiler::classMap() on scope exit - including an early ASSERT return - so a full class
 // map does not leak into later tests, which then fail to resolve their own class names.
 struct ClassMapClearOnExit {
-    ~ClassMapClearOnExit() { Profiler::instance()->classMap()->clearAll(); }
+    ~ClassMapClearOnExit() { EXPECT_TRUE(Profiler::instance()->classMap()->clearAll()); }
 };
 
 // A class whose lookupClass() failed because the class map is at MAX_CLASS_MAP_SIZE is not retried
@@ -417,7 +417,7 @@ TEST_F(ReferenceChainsBfsTest, ResolveLoadedClassesSkipsRetryWhileClassMapFull) 
     ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
     EXPECT_EQ(1, class_signature_calls_);
 
-    Profiler::instance()->classMap()->clearAll();
+    ASSERT_TRUE(Profiler::instance()->classMap()->clearAll());
     ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
     EXPECT_EQ(2, class_signature_calls_);
     EXPECT_NE(0u, tracker->classTags()->resolve(tags[classA]));

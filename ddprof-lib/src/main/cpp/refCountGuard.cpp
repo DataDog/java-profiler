@@ -164,42 +164,50 @@ static inline bool slotReferences(const RefCountSlot& s, void* target) {
     return false;
 }
 
-void RefCountGuard::waitForRefCountToClear(void* table_to_delete) {
+static inline bool slotReferencesAny(const RefCountSlot& s, void* const* targets, int count) {
+    for (int t = 0; t < count; ++t) {
+        if (slotReferences(s, targets[t])) return true;
+    }
+    return false;
+}
+
+// One pass over all slots: true iff some slot references any of the targets.
+static bool anySlotReferences(void* const* targets, int count) {
+    for (int i = 0; i < RefCountGuard::MAX_THREADS; ++i) {
+        const RefCountSlot& s = RefCountGuard::refcount_slots[i];
+        if (__atomic_load_n(&s.count, __ATOMIC_ACQUIRE) == 0) {
+            // Check active_ptr to cover the non-reentrant constructor's activation window:
+            // active_ptr is stored (RELEASE) before count++ (RELEASE), so count==0 with
+            // active_ptr set means the thread is in the window and must be waited for.
+            void* aptr = __atomic_load_n(&s.active_ptr, __ATOMIC_ACQUIRE);
+            for (int t = 0; t < count; ++t) {
+                if (aptr == targets[t]) return true;
+            }
+            continue;
+        }
+        if (slotReferencesAny(s, targets, count)) return true;
+    }
+    return false;
+}
+
+bool RefCountGuard::tryWaitForRefCountsToClear(void* const* targets, int count) {
     const int SPIN_ITERATIONS = 100;
     for (int spin = 0; spin < SPIN_ITERATIONS; ++spin) {
-        bool all_clear = true;
-        for (int i = 0; i < MAX_THREADS; ++i) {
-            uint32_t count = __atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE);
-            if (count == 0) {
-                // Check active_ptr to cover the non-reentrant constructor's activation window:
-                // active_ptr is stored (RELEASE) before count++ (RELEASE), so count==0 with
-                // active_ptr set means the thread is in the window and must be waited for.
-                void* aptr = __atomic_load_n(&refcount_slots[i].active_ptr, __ATOMIC_ACQUIRE);
-                if (aptr == table_to_delete) { all_clear = false; break; }
-                continue;
-            }
-            if (slotReferences(refcount_slots[i], table_to_delete)) { all_clear = false; break; }
-        }
-        if (all_clear) return;
+        if (!anySlotReferences(targets, count)) return true;
         spinPause();
     }
 
     const int MAX_WAIT_ITERATIONS = 5000;
     struct timespec sleep_time = {0, 100000};
     for (int wait_count = 0; wait_count < MAX_WAIT_ITERATIONS; ++wait_count) {
-        bool all_clear = true;
-        for (int i = 0; i < MAX_THREADS; ++i) {
-            uint32_t count = __atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE);
-            if (count == 0) {
-                void* aptr = __atomic_load_n(&refcount_slots[i].active_ptr, __ATOMIC_ACQUIRE);
-                if (aptr == table_to_delete) { all_clear = false; break; }
-                continue;
-            }
-            if (slotReferences(refcount_slots[i], table_to_delete)) { all_clear = false; break; }
-        }
-        if (all_clear) return;
+        if (!anySlotReferences(targets, count)) return true;
         nanosleep(&sleep_time, nullptr);
     }
+    return false;
+}
+
+void RefCountGuard::waitForRefCountToClear(void* table_to_delete) {
+    if (tryWaitForRefCountsToClear(&table_to_delete, 1)) return;
 
     Counters::increment(DICTIONARY_DRAIN_TIMEOUTS, 1);
     Log::warn("waitForRefCountToClear: timeout after ~500ms waiting for %p; "
@@ -211,34 +219,4 @@ void RefCountGuard::waitForRefCountToClear(void* table_to_delete) {
     // in production.
     abort();
 #endif
-}
-
-void RefCountGuard::waitForAllRefCountsToClear() {
-    const int SPIN_ITERATIONS = 100;
-    for (int spin = 0; spin < SPIN_ITERATIONS; ++spin) {
-        bool any = false;
-        for (int i = 0; i < MAX_THREADS; ++i) {
-            if (__atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE) > 0) { any = true; break; }
-            // Also check active_ptr: non-reentrant constructor stores it (RELEASE) before
-            // count++ (RELEASE), so count==0 with active_ptr!=null means the thread is in
-            // the activation window and must be waited for.
-            if (__atomic_load_n(&refcount_slots[i].active_ptr, __ATOMIC_ACQUIRE) != nullptr) { any = true; break; }
-        }
-        if (!any) return;
-        spinPause();
-    }
-
-    const int MAX_WAIT_ITERATIONS = 5000;
-    struct timespec sleep_time = {0, 100000};
-    int last_nonzero_slot = -1;
-    for (int wait_count = 0; wait_count < MAX_WAIT_ITERATIONS; ++wait_count) {
-        bool any = false;
-        for (int i = 0; i < MAX_THREADS; ++i) {
-            if (__atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE) > 0) { any = true; last_nonzero_slot = i; break; }
-            if (__atomic_load_n(&refcount_slots[i].active_ptr, __ATOMIC_ACQUIRE) != nullptr) { any = true; last_nonzero_slot = i; break; }
-        }
-        if (!any) return;
-        nanosleep(&sleep_time, nullptr);
-    }
-    Log::warn("waitForAllRefCountsToClear: timeout after ~500ms; slot %d last seen non-zero, proceeding", last_nonzero_slot);
 }

@@ -1527,17 +1527,29 @@ Error Profiler::start(Arguments &args, bool reset) {
     memset(_failures, 0, sizeof(_failures));
 
     // Reset dictionaries. StringDictionary::clearAll() manages its own
-    // synchronisation (RefCountGuard drain) internally; _class_map_lock is
-    // held exclusively here for the duration of the reset.
+    // synchronisation (RefCountGuard drain) internally.  _class_map_lock does
+    // not protect the reset: lookupClass() and the other readers never take
+    // it and rely on the dictionary's guard protocol instead.  A dictionary whose
+    // drain times out is left unchanged rather than reset under an accessor
+    // that may still be using it; it stays consistent and keeps its ids.
+    bool class_map_reset;
     {
       ExclusiveLockGuard guard(&_class_map_lock);
-      _class_map.clearAll();
+      class_map_reset = _class_map.clearAll();
     }
-    _string_label_map.clearAll();
-    _context_value_map.clearAll();
-    // Signal the Java layer that context-value encodings have been reassigned so it can drop its
-    // process-wide ContextValueCache (consumed in JavaProfiler.execute after this start returns).
-    _context_value_dict_reset.store(true, std::memory_order_release);
+    if (!class_map_reset) {
+      Log::warn("Class map not reset: still in use after drain timeout");
+    }
+    if (!_string_label_map.clearAll()) {
+      Log::warn("String label map not reset: still in use after drain timeout");
+    }
+    if (_context_value_map.clearAll()) {
+      // Signal the Java layer that context-value encodings have been reassigned so it can drop its
+      // process-wide ContextValueCache (consumed in JavaProfiler.execute after this start returns).
+      _context_value_dict_reset.store(true, std::memory_order_release);
+    } else {
+      Log::warn("Context value map not reset: still in use after drain timeout");
+    }
 
     // Reset call trace storage
     if (!_omit_stacktraces) {

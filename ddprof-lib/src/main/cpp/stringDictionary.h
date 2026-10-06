@@ -458,7 +458,7 @@ public:
 //
 //   _accepting gates new guard creation during clearAll().  A thread that
 //   passed the outer acquire-load check before clearAll() sets _accepting=false
-//   may create its guard after waitForAllRefCountsToClear() returns, missing
+//   may create its guard after clearAll()'s drain returns, missing
 //   the drain.  A seq_cst recheck inside the guard scope catches this TOCTOU
 //   window: the thread sees _accepting=false and returns 0 before touching any
 //   buffer data (overflow nodes or arena chunks that clearAll() is freeing).
@@ -632,22 +632,46 @@ public:
         }
     }
 
-    // Clear the scratch buffer (two rotations behind active; safe to clear).
+    // Clear the scratch buffer (two rotations behind active).
+    // An accessor whose guard on this buffer outlived rotate()'s drain may
+    // still be using it, so drain it first.  If the drain times out the clear
+    // is skipped; the buffer then becomes active on the next rotate() with its
+    // old entries, which is harmless because ids are never reassigned outside
+    // clearAll(), and it is cleared the next time it is the clear target.
     // Resets per-dump counters to 0 so they track only post-clearStandby inserts.
     void clearStandby() {
-        _rot.clearTarget()->clear();
+        StringDictionaryBuffer* target = _rot.clearTarget();
+        void* const buffers[] = {target};
+        if (RefCountGuard::tryWaitForRefCountsToClear(buffers, 1)) {
+            target->clear();
+        } else {
+            Counters::increment(DICTIONARY_DRAIN_TIMEOUTS, 1);
+            Log::warn("StringDictionary: standby buffer still in use after drain timeout; not cleared");
+        }
         Counters::set(DICTIONARY_KEYS, 0, _counter_offset);
         Counters::set(DICTIONARY_KEYS_BYTES, 0, _counter_offset);
     }
 
     // Reset all three buffers and restart the ID counter.
     // _accepting=false gates new RefCountGuard creation; the subsequent drain
-    // ensures no concurrent accessor is mid-read when clear() zeroes the root
-    // table.  clear() is O(overflow_nodes + extra_arena_chunks); both are
+    // of this dictionary's buffers ensures no concurrent accessor is mid-read
+    // when clear() zeroes the root table and frees overflow nodes and arena
+    // chunks.  clear() is O(overflow_nodes + extra_arena_chunks); both are
     // typically zero for small-to-medium dictionaries.
-    void clearAll() {
+    //
+    // Returns false, leaving the dictionary unchanged, if an accessor still
+    // holds a guard when the drain times out.  The reset is all-or-nothing:
+    // e.g. restarting _next_id without clearing the buffers would hand out ids
+    // that existing entries already use.  An unreset dictionary stays
+    // consistent - its ids remain valid and generation() is unchanged.
+    [[nodiscard]] bool clearAll() {
         _accepting.store(false, std::memory_order_seq_cst);
-        RefCountGuard::waitForAllRefCountsToClear();
+        void* const buffers[] = {&_a, &_b, &_c};
+        if (!RefCountGuard::tryWaitForRefCountsToClear(buffers, 3)) {
+            Counters::increment(DICTIONARY_DRAIN_TIMEOUTS, 1);
+            _accepting.store(true, std::memory_order_release);
+            return false;
+        }
         _a.clear(); _b.clear(); _c.clear();
         _rot.reset();
         _next_id.store(1, std::memory_order_relaxed);
@@ -655,6 +679,7 @@ public:
         Counters::set(DICTIONARY_KEYS_BYTES, 0, _counter_offset);
         _generation.fetch_add(1, std::memory_order_release);
         _accepting.store(true, std::memory_order_release);
+        return true;
     }
 };
 

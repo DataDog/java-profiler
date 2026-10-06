@@ -113,8 +113,19 @@ public:
     // Wait for all in-flight guards protecting ptr_to_delete to be released.
     static void waitForRefCountToClear(void* ptr_to_delete);
 
-    // Wait for ALL reference counts to clear.
-    static void waitForAllRefCountsToClear();
+    /**
+     * Waits for every in-flight guard referencing any of the count resources
+     * in targets to be released, giving up after ~500ms.
+     *
+     * Only the targets are considered, so guards on unrelated resources can
+     * neither delay nor time out this drain.  Nothing is logged or counted on
+     * timeout; the caller decides how to react.
+     *
+     * @return true when no guard referenced a target on the final scan;
+     *         false on timeout, in which case the targets must not be freed
+     *         or reset because an accessor may still be using them.
+     */
+    [[nodiscard]] static bool tryWaitForRefCountsToClear(void* const* targets, int count);
 };
 
 #endif // _REFCOUNTGUARD_H
