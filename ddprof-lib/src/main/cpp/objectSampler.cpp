@@ -209,6 +209,13 @@ Error ObjectSampler::start(Arguments &args) {
     _alloc_event_count = 0;
     error = LivenessTracker::instance()->start(args);
     if (error) {
+      // Roll back every side effect committed above: a failed start() must
+      // leave the sampler exactly as if it was never started, otherwise
+      // _active stays true and JVMTI keeps firing SampledObjectAlloc into
+      // recordAllocation() even though the caller sees a non-OK Error.
+      __atomic_store_n(&_active, false, __ATOMIC_RELEASE);
+      jvmti->SetEventNotificationMode(JVMTI_DISABLE,
+                                      JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
       return error;
     }
   }
