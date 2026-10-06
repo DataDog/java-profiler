@@ -512,7 +512,15 @@ void ReferenceChainTracker::invalidateResolvedChains(
 
 void ReferenceChainTracker::deferResolvedChainInvalidation(jlong source_tag) {
   _pending_chain_invalidations_lock.lock();
-  _pending_chain_invalidations.push_back(source_tag);
+  // _resolved_chains (the eviction target) can never hold more than
+  // MAX_RESOLVED_CHAINS live entries, so the capacity reserved by the
+  // constructor already covers every distinct source_tag; capping here
+  // just guards against a burst of repeat evictions for the same tag
+  // within one pass without ever growing (and reallocating) this vector
+  // from inside the FollowReferences stop-the-world callback.
+  if ((int)_pending_chain_invalidations.size() < MAX_PENDING_CHAIN_INVALIDATIONS) {
+    _pending_chain_invalidations.push_back(source_tag);
+  }
   _pending_chain_invalidations_lock.unlock();
 }
 
@@ -521,6 +529,13 @@ void ReferenceChainTracker::drainPendingChainInvalidations() {
   {
     _pending_chain_invalidations_lock.lock();
     pending.swap(_pending_chain_invalidations);
+    // swap() just handed our reserved buffer to the local `pending`, leaving
+    // _pending_chain_invalidations with pending's old (empty) buffer. Restore
+    // the reserved capacity now, under the lock, so the next
+    // deferResolvedChainInvalidation() call - from inside a future
+    // FollowReferences pause - still finds room to push_back without
+    // allocating there.
+    _pending_chain_invalidations.reserve(MAX_PENDING_CHAIN_INVALIDATIONS);
     _pending_chain_invalidations_lock.unlock();
   }
   if (!pending.empty()) {

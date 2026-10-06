@@ -591,8 +591,17 @@ private:
   std::unordered_map<jlong, CachedChain> _resolved_chains;
   SpinLock _resolved_chains_lock;
 
-  // Chain evictions deferred by the heap callback; see
-  // deferResolvedChainInvalidation().
+  // Resolved-chain evictions deferred by the FollowReferences heap callback
+  // (see deferResolvedChainInvalidation()). Small: each callback-side
+  // improveChain/re-parent/root-upgrade evicts at most one entry, and the
+  // pending set is drained outside any walk (runPassManualWalk()'s start and
+  // end, pollWatchedTargets()'s entry). Capped at MAX_RESOLVED_CHAINS (the
+  // eviction target _resolved_chains can never hold more live entries than
+  // that), and preallocated to that capacity so deferResolvedChainInvalidation()'s
+  // push_back - called from inside the FollowReferences STW pause - does not
+  // trigger allocator growth there. drainPendingChainInvalidations() restores
+  // the reserved capacity after each drain instead of letting it be swapped away.
+  static constexpr int MAX_PENDING_CHAIN_INVALIDATIONS = MAX_RESOLVED_CHAINS;
   std::vector<jlong> _pending_chain_invalidations;
   SpinLock _pending_chain_invalidations_lock;
 
@@ -753,7 +762,9 @@ private:
         _stale_expanded_rotation_cursor(1),
         _thread_walk_anchor_cursor(0),
         _safepoint_pain_budget(0.0), _search_pain_ms(0), _cpu_pain_budget(0.0),
-        _thread(), _running(false), _abort_pass_requested(false) {}
+        _thread(), _running(false), _abort_pass_requested(false) {
+    _pending_chain_invalidations.reserve(MAX_PENDING_CHAIN_INVALIDATIONS);
+  }
 
   void onGCStart();
   void onGCFinish();

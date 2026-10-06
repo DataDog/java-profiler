@@ -1115,6 +1115,7 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setGcGenerationsEnabled0(
     JNIEnv *env, jclass unused, jboolean enabled) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   LivenessTracker::instance()->setGcGenerationsForTest(enabled);
   return JNI_TRUE;
 }
@@ -1122,6 +1123,7 @@ Java_com_datadoghq_profiler_JavaProfiler_setGcGenerationsEnabled0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_seedKlassPopulationSample0(
     JNIEnv *env, jclass unused, jint klassId, jint count, jlong epoch) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   int slot;
   bool created;
   LivenessTracker::instance()->klassPopulationRecordForTest(
@@ -1133,6 +1135,7 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_seedTidTrendSample0(
     JNIEnv *env, jclass unused, jint klassId, jint tid, jint count,
     jlong epoch) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   LivenessTracker::instance()->tidTrendRecordForTest(
       (u32)klassId, (jint)tid, (u32)count, (u64)epoch);
 }
@@ -1143,6 +1146,7 @@ Java_com_datadoghq_profiler_JavaProfiler_seedTidTrendSample0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setKlassPopulationRepresentativeForTest0(
     JNIEnv *env, jclass unused, jint klassId, jobject representative) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   jweak rep = env->NewWeakGlobalRef(representative);
   LivenessTracker::instance()->klassPopulationSetRepresentativeForTest(
       env, (u32)klassId, rep);
@@ -1151,12 +1155,14 @@ Java_com_datadoghq_profiler_JavaProfiler_setKlassPopulationRepresentativeForTest
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_resetKlassPopulationForTest0(
     JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   LivenessTracker::instance()->klassPopulationResetForTest();
 }
 
 extern "C" DLLEXPORT jintArray JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_selectLeakCandidateKlassIds0(
     JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   KlassCandidate candidates[5];
   int n = LivenessTracker::instance()->selectLeakCandidates(candidates, 5);
   jintArray result = env->NewIntArray(n);
@@ -1174,6 +1180,7 @@ Java_com_datadoghq_profiler_JavaProfiler_selectLeakCandidateKlassIds0(
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_tagAsReferenceChainRoot0(
     JNIEnv *env, jclass unused, jobject target) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   jvmtiEnv *jvmti = VM::jvmti();
   if (jvmti == nullptr) {
     return 0;
@@ -1185,6 +1192,7 @@ Java_com_datadoghq_profiler_JavaProfiler_tagAsReferenceChainRoot0(
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_runReferenceChainPass0(
     JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   jvmtiEnv *jvmti = VM::jvmti();
   if (jvmti == nullptr) {
     return JNI_FALSE;
@@ -1195,6 +1203,7 @@ Java_com_datadoghq_profiler_JavaProfiler_runReferenceChainPass0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
     JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   jvmtiEnv *jvmti = VM::jvmti();
   if (jvmti == nullptr) {
     return;
@@ -1205,6 +1214,7 @@ Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCount0(
     JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   std::vector<ReferenceChainEvent> events;
   ReferenceChainTracker::instance()->drainPendingChainEvents(&events);
   return (jint)events.size();
@@ -1213,6 +1223,7 @@ Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCount0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_resetReferenceChainSearchForTest0(
     JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   jvmtiEnv *jvmti = VM::jvmti();
   if (jvmti == nullptr) {
     return;
@@ -1225,6 +1236,7 @@ Java_com_datadoghq_profiler_JavaProfiler_resetReferenceChainSearchForTest0(
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingPositionForTest0(
     JNIEnv *env, jclass unused, jobject target) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   jvmtiEnv *jvmti = VM::jvmti();
   if (jvmti == nullptr || target == nullptr) {
     return -2;
@@ -1241,6 +1253,7 @@ Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingPositionForTest
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingSizeForTest0(
     JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   return (jlong)ReferenceChainTracker::instance()->pendingExpandSizeForTest();
 }
 
@@ -1249,6 +1262,7 @@ Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingSizeForTest0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_heapFloorRecordForTest0(
     JNIEnv *env, jclass unused, jlong usedBytes, jlong timestampNs) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   LivenessTracker::instance()->heapFloorRecordForTest((u64)usedBytes,
                                                         (u64)timestampNs);
 }
@@ -1257,6 +1271,7 @@ Java_com_datadoghq_profiler_JavaProfiler_heapFloorRecordForTest0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setMaxHeapBytesForTest0(
     JNIEnv *env, jclass unused, jlong maxHeapBytes) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   LivenessTracker::instance()->setMaxHeapBytesForTest((jlong)maxHeapBytes);
 }
 
@@ -1264,6 +1279,7 @@ Java_com_datadoghq_profiler_JavaProfiler_setMaxHeapBytesForTest0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setHeapFloorRecordingForTest0(
     JNIEnv *env, jclass unused, jboolean enabled) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   LivenessTracker::instance()->setHeapFloorRecordingForTest(enabled == JNI_TRUE);
 }
 
@@ -1271,6 +1287,7 @@ Java_com_datadoghq_profiler_JavaProfiler_setHeapFloorRecordingForTest0(
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_shouldRunPassForTest0(JNIEnv *env,
                                                                 jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   return ReferenceChainTracker::instance()->shouldRunPassForTest(
              OS::nanotime())
              ? JNI_TRUE
@@ -1281,6 +1298,7 @@ Java_com_datadoghq_profiler_JavaProfiler_shouldRunPassForTest0(JNIEnv *env,
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_referenceChainPassesRunForTest0(
     JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   return (jint)ReferenceChainTracker::instance()->passesRun();
 }
 

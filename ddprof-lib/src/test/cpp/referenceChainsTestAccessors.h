@@ -15,7 +15,6 @@
 #define REFERENCE_CHAINS_TEST_ACCESSORS_H
 
 #include <deque>
-#include <gtest/gtest.h>
 #include <cstring>
 #include <vector>
 

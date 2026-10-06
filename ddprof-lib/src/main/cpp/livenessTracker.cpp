@@ -204,9 +204,13 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
     bool is_epoch_owner = account_epoch && target_gc_epoch > claimed &&
         __atomic_compare_exchange_n(&_last_gc_epoch, &claimed, target_gc_epoch,
                                     false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
-    // Only the epoch owner ages survivors; otherwise ages could wrap (lost
-    // CAS race) or advance twice (account_epoch=false).
-    int epoch_diff = is_epoch_owner ? (int)(target_gc_epoch - claimed) : 0;
+    // Only the epoch owner ages survivors - see the survivor loop's
+    // per-entry diff below (it also accounts for an entry's own
+    // admission_epoch, not just `claimed`). On a lost CAS race `claimed`
+    // holds the actual current epoch (>= our stale target), so a non-owner
+    // computes nothing here; an account_epoch=false sweep never attempts
+    // the claim either, for the same reason - it must not age survivors
+    // that the epoch owner ages again.
 
   // Detect a class-map reset the same way
   // ReferenceChainTracker::resolveLoadedClasses() does (referenceChains.cpp)
@@ -266,7 +270,21 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
           _table[i].cached_klass_id = 0;
           __atomic_store_n(&_table[i].ready, 0, __ATOMIC_RELEASE);
         }
-        _table[target].age += epoch_diff;
+        // Only age this survivor across the epochs it was actually alive
+        // for. An entry admitted via the overflow-retry path (track()'s
+        // cleanup_table(..., account_epoch=false) reaper) can carry an
+        // admission_epoch at or above `claimed` - it was never alive for
+        // the GC(s) between `claimed` and its own admission_epoch, so the
+        // owner's fold must not credit it with surviving those. See
+        // TrackingEntry::admission_epoch's own comment (livenessTracker.h).
+        if (is_epoch_owner) {
+          u64 base = _table[target].admission_epoch > claimed
+                         ? _table[target].admission_epoch
+                         : claimed;
+          if (target_gc_epoch > base) {
+            _table[target].age += (jlong)(target_gc_epoch - base);
+          }
+        }
 
         if (_gc_generations.load(std::memory_order_relaxed) && is_epoch_owner) {
           // Per-klass population tracking (design doc's Open Question 3) -
@@ -2376,6 +2394,9 @@ retry:
     _table[idx].skipped = skipped.get();
     skipped.set(0);
     _table[idx].age = 0;
+    // Boundary for cleanup_table()'s survivor-aging loop - see
+    // TrackingEntry::admission_epoch's own comment (livenessTracker.h).
+    _table[idx].admission_epoch = load(_gc_epoch);
     _table[idx].call_trace_id = call_trace_id;
     _table[idx].leak_tag = 0;
     _table[idx].ctx = ContextApi::snapshot();
