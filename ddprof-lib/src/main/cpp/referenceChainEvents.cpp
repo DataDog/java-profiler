@@ -501,6 +501,19 @@ void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
   }
 }
 
+void ReferenceChainTracker::invalidateResolvedChains(
+    const std::vector<jlong> &source_tags) {
+  ExclusiveLockGuard guard(&_resolved_chains_lock);
+  for (size_t i = 0; i < source_tags.size(); i++) {
+    auto it = _resolved_chains.find(source_tags[i]);
+    if (it != _resolved_chains.end()) {
+      _resolved_chains.erase(it);
+      TEST_LOG("ReferenceChainTracker::invalidateResolvedChains source_tag=%lld",
+               (long long)source_tags[i]);
+    }
+  }
+}
+
 void ReferenceChainTracker::deferResolvedChainInvalidation(jlong source_tag) {
   _pending_chain_invalidations_lock.lock();
   _pending_chain_invalidations.push_back(source_tag);
@@ -514,8 +527,8 @@ void ReferenceChainTracker::drainPendingChainInvalidations() {
     pending.swap(_pending_chain_invalidations);
     _pending_chain_invalidations_lock.unlock();
   }
-  for (size_t i = 0; i < pending.size(); i++) {
-    invalidateResolvedChain(pending[i]);
+  if (!pending.empty()) {
+    invalidateResolvedChains(pending);
   }
 }
 

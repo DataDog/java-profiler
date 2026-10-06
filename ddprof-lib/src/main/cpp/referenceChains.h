@@ -410,14 +410,15 @@ private:
     // treated as not-queued, the same degradation a full deque push
     // already accepts).
     bool insert(jlong tag) {
-      u64 i = mix(tag) >> (64 - SLOT_SHIFT);
+      const u64 start = mix(tag) >> (64 - SLOT_SHIFT);
+      u64 i = start;
       while (_used[i]) {
         if (_keys[i] == tag) {
           return false;
         }
         i = (i + 1) & SLOT_MASK;
         // Wrapped all 2048 slots without an empty one: table full.
-        if (i == (mix(tag) >> (64 - SLOT_SHIFT))) {
+        if (i == start) {
           return false;
         }
       }
@@ -1010,6 +1011,12 @@ private:
 
   // Remove a cached chain so pollWatchedTargets rebuilds it on the next poll.
   void invalidateResolvedChain(jlong source_tag);
+
+  // Same as invalidateResolvedChain() but for a whole batch under a single
+  // _resolved_chains_lock critical section - used by
+  // drainPendingChainInvalidations() so a pass/poll with many deferred
+  // evictions pays one lock/unlock round-trip instead of one per tag.
+  void invalidateResolvedChains(const std::vector<jlong> &source_tags);
 
   // Record a resolved-chain eviction from inside the FollowReferences heap
   // callback WITHOUT taking _resolved_chains_lock: the callback runs inside
