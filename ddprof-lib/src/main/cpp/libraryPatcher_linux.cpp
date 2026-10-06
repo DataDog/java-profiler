@@ -77,10 +77,11 @@ void LibraryPatcher::visit_live_libraries(LiveLibraryVisitor visit) {
 }
 
 // Visits the candidates that are the object being reported: the same image
-// base, and the same backing file or the same image fingerprint. The identity
-// check rejects a stale CodeCache whose library was unloaded and replaced by
-// a different one at the same address. A reload of the same build is accepted:
-// its GOT slots are at the same addresses, holding the same kind of values.
+// base and the same image fingerprint, or the same backing file for a cache
+// without a fingerprint. The identity check rejects a stale CodeCache whose
+// library was unloaded and replaced by a different one at the same address.
+// A reload of the same build is accepted: its GOT slots are at the same
+// addresses, holding the same kind of values.
 int LibraryPatcher::visit_loaded_object(struct dl_phdr_info* info, size_t size, void* data) {
   uintptr_t min_vaddr = UINTPTR_MAX;
   for (int i = 0; i < info->dlpi_phnum; i++) {
@@ -99,27 +100,32 @@ int LibraryPatcher::visit_loaded_object(struct dl_phdr_info* info, size_t size, 
   // glibc names the main executable "". It is never unloaded, so nothing else
   // can occupy its image base.
   bool main_executable = info->dlpi_name == nullptr || info->dlpi_name[0] == '\0';
-  u64 file_id = 0;
-  if (!main_executable) {
-    struct stat st;
-    if (stat(info->dlpi_name, &st) == 0) {
-      file_id = CodeCache::makeFileId(major(st.st_dev) << 8 | minor(st.st_dev), st.st_ino);
-    }
-  }
-  // The name the library was loaded by may no longer resolve to its file: the
-  // file was unlinked (JNI loaders that extract to a temporary file commonly
-  // do this), or the name is relative or a symlink. The image fingerprint
-  // identifies it then; it is computed lazily, at most once per object.
+  // The fingerprint decides whenever the cache has one. The backing file does
+  // not identify the image: a file can be replaced by a different build that
+  // reuses the freed inode (and is then not parsed, because its inode has been
+  // seen), and a relative or symlinked name may now resolve to another file.
+  // Both are computed lazily, at most once per object.
   u64 fingerprint = 0;
+  u64 file_id = 0;
+  bool file_id_known = false;
   LiveLibraryVisitor visit = *(LiveLibraryVisitor*)data;
   for (; ref != end && ref->_base == base; ref++) {
-    bool same_image = main_executable || (file_id != 0 && ref->_lib->fileId() == file_id);
+    bool same_image = main_executable;
     if (!same_image && ref->_lib->imageFingerprint() != 0) {
       if (fingerprint == 0) {
         fingerprint = Symbols::imageFingerprint(info->dlpi_phdr, info->dlpi_phnum,
                                                 info->dlpi_addr, 0, UINTPTR_MAX);
       }
       same_image = ref->_lib->imageFingerprint() == fingerprint;
+    } else if (!same_image) {
+      if (!file_id_known) {
+        struct stat st;
+        if (stat(info->dlpi_name, &st) == 0) {
+          file_id = CodeCache::makeFileId(major(st.st_dev) << 8 | minor(st.st_dev), st.st_ino);
+        }
+        file_id_known = true;
+      }
+      same_image = file_id != 0 && ref->_lib->fileId() == file_id;
     }
     if (same_image) {
       // The library may be a reload at the same address that is still

@@ -461,21 +461,44 @@ TEST_F(LibraryPatcherIdentityTest, PatchSkipsCacheOfDifferentImageAtSameBase) {
   });
 }
 
-// Controls for the test above: either identity alone is enough.
-TEST_F(LibraryPatcherIdentityTest, PatchAcceptsCacheOfSameFileAtSameBase) {
+// The backing file alone does not identify the image when the cache has a
+// fingerprint: a different build can reuse the inode of an unloaded library's
+// deleted file, and is then not parsed, because the inode has been seen.
+TEST_F(LibraryPatcherIdentityTest, PatchSkipsCacheOfSameFileButDifferentImage) {
   runInChild([]() {
     LoadedLib lib = loadLib(SOCKET);
-    if (!patchWritesFakeCache(lib, realCache()->fileId(), realCache()->imageFingerprint() + 1)) {
-      _exit(CHILD_SLOT_NOT_HOOKED);
+    if (patchWritesFakeCache(lib, realCache()->fileId(), realCache()->imageFingerprint() + 1)) {
+      _exit(CHILD_CORRUPTED);
     }
   });
 }
 
+// Control for the tests above: the image identity alone is enough.
 TEST_F(LibraryPatcherIdentityTest, PatchAcceptsCacheOfSameImageAtSameBase) {
   runInChild([]() {
     LoadedLib lib = loadLib(SOCKET);
     if (!patchWritesFakeCache(lib, realCache()->fileId() + 1, realCache()->imageFingerprint())) {
       _exit(CHILD_SLOT_NOT_HOOKED);
+    }
+  });
+}
+
+// A cache without a fingerprint, e.g. one whose notes lay outside the range
+// parsed, falls back to the backing file.
+TEST_F(LibraryPatcherIdentityTest, PatchAcceptsCacheWithoutFingerprintOfSameFile) {
+  runInChild([]() {
+    LoadedLib lib = loadLib(SOCKET);
+    if (!patchWritesFakeCache(lib, realCache()->fileId(), 0)) {
+      _exit(CHILD_SLOT_NOT_HOOKED);
+    }
+  });
+}
+
+TEST_F(LibraryPatcherIdentityTest, PatchSkipsCacheWithoutFingerprintOfDifferentFile) {
+  runInChild([]() {
+    LoadedLib lib = loadLib(SOCKET);
+    if (patchWritesFakeCache(lib, realCache()->fileId() + 1, 0)) {
+      _exit(CHILD_CORRUPTED);
     }
   });
 }
