@@ -16,7 +16,9 @@
 #include "gtest_crash_handler.h"
 #include "arch.h"
 #include "counters.h"
+#include "refCountGuard.h"
 #include "threadLocalData.h"
+#include <memory>
 
 // Test name for crash handler
 static constexpr char TEST_NAME[] = "CallTraceStorageTest";
@@ -1155,4 +1157,41 @@ TEST(CallTraceHashTableOverflowGuardTest, NextGenerationCapacityIsDouble) {
     EXPECT_EQ(CallTraceHashTableOverflowGuardTestAccessor::nextGenerationCapacity(65536), 131072ull);
     EXPECT_EQ(CallTraceHashTableOverflowGuardTestAccessor::nextGenerationCapacity(1), 2ull);
     EXPECT_EQ(CallTraceHashTableOverflowGuardTestAccessor::nextGenerationCapacity(0), 0ull);
+}
+
+// ── Drain timeout while a put() still holds the table ─────────────────────
+//
+// CallTraceStorage callers exclude put() while reclaiming tables (Profiler
+// holds lockAll()), so clearTableOnly()'s drain should never time out.  If it
+// does, the contract was broken and the table's chunks must be leaked rather
+// than unmapped under the put().  The guard is held by the test thread itself,
+// standing in for a put() stalled inside the table.
+TEST(CallTraceHashTableDrainTest, ClearWithGuardHeldLeaksChunks) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    auto table = std::make_unique<CallTraceHashTable>();
+    table->setInstanceId(1);
+    ASGCT_CallFrame frame;
+    frame.bci = 4242;
+    frame.method_id = (jmethodID)0x4242;
+    u64 id = table->put(1, &frame, false, 1);
+    ASSERT_GT(id, 0u);
+
+    CallTraceSet traces;
+    table->collect(traces);
+    CallTrace* held = findTraceById(traces, id);
+    ASSERT_NE(nullptr, held);
+
+    {
+        RefCountGuard guard(table.get());
+        table->clear();  // the drain times out on the guard above
+        // The chunk holding the trace was leaked, not unmapped.
+        EXPECT_EQ(id, held->trace_id);
+        EXPECT_EQ(4242, held->frames[0].bci);
+    }
+
+    // The table was still reset and keeps working.
+    CallTraceSet after;
+    table->collect(after);
+    EXPECT_EQ(nullptr, findTraceById(after, id));
+    EXPECT_GT(table->put(1, &frame, false, 1), 0u);
 }

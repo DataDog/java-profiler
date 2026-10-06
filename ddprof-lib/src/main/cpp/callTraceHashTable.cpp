@@ -169,16 +169,18 @@ void CallTraceHashTable::decrementCounters() {
 }
 
 ChunkList CallTraceHashTable::clearTableOnly() {
-  // Wait only for in-flight put() operations that hold a RefCountGuard on THIS
-  // table.  Waiting globally (for every guard slot to clear) would block on
-  // unrelated puts to the currently-active table, causing 500 ms timeouts under
-  // sustained wall-clock profiling and leaving collect() racing with a still-
-  // running put().  Since standby and scratch tables never appear as the
-  // _active_storage, this wait returns instantly for them; for the active table
-  // (called from clear() -> clearTableOnly()) the protection comes from the caller
-  // holding lockAll() (which blocks signal-handler puts) and from this in-function
-  // targeted wait — there is no prior caller-side drain.
-  RefCountGuard::waitForRefCountToClear(this);
+  // Callers exclude put() for the duration (Profiler holds lockAll(); every
+  // put() runs under one of its stripe locks), so this drain is defense in
+  // depth and should return on its first scan.  It waits only for guards on
+  // THIS table: a global wait would also count guards on unrelated resources,
+  // such as StringDictionary lookups that lockAll() does not exclude, and could
+  // time out on them.
+  //
+  // A timeout means the caller broke that contract and a put() may still be
+  // writing into this table's chunks.  waitForRefCountToClear() aborts debug
+  // builds; otherwise the detached chunks are leaked below instead of being
+  // handed back for freeing.
+  const bool drained = RefCountGuard::waitForRefCountToClear(this);
   decrementCounters();
 
   // Disconnect the full _prev chain before freeing chunks.  The advance step
@@ -207,6 +209,9 @@ ChunkList CallTraceHashTable::clearTableOnly() {
       __ATOMIC_RELEASE);
   _overflow = 0;
 
+  if (!drained) {
+    return ChunkList();
+  }
   return detached_chunks;
 }
 

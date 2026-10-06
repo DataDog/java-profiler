@@ -197,7 +197,7 @@ flowchart TD
     spin -->|"no"| sleep_loop["nanosleep 100us; same scan, up to ~500ms"]
     sleep_loop --> timeout{"timed out?"}
     timeout -->|"no"| done
-    timeout -->|"yes"| warn["Counters DICTIONARY_DRAIN_TIMEOUTS; Log warn; abort under DEBUG"]
+    timeout -->|"yes"| warn["Counters DICTIONARY_DRAIN_TIMEOUTS; Log warn; abort under DEBUG (not gtest); return false"]
     warn --> done
 ```
 
@@ -206,6 +206,11 @@ A slot is considered to reference `p` if `active_ptr == p` or any entry of
 never match a (non-null) drain target.  Because a protected resource never
 changes location, one pass over `active_ptr` and `nested[]` sees it regardless
 of how many nested guards start or end while the slot is read.
+
+`waitForRefCountToClear(p)` returns `true` when drained and `false` on timeout;
+on `false` the caller must not free `p`.  Debug builds abort on timeout instead,
+except gtest builds (`UNIT_TEST`), which exercise the release behavior.  `tryWaitForRefCountsToClear(targets, n)`
+is the same drain over several targets, without the counter and log line.
 
 ---
 
@@ -216,7 +221,7 @@ of how many nested guards start or end while the slot is read.
 | "Scanner never sees a stale `active_ptr` for a live slot" | `active_ptr` stored before `count++` and cleared after `count--` (root); never written by reentrant guards |
 | "A protected resource never moves" | Root resource only in `active_ptr`, nested resources only in their own `nested[]` entry, from construction to destruction |
 | "Every resource on a reentrant chain is visible to the scanner up to NESTED_DEPTH" | `nested[prev_count-1]` write in ctor; conditional clear in dtor |
-| "No deadlock between drain and signal handler" | All scans are bounded; timeout is observable via counter and DEBUG abort |
+| "No deadlock between drain and signal handler" | All scans are bounded; timeout is observable via counter, log and DEBUG abort, and reported to the caller |
 | "Slot can be reclaimed after drain returns" | `slot_owners[i] = 0` is written only by the non-reentrant teardown path — destructor or move-assignment overwriting an active guard — and only after `count` has been decremented to 0 |
 | "Nesting beyond NESTED_DEPTH is observable" | One-time `Log::warn` latched via `s_nested_overflow_warned` |
 

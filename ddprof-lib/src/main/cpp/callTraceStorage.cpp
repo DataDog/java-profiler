@@ -72,17 +72,17 @@ CallTraceStorage::~CallTraceStorage() {
     CallTraceHashTable* standby = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_standby_storage, nullptr, __ATOMIC_ACQ_REL));
     CallTraceHashTable* scratch = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_scratch_storage, nullptr, __ATOMIC_ACQ_REL));
 
-    // Wait for any ongoing refcount usage to complete and delete each unique table
+    // Wait for any ongoing refcount usage to complete and delete each unique table.
+    // A table a put() still holds after the drain timeout is leaked rather than
+    // deleted under it (waitForRefCountToClear() aborts debug builds first).
     // Note: In triple-buffering, all three pointers should be unique, but check anyway
-    RefCountGuard::waitForRefCountToClear(active);
-    delete active;
-
-    if (standby != active) {
-        RefCountGuard::waitForRefCountToClear(standby);
+    if (RefCountGuard::waitForRefCountToClear(active)) {
+        delete active;
+    }
+    if (standby != active && RefCountGuard::waitForRefCountToClear(standby)) {
         delete standby;
     }
-    if (scratch != active && scratch != standby) {
-        RefCountGuard::waitForRefCountToClear(scratch);
+    if (scratch != active && scratch != standby && RefCountGuard::waitForRefCountToClear(scratch)) {
         delete scratch;
     }
 
@@ -165,7 +165,8 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
 
 /*
  * Trace processing with signal blocking for simplified concurrency.
- * This function is safe to call concurrently with put() operations.
+ * The caller must exclude put() for the duration (see the class comment);
+ * the RefCountGuard drains below are defense in depth.
  * It is not designed to be called concurrently with itself.
  */
 void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> processor) {

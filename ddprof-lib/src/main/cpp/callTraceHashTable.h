@@ -137,6 +137,11 @@ public:
    * This is used to fix use-after-free in processTraces(): the table
    * structure is reset immediately (allowing rotation), but trace memory
    * remains valid until the processor finishes accessing it.
+   *
+   * The caller must exclude put() on this table for the duration.  If a
+   * put() still holds a RefCountGuard on it after the drain timeout, debug
+   * builds abort; otherwise the chunks are leaked rather than freed and the
+   * returned ChunkList is empty.
    */
   ChunkList clearTableOnly();
 

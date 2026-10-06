@@ -476,10 +476,22 @@ void CallTraceStorage::processTraces(...) {
     // Wait for all signal handlers to finish with old active table
     RefCountGuard::waitForRefCountToClear(old_active_table);
 
-    // Safe to clear and reuse the table
+    // clear() -> clearTableOnly() drains again; on timeout it leaks the
+    // table's chunks instead of freeing them
     old_active_table->clear();
 }
 ```
+
+**Lifetime contract:** in production these drains are defense in depth, not the
+primary protection. `processTraces()`, `clear()` and the destructor must not run
+concurrently with `put()`. `Profiler` guarantees this with `lockAll()`: every
+`put()` runs under one of the stripe locks, and every `processTraces()` /
+`clear()` caller (`FlightRecorder::stop()` / `dump()` via `rotateDictsAndRun()`,
+and `Profiler::start()`) holds all of them. `lockAll()` waits for in-flight
+`put()`s without a time limit, so the drains find no guard on the table. If a
+drain does time out the contract was broken: debug builds abort, and release
+builds leak instead of freeing memory a `put()` may still be writing
+(`clearTableOnly()` leaks the detached chunks, the destructor leaks the table).
 
 **Scanner Performance:**
 - Linear scan of 8192 slots: ~10-20 microseconds on modern CPUs
