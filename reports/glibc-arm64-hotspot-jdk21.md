@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk21
 
 ## glibc-arm64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-10-06 12:01:34 EDT
+**Date:** 2026-10-06 13:09:34 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 85 |
-| Sample Rate | 1.42/sec |
-| Health Score | 89% |
-| Threads | 10 |
-| Allocations | 65 |
+| CPU Samples | 101 |
+| Sample Rate | 1.68/sec |
+| Health Score | 105% |
+| Threads | 8 |
+| Allocations | 80 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 93 |
-| Sample Rate | 1.55/sec |
-| Health Score | 97% |
+| CPU Samples | 96 |
+| Sample Rate | 1.60/sec |
+| Health Score | 100% |
 | Threads | 12 |
-| Allocations | 81 |
+| Allocations | 52 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 40-40 cores)</summary>
 
 ```
-1791302098 40
-1791302103 40
-1791302108 40
-1791302113 40
-1791302118 40
-1791302123 40
-1791302128 40
-1791302133 40
-1791302138 40
-1791302143 40
-1791302148 40
-1791302153 40
-1791302158 40
-1791302163 40
-1791302168 40
-1791302173 40
-1791302178 40
-1791302183 40
-1791302188 40
-1791302193 40
+1791306307 40
+1791306312 40
+1791306317 40
+1791306322 40
+1791306327 40
+1791306332 40
+1791306337 40
+1791306342 40
+1791306347 40
+1791306352 40
+1791306357 40
+1791306362 40
+1791306367 40
+1791306372 40
+1791306377 40
+1791306382 40
+1791306387 40
+1791306392 40
+1791306397 40
+1791306402 40
 ```
 </details>
 
