@@ -1228,6 +1228,9 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_resetReferenceChainSearchForTest0(
     JNIEnv *env, jclass unused) {
   jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr) {
+    return;
+  }
   ReferenceChainTracker::instance()->resetSearchStateForTest(jvmti, env);
 }
 
@@ -1317,6 +1320,103 @@ extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_referenceChainPassesRunForTest0(
     JNIEnv *env, jclass unused) {
   return (jint)ReferenceChainTracker::instance()->passesRun();
+}
+
+#else // !DEBUG
+
+// Release-build stubs for the DEBUG-only test seams above: calling one of
+// these JNI methods must not throw UnsatisfiedLinkError in a release native
+// build, matching the "no-op returning false/0/an empty array in release
+// builds" contract documented on the Java side.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setGcGenerationsEnabled0(
+    JNIEnv *env, jclass unused, jboolean enabled) {
+  return JNI_FALSE;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_seedKlassPopulationSample0(
+    JNIEnv *env, jclass unused, jint klassId, jint count, jlong epoch) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_seedTidTrendSample0(
+    JNIEnv *env, jclass unused, jint klassId, jint tid, jint count,
+    jlong epoch) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setKlassPopulationRepresentativeForTest0(
+    JNIEnv *env, jclass unused, jint klassId, jobject representative) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_resetKlassPopulationForTest0(
+    JNIEnv *env, jclass unused) {}
+
+extern "C" DLLEXPORT jintArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_selectLeakCandidateKlassIds0(
+    JNIEnv *env, jclass unused) {
+  return env->NewIntArray(0);
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_tagAsReferenceChainRoot0(
+    JNIEnv *env, jclass unused, jobject target) {
+  return 0;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_runReferenceChainPass0(
+    JNIEnv *env, jclass unused) {
+  return JNI_FALSE;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
+    JNIEnv *env, jclass unused) {}
+
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCount0(
+    JNIEnv *env, jclass unused) {
+  return 0;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_resetReferenceChainSearchForTest0(
+    JNIEnv *env, jclass unused) {}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingPositionForTest0(
+    JNIEnv *env, jclass unused, jobject target) {
+  return -2;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingSizeForTest0(
+    JNIEnv *env, jclass unused) {
+  return 0;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_heapFloorRecordForTest0(
+    JNIEnv *env, jclass unused, jlong usedBytes, jlong timestampNs) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setMaxHeapBytesForTest0(
+    JNIEnv *env, jclass unused, jlong maxHeapBytes) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setHeapFloorRecordingForTest0(
+    JNIEnv *env, jclass unused, jboolean enabled) {}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_shouldRunPassForTest0(JNIEnv *env,
+                                                                jclass unused) {
+  return JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_referenceChainPassesRunForTest0(
+    JNIEnv *env, jclass unused) {
+  return 0;
 }
 
 #endif // DEBUG
