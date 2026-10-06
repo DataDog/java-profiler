@@ -364,19 +364,23 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
 
     TEST_LOG_SUMMARY("LivenessTracker::cleanup_table survivors=%u klass_count_scratch_size=%d",
              newsz, _klass_count_scratch_size);
-    if (_gc_generations.load(std::memory_order_relaxed) && is_epoch_owner) {
-      // Runs even when _klass_count_scratch is empty: foldKlassCountsLocked()
-      // records zero population samples for klasses whose every tracked
-      // instance died this epoch (they never appear in the scratch, and
-      // without a zero sample a dead population would stay a leak candidate
-      // until its entry is evicted).
-      foldKlassCountsLocked(env, target_gc_epoch, allow_resolve);
-    }
 
     end = OS::nanotime();
     Log::debug("Liveness tracker cleanup took %.2fms (%.2fus/element)",
                1.0f * (end - start) / 1000 / 1000,
                1.0f * (end - start) / 1000 / sz);
+  }
+  if (_gc_generations.load(std::memory_order_relaxed) && is_epoch_owner) {
+    // Deliberately outside the `sz > 0` block above: a reap-only sweep that
+    // finds the table already fully GC-cleared (sz == 0, e.g. a table that
+    // was at _table_max_cap and every tracked reference died) still owns
+    // this epoch and must fold it. foldKlassCountsLocked() records zero
+    // population samples for klasses whose every tracked instance died this
+    // epoch (they never appear in the scratch, and without a zero sample a
+    // dead population would stay a leak candidate until its entry is
+    // evicted) - skipping it here would silently drop the triggering
+    // allocation's epoch from every klass's population history.
+    foldKlassCountsLocked(env, target_gc_epoch, allow_resolve);
   }
   _table_lock.unlock();
   }

@@ -184,26 +184,30 @@ Error ObjectSampler::start(Arguments &args) {
   if (_interval > 0) {
     // LivenessTracker is started unconditionally (below) so it picks up this
     // recording's flags instead of keeping the previous recording's.
+    //
+    // LivenessTracker::start() (and the initialize() it calls) must complete
+    // before allocation callbacks are allowed to run: initialize_table()
+    // publishes a positive _table_cap before initialize() allocates _table,
+    // so a callback admitted while that is still in flight could pass
+    // track()'s capacity guard and dereference a null table. Keep JVMTI
+    // events disabled and _active false until LivenessTracker has finished
+    // initializing.
+    _alloc_event_count = 0;
+    error = LivenessTracker::instance()->start(args);
+    if (error) {
+      return error;
+    }
+
     jvmtiEnv *jvmti = VM::jvmti();
     // JVMTI Object Sampler is a 'solo' feature, meaning that it can only be
     // used by one JVMTI environment. Therefore, we can rely on the fact that if
     // this agent gets hold of the sample it will be its exclusive owner.
     jvmti->SetHeapSamplingInterval(_interval);
+    __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
     jvmti->SetEventNotificationMode(JVMTI_ENABLE,
                                     JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
+    // Activated last, strictly after LivenessTracker initialization succeeded.
     __atomic_store_n(&_active, true, __ATOMIC_RELEASE);
-    __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
-    // Started last so a JVMTI failure above doesn't leave it running unfed.
-    // need to reset the running sum in order for 'updateConfiguration' to be
-    // able to generate proper diffs
-    _alloc_event_count = 0;
-    error = LivenessTracker::instance()->start(args);
-    if (error) {
-      __atomic_store_n(&_active, false, __ATOMIC_RELEASE);
-      jvmti->SetEventNotificationMode(JVMTI_DISABLE,
-                                      JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
-      return error;
-    }
   }
 
   return Error::OK;

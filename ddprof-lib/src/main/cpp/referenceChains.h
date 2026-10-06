@@ -604,6 +604,13 @@ private:
   static constexpr int MAX_PENDING_CHAIN_INVALIDATIONS = MAX_RESOLVED_CHAINS;
   std::vector<jlong> _pending_chain_invalidations;
   SpinLock _pending_chain_invalidations_lock;
+  // Set instead of silently dropping a source_tag once the vector above is
+  // full (duplicates/uncached tags mean MAX_PENDING_CHAIN_INVALIDATIONS does
+  // not actually bound the number of distinct evictions owed). On the next
+  // drain this forces the entire _resolved_chains cache to be cleared rather
+  // than just the tags that fit, so an overflowed eviction can never leave a
+  // stale cached chain behind.
+  bool _pending_chain_invalidations_overflowed = false;
 
   // Abandoned-search events awaiting Profiler::dump() (profiler.cpp).
   static constexpr int MAX_PENDING_ABANDONED_EVENTS = 16;

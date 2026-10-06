@@ -513,22 +513,29 @@ void ReferenceChainTracker::invalidateResolvedChains(
 void ReferenceChainTracker::deferResolvedChainInvalidation(jlong source_tag) {
   _pending_chain_invalidations_lock.lock();
   // _resolved_chains (the eviction target) can never hold more than
-  // MAX_RESOLVED_CHAINS live entries, so the capacity reserved by the
-  // constructor already covers every distinct source_tag; capping here
-  // just guards against a burst of repeat evictions for the same tag
-  // within one pass without ever growing (and reallocating) this vector
-  // from inside the FollowReferences stop-the-world callback.
+  // MAX_RESOLVED_CHAINS *distinct* live entries, but the pending vector can
+  // still see more than MAX_PENDING_CHAIN_INVALIDATIONS pushes within one
+  // walk: callbacks enqueue uncached tags (never evicted, so never drained
+  // out of the way) and repeat evictions of the same tag, neither of which
+  // the cache size bounds. Once full, remember that an eviction was dropped
+  // instead of silently losing it - drainPendingChainInvalidations() then
+  // clears the whole cache rather than trusting the partial tag list.
   if ((int)_pending_chain_invalidations.size() < MAX_PENDING_CHAIN_INVALIDATIONS) {
     _pending_chain_invalidations.push_back(source_tag);
+  } else {
+    _pending_chain_invalidations_overflowed = true;
   }
   _pending_chain_invalidations_lock.unlock();
 }
 
 void ReferenceChainTracker::drainPendingChainInvalidations() {
   std::vector<jlong> pending;
+  bool overflowed;
   {
     _pending_chain_invalidations_lock.lock();
     pending.swap(_pending_chain_invalidations);
+    overflowed = _pending_chain_invalidations_overflowed;
+    _pending_chain_invalidations_overflowed = false;
     // swap() just handed our reserved buffer to the local `pending`, leaving
     // _pending_chain_invalidations with pending's old (empty) buffer. Restore
     // the reserved capacity now, under the lock, so the next
@@ -537,6 +544,15 @@ void ReferenceChainTracker::drainPendingChainInvalidations() {
     // allocating there.
     _pending_chain_invalidations.reserve(MAX_PENDING_CHAIN_INVALIDATIONS);
     _pending_chain_invalidations_lock.unlock();
+  }
+  if (overflowed) {
+    // The pending list could not hold every eviction owed this pass; a
+    // partial invalidation would let a stale cached chain survive with its
+    // search generation still matching. Clear the whole cache instead -
+    // this runs outside the heap walk, same as the targeted path below.
+    ExclusiveLockGuard guard(&_resolved_chains_lock);
+    _resolved_chains.clear();
+    return;
   }
   if (!pending.empty()) {
     invalidateResolvedChains(pending);
