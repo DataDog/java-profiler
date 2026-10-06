@@ -15,6 +15,7 @@
 #include "symbols.h"
 
 #include <algorithm>
+#include <assert.h>
 #include <dlfcn.h>
 #include <link.h>
 #include <mutex>
@@ -46,7 +47,15 @@ static bool has_entry_for(const PatchEntry* entries, int size, CodeCache* lib) {
 
 void LibraryPatcher::add_live_candidate(CodeCache* lib, int tag) {
   // Libraries without a known image base never had their imports parsed.
-  if (lib->imageBase() == nullptr || _live_count >= MAX_NATIVE_LIBS) return;
+  if (lib->imageBase() == nullptr) return;
+  // Every caller adds at most one candidate per CodeCache, and there are at
+  // most MAX_NATIVE_LIBS of them. unpatch_socket_functions() adds one per run
+  // of a library's entries, and a library has a single run: its slots are
+  // appended in one patch_socket_slots() call, and a later pass adds none,
+  // since its remaining slots were skipped as already present or because the
+  // table was full, which it stays until the entries are cleared.
+  assert(_live_count < MAX_NATIVE_LIBS && "more live candidates than libraries");
+  if (_live_count >= MAX_NATIVE_LIBS) return;
   _live_refs[_live_count++] = {(uintptr_t)lib->imageBase(), lib, tag};
 }
 

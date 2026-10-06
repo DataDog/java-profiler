@@ -63,8 +63,10 @@ private:
 
   static void add_live_candidate(CodeCache* lib, int tag);
   // Calls visit(lib, tag) for every candidate whose library is still loaded,
-  // then clears the candidates. Every write through a saved GOT slot must go
-  // through here: patched libraries are not pinned and can be dlclose()d.
+  // then clears the candidates. Every write LibraryPatcher makes through a
+  // saved GOT slot must go through here: patched libraries are not pinned and
+  // can be dlclose()d. (MallocHooker patches without it: it pins each library
+  // with UnloadProtection while writing to it, and never restores.)
   static void visit_live_libraries(LiveLibraryVisitor visit);
   static int visit_loaded_object(struct dl_phdr_info* info, size_t size, void* data);
   static bool needs_socket_patch(CodeCache* lib);

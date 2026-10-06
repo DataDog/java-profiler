@@ -1,25 +1,14 @@
 /*
- * Copyright 2026 Datadog, Inc
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
-// Regression tests for PROF-16135: LibraryPatcher keeps raw GOT-slot addresses
-// of patched DSOs (and CodeCacheArray never drops a CodeCache), but nothing
-// pins those DSOs. Once a patched DSO is dlclose()d and unmapped, restoring the
-// hooks on stop, or re-installing them on the next start, must not write
-// through the stale address: that is a SIGSEGV if the range is unmapped and
-// silent corruption if something else reused it.
+// LibraryPatcher keeps raw GOT-slot addresses of patched DSOs (and
+// CodeCacheArray never drops a CodeCache), but nothing pins those DSOs. Once a
+// patched DSO is dlclose()d and unmapped, restoring the hooks on stop, or
+// re-installing them on the next start, must not write through the stale
+// address: that is a SIGSEGV if the range is unmapped and silent corruption if
+// something else reused it.
 
 #ifdef __linux__
 
@@ -63,6 +52,7 @@ enum ChildExit {
   CHILD_SLOT_NOT_HOOKED = 14,
   CHILD_NOT_RESTORED = 15,  // the DSO is mapped but unpatching did not restore its slot
   CHILD_NO_FINGERPRINT = 16,
+  CHILD_SAME_FINGERPRINT = 17,  // two different builds got the same fingerprint
 };
 
 const unsigned char SENTINEL = 0xA5;
@@ -218,6 +208,7 @@ void runInChild(Scenario scenario) {
   ASSERT_NE(code, CHILD_NOT_RESTORED) << "DSO is still mapped but its slot was not restored";
   ASSERT_NE(code, CHILD_SLOT_NOT_HOOKED) << "patching did not hook the loaded DSO";
   ASSERT_NE(code, CHILD_NO_FINGERPRINT) << "the test DSO's CodeCache has no image fingerprint";
+  ASSERT_NE(code, CHILD_SAME_FINGERPRINT) << "builds differing in their build-id have the same fingerprint";
   ASSERT_EQ(code, CHILD_OK) << "child precondition failed with exit code " << code;
 }
 
@@ -344,17 +335,24 @@ INSTANTIATE_TEST_SUITE_P(PatchKinds, LibraryPatcherUnloadTest,
                            return std::string(info.param == &SOCKET ? "Socket" : "PthreadCreate");
                          });
 
+// Exits the child with code after removing the temporary file at path.
+[[noreturn]] static void exitRemoving(const char* path, int code) {
+  unlink(path);
+  _exit(code);
+}
+
 // Copies the test DSO to a fresh temporary file and returns its path in
 // path_out. Exits the child on failure.
 static void copyLibToTemp(char* path_out, size_t size) {
   snprintf(path_out, size, "/tmp/libpatchtarget-XXXXXX.so");
   int out = mkstemps(path_out, 3);
+  if (out < 0) _exit(CHILD_DLOPEN_FAILED);
   int in = open(g_lib_path, O_RDONLY);
-  if (out < 0 || in < 0) _exit(CHILD_DLOPEN_FAILED);
+  if (in < 0) exitRemoving(path_out, CHILD_DLOPEN_FAILED);
   char buf[8192];
   ssize_t n;
   while ((n = read(in, buf, sizeof(buf))) > 0) {
-    if (write(out, buf, n) != n) _exit(CHILD_DLOPEN_FAILED);
+    if (write(out, buf, n) != n) exitRemoving(path_out, CHILD_DLOPEN_FAILED);
   }
   close(in);
   close(out);
@@ -373,16 +371,16 @@ static LoadedLib loadUnlinkedLib(bool unlink_before_parse, LoadName load_name) {
   char name[96];
   if (load_name == BY_RELATIVE_PATH) {
     snprintf(name, sizeof(name), "./%s", strrchr(path, '/') + 1);
-    if (chdir("/tmp") != 0) _exit(CHILD_DLOPEN_FAILED);
+    if (chdir("/tmp") != 0) exitRemoving(path, CHILD_DLOPEN_FAILED);
   } else if (load_name == BY_SYMLINK) {
     snprintf(name, sizeof(name), "%s.link.so", path);
-    if (symlink(path, name) != 0) _exit(CHILD_DLOPEN_FAILED);
+    if (symlink(path, name) != 0) exitRemoving(path, CHILD_DLOPEN_FAILED);
   } else {
     snprintf(name, sizeof(name), "%s", path);
   }
   void* handle = dlopen(name, RTLD_NOW);
   if (load_name == BY_SYMLINK) unlink(name);
-  if (handle == nullptr) _exit(CHILD_DLOPEN_FAILED);
+  if (handle == nullptr) exitRemoving(path, CHILD_DLOPEN_FAILED);
   if (unlink_before_parse) unlink(path);
   Libraries::instance()->updateSymbols(false);
   if (!unlink_before_parse) unlink(path);
@@ -394,7 +392,8 @@ static LoadedLib loadUnlinkedLib(bool unlink_before_parse, LoadName load_name) {
 }
 
 // The hooks of an unlinked library must still be installed and restored: the
-// file identity check cannot stat() the file any more and has to go by path.
+// loader's name no longer resolves to the file, so only the image fingerprint
+// identifies it.
 static void patchAndRestoreUnlinkedLibrary(bool unlink_before_parse, LoadName load_name) {
   LoadedLib lib = loadUnlinkedLib(unlink_before_parse, load_name);
   patchAndVerify(SOCKET, lib);
@@ -555,7 +554,7 @@ TEST_F(LibraryPatcherIdentityTest, FingerprintCoversBuildId) {
         || memcmp(queries[0].phdrs, queries[1].phdrs, queries[0].phnum * sizeof(ElfW(Phdr))) != 0) {
       _exit(CHILD_SKIP);  // the toolchain laid the two builds out differently
     }
-    if (queries[0].fingerprint == queries[1].fingerprint) _exit(CHILD_CORRUPTED);
+    if (queries[0].fingerprint == queries[1].fingerprint) _exit(CHILD_SAME_FINGERPRINT);
   });
 }
 

@@ -148,9 +148,9 @@ TEST_F(LibraryPatcherPatching, LeavesItsOwnPthreadCreateSlotUntouched) {
 // stopped working: an identical cache that is not ours does get its slot
 // redirected to the hook.
 //
-// Unpatching writes only to libraries it can verify are still loaded
-// (PROF-16135). This cache has no image base and backs no loaded object, so
-// its entry is dropped without a write. Restoring a loaded library is covered
+// Unpatching writes only to libraries it can verify are still loaded. This
+// cache has no image base and backs no loaded object, so its entry is dropped
+// without a write. Restoring a loaded library is covered
 // by libraryPatcherUnload_ut.
 TEST_F(LibraryPatcherPatching, StillPatchesForeignPthreadCreateSlot) {
   void* const original = (void*)&fake_original_pthread_create;
