@@ -89,8 +89,9 @@ void LibraryPatcher::visit_live_libraries(LiveLibraryVisitor visit) {
 // base and the same image fingerprint, or the same backing file for a cache
 // without a fingerprint. The identity check rejects a stale CodeCache whose
 // library was unloaded and replaced by a different one at the same address.
-// A reload of the same build is accepted: its GOT slots are at the same
-// addresses, holding the same kind of values.
+// An image with the same fingerprint at the same base is accepted, a reload
+// of the same build in particular: the fingerprint covers the import layout,
+// so each saved slot address holds the same import as when it was saved.
 int LibraryPatcher::visit_loaded_object(struct dl_phdr_info* info, size_t size, void* data) {
   uintptr_t min_vaddr = UINTPTR_MAX;
   for (int i = 0; i < info->dlpi_phnum; i++) {
@@ -122,8 +123,7 @@ int LibraryPatcher::visit_loaded_object(struct dl_phdr_info* info, size_t size, 
     bool same_image = main_executable;
     if (!same_image && ref->_lib->imageFingerprint() != 0) {
       if (fingerprint == 0) {
-        fingerprint = Symbols::imageFingerprint(info->dlpi_phdr, info->dlpi_phnum,
-                                                info->dlpi_addr, 0, UINTPTR_MAX);
+        fingerprint = Symbols::imageFingerprint(info->dlpi_phdr, info->dlpi_phnum, info->dlpi_addr);
       }
       same_image = ref->_lib->imageFingerprint() == fingerprint;
     } else if (!same_image) {

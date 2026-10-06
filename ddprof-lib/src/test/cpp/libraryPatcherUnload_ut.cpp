@@ -88,14 +88,14 @@ struct LoadedLib {
   void* orig;   // the slot's value before patching
 };
 
-// Skips unless dlclose() really unmaps the test DSO when nothing else holds
-// it (it never does on musl). Runs before the profiler sees the DSO, so a fix
-// that pins patched DSOs cannot turn this into a skip.
-void requireUnloadableEnvironment() {
-  void* handle = dlopen(g_lib_path, RTLD_NOW);
+// Skips unless dlclose() really unmaps the test DSO at path when nothing else
+// holds it (it never does on musl). Runs before the profiler sees the DSO, so
+// a fix that pins patched DSOs cannot turn this into a skip.
+void requireUnloadableEnvironment(const char* path = g_lib_path) {
+  void* handle = dlopen(path, RTLD_NOW);
   if (handle == nullptr) _exit(CHILD_DLOPEN_FAILED);
   dlclose(handle);
-  if (dlopen(g_lib_path, RTLD_NOLOAD | RTLD_LAZY) != nullptr) _exit(CHILD_SKIP);
+  if (dlopen(path, RTLD_NOLOAD | RTLD_LAZY) != nullptr) _exit(CHILD_SKIP);
 }
 
 // Loads the test DSO, registers it with Libraries and returns its GOT slot
@@ -126,9 +126,9 @@ uintptr_t pageOf(void** slot) {
 // unmapped, false if it stayed loaded, i.e. the profiler pinned it (the
 // environment check already showed nothing else would). In the latter case a
 // reference is kept so the slot stays readable.
-bool unload(void* handle, void** slot) {
+bool unload(void* handle, void** slot, const char* path = g_lib_path) {
   dlclose(handle);
-  if (dlopen(g_lib_path, RTLD_NOLOAD | RTLD_LAZY) != nullptr) return false;
+  if (dlopen(path, RTLD_NOLOAD | RTLD_LAZY) != nullptr) return false;
   // msync() fails with ENOMEM iff the range is not mapped.
   if (msync((void*)pageOf(slot), sysconf(_SC_PAGESIZE), MS_ASYNC) == 0 || errno != ENOMEM) {
     _exit(CHILD_SKIP);  // already reused by an unrelated mapping
@@ -521,40 +521,116 @@ struct FingerprintQuery {
   u64 fingerprint;
   const ElfW(Phdr)* phdrs;
   int phnum;
+  uintptr_t base;
 };
 
 static int fingerprintLoadedObject(struct dl_phdr_info* info, size_t, void* data) {
   FingerprintQuery* query = (FingerprintQuery*)data;
   size_t len = strlen(info->dlpi_name), suffix_len = strlen(query->suffix);
   if (len < suffix_len || strcmp(info->dlpi_name + len - suffix_len, query->suffix) != 0) return 0;
-  query->fingerprint = Symbols::imageFingerprint(info->dlpi_phdr, info->dlpi_phnum,
-                                                 info->dlpi_addr, 0, UINTPTR_MAX);
+  query->fingerprint = Symbols::imageFingerprint(info->dlpi_phdr, info->dlpi_phnum, info->dlpi_addr);
   query->phdrs = info->dlpi_phdr;
   query->phnum = info->dlpi_phnum;
+  query->base = info->dlpi_addr;
   return 1;
+}
+
+// Fills query from the loaded object whose name ends in query.suffix.
+static void queryLoaded(FingerprintQuery& query) {
+  if (dl_iterate_phdr(fingerprintLoadedObject, &query) != 1) _exit(CHILD_LIB_NOT_FOUND);
+  if (query.fingerprint == 0) _exit(CHILD_NO_FINGERPRINT);
+}
+
+// The path of a test DSO built next to g_lib_path; suffix starts with '/'.
+static void testLibPath(char* path, size_t size, const char* suffix) {
+  snprintf(path, size, "%s", g_lib_path);
+  *strrchr(path, '/') = '\0';
+  strncat(path, suffix, size - strlen(path) - 1);
+}
+
+// Loads the test DSOs ending in suffix_a and suffix_b, both at once, and
+// returns their fingerprints. Skips unless their program headers are
+// identical, which is what makes the two hard to tell apart.
+static void fingerprintTwins(const char* suffix_a, const char* suffix_b, u64* fp_a, u64* fp_b) {
+  FingerprintQuery queries[] = {{suffix_a, 0, nullptr, 0, 0}, {suffix_b, 0, nullptr, 0, 0}};
+  for (FingerprintQuery& query : queries) {
+    char path[PATH_MAX];
+    testLibPath(path, sizeof(path), query.suffix);
+    if (dlopen(path, RTLD_NOW) == nullptr) _exit(CHILD_DLOPEN_FAILED);
+    queryLoaded(query);
+  }
+  if (queries[0].phnum != queries[1].phnum
+      || memcmp(queries[0].phdrs, queries[1].phdrs, queries[0].phnum * sizeof(ElfW(Phdr))) != 0) {
+    _exit(CHILD_SKIP);  // the toolchain laid the two builds out differently
+  }
+  *fp_a = queries[0].fingerprint;
+  *fp_b = queries[1].fingerprint;
 }
 
 // Two builds that differ only in their build-id have identical program
 // headers; the fingerprint must still tell them apart, through the notes.
 TEST_F(LibraryPatcherIdentityTest, FingerprintCoversBuildId) {
   runInChild([]() {
-    char dir[PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s", g_lib_path);
-    *strrchr(dir, '/') = '\0';
-    FingerprintQuery queries[] = {{"/libbuildid-a.so", 0, nullptr, 0},
-                                  {"/libbuildid-b.so", 0, nullptr, 0}};
-    for (FingerprintQuery& query : queries) {
-      char path[PATH_MAX + 32];
-      snprintf(path, sizeof(path), "%s%s", dir, query.suffix);
-      if (dlopen(path, RTLD_NOW) == nullptr) _exit(CHILD_DLOPEN_FAILED);
-      if (dl_iterate_phdr(fingerprintLoadedObject, &query) != 1) _exit(CHILD_LIB_NOT_FOUND);
-      if (query.fingerprint == 0) _exit(CHILD_NO_FINGERPRINT);
+    u64 a, b;
+    fingerprintTwins("/libbuildid-a.so", "/libbuildid-b.so", &a, &b);
+    if (a == b) _exit(CHILD_SAME_FINGERPRINT);
+  });
+}
+
+// Two builds without a build-id that differ only in importing write() or
+// read(): identical program headers and no notes to tell them apart. The
+// fingerprint must still differ, through the import layout.
+TEST_F(LibraryPatcherIdentityTest, FingerprintCoversImports) {
+  runInChild([]() {
+    u64 write_fp, read_fp;
+    fingerprintTwins("/libnoid-write.so", "/libnoid-read.so", &write_fp, &read_fp);
+    if (write_fp == read_fp) _exit(CHILD_SAME_FINGERPRINT);
+  });
+}
+
+// The patched DSO is unloaded and replaced, at the same base, by a build
+// without a build-id whose program headers are identical but whose GOT slot
+// at the saved address holds read() instead of write(). Stopping must not
+// restore write() into it.
+TEST_F(LibraryPatcherIdentityTest, UnpatchDoesNotWriteIntoReplacementWithSameLayout) {
+  runInChild([]() {
+    char write_path[PATH_MAX], read_path[PATH_MAX];
+    testLibPath(write_path, sizeof(write_path), "/libnoid-write.so");
+    testLibPath(read_path, sizeof(read_path), "/libnoid-read.so");
+    requireUnloadableEnvironment(write_path);
+
+    void* handle = dlopen(write_path, RTLD_NOW);
+    if (handle == nullptr) _exit(CHILD_DLOPEN_FAILED);
+    Libraries::instance()->updateSymbols(false);
+    CodeCache* old_cache = Libraries::instance()->findLibraryByName("libnoid-write");
+    if (old_cache == nullptr) _exit(CHILD_LIB_NOT_FOUND);
+    void** slot = old_cache->findImport(im_write);
+    if (slot == nullptr) _exit(CHILD_NO_IMPORT);
+    FingerprintQuery old_image = {"/libnoid-write.so", 0, nullptr, 0, 0};
+    queryLoaded(old_image);
+    ElfW(Phdr) old_phdrs[16];
+    if (old_image.phnum > 16) _exit(CHILD_SKIP);
+    memcpy(old_phdrs, old_image.phdrs, old_image.phnum * sizeof(ElfW(Phdr)));
+
+    LibraryPatcher::patch_socket_functions();
+    if (*slot != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
+    if (!unload(handle, slot, write_path)) _exit(CHILD_SKIP);  // pinned: no replacement possible
+
+    if (dlopen(read_path, RTLD_NOW) == nullptr) _exit(CHILD_DLOPEN_FAILED);
+    FingerprintQuery new_image = {"/libnoid-read.so", 0, nullptr, 0, 0};
+    queryLoaded(new_image);
+    if (new_image.base != old_image.base || new_image.phnum != old_image.phnum
+        || memcmp(new_image.phdrs, old_phdrs, new_image.phnum * sizeof(ElfW(Phdr))) != 0) {
+      _exit(CHILD_SKIP);  // not the same layout at the same base
     }
-    if (queries[0].phnum != queries[1].phnum
-        || memcmp(queries[0].phdrs, queries[1].phdrs, queries[0].phnum * sizeof(ElfW(Phdr))) != 0) {
-      _exit(CHILD_SKIP);  // the toolchain laid the two builds out differently
-    }
-    if (queries[0].fingerprint == queries[1].fingerprint) _exit(CHILD_SAME_FINGERPRINT);
+    Libraries::instance()->updateSymbols(false);
+    CodeCache* new_cache = Libraries::instance()->findLibraryByName("libnoid-read");
+    if (new_cache == nullptr) _exit(CHILD_LIB_NOT_FOUND);
+    if (new_cache->peekImport(im_read) != slot) _exit(CHILD_SKIP);  // GOTs laid out differently
+
+    void* before = *slot;
+    LibraryPatcher::unpatch_socket_functions();
+    if (*slot != before) _exit(CHILD_CORRUPTED);
   });
 }
 
