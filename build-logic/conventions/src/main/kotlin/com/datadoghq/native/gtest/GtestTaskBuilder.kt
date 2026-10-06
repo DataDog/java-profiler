@@ -113,7 +113,12 @@ class GtestTaskBuilder(
             this.compilerArgs.set(compilerArgs)
 
             // When a shared library compile task is provided, library sources are
-            // compiled once there. Only compile the test file itself here.
+            // compiled once there. Only compile the test file itself here. The
+            // sibling .inc and .h files are declared as task INPUTS (not sources -
+            // they cannot compile standalone): test .cpp files #include them by a
+            // path relative to the test directory, which is not an include dir, and
+            // without this an .inc- or .h-only edit leaves the test binary stale
+            // (the change silently never runs).
             if (sharedLibCompileTask != null) {
                 sources.from(testFile)
             } else {
@@ -122,6 +127,7 @@ class GtestTaskBuilder(
                     testFile
                 )
             }
+            inputs.files(project.fileTree(testFile.parentFile) { include("*.inc", "*.h") })
             includes.from(includeFiles)
             objectFileDir.set(objDir)
         }
