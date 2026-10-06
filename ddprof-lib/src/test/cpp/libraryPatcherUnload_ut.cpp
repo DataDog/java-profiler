@@ -21,11 +21,14 @@
 #include "os.h"
 #include "symbols.h"
 
+#include <atomic>
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <link.h>
+#include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -53,6 +56,8 @@ enum ChildExit {
   CHILD_NOT_RESTORED = 15,  // the DSO is mapped but unpatching did not restore its slot
   CHILD_NO_FINGERPRINT = 16,
   CHILD_SAME_FINGERPRINT = 17,  // two different builds got the same fingerprint
+  CHILD_DEADLOCK = 18,          // patching threads still blocked when the alarm fired
+  CHILD_THREAD_FAILED = 19,
 };
 
 const unsigned char SENTINEL = 0xA5;
@@ -208,7 +213,8 @@ void runInChild(Scenario scenario) {
   ASSERT_NE(code, CHILD_NOT_RESTORED) << "DSO is still mapped but its slot was not restored";
   ASSERT_NE(code, CHILD_SLOT_NOT_HOOKED) << "patching did not hook the loaded DSO";
   ASSERT_NE(code, CHILD_NO_FINGERPRINT) << "the test DSO's CodeCache has no image fingerprint";
-  ASSERT_NE(code, CHILD_SAME_FINGERPRINT) << "builds differing in their build-id have the same fingerprint";
+  ASSERT_NE(code, CHILD_SAME_FINGERPRINT) << "two different builds have the same fingerprint";
+  ASSERT_NE(code, CHILD_DEADLOCK) << "patching deadlocked against the loader's dl_load_write_lock";
   ASSERT_EQ(code, CHILD_OK) << "child precondition failed with exit code " << code;
 }
 
@@ -233,6 +239,11 @@ class LibraryPatcherUnloadTest : public ::testing::TestWithParam<const PatchKind
 };
 
 class LibraryPatcherIdentityTest : public ::testing::Test {
+ protected:
+  void SetUp() override { resolveLibPath(); }
+};
+
+class LibraryPatcherLockOrderTest : public ::testing::Test {
  protected:
   void SetUp() override { resolveLibPath(); }
 };
@@ -631,6 +642,43 @@ TEST_F(LibraryPatcherIdentityTest, UnpatchDoesNotWriteIntoReplacementWithSameLay
     void* before = *slot;
     LibraryPatcher::unpatch_socket_functions();
     if (*slot != before) _exit(CHILD_CORRUPTED);
+  });
+}
+
+// Set by the stopping thread just before it calls unpatch_socket_functions().
+std::atomic<bool> g_stopper_started{false};
+
+static void* stopSocketPatching(void*) {
+  g_stopper_started.store(true);
+  LibraryPatcher::unpatch_socket_functions();
+  return nullptr;
+}
+
+// A foreign dl_iterate_phdr() callback, holding dl_load_write_lock, that
+// patches as a refresh does: loading a library through the JVM from such a
+// callback reaches Profiler::dlopen_hook(), which refreshes synchronously.
+// Meanwhile another thread stops socket patching and waits for the same lock.
+static int patchInsideForeignWalk(struct dl_phdr_info*, size_t, void* data) {
+  pthread_t* stopper = (pthread_t*)data;
+  if (pthread_create(stopper, nullptr, stopSocketPatching, nullptr) != 0) _exit(CHILD_THREAD_FAILED);
+  while (!g_stopper_started.load()) sched_yield();
+  usleep(200 * 1000);  // let the stopper block on dl_load_write_lock
+  LibraryPatcher::patch_socket_functions();
+  return 1;
+}
+
+// Patching from inside a foreign walk must not deadlock with a concurrent stop:
+// the stopper must not hold the patch lock while it waits for the loader's lock.
+TEST_F(LibraryPatcherLockOrderTest, PatchInsideForeignWalkDoesNotDeadlockWithStop) {
+  runInChild([]() {
+    LoadedLib lib = loadLib(SOCKET);
+    patchAndVerify(SOCKET, lib);
+    signal(SIGALRM, [](int) { _exit(CHILD_DEADLOCK); });
+    alarm(10);
+    pthread_t stopper;
+    dl_iterate_phdr(patchInsideForeignWalk, &stopper);
+    pthread_join(stopper, nullptr);
+    alarm(0);
   });
 }
 

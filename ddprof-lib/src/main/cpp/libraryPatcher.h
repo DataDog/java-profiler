@@ -23,13 +23,16 @@ typedef struct _patchEntry {
   void*  _func;
 } PatchEntry;
 
-// A library to visit with LibraryPatcher::visit_live_libraries()
+// A library to visit with a LibraryPatcher::LiveLibraryWalk
 typedef struct _libraryRef {
   uintptr_t  _base;  // lib->imageBase(), the sort key
   CodeCache* _lib;
   int        _tag;   // caller-defined, passed back to the visitor
 } LibraryRef;
 
+// Adds a walk's candidates with LibraryPatcher::add_live_candidate(); ctx is
+// the context the walk was given.
+typedef void (*LiveLibraryCollector)(void* ctx);
 typedef void (*LiveLibraryVisitor)(CodeCache* lib, int tag);
 
 class LibraryPatcher {
@@ -56,18 +59,29 @@ private:
   static PatchEntry  _socket_entries[4 * MAX_NATIVE_LIBS];
   static int         _socket_size;
 
-  // Candidates for visit_live_libraries(), filled by add_live_candidate().
+  // Candidates of the current LiveLibraryWalk, filled by add_live_candidate().
   // Guarded by _lock.
   static LibraryRef  _live_refs[MAX_NATIVE_LIBS];
   static int         _live_count;
 
+  // Takes _lock, which it holds until destroyed, then calls collect(ctx) and
+  // visit(lib, tag) for every candidate whose library is still loaded, and
+  // clears the candidates. On glibc it does so inside a dl_iterate_phdr()
+  // walk, so _lock is always taken after the loader's dl_load_write_lock (see
+  // libraryPatcher_linux.cpp). All of LibraryPatcher's work under _lock runs
+  // in a walk, and every write it makes through a saved GOT slot comes from
+  // a visit: patched libraries are not pinned and can be dlclose()d.
+  // (MallocHooker patches without a walk: it pins each library with
+  // UnloadProtection while writing to it, and never restores.)
+  class LiveLibraryWalk {
+  public:
+    LiveLibraryWalk(LiveLibraryCollector collect, void* ctx, LiveLibraryVisitor visit);
+    ~LiveLibraryWalk() { _lock.unlock(); }
+    LiveLibraryWalk(const LiveLibraryWalk&) = delete;
+    LiveLibraryWalk& operator=(const LiveLibraryWalk&) = delete;
+  };
+
   static void add_live_candidate(CodeCache* lib, int tag);
-  // Calls visit(lib, tag) for every candidate whose library is still loaded,
-  // then clears the candidates. Every write LibraryPatcher makes through a
-  // saved GOT slot must go through here: patched libraries are not pinned and
-  // can be dlclose()d. (MallocHooker patches without it: it pins each library
-  // with UnloadProtection while writing to it, and never restores.)
-  static void visit_live_libraries(LiveLibraryVisitor visit);
   static int visit_loaded_object(struct dl_phdr_info* info, size_t size, void* data);
   static bool needs_socket_patch(CodeCache* lib);
   static void patch_socket_slots(CodeCache* lib);
