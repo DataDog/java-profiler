@@ -62,6 +62,15 @@ constexpr size_t KNUTH_MULTIPLICATIVE_CONSTANT = 0x9e3779b97f4a7c15ULL;
     #define TEST_LOG(fmt, ...) // No-op in non-debug mode
 #endif
 
+// Same gate as assert(): use for state that only assert() reads. Keying it on
+// DEBUG instead would break builds that keep asserts but do not define DEBUG
+// (the gtest release build strips -DNDEBUG without adding -DDEBUG).
+#ifndef NDEBUG
+    #define ASSERT_ONLY(s) s
+#else
+    #define ASSERT_ONLY(s)
+#endif
+
 #ifdef __FAULT_INJECTION__
     #define FAULT_INJECTION_ONLY(s) s
 #else

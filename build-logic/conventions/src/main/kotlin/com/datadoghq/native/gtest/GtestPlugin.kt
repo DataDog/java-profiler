@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 
 package com.datadoghq.native.gtest
 
@@ -200,6 +205,11 @@ class GtestPlugin : Plugin<Project> {
         val buildGtestConfigTask = project.tasks.register("buildGtest${config.capitalizedName()}") {
             group = "build"
             description = "Compile and link all Google Tests for the ${config.name} build (no run)"
+            // The binaries load the helper DSOs at run time, and CI runs them
+            // straight from this task's output, so build the DSOs here too.
+            if (PlatformUtils.currentPlatform == Platform.LINUX && extension.buildNativeLibs.get()) {
+                project.tasks.findByName("buildNativeLibs")?.let { dependsOn(it) }
+            }
         }
 
         // Compile all library sources ONCE for this config.  Each test
