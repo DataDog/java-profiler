@@ -56,6 +56,25 @@ TEST(PriorityExpandSetTest, RebuildFromMatchesQueueContents) {
 // invariant. Fills to capacity with DISTINCT tags, then asserts one more
 // insert on a fresh tag terminates (and returns false), and that a
 // duplicate of an existing member still returns false via the key match.
+TEST(PriorityExpandSetTest, InsertOnFullTableTerminatesWithoutLivelock) {
+    ReferenceChainsTestAccessor::pesClear();
+
+    const int capacity = 1 << 11; // 2048 slots (SLOT_SHIFT == 11)
+    for (int i = 0; i < capacity; i++) {
+        // Distinct tags; once slots start colliding, probing wraps past
+        // the end of the table.
+        ASSERT_TRUE(ReferenceChainsTestAccessor::pesInsert(1000 + (jlong)i * 7919))
+            << "insert must succeed until the table is full (i=" << i << ")";
+    }
+    // Table full: a fresh tag must return false promptly (no hang).
+    EXPECT_FALSE(ReferenceChainsTestAccessor::pesInsert(987654321));
+    // A duplicate of an existing member still returns false via the key
+    // match (found while probing).
+    EXPECT_FALSE(ReferenceChainsTestAccessor::pesInsert(1000));
+    ReferenceChainsTestAccessor::pesClear();
+    EXPECT_FALSE(ReferenceChainsTestAccessor::pesContains(1000));
+}
+
 // ClassTagAllocator (classTagAllocator.h) - the process-wide negative
 // class-object tag allocator shared by ReferenceChainTracker and
 // LivenessTracker. resetForTest() makes each test's minting sequence
@@ -70,25 +89,4 @@ TEST(ClassTagAllocatorTest, MintsStrictlyNegativeStrictlyDecreasingTags) {
     ClassTagAllocator::resetForTest();
     EXPECT_EQ(first, ClassTagAllocator::next())
         << "resetForTest must restart the sequence at the same value";
-}
-
-TEST(PriorityExpandSetTest, InsertOnFullTableTerminatesWithoutLivelock) {
-    ReferenceChainsTestAccessor::pesClear();
-
-    const int capacity = 1 << 11; // 2048 slots (SLOT_SHIFT == 11)
-    for (int i = 0; i < capacity; i++) {
-        // Distinct tags spread by Fibonacci hashing - sequential ints are
-        // the worst case for proving full-table behavior is probe-safe, so
-        // use them deliberately: they land on distinct slots only via the
-        // mix(), exercising the wrap path.
-        ASSERT_TRUE(ReferenceChainsTestAccessor::pesInsert(1000 + (jlong)i * 7919))
-            << "insert must succeed until the table is full (i=" << i << ")";
-    }
-    // Table full: a fresh tag must return false promptly (no hang).
-    EXPECT_FALSE(ReferenceChainsTestAccessor::pesInsert(987654321));
-    // A duplicate of an existing member still returns false via the key
-    // match (found while probing).
-    EXPECT_FALSE(ReferenceChainsTestAccessor::pesInsert(1000));
-    ReferenceChainsTestAccessor::pesClear();
-    EXPECT_FALSE(ReferenceChainsTestAccessor::pesContains(1000));
 }

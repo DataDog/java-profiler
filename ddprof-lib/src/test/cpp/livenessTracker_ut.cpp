@@ -17,9 +17,11 @@
 #include <gtest/gtest.h>
 #include "livenessTracker.h"
 #include "arguments.h"
+#include "counters.h"
 #include "objectSampler.h"
 #include "profiler.h"
 #include "referenceChainsTestAccessors.h"
+#include "vmEntry.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 #include <atomic>
 #include <cstdlib>
@@ -1092,7 +1094,134 @@ public:
 #endif
         return recorded;
     }
+
+    // Sets the two fields admitForTracking()'s volume backstop reads directly,
+    // bypassing track()'s real table-growth path - lets a test drive the
+    // backstop's >= comparison at specific boundary values without actually
+    // filling the tracking table.
+    static void setTableCapsForTest(LivenessTracker *t, int table_size,
+                                     int table_max_cap) {
+        t->_table_size = table_size;
+        t->_table_max_cap = table_max_cap;
+    }
+
+    // Invokes the private cleanup_table() directly - safe to call with
+    // table_size==0 (no survivor loop runs, so no JNI call beyond VM::jni()
+    // itself is made) to isolate the epoch-claim/aging gating this class's
+    // own account_epoch parameter controls.
+    static void callCleanupTableForTest(LivenessTracker *t, bool forced,
+                                         bool allow_resolve, bool account_epoch) {
+        t->cleanup_table(forced, allow_resolve, account_epoch);
+    }
+
+    static void setGcEpochForTest(LivenessTracker *t, u64 epoch) {
+        t->_gc_epoch = epoch;
+    }
+
+    static void setLastGcEpochForTest(LivenessTracker *t, u64 epoch) {
+        t->_last_gc_epoch = epoch;
+    }
+
+    static u64 lastGcEpochForTest(LivenessTracker *t) {
+        return t->_last_gc_epoch;
+    }
 };
+
+// VMTestAccessor is already defined by referenceChainsTestAccessors.h
+// (included above) - reused here as-is. cleanup_table()'s forced path
+// unconditionally calls VM::jni(), which dereferences VM::_vm - NULL by
+// default in this live-JVM-less gtest binary.
+static JNIEnv_ g_cleanup_table_mock_jni_env{};
+
+static jint JNICALL cleanupTableMockGetEnv(JavaVM *, void **penv, jint) {
+    *penv = &g_cleanup_table_mock_jni_env;
+    return 0; // JNI_OK
+}
+
+// Exercises cleanup_table()'s account_epoch parameter (livenessTracker.cpp)
+// directly via the friend accessor above, with an empty tracking table so no
+// survivor-loop JNI call beyond VM::jni() itself is needed.
+class CleanupTableAccountEpochTest : public ::testing::Test {
+protected:
+    JNIInvokeInterface_ vm_tbl{};
+    JavaVM_ mock_vm{};
+    JavaVM *orig_vm = nullptr;
+
+    void SetUp() override {
+        installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
+        orig_vm = VMTestAccessor::getVm();
+        vm_tbl = JNIInvokeInterface_{};
+        vm_tbl.GetEnv = &cleanupTableMockGetEnv;
+        mock_vm.functions = &vm_tbl;
+        VMTestAccessor::setVm(&mock_vm);
+
+        LivenessTracker::instance()->klassPopulationResetForTest();
+        LivenessTracker::instance()->classMapGenerationSetForTest(
+            Profiler::instance()->classMap()->generation());
+        LivenessTrackerTestAccessor::setTableCapsForTest(
+            LivenessTracker::instance(), /*table_size=*/0, /*table_max_cap=*/0);
+    }
+
+    void TearDown() override {
+        VMTestAccessor::setVm(orig_vm);
+        LivenessTrackerTestAccessor::setGcEpochForTest(LivenessTracker::instance(), 0);
+        LivenessTrackerTestAccessor::setLastGcEpochForTest(LivenessTracker::instance(), 0);
+        LivenessTracker::instance()->klassPopulationResetForTest();
+        restoreDefaultSignalHandlers();
+    }
+};
+
+// account_epoch=false (track()'s table-overflow reaper) must not claim the
+// GC epoch even when _gc_epoch is strictly ahead of _last_gc_epoch - the
+// background/GC-callback sweep (account_epoch=true) still needs to see this
+// epoch as unclaimed so it folds the population sample instead of silently
+// losing it.
+TEST_F(CleanupTableAccountEpochTest, AccountEpochFalseSkipsEpochClaim) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 5);
+    ASSERT_EQ(0u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false, /*account_epoch=*/false);
+    EXPECT_EQ(0u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker))
+        << "account_epoch=false must not claim the GC epoch";
+
+    // Repeated calls stay a no-op for epoch claiming.
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false, /*account_epoch=*/false);
+    EXPECT_EQ(0u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+}
+
+// account_epoch=true (the default; the epoch-owning sweep) claims a strictly
+// newer _gc_epoch - the behavior account_epoch=false above must NOT exhibit.
+TEST_F(CleanupTableAccountEpochTest, AccountEpochTrueClaimsEpoch) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 5);
+    ASSERT_EQ(0u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false, /*account_epoch=*/true);
+    EXPECT_EQ(5u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker))
+        << "account_epoch=true must claim the newer GC epoch";
+}
+
+// A pure-reaper sweep (account_epoch=false) followed by the real epoch-owner
+// sweep (account_epoch=true) for the SAME epoch still claims it exactly
+// once - confirming account_epoch=false left the epoch genuinely unclaimed
+// rather than merely skipping the counted side effects of a claim it still
+// made.
+TEST_F(CleanupTableAccountEpochTest, EpochOwnerStillClaimsAfterReaperSweep) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 7);
+
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false, /*account_epoch=*/false);
+    ASSERT_EQ(0u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false, /*account_epoch=*/true);
+    EXPECT_EQ(7u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+}
 
 class SecondsToOOMTest : public ::testing::Test {
 protected:
@@ -1716,6 +1845,59 @@ TEST_F(AdmissionBoostTest, ZeroCandidatePollClearsWatchedSet) {
     tracker->noteSelectedCandidates(nullptr, 0);
     EXPECT_EQ(tracker->watchedTidCountForTest(), 0);
     EXPECT_FALSE(tracker->admitForTrackingForTest(77));
+}
+
+// Volume backstop (admitForTracking()'s "Volume backstop for the urgency
+// boost" comment, livenessTracker.cpp): once the tracking table reaches its
+// high-water mark, urgency stops admitting at 100% and falls back to the
+// watched-tid-only boost, with the degradation observable via the
+// LIVENESS_URGENT_BOOST_* counters.
+TEST_F(AdmissionBoostTest, VolumeBackstopCapsUrgencyAdmission) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setUrgentTracking(true);
+
+    // _table_max_cap == 0 is the "backstop disabled" sentinel: urgency keeps
+    // admitting at 100% no matter how large table_size is.
+    LivenessTrackerTestAccessor::setTableCapsForTest(tracker, /*table_size=*/999,
+                                                       /*table_max_cap=*/0);
+    long long admits = Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS);
+    long long backed_off = Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF);
+    EXPECT_TRUE(tracker->admitForTrackingForTest(1));
+    EXPECT_EQ(admits + 1, Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS));
+    EXPECT_EQ(backed_off, Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF));
+
+    // table_size strictly below max_cap: still admits.
+    LivenessTrackerTestAccessor::setTableCapsForTest(tracker, /*table_size=*/5,
+                                                       /*table_max_cap=*/10);
+    admits = Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS);
+    EXPECT_TRUE(tracker->admitForTrackingForTest(2));
+    EXPECT_EQ(admits + 1, Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS));
+    EXPECT_EQ(backed_off, Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF));
+    admits = Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS);
+
+    // table_size == max_cap (the >= boundary): backs off and falls through to
+    // the unboosted ratio gate, which admissionResetForTest()'s ratio=0
+    // deterministically rejects for an unwatched tid.
+    LivenessTrackerTestAccessor::setTableCapsForTest(tracker, /*table_size=*/10,
+                                                       /*table_max_cap=*/10);
+    EXPECT_FALSE(tracker->admitForTrackingForTest(3));
+    EXPECT_EQ(admits, Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS));
+    EXPECT_EQ(backed_off + 1, Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF));
+
+    // table_size above max_cap: also backs off.
+    LivenessTrackerTestAccessor::setTableCapsForTest(tracker, /*table_size=*/11,
+                                                       /*table_max_cap=*/10);
+    EXPECT_FALSE(tracker->admitForTrackingForTest(4));
+    EXPECT_EQ(backed_off + 2, Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF));
+
+    // The backstop only gates the urgency path - a watched tid is still
+    // admitted via the separate, unconditional watched-tid boost below it.
+    KlassCandidate kc;
+    fillCandidate(&kc, 5);
+    tracker->noteSelectedCandidates(&kc, 1);
+    EXPECT_TRUE(tracker->admitForTrackingForTest(5));
+
+    LivenessTrackerTestAccessor::setTableCapsForTest(tracker, 0, 0);
 }
 
 // ---------------------------------------------------------------------------

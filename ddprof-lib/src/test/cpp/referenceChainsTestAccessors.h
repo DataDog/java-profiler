@@ -242,14 +242,6 @@ public:
             source_tag, std::move(event), source_tag_val, source_search_ns);
     }
 
-    // HEAD's collapsed form - what the inline (pre-merge) ut accessor
-    // exposed; kept so both call shapes compile against this one class.
-    static void cacheChain(jlong source_tag, ReferenceChainEvent event,
-                           u64 source_search_ns) {
-        cacheChain(source_tag, std::move(event), source_tag, source_search_ns);
-    }
-
-
     static int maxResolvedChains() {
         return ReferenceChainTracker::MAX_RESOLVED_CHAINS;
     }
