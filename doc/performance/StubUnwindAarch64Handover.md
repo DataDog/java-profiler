@@ -79,9 +79,12 @@ variations would explain the bimodal fast/slow jobs. This was not checked on
 CI. The ~600k deep samples then take minutes to parse in
 `JfrEvents.reduce` / `JfrEvent.getStackTraceString` (jafar `Values.resolvedDeep`).
 
-The test now uses `wall=1ms` for debug builds as it already did for ASan:
-10/10 forced reruns passed with retries disabled, 0.9 s (`vm`) / 0.27 s (`vmx`)
-per attempt, ~110-130 precomputed-info hits each. `@RetryTest` was lowered from
+The test now uses `wall=1ms` for debug builds as it already did for ASan, and
+runs 10x the workload rounds there so that the number of samples per stub stays
+the same. 1 ms with the original 40 rounds was too sparse: a musl amd64 JDK 21
+debug job saw no itable-stub sample in either attempt. With 400 rounds, 5/5
+forced reruns passed locally with no retries, at 2.7 s (`vm`) / 1.9 s (`vmx`)
+per attempt and ~1,250 precomputed-info hits each. `@RetryTest` was lowered from
 10 to 2: one retry absorbs sampling noise in the stub-presence assertions, while
 an unwind regression (which reproduced on nearly every attempt) still fails.
 
