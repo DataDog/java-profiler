@@ -512,14 +512,8 @@ void ReferenceChainTracker::invalidateResolvedChains(
 
 void ReferenceChainTracker::deferResolvedChainInvalidation(jlong source_tag) {
   _pending_chain_invalidations_lock.lock();
-  // _resolved_chains (the eviction target) can never hold more than
-  // MAX_RESOLVED_CHAINS *distinct* live entries, but the pending vector can
-  // still see more than MAX_PENDING_CHAIN_INVALIDATIONS pushes within one
-  // walk: callbacks enqueue uncached tags (never evicted, so never drained
-  // out of the way) and repeat evictions of the same tag, neither of which
-  // the cache size bounds. Once full, remember that an eviction was dropped
-  // instead of silently losing it - drainPendingChainInvalidations() then
-  // clears the whole cache rather than trusting the partial tag list.
+  // Uncached and repeated tags can still fill the vector within one walk.
+  // Don't drop them silently; flag the overflow so the drain clears it all.
   if ((int)_pending_chain_invalidations.size() < MAX_PENDING_CHAIN_INVALIDATIONS) {
     _pending_chain_invalidations.push_back(source_tag);
   } else {
@@ -536,20 +530,14 @@ void ReferenceChainTracker::drainPendingChainInvalidations() {
     pending.swap(_pending_chain_invalidations);
     overflowed = _pending_chain_invalidations_overflowed;
     _pending_chain_invalidations_overflowed = false;
-    // swap() just handed our reserved buffer to the local `pending`, leaving
-    // _pending_chain_invalidations with pending's old (empty) buffer. Restore
-    // the reserved capacity now, under the lock, so the next
-    // deferResolvedChainInvalidation() call - from inside a future
-    // FollowReferences pause - still finds room to push_back without
-    // allocating there.
+    // swap() took the reserved buffer; reserve again so the next heap
+    // callback doesn't allocate.
     _pending_chain_invalidations.reserve(MAX_PENDING_CHAIN_INVALIDATIONS);
     _pending_chain_invalidations_lock.unlock();
   }
   if (overflowed) {
-    // The pending list could not hold every eviction owed this pass; a
-    // partial invalidation would let a stale cached chain survive with its
-    // search generation still matching. Clear the whole cache instead -
-    // this runs outside the heap walk, same as the targeted path below.
+    // Some evictions were dropped; a partial invalidation could leave a
+    // stale chain behind.
     ExclusiveLockGuard guard(&_resolved_chains_lock);
     _resolved_chains.clear();
     return;

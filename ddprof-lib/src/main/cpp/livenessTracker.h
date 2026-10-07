@@ -30,14 +30,9 @@ typedef struct TrackingEntry {
   jint tid;
   jlong time;
   jlong age;
-  // _gc_epoch as observed at admission time - the last GC this entry did NOT
-  // survive (it was not yet allocated). An overflow-triggered reaper sweep
-  // (cleanup_table(..., account_epoch=false)) never claims _last_gc_epoch,
-  // so an entry admitted on its retry can land in the table before the
-  // owning sweep claims that same epoch; without this boundary the owner's
-  // later survivor-aging loop would credit the new entry with surviving a
-  // GC it was never alive for. See cleanup_table()'s survivor loop for how
-  // this caps the per-entry epoch delta.
+  // _gc_epoch at admission. An entry admitted after an account_epoch=false
+  // sweep can be in the table before the owner claims that epoch; aging
+  // starts from here so it is not credited with a GC it never survived.
   u64 admission_epoch;
   jlong leak_tag;  // 0 = untagged; otherwise a tag from the leak tag pool
   Context ctx;

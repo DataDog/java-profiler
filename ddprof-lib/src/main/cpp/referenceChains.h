@@ -591,25 +591,13 @@ private:
   std::unordered_map<jlong, CachedChain> _resolved_chains;
   SpinLock _resolved_chains_lock;
 
-  // Resolved-chain evictions deferred by the FollowReferences heap callback
-  // (see deferResolvedChainInvalidation()). Small: each callback-side
-  // improveChain/re-parent/root-upgrade evicts at most one entry, and the
-  // pending set is drained outside any walk (runPassManualWalk()'s start and
-  // end, pollWatchedTargets()'s entry). Capped at MAX_RESOLVED_CHAINS (the
-  // eviction target _resolved_chains can never hold more live entries than
-  // that), and preallocated to that capacity so deferResolvedChainInvalidation()'s
-  // push_back - called from inside the FollowReferences STW pause - does not
-  // trigger allocator growth there. drainPendingChainInvalidations() restores
-  // the reserved capacity after each drain instead of letting it be swapped away.
+  // Chain evictions deferred by the heap callback; see
+  // deferResolvedChainInvalidation(). Reserved up front and capped so the
+  // callback never allocates inside the FollowReferences pause.
   static constexpr int MAX_PENDING_CHAIN_INVALIDATIONS = MAX_RESOLVED_CHAINS;
   std::vector<jlong> _pending_chain_invalidations;
   SpinLock _pending_chain_invalidations_lock;
-  // Set instead of silently dropping a source_tag once the vector above is
-  // full (duplicates/uncached tags mean MAX_PENDING_CHAIN_INVALIDATIONS does
-  // not actually bound the number of distinct evictions owed). On the next
-  // drain this forces the entire _resolved_chains cache to be cleared rather
-  // than just the tags that fit, so an overflowed eviction can never leave a
-  // stale cached chain behind.
+  // Set when a source_tag didn't fit; the next drain clears the whole cache.
   bool _pending_chain_invalidations_overflowed = false;
 
   // Abandoned-search events awaiting Profiler::dump() (profiler.cpp).
