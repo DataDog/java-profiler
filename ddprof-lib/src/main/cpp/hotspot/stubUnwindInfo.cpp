@@ -387,6 +387,13 @@ int decodeBranch(uint32_t insn, int index, int count) {
 
 enum RetLoc { RET_LR, RET_STACK, RET_CONT, RET_UNKNOWN };
 
+// fp_est is only set when x29 lands on a frame record (saved x29 with the
+// saved x30 8 bytes above it), so the return address of an fp frame is
+// always at fp + 8. A later spill of x30 elsewhere ('str x30, [sp, #-16]!'
+// inside the frame) moves x30_abs but not the frame record; once that spill
+// is popped it lies below the live sp and must not be used.
+const int32_t FRAME_RECORD_PC_OFFSET = 8;
+
 struct ScanState {
     int32_t sp = 0;       // sp position in bytes below the entry sp
     bool sp_known = true;
@@ -427,7 +434,7 @@ struct ScanState {
             if (fp_est) {
                 p.kind = SU_FP_FRAME;
                 p.arg = fp_abs;
-                p.arg2 = fp_abs - x30_abs;
+                p.arg2 = FRAME_RECORD_PC_OFFSET;
             } else {
                 p.kind = SU_UNSUPPORTED;
                 p.arg = p.arg2 = 0;
@@ -445,7 +452,7 @@ struct ScanState {
         } else if (fp_est) {
             p.kind = SU_FP_FRAME;
             p.arg = fp_abs;             // caller sp = fp + arg
-            p.arg2 = fp_abs - x30_abs;  // pc slot = [fp + arg2]
+            p.arg2 = FRAME_RECORD_PC_OFFSET;  // pc slot = [fp + arg2]
         } else if (ret == RET_STACK && x30_abs > sp) {
             // Same ownership rule for the saved return-address slot: below
             // the live sp it is unowned memory.

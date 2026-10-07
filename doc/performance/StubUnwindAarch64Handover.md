@@ -1,3 +1,4 @@
+<!-- Copyright 2026, Datadog, Inc -->
 # StubUnwindCpuTest on aarch64: investigation handover and resolution
 
 Status as of 2026-10-07: **both problems root-caused and fixed** on branch

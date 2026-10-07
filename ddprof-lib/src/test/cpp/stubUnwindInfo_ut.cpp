@@ -568,6 +568,38 @@ TEST_F(StubUnwindTest, X29SaveSlotDroppedByUnmodeledAccess) {
     }
 }
 
+// An unprivileged store (STTR) overwriting the x29 save slot is a load/store
+// the save-slot tracking does not model exactly, so the later reload no longer
+// re-establishes the frame (PR 842 review).
+TEST_F(StubUnwindTest, X29SaveSlotDroppedBySttr) {
+    // 3: sttr x0, [sp, #8]     = 0xf8008be0 (overwrites the x29 slot)
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xa9bf77fc, 0xf8008be0,
+                                    0xa8c177fc, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 5, SU_FP_PROLOGUE, 16, 8);
+}
+
+// A nested spill of x30 inside an established frame moves the tracked x30
+// slot, but the frame record (and the return address in it) stays at fp + 8.
+// After the nested slot is popped it lies below the live sp, so the fp rule
+// must keep using the frame record (PR 842 review).
+TEST_F(StubUnwindTest, NestedX30SpillKeepsFrameRecordSlot) {
+    // 2: stp x29,x30,[sp,#-16]!   (nested pair spill; x29 save slot)
+    // 3: ldp x29,x30,[sp],#16     (reload from the save slot)
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xa9bf7bfd, 0xa8c17bfd,
+                                    NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 3, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 4, SU_FP_FRAME, 16, 8);
+
+    // 2: str x30,[sp,#-16]!       = 0xf81f0ffe (nested single spill)
+    // 3: ldr x30,[sp],#16         = 0xf84107fe
+    info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xf81f0ffe, 0xf84107fe, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 3, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 4, SU_FP_FRAME, 16, 8);
+}
+
 // Once more than MAX_BRANCHES edges freeze the transitions, a change of the
 // auxiliary facts alone (here 'mov x8, #1' defining a constant) is not a new
 // unwind rule and must not truncate the table.
