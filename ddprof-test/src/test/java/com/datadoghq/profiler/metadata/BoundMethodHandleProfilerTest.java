@@ -31,8 +31,7 @@ public class BoundMethodHandleProfilerTest extends AbstractProfilerTest {
         // thread spends nearly all its time in the signal handler (138s
         // locally, hours on CI runners, on JDK 25 aarch64). The test only
         // needs some samples, so it samples coarser there as well.
-        boolean slowWalk = isAsan() || "debug".equals(System.getProperty("ddprof_test.config"));
-        return slowWalk ? "wall=1ms" : "wall=100us";
+        return isAsan() || isDebugBuild() ? "wall=1ms" : "wall=100us";
     }
 
     @Test

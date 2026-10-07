@@ -44,21 +44,15 @@ public class StubUnwindCpuTest extends CStackAwareAbstractProfilerTest {
         // under the Gradle test executor; at 100us the registered thread
         // would spend nearly all its time in the signal handler and the
         // workload would take minutes instead of well under a second.
-        return isSlowWalk() ? "wall=1ms" : "wall=100us";
-    }
-
-    /**
-     * ASan and the -O0 debug build walk stacks too slowly for 100us sampling;
-     * they sample at 1ms and run {@link #SLOW_WALK_ROUND_FACTOR} times as many
-     * workload rounds, so the number of samples landing in each stub stays
-     * the same.
-     */
-    private boolean isSlowWalk() {
-        return isAsan() || "debug".equals(System.getProperty("ddprof_test.config"));
+        return isAsan() || isDebugBuild() ? "wall=1ms" : "wall=100us";
     }
 
     private static final int ROUNDS = 40;
-    private static final int SLOW_WALK_ROUND_FACTOR = 10;
+    // The debug build samples 10x coarser than release (see getProfilerCommand)
+    // and runs 10x the rounds so the number of samples landing in each stub
+    // stays the same. ASan always sampled at 1ms with ROUNDS and keeps that:
+    // its instrumented workload is already slow enough.
+    private static final int DEBUG_ROUND_FACTOR = 10;
 
     interface Calculator {
         int calculate();
@@ -144,7 +138,7 @@ public class StubUnwindCpuTest extends CStackAwareAbstractProfilerTest {
         Calculator[] calculators = {new Calculator1(), new Calculator2(), new Calculator3()};
 
         long acc = 0;
-        int rounds = isSlowWalk() ? ROUNDS * SLOW_WALK_ROUND_FACTOR : ROUNDS;
+        int rounds = isDebugBuild() && !isAsan() ? ROUNDS * DEBUG_ROUND_FACTOR : ROUNDS;
         for (int round = 0; round < rounds; round++) {
             acc += megamorphicWork(10_000, calculators);
             acc += arraycopyWork(data, dst, acc);

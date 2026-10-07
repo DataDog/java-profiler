@@ -508,6 +508,85 @@ TEST_F(StubUnwindTest, MovSpX29RecoversUnknownSp) {
     expectPhase(info, 5, SU_PC_TO_LR, 0);
 }
 
+// 'adr xN, L; br xM; L:' materializes a return point right after the br: L
+// is reached through a register, not as a fresh entry, so the restart must
+// not claim the entry rule there.
+TEST_F(StubUnwindTest, AdrTargetAfterRestartDegrades) {
+    // 0: adr x9, #8        = 0x10000049 (-> 2)
+    // 1: br x8
+    // 2: nop
+    // 3: ret
+    StubUnwindInfo* info = analyze({0x10000049, jumpReg(8), NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_PC_TO_LR, 0);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+}
+
+// An ADRP into the stub's own pages hides the exact code address it builds,
+// so the stub keeps the conservative cut after a mid-stub br.
+TEST_F(StubUnwindTest, AdrpIntoStubDisablesRestart) {
+    // 0: adrp x9, #0       = 0x90000009 (own page)
+    // 1: br x8
+    // 2: nop
+    // 3: ret
+    StubUnwindInfo* info = analyze({0x90000009, jumpReg(8), NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_PC_TO_LR, 0);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+}
+
+// x29/x30 writes from classes without a dedicated decoder: unscaled and
+// register-offset loads, conditional select, base writeback.
+TEST_F(StubUnwindTest, UndecodedGprWritesDropFrameOrLr) {
+    // 2: ldur x29, [x0, #-8]   = 0xf85f801d
+    // 2: ldr x29, [x0, x1]     = 0xf861681d
+    // 2: ldr x0, [x29], #8     = 0xf84087a0 (x29 written back)
+    for (uint32_t insn : {0xf85f801du, 0xf861681du, 0xf84087a0u}) {
+        StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, insn, NOP, RET});
+        ASSERT_NE(info, nullptr);
+        expectPhase(info, 2, SU_FP_FRAME, 16, 8);
+        expectPhase(info, 3, SU_FP_PROLOGUE, 16, 8);
+    }
+    // 1: csel x30, x0, x1, eq  = 0x9a81001e (frameless: lr clobbered)
+    StubUnwindInfo* info = analyze({NOP, 0x9a81001e, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_PC_TO_LR, 0);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+}
+
+// The x29 save slot is dropped by a store through another base (it may alias
+// the slot) and by an sp-derived pointer reaching a GPR.
+TEST_F(StubUnwindTest, X29SaveSlotDroppedByUnmodeledAccess) {
+    // 3: str x0, [x9]          = 0xf9000120
+    // 3: mov x1, sp            = 0x910003e1
+    for (uint32_t insn : {0xf9000120u, 0x910003e1u}) {
+        StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xa9bf77fc, insn,
+                                        0xa8c177fc, NOP, RET});
+        ASSERT_NE(info, nullptr);
+        expectPhase(info, 4, SU_FP_FRAME, 16, 8);
+        expectPhase(info, 5, SU_FP_PROLOGUE, 16, 8);
+    }
+}
+
+// Once more than MAX_BRANCHES edges freeze the transitions, a change of the
+// auxiliary facts alone (here 'mov x8, #1' defining a constant) is not a new
+// unwind rule and must not truncate the table.
+TEST_F(StubUnwindTest, FrozenTransitionsIgnoreAuxiliaryFacts) {
+    const int kBranches = 70;
+    std::vector<uint32_t> code;
+    for (int i = 0; i < kBranches; i++) {
+        code.push_back(cbz(0, kBranches + 3 - i));  // all to the final ret
+    }
+    code.push_back(0xd2800028);  // mov x8, #1
+    code.push_back(NOP);
+    code.push_back(NOP);
+    code.push_back(RET);
+    StubUnwindInfo* info = analyze(code);
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, kBranches + 1, SU_PC_TO_LR, 0);
+    expectPhase(info, kBranches + 3, SU_PC_TO_LR, 0);
+}
+
 // Regression fixture: an 'I2C/C2I adapters' blob as reported by JVMTI
 // DynamicCodeGenerated on JDK 21.0.12 aarch64 (G1), captured from a profiled
 // JVM. Layout: i2c entry (frameless, ends in 'br x8' at 0x28), c2i unverified
