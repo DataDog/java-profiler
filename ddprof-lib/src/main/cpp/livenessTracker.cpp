@@ -2212,9 +2212,18 @@ bool LivenessTracker::admitForTracking(jint tid) {
   if (__atomic_load_n(&_urgent_tracking, __ATOMIC_ACQUIRE)) {
     // Volume backstop for the urgency boost: with a full table every admission
     // forces a sweep on the allocation callback, so fall back to the
-    // watched-tid boost and the subsample ratio.
-    if (_table_max_cap > 0 &&
-        __atomic_load_n(&_table_size, __ATOMIC_RELAXED) >= _table_max_cap) {
+    // watched-tid boost and the subsample ratio. _table_size is only ever
+    // mutated under the exclusive _table_lock (cleanup_table()'s plain
+    // assignment), so a lock-free atomic read here can race with that write;
+    // take a shared-lock snapshot instead and back off whenever cleanup
+    // currently owns the lock exclusively.
+    bool back_off = true;
+    if (_table_lock.tryLockShared()) {
+      back_off = _table_max_cap > 0 &&
+                 __atomic_load_n(&_table_size, __ATOMIC_RELAXED) >= _table_max_cap;
+      _table_lock.unlockShared();
+    }
+    if (back_off) {
       Counters::increment(LIVENESS_URGENT_BOOST_BACKED_OFF);
     } else {
       Counters::increment(LIVENESS_URGENT_BOOST_ADMITS);

@@ -579,7 +579,15 @@ void ReferenceChainTracker::threadLoop() {
     _oom_ramp_active = urgent;
     LivenessTracker::instance()->setUrgentTracking(urgent);
 
-    bool should_run = shouldRunPass(now_ns);
+    // shouldRunPass()'s restart branch (restartSearch()) clears _pending_expand/_priority_expand
+    // the same way a pass does - take _engine_lock around the call so that mutation is serialized
+    // with runPassSerialized()/finishLoopIterationSerialized() and with the pendingExpand*ForTest()
+    // read seams, instead of racing them.
+    bool should_run;
+    {
+      MutexLocker engine_guard(_engine_lock);
+      should_run = shouldRunPass(now_ns);
+    }
     // Only sleep when idle (no pass will run). When a canary search is active or a pass is about to
     // run, skip the sleep to run passes back-to-back.
     if (!should_run && cadence_ns > 0) {
@@ -1029,6 +1037,10 @@ long ReferenceChainTracker::pendingExpandPositionForTest(jlong tag) const {
   if (tag == 0) {
     return -2;
   }
+  // _pending_expand/_priority_expand are otherwise only touched by the BFS thread under
+  // _engine_lock (runPass()/expandFrontier(), and shouldRunPass()'s restart branch) - take the
+  // same lock here so this read-only snapshot cannot observe either deque mid-mutation.
+  MutexLocker engine_guard(_engine_lock);
   // _priority_expand drains first (expandFrontier()'s own comment), so its entries are reported as
   // coming before _pending_expand's.
   long pos = 0;
@@ -1048,6 +1060,7 @@ long ReferenceChainTracker::pendingExpandPositionForTest(jlong tag) const {
 }
 
 size_t ReferenceChainTracker::pendingExpandSizeForTest() const {
+  MutexLocker engine_guard(_engine_lock);
   return _pending_expand.size() + _priority_expand.size();
 }
 

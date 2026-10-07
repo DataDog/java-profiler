@@ -1183,8 +1183,12 @@ public:
   // JVMTI tag helpers used by the heap-walk callbacks.
   jlong nextTag() { return atomicIncRelaxed(_next_tag, (jlong)1); }
 
-  // Held by runPassSerialized() and finishLoopIterationSerialized() around the engine work.
-  Mutex _engine_lock;
+  // Held by runPassSerialized() and finishLoopIterationSerialized() around the engine work, by
+  // threadLoop() around shouldRunPass() (whose restart branch mutates _pending_expand/
+  // _priority_expand the same way a pass does), and by the pendingExpand*ForTest() seams below so
+  // they never observe those deques mid-mutation from the BFS thread. Mutable because the test
+  // seams are const (read-only from the caller's perspective) but still need to take the lock.
+  mutable Mutex _engine_lock;
   jlong tagObject(jvmtiEnv *jvmti, jobject obj);
   jlong getTag(jvmtiEnv *jvmti, jobject obj);
   void clearTag(jvmtiEnv *jvmti, jobject obj);
