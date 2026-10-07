@@ -115,6 +115,19 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
     List<Thread> churnThreads = new ArrayList<>();
     Thread gcThread = null;
 
+    // Each profiler.dump(dumpFile) call truncates dumpFile and writes only the chunk
+    // accumulated since the previous switchChunk (see FlightRecorder::dump's O_TRUNC
+    // open) -- it is not cumulative. jmethodid_skipped_count, in contrast, accumulates
+    // over the whole churn window, across every dump and the continuous base recording.
+    // A stale-jmethodID resolution that landed in an earlier dump snapshot (since
+    // overwritten) would make the counter fire while the *last* snapshot contains
+    // nothing -- so every snapshot must be scanned as it's taken, not just the final
+    // one, or the label assertion below is checking an essentially arbitrary ~50ms
+    // window unrelated to where the counter actually moved.
+    AtomicBoolean foundUnloaded = new AtomicBoolean();
+    AtomicBoolean foundLegacy = new AtomicBoolean();
+    AtomicReference<String> legacySample = new AtomicReference<>();
+
     try {
       profiler.execute(
           "start," + getProfilerCommand() + ",jfr,mcleanup=true,file=" + baseFile.toAbsolutePath());
@@ -151,6 +164,9 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
       while (System.currentTimeMillis() < deadline) {
         profiler.dump(dumpFile);
         dumps++;
+        if (Files.size(dumpFile) > 0) {
+          scanFrameLabels(dumpFile, foundUnloaded, foundLegacy, legacySample);
+        }
         Thread.sleep(50);
       }
 
@@ -204,9 +220,18 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
               + unreadableLineTableDelta + ", jmethodid_skipped_count delta=" + skippedDelta
               + ") -- the '<unloaded>' label assertion is only meaningful when the"
               + " JVMTI-resolution-failure branch ran; skipping to avoid a spurious failure.");
-      // Assert that the recording produced by that branch uses the '<unloaded>' label and
-      // never the legacy 'jvmtiError' one -- this fails if the label is reverted to 'jvmtiError'.
-      assertUnloadedFrameLabel(dumpFile);
+      // Assert that the dump snapshots produced by that branch used the '<unloaded>' label
+      // and never the legacy 'jvmtiError' one -- this fails if the label is reverted to
+      // 'jvmtiError'. Checked against every snapshot scanned above (scanFrameLabels), not
+      // just the last one -- see the comment where foundUnloaded/foundLegacy are declared.
+      assertTrue(foundUnloaded.get(),
+          "jmethodid_skipped_count fired (delta=" + skippedDelta + "), so the stale-jmethodID "
+              + "branch ran, but no '<unloaded>' frame was found in any of the " + dumps
+              + " dump snapshots taken during the churn window -- the remap to '<unloaded>' may "
+              + "have been reverted.");
+      assertTrue(!foundLegacy.get(),
+          "Found a frame serialized as the legacy 'jvmtiError' label; expected '<unloaded>'. "
+              + "First offending sample: " + legacySample.get());
     } finally {
       running.set(false);
       for (Thread t : churnThreads) {
@@ -237,16 +262,16 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
   }
 
   /**
-   * Asserts that the JFR recording produced by the churn window serializes stale-jmethodID
-   * frames as {@code "<unloaded>"} and never as the legacy {@code "jvmtiError"} label.
-   * This is the regression guard for the flightRecorder.cpp remap: reverting the label to
-   * {@code "jvmtiError"} makes this assertion fail. Only stack-trace-bearing event types
-   * are inspected; events without a {@code stackTrace} field are skipped.
+   * Scans one dump snapshot for frames serialized with the {@code "<unloaded>"} stale-jmethodID
+   * label or the legacy {@code "jvmtiError"} one, merging any hits into the given accumulators.
+   * Called once per {@code profiler.dump()} snapshot during the churn window (each snapshot only
+   * covers the chunk since the previous dump, so a single snapshot can easily miss a label that a
+   * whole-run counter delta says fired at some point) -- the accumulators, not any one snapshot,
+   * are what the caller asserts against. Only stack-trace-bearing event types are inspected;
+   * events without a {@code stackTrace} field are skipped.
    */
-  private void assertUnloadedFrameLabel(Path recording) throws Exception {
-    AtomicBoolean foundUnloaded = new AtomicBoolean();
-    AtomicBoolean foundLegacy = new AtomicBoolean();
-    AtomicReference<String> legacySample = new AtomicReference<>();
+  private void scanFrameLabels(Path recording, AtomicBoolean foundUnloaded,
+      AtomicBoolean foundLegacy, AtomicReference<String> legacySample) throws Exception {
     for (String eventType : new String[]{"datadog.ExecutionSample", "datadog.AllocationSample"}) {
       streamEvents(recording, eventType, event -> {
         if (!event.has(STACK_TRACE)) {
@@ -268,13 +293,6 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
         }
       });
     }
-    assertTrue(foundUnloaded.get(),
-        "Expected at least one frame serialized as '<unloaded>' in " + recording
-            + " (jmethodid_skipped_count fired, so the stale-jmethodID branch ran), "
-            + "but none was found -- the remap to '<unloaded>' may have been reverted.");
-    assertTrue(!foundLegacy.get(),
-        "Found a frame serialized as the legacy 'jvmtiError' label in " + recording
-            + "; expected '<unloaded>'. First offending sample: " + legacySample.get());
   }
 
   private void churnLoop(AtomicBoolean running) {
