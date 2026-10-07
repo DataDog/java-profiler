@@ -1,8 +1,95 @@
-# StubUnwindCpuTest on aarch64: investigation handover
+# StubUnwindCpuTest on aarch64: investigation handover and resolution
 
-Status as of 2026-10-07. Branch `investigate/stub-unwind-aarch64`, cut from
-`main` at `3aa1d34d4`. This document is the only change on the branch; it is a
-starting point for continuing the investigation on a native aarch64 machine.
+Status as of 2026-10-07: **both problems root-caused and fixed** on branch
+`investigate/stub-unwind-aarch64` (see [Resolution](#resolution)). The original
+handover notes follow the resolution unchanged.
+
+## Resolution
+
+Reproduced natively on an aarch64 host (JDK 21.0.12 and 25.0.4) with
+`@RetryTest(1)`: both `vm` and `vmx` failed on the first attempt, and the
+attempts took 46 s and 105 s of recording plus minutes of JFR parsing.
+
+### 1. `break_unwind_stub_failed`: the `I2C/C2I adapters` blob
+
+Every failed sample (`datadog.UnwindFailure`, plus a temporary dump of the
+failing pc and phase table) was in the `I2C/C2I adapters` blob. One blob packs
+several entry points back to back (JDK 21, G1):
+
+| offset | code | correct rule |
+|---|---|---|
+| `0x00` | i2c: frameless argument shuffle, ends in `br x8` | pc = lr |
+| `0x2c` | c2i unverified entry (inline-cache check) | pc = lr |
+| `0x54` | c2i entry, class-init barrier | pc = lr |
+| `0x88` | c2i entry barrier: `stp x10,xzr`, fp frame, `push_CPU_state`, runtime call | sp+16 / fp frame |
+| `0x1a0` | `patch_callers_callsite`: fp frame, `push_CPU_state`, runtime call | fp frame |
+| `0x294` | `skip_fixup`: `sub sp,#16`, `br` to the interpreter | pc = lr / sp+16 |
+
+`analyzeStubUnwind()` truncated everything after the first mid-stub `br` to
+`SU_UNSUPPORTED`, so only the i2c part had rules; every c2i PC fell back to the
+legacy heuristics, which have no rule for adapters. The fix (all in
+`hotspot/stubUnwindInfo.cpp`):
+
+- **Restart after `br`.** The instruction after a register jump is not reached
+  by fall-through: it is a further entry point (entry state) or an in-stub
+  branch target, which branch validation already checks.
+- **SIMD structure loads/stores** (`st1 {..}, [sp], x8` / `ld1 {..}, [sp], #32`,
+  emitted by `push_CPU_state`/`pop_CPU_state`) were treated as neutral although
+  they write back sp, a latent soundness bug. The multiple-structure immediate
+  form is now modeled exactly, as is the register form when the offset register
+  holds a constant from `mov xN, #imm` (ORR/MOVZ/MOVN) on straight-line code.
+  Single-structure forms and unknown offsets make sp unknown.
+- **x29 reload from its save slot** (`pop_CPU_state` restores x29 with the other
+  GPRs) keeps the frame established; `mov sp, x29` makes sp known again.
+- The constant and the x29 save slot are not part of the unwind rule that
+  branch validation compares, so they are dropped at every in-stub branch
+  target.
+- Logical immediates writing sp (`and sp, x8, #-16`, the i2c stack-argument
+  alignment) now make sp unknown; move-wide/logical writes to x29 drop the frame.
+
+The captured blob is a regression fixture (`Jdk21I2CC2IAdaptersBlob` in
+`stubUnwindInfo_ut.cpp`). With the fix, a standalone harness running the test
+workload under a 150-frame stack showed 0 stub break frames in about 890k samples
+(JDK 21 and 25, `vm` and `vmx`), versus 11 in 212k before.
+
+Remaining risk: code after a `br` that is reached by an *indirect* jump from
+inside the same blob with a frame established would get the entry rule. No such
+HotSpot aarch64 stub is known; far jumps and adapter tail jumps leave the blob.
+
+### 2. Slow attempts: per-sample cost exceeds the 100 us wall interval
+
+`unwinding_ticks_async` showed the sampled thread spending ~97% of its time in
+the signal handler. The test runs under the Gradle/JUnit executor with ~150 Java
+frames on the stack; walking them in the `-O0 -DDEBUG` build costs ~160 us per
+sample (perf: unoptimized code, plus the DEBUG-only
+`SafeAccess::countIfLongjmpProtected` TLS lookup and counter increment per
+safefetch, ~1,800 safefetches per sample). With the cost above the interval, the
+workload only runs between handler invocations. The cost is a cliff, not linear
+in depth:
+
+| extra stack depth (debug, `wall=100us`) | workload time |
+|---|---|
+| 0 | 243 ms |
+| 50 | 360 ms |
+| 150 | 35.6 s |
+
+The release build at depth 150 takes 255 ms, so production profiling is not
+affected. If the per-sample cost on the CI runners sits near the interval, small
+variations would explain the bimodal fast/slow jobs. This was not checked on
+CI. The ~600k deep samples then take minutes to parse in
+`JfrEvents.reduce` / `JfrEvent.getStackTraceString` (jafar `Values.resolvedDeep`).
+
+The test now uses `wall=1ms` for debug builds as it already did for ASan:
+10/10 forced reruns passed with retries disabled, 0.9 s (`vm`) / 0.27 s (`vmx`)
+per attempt, ~110-130 precomputed-info hits each. `@RetryTest` was lowered from
+10 to 2: one retry absorbs sampling noise in the stub-presence assertions, while
+an unwind regression (which reproduced on nearly every attempt) still fails.
+
+### Local build note
+
+On this host clang picks the GCC 14 toolchain, which has no libstdc++ headers
+installed (`'cstddef' file not found`); building with
+`-Pnative.forceCompiler=g++` (GCC 13) works.
 
 ## Summary
 

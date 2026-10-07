@@ -39,8 +39,13 @@ public class StubUnwindCpuTest extends CStackAwareAbstractProfilerTest {
         // Wall-clock at 100us gives dense sampling of the registered thread on
         // every platform (CPU itimer sampling is too coarse on macOS); with
         // cstack=vm/vmx every sample is unwound through HotspotSupport::walkVM,
-        // which is the path the precomputed stub info serves.
-        return isAsan() ? "wall=1ms" : "wall=100us";
+        // which is the path the precomputed stub info serves. ASan and the
+        // -O0 debug build need ~160us per sample for the ~150-frame stack
+        // under the Gradle test executor; at 100us the registered thread
+        // would spend nearly all its time in the signal handler and the
+        // workload would take minutes instead of well under a second.
+        boolean slowWalk = isAsan() || "debug".equals(System.getProperty("ddprof_test.config"));
+        return slowWalk ? "wall=1ms" : "wall=100us";
     }
 
     interface Calculator {
@@ -111,7 +116,7 @@ public class StubUnwindCpuTest extends CStackAwareAbstractProfilerTest {
         return result;
     }
 
-    @RetryTest(10)
+    @RetryTest(2)
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx"})
     public void testStubUnwinding(@CStack String cstack) throws Exception {

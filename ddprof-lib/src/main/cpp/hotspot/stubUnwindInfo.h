@@ -30,9 +30,13 @@
 // executed and instruction k has not. The table is built by a linear scan
 // tracking sp, fp and the return address location; undecodable instructions
 // are assumed to preserve sp/fp/x30, and known clobber classes (writes to
-// x29/x30, calls from frameless code, mid-stub br) degrade the affected range
-// to SU_UNSUPPORTED instead of guessing. Branch targets are validated so no
-// PC is reachable with two different states; on any inconsistency the range
+// x29/x30, calls from frameless code, unmodeled sp writeback) degrade the
+// affected range to SU_UNSUPPORTED instead of guessing. The instruction after
+// a mid-stub br restarts from the entry state: it is only reachable as a
+// further entry point of the blob (the I2C/C2I adapters blob packs the i2c and
+// c2i entries back to back) or as a branch target. Branch targets are
+// validated so no PC is reachable with two different states; on any
+// inconsistency the range
 // degenerates to SU_UNSUPPORTED and unwindStub() falls back to the legacy
 // name-based heuristics. The failure mode is always "fall back", never
 // "guess".
