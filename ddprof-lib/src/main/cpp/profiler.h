@@ -190,6 +190,12 @@ private:
   Error checkJvmCapabilities();
 
   void lockAll();
+  // Resets the three StringDictionaries; returns how many were left unchanged
+  // because their drain timed out.
+  int resetDictionaries();
+  // Counters::reset(), keeping the dictionary memory gauges and the drain
+  // timeouts behind failed_dictionary_resets skipped resets accurate.
+  void resetCounters(int failed_dictionary_resets);
   void unlockAll();
 
   // Rotate all three dictionaries, then run jfr_op under lockAll().
@@ -489,6 +495,11 @@ public:
   static void unregisterThread(int tid);
 
 #ifdef UNIT_TEST
+  // Run the dictionary and counter reset steps of a fresh start() in
+  // isolation.  Compiled only into gtest binaries.
+  int resetDictionariesForTest() { return resetDictionaries(); }
+  void resetCountersForTest(int failed_dictionary_resets) { resetCounters(failed_dictionary_resets); }
+
   // Returns the tid most recently passed to unregisterThread(), or -1 if it
   // has never been called (or since the last resetUnregisterObservableForTest).
   // Used by integration tests to assert that cleanup_unregister wired

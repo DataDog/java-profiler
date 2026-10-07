@@ -77,6 +77,7 @@ class StringArena {
     Chunk*              _first;            // head of chain; kept across resets
     std::atomic<Chunk*> _active;           // current allocation target
     std::atomic<bool>   _growing{false};   // serialises new-chunk creation
+    std::atomic<int>    _extra_chunks{0};  // chunks linked after _first
     int                 _counter_offset{0};// 0 = no DICTIONARY_BYTES tracking
     bool                _oom_logged{false};// latched per generation; cleared by reset()
 
@@ -126,6 +127,7 @@ class StringArena {
         _active.store(fresh, std::memory_order_release);
         if (fresh) {
             full->next = fresh;            // link into chain for reset() traversal
+            _extra_chunks.fetch_add(1, std::memory_order_relaxed);
             countChunkAlloc();
         } else {
             // Make the failure observable in production logs.  Latched per
@@ -198,8 +200,17 @@ public:
             __atomic_store_n(&_first->pos, (size_t)0, __ATOMIC_RELAXED);
         }
         _active.store(_first, std::memory_order_release);
+        _extra_chunks.store(0, std::memory_order_relaxed);
         countChunkFree(freed);
         _oom_logged = false;
+    }
+
+    // Re-adds every live chunk to DICTIONARY_BYTES, for use after a global
+    // Counters::reset() zeroed the gauge while the chunks stayed allocated.
+    void reseedCounters() {
+        if (_counter_offset == 0) return;
+        int chunks = (_first != nullptr ? 1 : 0) + _extra_chunks.load(std::memory_order_relaxed);
+        Counters::increment(DICTIONARY_BYTES, (long long)chunks * (long long)sizeof(Chunk), _counter_offset);
     }
 };
 
@@ -226,6 +237,7 @@ private:
     SBTable*           _table;
     std::atomic<int>   _size{0};
     StringArena        _arena;
+    std::atomic<int>   _overflow_nodes{0};  // overflow SBTables linked below _table
     int                _counter_offset{0};  // 0 = no page/byte tracking
 
     static unsigned int hash(const char* key, size_t length) {
@@ -391,6 +403,7 @@ public:
                     free(nt);
                 } else {
                     NativeMem::record(NM_DICTIONARY, (long long)sizeof(SBTable));
+                    _overflow_nodes.fetch_add(1, std::memory_order_relaxed);
                     if (_counter_offset != 0) {
                         Counters::increment(DICTIONARY_PAGES, 1, _counter_offset);
                         Counters::increment(DICTIONARY_BYTES, (long long)sizeof(SBTable), _counter_offset);
@@ -425,10 +438,24 @@ public:
         memset(_table, 0, sizeof(SBTable));
         _arena.reset();
         _size.store(0, std::memory_order_relaxed);
+        _overflow_nodes.store(0, std::memory_order_relaxed);
         if (_counter_offset != 0 && freed > 0) {
             Counters::decrement(DICTIONARY_PAGES, freed, _counter_offset);
             Counters::decrement(DICTIONARY_BYTES, (long long)(freed * sizeof(SBTable)), _counter_offset);
         }
+    }
+
+    // Re-adds the root table, overflow tables and arena chunks to
+    // DICTIONARY_PAGES / DICTIONARY_BYTES, for use after a global
+    // Counters::reset() zeroed the gauges while the storage stayed allocated.
+    void reseedCounters() {
+        if (_counter_offset == 0) return;
+        if (_table != nullptr) {
+            int tables = 1 + _overflow_nodes.load(std::memory_order_relaxed);
+            Counters::increment(DICTIONARY_PAGES, tables, _counter_offset);
+            Counters::increment(DICTIONARY_BYTES, (long long)tables * (long long)sizeof(SBTable), _counter_offset);
+        }
+        _arena.reseedCounters();
     }
 
     int size() const { return _size.load(std::memory_order_relaxed); }
@@ -502,6 +529,19 @@ public:
 
     // Current id-namespace generation; see _generation's own comment.
     u64 generation() const { return _generation.load(std::memory_order_acquire); }
+
+    // Re-adds the storage of all three buffers to the DICTIONARY_PAGES /
+    // DICTIONARY_BYTES gauges.  Call right after a global Counters::reset(),
+    // which zeroes them although the buffers keep their root tables and first
+    // arena chunks - and all of their storage if clearAll() was skipped.
+    // Storage added between the reset and this call is counted twice; the
+    // window is a few instructions and the gauges are diagnostic only.
+    void reseedCounters() {
+        if (_counter_offset == 0) return;
+        _a.reseedCounters();
+        _b.reseedCounters();
+        _c.reseedCounters();
+    }
 
     // Entry count of the active buffer - the count bounded_lookup() checks size_limit against.
     // Needs no RefCountGuard: _a/_b/_c are members, never freed.

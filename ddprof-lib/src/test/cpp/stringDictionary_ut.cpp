@@ -5,7 +5,9 @@
 
 #include <gtest/gtest.h>
 #include "stringDictionary.h"
+#include "counters.h"
 #include "nativeMem.h"
+#include "profiler.h"
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -515,4 +517,67 @@ TEST(StringDictionaryReclamationTest, ClearStandbyKeepsBufferWhileGuardHeld) {
         EXPECT_EQ(id, dict.bounded_lookup("string_key_0", 12)) << "id changed at cycle " << cycle;
     }
     EXPECT_EQ(0, held_buf->size());
+}
+
+// ── Counter gauges across a skipped reset ─────────────────────────────────
+//
+// Profiler::start() calls Counters::reset() right after resetting the
+// dictionaries.  A dictionary whose reset was skipped keeps all of its storage,
+// so its memory gauges must be re-added after the counter reset; otherwise
+// freeing that storage later drives them negative.
+
+namespace {
+constexpr int kEndpointsOffset = 2;  // the DICTIONARY_ENDPOINTS_* counter rows
+}
+
+TEST(StringDictionaryCountersTest, ReseedKeepsGaugesExactAcrossSkippedReset) {
+    StringDictionary dict(kEndpointsOffset);
+    Counters::reset();
+    dict.reseedCounters();
+    const long long base_pages = Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset);
+    const long long base_bytes = Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset);
+    ASSERT_GT(base_pages, 0);
+    ASSERT_GT(base_bytes, 0);
+
+    fillPastFirstArenaChunk(dict);
+    dict.rotate();
+    {
+        GuardedKeyHolder holder(dict.standby());
+        ASSERT_FALSE(dict.clearAll());
+        Counters::reset();  // what Profiler::start() does next
+        dict.reseedCounters();
+        EXPECT_GT(Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset), base_pages);
+        EXPECT_GT(Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset), base_bytes);
+    }
+
+    // Freeing the retained storage returns the gauges to the baseline.
+    ASSERT_TRUE(dict.clearAll());
+    EXPECT_EQ(base_pages, Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset));
+    EXPECT_EQ(base_bytes, Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset));
+}
+
+// The reset steps of Profiler::start(): a skipped dictionary reset stays
+// visible as a drain timeout, and its gauges stay non-negative once the
+// storage is freed.
+TEST(StringDictionaryCountersTest, ProfilerResetKeepsCountersAcrossSkippedReset) {
+    Profiler* profiler = Profiler::instance();
+    StringDictionary* labels = profiler->stringLabelMap();
+    ASSERT_EQ(0, profiler->resetDictionariesForTest());
+    profiler->resetCountersForTest(0);
+    const long long base_pages = Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset);
+    const long long base_bytes = Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset);
+
+    fillPastFirstArenaChunk(*labels);
+    labels->rotate();
+    {
+        GuardedKeyHolder holder(labels->standby());
+        int failed = profiler->resetDictionariesForTest();
+        EXPECT_EQ(1, failed);
+        profiler->resetCountersForTest(failed);
+        EXPECT_EQ(1, Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS));
+    }
+
+    EXPECT_EQ(0, profiler->resetDictionariesForTest());
+    EXPECT_EQ(base_pages, Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset));
+    EXPECT_EQ(base_bytes, Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset));
 }
