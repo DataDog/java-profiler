@@ -499,52 +499,56 @@ void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
   }
 }
 
-void ReferenceChainTracker::invalidateResolvedChains(
-    const std::vector<jlong> &source_tags) {
-  ExclusiveLockGuard guard(&_resolved_chains_lock);
-  for (jlong tag : source_tags) {
-    if (_resolved_chains.erase(tag) > 0) {
-      TEST_LOG("ReferenceChainTracker::invalidateResolvedChains source_tag=%lld",
-               (long long)tag);
-    }
-  }
-}
-
 void ReferenceChainTracker::deferResolvedChainInvalidation(jlong source_tag) {
   _pending_chain_invalidations_lock.lock();
-  // Uncached and repeated tags can still fill the vector within one walk.
-  // Don't drop them silently; flag the overflow so the drain clears it all.
-  if ((int)_pending_chain_invalidations.size() < MAX_PENDING_CHAIN_INVALIDATIONS) {
+  // The same tag can be re-invalidated many times within one walk; keep one slot.
+  bool already_pending = false;
+  for (jlong tag : _pending_chain_invalidations) {
+    if (tag == source_tag) {
+      already_pending = true;
+      break;
+    }
+  }
+  if (already_pending) {
+    // nothing to do
+  } else if ((int)_pending_chain_invalidations.size() < MAX_PENDING_CHAIN_INVALIDATIONS) {
     _pending_chain_invalidations.push_back(source_tag);
   } else {
+    // Don't drop it silently; flag the overflow so the drain clears it all.
     _pending_chain_invalidations_overflowed = true;
+    Counters::increment(REFERENCE_CHAIN_PENDING_INVALIDATIONS_OVERFLOWED);
   }
   _pending_chain_invalidations_lock.unlock();
 }
 
 void ReferenceChainTracker::drainPendingChainInvalidations() {
-  std::vector<jlong> pending;
-  bool overflowed;
-  {
-    _pending_chain_invalidations_lock.lock();
-    pending.swap(_pending_chain_invalidations);
-    overflowed = _pending_chain_invalidations_overflowed;
-    _pending_chain_invalidations_overflowed = false;
-    // swap() took the reserved buffer; reserve again so the next heap
-    // callback doesn't allocate.
-    _pending_chain_invalidations.reserve(MAX_PENDING_CHAIN_INVALIDATIONS);
-    _pending_chain_invalidations_lock.unlock();
-  }
-  if (overflowed) {
-    // Some evictions were dropped; a partial invalidation could leave a
-    // stale chain behind.
-    ExclusiveLockGuard guard(&_resolved_chains_lock);
-    _resolved_chains.clear();
+  _pending_chain_invalidations_lock.lock();
+  bool empty = _pending_chain_invalidations.empty() &&
+               !_pending_chain_invalidations_overflowed;
+  _pending_chain_invalidations_lock.unlock();
+  if (empty) {
     return;
   }
-  if (!pending.empty()) {
-    invalidateResolvedChains(pending);
+  // Lock order: _resolved_chains_lock, then _pending_chain_invalidations_lock.
+  // The heap callback takes only the latter, so it never waits on a dump's
+  // cache copy. Erasing in place keeps the reserved buffer, so nothing allocates.
+  ExclusiveLockGuard guard(&_resolved_chains_lock);
+  _pending_chain_invalidations_lock.lock();
+  if (_pending_chain_invalidations_overflowed) {
+    // Some evictions were dropped; a partial invalidation could leave a
+    // stale chain behind.
+    _resolved_chains.clear();
+  } else {
+    for (jlong tag : _pending_chain_invalidations) {
+      if (_resolved_chains.erase(tag) > 0) {
+        TEST_LOG("ReferenceChainTracker::drainPendingChainInvalidations source_tag=%lld",
+                 (long long)tag);
+      }
+    }
   }
+  _pending_chain_invalidations.clear();
+  _pending_chain_invalidations_overflowed = false;
+  _pending_chain_invalidations_lock.unlock();
 }
 
 // Builds and caches chain events for every auto-marked discovered instance recorded against a slot
@@ -722,6 +726,8 @@ void ReferenceChainTracker::drainPendingChainEvents(
   if (out == nullptr) {
     return;
   }
+  // Apply deferred evictions first so the dump doesn't export an already-evicted chain.
+  drainPendingChainInvalidations();
   // Snapshot-and-keep, not a drain: every cached chain is copied out (and re-stamped so it lands in
   // the dumping chunk's window) while the cache itself is left intact, so the same live sample's
   // chain re-emits into every chunk it survives into (see _resolved_chains' comment).

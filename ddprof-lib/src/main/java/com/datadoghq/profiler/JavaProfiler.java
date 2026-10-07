@@ -466,7 +466,7 @@ public final class JavaProfiler {
      * Returns the calling thread's profiler tid. Tests seeding per-tid trends
      * via {@link #seedTidTrendSample0} must call this on the leaking thread.
      */
-    public static int getTid() {
+    static int getTid() {
         return getTid0();
     }
 

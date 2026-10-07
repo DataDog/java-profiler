@@ -1101,6 +1101,14 @@ public:
         t->_table_max_cap = table_max_cap;
     }
 
+    static int tableSizeFieldForTest(LivenessTracker *t) {
+        return t->_table_size;
+    }
+
+    static int tableMaxCapForTest(LivenessTracker *t) {
+        return t->_table_max_cap;
+    }
+
     static void callCleanupTableForTest(LivenessTracker *t, bool forced,
                                          bool allow_resolve, bool account_epoch) {
         t->cleanup_table(forced, allow_resolve, account_epoch);
@@ -1133,6 +1141,8 @@ protected:
     JNIInvokeInterface_ vm_tbl{};
     JavaVM_ mock_vm{};
     JavaVM *orig_vm = nullptr;
+    int saved_table_size = 0;
+    int saved_table_max_cap = 0;
 
     void SetUp() override {
         installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
@@ -1145,6 +1155,10 @@ protected:
         LivenessTracker::instance()->klassPopulationResetForTest();
         LivenessTracker::instance()->classMapGenerationSetForTest(
             Profiler::instance()->classMap()->generation());
+        saved_table_size = LivenessTrackerTestAccessor::tableSizeFieldForTest(
+            LivenessTracker::instance());
+        saved_table_max_cap = LivenessTrackerTestAccessor::tableMaxCapForTest(
+            LivenessTracker::instance());
         LivenessTrackerTestAccessor::setTableCapsForTest(
             LivenessTracker::instance(), /*table_size=*/0, /*table_max_cap=*/0);
     }
@@ -1154,6 +1168,8 @@ protected:
         LivenessTrackerTestAccessor::setGcEpochForTest(LivenessTracker::instance(), 0);
         LivenessTrackerTestAccessor::setLastGcEpochForTest(LivenessTracker::instance(), 0);
         LivenessTracker::instance()->klassPopulationResetForTest();
+        LivenessTrackerTestAccessor::setTableCapsForTest(
+            LivenessTracker::instance(), saved_table_size, saved_table_max_cap);
         restoreDefaultSignalHandlers();
     }
 };
@@ -1328,7 +1344,8 @@ TEST_F(SecondsToOOMTest, DipThenRecoverFloorReturnsNegativeNotInf) {
         << "the projection must be finite, never +inf";
 }
 
-// Odd-length window: for odd n the median sample is in the recent half.
+// Odd-length window: fill/2 rounds down, so the recent half excludes the
+// median sample; a steady rise must still project.
 TEST_F(SecondsToOOMTest, OddLengthRisingWindowStillProjects) {
     LivenessTracker *tracker = LivenessTracker::instance();
     tracker->setMaxHeapBytesForTest((jlong)(3000 * MiB));
@@ -1804,6 +1821,8 @@ TEST_F(AdmissionBoostTest, ZeroCandidatePollClearsWatchedSet) {
 TEST_F(AdmissionBoostTest, VolumeBackstopCapsUrgencyAdmission) {
     LivenessTracker *tracker = LivenessTracker::instance();
     tracker->setUrgentTracking(true);
+    int saved_table_size = LivenessTrackerTestAccessor::tableSizeFieldForTest(tracker);
+    int saved_table_max_cap = LivenessTrackerTestAccessor::tableMaxCapForTest(tracker);
 
     // max_cap == 0 disables the backstop.
     LivenessTrackerTestAccessor::setTableCapsForTest(tracker, /*table_size=*/999,
@@ -1842,7 +1861,8 @@ TEST_F(AdmissionBoostTest, VolumeBackstopCapsUrgencyAdmission) {
     tracker->noteSelectedCandidates(&kc, 1);
     EXPECT_TRUE(tracker->admitForTrackingForTest(5));
 
-    LivenessTrackerTestAccessor::setTableCapsForTest(tracker, 0, 0);
+    LivenessTrackerTestAccessor::setTableCapsForTest(tracker, saved_table_size,
+                                                       saved_table_max_cap);
 }
 
 // ---------------------------------------------------------------------------

@@ -157,9 +157,6 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // walk holds them.
   releaseEndedThreadRefs(jni);
 
-  // Apply deferred chain invalidations outside any walk.
-  drainPendingChainInvalidations();
-
   *safepoint_ns = 0;
 
   // Shared wall-clock ceiling for this whole call's static-field sweep, expandFrontier(), and
@@ -433,8 +430,8 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   *truncated = *truncated || rotation_truncated;
   *frontier_cap_hit = *frontier_cap_hit || rotation_frontier_cap_hit;
 
-  // Apply invalidations deferred during this pass's walks.
-  drainPendingChainInvalidations();
+  // Deferred chain invalidations are applied by the cache readers,
+  // pollWatchedTargets() and drainPendingChainEvents().
 }
 
 // Incremental resumption across passes.

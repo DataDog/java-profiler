@@ -593,8 +593,9 @@ private:
 
   // Chain evictions deferred by the heap callback; see
   // deferResolvedChainInvalidation(). Reserved up front and capped so the
-  // callback never allocates inside the FollowReferences pause.
-  static constexpr int MAX_PENDING_CHAIN_INVALIDATIONS = MAX_RESOLVED_CHAINS;
+  // callback never allocates inside the FollowReferences pause. Most queued
+  // tags were never cached, so the cap is well above MAX_RESOLVED_CHAINS.
+  static constexpr int MAX_PENDING_CHAIN_INVALIDATIONS = MAX_RESOLVED_CHAINS * 4;
   std::vector<jlong> _pending_chain_invalidations;
   SpinLock _pending_chain_invalidations_lock;
   // Set when a source_tag didn't fit; the next drain clears the whole cache.
@@ -1008,9 +1009,6 @@ private:
   // Remove a cached chain so pollWatchedTargets rebuilds it on the next poll.
   void invalidateResolvedChain(jlong source_tag);
 
-  // Batch form of invalidateResolvedChain(); takes the lock once.
-  void invalidateResolvedChains(const std::vector<jlong> &source_tags);
-
   // Queues an eviction from the heap callback. The callback runs inside the
   // FollowReferences pause and must not wait on _resolved_chains_lock, which
   // drainPendingChainEvents() holds while copying the cache for a JFR dump.
@@ -1357,7 +1355,11 @@ public:
   // LivenessTracker::selectLeakCandidates()/JavaProfiler's selectLeakCandidateKlassIds0() seam) -
   // something runReferenceChainPass0() (javaApi.cpp) cannot show, since it calls runPass() directly
   // and never consults this gate at all.
-  bool shouldRunPassForTest(u64 now_ns) { return shouldRunPass(now_ns); }
+  // Takes _engine_lock like threadLoop() does around shouldRunPass().
+  bool shouldRunPassForTest(u64 now_ns) {
+    MutexLocker engine_guard(_engine_lock);
+    return shouldRunPass(now_ns);
+  }
 };
 
 #endif // _REFERENCECHAINS_H
