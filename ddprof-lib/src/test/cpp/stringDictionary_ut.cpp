@@ -497,7 +497,7 @@ TEST(StringDictionaryReclamationTest, ClearStandbyKeepsBufferWhileGuardHeld) {
         GuardedKeyHolder holder(held_buf);
 
         dict.rotate();
-        dict.clearStandby();  // held_buf is now the clear target
+        EXPECT_FALSE(dict.clearStandby());  // held_buf is now the clear target
 
         EXPECT_EQ(held_size, held_buf->size()) << "guarded buffer was cleared";
 
@@ -513,7 +513,7 @@ TEST(StringDictionaryReclamationTest, ClearStandbyKeepsBufferWhileGuardHeld) {
     EXPECT_GT(id, 0u);
     for (int cycle = 0; cycle < 3; cycle++) {
         dict.rotate();
-        dict.clearStandby();
+        EXPECT_TRUE(dict.clearStandby());
         EXPECT_EQ(id, dict.bounded_lookup("string_key_0", 12)) << "id changed at cycle " << cycle;
     }
     EXPECT_EQ(0, held_buf->size());
@@ -562,8 +562,7 @@ TEST(StringDictionaryCountersTest, ReseedKeepsGaugesExactAcrossSkippedReset) {
 TEST(StringDictionaryCountersTest, ProfilerResetKeepsCountersAcrossSkippedReset) {
     Profiler* profiler = Profiler::instance();
     StringDictionary* labels = profiler->stringLabelMap();
-    ASSERT_EQ(0, profiler->resetDictionariesForTest());
-    profiler->resetCountersForTest(0);
+    ASSERT_EQ(0, profiler->resetRecordingStateForTest());
     const long long base_pages = Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset);
     const long long base_bytes = Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset);
 
@@ -571,13 +570,11 @@ TEST(StringDictionaryCountersTest, ProfilerResetKeepsCountersAcrossSkippedReset)
     labels->rotate();
     {
         GuardedKeyHolder holder(labels->standby());
-        int failed = profiler->resetDictionariesForTest();
-        EXPECT_EQ(1, failed);
-        profiler->resetCountersForTest(failed);
+        EXPECT_EQ(1, profiler->resetRecordingStateForTest());
         EXPECT_EQ(1, Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS));
     }
 
-    EXPECT_EQ(0, profiler->resetDictionariesForTest());
+    EXPECT_EQ(0, profiler->resetRecordingStateForTest());
     EXPECT_EQ(base_pages, Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset));
     EXPECT_EQ(base_bytes, Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset));
 }

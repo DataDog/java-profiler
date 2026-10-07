@@ -26,11 +26,12 @@ Consequences:
 
 - **`clear()` is O(number-of-overflow-nodes)** rather than O(number-of-entries). The arena
   is reset with a single atomic store; no per-key `free()` is needed.
-- **The TOCTOU gap between the `_accepting` acquire-load and `RefCountGuard::count++` is
-  benign.** Even if `clearAll()`'s drain misses a racing caller on a weakly-ordered CPU,
-  that caller reads from the memset-zeroed root table and returns 0 — the arena memory
-  is still valid, just logically reclaimed. No UAF is possible. The seq_cst recheck
-  that previously closed this window has therefore been removed from the hot path.
+- **The arena does not make a stale reader safe.** `clear()` keeps only the root table
+  and the first arena chunk; overflow nodes and further chunks are freed. A caller whose
+  guard `clearAll()`'s drain missed (the TOCTOU gap between the `_accepting` acquire-load
+  and `RefCountGuard::count++`) is stopped by the seq_cst `_accepting` recheck after guard
+  creation, before it touches buffer data; and if the drain times out, `clearAll()`
+  resets nothing (see "The seq_cst recheck after guard creation" and "clearAll() Protocol").
 - **Arena capacity is sized per dictionary** (configured in `Profiler`):
   `_class_map` 4 MB per buffer (class names accumulate across rotations);
   `_string_label_map` and `_context_value_map` 512 KB per buffer (bounded by `size_limit`).
@@ -185,11 +186,12 @@ clearAll() -> bool
   8. return true
 ```
 
-`clearAll()` is self-contained: no external lock is required. `Profiler::start()`
-calls it without `lockAll()`, logs a warning for a dictionary that was not reset
-and continues; an unreset dictionary stays consistent (ids valid, generation
-unchanged), and the Java `ContextValueCache` is only invalidated when the
-context-value dictionary was actually reset.
+`clearAll()` is self-contained: no external lock is required. It only reports the
+result; `Profiler::start()` (`resetRecordingState()`) calls it without `lockAll()`,
+and for a dictionary that was not reset increments `DICTIONARY_DRAIN_TIMEOUTS` and
+logs a warning after `Counters::reset()`, then continues. An unreset dictionary stays
+consistent (ids valid, generation unchanged), and the Java `ContextValueCache` is only
+invalidated when the context-value dictionary was actually reset.
 
 ---
 
@@ -252,6 +254,8 @@ on the then-active buffer outlived `rotate()`'s drain may still be using it two
 rotations later.  If that drain times out the clear is skipped; the buffer becomes
 active on the next `rotate()` with its old entries (harmless - ids are only
 reassigned by `clearAll()`) and is cleared the next time it is the clear target.
+`clearStandby()` returns `false` in that case and `rotateDictsAndRun()` reports it
+(`DICTIONARY_DRAIN_TIMEOUTS` and a warning).
 
 `rotate()` and `lockAll()` are deliberately separated:
 
@@ -268,7 +272,7 @@ reassigned by `clearAll()`) and is cleared the next time it is the clear target.
 |-----------|-------------|
 | No UAF during `clearAll()` reset | Per-dictionary drain + seq_cst `_accepting` recheck; on drain timeout nothing is reset |
 | No UAF during `clearStandby()` | Drain of the clear target; on timeout the clear is skipped |
-| No entry lost during `rotate()` | Two-phase copy + `waitForRefCountToClear(old_active)` drains late JNI insertors |
+| No entry lost during `rotate()`, unless its drain times out | Two-phase copy + `waitForRefCountToClear(old_active)` drains late JNI insertors; after a release-build timeout an insert by a straggler may miss the dump snapshot (it stays memory-safe: `clearStandby()` drains before clearing) |
 | No profiling signal inserts into `old_active` between Phase 1 and 2 (dump thread) | `SignalBlocker` in `rotateDictsAndRun()` |
 | `writeCpool()` sees a stable dump snapshot | `rotate()` completes (including drain) before `jfr_op()` starts |
 | `CallTraceStorage` writers excluded during dump | `lockAll()` around `jfr_op()` |
