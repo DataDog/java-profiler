@@ -482,16 +482,23 @@ void CallTraceStorage::processTraces(...) {
 }
 ```
 
-**Lifetime contract:** in production these drains are defense in depth, not the
-primary protection. `processTraces()`, `clear()` and the destructor must not run
-concurrently with `put()`. `Profiler` guarantees this with `lockAll()`: every
-`put()` runs under one of the stripe locks, and every `processTraces()` /
-`clear()` caller (`FlightRecorder::stop()` / `dump()` via `rotateDictsAndRun()`,
-and `Profiler::start()`) holds all of them. `lockAll()` waits for in-flight
-`put()`s without a time limit, so the drains find no guard on the table. If a
-drain does time out the contract was broken: debug builds abort, and release
-builds leak instead of freeing memory a `put()` may still be writing
-(`clearTableOnly()` leaks the detached chunks, the destructor leaks the table).
+**Reclamation and `put()`:**
+
+- `processTraces()` and the destructor tolerate concurrent `put()`. A table is
+  reclaimed only after it has been swapped out of `_active_storage`, which
+  `put()` re-checks after taking its guard, and after the drain on it succeeds.
+- `clear()` resets the *active* table in place. `_active_storage` does not change,
+  so a `put()` that starts after the drain passes its re-check and could write
+  into chunks being freed: `clear()` requires `put()` to be excluded.
+
+Today `Profiler` excludes `put()` from all of them: every `put()` runs under one
+of the stripe locks, and every `processTraces()` / `clear()` caller
+(`FlightRecorder::stop()` / `dump()` via `rotateDictsAndRun()`, and
+`Profiler::start()`) holds `lockAll()`, which the dump needs anyway for the
+per-stripe JFR buffers. The drains therefore find no guard on the table. If a
+drain does time out, debug builds abort and release builds leak instead of
+freeing memory a `put()` may still be writing (`clearTableOnly()` leaks the
+detached chunks, the destructor leaks the table).
 
 **Scanner Performance:**
 - Linear scan of 8192 slots: ~10-20 microseconds on modern CPUs

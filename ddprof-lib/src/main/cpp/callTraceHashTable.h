@@ -138,7 +138,8 @@ public:
    * structure is reset immediately (allowing rotation), but trace memory
    * remains valid until the processor finishes accessing it.
    *
-   * The caller must exclude put() on this table for the duration.  If a
+   * No new put() may enter this table for the duration: it must already be
+   * swapped out of the active slot, or put() excluded by the caller.  If a
    * put() still holds a RefCountGuard on it after the drain timeout, debug
    * builds abort; otherwise the chunks are leaked rather than freed and the
    * returned ChunkList is empty.

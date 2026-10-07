@@ -214,7 +214,7 @@ bool RefCountGuard::waitForRefCountToClear(void* table_to_delete) {
               "drain incomplete", table_to_delete);
 #if !defined(NDEBUG) && !defined(UNIT_TEST)
     // Treat the timeout as a fatal bug in debug builds so a stalled accessor
-    // (or, for CallTraceStorage, a broken lockAll() contract) is surfaced.
+    // is surfaced.
     // Release builds, and the gtest builds that cover the release behavior,
     // return false and the caller must not free the resource.
     abort();

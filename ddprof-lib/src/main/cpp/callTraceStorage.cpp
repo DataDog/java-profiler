@@ -165,8 +165,8 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
 
 /*
  * Trace processing with signal blocking for simplified concurrency.
- * The caller must exclude put() for the duration (see the class comment);
- * the RefCountGuard drains below are defense in depth.
+ * Tolerates concurrent put(): tables are reclaimed only after being swapped
+ * out and drained (see the class comment).
  * It is not designed to be called concurrently with itself.
  */
 void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> processor) {

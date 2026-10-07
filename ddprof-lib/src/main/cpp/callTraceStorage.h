@@ -32,13 +32,18 @@ typedef std::function<void(CallTraceIdSet&)> LivenessChecker;
  * Triple-buffered store of call traces, written by put() from signal handlers
  * and JNI paths and drained by processTraces().
  *
- * Lifetime contract: processTraces(), clear() and the destructor reclaim
- * table memory and must not run concurrently with put().  In Profiler this
- * exclusion comes from lockAll(): every put() runs under one of the stripe
- * locks and every processTraces()/clear() caller holds all of them.  The
- * RefCountGuard drains these methods perform are defense in depth; if one
- * times out, the contract was broken: debug builds abort, and release builds
- * leak the affected table memory rather than free it under a running put().
+ * Reclamation and put():
+ * - processTraces() and the destructor tolerate concurrent put(): they only
+ *   reclaim a table after swapping it out of _active_storage (put() re-checks
+ *   that pointer after taking its RefCountGuard) and draining the guards on it.
+ * - clear() resets the active table in place, so it requires put() to be
+ *   excluded; a put() that starts after its drain would write into chunks
+ *   being freed.
+ * In Profiler every put() runs under one of the stripe locks and every
+ * processTraces()/clear() caller holds lockAll(), so today no put() runs
+ * concurrently with any of them and the drains return immediately.  If a
+ * drain does time out, debug builds abort and release builds leak the table
+ * memory rather than free it under a put() that may still be writing.
  */
 class CallTraceStorage {
 public:
@@ -96,11 +101,11 @@ public:
     
     // Rotates the tables and hands all collected traces to processor.
     // The callback receives traces that are guaranteed to be valid during execution.
-    // Must not run concurrently with put() (see the class comment).
+    // Tolerates concurrent put() (see the class comment).
     void processTraces(std::function<void(const CallTraceSet&)> processor);
 
     // Clears the active and standby tables.
-    // Must not run concurrently with put() (see the class comment).
+    // Requires put() to be excluded for the duration (see the class comment).
     void clear();
 };
 

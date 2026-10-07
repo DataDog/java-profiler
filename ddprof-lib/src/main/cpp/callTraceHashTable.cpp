@@ -169,17 +169,18 @@ void CallTraceHashTable::decrementCounters() {
 }
 
 ChunkList CallTraceHashTable::clearTableOnly() {
-  // Callers exclude put() for the duration (Profiler holds lockAll(); every
-  // put() runs under one of its stripe locks), so this drain is defense in
-  // depth and should return on its first scan.  It waits only for guards on
-  // THIS table: a global wait would also count guards on unrelated resources,
-  // such as StringDictionary lookups that lockAll() does not exclude, and could
-  // time out on them.
+  // Drain the put() operations still holding a RefCountGuard on THIS table.
+  // processTraces() calls this only for tables already swapped out of
+  // _active_storage, which no new put() can enter; for the active table
+  // (CallTraceStorage::clear()) the caller must exclude put() itself.  In
+  // Profiler every caller also holds lockAll(), so the drain returns on its
+  // first scan.  It waits only for guards on this table: a global wait would
+  // also count guards on unrelated resources, such as StringDictionary lookups
+  // that lockAll() does not exclude, and could time out on them.
   //
-  // A timeout means the caller broke that contract and a put() may still be
-  // writing into this table's chunks.  waitForRefCountToClear() aborts debug
-  // builds; otherwise the detached chunks are leaked below instead of being
-  // handed back for freeing.
+  // On a timeout a put() may still be writing into this table's chunks.
+  // waitForRefCountToClear() aborts debug builds; otherwise the detached
+  // chunks are leaked below instead of being handed back for freeing.
   const bool drained = RefCountGuard::waitForRefCountToClear(this);
   decrementCounters();
 
