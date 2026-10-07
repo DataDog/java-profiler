@@ -88,6 +88,16 @@ per attempt and ~1,250 precomputed-info hits each. `@RetryTest` was lowered from
 10 to 2: one retry absorbs sampling noise in the stub-presence assertions, while
 an unwind regression (which reproduced on nearly every attempt) still fails.
 
+### Same cliff in other tests
+
+`BoundMethodHandleProfilerTest` also sampled at `wall=100us` on debug builds.
+On JDK 25 aarch64 it took 14 s on CI before, and 138 s locally with or without
+the analyzer change, and it stalled two CI jobs until the 3h timeout. It now
+uses `wall=1ms` on debug builds too (4.4 s locally); it only asserts that some
+samples exist. `MegamorphicCallTest` still samples at 100us on debug builds and
+is at risk of the same cliff; it needs itable-stub sample density, so a fix
+there would have to scale the workload like `StubUnwindCpuTest` does.
+
 ### Local build note
 
 On this host clang picks the GCC 14 toolchain, which has no libstdc++ headers
