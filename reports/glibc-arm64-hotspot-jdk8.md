@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-10-07 14:24:15 EDT
+**Date:** 2026-10-07 16:34:02 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 98 |
-| Sample Rate | 1.63/sec |
-| Health Score | 102% |
+| CPU Samples | 338 |
+| Sample Rate | 5.63/sec |
+| Health Score | 352% |
 | Threads | 9 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 105 |
-| Sample Rate | 1.75/sec |
-| Health Score | 109% |
-| Threads | 13 |
+| CPU Samples | 48 |
+| Sample Rate | 0.80/sec |
+| Health Score | 50% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 44-44 cores)</summary>
 
 ```
-1791397245 44
-1791397250 44
-1791397255 44
-1791397260 44
-1791397265 44
-1791397270 44
-1791397275 44
-1791397280 44
-1791397285 44
-1791397290 44
-1791397295 44
-1791397300 44
-1791397305 44
-1791397310 44
-1791397315 44
-1791397320 44
-1791397325 44
-1791397330 44
-1791397335 44
-1791397340 44
+1791405039 44
+1791405044 44
+1791405049 44
+1791405054 44
+1791405059 44
+1791405064 44
+1791405069 44
+1791405074 44
+1791405079 44
+1791405084 44
+1791405089 44
+1791405095 44
+1791405100 44
+1791405105 44
+1791405110 44
+1791405115 44
+1791405120 44
+1791405125 44
+1791405130 44
+1791405135 44
 ```
 </details>
 
