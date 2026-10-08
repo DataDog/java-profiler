@@ -267,10 +267,12 @@ inline bool isLoadStore(uint32_t insn) {
 
 // In-stub targets of ADR (exact) and whether any ADRP addresses a page that
 // overlaps the stub. Either is how generated code materializes a code address
-// it may later reach through 'br' or 'ret' ('adr lr, L; br xN; L: ...'); such
-// a target is not reachable by fall-through yet is not a branch target the
-// edge validation could check. Returns the ADR target index for in-range ADR,
-// -1 otherwise; sets adrp_into_stub for ADRP pages overlapping the stub.
+// it may later reach through 'br' ('adr x9, L; ...; br x9', the computed jump
+// into the unrolled loops of the *_fill and large_arrays_hashcode_* stubs, or
+// 'adr lr, L; br xN; L: ...'); such a target may be entered with a state the
+// fall-through scan cannot know, and it is not a branch target the edge
+// validation could check. Returns the ADR target index for in-range ADR, -1
+// otherwise; sets adrp_into_stub for ADRP pages overlapping the stub.
 int decodeAdrTarget(uint32_t insn, const instruction_t* entry, int index, int count,
                     bool& adrp_into_stub) {
     if ((insn & 0x1f000000) != 0x10000000) return -1;
@@ -285,6 +287,18 @@ int decodeAdrTarget(uint32_t insn, const instruction_t* entry, int index, int co
     uintptr_t page = (pc & ~(uintptr_t)0xfff) + (uintptr_t)(imm << 12);  // ADRP
     if (page < end && page + 0x1000 > start) adrp_into_stub = true;
     return -1;
+}
+
+// An ADR target reached in the fall-through state, so it needs no validation:
+// the return point of an in-stub call (set_last_Java_frame's last_Java_pc in
+// the runtime-call blobs is 'adr x8, L; ...; blr xN; L:', reached by the
+// callee's ret with the state after the call) and the ADR's own address
+// ('adr x8, .' in the throw and jfr blobs). Self targets are filtered out by
+// the caller; any other target degrades.
+bool isAdrSafeTarget(const instruction_t* entry, int index) {
+    if (index == 0) return false;
+    uint32_t prev = entry[index - 1];
+    return (prev >> 26) == 0x25 || (prev & 0xfffffc1f) == 0xd63f0000;  // BL, BLR
 }
 
 // AdvSIMD LD1-4/ST1-4 (multiple or single structure, including LDnR), with
@@ -338,8 +352,9 @@ bool decodeLogicalImm64(uint32_t insn, int& opc, int& rdn, int& rnn, uint64_t& i
     rnn = rn(insn);
     uint32_t n = (insn >> 22) & 1, immr = (insn >> 16) & 0x3f, imms = (insn >> 10) & 0x3f;
     uint32_t combined = (n << 6) | (~imms & 0x3f);
+    // HighestSetBit(N:NOT(imms)); 'combined | 1' keeps clz defined for 0.
     int len = 31 - __builtin_clz(combined | 1);
-    if (combined == 0 || len < 1) return false;
+    if (len < 1) return false;  // N = 0 with imms = 0b11111x: unallocated
     uint32_t levels = (1u << len) - 1;
     uint32_t sbits = imms & levels, r = immr & levels;
     if (sbits == levels) return false;  // reserved
@@ -598,11 +613,8 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length, bool multi_entr
         int target = decodeBranch(entry[i], i, count);
         if (target >= 0) targets[target >> 6] |= 1ull << (target & 63);
         int adr = decodeAdrTarget(entry[i], entry, i, count, adrp_into_stub);
-        if (adr >= 0) adr_targets[adr >> 6] |= 1ull << (adr & 63);
+        if (adr >= 0 && adr != i) adr_targets[adr >> 6] |= 1ull << (adr & 63);
     }
-    // Set once the scan has restarted after a mid-stub br: from then on the
-    // linear state assumes no indirect entry, so an ADR target degrades.
-    bool restarted = false;
 
     for (int i = 0; i < count; i++) {
         uint32_t insn = entry[i];
@@ -610,7 +622,8 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length, bool multi_entr
             st.const_reg = -1;
             st.fp_saved = false;
         }
-        if (restarted && (adr_targets[i >> 6] & (1ull << (i & 63))) && i < truncate_at) {
+        if ((adr_targets[i >> 6] & (1ull << (i & 63))) && !isAdrSafeTarget(entry, i) &&
+            i < truncate_at) {
             truncate_at = i;
         }
         ScanState next = st;
@@ -871,7 +884,6 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length, bool multi_entr
                 // after the br is unknown: cut there.
                 if (multi_entry && !adrp_into_stub) {
                     next = ScanState();
-                    restarted = true;
                 } else {
                     if (i + 1 < count && i + 1 < truncate_at) truncate_at = i + 1;
                     next = st;

@@ -522,7 +522,8 @@ TEST_F(StubUnwindTest, MovSpX29RecoversUnknownSp) {
 
 // 'adr xN, L; br xM; L:' materializes a return point right after the br: L
 // is reached through a register, not as a fresh entry, so even in a
-// multi-entry blob the restart must not claim the entry rule there.
+// multi-entry blob the restart must not claim the entry rule there (as for
+// every ADR target that is not a call's return point).
 TEST_F(StubUnwindTest, AdrTargetAfterRestartDegrades) {
     // 0: adr x9, #8        = 0x10000049 (-> 2)
     // 1: br x8
@@ -532,6 +533,42 @@ TEST_F(StubUnwindTest, AdrTargetAfterRestartDegrades) {
     ASSERT_NE(info, nullptr);
     expectPhase(info, 1, SU_PC_TO_LR, 0);
     expectPhase(info, 2, SU_UNSUPPORTED, 0);
+}
+
+// ADR targets degrade before any br as well: 'adr x9, L; sub sp, sp, #16;
+// ...; br x9; L:' may enter L with the caller's sp while the fall-through scan
+// says sp + 16 (PR 842 review).
+TEST_F(StubUnwindTest, AdrTargetBeforeBrDegrades) {
+    // 0: adr x9, #12       = 0x10000069 (-> 3)
+    // 1: sub sp,sp,#16
+    // 2: nop
+    // 3: nop             (L)
+    // 4: add sp,sp,#16
+    // 5: ret
+    StubUnwindInfo* info = analyze({0x10000069, subSp(16), NOP, NOP, addSp(16), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 2, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 3, SU_UNSUPPORTED, 0);
+}
+
+// The return point of an in-stub call (set_last_Java_frame's last_Java_pc) and
+// an ADR of its own address ('adr x8, .') are reached in the fall-through
+// state: they keep their rules.
+TEST_F(StubUnwindTest, AdrReturnPointAndSelfKeepRules) {
+    // 2: adr x8, #8        = 0x10000048 (-> 4, the return point of 3)
+    // 3: blr x9
+    // 4: nop             (L)
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0x10000048, callReg(9), NOP,
+                                    ldpPost64(29, 30, 16), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 4, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 6, SU_PC_TO_LR, 0);
+
+    // 1: adr x8, #0        = 0x10000008 (its own address)
+    info = analyze({subSp(16), 0x10000008, NOP, addSp(16), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 2, SU_SP_DELTA_LR, 16);
 }
 
 // An ADRP into the stub's own pages hides the exact code address it builds,
