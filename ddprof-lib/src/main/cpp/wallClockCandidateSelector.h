@@ -8,9 +8,9 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <random>
 #include <utility>
 #include <vector>
+#include "xorshift.h"
 
 enum class WallClockCandidateOutcome {
     SIGNAL_SENT,
@@ -39,11 +39,11 @@ struct WallClockCandidateStats {
 // others of ever being sampled. Reshuffling the visited prefix each pass
 // instead gives every listed thread roughly equal odds of being sampled over
 // time.
-template <typename T, typename URBG, typename Visitor>
+template <typename T, typename Visitor>
 WallClockCandidateStats selectWallClockCandidates(std::vector<T>& candidates,
                                                   size_t target_size,
                                                   size_t visit_limit,
-                                                  URBG& generator,
+                                                  u64& generator,
                                                   Visitor&& visitor) {
     WallClockCandidateStats stats;
     if (target_size == 0 || candidates.empty() || visit_limit == 0) {
@@ -52,8 +52,8 @@ WallClockCandidateStats selectWallClockCandidates(std::vector<T>& candidates,
 
     size_t max_visits = std::min(candidates.size(), visit_limit);
     for (size_t i = 0; i < max_visits && stats.slots_consumed < target_size; ++i) {
-        std::uniform_int_distribution<size_t> next(i, candidates.size() - 1);
-        size_t selected = next(generator);
+        size_t range = candidates.size() - i;
+        size_t selected = i + xorshift::boundedIndex(xorshift::next(generator), (u32)range);
         if (selected != i) {
             std::swap(candidates[i], candidates[selected]);
         }

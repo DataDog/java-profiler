@@ -15,6 +15,7 @@
  */
 
 #include <gtest/gtest.h>
+#include "nativeMem.h"
 #include "threadFilter.h"
 #include "wallClockBlockTracker.h"
 #include "../../main/cpp/gtest_crash_handler.h"
@@ -169,4 +170,82 @@ TEST_F(WallClockBlockTrackerTest, ClearActiveResetsBlockState) {
     WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
     EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
     EXPECT_FALSE(block_slot->sampledThisRun());
+}
+
+// If a block/park run's matching exit is missed (e.g. an exception path with
+// no finally/blockExit0), the slot stays "owned" forever and
+// shouldSuppressOwnedBlock() keeps skipping the thread in every later
+// context window. ThreadFilter::add() must clear a stuck active block run on
+// every context-window entry, but must NOT reset the unrelated
+// unowned-blocked sampling weight, which is meant to survive across
+// context-window entries/exits to keep its amortized sampling ratio
+// meaningful.
+TEST_F(WallClockBlockTrackerTest, ContextEntryClearsStuckActiveBlockRunButPreservesUnownedWeight) {
+    constexpr int tid = 7001;
+    int slot_id = filter->registerThread(tid);
+    ASSERT_GE(slot_id, 0);
+
+    // Simulate blockEnter0 opening a run whose matching blockExit0 never
+    // arrives.
+    u64 token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0ULL, token);
+
+    WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
+    ASSERT_NE(nullptr, block_slot);
+    block_slot->markSampledThisRun(OSThreadState::SLEEPING);
+    ASSERT_TRUE(block_slot->sampledThisRun());
+
+    // Accumulate unowned-blocked fallback weight/state, independent of the
+    // owned block run above -- this must survive the context re-entry below.
+    EXPECT_TRUE(block_slot->shouldRecordUnownedBlockedSample());
+    block_slot->recordUnownedBlockedSample(0xABCDULL, OSThreadState::CONDVAR_WAIT);
+    EXPECT_FALSE(block_slot->shouldRecordUnownedBlockedSample());
+    EXPECT_FALSE(block_slot->shouldRecordUnownedBlockedSample());
+
+    // The thread re-enters the context window (filterThreadAdd0 -> add())
+    // while the stale block run is still "owned".
+    EXPECT_TRUE(filter->add(tid, slot_id));
+
+    EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
+    EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
+    EXPECT_FALSE(block_slot->sampledThisRun());
+    EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->lastSampledState());
+
+    u64 call_trace_id = 0, weight = 0;
+    OSThreadState state = OSThreadState::UNKNOWN;
+    EXPECT_TRUE(block_slot->flushUnownedBlockedTail(call_trace_id, weight, state));
+    EXPECT_EQ(0xABCDULL, call_trace_id);
+    EXPECT_EQ(2ULL, weight);
+    EXPECT_EQ(OSThreadState::CONDVAR_WAIT, state);
+}
+
+TEST_F(WallClockBlockTrackerTest, ContextEntryWithoutActiveBlockRunIsANoop) {
+    constexpr int tid = 7002;
+    int slot_id = filter->registerThread(tid);
+    ASSERT_GE(slot_id, 0);
+
+    WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
+    ASSERT_NE(nullptr, block_slot);
+    EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
+
+    EXPECT_TRUE(filter->add(tid, slot_id));
+
+    EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
+    EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
+    EXPECT_FALSE(block_slot->sampledThisRun());
+}
+
+// The ~128 KiB _slots array is an eager, unconditional allocation (unlike
+// ThreadFilter's lazily-chunked storage), so every WallClockBlockTracker must
+// report it to NativeMem (NM_WALLCLOCK) at construction and retract it at
+// destruction.
+TEST(WallClockBlockTrackerNativeMemTest, ConstructionAndDestructionAccountForSlotsArray) {
+    long long before = NativeMem::live(NM_WALLCLOCK);
+    {
+        WallClockBlockTracker local_tracker;
+        EXPECT_EQ(before + static_cast<long long>(sizeof(WallClockBlockTracker::BlockState)) *
+                                ThreadFilter::kMaxThreads,
+                  NativeMem::live(NM_WALLCLOCK));
+    }
+    EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
 }

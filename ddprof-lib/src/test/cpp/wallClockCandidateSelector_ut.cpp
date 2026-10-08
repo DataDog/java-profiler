@@ -6,9 +6,9 @@
 #include <gtest/gtest.h>
 
 #include "wallClockCandidateSelector.h"
+#include "xorshift.h"
 
 #include <numeric>
-#include <random>
 #include <set>
 #include <vector>
 
@@ -20,7 +20,7 @@ static std::vector<int> makeCandidates(size_t count) {
 
 TEST(WallClockCandidateSelectorTest, VisitsOnlyTargetSizeWithoutRejections) {
     std::vector<int> candidates = makeCandidates(1000);
-    std::mt19937 generator(1234);
+    u64 generator = xorshift::seed(1234, 1);
     std::set<int> selected;
 
     WallClockCandidateStats stats = selectWallClockCandidates(
@@ -37,7 +37,7 @@ TEST(WallClockCandidateSelectorTest, VisitsOnlyTargetSizeWithoutRejections) {
 
 TEST(WallClockCandidateSelectorTest, PrecheckRejectedCandidatesAreBackfilled) {
     std::vector<int> candidates = makeCandidates(100);
-    std::mt19937 generator(42);
+    u64 generator = xorshift::seed(42, 1);
     std::set<int> selected;
 
     WallClockCandidateStats stats = selectWallClockCandidates(
@@ -59,7 +59,7 @@ TEST(WallClockCandidateSelectorTest, PrecheckRejectedCandidatesAreBackfilled) {
 
 TEST(WallClockCandidateSelectorTest, AllPrecheckRejectedCandidatesRespectVisitLimit) {
     std::vector<int> candidates = makeCandidates(257);
-    std::mt19937 generator(7);
+    u64 generator = xorshift::seed(7, 1);
     std::set<int> visited;
 
     WallClockCandidateStats stats = selectWallClockCandidates(
@@ -77,7 +77,7 @@ TEST(WallClockCandidateSelectorTest, AllPrecheckRejectedCandidatesRespectVisitLi
 
 TEST(WallClockCandidateSelectorTest, SignalFailureConsumesCapacityWithoutBackfill) {
     std::vector<int> candidates{1, 2, 3, 4, 5};
-    std::mt19937 generator(17);
+    u64 generator = xorshift::seed(17, 1);
     int callbacks = 0;
 
     WallClockCandidateStats stats = selectWallClockCandidates(
@@ -95,7 +95,7 @@ TEST(WallClockCandidateSelectorTest, SignalFailureConsumesCapacityWithoutBackfil
 TEST(WallClockCandidateSelectorTest, EmptyBoundsDoNoWork) {
     std::vector<int> candidates{1, 2, 3};
     std::vector<int> empty;
-    std::mt19937 generator(1);
+    u64 generator = xorshift::seed(1, 1);
     int callbacks = 0;
     auto visitor = [&](int) {
         callbacks++;
@@ -118,8 +118,8 @@ TEST(WallClockCandidateSelectorTest, EmptyBoundsDoNoWork) {
 TEST(WallClockCandidateSelectorTest, FixedSeedProducesDeterministicTraversal) {
     std::vector<int> first = makeCandidates(50);
     std::vector<int> second = first;
-    std::mt19937 first_generator(2026);
-    std::mt19937 second_generator(2026);
+    u64 first_generator = xorshift::seed(2026, 1);
+    u64 second_generator = xorshift::seed(2026, 1);
     std::vector<int> first_result;
     std::vector<int> second_result;
 
@@ -141,7 +141,7 @@ TEST(WallClockCandidateSelectorTest, RandomizedPrefixRemainsFairAcrossCandidates
     constexpr int rounds = 10000;
     std::vector<int> candidates(candidate_count);
     std::vector<int> selections(candidate_count, 0);
-    std::mt19937 generator(2026);
+    u64 generator = xorshift::seed(2026, 1);
 
     for (int round = 0; round < rounds; ++round) {
         std::iota(candidates.begin(), candidates.end(), 0);
@@ -161,7 +161,7 @@ TEST(WallClockCandidateSelectorTest, RandomizedPrefixRemainsFairAcrossCandidates
 
 TEST(WallClockCandidateSelectorTest, ExhaustingInputDoesNotReportVisitLimit) {
     std::vector<int> candidates{1, 2, 3};
-    std::mt19937 generator(8);
+    u64 generator = xorshift::seed(8, 1);
 
     WallClockCandidateStats stats = selectWallClockCandidates(
         candidates, 5, 20, generator,
@@ -174,7 +174,7 @@ TEST(WallClockCandidateSelectorTest, ExhaustingInputDoesNotReportVisitLimit) {
 
 TEST(WallClockCandidateSelectorTest, MixedAcceptRejectExhaustsPoolBelowTargetSize) {
     std::vector<int> candidates = makeCandidates(20);
-    std::mt19937 generator(99);
+    u64 generator = xorshift::seed(99, 1);
     std::set<int> selected;
 
     // Accept every third candidate (0, 3, 6, ..., 18 -> 7 acceptances out of 20),

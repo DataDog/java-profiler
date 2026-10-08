@@ -75,10 +75,10 @@ class BaseWallClock : public Engine {
       // stream between recordings without needing an entropy source.
       u64 rng = xorshift::seed((u64)(uintptr_t)this, TSC::ticks());
 
-      std::mt19937 candidate_generator;
+      u64 candidate_generator = 0;
       if (lazyBackfill) {
-        candidate_generator.seed(
-            xorshift::seed((u64)(uintptr_t)&candidate_generator, TSC::ticks()));
+        candidate_generator =
+            xorshift::seed((u64)(uintptr_t)&candidate_generator, TSC::ticks());
       }
 
       std::vector<ThreadType> threads;

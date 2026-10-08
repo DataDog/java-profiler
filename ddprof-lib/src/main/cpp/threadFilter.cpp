@@ -239,8 +239,9 @@ void ThreadFilter::refreshSlotForRecording(SlotID slot_id, Slot* slot, Recording
     // only reached via registerThread() re-registering the calling thread's
     // own tid, so no other thread can be transitioning this slot's context
     // window concurrently. The CAS (instead of a plain store) is defensive:
-    // it detects rather than silently clobbers a concurrent transition if
-    // that invariant is ever broken.
+    // it retries and counts each lost race via
+    // THREAD_REGISTRY_CONTEXT_RESET_RACE_DETECTED rather than silently
+    // clobbering a concurrent transition if that invariant is ever broken.
     u64 current = slot->context_window_state.load(std::memory_order_acquire);
     while (current != 0 &&
            !slot->context_window_state.compare_exchange_weak(
@@ -471,6 +472,18 @@ bool ThreadFilter::add(int tid, SlotID slot_id) {
         // of which disable suppression rather than enable it.
         if (unlikely(tid < 0 || slot.nativeTid() != tid)) {
             return false;
+        }
+        // A block/park run's exit can be missed (e.g. an exception path with
+        // no finally), leaving the slot "owned" forever and permanently
+        // suppressed. add() is only ever called by the slot's own thread
+        // (ensureCurrentThreadFilterSlot() uses current->tid()), which
+        // cannot itself be inside a block run at this exact point, so it is
+        // always safe to drop a stuck active block run on every context
+        // entry. Only the active-run fields are cleared, not the
+        // unowned-blocked sampling weight -- see
+        // WallClockBlockTracker::BlockState::clearActiveBlockRun().
+        if (_block_tracker != nullptr) {
+            _block_tracker->clearActiveBlockRun(slot_id, OSThreadState::UNKNOWN);
         }
         slot.enterContextWindow();
         return true;

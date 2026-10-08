@@ -475,8 +475,9 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (tf->registryActive()) {
     ThreadFilter::SlotID slot_id = WallClockBlockTracker::tokenSlotId(park_block_token);
-    if (tf->activeSlotForId(current->filterSlotId(), current->tid()) != nullptr &&
-        current->filterSlotId() == slot_id) {
+    ThreadFilter::SlotID cached_id = current->filterSlotId();
+    if (cached_id == slot_id &&
+        tf->activeSlotForId(cached_id, current->tid()) != nullptr) {
       WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
       tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(park_block_token));
     }

@@ -353,10 +353,8 @@ void BaseWallClock::stop() {
   // at its constructor sentinel of 0. Profiler::stop() calls every engine's
   // stop() whenever its event mask bit was requested, regardless of whether
   // start() actually activated it, so this guard must live here rather than
-  // at the call site. Skipping it crashes on musl: musl's pthread_kill/
-  // pthread_join dereference the thread descriptor unconditionally, so a
-  // zero-valued pthread_t segfaults instead of returning an error like glibc
-  // does.
+  // at the call site. Skipping it crashes on musl when _thread is still 0
+  // (observed); glibc tolerates a zero pthread_t here, musl does not.
   if (_thread == 0) {
     return;
   }

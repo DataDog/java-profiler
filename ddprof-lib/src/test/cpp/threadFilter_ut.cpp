@@ -423,11 +423,9 @@ TEST_F(ThreadFilterTest, FreeListExhaustionRecovery) {
     EXPECT_EQ(final_tids.size(), new_slot_ids.size());
 }
 
-// Performance regression test - only run in release builds
-#ifdef NDEBUG
 TEST_F(ThreadFilterTest, PerformanceRegression) {
     const int num_operations = 100000;
-    
+
     // Pre-register slots
     std::vector<int> slot_ids;
     for (int i = 0; i < 100; i++) {
@@ -435,9 +433,25 @@ TEST_F(ThreadFilterTest, PerformanceRegression) {
         ASSERT_GE(slot_id, 0);
         slot_ids.push_back(slot_id);
     }
-    
+
+    // Baseline: a plain atomic load + release store pair, measured on this
+    // machine/run rather than assumed, so the comparison below is immune to
+    // absolute clock-speed differences across CI hosts (a fixed ns ceiling
+    // is not).
+    std::atomic<u64> baseline_state{0};
+    auto baseline_start = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i < num_operations; i++) {
+        u64 v = baseline_state.load(std::memory_order_relaxed);
+        baseline_state.store(v + 1, std::memory_order_release);
+    }
+    auto baseline_end = std::chrono::high_resolution_clock::now();
+    double baseline_ns_per_op =
+        (double)std::chrono::duration_cast<std::chrono::nanoseconds>(baseline_end - baseline_start)
+            .count() /
+        num_operations;
+
     auto start = std::chrono::high_resolution_clock::now();
-    
+
     // Perform many add/accept/remove operations
     for (int i = 0; i < num_operations; i++) {
         int slot_id = slot_ids[i % slot_ids.size()];
@@ -446,16 +460,21 @@ TEST_F(ThreadFilterTest, PerformanceRegression) {
         EXPECT_TRUE(accepted);
         filter->remove(slot_id);
     }
-    
+
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    
-    fprintf(stderr, "Performance: %d operations in %ld microseconds (%.2f ns/op)\n",
-            num_operations, duration.count(), 
-            (double)duration.count() * 1000.0 / num_operations);
-    
-    // Should be fast - less than 200ns per operation is reasonable for this complex test
-    EXPECT_LT(duration.count() * 1000.0 / num_operations, 200.0);  // 200ns per op max
+    double ns_per_op = (double)duration.count() * 1000.0 / num_operations;
+
+    fprintf(stderr,
+            "Performance: %d operations in %ld microseconds (%.2f ns/op, baseline "
+            "load+store: %.2f ns/op)\n",
+            num_operations, duration.count(), ns_per_op, baseline_ns_per_op);
+
+    // Compare against a baseline measured in this same run instead of a fixed
+    // ns ceiling (see ContextWindowEnterExitPerformance below for the same
+    // pattern). This test additionally does TID hashing via accept(), so it
+    // gets a larger multiplier than the plain add()/remove() pair.
+    EXPECT_LT(ns_per_op, baseline_ns_per_op * 25.0 + 20.0);
 }
 
 // Isolates the cost of add()/remove() (i.e. Slot::enterContextWindow()/
@@ -468,6 +487,22 @@ TEST_F(ThreadFilterTest, ContextWindowEnterExitPerformance) {
     int slot_id = filter->registerThread(tid);
     ASSERT_GE(slot_id, 0);
 
+    // Baseline: a plain atomic load + release store pair, measured on this
+    // machine/run rather than assumed, so the comparison below is immune to
+    // absolute clock-speed differences across CI hosts (a fixed ns ceiling
+    // is not).
+    std::atomic<u64> baseline_state{0};
+    auto baseline_start = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i < num_operations; i++) {
+        u64 v = baseline_state.load(std::memory_order_relaxed);
+        baseline_state.store(v + 1, std::memory_order_release);
+    }
+    auto baseline_end = std::chrono::high_resolution_clock::now();
+    double baseline_ns_per_op =
+        (double)std::chrono::duration_cast<std::chrono::nanoseconds>(baseline_end - baseline_start)
+            .count() /
+        num_operations;
+
     auto start = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < num_operations; i++) {
@@ -479,15 +514,21 @@ TEST_F(ThreadFilterTest, ContextWindowEnterExitPerformance) {
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     double ns_per_op = (double)duration.count() * 1000.0 / (num_operations * 2);
 
-    fprintf(stderr, "ContextWindow enter/exit: %d pairs in %ld microseconds (%.2f ns/op)\n",
-            num_operations, duration.count(), ns_per_op);
+    fprintf(stderr,
+            "ContextWindow enter/exit: %d pairs in %ld microseconds (%.2f ns/op, baseline "
+            "load+store: %.2f ns/op)\n",
+            num_operations, duration.count(), ns_per_op, baseline_ns_per_op);
 
-    // A plain load + release store per call should stay well under a locked
-    // RMW's cost; this is a loose ceiling to catch a regression back to CAS
-    // or worse, not a tight performance contract.
-    EXPECT_LT(ns_per_op, 50.0);
+    // Compare against a baseline measured in this same run instead of a
+    // fixed ns ceiling, so the assertion isn't sensitive to CI host speed.
+    // add()/remove() does a bare load + release store plus a couple of
+    // cheap extra checks (tid match, chunk lookup) on top of the baseline's
+    // single load+store, so a generous multiplier still catches a
+    // regression back to a CAS retry loop or worse, which would cost
+    // several times more, not a fraction more. The flat floor absorbs
+    // timer-resolution noise when the baseline itself measures near zero.
+    EXPECT_LT(ns_per_op, baseline_ns_per_op * 15.0 + 20.0);
 }
-#endif // NDEBUG
 
 // Collect behavior with mixed states
 TEST_F(ThreadFilterTest, CollectMixedStates) {

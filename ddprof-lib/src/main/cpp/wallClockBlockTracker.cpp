@@ -14,6 +14,15 @@
  * limitations under the License.
  */
 #include "wallClockBlockTracker.h"
+#include "nativeMem.h"
+
+WallClockBlockTracker::WallClockBlockTracker() {
+    NativeMem::record(NM_WALLCLOCK, static_cast<long long>(sizeof(_slots)));
+}
+
+WallClockBlockTracker::~WallClockBlockTracker() {
+    NativeMem::record(NM_WALLCLOCK, -static_cast<long long>(sizeof(_slots)));
+}
 
 u64 WallClockBlockTracker::enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
                                            OSThreadState state, BlockRunOwner owner) {
@@ -56,6 +65,13 @@ void WallClockBlockTracker::resetSlot(ThreadFilter::SlotID slot_id, OSThreadStat
 void WallClockBlockTracker::resetAll() {
     for (ThreadFilter::SlotID slot_id = 0; slot_id < ThreadFilter::kMaxThreads; ++slot_id) {
         _slots[slot_id].resetSlot(OSThreadState::UNKNOWN);
+    }
+}
+
+void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id, OSThreadState state) {
+    BlockState* s = slotForId(slot_id);
+    if (s != nullptr) {
+        s->clearActiveBlockRun(state);
     }
 }
 
