@@ -251,11 +251,18 @@ rotateDictsAndRun(jfr_op):
 
 `clearStandby()` drains its target buffer before clearing it: a caller whose guard
 on the then-active buffer outlived `rotate()`'s drain may still be using it two
-rotations later.  If that drain times out the clear is skipped; the buffer becomes
-active on the next `rotate()` with its old entries (harmless - ids are only
-reassigned by `clearAll()`) and is cleared the next time it is the clear target.
-`clearStandby()` returns `false` in that case and `rotateDictsAndRun()` reports it
-(`DICTIONARY_DRAIN_TIMEOUTS` and a warning).
+rotations later.  If that drain times out the clear is skipped, `clearStandby()`
+returns `false` and `rotateDictsAndRun()` reports it (`DICTIONARY_DRAIN_TIMEOUTS`
+and a warning).
+
+Reusing such a buffer as-is would not be harmless: the straggler may have inserted
+a key after both copies of the earlier `rotate()`, with an id the active buffer has
+since assigned differently, and Phase 1's `copyFrom()` keeps an existing entry's id.
+So the dictionary remembers the skipped buffer, and the next `rotate()` - which
+makes it the active buffer - retries the drain and clear before Phase 1.  Only if
+the straggler still holds its guard then (a stall longer than a whole dump cycle)
+is the buffer reused uncleared; `rotate()` returns `false` and `rotateDictsAndRun()`
+reports it.
 
 `rotate()` and `lockAll()` are deliberately separated:
 

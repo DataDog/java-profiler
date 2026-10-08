@@ -154,6 +154,17 @@ RefCountGuard& RefCountGuard::operator=(RefCountGuard&& other) noexcept {
 
 // Returns true iff the slot currently references the resource we want to delete,
 // either as active_ptr or as any non-null entry in outer_stack.
+//
+// Guards move a resource between active_ptr and outer_stack while the slot is
+// being scanned, always storing it in the new place before clearing the old
+// one.  A reentrant constructor moves the displaced resource from active_ptr to
+// outer_stack; reading active_ptr first and outer_stack second sees it in at
+// least one of them.  A reentrant destructor moves it back from outer_stack to
+// active_ptr; a scan that read active_ptr before that store and outer_stack
+// after the clear would see it in neither, so active_ptr is read again.  The
+// ACQUIRE load of the cleared outer_stack entry pairs with the destructor's
+// RELEASE stores, so the second read sees the restored active_ptr (or a later
+// value of it).
 static inline bool slotReferences(const RefCountSlot& s, void* target) {
     void* table = __atomic_load_n(&s.active_ptr, __ATOMIC_ACQUIRE);
     if (table == target) return true;
@@ -161,7 +172,7 @@ static inline bool slotReferences(const RefCountSlot& s, void* target) {
         void* o = __atomic_load_n(&s.outer_stack[j], __ATOMIC_ACQUIRE);
         if (o == target) return true;
     }
-    return false;
+    return __atomic_load_n(&s.active_ptr, __ATOMIC_ACQUIRE) == target;
 }
 
 static inline bool slotReferencesAny(const RefCountSlot& s, void* const* targets, int count) {
@@ -188,6 +199,10 @@ static bool anySlotReferences(void* const* targets, int count) {
         if (slotReferencesAny(s, targets, count)) return true;
     }
     return false;
+}
+
+bool RefCountGuard::isReferenced(void* const* targets, int count) {
+    return anySlotReferences(targets, count);
 }
 
 bool RefCountGuard::tryWaitForRefCountsToClear(void* const* targets, int count) {

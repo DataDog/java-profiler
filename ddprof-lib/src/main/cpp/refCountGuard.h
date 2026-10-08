@@ -126,6 +126,14 @@ public:
      *         or reset because an accessor may still be using them.
      */
     [[nodiscard]] static bool tryWaitForRefCountsToClear(void* const* targets, int count);
+
+    /**
+     * One scan of all slots, without waiting.
+     *
+     * @return true if any slot references any of the count resources in
+     *         targets, as active_ptr or as a displaced outer resource.
+     */
+    static bool isReferenced(void* const* targets, int count);
 };
 
 #endif // _REFCOUNTGUARD_H

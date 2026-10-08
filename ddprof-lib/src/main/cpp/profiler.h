@@ -213,9 +213,15 @@ private:
   template<typename F>
   void rotateDictsAndRun(F jfr_op) {
     SignalBlocker blocker;
-    _class_map.rotate();
-    _string_label_map.rotate();
-    _context_value_map.rotate();
+    if (!_class_map.rotate()) {
+      reportDrainTimeout("Class map reused a standby buffer it could not clear");
+    }
+    if (!_string_label_map.rotate()) {
+      reportDrainTimeout("String label map reused a standby buffer it could not clear");
+    }
+    if (!_context_value_map.rotate()) {
+      reportDrainTimeout("Context value map reused a standby buffer it could not clear");
+    }
     lockAll();
     jfr_op();
     unlockAll();

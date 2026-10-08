@@ -167,3 +167,40 @@ TEST(RefCountGuardTryWaitTest, ReturnsTrueOnceGuardIsReleased) {
     EXPECT_TRUE(RefCountGuard::tryWaitForRefCountsToClear(targets, 1));
     releaser.join();
 }
+
+// A scan must see a resource held by an outer guard while a nested guard on
+// the same thread (a signal handler's put() inside a dictionary lookup, say)
+// starts and ends.  The nested destructor moves the outer resource from
+// outer_stack back into active_ptr; a scan that read active_ptr before that
+// move and outer_stack after it saw the resource in neither place.
+TEST(RefCountGuardScanTest, SeesOuterResourceAcrossNestedGuards) {
+    int outer_resource, inner_resource;
+    std::atomic<bool> holding{false};
+    std::atomic<bool> stop{false};
+    std::atomic<long> nestings{0};
+    std::thread nester([&] {
+        RefCountGuard outer(&outer_resource);
+        holding.store(true, std::memory_order_release);
+        while (!stop.load(std::memory_order_relaxed)) {
+            RefCountGuard inner(&inner_resource);
+            nestings.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+    while (!holding.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    void* const targets[] = {&outer_resource};
+    long scans = 0;
+    long misses = 0;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!RefCountGuard::isReferenced(targets, 1)) misses++;
+        scans++;
+    }
+    stop.store(true, std::memory_order_relaxed);
+    nester.join();
+
+    ASSERT_GT(nestings.load(), 0);
+    EXPECT_EQ(0, misses) << misses << " of " << scans << " scans missed the outer resource";
+}

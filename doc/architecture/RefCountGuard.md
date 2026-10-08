@@ -190,6 +190,13 @@ A slot is considered to reference `p` if `active_ptr == p` or any entry of
 `outer_stack[]` equals `p`.  Unused outer-stack entries are `nullptr` and
 therefore never match a (non-null) drain target.
 
+The scan reads `active_ptr`, then `outer_stack[]`, then `active_ptr` again.  Guards
+store a resource in its new place before clearing the old one, so a single pass
+can only miss a resource that moves from `outer_stack[]` back to `active_ptr` - a
+reentrant destructor restoring the outer resource while the slot is being read.
+The second read of `active_ptr` catches that move: the ACQUIRE load of the cleared
+`outer_stack[]` entry pairs with the destructor's RELEASE stores.
+
 ---
 
 ## Invariants

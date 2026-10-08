@@ -499,6 +499,11 @@ class StringDictionary {
     std::atomic<u64>  _generation{0};
     StringDictionaryBuffer _a, _b, _c;
     TripleBufferRotator<StringDictionaryBuffer> _rot;
+    // The buffer whose last clearStandby() was skipped, or null.  rotate()
+    // retries the clear before reusing it.  Accessed only by rotate(),
+    // clearStandby() and clearAll(), which the caller serialises (Profiler:
+    // _state_lock).
+    StringDictionaryBuffer* _uncleared{nullptr};
     int _counter_offset;  // offset into DICTIONARY_KEYS / DICTIONARY_KEYS_BYTES counter rows
 
     u32 nextId() {
@@ -510,6 +515,18 @@ class StringDictionary {
             id = _next_id.fetch_add(1, std::memory_order_relaxed);
         } while (__builtin_expect(id == 0, 0));
         return id;
+    }
+
+    // Clears the clear target if its last clearStandby() was skipped and its
+    // guards have drained since.  Returns false if it is still in use.
+    bool retryUnclearedTarget() {
+        StringDictionaryBuffer* target = _rot.clearTarget();
+        if (target != _uncleared) return true;
+        void* const buffers[] = {target};
+        if (!RefCountGuard::tryWaitForRefCountsToClear(buffers, 1)) return false;
+        target->clear();
+        _uncleared = nullptr;
+        return true;
     }
 
     void countInsert(size_t len) {
@@ -624,7 +641,14 @@ public:
     // The caller is responsible for ensuring it is empty on entry (Profiler
     // achieves this by calling clearStandby() after every cycle and
     // serialising JFR operations with _state_lock).
-    void rotate() {
+    //
+    // If clearStandby() had to skip that buffer, it may still hold an entry a
+    // straggler inserted after both copies of an earlier rotate(), with an id
+    // the active buffer has since assigned differently; Phase 1 would keep the
+    // stale id.  So the clear is retried first.  Returns false if the buffer
+    // is still in use and is reused uncleared; the caller reports it.
+    bool rotate() {
+        bool fresh = retryUnclearedTarget();
         StringDictionaryBuffer* old_active = _rot.active();
         // Phase 1: pre-populate clearTarget from active (before rotate).
         _rot.clearTarget()->copyFrom(*old_active);
@@ -634,6 +658,7 @@ public:
         // Phase 2: catch any entries inserted into old_active between Phase 1
         // and the drain completing.
         _rot.active()->copyFrom(*old_active);
+        return fresh;
     }
 
     // Resolve a key during the dump phase.  Safe to call from the dump thread
@@ -675,9 +700,8 @@ public:
     // Clear the scratch buffer (two rotations behind active).
     // An accessor whose guard on this buffer outlived rotate()'s drain may
     // still be using it, so drain it first.  If the drain times out the clear
-    // is skipped; the buffer then becomes active on the next rotate() with its
-    // old entries, which is harmless because ids are never reassigned outside
-    // clearAll(), and it is cleared the next time it is the clear target.
+    // is skipped and the buffer is remembered; the next rotate(), which makes
+    // it the active buffer, retries the clear first (see rotate()).
     // Returns false when the clear was skipped; the caller reports it.
     //
     // Either way DICTIONARY_KEYS / DICTIONARY_KEYS_BYTES restart at 0: they
@@ -691,6 +715,7 @@ public:
         if (cleared) {
             target->clear();
         }
+        _uncleared = cleared ? nullptr : target;
         Counters::set(DICTIONARY_KEYS, 0, _counter_offset);
         Counters::set(DICTIONARY_KEYS_BYTES, 0, _counter_offset);
         return cleared;
@@ -717,6 +742,7 @@ public:
         }
         _a.clear(); _b.clear(); _c.clear();
         _rot.reset();
+        _uncleared = nullptr;
         _next_id.store(1, std::memory_order_relaxed);
         Counters::set(DICTIONARY_KEYS, 0, _counter_offset);
         Counters::set(DICTIONARY_KEYS_BYTES, 0, _counter_offset);
