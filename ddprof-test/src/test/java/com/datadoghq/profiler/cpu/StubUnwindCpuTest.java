@@ -39,9 +39,20 @@ public class StubUnwindCpuTest extends CStackAwareAbstractProfilerTest {
         // Wall-clock at 100us gives dense sampling of the registered thread on
         // every platform (CPU itimer sampling is too coarse on macOS); with
         // cstack=vm/vmx every sample is unwound through HotspotSupport::walkVM,
-        // which is the path the precomputed stub info serves.
-        return isAsan() ? "wall=1ms" : "wall=100us";
+        // which is the path the precomputed stub info serves. ASan and the
+        // -O0 debug build need ~160us per sample for the ~150-frame stack
+        // under the Gradle test executor; at 100us the registered thread
+        // would spend nearly all its time in the signal handler and the
+        // workload would take minutes instead of well under a second.
+        return isAsan() || isDebugBuild() ? "wall=1ms" : "wall=100us";
     }
+
+    private static final int ROUNDS = 40;
+    // The debug build samples 10x coarser than release (see getProfilerCommand)
+    // and runs 10x the rounds so the number of samples landing in each stub
+    // stays the same. ASan always sampled at 1ms with ROUNDS and keeps that:
+    // its instrumented workload is already slow enough.
+    private static final int DEBUG_ROUND_FACTOR = 10;
 
     interface Calculator {
         int calculate();
@@ -111,7 +122,7 @@ public class StubUnwindCpuTest extends CStackAwareAbstractProfilerTest {
         return result;
     }
 
-    @RetryTest(10)
+    @RetryTest(2)
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx"})
     public void testStubUnwinding(@CStack String cstack) throws Exception {
@@ -127,7 +138,8 @@ public class StubUnwindCpuTest extends CStackAwareAbstractProfilerTest {
         Calculator[] calculators = {new Calculator1(), new Calculator2(), new Calculator3()};
 
         long acc = 0;
-        for (int round = 0; round < 40; round++) {
+        int rounds = isDebugBuild() && !isAsan() ? ROUNDS * DEBUG_ROUND_FACTOR : ROUNDS;
+        for (int round = 0; round < rounds; round++) {
             acc += megamorphicWork(10_000, calculators);
             acc += arraycopyWork(data, dst, acc);
             acc += hashWork(sha256, data, acc);

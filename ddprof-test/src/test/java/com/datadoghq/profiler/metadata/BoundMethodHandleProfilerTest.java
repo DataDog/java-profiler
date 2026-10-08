@@ -26,7 +26,12 @@ public class BoundMethodHandleProfilerTest extends AbstractProfilerTest {
         // wall=100us is ~10k samples/s. Under ASAN the workload runs for minutes,
         // producing a JFR too large for JMC to load into the 512MB test heap. Sampling
         // 10x coarser cuts both the recording size and the SIGVTALRM overhead.
-        return isAsan() ? "wall=1ms" : "wall=100us";
+        // The -O0 debug build needs more than 100us per sample for the deep
+        // stack under the Gradle test executor, so at 100us the registered
+        // thread spends nearly all its time in the signal handler (138s
+        // locally, hours on CI runners, on JDK 25 aarch64). The test only
+        // needs some samples, so it samples coarser there as well.
+        return isAsan() || isDebugBuild() ? "wall=1ms" : "wall=100us";
     }
 
     @Test
