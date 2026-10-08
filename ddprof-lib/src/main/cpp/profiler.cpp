@@ -1759,6 +1759,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_filter.deactivateRecording();
   }
 
+  _activated_mask = activated;
+
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
 
@@ -1818,9 +1820,13 @@ Error Profiler::stop() {
     return Error("signal handlers did not drain; teardown skipped, retry stop()");
   }
 
-  if (_event_mask & EM_ALLOC)
+  // Gate on _activated_mask, not _event_mask: a mixed-success start() can
+  // leave _event_mask requesting an engine whose start() actually failed
+  // (see the "recoverable" error handling in start()), and that engine
+  // must not have stop() called on it since it never ran.
+  if (_activated_mask & EM_ALLOC)
     _alloc_engine->stop();
-  if (_event_mask & EM_NATIVEMEM)
+  if (_activated_mask & EM_NATIVEMEM)
     malloc_tracer.stop();
   // Stop the refresher BEFORE socket unpatch: the refresher calls
   // install_socket_hooks() which re-reads _socket_active before acquiring the
@@ -1828,11 +1834,11 @@ Error Profiler::stop() {
   // it can see _socket_active=true, wait for the lock, then re-patch PLT slots
   // that unpatch just restored.  Stopping the refresher here closes that window.
   _libs->stopRefresher();
-  if (_event_mask & EM_NATIVESOCKET)
+  if (_activated_mask & EM_NATIVESOCKET)
     NativeSocketSampler::instance()->stop();
-  if (_event_mask & EM_WALL)
+  if (_activated_mask & EM_WALL)
     _wall_engine->stop();
-  if (_event_mask & EM_CPU)
+  if (_activated_mask & EM_CPU)
     _cpu_engine->stop();
 
   _thread_filter.deactivateRecording();

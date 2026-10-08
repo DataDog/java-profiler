@@ -264,7 +264,8 @@
 #define DD_COUNTER_TABLE_DEBUG(X)                                             \
   X(SAFEFETCH_WHILE_PROTECTED, "safefetch_while_protected")                   \
   X(SAFECOPY_WHILE_PROTECTED, "safecopy_while_protected")                     \
-  X(SAFESTORE_WHILE_PROTECTED, "safestore_while_protected")
+  X(SAFESTORE_WHILE_PROTECTED, "safestore_while_protected")                   \
+  X(WALL_STOP_WHILE_NOT_ACTIVATED, "wall_stop_while_not_activated")
 #else
 #define DD_COUNTER_TABLE_DEBUG(X)
 #endif

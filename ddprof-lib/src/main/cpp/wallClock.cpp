@@ -349,13 +349,16 @@ Error BaseWallClock::start(Arguments &args) {
 void BaseWallClock::stop() {
   _running.store(false);
   // start() can return before pthread_create() runs (e.g. the forced-failure
-  // test hook, or an early Error return for a bad interval), leaving _thread
-  // at its constructor sentinel of 0. Profiler::stop() calls every engine's
-  // stop() whenever its event mask bit was requested, regardless of whether
-  // start() actually activated it, so this guard must live here rather than
-  // at the call site. Skipping it crashes on musl when _thread is still 0
-  // (observed); glibc tolerates a zero pthread_t here, musl does not.
+  // test hook, or pthread_create() itself failing), leaving _thread at its
+  // constructor sentinel of 0. Profiler::stop() only reaches this call when
+  // start() actually activated the wall engine, but this guard is kept as
+  // defense-in-depth for any other caller of stop() on a never-started
+  // instance. Skipping it crashes on musl when _thread is still 0 (observed);
+  // glibc tolerates a zero pthread_t here, musl does not.
   if (_thread == 0) {
+#ifdef DEBUG
+    Counters::increment(CounterId::WALL_STOP_WHILE_NOT_ACTIVATED);
+#endif
     return;
   }
   // the thread join ensures we wait for the thread to finish before returning
