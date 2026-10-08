@@ -3,9 +3,9 @@ layout: default
 title: musl-x64-hotspot-jdk17
 ---
 
-## musl-x64-hotspot-jdk17 - ❌ FAIL
+## musl-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-10-08 12:05:52 EDT
+**Date:** 2026-10-08 12:33:21 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,50 +18,56 @@ title: musl-x64-hotspot-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 94 |
-| CPU Cores (end) | 94 |
+| CPU Cores (start) | 29 |
+| CPU Cores (end) | 29 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | 0 |
-| Sample Rate | 0.00/sec |
-| Health Score | 0% |
-| Threads | 0 |
-| Allocations | 0 |
+| Status | PASS |
+| CPU Samples | 483 |
+| Sample Rate | 8.05/sec |
+| Health Score | 503% |
+| Threads | 8 |
+| Allocations | 351 |
 
-#### Scenario 2: Tracer+Profiler ⚠️
+#### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 577 |
+| Sample Rate | 9.62/sec |
+| Health Score | 601% |
+| Threads | 9 |
+| Allocations | 505 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 94-96 cores)</summary>
+<summary>CPU Timeline (2 unique values: 27-29 cores)</summary>
 
 ```
-1791475179 94
-1791475184 94
-1791475189 94
-1791475194 94
-1791475199 94
-1791475204 96
-1791475209 96
-1791475214 96
-1791475219 96
-1791475224 96
-1791475229 94
-1791475234 94
-1791475239 94
-1791475244 94
+1791476912 29
+1791476917 29
+1791476922 29
+1791476927 29
+1791476932 29
+1791476938 29
+1791476943 27
+1791476948 27
+1791476953 27
+1791476958 27
+1791476963 27
+1791476968 27
+1791476973 27
+1791476978 27
+1791476983 29
+1791476988 29
+1791476993 29
+1791476998 29
+1791477003 29
+1791477008 29
 ```
 </details>
 

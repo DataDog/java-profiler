@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk17
 
 ## glibc-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-10-08 12:05:49 EDT
+**Date:** 2026-10-08 12:33:16 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 75 |
-| Sample Rate | 1.25/sec |
-| Health Score | 78% |
-| Threads | 9 |
-| Allocations | 63 |
+| CPU Samples | 305 |
+| Sample Rate | 5.08/sec |
+| Health Score | 318% |
+| Threads | 10 |
+| Allocations | 132 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 680 |
-| Sample Rate | 11.33/sec |
-| Health Score | 708% |
-| Threads | 9 |
-| Allocations | 492 |
+| CPU Samples | 105 |
+| Sample Rate | 1.75/sec |
+| Health Score | 109% |
+| Threads | 13 |
+| Allocations | 50 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1791475218 48
-1791475223 48
-1791475228 48
-1791475233 48
-1791475238 48
-1791475243 48
-1791475248 48
-1791475253 48
-1791475258 48
-1791475263 48
-1791475268 48
-1791475273 48
-1791475278 48
-1791475283 48
-1791475288 48
-1791475293 48
-1791475298 48
-1791475303 48
-1791475308 48
-1791475313 48
+1791476956 48
+1791476961 48
+1791476966 48
+1791476971 48
+1791476976 48
+1791476981 48
+1791476986 48
+1791476991 48
+1791476996 48
+1791477001 48
+1791477006 48
+1791477011 48
+1791477016 48
+1791477021 48
+1791477026 48
+1791477031 48
+1791477036 48
+1791477041 48
+1791477046 48
+1791477051 48
 ```
 </details>
 
