@@ -1526,26 +1526,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     _total_samples = 0;
     memset(_failures, 0, sizeof(_failures));
 
-    // Reset dictionaries. StringDictionary::clearAll() manages its own
-    // synchronisation (RefCountGuard drain) internally; _class_map_lock is
-    // held exclusively here for the duration of the reset.
-    {
-      ExclusiveLockGuard guard(&_class_map_lock);
-      _class_map.clearAll();
-    }
-    _string_label_map.clearAll();
-    _context_value_map.clearAll();
-    // Signal the Java layer that context-value encodings have been reassigned so it can drop its
-    // process-wide ContextValueCache (consumed in JavaProfiler.execute after this start returns).
-    _context_value_dict_reset.store(true, std::memory_order_release);
-
-    // Reset call trace storage
-    if (!_omit_stacktraces) {
-      lockAll();
-      _call_trace_storage.clear();
-      unlockAll();
-    }
-    Counters::reset();
+    resetRecordingState();
     WallClockCounters::reset();
 
     // Reset thread names and IDs
@@ -2218,6 +2199,57 @@ void Profiler::shutdown(Arguments &args) {
   }
 
   _state.store(TERMINATED, std::memory_order_release);
+}
+
+int Profiler::resetRecordingState() {
+  // StringDictionary::clearAll() manages its own synchronisation (RefCountGuard
+  // drain) internally; no external lock is needed.  A dictionary whose drain
+  // times out is left unchanged rather than reset under an accessor that may
+  // still be using it; it stays consistent and keeps its ids.
+  bool class_map_reset = _class_map.clearAll();
+  bool string_label_map_reset = _string_label_map.clearAll();
+  bool context_value_map_reset = _context_value_map.clearAll();
+  if (context_value_map_reset) {
+    // Signal the Java layer that context-value encodings have been reassigned so it can drop its
+    // process-wide ContextValueCache (consumed in JavaProfiler.execute after this start returns).
+    _context_value_dict_reset.store(true, std::memory_order_release);
+  }
+
+  if (!_omit_stacktraces) {
+    lockAll();
+    _call_trace_storage.clear();
+    unlockAll();
+  }
+
+  Counters::reset();
+  // Counters::reset() zeroes the dictionary memory gauges, but the dictionaries
+  // keep their root tables and first arena chunks, and all of their storage if
+  // a reset was skipped; without this, freeing that storage later would drive
+  // the gauges negative.
+  _class_map.reseedCounters();
+  _string_label_map.reseedCounters();
+  _context_value_map.reseedCounters();
+
+  // Reported only now, so Counters::reset() cannot erase the timeouts.
+  int failed = 0;
+  if (!class_map_reset) {
+    reportDrainTimeout("Class map not reset");
+    failed++;
+  }
+  if (!string_label_map_reset) {
+    reportDrainTimeout("String label map not reset");
+    failed++;
+  }
+  if (!context_value_map_reset) {
+    reportDrainTimeout("Context value map not reset");
+    failed++;
+  }
+  return failed;
+}
+
+void Profiler::reportDrainTimeout(const char *what) {
+  Counters::increment(DICTIONARY_DRAIN_TIMEOUTS);
+  Log::warn("%s: still in use after drain timeout", what);
 }
 
 int Profiler::lookupClass(const char *key, size_t length) {

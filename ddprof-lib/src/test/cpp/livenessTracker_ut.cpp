@@ -606,7 +606,7 @@ TEST_F(SelectLeakCandidatesTest, NothingSelectedAfterClassMapReset) {
     KlassCandidate out[5];
     ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
 
-    Profiler::instance()->classMap()->clearAll();
+    ASSERT_TRUE(Profiler::instance()->classMap()->clearAll());
     EXPECT_EQ(0, tracker->selectLeakCandidates(out, 5))
         << "klass ids from the previous class map were selected";
 }
@@ -2296,7 +2296,7 @@ TEST_F(LivenessTrackerMockJvmTest, FlushAfterClassMapResetDoesNotReuseStaleCache
     ASSERT_EQ(1u, tracker->tableSizeForTest());
     ASSERT_EQ(stale_id, cachedKlassIdAt(0));
 
-    Profiler::instance()->classMap()->clearAll();
+    ASSERT_TRUE(Profiler::instance()->classMap()->clearAll());
     for (u32 i = 1; i <= stale_id; i++) {
         std::string decoy = "com/datadoghq/lt/Decoy" + std::to_string(i);
         ASSERT_EQ(i, (u32)Profiler::instance()->lookupClass(decoy.c_str(), decoy.size()));
@@ -2346,7 +2346,7 @@ TEST_F(LivenessTrackerMockJvmTest, TagLeakInstancesSkipsCachedIdsFromPreviousCla
     sweep();
     ASSERT_EQ(stale_id, cachedKlassIdAt(0));
 
-    Profiler::instance()->classMap()->clearAll();
+    ASSERT_TRUE(Profiler::instance()->classMap()->clearAll());
     KlassCandidate candidate{};
     candidate.klass_id = stale_id;
     candidate.qualifying_tids[0] = kTid;
@@ -2376,7 +2376,7 @@ TEST_F(LivenessTrackerMockJvmTest, RepresentativeLookupSkipsPopulationFromPrevio
     jobject rep = tracker->resolveCandidateRepresentative(&jvm.jni, id);
     ASSERT_NE(nullptr, rep) << "setup: the sweep should record a representative";
 
-    Profiler::instance()->classMap()->clearAll();
+    ASSERT_TRUE(Profiler::instance()->classMap()->clearAll());
     EXPECT_EQ(nullptr, tracker->resolveCandidateRepresentative(&jvm.jni, id));
 
     // The next sweep drops the stale population and rebuilds it.
