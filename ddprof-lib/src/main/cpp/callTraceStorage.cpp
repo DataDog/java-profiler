@@ -72,9 +72,12 @@ CallTraceStorage::~CallTraceStorage() {
     CallTraceHashTable* standby = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_standby_storage, nullptr, __ATOMIC_ACQ_REL));
     CallTraceHashTable* scratch = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_scratch_storage, nullptr, __ATOMIC_ACQ_REL));
 
-    // Wait for any ongoing refcount usage to complete and delete each unique table.
-    // A table a put() still holds after the drain timeout is leaked rather than
-    // deleted under it (waitForRefCountToClear() aborts debug builds first).
+    // The caller must have stopped put() on this storage: put() loads
+    // _active_storage before it takes its guard, so a put() still in flight
+    // could find this object freed.  The drains below are defense in depth for
+    // a straggler that already holds a guard: a table one still holds after
+    // the drain timeout is leaked rather than deleted under it
+    // (waitForRefCountToClear() aborts debug builds first).
     // Note: In triple-buffering, all three pointers should be unique, but check anyway
     if (RefCountGuard::waitForRefCountToClear(active)) {
         delete active;
@@ -228,7 +231,9 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
 
     // Just make sure all puts to the original_active are done before proceeding
     // Do this outside of the critical section not to block the new active area needlessly
-    RefCountGuard::waitForRefCountToClear(original_active);
+    // On a timeout the collection below still runs (this chunk needs the traces),
+    // but step 10 must not free the table's chunks.
+    const bool active_drained = RefCountGuard::waitForRefCountToClear(original_active);
 
     // Step 6: Collect from old active directly to _traces_buffer with hook for immediate preservation
     original_active->collect(_traces_buffer, [&](CallTrace* trace) {
@@ -249,8 +254,13 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
     // This completes the deferred deallocation that prevents use-after-free
     LinearAllocator::freeChunks(standby_chunks);
 
-    // Step 10: Clear the original active area (now scratch)
-    original_active->clear();
+    // Step 10: Clear the original active area (now scratch).  After a failed
+    // drain, reset it without draining again and leak its chunks.
+    if (active_drained) {
+        original_active->clear();
+    } else {
+        original_active->clearAfterFailedDrain();
+    }
     
     // Triple-buffer rotation maintains trace continuity with thread-safe malloc-free operations:
     // - Pre-allocated collections prevent malloc/free during processTraces

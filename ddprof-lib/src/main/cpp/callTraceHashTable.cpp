@@ -133,8 +133,8 @@ void CallTraceHashTable::decrementCounters() {
   // Safe to call when (a) this is a standby/scratch table (never _active_storage,
   // so no signal-handler put() can target it), or (b) the active-table path is
   // guarded by lockAll() — both conditions are enforced by the only caller,
-  // clearTableOnly().  The _prev traversal is safe because waitForRefCountToClear(this)
-  // in clearTableOnly() has already drained any in-flight put() operations.
+  // resetTable().  The _prev traversal is safe because resetTable() calls this
+  // only after a successful drain of this table, so no put() is still in flight.
   // Use a set to deduplicate: put() may store the same CallTrace* pointer in
   // both a newer and an older table (when findCallTrace finds it in prev()),
   // but the counter was only incremented once, so we must only count it once.
@@ -179,10 +179,21 @@ ChunkList CallTraceHashTable::clearTableOnly() {
   // that lockAll() does not exclude, and could time out on them.
   //
   // On a timeout a put() may still be writing into this table's chunks.
-  // waitForRefCountToClear() aborts debug builds; otherwise the detached
-  // chunks are leaked below instead of being handed back for freeing.
-  const bool drained = RefCountGuard::waitForRefCountToClear(this);
-  decrementCounters();
+  // waitForRefCountToClear() aborts debug builds; otherwise resetTable()
+  // leaks the detached chunks instead of handing them back for freeing.
+  return resetTable(RefCountGuard::waitForRefCountToClear(this));
+}
+
+void CallTraceHashTable::clearAfterFailedDrain() {
+  resetTable(false);
+}
+
+ChunkList CallTraceHashTable::resetTable(bool drained) {
+  // Leaked memory stays allocated, so it stays counted; a stalled put() could
+  // also still change the table while decrementCounters() walked it.
+  if (drained) {
+    decrementCounters();
+  }
 
   // Disconnect the full _prev chain before freeing chunks.  The advance step
   // must use a pre-saved pointer because setPrev(nullptr) clears the link that

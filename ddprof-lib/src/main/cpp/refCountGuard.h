@@ -125,7 +125,7 @@ public:
      * @return true when drained; false on timeout, in which case
      *         ptr_to_delete must not be freed.
      */
-    static bool waitForRefCountToClear(void* ptr_to_delete);
+    [[nodiscard]] static bool waitForRefCountToClear(void* ptr_to_delete);
 
     /**
      * Waits for every in-flight guard referencing any of the count resources

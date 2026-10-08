@@ -484,15 +484,21 @@ void CallTraceStorage::processTraces(...) {
 
 **Reclamation and `put()`:**
 
-- `processTraces()` and the destructor tolerate concurrent `put()`. A table is
-  reclaimed only after it has been swapped out of `_active_storage`, which
-  `put()` re-checks after taking its guard, and after the drain on it succeeds.
+- `processTraces()` tolerates concurrent `put()`. A table is reclaimed only after
+  it has been swapped out of `_active_storage`, which `put()` re-checks after
+  taking its guard, and after the drain on it succeeds. If that drain times out,
+  the table is still collected (the chunk needs its traces) but then reset with
+  its chunks leaked, without draining a second time.
 - `clear()` resets the *active* table in place. `_active_storage` does not change,
   so a `put()` that starts after the drain passes its re-check and could write
   into chunks being freed: `clear()` requires `put()` to be excluded.
+- The destructor requires `put()` to be stopped. `put()` loads `_active_storage`
+  before it takes its guard, so a `put()` still in flight could find the
+  `CallTraceStorage` object itself freed; the table-level drains cannot protect
+  the containing object. They only cover a straggler that already holds a guard.
 
-Today `Profiler` excludes `put()` from all of them: every `put()` runs under one
-of the stripe locks, and every `processTraces()` / `clear()` caller
+Today `Profiler` excludes `put()` from `processTraces()` and `clear()`, and never
+destroys its `CallTraceStorage`: every `put()` runs under one of the stripe locks, and every `processTraces()` / `clear()` caller
 (`FlightRecorder::stop()` / `dump()` via `rotateDictsAndRun()`, and
 `Profiler::start()`) holds `lockAll()`, which the dump needs anyway for the
 per-stripe JFR buffers. The drains therefore find no guard on the table. If a

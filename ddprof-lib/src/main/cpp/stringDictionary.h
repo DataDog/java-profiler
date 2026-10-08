@@ -677,7 +677,10 @@ public:
         _rot.clearTarget()->copyFrom(*old_active);
         _rot.rotate();
         // Drain all in-flight accessors on old_active (now the dump buffer).
-        RefCountGuard::waitForRefCountToClear(old_active);
+        // The result is not needed: nothing is reclaimed here.  On a timeout
+        // a straggler's late insert may miss the snapshot, and clearStandby()
+        // drains again before it clears old_active.
+        (void)RefCountGuard::waitForRefCountToClear(old_active);
         // Phase 2: catch any entries inserted into old_active between Phase 1
         // and the drain completing.
         _rot.active()->copyFrom(*old_active);

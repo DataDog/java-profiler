@@ -1195,3 +1195,66 @@ TEST(CallTraceHashTableDrainTest, ClearWithGuardHeldLeaksChunks) {
     EXPECT_EQ(nullptr, findTraceById(after, id));
     EXPECT_GT(table->put(1, &frame, false, 1), 0u);
 }
+
+namespace {
+
+// Puts one trace into storage and returns it, read back from the active table.
+CallTrace* putAndFindTrace(CallTraceStorage* storage, int bci, u64* id_out) {
+    ASGCT_CallFrame frame;
+    frame.bci = bci;
+    frame.method_id = (jmethodID)(uintptr_t)bci;
+    u64 id = storage->put(1, &frame, false, 1);
+    *id_out = id;
+    CallTraceSet traces;
+    storage->activeTableForTest()->collect(traces);
+    return findTraceById(traces, id);
+}
+
+} // namespace
+
+// The destructor must not delete a table a put() still holds after its drain
+// times out; the other tables are deleted as usual.
+TEST(CallTraceStorageDrainTest, DestructorLeaksTableStillGuarded) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    CallTraceStorage* storage = new CallTraceStorage();
+    u64 id;
+    CallTrace* held = putAndFindTrace(storage, 4343, &id);
+    ASSERT_NE(nullptr, held);
+    CallTraceHashTable* table = storage->activeTableForTest();
+
+    {
+        RefCountGuard guard(table);
+        delete storage;  // the drain on table times out on the guard above
+        // The table and its chunks survived the destructor.
+        EXPECT_EQ(id, held->trace_id);
+        EXPECT_EQ(4343, held->frames[0].bci);
+    }
+    delete table;  // still a valid object; nothing else owns it now
+}
+
+// When processTraces()'s drain of the swapped-out active table times out, the
+// table's traces are still collected, the table is then reset without a second
+// drain, and its chunks are leaked instead of freed.
+TEST(CallTraceStorageDrainTest, ProcessTracesAfterFailedDrainLeaksOnce) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    CallTraceStorage storage;
+    u64 id;
+    CallTrace* held = putAndFindTrace(&storage, 4444, &id);
+    ASSERT_NE(nullptr, held);
+    CallTraceHashTable* table = storage.activeTableForTest();
+
+    long long timeouts_before = Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS);
+    bool collected = false;
+    {
+        RefCountGuard guard(table);
+        storage.processTraces([&](const CallTraceSet& traces) {
+            collected = findTraceById(traces, id) != nullptr;
+        });
+        EXPECT_TRUE(collected);
+        // One drain timed out; step 10 did not drain the table again.
+        EXPECT_EQ(timeouts_before + 1, Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS));
+        // The chunk holding the trace was leaked, not unmapped.
+        EXPECT_EQ(id, held->trace_id);
+        EXPECT_EQ(4444, held->frames[0].bci);
+    }
+}
