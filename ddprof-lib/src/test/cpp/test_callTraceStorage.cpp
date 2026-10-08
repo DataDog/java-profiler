@@ -16,6 +16,7 @@
 #include "gtest_crash_handler.h"
 #include "arch.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "refCountGuard.h"
 #include "threadLocalData.h"
 #include <memory>
@@ -1213,23 +1214,32 @@ CallTrace* putAndFindTrace(CallTraceStorage* storage, int bci, u64* id_out) {
 } // namespace
 
 // The destructor must not delete a table a put() still holds after its drain
-// times out; the other tables are deleted as usual.
+// times out; the other tables are deleted as usual.  NM_CALLTRACE tracks the
+// tables' chunk memory: only the guarded table may outlive the destructor, and
+// everything must be freed exactly once.
 TEST(CallTraceStorageDrainTest, DestructorLeaksTableStillGuarded) {
     ProfiledThread::initCurrentThreadSignalSafe();
+    const long long live_before = NativeMem::live(NM_CALLTRACE);
     CallTraceStorage* storage = new CallTraceStorage();
     u64 id;
     CallTrace* held = putAndFindTrace(storage, 4343, &id);
     ASSERT_NE(nullptr, held);
     CallTraceHashTable* table = storage->activeTableForTest();
+    const long long live_with_storage = NativeMem::live(NM_CALLTRACE);
 
     {
         RefCountGuard guard(table);
         delete storage;  // the drain on table times out on the guard above
-        // The table and its chunks survived the destructor.
+        // The table and its chunks survived the destructor...
         EXPECT_EQ(id, held->trace_id);
         EXPECT_EQ(4343, held->frames[0].bci);
+        // ...and the standby and scratch tables were freed.
+        const long long live_after = NativeMem::live(NM_CALLTRACE);
+        EXPECT_GT(live_after, live_before);
+        EXPECT_LT(live_after, live_with_storage);
     }
     delete table;  // still a valid object; nothing else owns it now
+    EXPECT_EQ(live_before, NativeMem::live(NM_CALLTRACE));
 }
 
 // When processTraces()'s drain of the swapped-out active table times out, the
