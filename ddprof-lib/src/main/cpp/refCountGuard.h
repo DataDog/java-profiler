@@ -36,7 +36,9 @@
  * could read each location while the resource was in the other one.)
  * nested is sized to NESTED_DEPTH; deeper nesting emits a one-time warning and
  * that guard's resource is invisible to the scanner (rare: it requires
- * NESTED_DEPTH+1 nested signal deliveries on the same thread).
+ * NESTED_DEPTH+1 nested signal deliveries on the same thread).  The unrecorded
+ * guard is the innermost one, the handler running at that moment; recording
+ * it by overwriting an entry would move a protected resource again.
  * Ordering: nested[i] is stored after count++ and cleared before count--.
  */
 struct alignas(DEFAULT_CACHE_LINE_SIZE) RefCountSlot {
@@ -131,7 +133,10 @@ public:
     [[nodiscard]] static bool tryWaitForRefCountsToClear(void* const* targets, int count);
 
     /**
-     * One scan of all slots, without waiting.
+     * One scan of all slots, without waiting.  A false result only says no
+     * guard referenced the targets during this scan; it is not a drain, so
+     * use tryWaitForRefCountsToClear() before reclaiming unless the caller
+     * knows no new guard can reach the targets.
      *
      * @return true if any slot references any of the count resources in
      *         targets, as active_ptr or as a nested guard's resource.

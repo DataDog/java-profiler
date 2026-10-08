@@ -103,7 +103,22 @@ resource.  After construction the slot contains:
 - `active_ptr == ` the root guard's resource
 - `nested[0..min(prev_count, NESTED_DEPTH)-1]` holding the nested guards'
   resources; a guard nested deeper than that is not recorded and triggers the
-  one-time overflow warning latched by `s_nested_overflow_warned`.
+  one-time overflow warning latched by `s_nested_overflow_warned`.  That
+  unrecorded guard is the innermost one - the handler running at that moment -
+  whereas the earlier displacing protocol lost track of a suspended outer one.
+  Either way a drain can then free a resource the thread uses once it
+  continues, and it takes `NESTED_DEPTH + 1` nested signal deliveries on one
+  thread.  Recording the innermost guard by overwriting an entry would move a
+  protected resource again, which is what this protocol avoids.
+
+The `nested[]` store is `SEQ_CST`.  The caller re-checks its resource right
+after constructing the guard (`CallTraceStorage::put()` reloads
+`_active_storage`, `StringDictionary` reloads `_accepting`), while a drainer
+clears or swaps that pointer and then scans.  The store has to be visible
+before the re-check load runs, which a RELEASE store does not guarantee (x86
+store buffer; on arm64 an acquire load may pass it).  The root path gets that
+ordering from the `count++` RMW after its `active_ptr` store; the scan starts
+each pass with a `SEQ_CST` fence for the drainer side.
 
 The scanner walks `active_ptr` plus every entry of `nested[]` and reports the
 slot as matching if any of them equals the resource being drained.  The target

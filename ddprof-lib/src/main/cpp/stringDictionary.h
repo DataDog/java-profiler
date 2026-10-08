@@ -504,6 +504,8 @@ class StringDictionary {
     // clearStandby() and clearAll(), which the caller serialises (Profiler:
     // _state_lock).
     StringDictionaryBuffer* _uncleared{nullptr};
+    // Scans retryUnclearedTarget() makes before giving up (no sleeping).
+    static constexpr int RETRY_SCANS = 100;
     int _counter_offset;  // offset into DICTIONARY_KEYS / DICTIONARY_KEYS_BYTES counter rows
 
     u32 nextId() {
@@ -517,16 +519,33 @@ class StringDictionary {
         return id;
     }
 
+    // Clears target if drained, else remembers it as uncleared.  Returns drained.
+    bool finishClear(StringDictionaryBuffer* target, bool drained) {
+        if (drained) {
+            target->clear();
+        }
+        _uncleared = drained ? nullptr : target;
+        return drained;
+    }
+
     // Clears the clear target if its last clearStandby() was skipped and its
-    // guards have drained since.  Returns false if it is still in use.
+    // guards have gone since.  Returns false if it is still in use.  The
+    // straggler had a whole dump cycle to finish, so a short check is enough:
+    // a full drain here would add a second ~500ms timeout on the dump thread
+    // for a thread that is stuck.  No new guard can reach the target - it is
+    // not the active buffer, and an accessor holding a stale pointer to it
+    // re-checks _rot.active() and retries - so a scan that finds no guard
+    // means it can be cleared.
     bool retryUnclearedTarget() {
         StringDictionaryBuffer* target = _rot.clearTarget();
         if (target != _uncleared) return true;
         void* const buffers[] = {target};
-        if (!RefCountGuard::tryWaitForRefCountsToClear(buffers, 1)) return false;
-        target->clear();
-        _uncleared = nullptr;
-        return true;
+        bool drained = false;
+        for (int attempt = 0; attempt < RETRY_SCANS && !drained; ++attempt) {
+            drained = !RefCountGuard::isReferenced(buffers, 1);
+            if (!drained) spinPause();
+        }
+        return finishClear(target, drained);
     }
 
     void countInsert(size_t len) {
@@ -646,7 +665,11 @@ public:
     // straggler inserted after both copies of an earlier rotate(), with an id
     // the active buffer has since assigned differently; Phase 1 would keep the
     // stale id.  So the clear is retried first.  Returns false if the buffer
-    // is still in use and is reused uncleared; the caller reports it.
+    // is still in use and is reused uncleared; the caller reports it.  The
+    // stale id then wins over the current one until the next clearAll(); the
+    // alternative, overwriting it, would instead orphan whatever the
+    // straggler recorded under it.  Either way it takes a thread stuck in a
+    // guarded insert for a whole dump cycle.
     bool rotate() {
         bool fresh = retryUnclearedTarget();
         StringDictionaryBuffer* old_active = _rot.active();
@@ -711,11 +734,7 @@ public:
     bool clearStandby() {
         StringDictionaryBuffer* target = _rot.clearTarget();
         void* const buffers[] = {target};
-        bool cleared = RefCountGuard::tryWaitForRefCountsToClear(buffers, 1);
-        if (cleared) {
-            target->clear();
-        }
-        _uncleared = cleared ? nullptr : target;
+        bool cleared = finishClear(target, RefCountGuard::tryWaitForRefCountsToClear(buffers, 1));
         Counters::set(DICTIONARY_KEYS, 0, _counter_offset);
         Counters::set(DICTIONARY_KEYS_BYTES, 0, _counter_offset);
         return cleared;

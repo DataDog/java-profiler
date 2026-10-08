@@ -262,7 +262,13 @@ So the dictionary remembers the skipped buffer, and the next `rotate()` - which
 makes it the active buffer - retries the drain and clear before Phase 1.  Only if
 the straggler still holds its guard then (a stall longer than a whole dump cycle)
 is the buffer reused uncleared; `rotate()` returns `false` and `rotateDictsAndRun()`
-reports it.
+reports it.  The retry is a short series of non-waiting scans, not a full drain,
+so a stuck thread does not cost a second ~500 ms timeout per cycle.
+
+If the buffer is reused uncleared, the straggler's stale id wins over the current
+one until the next `clearAll()`. Overwriting it with the current id instead would
+orphan whatever the straggler recorded under the stale id, so neither choice is
+lossless; both require a thread stuck in a guarded insert for a whole dump cycle.
 
 `rotate()` and `lockAll()` are deliberately separated:
 

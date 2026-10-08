@@ -77,7 +77,15 @@ RefCountGuard::RefCountGuard(void* resource) : _active(true), _is_reentrant(fals
         int idx = static_cast<int>(prev_count) - 1;
         if (idx >= 0 && idx < NESTED_DEPTH) {
             _nested_index = idx;
-            __atomic_store_n(&refcount_slots[_my_slot].nested[idx], resource, __ATOMIC_RELEASE);
+            // SEQ_CST: the caller re-checks its resource (e.g. reloads the
+            // current table pointer) right after this, and a drainer clears that
+            // pointer and then scans.  The store must be visible before the
+            // re-check load runs, or a drainer could find neither this entry nor
+            // a changed pointer; a RELEASE store gives no store->load ordering
+            // (x86 store buffer; arm64 may let an acquire load pass it).  The
+            // root path gets that ordering from the count++ RMW after its
+            // active_ptr store instead.
+            __atomic_store_n(&refcount_slots[_my_slot].nested[idx], resource, __ATOMIC_SEQ_CST);
         } else {
             // Reentrant nesting deeper than NESTED_DEPTH; this guard's resource
             // is invisible to the scanner.  Latch a single warning per process.
@@ -156,6 +164,11 @@ static inline bool slotReferencesAny(const RefCountSlot& s, void* const* targets
 
 // One pass over all slots: true iff some slot references any of the targets.
 static bool anySlotReferences(void* const* targets, int count) {
+    // Pairs with the guard side: the drainer has just unpublished the targets
+    // (cleared or swapped the pointer accessors re-check), and that store must
+    // be ordered before the slot loads below, as the guard's publication is
+    // ordered before its re-check.
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     for (int i = 0; i < RefCountGuard::MAX_THREADS; ++i) {
         const RefCountSlot& s = RefCountGuard::refcount_slots[i];
         if (__atomic_load_n(&s.count, __ATOMIC_ACQUIRE) == 0) {

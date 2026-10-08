@@ -552,6 +552,23 @@ TEST(StringDictionaryReclamationTest, ReusedUnclearedBufferKeepsCurrentIds) {
     EXPECT_EQ(current_id, dict.bounded_lookup("late", 4));
 }
 
+// While a straggler still holds its guard, rotate() reuses the uncleared
+// buffer after a short check instead of waiting out a second full drain
+// timeout on top of the one clearStandby() already spent.
+TEST(StringDictionaryReclamationTest, RotateGivesUpQuicklyOnBufferStillInUse) {
+    StringDictionary dict;
+    ASSERT_GT(dict.lookup("early", 5), 0u);
+    dict.rotate();
+    EXPECT_TRUE(dict.clearStandby());
+    GuardedKeyHolder holder(dict.standby());
+    dict.rotate();
+    EXPECT_FALSE(dict.clearStandby());  // the held buffer is the clear target
+
+    auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(dict.rotate());  // reuses the held buffer uncleared
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(250));
+}
+
 // ── Counter gauges across a skipped reset ─────────────────────────────────
 //
 // Profiler::start() calls Counters::reset() right after resetting the
