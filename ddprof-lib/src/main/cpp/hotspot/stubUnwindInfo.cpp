@@ -189,9 +189,9 @@ bool decodeAddSubImm(uint32_t insn, bool& is_sub, int& rdn, int& rnn, int32_t& i
 // extended: 0x8b...... / 0xcb......; the S bit in the mask excludes the
 // flag-setting ADDS/SUBS forms, whose Rd=31 is a discarded XZR) makes the
 // tracked sp untrustworthy -- degrade, never guess. Logical (shifted
-// register) and move-wide forms are not covered: per the ARM ARM their Rd=31
-// is XZR, not SP. Logical (immediate) forms do write SP at Rd=31 and are
-// handled by decodeLogicalImm64().
+// register) and move-wide forms are not covered: per the Arm Architecture
+// Reference Manual their Rd=31 is XZR, not SP. Logical (immediate) forms do
+// write SP at Rd=31 and are handled by decodeLogicalImm64().
 bool isAddSubRegSp(uint32_t insn) {
     return (insn & 0xbf000000) == 0x8b000000 && rd(insn) == 31;
 }
@@ -328,9 +328,9 @@ bool decodeSimdStruct(uint32_t insn, SimdStructInfo& v) {
 // Logical (immediate), 64-bit: AND/ORR/EOR/ANDS Xd, Xn, #bitmask. Rd = 31 is
 // sp for AND/ORR/EOR ('and sp, x8, #-16' aligns sp in the i2c adapter of a
 // method with stack arguments) and xzr for ANDS (TST). Decodes the bitmask
-// (ARM ARM DecodeBitMasks) so that 'mov x8, #-32' (= orr x8, xzr, #-32,
-// 0xb27bebe8) yields its constant. Returns false for other encodings and for
-// the reserved immediate patterns.
+// (DecodeBitMasks() pseudocode in the Arm Architecture Reference Manual) so
+// that 'mov x8, #-32' (= orr x8, xzr, #-32, 0xb27bebe8) yields its constant.
+// Returns false for other encodings and for the reserved immediate patterns.
 bool decodeLogicalImm64(uint32_t insn, int& opc, int& rdn, int& rnn, uint64_t& imm) {
     if ((insn & 0x9f800000) != 0x92000000) return false;  // sf=1, bits 28:23 = 100100
     opc = (insn >> 29) & 3;
