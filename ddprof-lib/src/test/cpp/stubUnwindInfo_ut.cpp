@@ -108,9 +108,9 @@ inline uint32_t jumpReg(int rn) { return 0xd61f0000 | (uint32_t)rn << 5; }
 class StubUnwindTest : public ::testing::Test {
 protected:
     // Classifies an instruction sequence; frees the info on scope exit.
-    StubUnwindInfo* analyze(const std::vector<uint32_t>& code) {
+    StubUnwindInfo* analyze(const std::vector<uint32_t>& code, bool multi_entry = false) {
         StubUnwindInfo* info =
-            analyzeStubUnwind(code.data(), (int)code.size() * 4);
+            analyzeStubUnwind(code.data(), (int)code.size() * 4, multi_entry);
         _owned.push_back(info);
         return info;
     }
@@ -300,13 +300,484 @@ TEST_F(StubUnwindTest, FramelessX30Spill) {
     expectPhase(info, 1, SU_FP_PROLOGUE, 16, 0);
 }
 
-// Mid-stub br: state after it is a separate entry path -> fallback.
+// Outside multi-entry blobs the state after a mid-stub br is unknown (a
+// jump-table entry, a return point reached through a register): fallback.
 TEST_F(StubUnwindTest, MidStubBrDegrades) {
     StubUnwindInfo* info = analyze({NOP, jumpReg(8), NOP, RET});
     ASSERT_NE(info, nullptr);
     expectPhase(info, 0, SU_PC_TO_LR, 0);
     expectPhase(info, 1, SU_PC_TO_LR, 0);
     expectPhase(info, 2, SU_UNSUPPORTED, 0);
+}
+
+// Multi-entry blob (I2C/C2I adapters): the instruction after a mid-stub br is
+// a further entry point, entered with the return address in lr and the
+// caller's sp -- the state before the br (sp lowered by 16) must not leak
+// into it.
+TEST_F(StubUnwindTest, MidStubBrRestartsAtEntryState) {
+    // 0: sub sp,sp,#16
+    // 1: br x8
+    // 2: nop             (second entry)
+    // 3: ret
+    StubUnwindInfo* info = analyze({subSp(16), jumpReg(8), NOP, RET}, true);
+    ASSERT_NE(info, nullptr);
+    EXPECT_TRUE(info->_classified);
+    expectPhase(info, 0, SU_PC_TO_LR, 0);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 2, SU_PC_TO_LR, 0);
+    expectPhase(info, 3, SU_PC_TO_LR, 0);
+}
+
+// A branch from inside an fp frame into the code after a mid-stub br reaches
+// it in a different state than the restarted entry state: the target must
+// degrade instead of claiming the entry rule.
+TEST_F(StubUnwindTest, MidStubBrFramedBranchTargetDegrades) {
+    // 0: stp x29,x30,[sp,#-16]!
+    // 1: mov x29,sp
+    // 2: cbz x0, 5
+    // 3: ldp x29,x30,[sp],#16
+    // 4: br x8
+    // 5: nop             (reached from 2 with the frame established)
+    // 6: ret
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, cbz(0, 3),
+                                    ldpPost64(29, 30, 16), jumpReg(8), NOP, RET},
+                                   true);
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 2, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 4, SU_PC_TO_LR, 0);
+    expectPhase(info, 5, SU_UNSUPPORTED, 0);
+    expectPhase(info, 6, SU_UNSUPPORTED, 0);
+}
+
+// SIMD multiple-structure post-index with an immediate moves sp by the
+// transfer size ('st1 {v0.2d}, [sp], #16': one Q register = 16 bytes).
+TEST_F(StubUnwindTest, SimdStructPostIndexImmTracksSp) {
+    // 0: sub sp,sp,#32
+    // 1: st1 {v0.2d}, [sp], #16   = 0x4c9f7fe0
+    // 2: ld1 {v0.1d-v3.1d}, [sp], #32 = 0x0cdf2fe0 (4 D registers: sp moves past entry)
+    // 3: nop
+    // 4: ret
+    StubUnwindInfo* info = analyze({subSp(32), 0x4c9f7fe0, 0x0cdf2fe0, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 32);
+    expectPhase(info, 2, SU_SP_DELTA_LR, 16);
+    // 16 - 32 < 0: popped beyond the entry sp, which is never a valid state
+    expectPhase(info, 3, SU_UNSUPPORTED, 0);
+}
+
+// push_CPU_state shape: 'mov x8, #-32' then register-form post-index stores
+// stepping sp by x8, popped by immediate-form loads. Both the ORR (HotSpot's
+// choice on JDK 21) and the MOVN encoding of the constant are tracked.
+TEST_F(StubUnwindTest, SimdStructPostIndexRegWithConstantTracksSp) {
+    for (uint32_t mov : {0xb27bebe8u /* orr x8, xzr, #-32 */, 0x928003e8u /* movn x8, #31 */}) {
+        // 0: mov x8, #-32
+        // 1: sub sp,sp,#32
+        // 2: st1 {v28.1d-v31.1d}, [sp], x8   = 0x0c882ffc
+        // 3: st1 {v0.1d-v3.1d}, [sp]         = 0x0c002fe0 (no writeback)
+        // 4: ld1 {v0.1d-v3.1d}, [sp], #32    = 0x0cdf2fe0
+        // 5: ld1 {v4.1d-v7.1d}, [sp], #32    = 0x0cdf2fe4
+        // 6: ret
+        StubUnwindInfo* info =
+            analyze({mov, subSp(32), 0x0c882ffc, 0x0c002fe0, 0x0cdf2fe0, 0x0cdf2fe4, RET});
+        ASSERT_NE(info, nullptr);
+        expectPhase(info, 2, SU_SP_DELTA_LR, 32);
+        expectPhase(info, 3, SU_SP_DELTA_LR, 64);
+        expectPhase(info, 4, SU_SP_DELTA_LR, 64);
+        expectPhase(info, 5, SU_SP_DELTA_LR, 32);
+        expectPhase(info, 6, SU_PC_TO_LR, 0);
+    }
+}
+
+// The constant is only trusted on straight-line code that cannot write it:
+// an intervening write to x8, or a branch target between definition and use,
+// drops it and the register-form step degrades.
+TEST_F(StubUnwindTest, SimdStructPostIndexConstantDropped) {
+    // 0: mov x8, #-32
+    // 1: add x8, x8, #0        = 0x91000108 (writes x8)
+    // 2: sub sp,sp,#32
+    // 3: st1 {v28.1d-v31.1d}, [sp], x8
+    // 4: nop
+    // 5: ret
+    StubUnwindInfo* info = analyze({0xb27bebe8, 0x91000108, subSp(32), 0x0c882ffc, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 3, SU_SP_DELTA_LR, 32);
+    expectPhase(info, 4, SU_UNSUPPORTED, 0);
+
+    // 0: mov x8, #-32
+    // 1: cbz x0, 2              (branch target at 2: x8 unknown on that path)
+    // 2: sub sp,sp,#32
+    // 3: st1 {v28.1d-v31.1d}, [sp], x8
+    // 4: nop
+    // 5: ret
+    info = analyze({0xb27bebe8, cbz(0, 1), subSp(32), 0x0c882ffc, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 3, SU_SP_DELTA_LR, 32);
+    expectPhase(info, 4, SU_UNSUPPORTED, 0);
+}
+
+// Single-structure post-index forms and register-form steps without a known
+// constant are not modeled: sp becomes unknown and frameless code degrades.
+TEST_F(StubUnwindTest, SimdStructPostIndexUnmodeledFormsDegrade) {
+    // ld1 {v0.d}[1], [sp], #8      = 0x4ddf87e0
+    // st1 {v0.s}[0], [sp], x3      = 0x0d8383e0
+    // st1 {v28.1d-v31.1d}, [sp], x8 = 0x0c882ffc
+    for (uint32_t insn : {0x4ddf87e0u, 0x0d8383e0u, 0x0c882ffcu}) {
+        StubUnwindInfo* info = analyze({subSp(32), insn, NOP, RET});
+        ASSERT_NE(info, nullptr);
+        expectPhase(info, 2, SU_UNSUPPORTED, 0);
+    }
+}
+
+// pop_CPU_state reloads x29 together with the other GPRs. Reloaded from the
+// slot it was saved to, x29 still holds the frame address, so 'mov sp, x29'
+// and the epilogue keep exact rules.
+TEST_F(StubUnwindTest, X29ReloadFromSaveSlotKeepsFrame) {
+    // 0: stp x29,x30,[sp,#-16]!
+    // 1: mov x29,sp
+    // 2: stp x28,x29,[sp,#-16]!   = 0xa9bf77fc (x29 saved at 24 below entry)
+    // 3: ldp x28,x29,[sp],#16     = 0xa8c177fc
+    // 4: mov sp,x29
+    // 5: ldp x29,x30,[sp],#16
+    // 6: ret
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xa9bf77fc, 0xa8c177fc,
+                                    0x910003bf, ldpPost64(29, 30, 16), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 3, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 4, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 5, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 6, SU_PC_TO_LR, 0);
+}
+
+// Negative controls: x29 reloaded from another slot, or from its save slot
+// after that slot was overwritten, no longer establishes the frame.
+TEST_F(StubUnwindTest, X29ReloadFromOtherOrClobberedSlotDropsFrame) {
+    // 3: ldp x29,x28,[sp],#16     = 0xa8c173fd (x29 from the x28 slot)
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xa9bf77fc, 0xa8c173fd,
+                                    NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 4, SU_FP_PROLOGUE, 16, 8);
+
+    // 3: str x0,[sp,#8]           = 0xf90007e0 (overwrites the x29 slot)
+    // 4: ldp x28,x29,[sp],#16
+    info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xa9bf77fc, 0xf90007e0, 0xa8c177fc,
+                    NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 4, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 5, SU_FP_PROLOGUE, 16, 8);
+}
+
+// Logical immediates: 'and sp, x8, #-16' (i2c stack-argument alignment)
+// writes sp; 'tst' (ANDS with Rd = xzr) does not.
+TEST_F(StubUnwindTest, LogicalImmSpWrite) {
+    // 1: and sp, x8, #-16         = 0x927ced1f
+    StubUnwindInfo* info = analyze({NOP, 0x927ced1f, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_PC_TO_LR, 0);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+
+    // 1: tst x8, #-16             = 0xf27ced1f
+    info = analyze({subSp(16), 0xf27ced1f, addSp(16), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 2, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 3, SU_PC_TO_LR, 0);
+}
+
+// A move-wide write to x29 ('mov x29, #0') moves fp off the frame.
+TEST_F(StubUnwindTest, MoveWideX29DropsFrame) {
+    // 2: movz x29, #0             = 0xd280001d
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xd280001d, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 2, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 3, SU_FP_PROLOGUE, 16, 8);
+}
+
+// Negative controls: no-writeback SIMD structure stores to sp, and post-index
+// forms with a base other than sp, leave the tracked sp alone.
+TEST_F(StubUnwindTest, SimdStructNoWritebackOrOtherBaseNeutral) {
+    // 1: st1 {v0.2d}, [sp]         = 0x4c007fe0
+    // 2: st1 {v0.2d}, [x0], #16    = 0x4c9f7c00
+    StubUnwindInfo* info = analyze({subSp(16), 0x4c007fe0, 0x4c9f7c00, addSp(16), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 2, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 3, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 4, SU_PC_TO_LR, 0);
+}
+
+// Inside an fp frame an unmodeled sp writeback keeps the fp rule, and
+// 'mov sp, x29' makes sp exact again so the epilogue still unwinds.
+TEST_F(StubUnwindTest, MovSpX29RecoversUnknownSp) {
+    // 0: stp x29,x30,[sp,#-16]!
+    // 1: mov x29,sp
+    // 2: ld1 {v0.1d-v3.1d}, [sp], #32   = 0x0cdf2fe0
+    // 3: mov sp,x29
+    // 4: ldp x29,x30,[sp],#16
+    // 5: ret
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0x0cdf2fe0, 0x910003bf,
+                                    ldpPost64(29, 30, 16), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 3, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 4, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 5, SU_PC_TO_LR, 0);
+}
+
+// 'adr xN, L; br xM; L:' materializes a return point right after the br: L
+// is reached through a register, not as a fresh entry, so even in a
+// multi-entry blob the restart must not claim the entry rule there (as for
+// every ADR target that is not a call's return point).
+TEST_F(StubUnwindTest, AdrTargetAfterRestartDegrades) {
+    // 0: adr x9, #8        = 0x10000049 (-> 2)
+    // 1: br x8
+    // 2: nop
+    // 3: ret
+    StubUnwindInfo* info = analyze({0x10000049, jumpReg(8), NOP, RET}, true);
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_PC_TO_LR, 0);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+}
+
+// ADR targets degrade before any br as well: 'adr x9, L; sub sp, sp, #16;
+// ...; br x9; L:' may enter L with the caller's sp while the fall-through scan
+// says sp + 16 (PR 842 review).
+TEST_F(StubUnwindTest, AdrTargetBeforeBrDegrades) {
+    // 0: adr x9, #12       = 0x10000069 (-> 3)
+    // 1: sub sp,sp,#16
+    // 2: nop
+    // 3: nop             (L)
+    // 4: add sp,sp,#16
+    // 5: ret
+    StubUnwindInfo* info = analyze({0x10000069, subSp(16), NOP, NOP, addSp(16), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 2, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 3, SU_UNSUPPORTED, 0);
+}
+
+// The return point of an in-stub call (set_last_Java_frame's last_Java_pc) and
+// an ADR of its own address ('adr x8, .') are reached in the fall-through
+// state: they keep their rules.
+TEST_F(StubUnwindTest, AdrReturnPointAndSelfKeepRules) {
+    // 2: adr x8, #8        = 0x10000048 (-> 4, the return point of 3)
+    // 3: blr x9
+    // 4: nop             (L)
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0x10000048, callReg(9), NOP,
+                                    ldpPost64(29, 30, 16), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 4, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 6, SU_PC_TO_LR, 0);
+
+    // 1: adr x8, #0        = 0x10000008 (its own address)
+    info = analyze({subSp(16), 0x10000008, NOP, addSp(16), RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 2, SU_SP_DELTA_LR, 16);
+}
+
+// An ADRP into the stub's own pages hides the exact code address it builds,
+// so even a multi-entry blob keeps the conservative cut after a mid-stub br.
+TEST_F(StubUnwindTest, AdrpIntoStubDisablesRestart) {
+    // 0: adrp x9, #0       = 0x90000009 (own page)
+    // 1: br x8
+    // 2: nop
+    // 3: ret
+    StubUnwindInfo* info = analyze({0x90000009, jumpReg(8), NOP, RET}, true);
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_PC_TO_LR, 0);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+}
+
+// x29/x30 writes from classes without a dedicated decoder: unscaled and
+// register-offset loads, conditional select, base writeback.
+TEST_F(StubUnwindTest, UndecodedGprWritesDropFrameOrLr) {
+    // 2: ldur x29, [x0, #-8]   = 0xf85f801d
+    // 2: ldr x29, [x0, x1]     = 0xf861681d
+    // 2: ldr x0, [x29], #8     = 0xf84087a0 (x29 written back)
+    for (uint32_t insn : {0xf85f801du, 0xf861681du, 0xf84087a0u}) {
+        StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, insn, NOP, RET});
+        ASSERT_NE(info, nullptr);
+        expectPhase(info, 2, SU_FP_FRAME, 16, 8);
+        expectPhase(info, 3, SU_FP_PROLOGUE, 16, 8);
+    }
+    // 1: csel x30, x0, x1, eq  = 0x9a81001e (frameless: lr clobbered)
+    StubUnwindInfo* info = analyze({NOP, 0x9a81001e, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_PC_TO_LR, 0);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+}
+
+// The x29 save slot is dropped by a store through another base (it may alias
+// the slot) and by an sp-derived pointer reaching a GPR.
+TEST_F(StubUnwindTest, X29SaveSlotDroppedByUnmodeledAccess) {
+    // 3: str x0, [x9]          = 0xf9000120
+    // 3: mov x1, sp            = 0x910003e1
+    for (uint32_t insn : {0xf9000120u, 0x910003e1u}) {
+        StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xa9bf77fc, insn,
+                                        0xa8c177fc, NOP, RET});
+        ASSERT_NE(info, nullptr);
+        expectPhase(info, 4, SU_FP_FRAME, 16, 8);
+        expectPhase(info, 5, SU_FP_PROLOGUE, 16, 8);
+    }
+}
+
+// An unprivileged store (STTR) overwriting the x29 save slot is a load/store
+// the save-slot tracking does not model exactly, so the later reload no longer
+// re-establishes the frame (PR 842 review).
+TEST_F(StubUnwindTest, X29SaveSlotDroppedBySttr) {
+    // 3: sttr x0, [sp, #8]     = 0xf8008be0 (overwrites the x29 slot)
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xa9bf77fc, 0xf8008be0,
+                                    0xa8c177fc, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 5, SU_FP_PROLOGUE, 16, 8);
+}
+
+// A nested spill of x30 inside an established frame moves the tracked x30
+// slot, but the frame record (and the return address in it) stays at fp + 8.
+// After the nested slot is popped it lies below the live sp, so the fp rule
+// must keep using the frame record (PR 842 review).
+TEST_F(StubUnwindTest, NestedX30SpillKeepsFrameRecordSlot) {
+    // 2: stp x29,x30,[sp,#-16]!   (nested pair spill; x29 save slot)
+    // 3: ldp x29,x30,[sp],#16     (reload from the save slot)
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xa9bf7bfd, 0xa8c17bfd,
+                                    NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 3, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 4, SU_FP_FRAME, 16, 8);
+
+    // 2: str x30,[sp,#-16]!       = 0xf81f0ffe (nested single spill)
+    // 3: ldr x30,[sp],#16         = 0xf84107fe
+    info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xf81f0ffe, 0xf84107fe, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 3, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 4, SU_FP_FRAME, 16, 8);
+}
+
+// The x29 save slot is unowned once popped: a later reload from that position
+// (after sp moves back down without a new store) may read memory a signal
+// overwrote, so it must not re-establish the frame (PR 842 review).
+TEST_F(StubUnwindTest, X29SaveSlotDroppedWhenPopped) {
+    // 2: stp x28,x29,[sp,#-16]!   (x29 saved at 24 below entry)
+    // 3: ldp x28,x29,[sp],#16     (reload, slot now below the live sp)
+    // 4: sub sp,sp,#16
+    // 5: ldp x28,x29,[sp]         = 0xa94077fc (same position, no new store)
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xa9bf77fc, 0xa8c177fc,
+                                    subSp(16), 0xa94077fc, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 4, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 6, SU_FP_PROLOGUE, 32, 24);
+}
+
+// SIMD&FP loads/stores write their GPR base on pre/post-index writeback; with
+// x29 as the base the frame pointer moves (PR 842 review).
+TEST_F(StubUnwindTest, SimdBaseWritebackX29DropsFrame) {
+    // ldr q0, [x29], #16           = 0x3cc107a0
+    // ldp q0, q1, [x29], #32       = 0xacc107a0
+    // ld1 {v0.2d}, [x29], #16      = 0x4cdf7fa0
+    // ldr d0, [x29, #-8]!          = 0xfc5f8fa0
+    for (uint32_t insn : {0x3cc107a0u, 0xacc107a0u, 0x4cdf7fa0u, 0xfc5f8fa0u}) {
+        StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, insn, NOP, RET});
+        ASSERT_NE(info, nullptr);
+        expectPhase(info, 2, SU_FP_FRAME, 16, 8);
+        expectPhase(info, 3, SU_FP_PROLOGUE, 16, 8);
+    }
+}
+
+// Once more than MAX_BRANCHES edges freeze the transitions, a change of the
+// auxiliary facts alone (here 'mov x8, #1' defining a constant) is not a new
+// unwind rule and must not truncate the table.
+TEST_F(StubUnwindTest, FrozenTransitionsIgnoreAuxiliaryFacts) {
+    const int kBranches = 70;
+    std::vector<uint32_t> code;
+    for (int i = 0; i < kBranches; i++) {
+        code.push_back(cbz(0, kBranches + 3 - i));  // all to the final ret
+    }
+    code.push_back(0xd2800028);  // mov x8, #1
+    code.push_back(NOP);
+    code.push_back(NOP);
+    code.push_back(RET);
+    StubUnwindInfo* info = analyze(code);
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, kBranches + 1, SU_PC_TO_LR, 0);
+    expectPhase(info, kBranches + 3, SU_PC_TO_LR, 0);
+}
+
+// Regression fixture: an 'I2C/C2I adapters' blob as reported by JVMTI
+// DynamicCodeGenerated on JDK 21.0.12 aarch64 (G1), captured from a profiled
+// JVM. Layout: i2c entry (frameless, ends in 'br x8' at 0x28), c2i unverified
+// entry (0x2c), c2i entry with class-init barrier (0x54), c2i entry barrier
+// (0x88: 'stp x10,xzr' then an fp frame around a runtime call, with
+// push_CPU_state's SIMD post-index stores), patch_callers_callsite (0x1a0,
+// fp frame) and skip_fixup (0x294: 'sub sp,#16' then 'br' to the
+// interpreter). Out-of-blob branch targets and embedded addresses are kept
+// verbatim; they do not affect the analysis. Before the mid-stub br restart
+// every PC after 0x28 was SU_UNSUPPORTED and samples there ended in
+// break_unwind_stub_failed.
+TEST_F(StubUnwindTest, Jdk21I2CC2IAdaptersBlob) {
+    static const uint32_t blob[] = {
+    0xf9402188, 0xf9400281, 0xaa0803e9, 0xf942a388, 0xeb2863ff, 0x54000069,
+    0x910003e8, 0xf902a388, 0xaa0903e8, 0xf901fb8c, 0xd61f0100, 0xb9400828,
+    0xf2c00a08, 0xf940052a, 0xeb0a011f, 0xf940012c, 0x54000040, 0x17ffeccf,
+    0xf9402588, 0xb4001248, 0x17ffeccc, 0xb9402988, 0x721d011f, 0x54000160,
+    0xf9400589, 0xf9400529, 0xf9400d29, 0x3944c528, 0xf100111f, 0x540000a0,
+    0xf9409d28, 0xeb08039f, 0x54000040, 0x17ffeb3f, 0xb40008ac, 0xf9400588,
+    0xf9400508, 0xf9400d08, 0xf9404d08, 0xb9402509, 0xb5000809, 0xa9bf7fea,
+    0xf940010a, 0xb400072a, 0xf940014a, 0xa9bf7bfd, 0x910003fd, 0x39410388,
+    0x34000648, 0xb400062a, 0xf9401788, 0xb40000e8, 0xd1002108, 0xf9001788,
+    0xf9401f89, 0x8b090108, 0xf900010a, 0x14000029, 0xa9b707e0, 0xa9010fe2,
+    0xa90217e4, 0xa9031fe6, 0xa9042fea, 0xa90537ec, 0xa9063fee, 0xa90747f0,
+    0xa9087ff2, 0xd10083ff, 0xb27bebe8, 0x0c882ffc, 0x0c882ff8, 0x0c882ff4,
+    0x0c882ff0, 0x0c882fe4, 0x0c002fe0, 0xaa1c03e1, 0xaa0a03e0, 0xa9bf33e8,
+    0xd283ce08, 0xf2a217e8, 0xf2df7f48, 0xd63f0100, 0xa8c133e8, 0x0cdf2fe0,
+    0x0cdf2fe4, 0x0cdf2ff0, 0x0cdf2ff4, 0x0cdf2ff8, 0x0cdf2ffc, 0xa9410fe2,
+    0xa94217e4, 0xa9431fe6, 0xa9442fea, 0xa94537ec, 0xa9463fee, 0xa94747f0,
+    0xa9487ff2, 0xa8c907e0, 0x910003bf, 0xa8c17bfd, 0xaa0a03e8, 0xa8c17fea,
+    0xb5000048, 0x17ffeaf9, 0xf9402588, 0xb4000788, 0xa9bf7bfd, 0x910003fd,
+    0xa9b107e0, 0xa9010fe2, 0xa90217e4, 0xa9031fe6, 0xa90427e8, 0xa9052fea,
+    0xa90637ec, 0xa9073fee, 0xa90847f0, 0xa9094ff2, 0xa90a57f4, 0xa90b5ff6,
+    0xa90c67f8, 0xa90d6ffa, 0xa90e77fc, 0xb27bebe8, 0xd10083ff, 0x0c882ffc,
+    0x0c882ff8, 0x0c882ff4, 0x0c882ff0, 0x0c882fec, 0x0c882fe8, 0x0c882fe4,
+    0x0c002fe0, 0xaa0c03e0, 0xaa1e03e1, 0xd2875688, 0xf2a22308, 0xf2df7f48,
+    0xd63f0100, 0xd5033fdf, 0x0cdf2fe0, 0x0cdf2fe4, 0x0cdf2fe8, 0x0cdf2fec,
+    0x0cdf2ff0, 0x0cdf2ff4, 0x0cdf2ff8, 0x0cdf2ffc, 0xa9410fe2, 0xa94217e4,
+    0xa9431fe6, 0xa94427e8, 0xa9452fea, 0xa94637ec, 0xa9473fee, 0xa94847f0,
+    0xa8c907e0, 0xa94157f4, 0xa9425ff6, 0xa94367f8, 0xa9446ffa, 0xa94577fc,
+    0xa8c64ff2, 0x910003bf, 0xa8c17bfd, 0x910003f3, 0xd10043ff, 0xf90003e1,
+    0x910003f4, 0xf9401d88, 0xd61f0100, 0x00000000,
+    };
+    std::vector<uint32_t> code(blob, blob + sizeof(blob) / sizeof(blob[0]));
+    // Analyzed as any other blob, everything after the i2c entry's br falls
+    // back (the behavior before multi_entry).
+    StubUnwindInfo* single = analyze(code);
+    ASSERT_NE(single, nullptr);
+    expectPhase(single, 0x28 / 4, SU_PC_TO_LR, 0);
+    expectPhase(single, 0x2c / 4, SU_UNSUPPORTED, 0);
+    StubUnwindInfo* info = analyze(code, true);
+    ASSERT_NE(info, nullptr);
+    EXPECT_TRUE(info->_classified);
+    // i2c (frameless)
+    expectPhase(info, 0x00 / 4, SU_PC_TO_LR, 0);
+    expectPhase(info, 0x28 / 4, SU_PC_TO_LR, 0);
+    // c2i unverified entry and class-init barrier: every PC sampled with
+    // break_unwind_stub_failed in the captured profile
+    for (int off : {0x2c, 0x38, 0x54, 0x58, 0x68, 0x74, 0x98, 0x9c, 0xa0, 0xa4}) {
+        expectPhase(info, off / 4, SU_PC_TO_LR, 0);
+    }
+    // c2i entry barrier: x10 spill, then fp frame (x29/x30 below the spill)
+    expectPhase(info, 0xa8 / 4, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 0xb8 / 4, SU_FP_PROLOGUE, 32, 8);
+    expectPhase(info, 0xbc / 4, SU_FP_FRAME, 32, 8);
+    expectPhase(info, 0x114 / 4, SU_FP_FRAME, 32, 8);   // SIMD post-index stores
+    expectPhase(info, 0x148 / 4, SU_FP_FRAME, 32, 8);   // after the runtime call
+    expectPhase(info, 0x18c / 4, SU_FP_FRAME, 32, 8);   // after 'mov sp, x29'
+    expectPhase(info, 0x190 / 4, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 0x198 / 4, SU_PC_TO_LR, 0);
+    // patch_callers_callsite
+    expectPhase(info, 0x1a0 / 4, SU_PC_TO_LR, 0);
+    expectPhase(info, 0x1ac / 4, SU_FP_PROLOGUE, 16, 8);
+    expectPhase(info, 0x1b0 / 4, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 0x22c / 4, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 0x290 / 4, SU_FP_FRAME, 16, 8);
+    // skip_fixup
+    expectPhase(info, 0x294 / 4, SU_PC_TO_LR, 0);
+    expectPhase(info, 0x2a0 / 4, SU_SP_DELTA_LR, 16);
+    expectPhase(info, 0x2a8 / 4, SU_SP_DELTA_LR, 16);
 }
 
 // Canonical straight-line epilogue: after the sp-restoring ldp the return
