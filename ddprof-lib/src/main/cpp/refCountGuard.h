@@ -27,25 +27,29 @@
  * sees the stored value if it was written before the load in program order.
  *
  * REENTRANT NESTING: when a signal fires inside an outer guard (same thread),
- * the displaced active_ptr is parked in outer_stack[] so the scanner can still
- * see every resource currently in use on the slot.  outer_stack is sized to
- * OUTER_STACK_DEPTH; deeper nesting emits a one-time warning and the deepest
- * displaced resource becomes invisible to the scanner (rare: it requires
- * OUTER_STACK_DEPTH+1 nested signal deliveries on the same thread).
- * Ordering: outer_stack[i] must be stored AFTER count++ but BEFORE active_ptr
- * is overwritten; cleared AFTER active_ptr is restored but BEFORE count--.
+ * the nested guard stores its resource in nested[depth - 1] and leaves
+ * active_ptr alone.  Every resource therefore stays in one place for as long
+ * as it is protected - the root guard's in active_ptr, each nested guard's in
+ * its nested[] entry - so a scan that reads active_ptr and then nested[] sees
+ * it no matter how many nested guards start or end during the scan.  (When a
+ * nested guard moved the outer resource out of active_ptr and back, a scan
+ * could read each location while the resource was in the other one.)
+ * nested is sized to NESTED_DEPTH; deeper nesting emits a one-time warning and
+ * that guard's resource is invisible to the scanner (rare: it requires
+ * NESTED_DEPTH+1 nested signal deliveries on the same thread).
+ * Ordering: nested[i] is stored after count++ and cleared before count--.
  */
 struct alignas(DEFAULT_CACHE_LINE_SIZE) RefCountSlot {
-    static constexpr int OUTER_STACK_DEPTH = 3;
+    static constexpr int NESTED_DEPTH = 3;
 
     volatile uint32_t count;                                // Reference count (0 = inactive)
-    alignas(alignof(void*)) void* active_ptr;               // Which resource is being referenced
-    void* outer_stack[OUTER_STACK_DEPTH];                   // Displaced resources on reentrant nesting
+    alignas(alignof(void*)) void* active_ptr;               // The root (outermost) guard's resource
+    void* nested[NESTED_DEPTH];                             // Resources of reentrant (nested) guards
     // Trailing padding fills the cache line.
-    // Layout on 64-bit: count(4) + 4-byte gap + active_ptr(8) + OUTER_STACK_DEPTH * 8.
-    char padding[DEFAULT_CACHE_LINE_SIZE - alignof(void*) - (1 + OUTER_STACK_DEPTH) * sizeof(void*)];
+    // Layout on 64-bit: count(4) + 4-byte gap + active_ptr(8) + NESTED_DEPTH * 8.
+    char padding[DEFAULT_CACHE_LINE_SIZE - alignof(void*) - (1 + NESTED_DEPTH) * sizeof(void*)];
 
-    RefCountSlot() : count(0), active_ptr(nullptr), outer_stack{}, padding{} {
+    RefCountSlot() : count(0), active_ptr(nullptr), nested{}, padding{} {
         static_assert(sizeof(RefCountSlot) == DEFAULT_CACHE_LINE_SIZE,
                       "RefCountSlot must be exactly one cache line");
     }
@@ -68,20 +72,17 @@ struct alignas(DEFAULT_CACHE_LINE_SIZE) RefCountSlot {
  * Reentrancy:
  * - A signal handler may create a RefCountGuard while a JNI thread already
  *   holds one on the same slot (same tid).  getThreadRefCountSlot() returns
- *   slot + MAX_THREADS to signal this case.  The inner guard saves and restores
- *   the outer guard's active_ptr instead of clearing it, so the scanner never
- *   sees a null pointer for an active outer guard.
- * - Ordering invariants differ for the reentrant case:
- *   Constructor: count incremented BEFORE overwriting active_ptr (outer resource
- *     stays visible to the scanner until the new pointer is installed).
- *   Destructor: active_ptr restored to saved outer pointer BEFORE decrementing
- *     count (scanner always sees outer resource while count is still elevated).
+ *   slot + MAX_THREADS to signal this case.  The nested guard records its
+ *   resource in the slot's nested[] entry for its depth and never touches
+ *   active_ptr, which keeps the outer guard's resource throughout.
+ * - Constructor: count incremented, then nested[depth - 1] stored.
+ *   Destructor: nested[depth - 1] cleared, then count decremented.
  */
 class RefCountGuard {
 public:
     static constexpr int MAX_THREADS = 8192;
     static constexpr int MAX_PROBE_DISTANCE = 32;
-    static constexpr int OUTER_STACK_DEPTH = RefCountSlot::OUTER_STACK_DEPTH;
+    static constexpr int NESTED_DEPTH = RefCountSlot::NESTED_DEPTH;
 
     static RefCountSlot refcount_slots[MAX_THREADS];
     static int slot_owners[MAX_THREADS];
@@ -89,14 +90,16 @@ public:
 private:
     bool  _active;
     bool  _is_reentrant;
-    int   _outer_slot;     // index into RefCountSlot::outer_stack, or -1 if not parked
+    int   _nested_index;   // index into RefCountSlot::nested, or -1 if not recorded
     int   _my_slot;
-    void* _saved_ptr;
 
     // Returns slot index in [0, MAX_THREADS) on fresh claim.
     // Returns slot + MAX_THREADS when the calling thread already owns that slot
-    // (reentrant signal delivery); the caller must save/restore active_ptr.
+    // (reentrant signal delivery); the guard then records its resource in nested[].
     static int getThreadRefCountSlot();
+
+    // Ends this guard's protection on its slot; no-op if inactive.
+    void release();
 
 public:
     explicit RefCountGuard(void* resource);
@@ -131,7 +134,7 @@ public:
      * One scan of all slots, without waiting.
      *
      * @return true if any slot references any of the count resources in
-     *         targets, as active_ptr or as a displaced outer resource.
+     *         targets, as active_ptr or as a nested guard's resource.
      */
     static bool isReferenced(void* const* targets, int count);
 };
