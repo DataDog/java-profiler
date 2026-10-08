@@ -108,9 +108,9 @@ inline uint32_t jumpReg(int rn) { return 0xd61f0000 | (uint32_t)rn << 5; }
 class StubUnwindTest : public ::testing::Test {
 protected:
     // Classifies an instruction sequence; frees the info on scope exit.
-    StubUnwindInfo* analyze(const std::vector<uint32_t>& code) {
+    StubUnwindInfo* analyze(const std::vector<uint32_t>& code, bool multi_entry = false) {
         StubUnwindInfo* info =
-            analyzeStubUnwind(code.data(), (int)code.size() * 4);
+            analyzeStubUnwind(code.data(), (int)code.size() * 4, multi_entry);
         _owned.push_back(info);
         return info;
     }
@@ -300,15 +300,26 @@ TEST_F(StubUnwindTest, FramelessX30Spill) {
     expectPhase(info, 1, SU_FP_PROLOGUE, 16, 0);
 }
 
-// Mid-stub br: the next instruction is a further entry point, entered with
-// the return address in lr and the caller's sp -- the state before the br
-// (sp lowered by 16) must not leak into it.
+// Outside multi-entry blobs the state after a mid-stub br is unknown (a
+// jump-table entry, a return point reached through a register): fallback.
+TEST_F(StubUnwindTest, MidStubBrDegrades) {
+    StubUnwindInfo* info = analyze({NOP, jumpReg(8), NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 0, SU_PC_TO_LR, 0);
+    expectPhase(info, 1, SU_PC_TO_LR, 0);
+    expectPhase(info, 2, SU_UNSUPPORTED, 0);
+}
+
+// Multi-entry blob (I2C/C2I adapters): the instruction after a mid-stub br is
+// a further entry point, entered with the return address in lr and the
+// caller's sp -- the state before the br (sp lowered by 16) must not leak
+// into it.
 TEST_F(StubUnwindTest, MidStubBrRestartsAtEntryState) {
     // 0: sub sp,sp,#16
     // 1: br x8
     // 2: nop             (second entry)
     // 3: ret
-    StubUnwindInfo* info = analyze({subSp(16), jumpReg(8), NOP, RET});
+    StubUnwindInfo* info = analyze({subSp(16), jumpReg(8), NOP, RET}, true);
     ASSERT_NE(info, nullptr);
     EXPECT_TRUE(info->_classified);
     expectPhase(info, 0, SU_PC_TO_LR, 0);
@@ -329,7 +340,8 @@ TEST_F(StubUnwindTest, MidStubBrFramedBranchTargetDegrades) {
     // 5: nop             (reached from 2 with the frame established)
     // 6: ret
     StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, cbz(0, 3),
-                                    ldpPost64(29, 30, 16), jumpReg(8), NOP, RET});
+                                    ldpPost64(29, 30, 16), jumpReg(8), NOP, RET},
+                                   true);
     ASSERT_NE(info, nullptr);
     expectPhase(info, 2, SU_FP_FRAME, 16, 8);
     expectPhase(info, 4, SU_PC_TO_LR, 0);
@@ -509,27 +521,27 @@ TEST_F(StubUnwindTest, MovSpX29RecoversUnknownSp) {
 }
 
 // 'adr xN, L; br xM; L:' materializes a return point right after the br: L
-// is reached through a register, not as a fresh entry, so the restart must
-// not claim the entry rule there.
+// is reached through a register, not as a fresh entry, so even in a
+// multi-entry blob the restart must not claim the entry rule there.
 TEST_F(StubUnwindTest, AdrTargetAfterRestartDegrades) {
     // 0: adr x9, #8        = 0x10000049 (-> 2)
     // 1: br x8
     // 2: nop
     // 3: ret
-    StubUnwindInfo* info = analyze({0x10000049, jumpReg(8), NOP, RET});
+    StubUnwindInfo* info = analyze({0x10000049, jumpReg(8), NOP, RET}, true);
     ASSERT_NE(info, nullptr);
     expectPhase(info, 1, SU_PC_TO_LR, 0);
     expectPhase(info, 2, SU_UNSUPPORTED, 0);
 }
 
 // An ADRP into the stub's own pages hides the exact code address it builds,
-// so the stub keeps the conservative cut after a mid-stub br.
+// so even a multi-entry blob keeps the conservative cut after a mid-stub br.
 TEST_F(StubUnwindTest, AdrpIntoStubDisablesRestart) {
     // 0: adrp x9, #0       = 0x90000009 (own page)
     // 1: br x8
     // 2: nop
     // 3: ret
-    StubUnwindInfo* info = analyze({0x90000009, jumpReg(8), NOP, RET});
+    StubUnwindInfo* info = analyze({0x90000009, jumpReg(8), NOP, RET}, true);
     ASSERT_NE(info, nullptr);
     expectPhase(info, 1, SU_PC_TO_LR, 0);
     expectPhase(info, 2, SU_UNSUPPORTED, 0);
@@ -600,6 +612,36 @@ TEST_F(StubUnwindTest, NestedX30SpillKeepsFrameRecordSlot) {
     expectPhase(info, 4, SU_FP_FRAME, 16, 8);
 }
 
+// The x29 save slot is unowned once popped: a later reload from that position
+// (after sp moves back down without a new store) may read memory a signal
+// overwrote, so it must not re-establish the frame (PR 842 review).
+TEST_F(StubUnwindTest, X29SaveSlotDroppedWhenPopped) {
+    // 2: stp x28,x29,[sp,#-16]!   (x29 saved at 24 below entry)
+    // 3: ldp x28,x29,[sp],#16     (reload, slot now below the live sp)
+    // 4: sub sp,sp,#16
+    // 5: ldp x28,x29,[sp]         = 0xa94077fc (same position, no new store)
+    StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, 0xa9bf77fc, 0xa8c177fc,
+                                    subSp(16), 0xa94077fc, NOP, RET});
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 4, SU_FP_FRAME, 16, 8);
+    expectPhase(info, 6, SU_FP_PROLOGUE, 32, 24);
+}
+
+// SIMD&FP loads/stores write their GPR base on pre/post-index writeback; with
+// x29 as the base the frame pointer moves (PR 842 review).
+TEST_F(StubUnwindTest, SimdBaseWritebackX29DropsFrame) {
+    // ldr q0, [x29], #16           = 0x3cc107a0
+    // ldp q0, q1, [x29], #32       = 0xacc107a0
+    // ld1 {v0.2d}, [x29], #16      = 0x4cdf7fa0
+    // ldr d0, [x29, #-8]!          = 0xfc5f8fa0
+    for (uint32_t insn : {0x3cc107a0u, 0xacc107a0u, 0x4cdf7fa0u, 0xfc5f8fa0u}) {
+        StubUnwindInfo* info = analyze({stpPre64(29, 30, -16), 0x910003fd, insn, NOP, RET});
+        ASSERT_NE(info, nullptr);
+        expectPhase(info, 2, SU_FP_FRAME, 16, 8);
+        expectPhase(info, 3, SU_FP_PROLOGUE, 16, 8);
+    }
+}
+
 // Once more than MAX_BRANCHES edges freeze the transitions, a change of the
 // auxiliary facts alone (here 'mov x8, #1' defining a constant) is not a new
 // unwind rule and must not truncate the table.
@@ -662,7 +704,14 @@ TEST_F(StubUnwindTest, Jdk21I2CC2IAdaptersBlob) {
     0xa8c64ff2, 0x910003bf, 0xa8c17bfd, 0x910003f3, 0xd10043ff, 0xf90003e1,
     0x910003f4, 0xf9401d88, 0xd61f0100, 0x00000000,
     };
-    StubUnwindInfo* info = analyze(std::vector<uint32_t>(blob, blob + sizeof(blob) / sizeof(blob[0])));
+    std::vector<uint32_t> code(blob, blob + sizeof(blob) / sizeof(blob[0]));
+    // Analyzed as any other blob, everything after the i2c entry's br falls
+    // back (the behavior before multi_entry).
+    StubUnwindInfo* single = analyze(code);
+    ASSERT_NE(single, nullptr);
+    expectPhase(single, 0x28 / 4, SU_PC_TO_LR, 0);
+    expectPhase(single, 0x2c / 4, SU_UNSUPPORTED, 0);
+    StubUnwindInfo* info = analyze(code, true);
     ASSERT_NE(info, nullptr);
     EXPECT_TRUE(info->_classified);
     // i2c (frameless)

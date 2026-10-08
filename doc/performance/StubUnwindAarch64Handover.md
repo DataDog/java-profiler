@@ -31,9 +31,14 @@ several entry points back to back (JDK 21, G1):
 legacy heuristics, which have no rule for adapters. The fix (all in
 `hotspot/stubUnwindInfo.cpp`):
 
-- **Restart after `br`.** The instruction after a register jump is not reached
-  by fall-through: it is a further entry point (entry state) or an in-stub
-  branch target, which branch validation already checks.
+- **Restart after `br`, adapters blob only.** In the `I2C/C2I adapters` blob
+  the instruction after a register jump is a further entry point (entry state)
+  or an in-stub branch target, which branch validation already checks. The
+  caller passes `multi_entry` for that blob name only; in every other blob the
+  code after a `br` may be a jump-table entry or a return point reached through
+  a register, so it keeps falling back. Even in the adapters blob, an ADR target
+  after a restart degrades, and an ADRP into the blob's own pages disables the
+  restart.
 - **SIMD structure loads/stores** (`st1 {..}, [sp], x8` / `ld1 {..}, [sp], #32`,
   emitted by `push_CPU_state`/`pop_CPU_state`) were treated as neutral although
   they write back sp, a latent soundness bug. The multiple-structure immediate
@@ -53,9 +58,10 @@ The captured blob is a regression fixture (`Jdk21I2CC2IAdaptersBlob` in
 workload under a 150-frame stack showed 0 stub break frames in about 890k samples
 (JDK 21 and 25, `vm` and `vmx`), versus 11 in 212k before.
 
-Remaining risk: code after a `br` that is reached by an *indirect* jump from
-inside the same blob with a frame established would get the entry rule. No such
-HotSpot aarch64 stub is known; far jumps and adapter tail jumps leave the blob.
+Remaining risk, adapters blob only: code after a `br` that is reached by an
+*indirect* jump through an address loaded from memory, with a frame
+established, would get the entry rule. The adapters' `br`s are tail jumps that
+leave the blob (to compiled code, the interpreter, or runtime stubs).
 
 ### 2. Slow attempts: per-sample cost exceeds the 100 us wall interval
 

@@ -202,7 +202,8 @@ bool isAddSubRegSp(uint32_t insn) {
 // data processing (register: shifted/extended add/sub, logical, adc, csel,
 // one/two/three-source; immediate: bitfield, extract) and GPR loads of every
 // addressing mode (literal, exclusive/acquire, register offset, unscaled,
-// narrower sizes, atomics), including base-register writeback. Conservative:
+// narrower sizes, atomics), including base-register writeback, also for
+// SIMD&FP loads/stores. Conservative:
 // prefetches and the status register of store-exclusive count as writes. An
 // x29 or x30 write that no decoder recognized would otherwise leave fp_est or
 // the lr rule stale ('ldur x29, [x0, #-8]', 'csel x30, ...').
@@ -212,11 +213,26 @@ uint32_t otherGprWrites(uint32_t insn) {
         (insn & 0x1c000000) == 0x10000000) {   // data processing (immediate)
         return bit(rd(insn));
     }
-    if ((insn & 0x0a000000) != 0x08000000 || ((insn >> 26) & 1)) {
-        return 0;  // not a load/store, or a SIMD&FP register transfer
+    if ((insn & 0x0a000000) != 0x08000000) {
+        return 0;  // not a load/store
     }
     bool load;
     uint32_t m = 0;
+    if ((insn >> 26) & 1) {
+        // SIMD&FP transfer: the data registers are not GPRs, but the GPR
+        // base is written back by the pre/post-index forms ('ldr q0, [x29],
+        // #16', 'ld1 {v0.2d}, [x29], #16').
+        switch ((insn >> 27) & 7) {  // bits 29:27
+            case 1:  // structure load/store: bit 23 = post-index
+            case 5:  // pair: bit 23 = pre/post-index
+                return ((insn >> 23) & 1) ? bit(rn(insn)) : 0;
+            case 7:  // single register: bits 11:10 = x1 for pre/post-index
+                return (((insn >> 24) & 1) == 0 && ((insn >> 21) & 1) == 0 && ((insn >> 10) & 1) != 0)
+                           ? bit(rn(insn)) : 0;
+            default:
+                return 0;
+        }
+    }
     switch ((insn >> 27) & 7) {  // bits 29:27
         case 1:  // load/store exclusive, load-acquire/store-release
             load = (insn >> 22) & 1;
@@ -521,7 +537,7 @@ const StubUnwindPhase* StubUnwindInfo::findPhase(int insn_index) const {
     return &_phases[lo];
 }
 
-StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
+StubUnwindInfo* analyzeStubUnwind(const void* start, int length, bool multi_entry) {
     if (start == nullptr || length <= 0 || length > MAX_STUB_BYTES ||
         (length & (INSN_SIZE - 1)) != 0) {
         return nullptr;
@@ -842,23 +858,23 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                 }
             } else if ((insn & 0xfffffc1f) == 0xd61f0000) {  // BR
                 // Control leaves through a register jump, so the next
-                // instruction is not reached by fall-through: it is either a
-                // further entry point of the same blob, entered like the blob
-                // start with the return address in lr and the caller's sp
-                // (the I2C/C2I adapters blob holds the i2c entry, whose
-                // shuffle ends in 'br', followed by the c2i entries), or a
-                // target of an in-stub branch. Restart from the entry state;
-                // the branch validation below degrades the target if a
-                // branch reaches it in a different state. A code address
-                // materialized into the stub by ADRP cannot be checked
-                // against the restart points, so such stubs keep the
-                // conservative cut instead.
-                if (adrp_into_stub) {
-                    if (i + 1 < count && i + 1 < truncate_at) truncate_at = i + 1;
-                    next = st;
-                } else {
+                // instruction is not reached by fall-through. In a
+                // multi_entry blob it is a further entry point, entered like
+                // the blob start with the return address in lr and the
+                // caller's sp (the I2C/C2I adapters blob holds the i2c entry,
+                // whose shuffle ends in 'br', followed by the c2i entries),
+                // or a target of an in-stub branch: restart from the entry
+                // state, and the branch validation below degrades the target
+                // if a branch reaches it in a different state. Elsewhere, and
+                // when an ADRP materializes a code address in the stub that
+                // cannot be checked against the restart points, the state
+                // after the br is unknown: cut there.
+                if (multi_entry && !adrp_into_stub) {
                     next = ScanState();
                     restarted = true;
+                } else {
+                    if (i + 1 < count && i + 1 < truncate_at) truncate_at = i + 1;
+                    next = st;
                 }
             } else if (isUnprivLoadStore(insn)) {
                 // LDTR/STTR: no base writeback, so sp is unchanged; a load
@@ -932,6 +948,9 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
         }
         if (!next.fp_est || next.fp_abs != st.fp_abs) next.fp_saved = false;
         if (isLoadStore(insn) && !sp_access) next.fp_saved = false;
+        // A popped save slot lies below the live sp: unowned memory a signal
+        // may overwrite (the same rule as FRAME_RECORD_PC_OFFSET for x30).
+        if (next.fp_saved && (!next.sp_known || next.fp_slot_abs > next.sp)) next.fp_saved = false;
 
         // Frozen transitions forbid a new unwind rule; the auxiliary facts
         // may still change without truncating.
