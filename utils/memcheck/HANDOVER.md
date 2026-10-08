@@ -33,6 +33,7 @@ All under `utils/memcheck/`:
 | `phase0-container.sh` | Host wrapper: builds the release lib from a clean clone of the committed HEAD inside the test image, then runs `phase0.sh`. |
 | `analyze_phase0.py` | Host-side: `phase0-report.md` + `phase0-stats.csv` (mean/SD/CV/range per scenario × arm × metric, noise class, NMT delta vs no-profiler). |
 | `results/2026-10-08-aarch64-docker-mac/` | First results (below). The CSV keeps only the `native_mem_*`, NMT and RSS rows. |
+| `results/2026-10-08-x64-aws-m5d4xlarge/` | amd64 Linux results (below), same filtering. |
 
 Scenarios (each run is a fresh JVM, `-Xms512m -Xmx512m -XX:+AlwaysPreTouch`,
 40 s steady state, rotation at 20 s, sample 5 s after the rotation):
@@ -77,6 +78,11 @@ SKIP_BUILD=1 ./utils/memcheck/phase0-container.sh build/memcheck
 
 Keep `CPUS=4` (the default) unless you are deliberately testing CPU-count
 sensitivity: CI runners are 4-core, and some categories scale with CPU count.
+The container is pinned to cores `0..CPUS-1` (`--cpuset-cpus`). An earlier
+version used `--cpus`, a CFS quota: on a 16-core host the JVM then saw 4 CPUs
+but `nproc`, the affinity mask and the profiler's
+`sysconf(_SC_NPROCESSORS_ONLN)` saw 16. The Mac set was not affected, because
+the Docker Desktop VM itself had 4 CPUs (`cpus: 4` in its report).
 
 **perf events.** `NM_PERF` stays 0 unless the profiler can open perf events.
 That needs the host's `kernel.perf_event_paranoid` low enough (check with
@@ -128,6 +134,45 @@ Caveats of this first pass:
   only 0.44 MiB of `method_map`. Fine for detecting per-item cost regressions,
   but the absolute numbers are not production-sized.
 
+## Results: amd64, AWS m5d.4xlarge (Xeon 8259CL), real Linux, 4 pinned cores
+
+JDK 21.0.8, profiler `adbd3fff8` (the profiler code is identical to
+`a60c7b1cf`; the commit only adds `utils/memcheck`), 10 reps, 115 runs,
+0 failures. Kernel 6.8, `perf_event_paranoid=2`, default Docker seccomp, so
+`NM_PERF` is still 0. Full report: `results/2026-10-08-x64-aws-m5d4xlarge/`.
+
+The gate candidates (counters, NMT `Class`/`Internal`) keep their noise
+classes. Of the 14 class changes against the Mac set, all but one are in
+report-only categories: `Compiler` and `Arena Chunk` go stable→noisy in some
+scenarios, `GC` goes stable→banded in `classesM` noprof, and `RssFile` goes
+noisy→stable. The exception is `Code`, which goes stable→banded in `traces`.
+
+- **Counters are quieter than on the Mac**: every live/max/post-flush SD is
+  ≤ 17 KiB (Mac: ≤ 70 KiB). Totals 22.4–26.4 MiB, SD 4–14 KiB. `calltrace`
+  ≤ 11 KiB, `method_map`/`dictionary`/`line_tables` ≤ 7 KiB (`dictionary` was
+  identical in every Mac run).
+- **NMT on shifts the logical counters by ≤ 12 KiB** (largest
+  |counters − nmt| mean over live/max/post-flush, `classesM` total), so the
+  nmt arm can still double as the counter arm.
+- **Absolute counter values depend on the architecture**: `native_symbols` is
+  12.87 MiB on x64 and 9.84 MiB on aarch64 (constant within each), and
+  `calltrace`/`method_map`/`line_tables` differ by up to ~0.1 MiB. So baselines
+  have to be per-architecture, and a gate compares x64 with x64 only.
+- **NMT `Class` and `Internal`**: the profiler deltas are the same on both
+  architectures to within 0.06 MiB (`Class` +0.11…+2.94, `Internal`
+  +0.15…+3.05 MiB), with SD ≤ 1 KiB and ≤ 5 KiB. Confirmed gateable.
+- **NMT `Tracing` is absent on x64 too.**
+- **NMT `Code` is weaker here than on the Mac**: the profiler delta is about
+  half (+3.2 MiB `traces`, +4.9 MiB `classesM`, against +6.8/+12.1), and the
+  nmt-arm SD reaches 411 KiB in `traces` (13 % of the delta; "banded"). A band
+  of 4·SD ≈ 1.6 MiB is still usable, but `Code` is a soft gate at best.
+- `Compiler` is noisy on x64 (SD up to 352 KiB), `GC` reaches 416 KiB SD in
+  `classesM`, and `Thread` is +0.01 MiB in `threads` (Mac: +0.55). Report only.
+- **RSS**: SD 0.1–4.5 MiB (Mac 0.1–6.2), profiler delta +23…+32 MiB. `RssFile`
+  is stable here (SD ≤ 0.1 MiB; Mac up to 2.1 MiB). Still report only.
+- `max(256 KiB, 4·SD)` still fits: the 256 KiB floor dominates for every
+  counter on x64.
+
 ## Gotchas found on the way
 
 - `memory=N:a:l` silently **disables** liveness: the field after the flags is
@@ -135,14 +180,18 @@ Caveats of this first pass:
 - `jcmd VM.native_memory` needs the target JVM started with
   `-XX:NativeMemoryTracking=summary`; NMT inflates malloc chunk overhead
   (`native_mem_chunk_overhead_bytes.*`), not the logical counters.
+- On a Linux host the bind-mounted repo belongs to the host user, so `git
+  clone` inside the container fails with "dubious ownership" unless
+  `safe.directory` is set (`phase0-container.sh` now sets it). Docker Desktop
+  hides this.
 - The final JFR file only contains chunks after the mid-run rotation; gauges
   (`live`, `max`) are absolute, so that is fine, and `post_flush_*` describes
   the rotation.
 
 ## Next steps
 
-1. **amd64 Linux box** — the platform the gate will run on. Full run, then
-   compare with `results/2026-10-08-aarch64-docker-mac/`. Same noise classes?
+1. ~~**amd64 Linux box**~~ — done, see the x64 results above. Same noise
+   classes; the absolute values are per-architecture.
 2. **perf enabled** (either box): run with `DOCKER_EXTRA_ARGS` above and check
    `NM_PERF` is non-zero and stable.
 3. **CPU-count sensitivity**: one run each with `CPUS=2` and `CPUS=8` to see

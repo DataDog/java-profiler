@@ -10,7 +10,8 @@
 # SKIP_BUILD=1 reuses it.
 #
 # Usage: phase0-container.sh [OUT]   (default OUT: build/memcheck)
-#   IMAGE (java-profiler-test:glibc-jdk21-<arch>), CPUS (4), REPS, NOPROF_REPS,
+#   IMAGE (java-profiler-test:glibc-jdk21-<arch>), CPUS (4, pinned to cores
+#   0..CPUS-1), REPS, NOPROF_REPS,
 #   SCENARIOS, SKIP_BUILD, STEADY_MS, DUMP_AFTER_MS, SAMPLE_DELAY_S
 #   DOCKER_EXTRA_ARGS  extra `docker run` flags, e.g. to let the profiler open
 #                      perf events (needed for the NM_PERF category):
@@ -23,14 +24,20 @@ OUT="$(mkdir -p "${1:-$ROOT/build/memcheck}" && cd "${1:-$ROOT/build/memcheck}" 
 case "$(uname -m)" in arm64|aarch64) ARCH=aarch64 ;; *) ARCH=x64 ;; esac
 IMAGE="${IMAGE:-java-profiler-test:glibc-jdk21-$ARCH}"
 
+# Pin to CPUS cores rather than setting a --cpus quota: a quota leaves every
+# host CPU visible to nproc/sysconf(_SC_NPROCESSORS_ONLN) and the affinity mask,
+# so only the JVM (which reads the cgroup quota) would see a 4-core machine.
+CPUS="${CPUS:-4}"
 # shellcheck disable=SC2086  # DOCKER_EXTRA_ARGS is a list of flags
-docker run --rm --cpus="${CPUS:-4}" ${DOCKER_EXTRA_ARGS:-} \
+docker run --rm --cpuset-cpus="0-$((CPUS - 1))" ${DOCKER_EXTRA_ARGS:-} \
   -v "$ROOT":/source:ro -v "$HERE":/memcheck:ro -v "$OUT":/out \
   -e REPS -e NOPROF_REPS -e SCENARIOS -e SKIP_BUILD -e STEADY_MS -e DUMP_AFTER_MS -e SAMPLE_DELAY_S \
   -e GRADLE_USER_HOME=/gradle-cache \
   "$IMAGE" /bin/bash -c '
 set -euo pipefail
 if [ -z "${SKIP_BUILD:-}" ]; then
+  # On a Linux host the bind-mounted repo is owned by the host user, not root.
+  git config --global --add safe.directory "*"
   git clone -q --depth 1 file:///source /workspace
   cd /workspace
   git rev-parse HEAD > /out/profiler-commit.txt
