@@ -254,6 +254,7 @@ Error ReferenceChainTracker::start(Arguments &args) {
     ExclusiveLockGuard guard(&_resolved_chains_lock);
     _resolved_chains.clear();
   }
+  clearPendingChainInvalidations();
   {
     ExclusiveLockGuard guard(&_pending_abandoned_events_lock);
     _pending_abandoned_events.clear();
@@ -433,6 +434,7 @@ void ReferenceChainTracker::stop() {
     ExclusiveLockGuard guard(&_resolved_chains_lock);
     _resolved_chains.clear();
   }
+  clearPendingChainInvalidations();
   {
     ExclusiveLockGuard guard(&_pending_abandoned_events_lock);
     _pending_abandoned_events.clear();
@@ -869,6 +871,7 @@ void ReferenceChainTracker::restartSearch() {
   if (_frontier != nullptr) {
     _frontier->resetForRestart();
   }
+  clearPendingChainInvalidations();
   _next_tag = 1;
   // Hop-edge label cache: keyed by raw class tags, which survive a restart (the shared class-tag
   // allocator is deliberately not reset - see this method's own declaration comment) - but the
@@ -1022,6 +1025,7 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
     ExclusiveLockGuard guard(&_resolved_chains_lock);
     _resolved_chains.clear();
   }
+  clearPendingChainInvalidations();
   {
     ExclusiveLockGuard guard(&_pending_abandoned_events_lock);
     _pending_abandoned_events.clear();
@@ -1151,7 +1155,8 @@ jlong ReferenceChainTracker::tagAsRootForTest(jvmtiEnv *jvmti, JNIEnv *jni,
   }
   // Discovery recording for this seam's decoupling contract.
   if (_candidate_count > 0) {
-    recordDiscoveredInstance(klass_id, tag, false);
+    recordDiscoveredInstance(klass_id, tag, false,
+                             CacheInvalidationMode::SYNCHRONOUS, nullptr, 0);
   }
   return tag;
 }

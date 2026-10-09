@@ -153,6 +153,12 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   }
 }
 
+void ObjectSampler::resetSession() {
+  _record_allocations = false;
+  _record_liveness = false;
+  _gc_generations = false;
+}
+
 Error ObjectSampler::check(Arguments &args) {
   if (!VM::canSampleObjects()) {
     return Error("Allocation Sampling is not supported on this JVM");
@@ -189,6 +195,8 @@ Error ObjectSampler::start(Arguments &args) {
     _alloc_event_count = 0;
     error = LivenessTracker::instance()->start(args);
     if (error) {
+      resetSession();
+      LivenessTracker::instance()->resetSession();
       return error;
     }
 

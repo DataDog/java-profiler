@@ -1504,6 +1504,11 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error("No profiling events specified");
   }
 
+  // Recording-scoped liveness and allocation metadata must not survive when the new recording
+  // does not activate the optional allocation engine.
+  LivenessTracker::instance()->resetSession();
+  ObjectSampler::instance()->resetSession();
+
   // Commit _features before the reset block so any signal-handler code that
   // reads _features.* observes the correct enabled state once profiling
   // engines start.

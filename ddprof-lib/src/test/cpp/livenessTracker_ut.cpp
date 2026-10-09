@@ -516,6 +516,34 @@ TEST_F(KlassPopulationTest, EvictsLeastRecentlyUpdatedEntryWhenFull) {
     EXPECT_EQ(new_entry.ring_fill, 1);
 }
 
+TEST_F(KlassPopulationTest, TidTrendCreationReturnsEvictedRepresentatives) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    const int cap = 256;
+    for (u32 klass_id = 1; klass_id <= (u32)cap; klass_id++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(klass_id, 1, klass_id, &slot,
+                                               &created);
+        ASSERT_TRUE(created);
+    }
+    jweak victim_ref = fakeRef(0xbeef);
+    tracker->klassPopulationSetRepresentativeForTest(nullptr, 1, victim_ref);
+
+    jweak evicted[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
+    int evicted_count = 0;
+    tracker->tidTrendRecordForTest(
+        /*klass_id=*/cap + 1, /*tid=*/7, /*count=*/12, /*epoch=*/cap + 1,
+        evicted, &evicted_count,
+        KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
+
+    ASSERT_EQ(1, evicted_count);
+    EXPECT_EQ(victim_ref, evicted[0]);
+    EXPECT_EQ(cap, tracker->klassPopulationSizeForTest());
+    KlassPopulationEntry replacement{};
+    EXPECT_TRUE(tracker->klassPopulationLookupForTest(cap + 1,
+                                                       &replacement));
+}
+
 // ---------------------------------------------------------------------------
 // Slope computation and candidate ranking. Same rationale as KlassPopulationTest above
 // for exercising LivenessTracker::instance() directly: selectLeakCandidates()
@@ -1125,7 +1153,38 @@ public:
     static u64 lastGcEpochForTest(LivenessTracker *t) {
         return t->_last_gc_epoch;
     }
+
+    static void setSessionGatesForTest(LivenessTracker *t, bool enabled,
+                                       bool generations) {
+        t->_enabled = enabled;
+        t->_gc_generations.store(generations, std::memory_order_relaxed);
+    }
+
+    static bool enabledForTest(LivenessTracker *t) {
+        return t->_enabled;
+    }
+
+    static bool entryAgeAndAdmissionForTest(LivenessTracker *t, u32 idx,
+                                             jlong *age,
+                                             u64 *admission_epoch) {
+        if (t->_table == nullptr || idx >= t->_table_size ||
+            __atomic_load_n(&t->_table[idx].ready, __ATOMIC_ACQUIRE) != 1) {
+            return false;
+        }
+        *age = t->_table[idx].age;
+        *admission_epoch = t->_table[idx].admission_epoch;
+        return true;
+    }
 };
+
+TEST(LivenessTrackerSessionTest, ResetSessionClearsOnlyRecordingGates) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/true, /*generations=*/true);
+    tracker->resetSession();
+    EXPECT_FALSE(LivenessTrackerTestAccessor::enabledForTest(tracker));
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+}
 
 // cleanup_table() calls VM::jni(), so install a fake JavaVM.
 static JNIEnv_ g_cleanup_table_mock_jni_env{};
@@ -1153,6 +1212,7 @@ protected:
         VMTestAccessor::setVm(&mock_vm);
 
         LivenessTracker::instance()->klassPopulationResetForTest();
+        LivenessTracker::instance()->setGcGenerationsForTest(true);
         LivenessTracker::instance()->classMapGenerationSetForTest(
             Profiler::instance()->classMap()->generation());
         saved_table_size = LivenessTrackerTestAccessor::tableSizeFieldForTest(
@@ -1168,6 +1228,7 @@ protected:
         LivenessTrackerTestAccessor::setGcEpochForTest(LivenessTracker::instance(), 0);
         LivenessTrackerTestAccessor::setLastGcEpochForTest(LivenessTracker::instance(), 0);
         LivenessTracker::instance()->klassPopulationResetForTest();
+        LivenessTracker::instance()->setGcGenerationsForTest(false);
         LivenessTrackerTestAccessor::setTableCapsForTest(
             LivenessTracker::instance(), saved_table_size, saved_table_max_cap);
         restoreDefaultSignalHandlers();
@@ -1211,6 +1272,29 @@ TEST_F(CleanupTableAccountEpochTest, EpochOwnerStillClaimsAfterReaperSweep) {
     LivenessTrackerTestAccessor::callCleanupTableForTest(
         tracker, /*forced=*/true, /*allow_resolve=*/false, /*account_epoch=*/true);
     EXPECT_EQ(7u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+}
+
+TEST_F(CleanupTableAccountEpochTest, EpochOwnerFoldsKnownKlassOnEmptyTable) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    int slot;
+    bool created;
+    tracker->klassPopulationRecordForTest(42, /*count=*/9, /*epoch=*/4,
+                                           &slot, &created);
+    ASSERT_TRUE(created);
+    LivenessTrackerTestAccessor::setLastGcEpochForTest(tracker, 4);
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 5);
+
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false,
+        /*account_epoch=*/true);
+
+    EXPECT_EQ(5u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+    KlassPopulationEntry entry{};
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(42, &entry));
+    EXPECT_EQ(5u, entry.last_updated_epoch);
+    ASSERT_EQ(2, entry.ring_fill);
+    u8 newest = (u8)((entry.ring_head + 30 - 1) % 30);
+    EXPECT_EQ(0u, entry.count_ring[newest]);
 }
 
 class SecondsToOOMTest : public ::testing::Test {
@@ -2383,6 +2467,44 @@ protected:
 };
 
 u64 LivenessTrackerMockJvmTest::fake_now_ns = 0;
+
+TEST_F(LivenessTrackerMockJvmTest, SurvivorAgingStartsAtAdmissionEpoch) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    ASSERT_EQ(0u, tracker->tableSizeForTest());
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 0);
+    LivenessTrackerTestAccessor::setLastGcEpochForTest(tracker, 0);
+
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 1);
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false,
+        /*account_epoch=*/true);
+
+    jlong old_age = -1;
+    u64 old_admission = UINT64_MAX;
+    ASSERT_TRUE(LivenessTrackerTestAccessor::entryAgeAndAdmissionForTest(
+        tracker, 0, &old_age, &old_admission));
+    EXPECT_EQ(0u, old_admission);
+    EXPECT_EQ(1, old_age);
+
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 3);
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 5);
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false,
+        /*account_epoch=*/true);
+
+    jlong new_age = -1;
+    u64 new_admission = UINT64_MAX;
+    ASSERT_TRUE(LivenessTrackerTestAccessor::entryAgeAndAdmissionForTest(
+        tracker, 0, &old_age, &old_admission));
+    ASSERT_TRUE(LivenessTrackerTestAccessor::entryAgeAndAdmissionForTest(
+        tracker, 1, &new_age, &new_admission));
+    EXPECT_EQ(5, old_age);
+    EXPECT_EQ(3u, new_admission);
+    EXPECT_EQ(2, new_age) << "entry must not age for epochs before admission";
+    EXPECT_EQ(5u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+}
 
 // Each sweep resolves the class of at most RESOLVE_BUDGET_PER_SWEEP (256,
 // livenessTracker.cpp) survivors. Survivors keep their table order across

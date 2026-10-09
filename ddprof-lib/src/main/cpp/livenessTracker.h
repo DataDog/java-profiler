@@ -836,6 +836,9 @@ public:
         _last_class_map_generation(0),
         _leak_tag_free_count(LEAK_TAG_POOL_SIZE) {}
 
+  // Reset recording-scoped gates at every accepted profiler start. Persistent tracking and
+  // population state intentionally survives recording boundaries.
+  void resetSession();
   Error start(Arguments &args);
   void stop();
   void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id);
@@ -1244,7 +1247,10 @@ public:
   // above. Out of gtest's reach in one respect: gtest call sites have no
   // live tracked instances to tag anyway (they exercise the qualification
   // gate only), so a distinct gtest-chosen tid is fine there.
-  void tidTrendRecordForTest(u32 klass_id, jint tid, u32 count, u64 epoch) {
+  void tidTrendRecordForTest(u32 klass_id, jint tid, u32 count, u64 epoch,
+                             jweak *out_evicted = nullptr,
+                             int *out_evicted_count = nullptr,
+                             int max_evicted = 0) {
     _table_lock.lock();
     klass_id = resolveTestKlassAliasLocked(klass_id);
     int slot = -1;
@@ -1257,7 +1263,9 @@ public:
     if (slot < 0) {
       int out_slot;
       bool created;
-      recordKlassPopulationSampleLocked(klass_id, 0, 0, &out_slot, &created);
+      recordKlassPopulationSampleLocked(klass_id, 0, 0, &out_slot, &created,
+                                        out_evicted, out_evicted_count,
+                                        max_evicted);
       slot = out_slot;
     }
     KlassPopulationEntry &entry = _klass_population[slot];

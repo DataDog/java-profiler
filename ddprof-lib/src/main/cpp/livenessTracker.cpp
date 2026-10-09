@@ -2008,6 +2008,11 @@ Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
   return Error::OK;
 }
 
+void LivenessTracker::resetSession() {
+  _enabled = false;
+  _gc_generations.store(false, std::memory_order_relaxed);
+}
+
 Error LivenessTracker::start(Arguments &args) {
   Error err = initialize(args);
   if (err) {

@@ -632,8 +632,9 @@ public final class JavaProfiler {
     static native void setHeapFloorRecordingForTest0(boolean enabled);
 
     /**
-     * Test seam: whether the search-restart gate would currently allow a new
-     * search, without running a pass.
+     * Test seam: evaluates the real search scheduling gate without executing a BFS pass.
+     * This is not a read-only query: under the native engine lock it may account a completed
+     * search's pain and restart/reset terminal search state.
      */
     static native boolean shouldRunPassForTest0();
 

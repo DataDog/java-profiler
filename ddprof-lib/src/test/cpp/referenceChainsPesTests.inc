@@ -49,6 +49,8 @@ TEST(PriorityExpandSetTest, InsertOnFullTableTerminatesWithoutLivelock) {
         ASSERT_TRUE(ReferenceChainsTestAccessor::pesInsert(1000 + (jlong)i * 7919))
             << "insert must succeed until the table is full (i=" << i << ")";
     }
+    EXPECT_TRUE(ReferenceChainsTestAccessor::pesContains(1000));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::pesContains(987654321));
     EXPECT_FALSE(ReferenceChainsTestAccessor::pesInsert(987654321));
     EXPECT_FALSE(ReferenceChainsTestAccessor::pesInsert(1000));
     ReferenceChainsTestAccessor::pesClear();

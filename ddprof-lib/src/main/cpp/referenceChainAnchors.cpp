@@ -81,9 +81,12 @@ void ReferenceChainTracker::descendFromAnchor(
     u32 anchor_depth, jlong anchor_descend_class_tag, int budget,
     int *edges_admitted, bool *truncated, bool *frontier_cap_hit,
     u64 *safepoint_ns) {
+  jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
   ReferenceChainPassContext ctx;
   ctx.tracker = this;
   ctx.frontier = _frontier;
+  ctx.resolved_chain_tags = resolved_chain_tags;
+  ctx.resolved_chain_tag_count = snapshotResolvedChainTags(resolved_chain_tags);
   // Bound admission to DESCENT_HOPS below the anchor, still subject to the global hop cap.
   int descent_cap = (int)anchor_depth + DESCENT_HOPS;
   ctx.hop_cap = descent_cap < _hop_cap ? descent_cap : _hop_cap;

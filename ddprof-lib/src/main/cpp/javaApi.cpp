@@ -1126,8 +1126,16 @@ Java_com_datadoghq_profiler_JavaProfiler_seedKlassPopulationSample0(
   ProfiledThread::initCurrentThreadSignalSafe();
   int slot;
   bool created;
+  jweak evicted[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
+  int evicted_count = 0;
   LivenessTracker::instance()->klassPopulationRecordForTest(
-      (u32)klassId, (u16)count, (u64)epoch, &slot, &created);
+      (u32)klassId, (u32)count, (u64)epoch, &slot, &created, evicted,
+      &evicted_count, KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
+  for (int i = 0; i < evicted_count; i++) {
+    if (evicted[i] != nullptr) {
+      env->DeleteWeakGlobalRef(evicted[i]);
+    }
+  }
 }
 
 // See tidTrendRecordForTest() (livenessTracker.h) for the tid requirements.
@@ -1136,8 +1144,16 @@ Java_com_datadoghq_profiler_JavaProfiler_seedTidTrendSample0(
     JNIEnv *env, jclass unused, jint klassId, jint tid, jint count,
     jlong epoch) {
   ProfiledThread::initCurrentThreadSignalSafe();
+  jweak evicted[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
+  int evicted_count = 0;
   LivenessTracker::instance()->tidTrendRecordForTest(
-      (u32)klassId, (jint)tid, (u32)count, (u64)epoch);
+      (u32)klassId, (jint)tid, (u32)count, (u64)epoch, evicted,
+      &evicted_count, KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
+  for (int i = 0; i < evicted_count; i++) {
+    if (evicted[i] != nullptr) {
+      env->DeleteWeakGlobalRef(evicted[i]);
+    }
+  }
 }
 
 // Makes `representative` klassId's leak-candidate representative, so a seeded
@@ -1283,7 +1299,8 @@ Java_com_datadoghq_profiler_JavaProfiler_setHeapFloorRecordingForTest0(
   LivenessTracker::instance()->setHeapFloorRecordingForTest(enabled == JNI_TRUE);
 }
 
-// Whether the search-restart gate would currently allow a new search.
+// Evaluates the real scheduling gate without executing a BFS pass. This is not read-only: under
+// the engine lock it may account completed-search pain and restart/reset terminal search state.
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_shouldRunPassForTest0(JNIEnv *env,
                                                                 jclass unused) {

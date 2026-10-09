@@ -210,9 +210,6 @@
    * and re-emits it on a later dump while the leak candidate is still      \
    * live. */                                                                \
   X(REFERENCE_CHAIN_WRITE_DROPPED, "reference_chain_write_dropped")            \
-  /* Deferred chain invalidations that overflowed the pending buffer and     \
-   * forced a full _resolved_chains clear on the next drain. */               \
-  X(REFERENCE_CHAIN_PENDING_INVALIDATIONS_OVERFLOWED, "reference_chain_pending_invalidations_overflowed") \
   /* LivenessTracker urgency boost: admissions below the table cap vs.    \
    * admissions that hit the cap and fell back to the subsample ratio. */  \
   X(LIVENESS_URGENT_BOOST_ADMITS, "liveness_urgent_boost_admits")             \

@@ -333,10 +333,21 @@ TEST_F(ReferenceChainsBfsTest, RecordDiscoveredInstanceEvictsNoiseSlots) {
     EXPECT_EQ((jlong)100,
               ReferenceChainsTestAccessor::candidateDiscoveredTagForTest(0, 0));
 
-    // Leak-correlated discovery evicts the first noise slot (tag 100 has no frontier entry ->
-    // treated as uncorrelated).
-    ReferenceChainsTestAccessor::recordDiscoveredInstanceForTest(
-        kKlass, 200, true);
+    // Callback-mode leak correlation replaces the noise slot immediately but defers cache erasure
+    // through the immutable pre-traversal snapshot.
+    ReferenceChainEvent cached;
+    cached._target_tag = 100;
+    cached._depth = 0;
+    ReferenceChainsTestAccessor::cacheChain(100, cached, 100, 0);
+    std::vector<jlong> snapshot =
+        ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    ReferenceChainsTestAccessor::recordDiscoveredInstanceDeferredForTest(
+        kKlass, 200, true, snapshot);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(100));
+    EXPECT_EQ(1u,
+              ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    ReferenceChainsTestAccessor::drainPendingChainInvalidations();
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(100));
     EXPECT_EQ(cap, ReferenceChainsTestAccessor::candidateDiscoveredCountForTest(0));
     EXPECT_EQ((jlong)200,
               ReferenceChainsTestAccessor::candidateDiscoveredTagForTest(0, 0));
