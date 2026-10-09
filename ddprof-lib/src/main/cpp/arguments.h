@@ -274,6 +274,7 @@ public:
   bool _nativesocket;
   long _nativesocket_interval;  // initial sampling period in nanoseconds; 0 = engine default
   bool _force_jmethodID;       // Load all jmethodIDs, true by default
+  bool _enabled;               // Agent-only. enabled=false puts the profiler in DISABLED mode
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -324,7 +325,8 @@ public:
         _jvmtistacks(false),
         _nativesocket(false),
         _nativesocket_interval(0),
-        _force_jmethodID(true) {}
+        _force_jmethodID(true),
+        _enabled(true) {}
 
   ~Arguments();
 

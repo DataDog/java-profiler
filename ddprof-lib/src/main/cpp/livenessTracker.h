@@ -832,6 +832,13 @@ public:
 
   Error start(Arguments &args);
   void stop();
+  // Frees everything tracked for the recording that just ended: clears the
+  // leak tags of still-live objects, deletes every weak global ref (table
+  // entries and per-klass representatives), frees the table and drops the
+  // first-start pinning, so the next start() initializes from scratch. Call
+  // after the recording is written (finishChunk() reads the table through the
+  // liveness checker) and once no SampledObjectAlloc callback can be running.
+  void release(JNIEnv *env, jvmtiEnv *jvmti);
   void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id);
 
   // track()'s admission gate: a chase-phase raise of the live-samples
@@ -1090,6 +1097,9 @@ public:
   int leakTagFreeCountForTest() const { return _leak_tag_free_count; }
 
   u32 tableSizeForTest() const { return _table_size; }
+  bool tableAllocatedForTest() const { return _table != nullptr; }
+  // Gives table entry idx a leak tag, as tagLeakInstances() does.
+  void setTableLeakTagForTest(u32 idx, jlong tag) { _table[idx].leak_tag = tag; }
 
   // Reads slot `idx`'s publication flag, leak tag and cached class id,
   // including slots at or past _table_size. Returns false if idx is outside

@@ -34,11 +34,12 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  *       is simply re-resolved on its next use.</li>
  * </ul>
  *
- * <p><b>Session boundary:</b> the encoding is stable only <em>within</em> a recording session. A
- * fresh {@code start} (native {@code Profiler::start} with reset) calls
- * {@code StringDictionary::clearAll()}, which resets the ID counter, so encodings from the previous
- * session become stale. {@link JavaProfiler} therefore calls {@link #clear()} on every {@code start}
- * command; a subsequent {@link #resolve} re-registers the value and re-caches its new encoding.
+ * <p><b>Session boundary:</b> the encoding is stable only <em>within</em> a recording session. The
+ * native Dictionary exists only while recording: {@code stop} releases it and {@code start}
+ * allocates it fresh with a restarted ID counter, so encodings from the previous session become
+ * stale. {@link JavaProfiler} therefore calls {@link #clear()} after every {@code start} and
+ * {@code stop}; a subsequent {@link #resolve} re-registers the value (while idle that fails and the
+ * attribute is skipped) and re-caches its new encoding.
  *
  * <p>In the all-native model there is no per-thread instance to host this cache, so it is a
  * single process-wide table shared across every carrier / virtual thread.

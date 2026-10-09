@@ -16,8 +16,8 @@
 // Manages GOT-patching for malloc interception across all loaded native libraries.
 class MallocHooker {
   private:
+    // Serializes patching and unpatching.
     static Mutex _patch_lock;
-    static int _patched_libs;
     static bool _initialized;
 
     static void detectNestedMalloc();
@@ -25,7 +25,11 @@ class MallocHooker {
   public:
     // Returns true if symbols were successfully resolved.
     static bool initialize();
+    // Installs the hooks in every loaded library not patched yet, while the
+    // tracer is running.
     static void patchLibraries();
+    // Restores the original entries in the libraries that are still loaded.
+    static void unpatchLibraries();
     static void installHooks();
 };
 

@@ -34,6 +34,8 @@ PatchEntry LibraryPatcher::_sigaction_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_sigaction_size = 0;
 PatchEntry LibraryPatcher::_socket_entries[4 * MAX_NATIVE_LIBS];
 int        LibraryPatcher::_socket_size = 0;
+MallocPatchEntry LibraryPatcher::_malloc_entries[MAX_MALLOC_HOOKS * NUM_IMPORT_TYPES * MAX_NATIVE_LIBS];
+int        LibraryPatcher::_malloc_size = 0;
 std::atomic<bool> LibraryPatcher::_socket_active{false};
 LibraryRef LibraryPatcher::_live_refs[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_live_count = 0;
@@ -781,7 +783,7 @@ void LibraryPatcher::patch_socket_slots(CodeCache* lib) {
   patch_socket_slot(read_location,  (void*)NativeSocketSampler::read_hook,  "read",  lib);
 }
 
-bool LibraryPatcher::patch_socket_functions() {
+bool LibraryPatcher::patch_socket_functions(bool initial) {
   // Resolve the real libc symbols ONCE at first call and cache them.  On a
   // restart cycle (stop()→start()) we MUST NOT re-resolve via RTLD_NEXT: if
   // any GOT slot in another DSO was missed during unpatch (e.g. its CodeCache
@@ -845,8 +847,9 @@ bool LibraryPatcher::patch_socket_functions() {
     NativeSocketSampler::read_fn  read;
     const CodeCacheArray* native_libs;
     int capped;
+    bool initial;
     bool proceed;
-  } patch = {pre_send, pre_recv, pre_write, pre_read, &Libraries::instance()->native_libs(), 0, false};
+  } patch = {pre_send, pre_recv, pre_write, pre_read, &Libraries::instance()->native_libs(), 0, initial, false};
 
   // The _lock is held during patching to protect _socket_entries and _socket_size.
   // Concurrent dlopen_hook calls serialize via the same lock in install_socket_hooks(),
@@ -854,15 +857,21 @@ bool LibraryPatcher::patch_socket_functions() {
   LiveLibraryWalk walk(
       [](void* ctx) {
         SocketPatch* patch = (SocketPatch*)ctx;
-        // Re-check under the lock only on re-entry (when hooks are already installed):
-        // a concurrent unpatch_socket_functions() may have cleared _socket_active
-        // between the acquire-load in install_socket_hooks() and this lock acquisition.
-        // The initial call from NativeSocketSampler::start() always has _socket_size == 0
-        // and must proceed regardless of _socket_active.
-        if (_socket_size > 0 && !_socket_active.load(std::memory_order_relaxed)) {
+        // Re-check under the lock on re-entry (after a dlopen): a concurrent
+        // unpatch_socket_functions() may have cleared _socket_active between the
+        // acquire-load in install_socket_hooks() and this lock acquisition. Keyed
+        // off `initial` rather than _socket_size, which unpatch resets to 0: a
+        // re-entry seeing 0 must not mistake itself for the start() call and
+        // re-install the hooks while the profiler is idle. The initial call
+        // proceeds regardless of _socket_active, and activates the hooks before
+        // patching so a dlopen racing with start() re-patches its library.
+        if (!patch->initial && !_socket_active.load(std::memory_order_relaxed)) {
           return;
         }
         patch->proceed = true;
+        if (patch->initial) {
+          _socket_active.store(true, std::memory_order_release);
+        }
         // Only assign orig pointers on the first call (no hooks installed yet).
         // On re-entry via dlopen, RTLD_NEXT would resolve to the hook itself.
         if (_socket_size == 0) {
@@ -930,6 +939,102 @@ void LibraryPatcher::unpatch_socket_functions() {
   // above may still be executing and will dereference these pointers.
   // They remain valid (pointing to the real libc functions) until the next
   // patch_socket_functions() call.
+}
+
+namespace {
+struct MallocPatchRequest {
+  const MallocHookSpec* specs;
+  int count;
+};
+}
+
+static bool has_malloc_entry_for(const MallocPatchEntry* entries, int size, CodeCache* lib) {
+  for (int index = 0; index < size; index++) {
+    if (entries[index]._lib == lib) return true;
+  }
+  return false;
+}
+
+// Set for the duration of a patch walk; the visitor has no context argument.
+static const MallocPatchRequest* _malloc_request = nullptr;
+
+void LibraryPatcher::patch_malloc_functions(const MallocHookSpec* specs, int count) {
+  MallocPatchRequest request = {specs, count};
+  _malloc_request = &request;
+  LiveLibraryWalk walk(
+      [](void* ctx) {
+        const MallocPatchRequest* req = (const MallocPatchRequest*)ctx;
+        const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
+        int num_of_libs = native_libs.count();
+        for (int index = 0; index < num_of_libs; index++) {
+          CodeCache* lib = native_libs.at(index);
+          if (lib == nullptr || has_malloc_entry_for(_malloc_entries, _malloc_size, lib)) continue;
+          bool has_import = false;
+          for (int i = 0; i < req->count && !has_import; i++) {
+            for (int ty = 0; ty < NUM_IMPORT_TYPES && !has_import; ty++) {
+              has_import = lib->peekImport(req->specs[i]._id, (ImportType)ty) != nullptr;
+            }
+          }
+          if (has_import) {
+            add_live_candidate(lib, 0);
+          }
+        }
+      },
+      (void*)&request,
+      [](CodeCache* lib, int) {
+        const MallocPatchRequest* req = _malloc_request;
+        for (int i = 0; i < req->count; i++) {
+          for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
+            void** location = lib->findImport(req->specs[i]._id, (ImportType)ty);
+            if (location == nullptr) continue;
+            if (_malloc_size >= MAX_MALLOC_HOOKS * NUM_IMPORT_TYPES * MAX_NATIVE_LIBS) {
+              Log::warn("malloc patch table full, skipping %s", lib->name());
+              return;
+            }
+            void* orig = __atomic_load_n(location, __ATOMIC_ACQUIRE);
+            if (orig == req->specs[i]._hook) continue;  // already ours
+            _malloc_entries[_malloc_size]._lib = lib;
+            _malloc_entries[_malloc_size]._location = location;
+            _malloc_entries[_malloc_size]._func = orig;
+            _malloc_entries[_malloc_size]._hook = req->specs[i]._hook;
+            __atomic_store_n(location, req->specs[i]._hook, __ATOMIC_RELEASE);
+            _malloc_size++;
+          }
+        }
+      });
+  _malloc_request = nullptr;
+}
+
+void LibraryPatcher::unpatch_malloc_functions() {
+  {
+    LiveLibraryWalk walk(
+        [](void*) {
+          // One candidate per run of a library's entries, tagged with the run's
+          // first index. Entries of unloaded libraries are dropped unwritten.
+          for (int index = 0; index < _malloc_size; index++) {
+            if (index == 0 || _malloc_entries[index - 1]._lib != _malloc_entries[index]._lib) {
+              add_live_candidate(_malloc_entries[index]._lib, index);
+            }
+          }
+        },
+        nullptr,
+        [](CodeCache* lib, int first) {
+          for (int index = first; index < _malloc_size && _malloc_entries[index]._lib == lib; index++) {
+            MallocPatchEntry& entry = _malloc_entries[index];
+            void* expected = entry._hook;
+            // Leave a slot alone if another tool re-patched it after us:
+            // writing our saved original back would remove its hook.
+            if (!__atomic_compare_exchange_n(entry._location, &expected, entry._func, false,
+                                             __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+              TEST_LOG("unpatch_malloc_functions: %s slot re-patched by someone else, left as is",
+                       lib->name());
+            }
+          }
+        });
+  }
+  // Callers serialize patch and unpatch (MallocHooker::_patch_lock), so no
+  // patch can append entries between the walk and this reset.
+  _malloc_size = 0;
 }
 
 #endif // __linux__

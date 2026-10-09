@@ -80,6 +80,10 @@ Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
   if (VM::initProfilerBridge(nullptr, true)) {
     // Attach ProfiledThread
     ProfiledThread::initCurrentThreadSignalSafe();
+    // Load jmethodIDs now, while idle, with the default policy, rather than
+    // all at once on the first start.
+    Arguments defaults;
+    JVMSupport::preloadMethodIDs(defaults, VM::jvmti(), env);
     return JNI_TRUE;
   } else {
     return JNI_FALSE;
@@ -88,6 +92,10 @@ Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv *env, jobject unused) {
+  if (Profiler::isDisabled()) {
+    throwNew(env, "java/lang/IllegalStateException", "Profiler is disabled");
+    return;
+  }
   // Attach ProfiledThread
   ProfiledThread::initCurrentThreadSignalSafe();
   Error error = Profiler::instance()->stop();
@@ -99,6 +107,9 @@ Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv *env, jobject unused) {
 
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv *env, jclass unused) {
+  if (Profiler::isDisabled()) {
+    return OS::threadId();
+  }
   // Attach ProfiledThread
   ProfiledThread* current =  ProfiledThread::initCurrentThreadSignalSafe();
   if (current != nullptr) {
@@ -111,6 +122,10 @@ Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv *env, jclass unused) {
 extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_execute0(JNIEnv *env, jobject unused,
                                                   jstring command) {
+  if (Profiler::isDisabled()) {
+    throwNew(env, "java/lang/IllegalStateException", "Profiler is disabled");
+    return NULL;
+  }
   Arguments args;
   JniString command_str(env, command);
   Error error = args.parse(command_str.c_str());
@@ -144,6 +159,9 @@ Java_com_datadoghq_profiler_JavaProfiler_execute0(JNIEnv *env, jobject unused,
 extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getStatus0(JNIEnv* env,
                                                     jclass unused) {
+  if (Profiler::isDisabled()) {
+    return env->NewStringUTF("Profiler is disabled");
+  }
   char msg[2048];
   // Attach ProfiledThread
   ProfiledThread::initCurrentThreadSignalSafe();
@@ -155,6 +173,9 @@ Java_com_datadoghq_profiler_JavaProfiler_getStatus0(JNIEnv* env,
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
                                                     jclass unused) {
+  if (Profiler::isDisabled()) {
+    return 0;
+  }
   // Attach ProfiledThread
   ProfiledThread::initCurrentThreadSignalSafe();
 
@@ -229,12 +250,18 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(JNIEnv *env,
                                                           jclass unused) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0();
 }
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
                                                              jclass unused) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0();
 }
 
@@ -242,6 +269,9 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
     JNIEnv *env, jclass unused, jlong rootSpanId, jstring endpoint,
     jstring operation, jint sizeLimit) {
+  if (Profiler::isDisabled()) {
+    return JNI_FALSE;
+  }
   JniString endpoint_str(env, endpoint);
 
   // Initialize thread TLS if it has not yet done
@@ -268,6 +298,10 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv *env, jclass unused,
                                                jstring path) {
+  if (Profiler::isDisabled()) {
+    throwNew(env, "java/lang/IllegalStateException", "Profiler is disabled");
+    return;
+  }
   // Initialize thread TLS if it has not yet done
   ProfiledThread::initCurrentThreadSignalSafe();
 
@@ -289,6 +323,9 @@ Java_com_datadoghq_profiler_JavaProfiler_getDebugCounters0(JNIEnv *env,
 extern "C" DLLEXPORT jobjectArray JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(
     JNIEnv *env, jclass unused) {
+  if (Profiler::isDisabled()) {
+    return nullptr;
+  }
 #ifdef COUNTERS
   // Initialize thread TLS if it has not yet done
   ProfiledThread::initCurrentThreadSignalSafe();
@@ -310,6 +347,9 @@ Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
     JNIEnv *env, jclass unused, jstring name, jstring value, jstring unit) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   // Initialize thread TLS if it has not yet done
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   int tid = current != nullptr ? current->tid() : OS::threadId();
@@ -337,6 +377,9 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     JNIEnv *env, jclass unused, jlong startTime, jlong endTime, jstring task,
     jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
 
   // Initialize thread TLS if it has not yet done
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
@@ -376,6 +419,9 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
     return;
@@ -395,6 +441,9 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
     return;
@@ -425,6 +474,9 @@ static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
     JNIEnv *env, jclass unused, jint state) {
+  if (Profiler::isDisabled()) {
+    return 0;
+  }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
     return 0;
@@ -448,6 +500,9 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
     JNIEnv *env, jclass unused, jlong token) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   u64 block_token = static_cast<u64>(token);
   if (block_token == 0) {
     return;
@@ -471,6 +526,9 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv *env,
                                                        jclass unused) {
+  if (Profiler::isDisabled()) {
+    return TSC::ticks();
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
 
   return TSC::ticks();
@@ -479,6 +537,9 @@ Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv *env,
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_tscFrequency0(JNIEnv *env,
                                                        jclass unused) {
+  if (Profiler::isDisabled()) {
+    return TSC::frequency();
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
   return TSC::frequency();
 }
@@ -487,6 +548,9 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_mallocArenaMax0(JNIEnv *env,
                                                          jclass unused,
                                                          jint maxArenas) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
   OS::mallocArenaMax(maxArenas);
 }
@@ -495,6 +559,9 @@ extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findStringJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
+  if (Profiler::isDisabled()) {
+    return NULL;
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
 
   JniString flag_str(env, flagName);
@@ -513,6 +580,9 @@ Java_com_datadoghq_profiler_JVMAccess_setStringJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName,
                                                          jstring flagValue) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
 
   JniString flag_str(env, flagName);
@@ -530,6 +600,9 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findBooleanJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
+  if (Profiler::isDisabled()) {
+    return JNI_FALSE;
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
 
   JniString flag_str(env, flagName);
@@ -548,6 +621,9 @@ Java_com_datadoghq_profiler_JVMAccess_setBooleanJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName,
                                                          jboolean flagValue) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
 
   JniString flag_str(env, flagName);
@@ -564,6 +640,9 @@ extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findIntJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
+  if (Profiler::isDisabled()) {
+    return 0;
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
 
   JniString flag_str(env, flagName);
@@ -581,6 +660,9 @@ extern "C" DLLEXPORT jdouble JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
+  if (Profiler::isDisabled()) {
+    return 0.0;
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
 
   JniString flag_str(env, flagName);
@@ -597,6 +679,9 @@ Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JVMAccess_healthCheck0(JNIEnv *env,
                                                          jobject unused) {
+  if (Profiler::isDisabled()) {
+    return JNI_FALSE;
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
   return true;
 }
@@ -612,6 +697,9 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
                                                          jstring tracer_version,
                                                          jobjectArray attribute_keys
                                                         ) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
 
   JniString env_str(env, env_data);
@@ -687,6 +775,9 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
 
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unused) {
+  if (Profiler::isDisabled()) {
+    return NULL;
+  }
 #ifndef OTEL_PROCESS_CTX_NO_READ
  ProfiledThread::initCurrentThreadSignalSafe();
 
@@ -885,6 +976,9 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass unused,
     jlong localRootSpanId, jlong spanId, jlong traceIdHigh, jlong traceIdLow,
     jint slot0, jint enc0, jbyteArray utf0, jint slot1, jint enc1, jbyteArray utf1) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
   if (thrd == nullptr) {
     return;
@@ -942,6 +1036,9 @@ Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass un
 // detached (valid=0).
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_clearTraceContext0(JNIEnv* env, jclass unused) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
   if (thrd == nullptr) {
     return;
@@ -968,6 +1065,9 @@ Java_com_datadoghq_profiler_JavaProfiler_clearTraceContext0(JNIEnv* env, jclass 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass unused,
     jint slot, jint encoding, jbyteArray utf8) {
+  if (Profiler::isDisabled()) {
+    return JNI_FALSE;
+  }
   ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
 
   if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
@@ -1008,6 +1108,9 @@ Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass un
 // Clears a single attribute slot (zeros the sidecar encoding, compacts it out of attrs_data).
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_clearContextValue0(JNIEnv* env, jclass unused, jint slot) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
 
   if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
@@ -1036,6 +1139,9 @@ Java_com_datadoghq_profiler_JavaProfiler_clearContextValue0(JNIEnv* env, jclass 
 // record directly via ProfiledThread::current() without mutating it. Introspection / test use.
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_copyContextTags0(JNIEnv* env, jclass unused, jintArray out) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   if (out == nullptr) {
     return;
   }
@@ -1060,6 +1166,9 @@ Java_com_datadoghq_profiler_JavaProfiler_copyContextTags0(JNIEnv* env, jclass un
 
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_ContextValueCache_registerConstant0(JNIEnv* env, jclass unused, jstring value) {
+  if (Profiler::isDisabled()) {
+    return -1;
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
 
   JniString value_str(env, value);
@@ -1083,6 +1192,9 @@ Java_com_datadoghq_profiler_JavaProfiler_maxContextSlots0(JNIEnv* env, jclass un
 // re-parsing in Java.
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_consumeContextDictionaryReset0(JNIEnv* env, jclass unused) {
+  if (Profiler::isDisabled()) {
+    return JNI_FALSE;
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
   return Profiler::instance()->consumeContextValueDictReset() ? JNI_TRUE : JNI_FALSE;
 }

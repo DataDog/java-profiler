@@ -15,9 +15,13 @@
  */
 package com.datadoghq.profiler;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -34,20 +38,35 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 public class ContextValueCacheTest {
 
     private final ContextValueCache cache = new ContextValueCache();
+    private JavaProfiler profiler;
+    private Path recording;
 
-    private static void loadLibrary() throws IOException {
-        JavaProfiler.getInstance(); // registerConstant0 is native
+    // The native context-value Dictionary only exists while a recording runs (stop() releases
+    // it), so registerConstant0 needs a started profiler.
+    @BeforeEach
+    public void startProfiler() throws IOException {
+        profiler = JavaProfiler.getInstance();
+        recording = Files.createTempFile("context-value-cache-", ".jfr");
+        profiler.execute("start,cpu=100ms,jfr,file=" + recording.toAbsolutePath());
+    }
+
+    @AfterEach
+    public void stopProfiler() throws IOException {
+        try {
+            profiler.stop();
+        } catch (IllegalStateException ignored) {
+            // already stopped by the test
+        }
+        Files.deleteIfExists(recording);
     }
 
     @Test
-    public void nullResolvesToNull() throws IOException {
-        loadLibrary();
+    public void nullResolvesToNull() {
         assertNull(cache.resolve(null));
     }
 
     @Test
-    public void resolveHitsCacheOnSecondLookup() throws IOException {
-        loadLibrary();
+    public void resolveHitsCacheOnSecondLookup() {
         ContextValueCache.Entry first = cache.resolve("hello");
         assertNotNull(first);
         ContextValueCache.Entry second = cache.resolve("hello");
@@ -55,16 +74,14 @@ public class ContextValueCacheTest {
     }
 
     @Test
-    public void oversizedValueResolvesToNull() throws IOException {
-        loadLibrary();
+    public void oversizedValueResolvesToNull() {
         char[] chars = new char[ContextValueCache.MAX_VALUE_BYTES + 1];
         Arrays.fill(chars, 'x');
         assertNull(cache.resolve(new String(chars)));
     }
 
     @Test
-    public void maxSizeValueResolves() throws IOException {
-        loadLibrary();
+    public void maxSizeValueResolves() {
         char[] chars = new char[ContextValueCache.MAX_VALUE_BYTES];
         Arrays.fill(chars, 'x');
         String value = new String(chars);
@@ -74,8 +91,7 @@ public class ContextValueCacheTest {
     }
 
     @Test
-    public void hashCollisionEvictsPreviousEntryButBothRemainResolvable() throws IOException {
-        loadLibrary();
+    public void hashCollisionEvictsPreviousEntryButBothRemainResolvable() {
         // ContextValueCache is direct-mapped by value.hashCode() & 0xFF (SIZE=256). Find two
         // distinct strings that collide in the same slot to exercise the eviction path.
         String a = "collision-a";
@@ -104,8 +120,7 @@ public class ContextValueCacheTest {
     }
 
     @Test
-    public void clearDropsCachedEntries() throws IOException {
-        loadLibrary();
+    public void clearDropsCachedEntries() {
         ContextValueCache.Entry before = cache.resolve("to-clear");
         assertNotNull(before);
         cache.clear();
@@ -115,8 +130,7 @@ public class ContextValueCacheTest {
     }
 
     @Test
-    public void charSequenceHitNeverCallsToString() throws IOException {
-        loadLibrary();
+    public void charSequenceHitNeverCallsToString() {
         ContextValueCache.Entry primed = cache.resolve("shared-value");
         assertNotNull(primed);
 
@@ -127,13 +141,19 @@ public class ContextValueCacheTest {
     }
 
     @Test
-    public void charSequenceMissMaterializesStringExactlyOnce() throws IOException {
-        loadLibrary();
+    public void charSequenceMissMaterializesStringExactlyOnce() {
         ToStringCountingCharSequence value = new ToStringCountingCharSequence("not-yet-cached");
         ContextValueCache.Entry e = cache.resolve((CharSequence) value);
         assertNotNull(e);
         assertEquals("not-yet-cached", e.key);
         assertEquals(1, value.toStringCalls, "a miss must materialize a String exactly once");
+    }
+
+    @Test
+    public void idleProfilerResolvesToNull() {
+        profiler.stop();
+        // No Dictionary while idle: nothing can be registered, so the attribute is skipped.
+        assertNull(cache.resolve("while-idle"));
     }
 
     /** A {@link CharSequence} that is not a {@link String}, counting {@link #toString()} calls. */

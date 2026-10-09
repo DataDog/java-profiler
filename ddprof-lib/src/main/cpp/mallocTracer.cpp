@@ -13,6 +13,7 @@
 #include "counters.h"
 #include "guards.h"
 #include "libraries.h"
+#include "libraryPatcher.h"
 #include "mallocTracer.h"
 #include "os.h"
 #include "pidController.h"
@@ -91,7 +92,6 @@ PidController MallocTracer::_pid(MallocTracer::TARGET_SAMPLES_PER_WINDOW,
     31, 511, 3, MallocTracer::CONFIG_UPDATE_CHECK_PERIOD_SECS, 15);
 
 Mutex MallocHooker::_patch_lock;
-int MallocHooker::_patched_libs = 0;
 bool MallocHooker::_initialized = false;
 // xoroshiro128+ PRNG state — shared, relaxed atomics.
 // Benign races are acceptable: occasional duplicate output is harmless
@@ -232,34 +232,30 @@ void MallocHooker::patchLibraries() {
     if (_orig_malloc == NULL) return;
 
     MutexLocker ml(_patch_lock);
+    // Re-checked under the lock: stop() clears _running before it unpatches
+    // under the same lock, so a dlopen() racing with stop() cannot install
+    // hooks after they were removed.
+    if (!MallocTracer::running()) return;
 
-    const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
-    int native_lib_count = native_libs.count();
+    MallocHookSpec specs[MAX_MALLOC_HOOKS];
+    int count = 0;
+    if (_orig_malloc) specs[count++] = {im_malloc, (void*)malloc_hook};
+    if (_orig_realloc) specs[count++] = {im_realloc, (void*)realloc_hook};
+    if (_orig_aligned_alloc) specs[count++] = {im_aligned_alloc, (void*)aligned_alloc_hook};
+    // On musl, calloc/posix_memalign delegate to malloc/aligned_alloc internally;
+    // hooking them too would double-count. Leave the GOT entry untouched instead.
+    if (_orig_calloc && !_nested_malloc) specs[count++] = {im_calloc, (void*)calloc_hook};
+    if (_orig_posix_memalign && !_nested_posix_memalign) specs[count++] = {im_posix_memalign, (void*)posix_memalign_hook};
 
-    // _patched_libs is intentionally monotonic: hooks are permanent and cannot be
-    // uninstalled safely (library unloading races). On profiler restart, only
-    // newly-loaded libraries need patching.
-    TEST_LOG("MallocHooker::patchLibraries: _patched_libs=%d native_lib_count=%d _orig_malloc=%p",
-             _patched_libs, native_lib_count, (void*)_orig_malloc);
-    while (_patched_libs < native_lib_count) {
-        CodeCache* cc = native_libs[_patched_libs++];
+    // Patches every loaded library not patched yet, so a restart patches them all again.
+    LibraryPatcher::patch_malloc_functions(specs, count);
+}
 
-        UnloadProtection handle(cc);
-        if (!handle.isValid()) {
-            TEST_LOG("MallocHooker::patchLibraries: skipping (invalid handle) %s", cc->name());
-            continue;
-        }
-
-        TEST_LOG("MallocHooker::patchLibraries: patching %s has_malloc=%d",
-                 cc->name(), cc->findImport(im_malloc) != nullptr);
-        if (_orig_malloc) cc->patchImport(im_malloc, (void*)malloc_hook);
-        if (_orig_realloc) cc->patchImport(im_realloc, (void*)realloc_hook);
-        if (_orig_aligned_alloc) cc->patchImport(im_aligned_alloc, (void*)aligned_alloc_hook);
-        // On musl, calloc/posix_memalign delegate to malloc/aligned_alloc internally;
-        // hooking them too would double-count. Leave the GOT entry untouched instead.
-        if (_orig_calloc && !_nested_malloc) cc->patchImport(im_calloc, (void*)calloc_hook);
-        if (_orig_posix_memalign && !_nested_posix_memalign) cc->patchImport(im_posix_memalign, (void*)posix_memalign_hook);
-    }
+void MallocHooker::unpatchLibraries() {
+    MutexLocker ml(_patch_lock);
+    // A thread still inside a hook finishes normally: the hooks live in this
+    // never-unloaded library and forward to _orig_*, which stay valid.
+    LibraryPatcher::unpatch_malloc_functions();
 }
 
 void MallocHooker::installHooks() {
@@ -404,7 +400,9 @@ Error MallocTracer::start(Arguments& args) {
 }
 
 void MallocTracer::stop() {
-    // Ideally, we should reset original malloc entries, but it's not currently safe
-    // in the view of library unloading. Consider using dl_iterate_phdr.
+    // Stop recording first, then restore the original GOT entries so idle
+    // allocations no longer go through the hooks. The restore only writes to
+    // libraries that are still loaded (LibraryPatcher::LiveLibraryWalk).
     __atomic_store_n(&_running, false, __ATOMIC_RELEASE);
+    MallocHooker::unpatchLibraries();
 }

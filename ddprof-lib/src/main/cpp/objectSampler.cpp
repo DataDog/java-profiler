@@ -10,6 +10,7 @@
 
 #include "context.h"
 #include "objectSampler.h"
+#include "inflightGate.h"
 #include "pidController.h"
 #include "profiler.h"
 #include "samplerPerf.h"
@@ -48,9 +49,19 @@ bool ObjectSampler::normalizeClassSignature(const char *class_name,
   return true;
 }
 
+// Brackets the SampledObjectAlloc callback, which reaches the liveness
+// table: stop() closes and drains it after disabling the event, so the table
+// can be freed once the recording is written.
+static InflightGate _callback_gate;
+static const long CALLBACK_DRAIN_TIMEOUT_NS = 500000000L;  // 500 ms
+
 void ObjectSampler::SampledObjectAlloc(jvmtiEnv *jvmti, JNIEnv *jni,
                                        jthread thread, jobject object,
                                        jclass object_klass, jlong size) {
+  InflightGate::Scope scope(_callback_gate);
+  if (!scope.entered()) {
+    return;
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
   ObjectSampler::instance()->recordAllocation(jvmti, jni, thread, BCI_ALLOC,
                                               object, object_klass, size);
@@ -194,6 +205,7 @@ Error ObjectSampler::start(Arguments &args) {
     // used by one JVMTI environment. Therefore, we can rely on the fact that if
     // this agent gets hold of the sample it will be its exclusive owner.
     jvmti->SetHeapSamplingInterval(_interval);
+    _callback_gate.open();
     jvmti->SetEventNotificationMode(JVMTI_ENABLE,
                                     JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
     __atomic_store_n(&_active, true, __ATOMIC_RELEASE);
@@ -211,6 +223,14 @@ void ObjectSampler::stop() {
   jvmtiEnv *jvmti = VM::jvmti();
   jvmti->SetEventNotificationMode(JVMTI_DISABLE,
                                   JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
+  // A callback already past the event check may still be in track().
+  _callback_gate.close();
+  if (!_callback_gate.drain(CALLBACK_DRAIN_TIMEOUT_NS)) {
+    Log::warn("ObjectSampler: allocation callbacks did not drain");
+    _callbacks_drained = false;
+  } else {
+    _callbacks_drained = true;
+  }
 
   if (_record_liveness || _gc_generations) {
     LivenessTracker::instance()->stop();

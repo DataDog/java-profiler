@@ -81,7 +81,7 @@ void Libraries::refresh() {
   // now and the end of this call re-arms us for the next tick.  All
   // downstream operations are idempotent (parseLibraries tracks
   // _parsed_inodes, patch_sigaction checks _sigaction_entries,
-  // installHooks uses monotonic _patched_libs, updateBuildIds tracks
+  // installHooks skips libraries already in the malloc patch table, updateBuildIds tracks
   // _build_id_processed), so redundant invocations are cheap.
   _dirty.store(false, std::memory_order_release);
   updateSymbols(false);

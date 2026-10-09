@@ -417,3 +417,74 @@ TEST_F(ReferenceChainsRecordingBoundaryTest, NoStaleFrontierIdsAfterRecordingBou
 
     tracker->stop();
 }
+
+// Profiler::stop() releases the tracker's per-recording state after the
+// recording is written: every live search tag is cleared, the frontier table
+// is freed, and the next start() rebuilds it for a brand-new search.
+TEST_F(ReferenceChainsLifecycleTest, ReleaseFreesFrontierAndClearsSearchTags) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=2:firstpassbudget=2"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    // Deep enough that budget=2 leaves the search RUNNING, holding live tags,
+    // after the first pass.
+    int nodes[8];
+    for (int i = 0; i < 8; i++) {
+        nodes[i] = addNode();
+    }
+    script = {{JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodes[0], -1}};
+    for (int i = 0; i + 1 < 8; i++) {
+        script.push_back({JVMTI_HEAP_REFERENCE_FIELD, nodes[i], nodes[i + 1], -1});
+    }
+    bool truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ASSERT_EQ(SearchState::RUNNING, ReferenceChainsTestAccessor::searchStateForTest());
+    int tagged = 0;
+    for (int i = 0; i < 8; i++) {
+        tagged += node_tags[nodes[i]] != 0;
+    }
+    ASSERT_GT(tagged, 0) << "the pass tagged nothing";
+
+    tracker->stop();
+    ASSERT_TRUE(tracker->release(&mock_jvmti, &mock_jni));
+    EXPECT_EQ(nullptr, tracker->frontierTable());
+    for (int i = 0; i < 8; i++) {
+        EXPECT_EQ(0, node_tags[nodes[i]]) << "node " << i << " kept its search tag";
+    }
+
+    ASSERT_FALSE(tracker->start(args));
+    EXPECT_NE(nullptr, tracker->frontierTable());
+    EXPECT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    tracker->stop();
+    EXPECT_TRUE(tracker->release(&mock_jvmti, &mock_jni));
+}
+
+// If the search tags cannot be confirmed cleared, release() keeps the frontier
+// (it is what identifies the tags still out there) and reports failure.
+TEST_F(ReferenceChainsLifecycleTest, ReleaseKeepsFrontierWhenTagsCannotBeCleared) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=2:firstpassbudget=2"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    int nodes[8];
+    for (int i = 0; i < 8; i++) {
+        nodes[i] = addNode();
+    }
+    script = {{JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodes[0], -1}};
+    for (int i = 0; i + 1 < 8; i++) {
+        script.push_back({JVMTI_HEAP_REFERENCE_FIELD, nodes[i], nodes[i + 1], -1});
+    }
+    bool truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ASSERT_NE(0, node_tags[nodes[0]]);
+
+    tracker->stop();
+    fail_get_objects_with_tags = true;
+    EXPECT_FALSE(tracker->release(&mock_jvmti, &mock_jni));
+    EXPECT_NE(nullptr, tracker->frontierTable());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::tagsReleased());
+
+    fail_get_objects_with_tags = false;
+    EXPECT_TRUE(tracker->release(&mock_jvmti, &mock_jni));
+    EXPECT_EQ(nullptr, tracker->frontierTable());
+}

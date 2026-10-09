@@ -2428,3 +2428,41 @@ TEST_F(LivenessTrackerMockJvmTest, SlotsPastTableSizeAreClearedAfterCompaction) 
         }
     }
 }
+
+// stop() of the profiler releases everything the tracker holds for the
+// recording: leak tags of live objects are cleared (the next recording reuses
+// the tag values), weak refs and the table are freed, the leak-tag pool is
+// full again, and the next start() initializes from scratch.
+TEST_F(LivenessTrackerMockJvmTest, ReleaseFreesTableAndClearsLeakTags) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jobject tagged = trackNew(&jvm.retained_class, 1);
+    trackNew(&jvm.retained_class, 2);
+    trackNew(&jvm.retained_class, 3);
+    ASSERT_EQ(3u, tracker->tableSizeForTest());
+
+    jlong tag = tracker->acquireLeakTagForTest();
+    ASSERT_NE(0, tag);
+    tracker->setTableLeakTagForTest(0, tag);
+    jvm.tags[tagged] = tag;
+
+    tracker->release(&jvm.jni, &jvm.jvmti);
+
+    EXPECT_FALSE(tracker->tableAllocatedForTest());
+    EXPECT_EQ(0u, tracker->tableSizeForTest());
+    EXPECT_EQ(0, jvm.tags[tagged]) << "a live object kept its leak tag";
+    EXPECT_FALSE(tracker->leakTagInUseForTest(tag));
+    EXPECT_EQ(LivenessTracker::leakTagPoolSizeForTest(), tracker->leakTagFreeCountForTest());
+
+    // While released, track() stores nothing.
+    trackNew(&jvm.retained_class, 4);
+    EXPECT_EQ(0u, tracker->tableSizeForTest());
+
+    // The next recording starts from scratch.
+    Arguments args;
+    ASSERT_FALSE(args.parse("generations=true"));
+    ASSERT_FALSE(tracker->start(args));
+    tracker->setSubsampleRatioForTest(1.0);
+    EXPECT_TRUE(tracker->tableAllocatedForTest());
+    trackNew(&jvm.retained_class, 5);
+    EXPECT_EQ(1u, tracker->tableSizeForTest());
+}

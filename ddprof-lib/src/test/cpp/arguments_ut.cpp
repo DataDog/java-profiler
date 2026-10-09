@@ -253,3 +253,32 @@ TEST_F(ArgumentsTest, BooleanOptionRejectsTypoSharingFirstLetterWithValidValue) 
         EXPECT_TRUE(error);
     }
 }
+
+// enabled=false is the agent-only switch for disabled mode.
+TEST_F(ArgumentsTest, EnabledIsParsedForAgentArguments) {
+    {
+        Arguments args(true);
+        EXPECT_TRUE(args._enabled);
+        EXPECT_FALSE(args.parse("enabled=false,start,cpu=10ms"));
+        EXPECT_FALSE(args._enabled);
+    }
+    {
+        Arguments args(true);
+        EXPECT_FALSE(args.parse("enabled=true"));
+        EXPECT_TRUE(args._enabled);
+    }
+    {
+        Arguments args(true);
+        EXPECT_TRUE(args.parse("enabled=foo"));
+    }
+}
+
+// Disabled mode has to be decided before any initialization, so execute0()-style
+// (non-persistent) arguments must not be able to set it.
+TEST_F(ArgumentsTest, EnabledIsRejectedOutsideAgentArguments) {
+    Arguments args;
+    Error error = args.parse("enabled=false");
+    ASSERT_TRUE(error);
+    EXPECT_STREQ("enabled is an agent-only option", error.message());
+    EXPECT_TRUE(args._enabled);
+}

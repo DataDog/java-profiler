@@ -293,3 +293,45 @@ TEST_F(JVMSupportRestartTest, SecondStartWithPartialPreloadIsNotBlockedByStaleFu
     // so the state stayed Fully_loaded instead of downgrading.
     EXPECT_EQ(JVMSupportTestAccessor::PartialLoaded(), JVMSupportTestAccessor::getLoadState());
 }
+
+// Counts GetLoadedClasses calls, i.e. full class scans.
+static int g_loaded_classes_calls = 0;
+static jvmtiError JNICALL mock_GetLoadedClasses_counting(jvmtiEnv*, jint* class_count_ptr, jclass** classes_ptr) {
+    g_loaded_classes_calls++;
+    *class_count_ptr = 0;
+    *classes_ptr = nullptr;
+    return JVMTI_ERROR_NONE;
+}
+
+// The idle-time preload does the full scan once; a later start with the same
+// policy, or with a partial one, must not scan again.
+TEST_F(JVMSupportRestartTest, PreloadScansOnceAndLaterStartsDoNotRescan) {
+    jvmti_tbl.GetLoadedClasses = &mock_GetLoadedClasses_counting;
+    g_loaded_classes_calls = 0;
+    JNIEnv* jni = reinterpret_cast<JNIEnv*>(&mock_jni);
+
+    Arguments defaults;
+    JVMSupport::preloadMethodIDs(defaults, &mock_jvmti, jni);
+    EXPECT_EQ(JVMSupportTestAccessor::FullyLoaded(), JVMSupportTestAccessor::getLoadState());
+    EXPECT_EQ(1, g_loaded_classes_calls);
+
+    // Idempotent.
+    JVMSupport::preloadMethodIDs(defaults, &mock_jvmti, jni);
+    EXPECT_EQ(1, g_loaded_classes_calls);
+
+    // First start with the default policy: already loaded.
+    JVMSupport::initExecution(defaults, &mock_jvmti, jni);
+    EXPECT_EQ(1, g_loaded_classes_calls);
+
+    // A partial-policy start switches the mode for new classes without a rescan.
+    Arguments partial_args;
+    partial_args._force_jmethodID = false;
+    partial_args._cstack = CSTACK_VM;
+    JVMSupport::initExecution(partial_args, &mock_jvmti, jni);
+    EXPECT_EQ(JVMSupportTestAccessor::PartialLoaded(), JVMSupportTestAccessor::getLoadState());
+    EXPECT_EQ(1, g_loaded_classes_calls);
+
+    // Back to full: classes loaded under the partial policy need the rescan.
+    JVMSupport::initExecution(defaults, &mock_jvmti, jni);
+    EXPECT_EQ(2, g_loaded_classes_calls);
+}

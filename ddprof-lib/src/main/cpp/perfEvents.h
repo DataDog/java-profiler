@@ -44,6 +44,12 @@ private:
   // cppcheck-suppress unusedPrivateFunction
   static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
 
+  int registerThreadGated(int tid);
+  static void closeEvent(int tid);
+  // Closes every fd and ring mmap and frees _events. Safe to call when nothing
+  // was allocated.
+  static void releaseEvents();
+
 public:
   Error check(Arguments &args);
   Error start(Arguments &args);

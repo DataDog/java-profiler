@@ -22,6 +22,7 @@
 #include "context.h"
 #include "counters.h"
 #include "guards.h"
+#include "inflightGate.h"
 #include "debugSupport.h"
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
@@ -580,11 +581,32 @@ Ring PerfEvents::_ring;
 CStack PerfEvents::_cstack;
 bool PerfEvents::_use_mmap_page;
 
+// Gate in front of _events / _max_events. It is open from the point start()
+// has allocated _events until stop(), and it is what lets stop() free them:
+// registerThread()/unregisterThread() run from the pthread hooks, and
+// resetBuffer() runs at the tail of the signal handler, outside the
+// SignalInflight window that Profiler::stop() drains. It also decides whether
+// a signal re-arms its fd (see PerfFdRearmGuard).
+static InflightGate _events_gate;
+// Highest tid ever registered in this recording, so releaseEvents() scans only
+// [0, _max_registered_tid] instead of all of pid_max.
+static int _max_registered_tid = -1;
+static const long EVENTS_DRAIN_TIMEOUT_NS = 500000000L;  // 500 ms
+
 static int __intsort(const void *a, const void *b) {
   return *(const int *)a > *(const int *)b;
 }
 
 int PerfEvents::registerThread(int tid) {
+  InflightGate::Scope scope(_events_gate);
+  if (!scope.entered()) {
+    // Not started, or being stopped.
+    return 0;
+  }
+  return registerThreadGated(tid);
+}
+
+int PerfEvents::registerThreadGated(int tid) {
   if (_max_events == -1) {
     // It hasn't been started
     return 0;
@@ -692,6 +714,12 @@ int PerfEvents::registerThread(int tid) {
   _events[tid]._fd = fd;
   _events[tid]._page = (struct perf_event_mmap_page *)page;
 
+  int prev_max = __atomic_load_n(&_max_registered_tid, __ATOMIC_RELAXED);
+  while (tid > prev_max &&
+         !__atomic_compare_exchange_n(&_max_registered_tid, &prev_max, tid, true,
+                                      __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+  }
+
   struct f_owner_ex ex;
   ex.type = F_OWNER_TID;
   ex.pid = tid;
@@ -707,7 +735,15 @@ int PerfEvents::registerThread(int tid) {
 }
 
 void PerfEvents::unregisterThread(int tid) {
-  if (tid >= _max_events) {
+  InflightGate::Scope scope(_events_gate);
+  if (!scope.entered()) {
+    return;
+  }
+  closeEvent(tid);
+}
+
+void PerfEvents::closeEvent(int tid) {
+  if (tid < 0 || tid >= _max_events) {
     return;
   }
 
@@ -770,8 +806,15 @@ public:
     // ErrnoPreserver, which is declared before this guard and therefore
     // destructs after it.
     PerfEvents::resetBuffer(_tid);
-    ioctl(_fd, PERF_EVENT_IOC_RESET, 0);
-    ioctl(_fd, PERF_EVENT_IOC_REFRESH, 1);
+    // Re-arm only while the engine is started. Once stop() has closed the
+    // gate, a one-shot fd goes quiet after its last signal instead of firing
+    // SIGPROF forever while the profiler is idle. Keyed off the gate rather
+    // than _enabled, because signals that arrive between registerThread() and
+    // enableEvents(true) at start must still re-arm their fd.
+    if (_events_gate.isOpen()) {
+      ioctl(_fd, PERF_EVENT_IOC_RESET, 0);
+      ioctl(_fd, PERF_EVENT_IOC_REFRESH, 1);
+    }
   }
   PerfFdRearmGuard(const PerfFdRearmGuard &) = delete;
   PerfFdRearmGuard &operator=(const PerfFdRearmGuard &) = delete;
@@ -949,6 +992,8 @@ Error PerfEvents::start(Arguments &args) {
                    (_ring != RING_USER || _cstack == CSTACK_DEFAULT ||
                     _cstack == CSTACK_LBR);
 
+  // A previous stop() whose drain timed out leaves the gate closed with the
+  // old _events in place; reuse them rather than freeing under a caller.
   int max_events = OS::getMaxThreadId();
   if (max_events != _max_events) {
     // Account the per-thread PerfEvent array under NM_PERF, alongside the ring
@@ -962,12 +1007,16 @@ Error PerfEvents::start(Arguments &args) {
       NativeMem::record(NM_PERF, -old_bytes);
     }
     _events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
-    _max_events = max_events;
-    if (_events != NULL) {
-      NativeMem::record(NM_PERF,
-                        (long long)((size_t)max_events * sizeof(PerfEvent)));
+    if (_events == NULL) {
+      _max_events = -1;
+      return Error("Not enough memory for perf events");
     }
+    _max_events = max_events;
+    NativeMem::record(NM_PERF,
+                      (long long)((size_t)max_events * sizeof(PerfEvent)));
   }
+  _max_registered_tid = -1;
+  _events_gate.open();
 
   OS::installSignalHandler(SIGPROF, signalHandler);
 
@@ -1020,7 +1069,8 @@ Error PerfEvents::start(Arguments &args) {
   free(threads);
 
   if (err != 0) {
-    *_pthread_entry = (void *)pthread_setspecific;
+    __atomic_store_n(_pthread_entry, (void *)pthread_setspecific, __ATOMIC_RELEASE);
+    releaseEvents();
     Profiler::instance()->switchThreadEvents(JVMTI_DISABLE);
     if (err == EACCES || err == EPERM) {
       return Error("No access to perf events. Try --all-user option or 'sysctl "
@@ -1040,17 +1090,48 @@ Error PerfEvents::start(Arguments &args) {
 }
 
 void PerfEvents::stop() {
-  // As we don't have snapshot feature, it's wasteful to unregister all the
-  // threads to re-register them right after when doing a stop+start to capture
-  // the data. Instead, since we know we are continuously profiling and we know
-  // the interval doesn't change, simply don't unregister threads on stop, and
-  // check whether the thread has been registered already on start.
+  // Nothing perf-related may stay active while the profiler is idle: no hook,
+  // no fds, no ring mmaps, no SIGPROF. Profiler::dump() rotates in place
+  // without stopping engines, so a stop really is the end of the recording.
+  //
+  // Unhook first so threads created from now on don't register.
+  if (_pthread_entry != NULL) {
+    __atomic_store_n(_pthread_entry, (void *)pthread_setspecific, __ATOMIC_RELEASE);
+  }
+  releaseEvents();
+}
+
+void PerfEvents::releaseEvents() {
+  _events_gate.close();
+  if (_events == NULL) {
+    return;
+  }
+  if (!_events_gate.drain(EVENTS_DRAIN_TIMEOUT_NS)) {
+    // A hook or signal-handler tail is still using _events. Keep everything
+    // (start() reuses it) rather than free it under that caller.
+    Log::warn("perf events: drain timed out; keeping %d perf event slots", _max_events);
+    return;
+  }
+  int max_tid = __atomic_load_n(&_max_registered_tid, __ATOMIC_RELAXED);
+  for (int tid = 0; tid <= max_tid && tid < _max_events; tid++) {
+    closeEvent(tid);
+  }
+  free(_events);
+  NativeMem::record(NM_PERF, -(long long)((size_t)_max_events * sizeof(PerfEvent)));
+  _events = NULL;
+  _max_events = -1;
+  _max_registered_tid = -1;
 }
 
 int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
                            StackContext *java_ctx) {
   if (!(_ring & RING_KERNEL)) {
     // we are not capturing kernel stacktraces
+    return 0;
+  }
+
+  InflightGate::Scope scope(_events_gate);
+  if (!scope.entered() || tid < 0 || tid >= _max_events) {
     return 0;
   }
 
@@ -1143,6 +1224,10 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
 }
 
 void PerfEvents::resetBuffer(int tid) {
+  InflightGate::Scope scope(_events_gate);
+  if (!scope.entered() || tid < 0 || tid >= _max_events) {
+    return;
+  }
   PerfEvent *event = &_events[tid];
   if (!event->tryLock()) {
     return; // the event is being destroyed

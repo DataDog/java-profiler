@@ -41,15 +41,13 @@ bool JVMSupport::initialize() {
     }
 
     // Check ProfiledThread key, it is critical for storing per-thread metadata
+    // The TLS priming pool is created and sized by Profiler::start(), from the
+    // number of live threads, so it costs nothing until the first recording.
     bool validKey = ProfiledThread::isThreadKeyValid();
-    if (validKey && ProfiledThread::supportPriming()) {
-        ThreadLocalDataPool::initialize();
-    } else {
-        if (!validKey) {
-            LOG_WARN("ProfiledThread TLS key creation failed");
-        } else {
-            LOG_WARN("Thread TLS priming is not supported");
-        }
+    if (!validKey) {
+        LOG_WARN("ProfiledThread TLS key creation failed");
+    } else if (!ProfiledThread::supportPriming()) {
+        LOG_WARN("Thread TLS priming is not supported");
     }
 
     return validKey;
@@ -87,7 +85,22 @@ void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
 
     setLoadState(state);
 
+    // Going from Fully_loaded to Partial_loaded only changes how classes loaded
+    // from now on are handled: every class loaded so far already has all of its
+    // jmethodIDs (e.g. from the idle-time preload, which uses the default
+    // load-all policy), so rescanning them would just repeat the spike the
+    // preload exists to avoid.
+    if (current_state == Fully_loaded) {
+        return;
+    }
     loadAllMethodIDsIfNeeded(jvmti, jni);
+}
+
+void JVMSupport::preloadMethodIDs(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
+    if (getLoadState() != No_loaded || jvmti == nullptr || jni == nullptr) {
+        return;
+    }
+    initExecution(args, jvmti, jni);
 }
 
 int JVMSupport::walkJavaStack(StackWalkRequest& request) {

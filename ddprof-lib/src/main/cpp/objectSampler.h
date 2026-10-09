@@ -36,6 +36,9 @@ private:
   static ObjectSampler *const _instance;
 
   bool _active;
+  // False when the last stop() timed out draining SampledObjectAlloc
+  // callbacks: the liveness table must then be kept, not freed.
+  bool _callbacks_drained = true;
   int _interval;
   int _configured_interval;
   bool _record_allocations;
@@ -66,6 +69,7 @@ protected:
 
 public:
   static ObjectSampler *const instance() { return _instance; }
+  bool callbacksDrained() const { return _callbacks_drained; }
 
   Error check(Arguments &args);
   Error start(Arguments &args);

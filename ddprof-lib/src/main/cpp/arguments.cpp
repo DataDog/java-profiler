@@ -391,6 +391,15 @@ Error Arguments::parse(const char *args) {
         msg = "Invalid remotesym value";
       }
 
+      CASE("enabled")
+      // Agent-only: disabled mode has to be decided before any initialization,
+      // so it can't be switched by a later execute0() command.
+      if (!_persistent) {
+        msg = "enabled is an agent-only option";
+      } else if (!parseBoolOption(value, _enabled)) {
+        msg = "Invalid enabled value";
+      }
+
       CASE("jvmtistacks")
       if (!parseBoolOption(value, _jvmtistacks)) {
         msg = "Invalid jvmtistacks value";

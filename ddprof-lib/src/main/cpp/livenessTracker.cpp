@@ -2053,8 +2053,72 @@ void LivenessTracker::stop() {
   cleanup_table();
   flush_table(nullptr);
 
-  // do not disable GC notifications here - the tracker is supposed to survive
-  // multiple recordings
+  // GC notifications are turned off by Profiler::stop() once both trackers
+  // have stopped; release() frees the table after the recording is written.
+}
+
+void LivenessTracker::release(JNIEnv *env, jvmtiEnv *jvmti) {
+  _table_lock.lock();
+  if (_table != nullptr) {
+    for (int i = 0; i < _table_size; i++) {
+      jweak ref = _table[i].ref;
+      if (ref == nullptr) {
+        continue;
+      }
+      jlong tag = _table[i].leak_tag;
+      if (tag >= LEAK_TAG_BASE && tag < LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE &&
+          jvmti != nullptr && env != nullptr) {
+        // The next recording hands leak tags out again from an empty pool; a
+        // live object keeping this one would collide with its next owner.
+        jobject obj = env->NewLocalRef(ref);
+        if (obj != nullptr) {
+          jvmti->SetTag(obj, 0);
+          env->DeleteLocalRef(obj);
+        }
+      }
+      if (env != nullptr) {
+        env->DeleteWeakGlobalRef(ref);
+      }
+    }
+    free(_table);
+    NativeMem::record(NM_LIVENESS, -(long long)sizeof(TrackingEntry) * _table_cap);
+    _table = nullptr;
+  }
+  _table_size = 0;
+  _table_cap = 0;
+  _table_max_cap = 0;
+
+  if (env != nullptr) {
+    for (int i = 0; i < _klass_population_size; i++) {
+      for (int r = 0; r < _klass_population[i].representative_count; r++) {
+        jweak rep = _klass_population[i].representatives[r];
+        if (rep != nullptr) {
+          env->DeleteWeakGlobalRef(rep);
+          _klass_population[i].representatives[r] = nullptr;
+        }
+      }
+      _klass_population[i].representative_count = 0;
+    }
+  }
+  _klass_population_size = 0;
+  _klass_count_scratch_size = 0;
+
+  {
+    ExclusiveLockGuard guard(&_leak_tag_pool_lock);
+    for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
+      _leak_tag_free_list[i] = i;
+      _leak_tag_in_use[i] = false;
+    }
+    _leak_tag_free_count = LEAK_TAG_POOL_SIZE;
+  }
+
+  // Survivors no longer age across recordings: the next start() runs the
+  // full initialization again instead of returning the pinned first result.
+  _initialized = false;
+  _stored_error = Error::OK;
+  _gc_epoch = 0;
+  _last_gc_epoch = 0;
+  _table_lock.unlock();
 }
 
 Error LivenessTracker::initialize(Arguments &args) {

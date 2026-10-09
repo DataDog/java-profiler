@@ -41,3 +41,15 @@ TEST(ProfilerNullCalltraceBufferTest, RecordExternalSampleNullBufferDoesNotCrash
         /*weight=*/1, /*tid=*/1, /*num_frames=*/1,
         &frame, /*truncated=*/false, BCI_ALLOC, /*event=*/nullptr);
 }
+
+// recordSample() is the signal-handler path. While idle (before the first
+// start, or after a stop() freed the buffers) its shard's buffer is null; it
+// must drop the sample instead of unwinding into it.
+TEST(ProfilerNullCalltraceBufferTest, RecordSampleNullBufferDoesNotCrash) {
+    u64 recorded = 42;
+    bool result = Profiler::instance()->recordSample(
+        /*ucontext=*/nullptr, /*weight=*/1, /*tid=*/1, BCI_CPU,
+        /*call_trace_id=*/0, /*event=*/nullptr, &recorded);
+    EXPECT_FALSE(result);
+    EXPECT_EQ(42u, recorded);
+}

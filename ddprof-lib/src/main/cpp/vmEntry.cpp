@@ -659,6 +659,10 @@ void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
   // initialize the heap usage tracking only after the VM is ready
     HeapUsage::initJMXUsage(VM::jni());
 
+    // Load jmethodIDs while idle (ClassPrepare keeps up from here), so a later
+    // start does not have to load them all at once.
+    JVMSupport::preloadMethodIDs(_agent_args, jvmti, jni);
+
     // Delayed start of profiler if agent has been loaded at VM bootstrap
     Error error = Profiler::instance()->run(_agent_args);
     if (error) {
@@ -717,6 +721,20 @@ Agent_OnLoad(JavaVM* vm, char* options, void* reserved) {
 
     Log::open(_agent_args);
 
+    // Disabled mode (enabled=false): don't initialize anything -- no JVMTI
+    // environment, capabilities, callbacks, hooks or threads -- and leave the
+    // profiler in the terminal DISABLED state so every later lifecycle
+    // transition (including a System.load()/init0() of this library) is rejected.
+    // It wins over any other argument, valid or not.
+    if (!_agent_args._enabled) {
+        if (error) {
+            Log::warn("Ignoring agent argument error in disabled mode: %s", error.message());
+        }
+        Profiler::instance()->disable();
+        Log::info("Datadog profiler disabled by agent argument");
+        return 0;
+    }
+
     if (error) {
         Log::error("%s", error.message());
         return ARGUMENTS_ERROR;
@@ -731,6 +749,10 @@ Agent_OnLoad(JavaVM* vm, char* options, void* reserved) {
 }
 
 extern "C" DLLEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+  // Loaded as a disabled agent first: let System.load() succeed, but initialize nothing.
+  if (Profiler::isDisabled()) {
+    return JNI_VERSION_1_6;
+  }
   if (!VM::initLibrary(vm)) {
     return 0;
   }
@@ -738,6 +760,9 @@ extern "C" DLLEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
 }
 
 extern "C" DLLEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
+  if (Profiler::isDisabled()) {
+    return;
+  }
   Profiler *profiler = Profiler::instance();
   if (profiler != NULL) {
     profiler->stop();

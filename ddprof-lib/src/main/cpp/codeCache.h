@@ -317,6 +317,12 @@ public:
   // Like findImport(), but never makes the GOT writable, so it does not touch
   // the library's memory. For bookkeeping only; patch through findImport().
   void **peekImport(ImportId id) const { return _imports[id][PRIMARY]; }
+  void **peekImport(ImportId id, ImportType type) const { return _imports[id][type]; }
+  // The GOT slot of `id` for one import type, made writable; null when absent.
+  void **findImport(ImportId id, ImportType type) {
+    findImport(id);
+    return _imports[id][type];
+  }
   // Makes the import slots writable even if they were made so before: when the
   // library was unloaded and reloaded at the same address, the new mapping's
   // GOT is read-only again under full RELRO.

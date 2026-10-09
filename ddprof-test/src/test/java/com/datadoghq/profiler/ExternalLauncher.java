@@ -22,6 +22,12 @@ import java.util.concurrent.atomic.LongAdder;
  *     <li>library - loads the profiler library</li>
  *     <li>profiler [comma delimited profiler command list] - starts the profiler</li>
  *     <li>profiler-work:<expectedCpuTime> [comma delimited profiler command list] - starts the profiler and runs a CPU-intensive task</li>
+ *     <li>profiler-disabled &lt;agent library path&gt; - expects the agent to be loaded from that path with
+ *     {@code enabled=false} and reports
+ *     whether {@link JavaProfiler#getInstance()} refused with an {@link IllegalStateException}</li>
+ *     <li>pre-start-threads:&lt;count&gt; &lt;comma delimited profiler command list&gt; - creates that many
+ *     threads, then starts the profiler for the first time, makes every thread burn CPU and
+ *     prints the TLS pool exhaustion counter</li>
  *     <li>profiler-virtual-thread - calls {@link JavaProfiler#getInstance()} for the first time from a virtual thread</li>
  *     <li>profiler-sequence [';'-delimited steps] - runs a sequence of start/stop calls in this
  *     process; each step is either the literal {@code STOP} (calls {@link JavaProfiler#stop()})
@@ -147,6 +153,50 @@ public class ExternalLauncher {
                         instance.execute(commands);
                     }
                 }
+            } else if (args[0].equals("profiler-disabled")) {
+                // Expects the agent to have been loaded with enabled=false: getInstance() must
+                // refuse to hand out an instance.
+                // args[1] is the -agentpath library: it has to be the very same .so, since a
+                // different copy has its own static state and was never disabled.
+                try {
+                    JavaProfiler.getInstance(args[1], null);
+                    System.out.println("[disabled-no-exception]");
+                } catch (IllegalStateException e) {
+                    System.out.println("[disabled] " + e.getMessage());
+                }
+            } else if (args[0].startsWith("pre-start-threads:")) {
+                // Threads that exist before the first start have no ProfiledThread and take a
+                // TLS pool slot on their first signal; the pool must be sized for all of them.
+                int count = Integer.parseInt(args[0].substring("pre-start-threads:".length()));
+                java.util.concurrent.CountDownLatch started = new java.util.concurrent.CountDownLatch(count);
+                java.util.concurrent.CountDownLatch burn = new java.util.concurrent.CountDownLatch(1);
+                java.util.concurrent.CountDownLatch burned = new java.util.concurrent.CountDownLatch(count);
+                for (int i = 0; i < count; i++) {
+                    Thread t = new Thread(() -> {
+                        started.countDown();
+                        try {
+                            burn.await();
+                        } catch (InterruptedException e) {
+                            return;
+                        }
+                        entryFrameBurn(50);
+                        burned.countDown();
+                        try {
+                            Thread.sleep(Long.MAX_VALUE);
+                        } catch (InterruptedException ignored) {
+                        }
+                    }, "pre-start-" + i);
+                    t.setDaemon(true);
+                    t.start();
+                }
+                started.await();
+                JavaProfiler instance = JavaProfiler.getInstance();
+                instance.execute(args[1]);
+                burn.countDown();
+                burned.await();
+                long exhausted = instance.getDebugCounters().getOrDefault("thread_local_pool_exhausted", 0L);
+                instance.stop();
+                System.out.println("[pool-exhausted] " + exhausted);
             } else if (args[0].equals("profiler-sequence")) {
                 JavaProfiler instance = JavaProfiler.getInstance();
                 if (args.length == 2) {

@@ -13,6 +13,7 @@
 
 #if defined(__linux__)
 
+#include "inflightGate.h"
 #include "poissonSampler.h"
 #include "rateLimiter.h"
 #include <atomic>
@@ -132,97 +133,117 @@ private:
     // serves as a numeric floor for pathologically low TSC frequencies).
     static const long DEFAULT_INTERVAL_TICKS  = 1000000; // fallback used in start() when the TSC-derived interval rounds to < 1
 
-    // Rate limiter: owns the PID controller, interval, epoch, and fire counter.
-    // NativeSocketSampler uses it directly (not via RateLimitedSampler) because
-    // it has two sampling channels (send + recv) that share one rate target but
-    // need independent per-thread PoissonSampler state.
-    RateLimiter _rate_limiter;
+    // Everything that only matters while recording: allocated in start(),
+    // deleted in stop(). Hooks reach it only through _session, inside _gate.
+    struct Session {
+        // Rate limiter: owns the PID controller, interval, epoch, and fire counter.
+        // NativeSocketSampler uses it directly (not via RateLimitedSampler) because
+        // it has two sampling channels (send + recv) that share one rate target but
+        // need independent per-thread PoissonSampler state.
+        RateLimiter _rate_limiter;
 
-    // fd → "ip:port" LRU cache.  Bounded to MAX_FD_CACHE entries; on overflow
-    // the least-recently-used entry is evicted.  All access is under _fd_cache_mutex.
-    // Address is always re-probed on sampled events (see recordEvent) so fd reuse
-    // is detected within one sampling interval.
-    using FdAddrList = std::list<std::pair<int, std::string>>;
-    FdAddrList _fd_lru_list;
-    std::unordered_map<int, FdAddrList::iterator> _fd_cache;
-    std::mutex _fd_cache_mutex;
+        // fd → "ip:port" LRU cache.  Bounded to MAX_FD_CACHE entries; on overflow
+        // the least-recently-used entry is evicted.  All access is under _fd_cache_mutex.
+        // Address is always re-probed on sampled events (see recordEvent) so fd reuse
+        // is detected within one sampling interval.
+        using FdAddrList = std::list<std::pair<int, std::string>>;
+        FdAddrList _fd_lru_list;
+        std::unordered_map<int, FdAddrList::iterator> _fd_cache;
+        std::mutex _fd_cache_mutex;
 
-    // fd-type cache for write/read hooks.  Lock-free: one atomic byte per fd number.
-    // Encoding: bits [7:4] = generation mod 16, bits [3:0] = type (0=unknown/invalid
-    // — implicit zero in fresh array, never written explicitly; 1=TCP socket;
-    // 2=non-TCP).  An entry is valid only when its high nibble equals _fd_cache_gen
-    // mod 16.  Incrementing _fd_cache_gen invalidates all entries in O(1) without
-    // touching the 65536-entry array.
-    //
-    // KNOWN LIMITATION (mod-16 generation wrap): _fd_cache_gen is only consulted via
-    // its low 4 bits.  After 16 start() cycles the generation wraps and stale entries
-    // from a previous incarnation become indistinguishable from current ones until each
-    // fd is naturally re-probed.  Profiler restarts are not exercised in production
-    // (only in tests), so the wrap is benign in practice.  If restart-in-prod ever
-    // becomes a supported mode, widen _fd_cache_gen to uint32_t and store the full
-    // generation in a wider per-fd cell.
-    // Fds outside [0, FD_TYPE_CACHE_SIZE) are probed on every call.
-    static const int     FD_TYPE_CACHE_SIZE  = 65536;
-    // FD_TYPE_UNKNOWN is the implicit value-zero sentinel for never-written entries
-    // and gen-mismatch entries; it is decoded by the (cached >> 4) != gen path in
-    // isSocket(), not by an explicit comparison against this constant.
-    static const uint8_t FD_TYPE_UNKNOWN     = 0;
-    static const uint8_t FD_TYPE_SOCKET      = 1;
-    static const uint8_t FD_TYPE_NON_SOCKET  = 2;
-    std::atomic<uint8_t> _fd_cache_gen{0};   // incremented on each cache reset
-    std::atomic<uint8_t> _fd_type_cache[FD_TYPE_CACHE_SIZE];
+        // fd-type cache for write/read hooks.  Lock-free: one atomic byte per fd number.
+        // Encoding: bits [7:4] = generation mod 16, bits [3:0] = type (0=unknown/invalid
+        // — implicit zero in fresh array, never written explicitly; 1=TCP socket;
+        // 2=non-TCP).  An entry is valid only when its high nibble equals _fd_cache_gen
+        // mod 16.  Incrementing _fd_cache_gen invalidates all entries in O(1) without
+        // touching the 65536-entry array.
+        //
+        // Each recording gets a fresh, all-unknown cache (a new Session), so
+        // _fd_cache_gen only advances on clearFdCache() within one recording; its
+        // mod-16 wrap would take 16 clears in a single recording.
+        // Fds outside [0, FD_TYPE_CACHE_SIZE) are probed on every call.
+        static const int     FD_TYPE_CACHE_SIZE  = 65536;
+        // FD_TYPE_UNKNOWN is the implicit value-zero sentinel for never-written entries
+        // and gen-mismatch entries; it is decoded by the (cached >> 4) != gen path in
+        // isSocket(), not by an explicit comparison against this constant.
+        static const uint8_t FD_TYPE_UNKNOWN     = 0;
+        static const uint8_t FD_TYPE_SOCKET      = 1;
+        static const uint8_t FD_TYPE_NON_SOCKET  = 2;
+        std::atomic<uint8_t> _fd_cache_gen{0};   // incremented on each cache reset
+        std::atomic<uint8_t> _fd_type_cache[FD_TYPE_CACHE_SIZE];
+
+
+        // Returns true if fd is a SOCK_STREAM socket (including AF_UNIX).
+        // Uses the fd-type cache; calls getsockopt on first encounter per fd and on
+        // every cached-SOCKET hit to revalidate against fd reuse (a closed socket fd
+        // reassigned to a regular file/pipe must not keep emitting socket events).
+        bool isSocket(int fd);
+
+        // Revalidates that fd is still a SOCK_STREAM socket; updates the type cache on
+        // mismatch.  Called from recordEvent() for write/read ops on sampled events only.
+        bool revalidateSocket(int fd);
+
+        // Inserts or updates fd→addr in the LRU cache, evicting the LRU entry if full.
+        // Must be called with _fd_cache_mutex held.
+        void insertFdAddrLocked(int fd, std::string addr);
+
+        // Decide whether to sample and compute weight.
+        // Returns true if the call should be recorded; sets weight out-param.
+        // Implements per-thread Poisson-process sampling: each thread maintains its
+        // own Exp-distributed countdown; when it expires the event is sampled and a
+        // new countdown is drawn.  weight = 1 / (1 - exp(-duration/interval)).
+        // duration_ticks: wall time of the I/O call in TSC ticks.
+        // op: 0 = send, 1 = recv, 2 = write, 3 = read.
+        bool shouldSample(u64 duration_ticks, int op, float &weight);
+
+        // Common recording logic shared by all four hooks.
+        void recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 op);
+
+        void clearFdCache();
+    };
+
+    // Per recording; null while idle.
+    static std::atomic<Session*> _session;
+    // Brackets each hook's use of _session -- never the real, possibly
+    // blocking, call. stop() closes and drains it before deleting the session.
+    static InflightGate _gate;
 
     NativeSocketSampler() = default;
 
     // Resolve the peer address for fd; returns empty string on failure.
-    std::string resolveAddr(int fd);
+    static std::string resolveAddr(int fd);
 
-    // Revalidates that fd is still a SOCK_STREAM socket; updates the type cache on
-    // mismatch.  Called from recordEvent() for write/read ops on sampled events only.
-    bool revalidateSocket(int fd);
+    // Closes and drains _gate, then deletes the session (leaks it on timeout).
+    static void releaseSession();
 
-    // Inserts or updates fd→addr in the LRU cache, evicting the LRU entry if full.
-    // Must be called with _fd_cache_mutex held.
-    void insertFdAddrLocked(int fd, std::string addr);
+    // The hooks' view of the session: pass through (not a socket / nothing
+    // recorded) while idle or while stop() tears the session down.
+    static bool isSocketGated(int fd);
+    static void recordEventGated(int fd, u64 t0, u64 t1, ssize_t bytes, u8 op);
+
+    // Records the event if ret > 0; returns ret unchanged.  Shared tail for all four hooks.
+    static inline ssize_t record_if_positive(int fd, ssize_t ret, u64 t0, u64 t1, u8 op) {
+        if (ret > 0) recordEventGated(fd, t0, t1, ret, op);
+        return ret;
+    }
 
 public:
     // Test seams — not part of the production API.
     static const int MAX_FD_CACHE = 65536;
 
-    int  fdAddrCacheSizeForTest() {
-        std::lock_guard<std::mutex> lock(_fd_cache_mutex);
-        return (int)_fd_cache.size();
+    // 0 while idle.
+    int  fdAddrCacheSizeForTest();
+    // Creates a session first if none is active.
+    void fdAddrCacheInsertForTest(int fd, const std::string& addr);
+    // Publish a session and open the gate, as start() does, without patching.
+    static void startSessionForTest() {
+        Session* prev = _session.exchange(new Session(), std::memory_order_acq_rel);
+        delete prev;
+        _gate.open();
     }
-    void fdAddrCacheInsertForTest(int fd, const std::string& addr) {
-        std::lock_guard<std::mutex> lock(_fd_cache_mutex);
-        insertFdAddrLocked(fd, addr);
-    }
-
-private:
-
-    // Returns true if fd is a SOCK_STREAM socket (including AF_UNIX).
-    // Uses the fd-type cache; calls getsockopt on first encounter per fd and on
-    // every cached-SOCKET hit to revalidate against fd reuse (a closed socket fd
-    // reassigned to a regular file/pipe must not keep emitting socket events).
-    bool isSocket(int fd);
-
-    // Decide whether to sample and compute weight.
-    // Returns true if the call should be recorded; sets weight out-param.
-    // Implements per-thread Poisson-process sampling: each thread maintains its
-    // own Exp-distributed countdown; when it expires the event is sampled and a
-    // new countdown is drawn.  weight = 1 / (1 - exp(-duration/interval)).
-    // duration_ticks: wall time of the I/O call in TSC ticks.
-    // op: 0 = send, 1 = recv, 2 = write, 3 = read.
-    bool shouldSample(u64 duration_ticks, int op, float &weight);
-
-    // Common recording logic shared by all four hooks.
-    void recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 op);
-
-    // Records the event if ret > 0; returns ret unchanged.  Shared tail for all four hooks.
-    static inline ssize_t record_if_positive(int fd, ssize_t ret, u64 t0, u64 t1, u8 op) {
-        if (ret > 0) _instance->recordEvent(fd, t0, t1, ret, op);
-        return ret;
-    }
+    // Close, drain and delete, as stop() does after unpatching.
+    static void stopSessionForTest() { releaseSession(); }
+    static bool hasSessionForTest() { return _session.load(std::memory_order_acquire) != nullptr; }
 };
 
 #else // !__linux__

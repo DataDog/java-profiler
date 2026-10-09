@@ -9,6 +9,7 @@
 
 #include "arch.h"
 #include <stdint.h>
+#include <type_traits>
 
 /**
  * Cache-aligned reference counting slot for thread-local reference counting.
@@ -38,18 +39,25 @@
 struct alignas(DEFAULT_CACHE_LINE_SIZE) RefCountSlot {
     static constexpr int OUTER_STACK_DEPTH = 3;
 
-    volatile uint32_t count;                                // Reference count (0 = inactive)
+    uint32_t count;                                         // Reference count (0 = inactive); accessed only via __atomic_* builtins
     alignas(alignof(void*)) void* active_ptr;               // Which resource is being referenced
     void* outer_stack[OUTER_STACK_DEPTH];                   // Displaced resources on reentrant nesting
     // Trailing padding fills the cache line.
     // Layout on 64-bit: count(4) + 4-byte gap + active_ptr(8) + OUTER_STACK_DEPTH * 8.
     char padding[DEFAULT_CACHE_LINE_SIZE - alignof(void*) - (1 + OUTER_STACK_DEPTH) * sizeof(void*)];
 
-    RefCountSlot() : count(0), active_ptr(nullptr), outer_stack{}, padding{} {
-        static_assert(sizeof(RefCountSlot) == DEFAULT_CACHE_LINE_SIZE,
-                      "RefCountSlot must be exactly one cache line");
-    }
+    // constexpr so the static refcount_slots[] array is constant-initialized:
+    // it stays in untouched zero-fill-on-demand .bss instead of having a load-time
+    // dynamic initializer write every one of its pages (~512 KiB resident while idle).
+    // count is deliberately not volatile: a volatile member makes the class a
+    // non-literal type, which would defeat constant initialization.
+    constexpr RefCountSlot() : count(0), active_ptr(nullptr), outer_stack{}, padding{} {}
 };
+
+static_assert(sizeof(RefCountSlot) == DEFAULT_CACHE_LINE_SIZE,
+              "RefCountSlot must be exactly one cache line");
+static_assert(std::is_trivially_destructible<RefCountSlot>::value,
+              "RefCountSlot must stay trivially destructible to be constant-initialized");
 
 /**
  * RAII guard for thread-local reference counting.

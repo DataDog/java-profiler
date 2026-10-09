@@ -141,6 +141,11 @@ public final class JavaProfiler {
      */
     public void stop() throws IllegalStateException {
         stop0();
+        // stop() releases the native context-value Dictionary; drop the cached encodings so idle
+        // writes resolve to "no attribute" rather than to the finished session's encodings.
+        if (consumeContextDictionaryReset0()) {
+            contextValueCache.clear();
+        }
     }
 
     /**
@@ -181,11 +186,11 @@ public final class JavaProfiler {
             throw new NullPointerException();
         }
         String result = execute0(command);
-        // A fresh 'start' (ACTION_START) resets the native context-value Dictionary
-        // (StringDictionary::clearAll), reassigning encodings. The native side sets a flag when it
-        // does so; consume it here and drop the value cache so no stale encoding from the prior
-        // session is reused. Driven by the already-parsed native action — no command re-parsing.
-        // See ContextValueCache and Profiler::start.
+        // Every start and stop gives the native context-value Dictionary a new id namespace
+        // (stop releases it, start allocates it fresh), reassigning encodings. The native side
+        // sets a flag when it does so; consume it here and drop the value cache so no stale
+        // encoding from the prior session is reused. Driven by the already-parsed native action —
+        // no command re-parsing. See ContextValueCache and Profiler::start/stop.
         if (consumeContextDictionaryReset0()) {
             contextValueCache.clear();
         }

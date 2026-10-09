@@ -12,8 +12,12 @@
 #include "threadLocalData.inline.h"
 #include "counters.h"
 
+#include <atomic>
 #include <mutex>
 #include <pthread.h>
+#include <set>
+#include <thread>
+#include <vector>
 
 // Covers ThreadLocalDataPool::contains(), whose result feeds directly into
 // unclaim()'s double-release guard. Uses createForTest()/destroyForTest() to
@@ -264,4 +268,108 @@ TEST(ProfiledThreadTest, NestedPrimingDuringForTidReleasesPoolSlot) {
     pthread_t t;
     ASSERT_EQ(0, pthread_create(&t, nullptr, threadPrimingRaceBody, nullptr));
     pthread_join(t, nullptr);
+}
+
+// Segmented growth: a full first segment spills claims into the next one, and
+// growth at least doubles total capacity.
+TEST_F(ThreadLocalDataPoolTest, claimSpillsIntoGrownSegment) {
+    ThreadLocalDataPool* pool = ThreadLocalDataPool::createForTest(2);
+    ASSERT_NE(pool->claimForTest(0), nullptr);
+    ASSERT_NE(pool->claimForTest(1), nullptr);
+
+    ASSERT_TRUE(pool->growForTest(3));
+    ASSERT_EQ(pool->segmentCountForTest(), 2);
+    // max(wanted - total, total) = max(1, 2): the pool doubles.
+    EXPECT_EQ(pool->segmentCapacityForTest(1), 2u);
+    EXPECT_EQ(pool->capacityForTest(), 4u);
+
+    ProfiledThread* spilled = pool->claimForTest(2);
+    ASSERT_NE(spilled, nullptr);
+    ProfiledThread* second_base = pool->segmentThreadsForTest(1);
+    EXPECT_TRUE(spilled >= second_base && spilled < second_base + 2);
+
+    // Released slots in a later segment are reusable.
+    EXPECT_TRUE(pool->unclaimForTest(spilled));
+    EXPECT_NE(pool->claimForTest(3), nullptr);
+
+    ThreadLocalDataPool::destroyForTest(pool);
+}
+
+TEST_F(ThreadLocalDataPoolTest, growIsNoOpWhenCapacitySuffices) {
+    ThreadLocalDataPool* pool = ThreadLocalDataPool::createForTest(8);
+    ASSERT_TRUE(pool->growForTest(8));
+    EXPECT_EQ(pool->segmentCountForTest(), 1);
+    EXPECT_EQ(pool->capacityForTest(), 8u);
+    ThreadLocalDataPool::destroyForTest(pool);
+}
+
+// contains() must be exact at every segment's boundaries, since unclaim() uses
+// it to tell pool slots from heap-allocated ProfiledThreads.
+TEST_F(ThreadLocalDataPoolTest, containsIsExactAcrossSegments) {
+    ThreadLocalDataPool* pool = ThreadLocalDataPool::createForTest(4);
+    ASSERT_TRUE(pool->growForTest(12));
+    ASSERT_EQ(pool->segmentCountForTest(), 2);
+    for (int i = 0; i < pool->segmentCountForTest(); i++) {
+        ProfiledThread* base = pool->segmentThreadsForTest(i);
+        uint32_t capacity = pool->segmentCapacityForTest(i);
+        EXPECT_TRUE(pool->containsForTest(base));
+        EXPECT_TRUE(pool->containsForTest(base + (capacity - 1)));
+        EXPECT_FALSE(pool->containsForTest(base - 1));
+        EXPECT_FALSE(pool->containsForTest(base + capacity));
+    }
+    ThreadLocalDataPool::destroyForTest(pool);
+}
+
+// The drop counter fires only once every segment is full.
+TEST_F(ThreadLocalDataPoolTest, exhaustionAcrossSegmentsRecordsOneDrop) {
+    ThreadLocalDataPool* pool = ThreadLocalDataPool::createForTest(1);
+    ASSERT_TRUE(pool->growForTest(2));
+    ASSERT_NE(pool->claimForTest(0), nullptr);
+
+    long long before = Counters::getCounter(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED);
+    ASSERT_NE(pool->claimForTest(1), nullptr);
+    EXPECT_EQ(Counters::getCounter(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED), before);
+
+    EXPECT_EQ(pool->claimForTest(2), nullptr);
+    EXPECT_EQ(Counters::getCounter(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED), before + 1);
+
+    ThreadLocalDataPool::destroyForTest(pool);
+}
+
+// Claims racing with growth (as signal handlers race with Profiler::start())
+// must each get a distinct slot, and every claimed slot must be in the pool.
+TEST_F(ThreadLocalDataPoolTest, concurrentClaimsDuringGrowth) {
+    ThreadLocalDataPool* pool = ThreadLocalDataPool::createForTest(4);
+    constexpr int THREADS = 8;
+    constexpr int CLAIMS_PER_THREAD = 16;
+    ProfiledThread* claimed[THREADS][CLAIMS_PER_THREAD] = {};
+    std::atomic<bool> go{false};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < THREADS; t++) {
+        threads.emplace_back([&, t] {
+            while (!go.load()) {
+            }
+            for (int i = 0; i < CLAIMS_PER_THREAD; i++) {
+                claimed[t][i] = pool->claimForTest(t * CLAIMS_PER_THREAD + i);
+            }
+        });
+    }
+    go.store(true);
+    for (uint64_t wanted = 8; wanted <= THREADS * CLAIMS_PER_THREAD; wanted *= 2) {
+        ASSERT_TRUE(pool->growForTest(wanted));
+    }
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    std::set<ProfiledThread*> distinct;
+    for (int t = 0; t < THREADS; t++) {
+        for (int i = 0; i < CLAIMS_PER_THREAD; i++) {
+            if (claimed[t][i] != nullptr) {
+                EXPECT_TRUE(pool->containsForTest(claimed[t][i]));
+                EXPECT_TRUE(distinct.insert(claimed[t][i]).second) << "slot handed out twice";
+            }
+        }
+    }
+    ThreadLocalDataPool::destroyForTest(pool);
 }

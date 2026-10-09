@@ -72,7 +72,9 @@ class FrameName;
 class StackContext;
 class VM;
 
-enum State { NEW, IDLE, RUNNING, TERMINATED, ERROR };
+// DISABLED is terminal: entered only from NEW, when the agent argument says
+// enabled=false. Nothing is initialized and every transition is rejected.
+enum State { NEW, IDLE, RUNNING, TERMINATED, ERROR, DISABLED };
 
 // Aligned to satisfy SpinLock member alignment requirement (64 bytes)
 // Required because this class contains the _locks[] SpinLock array.
@@ -105,15 +107,19 @@ private:
   static const int MAX_CLASS_MAP_SIZE = 1 << 18;
 
   ThreadInfo _thread_info;
-  StringDictionary _class_map{1};
-  StringDictionary _string_label_map{2};
-  StringDictionary _context_value_map{3};
+  // Storage exists only while recording: allocated in start(), released in
+  // stop(). The objects persist so their generation() keeps increasing.
+  StringDictionary _class_map{1, false};
+  StringDictionary _string_label_map{2, false};
+  StringDictionary _context_value_map{3, false};
   // Set when a fresh start resets _context_value_map (clearAll), reassigning encodings. Consumed by
   // the Java layer to drop its process-wide ContextValueCache so no stale encoding is reused. See
   // JavaProfiler.execute / ContextValueCache.
   std::atomic<bool> _context_value_dict_reset{false};
   ThreadFilter _thread_filter;
-  CallTraceStorage _call_trace_storage;
+  // Per recording: created in start(), deleted in stop(). Published and read
+  // under a _locks[] shard or lockAll(); null while idle.
+  CallTraceStorage *_call_trace_storage;
   FlightRecorder _jfr;
   Engine *_cpu_engine;
   Engine *_wall_engine = NULL;
@@ -167,6 +173,20 @@ private:
   static bool prewarmUnwinder();
 
   void disableEngines();
+  // Stops engine (un)registration from the thread hooks and drains it.
+  void closeThreadRegistration();
+  // Caller holds a _locks[] shard. DROPPED_TRACE_ID while idle.
+  u64 putCallTrace(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
+  Error allocateCallTraceResources(int jstackdepth);
+  // Detaches the call-trace storage and buffers; the caller holds lockAll().
+  void detachCallTraceResources(CallTraceStorage **storage, CallTraceBuffer **buffers, int *depth);
+  static void freeCallTraceResources(CallTraceStorage *storage, CallTraceBuffer **buffers, int depth);
+  // Sizes the TLS pool from the live thread count (grow-only).
+  void ensureThreadLocalPool();
+  Error allocateDictionaries();
+  void releaseDictionaries();
+  // Frees liveness and reference-chain tracking state after stop().
+  void releaseAllocationTracking();
 
   void onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
   void onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
@@ -244,7 +264,7 @@ public:
       : _state_lock(), _state(State::NEW), _class_unload_hook_trap(2),
         _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
         _string_label_map(2), _context_value_map(3), _thread_filter(),
-        _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
+        _call_trace_storage(nullptr), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
         _alloc_engine(NULL), _event_mask(0),
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
         _total_samples(0), _sample_seq(0), _failures(),
@@ -313,6 +333,14 @@ public:
     return _state.load(std::memory_order_acquire) == RUNNING;
   }
 
+  // Enters DISABLED. Only valid from NEW; returns false otherwise.
+  bool disable();
+
+  // Cheap enough for JNI entry points: one acquire load.
+  static inline bool isDisabled() {
+    return _instance->_state.load(std::memory_order_acquire) == DISABLED;
+  }
+
   u64 total_samples() { return _total_samples; }
   int max_stack_depth() { return _max_stack_depth; }
   time_t uptime() { return time(NULL) - _start_time; }
@@ -335,9 +363,10 @@ public:
 
   const char* cstack() const;
   int lookupClass(const char *key, size_t length);
+  // Called under lockAll() (from FlightRecorder while a chunk is written).
   void processCallTraces(std::function<void(const CallTraceSet&)> processor) {
-    if (!_omit_stacktraces) {
-      _call_trace_storage.processTraces(processor);
+    if (!_omit_stacktraces && _call_trace_storage != nullptr) {
+      _call_trace_storage->processTraces(processor);
     } else {
       // If stack traces are omitted, call processor with empty set
       static CallTraceSet empty_traces;
@@ -345,8 +374,12 @@ public:
     }
   }
   
+  // Called from LivenessTracker::start(), i.e. within Profiler::start() after
+  // the storage was created; each recording's storage gets its own checker.
   void registerLivenessChecker(LivenessChecker checker) {
-    _call_trace_storage.registerLivenessChecker(checker);
+    if (_call_trace_storage != nullptr) {
+      _call_trace_storage->registerLivenessChecker(checker);
+    }
   }
 
   inline u32 recordingEpoch() {
@@ -505,6 +538,8 @@ public:
   // Runs the reset steps of a fresh start() in isolation.  Compiled only into
   // gtest binaries.
   int resetRecordingStateForTest() { return resetRecordingState(); }
+  Error allocateDictionariesForTest() { return allocateDictionaries(); }
+  void releaseDictionariesForTest() { releaseDictionaries(); }
 
   // Returns the tid most recently passed to unregisterThread(), or -1 if it
   // has never been called (or since the last resetUnregisterObservableForTest).

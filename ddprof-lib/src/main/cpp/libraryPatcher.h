@@ -10,6 +10,15 @@
 #include "spinLock.h"
 #include <atomic>
 
+// A malloc-family function to hook: its import and the hook to install.
+typedef struct _mallocHookSpec {
+  ImportId _id;
+  void*    _hook;
+} MallocHookSpec;
+
+// malloc, calloc, realloc, posix_memalign, aligned_alloc
+const int MAX_MALLOC_HOOKS = 5;
+
 #ifdef __linux__
 
 struct dl_phdr_info;
@@ -22,6 +31,15 @@ typedef struct _patchEntry {
   // original function
   void*  _func;
 } PatchEntry;
+
+// A patched malloc-family GOT slot. Unlike PatchEntry it keeps the hook that
+// was installed, so the restore can tell whether the slot still holds it.
+typedef struct _mallocPatchEntry {
+  CodeCache* _lib;
+  void**     _location;
+  void*      _func;   // original value
+  void*      _hook;
+} MallocPatchEntry;
 
 // A library to visit with a LibraryPatcher::LiveLibraryWalk
 typedef struct _libraryRef {
@@ -59,6 +77,11 @@ private:
   static PatchEntry  _socket_entries[4 * MAX_NATIVE_LIBS];
   static int         _socket_size;
 
+  // Malloc-family patches (see MallocHooker). A library's slots are appended
+  // together in one visit, so they form a single run of entries.
+  static MallocPatchEntry _malloc_entries[MAX_MALLOC_HOOKS * NUM_IMPORT_TYPES * MAX_NATIVE_LIBS];
+  static int              _malloc_size;
+
   // Candidates of the current LiveLibraryWalk, filled by add_live_candidate().
   // Guarded by _lock.
   static LibraryRef  _live_refs[MAX_NATIVE_LIBS];
@@ -71,8 +94,6 @@ private:
   // libraryPatcher_linux.cpp). All of LibraryPatcher's work under _lock runs
   // in a walk, and every write it makes through a saved GOT slot comes from
   // a visit: patched libraries are not pinned and can be dlclose()d.
-  // (MallocHooker patches without a walk: it pins each library with
-  // UnloadProtection while writing to it, and never restores.)
   class LiveLibraryWalk {
   public:
     LiveLibraryWalk(LiveLibraryCollector collect, void* ctx, LiveLibraryVisitor visit);
@@ -108,13 +129,22 @@ public:
   static void patch_libraries();
   static void unpatch_libraries();
   static void patch_sigaction();
-  static bool patch_socket_functions();
+  // initial: called from NativeSocketSampler::start(). A non-initial call
+  // (after a dlopen) only patches while the hooks are active, re-checked under
+  // _lock, so it cannot re-install them after unpatch_socket_functions().
+  static bool patch_socket_functions(bool initial);
   static void unpatch_socket_functions();
+  // Installs the given malloc-family hooks in every loaded library not
+  // patched yet. Callers serialize (MallocHooker::_patch_lock).
+  static void patch_malloc_functions(const MallocHookSpec* specs, int count);
+  // Restores every saved malloc-family slot in the libraries that are still
+  // loaded, unless another tool re-patched it since, and forgets the entries.
+  static void unpatch_malloc_functions();
   // Called from Profiler::dlopen_hook after a new library is loaded.
   // No-op when socket hooks are not active.
   static inline void install_socket_hooks() {
     if (_socket_active.load(std::memory_order_acquire)) {
-      patch_socket_functions();
+      patch_socket_functions(false);
     }
   }
 };
@@ -127,9 +157,11 @@ public:
   static void patch_libraries() { }
   static void unpatch_libraries() { }
   static void patch_sigaction() { }
-  static bool patch_socket_functions() { return false; }
+  static bool patch_socket_functions(bool initial) { return false; }
   static void unpatch_socket_functions() { }
   static void install_socket_hooks() { }
+  static void patch_malloc_functions(const MallocHookSpec* specs, int count) { }
+  static void unpatch_malloc_functions() { }
 };
 
 #endif

@@ -521,8 +521,8 @@ TEST(StringDictionaryReclamationTest, ClearStandbyKeepsBufferWhileGuardHeld) {
 
 // ── Counter gauges across a skipped reset ─────────────────────────────────
 //
-// Profiler::start() calls Counters::reset() right after resetting the
-// dictionaries.  A dictionary whose reset was skipped keeps all of its storage,
+// Profiler::start() calls Counters::reset() before allocating the
+// dictionaries.  A dictionary whose release or reset was skipped keeps all of its storage,
 // so its memory gauges must be re-added after the counter reset; otherwise
 // freeing that storage later drives them negative.
 
@@ -556,25 +556,130 @@ TEST(StringDictionaryCountersTest, ReseedKeepsGaugesExactAcrossSkippedReset) {
     EXPECT_EQ(base_bytes, Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset));
 }
 
-// The reset steps of Profiler::start(): a skipped dictionary reset stays
-// visible as a drain timeout, and its gauges stay non-negative once the
-// storage is freed.
-TEST(StringDictionaryCountersTest, ProfilerResetKeepsCountersAcrossSkippedReset) {
+// The dictionary steps of Profiler::stop() and start(): a release whose drain
+// times out keeps the storage, stays visible as a drain timeout, is re-counted
+// after start()'s Counters::reset(), and the gauges return to zero once the
+// storage is finally freed.
+TEST(StringDictionaryCountersTest, ProfilerKeepsCountersAcrossTimedOutRelease) {
     Profiler* profiler = Profiler::instance();
     StringDictionary* labels = profiler->stringLabelMap();
     ASSERT_EQ(0, profiler->resetRecordingStateForTest());
+    ASSERT_FALSE(profiler->allocateDictionariesForTest());
     const long long base_pages = Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset);
     const long long base_bytes = Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset);
+    ASSERT_GT(base_pages, 0);
 
     fillPastFirstArenaChunk(*labels);
     labels->rotate();
     {
         GuardedKeyHolder holder(labels->standby());
-        EXPECT_EQ(1, profiler->resetRecordingStateForTest());
+        profiler->releaseDictionariesForTest();
         EXPECT_EQ(1, Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS));
+        EXPECT_FALSE(labels->isAccepting());
     }
 
-    EXPECT_EQ(0, profiler->resetRecordingStateForTest());
-    EXPECT_EQ(base_pages, Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset));
-    EXPECT_EQ(base_bytes, Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset));
+    // start(): the retained storage is re-counted after the counter reset.
+    ASSERT_EQ(0, profiler->resetRecordingStateForTest());
+    EXPECT_GT(Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset), base_pages);
+    EXPECT_GT(Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset), base_bytes);
+    ASSERT_FALSE(profiler->allocateDictionariesForTest());
+    EXPECT_TRUE(labels->isAccepting());
+
+    // stop(): this time everything is freed.
+    profiler->releaseDictionariesForTest();
+    EXPECT_EQ(0, Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset));
+    EXPECT_EQ(0, Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset));
+}
+
+// ── Release / allocate (per-recording storage) ─────────────────────────────
+
+// A buffer constructed released holds no storage, misses every lookup and
+// refuses inserts; allocate() gives it storage, release() frees all of it.
+TEST(StringDictionaryBufferTest, ReleaseFreesAllStorageAndAllocateRestoresIt) {
+    long long before = NativeMem::live(NM_DICTIONARY);
+    StringDictionaryBuffer buf(false);
+    EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY));
+    EXPECT_EQ(0u, buf.lookup("a", 1));
+    EXPECT_EQ(0u, buf.insert_with_id("a", 1, 7));
+    std::map<u32, const char*> entries;
+    buf.collect(entries);
+    EXPECT_TRUE(entries.empty());
+
+    for (int cycle = 0; cycle < 3; cycle++) {
+        ASSERT_TRUE(buf.allocate());
+        EXPECT_GT(NativeMem::live(NM_DICTIONARY), before);
+        for (int i = 0; i < 50000; i++) {
+            char key[32];
+            int len = snprintf(key, sizeof(key), "release_key_%d", i);
+            ASSERT_EQ((u32)(i + 1), buf.insert_with_id(key, (size_t)len, (u32)(i + 1)));
+        }
+        buf.release();
+        EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY)) << "cycle " << cycle;
+        EXPECT_EQ(0, buf.size());
+        EXPECT_EQ(0u, buf.lookup("release_key_1", 13));
+    }
+}
+
+TEST(StringDictionaryReleaseTest, ReleasedDictionaryRejectsLookupsAndRestartsIds) {
+    long long before = NativeMem::live(NM_DICTIONARY);
+    StringDictionary dict(0, false);
+    EXPECT_FALSE(dict.isAccepting());
+    EXPECT_EQ(0u, dict.lookup("x", 1));
+    EXPECT_EQ(0u, dict.bounded_lookup("x", 1));
+    EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY));
+
+    u64 generation = dict.generation();
+    for (int cycle = 0; cycle < 3; cycle++) {
+        ASSERT_TRUE(dict.allocateAll());
+        EXPECT_TRUE(dict.isAccepting());
+        // Ids restart at 1 in every recording.
+        EXPECT_EQ(1u, dict.lookup("first", 5));
+        EXPECT_EQ(2u, dict.lookup("second", 6));
+        EXPECT_EQ(1u, dict.bounded_lookup("first", 5));
+
+        ASSERT_TRUE(dict.releaseAll());
+        EXPECT_FALSE(dict.isAccepting());
+        EXPECT_EQ(0u, dict.lookup("first", 5));
+        EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY)) << "cycle " << cycle;
+        // Caches keyed by this dictionary's ids rely on the generation growing.
+        EXPECT_GT(dict.generation(), generation);
+        generation = dict.generation();
+    }
+}
+
+// Rotation and dump-time lookups on a released dictionary (dump() while idle)
+// must be harmless no-ops.
+TEST(StringDictionaryReleaseTest, RotateAndClearStandbyOnReleasedDictionary) {
+    StringDictionary dict(0, false);
+    dict.rotate();
+    EXPECT_TRUE(dict.clearStandby());
+    EXPECT_EQ(0u, dict.lookupDuringDump("k", 1));
+}
+
+// Lookups racing releaseAll() either complete before the drain or are turned
+// away; none may touch freed storage (run under ASan/TSan to catch that).
+TEST(StringDictionaryReleaseTest, LookupsRacingReleaseAll) {
+    for (int round = 0; round < 20; round++) {
+        StringDictionary dict(0, false);
+        ASSERT_TRUE(dict.allocateAll());
+        std::atomic<bool> stop{false};
+        std::vector<std::thread> threads;
+        for (int t = 0; t < 4; t++) {
+            threads.emplace_back([&, t] {
+                char key[32];
+                int i = 0;
+                while (!stop.load(std::memory_order_relaxed)) {
+                    int len = snprintf(key, sizeof(key), "k_%d_%d", t, i++ % 512);
+                    dict.lookup(key, (size_t)len);
+                }
+            });
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        ASSERT_TRUE(dict.releaseAll());
+        EXPECT_EQ(0u, dict.lookup("after", 5));
+        stop.store(true);
+        for (auto& th : threads) {
+            th.join();
+        }
+    }
 }

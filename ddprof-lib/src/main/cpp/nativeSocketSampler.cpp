@@ -72,6 +72,47 @@ std::atomic<NativeSocketSampler::send_fn>  NativeSocketSampler::_orig_send{nullp
 std::atomic<NativeSocketSampler::recv_fn>  NativeSocketSampler::_orig_recv{nullptr};
 std::atomic<NativeSocketSampler::write_fn> NativeSocketSampler::_orig_write{nullptr};
 std::atomic<NativeSocketSampler::read_fn>  NativeSocketSampler::_orig_read{nullptr};
+std::atomic<NativeSocketSampler::Session*> NativeSocketSampler::_session{nullptr};
+InflightGate NativeSocketSampler::_gate;
+
+// Long enough for any hook that is between its gate scopes and its JFR write;
+// a hook blocked in the real call holds no scope.
+static const long SESSION_DRAIN_TIMEOUT_NS = 500000000L;  // 500 ms
+
+bool NativeSocketSampler::isSocketGated(int fd) {
+    InflightGate::Scope scope(_gate);
+    if (!scope.entered()) return false;
+    Session* session = _session.load(std::memory_order_acquire);
+    return session != nullptr && session->isSocket(fd);
+}
+
+void NativeSocketSampler::recordEventGated(int fd, u64 t0, u64 t1, ssize_t bytes, u8 op) {
+    // Reloaded after the real call rather than reused from before it: the
+    // session may have been stopped (and freed) while the call was blocked.
+    InflightGate::Scope scope(_gate);
+    if (!scope.entered()) return;
+    Session* session = _session.load(std::memory_order_acquire);
+    if (session != nullptr) {
+        session->recordEvent(fd, t0, t1, bytes, op);
+    }
+}
+
+int NativeSocketSampler::fdAddrCacheSizeForTest() {
+    Session* session = _session.load(std::memory_order_acquire);
+    if (session == nullptr) return 0;
+    std::lock_guard<std::mutex> lock(session->_fd_cache_mutex);
+    return (int)session->_fd_cache.size();
+}
+
+void NativeSocketSampler::fdAddrCacheInsertForTest(int fd, const std::string& addr) {
+    Session* session = _session.load(std::memory_order_acquire);
+    if (session == nullptr) {
+        session = new Session();
+        _session.store(session, std::memory_order_release);
+    }
+    std::lock_guard<std::mutex> lock(session->_fd_cache_mutex);
+    session->insertFdAddrLocked(fd, addr);
+}
 
 std::string NativeSocketSampler::resolveAddr(int fd) {
     struct sockaddr_storage ss;
@@ -108,7 +149,7 @@ std::string NativeSocketSampler::resolveAddr(int fd) {
     return std::string(buf);
 }
 
-bool NativeSocketSampler::isSocket(int fd) {
+bool NativeSocketSampler::Session::isSocket(int fd) {
     // Accepts any SOCK_STREAM socket (including AF_UNIX); AF_INET/AF_INET6 filtering
     // is deferred to resolveAddr() which is only called for sampled events. AF_UNIX
     // will produce an empty remoteAddress field in the JFR event.
@@ -159,7 +200,7 @@ bool NativeSocketSampler::isSocket(int fd) {
     return false;
 }
 
-void NativeSocketSampler::insertFdAddrLocked(int fd, std::string addr) {
+void NativeSocketSampler::Session::insertFdAddrLocked(int fd, std::string addr) {
     auto it = _fd_cache.find(fd);
     if (it != _fd_cache.end()) {
         it->second->second = std::move(addr);
@@ -174,7 +215,7 @@ void NativeSocketSampler::insertFdAddrLocked(int fd, std::string addr) {
     }
 }
 
-bool NativeSocketSampler::revalidateSocket(int fd) {
+bool NativeSocketSampler::Session::revalidateSocket(int fd) {
     int so_type;
     socklen_t solen = sizeof(so_type);
     int rc = getsockopt(fd, SOL_SOCKET, SO_TYPE, &so_type, &solen);
@@ -189,7 +230,7 @@ bool NativeSocketSampler::revalidateSocket(int fd) {
     return false;
 }
 
-bool NativeSocketSampler::shouldSample(u64 duration_ticks, int op, float &weight) {
+bool NativeSocketSampler::Session::shouldSample(u64 duration_ticks, int op, float &weight) {
     // op 0 (send) and op 2 (write) are outbound → share _send_sampler.
     // op 1 (recv) and op 3 (read) are inbound  → share _recv_sampler.
     PoissonSampler &sampler = (op == 0 || op == 2) ? _send_sampler : _recv_sampler;
@@ -199,7 +240,7 @@ bool NativeSocketSampler::shouldSample(u64 duration_ticks, int op, float &weight
                           weight);
 }
 
-void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 op) {
+void NativeSocketSampler::Session::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 op) {
     if (!Profiler::instance()->isRunning()) return;
     // Clamp TSC inversion: a thread migrating cores between the two TSC reads can
     // observe t1 < t0.  Pass 0 to the sampler so the event is not force-sampled,
@@ -292,8 +333,7 @@ ssize_t NativeSocketSampler::send_hook(int fd, const void* buf, size_t len, int 
     send_fn fn = _orig_send.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
     if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len, flags);
-    NativeSocketSampler* self = _instance;
-    if (!self->isSocket(fd)) return fn(fd, buf, len, flags);
+    if (!isSocketGated(fd)) return fn(fd, buf, len, flags);
 #ifdef DEBUG
     {
         uint64_t n = _send_hook_calls.fetch_add(1, std::memory_order_relaxed);
@@ -311,8 +351,7 @@ ssize_t NativeSocketSampler::recv_hook(int fd, void* buf, size_t len, int flags)
     recv_fn fn = _orig_recv.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
     if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len, flags);
-    NativeSocketSampler* self = _instance;
-    if (!self->isSocket(fd)) return fn(fd, buf, len, flags);
+    if (!isSocketGated(fd)) return fn(fd, buf, len, flags);
 #ifdef DEBUG
     {
         uint64_t n = _recv_hook_calls.fetch_add(1, std::memory_order_relaxed);
@@ -330,8 +369,7 @@ ssize_t NativeSocketSampler::write_hook(int fd, const void* buf, size_t len) {
     write_fn fn = _orig_write.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
     if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len);
-    NativeSocketSampler* self = _instance;
-    bool is_socket = self->isSocket(fd);
+    bool is_socket = isSocketGated(fd);
 #ifdef DEBUG
     {
         uint64_t n = _write_hook_calls.fetch_add(1, std::memory_order_relaxed);
@@ -350,8 +388,7 @@ ssize_t NativeSocketSampler::read_hook(int fd, void* buf, size_t len) {
     read_fn fn = _orig_read.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
     if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len);
-    NativeSocketSampler* self = _instance;
-    bool is_socket = self->isSocket(fd);
+    bool is_socket = isSocketGated(fd);
 #ifdef DEBUG
     {
         uint64_t n = _read_hook_calls.fetch_add(1, std::memory_order_relaxed);
@@ -408,15 +445,18 @@ Error NativeSocketSampler::start(Arguments &args) {
     // time-weighted sampling gives P = 1 - exp(-duration/interval) → 1 when duration >> interval,
     // so slow calls self-select regardless of interval magnitude.  Only short-duration calls
     // (which carry no latency signal) are suppressed when the interval is large.
-    _rate_limiter.start(init_interval, TARGET_EVENTS_PER_SECOND,
-                        PID_WINDOW_SECS, PID_P_GAIN, PID_I_GAIN, PID_D_GAIN, PID_CUTOFF_S);
-    // Clear the fd->addr cache and reset the fd-type cache generation for the new
-    // session so stale entries from a prior run cannot produce misattributed events
-    // even if stop() was not called.  clearFdCache() bumps _fd_cache_gen under the
-    // mutex so the clear and the gen bump are atomic with respect to concurrent
-    // isSocket() calls.  A single call per start() keeps the mod-16 generation-wrap
-    // budget at the full 16 cycles documented in nativeSocketSampler.h.
-    clearFdCache();
+    // Value-initialized: the fd-type cache starts all-unknown, so a fresh
+    // session needs no clearFdCache().
+    Session* session = new Session();
+    session->_rate_limiter.start(init_interval, TARGET_EVENTS_PER_SECOND,
+                                 PID_WINDOW_SECS, PID_P_GAIN, PID_I_GAIN, PID_D_GAIN, PID_CUTOFF_S);
+    // Normally null: stop() deleted the previous one, or leaked it after a
+    // drain timeout (left unpublished). Only the test seam leaves one behind.
+    Session* prev = _session.exchange(session, std::memory_order_acq_rel);
+    if (prev != nullptr && !_gate.isOpen()) {
+        delete prev;
+    }
+    _gate.open();
 #ifdef DEBUG
     _send_hook_calls.store(0, std::memory_order_relaxed);
     _recv_hook_calls.store(0, std::memory_order_relaxed);
@@ -439,7 +479,8 @@ Error NativeSocketSampler::start(Arguments &args) {
                   "native call stacks for socket samples may be empty");
     }
 
-    if (!LibraryPatcher::patch_socket_functions()) {
+    if (!LibraryPatcher::patch_socket_functions(true)) {
+        releaseSession();
         return Error("failed to install native socket hooks (dlsym returned NULL)");
     }
     return Error::OK;
@@ -456,16 +497,33 @@ void NativeSocketSampler::stop() {
              (unsigned long long)_record_reject_calls.load(std::memory_order_relaxed));
 #endif
     LibraryPatcher::unpatch_socket_functions();
-    clearFdCache();
+    releaseSession();
+}
+
+void NativeSocketSampler::releaseSession() {
+    // Hooks still run after the unpatch (callers that resolved the hook
+    // earlier, threads blocked in the real call); the closed gate turns them
+    // into pass-throughs, and the drain waits out those inside a scope.
+    _gate.close();
+    if (!_gate.drain(SESSION_DRAIN_TIMEOUT_NS)) {
+        Log::warn("NativeSocketSampler: hooks did not drain; leaking the session");
+        _session.store(nullptr, std::memory_order_release);
+        return;
+    }
+    delete _session.exchange(nullptr, std::memory_order_acq_rel);
 }
 
 void NativeSocketSampler::clearFdCache() {
+    Session* session = _session.load(std::memory_order_acquire);
+    if (session != nullptr) {
+        session->clearFdCache();
+    }
+}
+
+void NativeSocketSampler::Session::clearFdCache() {
     std::lock_guard<std::mutex> lock(_fd_cache_mutex);
     _fd_cache.clear();
     _fd_lru_list.clear();
-    // Bump the generation under the lock so the clear and the bump are atomic
-    // with respect to concurrent isSocket() calls: no thread can insert an
-    // entry tagged with the old generation after the map is cleared.
     _fd_cache_gen.fetch_add(1, std::memory_order_release);
 }
 

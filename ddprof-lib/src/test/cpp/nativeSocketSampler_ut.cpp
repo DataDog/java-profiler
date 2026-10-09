@@ -22,6 +22,8 @@
 #include "libraryPatcher.h"
 
 #include <atomic>
+#include <chrono>
+#include <thread>
 #include <sys/socket.h>
 
 // ---------------------------------------------------------------------------
@@ -435,4 +437,65 @@ TEST(ArgumentsNatsock, OverflowRejected) {
     Arguments args;
     Error e = args.parse("natsock=99999999999999999s");
     ASSERT_TRUE(static_cast<bool>(e)) << "Expected error for natsock with overflow value";
+}
+
+// ---------------------------------------------------------------------------
+// Session lifetime: per-recording state is freed at stop() while hooks may
+// still be running.
+// ---------------------------------------------------------------------------
+
+static std::atomic<bool> g_blocked_in_send{false};
+static std::atomic<bool> g_release_send{false};
+
+static ssize_t stub_send_blocking(int /*fd*/, const void* /*buf*/, size_t len, int /*flags*/) {
+    g_blocked_in_send.store(true);
+    while (!g_release_send.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return (ssize_t)len;
+}
+
+// A thread blocked in the real send() across stop() holds no gate scope, so
+// stop() frees the session without waiting for it; when the call returns, the
+// hook must see the closed gate instead of touching the freed session (ASan
+// reports a use-after-free otherwise).
+TEST(NativeSocketSamplerSessionTest, HookBlockedAcrossStopDoesNotTouchFreedSession) {
+    int fds[2];
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+    NativeSocketSampler::send_fn s; NativeSocketSampler::recv_fn r;
+    NativeSocketSampler::write_fn w; NativeSocketSampler::read_fn rd;
+    NativeSocketSampler::getOriginalFunctions(s, r, w, rd);
+    NativeSocketSampler::setOriginalFunctions(stub_send_blocking, r, w, rd);
+    bool prev_active = LibraryPatcher::_socket_active.exchange(true);
+
+    NativeSocketSampler::startSessionForTest();
+    g_blocked_in_send = false;
+    g_release_send = false;
+    ssize_t ret = -2;
+    std::thread sender([&] {
+        char buf[16] = {};
+        ret = NativeSocketSampler::send_hook(fds[0], buf, sizeof(buf), 0);
+    });
+    while (!g_blocked_in_send.load()) {
+        std::this_thread::yield();
+    }
+    NativeSocketSampler::stopSessionForTest();
+    EXPECT_FALSE(NativeSocketSampler::hasSessionForTest());
+    g_release_send = true;
+    sender.join();
+    EXPECT_EQ(ret, 16);
+
+    LibraryPatcher::_socket_active.store(prev_active);
+    NativeSocketSampler::setOriginalFunctions(s, r, w, rd);
+    close(fds[0]);
+    close(fds[1]);
+}
+
+// While idle (no session) the hooks pass straight through.
+TEST(NativeSocketSamplerSessionTest, NoSessionMeansPassThrough) {
+    NativeSocketSampler::startSessionForTest();
+    NativeSocketSampler::stopSessionForTest();
+    ASSERT_FALSE(NativeSocketSampler::hasSessionForTest());
+    EXPECT_EQ(0, NativeSocketSampler::instance()->fdAddrCacheSizeForTest());
+    NativeSocketSampler::instance()->clearFdCache();  // no-op, must not crash
 }

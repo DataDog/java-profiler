@@ -1136,6 +1136,13 @@ public:
   // making meaningful progress).
   void autoTuneDefaults(Arguments &args);
   void stop();
+  // Frees the search's per-recording state once stopThread() joined the BFS
+  // thread and stop() ended the search: clears every live search tag, frees
+  // the frontier table and drops the cached java/lang/Object global ref, so
+  // the next start() rebuilds them. If the tags cannot be confirmed cleared,
+  // the frontier is kept (the next search's release retries) and false is
+  // returned.
+  bool release(jvmtiEnv *jvmti, JNIEnv *jni);
 
   // Spawns the BFS thread (threadEntry()/threadLoop()) if reference chain tracking is enabled and
   // no thread is already running.

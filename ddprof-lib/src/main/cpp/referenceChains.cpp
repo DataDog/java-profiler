@@ -275,9 +275,8 @@ Error ReferenceChainTracker::start(Arguments &args) {
             args._reference_chains_pause_target_ms,
             args._reference_chains_pain_budget_percent);
 
-  // Like LivenessTracker's own table, construct the frontier table once and keep it across repeated
-  // start()/stop() cycles - do not reallocate on a second start() with a possibly different cap,
-  // for the same reason LivenessTracker keeps its first-initialize() result.
+  // Per recording: release() frees the frontier table after each stop(), so it is rebuilt here with
+  // this recording's cap (it is only still present if the last release could not clear its tags).
   _configured_frontier_cap = args._reference_chains_frontier_cap;
   if (_frontier == nullptr) {
     _frontier = new FrontierTable(_configured_frontier_cap);
@@ -438,9 +437,35 @@ void ReferenceChainTracker::stop() {
     _pending_abandoned_events.clear();
   }
 
-  // Do not disable GC notifications here - LivenessTracker follows the same rule since the JVMTI
-  // env and its tracker singletons are expected to survive across multiple start/stop recording
-  // cycles.
+  // GC notifications are turned off by Profiler::stop() once both trackers have stopped, and the
+  // frontier/tags are freed by release() after the recording is written.
+}
+
+bool ReferenceChainTracker::release(jvmtiEnv *jvmti, JNIEnv *jni) {
+  if (_running.load(std::memory_order_acquire)) {
+    return false;  // the BFS thread still owns the frontier
+  }
+  if (_frontier != nullptr) {
+    if (!releaseSearchTags(jvmti, jni)) {
+      // Some live object may still carry a tag of this search: keep the frontier
+      // so the next search's terminal-gate release can retry before any restart.
+      _tags_released = false;
+      return false;
+    }
+    _tags_released = true;
+    delete _frontier;
+    _frontier = nullptr;
+  }
+  // The next recording starts a brand-new search (first-pass branch).
+  _next_tag = 1;
+  _search_started = false;
+  storeRelease(_search_state, (u8)SearchState::RUNNING);
+  _hop_label_cache.clear();
+  if (_cached_object_class != nullptr && jni != nullptr) {
+    jni->DeleteGlobalRef(_cached_object_class);
+    _cached_object_class = nullptr;
+  }
+  return true;
 }
 
 void ReferenceChainTracker::startThread() {

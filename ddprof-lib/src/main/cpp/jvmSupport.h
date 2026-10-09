@@ -55,6 +55,11 @@ public:
 
     // Initializing JVM support
     static void initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni);
+    // Starts loading jmethodIDs while the profiler is still idle -- a scan of
+    // the classes loaded so far, then ClassPrepare keeps up with new ones -- so
+    // the first start() does not pay for it all at once. No-op once loading
+    // has begun.
+    static void preloadMethodIDs(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni);
 
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc);

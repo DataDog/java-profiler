@@ -74,7 +74,7 @@ struct PatchKind {
 
 const PatchKind SOCKET = {
   "socket", im_write,
-  []() { LibraryPatcher::patch_socket_functions(); },
+  []() { LibraryPatcher::patch_socket_functions(true); },
   []() { LibraryPatcher::unpatch_socket_functions(); },
 };
 
@@ -85,6 +85,24 @@ const PatchKind PTHREAD_CREATE = {
     LibraryPatcher::patch_libraries();
   },
   []() { LibraryPatcher::unpatch_libraries(); },
+};
+
+// Forwards to the real malloc, so patching every loaded library's malloc slot
+// keeps the child process working. Resolved before the first patch.
+void* (*g_real_malloc)(size_t) = nullptr;
+void* forwarding_malloc_hook(size_t size) { return g_real_malloc(size); }
+
+const PatchKind MALLOC = {
+  "malloc", im_malloc,
+  []() {
+    if (g_real_malloc == nullptr) {
+      g_real_malloc = (void* (*)(size_t))dlsym(RTLD_NEXT, "malloc");
+      if (g_real_malloc == nullptr) g_real_malloc = (void* (*)(size_t))dlsym(RTLD_DEFAULT, "malloc");
+    }
+    MallocHookSpec spec = {im_malloc, (void*)forwarding_malloc_hook};
+    LibraryPatcher::patch_malloc_functions(&spec, 1);
+  },
+  []() { LibraryPatcher::unpatch_malloc_functions(); },
 };
 
 struct LoadedLib {
@@ -340,10 +358,27 @@ TEST_P(LibraryPatcherUnloadTest, UnpatchRestoresLoadedLibrary) {
   });
 }
 
+// Another tool that re-patched a malloc slot after us keeps its hook: the
+// restore only replaces our own hook with the saved original.
+TEST_F(LibraryPatcherIdentityTest, MallocUnpatchLeavesForeignHookInPlace) {
+  runInChild([&]() {
+    LoadedLib lib = loadLib(MALLOC);
+    patchAndVerify(MALLOC, lib);
+    void* foreign = (void*)((char*)&forwarding_malloc_hook + 1);  // any value that is not ours
+    __atomic_store_n(lib.slot, foreign, __ATOMIC_RELEASE);
+    MALLOC.unpatch();
+    if (*lib.slot != foreign) _exit(CHILD_CORRUPTED);
+    // Leave the slot callable for the rest of the child's life.
+    *lib.slot = lib.orig;
+  });
+}
+
 INSTANTIATE_TEST_SUITE_P(PatchKinds, LibraryPatcherUnloadTest,
-                         ::testing::Values(&SOCKET, &PTHREAD_CREATE),
+                         ::testing::Values(&SOCKET, &PTHREAD_CREATE, &MALLOC),
                          [](const ::testing::TestParamInfo<const PatchKind*>& info) {
-                           return std::string(info.param == &SOCKET ? "Socket" : "PthreadCreate");
+                           return std::string(info.param == &SOCKET ? "Socket"
+                                              : info.param == &MALLOC ? "Malloc"
+                                              : "PthreadCreate");
                          });
 
 // Exits the child with code after removing the temporary file at path.
@@ -450,7 +485,7 @@ static bool patchWritesFakeCache(const LoadedLib& lib, u64 file_id, u64 fingerpr
   CodeCache* real = Libraries::instance()->findLibraryByName("libpatchtarget");
   static void* word = (void*)&SENTINEL;
   addCacheAtLibraryBase(real, file_id, fingerprint, &word);
-  LibraryPatcher::patch_socket_functions();
+  LibraryPatcher::patch_socket_functions(true);
   if (*lib.slot != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
   return word != (void*)&SENTINEL;
 }
@@ -623,7 +658,7 @@ TEST_F(LibraryPatcherIdentityTest, UnpatchDoesNotWriteIntoReplacementWithSameLay
     if (old_image.phnum > 16) _exit(CHILD_SKIP);
     memcpy(old_phdrs, old_image.phdrs, old_image.phnum * sizeof(ElfW(Phdr)));
 
-    LibraryPatcher::patch_socket_functions();
+    LibraryPatcher::patch_socket_functions(true);
     if (*slot != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
     if (!unload(handle, slot, write_path)) _exit(CHILD_SKIP);  // pinned: no replacement possible
 
@@ -645,6 +680,19 @@ TEST_F(LibraryPatcherIdentityTest, UnpatchDoesNotWriteIntoReplacementWithSameLay
   });
 }
 
+// A dlopen-triggered re-patch (install_socket_hooks) that reaches the patch
+// lock after stop() unpatched must not re-install the hooks while idle, even
+// though the unpatch left _socket_size at 0 like a fresh start.
+TEST_F(LibraryPatcherIdentityTest, SocketRepatchAfterUnpatchIsRefused) {
+  runInChild([&]() {
+    LoadedLib lib = loadLib(SOCKET);
+    patchAndVerify(SOCKET, lib);
+    unpatchAndVerifyRestored(SOCKET, lib);
+    LibraryPatcher::patch_socket_functions(false);
+    if (*lib.slot != lib.orig) _exit(CHILD_CORRUPTED);
+  });
+}
+
 // Set by the stopping thread just before it calls unpatch_socket_functions().
 std::atomic<bool> g_stopper_started{false};
 
@@ -663,7 +711,7 @@ static int patchInsideForeignWalk(struct dl_phdr_info*, size_t, void* data) {
   if (pthread_create(stopper, nullptr, stopSocketPatching, nullptr) != 0) _exit(CHILD_THREAD_FAILED);
   while (!g_stopper_started.load()) sched_yield();
   usleep(200 * 1000);  // let the stopper block on dl_load_write_lock
-  LibraryPatcher::patch_socket_functions();
+  LibraryPatcher::patch_socket_functions(false);
   return 1;
 }
 
