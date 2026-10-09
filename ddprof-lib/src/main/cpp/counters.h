@@ -74,6 +74,10 @@
   X(THREAD_NAMES_COUNT, "thread_names_count")                                  \
   X(THREAD_FILTER_PAGES, "thread_filter_pages")                                \
   X(THREAD_FILTER_BYTES, "thread_filter_bytes")                                \
+  X(THREAD_REGISTRY_CAPACITY_EXHAUSTED, "thread_registry_capacity_exhausted")  \
+  X(THREAD_REGISTRY_INDEX_FAILURES, "thread_registry_index_failures")          \
+  X(THREAD_REGISTRY_CONTEXT_RESET_RACE_DETECTED, "thread_registry_context_reset_race_detected") \
+  X(THREAD_REGISTRY_HOOK_REREGISTRATION, "thread_registry_hook_reregistration") \
   X(JMETHODID_SKIPPED, "jmethodid_skipped_count")                              \
   X(CODECACHE_NATIVE_SIZE_BYTES, "codecache_native_size_bytes")                \
   X(CODECACHE_NATIVE_COUNT, "native_codecache_count")                          \
@@ -84,6 +88,9 @@
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
   X(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN, "wc_signals_suppressed_sampled_run")     \
+  X(WC_PRECHECK_REGISTRY_LOOKUPS, "wc_precheck_registry_lookups")             \
+  X(WC_PRECHECK_CANDIDATES_REJECTED, "wc_precheck_candidates_rejected")       \
+  X(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED, "wc_precheck_lookup_budget_exhausted") \
   X(WC_UNOWNED_BLOCKED_SUPPRESSED, "wc_unowned_blocked_suppressed")            \
   X(WC_UNOWNED_BLOCKED_RECORDED, "wc_unowned_blocked_recorded")                \
   X(WC_SIGNAL_QUEUE_FULL, "wc_signals_queue_full")                             \
@@ -296,7 +303,8 @@
 #define DD_COUNTER_TABLE_DEBUG(X)                                             \
   X(SAFEFETCH_WHILE_PROTECTED, "safefetch_while_protected")                   \
   X(SAFECOPY_WHILE_PROTECTED, "safecopy_while_protected")                     \
-  X(SAFESTORE_WHILE_PROTECTED, "safestore_while_protected")
+  X(SAFESTORE_WHILE_PROTECTED, "safestore_while_protected")                   \
+  X(WALL_STOP_WHILE_NOT_ACTIVATED, "wall_stop_while_not_activated")
 #else
 #define DD_COUNTER_TABLE_DEBUG(X)
 #endif
