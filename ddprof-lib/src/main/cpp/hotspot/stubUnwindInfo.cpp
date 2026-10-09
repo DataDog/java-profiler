@@ -284,7 +284,7 @@ int decodeAdrTarget(uint32_t insn, const instruction_t* entry, int index, int co
         if (target < start || target >= end || ((target - start) & (INSN_SIZE - 1)) != 0) return -1;
         return (int)((target - start) / INSN_SIZE);
     }
-    uintptr_t page = (pc & ~(uintptr_t)0xfff) + (uintptr_t)(imm << 12);  // ADRP
+    uintptr_t page = (pc & ~(uintptr_t)0xfff) + (uintptr_t)((uint64_t)imm << 12);  // ADRP
     if (page < end && page + 0x1000 > start) adrp_into_stub = true;
     return -1;
 }
