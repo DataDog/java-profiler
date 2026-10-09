@@ -104,6 +104,13 @@ inline uint32_t subSpRnImm(int rn, int imm) { return 0xd1000000 | 0x1f | (uint32
 inline uint32_t call(int offInsns) { return 0x94000000 | (uint32_t)(offInsns & 0x03ffffff); }
 inline uint32_t callReg(int rn) { return 0xd63f0000 | (uint32_t)rn << 5; }
 inline uint32_t jumpReg(int rn) { return 0xd61f0000 | (uint32_t)rn << 5; }
+// adrp Xd, #(pageImm * 4096) -- pageImm is the signed page-count offset,
+// split across immlo (bits 30:29) and immhi (bits 23:5) the way the decoder
+// in decodeAdrTarget() reassembles it.
+inline uint32_t adrp(int rd, int pageImm) {
+    uint32_t imm21 = (uint32_t)pageImm & 0x1fffffu;
+    return 0x90000000u | ((imm21 & 0x3u) << 29) | (((imm21 >> 2) & 0x7ffffu) << 5) | (uint32_t)rd;
+}
 
 class StubUnwindTest : public ::testing::Test {
 protected:
@@ -582,6 +589,25 @@ TEST_F(StubUnwindTest, AdrpIntoStubDisablesRestart) {
     ASSERT_NE(info, nullptr);
     expectPhase(info, 1, SU_PC_TO_LR, 0);
     expectPhase(info, 2, SU_UNSUPPORTED, 0);
+}
+
+// Regression: decodeAdrTarget() computes an ADRP's target page as
+// pc_page + (imm << 12), and imm is frequently negative (a page behind the
+// current instruction, as here). Left-shifting a negative signed value is
+// undefined behavior, and this build is compiled with
+// -fno-sanitize-recover=all, so UBSan aborts the process the first time this
+// path runs -- before this test's own assertions ever get to run. A target
+// page outside the stub must also leave the mid-stub-br restart enabled,
+// the same way AdrpIntoStubDisablesRestart's own-page target disables it.
+TEST_F(StubUnwindTest, AdrpNegativePageOffsetAllowsRestart) {
+    // 0: adrp x9, #-4096  (one page behind this instruction -- outside the stub)
+    // 1: br x8
+    // 2: nop              (second entry)
+    // 3: ret
+    StubUnwindInfo* info = analyze({adrp(9, -1), jumpReg(8), NOP, RET}, true);
+    ASSERT_NE(info, nullptr);
+    expectPhase(info, 1, SU_PC_TO_LR, 0);
+    expectPhase(info, 2, SU_PC_TO_LR, 0);
 }
 
 // x29/x30 writes from classes without a dedicated decoder: unscaled and
