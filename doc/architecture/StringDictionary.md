@@ -251,11 +251,24 @@ rotateDictsAndRun(jfr_op):
 
 `clearStandby()` drains its target buffer before clearing it: a caller whose guard
 on the then-active buffer outlived `rotate()`'s drain may still be using it two
-rotations later.  If that drain times out the clear is skipped; the buffer becomes
-active on the next `rotate()` with its old entries (harmless - ids are only
-reassigned by `clearAll()`) and is cleared the next time it is the clear target.
-`clearStandby()` returns `false` in that case and `rotateDictsAndRun()` reports it
-(`DICTIONARY_DRAIN_TIMEOUTS` and a warning).
+rotations later.  If that drain times out the clear is skipped, `clearStandby()`
+returns `false` and `rotateDictsAndRun()` reports it (`DICTIONARY_DRAIN_TIMEOUTS`
+and a warning).
+
+Reusing such a buffer as-is would not be harmless: the straggler may have inserted
+a key after both copies of the earlier `rotate()`, with an id the active buffer has
+since assigned differently, and Phase 1's `copyFrom()` keeps an existing entry's id.
+So the dictionary remembers the skipped buffer, and the next `rotate()` - which
+makes it the active buffer - retries the drain and clear before Phase 1.  Only if
+the straggler still holds its guard then (a stall longer than a whole dump cycle)
+is the buffer reused uncleared; `rotate()` returns `false` and `rotateDictsAndRun()`
+reports it.  The retry is a short series of non-waiting scans, not a full drain,
+so a stuck thread does not cost a second ~500 ms timeout per cycle.
+
+If the buffer is reused uncleared, the straggler's stale id wins over the current
+one until the next `clearAll()`. Overwriting it with the current id instead would
+orphan whatever the straggler recorded under the stale id, so neither choice is
+lossless; both require a thread stuck in a guarded insert for a whole dump cycle.
 
 `rotate()` and `lockAll()` are deliberately separated:
 

@@ -201,10 +201,12 @@ private:
 
   // Rotate all three dictionaries, then run jfr_op under lockAll().
   //
-  // rotate() is self-contained: it uses _accepting + RefCountGuard to drain
-  // concurrent JNI readers, and SignalBlocker prevents profiling signals on
-  // this thread from inserting into old_active between Phase 1 and Phase 2.
-  // No external lock is required for rotation.
+  // rotate() drains concurrent JNI readers itself (RefCountGuard), and
+  // SignalBlocker prevents profiling signals on this thread from inserting
+  // into old_active between Phase 1 and Phase 2.  It must not run concurrently
+  // with another rotate(), clearStandby() or clearAll() on the same
+  // dictionary: they share the dictionary's record of a buffer whose clear
+  // was skipped.  Callers serialise them with _state_lock.
   //
   // lockAll() wraps jfr_op only — to gate call-trace writers (signal handlers
   // and JNI paths that write to CallTraceStorage) from racing with the dump.
@@ -213,9 +215,15 @@ private:
   template<typename F>
   void rotateDictsAndRun(F jfr_op) {
     SignalBlocker blocker;
-    _class_map.rotate();
-    _string_label_map.rotate();
-    _context_value_map.rotate();
+    if (!_class_map.rotate()) {
+      reportDrainTimeout("Class map reused a standby buffer it could not clear");
+    }
+    if (!_string_label_map.rotate()) {
+      reportDrainTimeout("String label map reused a standby buffer it could not clear");
+    }
+    if (!_context_value_map.rotate()) {
+      reportDrainTimeout("Context value map reused a standby buffer it could not clear");
+    }
     lockAll();
     jfr_op();
     unlockAll();

@@ -146,8 +146,10 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     //   5. This check detects the race: _active_storage was nullified by scanner
     //   6. We return DROPPED_TRACE_ID, never touching the deleted table
     //
-    // Memory ordering: ACQUIRE load ensures we see scanner's ACQ_REL exchange to nullptr
-    CallTraceHashTable* original_active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
+    // Memory ordering: the load sees the scanner's ACQ_REL exchange to nullptr or its swap
+    // SEQ_CST rather than ACQUIRE: the re-check must not be satisfied before the
+    // guard's slot store is visible to a scanning drainer (see RefCountGuard).
+    CallTraceHashTable* original_active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_SEQ_CST));
     if (original_active != active || original_active == nullptr) {
         // Storage was swapped or nullified during guard construction
         // SAFE: We detected the race, drop this trace, never use the table pointer
