@@ -415,8 +415,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
           if (ctx->tracker->_candidate_klass_ids[s] == klass_id) {
             matched = true;
             ctx->tracker->recordDiscoveredInstance(
-                klass_id, *tag_ptr, false, CacheInvalidationMode::SYNCHRONOUS,
-                nullptr, 0);
+                klass_id, *tag_ptr, false, CacheInvalidationMode::DEFERRED,
+                ctx->resolved_chain_tags, ctx->resolved_chain_tag_count);
             break;
           }
         }
