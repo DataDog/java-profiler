@@ -115,8 +115,17 @@ public:
 
     bool isActive() const { return _active; }
 
-    // Wait for all in-flight guards protecting ptr_to_delete to be released.
-    static void waitForRefCountToClear(void* ptr_to_delete);
+    /**
+     * Waits for all in-flight guards protecting ptr_to_delete to be released,
+     * giving up after ~500ms.
+     *
+     * A timeout is counted (DICTIONARY_DRAIN_TIMEOUTS) and logged, and aborts
+     * debug builds (except gtest builds, which exercise the release path).
+     *
+     * @return true when drained; false on timeout, in which case
+     *         ptr_to_delete must not be freed.
+     */
+    [[nodiscard]] static bool waitForRefCountToClear(void* ptr_to_delete);
 
     /**
      * Waits for every in-flight guard referencing any of the count resources
