@@ -30,6 +30,10 @@ typedef struct TrackingEntry {
   jint tid;
   jlong time;
   jlong age;
+  // _gc_epoch at admission. An entry admitted after an account_epoch=false
+  // sweep can be in the table before the owner claims that epoch; aging
+  // starts from here so it is not credited with a GC it never survived.
+  u64 admission_epoch;
   jlong leak_tag;  // 0 = untagged; otherwise a tag from the leak tag pool
   Context ctx;
   // Set by cleanup_table()'s survivor loop via resolveKlassId() when
@@ -103,7 +107,7 @@ typedef struct KlassPopulationEntry {
   // often as a real leak does.
   u8 consecutive_positive;
   // Slope (regression value at the ring's newest sample minus the value at
-  // its oldest sample - see ringThirdsStats, livenessTracker.cpp) as of the
+  // its oldest sample - see ringWindowStats, livenessTracker.cpp) as of the
   // last push, computed and cached by hasQualifyingGrowth() alongside
   // consecutive_positive above - selectLeakCandidates() reads this directly
   // for ranking instead of re-scanning the ring: the ring only changes on
@@ -601,8 +605,10 @@ private:
   // thread (referenceChains.cpp), not the allocation hot path, so the same
   // upcalls flush_table() already makes safely are just as safe there - see
   // that method's own comment for why a third caller needs both bypassing
-  // the early-exit *and* resolution.
-  void cleanup_table(bool force = false, bool allow_resolve = true);
+  // the early-exit *and* resolution. account_epoch=false only reaps: no epoch
+  // claim, no survivor aging, no population fold.
+  void cleanup_table(bool force = false, bool allow_resolve = true,
+                     bool account_epoch = true);
 
   void flush_table(std::set<int> *tracked_thread_ids);
 
@@ -755,10 +761,10 @@ private:
   // The sustained-trend gate (this class's own header comment above,
   // "Sustained-trend gate") - both-required growth-magnitude and floor-rise
   // tests, design doc's original "mean of thirds" choice since replaced by
-  // full-window least-squares regression (see ringThirdsStats,
+  // full-window least-squares regression (see ringWindowStats,
   // livenessTracker.cpp - cheap, allocation-free, one pass over the
   // ring, no sorting or extra storage). A single scan
-  // (ringThirdsStats(), livenessTracker.cpp) both derives the pass/fail
+  // (ringWindowStats(), livenessTracker.cpp) both derives the pass/fail
   // result below AND updates entry.cached_slope (regression end value minus
   // start value) for selectLeakCandidates()'s ranking, rather than
   // that method re-scanning the same unchanged ring a moment later. Returns
@@ -830,6 +836,9 @@ public:
         _last_class_map_generation(0),
         _leak_tag_free_count(LEAK_TAG_POOL_SIZE) {}
 
+  // Reset recording-scoped gates at every accepted profiler start. Persistent tracking and
+  // population state intentionally survives recording boundaries.
+  void resetSession();
   Error start(Arguments &args);
   void stop();
   void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id);
@@ -1238,7 +1247,10 @@ public:
   // above. Out of gtest's reach in one respect: gtest call sites have no
   // live tracked instances to tag anyway (they exercise the qualification
   // gate only), so a distinct gtest-chosen tid is fine there.
-  void tidTrendRecordForTest(u32 klass_id, jint tid, u32 count, u64 epoch) {
+  void tidTrendRecordForTest(u32 klass_id, jint tid, u32 count, u64 epoch,
+                             jweak *out_evicted = nullptr,
+                             int *out_evicted_count = nullptr,
+                             int max_evicted = 0) {
     _table_lock.lock();
     klass_id = resolveTestKlassAliasLocked(klass_id);
     int slot = -1;
@@ -1251,7 +1263,9 @@ public:
     if (slot < 0) {
       int out_slot;
       bool created;
-      recordKlassPopulationSampleLocked(klass_id, 0, 0, &out_slot, &created);
+      recordKlassPopulationSampleLocked(klass_id, 0, 0, &out_slot, &created,
+                                        out_evicted, out_evicted_count,
+                                        max_evicted);
       slot = out_slot;
     }
     KlassPopulationEntry &entry = _klass_population[slot];

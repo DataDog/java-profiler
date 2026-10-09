@@ -462,6 +462,14 @@ public final class JavaProfiler {
 
     private static native int getTid0();
 
+    /**
+     * Returns the calling thread's profiler tid. Tests seeding per-tid trends
+     * via {@link #seedTidTrendSample0} must call this on the leaking thread.
+     */
+    static int getTid() {
+        return getTid0();
+    }
+
     private static native boolean recordTrace0(long rootSpanId, String endpoint, String operation, int sizeLimit);
 
     private static native void dump0(String recordingFilePath);
@@ -529,6 +537,111 @@ public final class JavaProfiler {
      * space this profiler's key happened to land.
      */
     public static native boolean testTlsPrimingAvailable();
+
+    /**
+     * Test seam. The test seams below are implemented in debug native builds only;
+     * in release builds they are no-ops.
+     * <p>
+     * Enables/disables per-klass population tracking without a live-JVM
+     * {@code initialize()}. Returns {@code true} on debug builds.
+     */
+    static native boolean setGcGenerationsEnabled0(boolean enabled);
+
+    /**
+     * Test seam: seeds one epoch of population history for {@code klassId}.
+     */
+    static native void seedKlassPopulationSample0(int klassId, int count, long epoch);
+
+    /**
+     * Test seam: seeds one epoch of per-tid trend history for {@code klassId}.
+     * {@code tid} should come from {@link #getTid()}.
+     */
+    static native void seedTidTrendSample0(int klassId, int tid, int count, long epoch);
+
+    /**
+     * Test seam: makes {@code representative} the leak-candidate representative
+     * of {@code klassId}.
+     */
+    static native void setKlassPopulationRepresentativeForTest0(int klassId, Object representative);
+
+    /**
+     * Test seam: clears the per-klass population table.
+     */
+    static native void resetKlassPopulationForTest0();
+
+    /**
+     * Test seam: the klass ids currently selected as leak candidates (top 5).
+     */
+    static native int[] selectLeakCandidateKlassIds0();
+
+    /**
+     * Test seam: tags {@code target} as a reference-chain frontier root.
+     * Returns the frontier tag, or {@code 0} on failure.
+     */
+    static native long tagAsReferenceChainRoot0(Object target);
+
+    /**
+     * Test seam: runs one reference-chain search pass synchronously. Returns
+     * {@code false} if reference chains are disabled or not started.
+     */
+    static native boolean runReferenceChainPass0();
+
+    /**
+     * Test seam: runs one poll of the leak-candidate to chain bridge synchronously.
+     */
+    static native void pollReferenceChainTargets0();
+
+    /**
+     * Test seam: drains queued reference-chain events and returns their count.
+     */
+    static native int drainReferenceChainEventCount0();
+
+    /**
+     * Test seam: resets the search state and releases held tags, so the next
+     * pass walks from the roots again.
+     */
+    static native void resetReferenceChainSearchForTest0();
+
+    /**
+     * Test seam: position of {@code target} in the pending-expansion queue
+     * ({@code 0} = next), {@code -1} if already expanded, {@code -2} if never
+     * admitted. Does not tag {@code target}.
+     */
+    static native long getReferenceChainPendingPositionForTest0(Object target);
+
+    /**
+     * Test seam: size of the pending-expansion queue.
+     */
+    static native long getReferenceChainPendingSizeForTest0();
+
+    /**
+     * Test seam: seeds one heap-floor sample for the time-to-OOM projection.
+     * Timestamps only need to be increasing.
+     */
+    static native void heapFloorRecordForTest0(long usedBytes, long timestampNs);
+
+    /**
+     * Test seam: overrides the max heap size used by the time-to-OOM projection.
+     */
+    static native void setMaxHeapBytesForTest0(long maxHeapBytes);
+
+    /**
+     * Test seam: {@code false} stops GCs from recording heap-floor samples,
+     * {@code true} restores it.
+     */
+    static native void setHeapFloorRecordingForTest0(boolean enabled);
+
+    /**
+     * Test seam: evaluates the real search scheduling gate without executing a BFS pass.
+     * This is not a read-only query: under the native engine lock it may account a completed
+     * search's pain and restart/reset terminal search state.
+     */
+    static native boolean shouldRunPassForTest0();
+
+    /**
+     * Test seam: number of passes run for the current search.
+     */
+    static native int referenceChainPassesRunForTest0();
 
     // ---- Test-only reads of the current thread's OTEP record ----------------------------------
     // Each resolves the current carrier's record directly (like the write primitives above) with

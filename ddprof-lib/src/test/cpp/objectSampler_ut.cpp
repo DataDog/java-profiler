@@ -33,7 +33,26 @@ public:
                                    jclass klass, jlong size) {
     s->recordAllocation(jvmti, jni, thread, event_type, object, klass, size);
   }
+
+  static void setSessionFlags(ObjectSampler *s, bool allocations,
+                              bool liveness, bool generations) {
+    s->_record_allocations = allocations;
+    s->_record_liveness = liveness;
+    s->_gc_generations = generations;
+  }
+
+  static bool anySessionFlag(const ObjectSampler *s) {
+    return s->_record_allocations || s->_record_liveness ||
+           s->_gc_generations;
+  }
 };
+
+TEST(ObjectSamplerTest, ResetSessionClearsRecordingMetadataFlags) {
+  ObjectSampler *sampler = ObjectSampler::instance();
+  ObjectSamplerTestAccessor::setSessionFlags(sampler, true, true, true);
+  sampler->resetSession();
+  EXPECT_FALSE(ObjectSamplerTestAccessor::anySessionFlag(sampler));
+}
 
 // ---------------------------------------------------------------------------
 // Mock-JVMTI infrastructure for Deallocate regression tests

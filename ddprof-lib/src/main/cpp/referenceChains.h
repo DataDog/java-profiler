@@ -389,24 +389,35 @@ private:
 
    public:
     bool contains(jlong tag) const {
-      u64 i = mix(tag) >> (64 - SLOT_SHIFT);
+      const u64 start = mix(tag) >> (64 - SLOT_SHIFT);
+      u64 i = start;
       while (_used[i]) {
         if (_keys[i] == tag) {
           return true;
         }
         i = (i + 1) & SLOT_MASK;
+        if (i == start) {
+          return false;
+        }
       }
       return false;
     }
 
     // Idempotent: returns false if `tag` is already indexed.
+    // Returns false on a full table instead of probing forever; callers
+    // already cap the deque at PRIORITY_EXPAND_CAP.
     bool insert(jlong tag) {
-      u64 i = mix(tag) >> (64 - SLOT_SHIFT);
+      const u64 start = mix(tag) >> (64 - SLOT_SHIFT);
+      u64 i = start;
       while (_used[i]) {
         if (_keys[i] == tag) {
           return false;
         }
         i = (i + 1) & SLOT_MASK;
+        // Wrapped around: table full.
+        if (i == start) {
+          return false;
+        }
       }
       _used[i] = 1;
       _keys[i] = tag;
@@ -584,6 +595,15 @@ private:
   std::unordered_map<jlong, CachedChain> _resolved_chains;
   SpinLock _resolved_chains_lock;
 
+  // Chain evictions deferred by heap callbacks. Only tags present in the immutable pre-traversal
+  // resolved-cache snapshot are eligible, so distinct pending tags are bounded exactly by the
+  // cache cap. Both buffers are reserved up front: drains swap the active producer buffer into the
+  // scratch buffer under the pending lock, then erase cache entries after releasing that lock.
+  static constexpr int MAX_PENDING_CHAIN_INVALIDATIONS = MAX_RESOLVED_CHAINS;
+  std::vector<jlong> _pending_chain_invalidations;
+  std::vector<jlong> _draining_chain_invalidations;
+  SpinLock _pending_chain_invalidations_lock;
+
   // Abandoned-search events awaiting Profiler::dump() (profiler.cpp).
   static constexpr int MAX_PENDING_ABANDONED_EVENTS = 16;
   std::vector<ReferenceChainAbandonedEvent> _pending_abandoned_events;
@@ -604,9 +624,10 @@ private:
   // of each pass - see runPass()'s own comment).
   PainBudget _cpu_pain_budget;
 
-  // The cache above is mutated on this tracker's own BFS scheduling thread (pollWatchedTargets())
-  // and read on whatever thread calls Profiler::dump() (drainPendingChainEvents());
-  // _resolved_chains_lock (declared with the cache) is the only synchronization between them.
+  // The engine/BFS thread inserts and refreshes the cache. A dump thread may snapshot it and drain
+  // exact deferred entries while a traversal is active. _resolved_chains_lock protects every cache
+  // access and serializes use of _draining_chain_invalidations; callbacks take only the pending
+  // lock. Drains acquire the resolved-cache lock before the pending lock.
 
   // Fallback cadence between passes.
   static constexpr u64 PASS_CADENCE_NS = 1000000000ULL; // 1s
@@ -741,7 +762,10 @@ private:
         _stale_expanded_rotation_cursor(1),
         _thread_walk_anchor_cursor(0),
         _safepoint_pain_budget(0.0), _search_pain_ms(0), _cpu_pain_budget(0.0),
-        _thread(), _running(false), _abort_pass_requested(false) {}
+        _thread(), _running(false), _abort_pass_requested(false) {
+    _pending_chain_invalidations.reserve(MAX_PENDING_CHAIN_INVALIDATIONS);
+    _draining_chain_invalidations.reserve(MAX_PENDING_CHAIN_INVALIDATIONS);
+  }
 
   void onGCStart();
   void onGCFinish();
@@ -861,8 +885,16 @@ private:
   void buildDiscoveredInstanceChains(jvmtiEnv *jvmti, JNIEnv *jni,
                                     u32 klass_id, u64 current_search_ns);
 
+  enum class CacheInvalidationMode : u8 {
+    SYNCHRONOUS,
+    DEFERRED
+  };
+
   void recordDiscoveredInstance(u32 klass_id, jlong frontier_tag,
-                                bool leak_correlated);
+                                bool leak_correlated,
+                                CacheInvalidationMode invalidation_mode,
+                                const jlong *resolved_chain_tags,
+                                int resolved_chain_tag_count);
 
   // Correlate a leak tag with an instance the BFS admitted BEFORE tagLeakInstances() tagged it (its
   // JVMTI tag is a frontier tag, its frontier entry has leak_tag == 0).
@@ -989,6 +1021,22 @@ private:
 
   // Remove a cached chain so pollWatchedTargets rebuilds it on the next poll.
   void invalidateResolvedChain(jlong source_tag);
+
+  // Copies the current cache keys into fixed caller-owned storage before a synchronous traversal.
+  int snapshotResolvedChainTags(jlong *out);
+
+  // Queues an eviction from a heap callback only when the tag was cached in the immutable
+  // pre-traversal snapshot. This never takes _resolved_chains_lock or allocates.
+  void deferResolvedChainInvalidation(jlong source_tag,
+                                      const jlong *resolved_chain_tags,
+                                      int resolved_chain_tag_count);
+
+  // Applies queued exact-tag evictions. Called by the engine thread and by dump threads, which may
+  // overlap a traversal; the resolved-cache/pending locks provide synchronization.
+  void drainPendingChainInvalidations();
+
+  // Clears both pending buffers at cache/tag-generation boundaries without releasing capacity.
+  void clearPendingChainInvalidations();
 
   // Snapshots the just-abandoned search into _pending_abandoned_events - called from runPass()
   // (referenceChains.cpp) immediately after it writes SearchState::ABANDONED, while
@@ -1154,8 +1202,12 @@ public:
   // JVMTI tag helpers used by the heap-walk callbacks.
   jlong nextTag() { return atomicIncRelaxed(_next_tag, (jlong)1); }
 
-  // Held by runPassSerialized() and finishLoopIterationSerialized() around the engine work.
-  Mutex _engine_lock;
+  // Held by runPassSerialized() and finishLoopIterationSerialized() around the engine work, by
+  // threadLoop() around shouldRunPass() (whose restart branch mutates _pending_expand/
+  // _priority_expand the same way a pass does), and by the pendingExpand*ForTest() seams below so
+  // they never observe those deques mid-mutation from the BFS thread. Mutable because the test
+  // seams are const (read-only from the caller's perspective) but still need to take the lock.
+  mutable Mutex _engine_lock;
   jlong tagObject(jvmtiEnv *jvmti, jobject obj);
   jlong getTag(jvmtiEnv *jvmti, jobject obj);
   void clearTag(jvmtiEnv *jvmti, jobject obj);
@@ -1316,15 +1368,16 @@ public:
   // for computing a position's fraction of the current backlog.
   size_t pendingExpandSizeForTest() const;
 
-  // Test seam - not part of the production API. Exposes the private shouldRunPass() gate directly,
-  // so a test can assert whether a fresh/terminal search would be allowed to start right now - in
-  // particular, whether LivenessTracker::secondsToOOM()'s urgent-OOM bypass (hasLeakSignal(), see
-  // OOM_URGENT_THRESHOLD_S's own comment above) opens this gate even with zero per-klass leak
-  // candidate (confirmable in the same test via
-  // LivenessTracker::selectLeakCandidates()/JavaProfiler's selectLeakCandidateKlassIds0() seam) -
-  // something runReferenceChainPass0() (javaApi.cpp) cannot show, since it calls runPass() directly
-  // and never consults this gate at all.
-  bool shouldRunPassForTest(u64 now_ns) { return shouldRunPass(now_ns); }
+  // Test seam - not part of the production API. Evaluates the real private scheduling gate without
+  // executing a BFS pass. This is not read-only: while holding _engine_lock like threadLoop(), the
+  // gate may account a completed search's pain and restart/reset terminal search state. It also
+  // exposes whether LivenessTracker::secondsToOOM()'s urgent-OOM bypass opens the gate even with no
+  // per-klass candidate; runReferenceChainPass0() cannot show that because it calls runPass()
+  // directly and never consults the gate.
+  bool shouldRunPassForTest(u64 now_ns) {
+    MutexLocker engine_guard(_engine_lock);
+    return shouldRunPass(now_ns);
+  }
 };
 
 #endif // _REFERENCECHAINS_H

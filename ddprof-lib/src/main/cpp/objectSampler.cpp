@@ -153,6 +153,12 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   }
 }
 
+void ObjectSampler::resetSession() {
+  _record_allocations = false;
+  _record_liveness = false;
+  _gc_generations = false;
+}
+
 Error ObjectSampler::check(Arguments &args) {
   if (!VM::canSampleObjects()) {
     return Error("Allocation Sampling is not supported on this JVM");
@@ -182,11 +188,16 @@ Error ObjectSampler::start(Arguments &args) {
     return error;
   }
   if (_interval > 0) {
-    if (_record_liveness || _gc_generations) {
-      error = LivenessTracker::instance()->start(args);
-      if (error) {
-        return error;
-      }
+    // LivenessTracker is started unconditionally (below) so it picks up this
+    // recording's flags instead of keeping the previous recording's.
+    // It must finish before callbacks are enabled: initialize_table()
+    // publishes _table_cap before _table is allocated.
+    _alloc_event_count = 0;
+    error = LivenessTracker::instance()->start(args);
+    if (error) {
+      resetSession();
+      LivenessTracker::instance()->resetSession();
+      return error;
     }
 
     jvmtiEnv *jvmti = VM::jvmti();
@@ -194,13 +205,10 @@ Error ObjectSampler::start(Arguments &args) {
     // used by one JVMTI environment. Therefore, we can rely on the fact that if
     // this agent gets hold of the sample it will be its exclusive owner.
     jvmti->SetHeapSamplingInterval(_interval);
+    __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
     jvmti->SetEventNotificationMode(JVMTI_ENABLE,
                                     JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
     __atomic_store_n(&_active, true, __ATOMIC_RELEASE);
-    __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
-    // need to reset the running sum in order for 'updateConfiguration' to be
-    // able to generate proper diffs
-    _alloc_event_count = 0;
   }
 
   return Error::OK;
@@ -212,9 +220,8 @@ void ObjectSampler::stop() {
   jvmti->SetEventNotificationMode(JVMTI_DISABLE,
                                   JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
 
-  if (_record_liveness || _gc_generations) {
-    LivenessTracker::instance()->stop();
-  }
+  // No-op when the tracker is not enabled.
+  LivenessTracker::instance()->stop();
 }
 
 Error ObjectSampler::updateConfiguration(u64 events, double time_coefficient) {
