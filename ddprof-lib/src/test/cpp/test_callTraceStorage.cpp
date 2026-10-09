@@ -698,14 +698,30 @@ TEST_F(CallTraceStorageTest, UseAfterFreeInProcessTraces) {
  * After the fix: the hasNext() guard breaks the loop and the call returns,
  * silently dropping the trace that could not be inserted.
  *
+ * The table is seeded with a small capacity: the bug depends only on the table
+ * being full, and filling a 65536-slot table, then probing all of it for every
+ * extra insert, took close to the 10 s deadline under TSan on CI runners.
  */
+// Test-only accessor granting access to CallTraceHashTable::seedTableForTesting,
+// following the CallTraceHashTable::friend CallTraceHashTableTestAccessor;
+// convention used elsewhere in this codebase (e.g. ObjectSamplerTestAccessor,
+// ProfilerTestAccessor).
+class CallTraceHashTableTestAccessor {
+public:
+  static void seedTable(CallTraceHashTable* table, u32 slot_base, u32 capacity) {
+    table->seedTableForTesting(slot_base, capacity);
+  }
+};
+
 TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
-    static constexpr u32 INITIAL_CAPACITY = 65536;
+    static constexpr u32 CAPACITY = 1024;
+    static constexpr u32 EXTRA = 128;
 
     // Heap-allocated so the worker's shared_ptr copy keeps it alive if we detach
     // before the thread writes completed=true (avoids UAF on slow machines).
     auto completed = std::make_shared<std::atomic<bool>>(false);
-    std::thread worker([completed] {  // capture by value — shared ownership
+    auto dropped = std::make_shared<std::atomic<long long>>(0);
+    std::thread worker([completed, dropped] {  // capture by value — shared ownership
         void* mem = std::aligned_alloc(alignof(CallTraceHashTable), sizeof(CallTraceHashTable));
         if (mem == nullptr) {
             completed->store(true);  // Let the join path handle this; EXPECT below will report.
@@ -716,12 +732,14 @@ TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
             new (mem) CallTraceHashTable(),
             [](CallTraceHashTable* p) { p->~CallTraceHashTable(); std::free(p); });
         tbl->setInstanceId(1);
+        CallTraceHashTableTestAccessor::seedTable(tbl.get(), 0, CAPACITY);
+        const long long dropped_before = Counters::getCounter(CALLTRACE_STORAGE_DROPPED);
 
         // Each iteration uses a distinct (bci, method_id) pair so calcHash produces
-        // a distinct hash, filling INITIAL_CAPACITY unique slots.  Iterations past
+        // a distinct hash, filling CAPACITY unique slots.  Iterations past
         // that point find no empty slot and must exit the probe via the hasNext()
         // guard rather than cycling forever.
-        for (u32 i = 0; i < INITIAL_CAPACITY + 128; ++i) {
+        for (u32 i = 0; i < CAPACITY + EXTRA; ++i) {
             // Stack-allocate source trace; putWithExistingId copies the payload.
             alignas(alignof(CallTrace)) char buf[sizeof(CallTrace)];
             CallTrace* src = new (buf) CallTrace(false, 1, static_cast<u64>(i) + 1);
@@ -730,6 +748,7 @@ TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
             tbl->putWithExistingId(src, 1);
         }
 
+        dropped->store(Counters::getCounter(CALLTRACE_STORAGE_DROPPED) - dropped_before);
         completed->store(true);
     });
 
@@ -748,6 +767,9 @@ TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
     EXPECT_TRUE(ok)
         << "putWithExistingId infinite-loop regression: did not terminate within 10 s "
            "when the scratch table was full";
+    // The table really filled up: inserts beyond its capacity took the
+    // give-up path the regression is about.
+    EXPECT_GT(dropped->load(), 0);
 }
 
 /**
@@ -940,17 +962,6 @@ std::unique_ptr<CallTraceHashTable, void(*)(CallTraceHashTable*)> makeHeapCallTr
         });
 }
 } // namespace
-
-// Test-only accessor granting access to CallTraceHashTable::seedTableForTesting,
-// following the CallTraceHashTable::friend CallTraceHashTableTestAccessor;
-// convention used elsewhere in this codebase (e.g. ObjectSamplerTestAccessor,
-// ProfilerTestAccessor).
-class CallTraceHashTableTestAccessor {
-public:
-  static void seedTable(CallTraceHashTable* table, u32 slot_base, u32 capacity) {
-    table->seedTableForTesting(slot_base, capacity);
-  }
-};
 
 // Test-only accessor granting access to CallTraceHashTable's private
 // nextGenerationCapacity()/wouldExceedSlotIdRange() helpers, following the
