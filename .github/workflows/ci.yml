@@ -60,12 +60,17 @@ jobs:
           bash -n \
             .gitlab/scripts/build.sh \
             .gitlab/scripts/check-abi-floor.sh \
+            .gitlab/scripts/check-release-flags.sh \
             .gitlab/scripts/tests/check_abi_floor_test.sh \
+            .gitlab/scripts/tests/check_release_flags_test.sh \
             .gitlab/scripts/tests/includes_test.sh
           shellcheck \
             .gitlab/scripts/check-abi-floor.sh \
-            .gitlab/scripts/tests/check_abi_floor_test.sh
+            .gitlab/scripts/check-release-flags.sh \
+            .gitlab/scripts/tests/check_abi_floor_test.sh \
+            .gitlab/scripts/tests/check_release_flags_test.sh
           bash .gitlab/scripts/tests/check_abi_floor_test.sh
+          bash .gitlab/scripts/tests/check_release_flags_test.sh
           bash .gitlab/scripts/tests/includes_test.sh
 
   # Fails when a quarantine entry is malformed, ticketless, or past its
