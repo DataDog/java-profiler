@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk11
 
 ## glibc-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-10-09 03:59:19 EDT
+**Date:** 2026-10-09 05:44:47 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 588 |
-| Sample Rate | 9.80/sec |
-| Health Score | 612% |
+| CPU Samples | 577 |
+| Sample Rate | 9.62/sec |
+| Health Score | 601% |
 | Threads | 8 |
 | Allocations | 383 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 826 |
-| Sample Rate | 13.77/sec |
-| Health Score | 861% |
-| Threads | 10 |
-| Allocations | 462 |
+| CPU Samples | 687 |
+| Sample Rate | 11.45/sec |
+| Health Score | 716% |
+| Threads | 8 |
+| Allocations | 496 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 17-17 cores)</summary>
 
 ```
-1791532515 17
-1791532520 17
-1791532525 17
-1791532530 17
-1791532535 17
-1791532540 17
-1791532545 17
-1791532550 17
-1791532555 17
-1791532560 17
-1791532565 17
-1791532570 17
-1791532575 17
-1791532580 17
-1791532585 17
-1791532590 17
-1791532595 17
-1791532600 17
-1791532605 17
-1791532610 17
+1791538737 17
+1791538742 17
+1791538747 17
+1791538752 17
+1791538757 17
+1791538762 17
+1791538767 17
+1791538772 17
+1791538777 17
+1791538782 17
+1791538787 17
+1791538792 17
+1791538797 17
+1791538802 17
+1791538807 17
+1791538812 17
+1791538817 17
+1791538822 17
+1791538827 17
+1791538832 17
 ```
 </details>
 
