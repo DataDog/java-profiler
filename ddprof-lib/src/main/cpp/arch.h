@@ -52,6 +52,12 @@ static inline long long atomicIncRelaxed(volatile T &var,
     return __atomic_fetch_add(&var, increment, __ATOMIC_RELAXED);
 }
 
+// Atomically replaces var with value and returns the previous value (relaxed).
+template <typename T>
+static inline T atomicExchangeRelaxed(volatile T &var, T value) {
+    return __atomic_exchange_n(&var, value, __ATOMIC_RELAXED);
+}
+
 // Atomic load/store (unordered)
 template <typename T>
 static inline T load(volatile T& var) {

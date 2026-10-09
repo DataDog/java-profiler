@@ -31,6 +31,7 @@
 #include "objectSampler.h"
 #include "os.h"
 #include "perfEvents.h"
+#include "referenceChains.h"
 #include "safeAccess.h"
 #include "samplerPerf.h"
 #include "stackFrame.h"
@@ -98,6 +99,14 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   }
   if (thread != NULL) {
     updateThreadName(jvmti, jni, thread, true);
+    if (_reference_chains_active) {
+      // Register this thread's live java.lang.Thread object so a leak
+      // candidate whose tid belongs to a thread started after recording
+      // start still has a _thread_objects entry for
+      // walkCandidateThreadLocals() to walk (see referenceChains.h's
+      // _thread_objects comment).
+      ReferenceChainTracker::instance()->registerThreadObject(jni, tid, thread);
+    }
   }
 
   _cpu_engine->registerThread(tid);
@@ -122,6 +131,13 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     }
 
     updateThreadName(jvmti, jni, thread, false);
+    if (_reference_chains_active) {
+      // Queue this thread's global ref for deferred deletion so a dead
+      // thread's ref doesn't pin the Thread object or anchor a reused tid
+      // (see referenceChains.h's _thread_objects/_thread_refs_pending_delete
+      // comments).
+      ReferenceChainTracker::instance()->unregisterThreadObject(jni, tid);
+    }
     // Block profiling signals around engine unregistration + TLS release to
     // close the window where a wall-clock/CPU signal could sample a
     // partially-torn-down thread (PROF-14674).
@@ -144,6 +160,9 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
   updateThreadName(jvmti, jni, thread, false);
   _thread_filter.unregisterThreadByTid(tid);
+  if (_reference_chains_active) {
+    ReferenceChainTracker::instance()->unregisterThreadObject(jni, tid);
+  }
   _cpu_engine->unregisterThread(tid);
   _wall_engine->unregisterThread(tid);
   LivenessTracker::instance()->releaseThreadLocalState();
@@ -1504,26 +1523,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     _total_samples = 0;
     memset(_failures, 0, sizeof(_failures));
 
-    // Reset dictionaries. StringDictionary::clearAll() manages its own
-    // synchronisation (RefCountGuard drain) internally; _class_map_lock is
-    // held exclusively here for the duration of the reset.
-    {
-      ExclusiveLockGuard guard(&_class_map_lock);
-      _class_map.clearAll();
-    }
-    _string_label_map.clearAll();
-    _context_value_map.clearAll();
-    // Signal the Java layer that context-value encodings have been reassigned so it can drop its
-    // process-wide ContextValueCache (consumed in JavaProfiler.execute after this start returns).
-    _context_value_dict_reset.store(true, std::memory_order_release);
-
-    // Reset call trace storage
-    if (!_omit_stacktraces) {
-      lockAll();
-      _call_trace_storage.clear();
-      unlockAll();
-    }
-    Counters::reset();
+    resetRecordingState();
     WallClockCounters::reset();
 
     // Reset thread names and IDs
@@ -1723,6 +1723,22 @@ Error Profiler::start(Arguments &args, bool reset) {
       }
     }
   }
+  if ((activated & EM_ALLOC) && args._reference_chains) {
+    // Reference-chain tracking chases LivenessTracker's leak-tagged
+    // candidates, so it only runs when allocation sampling actually
+    // activated. Must run AFTER ObjectSampler::start() ->
+    // LivenessTracker::start() (ordering noted in referenceChains.cpp) -
+    // the block above is that ordering point.
+    error = ReferenceChainTracker::instance()->start(args);
+    if (error) {
+      Log::warn("%s", error.message());
+      error = Error::OK; // recoverable - recording continues without chains
+    } else {
+      ReferenceChainTracker::instance()->startThread();
+      // Pre-existing threads are registered below, once thread events are on.
+      _reference_chains_active = true;
+    }
+  }
   if (_event_mask & EM_NATIVEMEM) {
     error = malloc_tracer.start(args);
     if (error) {
@@ -1763,6 +1779,18 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
+
+    if (_reference_chains_active) {
+      // Pre-existing threads must be registered from the profiler lifecycle
+      // (registerExistingThreads()'s own comment): onThreadStart() only sees
+      // threads started after the recording began. Runs after thread events
+      // are enabled so a thread started after the GetAllThreads() snapshot is
+      // registered by onThreadStart() and a snapshot thread that exits is
+      // unregistered by onThreadEnd(); a thread seen by both is re-registered
+      // under the same tid, which registerThreadObject() handles.
+      ReferenceChainTracker::instance()->registerExistingThreads(VM::jvmti(),
+                                                                 VM::jni());
+    }
 
     // Initialize this thread
     // Note: passing all nullptrs results in not able to resolve the thread name here.
@@ -1826,6 +1854,46 @@ Error Profiler::stop() {
   // must not have stop() called on it since it never ran.
   if (_activated_mask & EM_ALLOC)
     _alloc_engine->stop();
+  if (_reference_chains_active) {
+    // Cleared first so new onThreadStart()/onThreadEnd() calls skip the
+    // thread-object registry; a call that already read the flag is handled
+    // by releaseAllThreadObjects() closing the registry.
+    _reference_chains_active = false;
+    // Join the BFS thread and clear the recording-boundary state before the
+    // rest of the teardown (stopThread() wakes and joins; stop() resets the
+    // per-recording caches). Matches the Profiler::stop() order documented
+    // in referenceChains.cpp's stopThread()/stop() comments.
+    ReferenceChainTracker::instance()->stopThread();
+    // Write the tracker's still-undrained events into the final chunk before stop() clears
+    // the queues - otherwise abandonment events queued since the last dump() are dropped for
+    // good, and the final chunk's live-object/leak-tag events (written by
+    // LivenessTracker::stop() via _alloc_engine->stop() above) have no ReferenceChain events
+    // to match. Same writer shape as dump(): per-lock lock, drain, record, unlock; runs after
+    // SignalInflight::drain() so no signal-path writer can contend, and the BFS thread is
+    // already joined by stopThread() above so no new events can appear mid-drain.
+    {
+      int dump_tid = ProfiledThread::currentTid();
+      u32 lock_index = getLockIndex(dump_tid >= 0 ? dump_tid : 0);
+      _locks[lock_index].lock();
+      std::vector<ReferenceChainEvent> chain_events;
+      ReferenceChainTracker::instance()->drainPendingChainEvents(&chain_events);
+      for (auto &event : chain_events) {
+        _jfr.recordReferenceChain(lock_index, &event);
+      }
+      std::vector<ReferenceChainAbandonedEvent> abandoned_events;
+      ReferenceChainTracker::instance()->drainPendingAbandonedEvents(
+          &abandoned_events);
+      for (auto &event : abandoned_events) {
+        _jfr.recordReferenceChainAbandoned(lock_index, &event);
+      }
+      _locks[lock_index].unlock();
+    }
+    ReferenceChainTracker::instance()->stop();
+    // BFS thread is joined by stopThread() above, so no walk can be holding a
+    // copied ref: every registered/pending Thread global ref can be deleted
+    // now instead of leaking until (and across) the next recording.
+    ReferenceChainTracker::instance()->releaseAllThreadObjects(VM::jni());
+  }
   if (_activated_mask & EM_NATIVEMEM)
     malloc_tracer.stop();
   // Stop the refresher BEFORE socket unpatch: the refresher calls
@@ -1990,6 +2058,35 @@ Error Profiler::dump(const char *path, const int length) {
     // by the live objects
     LivenessTracker::instance()->flush(thread_ids);
 
+    // Emit the reference-chain tracker's pending events into this dumping
+    // chunk: chain events are snapshot-and-kept (re-emitted into every chunk
+    // while the sample stays live), abandonment events are a true drain.
+    // Runs before rotateDictsAndRun() so the events land inside the chunk
+    // being written, and under a profiler lock like every other
+    // recording-buffer writer (dump runs on a normal thread holding only
+    // _state_lock; the _state_lock -> _locks order is the codebase's).
+    if (_reference_chains_active) {
+      // Guarded so a recording that did not activate reference chains (flag
+      // off, or allocation sampling off) never re-emits a prior recording's
+      // cached chains/abandonments; stop() also clears both queues, so this
+      // is a belt-and-braces check against emitting a stale cache.
+      int dump_tid = ProfiledThread::currentTid();
+      u32 lock_index = getLockIndex(dump_tid >= 0 ? dump_tid : 0);
+      _locks[lock_index].lock();
+      std::vector<ReferenceChainEvent> chain_events;
+      ReferenceChainTracker::instance()->drainPendingChainEvents(&chain_events);
+      for (auto &event : chain_events) {
+        _jfr.recordReferenceChain(lock_index, &event);
+      }
+      std::vector<ReferenceChainAbandonedEvent> abandoned_events;
+      ReferenceChainTracker::instance()->drainPendingAbandonedEvents(
+          &abandoned_events);
+      for (auto &event : abandoned_events) {
+        _jfr.recordReferenceChainAbandoned(lock_index, &event);
+      }
+      _locks[lock_index].unlock();
+    }
+
     Libraries::instance()->refresh();
     updateJavaThreadNames();
     updateNativeThreadNames();
@@ -2132,6 +2229,57 @@ void Profiler::shutdown(Arguments &args) {
   }
 
   _state.store(TERMINATED, std::memory_order_release);
+}
+
+int Profiler::resetRecordingState() {
+  // StringDictionary::clearAll() manages its own synchronisation (RefCountGuard
+  // drain) internally; no external lock is needed.  A dictionary whose drain
+  // times out is left unchanged rather than reset under an accessor that may
+  // still be using it; it stays consistent and keeps its ids.
+  bool class_map_reset = _class_map.clearAll();
+  bool string_label_map_reset = _string_label_map.clearAll();
+  bool context_value_map_reset = _context_value_map.clearAll();
+  if (context_value_map_reset) {
+    // Signal the Java layer that context-value encodings have been reassigned so it can drop its
+    // process-wide ContextValueCache (consumed in JavaProfiler.execute after this start returns).
+    _context_value_dict_reset.store(true, std::memory_order_release);
+  }
+
+  if (!_omit_stacktraces) {
+    lockAll();
+    _call_trace_storage.clear();
+    unlockAll();
+  }
+
+  Counters::reset();
+  // Counters::reset() zeroes the dictionary memory gauges, but the dictionaries
+  // keep their root tables and first arena chunks, and all of their storage if
+  // a reset was skipped; without this, freeing that storage later would drive
+  // the gauges negative.
+  _class_map.reseedCounters();
+  _string_label_map.reseedCounters();
+  _context_value_map.reseedCounters();
+
+  // Reported only now, so Counters::reset() cannot erase the timeouts.
+  int failed = 0;
+  if (!class_map_reset) {
+    reportDrainTimeout("Class map not reset");
+    failed++;
+  }
+  if (!string_label_map_reset) {
+    reportDrainTimeout("String label map not reset");
+    failed++;
+  }
+  if (!context_value_map_reset) {
+    reportDrainTimeout("Context value map not reset");
+    failed++;
+  }
+  return failed;
+}
+
+void Profiler::reportDrainTimeout(const char *what) {
+  Counters::increment(DICTIONARY_DRAIN_TIMEOUTS);
+  Log::warn("%s: still in use after drain timeout", what);
 }
 
 int Profiler::lookupClass(const char *key, size_t length) {

@@ -77,6 +77,7 @@ class StringArena {
     Chunk*              _first;            // head of chain; kept across resets
     std::atomic<Chunk*> _active;           // current allocation target
     std::atomic<bool>   _growing{false};   // serialises new-chunk creation
+    std::atomic<int>    _extra_chunks{0};  // chunks linked after _first
     int                 _counter_offset{0};// 0 = no DICTIONARY_BYTES tracking
     bool                _oom_logged{false};// latched per generation; cleared by reset()
 
@@ -126,6 +127,7 @@ class StringArena {
         _active.store(fresh, std::memory_order_release);
         if (fresh) {
             full->next = fresh;            // link into chain for reset() traversal
+            _extra_chunks.fetch_add(1, std::memory_order_relaxed);
             countChunkAlloc();
         } else {
             // Make the failure observable in production logs.  Latched per
@@ -198,8 +200,17 @@ public:
             __atomic_store_n(&_first->pos, (size_t)0, __ATOMIC_RELAXED);
         }
         _active.store(_first, std::memory_order_release);
+        _extra_chunks.store(0, std::memory_order_relaxed);
         countChunkFree(freed);
         _oom_logged = false;
+    }
+
+    // Re-adds every live chunk to DICTIONARY_BYTES, for use after a global
+    // Counters::reset() zeroed the gauge while the chunks stayed allocated.
+    void reseedCounters() {
+        if (_counter_offset == 0) return;
+        int chunks = (_first != nullptr ? 1 : 0) + _extra_chunks.load(std::memory_order_relaxed);
+        Counters::increment(DICTIONARY_BYTES, (long long)chunks * (long long)sizeof(Chunk), _counter_offset);
     }
 };
 
@@ -226,6 +237,7 @@ private:
     SBTable*           _table;
     std::atomic<int>   _size{0};
     StringArena        _arena;
+    std::atomic<int>   _overflow_nodes{0};  // overflow SBTables linked below _table
     int                _counter_offset{0};  // 0 = no page/byte tracking
 
     static unsigned int hash(const char* key, size_t length) {
@@ -391,6 +403,7 @@ public:
                     free(nt);
                 } else {
                     NativeMem::record(NM_DICTIONARY, (long long)sizeof(SBTable));
+                    _overflow_nodes.fetch_add(1, std::memory_order_relaxed);
                     if (_counter_offset != 0) {
                         Counters::increment(DICTIONARY_PAGES, 1, _counter_offset);
                         Counters::increment(DICTIONARY_BYTES, (long long)sizeof(SBTable), _counter_offset);
@@ -425,10 +438,24 @@ public:
         memset(_table, 0, sizeof(SBTable));
         _arena.reset();
         _size.store(0, std::memory_order_relaxed);
+        _overflow_nodes.store(0, std::memory_order_relaxed);
         if (_counter_offset != 0 && freed > 0) {
             Counters::decrement(DICTIONARY_PAGES, freed, _counter_offset);
             Counters::decrement(DICTIONARY_BYTES, (long long)(freed * sizeof(SBTable)), _counter_offset);
         }
+    }
+
+    // Re-adds the root table, overflow tables and arena chunks to
+    // DICTIONARY_PAGES / DICTIONARY_BYTES, for use after a global
+    // Counters::reset() zeroed the gauges while the storage stayed allocated.
+    void reseedCounters() {
+        if (_counter_offset == 0) return;
+        if (_table != nullptr) {
+            int tables = 1 + _overflow_nodes.load(std::memory_order_relaxed);
+            Counters::increment(DICTIONARY_PAGES, tables, _counter_offset);
+            Counters::increment(DICTIONARY_BYTES, (long long)tables * (long long)sizeof(SBTable), _counter_offset);
+        }
+        _arena.reseedCounters();
     }
 
     int size() const { return _size.load(std::memory_order_relaxed); }
@@ -458,13 +485,18 @@ public:
 //
 //   _accepting gates new guard creation during clearAll().  A thread that
 //   passed the outer acquire-load check before clearAll() sets _accepting=false
-//   may create its guard after waitForAllRefCountsToClear() returns, missing
+//   may create its guard after clearAll()'s drain returns, missing
 //   the drain.  A seq_cst recheck inside the guard scope catches this TOCTOU
 //   window: the thread sees _accepting=false and returns 0 before touching any
 //   buffer data (overflow nodes or arena chunks that clearAll() is freeing).
 class StringDictionary {
     std::atomic<u32>  _next_id{1};      // starts at 1; id=0 reserved as "no entry"
     std::atomic<bool> _accepting{true}; // false while clearAll() is resetting buffers
+    // Bumped by clearAll() only. Lets a cache keyed by ids from this
+    // dictionary (e.g. ReferenceChainTracker::_class_tags, referenceChains.h)
+    // detect "the id namespace was wiped out from under me" and invalidate
+    // itself, rather than assuming ids stay valid across a clearAll().
+    std::atomic<u64>  _generation{0};
     StringDictionaryBuffer _a, _b, _c;
     TripleBufferRotator<StringDictionaryBuffer> _rot;
     int _counter_offset;  // offset into DICTIONARY_KEYS / DICTIONARY_KEYS_BYTES counter rows
@@ -494,6 +526,26 @@ public:
             _c.initCounters(counter_offset);
         }
     }
+
+    // Current id-namespace generation; see _generation's own comment.
+    u64 generation() const { return _generation.load(std::memory_order_acquire); }
+
+    // Re-adds the storage of all three buffers to the DICTIONARY_PAGES /
+    // DICTIONARY_BYTES gauges.  Call right after a global Counters::reset(),
+    // which zeroes them although the buffers keep their root tables and first
+    // arena chunks - and all of their storage if clearAll() was skipped.
+    // Storage added between the reset and this call is counted twice; the
+    // window is a few instructions and the gauges are diagnostic only.
+    void reseedCounters() {
+        if (_counter_offset == 0) return;
+        _a.reseedCounters();
+        _b.reseedCounters();
+        _c.reseedCounters();
+    }
+
+    // Entry count of the active buffer - the count bounded_lookup() checks size_limit against.
+    // Needs no RefCountGuard: _a/_b/_c are members, never freed.
+    int activeSize() const { return _rot.active()->size(); }
 
     // Insert into active buffer; returns globally stable id.  NOT signal-safe.
     u32 lookup(const char* key, size_t len) {
@@ -620,28 +672,57 @@ public:
         }
     }
 
-    // Clear the scratch buffer (two rotations behind active; safe to clear).
-    // Resets per-dump counters to 0 so they track only post-clearStandby inserts.
-    void clearStandby() {
-        _rot.clearTarget()->clear();
+    // Clear the scratch buffer (two rotations behind active).
+    // An accessor whose guard on this buffer outlived rotate()'s drain may
+    // still be using it, so drain it first.  If the drain times out the clear
+    // is skipped; the buffer then becomes active on the next rotate() with its
+    // old entries, which is harmless because ids are never reassigned outside
+    // clearAll(), and it is cleared the next time it is the clear target.
+    // Returns false when the clear was skipped; the caller reports it.
+    //
+    // Either way DICTIONARY_KEYS / DICTIONARY_KEYS_BYTES restart at 0: they
+    // count keys newly assigned an id (lookup()/bounded_lookup()) since the
+    // last clearStandby(), not the entries a buffer holds - the copies made
+    // by rotate() are not counted either.
+    bool clearStandby() {
+        StringDictionaryBuffer* target = _rot.clearTarget();
+        void* const buffers[] = {target};
+        bool cleared = RefCountGuard::tryWaitForRefCountsToClear(buffers, 1);
+        if (cleared) {
+            target->clear();
+        }
         Counters::set(DICTIONARY_KEYS, 0, _counter_offset);
         Counters::set(DICTIONARY_KEYS_BYTES, 0, _counter_offset);
+        return cleared;
     }
 
     // Reset all three buffers and restart the ID counter.
     // _accepting=false gates new RefCountGuard creation; the subsequent drain
-    // ensures no concurrent accessor is mid-read when clear() zeroes the root
-    // table.  clear() is O(overflow_nodes + extra_arena_chunks); both are
+    // of this dictionary's buffers ensures no concurrent accessor is mid-read
+    // when clear() zeroes the root table and frees overflow nodes and arena
+    // chunks.  clear() is O(overflow_nodes + extra_arena_chunks); both are
     // typically zero for small-to-medium dictionaries.
-    void clearAll() {
+    //
+    // Returns false, leaving the dictionary unchanged, if an accessor still
+    // holds a guard when the drain times out; the caller reports it.  The reset is all-or-nothing:
+    // e.g. restarting _next_id without clearing the buffers would hand out ids
+    // that existing entries already use.  An unreset dictionary stays
+    // consistent - its ids remain valid and generation() is unchanged.
+    [[nodiscard]] bool clearAll() {
         _accepting.store(false, std::memory_order_seq_cst);
-        RefCountGuard::waitForAllRefCountsToClear();
+        void* const buffers[] = {&_a, &_b, &_c};
+        if (!RefCountGuard::tryWaitForRefCountsToClear(buffers, 3)) {
+            _accepting.store(true, std::memory_order_release);
+            return false;
+        }
         _a.clear(); _b.clear(); _c.clear();
         _rot.reset();
         _next_id.store(1, std::memory_order_relaxed);
         Counters::set(DICTIONARY_KEYS, 0, _counter_offset);
         Counters::set(DICTIONARY_KEYS_BYTES, 0, _counter_offset);
+        _generation.fetch_add(1, std::memory_order_release);
         _accepting.store(true, std::memory_order_release);
+        return true;
     }
 };
 

@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -540,6 +541,24 @@ bool ElfParser::parseFile(CodeCache* cc, const char* base, const char* file_name
 void ElfParser::parseProgramHeaders(CodeCache* cc, const char* base, const char* end, bool relocate_dyn) {
     ElfParser elf(cc, base, base, (size_t)(end - base), NULL, relocate_dyn);
     if (elf.validHeader() && base + elf._header->e_phoff < end) {
+        size_t phdrs_size = elf._header->e_phnum * sizeof(ElfProgramHeader);
+        if (elf._header->e_phentsize == sizeof(ElfProgramHeader)
+            && phdrs_size <= (size_t)(end - base) - elf._header->e_phoff) {
+            // base is where the lowest PT_LOAD starts, rounded down to a page.
+            const ElfProgramHeader* phdrs = (const ElfProgramHeader*)(base + elf._header->e_phoff);
+            uintptr_t min_vaddr = UINTPTR_MAX;
+            for (int i = 0; i < elf._header->e_phnum; i++) {
+                if (phdrs[i].p_type == PT_LOAD && phdrs[i].p_vaddr < min_vaddr) {
+                    min_vaddr = phdrs[i].p_vaddr;
+                }
+            }
+            if (min_vaddr != UINTPTR_MAX) {
+                uintptr_t load_bias = (uintptr_t)base - (min_vaddr & ~OS::page_mask);
+                // The image is loaded (the caller checked with UnloadProtection),
+                // so the fingerprint may read all of it, as parseDynamicSection() does.
+                cc->setImageFingerprint(Symbols::imageFingerprint(phdrs, elf._header->e_phnum, load_bias));
+            }
+        }
         cc->setTextBase(base);
         elf.calcVirtualLoadAddress();
         elf.parseDynamicSection();
@@ -1117,7 +1136,7 @@ static void collectSharedLibraries(std::unordered_map<u64, SharedLibrary>& libs,
             continue;
         }
 
-        u64 inode = u64(map.dev()) << 32 | map.inode();
+        u64 inode = CodeCache::makeFileId(map.dev(), map.inode());
         if (_parsed_inodes.find(inode) != _parsed_inodes.end()) {
             continue;  // shared object is already parsed
         }
@@ -1182,6 +1201,7 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
 
         SharedLibrary& lib = it.second;
         CodeCache* cc = new CodeCache(lib.file, array->count(), lib.map_start, lib.map_end, lib.image_base);
+        cc->setFileId(inode);
 
         if (strchr(lib.file, ':') != NULL) {
             // Do not try to parse pseudofiles like anon_inode:name, /memfd:name
@@ -1259,6 +1279,152 @@ UnloadProtection::~UnloadProtection() {
     if (_lib_handle != NULL) {
         dlclose(_lib_handle);
     }
+}
+
+static u64 fnv1a(const void* data, size_t size, u64 hash) {
+    for (size_t i = 0; i < size; i++) {
+        hash = (hash ^ ((const unsigned char*)data)[i]) * 1099511628211ULL;
+    }
+    return hash;
+}
+
+namespace {
+
+// A loaded ELF image, described by its program headers. Only the file-backed
+// parts of its PT_LOAD segments are known to be mapped.
+class LoadedImage {
+  private:
+    const ElfProgramHeader* _ph;
+    int _phnum;
+    uintptr_t _load_bias;
+
+  public:
+    LoadedImage(const ElfProgramHeader* ph, int phnum, uintptr_t load_bias)
+        : _ph(ph), _phnum(phnum), _load_bias(load_bias) {}
+
+    uintptr_t address(uintptr_t vaddr) const { return _load_bias + vaddr; }
+
+    // True if [addr, addr + size) lies inside the file-backed part of a PT_LOAD.
+    bool readable(uintptr_t addr, size_t size) const {
+        for (int i = 0; i < _phnum; i++) {
+            if (_ph[i].p_type != PT_LOAD) continue;
+            uintptr_t start = address(_ph[i].p_vaddr);
+            if (addr >= start && addr - start <= _ph[i].p_filesz
+                && size <= _ph[i].p_filesz - (addr - start)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    const ElfProgramHeader* find(uint32_t type) const {
+        for (int i = 0; i < _phnum; i++) {
+            if (_ph[i].p_type == type) return &_ph[i];
+        }
+        return NULL;
+    }
+
+    // A pointer from the dynamic section. glibc relocates them in place, musl
+    // and the vDSO do not; an unrelocated one is a vaddr below the image. The
+    // same test as ElfParser::dyn_ptr().
+    uintptr_t dynamicPointer(uintptr_t d_ptr) const {
+        uintptr_t min_vaddr = UINTPTR_MAX;
+        for (int i = 0; i < _phnum; i++) {
+            if (_ph[i].p_type == PT_LOAD && _ph[i].p_vaddr < min_vaddr) min_vaddr = _ph[i].p_vaddr;
+        }
+        return d_ptr < address(min_vaddr & ~OS::page_mask) ? address(d_ptr) : d_ptr;
+    }
+};
+
+// Hashes every relocation in rel (size bytes, entries relent apart) that names
+// a symbol: its offset, type and symbol index, and the symbol's name. Returns
+// false if a symbol or its name lies outside the readable image.
+bool hashSymbolRelocations(const LoadedImage& image, uintptr_t rel, size_t size, size_t relent,
+                           uintptr_t symtab, size_t syment, uintptr_t strtab, size_t strsz,
+                           u64& hash) {
+    for (size_t offs = 0; offs + sizeof(ElfRelocation) <= size; offs += relent) {
+        const ElfRelocation* r = (const ElfRelocation*)(rel + offs);
+        size_t index = ELF_R_SYM(r->r_info);
+        if (index == 0) continue;  // e.g. R_*_RELATIVE: no import
+        uintptr_t sym = symtab + index * syment;
+        if (!image.readable(sym, sizeof(ElfSymbol))) return false;
+        size_t name = ((const ElfSymbol*)sym)->st_name;
+        if (name >= strsz) return false;
+        const char* str = (const char*)(strtab + name);
+        hash = fnv1a(&r->r_offset, sizeof(r->r_offset), hash);
+        hash = fnv1a(&r->r_info, sizeof(r->r_info), hash);
+        // Including the terminating NUL keeps adjacent names apart.
+        hash = fnv1a(str, strnlen(str, strsz - name - 1) + 1, hash);
+    }
+    return true;
+}
+
+// Hashes the dynamic relocations that name a symbol, from DT_JMPREL and
+// DT_RELA/DT_REL: together they say which import each GOT slot holds.
+// Returns false if a table lies outside the readable image.
+bool hashImportLayout(const LoadedImage& image, u64& hash) {
+    const ElfProgramHeader* dynamic = image.find(PT_DYNAMIC);
+    if (dynamic == NULL) return true;  // nothing is imported
+    uintptr_t dyn_start = image.address(dynamic->p_vaddr);
+    if (!image.readable(dyn_start, dynamic->p_filesz)) return false;
+
+    uintptr_t symtab = 0, strtab = 0, jmprel = 0, rel = 0;
+    size_t syment = 0, strsz = 0, pltrelsz = 0, relsz = 0, relent = 0, relcount = 0;
+    size_t count = dynamic->p_filesz / sizeof(ElfDyn);
+    for (const ElfDyn* dyn = (const ElfDyn*)dyn_start; count-- > 0 && dyn->d_tag != DT_NULL; dyn++) {
+        switch (dyn->d_tag) {
+            case DT_SYMTAB:    symtab = image.dynamicPointer(dyn->d_un.d_ptr); break;
+            case DT_STRTAB:    strtab = image.dynamicPointer(dyn->d_un.d_ptr); break;
+            case DT_JMPREL:    jmprel = image.dynamicPointer(dyn->d_un.d_ptr); break;
+            case DT_RELA:
+            case DT_REL:       rel = image.dynamicPointer(dyn->d_un.d_ptr); break;
+            case DT_SYMENT:    syment = dyn->d_un.d_val; break;
+            case DT_STRSZ:     strsz = dyn->d_un.d_val; break;
+            case DT_PLTRELSZ:  pltrelsz = dyn->d_un.d_val; break;
+            case DT_RELASZ:
+            case DT_RELSZ:     relsz = dyn->d_un.d_val; break;
+            case DT_RELAENT:
+            case DT_RELENT:    relent = dyn->d_un.d_val; break;
+            case DT_RELACOUNT:
+            case DT_RELCOUNT:  relcount = dyn->d_un.d_val; break;
+        }
+    }
+    // ElfParser::parseDynamicSection() records no imports without these.
+    if (symtab == 0 || strtab == 0 || syment == 0 || relent < sizeof(ElfRelocation)) return true;
+    if (strsz == 0 || !image.readable(strtab, strsz)) return false;
+
+    if (jmprel != 0 && pltrelsz != 0) {
+        if (!image.readable(jmprel, pltrelsz)
+            || !hashSymbolRelocations(image, jmprel, pltrelsz, relent, symtab, syment, strtab, strsz, hash)) {
+            return false;
+        }
+    }
+    if (rel != 0 && relsz != 0) {
+        if (!image.readable(rel, relsz)) return false;
+        // The leading DT_RELACOUNT entries are relative relocations, without a symbol.
+        size_t skip = relcount * relent < relsz ? relcount * relent : relsz;
+        if (!hashSymbolRelocations(image, rel + skip, relsz - skip, relent, symtab, syment, strtab, strsz, hash)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+u64 Symbols::imageFingerprint(const void* phdrs, int phnum, uintptr_t load_bias) {
+    const ElfProgramHeader* ph = (const ElfProgramHeader*)phdrs;
+    LoadedImage image(ph, phnum, load_bias);
+    u64 hash = fnv1a(ph, phnum * sizeof(ElfProgramHeader), 14695981039346656037ULL);
+    for (int i = 0; i < phnum; i++) {
+        if (ph[i].p_type != PT_NOTE) continue;
+        uintptr_t start = image.address(ph[i].p_vaddr);
+        if (image.readable(start, ph[i].p_filesz)) {
+            hash = fnv1a((const void*)start, ph[i].p_filesz, hash);
+        }
+    }
+    if (!hashImportLayout(image, hash)) return 0;
+    return hash != 0 ? hash : 1;
 }
 
 void Symbols::initLibraryRanges() {

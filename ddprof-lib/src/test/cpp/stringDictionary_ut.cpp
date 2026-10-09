@@ -5,8 +5,11 @@
 
 #include <gtest/gtest.h>
 #include "stringDictionary.h"
+#include "counters.h"
 #include "nativeMem.h"
+#include "profiler.h"
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -281,7 +284,7 @@ TEST_F(StringDictionaryTest, ClearAllResetsEverything) {
     u32 id = dict.lookup("x", 1);
     (void)id;
     dict.rotate();
-    dict.clearAll();
+    ASSERT_TRUE(dict.clearAll());
     EXPECT_EQ(0u, dict.bounded_lookup("x", 1));
     dict.rotate();
     std::map<u32, const char*> snap;
@@ -343,4 +346,235 @@ TEST_F(StringDictionaryTest, LookupDuringDumpWithSizeLimitRejectsNewKeyAtCapacit
     // capacity (dump/active hits are checked before the capacity check).
     u32 id0 = dict.lookupDuringDump("dump_cap_0", 10, size_limit);
     EXPECT_GT(id0, 0u);
+}
+
+// ── Reclamation while a guarded accessor is still active (PROF-16136) ─────
+//
+// A dictionary reset must never free or reset buffer storage that a guarded
+// accessor is still using, even when the reference drain gives up waiting.
+// The holder thread below stands in for an accessor that published its
+// RefCountGuard, passed the _accepting recheck, obtained a key pointer and was
+// then delayed.  The key is chosen from a non-first arena chunk, which clear()
+// frees (the first chunk is only rewound), so the stale read is a
+// heap-use-after-free that ASan reports.
+
+namespace {
+
+// Enough keys to spill past the first 512 KiB arena chunk.
+constexpr int kSpillKeys = 50000;
+
+void fillPastFirstArenaChunk(StringDictionary& dict) {
+    for (int i = 0; i < kSpillKeys; i++) {
+        char key[32];
+        int len = snprintf(key, sizeof(key), "string_key_%d", i);
+        ASSERT_GT(dict.lookup(key, (size_t)len), 0u);
+    }
+}
+
+// Holds a RefCountGuard on buf while keeping a pointer to the last inserted
+// key, then re-reads that key once released.
+class GuardedKeyHolder {
+public:
+    explicit GuardedKeyHolder(StringDictionaryBuffer* buf) : _buf(buf), _thread([this] { run(); }) {
+        while (!_ready.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+    }
+
+    ~GuardedKeyHolder() {
+        release();
+        _thread.join();
+    }
+
+    // Lets the holder re-read its key and drop the guard; waits until it has.
+    void release() {
+        _release.store(true, std::memory_order_release);
+        while (!_done.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+    }
+
+    const std::string& expected() const { return _expected; }
+    const std::string& observed() const { return _observed; }
+
+private:
+    void run() {
+        RefCountGuard guard(_buf);
+        char key[32];
+        snprintf(key, sizeof(key), "string_key_%d", kSpillKeys - 1);
+        _expected = key;
+        std::map<u32, const char*> entries;
+        _buf->collect(entries);
+        const char* held = nullptr;
+        for (auto& kv : entries) {
+            if (strcmp(kv.second, key) == 0) { held = kv.second; break; }
+        }
+        _ready.store(true, std::memory_order_release);
+        while (!_release.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        // Stale read under the bug: the arena chunk holding this key was freed.
+        _observed = held != nullptr ? std::string(held) : std::string();
+        _done.store(true, std::memory_order_release);
+    }
+
+    StringDictionaryBuffer* _buf;
+    std::string _expected;
+    std::string _observed;
+    std::atomic<bool> _ready{false};
+    std::atomic<bool> _release{false};
+    std::atomic<bool> _done{false};
+    std::thread _thread;
+};
+
+} // namespace
+
+// clearAll() must leave every buffer intact when the drain times out with a
+// guard still held, and must reset normally once the guard is gone.
+TEST(StringDictionaryReclamationTest, ClearAllKeepsStorageWhileGuardHeld) {
+    StringDictionary dict;
+    fillPastFirstArenaChunk(dict);
+    dict.rotate();  // the filled buffer becomes the dump buffer; its keys stay put
+    StringDictionaryBuffer* held_buf = dict.standby();
+    const int held_size = held_buf->size();
+    const u32 known_id = dict.bounded_lookup("string_key_0", 12);
+    ASSERT_GT(known_id, 0u);
+    const u64 gen_before = dict.generation();
+
+    {
+        GuardedKeyHolder holder(held_buf);
+
+        EXPECT_FALSE(dict.clearAll());  // the drain must time out: the holder never lets go
+
+        EXPECT_EQ(gen_before, dict.generation()) << "id namespace reset under an active guard";
+        EXPECT_EQ(held_size, held_buf->size()) << "guarded buffer was cleared";
+        EXPECT_EQ(known_id, dict.bounded_lookup("string_key_0", 12));
+
+        holder.release();
+        EXPECT_EQ(holder.expected(), holder.observed());
+    }
+
+    ASSERT_TRUE(dict.clearAll());
+    EXPECT_EQ(gen_before + 1, dict.generation());
+    EXPECT_EQ(0, held_buf->size());
+    EXPECT_EQ(0u, dict.bounded_lookup("string_key_0", 12));
+}
+
+// clearAll() drains only its own buffers.  Profiler::start() resets three
+// dictionaries back to back while JNI callers keep using the other two; a
+// guard held on a different dictionary must neither fail nor delay the reset.
+TEST(StringDictionaryReclamationTest, ClearAllIgnoresGuardsOnOtherDictionaries) {
+    StringDictionary dict;
+    StringDictionary other;
+    ASSERT_GT(dict.lookup("mine", 4), 0u);
+    fillPastFirstArenaChunk(other);
+    other.rotate();
+    const u64 gen_before = dict.generation();
+
+    GuardedKeyHolder holder(other.standby());
+    auto start = std::chrono::steady_clock::now();
+    EXPECT_TRUE(dict.clearAll());
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(100));
+    EXPECT_EQ(gen_before + 1, dict.generation());
+    EXPECT_EQ(0u, dict.bounded_lookup("mine", 4));
+}
+
+// clearStandby() must not clear a buffer that a guard still references.  This
+// is the rotation-side variant: an accessor whose guard on the active buffer
+// outlived rotate()'s drain is still using that buffer two rotations later,
+// when it comes up as the clear target.  The guard is taken after the first
+// rotate() so that drain is not exercised here; the scanner sees the same
+// slot state either way.
+TEST(StringDictionaryReclamationTest, ClearStandbyKeepsBufferWhileGuardHeld) {
+    StringDictionary dict;
+    fillPastFirstArenaChunk(dict);
+    dict.rotate();
+    dict.clearStandby();
+    StringDictionaryBuffer* held_buf = dict.standby();
+    const int held_size = held_buf->size();
+
+    {
+        GuardedKeyHolder holder(held_buf);
+
+        dict.rotate();
+        EXPECT_FALSE(dict.clearStandby());  // held_buf is now the clear target
+
+        EXPECT_EQ(held_size, held_buf->size()) << "guarded buffer was cleared";
+
+        holder.release();
+        EXPECT_EQ(holder.expected(), holder.observed());
+    }
+
+    // The uncleared buffer becomes active on the next rotate() and keeps its
+    // entries, which is harmless because ids are never reassigned outside
+    // clearAll().  With the guard gone it is cleared normally the next time it
+    // comes up as the clear target, three cycles later.
+    u32 id = dict.bounded_lookup("string_key_0", 12);
+    EXPECT_GT(id, 0u);
+    for (int cycle = 0; cycle < 3; cycle++) {
+        dict.rotate();
+        EXPECT_TRUE(dict.clearStandby());
+        EXPECT_EQ(id, dict.bounded_lookup("string_key_0", 12)) << "id changed at cycle " << cycle;
+    }
+    EXPECT_EQ(0, held_buf->size());
+}
+
+// ── Counter gauges across a skipped reset ─────────────────────────────────
+//
+// Profiler::start() calls Counters::reset() right after resetting the
+// dictionaries.  A dictionary whose reset was skipped keeps all of its storage,
+// so its memory gauges must be re-added after the counter reset; otherwise
+// freeing that storage later drives them negative.
+
+namespace {
+constexpr int kEndpointsOffset = 2;  // the DICTIONARY_ENDPOINTS_* counter rows
+}
+
+TEST(StringDictionaryCountersTest, ReseedKeepsGaugesExactAcrossSkippedReset) {
+    StringDictionary dict(kEndpointsOffset);
+    Counters::reset();
+    dict.reseedCounters();
+    const long long base_pages = Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset);
+    const long long base_bytes = Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset);
+    ASSERT_GT(base_pages, 0);
+    ASSERT_GT(base_bytes, 0);
+
+    fillPastFirstArenaChunk(dict);
+    dict.rotate();
+    {
+        GuardedKeyHolder holder(dict.standby());
+        ASSERT_FALSE(dict.clearAll());
+        Counters::reset();  // what Profiler::start() does next
+        dict.reseedCounters();
+        EXPECT_GT(Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset), base_pages);
+        EXPECT_GT(Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset), base_bytes);
+    }
+
+    // Freeing the retained storage returns the gauges to the baseline.
+    ASSERT_TRUE(dict.clearAll());
+    EXPECT_EQ(base_pages, Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset));
+    EXPECT_EQ(base_bytes, Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset));
+}
+
+// The reset steps of Profiler::start(): a skipped dictionary reset stays
+// visible as a drain timeout, and its gauges stay non-negative once the
+// storage is freed.
+TEST(StringDictionaryCountersTest, ProfilerResetKeepsCountersAcrossSkippedReset) {
+    Profiler* profiler = Profiler::instance();
+    StringDictionary* labels = profiler->stringLabelMap();
+    ASSERT_EQ(0, profiler->resetRecordingStateForTest());
+    const long long base_pages = Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset);
+    const long long base_bytes = Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset);
+
+    fillPastFirstArenaChunk(*labels);
+    labels->rotate();
+    {
+        GuardedKeyHolder holder(labels->standby());
+        EXPECT_EQ(1, profiler->resetRecordingStateForTest());
+        EXPECT_EQ(1, Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS));
+    }
+
+    EXPECT_EQ(0, profiler->resetRecordingStateForTest());
+    EXPECT_EQ(base_pages, Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset));
+    EXPECT_EQ(base_bytes, Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset));
 }

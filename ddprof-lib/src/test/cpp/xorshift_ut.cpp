@@ -407,3 +407,55 @@ TEST(ReservoirSamplerTest, ReuseAcrossCallsDoesNotAccumulate) {
         ASSERT_EQ(4u, out.size()) << "call " << call;
     }
 }
+
+// Algorithm L steps one past the item it just placed before adding the skip.
+// Without that step a zero skip places the same input item a second time, so a
+// sample of distinct threads can name one thread twice and miss another.
+TEST(ReservoirSamplerTest, SampleOfDistinctInputHasNoDuplicates) {
+    const int cases[][2] = {{4, 1}, {10, 3}, {17, 16}, {100, 16}, {2048, 16}, {16, 16}};
+    for (const auto& c : cases) {
+        const int n = c[0];
+        const int k = c[1];
+        std::vector<int> input;
+        for (int i = 0; i < n; i++) {
+            input.push_back(i);
+        }
+        for (int run = 0; run < 2000; run++) {
+            ReservoirSampler<int> sampler(k, (u64)run);
+            std::vector<int>& out = sampler.sample(input);
+            ASSERT_EQ((size_t)k, out.size()) << "n=" << n << " k=" << k;
+            std::set<int> distinct(out.begin(), out.end());
+            ASSERT_EQ((size_t)k, distinct.size())
+                << "duplicate selection for n=" << n << " k=" << k << " run=" << run;
+        }
+    }
+}
+
+// Each input item must land in the sample with probability k/n. The bound is
+// +/-5% of the expectation, which is over ten standard deviations wide for
+// these draw counts; the missing step put item k at roughly 1.25x (n=4, k=1)
+// and 1.8x (n=10, k=3) its fair share.
+TEST(ReservoirSamplerTest, InclusionFrequencyIsUniform) {
+    const int cases[][2] = {{4, 1}, {10, 3}, {40, 16}};
+    const int draws = 100000;
+    for (const auto& c : cases) {
+        const int n = c[0];
+        const int k = c[1];
+        std::vector<int> input;
+        for (int i = 0; i < n; i++) {
+            input.push_back(i);
+        }
+        std::vector<long> hits(n, 0);
+        for (int run = 0; run < draws; run++) {
+            ReservoirSampler<int> sampler(k, (u64)run);
+            for (int value : sampler.sample(input)) {
+                hits[value]++;
+            }
+        }
+        const double expected = (double)draws * k / n;
+        for (int i = 0; i < n; i++) {
+            EXPECT_NEAR((double)hits[i], expected, expected * 0.05)
+                << "item " << i << " for n=" << n << " k=" << k;
+        }
+    }
+}

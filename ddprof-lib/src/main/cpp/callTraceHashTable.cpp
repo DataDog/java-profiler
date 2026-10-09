@@ -170,7 +170,7 @@ void CallTraceHashTable::decrementCounters() {
 
 ChunkList CallTraceHashTable::clearTableOnly() {
   // Wait only for in-flight put() operations that hold a RefCountGuard on THIS
-  // table.  Waiting globally (waitForAllRefCountsToClear) would block on
+  // table.  Waiting globally (for every guard slot to clear) would block on
   // unrelated puts to the currently-active table, causing 500 ms timeouts under
   // sustained wall-clock profiling and leaving collect() racing with a still-
   // running put().  Since standby and scratch tables never appear as the

@@ -67,7 +67,10 @@ void JNICALL JitCodeCache::DynamicCodeGenerated(jvmtiEnv *jvmti, const char *nam
   // reader that finds the stub always finds its info.
   StubUnwindInfo* stub_info = nullptr;
   if (shouldAnalyzeStub(name)) {
-    stub_info = analyzeStubUnwind(address, length);
+    // Only the adapters blob is known to pack several entry points behind
+    // a mid-stub br (see analyzeStubUnwind()).
+    bool multi_entry = name != nullptr && strcmp(name, "I2C/C2I adapters") == 0;
+    stub_info = analyzeStubUnwind(address, length, multi_entry);
     Counters::increment(stub_info != nullptr && stub_info->_classified
                             ? WALKVM_STUB_INFO_CLASSIFIED
                             : WALKVM_STUB_INFO_UNCLASSIFIED);

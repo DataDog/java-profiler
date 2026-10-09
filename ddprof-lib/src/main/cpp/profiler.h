@@ -140,8 +140,14 @@ private:
   alignas(DEFAULT_CACHE_LINE_SIZE) volatile u64 _sample_seq;
   alignas(DEFAULT_CACHE_LINE_SIZE) u64 _failures[ASGCT_FAILURE_TYPES];
   bool _wall_precheck = false;
+  // True between a Profiler::start() that activated the reference-chain
+  // tracker and the matching stop(): gates stopThread()/stop() in
+  // Profiler::stop() so a recording started without the tracker never tears
+  // it down (the tracker is only started when allocation sampling activated
+  // AND referencechains=true - see Profiler::start()). Atomic: also read by
+  // onThreadStart()/onThreadEnd() on JVMTI thread-lifecycle callbacks.
+  std::atomic<bool> _reference_chains_active{false};
 
-  SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
   CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
   int _max_stack_depth;
@@ -190,6 +196,14 @@ private:
   Error checkJvmCapabilities();
 
   void lockAll();
+  // Resets the dictionaries, the call trace storage and the counters for a
+  // fresh recording; returns how many dictionaries were left unchanged because
+  // their drain timed out.
+  int resetRecordingState();
+  // Counts and logs a dictionary reset or standby clear skipped on a drain
+  // timeout.  The dictionaries only report the result; this is the one place
+  // that turns it into DICTIONARY_DRAIN_TIMEOUTS and a warning.
+  void reportDrainTimeout(const char *what);
   void unlockAll();
 
   // Rotate all three dictionaries, then run jfr_op under lockAll().
@@ -212,9 +226,15 @@ private:
     lockAll();
     jfr_op();
     unlockAll();
-    _class_map.clearStandby();
-    _string_label_map.clearStandby();
-    _context_value_map.clearStandby();
+    if (!_class_map.clearStandby()) {
+      reportDrainTimeout("Class map standby buffer not cleared");
+    }
+    if (!_string_label_map.clearStandby()) {
+      reportDrainTimeout("String label map standby buffer not cleared");
+    }
+    if (!_context_value_map.clearStandby()) {
+      reportDrainTimeout("Context value map standby buffer not cleared");
+    }
   }
 
   static int crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext);
@@ -234,7 +254,7 @@ public:
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
         _alloc_engine(NULL), _event_mask(0), _activated_mask(0),
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
-        _total_samples(0), _sample_seq(0), _failures(), _class_map_lock(),
+        _total_samples(0), _sample_seq(0), _failures(),
         _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _force_jmethodID(true),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
@@ -490,6 +510,10 @@ public:
   static void unregisterThread(int tid);
 
 #ifdef UNIT_TEST
+  // Runs the reset steps of a fresh start() in isolation.  Compiled only into
+  // gtest binaries.
+  int resetRecordingStateForTest() { return resetRecordingState(); }
+
   // Returns the tid most recently passed to unregisterThread(), or -1 if it
   // has never been called (or since the last resetUnregisterObservableForTest).
   // Used by integration tests to assert that cleanup_unregister wired

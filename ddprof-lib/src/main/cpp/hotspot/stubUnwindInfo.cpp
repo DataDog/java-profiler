@@ -59,6 +59,7 @@ struct PairInfo {
     int32_t imm;   // bytes, scaled and sign-extended
     bool gpr;      // false for SIMD pairs (their Rt fields are not GPR numbers)
     int base;      // Rn field: 31 = sp, 29 = fp, anything else is untracked
+    int size;      // bytes per register (8 or 16); the pair covers 2 * size
 };
 
 bool decodePair(uint32_t insn, PairInfo& p) {
@@ -95,6 +96,7 @@ bool decodePair(uint32_t insn, PairInfo& p) {
         p.load = (insn >> 22) & 1;
         p.gpr = ((insn >> 26) & 0x3f) == 0x2a;  // opc=10, V=0
         p.base = rn(insn);
+        p.size = f.scale;
         return true;
     }
     return false;
@@ -186,10 +188,190 @@ bool decodeAddSubImm(uint32_t insn, bool& is_sub, int& rdn, int& rnn, int32_t& i
 // An unmodeled 64-bit add/subtract register-form write to sp (shifted or
 // extended: 0x8b...... / 0xcb......; the S bit in the mask excludes the
 // flag-setting ADDS/SUBS forms, whose Rd=31 is a discarded XZR) makes the
-// tracked sp untrustworthy -- degrade, never guess. Logical and move-wide
-// forms are not covered: per the ARM ARM their Rd=31 is XZR, not SP.
+// tracked sp untrustworthy -- degrade, never guess. Logical (shifted
+// register) and move-wide forms are not covered: per the Arm Architecture
+// Reference Manual their Rd=31 is XZR, not SP. Logical (immediate) forms do
+// write SP at Rd=31 and are handled by decodeLogicalImm64().
 bool isAddSubRegSp(uint32_t insn) {
     return (insn & 0xbf000000) == 0x8b000000 && rd(insn) == 31;
+}
+
+// Bitmask of the general-purpose registers (x0-x30; writes to register 31
+// are ignored, sp writeback is handled by the sp-base paths) that an
+// instruction may write, for the classes the decoders above do not model:
+// data processing (register: shifted/extended add/sub, logical, adc, csel,
+// one/two/three-source; immediate: bitfield, extract) and GPR loads of every
+// addressing mode (literal, exclusive/acquire, register offset, unscaled,
+// narrower sizes, atomics), including base-register writeback, also for
+// SIMD&FP loads/stores. Conservative:
+// prefetches and the status register of store-exclusive count as writes. An
+// x29 or x30 write that no decoder recognized would otherwise leave fp_est or
+// the lr rule stale ('ldur x29, [x0, #-8]', 'csel x30, ...').
+uint32_t otherGprWrites(uint32_t insn) {
+    auto bit = [](int r) { return r == 31 ? 0u : 1u << r; };
+    if ((insn & 0x0e000000) == 0x0a000000 ||   // data processing (register)
+        (insn & 0x1c000000) == 0x10000000) {   // data processing (immediate)
+        return bit(rd(insn));
+    }
+    if ((insn & 0x0a000000) != 0x08000000) {
+        return 0;  // not a load/store
+    }
+    bool load;
+    uint32_t m = 0;
+    if ((insn >> 26) & 1) {
+        // SIMD&FP transfer: the data registers are not GPRs, but the GPR
+        // base is written back by the pre/post-index forms ('ldr q0, [x29],
+        // #16', 'ld1 {v0.2d}, [x29], #16').
+        switch ((insn >> 27) & 7) {  // bits 29:27
+            case 1:  // structure load/store: bit 23 = post-index
+            case 5:  // pair: bit 23 = pre/post-index
+                return ((insn >> 23) & 1) ? bit(rn(insn)) : 0;
+            case 7:  // single register: bits 11:10 = x1 for pre/post-index
+                return (((insn >> 24) & 1) == 0 && ((insn >> 21) & 1) == 0 && ((insn >> 10) & 1) != 0)
+                           ? bit(rn(insn)) : 0;
+            default:
+                return 0;
+        }
+    }
+    switch ((insn >> 27) & 7) {  // bits 29:27
+        case 1:  // load/store exclusive, load-acquire/store-release
+            load = (insn >> 22) & 1;
+            if (load) return bit(rt1(insn)) | bit(rt2(insn));
+            return bit((insn >> 16) & 31);  // store-exclusive status Ws
+        case 3:  // load register (literal), PRFM (literal)
+            return bit(rt1(insn));
+        case 5:  // load/store pair, all addressing modes
+            if (((insn >> 23) & 1) != 0) m |= bit(rn(insn));  // pre/post-index writeback
+            if ((insn >> 22) & 1) m |= bit(rt1(insn)) | bit(rt2(insn));
+            return m;
+        case 7:  // load/store register: unscaled, pre/post, register offset, atomics
+            if (((insn >> 24) & 1) == 0 && ((insn >> 21) & 1) == 0 && ((insn >> 10) & 1) != 0) {
+                m |= bit(rn(insn));  // pre/post-index writeback (bits 11:10 = x1)
+            }
+            if (((insn >> 24) & 1) == 0 && ((insn >> 21) & 1) == 1 && ((insn >> 10) & 3) == 0) {
+                return m | bit(rt1(insn));  // atomic memory operation / swap
+            }
+            load = ((insn >> 22) & 3) != 0;  // opc 00 is the only store
+            if (load) m |= bit(rt1(insn));
+            return m;
+        default:
+            return 0;
+    }
+}
+
+// Load/store instruction class (any register file). Used to drop the x29
+// save-slot fact on memory accesses that are not modeled as sp-relative.
+inline bool isLoadStore(uint32_t insn) {
+    return (insn & 0x0a000000) == 0x08000000;
+}
+
+// In-stub targets of ADR (exact) and whether any ADRP addresses a page that
+// overlaps the stub. Either is how generated code materializes a code address
+// it may later reach through 'br' ('adr x9, L; ...; br x9', the computed jump
+// into the unrolled loops of the *_fill and large_arrays_hashcode_* stubs, or
+// 'adr lr, L; br xN; L: ...'); such a target may be entered with a state the
+// fall-through scan cannot know, and it is not a branch target the edge
+// validation could check. Returns the ADR target index for in-range ADR, -1
+// otherwise; sets adrp_into_stub for ADRP pages overlapping the stub.
+int decodeAdrTarget(uint32_t insn, const instruction_t* entry, int index, int count,
+                    bool& adrp_into_stub) {
+    if ((insn & 0x1f000000) != 0x10000000) return -1;
+    int64_t imm = sext(((insn >> 3) & 0x1ffffc) | ((insn >> 29) & 3), 21);
+    uintptr_t pc = (uintptr_t)(entry + index);
+    uintptr_t start = (uintptr_t)entry, end = (uintptr_t)(entry + count);
+    if ((insn >> 31) == 0) {  // ADR
+        uintptr_t target = pc + imm;
+        if (target < start || target >= end || ((target - start) & (INSN_SIZE - 1)) != 0) return -1;
+        return (int)((target - start) / INSN_SIZE);
+    }
+    uintptr_t page = (pc & ~(uintptr_t)0xfff) + (uintptr_t)(imm << 12);  // ADRP
+    if (page < end && page + 0x1000 > start) adrp_into_stub = true;
+    return -1;
+}
+
+// An ADR target reached in the fall-through state, so it needs no validation:
+// the return point of an in-stub call (set_last_Java_frame's last_Java_pc in
+// the runtime-call blobs is 'adr x8, L; ...; blr xN; L:', reached by the
+// callee's ret with the state after the call) and the ADR's own address
+// ('adr x8, .' in the throw and jfr blobs). Self targets are filtered out by
+// the caller; any other target degrades.
+bool isAdrSafeTarget(const instruction_t* entry, int index) {
+    if (index == 0) return false;
+    uint32_t prev = entry[index - 1];
+    return (prev >> 26) == 0x25 || (prev & 0xfffffc1f) == 0xd63f0000;  // BL, BLR
+}
+
+// AdvSIMD LD1-4/ST1-4 (multiple or single structure, including LDnR), with
+// or without post-index writeback. Assembler-verified anchors:
+// 'st1 {v28.1d-v31.1d}, [sp], x8' = 0x0c882ffc, 'ld1 {v0.1d-v3.1d}, [sp], #32'
+// = 0x0cdf2fe0, 'st1 {v0.2d}, [sp]' = 0x4c007fe0, 'ld1 {v0.d}[1], [sp], #8' =
+// 0x4ddf87e0, 'st4 {v0.4s-v3.4s}, [sp], #64' = 0x4c9f0be0. Bits 31-23 =
+// 0 Q 0011 0 S P: S (bit 24) selects single vs multiple structure, P (bit 23)
+// post-index writeback (Rm at bits 20-16, Rm = 31 for the immediate form),
+// L (bit 22) = load. Their bits 29:27 are 001, so the sp-base guard for the
+// immediate load/store space (bits 29:27 = 111) does not see them. HotSpot's
+// push_CPU_state/pop_CPU_state emit them with an sp base, e.g. in the
+// I2C/C2I adapters' c2i entry barrier and patch_callers_callsite.
+struct SimdStructInfo {
+    bool load;
+    bool post;    // post-index writeback of Rn
+    int rm;       // offset register for the post-index form, 31 = immediate
+    int32_t len;  // bytes transferred, -1 if not modeled (single structure)
+};
+
+bool decodeSimdStruct(uint32_t insn, SimdStructInfo& v) {
+    if ((insn & 0xbe000000) != 0x0c000000) return false;
+    v.load = (insn >> 22) & 1;
+    v.post = (insn >> 23) & 1;
+    v.rm = (insn >> 16) & 31;
+    v.len = -1;
+    if (((insn >> 24) & 1) == 0) {  // multiple structures: opcode -> registers
+        int regs;
+        switch ((insn >> 12) & 0xf) {
+            case 0x0: case 0x2: regs = 4; break;  // LD4/ST4, LD1/ST1 x4
+            case 0x4: case 0x6: regs = 3; break;  // LD3/ST3, LD1/ST1 x3
+            case 0x8: case 0xa: regs = 2; break;  // LD2/ST2, LD1/ST1 x2
+            case 0x7:           regs = 1; break;  // LD1/ST1 x1
+            default:            regs = -1; break; // unallocated
+        }
+        if (regs > 0) v.len = regs * (((insn >> 30) & 1) ? 16 : 8);
+    }
+    return true;
+}
+
+// Logical (immediate), 64-bit: AND/ORR/EOR/ANDS Xd, Xn, #bitmask. Rd = 31 is
+// sp for AND/ORR/EOR ('and sp, x8, #-16' aligns sp in the i2c adapter of a
+// method with stack arguments) and xzr for ANDS (TST). Decodes the bitmask
+// (DecodeBitMasks() pseudocode in the Arm Architecture Reference Manual) so
+// that 'mov x8, #-32' (= orr x8, xzr, #-32, 0xb27bebe8) yields its constant.
+// Returns false for other encodings and for the reserved immediate patterns.
+bool decodeLogicalImm64(uint32_t insn, int& opc, int& rdn, int& rnn, uint64_t& imm) {
+    if ((insn & 0x9f800000) != 0x92000000) return false;  // sf=1, bits 28:23 = 100100
+    opc = (insn >> 29) & 3;
+    rdn = rd(insn);
+    rnn = rn(insn);
+    uint32_t n = (insn >> 22) & 1, immr = (insn >> 16) & 0x3f, imms = (insn >> 10) & 0x3f;
+    uint32_t combined = (n << 6) | (~imms & 0x3f);
+    // HighestSetBit(N:NOT(imms)); 'combined | 1' keeps clz defined for 0.
+    int len = 31 - __builtin_clz(combined | 1);
+    if (len < 1) return false;  // N = 0 with imms = 0b11111x: unallocated
+    uint32_t levels = (1u << len) - 1;
+    uint32_t sbits = imms & levels, r = immr & levels;
+    if (sbits == levels) return false;  // reserved
+    int esize = 1 << len;
+    uint64_t emask = esize == 64 ? ~0ull : ((1ull << esize) - 1);
+    uint64_t welem = (sbits + 1 == 64) ? ~0ull : ((1ull << (sbits + 1)) - 1);
+    uint64_t elem = r == 0 ? welem : (((welem >> r) | (welem << (esize - r))) & emask);
+    imm = 0;
+    for (int b = 0; b < 64; b += esize) imm |= elem << b;
+    return true;
+}
+
+// Does a store of len bytes whose lowest address sits at position a (bytes
+// below the entry sp) overlap the 8-byte slot at position s? Positions grow
+// downwards, so the store covers (a - len, a] and the slot (s - 8, s].
+inline bool overlapsSlot(int32_t a, int32_t len, int32_t s) {
+    return a > s - 8 && a < s + len;
 }
 
 // mov Xd, Xm (ORR shifted register; Rn=xzr for the plain MOV alias, but any
@@ -236,6 +418,13 @@ int decodeBranch(uint32_t insn, int index, int count) {
 
 enum RetLoc { RET_LR, RET_STACK, RET_CONT, RET_UNKNOWN };
 
+// fp_est is only set when x29 lands on a frame record (saved x29 with the
+// saved x30 8 bytes above it), so the return address of an fp frame is
+// always at fp + 8. A later spill of x30 elsewhere ('str x30, [sp, #-16]!'
+// inside the frame) moves x30_abs but not the frame record; once that spill
+// is popped it lies below the live sp and must not be used.
+const int32_t FRAME_RECORD_PC_OFFSET = 8;
+
 struct ScanState {
     int32_t sp = 0;       // sp position in bytes below the entry sp
     bool sp_known = true;
@@ -243,12 +432,28 @@ struct ScanState {
     int32_t fp_abs = 0;   // position of that slot below the entry sp
     RetLoc ret = RET_LR;
     int32_t x30_abs = 0;  // position of the saved x30 slot below the entry sp
+    // Facts that only refine the tracking of sp and fp and are not part of the
+    // unwind rule. Branch validation compares unwind rules, so these are
+    // dropped at every in-stub branch target and only ever derive from
+    // straight-line code.
+    int const_reg = -1;     // GPR holding const_val ('mov x8, #-32' before
+    int64_t const_val = 0;  // push_CPU_state's 'st1 {...}, [sp], x8')
+    bool fp_saved = false;  // the frame's x29 value is stored in the sp slot
+    int32_t fp_slot_abs = 0;  // at this position below the entry sp
 
     bool operator==(const ScanState& o) const {
         return sp == o.sp && sp_known == o.sp_known && fp_est == o.fp_est &&
-               fp_abs == o.fp_abs && ret == o.ret && x30_abs == o.x30_abs;
+               fp_abs == o.fp_abs && ret == o.ret && x30_abs == o.x30_abs &&
+               const_reg == o.const_reg && const_val == o.const_val &&
+               fp_saved == o.fp_saved && fp_slot_abs == o.fp_slot_abs;
     }
     bool operator!=(const ScanState& o) const { return !(*this == o); }
+    // Equality of the fields the unwind rule derives from (excludes the
+    // auxiliary facts above).
+    bool sameUnwindState(const ScanState& o) const {
+        return sp == o.sp && sp_known == o.sp_known && fp_est == o.fp_est &&
+               fp_abs == o.fp_abs && ret == o.ret && x30_abs == o.x30_abs;
+    }
 
     // The unwind rule that holds at a PC boundary in this state.
     void phase(StubUnwindPhase& p, int offset) const {
@@ -260,7 +465,7 @@ struct ScanState {
             if (fp_est) {
                 p.kind = SU_FP_FRAME;
                 p.arg = fp_abs;
-                p.arg2 = fp_abs - x30_abs;
+                p.arg2 = FRAME_RECORD_PC_OFFSET;
             } else {
                 p.kind = SU_UNSUPPORTED;
                 p.arg = p.arg2 = 0;
@@ -278,7 +483,7 @@ struct ScanState {
         } else if (fp_est) {
             p.kind = SU_FP_FRAME;
             p.arg = fp_abs;             // caller sp = fp + arg
-            p.arg2 = fp_abs - x30_abs;  // pc slot = [fp + arg2]
+            p.arg2 = FRAME_RECORD_PC_OFFSET;  // pc slot = [fp + arg2]
         } else if (ret == RET_STACK && x30_abs > sp) {
             // Same ownership rule for the saved return-address slot: below
             // the live sp it is unowned memory.
@@ -347,7 +552,7 @@ const StubUnwindPhase* StubUnwindInfo::findPhase(int insn_index) const {
     return &_phases[lo];
 }
 
-StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
+StubUnwindInfo* analyzeStubUnwind(const void* start, int length, bool multi_entry) {
     if (start == nullptr || length <= 0 || length > MAX_STUB_BYTES ||
         (length & (INSN_SIZE - 1)) != 0) {
         return nullptr;
@@ -399,10 +604,43 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
     };
     emit(st, 0);
 
+    // In-stub branch targets, where the auxiliary ScanState facts are
+    // dropped, and in-stub ADR targets (see decodeAdrTarget()).
+    uint64_t targets[MAX_STUB_BYTES / INSN_SIZE / 64] = {};
+    uint64_t adr_targets[MAX_STUB_BYTES / INSN_SIZE / 64] = {};
+    bool adrp_into_stub = false;
+    for (int i = 0; i < count; i++) {
+        int target = decodeBranch(entry[i], i, count);
+        if (target >= 0) targets[target >> 6] |= 1ull << (target & 63);
+        int adr = decodeAdrTarget(entry[i], entry, i, count, adrp_into_stub);
+        if (adr >= 0 && adr != i) adr_targets[adr >> 6] |= 1ull << (adr & 63);
+    }
+
     for (int i = 0; i < count; i++) {
         uint32_t insn = entry[i];
+        if (targets[i >> 6] & (1ull << (i & 63))) {
+            st.const_reg = -1;
+            st.fp_saved = false;
+        }
+        if ((adr_targets[i >> 6] & (1ull << (i & 63))) && !isAdrSafeTarget(entry, i) &&
+            i < truncate_at) {
+            truncate_at = i;
+        }
         ScanState next = st;
-        bool freeze_now = false;
+        // Instructions known not to write const_reg; any other instruction
+        // drops the tracked constant.
+        bool keeps_const = false;
+        int def_reg = -1;
+        int64_t def_val = 0;
+        // Set by the paths that model an sp-relative memory access exactly;
+        // any other load/store may alias the x29 save slot.
+        bool sp_access = false;
+        // GPR writes found by otherGprWrites() or base writeback: an x29
+        // write moves fp off the frame, an x30 write clobbers the lr rule.
+        auto clobber = [&](uint32_t mask) {
+            if (mask & (1u << 29)) next.fp_est = false;
+            if ((mask & (1u << 30)) && next.ret == RET_LR) next.ret = RET_UNKNOWN;
+        };
 
         PairInfo pair;
         SingleInfo single;
@@ -415,7 +653,11 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                 if (pair.gpr) {
                     untrackedBase(rt1(insn), rt2(insn), pair.load, next);
                 }
+                if ((insn >> 23) & 1) {
+                    clobber(1u << pair.base);  // pre/post-index writeback of the base
+                }
             } else {
+                sp_access = true;
                 // Address of the accessed pair, in bytes below the entry sp.
                 int32_t addr_abs;
                 const uint32_t form = insn & 0x01800000;  // bit24, bit23
@@ -431,6 +673,12 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                     addr_abs = next.sp - pair.imm;
                 }
                 if (next.sp < 0) next.sp_known = false;
+                if (!pair.load) {
+                    keeps_const = true;
+                    if (!st.sp_known || overlapsSlot(addr_abs, 2 * pair.size, next.fp_slot_abs)) {
+                        next.fp_saved = false;
+                    }
+                }
                 if (pair.gpr) {
                     int a = rt1(insn), b = rt2(insn);
                     if (pair.load) {
@@ -446,12 +694,22 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                             }
                         }
                         if (a == 29 || b == 29) {
-                            next.fp_est = false;  // x29 reloaded: no longer our frame fp
+                            // x29 reloaded: still our frame fp only if it
+                            // comes back from the slot it was saved to
+                            int32_t slot = (a == 29) ? addr_abs : addr_abs - 8;
+                            if (!(st.sp_known && next.fp_saved && slot == next.fp_slot_abs)) {
+                                next.fp_est = false;
+                            }
                         }
                     } else {
                         if (a == 30 || b == 30) {
                             next.ret = RET_STACK;
                             next.x30_abs = (a == 30) ? addr_abs : addr_abs - 8;
+                        }
+                        if ((a == 29 || b == 29) && next.fp_est && st.sp_known) {
+                            // push_CPU_state saves x29 with the other GPRs
+                            next.fp_saved = true;
+                            next.fp_slot_abs = (a == 29) ? addr_abs : addr_abs - 8;
                         }
                     }
                 }
@@ -461,7 +719,11 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                 // Untracked base (e.g. a copy loop's 'ldr x4, [x2], #8'):
                 // only the register effects apply, as for pairs.
                 untrackedBase(rd(insn), -1, single.load, next);
+                if (single.mode != 0) {
+                    clobber(1u << single.base);  // pre/post-index writeback of the base
+                }
             } else {
+                sp_access = true;
                 int32_t addr_abs;
                 if (single.mode == 2) {  // post-index: sp moves up
                     addr_abs = next.sp;
@@ -474,6 +736,16 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                 }
                 if (next.sp < 0) next.sp_known = false;
                 int t = rd(insn);  // Rt field for loads/stores
+                if (!single.load) {
+                    keeps_const = true;
+                    if (!st.sp_known || overlapsSlot(addr_abs, 8, next.fp_slot_abs)) {
+                        next.fp_saved = false;
+                    }
+                    if (t == 29 && next.fp_est && st.sp_known) {
+                        next.fp_saved = true;
+                        next.fp_slot_abs = addr_abs;
+                    }
+                }
                 if (t == 30) {
                     if (single.load) {
                         if (next.ret != RET_CONT) {
@@ -489,7 +761,8 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                     } else if (next.ret == RET_LR) {
                         next.ret = RET_UNKNOWN;  // saved somewhere we cannot name
                     }
-                } else if (t == 29 && single.load) {
+                } else if (t == 29 && single.load &&
+                           !(st.sp_known && next.fp_saved && addr_abs == next.fp_slot_abs)) {
                     next.fp_est = false;
                 }
             }
@@ -497,7 +770,11 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
             bool is_sub;
             int32_t imm;
             int rdn, rnn, aimm;
+            int opc;
+            uint64_t limm;
+            SimdStructInfo simd;
             if (decodeAddSubSp(insn, is_sub, imm)) {
+                keeps_const = true;
                 next.sp += is_sub ? imm : -imm;
                 if (next.sp < 0) next.sp_known = false;
             } else if (decodeAddSubImm(insn, is_sub, rdn, rnn, aimm)) {
@@ -508,7 +785,13 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                     if (rnn == 31) {
                         next.sp += is_sub ? aimm : -aimm;
                     } else if (rnn == 29 && next.fp_est) {
+                        // fp_est holds only while no decoded instruction
+                        // has written x29 (otherGprWrites() covers the
+                        // classes without a dedicated decoder), so x29 is
+                        // the exact frame address and sp is known again even
+                        // after an unmodeled sp update inside the frame.
                         next.sp = is_sub ? next.fp_abs + aimm : next.fp_abs - aimm;
+                        next.sp_known = true;
                     } else {
                         next.sp_known = false;
                     }
@@ -527,6 +810,11 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                 } else if (rdn == 30 && next.ret == RET_LR) {
                     next.ret = RET_UNKNOWN;
                 }
+                if (rnn == 31 && rdn != 31 && rdn != 29) {
+                    // An sp-derived pointer in a GPR ('mov x1, sp') lets later
+                    // stores or a callee write the x29 save slot unseen.
+                    next.fp_saved = false;
+                }
             } else if (isOrrReg(insn)) {
                 int d = rd(insn);
                 if (d == 29) {
@@ -534,9 +822,32 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                 } else if (d == 30 && next.ret == RET_LR) {
                     next.ret = RET_UNKNOWN;
                 }
-            } else if (isAdrLike(insn) || isMoveWide(insn)) {
-                if (rd(insn) == 30 && next.ret == RET_LR) {
+            } else if (decodeLogicalImm64(insn, opc, rdn, rnn, limm)) {
+                if (rdn == 31) {
+                    if (opc != 3) next.sp_known = false;  // AND/ORR/EOR write sp; ANDS writes xzr
+                } else if (rdn == 29) {
+                    next.fp_est = false;
+                } else if (rdn == 30 && next.ret == RET_LR) {
                     next.ret = RET_UNKNOWN;
+                }
+                if (opc == 1 && rnn == 31 && rdn != 31) {  // mov Xd, #bitmask
+                    def_reg = rdn;
+                    def_val = (int64_t)limm;
+                }
+            } else if (isAdrLike(insn) || isMoveWide(insn)) {
+                int d = rd(insn);
+                if (d == 29) {
+                    next.fp_est = false;
+                } else if (d == 30 && next.ret == RET_LR) {
+                    next.ret = RET_UNKNOWN;
+                }
+                int mov_opc = (insn >> 29) & 3;
+                if (isMoveWide(insn) && (insn >> 31) && (mov_opc == 0 || mov_opc == 2) && d != 31) {
+                    // 64-bit MOVN (opc 00) / MOVZ (opc 10); MOVK (11) keeps
+                    // the other bits and is not a constant definition
+                    int64_t v = (int64_t)((uint64_t)((insn >> 5) & 0xffff) << (16 * ((insn >> 21) & 3)));
+                    def_reg = d;
+                    def_val = mov_opc == 0 ? ~v : v;
                 }
             } else if ((insn >> 26) == 0x25) {  // BL
                 int64_t target = i + (int64_t)sext(insn & 0x03ffffff, 26);
@@ -559,18 +870,29 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                     next.ret = RET_CONT;
                 }
             } else if ((insn & 0xfffffc1f) == 0xd61f0000) {  // BR
-                if (i + 1 < count) {
-                    // Control leaves the stub; linear state after a mid-stub
-                    // branch is not trustworthy (it may be a separate entry
-                    // path with unknown state).
-                    if (i + 1 < truncate_at) truncate_at = i + 1;
-                    freeze_now = true;
+                // Control leaves through a register jump, so the next
+                // instruction is not reached by fall-through. In a
+                // multi_entry blob it is a further entry point, entered like
+                // the blob start with the return address in lr and the
+                // caller's sp (the I2C/C2I adapters blob holds the i2c entry,
+                // whose shuffle ends in 'br', followed by the c2i entries),
+                // or a target of an in-stub branch: restart from the entry
+                // state, and the branch validation below degrades the target
+                // if a branch reaches it in a different state. Elsewhere, and
+                // when an ADRP materializes a code address in the stub that
+                // cannot be checked against the restart points, the state
+                // after the br is unknown: cut there.
+                if (multi_entry && !adrp_into_stub) {
+                    next = ScanState();
+                } else {
+                    if (i + 1 < count && i + 1 < truncate_at) truncate_at = i + 1;
+                    next = st;
                 }
             } else if (isUnprivLoadStore(insn)) {
                 // LDTR/STTR: no base writeback, so sp is unchanged; a load
                 // into x30 clobbers the return-address register.
                 if ((insn >> 22) & 1) {
-                    if (rd(insn) == 30 && next.ret == RET_LR) next.ret = RET_UNKNOWN;
+                    clobber(1u << rd(insn));
                 }
             } else if ((insn & 0x38000000) == 0x38000000 && rn(insn) == 31) {
                 // An undecoded load/store with an sp base: the immediate
@@ -585,6 +907,29 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                 // have bits 29:27 != 111; LDTR/STTR were handled above.
                 if (i + 1 < truncate_at) truncate_at = i + 1;
                 transitions_frozen = true;
+            } else if (decodeSimdStruct(insn, simd) && rn(insn) == 31) {
+                // Writes only SIMD registers (and sp on writeback).
+                keeps_const = true;
+                sp_access = true;
+                if (!simd.load && (simd.len < 0 || !st.sp_known ||
+                                   overlapsSlot(next.sp, simd.len, next.fp_slot_abs))) {
+                    next.fp_saved = false;
+                }
+                if (simd.post) {
+                    // sp += transfer size (immediate form) or += Xm. An
+                    // unmodeled step makes sp unknown; an established fp
+                    // frame keeps the fp rule exact and 'mov sp, x29' makes
+                    // sp known again.
+                    if (simd.rm == 31 && simd.len > 0) {
+                        next.sp -= simd.len;
+                    } else if (simd.rm != 31 && simd.rm == st.const_reg &&
+                               st.const_val > -MAX_STUB_BYTES && st.const_val < MAX_STUB_BYTES) {
+                        next.sp -= (int32_t)st.const_val;
+                    } else {
+                        next.sp_known = false;
+                    }
+                    if (next.sp < 0) next.sp_known = false;
+                }
             } else if (isAddSubRegSp(insn)) {
                 // Unmodeled register-form sp write (e.g. 'add sp, sp, x0'):
                 // the tracked sp can no longer be trusted.
@@ -600,14 +945,28 @@ StubUnwindInfo* analyzeStubUnwind(const void* start, int length) {
                         transitions_frozen = true;
                     }
                 }
-                // ret, nop, and all undecodable instructions: assumed neutral.
+                // Classes without a dedicated decoder that can still write
+                // x29/x30 ('ldur x29, [x0, #-8]', 'csel x30, ...').
+                clobber(otherGprWrites(insn));
+                // ret, nop, and all remaining undecodable instructions:
+                // assumed neutral.
             }
         }
 
-        if (freeze_now) {
-            next = st;  // state beyond this point is not modeled
+        if (!keeps_const) next.const_reg = -1;
+        if (def_reg >= 0) {
+            next.const_reg = def_reg;
+            next.const_val = def_val;
         }
-        if (transitions_frozen && next != st) {
+        if (!next.fp_est || next.fp_abs != st.fp_abs) next.fp_saved = false;
+        if (isLoadStore(insn) && !sp_access) next.fp_saved = false;
+        // A popped save slot lies below the live sp: unowned memory a signal
+        // may overwrite (the same rule as FRAME_RECORD_PC_OFFSET for x30).
+        if (next.fp_saved && (!next.sp_known || next.fp_slot_abs > next.sp)) next.fp_saved = false;
+
+        // Frozen transitions forbid a new unwind rule; the auxiliary facts
+        // may still change without truncating.
+        if (transitions_frozen && !next.sameUnwindState(st)) {
             if (i + 1 < truncate_at) truncate_at = i + 1;
             next = st;
         }
