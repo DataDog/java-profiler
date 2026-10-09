@@ -96,9 +96,15 @@ val copyExternalLibs by tasks.registering(Copy::class) {
 }
 
 // Create JAR tasks for each build configuration using nativeBuild extension utilities
-// Uses afterEvaluate to discover configurations dynamically from NativeBuildExtension
+// Uses afterEvaluate to discover configurations dynamically from NativeBuildExtension.
+// `coverage` is excluded: nativeBuild.buildConfigurations.names lists every registered
+// config regardless of its `active` flag (the same quirk already lets inactive
+// asan/tsan show up here on platforms where they're unsupported), so without this
+// filter a --coverage-instrumented classifier jar would get built and added to the
+// published Maven artifact by every `publish` run, coverage build or not.
 afterEvaluate {
-  nativeBuild.buildConfigurations.names.forEach { name ->
+  val packagedConfigNames = nativeBuild.buildConfigurations.names.filterNot { it == "coverage" }
+  packagedConfigNames.forEach { name ->
     val capitalizedName = name.replaceFirstChar { it.uppercase() }
 
     val copyTask = tasks.register("copy${capitalizedName}Libs", Copy::class) {
@@ -151,6 +157,54 @@ afterEvaluate {
   }
 }
 
+// C++ coverage report (only meaningful, and only registered, alongside the opt-in
+// `coverage` build configuration -- see ConfigurationPresets.configureCoverage).
+// Requires gcovr (`pip install gcovr`), which reads the gcc/clang-compatible
+// .gcno/.gcda files gtestCoverage produces directly, so one tool covers both
+// toolchains without a separate lcov+genhtml install.
+if (project.hasProperty("enableCoverage")) {
+  tasks.register("gtestCoverageReport") {
+    group = "verification"
+    description = "Generates an HTML C++ coverage report from the gtestCoverage run (requires gcovr)"
+    dependsOn("gtestCoverage")
+
+    val reportDir = layout.buildDirectory.dir("reports/coverage/cpp")
+    val objDir = layout.buildDirectory.dir("obj/gtest/coverage")
+    val srcRoot = project.file("src/main/cpp")
+
+    doLast {
+      val gcovExecutable = when {
+        PlatformUtils.currentPlatform == Platform.MACOS -> "xcrun llvm-cov gcov"
+        File(PlatformUtils.findCompiler(project)).name.contains("clang") -> "llvm-cov gcov"
+        else -> "gcov"
+      }
+
+      val outDir = reportDir.get().asFile.also { it.mkdirs() }
+      val cmd = listOf(
+        "gcovr",
+        "--root", srcRoot.absolutePath,
+        "--gcov-executable", gcovExecutable,
+        "--html", "--html-details",
+        "-o", "${outDir.absolutePath}/index.html",
+        "--print-summary",
+        objDir.get().asFile.absolutePath
+      )
+      project.logger.lifecycle("Running: ${cmd.joinToString(" ")}")
+      val process = ProcessBuilder(cmd)
+        .directory(project.projectDir)
+        .redirectErrorStream(true)
+        .start()
+      val output = process.inputStream.bufferedReader().readText()
+      val exitCode = process.waitFor()
+      println(output)
+      if (exitCode != 0) {
+        throw GradleException("gcovr failed (exit $exitCode) -- install it with 'pip install gcovr' if missing")
+      }
+      project.logger.lifecycle("Coverage report written to file://${outDir.absolutePath}/index.html")
+    }
+  }
+}
+
 // Add runBenchmarks task
 tasks.register("runBenchmarks") {
   dependsOn(":ddprof-lib:benchmarks:runBenchmark")
@@ -199,9 +253,10 @@ publishing {
       groupId = "com.datadoghq"
       artifactId = "ddprof"
 
-      // Add artifacts from each build configuration
+      // Add artifacts from each build configuration (coverage excluded -- see the
+      // packagedConfigNames comment above)
       afterEvaluate {
-        nativeBuild.buildConfigurations.names.forEach { name ->
+        nativeBuild.buildConfigurations.names.filterNot { it == "coverage" }.forEach { name ->
           val capitalizedName = name.replaceFirstChar { it.uppercase() }
           artifact(tasks.named("assemble${capitalizedName}Jar"))
         }

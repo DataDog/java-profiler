@@ -1,11 +1,69 @@
 import com.datadoghq.profiler.ProfilerTestExtension
+import org.gradle.api.tasks.SourceSetContainer
 
 plugins {
   java
   `java-library`
   application
+  jacoco
   id("com.datadoghq.profiler-test")
   id("com.datadoghq.java-conventions")
+}
+
+jacoco {
+  toolVersion = "0.8.12"
+}
+
+// JaCoCo's plugin auto-attaches a JacocoTaskExtension (enabled by default) to every Test
+// task in this project, including testAsan/testSlowAsan/testTsan/testSlowTsan. Restrict
+// instrumentation to the plain debug config's tasks only -- asan/tsan already carry
+// sanitizer instrumentation and don't need coverage data, and leaving JaCoCo enabled
+// everywhere would multiply CI cost for no additional signal.
+val coverageTaskNames: Set<String> = if (project.hasProperty("disableJacoco")) emptySet() else setOf("testDebug", "testSlowDebug")
+
+// When jacocoTestReport is actually being requested, don't let a handful of
+// known-flaky native-thread/CPU tests (already @RetryingTest-annotated; see
+// NativeThreadTest, DynamicNativeThread, VtableReceiverFrameTest, ThreadEntryDetectionTest)
+// block report generation -- testDebug still records and prints its failures,
+// it just won't fail the build, so jacocoTestReport's dependency is satisfied
+// and the exec data that was produced gets aggregated regardless.
+val requestingCoverageReport = gradle.startParameter.taskNames.any { it.contains("jacocoTestReport") }
+
+tasks.withType<Test>().configureEach {
+  extensions.configure<JacocoTaskExtension> {
+    isEnabled = name in coverageTaskNames
+  }
+  if (name in coverageTaskNames && requestingCoverageReport) {
+    ignoreFailures = true
+  }
+}
+
+// The jacoco plugin already registers a default "jacocoTestReport" task (wired to the
+// disabled "test" task); reconfigure it to aggregate our actual coverage-producing tasks
+// instead of registering a new one.
+tasks.named<JacocoReport>("jacocoTestReport") {
+  group = "verification"
+  description = "Generates an aggregated HTML/XML coverage report from testDebug and testSlowDebug"
+
+  val coverageTasks = tasks.matching { it.name in coverageTaskNames }
+  dependsOn(coverageTasks)
+  executionData.setFrom(coverageTasks.map { task ->
+    fileTree(task.project.layout.buildDirectory) { include("jacoco/${task.name}.exec") }
+  })
+
+  // The tests here exercise ddprof-lib's classes (the profiler itself), not this
+  // project's own trivial main sourceSet (just the UnwindingValidator app) -- so
+  // coverage must be measured against ddprof-lib, the actual target under test.
+  val libMainSourceSet = project(":ddprof-lib").extensions.getByType<SourceSetContainer>()["main"]
+  sourceDirectories.setFrom(libMainSourceSet.allSource.srcDirs)
+  classDirectories.setFrom(libMainSourceSet.output)
+
+  reports {
+    html.required.set(true)
+    xml.required.set(true)
+    html.outputLocation.set(layout.buildDirectory.dir("reports/jacoco/jacocoTestReport/html"))
+    xml.outputLocation.set(layout.buildDirectory.file("reports/jacoco/jacocoTestReport/jacocoTestReport.xml"))
+  }
 }
 
 // Reference to native test helpers library directory
