@@ -46,8 +46,8 @@ protected:
         auto& slot = RefCountGuard::refcount_slots[TEST_SLOT];
         __atomic_store_n(&slot.count, 0u, __ATOMIC_SEQ_CST);
         __atomic_store_n(&slot.active_ptr, nullptr, __ATOMIC_SEQ_CST);
-        for (int i = 0; i < RefCountSlot::OUTER_STACK_DEPTH; ++i) {
-            __atomic_store_n(&slot.outer_stack[i], nullptr, __ATOMIC_SEQ_CST);
+        for (int i = 0; i < RefCountSlot::NESTED_DEPTH; ++i) {
+            __atomic_store_n(&slot.nested[i], nullptr, __ATOMIC_SEQ_CST);
         }
     }
 
@@ -166,4 +166,80 @@ TEST(RefCountGuardTryWaitTest, ReturnsTrueOnceGuardIsReleased) {
     }
     EXPECT_TRUE(RefCountGuard::tryWaitForRefCountsToClear(targets, 1));
     releaser.join();
+}
+
+// A scan must see a resource held by an outer guard while nested guards on
+// the same thread (a signal handler's put() inside a dictionary lookup, say)
+// start and end.  When nested guards moved the outer resource between
+// active_ptr and the stack, a scan could read each location while the resource
+// was in the other one - after one nested guard ended, or across one ending
+// and the next starting.
+TEST(RefCountGuardScanTest, SeesOuterResourceAcrossNestedGuards) {
+    int outer_resource, inner_resource;
+    std::atomic<bool> holding{false};
+    std::atomic<bool> stop{false};
+    std::atomic<long> nestings{0};
+    std::thread nester([&] {
+        RefCountGuard outer(&outer_resource);
+        holding.store(true, std::memory_order_release);
+        while (!stop.load(std::memory_order_relaxed)) {
+            RefCountGuard inner(&inner_resource);
+            nestings.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+    while (!holding.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    void* const targets[] = {&outer_resource};
+    long scans = 0;
+    long misses = 0;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!RefCountGuard::isReferenced(targets, 1)) misses++;
+        scans++;
+    }
+    stop.store(true, std::memory_order_relaxed);
+    nester.join();
+
+    ASSERT_GT(nestings.load(), 0);
+    EXPECT_EQ(0, misses) << misses << " of " << scans << " scans missed the outer resource";
+}
+
+// The property that makes the scan above sound: while an outer guard is held,
+// its resource stays in active_ptr, and each nested guard's resource stays in
+// the nested[] entry for its depth, from the guard's construction to its
+// destruction.  No resource ever moves while it is protected.
+TEST(RefCountGuardScanTest, NestedGuardsNeverMoveProtectedResources) {
+    int outer_resource, inner_resource, innermost_resource;
+    RefCountGuard outer(&outer_resource);
+    ASSERT_TRUE(outer.isActive());
+    RefCountSlot* slot = nullptr;
+    for (int i = 0; i < RefCountGuard::MAX_THREADS; ++i) {
+        if (__atomic_load_n(&RefCountGuard::refcount_slots[i].active_ptr, __ATOMIC_ACQUIRE) == &outer_resource) {
+            slot = &RefCountGuard::refcount_slots[i];
+            break;
+        }
+    }
+    ASSERT_NE(nullptr, slot);
+
+    for (int round = 0; round < 2; ++round) {  // a second nesting reuses the same entries
+        {
+            RefCountGuard inner(&inner_resource);
+            EXPECT_EQ(&outer_resource, slot->active_ptr);
+            EXPECT_EQ(&inner_resource, slot->nested[0]);
+            {
+                RefCountGuard innermost(&innermost_resource);
+                EXPECT_EQ(&outer_resource, slot->active_ptr);
+                EXPECT_EQ(&inner_resource, slot->nested[0]);
+                EXPECT_EQ(&innermost_resource, slot->nested[1]);
+            }
+            EXPECT_EQ(&outer_resource, slot->active_ptr);
+            EXPECT_EQ(&inner_resource, slot->nested[0]);
+            EXPECT_EQ(nullptr, slot->nested[1]);
+        }
+        EXPECT_EQ(&outer_resource, slot->active_ptr);
+        EXPECT_EQ(nullptr, slot->nested[0]);
+        EXPECT_EQ(1u, slot->count);
+    }
 }

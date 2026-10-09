@@ -519,6 +519,56 @@ TEST(StringDictionaryReclamationTest, ClearStandbyKeepsBufferWhileGuardHeld) {
     EXPECT_EQ(0, held_buf->size());
 }
 
+// A buffer whose clear was skipped must not bring stale ids back into use.
+// A straggler that outlived rotate()'s drain can insert a key into the old
+// buffer after both copies, while the active buffer gives the same key a
+// different id.  If the straggler still holds its guard when clearStandby()
+// runs, the clear is skipped; when rotate() later reuses that buffer as the
+// new active, the current id must win over the straggler's.
+TEST(StringDictionaryReclamationTest, ReusedUnclearedBufferKeepsCurrentIds) {
+    StringDictionary dict;
+    ASSERT_GT(dict.lookup("early", 5), 0u);
+    dict.rotate();
+    EXPECT_TRUE(dict.clearStandby());
+    StringDictionaryBuffer* held_buf = dict.standby();
+
+    const u32 stale_id = 999999;
+    u32 current_id;
+    {
+        GuardedKeyHolder holder(held_buf);
+        // The straggler's late insert into the old buffer...
+        ASSERT_EQ(stale_id, held_buf->insert_with_id("late", 4, stale_id));
+        // ...while the active buffer assigns the key its own id.
+        current_id = dict.lookup("late", 4);
+        ASSERT_GT(current_id, 0u);
+        ASSERT_NE(stale_id, current_id);
+
+        dict.rotate();
+        EXPECT_FALSE(dict.clearStandby());  // held_buf is the clear target
+    }
+
+    // The straggler is gone; the next rotate() reuses held_buf as the active.
+    EXPECT_TRUE(dict.rotate());
+    EXPECT_EQ(current_id, dict.bounded_lookup("late", 4));
+}
+
+// While a straggler still holds its guard, rotate() reuses the uncleared
+// buffer after a short check instead of waiting out a second full drain
+// timeout on top of the one clearStandby() already spent.
+TEST(StringDictionaryReclamationTest, RotateGivesUpQuicklyOnBufferStillInUse) {
+    StringDictionary dict;
+    ASSERT_GT(dict.lookup("early", 5), 0u);
+    dict.rotate();
+    EXPECT_TRUE(dict.clearStandby());
+    GuardedKeyHolder holder(dict.standby());
+    dict.rotate();
+    EXPECT_FALSE(dict.clearStandby());  // the held buffer is the clear target
+
+    auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(dict.rotate());  // reuses the held buffer uncleared
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(250));
+}
+
 // ── Counter gauges across a skipped reset ─────────────────────────────────
 //
 // Profiler::start() calls Counters::reset() right after resetting the
