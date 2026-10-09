@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk8
 
 ## musl-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-10-09 08:20:13 EDT
+**Date:** 2026-10-09 10:23:31 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 31 |
-| CPU Cores (end) | 31 |
+| CPU Cores (start) | 51 |
+| CPU Cores (end) | 51 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 106 |
-| Sample Rate | 1.77/sec |
-| Health Score | 111% |
-| Threads | 11 |
+| CPU Samples | 111 |
+| Sample Rate | 1.85/sec |
+| Health Score | 116% |
+| Threads | 12 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 31-31 cores)</summary>
+<summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1791547997 31
-1791548002 31
-1791548007 31
-1791548013 31
-1791548018 31
-1791548023 31
-1791548028 31
-1791548033 31
-1791548038 31
-1791548043 31
-1791548048 31
-1791548053 31
-1791548058 31
-1791548063 31
-1791548068 31
-1791548073 31
-1791548078 31
-1791548083 31
-1791548088 31
-1791548093 31
+1791555467 51
+1791555472 51
+1791555477 51
+1791555482 51
+1791555487 51
+1791555492 51
+1791555497 51
+1791555502 51
+1791555507 51
+1791555512 51
+1791555517 51
+1791555522 51
+1791555527 51
+1791555532 51
+1791555537 51
+1791555542 51
+1791555547 51
+1791555552 51
+1791555557 51
+1791555562 51
 ```
 </details>
 
