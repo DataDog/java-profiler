@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 Datadog
+ * Copyright 2024, 2026 Datadog
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@
 #define RESERVOIR_SAMPLER_H
 
 #include "xorshift.h"
-#include <cassert>
 #include <math.h>
 #include <vector>
 
@@ -69,15 +68,34 @@ public:
         for (int i = 0; i < _size && i < (int)input.size(); i++) {
             _reservoir.push_back(input[i]);
         }
+        // Algorithm L (Li, 1994). `target` is the 0-based index of the next
+        // input item to place, so the first candidate is input[_size] plus a
+        // skip, and every later one is one past the item just placed plus a
+        // skip. Without that +1 a zero skip places the same item again,
+        // duplicating it in the sample.
+        const int n = (int)input.size();
         double weight = exp(log(nextUniform()) / _size);
-        int target = _size + (int) (log(nextUniform()) / log(1 - weight));
-        assert(target >= 0);
-        while (target < (int)input.size()) {
+        int target = advance(_size, n, weight);
+        while (target < n) {
             _reservoir[xorshift::boundedIndex(xorshift::next(_rng), (u32)_size)] = input[target];
             weight *= exp(log(nextUniform()) / _size);
-            target += (int) (log(nextUniform()) / log(1 - weight));
+            target = advance(target + 1, n, weight);
         }
         return _reservoir;
+    }
+
+private:
+    // Returns `from` plus a geometric skip, or `n` when the skip runs past the
+    // input. The skip is compared as a double before the int conversion: as
+    // `weight` shrinks it can exceed INT_MAX, and once `1 - weight` rounds to
+    // 1.0 the quotient is -inf (log(u) < 0 over log(1.0) == +0.0). Either way
+    // the stream is exhausted, and converting such a value would be undefined.
+    int advance(int from, int n, double weight) {
+        double skip = floor(log(nextUniform()) / log(1 - weight));
+        if (!(skip >= 0.0 && skip < (double)(n - from))) {
+            return n;
+        }
+        return from + (int)skip;
     }
 };
 

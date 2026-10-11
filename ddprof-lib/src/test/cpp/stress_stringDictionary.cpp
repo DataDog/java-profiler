@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -532,10 +532,13 @@ TEST(StressStringDictionary, ClearAllWithoutExternalLockIsSafe) {
     }
 
     // Clearer: call clearAll() with no external lock — internal mechanism only.
-    std::thread clearer([&dict, &done]() {
+    // Accessors hold their guards only briefly, so every drain must succeed.
+    std::atomic<int> failed_clears{0};
+    std::thread clearer([&dict, &done, &failed_clears]() {
         for (int i = 0; i < N_CLEAR_OPS && !done.load(std::memory_order_relaxed); i++) {
             std::this_thread::sleep_for(std::chrono::milliseconds(40));
-            dict.clearAll();  // no lockAll() wrapper — this is the invariant under test
+            // no lockAll() wrapper — this is the invariant under test
+            if (!dict.clearAll()) failed_clears.fetch_add(1, std::memory_order_relaxed);
         }
     });
 
@@ -545,14 +548,14 @@ TEST(StressStringDictionary, ClearAllWithoutExternalLockIsSafe) {
     for (auto& th : inserters) th.join();
     for (auto& th : readers) th.join();
 
-    SUCCEED();
+    EXPECT_EQ(0, failed_clears.load());
 }
 
 // ── clearAll under concurrent readers ─────────────────────────────────────
 //
 // StringDictionary::clearAll() frees every malloc'd key in all three buffers.
 // Its contract is that the caller must quiesce signal handlers first
-// (cf. RefCountGuard::waitForAllRefCountsToClear in the production callsite).
+// (cf. the RefCountGuard drain inside clearAll()).
 // This test models that protocol using a std::shared_mutex barrier:
 // readers/inserters acquire it shared, the clearer acquires it exclusive.
 //
@@ -598,7 +601,8 @@ TEST(StressStringDictionary, ClearAllUnderConcurrentReaders) {
             std::unordered_map<std::string, u32> new_ids;
             {
                 std::unique_lock<std::shared_mutex> lk(epoch_mtx);
-                dict.clearAll();
+                // Accessors hold their guards only briefly, so the drain must succeed.
+                ASSERT_TRUE(dict.clearAll());
                 reseed(new_ids);
                 seed_ids = std::move(new_ids);
                 epoch.fetch_add(1, std::memory_order_release);

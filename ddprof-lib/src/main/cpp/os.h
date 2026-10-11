@@ -212,6 +212,7 @@ class OS {
     static int getCpuCount();
     static int getCgroupCpuMillicores();
     static long getContainerMemoryLimit();
+    static long getContainerMemoryUsage();
     static u64 getProcessCpuTime(u64* utime, u64* stime);
     static u64 getTotalCpuTime(u64* utime, u64* stime);
 

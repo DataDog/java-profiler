@@ -17,6 +17,7 @@
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
+#include "referenceChains.h"
 #include "safeAccess.h"
 #include "samplerPerf.h"
 #include "threadLocalData.h"
@@ -444,6 +445,17 @@ bool VM::initializeRequestStackTrace() {
   return false;
 }
 
+// JVMTI delivers ONE callback per event slot; both trackers need the
+// GarbageCollectionFinish signal (liveness GC epochs + reference-chain pass
+// scheduling), so this vmEntry-level forwarder fans the single slot out to
+// both static callbacks. Order is irrelevant (each only does lock-free
+// bookkeeping); LivenessTracker's callback keeps its own
+// initCurrentThreadSignalSafe() behavior.
+void JNICALL ForwardedGarbageCollectionFinish(jvmtiEnv *jvmti_env) {
+  LivenessTracker::GarbageCollectionFinish(jvmti_env);
+  ReferenceChainTracker::GarbageCollectionFinish(jvmti_env);
+}
+
 bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   TEST_LOG("VM::initProfilerBridge");
   if (!initShared(vm)) {
@@ -518,7 +530,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.ThreadStart = Profiler::ThreadStart;
   callbacks.ThreadEnd = Profiler::ThreadEnd;
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
-  callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
+  callbacks.GarbageCollectionStart = ReferenceChainTracker::GarbageCollectionStart;
+  callbacks.GarbageCollectionFinish = ForwardedGarbageCollectionFinish;
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 

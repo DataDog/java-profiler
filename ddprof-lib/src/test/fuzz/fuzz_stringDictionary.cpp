@@ -25,6 +25,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <map>
@@ -142,7 +143,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             dict.clearStandby();
         } else if (op < 0xA8) {
             // clearAll — sequential fuzz only; not exercising signal-time semantics.
-            dict.clearAll();
+            // With no concurrent accessor the drain cannot time out.
+            if (!dict.clearAll()) abort();
             shadow.clear();
             has_dump_buffer = false;
         }

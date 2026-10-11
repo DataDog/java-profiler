@@ -30,6 +30,7 @@ import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -110,6 +111,7 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
 
     Path baseFile = tempFile("jmethodid-churn-base");
     Path dumpFile = tempFile("jmethodid-churn-dump");
+    Path firedDumpFile = null;
 
     AtomicBoolean running = new AtomicBoolean(true);
     List<Thread> churnThreads = new ArrayList<>();
@@ -148,9 +150,23 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
       // with class unloading, not just after it.
       long deadline = System.currentTimeMillis() + DURATION_MILLIS;
       int dumps = 0;
+      long prevSkipped = before.getOrDefault("jmethodid_skipped_count", 0L);
       while (System.currentTimeMillis() < deadline) {
         profiler.dump(dumpFile);
         dumps++;
+        // The stale-jmethodID branch (JMETHODID_SKIPPED) and the '<unloaded>' label it
+        // serializes are produced in the same fillJavaMethodInfo call, so a dump whose
+        // window observed the counter crossing is guaranteed to carry the branch's
+        // output. Snapshot it: the assertion cannot use just the last dump file, since
+        // the counter also fires during background JFR buffer flushes between dumps,
+        // and a stale trace still present at an early dump can be evicted from the
+        // call-trace storage by later churn before the final dump is written.
+        long skipped = profiler.getDebugCounters().getOrDefault("jmethodid_skipped_count", 0L);
+        if (firedDumpFile == null && skipped > prevSkipped) {
+          firedDumpFile = tempFile("jmethodid-churn-fired");
+          Files.copy(dumpFile, firedDumpFile, StandardCopyOption.REPLACE_EXISTING);
+        }
+        prevSkipped = skipped;
         Thread.sleep(50);
       }
 
@@ -162,6 +178,21 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
 
       // Reaching this line means the profiler survived the whole churn window.
       Map<String, Long> after = profiler.getDebugCounters();
+      long skippedDelta = after.getOrDefault("jmethodid_skipped_count", 0L)
+          - before.getOrDefault("jmethodid_skipped_count", 0L);
+      long unreadableLineTableDelta = after.getOrDefault("line_number_table_unreadable", 0L)
+          - before.getOrDefault("line_number_table_unreadable", 0L);
+
+      // If the counter only fired during background JFR buffer flushes between dumps,
+      // no dump window observed it and no snapshot was taken. One more dump
+      // re-serializes any trace still carrying that stale jmethodID -- its
+      // '<unloaded>' MethodInfo is cached from the first resolution -- so the label
+      // assertion below stays checkable.
+      if (skippedDelta > 0 && firedDumpFile == null) {
+        firedDumpFile = tempFile("jmethodid-churn-fired");
+        profiler.dump(firedDumpFile);
+      }
+
       profiler.stop();
 
       assertTrue(Files.size(dumpFile) > 0,
@@ -173,11 +204,6 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
               + "counter-delta assertion below would be meaningless without this, since it "
               + "can't tell 'no stale jmethodID was hit' apart from 'churn never ran at all' "
               + "(e.g. a regression in generateChurnClassBytecode or IsolatedClassLoader).");
-
-      long skippedDelta = after.getOrDefault("jmethodid_skipped_count", 0L)
-          - before.getOrDefault("jmethodid_skipped_count", 0L);
-      long unreadableLineTableDelta = after.getOrDefault("line_number_table_unreadable", 0L)
-          - before.getOrDefault("line_number_table_unreadable", 0L);
 
       // Whether the stale-jmethodID race actually gets hit within the churn window is
       // JVM/host-discretionary (see class javadoc); treat "never observed" as an aborted
@@ -206,7 +232,10 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
               + " JVMTI-resolution-failure branch ran; skipping to avoid a spurious failure.");
       // Assert that the recording produced by that branch uses the '<unloaded>' label and
       // never the legacy 'jvmtiError' one -- this fails if the label is reverted to 'jvmtiError'.
-      assertUnloadedFrameLabel(dumpFile);
+      // With skippedDelta > 0, firedDumpFile is always set: either the dump whose window
+      // observed the counter crossing (label emitted in that same fillJavaMethodInfo call)
+      // or the extra post-churn dump taken above.
+      assertUnloadedFrameLabel(firedDumpFile);
     } finally {
       running.set(false);
       for (Thread t : churnThreads) {
@@ -232,6 +261,12 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
       try {
         Files.deleteIfExists(dumpFile);
       } catch (IOException ignored) {
+      }
+      if (firedDumpFile != null) {
+        try {
+          Files.deleteIfExists(firedDumpFile);
+        } catch (IOException ignored) {
+        }
       }
     }
   }

@@ -282,9 +282,18 @@ jobs:
     steps:
       - name: Setup OS
         run: |
-          apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils python3 >/dev/null
-          # Install debug symbols for musl libc
-          apk add musl-dbg
+          # dl-cdn.alpinelinux.org intermittently fails the index fetch with a TLS error;
+          # retry so a transient mirror blip does not fail the job. musl-dbg provides
+          # debug symbols for musl libc.
+          for attempt in 1 2 3 4 5; do
+            if apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils python3 musl-dbg >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0

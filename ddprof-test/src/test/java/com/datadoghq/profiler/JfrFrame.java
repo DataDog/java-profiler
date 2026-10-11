@@ -45,6 +45,14 @@ public final class JfrFrame {
         return method != null ? symbolString(method.get("descriptor")) : null;
     }
 
+    /**
+     * The frame's {@code jdk.types.FrameType} description (e.g. {@code "Native (remote)"}), or
+     * {@code null} if the frame type has no entry in the constant pool.
+     */
+    public String typeDescription() {
+        return symbolString(value.get("type"));
+    }
+
     /** The full name (e.g. {@code java.lang.String}) of the method's declaring type, or {@code null}. */
     @SuppressWarnings("unchecked")
     public String className() {

@@ -133,6 +133,14 @@ public abstract class AbstractProfilerTest {
     return System.getenv("ASAN_OPTIONS") != null;
   }
 
+  /**
+   * Whether the tests run against the -O0 debug build of the native library, which unwinds
+   * several times slower than the release build.
+   */
+  protected final boolean isDebugBuild() {
+    return "debug".equals(System.getProperty("ddprof_test.config"));
+  }
+
   private static long getPid() {
     try {
       String name = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();

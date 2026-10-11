@@ -908,9 +908,60 @@ int OS::getCgroupCpuMillicores() {
     return -1; // unconstrained or unavailable
 }
 
+// The usage file getContainerMemoryUsage() reads: the winning limit's own
+// cgroup when one was found and its usage file is readable, else the
+// process's leaf cgroup. Named per the hierarchy that supplied the limit (v2
+// memory.current vs v1 memory.usage_in_bytes), not probed by filename order -
+// on a hybrid system both controller files can be visible for the same
+// cgroup dir, and reading the wrong one pairs the limit with an unrelated
+// usage number. Empty when no usable file was found.
+// Threading: written only by resolveContainerMemoryLimit(), which runs once,
+// inside the first getContainerMemoryLimit() call. LivenessTracker::onGC()
+// reads it via getContainerMemoryUsage() only after acquiring the flag that
+// LivenessTracker::initialize_table() release-publishes after its
+// getContainerMemoryLimit() call.
+static char g_memory_usage_file[PATH_MAX] = {0};
+
+// Reads a non-negative integer from a cgroup file; -1 if it cannot be read.
+static long readCgroupValue(const char* file) {
+    int fd = open(file, O_RDONLY);
+    if (fd == -1) {
+        return -1;
+    }
+    char buf[32] = {0};
+    ssize_t r = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (r <= 0) {
+        return -1;
+    }
+    long value = atol(buf);
+    return value >= 0 ? value : -1;
+}
+
+// Points g_memory_usage_file at winner_dir/name if readable, else at
+// leaf_dir/name if readable, else clears it.
+static void selectUsageFile(const char* winner_dir, const char* leaf_dir, const char* name) {
+    const char* dirs[2] = {winner_dir, leaf_dir};
+    for (const char* dir : dirs) {
+        if (dir[0] != '\0' &&
+            (size_t)snprintf(g_memory_usage_file, sizeof(g_memory_usage_file), "%s/%s", dir,
+                             name) < sizeof(g_memory_usage_file) &&
+            readCgroupValue(g_memory_usage_file) >= 0) {
+            return;
+        }
+    }
+    g_memory_usage_file[0] = '\0';
+}
+
 // Applies the smallest (most restrictive) memory.max found across this
 // process's cgroup v2 group and all of its ancestors up to the mount root.
-static long walkCgroupV2MemoryLimit(char* path) {
+// When a limit wins, the cgroup it came from is remembered in
+// *winner_path_out: getContainerMemoryUsage() must read memory.current from
+// that same cgroup (see g_memory_usage_file), because an ancestor-level limit
+// also covers sibling cgroups whose usage the leaf's memory.current excludes
+// - pairing the ancestor limit with leaf usage would overstate the available
+// memory and delay the OOM projection.
+static long walkCgroupV2MemoryLimit(char* path, char* winner_path_out) {
     size_t base_len = strlen("/sys/fs/cgroup");
     long best = -1;
     for (;;) {
@@ -925,6 +976,9 @@ static long walkCgroupV2MemoryLimit(char* path) {
                     long limit = atol(buf);
                     if (limit > 0 && (best < 0 || limit < best)) {
                         best = limit;
+                        if (winner_path_out != nullptr) {
+                            snprintf(winner_path_out, PATH_MAX, "%s", path);
+                        }
                     }
                 }
             }
@@ -937,8 +991,9 @@ static long walkCgroupV2MemoryLimit(char* path) {
 }
 
 // Walks ancestors the same way as walkCgroupV2MemoryLimit(), but reads the
-// cgroup v1 memory controller's limit file instead.
-static long walkCgroupV1MemoryLimit(char* path) {
+// cgroup v1 memory controller's limit file instead. See the v2 walk's
+// comment for the winner-path bookkeeping.
+static long walkCgroupV1MemoryLimit(char* path, char* winner_path_out) {
     size_t base_len = strlen("/sys/fs/cgroup/memory");
     long best = -1;
     for (;;) {
@@ -954,6 +1009,9 @@ static long walkCgroupV1MemoryLimit(char* path) {
                     // A limit of 9223372036854771712 (LLONG_MAX rounded) means unconstrained.
                     if (limit > 0 && limit < 0x7ffffffffffff000L && (best < 0 || limit < best)) {
                         best = limit;
+                        if (winner_path_out != nullptr) {
+                            snprintf(winner_path_out, PATH_MAX, "%s", path);
+                        }
                     }
                 }
             }
@@ -965,9 +1023,13 @@ static long walkCgroupV1MemoryLimit(char* path) {
     return best;
 }
 
-long OS::getContainerMemoryLimit() {
+// The cgroup a process belongs to, and so its limit, is not expected to
+// change at runtime, so this is resolved once (see getContainerMemoryLimit()).
+static long resolveContainerMemoryLimit() {
     char subpath[PATH_MAX];
     char path[PATH_MAX];
+    char leaf_dir[PATH_MAX];
+    char winner_dir[PATH_MAX];
 
     // Try cgroup v2 first, resolved from this process's own cgroup path.
     if (getOwnCgroupPath("", subpath, sizeof(subpath))) {
@@ -982,7 +1044,11 @@ long OS::getContainerMemoryLimit() {
                 int fd = open(leaf, O_RDONLY);
                 if (fd != -1) {
                     close(fd);
-                    return walkCgroupV2MemoryLimit(path);
+                    memcpy(leaf_dir, path, base_len + sub_len + 1);
+                    winner_dir[0] = '\0';
+                    long limit = walkCgroupV2MemoryLimit(path, winner_dir);
+                    selectUsageFile(winner_dir, leaf_dir, "memory.current");
+                    return limit;
                 }
             }
         }
@@ -1002,13 +1068,35 @@ long OS::getContainerMemoryLimit() {
                 int fd = open(leaf, O_RDONLY);
                 if (fd != -1) {
                     close(fd);
-                    return walkCgroupV1MemoryLimit(path);
+                    memcpy(leaf_dir, path, base_len + sub_len + 1);
+                    winner_dir[0] = '\0';
+                    long limit = walkCgroupV1MemoryLimit(path, winner_dir);
+                    selectUsageFile(winner_dir, leaf_dir, "memory.usage_in_bytes");
+                    return limit;
                 }
             }
         }
     }
 
     return -1;
+}
+
+long OS::getContainerMemoryLimit() {
+    // Function-local static: resolved exactly once even if callers race, and
+    // every caller observes g_memory_usage_file as resolve left it.
+    static const long limit = resolveContainerMemoryLimit();
+    return limit;
+}
+
+// Reads the current usage from the file resolveContainerMemoryLimit() picked
+// (see g_memory_usage_file): the cgroup that supplied the winning limit when
+// one was recorded - an ancestor-level limit also covers sibling cgroups,
+// whose usage the leaf's memory.current excludes, so pairing an ancestor
+// limit with leaf usage would overstate the available memory and delay the
+// OOM projection. Returns -1 before the first getContainerMemoryLimit() call
+// or when no usable file was found.
+long OS::getContainerMemoryUsage() {
+    return g_memory_usage_file[0] != '\0' ? readCgroupValue(g_memory_usage_file) : -1;
 }
 
 u64 OS::getProcessCpuTime(u64* utime, u64* stime) {
@@ -1046,9 +1134,12 @@ int OS::createMemoryFile(const char* name) {
 
 void OS::copyFile(int src_fd, int dst_fd, off_t offset, size_t size) {
     // copy_file_range() is probably better, but not supported on all kernels
+    size_t requested = size;
     while (size > 0) {
         ssize_t bytes = sendfile(dst_fd, src_fd, &offset, size);
         if (bytes <= 0) {
+            TEST_LOG("OS::copyFile sendfile returned %zd, errno=%d, remaining=%zu of requested=%zu",
+                     bytes, errno, size, requested);
             break;
         }
         size -= (size_t)bytes;

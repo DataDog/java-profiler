@@ -60,8 +60,14 @@ inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, jmethod
 // zero-size-symbol cases, not zero-gap adjacency (see
 // BinarySearchPicksNextSymbolAtZeroGapBoundary), which is why the adjustment
 // is needed.
+//
+// The adjustment is done on uintptr_t rather than on a char pointer: pc can be
+// garbage read from a return-address slot during an optimistic unwind (UBSan
+// has caught both nullptr and 0x1 here), and offsetting a pointer to or from
+// null is undefined behavior, while unsigned integer wrap-around is not. Such
+// an address still matches no library and no FDE either way.
 inline const void* attributionPC(const void* pc, bool pc_is_return_address) {
-    return pc_is_return_address ? (const void*)((const char*)pc - 1) : pc;
+    return pc_is_return_address ? (const void*)((uintptr_t)pc - 1) : pc;
 }
 
 // The walking pc and "was it loaded from a return-address slot?" are one

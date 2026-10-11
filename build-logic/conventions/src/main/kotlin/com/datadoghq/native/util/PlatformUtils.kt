@@ -70,7 +70,11 @@ object PlatformUtils {
             val process = ProcessBuilder(compiler, "--version")
                 .redirectErrorStream(true)
                 .start()
-            process.waitFor(5, TimeUnit.SECONDS)
+            // Generous beyond the obvious: on a loaded macOS host the /usr/bin/clang++ Xcode
+            // shim can take several seconds to answer --version (Rosetta translation churn,
+            // oahd-helper at 100% CPU), and a 5s budget made this probe fail intermittently
+            // from invocations that accepted the same path minutes earlier.
+            process.waitFor(30, TimeUnit.SECONDS)
             process.exitValue() == 0
         } catch (e: Exception) {
             false

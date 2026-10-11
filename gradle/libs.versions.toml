@@ -20,7 +20,7 @@ zstd = "1.5.7-20"
 
 # JFR parsing for test verification (replaces JMC's FlightRecordingLoader, which can hang
 # forever if one of its internal parallel chunk-parsing workers dies from OOM)
-jafar = "0.26.2"
+jafar = "0.28.0"
 
 # Code analysis
 asm = "9.10.1"
