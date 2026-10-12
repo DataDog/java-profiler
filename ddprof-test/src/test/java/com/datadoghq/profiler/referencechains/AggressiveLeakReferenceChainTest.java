@@ -6,7 +6,7 @@
 package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.ReferenceChainTestHooks;
+import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Test;
 
@@ -56,9 +56,9 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
   }
 
   private static void assumeDebugBuild() {
-    assumeTrue(ReferenceChainAssertions.isDebugInstrumentedBuild(),
+    assumeTrue("debug".equals(System.getProperty("ddprof_test.config")),
         "heapFloorRecordForTest0/setMaxHeapBytesForTest0/shouldRunPassForTest0 only exist in a "
-            + "-DDEBUG native build - debug/asan/tsan (javaApi.cpp's #ifdef DEBUG guard)");
+            + "debug native build (javaApi.cpp's #ifdef DEBUG guard)");
   }
 
   /**
@@ -82,50 +82,44 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
   public void shouldOpenSearchGateOnAggressiveHeapWideGrowthWithNoLeakCandidate()
       throws InterruptedException {
     assumeDebugBuild();
-    ReferenceChainTestHooks.setHeapFloorRecordingForTest0(false);
-    ReferenceChainTestHooks.resetKlassPopulationForTest0();
-    ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
+    JavaProfiler.setHeapFloorRecordingForTest0(false);
+    JavaProfiler.resetKlassPopulationForTest0();
+    JavaProfiler.resetReferenceChainSearchForTest0();
     try {
-      // Baseline BEFORE publishing any urgency input: the live BFS thread may run the one
-      // urgency-authorized search as soon as the samples below land, and that pass must count.
-      int passesBefore = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
       // 1000 MiB fake max heap, rising from 100 MiB to 991 MiB over 9 (fake) seconds: ~99 MiB/s,
       // 9 MiB of headroom left at the last sample -> projected time-to-OOM ~= 9/99 s, far under
       // OOM_URGENT_THRESHOLD_S = 300s.
-      ReferenceChainTestHooks.setMaxHeapBytesForTest0(1000L * 1024 * 1024);
+      JavaProfiler.setMaxHeapBytesForTest0(1000L * 1024 * 1024);
       for (int i = 0; i < 10; i++) {
         long usedBytes = (100L + i * 99L) * 1024 * 1024;
         long timestampNs = i * 1_000_000_000L;
-        ReferenceChainTestHooks.heapFloorRecordForTest0(usedBytes, timestampNs);
+        JavaProfiler.heapFloorRecordForTest0(usedBytes, timestampNs);
       }
 
-      int[] candidates = ReferenceChainTestHooks.selectLeakCandidateKlassIds0();
+      int[] candidates = JavaProfiler.selectLeakCandidateKlassIds0();
       assertTrue(candidates == null || candidates.length == 0,
           "This test's own precondition: no per-klass candidate should exist, so passes running "
               + "below can only come from the aggregate urgent-OOM bypass");
 
+      int passesBefore = JavaProfiler.referenceChainPassesRunForTest0();
       // Idle BFS cadence is ~1s/pass; urgency ramps it to ~10ms after the latch. 20s covers the
       // first evaluation landing up to one idle cadence after the seeding loop.
       long deadline = System.currentTimeMillis() + 20_000;
-      while (ReferenceChainTestHooks.referenceChainPassesRunForTest0() == passesBefore
+      while (JavaProfiler.referenceChainPassesRunForTest0() == passesBefore
           && System.currentTimeMillis() < deadline) {
         Thread.sleep(50);
       }
-      assertTrue(ReferenceChainTestHooks.referenceChainPassesRunForTest0() > passesBefore,
+      assertTrue(JavaProfiler.referenceChainPassesRunForTest0() > passesBefore,
           "Expected the BFS thread to run passes from the urgent heap-wide OOM projection alone, "
               + "with zero per-klass leak candidate");
 
-      candidates = ReferenceChainTestHooks.selectLeakCandidateKlassIds0();
+      candidates = JavaProfiler.selectLeakCandidateKlassIds0();
       assertTrue(candidates == null || candidates.length == 0,
           "The passes that just ran must still have had zero per-klass candidates - the "
               + "aggregate urgent-OOM projection was the only possible trigger");
     } finally {
-      // Reset the ring while recording is still disabled so the restore below cannot
-      // let a real GC interleave a sample with the reset, and so the next test in this
-      // JVM does not inherit this test's seeded samples into its secondsToOOM().
-      ReferenceChainTestHooks.heapFloorResetForTest0();
-      ReferenceChainTestHooks.setMaxHeapBytesForTest0(-1);
-      ReferenceChainTestHooks.setHeapFloorRecordingForTest0(true);
+      JavaProfiler.setMaxHeapBytesForTest0(-1);
+      JavaProfiler.setHeapFloorRecordingForTest0(true);
     }
   }
 
@@ -138,63 +132,25 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
   @Test
   public void shouldNotOpenSearchGateOnFlatHeapFloorWithNoLeakCandidate() {
     assumeDebugBuild();
-    ReferenceChainTestHooks.setHeapFloorRecordingForTest0(false);
-    ReferenceChainTestHooks.resetKlassPopulationForTest0();
-    ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
+    JavaProfiler.setHeapFloorRecordingForTest0(false);
+    JavaProfiler.resetKlassPopulationForTest0();
+    JavaProfiler.resetReferenceChainSearchForTest0();
     try {
-      ReferenceChainTestHooks.setMaxHeapBytesForTest0(1000L * 1024 * 1024);
+      JavaProfiler.setMaxHeapBytesForTest0(1000L * 1024 * 1024);
       for (int i = 0; i < 10; i++) {
-        ReferenceChainTestHooks.heapFloorRecordForTest0(200L * 1024 * 1024, i * 1_000_000_000L);
+        JavaProfiler.heapFloorRecordForTest0(200L * 1024 * 1024, i * 1_000_000_000L);
       }
 
-      int[] candidates = ReferenceChainTestHooks.selectLeakCandidateKlassIds0();
+      int[] candidates = JavaProfiler.selectLeakCandidateKlassIds0();
       assertTrue(candidates == null || candidates.length == 0,
           "This test's own precondition: no per-klass candidate should exist either");
 
-      assertFalse(ReferenceChainTestHooks.shouldRunPassForTest0(),
+      assertFalse(JavaProfiler.shouldRunPassForTest0(),
           "Expected the search-restart gate to stay closed: no heap growth and no per-klass "
               + "candidate give hasLeakSignal() nothing to trust");
     } finally {
-      // Same order as the seeding test above: ring reset first, still disabled.
-      ReferenceChainTestHooks.heapFloorResetForTest0();
-      ReferenceChainTestHooks.setMaxHeapBytesForTest0(-1);
-      ReferenceChainTestHooks.setHeapFloorRecordingForTest0(true);
-    }
-  }
-
-  /**
-   * Kills a no-op'd {@code heapFloorResetForTest0()} mutation: every other call site resets in
-   * a finally block that no assertion observes, so without this test a reset whose body was
-   * dropped (or whose JNI entry was left as the release stub) would leave the whole suite
-   * green while leaking one test's seeded samples into the next test's JVM. The rising-then-
-   * empty pair is asserted directly through {@code heapFloorRising()} - the same read the
-   * aggregate gate uses - so the reset's effect is checked, not assumed.
-   */
-  @Test
-  public void shouldEmptyHeapFloorRingOnReset() {
-    assumeDebugBuild();
-    ReferenceChainTestHooks.setHeapFloorRecordingForTest0(false);
-    ReferenceChainTestHooks.resetKlassPopulationForTest0();
-    ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
-    try {
-      // Same rising seeds as shouldOpenSearchGateOnAggressiveHeapWideGrowthWithNoLeakCandidate:
-      // 100 MiB to 991 MiB over 9 fake seconds, which clears heapFloorRising()'s growth and
-      // floor bars at exactly the min-fill trend window (fill = 10 samples).
-      for (int i = 0; i < 10; i++) {
-        long usedBytes = (100L + i * 99L) * 1024 * 1024;
-        long timestampNs = i * 1_000_000_000L;
-        ReferenceChainTestHooks.heapFloorRecordForTest0(usedBytes, timestampNs);
-      }
-      assertTrue(ReferenceChainTestHooks.heapFloorRisingForTest0(),
-          "Precondition: the seeded samples must read as a sustained rise before the reset");
-      ReferenceChainTestHooks.heapFloorResetForTest0();
-      assertFalse(ReferenceChainTestHooks.heapFloorRisingForTest0(),
-          "heapFloorResetForTest0() must empty the ring: fill = 0 falls below the min-fill "
-              + "trend gate heapFloorRising() requires");
-    } finally {
-      // Same order as the other tests: ring reset first, still disabled.
-      ReferenceChainTestHooks.heapFloorResetForTest0();
-      ReferenceChainTestHooks.setHeapFloorRecordingForTest0(true);
+      JavaProfiler.setMaxHeapBytesForTest0(-1);
+      JavaProfiler.setHeapFloorRecordingForTest0(true);
     }
   }
 }

@@ -74,8 +74,10 @@ public abstract class AbstractProfilerTest {
   protected JavaProfiler profiler;
   private Path jfrDump;
 
-  // Set before getProfilerCommand() is consulted, so a subclass can vary its
-  // command per @Test method instead of needing one test class per configuration.
+  // Set at the very start of setupProfiler(), before getProfilerCommand() is
+  // consulted, so a subclass can branch its command on the current test
+  // method (e.g. distinct hop/budget/frontier-cap values per @Test) without
+  // needing separate test classes per configuration.
   protected TestInfo testInfo;
 
   private Duration cpuInterval;

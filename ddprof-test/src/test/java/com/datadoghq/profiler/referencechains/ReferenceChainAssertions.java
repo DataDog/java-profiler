@@ -21,51 +21,21 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Shared {@code datadog.ReferenceChain} JFR-parsing helpers.
+ * Shared {@code datadog.ReferenceChain} JFR-parsing helpers, extracted out of
+ * {@code ReferenceChainTrackingTest} so both that in-process JUnit test and
+ * {@link LeakingCacheScenario} (run inside a genuinely separate child JVM by
+ * {@code ExternalProcessReferenceChainTest}) can reuse the exact same JMC-accessor logic
+ * rather than maintaining two copies.
  *
- * <p>Two overloads because callers load recordings differently:
- * {@code ReferenceChainTrackingTest} uses {@code AbstractProfilerTest}'s {@code JfrEvents}
- * helpers ({@link #findMatchForClass(JfrEvents, Class)}), while {@link LeakingCacheScenario} loads
- * via JMC's {@code JfrLoaderToolkit} ({@link #findMatchForClass(IItemCollection, Class)}).
+ * <p>{@link #findMatchForClass(JfrEvents, Class)} is a separate, jafar-backed counterpart to
+ * {@link #findMatchForClass(IItemCollection, Class)} for {@code ReferenceChainTrackingTest}, which
+ * loads recordings via {@code AbstractProfilerTest}'s {@code JfrEvents}-returning helpers.
+ * {@link LeakingCacheScenario} and {@code ReferenceChainJfrParserTest}
+ * load recordings directly via JMC's {@code JfrLoaderToolkit} and keep using the
+ * {@code IItemCollection} overload unchanged.
  */
 public final class ReferenceChainAssertions {
   private ReferenceChainAssertions() {}
-
-  /**
-   * Leak-tag pool range, mirrored from referenceChains.h / livenessTracker.h (LEAK_TAG_BASE,
-   * LEAK_TAG_POOL_SIZE): a correlated chain's targetTag and its HeapLiveObject's leakTag must fall
-   * into [LEAK_TAG_BASE, LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE). Asserted against runtime event
-   * values.
-   */
-  public static final long LEAK_TAG_BASE = 0x40000000L;
-
-  public static final long LEAK_TAG_POOL_SIZE = 256;
-
-  /**
-   * True on every native build that compiles javaApi.cpp's {@code #ifdef DEBUG} test seams: debug,
-   * asan and tsan (all add -DDEBUG, ConfigurationPresets.kt). Release builds get no-op seam stubs.
-   * Child JVMs see the same answer because the launchers forward {@code -Dddprof_test.config}.
-   */
-  public static boolean isDebugInstrumentedBuild() {
-    String config = System.getProperty("ddprof_test.config");
-    return config != null && ("debug".equals(config) || config.endsWith("san"));
-  }
-
-  /**
-   * The {@code ddprof_test.config} value ProfilerTestPlugin.kt sets on every test&lt;config&gt; task.
-   * Launchers forwarding it to a child JVM must fail loud when it is unset (a test run directly
-   * from an IDE, outside the Gradle tasks) instead of concatenating the literal "null", which the
-   * child would silently classify as a release build and take the unseeded, flakier path.
-   */
-  public static String requiredTestConfig() {
-    String config = System.getProperty("ddprof_test.config");
-    if (config == null) {
-      throw new IllegalStateException(
-          "ddprof_test.config is not set; run via a test<config> Gradle task so the child "
-              + "JVM sees the right build configuration");
-    }
-    return config;
-  }
 
   /** Result of {@link #findMatchForClass(IItemCollection, Class)}: one resolved chain event's fields. */
   public static final class ChainMatch {
@@ -100,21 +70,6 @@ public final class ReferenceChainAssertions {
    * own comment). Returns {@code null} if {@code events} is empty or none match.
    */
   public static ChainMatch findMatchForClass(IItemCollection events, Class<?> targetClass) {
-    return findMatch(events, targetClass, false, 0);
-  }
-
-  /**
-   * Same as {@link #findMatchForClass(IItemCollection, Class)}, but identifies one specific
-   * instance: only an item whose {@code targetTag} equals {@code requiredTargetTag} matches (an
-   * item without a readable {@code targetTag} never does).
-   */
-  public static ChainMatch findMatchForClassAndTargetTag(IItemCollection events,
-      Class<?> targetClass, long requiredTargetTag) {
-    return findMatch(events, targetClass, true, requiredTargetTag);
-  }
-
-  private static ChainMatch findMatch(IItemCollection events, Class<?> targetClass,
-      boolean requireTag, long requiredTargetTag) {
     if (events == null || !events.hasItems()) {
       return null;
     }
@@ -139,14 +94,11 @@ public final class ReferenceChainAssertions {
             || !targetName.equals(((IMCType) rawChain[0]).getFullName())) {
           continue;
         }
-        long targetTag = targetTagAccessor != null ? numberValue(targetTagAccessor.getMember(item)) : -1;
-        if (requireTag && targetTag != requiredTargetTag) {
-          continue;
-        }
         List<IMCType> chain = new ArrayList<>(rawChain.length);
         for (Object element : rawChain) {
           chain.add((IMCType) element);
         }
+        long targetTag = targetTagAccessor != null ? numberValue(targetTagAccessor.getMember(item)) : -1;
         int depth = depthAccessor != null ? (int) numberValue(depthAccessor.getMember(item)) : -1;
         return new ChainMatch(chain, targetTag, depth);
       }
@@ -185,9 +137,15 @@ public final class ReferenceChainAssertions {
   }
 
   /**
-   * {@code targetClass}'s name in {@code IMCType.getFullName()} format: {@code Class.getName()}
-   * renders {@code byte[].class} as {@code "[B"}, but JMC renders it as {@code "byte[]"}, so a
-   * direct comparison never matches an array-typed leaf. Non-array names are unchanged.
+   * {@code targetClass}'s name in the same format {@code IMCType.getFullName()} uses for array
+   * types - found the hard way: {@code Class.getName()} renders {@code byte[].class} as {@code
+   * "[B"} (JVM internal signature notation), but JMC's chunk parser renders the same array class's
+   * {@code IMCType.getFullName()} as {@code "byte[]"} (Java source notation), so comparing {@link
+   * Class#getName()} directly against {@code getFullName()} - as both {@code findMatchForClass}
+   * overloads above used to - can never match an array-typed leaf class, even when the correct
+   * event is genuinely present in the recording. Only affects array {@code targetClass} values
+   * (e.g. {@code byte[].class}); a non-array class's {@code getName()} already matches {@code
+   * getFullName()} as-is.
    */
   private static String jmcStyleName(Class<?> targetClass) {
     int dimensions = 0;

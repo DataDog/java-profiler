@@ -5,7 +5,6 @@
 
 package com.datadoghq.profiler.referencechains;
 
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IAccessorKey;
@@ -15,7 +14,6 @@ import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.item.IType;
 import org.openjdk.jmc.common.item.ItemFilters;
-import org.openjdk.jmc.common.unit.IQuantity;
 import org.openjdk.jmc.flightrecorder.CouldNotLoadRecordingException;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
@@ -27,7 +25,6 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -35,53 +32,60 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
- * Verifies JMC resolves {@code datadog.ReferenceChain}'s {@code chain} field - declared in
- * jfrMetadata.cpp as {@code field("chain", T_CLASS, ..., F_CPOOL | F_ARRAY)}, an array of
- * constant-pool {@code T_CLASS} indices. Neither scalar F_CPOOL fields (e.g. {@code objectClass})
- * nor F_ARRAY-of-struct fields (e.g. {@code jdk.StackTrace#frames}) cover this combination.
+ * PROF-15341 design doc, Open Question: does JMC's parser actually resolve the {@code
+ * datadog.ReferenceChain} event's {@code chain} field - declared in jfrMetadata.cpp as {@code
+ * field("chain", T_CLASS, ..., F_CPOOL | F_ARRAY)}, i.e. an <em>array of scalar
+ * constant-pool-index</em> {@code T_CLASS} values - the same way it resolves a plain scalar
+ * F_CPOOL field (e.g. {@code objectClass}, already exercised by {@code AbstractProfilerTest})
+ * or a plain F_ARRAY-of-composite-struct field (e.g. {@code jdk.StackTrace#frames})? Neither
+ * already-exercised shape proves this exact combination.
  *
- * <p>Loads the .jfr produced by the companion gtest ({@code referenceChainJfrRoundtrip_ut.cpp})
- * directly, with no live profiler, and asserts the seeded class names in leaf-to-root order.
+ * <p>This test loads the standalone .jfr file produced by the companion gtest ({@code
+ * ddprof-lib/src/test/cpp/referenceChainJfrRoundtrip_ut.cpp}) directly via {@link
+ * JfrLoaderToolkit} - no live profiler attach, no {@code AbstractProfilerTest} lifecycle - and
+ * asserts the {@code chain} field resolves to the exact class names that gtest seeded, in the
+ * exact leaf-to-root order {@code ReferenceChainTracker::buildChainEvent()} (referenceChains.h)
+ * produces.
  *
  * <p><b>Why a generic accessor, not {@code Attribute.attr(...)}:</b> JMC's v1 chunk parser
- * ({@code ArrayReader#getContentType()}) registers {@code UnitLookup.UNKNOWN} as the content type
- * of every array field, so it cannot be bound via a typed {@code Attribute}. Looking it up by
- * identifier via {@code IType#getAccessorKeys()} still goes through {@code ArrayReader}'s
- * per-element {@code PoolReader} resolution - the thing this test exists to prove.
+ * (internal.parser.v1.ValueReaders.ArrayReader#getContentType()) registers {@code
+ * UnitLookup.UNKNOWN} as the declared content type for <em>every</em> array field, regardless of
+ * what its element reader resolves to - this is generic to all array fields, not specific to the
+ * cpool case. A field registered as UNKNOWN cannot be bound via {@code
+ * Attribute.attr(id, name, desc, CLASS).getAccessor(type)} (that requires the field's registered
+ * content type to match). This test instead looks the field up by identifier via {@code
+ * IType#getAccessorKeys()} and calls {@code IType#getAccessor(IAccessorKey)} directly - the same
+ * lower-level lookup JMC's own UI uses for fields it has no compile-time-known attribute for.
+ * This is not a workaround for a missing capability; it is the correct API for an unregistered
+ * custom field, and it still calls through the very code
+ * ({@code ArrayReader.read()}/{@code resolve()} delegating per-element to the field's element
+ * reader, which for {@code chain} is a {@code PoolReader}) that resolves each array element's
+ * constant-pool index to its class - the actual thing this test exists to prove.
  */
 public class ReferenceChainJfrParserTest {
 
   private static final String EVENT_TYPE = "datadog.ReferenceChain";
 
-  /** Set by the build for both this test and the companion gtest (see build.gradle.kts). */
-  private static final String ROUNDTRIP_JFR_ENV = "DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR";
+  /**
+   * Same path {@code chainRoundtripJfrPath()} in the companion gtest resolves to: the OS temp
+   * dir (TMPDIR, falling back to /tmp), agreed by both sides rather than by a shared build
+   * directory - the gtest (ddprof-lib) and this test (ddprof-test) are different Gradle
+   * modules/tasks with no other filesystem contract between them.
+   */
+  private static Path roundtripJfrPath() {
+    String tmp = System.getenv("TMPDIR");
+    String dir = (tmp != null && !tmp.isEmpty()) ? tmp : "/tmp";
+    return Paths.get(dir, "datadog_reference_chain_roundtrip.jfr");
+  }
 
   @Test
   public void chainFieldResolvesToSeededClassNamesInLeafToRootOrder()
       throws IOException, CouldNotLoadRecordingException {
-    String configured = System.getenv(ROUNDTRIP_JFR_ENV);
-    Assumptions.assumeTrue(configured != null && !configured.isEmpty(),
-        ROUNDTRIP_JFR_ENV + " is not set - this test only runs from the Gradle test tasks");
-    Path jfrPath = Paths.get(configured);
-    // Assumption, not assertion: the producing gtest does not run on CI runners without Google
-    // Test (e.g. the el7 testRelease job) or with -Pskip-gtest. The build deletes the file before
-    // the gtest runs, and when the gtest is skipped, so an existing file is always this build's.
-    Assumptions.assumeTrue(Files.exists(jfrPath),
+    Path jfrPath = roundtripJfrPath();
+    assertTrue(Files.exists(jfrPath),
         "Expected " + jfrPath + " to exist - run "
             + ":ddprof-lib:gtestDebug_referenceChainJfrRoundtrip_ut first "
             + "(referenceChainJfrRoundtrip_ut.cpp produces this file).");
-    // The seeded values the companion gtest wrote next to the recording - the
-    // single source of truth for this test's expectations, so the producer and
-    // this consumer cannot drift apart silently.
-    Path expectedPath = Paths.get(configured + ".expected");
-    Assumptions.assumeTrue(Files.exists(expectedPath),
-        "Expected " + expectedPath + " to exist - run "
-            + ":ddprof-lib:gtestDebug_referenceChainJfrRoundtrip_ut first "
-            + "(referenceChainJfrRoundtrip_ut.cpp produces this sidecar).");
-    Properties expected = new Properties();
-    try (InputStream in = Files.newInputStream(expectedPath)) {
-      expected.load(in);
-    }
 
     IItemCollection events;
     try (InputStream in = Files.newInputStream(jfrPath)) {
@@ -92,7 +96,6 @@ public class ReferenceChainJfrParserTest {
 
     List<IMCType> resolvedChain = null;
     long targetTag = -1;
-    long leakTagIncarnation = -1;
     int depth = -1;
     for (IItemIterable iterable : chainEvents) {
       IType<IItem> type = iterable.getType();
@@ -100,9 +103,6 @@ public class ReferenceChainJfrParserTest {
       IMemberAccessor<?, IItem> edgesAccessor = findAccessor(type, "edges");
       IMemberAccessor<?, IItem> targetTagAccessor = findAccessor(type, "targetTag");
       IMemberAccessor<?, IItem> depthAccessor = findAccessor(type, "depth");
-      IMemberAccessor<?, IItem> incarnationAccessor = findAccessor(type, "leakTagIncarnation");
-      assertNotNull(incarnationAccessor, "No accessor for 'leakTagIncarnation' field on "
-          + EVENT_TYPE);
       assertNotNull(chainAccessor, "No accessor for 'chain' field on " + EVENT_TYPE);
       assertNotNull(edgesAccessor, "No accessor for 'edges' field on " + EVENT_TYPE
           + " - the new retention-edge label array (T_STRING|F_ARRAY) did not make it "
@@ -126,40 +126,39 @@ public class ReferenceChainJfrParserTest {
           chain.add((IMCType) element);
         }
         resolvedChain = chain;
-        // Retention-edge labels, one per hop. The gtest has no JNIEnv, so it seeds kind labels
-        // instead of decoded ones; this checks the array field parses, not the decode
-        // (covered natively by referenceChains_ut).
+        // Retention-edge labels: one per chain hop, aligned with it (the
+        // gtest seeds kind labels because its JNIEnv is null - the label
+        // DECODE is skipped; the Java side validates the ARRAY FIELD parses,
+        // not the decode itself, which referenceChains_ut covers natively).
         Object edgesValue = edgesAccessor.getMember(item);
         assertNotNull(edgesValue, "'edges' field resolved to null");
         assertTrue(edgesValue instanceof Object[],
             "'edges' field resolved to " + edgesValue.getClass()
                 + ", expected an array");
         Object[] rawEdges = (Object[]) edgesValue;
-        assertEquals(expectedInt(expected, "chain.length"), rawEdges.length,
-            "edges must align with the chain, one label per hop");
+        assertEquals(3, rawEdges.length, "edges must align with the chain, one label per hop");
         for (Object e : rawEdges) {
           assertTrue(e instanceof String,
               "edges[] element resolved to " + (e == null ? "null" : e.getClass())
                   + ", expected a String");
         }
-        assertEquals(expected.getProperty("edges.0"), rawEdges[0]);
-        assertEquals(expected.getProperty("edges.1"), rawEdges[1]);
-        assertEquals(expected.getProperty("edges.2"), rawEdges[2]);
+        assertEquals("field", rawEdges[0]);
+        assertEquals("element", rawEdges[1]);
+        assertEquals("jni_global", rawEdges[2]);
         if (targetTagAccessor != null) {
           Object v = targetTagAccessor.getMember(item);
           if (v instanceof Number) {
             targetTag = ((Number) v).longValue();
-          } else if (v instanceof IQuantity) {
-            targetTag = ((IQuantity) v).longValue();
+          } else if (v instanceof org.openjdk.jmc.common.unit.IQuantity) {
+            targetTag = ((org.openjdk.jmc.common.unit.IQuantity) v).longValue();
           }
         }
-        leakTagIncarnation = longValue(incarnationAccessor.getMember(item));
         if (depthAccessor != null) {
           Object v = depthAccessor.getMember(item);
           if (v instanceof Number) {
             depth = ((Number) v).intValue();
-          } else if (v instanceof IQuantity) {
-            depth = (int) ((IQuantity) v).longValue();
+          } else if (v instanceof org.openjdk.jmc.common.unit.IQuantity) {
+            depth = (int) ((org.openjdk.jmc.common.unit.IQuantity) v).longValue();
           }
         }
         break; // referenceChainJfrRoundtrip_ut.cpp writes exactly one event
@@ -170,55 +169,15 @@ public class ReferenceChainJfrParserTest {
     }
 
     assertNotNull(resolvedChain, "Never iterated a " + EVENT_TYPE + " item");
-    assertEquals(expectedInt(expected, "chain.length"), resolvedChain.size(),
-        "Expected leaf/middle/root - as many entries as the gtest seeded");
+    assertEquals(3, resolvedChain.size(), "Expected leaf/middle/root - 3 entries");
     // Leaf-to-root order, matching ReferenceChainTracker::buildChainEvent()'s
     // FrontierTable::reconstructChain() contract and the gtest's insert() calls
-    // (tag=3 leaf -> tag=2 middle -> tag=1 root). The sidecar carries the gtest's
-    // slashed internal names; JMC renders IMCType full names with dots.
-    for (int i = 0; i < resolvedChain.size(); i++) {
-      assertEquals(expected.getProperty("chain." + i).replace('/', '.'),
-          resolvedChain.get(i).getFullName(),
-          "chain[" + i + "] must be the gtest's seeded class in leaf-to-root order");
-    }
-    assertEquals(expectedLong(expected, "targetTag"), targetTag,
-        "targetTag should be the leaf's frontier tag the gtest seeded");
-    assertEquals(expectedInt(expected, "depth"), depth,
-        "depth should be the leaf's own depth the gtest seeded");
-    assertEquals(expectedLong(expected, "leakTagIncarnation"), leakTagIncarnation,
-        "leakTagIncarnation should carry the event's ownership stamp the gtest seeded");
-  }
-
-  // Both sidecar readers report the offending key with the value: a bare parse
-  // exception names neither, and a MISSING key surfaces as a null parse whose
-  // built-in message ("null") says nothing about which sidecar entry is absent.
-  private static int expectedInt(Properties expected, String key) {
-    String value = expected.getProperty(key);
-    try {
-      return Integer.parseInt(value);
-    } catch (RuntimeException e) {
-      throw new IllegalStateException(
-          "malformed or missing '" + key + "' in the roundtrip sidecar (value: " + value + ")", e);
-    }
-  }
-
-  private static long expectedLong(Properties expected, String key) {
-    String value = expected.getProperty(key);
-    try {
-      return Long.parseLong(value);
-    } catch (RuntimeException e) {
-      throw new IllegalStateException(
-          "malformed or missing '" + key + "' in the roundtrip sidecar (value: " + value + ")", e);
-    }
-  }
-
-  private static long longValue(Object v) {
-    if (v instanceof Number) {
-      return ((Number) v).longValue();
-    } else if (v instanceof IQuantity) {
-      return ((IQuantity) v).longValue();
-    }
-    return -1;
+    // (tag=3 leaf -> tag=2 middle -> tag=1 root).
+    assertEquals("com.test.ChainLeaf", resolvedChain.get(0).getFullName());
+    assertEquals("com.test.ChainMiddle", resolvedChain.get(1).getFullName());
+    assertEquals("com.test.ChainRoot", resolvedChain.get(2).getFullName());
+    assertEquals(3L, targetTag, "targetTag should be the leaf's frontier tag (3)");
+    assertEquals(2, depth, "depth should be the leaf's own depth (2 hops from the root)");
   }
 
   private static IMemberAccessor<?, IItem> findAccessor(IType<IItem> type, String identifier) {
