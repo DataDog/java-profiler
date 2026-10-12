@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-10-11 23:08:37 EDT
+**Date:** 2026-10-11 23:09:32 EDT
 
 ### Configuration
 | Setting | Value |
@@ -19,7 +19,7 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | CPU Cores (start) | 17 |
-| CPU Cores (end) | 64 |
+| CPU Cores (end) | 17 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 326 |
-| Sample Rate | 5.43/sec |
-| Health Score | 339% |
-| Threads | 7 |
+| CPU Samples | 148 |
+| Sample Rate | 2.47/sec |
+| Health Score | 154% |
+| Threads | 5 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 362 |
-| Sample Rate | 6.03/sec |
-| Health Score | 377% |
-| Threads | 9 |
+| CPU Samples | 168 |
+| Sample Rate | 2.80/sec |
+| Health Score | 175% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 17-64 cores)</summary>
+<summary>CPU Timeline (2 unique values: 15-17 cores)</summary>
 
 ```
-1791774125 17
-1791774130 17
-1791774135 17
-1791774140 17
-1791774145 17
-1791774150 17
-1791774155 17
-1791774160 17
-1791774165 17
-1791774170 17
-1791774175 17
-1791774180 17
-1791774185 17
-1791774190 17
-1791774195 17
-1791774200 17
-1791774205 17
-1791774210 64
-1791774215 64
-1791774220 64
+1791774078 17
+1791774083 17
+1791774088 17
+1791774093 17
+1791774098 15
+1791774103 15
+1791774108 15
+1791774113 15
+1791774118 17
+1791774123 17
+1791774128 17
+1791774133 17
+1791774138 17
+1791774143 17
+1791774148 17
+1791774153 17
+1791774158 17
+1791774163 17
+1791774168 17
+1791774173 17
 ```
 </details>
 

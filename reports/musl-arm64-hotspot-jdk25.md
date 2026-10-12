@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk25
 
 ## musl-arm64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-10-11 23:08:37 EDT
+**Date:** 2026-10-11 23:09:32 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 49 |
-| Sample Rate | 0.82/sec |
-| Health Score | 51% |
+| CPU Samples | 75 |
+| Sample Rate | 1.25/sec |
+| Health Score | 78% |
 | Threads | 11 |
-| Allocations | 73 |
+| Allocations | 62 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 507 |
-| Sample Rate | 8.45/sec |
-| Health Score | 528% |
-| Threads | 10 |
-| Allocations | 468 |
+| CPU Samples | 15 |
+| Sample Rate | 0.25/sec |
+| Health Score | 16% |
+| Threads | 7 |
+| Allocations | 13 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 18-18 cores)</summary>
 
 ```
-1791774112 18
-1791774117 18
-1791774122 18
-1791774127 18
-1791774132 18
-1791774137 18
-1791774142 18
-1791774147 18
-1791774152 18
-1791774157 18
-1791774162 18
-1791774167 18
-1791774172 18
-1791774177 18
-1791774182 18
-1791774187 18
-1791774192 18
-1791774197 18
-1791774202 18
-1791774208 18
+1791774110 18
+1791774115 18
+1791774120 18
+1791774125 18
+1791774130 18
+1791774135 18
+1791774140 18
+1791774145 18
+1791774150 18
+1791774155 18
+1791774160 18
+1791774165 18
+1791774170 18
+1791774175 18
+1791774180 18
+1791774185 18
+1791774190 18
+1791774195 18
+1791774200 18
+1791774205 18
 ```
 </details>
 
