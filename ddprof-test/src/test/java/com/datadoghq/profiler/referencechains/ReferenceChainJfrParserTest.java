@@ -5,6 +5,7 @@
 
 package com.datadoghq.profiler.referencechains;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IAccessorKey;
@@ -14,6 +15,7 @@ import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.item.IType;
 import org.openjdk.jmc.common.item.ItemFilters;
+import org.openjdk.jmc.common.unit.IQuantity;
 import org.openjdk.jmc.flightrecorder.CouldNotLoadRecordingException;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
@@ -82,7 +84,13 @@ public class ReferenceChainJfrParserTest {
   public void chainFieldResolvesToSeededClassNamesInLeafToRootOrder()
       throws IOException, CouldNotLoadRecordingException {
     Path jfrPath = roundtripJfrPath();
-    assertTrue(Files.exists(jfrPath),
+    // Assumption, not assertion: the fixture is produced by the companion gtest
+    // (referenceChainJfrRoundtrip_ut.cpp), which does not run on CI runners
+    // without Google Test (e.g. the el7 testRelease job) - there the file can
+    // never exist and this test would fail spuriously. Where the gtest ran in
+    // the same Gradle invocation (local testDebug, gtest-equipped CI jobs), the
+    // file exists and the test executes; otherwise it is skipped.
+    Assumptions.assumeTrue(Files.exists(jfrPath),
         "Expected " + jfrPath + " to exist - run "
             + ":ddprof-lib:gtestDebug_referenceChainJfrRoundtrip_ut first "
             + "(referenceChainJfrRoundtrip_ut.cpp produces this file).");
@@ -149,16 +157,16 @@ public class ReferenceChainJfrParserTest {
           Object v = targetTagAccessor.getMember(item);
           if (v instanceof Number) {
             targetTag = ((Number) v).longValue();
-          } else if (v instanceof org.openjdk.jmc.common.unit.IQuantity) {
-            targetTag = ((org.openjdk.jmc.common.unit.IQuantity) v).longValue();
+          } else if (v instanceof IQuantity) {
+            targetTag = ((IQuantity) v).longValue();
           }
         }
         if (depthAccessor != null) {
           Object v = depthAccessor.getMember(item);
           if (v instanceof Number) {
             depth = ((Number) v).intValue();
-          } else if (v instanceof org.openjdk.jmc.common.unit.IQuantity) {
-            depth = (int) ((org.openjdk.jmc.common.unit.IQuantity) v).longValue();
+          } else if (v instanceof IQuantity) {
+            depth = (int) ((IQuantity) v).longValue();
           }
         }
         break; // referenceChainJfrRoundtrip_ut.cpp writes exactly one event
