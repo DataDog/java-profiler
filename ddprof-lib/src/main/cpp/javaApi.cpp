@@ -1173,6 +1173,17 @@ Java_com_datadoghq_profiler_JavaProfiler_resetKlassPopulationForTest0(
     JNIEnv *env, jclass unused) {
   ProfiledThread::initCurrentThreadSignalSafe();
   LivenessTracker::instance()->klassPopulationResetForTest();
+  // Re-baseline the class-map generation: selectLeakCandidates() returns
+  // nothing while classMap()->generation() differs from the tracker's
+  // baseline, and that baseline is only re-synced by cleanup_table()'s
+  // GC-driven sweep - but this JVM has typically already run several
+  // recordings (each Profiler::start() clearAll() bumps the generation)
+  // before this test's seeding, and no GC may land between start() and
+  // the seeded selectLeakCandidates() call. After the wipe above there is
+  // no stale-namespace population data left to protect, so adopting the
+  // current generation is safe.
+  LivenessTracker::instance()->classMapGenerationSetForTest(
+      Profiler::instance()->classMap()->generation());
 }
 
 extern "C" DLLEXPORT jintArray JNICALL
