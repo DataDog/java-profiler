@@ -36,6 +36,17 @@ public abstract class AbstractProcessProfilerTest {
     }
 
     protected final LaunchResult launch(String target, List<String> jvmArgs, String commands, Map<String, String> env, Function<String, LineConsumerResult> onStdoutLine, Function<String, LineConsumerResult> onStderrLine) throws Exception {
+        return launch(target, jvmArgs, commands, env, 10, onStdoutLine, onStderrLine);
+    }
+
+    /**
+     * Same as the 6-arg overload above, but with a caller-supplied wait timeout instead of the
+     * hardcoded 10 seconds - needed by scenarios that run substantially longer than a plain
+     * attach/init check, e.g. {@code ExternalProcessReferenceChainTest}'s population-growth loop
+     * (up to 25 rounds plus a grace period, ~20s+ observed in-process, plus a whole separate
+     * JVM's own startup/classloading cost on top).
+     */
+    protected final LaunchResult launch(String target, List<String> jvmArgs, String commands, Map<String, String> env, long timeoutSeconds, Function<String, LineConsumerResult> onStdoutLine, Function<String, LineConsumerResult> onStderrLine) throws Exception {
         String javaHome = System.getenv("JAVA_TEST_HOME");
         if (javaHome == null) {
             javaHome = System.getenv("JAVA_HOME");
@@ -130,7 +141,7 @@ public abstract class AbstractProcessProfilerTest {
         stdoutReader.start();
         stderrReader.start();
 
-        boolean val = p.waitFor(10, TimeUnit.SECONDS);
+        boolean val = p.waitFor(timeoutSeconds, TimeUnit.SECONDS);
         if (!val) {
             p.destroyForcibly();
             p.waitFor(5, TimeUnit.SECONDS);
