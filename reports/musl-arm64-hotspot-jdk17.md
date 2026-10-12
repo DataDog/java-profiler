@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk17
 
 ## musl-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-10-11 23:04:59 EDT
+**Date:** 2026-10-11 23:05:58 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,34 +28,26 @@ title: musl-arm64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 76 |
-| Sample Rate | 1.27/sec |
-| Health Score | 79% |
+| CPU Samples | 306 |
+| Sample Rate | 5.10/sec |
+| Health Score | 319% |
 | Threads | 11 |
-| Allocations | 74 |
+| Allocations | 112 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 87 |
-| Sample Rate | 1.45/sec |
-| Health Score | 91% |
-| Threads | 13 |
-| Allocations | 57 |
+| CPU Samples | 92 |
+| Sample Rate | 1.53/sec |
+| Health Score | 96% |
+| Threads | 12 |
+| Allocations | 71 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 18-18 cores)</summary>
 
 ```
-1791774057 18
-1791774062 18
-1791774067 18
-1791774072 18
-1791774077 18
-1791774082 18
-1791774087 18
-1791774092 18
 1791774097 18
 1791774102 18
 1791774107 18
@@ -68,6 +60,14 @@ title: musl-arm64-hotspot-jdk17
 1791774142 18
 1791774147 18
 1791774152 18
+1791774157 18
+1791774162 18
+1791774167 18
+1791774172 18
+1791774177 18
+1791774182 18
+1791774187 18
+1791774192 18
 ```
 </details>
 

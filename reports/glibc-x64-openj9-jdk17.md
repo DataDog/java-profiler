@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk17
 
 ## glibc-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-10-11 23:04:59 EDT
+**Date:** 2026-10-11 23:05:57 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,27 +28,26 @@ title: glibc-x64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 451 |
-| Sample Rate | 7.52/sec |
-| Health Score | 470% |
+| CPU Samples | 480 |
+| Sample Rate | 8.00/sec |
+| Health Score | 500% |
 | Threads | 9 |
-| Allocations | 375 |
+| Allocations | 377 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 548 |
-| Sample Rate | 9.13/sec |
-| Health Score | 571% |
-| Threads | 11 |
-| Allocations | 446 |
+| CPU Samples | 500 |
+| Sample Rate | 8.33/sec |
+| Health Score | 521% |
+| Threads | 10 |
+| Allocations | 469 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1791774059 51
 1791774064 51
 1791774069 51
 1791774074 51
@@ -68,6 +67,7 @@ title: glibc-x64-openj9-jdk17
 1791774144 51
 1791774149 51
 1791774154 51
+1791774159 51
 ```
 </details>
 

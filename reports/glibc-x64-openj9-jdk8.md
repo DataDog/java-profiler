@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-10-11 23:04:59 EDT
+**Date:** 2026-10-11 23:05:57 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 182 |
-| Sample Rate | 3.03/sec |
-| Health Score | 189% |
+| CPU Samples | 193 |
+| Sample Rate | 3.22/sec |
+| Health Score | 201% |
 | Threads | 6 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 159 |
-| Sample Rate | 2.65/sec |
-| Health Score | 166% |
-| Threads | 7 |
+| CPU Samples | 403 |
+| Sample Rate | 6.72/sec |
+| Health Score | 420% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1791774059 51
-1791774064 51
-1791774069 51
-1791774074 51
-1791774079 51
-1791774084 51
-1791774089 51
-1791774094 51
-1791774099 51
-1791774104 51
-1791774109 51
-1791774114 51
-1791774119 51
-1791774124 51
-1791774129 51
-1791774134 51
-1791774139 51
-1791774144 51
-1791774149 51
-1791774154 51
+1791774080 51
+1791774085 51
+1791774090 51
+1791774095 51
+1791774100 51
+1791774105 51
+1791774110 51
+1791774115 51
+1791774120 51
+1791774125 51
+1791774130 51
+1791774135 51
+1791774140 51
+1791774145 51
+1791774150 51
+1791774155 51
+1791774160 51
+1791774165 51
+1791774170 51
+1791774175 51
 ```
 </details>
 
