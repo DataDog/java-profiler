@@ -3,7 +3,7 @@
 [versions]
 cpp-standard = "17"
 kotlin = "1.9.22"
-spotless = "8.10.3"
+spotless = "8.10.4"
 
 # Testing
 junit = "5.9.3"
@@ -20,10 +20,10 @@ zstd = "1.5.7-20"
 
 # JFR parsing for test verification (replaces JMC's FlightRecordingLoader, which can hang
 # forever if one of its internal parallel chunk-parsing workers dies from OOM)
-jafar = "0.28.0"
+jafar = "0.29.0"
 
 # Code analysis
-asm = "9.10.1"
+asm = "9.11"
 
 # Datadog tracer (compileOnly for the chaos harness — runtime is provided by dd-java-agent).
 # Dynamic version: always resolve to the latest released dd-trace-api so the chaos harness
