@@ -259,12 +259,12 @@ TEST_F(ReferenceChainsCanaryRefillTest, BackoffGateHoldsUnlessOomRampActive) {
     ReferenceChainsTestAccessor::setSearchStartedForTest(true);
 
     // Open chase with the backoff engaged: mult=4 x ema=100ms = 400ms
-    // spacing, and only 50ms since the last pass.
+    // spacing, and only 50ms since the last pass. The EMA is in ns.
     ReferenceChainsTestAccessor::setCandidateCountForTest(2);
     ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(0x1);
     u64 now = 6000000000ULL; // 6s into the test's synthetic clock
     ReferenceChainsTestAccessor::setCanaryBackoffForTest(
-        4, 100, now - 50 * 1000000ULL);
+        4, 100ULL * 1000000ULL, now - 50 * 1000000ULL);
 
     ReferenceChainsTestAccessor::setOomRampActive(false);
     EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(now));

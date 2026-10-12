@@ -546,6 +546,78 @@ TEST_F(ResolvedChainCacheTest, MultipleKlassesAllSnapshotTogether) {
     EXPECT_EQ((std::set<u64>{1, 2, 3}), tags);
 }
 
+TEST_F(ResolvedChainCacheTest, DeferredInvalidationFiltersDeduplicatesAndDrainsExactTags) {
+    ReferenceChainsTestAccessor::cacheChain(1, makeEvent(1), 1, 0);
+    ReferenceChainsTestAccessor::cacheChain(2, makeEvent(2), 2, 0);
+    ReferenceChainsTestAccessor::cacheChain(3, makeEvent(3), 3, 0);
+    std::vector<jlong> snapshot =
+        ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    ASSERT_EQ(3u, snapshot.size());
+
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(2, snapshot);
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(2, snapshot);
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(999, snapshot);
+    EXPECT_EQ(1u,
+              ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(2));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(1));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(3));
+    ASSERT_EQ(2u, dump.size());
+    EXPECT_EQ(0u,
+              ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_EQ(0u,
+              ReferenceChainsTestAccessor::drainingChainInvalidationCount());
+}
+
+TEST_F(ResolvedChainCacheTest, DeferredInvalidationIsBoundedByCacheAndKeepsCapacity) {
+    const int cap = ReferenceChainsTestAccessor::maxResolvedChains();
+    for (int i = 0; i < cap; i++) {
+        ReferenceChainsTestAccessor::cacheChain(i + 1, makeEvent(i + 1),
+                                                i + 1, 0);
+    }
+    std::vector<jlong> snapshot =
+        ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    ASSERT_EQ((size_t)cap, snapshot.size());
+    for (jlong tag : snapshot) {
+        ReferenceChainsTestAccessor::deferResolvedChainInvalidation(tag,
+                                                                     snapshot);
+    }
+    for (jlong tag : snapshot) {
+        ReferenceChainsTestAccessor::deferResolvedChainInvalidation(tag,
+                                                                     snapshot);
+    }
+    EXPECT_EQ((size_t)cap,
+              ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    ReferenceChainsTestAccessor::drainPendingChainInvalidations();
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount());
+    EXPECT_GE(ReferenceChainsTestAccessor::pendingChainInvalidationCapacity(),
+              (size_t)cap);
+    EXPECT_GE(ReferenceChainsTestAccessor::drainingChainInvalidationCapacity(),
+              (size_t)cap);
+}
+
+TEST_F(ResolvedChainCacheTest, RestartDropsPendingTagsBeforeNumericTagReuse) {
+    ReferenceChainsTestAccessor::cacheChain(1, makeEvent(1), 1, 0);
+    std::vector<jlong> snapshot =
+        ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(1, snapshot);
+    ASSERT_EQ(1u,
+              ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    ReferenceChainsTestAccessor::restartSearchForTest();
+    ReferenceChainsTestAccessor::cacheChain(1, makeEvent(101), 1, 1);
+    ReferenceChainsTestAccessor::drainPendingChainInvalidations();
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(1));
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(1u, dump.size());
+    EXPECT_EQ(101u, dump[0]._target_tag);
+}
+
 // A brand-new klass arriving with the cache already at MAX_RESOLVED_CHAINS is dropped (and counted
 // via REFERENCE_CHAIN_EVENTS_DROPPED, this codebase's own "dropped-event-without-counter" review
 // lens) rather than evicting some other still-live sample's chain - but refreshing a klass that is

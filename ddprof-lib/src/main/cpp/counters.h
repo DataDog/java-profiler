@@ -210,6 +210,10 @@
    * and re-emits it on a later dump while the leak candidate is still      \
    * live. */                                                                \
   X(REFERENCE_CHAIN_WRITE_DROPPED, "reference_chain_write_dropped")            \
+  /* LivenessTracker urgency boost: admissions below the table cap vs.    \
+   * admissions that hit the cap and fell back to the subsample ratio. */  \
+  X(LIVENESS_URGENT_BOOST_ADMITS, "liveness_urgent_boost_admits")             \
+  X(LIVENESS_URGENT_BOOST_BACKED_OFF, "liveness_urgent_boost_backed_off")     \
   /* FrontierTable's own calloc/realloc-backed storage (referenceChains.cpp) -   \
    * outside NMT's visibility since it bypasses os::malloc, so this is the only \
    * way to attribute its native RSS contribution. */                          \
