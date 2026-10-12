@@ -5,6 +5,7 @@
 
 package com.datadoghq.profiler.referencechains;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IAccessorKey;
@@ -82,7 +83,13 @@ public class ReferenceChainJfrParserTest {
   public void chainFieldResolvesToSeededClassNamesInLeafToRootOrder()
       throws IOException, CouldNotLoadRecordingException {
     Path jfrPath = roundtripJfrPath();
-    assertTrue(Files.exists(jfrPath),
+    // Assumption, not assertion: the fixture is produced by the companion gtest
+    // (referenceChainJfrRoundtrip_ut.cpp), which does not run on CI runners
+    // without Google Test (e.g. the el7 testRelease job) - there the file can
+    // never exist and this test would fail spuriously. Where the gtest ran in
+    // the same Gradle invocation (local testDebug, gtest-equipped CI jobs), the
+    // file exists and the test executes; otherwise it is skipped.
+    Assumptions.assumeTrue(Files.exists(jfrPath),
         "Expected " + jfrPath + " to exist - run "
             + ":ddprof-lib:gtestDebug_referenceChainJfrRoundtrip_ut first "
             + "(referenceChainJfrRoundtrip_ut.cpp produces this file).");
