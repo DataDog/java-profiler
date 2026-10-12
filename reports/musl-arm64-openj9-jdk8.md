@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk8
 
 ## musl-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-10-11 23:06:53 EDT
+**Date:** 2026-10-11 23:07:44 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 109 |
-| Sample Rate | 1.82/sec |
-| Health Score | 114% |
+| CPU Samples | 253 |
+| Sample Rate | 4.22/sec |
+| Health Score | 264% |
 | Threads | 11 |
 | Allocations | 0 |
 
@@ -38,16 +38,19 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 107 |
-| Sample Rate | 1.78/sec |
-| Health Score | 111% |
-| Threads | 12 |
+| CPU Samples | 260 |
+| Sample Rate | 4.33/sec |
+| Health Score | 271% |
+| Threads | 13 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
 
 ```
+1791774131 34
+1791774136 34
+1791774141 34
 1791774146 34
 1791774151 34
 1791774156 34
@@ -65,9 +68,6 @@ title: musl-arm64-openj9-jdk8
 1791774216 34
 1791774221 34
 1791774226 34
-1791774231 34
-1791774236 34
-1791774241 34
 ```
 </details>
 

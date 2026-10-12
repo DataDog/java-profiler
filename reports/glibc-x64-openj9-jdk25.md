@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-10-11 23:06:52 EDT
+**Date:** 2026-10-11 23:07:43 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,26 +28,34 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 402 |
-| Sample Rate | 6.70/sec |
-| Health Score | 419% |
+| CPU Samples | 359 |
+| Sample Rate | 5.98/sec |
+| Health Score | 374% |
 | Threads | 8 |
-| Allocations | 375 |
+| Allocations | 372 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 441 |
-| Sample Rate | 7.35/sec |
-| Health Score | 459% |
-| Threads | 9 |
-| Allocations | 489 |
+| CPU Samples | 466 |
+| Sample Rate | 7.77/sec |
+| Health Score | 486% |
+| Threads | 10 |
+| Allocations | 476 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
+1791774120 32
+1791774125 32
+1791774130 32
+1791774135 32
+1791774140 32
+1791774145 32
+1791774150 32
+1791774155 32
 1791774160 32
 1791774165 32
 1791774170 32
@@ -60,14 +68,6 @@ title: glibc-x64-openj9-jdk25
 1791774205 32
 1791774210 32
 1791774215 32
-1791774220 32
-1791774225 32
-1791774230 32
-1791774235 32
-1791774240 32
-1791774245 32
-1791774250 32
-1791774255 32
 ```
 </details>
 

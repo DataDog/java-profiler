@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk8
 
 ## musl-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-10-11 23:06:54 EDT
+**Date:** 2026-10-11 23:07:45 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,10 +28,10 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 205 |
-| Sample Rate | 3.42/sec |
-| Health Score | 214% |
-| Threads | 6 |
+| CPU Samples | 176 |
+| Sample Rate | 2.93/sec |
+| Health Score | 183% |
+| Threads | 5 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
@@ -41,33 +41,33 @@ title: musl-x64-hotspot-jdk8
 | CPU Samples | 442 |
 | Sample Rate | 7.37/sec |
 | Health Score | 461% |
-| Threads | 11 |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1791774123 32
-1791774128 32
-1791774133 32
-1791774138 32
-1791774143 32
-1791774148 32
-1791774153 32
-1791774158 32
-1791774163 32
-1791774168 32
-1791774173 32
-1791774178 32
-1791774183 32
-1791774188 32
-1791774193 32
-1791774198 32
-1791774203 32
-1791774208 32
-1791774213 32
-1791774218 32
+1791774089 32
+1791774094 32
+1791774099 32
+1791774104 32
+1791774109 32
+1791774114 32
+1791774119 32
+1791774124 32
+1791774129 32
+1791774134 32
+1791774139 32
+1791774144 32
+1791774149 32
+1791774154 32
+1791774159 32
+1791774164 32
+1791774169 32
+1791774175 32
+1791774180 32
+1791774185 32
 ```
 </details>
 
