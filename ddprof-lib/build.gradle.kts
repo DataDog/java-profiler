@@ -97,13 +97,15 @@ val copyExternalLibs by tasks.registering(Copy::class) {
 
 // Create JAR tasks for each build configuration using nativeBuild extension utilities
 // Uses afterEvaluate to discover configurations dynamically from NativeBuildExtension.
-// `coverage` is excluded: nativeBuild.buildConfigurations.names lists every registered
-// config regardless of its `active` flag (the same quirk already lets inactive
-// asan/tsan show up here on platforms where they're unsupported), so without this
-// filter a --coverage-instrumented classifier jar would get built and added to the
-// published Maven artifact by every `publish` run, coverage build or not.
+// `coverage` is only packaged with -PenableCoverage: nativeBuild.buildConfigurations.names
+// lists every registered config regardless of its `active` flag (the same quirk already
+// lets inactive asan/tsan show up here on platforms where they're unsupported). With the
+// flag, its jar and consumable configuration are what ddprof-test's testCoverage loads;
+// it is still never published (see the publishing block below).
 afterEvaluate {
-  val packagedConfigNames = nativeBuild.buildConfigurations.names.filterNot { it == "coverage" }
+  val packagedConfigNames = nativeBuild.buildConfigurations.names.filter {
+    it != "coverage" || project.hasProperty("enableCoverage")
+  }
   packagedConfigNames.forEach { name ->
     val capitalizedName = name.replaceFirstChar { it.uppercase() }
 
@@ -160,23 +162,46 @@ afterEvaluate {
 // C++ coverage report (only meaningful, and only registered, alongside the opt-in
 // `coverage` build configuration -- see ConfigurationPresets.configureCoverage).
 // Requires gcovr (`pip install gcovr`), which reads the gcc/clang-compatible
-// .gcno/.gcda files gtestCoverage produces directly, so one tool covers both
-// toolchains without a separate lcov+genhtml install.
+// .gcno/.gcda files directly, so one tool covers both toolchains without a
+// separate lcov+genhtml install.
+//
+// Two runs feed it: the gtest binaries (gtestCoverage, objects under
+// obj/gtest/coverage) and the Java integration tests (:ddprof-test:testCoverage --
+// the testDebug suite run against the coverage-instrumented library, objects
+// under obj/main/coverage). gcovr merges both into one per-source-file report.
 if (project.hasProperty("enableCoverage")) {
+  val gtestObjDir = layout.buildDirectory.dir("obj/gtest/coverage")
+
+  // gcov adds to existing .gcda counts, and .gcda files left over from before a
+  // recompile no longer match the new .gcno stamps -- so every gtest binary must start
+  // from zero. Runs before each gtestCoverage_<test> task rather than in gtestCoverage
+  // itself, which is only an aggregate that executes after its test tasks.
+  val cleanGtestCoverageData = tasks.register<Delete>("cleanGtestCoverageData") {
+    delete(fileTree(gtestObjDir) { include("**/*.gcda") })
+  }
+  tasks.matching { it.name.startsWith("gtestCoverage_") }.configureEach {
+    dependsOn(cleanGtestCoverageData)
+  }
+
   tasks.register("gtestCoverageReport") {
     group = "verification"
-    description = "Generates an HTML C++ coverage report from the gtestCoverage run (requires gcovr)"
-    dependsOn("gtestCoverage")
+    description = "Generates an HTML C++ coverage report from gtestCoverage and :ddprof-test:testCoverage (requires gcovr)"
+    dependsOn("gtestCoverage", ":ddprof-test:testCoverage")
 
     val reportDir = layout.buildDirectory.dir("reports/coverage/cpp")
-    val objDir = layout.buildDirectory.dir("obj/gtest/coverage")
+    val libObjDir = layout.buildDirectory.dir("obj/main/coverage")
     val srcRoot = project.file("src/main/cpp")
 
     doLast {
+      // The gcov tool must come from the same toolchain that wrote the .gcno files,
+      // so derive it from the compiler (e.g. /usr/bin/g++-13 -> /usr/bin/gcov-13,
+      // clang++-17 -> llvm-cov-17 gcov) instead of whatever `gcov` is on PATH.
+      val compiler = File(PlatformUtils.findCompiler(project))
+      fun siblingOf(tool: String) = compiler.parentFile?.resolve(tool)?.path ?: tool
       val gcovExecutable = when {
         PlatformUtils.currentPlatform == Platform.MACOS -> "xcrun llvm-cov gcov"
-        File(PlatformUtils.findCompiler(project)).name.contains("clang") -> "llvm-cov gcov"
-        else -> "gcov"
+        compiler.name.contains("clang") -> siblingOf(compiler.name.replace(Regex("clang(\\+\\+)?"), "llvm-cov")) + " gcov"
+        else -> siblingOf(compiler.name.replace(Regex("[gc]\\+\\+"), "gcov"))
       }
 
       val outDir = reportDir.get().asFile.also { it.mkdirs() }
@@ -187,7 +212,12 @@ if (project.hasProperty("enableCoverage")) {
         "--html", "--html-details",
         "-o", "${outDir.absolutePath}/index.html",
         "--print-summary",
-        objDir.get().asFile.absolutePath
+        // Safety net only: -fprofile-update=atomic (see configureCoverage) should keep
+        // counters consistent, but a stray negative count must not discard a
+        // ~20-minute run -- warn and ignore it instead of failing.
+        "--gcov-ignore-parse-errors=negative_hits.warn_once_per_file",
+        gtestObjDir.get().asFile.absolutePath,
+        libObjDir.get().asFile.absolutePath,
       )
       project.logger.lifecycle("Running: ${cmd.joinToString(" ")}")
       val process = ProcessBuilder(cmd)

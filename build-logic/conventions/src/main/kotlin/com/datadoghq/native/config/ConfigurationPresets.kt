@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 
 package com.datadoghq.native.config
 
@@ -425,6 +430,11 @@ object ConfigurationPresets {
      * gcc and clang and emits gcov-compatible .gcno/.gcda files, so one preset
      * covers both toolchains/platforms without a separate clang source-based
      * coverage format). Inactive unless the caller opts in via -PenableCoverage.
+     *
+     * `-fprofile-update=atomic`: the default counter updates are plain
+     * read-modify-writes, so the profiler's concurrent threads (samplers, signal
+     * handlers, JVM threads) lose and corrupt counts -- a Linux run produced
+     * negative branch counts (GCC bug 68080) that gcovr refuses to parse.
      */
     fun configureCoverage(
         config: BuildConfiguration,
@@ -440,13 +450,16 @@ object ConfigurationPresets {
         when (platform) {
             Platform.LINUX -> {
                 config.compilerArgs.set(
-                    listOf("-O0", "-g", "-DDEBUG", "--coverage") + commonLinuxCompilerArgs(version)
+                    listOf("-O0", "-g", "-DDEBUG", "--coverage", "-fprofile-update=atomic") + commonLinuxCompilerArgs(version)
                 )
-                config.linkerArgs.set(commonLinuxLinkerArgs() + listOf("--coverage"))
+                // -z,nodelete: same as configureDebug -- testCoverage loads this library
+                // into the same JVMs, so it is exposed to the same unmap-while-executing
+                // SIGSEGV on the DestroyJavaVM path.
+                config.linkerArgs.set(commonLinuxLinkerArgs() + listOf("-Wl,-z,nodelete", "--coverage"))
             }
             Platform.MACOS -> {
                 config.compilerArgs.set(
-                    commonMacosCompilerArgs(version) + listOf("-O0", "-g", "-DDEBUG", "--coverage")
+                    commonMacosCompilerArgs(version) + listOf("-O0", "-g", "-DDEBUG", "--coverage", "-fprofile-update=atomic")
                 )
                 config.linkerArgs.set(listOf("--coverage"))
             }

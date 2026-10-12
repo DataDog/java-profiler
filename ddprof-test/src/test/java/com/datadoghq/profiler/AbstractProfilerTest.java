@@ -134,11 +134,11 @@ public abstract class AbstractProfilerTest {
   }
 
   /**
-   * Whether the tests run against the -O0 debug build of the native library, which unwinds
-   * several times slower than the release build.
+   * Whether the tests run against an -O0 debug build of the native library (debug or coverage),
+   * which unwinds several times slower than the release build.
    */
   protected final boolean isDebugBuild() {
-    return "debug".equals(System.getProperty("ddprof_test.config"));
+    return NativeBuildConfig.isDebug();
   }
 
   private static long getPid() {

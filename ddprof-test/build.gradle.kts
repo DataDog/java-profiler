@@ -1,5 +1,11 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import com.datadoghq.profiler.ProfilerTestExtension
 import org.gradle.api.tasks.SourceSetContainer
+import java.util.concurrent.ConcurrentHashMap
 
 plugins {
   java
@@ -15,27 +21,88 @@ jacoco {
 }
 
 // JaCoCo's plugin auto-attaches a JacocoTaskExtension (enabled by default) to every Test
-// task in this project, including testAsan/testSlowAsan/testTsan/testSlowTsan. Restrict
-// instrumentation to the plain debug config's tasks only -- asan/tsan already carry
-// sanitizer instrumentation and don't need coverage data, and leaving JaCoCo enabled
-// everywhere would multiply CI cost for no additional signal.
-val coverageTaskNames: Set<String> = if (project.hasProperty("disableJacoco")) emptySet() else setOf("testDebug", "testSlowDebug")
-
-// When jacocoTestReport is actually being requested, don't let a handful of
-// known-flaky native-thread/CPU tests (already @RetryingTest-annotated; see
-// NativeThreadTest, DynamicNativeThread, VtableReceiverFrameTest, ThreadEntryDetectionTest)
-// block report generation -- testDebug still records and prints its failures,
-// it just won't fail the build, so jacocoTestReport's dependency is satisfied
-// and the exec data that was produced gets aggregated regardless.
+// task in this project. Instrument only when jacocoTestReport is actually requested, and
+// then only the plain debug config's tasks: ordinary testDebug runs (CI included) keep
+// running the profiler against unmodified bytecode -- JaCoCo's injected $jacocoInit
+// methods and probe arrays would otherwise show up in the allocation and stack-sampling
+// data those tests assert on -- and asan/tsan already carry sanitizer instrumentation.
 val requestingCoverageReport = gradle.startParameter.taskNames.any { it.contains("jacocoTestReport") }
+val requestingCppCoverageReport = gradle.startParameter.taskNames.any { it.contains("gtestCoverageReport") }
+val coverageTaskNames: Set<String> = if (requestingCoverageReport) setOf("testDebug", "testSlowDebug") else emptySet()
+
+// When a coverage report is requested, a handful of known-flaky native-thread/CPU tests
+// (already @RetryingTest-annotated; see NativeThreadTest, DynamicNativeThread,
+// VtableReceiverFrameTest, ThreadEntryDetectionTest) must not keep the report from being
+// generated. Their failures are deferred, not ignored: the test task records them and
+// lets the report run, and the report task fails the build once the report is written.
+val deferredTestFailures: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+fun Task.deferFailuresToCoverageReport() {
+  val taskName = name
+  when (this) {
+    is Test -> {
+      ignoreFailures = true
+      addTestListener(object : TestListener {
+        override fun beforeSuite(suite: TestDescriptor) {}
+        override fun beforeTest(testDescriptor: TestDescriptor) {}
+        override fun afterTest(testDescriptor: TestDescriptor, result: TestResult) {}
+        override fun afterSuite(suite: TestDescriptor, result: TestResult) {
+          if (suite.parent == null && result.resultType == TestResult.ResultType.FAILURE) {
+            deferredTestFailures.add(taskName)
+          }
+        }
+      })
+    }
+    is Exec -> {
+      isIgnoreExitValue = true
+      doLast {
+        if (executionResult.get().exitValue != 0) {
+          deferredTestFailures.add(taskName)
+        }
+      }
+    }
+  }
+}
+
+fun failOnDeferredTestFailures(taskNames: Collection<String>) {
+  val failed = taskNames.filter { it in deferredTestFailures }
+  if (failed.isNotEmpty()) {
+    throw GradleException("Coverage report generated, but tests failed in: ${failed.joinToString()}")
+  }
+}
 
 tasks.withType<Test>().configureEach {
   extensions.configure<JacocoTaskExtension> {
     isEnabled = name in coverageTaskNames
   }
-  if (name in coverageTaskNames && requestingCoverageReport) {
-    ignoreFailures = true
+  // The failed tests' results are cached like a pass would be, so a rerun must not be
+  // UP-TO-DATE and silently skip the deferred failure.
+  if (name in coverageTaskNames) {
+    deferFailuresToCoverageReport()
+    outputs.upToDateWhen { false }
   }
+}
+
+// testCoverage (created by the profiler-test plugin only with -PenableCoverage) runs the
+// testDebug suite against ddprof-lib's gcov-instrumented `coverage` library; every test
+// JVM that loads it writes .gcda counts next to the library's objects when it exits, and
+// :ddprof-lib:gtestCoverageReport folds them into the C++ report.
+val libCoverageObjDir = project(":ddprof-lib").layout.buildDirectory.dir("obj/main/coverage")
+
+tasks.matching { it.name == "testCoverage" }.configureEach {
+  // gcov adds to existing .gcda counts, so start each run from zero rather than
+  // accumulating counts from earlier runs (.gcno files, written at compile time, stay).
+  doFirst {
+    fileTree(libCoverageObjDir) { include("**/*.gcda") }.forEach { it.delete() }
+  }
+  if (requestingCppCoverageReport) {
+    deferFailuresToCoverageReport()
+    outputs.upToDateWhen { false }
+  }
+}
+
+project(":ddprof-lib").tasks.matching { it.name == "gtestCoverageReport" }.configureEach {
+  doLast { failOnDeferredTestFailures(listOf("testCoverage")) }
 }
 
 // The jacoco plugin already registers a default "jacocoTestReport" task (wired to the
@@ -47,9 +114,11 @@ tasks.named<JacocoReport>("jacocoTestReport") {
 
   val coverageTasks = tasks.matching { it.name in coverageTaskNames }
   dependsOn(coverageTasks)
-  executionData.setFrom(coverageTasks.map { task ->
-    fileTree(task.project.layout.buildDirectory) { include("jacoco/${task.name}.exec") }
-  })
+  executionData.setFrom(
+    coverageTasks.map { task ->
+      fileTree(task.project.layout.buildDirectory) { include("jacoco/${task.name}.exec") }
+    },
+  )
 
   // The tests here exercise ddprof-lib's classes (the profiler itself), not this
   // project's own trivial main sourceSet (just the UnwindingValidator app) -- so
@@ -57,6 +126,8 @@ tasks.named<JacocoReport>("jacocoTestReport") {
   val libMainSourceSet = project(":ddprof-lib").extensions.getByType<SourceSetContainer>()["main"]
   sourceDirectories.setFrom(libMainSourceSet.allSource.srcDirs)
   classDirectories.setFrom(libMainSourceSet.output)
+
+  doLast { failOnDeferredTestFailures(coverageTaskNames) }
 
   reports {
     html.required.set(true)
