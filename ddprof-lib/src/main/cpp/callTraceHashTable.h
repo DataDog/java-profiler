@@ -128,6 +128,13 @@ public:
 
   void clear();
 
+private:
+  // Resets the table structure. With drained, returns the detached chunks for
+  // the caller to free; otherwise leaks them and returns an empty ChunkList.
+  ChunkList resetTable(bool drained);
+
+public:
+
   /**
    * Resets the hash table structure but defers memory deallocation.
    * Returns a ChunkList containing the detached memory chunks.
@@ -137,8 +144,21 @@ public:
    * This is used to fix use-after-free in processTraces(): the table
    * structure is reset immediately (allowing rotation), but trace memory
    * remains valid until the processor finishes accessing it.
+   *
+   * No new put() may enter this table for the duration: it must already be
+   * swapped out of the active slot, or put() excluded by the caller.  If a
+   * put() still holds a RefCountGuard on it after the drain timeout, debug
+   * builds abort; otherwise the chunks are leaked rather than freed and the
+   * returned ChunkList is empty.
    */
   ChunkList clearTableOnly();
+
+  /**
+   * Resets the table like clear(), for a caller whose own drain of this table
+   * already timed out: skips the drain and leaks the chunks, since a put() may
+   * still be writing into them.
+   */
+  void clearAfterFailedDrain();
 
   void collect(CallTraceSet &traces, std::function<void(CallTrace*)> trace_hook = nullptr);
 

@@ -1501,6 +1501,11 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error("No profiling events specified");
   }
 
+  // Recording-scoped liveness and allocation metadata must not survive when the new recording
+  // does not activate the optional allocation engine.
+  LivenessTracker::instance()->resetSession();
+  ObjectSampler::instance()->resetSession();
+
   // Commit _features before the reset block so any signal-handler code that
   // reads _features.* observes the correct enabled state once profiling
   // engines start.
@@ -2102,6 +2107,9 @@ Error Profiler::dump(const char *path, const int length) {
       err = _jfr.dump(path, length);
       __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
     });
+    if (err) {
+      TEST_LOG("Profiler::dump _jfr.dump failed: %s", err.message());
+    }
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();

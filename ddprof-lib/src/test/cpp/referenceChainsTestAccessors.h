@@ -14,6 +14,7 @@
 #ifndef REFERENCE_CHAINS_TEST_ACCESSORS_H
 #define REFERENCE_CHAINS_TEST_ACCESSORS_H
 
+#include <deque>
 #include <cstring>
 #include <vector>
 
@@ -93,6 +94,7 @@ public:
         t->_passes_since_last_candidate_progress = 0;
         t->_last_candidate_progress_mark = 0;
         t->_canary_stuck_restart_count = 0;
+        t->clearPendingChainInvalidations();
         t->_resolved_chains.clear();
         t->_safepoint_pain_budget = PainBudget();
         t->_cpu_pain_budget = PainBudget();
@@ -238,6 +240,43 @@ public:
 
     static int maxResolvedChains() {
         return ReferenceChainTracker::MAX_RESOLVED_CHAINS;
+    }
+
+    static std::vector<jlong> snapshotResolvedChainTags() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        jlong tags[ReferenceChainTracker::MAX_RESOLVED_CHAINS];
+        int count = t->snapshotResolvedChainTags(tags);
+        return std::vector<jlong>(tags, tags + count);
+    }
+
+    static void deferResolvedChainInvalidation(
+        jlong tag, const std::vector<jlong> &snapshot) {
+        ReferenceChainTracker::instance()->deferResolvedChainInvalidation(
+            tag, snapshot.data(), (int)snapshot.size());
+    }
+
+    static size_t pendingChainInvalidationCount() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_pending_chain_invalidations_lock.lock();
+        size_t count = t->_pending_chain_invalidations.size();
+        t->_pending_chain_invalidations_lock.unlock();
+        return count;
+    }
+
+    static size_t drainingChainInvalidationCount() {
+        return ReferenceChainTracker::instance()->_draining_chain_invalidations.size();
+    }
+
+    static size_t pendingChainInvalidationCapacity() {
+        return ReferenceChainTracker::instance()->_pending_chain_invalidations.capacity();
+    }
+
+    static size_t drainingChainInvalidationCapacity() {
+        return ReferenceChainTracker::instance()->_draining_chain_invalidations.capacity();
+    }
+
+    static void drainPendingChainInvalidations() {
+        ReferenceChainTracker::instance()->drainPendingChainInvalidations();
     }
 
     // Target-selection bridging step: read-only peeks into the resolved-chain cache, for asserting
@@ -407,8 +446,19 @@ public:
     // leak-correlation tests below.
     static void recordDiscoveredInstanceForTest(u32 klass_id, jlong tag,
                                                  bool leak_correlated) {
-        ReferenceChainTracker::instance()->recordDiscoveredInstance(klass_id, tag,
-                                                                   leak_correlated);
+        ReferenceChainTracker::instance()->recordDiscoveredInstance(
+            klass_id, tag, leak_correlated,
+            ReferenceChainTracker::CacheInvalidationMode::SYNCHRONOUS,
+            nullptr, 0);
+    }
+
+    static void recordDiscoveredInstanceDeferredForTest(
+        u32 klass_id, jlong tag, bool leak_correlated,
+        const std::vector<jlong> &snapshot) {
+        ReferenceChainTracker::instance()->recordDiscoveredInstance(
+            klass_id, tag, leak_correlated,
+            ReferenceChainTracker::CacheInvalidationMode::DEFERRED,
+            snapshot.data(), (int)snapshot.size());
     }
 
     // Drive restartSearch() directly (the accessor base already set _tags_released, so its assert
@@ -954,6 +1004,22 @@ public:
     static void seedLeakAccumulationForNewlyWatchedKlass(u32 klass_id) {
         ReferenceChainTracker::instance()
             ->seedLeakAccumulationForNewlyWatchedKlass(klass_id);
+    }
+
+    static void pesClear() {
+        ReferenceChainTracker::instance()->_priority_expand_set.clear();
+    }
+
+    static bool pesContains(jlong tag) {
+        return ReferenceChainTracker::instance()->_priority_expand_set.contains(tag);
+    }
+
+    static bool pesInsert(jlong tag) {
+        return ReferenceChainTracker::instance()->_priority_expand_set.insert(tag);
+    }
+
+    static void pesRebuildFrom(const std::deque<jlong> &queue) {
+        ReferenceChainTracker::instance()->_priority_expand_set.rebuildFrom(queue);
     }
 };
 

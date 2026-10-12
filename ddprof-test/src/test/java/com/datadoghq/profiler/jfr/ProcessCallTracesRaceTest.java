@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.jfr;
 
 import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
@@ -24,9 +29,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Regression test for PROF-14889: SIGSEGV in Profiler::processCallTraces during JFR
  * snapshot dump under high-rate wall-clock profiling.
  *
- * Root cause: CallTraceHashTable::clearTableOnly() used a global refcount wait
- * (waitForAllRefCountsToClear) that timed out under sustained signal-handler load,
- * leaving collect() racing with an in-flight put().  The bug surfaces only when:
+ * Original diagnosis: CallTraceHashTable::clearTableOnly() used a global refcount
+ * wait (waitForAllRefCountsToClear) that timed out under sustained signal-handler
+ * load.  Note that dump() holds lockAll() and every put() runs under one of its
+ * stripe locks, so no put() can be in flight during processCallTraces(); a global
+ * wait could only time out on guards of other resources (e.g. StringDictionary
+ * lookups).  The conditions that exposed the crash were:
  *   - Wall-clock profiling is active at high rate (<=5 ms)
  *   - Many threads are generating call traces simultaneously
  *   - dump() is called explicitly while the profiler is running

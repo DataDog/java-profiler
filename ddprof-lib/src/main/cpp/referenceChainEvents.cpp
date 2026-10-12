@@ -149,6 +149,9 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     return;
   }
 
+  // Don't rebuild chains against cache entries the heap callback asked to drop.
+  drainPendingChainInvalidations();
+
   // Stamp every entry this poll refreshes with the current search generation.
   const u64 current_search_ns = load(_search_start_ns);
 
@@ -496,6 +499,77 @@ void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
   }
 }
 
+int ReferenceChainTracker::snapshotResolvedChainTags(jlong *out) {
+  if (out == nullptr) {
+    return 0;
+  }
+  ExclusiveLockGuard guard(&_resolved_chains_lock);
+  int count = 0;
+  for (const auto &entry : _resolved_chains) {
+    assert(count < MAX_RESOLVED_CHAINS);
+    out[count++] = entry.first;
+  }
+  return count;
+}
+
+void ReferenceChainTracker::deferResolvedChainInvalidation(
+    jlong source_tag, const jlong *resolved_chain_tags,
+    int resolved_chain_tag_count) {
+  bool was_cached = false;
+  for (int i = 0; i < resolved_chain_tag_count; i++) {
+    if (resolved_chain_tags[i] == source_tag) {
+      was_cached = true;
+      break;
+    }
+  }
+  if (!was_cached) {
+    return;
+  }
+
+  _pending_chain_invalidations_lock.lock();
+  for (jlong tag : _pending_chain_invalidations) {
+    if (tag == source_tag) {
+      _pending_chain_invalidations_lock.unlock();
+      return;
+    }
+  }
+  // Cache insertion is serialized with traversals on the engine thread and dumps can only remove
+  // keys, so one pre-traversal snapshot bounds distinct eligible tags to the cache cap.
+  assert((int)_pending_chain_invalidations.size() <
+         MAX_PENDING_CHAIN_INVALIDATIONS);
+  if ((int)_pending_chain_invalidations.size() <
+      MAX_PENDING_CHAIN_INVALIDATIONS) {
+    _pending_chain_invalidations.push_back(source_tag);
+  }
+  _pending_chain_invalidations_lock.unlock();
+}
+
+void ReferenceChainTracker::drainPendingChainInvalidations() {
+  // Serialize drainers and scratch-buffer use with the cache. The producer lock is held only for
+  // the O(1) handoff, never for unordered_map erase or node destruction.
+  ExclusiveLockGuard guard(&_resolved_chains_lock);
+  _pending_chain_invalidations_lock.lock();
+  assert(_draining_chain_invalidations.empty());
+  _pending_chain_invalidations.swap(_draining_chain_invalidations);
+  _pending_chain_invalidations_lock.unlock();
+
+  for (jlong tag : _draining_chain_invalidations) {
+    if (_resolved_chains.erase(tag) > 0) {
+      TEST_LOG("ReferenceChainTracker::drainPendingChainInvalidations source_tag=%lld",
+               (long long)tag);
+    }
+  }
+  _draining_chain_invalidations.clear();
+}
+
+void ReferenceChainTracker::clearPendingChainInvalidations() {
+  ExclusiveLockGuard cache_guard(&_resolved_chains_lock);
+  _pending_chain_invalidations_lock.lock();
+  _pending_chain_invalidations.clear();
+  _draining_chain_invalidations.clear();
+  _pending_chain_invalidations_lock.unlock();
+}
+
 // Builds and caches chain events for every auto-marked discovered instance recorded against a slot
 // holding klass_id (see the auto-mark block in heapReferenceCallback() for how instances get
 // recorded).
@@ -595,9 +669,10 @@ for (int s = 0; s < _candidate_count; s++) {
 }
 }
 
-void ReferenceChainTracker::recordDiscoveredInstance(u32 klass_id,
-                                                     jlong frontier_tag,
-                                                     bool leak_correlated) {
+void ReferenceChainTracker::recordDiscoveredInstance(
+    u32 klass_id, jlong frontier_tag, bool leak_correlated,
+    CacheInvalidationMode invalidation_mode,
+    const jlong *resolved_chain_tags, int resolved_chain_tag_count) {
   // See the declaration's own comment (referenceChains.h) for the noise-eviction rationale.
   for (int s = 0; s < _candidate_count; s++) {
     if (_candidate_klass_ids[s] != klass_id) {
@@ -624,7 +699,12 @@ void ReferenceChainTracker::recordDiscoveredInstance(u32 klass_id,
           !_frontier->lookup(victim, &victim_entry) ||
           victim_entry.leak_tag == 0) {
         _candidate_discovered_tags[s][d] = frontier_tag;
-        invalidateResolvedChain(victim);
+        if (invalidation_mode == CacheInvalidationMode::DEFERRED) {
+          deferResolvedChainInvalidation(victim, resolved_chain_tags,
+                                         resolved_chain_tag_count);
+        } else {
+          invalidateResolvedChain(victim);
+        }
         TEST_LOG("ReferenceChainTracker::recordDiscoveredInstance evicted "
                  "noise slot=%d idx=%d victim_tag=%lld for leak tag=%lld",
                  s, d, (long long)victim, (long long)frontier_tag);
@@ -662,7 +742,8 @@ bool ReferenceChainTracker::correlateAdmittedLeakTag(jlong frontier_tag,
            "frontier_tag=%lld leak_tag=%lld depth=%u parent_tag=%lld",
            (long long)frontier_tag, (long long)leak_tag, entry.depth,
            (long long)entry.parent_tag);
-  recordDiscoveredInstance(klass_id, frontier_tag, true);
+  recordDiscoveredInstance(klass_id, frontier_tag, true,
+                           CacheInvalidationMode::SYNCHRONOUS, nullptr, 0);
   return true;
 }
 
@@ -671,6 +752,8 @@ void ReferenceChainTracker::drainPendingChainEvents(
   if (out == nullptr) {
     return;
   }
+  // Apply deferred evictions first so the dump doesn't export an already-evicted chain.
+  drainPendingChainInvalidations();
   // Snapshot-and-keep, not a drain: every cached chain is copied out (and re-stamped so it lands in
   // the dumping chunk's window) while the cache itself is left intact, so the same live sample's
   // chain re-emits into every chunk it survives into (see _resolved_chains' comment).

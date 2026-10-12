@@ -206,17 +206,18 @@ bool RefCountGuard::tryWaitForRefCountsToClear(void* const* targets, int count) 
     return false;
 }
 
-void RefCountGuard::waitForRefCountToClear(void* table_to_delete) {
-    if (tryWaitForRefCountsToClear(&table_to_delete, 1)) return;
+bool RefCountGuard::waitForRefCountToClear(void* table_to_delete) {
+    if (tryWaitForRefCountsToClear(&table_to_delete, 1)) return true;
 
     Counters::increment(DICTIONARY_DRAIN_TIMEOUTS, 1);
     Log::warn("waitForRefCountToClear: timeout after ~500ms waiting for %p; "
-              "drain incomplete, proceeding (dictionary snapshot may miss late inserts)",
-              table_to_delete);
-#ifndef NDEBUG
-    // Under DEBUG builds, treat the timeout as a fatal bug — keeping the abort
-    // out of release avoids turning a survivable rotation glitch into a crash
-    // in production.
+              "drain incomplete", table_to_delete);
+#if !defined(NDEBUG) && !defined(UNIT_TEST)
+    // Treat the timeout as a fatal bug in debug builds so a stalled accessor
+    // is surfaced.
+    // Release builds, and the gtest builds that cover the release behavior,
+    // return false and the caller must not free the resource.
     abort();
 #endif
+    return false;
 }

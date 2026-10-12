@@ -29,6 +29,12 @@ struct ReferenceChainPassContext {
   // exhaustion, as opposed to edges_admitted reaching budget.
   bool frontier_cap_hit;
 
+  // Immutable snapshot of the resolved-chain source tags that were cached before this synchronous
+  // traversal started. Callback code uses this fixed caller-owned array to decide whether a shape
+  // change needs invalidation without taking the resolved-chain cache lock.
+  const jlong *resolved_chain_tags = nullptr;
+  int resolved_chain_tag_count = 0;
+
   // ARRAY-HOLDER BATCHING: when non-null, expandFrontier() is driving a one-hop expansion of a
   // batch of boundary objects passed to a single FollowReferences(initial_object=holder_array)
   // call.

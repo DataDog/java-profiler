@@ -16,7 +16,10 @@
 #include "gtest_crash_handler.h"
 #include "arch.h"
 #include "counters.h"
+#include "nativeMem.h"
+#include "refCountGuard.h"
 #include "threadLocalData.h"
+#include <memory>
 
 // Test name for crash handler
 static constexpr char TEST_NAME[] = "CallTraceStorageTest";
@@ -1155,4 +1158,113 @@ TEST(CallTraceHashTableOverflowGuardTest, NextGenerationCapacityIsDouble) {
     EXPECT_EQ(CallTraceHashTableOverflowGuardTestAccessor::nextGenerationCapacity(65536), 131072ull);
     EXPECT_EQ(CallTraceHashTableOverflowGuardTestAccessor::nextGenerationCapacity(1), 2ull);
     EXPECT_EQ(CallTraceHashTableOverflowGuardTestAccessor::nextGenerationCapacity(0), 0ull);
+}
+
+// ── Drain timeout while a put() still holds the table ─────────────────────
+//
+// CallTraceStorage callers exclude put() while reclaiming tables (Profiler
+// holds lockAll()), so clearTableOnly()'s drain should never time out.  If it
+// does, the contract was broken and the table's chunks must be leaked rather
+// than unmapped under the put().  The guard is held by the test thread itself,
+// standing in for a put() stalled inside the table.
+TEST(CallTraceHashTableDrainTest, ClearWithGuardHeldLeaksChunks) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    auto table = std::make_unique<CallTraceHashTable>();
+    table->setInstanceId(1);
+    ASGCT_CallFrame frame;
+    frame.bci = 4242;
+    frame.method_id = (jmethodID)0x4242;
+    u64 id = table->put(1, &frame, false, 1);
+    ASSERT_GT(id, 0u);
+
+    CallTraceSet traces;
+    table->collect(traces);
+    CallTrace* held = findTraceById(traces, id);
+    ASSERT_NE(nullptr, held);
+
+    {
+        RefCountGuard guard(table.get());
+        table->clear();  // the drain times out on the guard above
+        // The chunk holding the trace was leaked, not unmapped.
+        EXPECT_EQ(id, held->trace_id);
+        EXPECT_EQ(4242, held->frames[0].bci);
+    }
+
+    // The table was still reset and keeps working.
+    CallTraceSet after;
+    table->collect(after);
+    EXPECT_EQ(nullptr, findTraceById(after, id));
+    EXPECT_GT(table->put(1, &frame, false, 1), 0u);
+}
+
+namespace {
+
+// Puts one trace into storage and returns it, read back from the active table.
+CallTrace* putAndFindTrace(CallTraceStorage* storage, int bci, u64* id_out) {
+    ASGCT_CallFrame frame;
+    frame.bci = bci;
+    frame.method_id = (jmethodID)(uintptr_t)bci;
+    u64 id = storage->put(1, &frame, false, 1);
+    *id_out = id;
+    CallTraceSet traces;
+    storage->activeTableForTest()->collect(traces);
+    return findTraceById(traces, id);
+}
+
+} // namespace
+
+// The destructor must not delete a table a put() still holds after its drain
+// times out; the other tables are deleted as usual.  NM_CALLTRACE tracks the
+// tables' chunk memory: only the guarded table may outlive the destructor, and
+// everything must be freed exactly once.
+TEST(CallTraceStorageDrainTest, DestructorLeaksTableStillGuarded) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    const long long live_before = NativeMem::live(NM_CALLTRACE);
+    CallTraceStorage* storage = new CallTraceStorage();
+    u64 id;
+    CallTrace* held = putAndFindTrace(storage, 4343, &id);
+    ASSERT_NE(nullptr, held);
+    CallTraceHashTable* table = storage->activeTableForTest();
+    const long long live_with_storage = NativeMem::live(NM_CALLTRACE);
+
+    {
+        RefCountGuard guard(table);
+        delete storage;  // the drain on table times out on the guard above
+        // The table and its chunks survived the destructor...
+        EXPECT_EQ(id, held->trace_id);
+        EXPECT_EQ(4343, held->frames[0].bci);
+        // ...and the standby and scratch tables were freed.
+        const long long live_after = NativeMem::live(NM_CALLTRACE);
+        EXPECT_GT(live_after, live_before);
+        EXPECT_LT(live_after, live_with_storage);
+    }
+    delete table;  // still a valid object; nothing else owns it now
+    EXPECT_EQ(live_before, NativeMem::live(NM_CALLTRACE));
+}
+
+// When processTraces()'s drain of the swapped-out active table times out, the
+// table's traces are still collected, the table is then reset without a second
+// drain, and its chunks are leaked instead of freed.
+TEST(CallTraceStorageDrainTest, ProcessTracesAfterFailedDrainLeaksOnce) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    CallTraceStorage storage;
+    u64 id;
+    CallTrace* held = putAndFindTrace(&storage, 4444, &id);
+    ASSERT_NE(nullptr, held);
+    CallTraceHashTable* table = storage.activeTableForTest();
+
+    long long timeouts_before = Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS);
+    bool collected = false;
+    {
+        RefCountGuard guard(table);
+        storage.processTraces([&](const CallTraceSet& traces) {
+            collected = findTraceById(traces, id) != nullptr;
+        });
+        EXPECT_TRUE(collected);
+        // One drain timed out; step 10 did not drain the table again.
+        EXPECT_EQ(timeouts_before + 1, Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS));
+        // The chunk holding the trace was leaked, not unmapped.
+        EXPECT_EQ(id, held->trace_id);
+        EXPECT_EQ(4444, held->frames[0].bci);
+    }
 }
