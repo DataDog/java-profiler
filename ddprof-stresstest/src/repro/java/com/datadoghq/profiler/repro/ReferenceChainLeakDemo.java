@@ -23,7 +23,7 @@ import java.util.Map;
  *
  * <pre>
  * java -agentpath:/path/to/libjavaProfiler.so=start,memory=64:l,generations=true,\
- *   referencechains=true:hops=64:budget=4000:ttl=120000:framecap=2000000:\
+ *   referencechains=true:hops=64:budget=10000:ttl=120000:framecap=2000000:\
  *   pausetarget=5000:painbudget=100,jfr,file=repro.jfr \
  *   -jar refchains_repro.jar repro.jfr /path/to/libjavaProfiler.so
  * </pre>
@@ -43,7 +43,12 @@ import java.util.Map;
  *   {@code datadog.ReferenceChain} into the JFR file - nothing drains that queue on a timer,
  *   and in production it's dd-trace-java's own periodic recording-chunk rotation that calls
  *   {@code dump()}. Without it, chain events get built and enqueued (visible via {@code
- *   TEST_LOG}) but are silently discarded when the process exits.
+ *   TEST_LOG}) but are silently discarded when the process exits. Each periodic dump goes to
+ *   its own file, {@code <jfr-dump-path>.snapshot.<round>} (printed as a {@code [repro]
+ *   dumped ...} line), because a drained chain event is written exactly once: reusing one
+ *   snapshot path would overwrite - and permanently lose - every earlier window's chains.
+ *   A bounded run's final dump goes to {@code <jfr-dump-path>.snapshot} (the path the sweep
+ *   scripts read); inspect all snapshot files together for the complete chain evidence.
  *   <li>Passing the {@code .so} path explicitly to {@link JavaProfiler#getInstance(String,
  *   String)}: with no {@code libLocation}, {@code getInstance()} extracts the jar's own
  *   bundled copy of the library to a fresh temp file and {@code System.load()}s <em>that</em>
@@ -113,20 +118,44 @@ public final class ReferenceChainLeakDemo {
     // call, not just this app's own memory growth, is load-bearing for the repro.
     private static final int DUMP_EVERY_N_ROUNDS = 10;
 
+    private static final String USAGE =
+            "usage: ReferenceChainLeakDemo <jfr-dump-path> <agent-so-path> [duration-seconds] "
+                    + "(both required args must match the -agentpath:<agent-so-path>=...jfr,file=<jfr-dump-path> values; "
+                    + "duration-seconds - a non-negative whole number of seconds - runs a bounded, "
+                    + "metrics-reporting session instead of forever)";
+
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
-            System.err.println("usage: ReferenceChainLeakDemo <jfr-dump-path> <agent-so-path> [duration-seconds] "
-                    + "(both required args must match the -agentpath:<agent-so-path>=...jfr,file=<jfr-dump-path> values; "
-                    + "duration-seconds runs a bounded, metrics-reporting session instead of forever)");
+            System.err.println(USAGE);
             System.exit(1);
         }
-        long durationSeconds = args.length >= 3 ? Long.parseLong(args[2]) : -1;
+        long durationSeconds = args.length >= 3 ? parseDurationSeconds(args[2]) : -1;
         run(Paths.get(args[0]), args[1], durationSeconds);
     }
 
+    // Malformed input (e.g. an empty/garbled $DURATION from the wrapper scripts) must print the
+    // usage and exit non-zero, not die with an uncaught NumberFormatException. Also rejects
+    // values whose deadline (seconds * 1e9 ns, see run()) would overflow a long.
+    private static long parseDurationSeconds(String arg) {
+        long seconds;
+        try {
+            seconds = Long.parseLong(arg.trim());
+        } catch (NumberFormatException e) {
+            seconds = -1;
+        }
+        if (seconds < 0 || seconds > Long.MAX_VALUE / 1_000_000_000L) {
+            System.err.println("invalid duration-seconds '" + arg + "'");
+            System.err.println(USAGE);
+            System.exit(1);
+        }
+        return seconds;
+    }
+
     // FlightRecorder::dump() (flightRecorder.cpp) rejects dumping the continuous recording to
-    // its own file= path ("Can not dump recording to itself"), so periodic drains must target
-    // a different path; this is that path's suffix.
+    // its own file= path ("Can not dump recording to itself"), so drains must target a
+    // different path; this is that path's suffix. Periodic drains append ".<round>" so each
+    // window's drained chain events survive (see this class's header comment); the final
+    // bounded-run drain uses the bare suffix.
     private static final String SNAPSHOT_SUFFIX = ".snapshot";
 
     // Tracked so a bounded run (durationSeconds >= 0) can report throughput/latency/memory
@@ -138,7 +167,8 @@ public final class ReferenceChainLeakDemo {
     private static long maxRoundNanos = 0;
 
     private static void run(Path recordingPath, String agentSoPath, long durationSeconds) throws InterruptedException {
-        // Must differ from recordingPath itself - see SNAPSHOT_SUFFIX's comment.
+        // Must differ from recordingPath itself - see SNAPSHOT_SUFFIX's comment. Final
+        // (bounded-run) drain target; periodic drains use snapshotPath + "." + round.
         Path snapshotPath = recordingPath.resolveSibling(recordingPath.getFileName() + SNAPSHOT_SUFFIX);
         // Must pass the exact .so path -agentpath already loaded: JavaProfiler.getInstance()
         // with no libLocation extracts the jar's own bundled copy to a fresh temp file and
@@ -199,7 +229,11 @@ public final class ReferenceChainLeakDemo {
             }
 
             if (round % DUMP_EVERY_N_ROUNDS == 0) {
-                profiler.dump(snapshotPath);
+                // Distinct file per drain: an event drained here is written only to this file.
+                Path roundSnapshotPath =
+                        snapshotPath.resolveSibling(snapshotPath.getFileName() + "." + round);
+                profiler.dump(roundSnapshotPath);
+                System.out.println("[repro] dumped " + roundSnapshotPath);
             }
 
             long roundNanos = System.nanoTime() - roundStartNanos;
@@ -212,6 +246,7 @@ public final class ReferenceChainLeakDemo {
 
         if (durationSeconds >= 0) {
             profiler.dump(snapshotPath);
+            System.out.println("[repro] dumped " + snapshotPath);
             reportMetrics(startNanos, startHeapUsedMb);
         }
     }

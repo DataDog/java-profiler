@@ -72,7 +72,10 @@ fi
 # to sonnet-5 via the AI gateway, billing real money for every log parse.)
 echo
 echo "Generating gradle summary…"
-python3 - "$LOG" <<'PYEOF' || echo "⚠ gradle summary generation failed — full log at: $LOG"
+# A generator failure (exception, missing python3) must not leave stale or missing artifacts
+# behind a successful exit: capture its rc, write an UNKNOWN pair below, and propagate the rc.
+summary_rc=0
+python3 - "$LOG" <<'PYEOF' || summary_rc=$?
 import json, os, re, sys
 
 log_path = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -87,7 +90,12 @@ tests = {"total": 0, "failed": 0, "skipped": 0, "modules": {}}
 
 RE_STATUS   = re.compile(r"^BUILD (SUCCESSFUL|FAILED)(?: in (.+?))?\s*$")
 RE_TASK     = re.compile(r"^> Task (\S+)")
-RE_GSUM     = re.compile(r"(\d+) tests? (successful|failed|skipped)")
+# A summary line may carry several counts ("N tests successful, M failed, K skipped"): RE_GSUM
+# matches the whole run of counts, RE_GSUM_PART splits it so none of them is dropped.
+RE_GSUM     = re.compile(r"\d+ tests? (?:successful|failed|skipped)"
+                         r"(?:,\s*\d+ (?:tests? )?(?:successful|failed|skipped))*")
+RE_GSUM_PART = re.compile(r"(\d+) (?:tests? )?(successful|failed|skipped)")
+RE_HL_TASK  = re.compile(r"task '([^']+)'")
 RE_COMP     = re.compile(r"(\d+) tests? completed(?:, (\d+) failed)?(?:, (\d+) skipped)?")
 RE_GTEST_P  = re.compile(r"\[  PASSED  \] (\d+) tests?")
 RE_GTEST_F  = re.compile(r"\[  FAILED  \] (\d+) tests?")
@@ -110,8 +118,9 @@ if not log_path or not os.path.isfile(log_path) or os.path.getsize(log_path) == 
     why = f"log not found: {log_path!r}" if not log_path or not os.path.isfile(log_path) else "log is empty"
     os.makedirs(OUT_DIR, exist_ok=True)
     open(MD, "w").write(f"# Gradle Summary\n\n- Status: UNKNOWN ({why})\n\nFull log unavailable or empty.\n")
-    json.dump({"status": "UNKNOWN", "totalTime": None, "failedTasks": [], "warnings": [],
-               "tests": tests, "slowTasks": [], "depIssues": [why], "actions": []}, open(JS, "w"), indent=1)
+    json.dump({"status": "UNKNOWN", "totalTime": None, "failedTasks": [], "primaryFailures": [],
+               "warnings": [], "tests": tests, "slowTasks": [], "depIssues": [why], "actions": []},
+              open(JS, "w"), indent=1)
     print(f"Gradle log unusable ({why}); wrote {MD} and {JS}")
     sys.exit(0)
 
@@ -130,11 +139,14 @@ with open(log_path, encoding="utf-8", errors="replace") as f:
             if line.endswith("FAILED") and m.group(1) not in failed_tasks:
                 failed_tasks.append(m.group(1))
             continue
-        if "FAILURE: Build failed with an exception" in line:
-            grab_headline = True
+        # Gradle prints one "* What went wrong" block per failure ("FAILURE: Build failed with
+        # an exception." for one, "FAILURE: Build completed with N failures." + numbered blocks
+        # for several), so capture a headline at every such block, not just after the banner.
+        if line.startswith("FAILURE: Build "):
             continue
-        if grab_headline and line.strip().startswith("* What went wrong"):
+        if line.strip().startswith("* What went wrong"):
             headlines.append("")
+            grab_headline = True
             continue
         if grab_headline:
             s = line.strip()
@@ -154,16 +166,10 @@ with open(log_path, encoding="utf-8", errors="replace") as f:
             continue
         m = RE_GSUM.search(line)
         if m:
-            n, verb = int(m.group(1)), m.group(2)
-            mm = mod(cur_task or "(unknown)")
-            mm["total"] += n
-            tests["total"] += n
-            if verb == "failed":
-                mm["failed"] += n
-                tests["failed"] += n
-            elif verb == "skipped":
-                mm["skipped"] += n
-                tests["skipped"] += n
+            counts = {"successful": 0, "failed": 0, "skipped": 0}
+            for pm in RE_GSUM_PART.finditer(m.group(0)):
+                counts[pm.group(2)] += int(pm.group(1))
+            add_counts(cur_task or "(unknown)", counts["successful"], counts["failed"], counts["skipped"])
             continue
         m = RE_GTEST_P.search(line)
         if m:
@@ -187,8 +193,22 @@ with open(log_path, encoding="utf-8", errors="replace") as f:
                 seen_warnings.add(key)
                 warnings.append(key)
 
-failed = [t + (" — " + h if h else "") for t, h in zip(failed_tasks, headlines + [""] * len(failed_tasks))]
-data = {"status": status, "totalTime": total_time, "failedTasks": failed, "warnings": warnings,
+# Pair each failed task with the headline that names it ("Execution failed for task ':x:y'.");
+# a task with no naming headline points at the build-level Primary Failure section instead of
+# being paired positionally with an unrelated headline.
+primary_failures = [h for h in headlines if h]
+headline_by_task = {}
+for h in primary_failures:
+    hm = RE_HL_TASK.search(h)
+    if hm and hm.group(1) not in headline_by_task:
+        headline_by_task[hm.group(1)] = h
+fallback = "(see Primary Failure)" if primary_failures else ""
+failed = []
+for t in failed_tasks:
+    h = headline_by_task.get(t) or fallback
+    failed.append(t + (" — " + h if h else ""))
+data = {"status": status, "totalTime": total_time, "failedTasks": failed,
+        "primaryFailures": primary_failures, "warnings": warnings,
         "tests": tests, "slowTasks": [], "depIssues": dep_issues, "actions": []}
 
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -201,9 +221,11 @@ if failed:
     L.append("## Failing Tasks")
     L += [f"- {t}" for t in failed]
     L.append("")
-if headlines:
+if primary_failures:
     L.append("## Primary Failure")
-    L += [f"```text\n{h}\n```" for h in headlines[:3] if h]
+    L += [f"```text\n{h}\n```" for h in primary_failures[:3]]
+    if len(primary_failures) > 3:
+        L.append(f"… {len(primary_failures) - 3} more (see primaryFailures in {JS})")
     L.append("")
 if tests["total"]:
     L.append("## Tests")
@@ -228,3 +250,14 @@ open(MD, "w").write("\n".join(L) + "\n")
 print(f"{status} (time: {total_time or 'n/a'}); {len(failed)} failing task(s), {tests['failed']} test failure(s)")
 print(f"Wrote {MD} and {JS}")
 PYEOF
+
+if [ "$summary_rc" -ne 0 ]; then
+  echo "⚠ gradle summary generation failed (rc=$summary_rc) — full log at: $LOG"
+  mkdir -p build/reports/claude
+  log_json="$(printf '%s' "$LOG" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+  printf '# Gradle Summary\n\n- Status: UNKNOWN (summary generation failed, rc=%s)\n- Log: %s\n' \
+    "$summary_rc" "$LOG" > build/reports/claude/gradle-summary.md
+  printf '{"status": "UNKNOWN", "totalTime": null, "failedTasks": [], "primaryFailures": [], "warnings": [], "tests": {"total": 0, "failed": 0, "skipped": 0, "modules": {}}, "slowTasks": [], "depIssues": ["summary generation failed (rc=%s), see %s"], "actions": []}\n' \
+    "$summary_rc" "$log_json" > build/reports/claude/gradle-summary.json
+  exit "$summary_rc"
+fi

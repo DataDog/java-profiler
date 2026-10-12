@@ -28,8 +28,11 @@
 #   REFCHAINS_ENABLED  "true" (default) or "false" - toggles the
 #                      referencechains=... agent sub-option itself, for A/B
 #                      comparison against a baseline with the feature off.
-#   REFCHAINS_ARGS     extra referencechains=... sub-options appended after the
-#                      baked-in defaults below (e.g. "hops=32")
+#   REFCHAINS_ARGS     extra referencechains=... sub-options (e.g. "hops=32"),
+#                      appended after the baked-in baseline (BAKED_REFCHAINS_OPTS
+#                      below). Any baked key REFCHAINS_ARGS also sets is dropped
+#                      from the baseline, so the caller's value is the only
+#                      occurrence of that key in the final option string.
 #   REFCHAINS_JAVA_HOME  JDK home to launch the repro with (default: "java" on
 #                      PATH). Lets you A/B a specific JDK, e.g. to reproduce a
 #                      version-specific VMStructs bug: REFCHAINS_JAVA_HOME=/usr/local/sdkman/candidates/java/25.0.3-tem
@@ -105,17 +108,33 @@ fi
 echo "Using jar: ${REFCHAINS_JAR}"
 
 # No firstpassbudget here: the tracker auto-scales the first pass's budget
-# from budget=4000 (currently x50, capped at 200000 - referenceChains.h) so
-# it can actually reach this app's leaking population. Pass
-# REFCHAINS_ARGS="firstpassbudget=N" to override that auto-scaled default.
+# from the baked budget=10000 below (x AUTO_FIRST_PASS_BUDGET_MULTIPLIER = 50,
+# capped at AUTO_FIRST_PASS_BUDGET_CAP = 200000 - referenceChains.h - so the
+# effective first-pass budget is 200000) so it can actually reach this app's
+# leaking population. Pass REFCHAINS_ARGS="firstpassbudget=N" to override that
+# auto-scaled default.
 REFCHAINS_ENABLED="${REFCHAINS_ENABLED:-true}"
-REFERENCECHAINS_OPTS="${REFCHAINS_ENABLED}:hops=64:budget=10000:ttl=120000:framecap=2000000:pausetarget=500:painbudget=100"
-if [ -n "${REFCHAINS_ARGS:-}" ]; then
-  REFERENCECHAINS_OPTS="${REFERENCECHAINS_OPTS}:${REFCHAINS_ARGS}"
-fi
+BAKED_REFCHAINS_OPTS="hops=64:budget=10000:ttl=120000:framecap=2000000:pausetarget=500:painbudget=100"
+# Drop every baked key that REFCHAINS_ARGS also sets. arguments.cpp parses the
+# referencechains sub-options left to right and each key simply overwrites its
+# field (last occurrence wins, keys matched case-insensitively), so appending a
+# duplicate would work today - but dropping it keeps the final string
+# duplicate-free and the effective value unambiguous to anyone reading it.
+# (Plain read/case/tr only: bash 3.2 - macOS's /bin/bash - has no ${var,,}.)
+REFCHAINS_ARGS_LC=":$(printf '%s' "${REFCHAINS_ARGS:-}" | tr '[:upper:]' '[:lower:]')"
+EFFECTIVE_BAKED_OPTS=""
+IFS=':' read -r -a BAKED_KVS <<< "${BAKED_REFCHAINS_OPTS}"
+for kv in "${BAKED_KVS[@]}"; do
+  case "${REFCHAINS_ARGS_LC}" in
+    *":${kv%%=*}="*) echo "Baked ${kv} overridden by REFCHAINS_ARGS" ; continue ;;
+  esac
+  EFFECTIVE_BAKED_OPTS="${EFFECTIVE_BAKED_OPTS:+${EFFECTIVE_BAKED_OPTS}:}${kv}"
+done
+REFERENCECHAINS_OPTS="${REFCHAINS_ENABLED}${EFFECTIVE_BAKED_OPTS:+:${EFFECTIVE_BAKED_OPTS}}${REFCHAINS_ARGS:+:${REFCHAINS_ARGS}}"
 
 echo "JFR output: ${JFR_OUT}"
 echo "referencechains enabled: ${REFCHAINS_ENABLED}"
+echo "referencechains options: ${REFERENCECHAINS_OPTS}"
 rm -f "${JFR_OUT}"
 
 JAVA_LOG_OPTS=()

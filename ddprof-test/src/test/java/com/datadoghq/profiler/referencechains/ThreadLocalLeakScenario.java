@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -108,11 +109,12 @@ public final class ThreadLocalLeakScenario {
     }
 
     /**
-     * Bounded wait for the leak thread's first publish. Only the
-     * late-thread mode needs it: there the thread is started after the
-     * profiler (and thus after {@code profiler.execute()} returned), so the
-     * main thread cannot rely on the start-command's JNI work having
-     * scheduled the leak thread far enough to publish.
+     * Bounded wait for the leak thread's first publish. Both modes need it:
+     * in the late-thread mode the thread is started only after
+     * {@code profiler.execute()} returned, and in the default mode the leak
+     * thread must still allocate {@code SEED_CHUNKS} chunks before it
+     * publishes - so neither mode can assume publication has happened by the
+     * time the main thread seeds.
      */
     boolean awaitPublication(long timeoutMs) throws InterruptedException {
       long deadline = System.nanoTime()
@@ -181,7 +183,7 @@ public final class ThreadLocalLeakScenario {
       for (int i = 0; i < SEED_CHUNKS; i++) {
         sink.add(new byte[CHUNK_BYTES]);
       }
-      handoff.publish(JavaProfiler.getTid(), sink.get(0));
+      handoff.publish(ReferenceChainTestHooks.getTid(), sink.get(0));
       while (true) {
         try {
           if (rounds.poll(50, TimeUnit.MILLISECONDS) == null) {
@@ -204,12 +206,13 @@ public final class ThreadLocalLeakScenario {
 
     if (lateThread) {
       leakThread.start();
-      // The debug seeding below consumes the handoff immediately; the
-      // thread is only just started, so wait for its first publish.
-      if (!handoff.awaitPublication(30000)) {
-        System.out.println(NOT_FOUND_MARKER);
-        return;
-      }
+    }
+    // The debug seeding below consumes the handoff immediately; in both modes
+    // the leak thread must first allocate SEED_CHUNKS chunks before it
+    // publishes, so wait (bounded) for its first publish rather than race it.
+    if (!handoff.awaitPublication(30000)) {
+      System.out.println(NOT_FOUND_MARKER);
+      return;
     }
 
     boolean debugBuild = "debug".equals(System.getProperty("ddprof_test.config"));
@@ -220,22 +223,27 @@ public final class ThreadLocalLeakScenario {
       // seeds or the seeds authorize nothing). The rep chunk stays durably
       // reachable only through the leak thread's ThreadLocalMap - the
       // take() above dropped this handoff's reference.
-      JavaProfiler.setKlassPopulationRepresentativeForTest0(LEAK_KLASS_ID, handoff.take());
+      ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
+          LEAK_KLASS_ID, handoff.take());
       leakTid = handoff.tid;
       for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
-        JavaProfiler.seedKlassPopulationSample0(LEAK_KLASS_ID, epoch * 10, epoch);
-        JavaProfiler.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
+        ReferenceChainTestHooks.seedKlassPopulationSample0(LEAK_KLASS_ID, epoch * 10, epoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
       }
+      // Continue the rising epoch sequence past the seeded range so each
+      // per-round maintenance seed below pushes a fresh, strictly increasing
+      // epoch (same as StaticFieldGrowingCollectionScenario).
+      hysteresisEpoch = SEED_EPOCHS_FOR_HYSTERESIS;
       // Wait for the BFS thread's first full pass, then poll - same
       // load-bearing wait as LeakTagCorrelationScenario.
-      int initialPasses = JavaProfiler.referenceChainPassesRunForTest0();
+      int initialPasses = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
       for (int i = 0; i < 300; i++) {
-        if (JavaProfiler.referenceChainPassesRunForTest0() != initialPasses) {
+        if (ReferenceChainTestHooks.referenceChainPassesRunForTest0() != initialPasses) {
           break;
         }
         Thread.sleep(100);
       }
-      JavaProfiler.pollReferenceChainTargets0();
+      ReferenceChainTestHooks.pollReferenceChainTargets0();
     } else {
       Thread.sleep(5000);
     }
@@ -248,9 +256,10 @@ public final class ThreadLocalLeakScenario {
       }
       if (debugBuild) {
         hysteresisEpoch++;
-        JavaProfiler.seedKlassPopulationSample0(
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
             LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        JavaProfiler.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(
+            LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
       }
       Thread.sleep(300);
       System.gc();
@@ -272,9 +281,10 @@ public final class ThreadLocalLeakScenario {
       }
       if (debugBuild) {
         hysteresisEpoch++;
-        JavaProfiler.seedKlassPopulationSample0(
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
             LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        JavaProfiler.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(
+            LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
       }
       if (!rounds.offer(attempt)) {
         throw new IllegalStateException(
@@ -301,14 +311,30 @@ public final class ThreadLocalLeakScenario {
     System.out.println(FOUND_MARKER + best.payloadChain.targetTag);
   }
 
+  /**
+   * Monotonic: never downgrades an already better result (e.g. a fully
+   * correlated in-pool chain) to a later out-of-pool/unmatched scan; at equal
+   * quality the newer scan wins.
+   */
   private static ScanResult keepBest(ScanResult best, ScanResult scan) {
     if (scan == null) {
       return best;
     }
-    if (scan.payloadChain != null) {
+    if (best == null) {
       return scan;
     }
-    return best != null ? best : scan;
+    return quality(scan) >= quality(best) ? scan : best;
+  }
+
+  /** 0: no chain, 1: out-of-pool chain, 2: in-pool chain, 3: in-pool and correlated. */
+  private static int quality(ScanResult r) {
+    if (r == null || r.payloadChain == null) {
+      return 0;
+    }
+    if (!r.payloadChainInPool) {
+      return 1;
+    }
+    return r.liveObjectMatchesForChainTag > 0 ? 3 : 2;
   }
 
   /**
