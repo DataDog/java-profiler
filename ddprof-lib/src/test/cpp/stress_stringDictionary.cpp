@@ -653,3 +653,48 @@ TEST(StressStringDictionary, ClearAllUnderConcurrentReaders) {
     for (auto& th : inserters) th.join();
     for (auto& th : readers) th.join();
 }
+
+// Invariant (PROF-16137): a key first seen while rotate() is running gets one
+// id, no matter which side of the rotation each caller lands on.  All threads
+// walk the same never-before-seen keys while a rotator spins, so first-time
+// inserts keep straddling the transition window.  IdStabilityUnderConcurrentRotation
+// pre-inserts every key before rotating and cannot reach this window.
+TEST(StressStringDictionary, FreshKeysKeepOneIdUnderConcurrentRotation) {
+    StringDictionary dict;
+    constexpr int N_WRITERS = 4;
+    constexpr int N_KEYS = 20000;
+    std::atomic<bool> done{false};
+
+    std::vector<std::string> keys;
+    keys.reserve(N_KEYS);
+    for (int i = 0; i < N_KEYS; i++) keys.push_back("fresh_" + std::to_string(i));
+
+    std::thread rotator([&dict, &done]() {
+        while (!done.load(std::memory_order_relaxed)) {
+            dict.rotate();
+            dict.clearStandby();
+        }
+    });
+
+    std::vector<std::vector<u32>> seen(N_WRITERS, std::vector<u32>(N_KEYS, 0));
+    std::vector<std::thread> writers;
+    for (int t = 0; t < N_WRITERS; t++) {
+        writers.emplace_back([&dict, &keys, &seen, t]() {
+            for (int i = 0; i < N_KEYS; i++) {
+                seen[t][i] = dict.lookup(keys[i].c_str(), keys[i].size());
+            }
+        });
+    }
+    for (auto& th : writers) th.join();
+    done.store(true);
+    rotator.join();
+
+    int conflicts = 0;
+    for (int i = 0; i < N_KEYS; i++) {
+        u32 current = dict.bounded_lookup(keys[i].c_str(), keys[i].size());
+        for (int t = 0; t < N_WRITERS; t++) {
+            if (seen[t][i] != 0 && seen[t][i] != current) conflicts++;
+        }
+    }
+    EXPECT_EQ(0, conflicts) << "ids handed out that no longer match the dictionary";
+}

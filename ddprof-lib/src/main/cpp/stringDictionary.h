@@ -9,15 +9,18 @@
 #include "counters.h"
 #include "log.h"
 #include "nativeMem.h"
+#include "os.h"
 #include "refCountGuard.h"
 #include "tripleBuffer.h"
 #include "arch.h"
+#include <assert.h>
 #include <atomic>
 #include <climits>
 #include <map>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <vector>
 
 // Reuse the same table geometry as Dictionary for cache-friendly layout.
@@ -30,7 +33,7 @@
 #define CELLS 3
 #endif
 static_assert(ROW_BITS == 7, "StringDictionary assumes ROW_BITS == 7");
-static_assert(ROWS == 128, "StringDictionary assumes ROWS == 128 (sized into freeOverflowNodes/collectTable traversal)");
+static_assert(ROWS == 128, "StringDictionary assumes ROWS == 128 (sized into freeOverflowNodes/forEachEntry traversal)");
 static_assert(CELLS == 3, "StringDictionary assumes CELLS == 3 (SBRow layout)");
 
 // ─── Internal storage types ────────────────────────────────────────────────
@@ -280,8 +283,11 @@ private:
         return freed;
     }
 
-    static void collectTable(const SBTable* table,
-                             std::map<u32, const char*>& out) {
+    // Calls visit(key, id) for every entry of table and its overflow chains
+    // whose id is published; entries still mid-insert (id == 0) are skipped.
+    template <typename Visitor>
+    static void forEachEntry(const SBTable* table, Visitor visit) {
+        if (table == nullptr) return;
         struct Frame { const SBTable* t; int row; };
         std::vector<Frame> stk;
         stk.reserve(RESERVED_TRAVERSAL_DEPTH);
@@ -294,7 +300,7 @@ private:
                 const char* k = __atomic_load_n(&row->keys[j], __ATOMIC_ACQUIRE);
                 if (k) {
                     u32 eid = __atomic_load_n(&row->ids[j], __ATOMIC_ACQUIRE);
-                    if (eid != 0) out[eid] = k;
+                    if (eid != 0) visit(k, eid);
                 }
             }
             const SBTable* next = __atomic_load_n(&row->next, __ATOMIC_ACQUIRE);
@@ -415,19 +421,35 @@ public:
         }
     }
 
+    // Outcome of copyFrom(): src entries now held here under their src id,
+    // and src keys this buffer already held under a different id (an id
+    // conflict -- see StringDictionary::rotate()).  Entries whose insert
+    // failed (allocation failure) count as neither.
+    struct CopyResult {
+        int copied;
+        int conflicts;
+    };
+
     // Copy all entries from src into this buffer preserving their ids.
+    // Walks src's table directly, so no per-entry allocation beyond the
+    // inserts themselves; keys already present here are left untouched.
     // NOT signal-safe.
-    void copyFrom(const StringDictionaryBuffer& src) {
-        std::map<u32, const char*> entries;
-        src.collect(entries);
-        for (auto& kv : entries) {
-            insert_with_id(kv.second, strlen(kv.second), kv.first);
-        }
+    CopyResult copyFrom(const StringDictionaryBuffer& src) {
+        CopyResult result = {0, 0};
+        forEachEntry(src._table, [this, &result](const char* key, u32 id) {
+            u32 stored = insert_with_id(key, strlen(key), id);
+            if (stored == id) {
+                result.copied++;
+            } else if (stored != 0) {
+                result.conflicts++;
+            }
+        });
+        return result;
     }
 
     // Populate out with {id -> key} for all entries in this buffer.
     void collect(std::map<u32, const char*>& out) const {
-        collectTable(_table, out);
+        forEachEntry(_table, [&out](const char* key, u32 id) { out[id] = key; });
     }
 
     // Free overflow nodes, zero the root table, reset the arena.
@@ -475,6 +497,9 @@ public:
 // concurrent inserts in the rotation window:
 //   phase 1: copy active → clearTarget (before rotate)
 //   phase 2: copy old_active → new_active (after drain, catch late inserts)
+// From just before new_active is published until phase 2 has finished,
+// _transitioning is set and a lookup that misses waits for it to clear instead
+// of assigning a new id (see rotate() for why).
 // lookupDuringDump(key): probes dump then active; inserts into both if new.
 //
 // Concurrency:
@@ -497,6 +522,12 @@ class StringDictionary {
     // detect "the id namespace was wiped out from under me" and invalidate
     // itself, rather than assuming ids stay valid across a clearAll().
     std::atomic<u64>  _generation{0};
+    // Set by rotate() from just before it publishes the new active until its
+    // phase 2 copy is done; first-time id assignment waits it out.
+    std::atomic<bool> _transitioning{false};
+    // OS::threadId() of the thread inside rotate() (debug builds only, else 0),
+    // so waitForTransition() can assert it is never the rotating thread.
+    std::atomic<int>  _rotating_tid{0};
     StringDictionaryBuffer _a, _b, _c;
     TripleBufferRotator<StringDictionaryBuffer> _rot;
     // The buffer whose last clearStandby() was skipped, or null.  rotate()
@@ -553,7 +584,124 @@ class StringDictionary {
         Counters::increment(DICTIONARY_KEYS_BYTES, (long long)(len + 1), _counter_offset);
     }
 
+    // A key held under two ids means one of them was handed to a caller and
+    // will not resolve in later snapshots.  rotate()'s transition gate rules
+    // this out except after a drain timeout: a straggler's late insert, or a
+    // clear target reused uncleared (see rotate()).  Those are reported by the
+    // caller already, so this only counts.
+    void reportIdConflicts(int conflicts) {
+        if (conflicts == 0) return;
+        Counters::increment(DICTIONARY_ID_CONFLICTS, conflicts);
+    }
+
+    void addToDump(StringDictionaryBuffer* dump, const char* key, size_t len, u32 id) {
+        u32 stored = dump->insert_with_id(key, len, id);
+        reportIdConflicts(stored != 0 && stored != id ? 1 : 0);
+    }
+
+    // Blocks until the rotate() in progress has finished phase 2.  The caller
+    // must not hold a RefCountGuard: one on the old active would stall
+    // rotate()'s drain until it times out.  Returns false if clearAll() starts
+    // meanwhile, in which case the caller gives up with 0.
+    bool waitForTransition() {
+        assert(_rotating_tid.load(std::memory_order_relaxed) != OS::threadId());
+        Counters::increment(DICTIONARY_TRANSITION_WAITS);
+#ifdef UNIT_TEST
+        _transition_waits.fetch_add(1);
+#endif
+        const int SPIN_ITERATIONS = 100;
+        for (int spin = 0; _transitioning.load(std::memory_order_acquire); spin++) {
+            if (!_accepting.load(std::memory_order_acquire)) return false;
+            if (spin < SPIN_ITERATIONS) {
+                spinPause();
+            } else {
+                struct timespec sleep_time = {0, 100000};
+                nanosleep(&sleep_time, nullptr);
+            }
+        }
+        return true;
+    }
+
+    // Shared body of lookup() and the size-limited bounded_lookup(): returns
+    // key's id, inserting it under a new id if absent and active holds fewer
+    // than size_limit entries.
+    u32 lookupOrInsert(const char* key, size_t len, int size_limit) {
+        if (!_accepting.load(std::memory_order_acquire)) return 0;
+        while (true) {
+            {
+                StringDictionaryBuffer* active = _rot.active();
+                RefCountGuard guard(active);
+                if (!guard.isActive()) return 0;
+                // Re-check _accepting after guard creation to close the TOCTOU window:
+                // clearAll() sets _accepting=false then drains; a thread that passed the
+                // outer check but hadn't yet incremented its guard count would be missed
+                // by the drain and could access freed overflow nodes or arena chunks.
+                if (!_accepting.load(std::memory_order_seq_cst)) return 0;
+                if (_rot.active() != active) continue;
+                u32 id = active->lookup(key, len);
+                if (id != 0) return id;
+                // Pairs with the fence in rotate(), which follows its publish of
+                // the new active: either the re-check below sees that publish
+                // (retry on the new active), or rotate()'s drain sees this guard
+                // and waits for the insert below before running phase 2.  The
+                // re-check before the probe is not enough: it precedes this fence.
+                __atomic_thread_fence(__ATOMIC_SEQ_CST);
+                if (_rot.active() != active) continue;
+                // A writer on the new active sees _transitioning set until
+                // phase 2 is done (see rotate()), so it must not assign an id.
+                if (!_transitioning.load(std::memory_order_relaxed)) {
+                    if (active->size() >= size_limit) return 0;
+                    u32 new_id = nextId();
+                    u32 result = active->insert_with_id(key, len, new_id);
+                    if (result == new_id) countInsert(len);
+                    return result;
+                }
+            }
+            // Missed mid-rotation: the key may still be on its way into this
+            // active via phase 2.  Retry once it has landed (guard released above).
+            if (!waitForTransition()) return 0;
+        }
+    }
+
 public:
+    // Points inside rotate() at which a UNIT_TEST build calls the hook
+    // installed with setRotateHookForTest(), on the rotating thread.
+    enum RotateStage {
+        ROTATE_AFTER_PHASE1,   // phase 1 copied; new active not yet published
+        ROTATE_BEFORE_DRAIN    // new active published; old active not yet drained
+    };
+
+private:
+#ifdef UNIT_TEST
+    void (*_rotate_hook)(RotateStage, void*) = nullptr;
+    void* _rotate_hook_arg = nullptr;
+    std::atomic<int> _transition_waits{0};
+    int _phase2_skips = 0;
+#endif
+
+    void rotateHook(RotateStage stage) {
+#ifdef UNIT_TEST
+        if (_rotate_hook != nullptr) _rotate_hook(stage, _rotate_hook_arg);
+#else
+        (void)stage;
+#endif
+    }
+
+public:
+#ifdef UNIT_TEST
+    // Test seam: lets a test interleave other threads with the steps of rotate().
+    void setRotateHookForTest(void (*hook)(RotateStage, void*), void* arg) {
+        _rotate_hook = hook;
+        _rotate_hook_arg = arg;
+    }
+
+    // Number of times a lookup has waited for a rotate() to finish phase 2.
+    int transitionWaitsForTest() const { return _transition_waits.load(); }
+
+    // Number of rotate() calls that skipped phase 2 (nothing arrived late).
+    int phase2SkipsForTest() const { return _phase2_skips; }
+#endif
+
     explicit StringDictionary(int counter_offset = 0)
         : _rot(&_a, &_b, &_c), _counter_offset(counter_offset) {
         if (counter_offset != 0) {
@@ -583,46 +731,16 @@ public:
     // Needs no RefCountGuard: _a/_b/_c are members, never freed.
     int activeSize() const { return _rot.active()->size(); }
 
-    // Insert into active buffer; returns globally stable id.  NOT signal-safe.
+    // Insert into active buffer; returns globally stable id.  NOT signal-safe;
+    // a miss during rotate() blocks until rotate() has finished phase 2.
     u32 lookup(const char* key, size_t len) {
-        if (!_accepting.load(std::memory_order_acquire)) return 0;
-        while (true) {
-            StringDictionaryBuffer* active = _rot.active();
-            RefCountGuard guard(active);
-            if (!guard.isActive()) return 0;
-            // Re-check _accepting after guard creation to close the TOCTOU window:
-            // clearAll() sets _accepting=false then drains; a thread that passed the
-            // outer check but hadn't yet incremented its guard count would be missed
-            // by the drain and could access freed overflow nodes or arena chunks.
-            if (!_accepting.load(std::memory_order_seq_cst)) return 0;
-            if (_rot.active() != active) continue;
-            u32 id = active->lookup(key, len);
-            if (id != 0) return id;
-            u32 new_id = nextId();
-            u32 result = active->insert_with_id(key, len, new_id);
-            if (result == new_id) countInsert(len);
-            return result;
-        }
+        return lookupOrInsert(key, len, INT_MAX);
     }
 
     // Insert into active buffer if size < size_limit; returns 0 when at cap.
-    // NOT signal-safe.
+    // NOT signal-safe; a miss during rotate() blocks like lookup() does.
     u32 bounded_lookup(const char* key, size_t len, int size_limit) {
-        if (!_accepting.load(std::memory_order_acquire)) return 0;
-        while (true) {
-            StringDictionaryBuffer* active = _rot.active();
-            RefCountGuard guard(active);
-            if (!guard.isActive()) return 0;
-            if (!_accepting.load(std::memory_order_seq_cst)) return 0;
-            if (_rot.active() != active) continue;
-            u32 id = active->lookup(key, len);
-            if (id != 0) return id;
-            if (active->size() >= size_limit) return 0;
-            u32 new_id = nextId();
-            u32 result = active->insert_with_id(key, len, new_id);
-            if (result == new_id) countInsert(len);
-            return result;
-        }
+        return lookupOrInsert(key, len, size_limit);
     }
 
     // Signal-safe read-only probe of active. Returns 0 on miss.
@@ -659,7 +777,8 @@ public:
     // clearTarget() is the buffer that becomes the new active after rotate().
     // The caller is responsible for ensuring it is empty on entry (Profiler
     // achieves this by calling clearStandby() after every cycle and
-    // serialising JFR operations with _state_lock).
+    // serialising JFR operations with _state_lock).  rotate() itself must not
+    // run concurrently with another rotate() or clearAll() on this dictionary.
     //
     // If clearStandby() had to skip that buffer, it may still hold an entry a
     // straggler inserted after both copies of an earlier rotate(), with an id
@@ -670,20 +789,61 @@ public:
     // alternative, overwriting it, would instead orphan whatever the
     // straggler recorded under it.  Either way it takes a thread stuck in a
     // guarded insert for a whole dump cycle.
+    //
+    // Transition gate: a key inserted into old_active after phase 1 only
+    // reaches new_active in phase 2.  If a lookup that missed in new_active
+    // were allowed to assign a fresh id before then, phase 2 would find the
+    // key already present and the two ids would both be out with callers.
+    // So between publishing new_active and finishing phase 2, a lookup that
+    // misses waits (lookupOrInsert()) and retries, finding the carried-over id.
     bool rotate() {
         bool fresh = retryUnclearedTarget();
+#ifndef NDEBUG
+        _rotating_tid.store(OS::threadId(), std::memory_order_relaxed);
+#endif
         StringDictionaryBuffer* old_active = _rot.active();
         // Phase 1: pre-populate clearTarget from active (before rotate).
-        _rot.clearTarget()->copyFrom(*old_active);
+        // Conflicts here come only from a target reused uncleared (!fresh).
+        StringDictionaryBuffer::CopyResult phase1 = _rot.clearTarget()->copyFrom(*old_active);
+        rotateHook(ROTATE_AFTER_PHASE1);
+        // Set before publishing: _rot.rotate() is a release CAS, so a writer
+        // that acquire-loads the new active also sees _transitioning set.
+        _transitioning.store(true, std::memory_order_relaxed);
         _rot.rotate();
+        // Pairs with the fence in lookupOrInsert(), for writers still holding
+        // a guard on old_active: either their post-fence re-check sees the new
+        // active and they retry there, or the drain below sees their guard and
+        // waits for their insert.
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        rotateHook(ROTATE_BEFORE_DRAIN);
         // Drain all in-flight accessors on old_active (now the dump buffer).
         // The result is not needed: nothing is reclaimed here.  On a timeout
         // a straggler's late insert may miss the snapshot, and clearStandby()
         // drains again before it clears old_active.
         (void)RefCountGuard::waitForRefCountToClear(old_active);
         // Phase 2: catch any entries inserted into old_active between Phase 1
-        // and the drain completing.
-        _rot.active()->copyFrom(*old_active);
+        // and the drain completing.  Skipped when phase 1 already resolved
+        // every entry (copied it, or found it conflicting - phase 2 would only
+        // find the same conflict again): old_active never loses entries, so if
+        // its size equals that number, phase 2 has nothing left.  The drain
+        // makes the size current: insert_with_id() bumps _size before the
+        // writer's guard release, which the drain's acquire load observed.  An
+        // entry phase 1 skipped (id not yet published) or failed to copy
+        // (allocation failure) leaves the counts unequal, so phase 2 still
+        // runs for it.  Phase 2 revisits every entry, so its conflict count
+        // includes phase 1's; report one or the other, not both.
+        if (old_active->size() != phase1.copied + phase1.conflicts) {
+            reportIdConflicts(_rot.active()->copyFrom(*old_active).conflicts);
+        } else {
+            reportIdConflicts(phase1.conflicts);
+#ifdef UNIT_TEST
+            _phase2_skips++;
+#endif
+        }
+        _transitioning.store(false, std::memory_order_release);
+#ifndef NDEBUG
+        _rotating_tid.store(0, std::memory_order_relaxed);
+#endif
         return fresh;
     }
 
@@ -707,7 +867,7 @@ public:
             id = active->lookup(key, len);
         }
         if (id != 0) {
-            dump->insert_with_id(key, len, id);
+            addToDump(dump, key, len, id);
             return id;
         }
 
@@ -718,7 +878,7 @@ public:
             if (active->size() >= size_limit) return 0;
             u32 new_id = nextId();
             new_id = active->insert_with_id(key, len, new_id);
-            if (new_id != 0) dump->insert_with_id(key, len, new_id);
+            if (new_id != 0) addToDump(dump, key, len, new_id);
             return new_id;
         }
     }

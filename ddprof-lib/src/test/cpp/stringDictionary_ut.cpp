@@ -97,10 +97,29 @@ TEST(StringDictionaryBufferTest, CopyFromPreservesAllEntriesWithIds) {
     src.insert_with_id("java/lang/Integer", 17, 20);
 
     StringDictionaryBuffer dst;
-    dst.copyFrom(src);
+    StringDictionaryBuffer::CopyResult result = dst.copyFrom(src);
 
+    EXPECT_EQ(2, result.copied);
+    EXPECT_EQ(0, result.conflicts);
     EXPECT_EQ(10u, dst.lookup("java/lang/String", 16));
     EXPECT_EQ(20u, dst.lookup("java/lang/Integer", 17));
+}
+
+// A key dst already holds under another id is a conflict: it is neither
+// overwritten nor counted as copied.
+TEST(StringDictionaryBufferTest, CopyFromReportsConflictingIds) {
+    StringDictionaryBuffer src;
+    src.insert_with_id("shared", 6, 10);
+    src.insert_with_id("only_src", 8, 20);
+
+    StringDictionaryBuffer dst;
+    dst.insert_with_id("shared", 6, 99);
+    StringDictionaryBuffer::CopyResult result = dst.copyFrom(src);
+
+    EXPECT_EQ(1, result.copied);
+    EXPECT_EQ(1, result.conflicts);
+    EXPECT_EQ(99u, dst.lookup("shared", 6));
+    EXPECT_EQ(20u, dst.lookup("only_src", 8));
 }
 
 TEST(StringDictionaryBufferTest, ClearResetsToEmpty) {
@@ -627,4 +646,84 @@ TEST(StringDictionaryCountersTest, ProfilerResetKeepsCountersAcrossSkippedReset)
     EXPECT_EQ(0, profiler->resetRecordingStateForTest());
     EXPECT_EQ(base_pages, Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset));
     EXPECT_EQ(base_bytes, Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset));
+}
+
+// ── rotate() transition window (PROF-16137) ───────────────────────────────
+
+namespace {
+
+// Drives the interleaving from PROF-16137 through StringDictionary's rotate
+// hooks: writer A inserts a fresh key into the old active after phase 1 copied
+// it, then writer B looks the same key up in the newly published active before
+// the drain and phase 2 have run.
+struct LateInsertScenario {
+    StringDictionary* dict;
+    const char* key;
+    size_t len;
+    u32 id_a = 0;
+    std::atomic<u32> id_b{0};
+    std::atomic<bool> b_done{false};
+    std::thread b;
+};
+
+void lateInsertHook(StringDictionary::RotateStage stage, void* arg) {
+    auto* s = static_cast<LateInsertScenario*>(arg);
+    if (stage == StringDictionary::ROTATE_AFTER_PHASE1) {
+        // Still the old active here, and phase 1 has already copied it.
+        s->id_a = s->dict->lookup(s->key, s->len);
+        return;
+    }
+    s->b = std::thread([s]() {
+        s->id_b.store(s->dict->lookup(s->key, s->len));
+        s->b_done.store(true);
+    });
+    // Let B run inside the window before rotate() drains and runs phase 2:
+    // continue once B has either returned or is waiting for the rotation.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!s->b_done.load() && s->dict->transitionWaitsForTest() == 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+}
+
+}  // namespace
+
+TEST_F(StringDictionaryTest, LateInsertDuringRotateKeepsOneId) {
+    dict.lookup("seed", 4);
+    LateInsertScenario s{&dict, "late_key", 8};
+    dict.setRotateHookForTest(lateInsertHook, &s);
+    dict.rotate();
+    dict.setRotateHookForTest(nullptr, nullptr);
+    s.b.join();
+
+    ASSERT_NE(0u, s.id_a);
+    // B missed in the new active mid-rotation, so it must have waited once;
+    // A's late insert means phase 2 must have run.
+    EXPECT_EQ(1, dict.transitionWaitsForTest());
+    EXPECT_EQ(0, dict.phase2SkipsForTest());
+    EXPECT_EQ(s.id_a, s.id_b.load()) << "same key got two ids across the rotation";
+    EXPECT_EQ(s.id_a, dict.standby()->lookup("late_key", 8));
+    EXPECT_EQ(s.id_a, dict.bounded_lookup("late_key", 8));
+
+    // The id handed out during the window must still resolve in the next snapshot.
+    dict.clearStandby();
+    dict.rotate();
+    std::map<u32, const char*> snap;
+    dict.standby()->collect(snap);
+    ASSERT_EQ(1u, snap.count(s.id_a));
+    EXPECT_STREQ("late_key", snap[s.id_a]);
+}
+
+// With no insert after phase 1, phase 2 has nothing to copy and is skipped;
+// every key must still resolve to its id in both the dump and the new active.
+TEST_F(StringDictionaryTest, RotateSkipsPhase2WhenNothingArrivedLate) {
+    u32 id_a = dict.lookup("alpha", 5);
+    u32 id_b = dict.lookup("beta", 4);
+    dict.rotate();
+
+    EXPECT_EQ(1, dict.phase2SkipsForTest());
+    EXPECT_EQ(id_a, dict.bounded_lookup("alpha", 5));
+    EXPECT_EQ(id_b, dict.bounded_lookup("beta", 4));
+    EXPECT_EQ(id_a, dict.standby()->lookup("alpha", 5));
+    EXPECT_EQ(id_b, dict.standby()->lookup("beta", 4));
 }
