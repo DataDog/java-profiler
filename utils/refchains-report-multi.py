@@ -10,6 +10,7 @@ import csv
 import html
 import json
 import os
+import sys
 
 ACCENT = "#2a78d6"  # dataviz palette categorical slot 1 ("blue") - one series per chart, no legend needed
 GRID = "#dedcd3"
@@ -43,6 +44,11 @@ def fnum(s):
     try:
         return float(s)
     except (TypeError, ValueError):
+        # Coercing an unparsable CSV cell to 0.0 lets the chart render
+        # instead of crashing, but a silent 0.0 looks like a real
+        # measurement - flag it so a malformed sweep row doesn't masquerade
+        # as a genuine zero data point (same as refchains-report.py).
+        print(f"warning: could not parse {s!r} as a number, using 0.0", file=sys.stderr)
         return 0.0
 
 
@@ -221,7 +227,7 @@ def main():
 </head>
 <body>
 <h1>reference-chains OFAT budget-knob sweep</h1>
-<div class="meta">JDK: {html.escape(str(args.jdk))} &nbsp;|&nbsp; GC: {html.escape(str(args.gc))} &nbsp;|&nbsp; duration/point: {html.escape(str(args.duration))}s &nbsp;|&nbsp; one-factor-at-a-time: each knob swept independently, others left at their built-in defaults</div>
+<div class="meta">JDK: {html.escape(str(args.jdk))} &nbsp;|&nbsp; GC: {html.escape(str(args.gc))} &nbsp;|&nbsp; duration/point: {html.escape(str(args.duration))}s &nbsp;|&nbsp; one-factor-at-a-time: each knob swept independently, the others held at run-refchains-repro.sh's baked baseline (budget=10000, pausetarget=500, painbudget=100; firstpassbudget auto-scaled)</div>
 <div class="tabs">{"".join(tabs_nav)}</div>
 {"".join(tabs_content)}
 <details>

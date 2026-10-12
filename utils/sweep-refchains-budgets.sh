@@ -73,12 +73,15 @@ parse_run() {
 
   local metrics_line
   metrics_line=$(grep '^\[metrics\]' "${stdout}" || true)
+  # Every extraction below tolerates "no match" (`|| true`): under set -euo
+  # pipefail a missing field (crashed/truncated run) would otherwise abort the
+  # whole sweep instead of recording this point as 0 and moving on.
   local wall_seconds entries_per_sec avg_round_ms max_round_ms heap_growth_mb
-  wall_seconds=$(echo "${metrics_line}" | grep -oE 'wallSeconds=[0-9.]+' | cut -d= -f2)
-  entries_per_sec=$(echo "${metrics_line}" | grep -oE 'entriesPerSec=[0-9.]+' | cut -d= -f2)
-  avg_round_ms=$(echo "${metrics_line}" | grep -oE 'avgRoundMs=[0-9.]+' | cut -d= -f2)
-  max_round_ms=$(echo "${metrics_line}" | grep -oE 'maxRoundMs=[0-9.]+' | cut -d= -f2)
-  heap_growth_mb=$(echo "${metrics_line}" | grep -oE 'heapGrowthMb=-?[0-9]+' | cut -d= -f2)
+  wall_seconds=$(echo "${metrics_line}" | grep -oE 'wallSeconds=[0-9.]+' | cut -d= -f2 || true)
+  entries_per_sec=$(echo "${metrics_line}" | grep -oE 'entriesPerSec=[0-9.]+' | cut -d= -f2 || true)
+  avg_round_ms=$(echo "${metrics_line}" | grep -oE 'avgRoundMs=[0-9.]+' | cut -d= -f2 || true)
+  max_round_ms=$(echo "${metrics_line}" | grep -oE 'maxRoundMs=[0-9.]+' | cut -d= -f2 || true)
+  heap_growth_mb=$(echo "${metrics_line}" | grep -oE 'heapGrowthMb=-?[0-9]+' | cut -d= -f2 || true)
 
   # Two -Xlog safepoint line shapes across JDK versions:
   #  - JDK 17+: `Safepoint "name", ... Total: N ns` (one line, everything on it)
@@ -90,11 +93,15 @@ parse_run() {
   stw_stats=$(grep -oE 'Safepoint "[^"]+".*Total: [0-9]+ ns' "${safepoint_log}" 2>/dev/null \
     | grep -oE 'Total: [0-9]+ ns' \
     | grep -oE '[0-9]+' \
-    | awk '{sec=$1/1e9; sum+=sec; if(sec>max) max=sec; n+=1} END {if(n>0) printf "%d %.4f %.4f %.4f", n, sum, sum/n, max}')
+    | awk '{sec=$1/1e9; sum+=sec; if(sec>max) max=sec; n+=1} END {if(n>0) printf "%d %.4f %.4f %.4f", n, sum, sum/n, max}' \
+    || true)
   if [ -z "${stw_stats}" ]; then
+    # Capture exactly the "stopped: N seconds" value (one per line), not every
+    # numeric token on the line.
     stw_stats=$(grep -oE 'Total time for which application threads were stopped: [0-9.]+ seconds' "${safepoint_log}" 2>/dev/null \
-      | grep -oE '[0-9.]+' \
-      | awk '{sec=$1; sum+=sec; if(sec>max) max=sec; n+=1} END {if(n>0) printf "%d %.4f %.4f %.4f", n, sum, sum/n, max}')
+      | sed -E 's/.*stopped: ([0-9.]+) seconds.*/\1/' \
+      | awk '{sec=$1; sum+=sec; if(sec>max) max=sec; n+=1} END {if(n>0) printf "%d %.4f %.4f %.4f", n, sum, sum/n, max}' \
+      || true)
   fi
   read -r stw_count stw_total stw_avg stw_max <<< "${stw_stats:-0 0 0 0}"
 

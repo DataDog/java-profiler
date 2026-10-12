@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.ItemFilters;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
@@ -90,7 +91,7 @@ public final class StaticFieldGrowingCollectionScenario {
     // Snapshotted BEFORE seeding anything, while the BFS thread's search has not run a single
     // pass yet (referenceChainPassesRunForTest0() reads 0 here) - see the wait loop below for why
     // this exact value, not just "nonzero", is what the wait needs to advance past.
-    int initialPasses = debugBuild ? JavaProfiler.referenceChainPassesRunForTest0() : -1;
+    int initialPasses = debugBuild ? ReferenceChainTestHooks.referenceChainPassesRunForTest0() : -1;
 
     if (debugBuild) {
       // Seed enough hysteresis-qualifying epochs to unlock ReferenceChainTracker::hasLeakSignal()/
@@ -105,10 +106,12 @@ public final class StaticFieldGrowingCollectionScenario {
       // seeding block for the rationale): the qualifying tid must be the thread that
       // allocates the tracked instances - this thread allocates every LEAK_BUFFER
       // chunk, including the lateChunk this scenario watches.
-      leakTid = JavaProfiler.getTid();
+      leakTid = ReferenceChainTestHooks.getTid();
       for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
-        JavaProfiler.seedKlassPopulationSample0(LEAK_BUFFER_TEST_KLASS_ID, epoch * 10, epoch);
-        JavaProfiler.seedTidTrendSample0(LEAK_BUFFER_TEST_KLASS_ID, leakTid, epoch * 3, epoch);
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
+            LEAK_BUFFER_TEST_KLASS_ID, epoch * 10, epoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(
+            LEAK_BUFFER_TEST_KLASS_ID, leakTid, epoch * 3, epoch);
       }
       hysteresisEpoch = SEED_EPOCHS_FOR_HYSTERESIS;
     }
@@ -143,7 +146,7 @@ public final class StaticFieldGrowingCollectionScenario {
       // generous margin for the same reason ExternalProcessReferenceChainTest's own budget/
       // pausetarget are raised this far above the in-process test's defaults.
       for (int i = 0; i < 300 && !passCompleted; i++) {
-        passCompleted = JavaProfiler.referenceChainPassesRunForTest0() != initialPasses;
+        passCompleted = ReferenceChainTestHooks.referenceChainPassesRunForTest0() != initialPasses;
         if (!passCompleted) {
           Thread.sleep(100);
         }
@@ -160,7 +163,8 @@ public final class StaticFieldGrowingCollectionScenario {
     // Snapshotted right after the wait above confirms the first pass has fully completed - any
     // later change (advance, or reset-to-lower via a restart) proves a walk that started strictly
     // after lateChunk existed.
-    int passesRunBeforeLateChunk = debugBuild ? JavaProfiler.referenceChainPassesRunForTest0() : -1;
+    int passesRunBeforeLateChunk =
+        debugBuild ? ReferenceChainTestHooks.referenceChainPassesRunForTest0() : -1;
     byte[] lateChunk = new byte[CHUNK_BYTES];
     LEAK_BUFFER.add(lateChunk);
 
@@ -206,12 +210,13 @@ public final class StaticFieldGrowingCollectionScenario {
         // still leaves enough remaining rounds to reach it, rather than exhausting a fixed budget
         // of calls before ever getting there.
         hysteresisEpoch++;
-        JavaProfiler.seedKlassPopulationSample0(
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
             LEAK_BUFFER_TEST_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        JavaProfiler.seedTidTrendSample0(
+        ReferenceChainTestHooks.seedTidTrendSample0(
             LEAK_BUFFER_TEST_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
-        JavaProfiler.setKlassPopulationRepresentativeForTest0(LEAK_BUFFER_TEST_KLASS_ID, lateChunk);
-        JavaProfiler.pollReferenceChainTargets0();
+        ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
+            LEAK_BUFFER_TEST_KLASS_ID, lateChunk);
+        ReferenceChainTestHooks.pollReferenceChainTargets0();
 
         // Only TRUST a match once passesRun() has genuinely changed since the snapshot taken right
         // before lateChunk was created - either advanced (the same, never-restarted search ran a
@@ -221,7 +226,7 @@ public final class StaticFieldGrowingCollectionScenario {
         // one race this whole seam exists to rule out: the very first, still-in-flight pass finding
         // lateChunk by accident because admitStaticFieldRoots() and expandFrontier() are two steps
         // of that SAME call, and Java can observe the former's completion before the latter runs.
-        if (JavaProfiler.referenceChainPassesRunForTest0() != passesRunBeforeLateChunk) {
+        if (ReferenceChainTestHooks.referenceChainPassesRunForTest0() != passesRunBeforeLateChunk) {
           profiler.dump(scratchDumpPath);
           match = findMatch(scratchDumpPath);
         }
@@ -250,7 +255,8 @@ public final class StaticFieldGrowingCollectionScenario {
       // Same passesRun()-advanced check as the round loop above (debug builds only) - by this
       // point in a real run it has virtually always already flipped, but there is no reason to
       // drop the guarantee here just because the round loop above didn't need it.
-      if (debugBuild && JavaProfiler.referenceChainPassesRunForTest0() == passesRunBeforeLateChunk) {
+      if (debugBuild
+          && ReferenceChainTestHooks.referenceChainPassesRunForTest0() == passesRunBeforeLateChunk) {
         continue;
       }
       profiler.dump(scratchDumpPath);

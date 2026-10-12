@@ -6,15 +6,16 @@
 package com.datadoghq.profiler;
 
 /**
- * Test bridge for the package-private reference-chain/liveness test seams on {@link JavaProfiler},
- * so tests outside {@code com.datadoghq.profiler} can call them without the seams becoming public
- * API of the shipped jar. The native seams exist only in -DDEBUG builds (debug/asan/tsan); release
- * builds get no-op stubs.
+ * Test bridge for {@link JavaProfiler}'s package-private reference-chain / liveness test seams
+ * (same pattern as {@link ProfilerOwnedBlockHooks}). The seams mutate the process-wide profiler
+ * singleton's state, so they stay non-public in the shipped library; this class lives only in
+ * test sources and lets tests in other packages (e.g. {@code referencechains}) reach them.
+ * Every method is a plain delegate - see the corresponding {@link JavaProfiler} seam for its
+ * contract (all are debug-native-build only and no-ops in release builds).
  */
 public final class ReferenceChainTestHooks {
     private ReferenceChainTestHooks() {}
 
-    /** The calling thread's profiler tid. Call it on the allocating (leaking) thread. */
     public static int getTid() {
         return JavaProfiler.getTid();
     }
@@ -55,8 +56,8 @@ public final class ReferenceChainTestHooks {
         JavaProfiler.pollReferenceChainTargets0();
     }
 
-    public static int drainReferenceChainEventCountForLeaf0(Object leaf) {
-        return JavaProfiler.drainReferenceChainEventCountForLeaf0(leaf);
+    public static int drainReferenceChainEventCount0() {
+        return JavaProfiler.drainReferenceChainEventCount0();
     }
 
     public static void resetReferenceChainSearchForTest0() {
@@ -71,14 +72,6 @@ public final class ReferenceChainTestHooks {
         return JavaProfiler.getReferenceChainPendingSizeForTest0();
     }
 
-    public static int getReferenceChainFrontierStateForTest0(Object target) {
-        return JavaProfiler.getReferenceChainFrontierStateForTest0(target);
-    }
-
-    public static long getReferenceChainResolvedTargetTagForTest0(Object target) {
-        return JavaProfiler.getReferenceChainResolvedTargetTagForTest0(target);
-    }
-
     public static void heapFloorRecordForTest0(long usedBytes, long timestampNs) {
         JavaProfiler.heapFloorRecordForTest0(usedBytes, timestampNs);
     }
@@ -91,29 +84,7 @@ public final class ReferenceChainTestHooks {
         JavaProfiler.setHeapFloorRecordingForTest0(enabled);
     }
 
-    /**
-     * Clears the heap-floor ring seeded via {@link #heapFloorRecordForTest0(long, long)} so
-     * the next test in the same JVM starts from an empty ring. Call before the
-     * {@link #setHeapFloorRecordingForTest0(boolean)} restore, while recording is still
-     * disabled - the native seam asserts when called while recording is enabled.
-     */
-    public static void heapFloorResetForTest0() {
-        JavaProfiler.heapFloorResetForTest0();
-    }
-
-    /**
-     * Reports whether the seeded heap-floor ring currently shows a sustained rise
-     * ({@code heapFloorRising()}). {@code false} before any seeding and after
-     * {@link #heapFloorResetForTest0()} emptied the ring.
-     */
-    public static boolean heapFloorRisingForTest0() {
-        return JavaProfiler.heapFloorRisingForTest0();
-    }
-
-    /**
-     * Not a read-only query: under the native engine lock the gate may account a completed
-     * search's pain and restart/reset terminal search state.
-     */
+    /** Not a pure predicate - see {@link JavaProfiler}'s own {@code shouldRunPassForTest0()} doc. */
     public static boolean shouldRunPassForTest0() {
         return JavaProfiler.shouldRunPassForTest0();
     }

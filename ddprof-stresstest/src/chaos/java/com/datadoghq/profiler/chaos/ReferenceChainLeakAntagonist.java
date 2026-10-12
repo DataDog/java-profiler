@@ -68,8 +68,11 @@ public final class ReferenceChainLeakAntagonist implements Antagonist {
     }
 
     private void growthLoop() {
-        while (running && cache.size() < CAP_ENTRIES) {
-            for (int i = 0; i < BATCH_SIZE && cache.size() < CAP_ENTRIES; i++) {
+        // nextKey, not cache.size(): ConcurrentHashMap.size() sums every counter cell, too
+        // costly per put. Equivalent here - this thread is the only writer, keys are unique
+        // and nothing is ever removed, so nextKey always equals the entry count.
+        while (running && nextKey < CAP_ENTRIES) {
+            for (int i = 0; i < BATCH_SIZE && nextKey < CAP_ENTRIES; i++) {
                 String key = "refchain-leak-" + (nextKey++);
                 cache.put(key, new CachedEntry(key));
                 MemoryGovernor.pace();

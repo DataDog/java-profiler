@@ -112,8 +112,11 @@ read -r on_entries on_avg_round on_max_round on_heap_growth on_stw_count on_stw_
 read -r off_entries off_avg_round off_max_round off_heap_growth off_stw_count off_stw_total off_stw_avg off_stw_max off_rss off_wall \
   <<< "$(parse_variant "off")"
 
-# Percentage delta of "on" relative to "off": positive means "on" is worse
-# (slower/longer-paused/more memory). Guards div-by-zero by falling back to 0.
+# Percentage delta of "on" relative to "off", (on - off) / off, for every row
+# alike: positive means "on" measured higher - worse for the cost metrics
+# (latency, STW, memory), BETTER for throughput (entries/sec, higher is
+# better), so a throughput cost shows up as a negative delta. Guards
+# div-by-zero by printing "n/a".
 pct_delta() {
   awk -v on="$1" -v off="$2" 'BEGIN {
     if (off == 0) { printf "n/a"; exit }
@@ -121,7 +124,7 @@ pct_delta() {
   }'
 }
 
-throughput_delta_pct=$(pct_delta "${off_entries}" "${on_entries}")   # off/on: lower throughput with refchains on is the "cost"
+throughput_delta_pct=$(pct_delta "${on_entries}" "${off_entries}")   # negative = lower throughput with refchains on
 avg_round_delta_pct=$(pct_delta "${on_avg_round}" "${off_avg_round}")
 stw_total_delta_pct=$(pct_delta "${on_stw_total}" "${off_stw_total}")
 stw_max_delta_pct=$(pct_delta "${on_stw_max}" "${off_stw_max}")
@@ -139,7 +142,7 @@ REPORT="${WORKDIR}/report.md"
   echo
   echo "| metric | on (refchains=true) | off (refchains=false) | delta (on vs. off) |"
   echo "|---|---|---|---|"
-  echo "| entries/sec (throughput) | ${on_entries} | ${off_entries} | ${throughput_delta_pct} |"
+  echo "| entries/sec (throughput, higher is better) | ${on_entries} | ${off_entries} | ${throughput_delta_pct} |"
   echo "| avg round latency (ms) | ${on_avg_round} | ${off_avg_round} | ${avg_round_delta_pct} |"
   echo "| max round latency (ms) | ${on_max_round} | ${off_max_round} | - |"
   echo "| safepoint count | ${on_stw_count} | ${off_stw_count} | - |"
@@ -150,7 +153,7 @@ REPORT="${WORKDIR}/report.md"
   echo
   echo "## Answers"
   echo
-  echo "- **Slower overall?** throughput ${throughput_delta_pct}, avg round latency ${avg_round_delta_pct} with referencechains on."
+  echo "- **Slower overall?** throughput ${throughput_delta_pct} (negative = lower throughput), avg round latency ${avg_round_delta_pct} (positive = slower) with referencechains on."
   echo "- **Lengthy STW safepoints?** total stop time ${stw_total_delta_pct}, longest single pause ${on_stw_max}s (vs. ${off_stw_max}s off)."
   echo "- **Memory usage up significantly?** heap grew ${heap_growth_delta_mb} MB more, peak RSS ${rss_delta_pct} (${rss_delta_kb} KB) with referencechains on."
 } > "${REPORT}"

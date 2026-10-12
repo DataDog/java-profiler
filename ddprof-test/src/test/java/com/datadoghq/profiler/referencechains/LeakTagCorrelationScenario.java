@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -17,8 +18,6 @@ import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -185,7 +184,10 @@ public final class LeakTagCorrelationScenario {
    */
   public static final String NOISE_CHAIN_MARKER = "[correlation-noise-chain-emitted] ";
 
-  /** One dump's scan outcome - all fields per the latest dump only. */
+  /**
+   * One dump's scan outcome - payload fields per one dump; the violation lists
+   * are accumulated across scans by keepBest() whenever it retains an earlier best.
+   */
   private static final class ScanResult {
     ReferenceChainAssertions.ChainMatch payloadChain;
     boolean payloadChainInPool;
@@ -218,7 +220,7 @@ public final class LeakTagCorrelationScenario {
       }
       // The tid must be captured on THIS thread: the per-(klass, tid) seeding below
       // qualifies the allocating thread, and the noise instances are all allocated here.
-      handoff.publish(held[0], JavaProfiler.getTid());
+      handoff.publish(held[0], ReferenceChainTestHooks.getTid());
       long slot = 0;
       while (true) {
         try {
@@ -255,8 +257,24 @@ public final class LeakTagCorrelationScenario {
       // process's life; the noise representative only via the noise thread's frame (the
       // handoff's own reference is dropped by take()) - exactly what makes one a valid
       // leak candidate and the other a gate test.
-      JavaProfiler.setKlassPopulationRepresentativeForTest0(LEAK_KLASS_ID, LEAK_SINK.get(0));
-      JavaProfiler.setKlassPopulationRepresentativeForTest0(NOISE_KLASS_ID, handoff.take());
+      ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
+          LEAK_KLASS_ID, LEAK_SINK.get(0));
+      // The noise thread publishes asynchronously (after allocating its payloads);
+      // wait (bounded) for it rather than racing take() into a null representative / tid 0.
+      for (int i = 0; i < 200 && handoff.representative == null; i++) {
+        Thread.sleep(25);
+      }
+      NoisePayload noiseRepresentative = handoff.take();
+      // tid is published before representative (NoiseHandoff.publish()), so it is
+      // visible once take() has observed a non-null payload.
+      noiseTid = handoff.tid;
+      if (noiseRepresentative == null || noiseTid == 0) {
+        throw new IllegalStateException("noise thread never published its representative/tid"
+            + " within 5s (representative=" + noiseRepresentative + ", tid=" + noiseTid + ")");
+      }
+      ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
+          NOISE_KLASS_ID, noiseRepresentative);
+      noiseRepresentative = null; // keep retention transient: drop this frame's reference
       // Per-(klass, tid) qualification seeds: selectLeakCandidates() now also
       // requires a qualifying ALLOCATING THREAD, and tagLeakInstances() scopes leak
       // tags to exactly those tids' instances - so the seeded qualification must
@@ -265,26 +283,29 @@ public final class LeakTagCorrelationScenario {
       // the tagging scope. Same epoch-aligned ramp shape as the klass seeds
       // (scaled to fit the per-tid u8 ring); the synthetic flag keeps these
       // ramps immune to the real fold's absent-tid decay between rounds.
-      leakTid = JavaProfiler.getTid();
-      noiseTid = handoff.tid;
+      leakTid = ReferenceChainTestHooks.getTid();
       for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
-        JavaProfiler.seedKlassPopulationSample0(LEAK_KLASS_ID, epoch * 10, epoch);
-        JavaProfiler.seedKlassPopulationSample0(NOISE_KLASS_ID, epoch * 10, epoch);
-        JavaProfiler.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
-        JavaProfiler.seedTidTrendSample0(NOISE_KLASS_ID, noiseTid, epoch * 3, epoch);
+        ReferenceChainTestHooks.seedKlassPopulationSample0(LEAK_KLASS_ID, epoch * 10, epoch);
+        ReferenceChainTestHooks.seedKlassPopulationSample0(NOISE_KLASS_ID, epoch * 10, epoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(NOISE_KLASS_ID, noiseTid, epoch * 3, epoch);
       }
+      // Continue the ramp past the seeded range: each maintenance round below
+      // pre-increments, so the first round pushes epoch SEED_EPOCHS_FOR_HYSTERESIS + 1
+      // (same as StaticFieldGrowingCollectionScenario).
+      hysteresisEpoch = SEED_EPOCHS_FOR_HYSTERESIS;
       // Wait for the BFS thread to fully complete its first pass (static sweep AND frontier
       // expansion) before any growth round - same load-bearing wait and rationale as
       // StaticFieldGrowingCollectionScenario: the late chunks added afterward must be
       // discovered via rotation re-walks, not by a first pass that has not even run yet.
-      int initialPasses = JavaProfiler.referenceChainPassesRunForTest0();
+      int initialPasses = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
       for (int i = 0; i < 300; i++) {
-        if (JavaProfiler.referenceChainPassesRunForTest0() != initialPasses) {
+        if (ReferenceChainTestHooks.referenceChainPassesRunForTest0() != initialPasses) {
           break;
         }
         Thread.sleep(100);
       }
-      JavaProfiler.pollReferenceChainTargets0();
+      ReferenceChainTestHooks.pollReferenceChainTargets0();
     } else {
       // No debug seams outside debug builds - give the real allocation sampler and the
       // pass loop time to notice the seeded population on their own.
@@ -292,8 +313,10 @@ public final class LeakTagCorrelationScenario {
     }
 
     // Each dump re-emits every resolved chain (drainPendingChainEvents()'s
-    // snapshot-and-keep contract), so a later dump's scan is a superset state - the
-    // latest scan with a payload chain observed is always the best evidence.
+    // snapshot-and-keep contract), so a later dump's scan is usually a superset state -
+    // the latest scan is preferred, except that keepBest() never lets a later, worse
+    // payload chain (e.g. out-of-pool) displace an earlier in-pool/correlated one; the
+    // gate violations of every retained-over scan are accumulated.
     ScanResult best = null;
     int totalRounds = 25;
     // Slow growth per round is deliberate: each chunk clears the allocation
@@ -304,13 +327,13 @@ public final class LeakTagCorrelationScenario {
       addChunk();
       if (debugBuild) {
         hysteresisEpoch++;
-        JavaProfiler.seedKlassPopulationSample0(
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
             LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        JavaProfiler.seedKlassPopulationSample0(
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
             NOISE_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        JavaProfiler.seedTidTrendSample0(
+        ReferenceChainTestHooks.seedTidTrendSample0(
             LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
-        JavaProfiler.seedTidTrendSample0(
+        ReferenceChainTestHooks.seedTidTrendSample0(
             NOISE_KLASS_ID, noiseTid, hysteresisEpoch * 3, hysteresisEpoch);
       }
       System.gc();
@@ -339,13 +362,13 @@ public final class LeakTagCorrelationScenario {
       }
       if (debugBuild) {
         hysteresisEpoch++;
-        JavaProfiler.seedKlassPopulationSample0(
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
             LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        JavaProfiler.seedKlassPopulationSample0(
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
             NOISE_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        JavaProfiler.seedTidTrendSample0(
+        ReferenceChainTestHooks.seedTidTrendSample0(
             LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
-        JavaProfiler.seedTidTrendSample0(
+        ReferenceChainTestHooks.seedTidTrendSample0(
             NOISE_KLASS_ID, noiseTid, hysteresisEpoch * 3, hysteresisEpoch);
       }
       Thread.sleep(1000);
@@ -377,15 +400,46 @@ public final class LeakTagCorrelationScenario {
     System.out.println(FOUND_MARKER + best.payloadChain.targetTag);
   }
 
-  /** Latest scan wins; a scan without a payload chain never displaces one that had it. */
+  /**
+   * Monotonic in payload quality (same rule as ThreadLocalLeakScenario.keepBest(), and the
+   * same in-pool preference scan() applies within a single dump): a later scan replaces
+   * {@code best} only when its payload chain is at least as good - no chain &lt; out-of-pool
+   * chain &lt; in-pool chain &lt; in-pool chain with a matching live object; at equal quality
+   * the newer scan wins. Whenever the earlier best is kept, the incoming scan's gate
+   * violations are merged into it so a later dump's transient/noise chain is never hidden.
+   */
   private static ScanResult keepBest(ScanResult best, ScanResult scan) {
     if (scan == null) {
       return best;
     }
-    if (scan.payloadChain != null) {
+    if (best == null) {
       return scan;
     }
-    return best != null ? best : scan;
+    if (quality(scan) >= quality(best)) {
+      return scan;
+    }
+    mergeViolations(best.transientViolations, scan.transientViolations);
+    mergeViolations(best.noiseChains, scan.noiseChains);
+    return best;
+  }
+
+  /** 0: no chain, 1: out-of-pool chain, 2: in-pool chain, 3: in-pool and correlated. */
+  private static int quality(ScanResult r) {
+    if (r == null || r.payloadChain == null) {
+      return 0;
+    }
+    if (!r.payloadChainInPool) {
+      return 1;
+    }
+    return r.liveObjectMatchesForChainTag > 0 ? 3 : 2;
+  }
+
+  private static void mergeViolations(List<String> into, List<String> from) {
+    for (String v : from) {
+      if (!into.contains(v)) {
+        into.add(v);
+      }
+    }
   }
 
   /**

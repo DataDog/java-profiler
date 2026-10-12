@@ -94,7 +94,8 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
    * leak-accumulation rotation's FRONTIER-state selection is additionally asserted, and
    * the correlation result markers that the pod regime legitimately produces without the
    * full correlation completing (not-found, tag-out-of-pool - see the tight variant's own
-   * comment) are accepted instead of failed.
+   * comment) are accepted instead of failed - but only if the child logged at least one
+   * leak-tag interception/correlation or chain-reconstruction attempt.
    */
   private void assertCorrelationFound(String pauseTargetOption,
       boolean requireFrontierRotation) throws Exception {
@@ -109,6 +110,10 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
     // long run cannot grow this without limit.
     Deque<String> testLogTail = new ArrayDeque<>();
     AtomicBoolean frontierRotationSeen = new AtomicBoolean(false);
+    // Hard evidence for the tight variant's escape hatch: at least one leak-tag interception /
+    // correlation or chain-reconstruction attempt happened in the child. Set while lines stream
+    // in (not scanned from testLogTail, whose evict-oldest cap can drop early lines).
+    AtomicBoolean correlationActivitySeen = new AtomicBoolean(false);
     try {
       // Same raised budget as ExternalProcessReferenceChainTest's own scenarios: a genuinely
       // fresh, cold external JVM's reachable graph is far larger than the in-process tests',
@@ -154,6 +159,12 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
                   && line.contains("state=FRONTIER")) {
                 frontierRotationSeen.set(true);
               }
+              if (line.contains("leak-tag intercepted:")       // heapReferenceCallback interception
+                  || line.contains("correlateAdmittedLeakTag frontier_tag=") // admitted correlation
+                  || line.contains("buildChainEvent target_tag=") // chain reconstructed
+                  || line.contains("reconstructChain")) {       // reconstruction attempted, failed
+                correlationActivitySeen.set(true);
+              }
               testLogTail.addLast(line);
               while (testLogTail.size() > 2000) {
                 testLogTail.removeFirst();
@@ -186,7 +197,16 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
       if (requireFrontierRotation && (line.equals(LeakTagCorrelationScenario.NOT_FOUND_MARKER)
           || line.startsWith(LeakTagCorrelationScenario.TAG_OUT_OF_POOL_MARKER))) {
         // The pod regime legitimately produces these without full correlation completing
-        // (see the tight variant's comment); the loose variant still fails on them.
+        // (see the tight variant's comment); the loose variant still fails on them. The
+        // escape hatch is NOT a blanket pass: the correlation machinery must have run at
+        // least once (a leak-tag interception/correlation, or a chain-reconstruction
+        // attempt), so a fully broken path (tagging never firing, interception always
+        // dropping, no chain ever reconstructed) still fails here.
+        assertTrue(correlationActivitySeen.get(),
+            "Tight-window outcome " + line + " accepted by the pod-regime escape hatch, but "
+                + "the child logged no leak-tag interception/correlation and no chain "
+                + "reconstruction attempt - the correlation path is broken outright, not "
+                + "losing the pod-regime race" + diagnostics(testLogTail));
         return;
       }
       fail("Leak-tag correlation did not succeed: " + line + diagnostics(testLogTail));
@@ -217,7 +237,8 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
       } else if (s.contains("intercepted") || s.contains("correlateAdmittedLeakTag")
           || s.contains("recordDiscoveredInstance") || s.contains("auto-mark")
           || s.contains("rotation_candidates")
-          || s.contains("collectLeakAccumulationCandidatesForRotation selected")) {
+          || s.contains("collectLeakAccumulationCandidatesForRotation selected")
+          || s.contains("buildChainEvent target_tag=") || s.contains("reconstructChain")) {
         leakTagLines.add(s);
       }
     }
