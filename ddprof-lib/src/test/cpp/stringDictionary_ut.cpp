@@ -905,11 +905,18 @@ TEST_F(StringDictionaryTest, LookupDuringDumpRacingStragglerReturnsDumpResidentI
     s.dt = std::thread([&s]() {
         s.id_dt.store(s.dict->lookupDuringDump("late_key", 8));
     });
-    while (s.dt_state.load() != 1) std::this_thread::yield();
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (s.dt_state.load() != 1 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(1, s.dt_state.load()) << "dump thread never reached its second probe";
 
     // W's dump insert lands - after the dump thread's dump probe.
     s.w_state.store(2);
-    while (s.w_state.load() != 3) std::this_thread::yield();
+    while (s.w_state.load() != 3 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(3, s.w_state.load()) << "W never finished its dump insert";
 
     // A post-phase-2 writer assigns the key its own id in the active buffer,
     // before W's active insert.

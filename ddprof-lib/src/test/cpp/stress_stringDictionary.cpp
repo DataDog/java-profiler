@@ -666,15 +666,18 @@ TEST(StressStringDictionary, FreshKeysKeepOneIdUnderConcurrentRotation) {
     constexpr int N_KEYS = 20000;
     const long long base_timeouts = Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS);
     std::atomic<bool> done{false};
+    // Clears skipped and buffers reused uncleared: stalls that, unlike a
+    // timed-out rotate() drain, DICTIONARY_DRAIN_TIMEOUTS does not count.
+    std::atomic<int> skipped_clears{0};
 
     std::vector<std::string> keys;
     keys.reserve(N_KEYS);
     for (int i = 0; i < N_KEYS; i++) keys.push_back("fresh_" + std::to_string(i));
 
-    std::thread rotator([&dict, &done]() {
+    std::thread rotator([&dict, &done, &skipped_clears]() {
         while (!done.load(std::memory_order_relaxed)) {
-            dict.rotate();
-            dict.clearStandby();
+            if (!dict.rotate()) skipped_clears.fetch_add(1);
+            if (!dict.clearStandby()) skipped_clears.fetch_add(1);
         }
     });
 
@@ -699,23 +702,24 @@ TEST(StressStringDictionary, FreshKeysKeepOneIdUnderConcurrentRotation) {
         }
     }
     // Mid-rotation misses take guards on the old active, which rotate() is
-    // draining; they must not keep the drain from completing.  A drain
-    // timeout only means some accessor held such a guard for ~500ms - on a
-    // shared CI runner that is a scheduling stall, not a defect, and
-    // rotate() gives up and proceeds by design.  After a timeout a straggler
-    // can also legitimately leave a caller holding a dump-only id (the
-    // documented residual), which the conflict loop would report even
-    // though nothing regressed, so the id check is only conclusive when no
-    // timeout happened.  The race this test targets - and the one on main,
-    // 33-81 conflicting ids per run - produces conflicts with no timeouts at
-    // all, so detection is not weakened; a systematic stall would instead
-    // flood the log with these warnings.
-    long long drain_timeouts = Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS) - base_timeouts;
-    if (drain_timeouts > 0) {
-        printf("WARNING: FreshKeysKeepOneIdUnderConcurrentRotation: %lld drain timeouts, "
-               "%d conflicting ids - run inconclusive (likely a scheduling stall)\n",
-               drain_timeouts, conflicts);
-    } else {
-        EXPECT_EQ(0, conflicts) << "ids handed out that no longer match the dictionary";
+    // draining; they must not keep the drain from completing.  A single stall
+    // - an accessor holding a guard for ~500ms on a loaded CI runner - is
+    // survivable by design, but the rotator runs nonstop, so drains that the
+    // guards starve would time out again and again.
+    const long long stalls = Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS) - base_timeouts +
+                             skipped_clears.load();
+    constexpr long long MAX_STALLS = 2;
+    EXPECT_LE(stalls, MAX_STALLS) << "drains keep timing out: mid-rotation guards may be starving them";
+    // After a stall a straggler can legitimately leave a caller holding a
+    // dump-only id (the documented residual).  Each writer holds one guard at
+    // a time, so a stall leaves at most N_WRITERS late keys, and each key has
+    // N_WRITERS entries in seen: at most N_WRITERS^2 conflicts per stall.  The
+    // race this test targets produces conflicts with no stall at all (33-81
+    // per run on main), so with no stall any conflict fails the test.
+    if (stalls > 0) {
+        printf("NOTE: FreshKeysKeepOneIdUnderConcurrentRotation: %lld stalls, %d conflicting ids\n",
+               stalls, conflicts);
     }
+    EXPECT_LE(conflicts, stalls * N_WRITERS * N_WRITERS)
+        << "ids handed out that no longer match the dictionary (" << stalls << " stalls)";
 }

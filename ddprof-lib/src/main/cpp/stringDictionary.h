@@ -691,14 +691,15 @@ class StringDictionary {
 public:
     // Points at which a UNIT_TEST build calls the hook installed with
     // setRotateHookForTest().  The ROTATE_* stages run on the rotating thread,
-    // TRANSITION_BETWEEN_INSERTS on the thread doing a mid-rotation lookup.
+    // the TRANSITION_* stages on the thread doing a mid-rotation lookup, and
+    // DUMP_BETWEEN_PROBES on the thread calling lookupDuringDump().
     enum RotateStage {
-        ROTATE_AFTER_PHASE1,        // phase 1 copied; new active not yet published
-        ROTATE_BEFORE_DRAIN,        // new active published; old active not yet drained
-        ROTATE_AFTER_PHASE2,        // phase 2 copied; _transitioning still set
-        TRANSITION_BETWEEN_INSERTS,  // assignDuringTransition(): dump insert done, active insert not yet
+        ROTATE_AFTER_PHASE1,            // phase 1 copied; new active not yet published
+        ROTATE_BEFORE_DRAIN,            // new active published; old active not yet drained
+        ROTATE_AFTER_PHASE2,            // phase 2 copied; _transitioning still set
         TRANSITION_BEFORE_DUMP_INSERT,  // assignDuringTransition(): dump guard taken, dump insert not yet
-        DUMP_BETWEEN_PROBES  // lookupDuringDump(): dump probe missed, active probe not yet
+        TRANSITION_BETWEEN_INSERTS,     // assignDuringTransition(): dump insert done, active insert not yet
+        DUMP_BETWEEN_PROBES             // lookupDuringDump(): dump probe missed, active probe not yet
     };
 
 private:
