@@ -696,8 +696,8 @@ TEST_F(StringDictionaryTest, LateInsertDuringRotateKeepsOneId) {
     LateInsertScenario s{&dict, "late_key", 8};
     dict.setRotateHookForTest(lateInsertHook, &s);
     dict.rotate();
-    dict.setRotateHookForTest(nullptr, nullptr);
     s.b.join();
+    dict.setRotateHookForTest(nullptr, nullptr);
 
     ASSERT_NE(0u, s.id_a);
     EXPECT_TRUE(s.b_done_before_drain) << "lookup blocked on rotate()";
@@ -722,8 +722,8 @@ TEST_F(StringDictionaryTest, FreshKeyDuringRotateLandsInBothBuffers) {
     LateInsertScenario s{&dict, nullptr, 0};
     dict.setRotateHookForTest(lateInsertHook, &s);
     dict.rotate();
-    dict.setRotateHookForTest(nullptr, nullptr);
     s.b.join();
+    dict.setRotateHookForTest(nullptr, nullptr);
 
     u32 id = s.id_b.load();
     ASSERT_NE(0u, id);
