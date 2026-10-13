@@ -217,6 +217,14 @@ public:
     static size_t resolvedChainCount() {
         return ReferenceChainTracker::instance()->_resolved_chains.size();
     }
+    // Holds/releases the private _resolved_chains_lock, so a test can prove a seam takes
+    // _engine_lock BEFORE _resolved_chains_lock (and never the reverse).
+    static void lockResolvedChainsForTest() {
+        ReferenceChainTracker::instance()->_resolved_chains_lock.lock();
+    }
+    static void unlockResolvedChainsForTest() {
+        ReferenceChainTracker::instance()->_resolved_chains_lock.unlock();
+    }
     // Source tags of every resolved chain - the fuzz target iterates these to
     // check for phantom/negative-tag chains (I2's sign discrimination).
     static std::vector<jlong> resolvedChainSourceTags() {

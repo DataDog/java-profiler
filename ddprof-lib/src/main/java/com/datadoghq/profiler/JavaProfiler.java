@@ -672,17 +672,21 @@ public final class JavaProfiler {
     public static native long getReferenceChainPendingSizeForTest0();
 
     /**
-     * Test seam (debug native builds only, returns -1 in release): does not tag {@code target}.
-     * The state of the current search's frontier entry for target - 0 = FRONTIER (admitted, not
-     * yet expanded), 1 = EXPANDED, 3 = ABANDONED - or {@code -1} if target has no frontier entry
-     * (never admitted, or still carrying only a leak tag).
+     * Test seam (-DDEBUG native builds only - debug/asan/tsan; returns -1 in release): does not
+     * tag {@code target}. The raw {@code FrontierEntryState} (canonical values:
+     * referenceChainFrontier.h) of the current search's frontier entry for target - 0 = FRONTIER
+     * (admitted, not yet expanded), 1 = EXPANDED, 2 = EDGE (retired: never produced by the
+     * production walk, so this seam does not return it in practice), 3 = ABANDONED - or
+     * {@code -1} if target has no frontier entry (never admitted, or still carrying only a leak
+     * tag).
      */
     public static native int getReferenceChainFrontierStateForTest0(Object target);
 
     /**
-     * Test seam (debug native builds only, returns 0 in release): does not tag {@code target}.
-     * The targetTag the {@code datadog.ReferenceChain} event for target carries, if the current
-     * search has already resolved and cached target's own chain; 0 otherwise.
+     * Test seam (-DDEBUG native builds only - debug/asan/tsan; returns 0 in release): does not
+     * tag {@code target}. The targetTag the {@code datadog.ReferenceChain} event for target
+     * carries, if the current search has already resolved and cached target's own chain; 0
+     * otherwise.
      */
     public static native long getReferenceChainResolvedTargetTagForTest0(Object target);
 

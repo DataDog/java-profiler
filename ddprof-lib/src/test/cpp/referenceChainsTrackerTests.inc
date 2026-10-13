@@ -676,6 +676,173 @@ TEST_F(ResolvedChainCacheTest, FullCacheEvictsPreviousGenerationForCurrentChain)
     EXPECT_EQ((u64)kNewTag, dump[0]._target_tag);
 }
 
+// Test-seam locking (frontierStateForTest()/resolvedChainTargetTagForTest()): both seams are
+// called from a Java test thread while the BFS thread mutates the frontier / search generation
+// under _engine_lock, so they must serialize on that same lock. _engine_lock is recursive, so the
+// blocking is only observable from a second thread.
+namespace {
+// Polls `done` for up to `timeout_ms`; true once it is set.
+bool waitForSeamThread(const std::atomic<bool> &done, int timeout_ms) {
+    for (int waited = 0; waited < timeout_ms; waited += 10) {
+        if (done.load()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return done.load();
+}
+} // namespace
+
+// Every value the frontier-state seam can return, and every -1 sentinel path.
+TEST_F(ReferenceChainsBfsTest, FrontierStateSeamReportsStatesAndSentinels) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    ASSERT_NE(nullptr, frontier);
+
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 1, 0, 0, FrontierEntryState::FRONTIER, 0));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 2, 0, 0, FrontierEntryState::EXPANDED, 0));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 3, 0, 0, FrontierEntryState::ABANDONED, 0));
+
+    EXPECT_EQ(0, tracker->frontierStateForTest(1));
+    EXPECT_EQ(1, tracker->frontierStateForTest(2));
+    EXPECT_EQ(3, tracker->frontierStateForTest(3));
+
+    EXPECT_EQ(-1, tracker->frontierStateForTest(0)) << "untagged";
+    EXPECT_EQ(-1, tracker->frontierStateForTest(-7)) << "negative tag";
+    EXPECT_EQ(-1, tracker->frontierStateForTest(999)) << "no frontier entry";
+    EXPECT_EQ(-1, tracker->frontierStateForTest(ReferenceChainTracker::LEAK_TAG_BASE))
+        << "leak tag";
+    EXPECT_EQ(-1, tracker->frontierStateForTest(ReferenceChainTracker::LEAK_TAG_BASE + 5))
+        << "leak tag";
+
+    tracker->stop();
+    // No frontier table at all: -1, not a crash.
+    ReferenceChainsTestAccessor::reset();
+    EXPECT_EQ(-1, tracker->frontierStateForTest(1));
+}
+
+// frontierStateForTest() must wait for a holder of _engine_lock (a running pass) and report the
+// state that holder left behind - while the pure tag guard stays a non-blocking fast path.
+TEST_F(ReferenceChainsBfsTest, FrontierStateSeamSerializesWithEngineLock) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    ASSERT_NE(nullptr, frontier);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 1, 0, 0, FrontierEntryState::FRONTIER, 0));
+
+    tracker->_engine_lock.lock();
+    std::atomic<bool> done{false};
+    std::atomic<int> result{-2};
+    std::thread seam([&] {
+        result.store(tracker->frontierStateForTest(1));
+        done.store(true);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_FALSE(done.load()) << "seam must block while _engine_lock is held";
+
+    // Fast path: the tag guard never touches engine state, so it must not block.
+    std::atomic<bool> fast_done{false};
+    std::atomic<int> fast_result{-2};
+    std::thread fast([&] {
+        fast_result.store(tracker->frontierStateForTest(0));
+        fast_done.store(true);
+    });
+    EXPECT_TRUE(waitForSeamThread(fast_done, 2000)) << "tag guard must not take _engine_lock";
+
+    // Simulates a pass expanding the entry while it holds _engine_lock.
+    frontier->markExpanded(1);
+    tracker->_engine_lock.unlock();
+
+    EXPECT_TRUE(waitForSeamThread(done, 10000));
+    seam.join();
+    fast.join();
+    EXPECT_EQ(1, result.load());
+    EXPECT_EQ(-1, fast_result.load());
+
+    tracker->stop();
+}
+
+// The search-generation guard of resolvedChainTargetTagForTest(): every 0 path and the match.
+TEST_F(ResolvedChainCacheTest, ResolvedTargetTagSeamChecksGeneration) {
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(1000);
+    ReferenceChainsTestAccessor::cacheChain(5, makeEvent(77), 5, 1000);
+    EXPECT_EQ(77, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(5));
+    EXPECT_EQ(0, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(6))
+        << "no cached chain";
+    EXPECT_EQ(0, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(0));
+    EXPECT_EQ(0, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(-1));
+
+    const jlong leakTag = ReferenceChainTracker::LEAK_TAG_BASE;
+    ReferenceChainsTestAccessor::cacheChain(leakTag, makeEvent(88), leakTag, 1000);
+    EXPECT_EQ(0, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(leakTag))
+        << "leak tags are never resolved-chain keys for this seam";
+
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(2000);
+    EXPECT_EQ(0, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(5))
+        << "chain cached by an earlier search generation";
+
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(0);
+    ReferenceChainsTestAccessor::cacheChain(7, makeEvent(99), 7, 0);
+    EXPECT_EQ(0, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(7))
+        << "no search in flight: 0 even though source_search_ns == 0 matches";
+}
+
+// A generation change made under _engine_lock (restartSearch()/runPass()) while the seam waits must
+// be observed: the seam samples _search_start_ns only once it holds _engine_lock.
+TEST_F(ResolvedChainCacheTest, ResolvedTargetTagSeamSamplesGenerationUnderEngineLock) {
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(1000);
+    ReferenceChainsTestAccessor::cacheChain(5, makeEvent(77), 5, 1000);
+
+    tracker->_engine_lock.lock();
+    std::atomic<bool> done{false};
+    std::atomic<jlong> result{-2};
+    std::thread seam([&] {
+        result.store(tracker->resolvedChainTargetTagForTest(5));
+        done.store(true);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_FALSE(done.load()) << "seam must block while _engine_lock is held";
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(2000);
+    tracker->_engine_lock.unlock();
+
+    EXPECT_TRUE(waitForSeamThread(done, 10000));
+    seam.join();
+    EXPECT_EQ(0, result.load()) << "stale-generation chain returned after a concurrent restart";
+}
+
+// Lock order _engine_lock -> _resolved_chains_lock: with only _resolved_chains_lock held, the seam
+// takes _engine_lock, waits on the cache lock, and completes once it is released.
+TEST_F(ResolvedChainCacheTest, ResolvedTargetTagSeamLockOrder) {
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(1000);
+    ReferenceChainsTestAccessor::cacheChain(5, makeEvent(77), 5, 1000);
+
+    ReferenceChainsTestAccessor::lockResolvedChainsForTest();
+    std::atomic<bool> done{false};
+    std::atomic<jlong> result{-2};
+    std::thread seam([&] {
+        result.store(tracker->resolvedChainTargetTagForTest(5));
+        done.store(true);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_FALSE(done.load()) << "seam must wait on _resolved_chains_lock";
+    ReferenceChainsTestAccessor::unlockResolvedChainsForTest();
+
+    EXPECT_TRUE(waitForSeamThread(done, 10000));
+    seam.join();
+    EXPECT_EQ(77, result.load());
+}
+
 // Pause-time pacing controller: pause-time-SLO feedback loop
 
 TEST_F(ReferenceChainsTest, PacingHoldsSteadyWhenPassesLandExactlyOnCeiling) {

@@ -1204,9 +1204,11 @@ public:
 
   // Held by runPassSerialized() and finishLoopIterationSerialized() around the engine work, by
   // threadLoop() around shouldRunPass() (whose restart branch mutates _pending_expand/
-  // _priority_expand the same way a pass does), and by the pendingExpand*ForTest() seams below so
-  // they never observe those deques mid-mutation from the BFS thread. Mutable because the test
-  // seams are const (read-only from the caller's perspective) but still need to take the lock.
+  // _priority_expand the same way a pass does), and by the pendingExpand*ForTest()/
+  // frontierStateForTest()/resolvedChainTargetTagForTest() test seams below so they never observe
+  // engine state mid-mutation from the BFS thread. Mutable because the test seams are const
+  // (read-only from the caller's perspective) but still need to take the lock. Recursive
+  // (mutex.cpp); never acquire it while holding _resolved_chains_lock.
   mutable Mutex _engine_lock;
   jlong tagObject(jvmtiEnv *jvmti, jobject obj);
   jlong getTag(jvmtiEnv *jvmti, jobject obj);
@@ -1368,11 +1370,13 @@ public:
   // for computing a position's fraction of the current backlog.
   size_t pendingExpandSizeForTest() const;
 
-  // Test seam - not part of the production API. The FrontierEntryState of the current search's
-  // frontier entry for the object carrying JVMTI tag `object_tag` (FRONTIER/EXPANDED/ABANDONED),
-  // or -1 if there is no such entry: untagged, leak-tagged (not yet intercepted by the walk), or
-  // no frontier table / slot. Lets a test synchronize on an object's actual expansion rather than
-  // inferring it from pass counters.
+  // Test seam - not part of the production API. The raw FrontierEntryState (canonical values:
+  // referenceChainFrontier.h) of the current search's frontier entry for the object carrying JVMTI
+  // tag `object_tag` - FRONTIER(0)/EXPANDED(1)/ABANDONED(3); EDGE(2) is retired and never produced
+  // by the production walk (FrontierTable::markEdge() has no production caller) - or -1 if there is
+  // no such entry: untagged, leak-tagged (not yet intercepted by the walk), or no frontier table /
+  // slot. Lets a test synchronize on an object's actual expansion rather than inferring it from
+  // pass counters. Serialized with the BFS thread via _engine_lock.
   int frontierStateForTest(jlong object_tag);
 
   // Test seam - not part of the production API. Returns the targetTag a datadog.ReferenceChain
@@ -1381,7 +1385,8 @@ public:
   // keyed by its frontier tag with source_search_ns == _search_start_ns). 0 otherwise: untagged,
   // leak-tagged but not yet intercepted, no cached chain, or a chain cached by an earlier search
   // generation (restartSearch() keeps _resolved_chains and reuses tags from 1, so raw tag equality
-  // alone could match a stale, unrelated chain).
+  // alone could match a stale, unrelated chain). Samples _search_start_ns under _engine_lock and
+  // _resolved_chains_lock.
   jlong resolvedChainTargetTagForTest(jlong object_tag);
 
   // Test seam - not part of the production API. Evaluates the real private scheduling gate without

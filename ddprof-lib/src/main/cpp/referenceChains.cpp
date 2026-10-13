@@ -1064,7 +1064,14 @@ long ReferenceChainTracker::pendingExpandPositionForTest(jlong tag) const {
 }
 
 int ReferenceChainTracker::frontierStateForTest(jlong object_tag) {
-  if (object_tag <= 0 || isLeakTag(object_tag) || _frontier == nullptr) {
+  if (object_tag <= 0 || isLeakTag(object_tag)) {
+    return -1;
+  }
+  // Same lock as the pendingExpand*ForTest() seams above: the BFS thread mutates the frontier
+  // (insert/expand/abandon in runPass(), resetForRestart() via shouldRunPass()'s restart branch)
+  // only under _engine_lock, so this snapshot never observes a pass or restart mid-flight.
+  MutexLocker engine_guard(_engine_lock);
+  if (_frontier == nullptr) {
     return -1;
   }
   FrontierEntry entry{};
