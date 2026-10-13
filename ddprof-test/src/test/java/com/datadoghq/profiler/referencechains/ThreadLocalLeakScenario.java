@@ -108,11 +108,12 @@ public final class ThreadLocalLeakScenario {
     }
 
     /**
-     * Bounded wait for the leak thread's first publish. Only the
-     * late-thread mode needs it: there the thread is started after the
-     * profiler (and thus after {@code profiler.execute()} returned), so the
-     * main thread cannot rely on the start-command's JNI work having
-     * scheduled the leak thread far enough to publish.
+     * Bounded wait for the leak thread's first publish. Required in both
+     * thread-start modes: run() consumes the handoff right after the
+     * profiler starts, and neither starting the thread before
+     * {@code profiler.execute()} nor after it guarantees the thread has
+     * allocated its seed chunks and published by then. Must be called
+     * before take() (it polls seedChunk, which take() clears).
      */
     boolean awaitPublication(long timeoutMs) throws InterruptedException {
       long deadline = System.nanoTime()
@@ -177,17 +178,22 @@ public final class ThreadLocalLeakScenario {
     // always allocated on the same qualifying tid).
     BlockingQueue<Integer> rounds = new ArrayBlockingQueue<>(32);
     Thread leakThread = new Thread(() -> {
-      List<byte[]> sink = SINK.get();
+      // No local ever holds the sink: re-fetch it via SINK on every use so
+      // the only durable path to the chunks is Thread.threadLocals ->
+      // ThreadLocalMap. A live stack local would let root enumeration reach
+      // ArrayList -> elementData -> byte[] directly (a depth-2 stack-local
+      // chain the transient-root gate does not suppress), bypassing the
+      // thread-scoped walk this scenario exists to prove.
       for (int i = 0; i < SEED_CHUNKS; i++) {
-        sink.add(new byte[CHUNK_BYTES]);
+        SINK.get().add(new byte[CHUNK_BYTES]);
       }
-      handoff.publish(JavaProfiler.getTid(), sink.get(0));
+      handoff.publish(JavaProfiler.getTid(), SINK.get().get(0));
       while (true) {
         try {
           if (rounds.poll(50, TimeUnit.MILLISECONDS) == null) {
             continue;
           }
-          sink.add(new byte[CHUNK_BYTES]);
+          SINK.get().add(new byte[CHUNK_BYTES]);
         } catch (InterruptedException e) {
           return;
         }
@@ -204,12 +210,14 @@ public final class ThreadLocalLeakScenario {
 
     if (lateThread) {
       leakThread.start();
-      // The debug seeding below consumes the handoff immediately; the
-      // thread is only just started, so wait for its first publish.
-      if (!handoff.awaitPublication(30000)) {
-        System.out.println(NOT_FOUND_MARKER);
-        return;
-      }
+    }
+    // The debug seeding below consumes the handoff (rep chunk + tid)
+    // immediately. Neither thread-start mode guarantees the leak thread has
+    // published by now (profiler.execute() returning says nothing about the
+    // leak thread's progress), so wait for its first publish in both.
+    if (!handoff.awaitPublication(30000)) {
+      System.out.println(NOT_FOUND_MARKER);
+      return;
     }
 
     boolean debugBuild = "debug".equals(System.getProperty("ddprof_test.config"));
@@ -226,6 +234,10 @@ public final class ThreadLocalLeakScenario {
         JavaProfiler.seedKlassPopulationSample0(LEAK_KLASS_ID, epoch * 10, epoch);
         JavaProfiler.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
       }
+      // Maintenance continues the seeded ramp (next epoch =
+      // SEED_EPOCHS_FOR_HYSTERESIS + 1) instead of restarting at 1 - same as
+      // StaticFieldGrowingCollectionScenario.
+      hysteresisEpoch = SEED_EPOCHS_FOR_HYSTERESIS;
       // Wait for the BFS thread's first full pass, then poll - same
       // load-bearing wait as LeakTagCorrelationScenario.
       int initialPasses = JavaProfiler.referenceChainPassesRunForTest0();
@@ -237,6 +249,10 @@ public final class ThreadLocalLeakScenario {
       }
       JavaProfiler.pollReferenceChainTargets0();
     } else {
+      // Drop the handoff's chunk reference: the lambda (captured by the
+      // Thread's runnable) retains `handoff`, so a never-taken seedChunk
+      // would be a second, non-ThreadLocalMap path to a chunk.
+      handoff.take();
       Thread.sleep(5000);
     }
 
@@ -301,6 +317,19 @@ public final class ThreadLocalLeakScenario {
     System.out.println(FOUND_MARKER + best.payloadChain.targetTag);
   }
 
+  /** True if any hop of the leaf-to-root chain is the ThreadLocalMap (or one of its nested types). */
+  private static boolean passesThroughThreadLocalMap(Object[] rawChain) {
+    for (Object element : rawChain) {
+      if (element instanceof IMCType) {
+        String name = ((IMCType) element).getFullName();
+        if (name != null && name.contains("ThreadLocalMap")) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   private static ScanResult keepBest(ScanResult best, ScanResult scan) {
     if (scan == null) {
       return best;
@@ -312,7 +341,9 @@ public final class ThreadLocalLeakScenario {
   }
 
   /**
-   * Scans one dump: the first leaked {@code byte[]} chain (if any), whether
+   * Scans one dump: the first leaked {@code byte[]} chain (if any) that runs
+   * through a ThreadLocalMap hop - any other byte[] chain does not prove the
+   * thread-scoped walk and is ignored - whether
    * its targetTag is in the leak-tag pool, and how many
    * {@code datadog.HeapLiveObject} events for a leaked {@code byte[]} carry
    * that same tag in {@code leakTag}. Simplified from
@@ -348,6 +379,13 @@ public final class ThreadLocalLeakScenario {
         long targetTag = targetTagAccessor != null
             ? ReferenceChainAssertions.numberValue(targetTagAccessor.getMember(item)) : -1;
         if (!"byte[]".equals(leaf)) {
+          continue;
+        }
+        // Only a chain through the leaking thread's ThreadLocalMap proves the
+        // thread-scoped walk; any other byte[] chain must not satisfy this
+        // scenario (with thread registration broken it would be the only
+        // kind of chain left, and the scenario must report NOT_FOUND).
+        if (!passesThroughThreadLocalMap(rawChain)) {
           continue;
         }
         boolean inPool =

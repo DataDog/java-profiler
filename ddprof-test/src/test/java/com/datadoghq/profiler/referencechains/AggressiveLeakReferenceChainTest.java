@@ -86,6 +86,9 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
     JavaProfiler.resetKlassPopulationForTest0();
     JavaProfiler.resetReferenceChainSearchForTest0();
     try {
+      // Baseline BEFORE publishing any urgency input: the live BFS thread may run the one
+      // urgency-authorized search as soon as the samples below land, and that pass must count.
+      int passesBefore = JavaProfiler.referenceChainPassesRunForTest0();
       // 1000 MiB fake max heap, rising from 100 MiB to 991 MiB over 9 (fake) seconds: ~99 MiB/s,
       // 9 MiB of headroom left at the last sample -> projected time-to-OOM ~= 9/99 s, far under
       // OOM_URGENT_THRESHOLD_S = 300s.
@@ -101,7 +104,6 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
           "This test's own precondition: no per-klass candidate should exist, so passes running "
               + "below can only come from the aggregate urgent-OOM bypass");
 
-      int passesBefore = JavaProfiler.referenceChainPassesRunForTest0();
       // Idle BFS cadence is ~1s/pass; urgency ramps it to ~10ms after the latch. 20s covers the
       // first evaluation landing up to one idle cadence after the seeding loop.
       long deadline = System.currentTimeMillis() + 20_000;
