@@ -580,9 +580,10 @@ class StringDictionary {
 
     // A key held under two ids means one of them may have been handed to a
     // caller and will not resolve in later snapshots.  rotate() rules this out
-    // except after a drain timeout: a straggler's late insert, or a clear
-    // target reused uncleared (see rotate()).  It can also count an id that
-    // nobody holds (see assignDuringTransition()).  Only counted.
+    // except after a drain timeout (a straggler's late insert, or a clear
+    // target reused uncleared - see rotate()) and when a mid-rotation lookup
+    // could not insert into the dump buffer and assigned its own id (see
+    // assignDuringTransition()).  Only counted.
     void reportIdConflicts(int conflicts) {
         if (conflicts == 0) return;
         Counters::increment(DICTIONARY_ID_CONFLICTS, conflicts);
@@ -598,9 +599,14 @@ class StringDictionary {
     // old_active after phase 1 and not yet copied, so old_active, the dump
     // buffer, decides the id: its insert_with_id() returns the id it already
     // holds for the key, if any.  active then gets that id - the one phase 2
-    // copies - unless a writer that saw the gate already closed got in first
-    // with another id; active's id is returned either way, leaving at most an
-    // unused entry in the dump buffer.
+    // copies - unless a writer arriving after phase 2, which saw
+    // _transitioning clear, got in first with another id.  active's id is
+    // returned either way, so all callers agree; the dump buffer then keeps
+    // the key under the other id until it is cleared.  No caller of lookup()
+    // holds that id, but lookupDuringDump() probes the dump buffer first and
+    // returns it to the dump thread.  That stays consistent: the id is in the
+    // dump buffer, which is what the current chunk's constant pool is written
+    // from, and the dump thread resolves class ids afresh in every chunk.
     // A writer still on old_active can see the gate set just before the new
     // active is published; it then goes through the previous dump buffer,
     // which costs nothing but an unused entry there: phase 2 copies its
@@ -617,6 +623,7 @@ class StringDictionary {
         if (_rot.dumpBuffer() != dump) return 0;
         u32 id = dump->insert_with_id(key, len, nextId());
         if (id == 0) return 0;
+        rotateHook(TRANSITION_BETWEEN_INSERTS);
         u32 result = active->insert_with_id(key, len, id);
         if (result == id) countInsert(len);
         return result;
@@ -661,11 +668,14 @@ class StringDictionary {
     }
 
 public:
-    // Points inside rotate() at which a UNIT_TEST build calls the hook
-    // installed with setRotateHookForTest(), on the rotating thread.
+    // Points at which a UNIT_TEST build calls the hook installed with
+    // setRotateHookForTest().  The ROTATE_* stages run on the rotating thread,
+    // TRANSITION_BETWEEN_INSERTS on the thread doing a mid-rotation lookup.
     enum RotateStage {
-        ROTATE_AFTER_PHASE1,   // phase 1 copied; new active not yet published
-        ROTATE_BEFORE_DRAIN    // new active published; old active not yet drained
+        ROTATE_AFTER_PHASE1,        // phase 1 copied; new active not yet published
+        ROTATE_BEFORE_DRAIN,        // new active published; old active not yet drained
+        ROTATE_AFTER_PHASE2,        // phase 2 copied; _transitioning still set
+        TRANSITION_BETWEEN_INSERTS  // assignDuringTransition(): dump insert done, active insert not yet
     };
 
 private:
@@ -812,6 +822,7 @@ public:
         // and the drain completing.  It revisits every entry, so its conflict
         // count includes phase 1's.
         reportIdConflicts(_rot.active()->copyFrom(*old_active).conflicts);
+        rotateHook(ROTATE_AFTER_PHASE2);
         _transitioning.store(false, std::memory_order_release);
         return fresh;
     }

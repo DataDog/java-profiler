@@ -251,7 +251,12 @@ the new active holds. Nothing waits for `rotate()`.
   previous dump buffer; that only leaves an unused entry there.
 - A writer that sees the flag set while another, arriving after Phase 2, sees
   it clear, may find the key already in the new active under a fresh id. It
-  returns that id; the id it put into the dump buffer is held by nobody.
+  returns that id, so all callers agree, but the dump buffer keeps the key
+  under the id it put there. No `lookup()` caller holds that id;
+  `lookupDuringDump()`, which probes the dump buffer first, returns it to the
+  dump thread. That is consistent within the dump: the id is in the dump
+  buffer the chunk's constant pool is written from, and the dump thread
+  resolves class ids afresh in every chunk.
 
 The writer guards the dump buffer for one insert, re-checking after a SEQ_CST
 fence that it is still the dump buffer (otherwise `clearStandby()` may be

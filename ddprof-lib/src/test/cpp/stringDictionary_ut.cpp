@@ -674,6 +674,7 @@ void lateInsertHook(StringDictionary::RotateStage stage, void* arg) {
         if (s->key != nullptr) s->id_a = s->dict->lookup(s->key, s->len);
         return;
     }
+    if (stage != StringDictionary::ROTATE_BEFORE_DRAIN) return;
     s->b = std::thread([s]() {
         const char* key = s->key != nullptr ? s->key : "fresh_key";
         s->id_b.store(s->dict->lookup(key, strlen(key)));
@@ -758,4 +759,70 @@ TEST_F(StringDictionaryTest, BoundedLookupAtCapacityDuringRotateReturnsZero) {
     EXPECT_EQ(0u, s.result);
     EXPECT_EQ(0u, dict.standby()->lookup("over_cap", 8));
     EXPECT_EQ(0u, dict.bounded_lookup("over_cap", 8));
+}
+
+namespace {
+
+// Writer B is between its dump-buffer insert and its active insert when the
+// transition ends, and writer D looks the same fresh key up right then.  D sees
+// _transitioning clear and assigns the key its own id in the active buffer
+// before B gets there, so the dump buffer keeps the key under B's id.
+struct TransitionEndScenario {
+    StringDictionary* dict;
+    std::atomic<int> b_state{0};  // 1 = B between its inserts, 2 = B released
+    std::atomic<u32> id_b{0};
+    std::thread b;
+};
+
+void transitionEndHook(StringDictionary::RotateStage stage, void* arg) {
+    auto* s = static_cast<TransitionEndScenario*>(arg);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    if (stage == StringDictionary::TRANSITION_BETWEEN_INSERTS) {
+        s->b_state.store(1);
+        while (s->b_state.load() != 2 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+    } else if (stage == StringDictionary::ROTATE_AFTER_PHASE2) {
+        s->b = std::thread([s]() { s->id_b.store(s->dict->lookup("late_key", 8)); });
+        while (s->b_state.load() != 1 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+    }
+}
+
+}  // namespace
+
+// Callers must agree on one id, and the id the dump thread gets from
+// lookupDuringDump() must be in the dump snapshot this chunk's constant pool
+// is written from, even though the dump buffer holds the key under an id no
+// lookup() caller got.
+TEST_F(StringDictionaryTest, LookupStraddlingTransitionEndKeepsCallersConsistent) {
+    dict.lookup("seed", 4);
+    TransitionEndScenario s{&dict};
+    dict.setRotateHookForTest(transitionEndHook, &s);
+    dict.rotate();  // returns with B between its two inserts
+    ASSERT_EQ(1, s.b_state.load()) << "B never reached the mid-rotation path";
+    u32 id_d = dict.lookup("late_key", 8);
+    s.b_state.store(2);
+    s.b.join();
+    dict.setRotateHookForTest(nullptr, nullptr);
+
+    ASSERT_NE(0u, id_d);
+    EXPECT_EQ(id_d, s.id_b.load()) << "callers got different ids";
+    EXPECT_EQ(id_d, dict.bounded_lookup("late_key", 8));
+
+    u32 dump_id = dict.lookupDuringDump("late_key", 8);
+    ASSERT_NE(0u, dump_id);
+    std::map<u32, const char*> snap;
+    dict.standby()->collect(snap);
+    ASSERT_EQ(1u, snap.count(dump_id));
+    EXPECT_STREQ("late_key", snap[dump_id]);
+
+    // The callers' id must resolve in the next snapshot.
+    dict.clearStandby();
+    dict.rotate();
+    snap.clear();
+    dict.standby()->collect(snap);
+    ASSERT_EQ(1u, snap.count(id_d));
+    EXPECT_STREQ("late_key", snap[id_d]);
 }
