@@ -1287,6 +1287,38 @@ Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingSizeForTest0(
   return (jlong)ReferenceChainTracker::instance()->pendingExpandSizeForTest();
 }
 
+// Reads target's existing tag without tagging it; see frontierStateForTest().
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainFrontierStateForTest0(
+    JNIEnv *env, jclass unused, jobject target) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr || target == nullptr) {
+    return -1;
+  }
+  jlong tag = 0;
+  if (jvmti->GetTag(target, &tag) != JVMTI_ERROR_NONE) {
+    return -1;
+  }
+  return (jint)ReferenceChainTracker::instance()->frontierStateForTest(tag);
+}
+
+// Reads target's existing tag without tagging it; see resolvedChainTargetTagForTest().
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainResolvedTargetTagForTest0(
+    JNIEnv *env, jclass unused, jobject target) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr || target == nullptr) {
+    return 0;
+  }
+  jlong tag = 0;
+  if (jvmti->GetTag(target, &tag) != JVMTI_ERROR_NONE) {
+    return 0;
+  }
+  return ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(tag);
+}
+
 // Seeds one heap-floor sample for secondsToOOM() without waiting for a GC.
 // Timestamps are only compared with each other, so any increasing sequence works.
 extern "C" DLLEXPORT void JNICALL
@@ -1400,6 +1432,18 @@ Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingPositionForTest
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingSizeForTest0(
     JNIEnv *env, jclass unused) {
+  return 0;
+}
+
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainFrontierStateForTest0(
+    JNIEnv *env, jclass unused, jobject target) {
+  return -1;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainResolvedTargetTagForTest0(
+    JNIEnv *env, jclass unused, jobject target) {
   return 0;
 }
 
