@@ -25,27 +25,22 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
  * Genuinely separate-process end-to-end coverage for the reference-chains target-selection
  * mechanism, complementing {@link ReferenceChainTrackingTest}'s in-process coverage: runs a real
  * "leaking Java app" (an ever-growing, never-evicted {@code HashMap}-backed cache - see
- * {@link LeakingCacheScenario}) in a genuinely separate child JVM, launched the same way
- * {@code JavaProfilerTest}/{@code JVMAccessTest} already launch child processes, and asserts on
- * that child's own reported result rather than reading a JFR file back out of this test's own
- * process.
+ * {@link LeakingCacheScenario}) in a separate child JVM, launched the same way
+ * {@code JavaProfilerTest}/{@code JVMAccessTest} launch child processes, and asserts on the
+ * child's own reported result.
  *
  * <p><b>Why a separate process, not another {@code @Test} in {@code ReferenceChainTrackingTest}:</b>
- * an earlier attempt added a second success-path {@code @Test} method there, using this exact
- * same {@code HashMap}-based leak shape, sharing that class's in-process {@code AbstractProfilerTest}
- * dynamic-attach lifecycle. It failed reliably whenever it ran after
- * {@code ReferenceChainTrackingTest}'s own {@code ChainLink} test in the same JVM - not a
- * test-ordering bug, but a genuine, non-obvious property of {@code ReferenceChainTracker}:
- * {@code runPass()} (referenceChains.cpp) performs exactly one root-seeded {@code FollowReferences}
- * walk per search's *entire lifetime* ({@code _search_started}); every later pass only expands
- * frontier entries that walk already discovered ({@code expandFrontier()}) - it never
- * re-examines GC roots or revisits an already-{@code EXPANDED} entry for newly-added children.
- * Since {@code ReferenceChainTracker} is a process-wide singleton, only the *first* test to ever
- * call {@code runPass()} in a given JVM gets a real root-seeded walk; every subsequent test's own,
- * independently-rooted local variables are structurally invisible to the mechanism afterward, no
- * matter how they are built. A genuinely separate child JVM per scenario sidesteps this
- * entirely: each process gets its own fresh {@code ReferenceChainTracker} singleton, and
- * therefore its own guaranteed first-ever root walk.
+ * an earlier attempt did exactly that and failed reliably whenever it ran after that class's own
+ * {@code ChainLink} test - not a test-ordering bug, but a genuine property of
+ * {@code ReferenceChainTracker}: {@code runPass()} performs exactly one root-seeded
+ * {@code FollowReferences} walk per search's *entire lifetime* ({@code _search_started}); every
+ * later pass only expands frontier entries that walk already discovered ({@code expandFrontier()})
+ * - it never re-examines GC roots or revisits an already-{@code EXPANDED} entry for newly-added
+ * children. Since the tracker is a process-wide singleton, only the *first* test to ever call
+ * {@code runPass()} in a given JVM gets a real root-seeded walk; every subsequent test's own,
+ * independently-rooted local variables are structurally invisible afterward. A separate child JVM
+ * per scenario sidesteps this: each process gets its own fresh singleton, and therefore its own
+ * guaranteed first-ever root walk.
  */
 @Tag("slow")
 public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTest {
@@ -68,21 +63,17 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
     // LeakingCacheScenario.run() makes to scratchDumpPath matter.
     Path continuousJfrPath = Files.createTempFile("referencechains-external-process-continuous", ".jfr");
     try {
-      // budget=200000 (up from the in-process test's 4000, found via TEST_LOG instrumentation
-      // in referenceChains.cpp/livenessTracker.cpp): a genuinely fresh external JVM's
-      // reachable-from-roots graph (full JUnit/JMC/Gradle-worker classpath, bootstrapped from
-      // scratch - no benefit from a warm, already-running shared worker JVM) is far larger than
-      // the in-process test's, and each pass's own JVMTI walk cost scales with cumulative
-      // frontier size, not with this scenario's own allocation rate - budget=4000 stayed
-      // truncated=1 at 76000+ admitted edges after 19 real passes and never got close to this
-      // scenario's own cache before the test's own timeout. _budget is the pacing controller's
-      // hard ceiling (see updatePacing()'s own comment, referenceChains.cpp) - pausetarget alone
-      // cannot compensate for a ceiling set too low, only pacing *within* it.
-      // memory=64:l:1.0 - the explicit 100% live-sample ratio removes the
-      // default 10% subsampling lottery from the tracked-instance pool
-      // (see LeakTagCorrelationReferenceChainTest's own comment for the
-      // full analysis); total volume stays capped by the 256KiB interval
-      // floor, so the tracking table remains tiny.
+      // budget=200000 (up from the in-process test's 4000, found via TEST_LOG instrumentation):
+      // a genuinely fresh external JVM's reachable-from-roots graph (full JUnit/JMC/Gradle-worker
+      // classpath, bootstrapped from scratch) is far larger than the in-process test's, and each
+      // pass's walk cost scales with cumulative frontier size, not with this scenario's allocation
+      // rate - budget=4000 stayed truncated=1 at 76000+ admitted edges after 19 real passes and
+      // never got close to this scenario's own cache before the timeout. _budget is the pacing
+      // controller's hard ceiling - pausetarget alone cannot compensate for a ceiling set too
+      // low. memory=64:l:1.0 - the explicit 100% live-sample ratio removes the default 10%
+      // subsampling lottery from the tracked-instance pool (see
+      // LeakTagCorrelationReferenceChainTest's comment); total volume stays capped by the 256KiB
+      // interval floor, so the tracking table remains tiny.
       String startCommand = "start,memory=64:l:1.0,generations=true,"
           + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:pausetarget=60000"
           + ",jfr,file=" + continuousJfrPath.toAbsolutePath();
@@ -134,14 +125,13 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
 
   /**
    * Mirrors {@link #shouldReconstructReferrerChainInSeparateProcess()}, but against {@link
-   * StaticFieldGrowingCollectionScenario} instead of {@link LeakingCacheScenario}: a {@code
-   * static final List<byte[]>} field appended to (never reassigned) after its owning class has
-   * already been swept once by {@code admitStaticFieldRoots()} (referenceChains.cpp) - the exact
-   * shape found in the {@code prof-analyzer-hotdog-jb} pod's real leak generator, as opposed to
-   * {@code LeakingCacheScenario}'s local-variable (stack-root) cache. Local, fast reproduction of
-   * whether {@code collectStaleExpandedEntriesForRotation()}'s rotation mechanism actually
-   * re-expands an already-{@code EXPANDED} static-field-rooted collection to pick up elements
-   * added after its one-time sweep.
+   * StaticFieldGrowingCollectionScenario}: a {@code static final List<byte[]>} field appended to
+   * (never reassigned) after its owning class has already been swept once by {@code
+   * admitStaticFieldRoots()} - the exact shape found in the {@code prof-analyzer-hotdog-jb} pod's
+   * real leak generator. Local, fast reproduction of whether {@code
+   * collectStaleExpandedEntriesForRotation()}'s rotation mechanism actually re-expands an
+   * already-{@code EXPANDED} static-field-rooted collection to pick up elements added after its
+   * one-time sweep.
    */
   @Test
   void shouldReconstructReferrerChainForGrowingStaticFieldCollection() throws Exception {
@@ -153,14 +143,9 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
     Files.deleteIfExists(scratchDumpPath);
     Path continuousJfrPath = Files.createTempFile("referencechains-static-field-external-process-continuous", ".jfr");
     try {
-      // See ExternalProcessReferenceChainTest.shouldReconstructReferrerChainInSeparateProcess()'s
-      // own comment for why budget/pausetarget are raised this far above the in-process test's
-      // defaults for a genuinely fresh, cold external JVM.
-      // memory=64:l:1.0 - the explicit 100% live-sample ratio removes the
-      // default 10% subsampling lottery from the tracked-instance pool
-      // (see LeakTagCorrelationReferenceChainTest's own comment for the
-      // full analysis); total volume stays capped by the 256KiB interval
-      // floor, so the tracking table remains tiny.
+      // See shouldReconstructReferrerChainInSeparateProcess()'s comment for why budget/pausetarget
+      // are raised this far above the in-process test's defaults for a cold external JVM; the
+      // memory=64:l:1.0 ratio rationale is in LeakTagCorrelationReferenceChainTest's comment.
       String startCommand = "start,memory=64:l:1.0,generations=true,"
           + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:pausetarget=60000"
           + ",jfr,file=" + continuousJfrPath.toAbsolutePath();
@@ -191,10 +176,9 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
       assertNotNull(resultLine.get(),
           "Child process never printed a recognizable result marker on stdout");
       assertEquals(
-          // "byte[]", not byte[].class.getName()'s "[B": StaticFieldGrowingCollectionScenario
-          // prints match.chain.get(0).getFullName(), and JMC's IMCType renders array types in
-          // Java source notation, not JVM signature notation - see
-          // ReferenceChainAssertions.jmcStyleName()'s own comment for why matching required the
+          // "byte[]", not byte[].class.getName()'s "[B": the scenario prints
+          // match.chain.get(0).getFullName(), and JMC's IMCType renders array types in Java source
+          // notation - see ReferenceChainAssertions.jmcStyleName() for why matching needs the
           // same distinction.
           StaticFieldGrowingCollectionScenario.FOUND_MARKER + "byte[]",
           resultLine.get(),

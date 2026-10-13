@@ -463,13 +463,10 @@ public final class JavaProfiler {
     private static native int getTid0();
 
     /**
-     * Test seam (debug native builds only): returns the calling thread's profiler tid
-     * (ProfiledThread::currentTid()'s value on the native side - the same tid space
-     * {@code seedTidTrendSample0} matches tracked instances' allocating threads
-     * against). Scenarios seeding per-(klass, tid) trend ramps must call this ON
-     * the leaking thread and pass the result to {@code seedTidTrendSample0}, or
-     * the qualifying tid will match no tracked instance and no leak tag will
-     * ever be assigned to the scenario's real instances.
+     * Test seam (debug native builds only): returns the calling thread's profiler tid - the same
+     * tid space {@code seedTidTrendSample0} matches tracked instances' allocating threads against.
+     * Scenarios seeding per-(klass, tid) ramps must call this ON the leaking thread, or the
+     * qualifying tid matches no tracked instance and no leak tag is ever assigned.
      */
     static int getTid() {
         return getTid0();
@@ -550,12 +547,10 @@ public final class JavaProfiler {
      * process-wide profiler singleton, so they must not be callable by application code
      * sharing the JVM with a debug native build. Tests outside this package reach them only
      * through the test-source bridge {@code com.datadoghq.profiler.ReferenceChainTestHooks}
-     * (ddprof-test), same pattern as {@code ProfilerOwnedBlockHooks}.
-     * <p>
-     * Decouples LivenessTracker's leak-candidate
-     * detection from ReferenceChainTracker's chain reconstruction, each independently
-     * verifiable end-to-end without depending on both the probabilistic JVMTI heap
-     * sampler and the reference-chain BFS search organically producing the right
+     * (ddprof-test), same pattern as {@code ProfilerOwnedBlockHooks}. Collectively the seams
+     * decouple LivenessTracker's leak-candidate detection from ReferenceChainTracker's chain
+     * reconstruction, so each is verifiable end-to-end without depending on both the
+     * probabilistic JVMTI heap sampler and the BFS search organically producing the right
      * conditions in the same test run.
      * <p>
      * Enables/disables LivenessTracker's per-klass population tracking directly,
@@ -575,25 +570,20 @@ public final class JavaProfiler {
     static native void seedKlassPopulationSample0(int klassId, int count, long epoch);
 
     /**
-     * Test seam (debug native builds only): seeds one epoch's worth of per-tid trend
-     * history for {@code klassId}, the (klass, tid) qualification
-     * selectLeakCandidates() now requires on top of the klass-level ramp seeded by
-     * {@link #seedKlassPopulationSample0}. Repeated calls with the same rising shape
-     * (and the same {@code tid}) build the sustained rise that qualifies {@code tid}
-     * as a leak-site thread. {@code tid} must be the leaking thread's real profiler
-     * tid from {@link #getTid()} whenever the scenario also relies on leak tagging
-     * of real tracked instances; see that method's own comment.
+     * Test seam (debug native builds only): seeds one epoch's worth of per-tid trend history for
+     * {@code klassId} - the (klass, tid) qualification selectLeakCandidates() requires on top of
+     * the klass-level ramp. {@code tid} must be the leaking thread's real profiler tid from
+     * {@link #getTid()} whenever the scenario also relies on leak tagging of real tracked
+     * instances.
      */
     static native void seedTidTrendSample0(int klassId, int tid, int count, long epoch);
 
     /**
      * Test seam (debug native builds only): wires {@code representative} in as {@code klassId}'s
      * leak-candidate representative directly (a fresh weak global ref owned by LivenessTracker),
-     * bypassing the real allocation-sampling path that would otherwise populate this. Combined
-     * with {@link #seedKlassPopulationSample0} and {@link #tagAsReferenceChainRoot0}, lets a test
-     * join a synthetic slope signal to a real, directly-tagged object so
-     * {@link #pollReferenceChainTargets0()}'s bridging step can be exercised end-to-end with
-     * neither the real sampler nor the real root-seeded walk involved.
+     * bypassing the real allocation-sampling path. Lets a test join a synthetic slope signal to
+     * a real, directly-tagged object so {@link #pollReferenceChainTargets0()}'s bridging step can
+     * be exercised end-to-end.
      */
     static native void setKlassPopulationRepresentativeForTest0(int klassId, Object representative);
 
@@ -604,12 +594,10 @@ public final class JavaProfiler {
     static native void resetKlassPopulationForTest0();
 
     /**
-     * Test seam (debug native builds only): returns the klass ids LivenessTracker's
-     * real leak-candidate ranking (positive population slope, top 5) currently
-     * selects - the same call ReferenceChainTracker's restart gate and target-polling
-     * bridge use in production, exposed here so a test can assert a slope signal was
-     * generated (real or seeded via {@link #seedKlassPopulationSample0}) without
-     * needing a reference-chain search to also be running.
+     * Test seam (debug native builds only): returns the klass ids LivenessTracker's real
+     * leak-candidate ranking (positive population slope, top 5) currently selects - the same
+     * call the restart gate and target-polling bridge use in production, exposed so a test can
+     * assert a slope signal was generated without a reference-chain search also running.
      */
     static native int[] selectLeakCandidateKlassIds0();
 

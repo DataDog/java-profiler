@@ -94,18 +94,13 @@ public final class StaticFieldGrowingCollectionScenario {
     int initialPasses = debugBuild ? ReferenceChainTestHooks.referenceChainPassesRunForTest0() : -1;
 
     if (debugBuild) {
-      // Seed enough hysteresis-qualifying epochs to unlock ReferenceChainTracker::hasLeakSignal()/
-      // shouldRunPass() - WITHOUT wiring in a representative object yet (setKlassPopulationRepresentativeForTest0
-      // is not called here). hasLeakSignal() only asks selectLeakCandidates() for a nonzero count -
-      // it never reads/dereferences the representative field - so this step's only job is
-      // authorizing the BFS thread's first pass to actually start. Doing this BEFORE waiting on
-      // passesRun() advancing below is load-bearing, found the hard way: a pass only ever runs
-      // once shouldRunPass() sees a leak signal - waiting on passesRun() before seeding anything is
-      // a deadlock, not just a slow path.
-      // Per-(klass, tid) qualification seeds (see LeakTagCorrelationScenario's own
-      // seeding block for the rationale): the qualifying tid must be the thread that
-      // allocates the tracked instances - this thread allocates every LEAK_BUFFER
-      // chunk, including the lateChunk this scenario watches.
+      // Seed enough hysteresis-qualifying epochs to unlock hasLeakSignal()/shouldRunPass() -
+      // WITHOUT wiring in a representative object yet: hasLeakSignal() only asks
+      // selectLeakCandidates() for a nonzero count, never reads the representative. Doing this
+      // BEFORE waiting on passesRun() advancing below is load-bearing: a pass only ever runs once
+      // shouldRunPass() sees a leak signal - waiting before seeding anything is a deadlock.
+      // Per-(klass, tid) seeds: the qualifying tid must be the thread that allocates the tracked
+      // instances - this thread allocates every LEAK_BUFFER chunk, including lateChunk.
       leakTid = ReferenceChainTestHooks.getTid();
       for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
         ReferenceChainTestHooks.seedKlassPopulationSample0(
@@ -117,34 +112,23 @@ public final class StaticFieldGrowingCollectionScenario {
     }
 
     // Wait for the BFS thread to fully complete its own first pass - not just
-    // admitStaticFieldRoots()'s one-time sweep of LEAK_BUFFER's *current* contents (an earlier,
-    // narrower version of this wait checked exactly that, via a since-removed
-    // hasCompletedStaticFieldSweepForTest0() seam), but the WHOLE pass, static-field sweep and
-    // expandFrontier()/collectStaleExpandedEntriesForRotation() alike - strictly before this
-    // scenario creates the one chunk whose chain it is actually going to watch for. This is the
-    // entire point of this scenario: proving that an element appended to a static field's
-    // collection AFTER that field's List is already ReferenceChainTracker-EXPANDED gets discovered
-    // via a LATER re-expansion of that stale entry, not via the very first pass that admitted it.
-    // Waiting on only the static-field sub-step (found the hard way, by actually instrumenting
-    // runPassManualWalk() and reading cacheResolvedChain()'s own timestamp against it) is not
-    // enough: admitStaticFieldRoots() and expandFrontier() are two steps of the SAME runPass()
-    // call, so Java can observe the former's completion while the latter - which is what actually
-    // marks LEAK_BUFFER's List entry EXPANDED - is still in flight, still racing lateChunk's
-    // creation exactly the way the sleep-based version this replaced did. Waiting for
-    // referenceChainPassesRunForTest0() to advance past its pre-seeding snapshot instead only
-    // becomes true once that ENTIRE pass (both steps) has finished. Non-debug builds have no such
-    // seam and fall back to a generous sleep - acceptable there because the non-debug path never
-    // pins a specific representative anyway (see the debugBuild branch below): it just waits on
-    // real, much-slower allocation sampling to notice the growth on its own, so a few extra
-    // seconds of margin either way changes nothing about what the eventual match would prove.
+    // admitStaticFieldRoots()'s one-time sweep of LEAK_BUFFER's current contents, but the WHOLE
+    // pass, sweep and expandFrontier()/collectStaleExpandedEntriesForRotation() alike - strictly
+    // before this scenario creates the chunk whose chain it watches for. That is the entire
+    // point: proving that an element appended AFTER the field's List is already EXPANDED gets
+    // discovered via a LATER re-expansion of that stale entry, not via the first pass that
+    // admitted it. Waiting on only the static-field sub-step is not enough: admitStaticFieldRoots()
+    // and expandFrontier() are two steps of the SAME runPass() call, so Java can observe the
+    // former's completion while the latter - which actually marks LEAK_BUFFER's entry EXPANDED -
+    // is still in flight. Advancing referenceChainPassesRunForTest0() past its pre-seeding
+    // snapshot only becomes true once that ENTIRE pass has finished. Non-debug builds have no
+    // such seam and fall back to a generous sleep - acceptable there because that path never
+    // pins a specific representative anyway; it just waits on real allocation sampling.
     if (debugBuild) {
       boolean passCompleted = false;
       // admitStaticFieldRoots() sweeps every loaded class in one FollowReferences call - a cold
-      // external JVM's full JUnit/JMC/Gradle-worker classpath (thousands of classes) can need
-      // several retries against pause-time-SLO pacing before one completes without truncating (see
-      // that method's own header comment on retry-from-scratch-but-cheap-on-already-admitted) -
-      // generous margin for the same reason ExternalProcessReferenceChainTest's own budget/
-      // pausetarget are raised this far above the in-process test's defaults.
+      // external JVM's full classpath (thousands of classes) can need several retries against
+      // pause-time-SLO pacing before one completes without truncating.
       for (int i = 0; i < 300 && !passCompleted; i++) {
         passCompleted = ReferenceChainTestHooks.referenceChainPassesRunForTest0() != initialPasses;
         if (!passCompleted) {
@@ -168,19 +152,13 @@ public final class StaticFieldGrowingCollectionScenario {
     byte[] lateChunk = new byte[CHUNK_BYTES];
     LEAK_BUFFER.add(lateChunk);
 
-    // From here on, seeded incrementally, one epoch per round below, rather than as a single
-    // upfront burst - found the hard way: profiler.execute()'s start() resets
-    // Profiler::classMap()'s generation synchronously, but LivenessTracker::cleanup_table() only
-    // observes that new generation (and updates its own _last_class_map_generation) lazily, on the
-    // BFS thread's own first tick. A burst seeded entirely before that first tick lands in
-    // _klass_population, then gets wiped wholesale the moment that tick's class-map-generation
-    // mismatch fires (cleanup_table()'s own comment, livenessTracker.cpp). Seeding one fresh epoch
-    // per round instead is self-healing exactly the way the real leak this scenario mirrors is:
-    // LEAK_BUFFER keeps growing every round regardless of any one-time startup housekeeping, so
-    // however many rounds a wipe costs, the trend simply resumes accumulating from the next
-    // round's seed call. (Waiting for the first pass to fully complete above already makes this
-    // particular race very unlikely to matter by this point, but there is no reason to give up the
-    // self-healing margin now that it costs nothing.)
+    // From here on, seeded incrementally, one epoch per round, rather than as a single upfront
+    // burst: profiler.execute()'s start() resets Profiler::classMap()'s generation synchronously,
+    // but LivenessTracker::cleanup_table() only observes that new generation lazily, on the BFS
+    // thread's first tick - a burst seeded before that tick gets wiped wholesale by the
+    // class-map-generation mismatch. Seeding one fresh epoch per round is self-healing the same
+    // way the real leak is: LEAK_BUFFER keeps growing every round regardless of any one-time
+    // startup housekeeping, so however many rounds a wipe costs, the trend simply resumes.
     ReferenceChainAssertions.ChainMatch match = null;
     int totalRounds = 25;
     for (int round = 1; round <= totalRounds && match == null; round++) {
@@ -191,24 +169,16 @@ public final class StaticFieldGrowingCollectionScenario {
       System.gc();
 
       if (match == null && debugBuild) {
-        // Seeding/polling every round unconditionally (not gated on passesRun() having advanced)
-        // is load-bearing, found the hard way: gating this on the tracker's OWN progress creates a
-        // deadlock - ReferenceChainTracker::hasLeakSignal() (which authorizes both a search's first
-        // pass and any later restart once the search reaches a terminal state) reads
-        // LivenessTracker::selectLeakCandidates(), which needs a continuously-refreshed population
-        // trend to keep reporting this candidate; stopping that refresh mid-search (to wait on the
-        // search's own progress) can stall the search itself with no path back, since nothing else
-        // keeps re-authorizing it. This scenario's target - a growing static-field collection -
-        // legitimately produces a continuous real signal in production; seeding continuously here
-        // is what actually mirrors that, not an artifact to gate away.
+        // Seeding/polling every round unconditionally is load-bearing: gating this on the
+        // tracker's own progress creates a deadlock - hasLeakSignal() (which authorizes both a
+        // first pass and any restart) reads selectLeakCandidates(), which needs a
+        // continuously-refreshed trend to keep reporting this candidate; stopping the refresh
+        // mid-search can stall the search with no path back. This scenario's target - a growing
+        // static-field collection - legitimately produces a continuous real signal in production;
+        // seeding continuously is what mirrors that, not an artifact to gate away.
         //
-        // Same debug-only seeded-representative short-circuit as LeakingCacheScenario's own -
-        // watches lateChunk specifically (added after the static field's first sweep), not
-        // whatever the real allocation sampler happens to pick. See SEED_EPOCHS_FOR_HYSTERESIS's
-        // own comment for the minimum epoch count this needs - kept uncapped here (not stopped
-        // once that minimum is reached) specifically so a wipe that costs an early round or two
-        // still leaves enough remaining rounds to reach it, rather than exhausting a fixed budget
-        // of calls before ever getting there.
+        // Kept uncapped (not stopped once the minimum epoch count is reached) so a wipe that
+        // costs an early round or two still leaves enough remaining rounds to reach it.
         hysteresisEpoch++;
         ReferenceChainTestHooks.seedKlassPopulationSample0(
             LEAK_BUFFER_TEST_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
@@ -218,14 +188,11 @@ public final class StaticFieldGrowingCollectionScenario {
             LEAK_BUFFER_TEST_KLASS_ID, lateChunk);
         ReferenceChainTestHooks.pollReferenceChainTargets0();
 
-        // Only TRUST a match once passesRun() has genuinely changed since the snapshot taken right
-        // before lateChunk was created - either advanced (the same, never-restarted search ran a
-        // later pass) or reset to a lower value (restartSearch() ran, which only ever happens on a
-        // threadLoop tick strictly after that snapshot, since time only moves forward). Either way
-        // proves the match came from a walk that started after lateChunk existed, ruling out the
-        // one race this whole seam exists to rule out: the very first, still-in-flight pass finding
-        // lateChunk by accident because admitStaticFieldRoots() and expandFrontier() are two steps
-        // of that SAME call, and Java can observe the former's completion before the latter runs.
+        // Only TRUST a match once passesRun() has changed since the snapshot taken right before
+        // lateChunk was created - advanced (the same, never-restarted search ran a later pass) or
+        // reset lower (restartSearch() ran, only possible on a tick strictly after that
+        // snapshot). Either way proves the match came from a walk that started after lateChunk
+        // existed, ruling out the still-in-flight first pass finding it by accident.
         if (ReferenceChainTestHooks.referenceChainPassesRunForTest0() != passesRunBeforeLateChunk) {
           profiler.dump(scratchDumpPath);
           match = findMatch(scratchDumpPath);
@@ -243,18 +210,14 @@ public final class StaticFieldGrowingCollectionScenario {
       }
     }
 
-    // A cold external JVM's one-shot root-seeded walk over its whole reachable graph (full
-    // JUnit/JMC/Gradle-worker classpath) takes far longer than this scenario's own round loop -
-    // found the hard way: a first attempt at this scenario's tail wait (5 x 1s) gave up and
-    // printed NOT_FOUND_MARKER mere moments before the tracker's own runPass() actually
-    // completed (searchState=COMPLETED) and successfully built the chain. Mirrors
-    // ExternalProcessReferenceChainTest's own comment on why budget/pausetarget are raised this
-    // far for exactly this reason.
+    // A cold external JVM's one-shot root-seeded walk over its whole reachable graph takes far
+    // longer than the round loop: an earlier tail wait of 5 x 1s gave up and printed NOT_FOUND
+    // mere moments before the tracker's own pass actually completed and built the chain.
     for (int attempt = 0; match == null && attempt < 40; attempt++) {
       Thread.sleep(1500);
       // Same passesRun()-advanced check as the round loop above (debug builds only) - by this
-      // point in a real run it has virtually always already flipped, but there is no reason to
-      // drop the guarantee here just because the round loop above didn't need it.
+      // point it has virtually always already flipped, but there is no reason to drop the
+      // guarantee.
       if (debugBuild
           && ReferenceChainTestHooks.referenceChainPassesRunForTest0() == passesRunBeforeLateChunk) {
         continue;
