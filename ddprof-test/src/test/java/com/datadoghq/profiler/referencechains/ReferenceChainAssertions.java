@@ -22,17 +22,12 @@ import java.util.Map;
 
 /**
  * Shared {@code datadog.ReferenceChain} JFR-parsing helpers, extracted out of
- * {@code ReferenceChainTrackingTest} so both that in-process JUnit test and
- * {@link LeakingCacheScenario} (run inside a genuinely separate child JVM by
- * {@code ExternalProcessReferenceChainTest}) can reuse the exact same JMC-accessor logic
- * rather than maintaining two copies.
- *
- * <p>{@link #findMatchForClass(JfrEvents, Class)} is a separate, jafar-backed counterpart to
- * {@link #findMatchForClass(IItemCollection, Class)} for {@code ReferenceChainTrackingTest}, which
- * loads recordings via {@code AbstractProfilerTest}'s {@code JfrEvents}-returning helpers.
- * {@link LeakingCacheScenario} and {@code ReferenceChainJfrParserTest}
- * load recordings directly via JMC's {@code JfrLoaderToolkit} and keep using the
- * {@code IItemCollection} overload unchanged.
+ * {@code ReferenceChainTrackingTest} so that test and {@link LeakingCacheScenario} (run inside a
+ * genuinely separate child JVM by {@code ExternalProcessReferenceChainTest}) reuse the exact same
+ * JMC-accessor logic rather than maintaining two copies. The jafar-backed
+ * {@link #findMatchForClass(JfrEvents, Class)} overload serves in-process tests loading recordings
+ * via {@code AbstractProfilerTest}'s helpers; the JMC {@code IItemCollection} overload serves
+ * tests loading recordings directly via {@code JfrLoaderToolkit}.
  */
 public final class ReferenceChainAssertions {
   private ReferenceChainAssertions() {}
@@ -137,15 +132,11 @@ public final class ReferenceChainAssertions {
   }
 
   /**
-   * {@code targetClass}'s name in the same format {@code IMCType.getFullName()} uses for array
-   * types - found the hard way: {@code Class.getName()} renders {@code byte[].class} as {@code
-   * "[B"} (JVM internal signature notation), but JMC's chunk parser renders the same array class's
-   * {@code IMCType.getFullName()} as {@code "byte[]"} (Java source notation), so comparing {@link
-   * Class#getName()} directly against {@code getFullName()} - as both {@code findMatchForClass}
-   * overloads above used to - can never match an array-typed leaf class, even when the correct
-   * event is genuinely present in the recording. Only affects array {@code targetClass} values
-   * (e.g. {@code byte[].class}); a non-array class's {@code getName()} already matches {@code
-   * getFullName()} as-is.
+   * {@code targetClass}'s name in the format {@code IMCType.getFullName()} uses for array types:
+   * {@code Class.getName()} renders {@code byte[].class} as {@code "[B"} (JVM internal signature
+   * notation) but JMC's chunk parser renders the same class as {@code "byte[]"} (Java source
+   * notation), so comparing {@link Class#getName()} directly against {@code getFullName()} can
+   * never match an array-typed leaf class. Only affects array {@code targetClass} values.
    */
   private static String jmcStyleName(Class<?> targetClass) {
     int dimensions = 0;
@@ -188,12 +179,9 @@ public final class ReferenceChainAssertions {
 
   /**
    * Looks up a field's accessor by identifier rather than via {@code Attribute.attr(...)}: JMC's
-   * v1 chunk parser (internal.parser.v1.ValueReaders.ArrayReader#getContentType()) registers
-   * {@code UnitLookup.UNKNOWN} as the declared content type for every array field regardless of
-   * what its element reader resolves to, so an {@code F_ARRAY} field like {@code chain}
-   * (T_CLASS, F_CPOOL|F_ARRAY, jfrMetadata.cpp) cannot be bound via a compile-time-typed
-   * {@code Attribute}. Mirrors {@code ReferenceChainJfrParserTest}'s identical lookup, which
-   * already proves this resolves {@code chain}'s array elements to real {@link IMCType}s.
+   * v1 chunk parser registers {@code UnitLookup.UNKNOWN} as the declared content type for every
+   * array field regardless of what its element reader resolves to, so an {@code F_ARRAY} field
+   * like {@code chain} cannot be bound via a compile-time-typed {@code Attribute}.
    */
   public static IMemberAccessor<?, IItem> findAccessor(IType<IItem> type, String identifier) {
     for (IAccessorKey<?> key : type.getAccessorKeys().keySet()) {

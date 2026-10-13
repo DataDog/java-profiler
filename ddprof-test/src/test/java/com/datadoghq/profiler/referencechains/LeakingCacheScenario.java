@@ -19,66 +19,41 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * The actual "leaking Java app" body run inside a genuinely separate child JVM by
- * {@code ExternalLauncher}'s {@code leak-cache} mode, driven by
- * {@code ExternalProcessReferenceChainTest}. Deliberately not a JUnit test itself - no
- * {@code AbstractProfilerTest}/dynamic-attach lifecycle, no shared-JVM {@code ReferenceChainTracker}
- * singleton with any other test - this class's whole point is to run alone in its own process, so
- * the one-shot root-seeded BFS walk (see this class's own comment on why a previous attempt at
- * folding this scenario into {@code ReferenceChainTrackingTest} as a second {@code @Test} method
- * failed) always belongs to this scenario and only this scenario.
+ * The actual "leaking Java app" body run inside a separate child JVM by {@code ExternalLauncher}'s
+ * {@code leak-cache} mode, driven by {@code ExternalProcessReferenceChainTest}. Deliberately not a
+ * JUnit test itself - no shared-JVM {@code ReferenceChainTracker} singleton with any other test;
+ * the whole point is to run alone in its own process so the one-shot root-seeded BFS walk always
+ * belongs to this scenario (see {@code ExternalProcessReferenceChainTest}'s comment for why an
+ * earlier in-process attempt failed).
  *
- * <p>Same realistic-leak shape as {@code ReferenceChainTrackingTest}'s own (now-removed) in-process
- * attempt: an ever-growing, never-evicted {@code HashMap}-backed cache, held by a local variable.
- *
- * <p><b>Why {@code cache} is seeded and populated <em>before</em> the profiler is even started
- * (found the hard way, against a real separate-process run):</b> {@code threadLoop()}
- * (referenceChains.cpp) calls {@code OS::sleep(_effective_cadence_ns)} - 1 second, initially -
- * *before* its very first {@code shouldRunPass()} check, and {@code shouldRunPass()} always
- * returns {@code true} on that first-ever check ({@code !_search_started}). So the process's
- * one-and-only root-seeded walk fires roughly one second after {@code startThread()}, or earlier
- * if woken by a GC-finish signal - a race {@code ReferenceChainTrackingTest}'s own
- * {@code shouldReportAbandonedSearchOnTinyFrontierCap()} comment already documents ("that wakeup
- * can race the thread's own startup ... and be missed"). An initial in-process attempt at this
- * exact scenario created {@code cache} and started allocating only *after* starting the profiler
- * (mirroring {@code ReferenceChainTrackingTest}'s {@code gcRootHolder}, which happened to work by
- * luck of scheduling in a warm, already-running JVM) - against a genuinely fresh, cold JVM this
- * lost the race essentially every time: the one-shot walk caught {@code cache} still empty,
- * permanently blocking discovery of everything added to it afterward (a frontier entry once
- * marked {@code EXPANDED} is never revisited for new children - see {@code expandFrontier()}'s
- * own comment). Seeding {@code cache} with real data *before* {@code profiler.execute()} is even
- * called removes the race entirely: no matter how fast the walk fires, {@code cache} is never
- * empty when it does.
+ * <p><b>Why {@code cache} is seeded and populated <em>before</em> the profiler is even started:</b>
+ * {@code threadLoop()} sleeps one initial cadence *before* its very first {@code shouldRunPass()}
+ * check, and that first check always returns {@code true} ({@code !_search_started}) - so the
+ * process's one-and-only root-seeded walk fires roughly one second after {@code startThread()}, or
+ * earlier if woken by a GC-finish signal (which can race the thread's own startup). An initial
+ * in-process attempt created {@code cache} only *after* starting the profiler; against a cold JVM
+ * that lost the race essentially every time - the one-shot walk caught {@code cache} still empty,
+ * and a frontier entry once marked {@code EXPANDED} is never revisited for new children. Seeding
+ * before {@code profiler.execute()} removes the race entirely.
  */
 public final class LeakingCacheScenario {
   private LeakingCacheScenario() {}
 
   // Arbitrary, scenario-chosen klass id - this process's own LivenessTracker population table
-  // treats it as an opaque key (see KlassPopulationEntry's own comment) and this process never
-  // runs any other reference-chains scenario, so no collision risk with e.g.
-  // ReferenceChainTrackingTest's/ReferenceChainTestSeamsTest's own klass ids in their own,
-  // separate JVMs.
+  // treats it as an opaque key, and this process never runs any other reference-chains scenario.
   private static final int CACHED_PAYLOAD_TEST_KLASS_ID = 987301;
 
-  // See ReferenceChainTrackingTest.SEED_EPOCHS_FOR_HYSTERESIS's own comment for the full
-  // derivation: LivenessTracker's hysteresis gate (livenessTracker.h's
-  // KLASS_POPULATION_MIN_FILL_FOR_TREND=10 / LEAK_TREND_HYSTERESIS_BASE=5) only starts
-  // incrementing consecutive_positive once ring_fill has reached 10, so a batch of exactly 10
-  // seedKlassPopulationSample0() calls caps consecutive_positive at 1 - far short of what
-  // selectLeakCandidates() (livenessTracker.cpp) requires before ReferenceChainTracker::
-  // hasLeakSignal() reports a candidate, which is what this scenario's own generations=true
-  // startCommand needs to authorize the BFS thread's first real pass at all.
+  // See ReferenceChainTrackingTest.SEED_EPOCHS_FOR_HYSTERESIS for the derivation: 10
+  // (KLASS_POPULATION_MIN_FILL_FOR_TREND) + 5 (LEAK_TREND_HYSTERESIS_BASE) - 1 = 14 seed calls
+  // is the minimum that clears selectLeakCandidates()'s consecutive_positive gate; 15 gives
+  // margin. generations=true needs that gate cleared to authorize the BFS thread's first pass.
   private static final int SEED_EPOCHS_FOR_HYSTERESIS = 15;
 
   /**
-   * Durable holder for the cache fixture. The discovered-chain gate suppresses
-   * chains shallower than the first real holder hop that are rooted at a TRANSIENT
-   * root (stack/JNI local) - a frame-held "leak" is by definition not a leak, so the
-   * cache must be retained through a static field (the real singleton-collection
-   * shape) rather than only {@code run()}'s own local, which is exactly the
-   * transient-rooted shape the gate suppresses. {@code run()}'s local {@code cache}
-   * variable below aliases this static; the durable root is what makes the emitted
-   * chain durable-rooted.
+   * Durable holder for the cache fixture. The discovered-chain gate suppresses chains shallower
+   * than the first real holder hop that are rooted at a TRANSIENT root (stack/JNI local) - a
+   * frame-held "leak" is by definition not a leak - so the cache must be retained through a
+   * static field; {@code run()}'s local {@code cache} variable below aliases this static.
    */
   private static final Map<String, CachedPayload> CACHE = new HashMap<>();
 
@@ -89,35 +64,29 @@ public final class LeakingCacheScenario {
   public static final String NOT_FOUND_MARKER = "[chain-not-found]";
 
   /**
-   * Printed to stdout (with the offending class name appended) if a match was found but its
-   * chain did not pass through {@code java.util.HashMap}'s own internal storage - see
-   * {@code ExternalProcessReferenceChainTest} for why this is asserted in the parent process
-   * rather than here (keeping this scenario's own stdout contract to "found/not-found" and
-   * leaving richer chain-shape assertions to the JUnit side, the same separation of concerns
-   * {@code ReferenceChainJfrParserTest} already uses for the lower-level JFR-format proof).
+   * Printed to stdout (with the offending class name appended) if a match was found but its chain
+   * did not pass through {@code java.util.HashMap}'s own internal storage - asserted in the
+   * parent process rather than here, keeping this scenario's stdout contract to "found/not-found".
    */
   public static final String NO_HASHMAP_INTERNALS_MARKER = "[chain-found-no-hashmap-internals] ";
 
   /**
    * Printed to stdout (with an "N/M" re-emitted-dump count appended) if the chain was
-   * successfully reconstructed but did <em>not</em> re-emit into one or more subsequent,
-   * independently written JFR dumps - i.e. the "snapshot-and-keep" contract of
-   * {@code ReferenceChainTracker::drainPendingChainEvents()} (referenceChains.cpp), which
-   * {@code Profiler::dump()} invokes on every dump without clearing the resolved-chain cache,
-   * failed to hold across dumps. Asserted by {@code ExternalProcessReferenceChainTest}.
+   * reconstructed but did <em>not</em> re-emit into one or more subsequent, independently written
+   * JFR dumps - i.e. the "snapshot-and-keep" contract of {@code drainPendingChainEvents()} failed
+   * to hold across dumps. Asserted by {@code ExternalProcessReferenceChainTest}.
    */
   public static final String CHAIN_NOT_PERSISTED_MARKER = "[chain-not-persisted] ";
 
   /**
-   * Seeds {@code cache} with an initial batch, *then* starts the profiler (see this class's own
-   * comment for why that order is load-bearing), then runs the same population-growth loop
-   * {@code ReferenceChainTrackingTest} pioneered - dumping to {@code scratchDumpPath} after every
-   * round (and a short grace period beyond the last round) until a {@code datadog.ReferenceChain}
-   * event whose {@code chain[0]} is {@link CachedPayload} appears - then prints exactly one
-   * result line to stdout. Called from {@code ExternalLauncher} (a different package - hence
-   * {@code public}), which owns the generic child-process bootstrap (JVMTI/library init, process
-   * exit) this scenario deliberately stays agnostic of; starting the profiler itself happens
-   * here, not in {@code ExternalLauncher}, specifically so {@code cache} can be seeded first.
+   * Seeds {@code cache} with an initial batch, *then* starts the profiler (order is load-bearing,
+   * see the class comment), then runs the same population-growth loop
+   * {@code ReferenceChainTrackingTest} pioneered - dumping after every round (plus a grace period)
+   * until a {@code datadog.ReferenceChain} event whose {@code chain[0]} is {@link CachedPayload}
+   * appears - then prints exactly one result line to stdout. Called from {@code ExternalLauncher}
+   * (a different package - hence {@code public}), which owns the generic child-process bootstrap;
+   * starting the profiler happens here, not there, specifically so {@code cache} can be seeded
+   * first.
    */
   public static void run(JavaProfiler profiler, String startCommand, Path scratchDumpPath) throws Exception {
     Map<String, CachedPayload> cache = CACHE;
@@ -149,29 +118,20 @@ public final class LeakingCacheScenario {
       match = findMatch(scratchDumpPath);
 
       if (match == null && debugBuild) {
-        // Same debug-only, seeded-representative short-circuit as ReferenceChainTrackingTest's
-        // own shouldReconstructReferrerChainThroughUnboundedCacheLeak() (see that method's own
-        // comment, and SEED_EPOCHS_FOR_HYSTERESIS's own comment above): decouples this scenario's
-        // assertion from whether the real, probabilistic allocation-sampling-driven slope
-        // detection happens to notice CachedPayload's own population trend within this scenario's
-        // fixed round/timeout budget - by clearing hasLeakSignal()'s own hysteresis gate outright,
-        // which is what actually authorizes the BFS thread's first real pass, rather than assuming
-        // some earlier pass has already tagged anything. "seed-0" (from seedInitialBatch()) is
-        // reachable via cache for the scenario's entire lifetime, so it is a safe, always-valid
-        // representative regardless of which round this fires on.
-        // Representative BEFORE seeding: setKlassPopulationRepresentativeForTest0
-        // resolves the representative's real klass id and aliases the synthetic id
-        // to it, so the hysteresis seeds below land in the real population entry
-        // (candidate matching is real-id keyed since the leak-tag pool redesign).
+        // Same debug-only, seeded-representative short-circuit as ReferenceChainTrackingTest:
+        // clears hasLeakSignal()'s hysteresis gate outright, decoupling this scenario's assertion
+        // from whether probabilistic slope detection happens to notice CachedPayload's trend
+        // within the fixed round/timeout budget. "seed-0" (from seedInitialBatch()) is reachable
+        // via cache for the scenario's entire lifetime, so it is always a valid representative.
+        // Representative BEFORE seeding: setting it registers the synthetic->real id alias, so
+        // the seeds below land in the real population entry (candidate matching is real-id keyed
+        // since the leak-tag pool redesign).
         ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
             CACHED_PAYLOAD_TEST_KLASS_ID, cache.get("seed-0"));
         if (!seededTestKlassTrend) {
-          // Per-(klass, tid) qualification seeds: the qualifying tid is THIS
-          // thread's - the creator of "seed-0", the always-reachable representative
-          // the seeded ramp and the match below hang off. (The per-round allocator
-          // threads are one-shot, so no single one of their tids carries a sustained
-          // per-tid signal - exactly the one-cohort-per-thread shape the retained-
-          // count bar / synthetic seeds exist to keep qualifying.)
+          // The qualifying tid is THIS thread's - the creator of "seed-0". The per-round
+          // allocator threads are one-shot, so no single one of their tids carries a sustained
+          // per-tid signal.
           int leakTid = ReferenceChainTestHooks.getTid();
           for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
             ReferenceChainTestHooks.seedKlassPopulationSample0(
@@ -222,13 +182,11 @@ public final class LeakingCacheScenario {
     }
 
     // Across-dumps persistence: a resolved chain must re-emit into EVERY subsequent dump the
-    // sample survives into, not only the one dump that first observed it. Profiler::dump()
-    // re-snapshots the whole resolved-chain cache without clearing it on every call
-    // (drainPendingChainEvents(), referenceChains.cpp - "snapshot-and-keep, not a drain"), so a
-    // still-live sample's chain re-emits into every chunk. `cache` still holds every
-    // CachedPayload here, so the sample stays live across these extra dumps; each dump targets a
-    // brand-new file, so a chain found there can only be present because it was re-emitted into
-    // that dump, not left over from the round-loop's own scratchDumpPath.
+    // sample survives into, not only the dump that first observed it. Profiler::dump()
+    // re-snapshots the resolved-chain cache without clearing it on every call
+    // ("snapshot-and-keep, not a drain"). `cache` still holds every CachedPayload here, so the
+    // sample stays live across these extra dumps; each dump targets a brand-new file, so a chain
+    // found there can only be present because it was re-emitted into that dump.
     int persistChecks = 3;
     int persisted = 0;
     for (int i = 1; i <= persistChecks; i++) {
@@ -256,10 +214,8 @@ public final class LeakingCacheScenario {
 
   /**
    * Populates {@code cache} with {@code count} entries under a key namespace ("seed-") disjoint
-   * from the round loop's own ("leak-") - called before the profiler (and therefore
-   * {@code ReferenceChainTracker}'s BFS thread) even starts, so the process's one-shot
-   * root-seeded walk can never catch {@code cache} empty (see this class's own comment on why
-   * that race is otherwise real).
+   * from the round loop's own ("leak-") - before the profiler (and its BFS thread) even starts,
+   * so the one-shot root-seeded walk can never catch {@code cache} empty.
    */
   private static void seedInitialBatch(Map<String, CachedPayload> cache, int count) {
     for (int i = 0; i < count; i++) {
@@ -338,12 +294,11 @@ public final class LeakingCacheScenario {
   }
 
   /**
-   * Realistic-leak fixture - identical shape to {@code ReferenceChainTrackingTest}'s own
-   * (now-removed) in-process attempt. The 32 {@code long} fields exist purely so a given number
-   * of megabytes needs far fewer entries to reach {@code ObjectSampler}'s real 256KiB sampling
-   * floor - deliberately plain fields, not a nested array (a same-instance companion array would
-   * be a *second*, separate heap allocation the size-weighted allocation sampler would compete
-   * for, taking sampling attention away from {@code CachedPayload} itself).
+   * Realistic-leak fixture - identical shape to {@code ReferenceChainTrackingTest.CachedPayload}.
+   * The 32 {@code long} fields exist purely so a given number of megabytes needs far fewer entries
+   * to reach {@code ObjectSampler}'s real 256KiB sampling floor - deliberately plain fields, not
+   * a nested array (a same-instance companion array would be a second, separate heap allocation
+   * the size-weighted sampler would compete for, taking attention away from CachedPayload).
    */
   static final class CachedPayload {
     final String key;

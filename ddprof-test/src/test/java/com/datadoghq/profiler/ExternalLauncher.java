@@ -38,24 +38,26 @@ import java.util.concurrent.atomic.LongAdder;
  *     holds samples rooted at each of the three thread entry points; see {@code EntryFrameTest}</li>
  *     <li>leak-cache "&lt;start command&gt;|||&lt;scratch dump path&gt;" - starts the profiler with
  *     the given start command, then runs {@link LeakingCacheScenario} in this process and exits
- *     directly (no readiness/stdin-signal handshake, unlike the other modes above) once it
- *     prints its one result line. Used by {@code ExternalProcessReferenceChainTest}
- *     (referencechains package) to prove the reference-chains mechanism end-to-end against a
- *     genuinely separate JVM, not the in-process dynamic-attach lifecycle every other test in
- *     this module uses - see that scenario's own class comment for why a *separate* process is
- *     load-bearing here (the one-shot root-seeded BFS walk is a process-wide, once-ever
- *     resource).</li>
+ *     directly once it prints its one result line (no readiness/stdin-signal handshake, unlike
+ *     the modes above). Used by {@code ExternalProcessReferenceChainTest} to prove the
+ *     reference-chains mechanism against a genuinely separate JVM - a separate process is
+ *     load-bearing there because the one-shot root-seeded BFS walk is a process-wide,
+ *     once-ever resource.</li>
  *     <li>leak-static-field "&lt;start command&gt;|||&lt;scratch dump path&gt;" - same packing and
- *     lifecycle as {@code leak-cache} above, but runs {@link StaticFieldGrowingCollectionScenario}
- *     instead: a {@code static final List<byte[]>} field appended to (never reassigned) after
- *     its owning class has already been swept once by {@code admitStaticFieldRoots()} -
- *     mirroring the real leak generator found in the {@code prof-analyzer-hotdog-jb} pod.</li>
+ *     lifecycle as {@code leak-cache} above, but runs {@link StaticFieldGrowingCollectionScenario}:
+ *     a {@code static final List<byte[]>} field appended to (never reassigned) after its owning
+ *     class has already been swept once by {@code admitStaticFieldRoots()} - mirroring the real
+ *     leak generator found in the {@code prof-analyzer-hotdog-jb} pod.</li>
  *     <li>leak-correlation "&lt;start command&gt;|||&lt;scratch dump path&gt;" - same packing and
- *     lifecycle as {@code leak-cache} above, but runs {@link LeakTagCorrelationScenario}
- *     instead: a static-collection leak coexisting with ephemeral stack-local noise of another
- *     class and a large live filler graph, asserting the emitted chain's targetTag is a
- *     leak-tag-pool tag matching a HeapLiveObject's leakTag - the chain-to-live-heap-sample
- *     correlation use case.</li>
+ *     lifecycle as {@code leak-cache} above, but runs {@link LeakTagCorrelationScenario}: a
+ *     static-collection leak coexisting with ephemeral stack-local noise and a large live filler
+ *     graph, asserting the emitted chain's targetTag is a leak-tag-pool tag matching a
+ *     HeapLiveObject's leakTag.</li>
+ *     <li>threadlocal-leak / threadlocal-leak-late "&lt;start command&gt;|||&lt;scratch dump path&gt;" -
+ *     same packing and lifecycle as {@code leak-cache} above, but runs
+ *     {@link ThreadLocalLeakScenario}: a growing {@code byte[]} collection held only through the
+ *     leaking thread's {@code ThreadLocal} map; the {@code -late} variant starts the leak thread
+ *     only after the recording began (see that scenario's own comment).</li>
  * </ul>
  */
 public class ExternalLauncher {
@@ -229,9 +231,8 @@ public class ExternalLauncher {
                 }
             } else if (args[0].equals("leak-cache")) {
                 // "<start command>|||<scratch dump path>" packed into one args[1] string rather
-                // than extending AbstractProcessProfilerTest.launch()'s generic 2-arg
-                // (target, commands) contract with a 3rd argument every other mode would have to
-                // ignore.
+                // than extending launch()'s generic (target, commands) contract with a 3rd
+                // argument every other mode would have to ignore.
                 String packed = args.length == 2 ? args[1] : "";
                 int sep = packed.indexOf("|||");
                 if (sep < 0) {
@@ -241,15 +242,13 @@ public class ExternalLauncher {
                 String commands = packed.substring(0, sep);
                 String scratchPath = packed.substring(sep + "|||".length());
                 JavaProfiler instance = JavaProfiler.getInstance();
-                // LeakingCacheScenario.run() itself calls instance.execute(commands), not here -
-                // it needs to seed its cache fixture *before* starting the profiler (see that
-                // method's own comment for why).
+                // The scenario itself calls execute(commands) - it needs to seed its cache fixture
+                // *before* starting the profiler.
                 LeakingCacheScenario.run(instance, commands, Paths.get(scratchPath));
                 System.out.flush();
-                // Deliberately exits here rather than falling through to the shared
-                // "[ready]" + stdin-signal handshake below: this mode runs to completion in one
-                // shot (no live back-and-forth with the parent needed) and its own result line
-                // has already been printed by LeakingCacheScenario.run().
+                // Exits here rather than falling through to the shared "[ready]" + stdin-signal
+                // handshake: this mode runs to completion in one shot and has already printed its
+                // result line.
                 System.exit(0);
             } else if (args[0].equals("leak-static-field")) {
                 // Same "<start command>|||<scratch dump path>" packing as leak-cache above.
@@ -294,10 +293,9 @@ public class ExternalLauncher {
                 System.out.flush();
                 System.exit(0);
             } else if (args[0].equals("threadlocal-leak-late")) {
-                // Same packing as threadlocal-leak, but the leak thread is
-                // started only AFTER the recording began - the regression
-                // shape for Profiler::onThreadStart's registerThreadObject()
-                // wiring (ThreadLocalLeakScenario.run()'s lateThread comment).
+                // Same packing as threadlocal-leak, but the leak thread is started only AFTER the
+                // recording began - the regression shape for Profiler::onThreadStart's
+                // registerThreadObject() wiring (ThreadLocalLeakScenario.run()'s lateThread comment).
                 String packed = args.length == 2 ? args[1] : "";
                 int sep = packed.indexOf("|||");
                 if (sep < 0) {

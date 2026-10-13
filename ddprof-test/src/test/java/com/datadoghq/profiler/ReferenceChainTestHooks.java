@@ -8,10 +8,8 @@ package com.datadoghq.profiler;
 /**
  * Test bridge for {@link JavaProfiler}'s package-private reference-chain / liveness test seams
  * (same pattern as {@link ProfilerOwnedBlockHooks}). The seams mutate the process-wide profiler
- * singleton's state, so they stay non-public in the shipped library; this class lives only in
- * test sources and lets tests in other packages (e.g. {@code referencechains}) reach them.
- * Every method is a plain delegate - see the corresponding {@link JavaProfiler} seam for its
- * contract (all are debug-native-build only and no-ops in release builds).
+ * singleton's state, so they stay non-public in the shipped library; tests in other packages
+ * reach them only through this class. All are debug-native-build only, no-ops in release builds.
  */
 public final class ReferenceChainTestHooks {
     private ReferenceChainTestHooks() {}
