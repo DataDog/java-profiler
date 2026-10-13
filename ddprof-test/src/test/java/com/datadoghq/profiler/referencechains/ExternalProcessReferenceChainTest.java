@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
@@ -167,13 +167,17 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
           + ",jfr,file=" + continuousJfrPath.toAbsolutePath();
       String packedCommand = startCommand + "|||" + scratchDumpPath.toAbsolutePath();
 
+      List<String> jvmArgs = new ArrayList<>();
+      jvmArgs.add("-Dddprof_test.config=" + System.getProperty("ddprof_test.config"));
       // --add-opens: the scenario reflects into Collections$SynchronizedList.list and
       // ArrayList.elementData to check its holders' expansion state before creating lateChunk.
-      List<String> jvmArgs = Arrays.asList(
-          "-Dddprof_test.config=" + System.getProperty("ddprof_test.config"),
-          "--add-opens=java.base/java.util=ALL-UNNAMED");
+      // JDK 8 has no module system (that reflection needs no opening) and rejects the option.
+      if (Platform.isJavaVersionAtLeast(9)) {
+        jvmArgs.add("--add-opens=java.base/java.util=ALL-UNNAMED");
+      }
 
       AtomicReference<String> resultLine = new AtomicReference<>();
+      AtomicReference<String> seamPathLine = new AtomicReference<>();
       LaunchResult result = launch("leak-static-field", jvmArgs, packedCommand,
           Collections.emptyMap(),
           // Wider than shouldReconstructReferrerChainInSeparateProcess()'s 90s: this scenario's
@@ -185,6 +189,8 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
             if (line.startsWith(StaticFieldGrowingCollectionScenario.FOUND_MARKER)
                 || line.equals(StaticFieldGrowingCollectionScenario.NOT_FOUND_MARKER)) {
               resultLine.set(line);
+            } else if (line.startsWith(StaticFieldGrowingCollectionScenario.SEAM_PATH_MARKER)) {
+              seamPathLine.set(line);
             }
             return LineConsumerResult.CONTINUE;
           },
@@ -192,6 +198,13 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
 
       assertTrue(result.inTime, "Child process did not exit within the wait timeout");
       assertEquals(0, result.exitCode, "Child process exited with a non-zero code");
+      // The scenario's native test seams are compiled into every -DDEBUG build (debug/asan/tsan),
+      // so the strong seam path must be taken on exactly those configs.
+      String config = System.getProperty("ddprof_test.config");
+      boolean expectSeams = config != null && ("debug".equals(config) || config.endsWith("san"));
+      assertEquals(StaticFieldGrowingCollectionScenario.SEAM_PATH_MARKER + expectSeams,
+          seamPathLine.get(),
+          "scenario's seam-path predicate must match the native -DDEBUG build set");
       assertNotNull(resultLine.get(),
           "Child process never printed a recognizable result marker on stdout");
       assertEquals(

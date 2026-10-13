@@ -76,8 +76,17 @@ public final class StaticFieldGrowingCollectionScenario {
   // JavaProfiler.getReferenceChainFrontierStateForTest0().
   private static final int FRONTIER_STATE_EXPANDED = 1;
 
+  // JavaProfiler.getReferenceChainFrontierStateForTest0()'s "no frontier entry" sentinel.
+  private static final int FRONTIER_STATE_NONE = -1;
+
   /** Printed to stdout, followed by the matched leaf class's name, on success. */
   public static final String FOUND_MARKER = "[chain-found] ";
+
+  /**
+   * Printed to stdout, followed by {@code true}/{@code false}, once the scenario has decided
+   * whether it takes the native test-seam path (every -DDEBUG build: debug/asan/tsan).
+   */
+  public static final String SEAM_PATH_MARKER = "[seam-path] ";
 
   /** Printed to stdout (with no class name suffix) if no match was ever observed. */
   public static final String NOT_FOUND_MARKER = "[chain-not-found]";
@@ -97,7 +106,14 @@ public final class StaticFieldGrowingCollectionScenario {
       profiler.execute(startCommand);
     }
 
-    boolean debugBuild = "debug".equals(System.getProperty("ddprof_test.config"));
+    // The seams used below are compiled into every -DDEBUG native build - debug, asan and tsan
+    // (javaApi.cpp's #ifdef DEBUG block; ConfigurationPresets.kt) - so the seam path must be
+    // enabled on all three. Same predicate as LeakTagCorrelationReferenceChainTest's rotation
+    // gate; release builds get the no-op stubs.
+    String testConfig = System.getProperty("ddprof_test.config");
+    boolean debugBuild = testConfig != null
+        && ("debug".equals(testConfig) || testConfig.endsWith("san"));
+    System.out.println(SEAM_PATH_MARKER + debugBuild);
     int hysteresisEpoch = 0;
     // Declared at method scope: the per-round maintenance seeding below (in
     // its own debugBuild block) reuses this tid.
@@ -108,6 +124,14 @@ public final class StaticFieldGrowingCollectionScenario {
     int initialPasses = debugBuild ? JavaProfiler.referenceChainPassesRunForTest0() : -1;
 
     if (debugBuild) {
+      // Pins the frontier-state seam's -1 sentinel: an untagged object (tag 0) has no frontier
+      // entry. Probed before any seeding - no pass can run until shouldRunPass() sees a leak
+      // signal - so the BFS root walk cannot have tagged the probe yet.
+      int untaggedState = JavaProfiler.getReferenceChainFrontierStateForTest0(new Object());
+      if (untaggedState != FRONTIER_STATE_NONE) {
+        throw new IllegalStateException("frontier-state seam returned " + untaggedState
+            + " for an untagged probe object, expected " + FRONTIER_STATE_NONE);
+      }
       // Seed enough hysteresis-qualifying epochs to unlock ReferenceChainTracker::hasLeakSignal()/
       // shouldRunPass() - WITHOUT wiring in a representative object yet (setKlassPopulationRepresentativeForTest0
       // is not called here). hasLeakSignal() only asks selectLeakCandidates() for a nonzero count -
@@ -136,11 +160,11 @@ public final class StaticFieldGrowingCollectionScenario {
     // admitStaticFieldRoots() and expandFrontier() are two steps of the SAME runPass() call, and
     // neither the static-field sweep's completion nor a changed pass counter proves the holders
     // were expanded (see the debug branch below), so the wait reads their frontier state directly.
-    // Non-debug builds have no such seam and fall back to a generous sleep - acceptable there
-    // because the non-debug path never pins a specific representative anyway (see the debugBuild
-    // branch below): it just waits on real, much-slower allocation sampling to notice the growth
-    // on its own, so a few extra seconds of margin either way changes nothing about what the
-    // eventual match would prove.
+    // Release (non-DEBUG) builds have no such seam and fall back to a generous sleep - acceptable
+    // there because the non-debug path never pins a specific representative anyway (see the
+    // debugBuild branch below): it just waits on real, much-slower allocation sampling to notice
+    // the growth on its own, so a few extra seconds of margin either way changes nothing about
+    // what the eventual match would prove.
     if (debugBuild) {
       // A changed pass counter alone is not proof that LEAK_BUFFER's holders were expanded:
       // truncated passes also bump it, and admitStaticFieldRoots() only processes a bounded
@@ -167,7 +191,9 @@ public final class StaticFieldGrowingCollectionScenario {
       // against pause-time-SLO pacing, and the expansion backlog ahead of LEAK_BUFFER's holders
       // is FIFO - generous margin for the same reason ExternalProcessReferenceChainTest's own
       // budget/pausetarget are raised this far above the in-process test's defaults. Wall-clock
-      // deadline: the seam reads can contend with a running pass's locks.
+      // deadline: the seam reads can contend with a running pass's locks. Not scaled for
+      // asan/tsan: the parent's 150s launch timeout must still cover this wait + rounds + the 60s
+      // tail.
       long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(45);
       boolean holdersExpanded = false;
       while (!holdersExpanded && System.nanoTime() < deadline) {
@@ -266,7 +292,7 @@ public final class StaticFieldGrowingCollectionScenario {
         }
       }
 
-      // Non-debug builds have no identity seam: class-only matching, as before.
+      // Release (non-DEBUG) builds have no identity seam: class-only matching, as before.
       if (match == null && !debugBuild) {
         profiler.dump(scratchDumpPath);
         match = findMatch(scratchDumpPath, 0);
@@ -287,9 +313,10 @@ public final class StaticFieldGrowingCollectionScenario {
     // far for exactly this reason.
     for (int attempt = 0; match == null && attempt < 40; attempt++) {
       Thread.sleep(1500);
-      // Same passesRun()-advanced check as the round loop above (debug builds only) - by this
-      // point in a real run it has virtually always already flipped, but there is no reason to
-      // drop the guarantee here just because the round loop above didn't need it.
+      // Same passesRun()-advanced check as the round loop above (-DDEBUG builds only:
+      // debug/asan/tsan) - by this point in a real run it has virtually always already flipped,
+      // but there is no reason to drop the guarantee here just because the round loop above
+      // didn't need it.
       // Same lateChunk-identity pinning as the round loop above.
       long requiredTargetTag = 0;
       if (debugBuild) {
