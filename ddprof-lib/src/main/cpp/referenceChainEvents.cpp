@@ -503,11 +503,17 @@ jlong ReferenceChainTracker::resolvedChainTargetTagForTest(jlong object_tag) {
   if (object_tag <= 0 || isLeakTag(object_tag)) {
     return 0;
   }
+  // _search_start_ns is only rewritten by runPass()/restartSearch() under _engine_lock (BFS thread)
+  // or after stopThread() - NOT under _resolved_chains_lock - so hold _engine_lock too, then sample
+  // the generation only once both locks are held: a concurrent restart/new pass cannot change it
+  // between the load and the source_search_ns comparison below. Lock order _engine_lock ->
+  // _resolved_chains_lock matches finishLoopIterationSerialized() -> pollWatchedTargets().
+  MutexLocker engine_guard(_engine_lock);
+  ExclusiveLockGuard guard(&_resolved_chains_lock);
   const u64 current_search_ns = load(_search_start_ns);
   if (current_search_ns == 0) {
     return 0;
   }
-  ExclusiveLockGuard guard(&_resolved_chains_lock);
   auto it = _resolved_chains.find(object_tag);
   if (it == _resolved_chains.end() ||
       it->second.source_search_ns != current_search_ns) {

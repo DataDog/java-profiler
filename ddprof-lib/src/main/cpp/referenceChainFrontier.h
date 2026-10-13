@@ -21,7 +21,9 @@
 namespace FrontierEntryState {
 constexpr u8 FRONTIER = 0;  // discovered, not yet expanded by FollowReferences
 constexpr u8 EXPANDED = 1;  // expanded; children (if any) are in the table
-constexpr u8 EDGE = 2;      // on a path toward a target sample (EdgeStore)
+// EDGE is retired: never set by the production walk (see reconstructChain()'s comment in
+// referenceChainFrontier.cpp); only markEdge() and unit/fuzz fixtures set it.
+constexpr u8 EDGE = 2;
 constexpr u8 ABANDONED = 3; // tag released; entry kept only to avoid reuse
 } // namespace FrontierEntryState
 
@@ -183,7 +185,8 @@ public:
   // Marks metadata abandoned; the caller must clear the JVMTI tag.
   void clear(jlong tag);
 
-  // Marks the slot as part of a resolved path.
+  // Marks the slot EDGE. Retired: no production caller (only the fuzz harness's shadow model and
+  // unit-test fixtures use EDGE).
   void markEdge(jlong tag);
 
   // Marks the slot after all outgoing edges have been visited.
