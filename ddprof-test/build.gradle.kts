@@ -20,15 +20,19 @@ jacoco {
   toolVersion = "0.8.12"
 }
 
+// :ddprof-lib:coverageReport produces both the Java (JaCoCo) and the C++ (gcovr) report
+// from a single run of the Java test suites: testCoverage and testSlowCoverage (created
+// by the profiler-test plugin only with -PenableCoverage) load ddprof-lib's
+// gcov-instrumented `coverage` library *and* carry the JaCoCo agent.
+//
 // JaCoCo's plugin auto-attaches a JacocoTaskExtension (enabled by default) to every Test
-// task in this project. Instrument only when jacocoTestReport is actually requested, and
-// then only the plain debug config's tasks: ordinary testDebug runs (CI included) keep
-// running the profiler against unmodified bytecode -- JaCoCo's injected $jacocoInit
-// methods and probe arrays would otherwise show up in the allocation and stack-sampling
-// data those tests assert on -- and asan/tsan already carry sanitizer instrumentation.
-val requestingCoverageReport = gradle.startParameter.taskNames.any { it.contains("jacocoTestReport") }
-val requestingCppCoverageReport = gradle.startParameter.taskNames.any { it.contains("gtestCoverageReport") }
-val coverageTaskNames: Set<String> = if (requestingCoverageReport) setOf("testDebug", "testSlowDebug") else emptySet()
+// task in this project. Instrument only the coverage config's tasks: ordinary testDebug
+// runs (CI included) keep running the profiler against unmodified bytecode -- JaCoCo's
+// injected $jacocoInit methods and probe arrays would otherwise show up in the allocation
+// and stack-sampling data those tests assert on -- and asan/tsan already carry sanitizer
+// instrumentation.
+val coverageTaskNames: Set<String> = setOf("testCoverage", "testSlowCoverage")
+val requestingCoverageReport = gradle.startParameter.taskNames.any { it.contains("coverageReport") }
 
 // When a coverage report is requested, a handful of known-flaky native-thread/CPU tests
 // (already @RetryingTest-annotated; see NativeThreadTest, DynamicNativeThread,
@@ -75,42 +79,39 @@ tasks.withType<Test>().configureEach {
   extensions.configure<JacocoTaskExtension> {
     isEnabled = name in coverageTaskNames
   }
-  // The failed tests' results are cached like a pass would be, so a rerun must not be
-  // UP-TO-DATE and silently skip the deferred failure.
-  if (name in coverageTaskNames) {
-    deferFailuresToCoverageReport()
-    outputs.upToDateWhen { false }
-  }
 }
 
-// testCoverage (created by the profiler-test plugin only with -PenableCoverage) runs the
-// testDebug suite against ddprof-lib's gcov-instrumented `coverage` library; every test
-// JVM that loads it writes .gcda counts next to the library's objects when it exits, and
-// :ddprof-lib:gtestCoverageReport folds them into the C++ report.
+// Every test JVM that loads the coverage library writes .gcda counts next to the
+// library's objects when it exits, and :ddprof-lib:coverageReport folds them into the
+// C++ report. gcov adds to existing .gcda counts, so clear them once before the coverage
+// test tasks run -- not in each task, which would wipe the counts the other one just
+// wrote (.gcno files, written at compile time, stay).
 val libCoverageObjDir = project(":ddprof-lib").layout.buildDirectory.dir("obj/main/coverage")
+val cleanLibCoverageData = tasks.register<Delete>("cleanLibCoverageData") {
+  delete(fileTree(libCoverageObjDir) { include("**/*.gcda") })
+}
 
-tasks.matching { it.name == "testCoverage" }.configureEach {
-  // gcov adds to existing .gcda counts, so start each run from zero rather than
-  // accumulating counts from earlier runs (.gcno files, written at compile time, stay).
-  doFirst {
-    fileTree(libCoverageObjDir) { include("**/*.gcda") }.forEach { it.delete() }
-  }
-  if (requestingCppCoverageReport) {
+tasks.matching { it.name in coverageTaskNames }.configureEach {
+  dependsOn(cleanLibCoverageData)
+  // The failed tests' results are cached like a pass would be, so a rerun must not be
+  // UP-TO-DATE and silently skip the deferred failure (or the cleared .gcda counts).
+  if (requestingCoverageReport) {
     deferFailuresToCoverageReport()
     outputs.upToDateWhen { false }
   }
 }
 
-project(":ddprof-lib").tasks.matching { it.name == "gtestCoverageReport" }.configureEach {
-  doLast { failOnDeferredTestFailures(listOf("testCoverage")) }
+// Runs after coverageReport's own gcovr doLast, so both reports are written first.
+project(":ddprof-lib").tasks.matching { it.name == "coverageReport" }.configureEach {
+  doLast { failOnDeferredTestFailures(coverageTaskNames) }
 }
 
 // The jacoco plugin already registers a default "jacocoTestReport" task (wired to the
-// disabled "test" task); reconfigure it to aggregate our actual coverage-producing tasks
+// disabled "test" task); reconfigure it as the Java half of :ddprof-lib:coverageReport
 // instead of registering a new one.
 tasks.named<JacocoReport>("jacocoTestReport") {
   group = "verification"
-  description = "Generates an aggregated HTML/XML coverage report from testDebug and testSlowDebug"
+  description = "Java half of :ddprof-lib:coverageReport (run that instead; requires -PenableCoverage)"
 
   val coverageTasks = tasks.matching { it.name in coverageTaskNames }
   dependsOn(coverageTasks)
@@ -127,13 +128,15 @@ tasks.named<JacocoReport>("jacocoTestReport") {
   sourceDirectories.setFrom(libMainSourceSet.allSource.srcDirs)
   classDirectories.setFrom(libMainSourceSet.output)
 
-  doLast { failOnDeferredTestFailures(coverageTaskNames) }
+  // Test failures are checked by coverageReport, after both reports are written.
 
+  // Next to the C++ report (ddprof-lib/build/reports/coverage/cpp).
+  val javaReportDir = project(":ddprof-lib").layout.buildDirectory.dir("reports/coverage/java")
   reports {
     html.required.set(true)
     xml.required.set(true)
-    html.outputLocation.set(layout.buildDirectory.dir("reports/jacoco/jacocoTestReport/html"))
-    xml.outputLocation.set(layout.buildDirectory.file("reports/jacoco/jacocoTestReport/jacocoTestReport.xml"))
+    html.outputLocation.set(javaReportDir.map { it.dir("html") })
+    xml.outputLocation.set(javaReportDir.map { it.file("jacoco.xml") })
   }
 }
 

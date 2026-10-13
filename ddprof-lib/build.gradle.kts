@@ -159,16 +159,18 @@ afterEvaluate {
   }
 }
 
-// C++ coverage report (only meaningful, and only registered, alongside the opt-in
-// `coverage` build configuration -- see ConfigurationPresets.configureCoverage).
-// Requires gcovr (`pip install gcovr`), which reads the gcc/clang-compatible
-// .gcno/.gcda files directly, so one tool covers both toolchains without a
-// separate lcov+genhtml install.
+// Java + C++ coverage report (only meaningful, and only registered, alongside the
+// opt-in `coverage` build configuration -- see ConfigurationPresets.configureCoverage).
+// The Java half is :ddprof-test:jacocoTestReport (reports/coverage/java); this task
+// itself writes the C++ half (reports/coverage/cpp). That needs gcovr
+// (`pip install gcovr`), which reads the gcc/clang-compatible .gcno/.gcda files
+// directly, so one tool covers both toolchains without a separate lcov+genhtml install.
 //
-// Two runs feed it: the gtest binaries (gtestCoverage, objects under
-// obj/gtest/coverage) and the Java integration tests (:ddprof-test:testCoverage --
-// the testDebug suite run against the coverage-instrumented library, objects
-// under obj/main/coverage). gcovr merges both into one per-source-file report.
+// Two runs feed the C++ report: the gtest binaries (gtestCoverage, objects under
+// obj/gtest/coverage) and the Java integration tests (:ddprof-test:testCoverage and
+// testSlowCoverage -- the same runs that produce the JaCoCo data, against the
+// coverage-instrumented library, objects under obj/main/coverage). gcovr merges both
+// into one per-source-file report.
 if (project.hasProperty("enableCoverage")) {
   val gtestObjDir = layout.buildDirectory.dir("obj/gtest/coverage")
 
@@ -183,10 +185,10 @@ if (project.hasProperty("enableCoverage")) {
     dependsOn(cleanGtestCoverageData)
   }
 
-  tasks.register("gtestCoverageReport") {
+  tasks.register("coverageReport") {
     group = "verification"
-    description = "Generates an HTML C++ coverage report from gtestCoverage and :ddprof-test:testCoverage (requires gcovr)"
-    dependsOn("gtestCoverage", ":ddprof-test:testCoverage")
+    description = "Generates the Java (JaCoCo) and C++ (gcovr) coverage reports from gtestCoverage and :ddprof-test:testCoverage/testSlowCoverage (requires gcovr)"
+    dependsOn("gtestCoverage", ":ddprof-test:testCoverage", ":ddprof-test:testSlowCoverage", ":ddprof-test:jacocoTestReport")
 
     val reportDir = layout.buildDirectory.dir("reports/coverage/cpp")
     val libObjDir = layout.buildDirectory.dir("obj/main/coverage")
@@ -216,6 +218,11 @@ if (project.hasProperty("enableCoverage")) {
         // counters consistent, but a stray negative count must not discard a
         // ~20-minute run -- warn and ignore it instead of failing.
         "--gcov-ignore-parse-errors=negative_hits.warn_once_per_file",
+        // gcovr flags any count above 2^32 as a GCC-68080 artifact, but the 64-bit atomic
+        // counters legitimately pass that on hot paths (e.g. threadLocal.h's isKeyValid()
+        // hit ~4.4e9 over testCoverage + testSlowCoverage). Real counts stay far below
+        // 1e15 (1e9 hits/s for ~11 days), while wrapped/garbage counts land near 2^64.
+        "--gcov-suspicious-hits-threshold=1000000000000000",
         gtestObjDir.get().asFile.absolutePath,
         libObjDir.get().asFile.absolutePath,
       )
@@ -230,7 +237,8 @@ if (project.hasProperty("enableCoverage")) {
       if (exitCode != 0) {
         throw GradleException("gcovr failed (exit $exitCode) -- install it with 'pip install gcovr' if missing")
       }
-      project.logger.lifecycle("Coverage report written to file://${outDir.absolutePath}/index.html")
+      project.logger.lifecycle("C++ coverage report written to file://${outDir.absolutePath}/index.html")
+      project.logger.lifecycle("Java coverage report written to file://${outDir.parentFile.absolutePath}/java/html/index.html")
     }
   }
 }
