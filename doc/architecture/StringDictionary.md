@@ -217,7 +217,7 @@ Drain:
        ↳ wait for any JNI thread still holding a guard on old_active
          (signal handlers on THIS thread cannot fire: SignalBlocker)
 
-Phase 2:  (skipped if old_active->size() == entries Phase 1 copied or found conflicting)
+Phase 2:
   _rot.active()->copyFrom(*old_active)
        ↳ copy any entries inserted into old_active between Phase 1 and the drain
          (late inserts from other threads are captured here); a key found here
@@ -225,40 +225,40 @@ Phase 2:  (skipped if old_active->size() == entries Phase 1 copied or found conf
   _transitioning = false   (release)
 ```
 
-### Transition gate
+### Transition
 
 A key inserted into `old_active` after Phase 1 reaches the new active only in
-Phase 2. Without a gate, a lookup that misses in the new active in between
-assigns the key a second id; Phase 2 then finds the key present and keeps that
-id, while callers already hold both (PROF-16137).
+Phase 2. If a lookup that misses in the new active in between assigned the key
+a fresh id, Phase 2 would find the key present and keep that id, while callers
+already hold both.
 
-So `lookup()` and the size-limited `bounded_lookup()` never assign a new id
-while `_transitioning` is set. On a miss they issue a SEQ_CST fence, re-check
-that their buffer is still the active one (retrying if not), load the flag, and
-if it is set release their guard, wait for it to clear (spin, then
-100 µs sleeps; counted in `DICTIONARY_TRANSITION_WAITS`) and retry, which finds
-the id Phase 2 carried over. Hits never wait.
+So while `_transitioning` is set, `lookup()` and the size-limited
+`bounded_lookup()` do not assign an id on their own after a miss. They issue a
+SEQ_CST fence, re-check that their buffer is still the active one (retrying if
+not), apply the size limit, and then let `old_active` - now the dump buffer -
+decide: `insert_with_id(key, nextId())` on it returns the id it already holds
+for the key, or stores the fresh one. The writer then inserts the key into the
+new active under that id, which is the id Phase 2 copies, and returns whatever
+the new active holds. Nothing waits for `rotate()`.
 
 - A writer that loaded the **new** active also sees the flag: it is stored
   before the release CAS in `_rot.rotate()` that publishes the new active.
 - A writer still on **old_active**: the two SEQ_CST fences guarantee that either
   its post-fence re-check sees the new active and it retries there, or the
   drain sees its guard and Phase 2 copies its insert. The re-check made before
-  the probe does not count: it precedes the writer's fence.
+  the probe does not count: it precedes the writer's fence. Such a writer may
+  see the flag set before the new active is published and then go through the
+  previous dump buffer; that only leaves an unused entry there.
+- A writer that sees the flag set while another, arriving after Phase 2, sees
+  it clear, may find the key already in the new active under a fresh id. It
+  returns that id; the id it put into the dump buffer is held by nobody.
 
-Phase 2 is skipped when nothing arrived late: `old_active` never loses
-entries, so if its size after the drain equals the number of entries Phase 1
-resolved, Phase 2 has nothing left to do. Then the gate is held only for the
-drain. Phase 1 resolves an entry by copying it, or by finding the key already
-present under another id (possible only in a clear target reused uncleared;
-Phase 2 would find the same conflict again). An entry Phase 1 skipped (id not
-yet published) or failed to copy (allocation failure) leaves the counts
-unequal, so Phase 2 still runs for it.
+The writer guards the dump buffer for one insert, re-checking after a SEQ_CST
+fence that it is still the dump buffer (otherwise `clearStandby()` may be
+clearing it, and the writer assigns the id itself). These guards are on the
+buffer `rotate()` is draining, so a high rate of first-time keys during the
+drain can delay it.
 
-The wait is unbounded but always ends: `rotate()` clears the flag after a
-drain that itself times out after ~500 ms, waiters hold no guard the drain
-could wait on, and a waiter gives up with 0 if `clearAll()` starts. The
-rotating thread must never wait on its own flag (asserted in debug builds).
 If the drain times out, a straggler can still insert into `old_active` after
 Phase 2; that id lives only in the dump buffer.
 
@@ -327,7 +327,7 @@ lossless; both require a thread stuck in a guarded insert for a whole dump cycle
 | No UAF during `clearAll()` reset | Per-dictionary drain + seq_cst `_accepting` recheck; on drain timeout nothing is reset |
 | No UAF during `clearStandby()` | Drain of the clear target; on timeout the clear is skipped |
 | No entry lost during `rotate()`, unless its drain times out | Two-phase copy + `waitForRefCountToClear(old_active)` drains late JNI insertors; after a release-build timeout an insert by a straggler may miss the dump snapshot (it stays memory-safe: `clearStandby()` drains before clearing) |
-| One id per key across `rotate()`, unless its drain times out | Transition gate: misses wait for Phase 2 instead of assigning a new id |
+| One id per key across `rotate()`, unless its drain times out | Mid-rotation misses take their id from `old_active`, the id Phase 2 copies |
 | No profiling signal inserts into `old_active` between Phase 1 and 2 (dump thread) | `SignalBlocker` in `rotateDictsAndRun()` |
 | `writeCpool()` sees a stable dump snapshot | `rotate()` completes (including drain) before `jfr_op()` starts |
 | `CallTraceStorage` writers excluded during dump | `lockAll()` around `jfr_op()` |

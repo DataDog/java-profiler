@@ -654,7 +654,7 @@ TEST(StressStringDictionary, ClearAllUnderConcurrentReaders) {
     for (auto& th : readers) th.join();
 }
 
-// Invariant (PROF-16137): a key first seen while rotate() is running gets one
+// Invariant: a key first seen while rotate() is running gets one
 // id, no matter which side of the rotation each caller lands on.  All threads
 // walk the same never-before-seen keys while a rotator spins, so first-time
 // inserts keep straddling the transition window.  IdStabilityUnderConcurrentRotation
@@ -663,6 +663,7 @@ TEST(StressStringDictionary, FreshKeysKeepOneIdUnderConcurrentRotation) {
     StringDictionary dict;
     constexpr int N_WRITERS = 4;
     constexpr int N_KEYS = 20000;
+    const long long base_timeouts = Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS);
     std::atomic<bool> done{false};
 
     std::vector<std::string> keys;
@@ -697,4 +698,7 @@ TEST(StressStringDictionary, FreshKeysKeepOneIdUnderConcurrentRotation) {
         }
     }
     EXPECT_EQ(0, conflicts) << "ids handed out that no longer match the dictionary";
+    // Mid-rotation misses take guards on the old active, which rotate() is
+    // draining; they must not keep the drain from completing.
+    EXPECT_EQ(base_timeouts, Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS));
 }

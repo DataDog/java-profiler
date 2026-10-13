@@ -648,14 +648,14 @@ TEST(StringDictionaryCountersTest, ProfilerResetKeepsCountersAcrossSkippedReset)
     EXPECT_EQ(base_bytes, Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset));
 }
 
-// ── rotate() transition window (PROF-16137) ───────────────────────────────
+// ── rotate() transition window ────────────────────────────────────────────
 
 namespace {
 
-// Drives the interleaving from PROF-16137 through StringDictionary's rotate
-// hooks: writer A inserts a fresh key into the old active after phase 1 copied
-// it, then writer B looks the same key up in the newly published active before
-// the drain and phase 2 have run.
+// Drives this interleaving through StringDictionary's rotate hooks: writer A
+// inserts a fresh key into the old active after phase 1 copied it, then
+// writer B looks the same key up in the newly published active before the
+// drain and phase 2 have run.
 struct LateInsertScenario {
     StringDictionary* dict;
     const char* key;
@@ -663,6 +663,7 @@ struct LateInsertScenario {
     u32 id_a = 0;
     std::atomic<u32> id_b{0};
     std::atomic<bool> b_done{false};
+    bool b_done_before_drain = false;
     std::thread b;
 };
 
@@ -670,26 +671,27 @@ void lateInsertHook(StringDictionary::RotateStage stage, void* arg) {
     auto* s = static_cast<LateInsertScenario*>(arg);
     if (stage == StringDictionary::ROTATE_AFTER_PHASE1) {
         // Still the old active here, and phase 1 has already copied it.
-        s->id_a = s->dict->lookup(s->key, s->len);
+        if (s->key != nullptr) s->id_a = s->dict->lookup(s->key, s->len);
         return;
     }
     s->b = std::thread([s]() {
-        s->id_b.store(s->dict->lookup(s->key, s->len));
+        const char* key = s->key != nullptr ? s->key : "fresh_key";
+        s->id_b.store(s->dict->lookup(key, strlen(key)));
         s->b_done.store(true);
     });
-    // Let B run inside the window before rotate() drains and runs phase 2:
-    // continue once B has either returned or is waiting for the rotation.
+    // B must not need anything from the rest of rotate() to return.
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (!s->b_done.load() && s->dict->transitionWaitsForTest() == 0 &&
-           std::chrono::steady_clock::now() < deadline) {
+    while (!s->b_done.load() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::yield();
     }
+    s->b_done_before_drain = s->b_done.load();
 }
 
 }  // namespace
 
 TEST_F(StringDictionaryTest, LateInsertDuringRotateKeepsOneId) {
     dict.lookup("seed", 4);
+    const long long base_conflicts = Counters::getCounter(DICTIONARY_ID_CONFLICTS);
     LateInsertScenario s{&dict, "late_key", 8};
     dict.setRotateHookForTest(lateInsertHook, &s);
     dict.rotate();
@@ -697,13 +699,11 @@ TEST_F(StringDictionaryTest, LateInsertDuringRotateKeepsOneId) {
     s.b.join();
 
     ASSERT_NE(0u, s.id_a);
-    // B missed in the new active mid-rotation, so it must have waited once;
-    // A's late insert means phase 2 must have run.
-    EXPECT_EQ(1, dict.transitionWaitsForTest());
-    EXPECT_EQ(0, dict.phase2SkipsForTest());
+    EXPECT_TRUE(s.b_done_before_drain) << "lookup blocked on rotate()";
     EXPECT_EQ(s.id_a, s.id_b.load()) << "same key got two ids across the rotation";
     EXPECT_EQ(s.id_a, dict.standby()->lookup("late_key", 8));
     EXPECT_EQ(s.id_a, dict.bounded_lookup("late_key", 8));
+    EXPECT_EQ(base_conflicts, Counters::getCounter(DICTIONARY_ID_CONFLICTS));
 
     // The id handed out during the window must still resolve in the next snapshot.
     dict.clearStandby();
@@ -714,16 +714,48 @@ TEST_F(StringDictionaryTest, LateInsertDuringRotateKeepsOneId) {
     EXPECT_STREQ("late_key", snap[s.id_a]);
 }
 
-// With no insert after phase 1, phase 2 has nothing to copy and is skipped;
-// every key must still resolve to its id in both the dump and the new active.
-TEST_F(StringDictionaryTest, RotateSkipsPhase2WhenNothingArrivedLate) {
-    u32 id_a = dict.lookup("alpha", 5);
-    u32 id_b = dict.lookup("beta", 4);
+// A key nobody has seen before, first looked up mid-rotation, goes into both
+// the dump buffer and the new active under the same id without waiting.
+TEST_F(StringDictionaryTest, FreshKeyDuringRotateLandsInBothBuffers) {
+    dict.lookup("seed", 4);
+    LateInsertScenario s{&dict, nullptr, 0};
+    dict.setRotateHookForTest(lateInsertHook, &s);
     dict.rotate();
+    dict.setRotateHookForTest(nullptr, nullptr);
+    s.b.join();
 
-    EXPECT_EQ(1, dict.phase2SkipsForTest());
-    EXPECT_EQ(id_a, dict.bounded_lookup("alpha", 5));
-    EXPECT_EQ(id_b, dict.bounded_lookup("beta", 4));
-    EXPECT_EQ(id_a, dict.standby()->lookup("alpha", 5));
-    EXPECT_EQ(id_b, dict.standby()->lookup("beta", 4));
+    u32 id = s.id_b.load();
+    ASSERT_NE(0u, id);
+    EXPECT_TRUE(s.b_done_before_drain) << "lookup blocked on rotate()";
+    EXPECT_EQ(id, dict.standby()->lookup("fresh_key", 9));
+    EXPECT_EQ(id, dict.bounded_lookup("fresh_key", 9));
+}
+
+namespace {
+
+struct AtCapacityScenario {
+    StringDictionary* dict;
+    u32 result = 1;
+};
+
+void atCapacityHook(StringDictionary::RotateStage stage, void* arg) {
+    if (stage != StringDictionary::ROTATE_BEFORE_DRAIN) return;
+    auto* s = static_cast<AtCapacityScenario*>(arg);
+    s->result = s->dict->bounded_lookup("over_cap", 8, 1);
+}
+
+}  // namespace
+
+// The size limit applies mid-rotation too, and the at-capacity miss leaves
+// nothing behind in the dump buffer.
+TEST_F(StringDictionaryTest, BoundedLookupAtCapacityDuringRotateReturnsZero) {
+    dict.lookup("seed", 4);
+    AtCapacityScenario s{&dict};
+    dict.setRotateHookForTest(atCapacityHook, &s);
+    dict.rotate();
+    dict.setRotateHookForTest(nullptr, nullptr);
+
+    EXPECT_EQ(0u, s.result);
+    EXPECT_EQ(0u, dict.standby()->lookup("over_cap", 8));
+    EXPECT_EQ(0u, dict.bounded_lookup("over_cap", 8));
 }
