@@ -5,8 +5,8 @@
 
 package com.datadoghq.profiler.referencechains;
 
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Assumptions;
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IAccessorKey;
 import org.openjdk.jmc.common.item.IItem;
@@ -34,45 +34,38 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
- * PROF-15341 design doc, Open Question: does JMC's parser actually resolve the {@code
- * datadog.ReferenceChain} event's {@code chain} field - declared in jfrMetadata.cpp as {@code
- * field("chain", T_CLASS, ..., F_CPOOL | F_ARRAY)}, i.e. an <em>array of scalar
- * constant-pool-index</em> {@code T_CLASS} values - the same way it resolves a plain scalar
- * F_CPOOL field (e.g. {@code objectClass}, already exercised by {@code AbstractProfilerTest})
- * or a plain F_ARRAY-of-composite-struct field (e.g. {@code jdk.StackTrace#frames})? Neither
- * already-exercised shape proves this exact combination.
+ * PROF-15341 design doc, Open Question: does JMC's parser resolve the {@code datadog.ReferenceChain}
+ * event's {@code chain} field - declared in jfrMetadata.cpp as {@code field("chain", T_CLASS,
+ * ..., F_CPOOL | F_ARRAY)}, an <em>array of scalar constant-pool-index</em> {@code T_CLASS}
+ * values - the same way it resolves a plain scalar F_CPOOL field ({@code objectClass}) or a
+ * plain F_ARRAY-of-composite-struct field ({@code jdk.StackTrace#frames})? Neither shape proves
+ * this combination.
  *
- * <p>This test loads the standalone .jfr file produced by the companion gtest ({@code
- * ddprof-lib/src/test/cpp/referenceChainJfrRoundtrip_ut.cpp}) directly via {@link
- * JfrLoaderToolkit} - no live profiler attach, no {@code AbstractProfilerTest} lifecycle - and
- * asserts the {@code chain} field resolves to the exact class names that gtest seeded, in the
- * exact leaf-to-root order {@code ReferenceChainTracker::buildChainEvent()} (referenceChains.h)
- * produces.
+ * <p>Loads the standalone .jfr file produced by the companion gtest
+ * ({@code referenceChainJfrRoundtrip_ut.cpp}) directly via {@link JfrLoaderToolkit} - no live
+ * profiler attach - and asserts the {@code chain} field resolves to the exact class names the
+ * gtest seeded, in the leaf-to-root order {@code buildChainEvent()} produces.
  *
  * <p><b>Why a generic accessor, not {@code Attribute.attr(...)}:</b> JMC's v1 chunk parser
- * (internal.parser.v1.ValueReaders.ArrayReader#getContentType()) registers {@code
- * UnitLookup.UNKNOWN} as the declared content type for <em>every</em> array field, regardless of
- * what its element reader resolves to - this is generic to all array fields, not specific to the
- * cpool case. A field registered as UNKNOWN cannot be bound via {@code
- * Attribute.attr(id, name, desc, CLASS).getAccessor(type)} (that requires the field's registered
- * content type to match). This test instead looks the field up by identifier via {@code
- * IType#getAccessorKeys()} and calls {@code IType#getAccessor(IAccessorKey)} directly - the same
- * lower-level lookup JMC's own UI uses for fields it has no compile-time-known attribute for.
- * This is not a workaround for a missing capability; it is the correct API for an unregistered
- * custom field, and it still calls through the very code
- * ({@code ArrayReader.read()}/{@code resolve()} delegating per-element to the field's element
- * reader, which for {@code chain} is a {@code PoolReader}) that resolves each array element's
- * constant-pool index to its class - the actual thing this test exists to prove.
+ * registers {@code UnitLookup.UNKNOWN} as the declared content type for <em>every</em> array
+ * field, regardless of what its element reader resolves to, and a field registered as UNKNOWN
+ * cannot be bound via a compile-time-typed {@code Attribute}. This test looks the field up by
+ * identifier via {@code IType#getAccessorKeys()} and calls {@code IType#getAccessor(IAccessorKey)}
+ * directly - the same lookup JMC's own UI uses for fields it has no compile-time-known attribute
+ * for. It still calls through the code ({@code ArrayReader.read()}/{@code resolve()} delegating
+ * per-element to the field's {@code PoolReader}) that resolves each element's constant-pool index
+ * to its class - the actual thing this test exists to prove.
  */
 public class ReferenceChainJfrParserTest {
 
   private static final String EVENT_TYPE = "datadog.ReferenceChain";
 
   /**
-   * Same path {@code chainRoundtripJfrPath()} in the companion gtest resolves to: the OS temp
-   * dir (TMPDIR, falling back to /tmp), agreed by both sides rather than by a shared build
-   * directory - the gtest (ddprof-lib) and this test (ddprof-test) are different Gradle
-   * modules/tasks with no other filesystem contract between them.
+   * Same path the companion gtest resolves to: the OS temp dir (TMPDIR, falling back to /tmp),
+   * agreed by both sides - the gtest (ddprof-lib) and this test (ddprof-test) are different
+   * Gradle modules with no other filesystem contract between them. The file is consume-once: this
+   * test deletes it after loading and the gtest unlinks it before regenerating, so a stale fixture
+   * from an earlier build can never satisfy the existence assumption below.
    */
   private static Path roundtripJfrPath() {
     String tmp = System.getenv("TMPDIR");
@@ -84,12 +77,8 @@ public class ReferenceChainJfrParserTest {
   public void chainFieldResolvesToSeededClassNamesInLeafToRootOrder()
       throws IOException, CouldNotLoadRecordingException {
     Path jfrPath = roundtripJfrPath();
-    // Assumption, not assertion: the fixture is produced by the companion gtest
-    // (referenceChainJfrRoundtrip_ut.cpp), which does not run on CI runners
-    // without Google Test (e.g. the el7 testRelease job) - there the file can
-    // never exist and this test would fail spuriously. Where the gtest ran in
-    // the same Gradle invocation (local testDebug, gtest-equipped CI jobs), the
-    // file exists and the test executes; otherwise it is skipped.
+    // CI runners without Google Test (e.g. el7), or runs where the gtest has not re-run since the
+    // fixture was last consumed, have no fixture - skip rather than fail.
     Assumptions.assumeTrue(Files.exists(jfrPath),
         "Expected " + jfrPath + " to exist - run "
             + ":ddprof-lib:gtestDebug_referenceChainJfrRoundtrip_ut first "
@@ -98,6 +87,11 @@ public class ReferenceChainJfrParserTest {
     IItemCollection events;
     try (InputStream in = Files.newInputStream(jfrPath)) {
       events = JfrLoaderToolkit.loadEvents(in);
+    } finally {
+      // Consume-once (see roundtripJfrPath()): loadEvents() fully materializes the recording, so
+      // the shared fixture can go now - even on a parse failure - and a later run only ever sees
+      // a file freshly written by the gtest.
+      Files.deleteIfExists(jfrPath);
     }
     IItemCollection chainEvents = events.apply(ItemFilters.type(EVENT_TYPE));
     assertTrue(chainEvents.hasItems(), "Expected at least one " + EVENT_TYPE + " event");
@@ -134,10 +128,9 @@ public class ReferenceChainJfrParserTest {
           chain.add((IMCType) element);
         }
         resolvedChain = chain;
-        // Retention-edge labels: one per chain hop, aligned with it (the
-        // gtest seeds kind labels because its JNIEnv is null - the label
-        // DECODE is skipped; the Java side validates the ARRAY FIELD parses,
-        // not the decode itself, which referenceChains_ut covers natively).
+        // Retention-edge labels: one per chain hop, aligned with it. The gtest seeds kind labels
+        // because its JNIEnv is null - the label DECODE is skipped; the Java side validates the
+        // ARRAY FIELD parses, not the decode itself (referenceChains_ut covers that natively).
         Object edgesValue = edgesAccessor.getMember(item);
         assertNotNull(edgesValue, "'edges' field resolved to null");
         assertTrue(edgesValue instanceof Object[],

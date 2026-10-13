@@ -45,9 +45,10 @@ tail -n0 -F "$LOG" 2>/dev/null > >(awk '
 ') &
 tail_pid=$!
 
-# Wait for Gradle to finish
-wait "$gradle_pid"
-status=$?
+# Wait for Gradle to finish. set -e would abort right here on a failed build (before any summary
+# runs), so capture the status instead of letting errexit see it.
+status=0
+wait "$gradle_pid" || status=$?
 
 # Stop the tail and print a compact summary from the log
 kill "$tail_pid" 2>/dev/null || true
@@ -77,9 +78,27 @@ fi
 # to sonnet-5 via the AI gateway, billing real money for every log parse.)
 echo
 echo "Generating gradle summary…"
+# Single writer for the UNKNOWN artifact pair: every path that cannot produce a real summary
+# (unusable log, generator exception, missing python3) goes through here, so the schema lives once.
+# Keys/order match the generator's success-path JSON below.
+write_unknown_summary() {
+  local out=build/reports/claude detail detail_json
+  detail="$1, see $LOG"
+  detail_json="$(printf '%s' "$detail" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+  mkdir -p "$out"
+  printf '# Gradle Summary\n\n- Status: UNKNOWN (%s)\n- Log: %s\n' "$1" "$LOG" > "$out/gradle-summary.md"
+  printf '{"status": "UNKNOWN", "totalTime": null, "failedTasks": [], "primaryFailures": [], "warnings": [], "tests": {"total": 0, "failed": 0, "skipped": 0, "modules": {}}, "slowTasks": [], "depIssues": ["%s"], "actions": []}\n' "$detail_json" > "$out/gradle-summary.json"
+}
+
 # A generator failure (exception, missing python3) must not leave stale or missing artifacts
-# behind a successful exit: capture its rc, write an UNKNOWN pair below, and propagate the rc.
+# behind: capture its rc and write an UNKNOWN pair below. Gradle's own status stays authoritative
+# for the exit code.
 summary_rc=0
+if [ ! -s "$LOG" ]; then
+  if [ -f "$LOG" ]; then why="log is empty"; else why="log not found"; fi
+  write_unknown_summary "$why"
+  echo "Gradle log unusable ($why); wrote build/reports/claude/gradle-summary.{md,json}"
+else
 python3 - "$LOG" <<'PYEOF' || summary_rc=$?
 import json, os, re, sys
 
@@ -118,16 +137,6 @@ def add_counts(name, ok, failed, skipped):
     tests["total"] += ok + failed + skipped
     tests["failed"] += failed
     tests["skipped"] += skipped
-
-if not log_path or not os.path.isfile(log_path) or os.path.getsize(log_path) == 0:
-    why = f"log not found: {log_path!r}" if not log_path or not os.path.isfile(log_path) else "log is empty"
-    os.makedirs(OUT_DIR, exist_ok=True)
-    open(MD, "w").write(f"# Gradle Summary\n\n- Status: UNKNOWN ({why})\n\nFull log unavailable or empty.\n")
-    json.dump({"status": "UNKNOWN", "totalTime": None, "failedTasks": [], "primaryFailures": [],
-               "warnings": [], "tests": tests, "slowTasks": [], "depIssues": [why], "actions": []},
-              open(JS, "w"), indent=1)
-    print(f"Gradle log unusable ({why}); wrote {MD} and {JS}")
-    sys.exit(0)
 
 grab_headline = False
 with open(log_path, encoding="utf-8", errors="replace") as f:
@@ -255,14 +264,12 @@ open(MD, "w").write("\n".join(L) + "\n")
 print(f"{status} (time: {total_time or 'n/a'}); {len(failed)} failing task(s), {tests['failed']} test failure(s)")
 print(f"Wrote {MD} and {JS}")
 PYEOF
+fi
 
 if [ "$summary_rc" -ne 0 ]; then
   echo "⚠ gradle summary generation failed (rc=$summary_rc) — full log at: $LOG"
-  mkdir -p build/reports/claude
-  log_json="$(printf '%s' "$LOG" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
-  printf '# Gradle Summary\n\n- Status: UNKNOWN (summary generation failed, rc=%s)\n- Log: %s\n' \
-    "$summary_rc" "$LOG" > build/reports/claude/gradle-summary.md
-  printf '{"status": "UNKNOWN", "totalTime": null, "failedTasks": [], "primaryFailures": [], "warnings": [], "tests": {"total": 0, "failed": 0, "skipped": 0, "modules": {}}, "slowTasks": [], "depIssues": ["summary generation failed (rc=%s), see %s"], "actions": []}\n' \
-    "$summary_rc" "$log_json" > build/reports/claude/gradle-summary.json
-  exit "$summary_rc"
+  write_unknown_summary "summary generation failed, rc=$summary_rc"
+  # Gradle's own status is authoritative; the generator rc surfaces only when the build passed.
+  exit $(( status != 0 ? status : summary_rc ))
 fi
+exit "$status"

@@ -148,8 +148,9 @@ if [ -n "${DURATION_SECONDS}" ]; then
   echo "Safepoint/GC log: ${SAFEPOINT_LOG}"
 fi
 
+# ${arr[@]+"${arr[@]}"}: bash 3.2 (macOS /bin/bash) + set -u treats an empty "${arr[@]}" as unbound.
 exec "${JAVA_BIN}" \
-  "${JAVA_LOG_OPTS[@]}" \
-  "${GC_JVM_OPTS[@]}" \
+  ${JAVA_LOG_OPTS[@]+"${JAVA_LOG_OPTS[@]}"} \
+  ${GC_JVM_OPTS[@]+"${GC_JVM_OPTS[@]}"} \
   -agentpath:"${REFCHAINS_SO}"=start,memory=64:l,generations=true,referencechains=${REFERENCECHAINS_OPTS},jfr,file="${JFR_OUT}" \
   -jar "${REFCHAINS_JAR}" "${JFR_OUT}" "${REFCHAINS_SO}" ${DURATION_SECONDS}

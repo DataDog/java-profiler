@@ -234,10 +234,13 @@ protected:
 };
 
 // Path agreed with the companion Java parser test in ddprof-test, which
-// reads the same file back via JMC's JfrLoaderToolkit. The build passes the
-// same DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR to both sides (ddprof-lib and
-// ddprof-test build.gradle.kts) and deletes the file before this gtest runs;
-// the OS temp dir is only a fallback for running the binary by hand.
+// reads the same file back via JMC's
+// JfrLoaderToolkit. Both sides resolve it via the OS temp dir so the
+// producer (this gtest) and the consumer (the Java test, run afterwards by
+// the same operator/CI job on the same machine) agree without either side
+// needing to know the other module's build directory layout.
+// The file is consume-once: ProducesValidStandaloneJfrWithChainEvent unlinks it before
+// writing and the Java test deletes it after reading.
 static std::string chainRoundtripJfrPath() {
     const char *configured = getenv("DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR");
     if (configured != nullptr && *configured != 0) {
@@ -280,6 +283,10 @@ static u32 decodeVar32(const char *data, int *off) {
 }
 
 TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent) {
+    // Drop any fixture left by an earlier (possibly different-revision) run before any ASSERT
+    // below can bail out, so a failed run never leaves a stale file for the Java parser test
+    // (ReferenceChainJfrParserTest) to validate. ENOENT is expected and ignored.
+    unlink(chainRoundtripJfrPath().c_str());
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     // Skip OS/CPU info, JVM info, system properties and native library
