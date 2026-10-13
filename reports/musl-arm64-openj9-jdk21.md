@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk21
 
 ## musl-arm64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-10-13 10:31:43 EDT
+**Date:** 2026-10-13 12:35:46 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 555 |
-| Sample Rate | 9.25/sec |
-| Health Score | 578% |
-| Threads | 9 |
-| Allocations | 398 |
+| CPU Samples | 259 |
+| Sample Rate | 4.32/sec |
+| Health Score | 270% |
+| Threads | 10 |
+| Allocations | 129 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 122 |
-| Sample Rate | 2.03/sec |
-| Health Score | 127% |
+| CPU Samples | 277 |
+| Sample Rate | 4.62/sec |
+| Health Score | 289% |
 | Threads | 13 |
-| Allocations | 61 |
+| Allocations | 146 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 10-10 cores)</summary>
 
 ```
-1791901634 10
-1791901639 10
-1791901644 10
-1791901649 10
-1791901654 10
-1791901659 10
-1791901664 10
-1791901669 10
-1791901674 10
-1791901679 10
-1791901684 10
-1791901689 10
-1791901694 10
-1791901699 10
-1791901704 10
-1791901709 10
-1791901714 10
-1791901719 10
-1791901725 10
-1791901730 10
+1791908939 10
+1791908944 10
+1791908949 10
+1791908954 10
+1791908960 10
+1791908965 10
+1791908970 10
+1791908975 10
+1791908980 10
+1791908985 10
+1791908990 10
+1791908995 10
+1791909000 10
+1791909005 10
+1791909010 10
+1791909015 10
+1791909020 10
+1791909025 10
+1791909030 10
+1791909035 10
 ```
 </details>
 
