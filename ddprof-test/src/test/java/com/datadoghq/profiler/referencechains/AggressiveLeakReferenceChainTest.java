@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * seed {@code LivenessTracker}'s aggregate heap-floor-ring history and its max-heap-bytes cache
  * directly, so {@code secondsToOOM()}'s projection can be driven under
  * {@code OOM_URGENT_THRESHOLD_S} (referenceChains.h) deterministically, decoupled from this JVM's
- * real {@code -Xmx} and from real GC timing. {@code shouldRunPassForTest0()} then reads
+ * real {@code -Xmx} and from real GC timing. {@code shouldRunPassForTest0()} then evaluates
  * {@code ReferenceChainTracker::shouldRunPass()} - the search-restart gate {@code hasLeakSignal()}
  * feeds - directly, rather than running a real pass, so this class never depends on
  * {@code selectLeakCandidates()} ranking anything, a real JVMTI heap walk, or a JFR event.
@@ -162,7 +162,16 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
       assertTrue(candidates == null || candidates.length == 0,
           "This test's own precondition: no per-klass candidate should exist either");
 
-      assertFalse(ReferenceChainTestHooks.shouldRunPassForTest0(),
+      // shouldRunPassForTest0() is NOT a pure predicate (see JavaProfiler's own javadoc): under the
+      // native engine lock it may account a finished search's pain, restart terminal search state,
+      // or spend the urgent one-shot entitlement. Reset the search right before it so any mutation
+      // lands on a fresh tracker (_search_started == false) instead of whatever search an earlier
+      // class in this shared JVM left behind. Only the search is reset here, not the population:
+      // resetKlassPopulationForTest0() also zeroes the heap-floor ring seeded above, which would
+      // turn this control into a trivial "insufficient fill" pass.
+      ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
+      boolean gateOpen = ReferenceChainTestHooks.shouldRunPassForTest0();
+      assertFalse(gateOpen,
           "Expected the search-restart gate to stay closed: no heap growth and no per-klass "
               + "candidate give hasLeakSignal() nothing to trust");
     } finally {

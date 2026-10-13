@@ -30,75 +30,52 @@ import java.util.Map;
  *
  * <p>Takes the JFR output path as {@code args[0]} (must match {@code file=} above) and the
  * agent's own {@code .so} path as {@code args[1]} (must match the {@code -agentpath} value
- * above), and periodically calls {@link JavaProfiler#dump}. Both are load-bearing:
+ * above), and periodically calls {@link JavaProfiler#dump}. Both are load-bearing: the dump call
+ * is the only code path that drains {@code ReferenceChainTracker}'s pending chain-event queue
+ * into the JFR file (nothing drains it on a timer), and passing the {@code .so} path explicitly
+ * makes {@code getInstance()} attach to the already-loaded {@code -agentpath} agent instead of
+ * extracting the jar's bundled copy to a temp file - a second, never-{@code start()}-ed
+ * {@code Profiler} singleton whose {@code dump()} calls would be silent no-ops. Each periodic
+ * dump goes to its own file, {@code <jfr-dump-path>.snapshot.<round>}, because a drained chain
+ * event is written exactly once: reusing one snapshot path would permanently lose every earlier
+ * window's chains. A bounded run's final dump goes to {@code <jfr-dump-path>.snapshot} (the path
+ * the sweep scripts read); inspect all snapshot files together for the complete chain evidence.
  *
  * <p>An optional {@code args[2]} duration in seconds switches from the default "run forever"
  * manual mode to a bounded session that dumps once more and prints a single {@code [metrics]}
  * line at exit (throughput, round latency, heap growth) - see
  * {@code utils/compare-refchains-repro.sh}, which runs this app twice (referencechains on vs.
  * off) over the same duration and diffs those lines against each run's safepoint/GC logs.
- * <ul>
- *   <li>The dump call itself: {@code Profiler::dump()} (profiler.cpp) is the only code path
- *   that drains {@code ReferenceChainTracker}'s pending chain-event queue and actually writes
- *   {@code datadog.ReferenceChain} into the JFR file - nothing drains that queue on a timer,
- *   and in production it's dd-trace-java's own periodic recording-chunk rotation that calls
- *   {@code dump()}. Without it, chain events get built and enqueued (visible via {@code
- *   TEST_LOG}) but are silently discarded when the process exits. Each periodic dump goes to
- *   its own file, {@code <jfr-dump-path>.snapshot.<round>} (printed as a {@code [repro]
- *   dumped ...} line), because a drained chain event is written exactly once: reusing one
- *   snapshot path would overwrite - and permanently lose - every earlier window's chains.
- *   A bounded run's final dump goes to {@code <jfr-dump-path>.snapshot} (the path the sweep
- *   scripts read); inspect all snapshot files together for the complete chain evidence.
- *   <li>Passing the {@code .so} path explicitly to {@link JavaProfiler#getInstance(String,
- *   String)}: with no {@code libLocation}, {@code getInstance()} extracts the jar's own
- *   bundled copy of the library to a fresh temp file and {@code System.load()}s <em>that</em>
- *   instead of attaching to the one {@code -agentpath} already loaded - a second, never-{@code
- *   start()}-ed {@code Profiler} singleton whose {@code dump()} calls are silent no-ops.
- *   Passing the same path lets the dynamic linker dedup the load onto the already-running
- *   singleton, the same way dd-trace-java attaches to its own {@code -agentpath} agent.
- * </ul>
- *
- * <p>Deliberately omits {@code firstpassbudget}: the tracker auto-scales its
- * first pass's budget from the plain {@code budget} value
- * ({@code ReferenceChainTracker::AUTO_FIRST_PASS_BUDGET_MULTIPLIER}, capped at
- * {@code AUTO_FIRST_PASS_BUDGET_CAP}, referenceChains.h) rather than reusing
- * {@code budget} as-is for that first, cold root-seeded walk - reusing it directly
- * truncates every pass before it gets anywhere near this app's {@code CachedEntry}
- * population, and the target's JVMTI tag stays 0 forever. Pass
- * {@code firstpassbudget=N} explicitly only to override that auto-scaled default.
+ *</p>
+ * <p>Deliberately omits {@code firstpassbudget}: the tracker auto-scales its first pass's budget
+ * from the plain {@code budget} value ({@code AUTO_FIRST_PASS_BUDGET_MULTIPLIER}, capped at
+ * {@code AUTO_FIRST_PASS_BUDGET_CAP}, referenceChains.h) rather than reusing {@code budget} as-is
+ * for that first, cold root-seeded walk - reusing it directly truncates every pass before it gets
+ * anywhere near this app's {@code CachedEntry} population. Pass {@code firstpassbudget=N}
+ * explicitly only to override that auto-scaled default.
  *
  * <p>Grows an ever-referenced, never-evicted {@code HashMap}-backed cache (same shape as
- * ddprof-test's {@code LeakingCacheScenario}/the chaos harness's {@code
- * ReferenceChainLeakAntagonist}). Two things this app does deliberately, both found the hard
- * way by running it without them and never seeing a chain get discovered:
+ * ddprof-test's {@code LeakingCacheScenario}). Two deliberate choices, both found by running
+ * without them and never seeing a chain get discovered:
  *
  * <ul>
  *   <li><b>Explicit {@code System.gc()} every round.</b> {@code LivenessTracker}'s
- *   population-growth trend ({@code computeKlassPopulationSlope}, livenessTracker.cpp) needs at
- *   least {@code KLASS_POPULATION_MIN_FILL_FOR_TREND} (10) distinct GC epochs of population
- *   samples before it will even attempt a slope, and {@code _gc_epoch} only advances on a
- *   {@code GarbageCollectionFinish} JVMTI callback - i.e. on an actual GC. Left to whatever GCs
- *   the JVM decides to run on its own, a slow, modest allocation rate against a large default
- *   heap can go many minutes without a single GC, so the epoch count - and therefore the trend -
- *   never moves. Forcing a GC every round (same pattern {@code LeakingCacheScenario}'s round
- *   loop and {@code ReferenceChainTrackingTest} already rely on) turns epoch progress into
- *   something this app controls directly instead of leaving it to chance.
+ *   population-growth trend needs at least {@code KLASS_POPULATION_MIN_FILL_FOR_TREND} (10)
+ *   distinct GC epochs of samples before it attempts a slope, and {@code _gc_epoch} only advances
+ *   on a {@code GarbageCollectionFinish} callback. A slow allocation rate against a large default
+ *   heap can go many minutes without a GC, so the trend never moves on its own.</li>
  *   <li><b>No hard stop.</b> A cache that grows to a fixed cap and then sits flat stops being a
- *   growing population the instant it stops growing - {@code computeKlassPopulationSlope}
- *   compares the earliest vs. most recent third of its 30-epoch ring, so a long enough flat
- *   period after the cap pushes the slope back to zero (or the real growth epochs age out of the
- *   ring before the search ever gets scheduled/its own pain-budget cooldown clears). This app
- *   keeps growing forever instead, self-throttling its own pace against a heap-usage watermark
- *   (see {@link #run}) so it stays a real, positive, continuously-observable trend without ever
- *   growing fast/large enough to actually exhaust the heap.
+ *   growing population the instant it stops growing - {@code computeKlassPopulationSlope} compares
+ *   the earliest vs. most recent third of its 30-epoch ring, so a long enough flat period pushes
+ *   the slope back to zero. This app keeps growing forever, self-throttling against a heap-usage
+ *   watermark (see {@link #run}) so the trend stays real without ever exhausting the heap.</li>
  * </ul>
  *
- * <p>Seeds the cache with an initial batch on the very first line of {@code main} - before
- * printing anything or sleeping - so the agent's one-shot, root-seeded first pass (which fires
- * roughly a second after the agent's own background thread starts, i.e. before {@code
- * Agent_OnLoad} even returns control to this class's {@code main}) has a real chance of finding
- * {@code cache} already non-empty. See {@code LeakingCacheScenario}'s own comment for the full
- * story of why that ordering is load-bearing.
+ * <p>Seeds the cache on the very first line of {@code main} - before validating arguments,
+ * loading/attaching to the agent library, printing anything, or sleeping - so the agent's one-shot, root-seeded first pass (which fires roughly a second after
+ * the agent's background thread starts, i.e. before {@code Agent_OnLoad} even returns control to
+ * {@code main}) has a real chance of finding {@code cache} already non-empty. See
+ * {@code LeakingCacheScenario}'s comment for why that ordering is load-bearing.
  */
 public final class ReferenceChainLeakDemo {
 
@@ -125,12 +102,16 @@ public final class ReferenceChainLeakDemo {
                     + "metrics-reporting session instead of forever)";
 
     public static void main(String[] args) throws Exception {
+        // Must stay first - see the class header: seeding races the agent's one-shot,
+        // root-seeded first pass.
+        Map<String, CachedEntry> cache = new HashMap<>();
+        seed(cache, 300);
         if (args.length < 2) {
             System.err.println(USAGE);
             System.exit(1);
         }
         long durationSeconds = args.length >= 3 ? parseDurationSeconds(args[2]) : -1;
-        run(Paths.get(args[0]), args[1], durationSeconds);
+        run(cache, Paths.get(args[0]), args[1], durationSeconds);
     }
 
     // Malformed input (e.g. an empty/garbled $DURATION from the wrapper scripts) must print the
@@ -166,7 +147,7 @@ public final class ReferenceChainLeakDemo {
     private static long totalRoundNanos = 0;
     private static long maxRoundNanos = 0;
 
-    private static void run(Path recordingPath, String agentSoPath, long durationSeconds) throws InterruptedException {
+    private static void run(Map<String, CachedEntry> cache, Path recordingPath, String agentSoPath, long durationSeconds) throws InterruptedException {
         // Must differ from recordingPath itself - see SNAPSHOT_SUFFIX's comment. Final
         // (bounded-run) drain target; periodic drains use snapshotPath + "." + round.
         Path snapshotPath = recordingPath.resolveSibling(recordingPath.getFileName() + SNAPSHOT_SUFFIX);
@@ -184,9 +165,6 @@ public final class ReferenceChainLeakDemo {
                     "JavaProfiler.getInstance() failed - was this launched with "
                             + "-agentpath:libjavaProfiler.so=start,...?", e);
         }
-
-        Map<String, CachedEntry> cache = new HashMap<>();
-        seed(cache, 300);
 
         System.out.println("[repro] pid=" + pid()
                 + " - growing cache " + (durationSeconds >= 0 ? ("for " + durationSeconds + "s") : "forever")
@@ -292,7 +270,18 @@ public final class ReferenceChainLeakDemo {
 
     private static double heapUsedFraction() {
         MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
-        return heap.getMax() > 0 ? (double) heap.getUsed() / (double) heap.getMax() : 0.0;
+        long max = heap.getMax();
+        if (max <= 0) {
+            // Heap max undefined (-1) in some container/ergonomics setups: fall back to
+            // Runtime.maxMemory(), and if that is unbounded too (Long.MAX_VALUE), report the high
+            // watermark so growth runs throttled - never treat "unknown limit" as "empty heap".
+            long runtimeMax = Runtime.getRuntime().maxMemory();
+            if (runtimeMax <= 0 || runtimeMax == Long.MAX_VALUE) {
+                return HIGH_WATERMARK;
+            }
+            max = runtimeMax;
+        }
+        return (double) heap.getUsed() / (double) max;
     }
 
     private static String pct(double fraction) {
