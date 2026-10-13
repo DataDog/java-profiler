@@ -34,6 +34,7 @@ All under `utils/memcheck/`:
 | `analyze_phase0.py` | Host-side: `phase0-report.md` + `phase0-stats.csv` (mean/SD/CV/range per scenario × arm × metric, noise class, NMT delta vs no-profiler). |
 | `results/2026-10-08-aarch64-docker-mac/` | First results (below). The CSV keeps only the `native_mem_*`, NMT and RSS rows. |
 | `results/2026-10-08-x64-aws-m5d4xlarge/` | amd64 Linux results (below), same filtering. |
+| `results/2026-10-09-x64-aws-m5d4xlarge-cpus{2,8}/` | CPU-count sensitivity on the same box, 3 reps (below). |
 
 Scenarios (each run is a fresh JVM, `-Xms512m -Xmx512m -XX:+AlwaysPreTouch`,
 40 s steady state, rotation at 20 s, sample 5 s after the rotation):
@@ -84,16 +85,33 @@ but `nproc`, the affinity mask and the profiler's
 `sysconf(_SC_NPROCESSORS_ONLN)` saw 16. The Mac set was not affected, because
 the Docker Desktop VM itself had 4 CPUs (`cpus: 4` in its report).
 
-**perf events.** `NM_PERF` stays 0 unless the profiler can open perf events.
-That needs the host's `kernel.perf_event_paranoid` low enough (check with
-`sysctl kernel.perf_event_paranoid`), and the container must be allowed to
-call `perf_event_open`, which Docker's defaults restrict. Untested so far;
-start with:
+**perf events: not measured, and `NM_PERF` is left out of the gate.** No
+scenario opens a perf event. `cpu=` and `event=cpu` both pick the ctimer
+engine (per-thread `timer_create` CPU timers) and fall back to perf events only
+if ctimer fails (`selectCpuEngine` in `profiler.cpp`), which does not happen on
+Linux. So `NM_PERF` is 0 even with perf events allowed, and the gate would see
+the perf engine only if a scenario used a perf-only event. Tested on the x64
+box (`perf_event_paranoid=2`, no host change needed):
 
-```bash
-DOCKER_EXTRA_ARGS="--cap-add=PERFMON --security-opt seccomp=unconfined" \
-  REPS=10 NOPROF_REPS=3 ./utils/memcheck/phase0-container.sh build/memcheck-perf
-```
+| container | `cycles` (hardware) | `page-faults`, `context-switches` (software) |
+|---|---|---|
+| default Docker | fails | fails |
+| `--cap-add=PERFMON --security-opt seccomp=unconfined` | fails | starts |
+| `--privileged` | fails | starts |
+
+The VM does not appear to expose hardware PMU events. Note also that this
+fork's event table has no `cpu-clock`: `event=cpu-clock` fails as an
+unsupported event.
+
+With a perf event, `NM_PERF` is not a useful gate metric anyway: it is
+dominated by `PerfEvents::start` allocating one `PerfEvent` per possible
+thread ID, `calloc(pid_max, sizeof(PerfEvent))`. `PerfEvent` is 128 bytes
+because it inherits the cache-line-padded `SpinLock` (`1abf1ebd3`). With
+`pid_max=4194304` that is exactly 512 MiB in `NM_PERF`, a constant set by the
+host's `pid_max`. Only the pages of thread IDs that actually get an event are
+touched: in a 200-thread `threads` run the 512 MiB mapping had 36 KiB
+resident (`smaps`). Filed as
+[PROF-16244](https://datadoghq.atlassian.net/browse/PROF-16244).
 
 Without Docker, `phase0.sh` runs directly given `DDPROF_LIB`,
 `DDPROF_CLASSES`, `MEMCHECK_CLASSES`, `WORKDIR`, `OUTDIR` and a JDK 21 with
@@ -173,6 +191,37 @@ noisy→stable. The exception is `Code`, which goes stable→banded in `traces`.
 - `max(256 KiB, 4·SD)` still fits: the 256 KiB floor dominates for every
   counter on x64.
 
+## CPU-count sensitivity: same x64 box, CPUS=2 and CPUS=8
+
+3 reps per arm (45 runs each, 0 failures), library from the CPUS=4 run. Each
+mean is compared with the 10-rep CPUS=4 set against the planned threshold
+`max(256 KiB, 4·SD of the CPUS=4 set)`.
+
+- **Profiler counters: no live/max/post-flush metric crosses the threshold**
+  at 2 or 8 CPUs. They do not depend on the core count.
+- **NMT `Internal`, and `Class` outside `classesM`**: the profiler deltas are
+  unchanged at 2 and 8 CPUs (within 0.1 MiB).
+- **NMT `Class` in `classesM` on 2 CPUs is unstable, and the profiler does not
+  cause it.** The scenario loads ~42,800 instance classes (2000 generated
+  classes, plus roughly one per reflectively invoked method: 2000 × 20). On 2
+  CPUs, between 40,594 and 42,845 of them were loaded at sample time (low in
+  5 of 9 nmt runs), and `Class` committed tracks that count (~1.7 KiB per
+  class), so it dropped by up to 3.7 MiB. All runs at 4 and 8 CPUs
+  reached the full count. The workload simply had not finished at sample
+  time: before `Class` is gated, `classesM` should reach a fixed class count
+  before `MEMCHECK_LOADED`, or the sample should wait for it. CI runners
+  slower than this box could show the same thing at 4 cores. The reruns that
+  keep the full NMT output are in `build/memcheck-cpus2-classes/work/`
+  (not committed).
+- **CPU-dependent, so the runner type has to be pinned for these**: NMT `GC`
+  (−4.0 MiB at 2 CPUs, +8.1 MiB at 8, in every scenario) and therefore NMT `total`; `Code` (up to −6.4 MiB
+  at 2 and +3.9 MiB at 8 in the nmt arm, and the profiler delta moves too);
+  `Metaspace`; `Arena Chunk`; RSS in `classesM`/`traces`.
+- **Conclusion for CI**: gating on the counters and on `Internal` is safe
+  across runner sizes. `Class` is safe once the `classesM` workload is made
+  deterministic. Anything report-only can still vary with the runner's core
+  count, so baselines should come from the same runner type.
+
 ## Gotchas found on the way
 
 - `memory=N:a:l` silently **disables** liveness: the field after the flags is
@@ -192,11 +241,10 @@ noisy→stable. The exception is `Code`, which goes stable→banded in `traces`.
 
 1. ~~**amd64 Linux box**~~ — done, see the x64 results above. Same noise
    classes; the absolute values are per-architecture.
-2. **perf enabled** (either box): run with `DOCKER_EXTRA_ARGS` above and check
-   `NM_PERF` is non-zero and stable.
-3. **CPU-count sensitivity**: one run each with `CPUS=2` and `CPUS=8` to see
-   which categories move — that decides how strictly the CI runner type has
-   to be pinned.
+2. ~~**perf enabled**~~: dropped, see "perf events" above.
+3. ~~**CPU-count sensitivity**~~: done, see above. Follow-up: make
+   `classesM` reach its full class count before sampling, then re-check
+   `Class` on 2 CPUs.
 4. **arm64 bare-metal box**: confirms whether Docker Desktop distorted
    anything, and whether arm64 can be a second gated platform.
 5. Commit each result set under `results/<date>-<arch>-<host>/`.
