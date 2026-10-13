@@ -418,10 +418,13 @@ public:
         }
     }
 
-    // Outcome of copyFrom(): src entries now held here under their src id,
-    // and src keys this buffer already held under a different id (an id
-    // conflict -- see StringDictionary::rotate()).  Entries whose insert
-    // failed (allocation failure) count as neither.
+    // Outcome of copyFrom().  copied counts src entries found here under
+    // their src id, whether this call stored them or they were already
+    // present - a phase 2 copy re-finds everything phase 1 stored, so copied
+    // is not "entries newly stored".  conflicts counts src keys this buffer
+    // already held under a different id (an id conflict - see
+    // StringDictionary::rotate()).  Entries whose insert failed (allocation
+    // failure) count as neither.
     struct CopyResult {
         int copied;
         int conflicts;
@@ -631,10 +634,18 @@ class StringDictionary {
         // longer the dump buffer, clearStandby() may be clearing it.
         if (_rot.dumpBuffer() != dump) return 0;
         rotateHook(TRANSITION_BEFORE_DUMP_INSERT);
+        // When the dump buffer already holds the key, the freshly drawn id
+        // is discarded; ids need only be unique, not dense.
         u32 id = dump->insert_with_id(key, len, nextId());
         if (id == 0) return 0;
         rotateHook(TRANSITION_BETWEEN_INSERTS);
         u32 result = active->insert_with_id(key, len, id);
+        // Two writers racing the same fresh key are both arbitrated by the
+        // dump buffer to this same id, so both can observe result == id and
+        // count the insert once each - DICTIONARY_KEYS then overcounts by
+        // one under this race.  Accepted: the counters are diagnostic, and
+        // insert_with_id() cannot reveal which caller created the active
+        // slot when both pass the same id.
         if (result == id) countInsert(len);
         return result;
     }
@@ -831,8 +842,11 @@ public:
         // drains again before it clears old_active.
         (void)RefCountGuard::waitForRefCountToClear(old_active);
         // Phase 2: catch any entries inserted into old_active between Phase 1
-        // and the drain completing.  It revisits every entry, so its conflict
-        // count includes phase 1's.
+        // and the drain completing.  Its conflict count includes phase 1's:
+        // every phase-1-conflicting key is still in old_active, which only
+        // gains entries between the phases (only clear() removes any, and
+        // mid-rotate nothing clears old_active), so phase 2 re-finds each
+        // one and reports it.
         reportIdConflicts(_rot.active()->copyFrom(*old_active).conflicts);
         rotateHook(ROTATE_AFTER_PHASE2);
         _transitioning.store(false, std::memory_order_release);
