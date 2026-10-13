@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk11
 
 ## glibc-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-10-13 01:03:50 EDT
+**Date:** 2026-10-13 05:40:02 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 599 |
-| Sample Rate | 9.98/sec |
-| Health Score | 624% |
+| CPU Samples | 519 |
+| Sample Rate | 8.65/sec |
+| Health Score | 541% |
 | Threads | 8 |
-| Allocations | 338 |
+| Allocations | 384 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 1040 |
-| Sample Rate | 17.33/sec |
-| Health Score | 1083% |
-| Threads | 10 |
-| Allocations | 491 |
+| CPU Samples | 680 |
+| Sample Rate | 11.33/sec |
+| Health Score | 708% |
+| Threads | 9 |
+| Allocations | 515 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 17-17 cores)</summary>
 
 ```
-1791867591 17
-1791867596 17
-1791867601 17
-1791867606 17
-1791867611 17
-1791867616 17
-1791867621 17
-1791867626 17
-1791867631 17
-1791867636 17
-1791867641 17
-1791867646 17
-1791867651 17
-1791867656 17
-1791867661 17
-1791867666 17
-1791867671 17
-1791867676 17
-1791867681 17
-1791867686 17
+1791884116 17
+1791884121 17
+1791884126 17
+1791884131 17
+1791884136 17
+1791884141 17
+1791884146 17
+1791884151 17
+1791884156 17
+1791884161 17
+1791884166 17
+1791884171 17
+1791884176 17
+1791884181 17
+1791884186 17
+1791884191 17
+1791884196 17
+1791884201 17
+1791884206 17
+1791884211 17
 ```
 </details>
 
