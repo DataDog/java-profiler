@@ -1180,8 +1180,11 @@ Java_com_datadoghq_profiler_JavaProfiler_resetKlassPopulationForTest0(
   // recordings (each Profiler::start() clearAll() bumps the generation)
   // before this test's seeding, and no GC may land between start() and
   // the seeded selectLeakCandidates() call. After the wipe above there is
-  // no stale-namespace population data left to protect, so adopting the
-  // current generation is safe.
+  // no stale-namespace population data left, and
+  // classMapGenerationSetForTest() itself invalidates every tracking entry's
+  // cached_klass_id when the generation changes (the same thing
+  // cleanup_table()'s reset branch does), so adopting the current
+  // generation is safe.
   LivenessTracker::instance()->classMapGenerationSetForTest(
       Profiler::instance()->classMap()->generation());
 }

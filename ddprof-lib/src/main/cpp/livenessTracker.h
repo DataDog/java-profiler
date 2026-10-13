@@ -1457,8 +1457,18 @@ public:
   }
   // Lets a test that seeds _klass_population directly (no cleanup_table()
   // sweep) mark it as belonging to the given class-map generation.
+  // Adopting a new generation here bypasses cleanup_table()'s class-map-reset
+  // branch, so it must do that branch's tracking-table half itself: every
+  // cached_klass_id was resolved against the old StringDictionary namespace
+  // and could alias an unrelated class in the new one. (_klass_population is
+  // the caller's job - see klassPopulationResetForTest().)
   void classMapGenerationSetForTest(u64 generation) {
     _table_lock.lock();
+    if (generation != _last_class_map_generation && _table != NULL) {
+      for (u32 i = 0; i < (u32)_table_size; i++) {
+        _table[i].cached_klass_id = 0;
+      }
+    }
     _last_class_map_generation = generation;
     _table_lock.unlock();
   }
