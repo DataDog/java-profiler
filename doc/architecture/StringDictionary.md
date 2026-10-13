@@ -258,6 +258,17 @@ the new active holds. Nothing waits for `rotate()`.
   buffer the chunk's constant pool is written from, and the dump thread
   resolves class ids afresh in every chunk.
 
+The same straggler can race `lookupDuringDump()` itself: the dump thread's
+dump probe may miss the straggler's not-yet-done dump insert while its active
+probe finds the key under the post-Phase-2 writer's id, and the straggler's
+dump insert then wins the dump slot. `addToDump()` detects this (its insert
+returns the straggler's id) and `lookupDuringDump()` returns that id - the one
+the dump snapshot actually contains - instead of the active buffer's id,
+which the snapshot may not hold. Returning the active id there would emit an
+id this chunk's constant pool lacks, and would make two resolutions of the
+same key in one dump disagree. The conflict is counted in
+`DICTIONARY_ID_CONFLICTS`.
+
 The writer guards the dump buffer for one insert, re-checking after a SEQ_CST
 fence that it is still the dump buffer (otherwise `clearStandby()` may be
 clearing it, and the writer assigns the id itself). These guards are on the
@@ -333,6 +344,7 @@ lossless; both require a thread stuck in a guarded insert for a whole dump cycle
 | No UAF during `clearStandby()` | Drain of the clear target; on timeout the clear is skipped |
 | No entry lost during `rotate()`, unless its drain times out | Two-phase copy + `waitForRefCountToClear(old_active)` drains late JNI insertors; after a release-build timeout an insert by a straggler may miss the dump snapshot (it stays memory-safe: `clearStandby()` drains before clearing) |
 | One id per key across `rotate()`, unless its drain times out | Mid-rotation misses take their id from `old_active`, the id Phase 2 copies |
+| `lookupDuringDump()` returns an id the dump snapshot contains, even racing a transition straggler | `addToDump()` returns the id the dump buffer holds, not the active buffer's |
 | No profiling signal inserts into `old_active` between Phase 1 and 2 (dump thread) | `SignalBlocker` in `rotateDictsAndRun()` |
 | `writeCpool()` sees a stable dump snapshot | `rotate()` completes (including drain) before `jfr_op()` starts |
 | `CallTraceStorage` writers excluded during dump | `lockAll()` around `jfr_op()` |

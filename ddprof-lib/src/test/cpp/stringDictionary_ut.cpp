@@ -826,3 +826,126 @@ TEST_F(StringDictionaryTest, LookupStraddlingTransitionEndKeepsCallersConsistent
     ASSERT_EQ(1u, snap.count(id_d));
     EXPECT_STREQ("late_key", snap[id_d]);
 }
+
+namespace {
+
+// A transition straggler (writer W) parked before its dump insert resumes
+// while the dump runs, and its dump insert lands between the dump thread's
+// two probes: the dump probe missed the key, the active probe finds it under
+// the id a post-phase-2 writer (D) assigned.  addToDump() then loses the dump
+// slot to W's dump insert, so the dump buffer holds the key under W's id
+// while the active buffer holds it under D's.
+struct DumpRaceScenario {
+    StringDictionary* dict;
+    std::atomic<int> w_state{0};  // W: 1 = parked before dump insert, 2 = released; 3 = parked between inserts, 4 = released
+    std::atomic<int> dt_state{0};  // dump thread: 1 = parked between probes, 2 = released
+    std::atomic<u32> id_w{0};
+    std::atomic<u32> id_dt{0};
+    std::thread w;
+    std::thread dt;
+};
+
+void dumpRaceHook(StringDictionary::RotateStage stage, void* arg) {
+    auto* s = static_cast<DumpRaceScenario*>(arg);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    switch (stage) {
+    case StringDictionary::ROTATE_AFTER_PHASE2:
+        // W enters the transition path with phase 2 already done, so nothing
+        // copies its inserts; it parks before its dump insert.
+        s->w = std::thread([s]() {
+            s->id_w.store(s->dict->lookup("late_key", 8));
+        });
+        while (s->w_state.load() != 1 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        break;
+    case StringDictionary::TRANSITION_BEFORE_DUMP_INSERT:
+        s->w_state.store(1);
+        while (s->w_state.load() != 2 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        break;
+    case StringDictionary::TRANSITION_BETWEEN_INSERTS:
+        s->w_state.store(3);
+        while (s->w_state.load() != 4 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        break;
+    case StringDictionary::DUMP_BETWEEN_PROBES:
+        s->dt_state.store(1);
+        while (s->dt_state.load() != 2 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+}  // namespace
+
+// lookupDuringDump() must hand the dump thread an id the dump snapshot
+// actually contains, even when a transition straggler's dump insert races its
+// probes: the straggler's dump insert and a post-phase-2 writer's active
+// insert both land between the dump probe (which missed) and the active probe
+// (which hit).
+TEST_F(StringDictionaryTest, LookupDuringDumpRacingStragglerReturnsDumpResidentId) {
+    dict.lookup("seed", 4);
+    const long long base_conflicts = Counters::getCounter(DICTIONARY_ID_CONFLICTS);
+    DumpRaceScenario s{&dict};
+    dict.setRotateHookForTest(dumpRaceHook, &s);
+
+    // Phase 2 has copied; W parks inside the transition path before its dump
+    // insert, and rotate() returns with W still parked.
+    dict.rotate();
+    ASSERT_EQ(1, s.w_state.load()) << "W never reached the transition path";
+
+    // The dump thread probes the dump (miss: W has not inserted yet) and
+    // parks between its probes.
+    s.dt = std::thread([&s]() {
+        s.id_dt.store(s.dict->lookupDuringDump("late_key", 8));
+    });
+    while (s.dt_state.load() != 1) std::this_thread::yield();
+
+    // W's dump insert lands - after the dump thread's dump probe.
+    s.w_state.store(2);
+    while (s.w_state.load() != 3) std::this_thread::yield();
+
+    // A post-phase-2 writer assigns the key its own id in the active buffer,
+    // before W's active insert.
+    u32 id_d = dict.lookup("late_key", 8);
+    ASSERT_NE(0u, id_d);
+
+    // The dump thread's active probe hits id_d.
+    s.dt_state.store(2);
+    s.dt.join();
+    s.w_state.store(4);
+    s.w.join();
+    dict.setRotateHookForTest(nullptr, nullptr);
+
+    u32 dump_id = s.id_dt.load();
+    ASSERT_NE(0u, dump_id);
+
+    // The id handed to the dump thread must be in the dump snapshot this
+    // chunk's constant pool is written from.
+    std::map<u32, const char*> snap;
+    dict.standby()->collect(snap);
+    EXPECT_EQ(1u, snap.count(dump_id));
+    EXPECT_STREQ("late_key", snap[dump_id]);
+
+    // And it must be stable within the dump: a second resolution of the same
+    // key in the same chunk returns the same id.
+    EXPECT_EQ(dump_id, dict.lookupDuringDump("late_key", 8));
+
+    // The conflict (dump buffer holds the key under W's dump id) is reported.
+    EXPECT_EQ(1, Counters::getCounter(DICTIONARY_ID_CONFLICTS) - base_conflicts);
+
+    // lookup() callers keep the active id, and it resolves in the next snapshot.
+    EXPECT_EQ(id_d, s.id_w.load());
+    dict.clearStandby();
+    dict.rotate();
+    snap.clear();
+    dict.standby()->collect(snap);
+    ASSERT_EQ(1u, snap.count(id_d));
+    EXPECT_STREQ("late_key", snap[id_d]);
+}

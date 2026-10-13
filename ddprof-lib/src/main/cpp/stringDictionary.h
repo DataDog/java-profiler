@@ -589,9 +589,18 @@ class StringDictionary {
         Counters::increment(DICTIONARY_ID_CONFLICTS, conflicts);
     }
 
-    void addToDump(StringDictionaryBuffer* dump, const char* key, size_t len, u32 id) {
+    // Inserts (key, id) into the dump buffer and returns the id the dump
+    // buffer holds for the key afterwards.  A transition straggler (see
+    // assignDuringTransition()) can race this insert and hold the key under
+    // a different id; the dump thread must then record the id the dump
+    // snapshot - the source of this chunk's constant pool - actually
+    // contains, not the active buffer's id.  The conflict is counted either
+    // way.  Returns id unchanged when the dump insert failed (OOM): the id
+    // is not in the dump buffer then, but nothing better is available.
+    u32 addToDump(StringDictionaryBuffer* dump, const char* key, size_t len, u32 id) {
         u32 stored = dump->insert_with_id(key, len, id);
         reportIdConflicts(stored != 0 && stored != id ? 1 : 0);
+        return stored != 0 ? stored : id;
     }
 
     // First-time id assignment while rotate() is between publishing the new
@@ -621,6 +630,7 @@ class StringDictionary {
         // Same rule as for active (see retryUnclearedTarget()): once it is no
         // longer the dump buffer, clearStandby() may be clearing it.
         if (_rot.dumpBuffer() != dump) return 0;
+        rotateHook(TRANSITION_BEFORE_DUMP_INSERT);
         u32 id = dump->insert_with_id(key, len, nextId());
         if (id == 0) return 0;
         rotateHook(TRANSITION_BETWEEN_INSERTS);
@@ -675,7 +685,9 @@ public:
         ROTATE_AFTER_PHASE1,        // phase 1 copied; new active not yet published
         ROTATE_BEFORE_DRAIN,        // new active published; old active not yet drained
         ROTATE_AFTER_PHASE2,        // phase 2 copied; _transitioning still set
-        TRANSITION_BETWEEN_INSERTS  // assignDuringTransition(): dump insert done, active insert not yet
+        TRANSITION_BETWEEN_INSERTS,  // assignDuringTransition(): dump insert done, active insert not yet
+        TRANSITION_BEFORE_DUMP_INSERT,  // assignDuringTransition(): dump guard taken, dump insert not yet
+        DUMP_BETWEEN_PROBES  // lookupDuringDump(): dump probe missed, active probe not yet
     };
 
 private:
@@ -834,11 +846,22 @@ public:
     // once active->size() reaches size_limit, previously-known keys still
     // resolve (dump/active hits above), but a genuinely new key returns 0
     // instead of growing the dictionary further.
+    // The returned id is the one the dump buffer holds for the key, so it is
+    // in the snapshot this chunk's constant pool is written from.  When a
+    // transition straggler (a writer parked inside assignDuringTransition()
+    // across the end of the transition) inserts the key into the dump buffer
+    // under another id between this call's probes, the straggler's id is
+    // returned and the conflict counted - the straggler's id is the one the
+    // snapshot contains, and later resolutions of the same key in the same
+    // dump return it too.  lookup() callers, by contrast, get the active
+    // buffer's id; the two namespaces stay consistent within their own
+    // snapshot, and the dump thread re-resolves ids in every chunk.
     u32 lookupDuringDump(const char* key, size_t len, int size_limit = INT_MAX) {
         StringDictionaryBuffer* dump = _rot.dumpBuffer();
 
         u32 id = dump->lookup(key, len);
         if (id != 0) return id;
+        rotateHook(DUMP_BETWEEN_PROBES);
 
         {
             StringDictionaryBuffer* active = _rot.active();
@@ -847,8 +870,7 @@ public:
             id = active->lookup(key, len);
         }
         if (id != 0) {
-            addToDump(dump, key, len, id);
-            return id;
+            return addToDump(dump, key, len, id);
         }
 
         {
@@ -858,7 +880,7 @@ public:
             if (active->size() >= size_limit) return 0;
             u32 new_id = nextId();
             new_id = active->insert_with_id(key, len, new_id);
-            if (new_id != 0) addToDump(dump, key, len, new_id);
+            if (new_id != 0) return addToDump(dump, key, len, new_id);
             return new_id;
         }
     }
