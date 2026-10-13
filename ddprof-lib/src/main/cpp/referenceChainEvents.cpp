@@ -499,6 +499,23 @@ void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
   }
 }
 
+jlong ReferenceChainTracker::resolvedChainTargetTagForTest(jlong object_tag) {
+  if (object_tag <= 0 || isLeakTag(object_tag)) {
+    return 0;
+  }
+  const u64 current_search_ns = load(_search_start_ns);
+  if (current_search_ns == 0) {
+    return 0;
+  }
+  ExclusiveLockGuard guard(&_resolved_chains_lock);
+  auto it = _resolved_chains.find(object_tag);
+  if (it == _resolved_chains.end() ||
+      it->second.source_search_ns != current_search_ns) {
+    return 0;
+  }
+  return (jlong)it->second.event._target_tag;
+}
+
 int ReferenceChainTracker::snapshotResolvedChainTags(jlong *out) {
   if (out == nullptr) {
     return 0;

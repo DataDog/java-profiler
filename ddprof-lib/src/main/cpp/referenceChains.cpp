@@ -1063,6 +1063,17 @@ long ReferenceChainTracker::pendingExpandPositionForTest(jlong tag) const {
   return -1;
 }
 
+int ReferenceChainTracker::frontierStateForTest(jlong object_tag) {
+  if (object_tag <= 0 || isLeakTag(object_tag) || _frontier == nullptr) {
+    return -1;
+  }
+  FrontierEntry entry{};
+  if (!_frontier->lookup(object_tag, &entry)) {
+    return -1;
+  }
+  return (int)entry.state;
+}
+
 size_t ReferenceChainTracker::pendingExpandSizeForTest() const {
   MutexLocker engine_guard(_engine_lock);
   return _pending_expand.size() + _priority_expand.size();

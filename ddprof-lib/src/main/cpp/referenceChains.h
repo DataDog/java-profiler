@@ -1368,6 +1368,22 @@ public:
   // for computing a position's fraction of the current backlog.
   size_t pendingExpandSizeForTest() const;
 
+  // Test seam - not part of the production API. The FrontierEntryState of the current search's
+  // frontier entry for the object carrying JVMTI tag `object_tag` (FRONTIER/EXPANDED/ABANDONED),
+  // or -1 if there is no such entry: untagged, leak-tagged (not yet intercepted by the walk), or
+  // no frontier table / slot. Lets a test synchronize on an object's actual expansion rather than
+  // inferring it from pass counters.
+  int frontierStateForTest(jlong object_tag);
+
+  // Test seam - not part of the production API. Returns the targetTag a datadog.ReferenceChain
+  // event for the object currently carrying JVMTI tag `object_tag` would report, but only if the
+  // CURRENT search has already resolved and cached that object's own chain (_resolved_chains entry
+  // keyed by its frontier tag with source_search_ns == _search_start_ns). 0 otherwise: untagged,
+  // leak-tagged but not yet intercepted, no cached chain, or a chain cached by an earlier search
+  // generation (restartSearch() keeps _resolved_chains and reuses tags from 1, so raw tag equality
+  // alone could match a stale, unrelated chain).
+  jlong resolvedChainTargetTagForTest(jlong object_tag);
+
   // Test seam - not part of the production API. Evaluates the real private scheduling gate without
   // executing a BFS pass. This is not read-only: while holding _engine_lock like threadLoop(), the
   // gate may account a completed search's pain and restart/reset terminal search state. It also

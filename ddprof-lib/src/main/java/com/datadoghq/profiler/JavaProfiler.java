@@ -672,6 +672,21 @@ public final class JavaProfiler {
     public static native long getReferenceChainPendingSizeForTest0();
 
     /**
+     * Test seam (debug native builds only, returns -1 in release): does not tag {@code target}.
+     * The state of the current search's frontier entry for target - 0 = FRONTIER (admitted, not
+     * yet expanded), 1 = EXPANDED, 3 = ABANDONED - or {@code -1} if target has no frontier entry
+     * (never admitted, or still carrying only a leak tag).
+     */
+    public static native int getReferenceChainFrontierStateForTest0(Object target);
+
+    /**
+     * Test seam (debug native builds only, returns 0 in release): does not tag {@code target}.
+     * The targetTag the {@code datadog.ReferenceChain} event for target carries, if the current
+     * search has already resolved and cached target's own chain; 0 otherwise.
+     */
+    public static native long getReferenceChainResolvedTargetTagForTest0(Object target);
+
+    /**
      * Test seam (debug native builds only): seeds one heap-floor-ring sample - the input to
      * {@code LivenessTracker::secondsToOOM()}'s time-to-OOM projection - directly, bypassing the
      * real {@code GarbageCollectionFinish} callback. {@code timestampNs} values are only ever
