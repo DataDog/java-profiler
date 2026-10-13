@@ -185,7 +185,10 @@ public final class LeakTagCorrelationScenario {
    */
   public static final String NOISE_CHAIN_MARKER = "[correlation-noise-chain-emitted] ";
 
-  /** One dump's scan outcome - all fields per the latest dump only. */
+  /**
+   * Scan outcome: payload fields from one dump; transientViolations/noiseChains accumulated
+   * across all scans by keepBest().
+   */
   private static final class ScanResult {
     ReferenceChainAssertions.ChainMatch payloadChain;
     boolean payloadChainInPool;
@@ -273,6 +276,9 @@ public final class LeakTagCorrelationScenario {
         JavaProfiler.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
         JavaProfiler.seedTidTrendSample0(NOISE_KLASS_ID, noiseTid, epoch * 3, epoch);
       }
+      // Maintenance continues the seeded ramp (next epoch = SEED_EPOCHS_FOR_HYSTERESIS + 1)
+      // instead of restarting at 1 - same as StaticFieldGrowingCollectionScenario.
+      hysteresisEpoch = SEED_EPOCHS_FOR_HYSTERESIS;
       // Wait for the BFS thread to fully complete its first pass (static sweep AND frontier
       // expansion) before any growth round - same load-bearing wait and rationale as
       // StaticFieldGrowingCollectionScenario: the late chunks added afterward must be
@@ -293,7 +299,10 @@ public final class LeakTagCorrelationScenario {
 
     // Each dump re-emits every resolved chain (drainPendingChainEvents()'s
     // snapshot-and-keep contract), so a later dump's scan is a superset state - the
-    // latest scan with a payload chain observed is always the best evidence.
+    // latest scan with a payload chain observed is always the best payload evidence. Gate
+    // violations are NOT taken from the latest scan alone: keepBest() accumulates them
+    // across every scan (a violating resolved chain may be invalidated/evicted before a
+    // later dump, and the gates are 'ever emitted' contracts).
     ScanResult best = null;
     int totalRounds = 25;
     // Slow growth per round is deliberate: each chunk clears the allocation
@@ -377,15 +386,31 @@ public final class LeakTagCorrelationScenario {
     System.out.println(FOUND_MARKER + best.payloadChain.targetTag);
   }
 
-  /** Latest scan wins; a scan without a payload chain never displaces one that had it. */
+  /**
+   * Payload state comes from the latest scan that saw a payload chain (a scan without one
+   * never displaces one that had it). Gate violations (transient/noise chains) are
+   * accumulated across ALL scans - they are 'ever emitted' contracts, and a violating
+   * resolved chain may be invalidated/evicted before a later dump.
+   */
   private static ScanResult keepBest(ScanResult best, ScanResult scan) {
     if (scan == null) {
       return best;
     }
-    if (scan.payloadChain != null) {
-      return scan;
+    ScanResult result = scan.payloadChain != null || best == null ? scan : best;
+    ScanResult other = result == scan ? best : scan;
+    if (other != null) {
+      mergeDistinct(result.transientViolations, other.transientViolations);
+      mergeDistinct(result.noiseChains, other.noiseChains);
     }
-    return best != null ? best : scan;
+    return result;
+  }
+
+  private static void mergeDistinct(List<String> into, List<String> from) {
+    for (String s : from) {
+      if (!into.contains(s)) {
+        into.add(s);
+      }
+    }
   }
 
   /**

@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
@@ -166,8 +167,11 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
           + ",jfr,file=" + continuousJfrPath.toAbsolutePath();
       String packedCommand = startCommand + "|||" + scratchDumpPath.toAbsolutePath();
 
-      List<String> jvmArgs = Collections.singletonList(
-          "-Dddprof_test.config=" + System.getProperty("ddprof_test.config"));
+      // --add-opens: the scenario reflects into Collections$SynchronizedList.list and
+      // ArrayList.elementData to check its holders' expansion state before creating lateChunk.
+      List<String> jvmArgs = Arrays.asList(
+          "-Dddprof_test.config=" + System.getProperty("ddprof_test.config"),
+          "--add-opens=java.base/java.util=ALL-UNNAMED");
 
       AtomicReference<String> resultLine = new AtomicReference<>();
       LaunchResult result = launch("leak-static-field", jvmArgs, packedCommand,

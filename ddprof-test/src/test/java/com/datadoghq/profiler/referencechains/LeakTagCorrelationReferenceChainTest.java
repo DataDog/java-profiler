@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -25,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * End-to-end coverage of the leak-tag correlation use case in a genuinely separate child
@@ -94,13 +96,25 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
    * leak-accumulation rotation's FRONTIER-state selection is additionally asserted, and
    * the correlation result markers that the pod regime legitimately produces without the
    * full correlation completing (not-found, tag-out-of-pool - see the tight variant's own
-   * comment) are accepted instead of failed.
+   * comment) are accepted instead of failed. That FRONTIER signal is a level-2
+   * {@code TEST_LOG} line, so this variant runs only on DEBUG-instrumented native builds and
+   * forces reference-chains debug level 2 in the child; the loose variant does not depend on
+   * logging and runs on every build.
    */
   private void assertCorrelationFound(String pauseTargetOption,
       boolean requireFrontierRotation) throws Exception {
     assumeFalse(Platform.isJavaVersion(8));
     assumeFalse(Platform.isJ9());
     assumeFalse(Platform.isZing());
+    if (requireFrontierRotation) {
+      // The FRONTIER-rotation signal is a level-2 TEST_LOG line (referenceChainWalk.cpp,
+      // collectLeakAccumulationCandidatesForRotation) - compiled out without -DDEBUG
+      // (debug/asan/tsan only) and silent unless DD_PROFILING_REFERENCE_CHAINS_DEBUG=2.
+      String config = System.getProperty("ddprof_test.config");
+      assumeTrue(config != null && ("debug".equals(config) || config.endsWith("san")),
+          "FRONTIER-rotation assertion needs the reference-chains TEST_LOG stream, only "
+              + "compiled into DEBUG-instrumented builds (debug/asan/tsan)");
+    }
 
     Path scratchDumpPath = Files.createTempFile("referencechains-correlation-", ".jfr");
     Files.deleteIfExists(scratchDumpPath);
@@ -134,8 +148,13 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
           "-Dddprof_test.config=" + System.getProperty("ddprof_test.config"));
 
       AtomicReference<String> resultLine = new AtomicReference<>();
+      // Level 2 is required for the FRONTIER-selection TEST_LOG line (rcDebugLevel.h); the
+      // loose variant keeps the default (silent) level.
+      Map<String, String> childEnv = requireFrontierRotation
+          ? Collections.singletonMap("DD_PROFILING_REFERENCE_CHAINS_DEBUG", "2")
+          : Collections.<String, String>emptyMap();
       LaunchResult result = launch("leak-correlation", jvmArgs, packedCommand,
-          Collections.emptyMap(),
+          childEnv,
           // The scenario's own round loop (up to 25 rounds plus a 5-attempt grace period,
           // ~40-60s observed) on top of a cold external JVM's startup/classloading cost and
           // this scenario's larger graph - same margin logic as the existing scenarios.

@@ -70,6 +70,21 @@ public final class ReferenceChainAssertions {
    * own comment). Returns {@code null} if {@code events} is empty or none match.
    */
   public static ChainMatch findMatchForClass(IItemCollection events, Class<?> targetClass) {
+    return findMatch(events, targetClass, false, 0);
+  }
+
+  /**
+   * Same as {@link #findMatchForClass(IItemCollection, Class)}, but identifies one specific
+   * instance: only an item whose {@code targetTag} equals {@code requiredTargetTag} matches (an
+   * item without a readable {@code targetTag} never does).
+   */
+  public static ChainMatch findMatchForClassAndTargetTag(IItemCollection events,
+      Class<?> targetClass, long requiredTargetTag) {
+    return findMatch(events, targetClass, true, requiredTargetTag);
+  }
+
+  private static ChainMatch findMatch(IItemCollection events, Class<?> targetClass,
+      boolean requireTag, long requiredTargetTag) {
     if (events == null || !events.hasItems()) {
       return null;
     }
@@ -94,11 +109,14 @@ public final class ReferenceChainAssertions {
             || !targetName.equals(((IMCType) rawChain[0]).getFullName())) {
           continue;
         }
+        long targetTag = targetTagAccessor != null ? numberValue(targetTagAccessor.getMember(item)) : -1;
+        if (requireTag && targetTag != requiredTargetTag) {
+          continue;
+        }
         List<IMCType> chain = new ArrayList<>(rawChain.length);
         for (Object element : rawChain) {
           chain.add((IMCType) element);
         }
-        long targetTag = targetTagAccessor != null ? numberValue(targetTagAccessor.getMember(item)) : -1;
         int depth = depthAccessor != null ? (int) numberValue(depthAccessor.getMember(item)) : -1;
         return new ChainMatch(chain, targetTag, depth);
       }
