@@ -55,22 +55,20 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
   }
 
   /**
-   * The pod-regime variant of the correlation use case: the same scenario under a
-   * pod-like tight pass window (pausetarget in single-digit ms, as on the production-like
-   * pod whose expand window was ~10ms against a 14-41ms GetObjectsWithTags floor at a
-   * 242k-entry tag map, ev-leaktag-onpod-round4). Full correlation cannot be the pass
-   * criterion at this window width: the scenario's trend gates were tuned for the loose
-   * window's crawl/GC interleaving, and under tight windows the leak klass's real-fold
-   * trend can flip within a single run - the same knife-edge the pod itself lives on
-   * (chains arrive via the plain crawl path while pool tagging/interception loses the
-   * race; observed: [correlation-tag-out-of-pool] with zero interceptions). What CAN be
-   * asserted deterministically here is the machinery this window exists to exercise:
-   * the leak-accumulation rotation must engage and select FRONTIER-state (un-expanded
-   * backlog) holders - the round-4 fix whose absence made that tier select zero on the
-   * pod while holding 51k known parent candidates. GetObjectsWithTags batch control is
-   * covered unit-level (gotwWindowNs() widening): a real child JVM's local tag map
-   * (~100k filler) keeps the per-call floor under the nominal window, so the widening
-   * regime cannot be reproduced end-to-end locally without a 242k-entry tag map.
+   * The pod-regime variant: the same scenario under a pod-like tight pass window (pausetarget in
+   * single-digit ms, as on the production-like pod whose expand window was ~10ms against a
+   * 14-41ms GetObjectsWithTags floor at a 242k-entry tag map, ev-leaktag-onpod-round4). Full
+   * correlation cannot be the pass criterion at this window width: the trend gates were tuned
+   * for the loose window's crawl/GC interleaving, and under tight windows the leak klass's
+   * real-fold trend can flip within a single run - the same knife-edge the pod itself lives on
+   * (chains arrive via the plain crawl path while pool tagging/interception loses the race;
+   * observed: [correlation-tag-out-of-pool] with zero interceptions). What CAN be asserted
+   * deterministically is the machinery this window exists to exercise: the leak-accumulation
+   * rotation must engage and select FRONTIER-state (un-expanded backlog) holders - the round-4
+   * fix whose absence made that tier select zero on the pod while holding 51k known parent
+   * candidates. GetObjectsWithTags batch control is covered unit-level (gotwWindowNs()
+   * widening): a real child JVM's ~100k-entry tag map keeps the per-call floor under the nominal
+   * window, so the widening regime cannot be reproduced end-to-end locally.
    */
   @Test
   void shouldRotateFrontierLeakHoldersUnderPodLikeTightWindows() throws Exception {
@@ -88,13 +86,12 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
 
   /**
    * Drives the leak-correlation child JVM and asserts the correlated chain, with the
-   * referencechains pausetarget given by {@code pauseTargetOption} (everything else held
-   * fixed across the two callers so the variant differs in exactly the pass-window regime).
-   * With {@code requireFrontierRotation} (the tight-window pod-regime variant), the
-   * leak-accumulation rotation's FRONTIER-state selection is additionally asserted, and
-   * the correlation result markers that the pod regime legitimately produces without the
-   * full correlation completing (not-found, tag-out-of-pool - see the tight variant's own
-   * comment) are accepted instead of failed.
+   * referencechains pausetarget given by {@code pauseTargetOption} (everything else held fixed
+   * across the two callers so the variant differs in exactly the pass-window regime). With
+   * {@code requireFrontierRotation} (the tight-window pod-regime variant), FRONTIER-state
+   * rotation selection is additionally asserted, and the pod regime's legitimate partial
+   * outcomes (not-found, tag-out-of-pool) are accepted instead of failed - but only if the
+   * child logged at least one leak-tag interception/correlation or chain-reconstruction attempt.
    */
   private void assertCorrelationFound(String pauseTargetOption,
       boolean requireFrontierRotation) throws Exception {
@@ -109,21 +106,22 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
     // long run cannot grow this without limit.
     Deque<String> testLogTail = new ArrayDeque<>();
     AtomicBoolean frontierRotationSeen = new AtomicBoolean(false);
+    // Hard evidence for the tight variant's escape hatch: at least one leak-tag interception /
+    // correlation or chain-reconstruction attempt happened in the child. Set while lines stream
+    // in (not scanned from testLogTail, whose evict-oldest cap can drop early lines).
+    AtomicBoolean correlationActivitySeen = new AtomicBoolean(false);
     try {
       // Same raised budget as ExternalProcessReferenceChainTest's own scenarios: a genuinely
       // fresh, cold external JVM's reachable graph is far larger than the in-process tests',
       // and this scenario adds ~100k filler objects on top. The pausetarget varies by caller.
-      // memory=64:l:1.0 - the explicit liveness-sample ratio is load-bearing,
-      // not decoration: without a ratio segment, the default is 10%
-      // (arguments.h's _live_samples_ratio) and LivenessTracker::track()
-      // drops 90% of tracked instances probabilistically. This scenario's
-      // leak cohort is only tens of 1MB chunks, so the default makes the
-      // (klass, tid) population a per-run Bernoulli lottery - observed live
-      // as the intermittent "tagLeakInstances ZERO" runs where zero chunks
-      // survived the filter (passing runs' stable "tagged=5" is exactly the
-      // ~10% tail of ~50 chunks). 1.0 makes the scenario's documented
-      // assumption ("every allocation is sampled, tracked, and taggable",
-      // LeakTagCorrelationScenario) actually true.
+      // memory=64:l:1.0 - the explicit liveness-sample ratio is load-bearing: without it the
+      // default is 10% and LivenessTracker::track() drops 90% of tracked instances
+      // probabilistically. This scenario's leak cohort is only tens of 1MB chunks, so the
+      // default makes the (klass, tid) population a per-run Bernoulli lottery - observed live
+      // as the intermittent "tagLeakInstances ZERO" runs where zero chunks survived the filter
+      // (passing runs' stable "tagged=5" is exactly the ~10% tail of ~50 chunks). 1.0 makes the
+      // scenario's documented assumption ("every allocation is sampled, tracked, and taggable")
+      // actually true.
       String startCommand = "start,memory=64:l:1.0,generations=true,"
           + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:"
           + pauseTargetOption
@@ -153,6 +151,12 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
               if (line.contains("collectLeakAccumulationCandidatesForRotation selected")
                   && line.contains("state=FRONTIER")) {
                 frontierRotationSeen.set(true);
+              }
+              if (line.contains("leak-tag intercepted:")       // heapReferenceCallback interception
+                  || line.contains("correlateAdmittedLeakTag frontier_tag=") // admitted correlation
+                  || line.contains("buildChainEvent target_tag=") // chain reconstructed
+                  || line.contains("reconstructChain")) {       // reconstruction attempted, failed
+                correlationActivitySeen.set(true);
               }
               testLogTail.addLast(line);
               while (testLogTail.size() > 2000) {
@@ -185,8 +189,15 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
       }
       if (requireFrontierRotation && (line.equals(LeakTagCorrelationScenario.NOT_FOUND_MARKER)
           || line.startsWith(LeakTagCorrelationScenario.TAG_OUT_OF_POOL_MARKER))) {
-        // The pod regime legitimately produces these without full correlation completing
-        // (see the tight variant's comment); the loose variant still fails on them.
+        // The pod regime legitimately produces these without full correlation completing. The
+        // escape hatch is NOT a blanket pass: the correlation machinery must have run at least
+        // once, so a fully broken path (tagging never firing, interception always dropping, no
+        // chain ever reconstructed) still fails here.
+        assertTrue(correlationActivitySeen.get(),
+            "Tight-window outcome " + line + " accepted by the pod-regime escape hatch, but "
+                + "the child logged no leak-tag interception/correlation and no chain "
+                + "reconstruction attempt - the correlation path is broken outright, not "
+                + "losing the pod-regime race" + diagnostics(testLogTail));
         return;
       }
       fail("Leak-tag correlation did not succeed: " + line + diagnostics(testLogTail));
@@ -217,7 +228,8 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
       } else if (s.contains("intercepted") || s.contains("correlateAdmittedLeakTag")
           || s.contains("recordDiscoveredInstance") || s.contains("auto-mark")
           || s.contains("rotation_candidates")
-          || s.contains("collectLeakAccumulationCandidatesForRotation selected")) {
+          || s.contains("collectLeakAccumulationCandidatesForRotation selected")
+          || s.contains("buildChainEvent target_tag=") || s.contains("reconstructChain")) {
         leakTagLines.add(s);
       }
     }

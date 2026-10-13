@@ -239,6 +239,8 @@ protected:
 // producer (this gtest) and the consumer (the Java test, run afterwards by
 // the same operator/CI job on the same machine) agree without either side
 // needing to know the other module's build directory layout.
+// The file is consume-once: ProducesValidStandaloneJfrWithChainEvent unlinks it before
+// writing and the Java test deletes it after reading.
 static std::string chainRoundtripJfrPath() {
     const char *tmp = getenv("TMPDIR");
     std::string dir = (tmp != nullptr && *tmp != 0) ? tmp : "/tmp";
@@ -277,6 +279,10 @@ static u32 decodeVar32(const char *data, int *off) {
 }
 
 TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent) {
+    // Drop any fixture left by an earlier (possibly different-revision) run before any ASSERT
+    // below can bail out, so a failed run never leaves a stale file for the Java parser test
+    // (ReferenceChainJfrParserTest) to validate. ENOENT is expected and ignored.
+    unlink(chainRoundtripJfrPath().c_str());
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     // Skip OS/CPU info, JVM info, system properties and native library
