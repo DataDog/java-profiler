@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-10-14 10:47:47 EDT
+**Date:** 2026-10-14 11:49:32 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 583 |
-| Sample Rate | 9.72/sec |
-| Health Score | 608% |
+| CPU Samples | 474 |
+| Sample Rate | 7.90/sec |
+| Health Score | 494% |
 | Threads | 8 |
-| Allocations | 387 |
+| Allocations | 346 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 803 |
-| Sample Rate | 13.38/sec |
-| Health Score | 836% |
-| Threads | 10 |
-| Allocations | 524 |
+| CPU Samples | 737 |
+| Sample Rate | 12.28/sec |
+| Health Score | 767% |
+| Threads | 9 |
+| Allocations | 513 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 54-56 cores)</summary>
 
 ```
-1791988863 54
-1791988868 54
-1791988873 54
-1791988878 54
-1791988883 54
-1791988888 56
-1791988893 56
-1791988898 56
-1791988903 56
-1791988908 56
-1791988913 56
-1791988918 56
-1791988923 56
-1791988928 56
-1791988933 56
-1791988938 56
-1791988943 56
-1791988948 56
-1791988953 56
-1791988958 56
+1791992508 54
+1791992513 54
+1791992518 54
+1791992523 54
+1791992528 54
+1791992533 54
+1791992538 54
+1791992543 56
+1791992548 56
+1791992553 56
+1791992558 56
+1791992563 54
+1791992568 54
+1791992573 54
+1791992578 54
+1791992583 54
+1791992588 54
+1791992593 54
+1791992598 54
+1791992603 56
 ```
 </details>
 
