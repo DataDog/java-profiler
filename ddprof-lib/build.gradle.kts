@@ -238,7 +238,13 @@ if (project.hasProperty("enableCoverage")) {
         throw GradleException("gcovr failed (exit $exitCode) -- install it with 'pip install gcovr' if missing")
       }
       project.logger.lifecycle("C++ coverage report written to file://${outDir.absolutePath}/index.html")
-      project.logger.lifecycle("Java coverage report written to file://${outDir.parentFile.absolutePath}/java/html/index.html")
+      val javaReport = outDir.resolveSibling("java/html/index.html")
+      if (javaReport.isFile) {
+        project.logger.lifecycle("Java coverage report written to file://${javaReport.absolutePath}")
+      } else {
+        // jacocoTestReport is skipped when no test task wrote JaCoCo execution data.
+        project.logger.warn("No Java coverage report: no JaCoCo execution data was recorded")
+      }
     }
   }
 }

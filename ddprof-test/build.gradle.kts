@@ -4,6 +4,7 @@
  */
 
 import com.datadoghq.profiler.ProfilerTestExtension
+import com.datadoghq.profiler.ProfilerTestPlugin
 import org.gradle.api.tasks.SourceSetContainer
 import java.util.concurrent.ConcurrentHashMap
 
@@ -17,7 +18,7 @@ plugins {
 }
 
 jacoco {
-  toolVersion = "0.8.12"
+  toolVersion = "0.8.14"
 }
 
 // :ddprof-lib:coverageReport produces both the Java (JaCoCo) and the C++ (gcovr) report
@@ -79,6 +80,27 @@ tasks.withType<Test>().configureEach {
   extensions.configure<JacocoTaskExtension> {
     isEnabled = name in coverageTaskNames
   }
+}
+
+// On musl the profiler-test plugin creates the test tasks as Exec tasks (running its own
+// ProfilerTestRunner), which the jacoco plugin doesn't instrument -- attach the agent
+// by hand so they write the same build/jacoco/<task>.exec file a Test task would.
+// The agent jar ships nested inside the org.jacoco.agent artifact (`jacocoAgent`).
+val extractJacocoAgent = tasks.register<Sync>("extractJacocoAgent") {
+  from(configurations.named("jacocoAgent").map { zipTree(it.singleFile) }) {
+    include("jacocoagent.jar")
+  }
+  into(layout.buildDirectory.dir("tmp/jacocoAgent"))
+}
+
+tasks.withType<Exec>().matching { it.name in coverageTaskNames }.configureEach {
+  dependsOn(extractJacocoAgent)
+  val agentJar = extractJacocoAgent.map { it.destinationDir.resolve("jacocoagent.jar") }
+  val execFile = layout.buildDirectory.file("jacoco/$name.exec")
+  outputs.file(execFile)
+  ProfilerTestPlugin.additionalJvmArgs(this).add(
+    provider { "-javaagent:${agentJar.get().absolutePath}=destfile=${execFile.get().asFile.absolutePath},append=false" },
+  )
 }
 
 // Every test JVM that loads the coverage library writes .gcda counts next to the
