@@ -227,15 +227,25 @@ if (project.hasProperty("enableCoverage")) {
         libObjDir.get().asFile.absolutePath,
       )
       project.logger.lifecycle("Running: ${cmd.joinToString(" ")}")
-      val process = ProcessBuilder(cmd)
-        .directory(project.projectDir)
-        .redirectErrorStream(true)
-        .start()
+      // A missing gcovr surfaces here as a bare IOException, after the Java report has
+      // already been written -- turn it into the install hint instead.
+      val process = try {
+        ProcessBuilder(cmd)
+          .directory(project.projectDir)
+          .redirectErrorStream(true)
+          .start()
+      } catch (e: java.io.IOException) {
+        throw GradleException(
+          "gcovr not found -- install it with 'pip install gcovr' (Alpine/musl: 'apk add py3-pip && " +
+            "pip install --break-system-packages gcovr'; distro gcovr packages may be too old for the flags used here)",
+          e,
+        )
+      }
       val output = process.inputStream.bufferedReader().readText()
       val exitCode = process.waitFor()
       println(output)
       if (exitCode != 0) {
-        throw GradleException("gcovr failed (exit $exitCode) -- install it with 'pip install gcovr' if missing")
+        throw GradleException("gcovr failed (exit $exitCode) -- see its output above")
       }
       project.logger.lifecycle("C++ coverage report written to file://${outDir.absolutePath}/index.html")
       val javaReport = outDir.resolveSibling("java/html/index.html")
