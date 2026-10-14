@@ -524,9 +524,13 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
   // Trace preservation for standby tables (no contention with new puts)
   // This is safe because new put() operations go to the new active table
   
-  u64 hash = calcHash(source_trace->num_frames, source_trace->frames, source_trace->truncated);
+  // Preserved entries are keyed by exact ID, not stack hash: identical stacks
+  // from different active tenures can have distinct IDs still held by live objects.
+  // processTraces() clears a preservation table before making it active again,
+  // so these ID keys never mix with put()'s stack-hash keys.
+  u64 hash = source_trace->trace_id;
   
-  // First check if trace already exists in any table in the chain.
+  // First check if this exact ID already exists in any table in the chain.
   // Use ACQUIRE to match the RELEASE store in clearTableOnly(); putWithExistingId()
   // is only called on scratch/standby tables with no concurrent writers, so the
   // load is safe, but consistent ordering prevents latent issues if callers change.
@@ -570,8 +574,9 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
           Counters::increment(CALLTRACE_STORAGE_BYTES, total_size);
           Counters::increment(CALLTRACE_STORAGE_TRACES);
 
-          // Increment table size
-          table->incSize();
+          // Grow like put(): one entry per live trace ID can exceed the
+          // initial capacity (LivenessTracker tracks up to 262,144 objects).
+          expandTableIfNeeded(table, table->incSize());
         } else {
           // Allocation failure - clear the key we claimed
           __atomic_store_n(&keys[slot], 0, __ATOMIC_RELEASE);

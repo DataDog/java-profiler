@@ -229,6 +229,200 @@ TEST_F(CallTraceStorageTest, TraceIdPreservation) {
            original_trace_id, preserved_trace_id);
 }
 
+// PROF-16138 regression: identical stacks allocated in successive active-table
+// tenures receive distinct trace IDs (the instance ID occupies the upper 32 bits).
+// LivenessTracker retains the EXACT id per surviving object, so preservation must
+// keep every referenced id resolvable across dumps even when the frames match.
+// The buggy putWithExistingId() deduplicates preserved entries by stack hash, so
+// after the table physically holding the second id is cleared, that id is no
+// longer resolvable although it is still referenced (live).
+//
+// Trigger sequence (matches the ticket):
+//   1. put(S) in active tenure 1 -> a_id; mark a_id live; processTraces().
+//   2. put(S) again (now in active tenure 2) -> b_id, distinct from a_id.
+//   3. mark BOTH a_id and b_id live.
+//   4. processTraces() repeatedly WITHOUT re-inserting S.
+// Every processed trace set must continue to contain both ids and their frames.
+// The defect surfaces two dumps after step 2 (once the source table holding b_id
+// has been cleared), so a single extra dump would hide it -> loop several times.
+TEST_F(CallTraceStorageTest, DuplicateStackDistinctIdsPreservedAcrossDumps) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+
+    // A single shared stack S used for every insertion.
+    ASGCT_CallFrame frame;
+    frame.bci = 42;
+    frame.method_id = (jmethodID)0xCAFEBABE;
+
+    // Liveness checker reports whatever ids the test currently considers live.
+    std::unordered_set<u64> live_ids;
+    storage->registerLivenessChecker([&live_ids](CallTraceIdSet& buffer) {
+        for (u64 id : live_ids) {
+            buffer.insert(id);
+        }
+    });
+
+    // Step 1: allocate S in active tenure 1 and preserve it across one dump.
+    u64 a_id = storage->put(1, &frame, false, 1);
+    ASSERT_GT(a_id, 0u);
+    live_ids.insert(a_id);
+    storage->processTraces([&](const CallTraceSet& traces) {
+        EXPECT_NE(findTraceById(traces, a_id), nullptr);
+    });
+
+    // Step 2: allocate the identical stack S again. It now lands in the new active
+    // table (a different tenure), so it must receive a distinct id.
+    u64 b_id = storage->put(1, &frame, false, 1);
+    ASSERT_GT(b_id, 0u);
+    ASSERT_NE(a_id, b_id)
+        << "identical stacks in successive tenures must get distinct ids";
+
+    // Step 3: both objects remain alive; both ids must stay resolvable.
+    live_ids.insert(b_id);
+
+    // Step 4: dump repeatedly. Every dump must expose both ids with intact frames.
+    // Without re-inserting S, nothing refreshes b_id's definition; only correct
+    // id-based preservation keeps it alive.
+    for (int dump = 0; dump < 4; dump++) {
+        storage->processTraces([&](const CallTraceSet& traces) {
+            CallTrace* a_trace = findTraceById(traces, a_id);
+            CallTrace* b_trace = findTraceById(traces, b_id);
+            ASSERT_NE(a_trace, nullptr)
+                << "a_id lost at dump " << dump;
+            ASSERT_NE(b_trace, nullptr)
+                << "b_id (identical stack, distinct id) lost at dump " << dump;
+            EXPECT_EQ(a_trace->trace_id, a_id);
+            EXPECT_EQ(b_trace->trace_id, b_id);
+            ASSERT_EQ(a_trace->num_frames, 1);
+            ASSERT_EQ(b_trace->num_frames, 1);
+            EXPECT_FALSE(a_trace->truncated);
+            EXPECT_FALSE(b_trace->truncated);
+            EXPECT_EQ(a_trace->frames[0].bci, 42);
+            EXPECT_EQ(b_trace->frames[0].bci, 42);
+            EXPECT_EQ(a_trace->frames[0].method_id, (jmethodID)0xCAFEBABE);
+            EXPECT_EQ(b_trace->frames[0].method_id, (jmethodID)0xCAFEBABE);
+        });
+    }
+}
+
+TEST_F(CallTraceStorageTest, PreservedDuplicateStackIdsExpireIndependently) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+
+    ASGCT_CallFrame frame;
+    frame.bci = 42;
+    frame.method_id = (jmethodID)0xCAFEBABE;
+
+    CallTraceIdSet live_ids;
+    storage->registerLivenessChecker([&](CallTraceIdSet& buffer) {
+        buffer.insert(live_ids.begin(), live_ids.end());
+    });
+
+    u64 a_id = storage->put(1, &frame, false, 1);
+    ASSERT_NE(a_id, CallTraceStorage::DROPPED_TRACE_ID);
+    live_ids.insert(a_id);
+    storage->processTraces([](const CallTraceSet&) {});
+
+    u64 b_id = storage->put(1, &frame, false, 1);
+    ASSERT_NE(b_id, CallTraceStorage::DROPPED_TRACE_ID);
+    ASSERT_NE(a_id, b_id);
+    live_ids.insert(b_id);
+    storage->processTraces([](const CallTraceSet&) {});
+
+    // Stop preserving the older ID. It is collected once more from standby,
+    // then must disappear without taking the identical-stack newer ID with it.
+    live_ids.erase(a_id);
+    storage->processTraces([](const CallTraceSet&) {});
+    storage->processTraces([&](const CallTraceSet& traces) {
+        EXPECT_EQ(findTraceById(traces, a_id), nullptr);
+        CallTrace* trace = findTraceById(traces, b_id);
+        ASSERT_NE(trace, nullptr);
+        ASSERT_EQ(trace->num_frames, 1);
+        EXPECT_EQ(trace->frames[0].bci, frame.bci);
+        EXPECT_EQ(trace->frames[0].method_id, frame.method_id);
+    });
+
+    live_ids.clear();
+    storage->processTraces([](const CallTraceSet&) {});
+    storage->processTraces([&](const CallTraceSet& traces) {
+        EXPECT_EQ(findTraceById(traces, a_id), nullptr);
+        EXPECT_EQ(findTraceById(traces, b_id), nullptr);
+    });
+}
+
+TEST_F(CallTraceStorageTest, PreservationDeduplicatesIdsNotStacks) {
+    CallTraceHashTable table;
+    constexpr u64 COUNT = 512;
+    constexpr u64 INSTANCE_ID = 7;
+
+    // Many distinct IDs for one stack must coexist. Re-inserting the same IDs
+    // must not allocate additional definitions, even after earlier hash matches.
+    for (int pass = 0; pass < 2; pass++) {
+        for (u64 slot = 0; slot < COUNT; slot++) {
+            CallTrace source(true, 1, (INSTANCE_ID << 32) | slot);
+            source.frames[0].bci = 42;
+            source.frames[0].method_id = (jmethodID)0xCAFEBABE;
+            table.putWithExistingId(&source, 1);
+        }
+    }
+
+    CallTraceSet traces;
+    table.collect(traces);
+    ASSERT_EQ(traces.size(), COUNT);
+    CallTraceIdSet ids;
+    for (CallTrace* trace : traces) {
+        EXPECT_TRUE(ids.insert(trace->trace_id).second);
+        EXPECT_EQ(trace->trace_id >> 32, INSTANCE_ID);
+        EXPECT_LT(trace->trace_id & 0xffffffffULL, COUNT);
+        EXPECT_TRUE(trace->truncated);
+        ASSERT_EQ(trace->num_frames, 1);
+        EXPECT_EQ(trace->frames[0].bci, 42);
+        EXPECT_EQ(trace->frames[0].method_id, (jmethodID)0xCAFEBABE);
+    }
+}
+
+// The preservation table must grow like the active table: LivenessTracker can
+// keep up to 262,144 objects live, each pinning its own trace ID, which is more
+// than the 65,536-slot initial capacity. Without expansion, preservation drops
+// every definition past the initial capacity, and the second dump (which reads
+// only the preserved standby table) is missing them.
+TEST_F(CallTraceStorageTest, PreservationTableExpandsBeyondInitialCapacity) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    static constexpr u32 INITIAL_CAPACITY = 65536;
+    static constexpr u32 COUNT = INITIAL_CAPACITY + 1024;
+
+    std::vector<u64> ids;
+    ids.reserve(COUNT);
+    for (u32 i = 0; i < COUNT; i++) {
+        ASGCT_CallFrame frame;
+        frame.bci = static_cast<int>(i);
+        frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(0x50000 + i));
+        u64 id = storage->put(1, &frame, false, 1);
+        ASSERT_NE(id, CallTraceStorage::DROPPED_TRACE_ID) << "put() failed for trace " << i;
+        ids.push_back(id);
+    }
+    storage->registerLivenessChecker([&ids](CallTraceIdSet& buffer) {
+        buffer.insert(ids.begin(), ids.end());
+    });
+
+    const long long dropped_before = Counters::getCounter(CALLTRACE_STORAGE_DROPPED);
+    // First dump preserves every live trace from the old active table.
+    storage->processTraces([](const CallTraceSet&) {});
+    // Second dump sees only what the first dump preserved.
+    size_t missing = 0;
+    storage->processTraces([&](const CallTraceSet& traces) {
+        CallTraceIdSet present;
+        for (CallTrace* trace : traces) {
+            present.insert(trace->trace_id);
+        }
+        for (u64 id : ids) {
+            if (present.find(id) == present.end()) {
+                missing++;
+            }
+        }
+    });
+    EXPECT_EQ(missing, 0u) << "live trace definitions lost during preservation";
+    EXPECT_EQ(Counters::getCounter(CALLTRACE_STORAGE_DROPPED) - dropped_before, 0);
+}
+
 TEST_F(CallTraceStorageTest, ClearMethod) {
     ProfiledThread::initCurrentThreadSignalSafe();
 
@@ -735,11 +929,15 @@ TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
             new (mem) CallTraceHashTable(),
             [](CallTraceHashTable* p) { p->~CallTraceHashTable(); std::free(p); });
         tbl->setInstanceId(1);
-        CallTraceHashTableTestAccessor::seedTable(tbl.get(), 0, CAPACITY);
+        // putWithExistingId() expands like put(); seed at the slot-id boundary so
+        // the expansion-overflow guard skips growth and the table can fill up.
+        constexpr u64 kSlotIdRange = 0x100000000ull; // 2^32
+        const u64 boundary_slot_base = kSlotIdRange - CAPACITY - (u64)CAPACITY * 2 + 1;
+        CallTraceHashTableTestAccessor::seedTable(tbl.get(), static_cast<u32>(boundary_slot_base), CAPACITY);
         const long long dropped_before = Counters::getCounter(CALLTRACE_STORAGE_DROPPED);
 
-        // Each iteration uses a distinct (bci, method_id) pair so calcHash produces
-        // a distinct hash, filling CAPACITY unique slots.  Iterations past
+        // Each iteration uses a distinct trace ID, filling CAPACITY unique
+        // slots in the preservation table. Iterations past
         // that point find no empty slot and must exit the probe via the hasNext()
         // guard rather than cycling forever.
         for (u32 i = 0; i < CAPACITY + EXTRA; ++i) {
