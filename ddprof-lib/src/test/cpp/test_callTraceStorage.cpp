@@ -6,6 +6,7 @@
 #include "gtest/gtest.h"
 #include "callTraceStorage.h"
 #include <vector>
+#include <unordered_map>
 #include <unordered_set>
 #include <thread>
 #include <atomic>
@@ -382,8 +383,9 @@ TEST_F(CallTraceStorageTest, PreservationDeduplicatesIdsNotStacks) {
 // The preservation table must grow like the active table: LivenessTracker can
 // keep up to 262,144 objects live, each pinning its own trace ID, which is more
 // than the 65,536-slot initial capacity. Without expansion, preservation drops
-// every definition past the initial capacity, and the second dump (which reads
-// only the preserved standby table) is missing them.
+// every definition past the initial capacity, and every later dump (which reads
+// only the preserved standby table) is missing them. Several dumps are checked
+// because each one preserves into a table that was reset after it last grew.
 TEST_F(CallTraceStorageTest, PreservationTableExpandsBeyondInitialCapacity) {
     ProfiledThread::initCurrentThreadSignalSafe();
     static constexpr u32 INITIAL_CAPACITY = 65536;
@@ -406,20 +408,36 @@ TEST_F(CallTraceStorageTest, PreservationTableExpandsBeyondInitialCapacity) {
     const long long dropped_before = Counters::getCounter(CALLTRACE_STORAGE_DROPPED);
     // First dump preserves every live trace from the old active table.
     storage->processTraces([](const CallTraceSet&) {});
-    // Second dump sees only what the first dump preserved.
-    size_t missing = 0;
-    storage->processTraces([&](const CallTraceSet& traces) {
-        CallTraceIdSet present;
-        for (CallTrace* trace : traces) {
-            present.insert(trace->trace_id);
-        }
-        for (u64 id : ids) {
-            if (present.find(id) == present.end()) {
-                missing++;
+    // Later dumps see only what earlier dumps preserved.
+    static constexpr int LATER_DUMPS = 4;
+    for (int dump = 0; dump < LATER_DUMPS; dump++) {
+        size_t missing = 0;
+        size_t corrupted = 0;
+        storage->processTraces([&](const CallTraceSet& traces) {
+            std::unordered_map<u64, CallTrace*> by_id;
+            by_id.reserve(traces.size());
+            for (CallTrace* trace : traces) {
+                by_id.emplace(trace->trace_id, trace);
             }
-        }
-    });
-    EXPECT_EQ(missing, 0u) << "live trace definitions lost during preservation";
+            // Count instead of asserting per trace to keep failure output short.
+            for (u32 i = 0; i < COUNT; i++) {
+                auto it = by_id.find(ids[i]);
+                if (it == by_id.end()) {
+                    missing++;
+                    continue;
+                }
+                const CallTrace* trace = it->second;
+                if (trace->num_frames != 1 || trace->truncated ||
+                    trace->frames[0].bci != static_cast<int>(i) ||
+                    trace->frames[0].method_id !=
+                        reinterpret_cast<jmethodID>(static_cast<uintptr_t>(0x50000 + i))) {
+                    corrupted++;
+                }
+            }
+        });
+        EXPECT_EQ(missing, 0u) << "live trace definitions lost at dump " << dump;
+        EXPECT_EQ(corrupted, 0u) << "preserved frames differ at dump " << dump;
+    }
     EXPECT_EQ(Counters::getCounter(CALLTRACE_STORAGE_DROPPED) - dropped_before, 0);
 }
 
