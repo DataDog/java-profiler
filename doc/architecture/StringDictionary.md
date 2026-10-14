@@ -207,8 +207,10 @@ Phase 1:
   old_active = _rot.active()
   _rot.clearTarget()->copyFrom(*old_active)
        ↳ pre-populate the future active buffer with all current entries
+  _transitioning = true
   _rot.rotate()
        ↳ old_active becomes the dump buffer; clearTarget becomes new active
+  SEQ_CST fence
 
 Drain:
   RefCountGuard::waitForRefCountToClear(old_active)
@@ -218,8 +220,63 @@ Drain:
 Phase 2:
   _rot.active()->copyFrom(*old_active)
        ↳ copy any entries inserted into old_active between Phase 1 and the drain
-         (late inserts from other threads are captured here)
+         (late inserts from other threads are captured here); a key found here
+         under a different id counts DICTIONARY_ID_CONFLICTS
+  _transitioning = false   (release)
 ```
+
+### Transition
+
+A key inserted into `old_active` after Phase 1 reaches the new active only in
+Phase 2. If a lookup that misses in the new active in between assigned the key
+a fresh id, Phase 2 would find the key present and keep that id, while callers
+already hold both.
+
+So while `_transitioning` is set, `lookup()` and the size-limited
+`bounded_lookup()` do not assign an id on their own after a miss. They issue a
+SEQ_CST fence, re-check that their buffer is still the active one (retrying if
+not), apply the size limit, and then let `old_active` - now the dump buffer -
+decide: `insert_with_id(key, nextId())` on it returns the id it already holds
+for the key, or stores the fresh one. The writer then inserts the key into the
+new active under that id, which is the id Phase 2 copies, and returns whatever
+the new active holds. Nothing waits for `rotate()`.
+
+- A writer that loaded the **new** active also sees the flag: it is stored
+  before the release CAS in `_rot.rotate()` that publishes the new active.
+- A writer still on **old_active**: the two SEQ_CST fences guarantee that either
+  its post-fence re-check sees the new active and it retries there, or the
+  drain sees its guard and Phase 2 copies its insert. The re-check made before
+  the probe does not count: it precedes the writer's fence. Such a writer may
+  see the flag set before the new active is published and then go through the
+  previous dump buffer; that only leaves an unused entry there.
+- A writer that sees the flag set while another, arriving after Phase 2, sees
+  it clear, may find the key already in the new active under a fresh id. It
+  returns that id, so all callers agree, but the dump buffer keeps the key
+  under the id it put there. No `lookup()` caller holds that id;
+  `lookupDuringDump()`, which probes the dump buffer first, returns it to the
+  dump thread. That is consistent within the dump: the id is in the dump
+  buffer the chunk's constant pool is written from, and the dump thread
+  resolves class ids afresh in every chunk.
+
+The same straggler can race `lookupDuringDump()` itself: the dump thread's
+dump probe may miss the straggler's not-yet-done dump insert while its active
+probe finds the key under the post-Phase-2 writer's id, and the straggler's
+dump insert then wins the dump slot. `addToDump()` detects this (its insert
+returns the straggler's id) and `lookupDuringDump()` returns that id - the one
+the dump snapshot actually contains - instead of the active buffer's id,
+which the snapshot may not hold. Returning the active id there would emit an
+id this chunk's constant pool lacks, and would make two resolutions of the
+same key in one dump disagree. The conflict is counted in
+`DICTIONARY_ID_CONFLICTS`.
+
+The writer guards the dump buffer for one insert, re-checking after a SEQ_CST
+fence that it is still the dump buffer (otherwise `clearStandby()` may be
+clearing it, and the writer assigns the id itself). These guards are on the
+buffer `rotate()` is draining, so a high rate of first-time keys during the
+drain can delay it.
+
+If the drain times out, a straggler can still insert into `old_active` after
+Phase 2; that id lives only in the dump buffer.
 
 `SignalBlocker` is needed to bound the Phase 1→Phase 2 window: without it, a
 profiling signal on the dump thread could keep inserting into `old_active` and
@@ -286,6 +343,8 @@ lossless; both require a thread stuck in a guarded insert for a whole dump cycle
 | No UAF during `clearAll()` reset | Per-dictionary drain + seq_cst `_accepting` recheck; on drain timeout nothing is reset |
 | No UAF during `clearStandby()` | Drain of the clear target; on timeout the clear is skipped |
 | No entry lost during `rotate()`, unless its drain times out | Two-phase copy + `waitForRefCountToClear(old_active)` drains late JNI insertors; after a release-build timeout an insert by a straggler may miss the dump snapshot (it stays memory-safe: `clearStandby()` drains before clearing) |
+| One id per key across `rotate()`, unless its drain times out | Mid-rotation misses take their id from `old_active`, the id Phase 2 copies |
+| `lookupDuringDump()` returns an id the dump snapshot contains, even racing a transition straggler | `addToDump()` returns the id the dump buffer holds, not the active buffer's |
 | No profiling signal inserts into `old_active` between Phase 1 and 2 (dump thread) | `SignalBlocker` in `rotateDictsAndRun()` |
 | `writeCpool()` sees a stable dump snapshot | `rotate()` completes (including drain) before `jfr_op()` starts |
 | `CallTraceStorage` writers excluded during dump | `lockAll()` around `jfr_op()` |
