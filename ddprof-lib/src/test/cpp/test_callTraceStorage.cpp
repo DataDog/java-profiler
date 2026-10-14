@@ -292,13 +292,90 @@ TEST_F(CallTraceStorageTest, DuplicateStackDistinctIdsPreservedAcrossDumps) {
                 << "b_id (identical stack, distinct id) lost at dump " << dump;
             EXPECT_EQ(a_trace->trace_id, a_id);
             EXPECT_EQ(b_trace->trace_id, b_id);
-            EXPECT_EQ(a_trace->num_frames, 1);
-            EXPECT_EQ(b_trace->num_frames, 1);
+            ASSERT_EQ(a_trace->num_frames, 1);
+            ASSERT_EQ(b_trace->num_frames, 1);
+            EXPECT_FALSE(a_trace->truncated);
+            EXPECT_FALSE(b_trace->truncated);
             EXPECT_EQ(a_trace->frames[0].bci, 42);
             EXPECT_EQ(b_trace->frames[0].bci, 42);
             EXPECT_EQ(a_trace->frames[0].method_id, (jmethodID)0xCAFEBABE);
             EXPECT_EQ(b_trace->frames[0].method_id, (jmethodID)0xCAFEBABE);
         });
+    }
+}
+
+TEST_F(CallTraceStorageTest, PreservedDuplicateStackIdsExpireIndependently) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+
+    ASGCT_CallFrame frame;
+    frame.bci = 42;
+    frame.method_id = (jmethodID)0xCAFEBABE;
+
+    CallTraceIdSet live_ids;
+    storage->registerLivenessChecker([&](CallTraceIdSet& buffer) {
+        buffer.insert(live_ids.begin(), live_ids.end());
+    });
+
+    u64 a_id = storage->put(1, &frame, false, 1);
+    ASSERT_NE(a_id, CallTraceStorage::DROPPED_TRACE_ID);
+    live_ids.insert(a_id);
+    storage->processTraces([](const CallTraceSet&) {});
+
+    u64 b_id = storage->put(1, &frame, false, 1);
+    ASSERT_NE(b_id, CallTraceStorage::DROPPED_TRACE_ID);
+    ASSERT_NE(a_id, b_id);
+    live_ids.insert(b_id);
+    storage->processTraces([](const CallTraceSet&) {});
+
+    // Stop preserving the older ID. It is collected once more from standby,
+    // then must disappear without taking the identical-stack newer ID with it.
+    live_ids.erase(a_id);
+    storage->processTraces([](const CallTraceSet&) {});
+    storage->processTraces([&](const CallTraceSet& traces) {
+        EXPECT_EQ(findTraceById(traces, a_id), nullptr);
+        CallTrace* trace = findTraceById(traces, b_id);
+        ASSERT_NE(trace, nullptr);
+        ASSERT_EQ(trace->num_frames, 1);
+        EXPECT_EQ(trace->frames[0].bci, frame.bci);
+        EXPECT_EQ(trace->frames[0].method_id, frame.method_id);
+    });
+
+    live_ids.clear();
+    storage->processTraces([](const CallTraceSet&) {});
+    storage->processTraces([&](const CallTraceSet& traces) {
+        EXPECT_EQ(findTraceById(traces, a_id), nullptr);
+        EXPECT_EQ(findTraceById(traces, b_id), nullptr);
+    });
+}
+
+TEST_F(CallTraceStorageTest, PreservationDeduplicatesIdsNotStacks) {
+    CallTraceHashTable table;
+    constexpr u64 COUNT = 512;
+    constexpr u64 INSTANCE_ID = 7;
+
+    // Many distinct IDs for one stack must coexist. Re-inserting the same IDs
+    // must not allocate additional definitions, even after earlier hash matches.
+    for (int pass = 0; pass < 2; pass++) {
+        for (u64 slot = 0; slot < COUNT; slot++) {
+            CallTrace source(true, 1, (INSTANCE_ID << 32) | slot);
+            source.frames[0].bci = 42;
+            source.frames[0].method_id = (jmethodID)0xCAFEBABE;
+            table.putWithExistingId(&source, 1);
+        }
+    }
+
+    CallTraceSet traces;
+    table.collect(traces);
+    ASSERT_EQ(traces.size(), COUNT);
+    CallTraceIdSet ids;
+    for (CallTrace* trace : traces) {
+        EXPECT_TRUE(ids.insert(trace->trace_id).second);
+        EXPECT_EQ(trace->trace_id >> 32, INSTANCE_ID);
+        EXPECT_LT(trace->trace_id & 0xffffffffULL, COUNT);
+        EXPECT_TRUE(trace->truncated);
+        ASSERT_EQ(trace->num_frames, 1);
+        EXPECT_EQ(trace->frames[0].bci, 42);
+        EXPECT_EQ(trace->frames[0].method_id, (jmethodID)0xCAFEBABE);
     }
 }
 
@@ -811,8 +888,8 @@ TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
         CallTraceHashTableTestAccessor::seedTable(tbl.get(), 0, CAPACITY);
         const long long dropped_before = Counters::getCounter(CALLTRACE_STORAGE_DROPPED);
 
-        // Each iteration uses a distinct (bci, method_id) pair so calcHash produces
-        // a distinct hash, filling CAPACITY unique slots.  Iterations past
+        // Each iteration uses a distinct trace ID, filling CAPACITY unique
+        // slots in the preservation table. Iterations past
         // that point find no empty slot and must exit the probe via the hasNext()
         // guard rather than cycling forever.
         for (u32 i = 0; i < CAPACITY + EXTRA; ++i) {

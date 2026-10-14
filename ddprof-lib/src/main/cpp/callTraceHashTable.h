@@ -163,7 +163,12 @@ public:
   void collect(CallTraceSet &traces, std::function<void(CallTrace*)> trace_hook = nullptr);
 
   u64 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
-  void putWithExistingId(CallTrace* trace, u64 weight);  // For standby tables with no contention
+  /**
+   * Copies a trace into a scratch/standby table, deduplicating by exact trace ID.
+   * Must not mix with put(): clear the table before reusing it for active sampling.
+   * The caller must exclude concurrent writers.
+   */
+  void putWithExistingId(CallTrace* trace, u64 weight);
   void setInstanceId(u64 instance_id) {
     // Use atomic store with RELEASE ordering to ensure visibility across threads
     _instance_id.store(instance_id, std::memory_order_release);
