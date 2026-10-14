@@ -581,7 +581,12 @@ CStack PerfEvents::_cstack;
 bool PerfEvents::_use_mmap_page;
 
 int PerfEvents::compareTids(const void *a, const void *b) {
-  return *(const int *)a > *(const int *)b;
+  // qsort() needs a negative result when a orders first. Returning only
+  // `a > b` (0 or 1) happens to work with glibc's merge sort, which tests
+  // `cmp <= 0`, but musl's smoothsort then leaves the list unsorted.
+  int x = *(const int *)a;
+  int y = *(const int *)b;
+  return (x > y) - (x < y);
 }
 
 int PerfEvents::registerThread(int tid) {
