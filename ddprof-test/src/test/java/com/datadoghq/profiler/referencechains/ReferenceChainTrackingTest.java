@@ -142,6 +142,11 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   // for the same cheap-insurance-against-collision reason those two are distinct from each other.
   private static final int ABANDON_TEST_KLASS_ID = 987203;
 
+  // T_REFERENCE_CHAIN in ddprof-lib/src/main/cpp/jfrMetadata.h - the jdk.ActiveSetting "id"
+  // the profiler writes for the datadog.ReferenceChain setting (flightRecorder.cpp's
+  // writeBoolSetting(buf, T_REFERENCE_CHAIN, "enabled", ...)). Must stay in sync with that enum.
+  private static final long REFERENCE_CHAIN_EVENT_ID = 129;
+
   @Override
   protected String getProfilerCommand() {
     String testName = testInfo != null
@@ -257,15 +262,19 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     // draining that debt back to canStartNow()==true would take on the order of minutes, far past
     // this method's own retry budget below. painbudget=100 keeps that gate affordable immediately,
     // the same way it does for the sibling method.
+    //
+    // memory=64:l:1.0 is load-bearing: Profiler::start() (profiler.cpp) only starts the
+    // ReferenceChainTracker when allocation sampling actually activated (activated & EM_ALLOC).
+    // A bare referencechains=... command falls back to cpu-only profiling, so the search never
+    // runs and dump() could never emit datadog.ReferenceChainAbandoned. No generations=true:
+    // LivenessTracker::initialize() then clears _gc_generations, so hasLeakSignal() returns true
+    // without needing any population trend.
     if ("shouldReportAbandonedSearchOnTinyFrontierCap".equals(testName)) {
-      return "referencechains=true:hops=32:budget=500:framecap=1:ttl=100:painbudget=100";
+      return "memory=64:l:1.0,referencechains=true:hops=32:budget=500:framecap=1:ttl=100:painbudget=100";
     }
-    // Deliberately does not request cpu/wall/memory/nativemem: those categories also
-    // write an "enabled" ActiveSetting (flightRecorder.cpp:1141-1144) and all default to
-    // false when not requested, so "enabled"="true" is unambiguous evidence of the
-    // datadog.ReferenceChain setting specifically without needing to disambiguate by the
-    // ActiveSetting "id" field (JMC's generic accessor lookup does not resolve that field
-    // for this custom event type - not worth a bespoke accessor for one assertion).
+    // shouldExposeReferenceChainsSettingWhenEnabled: a referencechains-only command. Arguments::parse()
+    // implicitly falls back to cpu profiling, whose ActiveSetting is also "enabled"="true", so the
+    // test also matches on the ActiveSetting "id" (T_REFERENCE_CHAIN, REFERENCE_CHAIN_EVENT_ID).
     return "referencechains=true:hops=32:budget=500:ttl=2000:framecap=256";
   }
 
@@ -289,8 +298,11 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     JfrEvents settings = verifyEvents("jdk.ActiveSetting");
     boolean sawEnabledSetting = false;
     for (JfrEvent item : settings) {
-      if ("enabled".equals(item.getString("name")) && "true".equals(item.getString("value"))) {
+      if (item.getLong("id", -1) == REFERENCE_CHAIN_EVENT_ID
+          && "enabled".equals(item.getString("name"))
+          && "true".equals(item.getString("value"))) {
         sawEnabledSetting = true;
+        break;
       }
     }
     assertTrue(sawEnabledSetting, "datadog.ReferenceChain#enabled setting was not found");
@@ -810,15 +822,16 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
    * alone was not enough - the search's first pass never ran at all, so it could never reach
    * {@code SearchState::ABANDONED} for {@code dump()} to observe):</b> {@code LivenessTracker::_gc_generations}
    * (livenessTracker.cpp's {@code initialize()}) is only ever updated when a {@code start()} command
-   * actually requests liveness tracking - a bare {@code referencechains=true:...} command like this
-   * method's own does not call {@code LivenessTracker::start()} at all, so
-   * {@code gcGenerationsEnabled()} stays stuck at whatever the two {@code generations=true} tests
-   * above last left it (confirmed directly: this method's own native trace shows
-   * {@code gc_generations=1}). {@code ReferenceChainTracker::hasLeakSignal()}, which
-   * {@code shouldRunPass()} consults for even this search's very first pass, therefore falls
-   * through to {@code selectLeakCandidates()} exactly as the two tests above do - with nothing
-   * left over from {@link #shouldReconstructReferrerChainThroughUnboundedCacheLeak()}'s own
-   * {@code resetKlassPopulationForTest0()} call to satisfy it. Seeding
+   * actually requests liveness tracking. This method's own command now requests
+   * {@code memory=64:l:1.0} (required for the tracker to start at all, see
+   * {@code getProfilerCommand()}), so {@code LivenessTracker::initialize()} resets
+   * {@code gcGenerationsEnabled()} to false and {@code ReferenceChainTracker::hasLeakSignal()}
+   * returns true unconditionally. The seeding below is kept as defensive insurance in case a
+   * future command change re-enables generations (then {@code hasLeakSignal()}, which
+   * {@code shouldRunPass()} consults for even this search's very first pass, falls through to
+   * {@code selectLeakCandidates()} exactly as the two tests above do - with nothing left over from
+   * {@link #shouldReconstructReferrerChainThroughUnboundedCacheLeak()}'s own
+   * {@code resetKlassPopulationForTest0()} call to satisfy it), and is harmless otherwise. Seeding
    * {@code SEED_EPOCHS_FOR_HYSTERESIS} epochs for a dedicated klass id (see
    * {@code SEED_EPOCHS_FOR_HYSTERESIS}'s own comment for the full derivation) clears that gate the
    * same way it does there - this method never sets a representative or polls for it, since it has
@@ -853,7 +866,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   public void shouldReportAbandonedSearchOnTinyFrontierCap() throws Exception {
     if ("debug".equals(System.getProperty("ddprof_test.config"))) {
       // See this method's own javadoc ("Why this method also seeds a klass population trend...")
-      // for why this is needed even though this method requests no generations=true of its own.
+      // for why this is kept even though this method requests no generations=true of its own.
       //
       // A System.gc() + throwaway dump() first - see this method's own javadoc ("Why the seeding
       // is preceded by...") for why *both* are needed: a dump() alone triggers cleanup_table()
