@@ -231,7 +231,10 @@ public final class LeakTagCorrelationScenario {
         }
         // Churn one slot at a time: the population stays live-but-ephemeral (constant live
         // count, nothing durably retained beyond the frame) while still allocating.
-        held[(int) (slot++ % held.length)] = new NoisePayload();
+        // held[0] is reserved: it is the published noise representative, and after
+        // handoff.take() this frame is its only strong reference (the tracker holds just a
+        // weak ref) - churning it would let the representative be collected.
+        held[1 + (int) (slot++ % (held.length - 1))] = new NoisePayload();
       }
     }, "leak-correlation-noise");
     noiseThread.setDaemon(true);
@@ -258,6 +261,17 @@ public final class LeakTagCorrelationScenario {
       // process's life; the noise representative only via the noise thread's frame (the
       // handoff's own reference is dropped by take()) - exactly what makes one a valid
       // leak candidate and the other a gate test.
+      // The noise thread publishes asynchronously: wait for it, or take() below could
+      // return null (no alias to the real NoisePayload klass) and handoff.tid could be 0
+      // (no real allocating tid qualified) - noise suppression would then go unexercised.
+      // Plain volatile read, NOT take(): take() drops the handoff's reference.
+      long noisePublicationDeadline = System.nanoTime() + 30_000_000_000L;
+      while (handoff.representative == null && System.nanoTime() < noisePublicationDeadline) {
+        Thread.sleep(10);
+      }
+      if (handoff.representative == null || handoff.tid <= 0) {
+        throw new IllegalStateException("Noise thread did not publish a representative and tid");
+      }
       JavaProfiler.setKlassPopulationRepresentativeForTest0(LEAK_KLASS_ID, LEAK_SINK.get(0));
       JavaProfiler.setKlassPopulationRepresentativeForTest0(NOISE_KLASS_ID, handoff.take());
       // Per-(klass, tid) qualification seeds: selectLeakCandidates() now also
@@ -363,16 +377,19 @@ public final class LeakTagCorrelationScenario {
       best = keepBest(best, scan(scratchDumpPath));
     }
 
-    if (best == null || best.payloadChain == null) {
-      System.out.println(NOT_FOUND_MARKER);
-      return;
-    }
-    if (!best.transientViolations.isEmpty()) {
+    // Gate violations are 'ever emitted' contracts, independent of whether a payload chain
+    // was found - report them first so a NOT_FOUND result (accepted by the tight-window
+    // variant) can never mask a suppression regression.
+    if (best != null && !best.transientViolations.isEmpty()) {
       System.out.println(TRANSIENT_CHAIN_MARKER + best.transientViolations);
       return;
     }
-    if (!best.noiseChains.isEmpty()) {
+    if (best != null && !best.noiseChains.isEmpty()) {
       System.out.println(NOISE_CHAIN_MARKER + best.noiseChains);
+      return;
+    }
+    if (best == null || best.payloadChain == null) {
+      System.out.println(NOT_FOUND_MARKER);
       return;
     }
     if (!best.payloadChainInPool) {

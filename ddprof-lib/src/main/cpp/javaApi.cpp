@@ -1263,6 +1263,13 @@ Java_com_datadoghq_profiler_JavaProfiler_resetReferenceChainSearchForTest0(
 
 // Reads target's existing tag without tagging it. Return values are described
 // at pendingExpandPositionForTest().
+//
+// The tag read and the lookup both run under _engine_lock: the BFS thread
+// releases and reissues frontier tags (releaseSearchTags()/restartSearch())
+// only while holding it, so the tag cannot be reassigned to another object
+// between GetTag() and the lookup. The lock is recursive (mutex.cpp), so the
+// tracker seam's own nested acquisition is fine. The same applies to the two
+// seams below.
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingPositionForTest0(
     JNIEnv *env, jclass unused, jobject target) {
@@ -1271,13 +1278,14 @@ Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingPositionForTest
   if (jvmti == nullptr || target == nullptr) {
     return -2;
   }
+  ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+  MutexLocker engine_guard(tracker->_engine_lock);
   jlong tag = 0;
   jvmtiError err = jvmti->GetTag(target, &tag);
   if (err != JVMTI_ERROR_NONE) {
     return -2;
   }
-  return (jlong)ReferenceChainTracker::instance()->pendingExpandPositionForTest(
-      tag);
+  return (jlong)tracker->pendingExpandPositionForTest(tag);
 }
 
 extern "C" DLLEXPORT jlong JNICALL
@@ -1287,7 +1295,8 @@ Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingSizeForTest0(
   return (jlong)ReferenceChainTracker::instance()->pendingExpandSizeForTest();
 }
 
-// Reads target's existing tag without tagging it; see frontierStateForTest().
+// Reads target's existing tag without tagging it, under _engine_lock (see
+// getReferenceChainPendingPositionForTest0()); see frontierStateForTest().
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainFrontierStateForTest0(
     JNIEnv *env, jclass unused, jobject target) {
@@ -1296,14 +1305,18 @@ Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainFrontierStateForTest0(
   if (jvmti == nullptr || target == nullptr) {
     return -1;
   }
+  ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+  MutexLocker engine_guard(tracker->_engine_lock);
   jlong tag = 0;
   if (jvmti->GetTag(target, &tag) != JVMTI_ERROR_NONE) {
     return -1;
   }
-  return (jint)ReferenceChainTracker::instance()->frontierStateForTest(tag);
+  return (jint)tracker->frontierStateForTest(tag);
 }
 
-// Reads target's existing tag without tagging it; see resolvedChainTargetTagForTest().
+// Reads target's existing tag without tagging it, under _engine_lock (see
+// getReferenceChainPendingPositionForTest0()); see
+// resolvedChainTargetTagForTest().
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainResolvedTargetTagForTest0(
     JNIEnv *env, jclass unused, jobject target) {
@@ -1312,11 +1325,13 @@ Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainResolvedTargetTagForTe
   if (jvmti == nullptr || target == nullptr) {
     return 0;
   }
+  ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+  MutexLocker engine_guard(tracker->_engine_lock);
   jlong tag = 0;
   if (jvmti->GetTag(target, &tag) != JVMTI_ERROR_NONE) {
     return 0;
   }
-  return ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(tag);
+  return tracker->resolvedChainTargetTagForTest(tag);
 }
 
 // Seeds one heap-floor sample for secondsToOOM() without waiting for a GC.
