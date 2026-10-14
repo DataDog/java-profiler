@@ -574,8 +574,9 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
           Counters::increment(CALLTRACE_STORAGE_BYTES, total_size);
           Counters::increment(CALLTRACE_STORAGE_TRACES);
 
-          // Increment table size
-          table->incSize();
+          // Grow like put(): one entry per live trace ID can exceed the
+          // initial capacity (LivenessTracker tracks up to 262,144 objects).
+          expandTableIfNeeded(table, table->incSize());
         } else {
           // Allocation failure - clear the key we claimed
           __atomic_store_n(&keys[slot], 0, __ATOMIC_RELEASE);

@@ -379,6 +379,50 @@ TEST_F(CallTraceStorageTest, PreservationDeduplicatesIdsNotStacks) {
     }
 }
 
+// The preservation table must grow like the active table: LivenessTracker can
+// keep up to 262,144 objects live, each pinning its own trace ID, which is more
+// than the 65,536-slot initial capacity. Without expansion, preservation drops
+// every definition past the initial capacity, and the second dump (which reads
+// only the preserved standby table) is missing them.
+TEST_F(CallTraceStorageTest, PreservationTableExpandsBeyondInitialCapacity) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    static constexpr u32 INITIAL_CAPACITY = 65536;
+    static constexpr u32 COUNT = INITIAL_CAPACITY + 1024;
+
+    std::vector<u64> ids;
+    ids.reserve(COUNT);
+    for (u32 i = 0; i < COUNT; i++) {
+        ASGCT_CallFrame frame;
+        frame.bci = static_cast<int>(i);
+        frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(0x50000 + i));
+        u64 id = storage->put(1, &frame, false, 1);
+        ASSERT_NE(id, CallTraceStorage::DROPPED_TRACE_ID) << "put() failed for trace " << i;
+        ids.push_back(id);
+    }
+    storage->registerLivenessChecker([&ids](CallTraceIdSet& buffer) {
+        buffer.insert(ids.begin(), ids.end());
+    });
+
+    const long long dropped_before = Counters::getCounter(CALLTRACE_STORAGE_DROPPED);
+    // First dump preserves every live trace from the old active table.
+    storage->processTraces([](const CallTraceSet&) {});
+    // Second dump sees only what the first dump preserved.
+    size_t missing = 0;
+    storage->processTraces([&](const CallTraceSet& traces) {
+        CallTraceIdSet present;
+        for (CallTrace* trace : traces) {
+            present.insert(trace->trace_id);
+        }
+        for (u64 id : ids) {
+            if (present.find(id) == present.end()) {
+                missing++;
+            }
+        }
+    });
+    EXPECT_EQ(missing, 0u) << "live trace definitions lost during preservation";
+    EXPECT_EQ(Counters::getCounter(CALLTRACE_STORAGE_DROPPED) - dropped_before, 0);
+}
+
 TEST_F(CallTraceStorageTest, ClearMethod) {
     ProfiledThread::initCurrentThreadSignalSafe();
 
@@ -885,7 +929,11 @@ TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
             new (mem) CallTraceHashTable(),
             [](CallTraceHashTable* p) { p->~CallTraceHashTable(); std::free(p); });
         tbl->setInstanceId(1);
-        CallTraceHashTableTestAccessor::seedTable(tbl.get(), 0, CAPACITY);
+        // putWithExistingId() expands like put(); seed at the slot-id boundary so
+        // the expansion-overflow guard skips growth and the table can fill up.
+        constexpr u64 kSlotIdRange = 0x100000000ull; // 2^32
+        const u64 boundary_slot_base = kSlotIdRange - CAPACITY - (u64)CAPACITY * 2 + 1;
+        CallTraceHashTableTestAccessor::seedTable(tbl.get(), static_cast<u32>(boundary_slot_base), CAPACITY);
         const long long dropped_before = Counters::getCounter(CALLTRACE_STORAGE_DROPPED);
 
         // Each iteration uses a distinct trace ID, filling CAPACITY unique
