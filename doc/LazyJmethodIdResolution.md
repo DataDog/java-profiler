@@ -81,8 +81,9 @@ always get jmethodIDs.
 
 ### Option A: reuse epoch (portable fallback) — implemented
 
-Implemented as described below (`KlassRegistry::epoch()`/`bumpEpoch()`, `pin(…, sampled_epoch, &stale)`,
-counter `method_resolve_lazy_stale`). It also relies on one invariant, which is now enforced: every class is
+Implemented (`KlassRegistry::epoch()`/`bumpEpoch()`, `pin(…, sampled_epoch, &status)`, counter
+`method_resolve_lazy_stale`). After review, **every registration bumps the epoch**, not only replacements
+and purges (see "Guarantees and limits" below). It also relies on one invariant, which is now enforced: every class is
 registered before any of its methods can run. ClassPrepare guarantees this; if `add()` fails,
 `registerClass` preloads that class's jmethodIDs instead (`klass_registry_add_failed`), so no raw
 frame of an unregistered class is ever produced. Without that, a later class at the same address
@@ -91,16 +92,17 @@ could be inserted fresh, without a bump, and accept the unregistered class's fra
 
 - The registry keeps a global `_epoch`, and each entry records the epoch it was
   registered at.
-- The epoch is bumped on a replacement (known key, different mirror) and whenever a
-  rehash purges dead entries, because a purged key can come back looking like a fresh
-  insert.
+- ~~The epoch is bumped on a replacement and on a purge.~~ It is bumped on **every** registration.
+  The original rule missed a dead class's `Method*` memory being reused by a class loaded fresh
+  at a *different* `Klass*`.
 - The sampler stores the current epoch in the raw frame: one acquire load, with no
   registry lookup in the handler.
 - Resolve accepts only if `entry.epoch ≤ frame.epoch`, compared modularly. Live classes
   always pass, because ClassPrepare runs before their methods do. Old-incarnation frames
   fail, and old and new frames no longer dedup together.
-- Cost: a stack sampled across a bump splits into two traces. In heavy churn, bumps
-  follow the reuse rate. A "seen since last bump" flag can reduce how often it bumps.
+- Cost: a stack sampled across a bump splits into two traces. With a bump per registration,
+  epoch tags split traces on every class load. That's acceptable for a fallback used only
+  without JFR, and trace-ID tags don't have this problem.
 
 ### Option B: HotSpot's JFR class trace ID, read by offset — implemented, preferred
 
@@ -222,6 +224,49 @@ The original budget analysis:
 - 10 bits alone is too few under heavy churn for either option. Resolving from a
   background thread shrinks the window between sample and resolve, and helps both.
 
+## Guarantees and limits (after review)
+
+A review of `a9b67775` found four issues. All have been checked against the OpenJDK sources
+and fixed or bounded:
+
+1. **Methods array read without protection after pinning.** Redefinition swaps `_methods` at a
+   safepoint (`the_class->set_methods(_new_methods)`) and frees previous versions later, at another
+   safepoint (`ClassLoaderDataGraph::clean_deallocate_lists`). The dump thread is in native and
+   holds up neither. Fixed: every load in `VMKlass::containsMethod()` goes through `SafeAccess`,
+   so a fault reads as "not a member".
+2. **`Method*` reuse within a live class (repeated redefinition).** The class's mirror, trace ID
+   and epoch don't change, so no tag can tell the frames apart. Fixed: the redefine/retransform
+   hooks call `KlassRegistry::markRedefined()` *before* the original JVMTI function, and preload
+   the class's jmethodIDs afterwards, so its later frames aren't raw. `pin()` refuses raw frames
+   of a marked class (`method_resolve_lazy_redefined`), and `resolveViaRegistry()` checks the
+   mark again after its metadata reads. If the mark is still absent then, every read happened
+   before the methods were swapped. The same analysis found the epoch-mode hole fixed by
+   per-registration bumps (above).
+3. **`klassRegistry_ut` didn't link in release** (missing `vmStructs.inline.h`). Fixed; all
+   new gtest binaries pass in release.
+4. **Tag collisions.** Bounded and monitored, not eliminated:
+   - **Can't crash:** after pinning, only `SafeAccess` reads and JNI/JVMTI on a live class remain.
+   - **Trace-ID tags** can only collide once two classes' trace IDs are ≥ 2^25 apart. A JVM that
+     has created fewer than 2^25 (33,554,432) classes can't misattribute.
+   - **After that** (extreme class churn after long uptime), a stale frame can resolve to a live
+     method of the wrong class. That needs all of: the sampled class is unloaded before the frame
+     is resolved; a newer class takes over its exact `Method*` address; and the two IDs differ by
+     an exact multiple of 2^25. The result is one misattributed frame.
+   - **Epoch tags** need 2^24 registrations while one trace is still unresolved.
+   - **Tripwire:** `klass_trace_id_beyond_tag_range` counts registrations of classes whose trace
+     ID exceeds the tag range. If it ever fires in practice, the planned fix is a 64-bit registry
+     epoch per `CallTrace`, checked as "holder registered no later than the trace". That makes
+     misattribution impossible and leaves dropped frames as the worst case. A trace-lifetime bound
+     would *not* help trace-ID tags, since collisions depend on the classes' age difference, not
+     the frame's.
+
+Correctness also rests on two invariants: every class is registered before its methods can run
+(ClassPrepare; registration failure falls back to preloading), and every redefinition goes
+through the hooked `RedefineClasses`/`RetransformClasses`.
+
+Size correction: `KlassRegistry::Entry` is 24 bytes on 64-bit (`Klass*`, `jweak`, `uint32_t`
+epoch, `bool`), not 16.
+
 ## Measurements
 
 20,000 classes × 50 static methods (1M methods), 100 classes per custom loader, all kept
@@ -259,9 +304,11 @@ through the `com.sun.management:type=DiagnosticCommand` MBean. It lives in
 | gtests: `klassRegistry_ut`, `klassTraceId_ut`, `hotspotLazyResolve_ut` (every reuse case under both tag sources), `frame_ut`, `jvmSupport_ut`, `arguments_ut` | pass (macOS; Linux debug + ASan before the trace-ID commits) |
 | `LazyJmethodIdTest` on JDK 8u462, 11.0.28 (musl) and 17.0.16, 21.0.8, 25.0.2 (glibc), aarch64 | pass, trace-ID tags on all five |
 | Calibrated offsets: 8u462 → 184, 11.0.28 → 168, 17.0.16 → 168, 21.0.8 → 184, 25.0.2 → 192 | measured |
-| `LazyTraceIdJfrValidationTest` (CI cross-check against JFR) | pass on macOS JDK 25; containers pending |
+| `LazyTraceIdJfrValidationTest` (CI cross-check against JFR) | pass on JDK 25 (macOS, Linux); 8–21 see below |
 | Runtime JFR cross-check | dropped, see "Confirming the offset" |
+| Review fixes: `SafeAccess` in `containsMethod`, redefinition marking, per-registration epoch, release link fix, tag-range tripwire | done |
 | Dump-latency benchmark; per-dump cache for repeated raw frames | open |
+| `LazyTraceIdJfrValidationTest` finds no JFR samples for the probe on JDK 8–21 (test setup, not an offset mismatch) | open |
 | `JmethodIdOverheadBenchTest.java`: temporary harness, don't commit | uncommitted |
 
 ### Files touched

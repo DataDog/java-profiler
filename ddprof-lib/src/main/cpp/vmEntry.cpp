@@ -678,16 +678,20 @@ void JNICALL VM::VMDeath(jvmtiEnv *jvmti, JNIEnv *jni) {
 jvmtiError
 VM::RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
                         const jvmtiClassDefinition *class_definitions) {
+  JNIEnv *env = jni();
+  for (int i = 0; i < class_count; i++) {
+    if (class_definitions[i].klass != NULL) {
+      JVMSupport::beforeClassRedefinition(env, class_definitions[i].klass);
+    }
+  }
+
   jvmtiError result =
       _orig_RedefineClasses(jvmti, class_count, class_definitions);
 
-  if (result == 0) {
-    // jmethodIDs are invalidated after RedefineClasses
-    JNIEnv *env = jni();
-    for (int i = 0; i < class_count; i++) {
-      if (class_definitions[i].klass != NULL) {
-        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, class_definitions[i].klass);
-      }
+  // jmethodIDs are invalidated after RedefineClasses
+  for (int i = 0; i < class_count; i++) {
+    if (class_definitions[i].klass != NULL) {
+      JVMSupport::afterClassRedefinition(jvmti, env, class_definitions[i].klass, result == 0);
     }
   }
 
@@ -696,15 +700,19 @@ VM::RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
 
 jvmtiError VM::RetransformClassesHook(jvmtiEnv *jvmti, jint class_count,
                                       const jclass *classes) {
+  JNIEnv *env = jni();
+  for (int i = 0; i < class_count; i++) {
+    if (classes[i] != NULL) {
+      JVMSupport::beforeClassRedefinition(env, classes[i]);
+    }
+  }
+
   jvmtiError result = _orig_RetransformClasses(jvmti, class_count, classes);
 
-  if (result == 0) {
-    // jmethodIDs are invalidated after RetransformClasses
-    JNIEnv *env = jni();
-    for (int i = 0; i < class_count; i++) {
-      if (classes[i] != NULL) {
-        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, classes[i]);
-      }
+  // jmethodIDs are invalidated after RetransformClasses
+  for (int i = 0; i < class_count; i++) {
+    if (classes[i] != NULL) {
+      JVMSupport::afterClassRedefinition(jvmti, env, classes[i], result == 0);
     }
   }
 

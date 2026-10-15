@@ -59,7 +59,6 @@ bool KlassRegistry::rehash(JNIEnv* jni) {
   _table = table;
   _capacity = capacity;
   _size = 0;
-  bool purged = false;
   for (size_t i = 0; i < old_capacity; i++) {
     Entry& e = old_table[i];
     if (e.klass == nullptr) {
@@ -67,18 +66,12 @@ bool KlassRegistry::rehash(JNIEnv* jni) {
     }
     if (jni->IsSameObject(e.mirror, nullptr)) {
       jni->DeleteWeakGlobalRef(e.mirror);
-      purged = true;
     } else {
       *find(e.klass) = e;
       _size++;
     }
   }
   free(old_table);
-  if (purged) {
-    // A purged address may be handed to a new class whose add() then looks
-    // like a first insert; frames of the purged class must stay older.
-    bumpEpoch();
-  }
   return true;
 }
 
@@ -103,6 +96,7 @@ bool KlassRegistry::add(JNIEnv* jni, const void* klass, jclass mirror) {
       // A different class now lives at this address; frames sampled from the
       // previous one must not match it.
       e->epoch = bumpEpoch();
+      e->redefined = false;
       return true;
     }
   }
@@ -117,15 +111,20 @@ bool KlassRegistry::add(JNIEnv* jni, const void* klass, jclass mirror) {
   Entry* e = find(klass);
   e->klass = klass;
   e->mirror = ref;
-  e->epoch = _epoch;
+  // Every registration gets a new epoch: this class may occupy memory freed
+  // by a class that frames sampled before now came from.
+  e->epoch = bumpEpoch();
+  e->redefined = false;
   _size++;
   return true;
 }
 
-jclass KlassRegistry::pin(JNIEnv* jni, const void* klass, uint32_t sampled_epoch, bool* stale) {
-  if (stale != nullptr) {
-    *stale = false;
+jclass KlassRegistry::pin(JNIEnv* jni, const void* klass, uint32_t sampled_epoch, PinStatus* status) {
+  PinStatus local_status;
+  if (status == nullptr) {
+    status = &local_status;
   }
+  *status = PIN_ABSENT;
   if (klass == nullptr) {
     return nullptr;
   }
@@ -137,19 +136,50 @@ jclass KlassRegistry::pin(JNIEnv* jni, const void* klass, uint32_t sampled_epoch
   if (e->klass != klass) {
     return nullptr;
   }
+  if (e->redefined) {
+    *status = PIN_REDEFINED;
+    return nullptr;
+  }
   // Serial-number comparison: the frame is at least as new as the entry iff
   // (sampled - registered) mod 2^EPOCH_BITS lies in the lower half.
   const uint32_t mask = (1u << EPOCH_BITS) - 1;
   if (((sampled_epoch - e->epoch) & mask) >= (1u << (EPOCH_BITS - 1))) {
-    if (stale != nullptr) {
-      *stale = true;
-    }
+    *status = PIN_STALE;
     return nullptr;
   }
   // NewLocalRef on a weak global reference returns NULL once the referent has
   // been collected. Done under the lock so a concurrent rehash() cannot delete
   // the weak reference out from under the call.
-  return (jclass)jni->NewLocalRef(e->mirror);
+  jclass ref = (jclass)jni->NewLocalRef(e->mirror);
+  if (ref != nullptr) {
+    *status = PIN_OK;
+  }
+  return ref;
+}
+
+bool KlassRegistry::markRedefined(const void* klass) {
+  if (klass == nullptr) {
+    return false;
+  }
+  MutexLocker ml(_lock);
+  if (_capacity == 0) {
+    return false;
+  }
+  Entry* e = find(klass);
+  if (e->klass != klass) {
+    return false;
+  }
+  e->redefined = true;
+  return true;
+}
+
+bool KlassRegistry::isRedefined(const void* klass) {
+  MutexLocker ml(_lock);
+  if (_capacity == 0) {
+    return false;
+  }
+  Entry* e = find(klass);
+  return e->klass == klass && e->redefined;
 }
 
 size_t KlassRegistry::size() {

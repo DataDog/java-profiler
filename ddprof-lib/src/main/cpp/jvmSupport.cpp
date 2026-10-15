@@ -173,6 +173,22 @@ bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
     }
 }
 
+void JVMSupport::beforeClassRedefinition(JNIEnv *jni, jclass klass) {
+    if (getLoadState() == Lazy_loaded) {
+        HotspotSupport::beforeClassRedefinition(jni, klass);
+    }
+}
+
+void JVMSupport::afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded) {
+    if (getLoadState() == Lazy_loaded) {
+        // Even after a failed attempt: the class is marked for good, and only
+        // jmethodIDs keep its later frames from being raw (and refused).
+        HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, true /* load all */);
+    } else if (succeeded) {
+        loadMethodIDsIfNeeded(jvmti, jni, klass);
+    }
+}
+
 bool JVMSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
   // CRITICAL: GetClassMethods must be called to preallocate jmethodIDs for AsyncGetCallTrace.
   // AGCT operates in signal handlers where lock acquisition is forbidden, so jmethodIDs must

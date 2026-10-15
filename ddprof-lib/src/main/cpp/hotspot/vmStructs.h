@@ -732,21 +732,30 @@ DECLARE(VMKlass)
     // only compared, never dereferenced, so it may be stale. `idnum_hint` is
     // the method's idnum if known (or -1): HotSpot keeps methods()->at(idnum)
     // equal to the method with that idnum until a redefinition reorders them,
-    // so the hint usually avoids the linear scan. The klass itself must be
-    // kept alive by the caller.
+    // so the hint usually avoids the linear scan.
+    //
+    // Keeping the class alive does not keep this array alive: a redefinition
+    // swaps in a new array at a safepoint and frees the old one at a later
+    // one, and a caller in native state does not hold up either. So every
+    // load goes through SafeAccess, and a fault reads as "not a member".
     bool containsMethod(const void* method, int idnum_hint) {
         assert(_methods_offset >= 0);
-        const char* methods = *(const char**) at(_methods_offset);
+        const char* methods = (const char*) SafeAccess::loadPtr((void**) at(_methods_offset), nullptr);
         if (methods == NULL) {
             return false;
         }
-        int len = *(const int*)methods;
-        const void* const* data = (const void* const*)(methods + sizeof(void*));
-        if (idnum_hint >= 0 && idnum_hint < len && data[idnum_hint] == method) {
+        // Array<Method*>::_length is an int; a method count beyond u2 is not a
+        // valid class file, so a larger value means the array is gone.
+        int len = SafeAccess::load32((int32_t*) methods, -1);
+        if (len < 0 || len > 0xffff) {
+            return false;
+        }
+        void** data = (void**)(methods + sizeof(void*));
+        if (idnum_hint >= 0 && idnum_hint < len && SafeAccess::loadPtr(&data[idnum_hint], nullptr) == method) {
             return true;
         }
         for (int i = 0; i < len; i++) {
-            if (data[i] == method) {
+            if (SafeAccess::loadPtr(&data[i], nullptr) == method) {
                 return true;
             }
         }

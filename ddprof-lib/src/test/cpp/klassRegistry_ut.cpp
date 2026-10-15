@@ -6,7 +6,7 @@
 #include <gtest/gtest.h>
 
 #include "../../main/cpp/hotspot/klassRegistry.h"
-#include "../../main/cpp/hotspot/vmStructs.h"
+#include "../../main/cpp/hotspot/vmStructs.inline.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -226,17 +226,56 @@ TEST_F(KlassRegistryTest, ClearDeletesEveryWeakRef) {
 }
 
 // Epochs: a frame records registry.epoch() when sampled; pin() refuses it when
-// the entry for its Klass* was registered later. Only registrations that may
-// reuse a gone class's address bump the epoch.
+// the entry for its Klass* was registered later. Every new registration bumps
+// the epoch, since any new class may occupy memory of one that is gone.
 
-TEST_F(KlassRegistryTest, FirstInsertDoesNotBumpEpoch) {
+TEST_F(KlassRegistryTest, EveryRegistrationBumpsEpochButReAddingDoesNot) {
     uint32_t e0 = registry.epoch();
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    uint32_t e1 = registry.epoch();
+    EXPECT_NE(e0, e1);
     ASSERT_TRUE(registry.add(jni, klassAt(1), mirror(1)));
-    EXPECT_EQ(e0, registry.epoch());
-    // Re-adding the same pair (e.g. after a redefinition) is not a reuse.
+    uint32_t e2 = registry.epoch();
+    EXPECT_NE(e1, e2);
+    // Re-adding the same pair is not a new registration.
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    EXPECT_EQ(e0, registry.epoch());
+    EXPECT_EQ(e2, registry.epoch());
+}
+
+TEST_F(KlassRegistryTest, FrameSampledBeforeAnotherClassRegisteredIsStaleForThatClass) {
+    // A frame whose Method* memory now belongs to a class registered after the
+    // sample -- at any address -- must not match that class.
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    uint32_t sampled = registry.epoch();
+    ASSERT_TRUE(registry.add(jni, klassAt(1), mirror(1)));
+    KlassRegistry::PinStatus status;
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(1), sampled, &status));
+    EXPECT_EQ(KlassRegistry::PIN_STALE, status);
+    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0), sampled, &status));
+    EXPECT_EQ(KlassRegistry::PIN_OK, status);
+}
+
+TEST_F(KlassRegistryTest, RedefinedClassIsRefusedForGood) {
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    EXPECT_FALSE(registry.isRedefined(klassAt(0)));
+    EXPECT_TRUE(registry.markRedefined(klassAt(0)));
+    EXPECT_TRUE(registry.isRedefined(klassAt(0)));
+    KlassRegistry::PinStatus status;
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), registry.epoch(), &status));
+    EXPECT_EQ(KlassRegistry::PIN_REDEFINED, status);
+    // Re-registering the same mirror does not clear the mark.
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    EXPECT_TRUE(registry.isRedefined(klassAt(0)));
+    EXPECT_FALSE(registry.markRedefined(klassAt(5)));
+}
+
+TEST_F(KlassRegistryTest, NewClassAtRedefinedClassAddressStartsUnmarked) {
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    ASSERT_TRUE(registry.markRedefined(klassAt(0)));
+    heap.collect(&mirrors[0]);
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(1)));
+    EXPECT_FALSE(registry.isRedefined(klassAt(0)));
+    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(0), registry.epoch()));
 }
 
 TEST_F(KlassRegistryTest, ReplacementBumpsEpochAndRejectsOlderFrames) {
@@ -246,14 +285,14 @@ TEST_F(KlassRegistryTest, ReplacementBumpsEpochAndRejectsOlderFrames) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(1)));
     EXPECT_NE(sampled_old, registry.epoch());
 
-    bool stale = false;
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), sampled_old, &stale));
-    EXPECT_TRUE(stale);
-    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(0), registry.epoch(), &stale));
-    EXPECT_FALSE(stale);
+    KlassRegistry::PinStatus status;
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), sampled_old, &status));
+    EXPECT_EQ(KlassRegistry::PIN_STALE, status);
+    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(0), registry.epoch(), &status));
+    EXPECT_EQ(KlassRegistry::PIN_OK, status);
 }
 
-TEST_F(KlassRegistryTest, PurgeBumpsEpochSoReinsertRejectsOlderFrames) {
+TEST_F(KlassRegistryTest, PurgedAddressReinsertedRejectsOlderFrames) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     uint32_t sampled_old = registry.epoch();
     heap.collect(&mirrors[0]);
@@ -265,21 +304,21 @@ TEST_F(KlassRegistryTest, PurgeBumpsEpochSoReinsertRejectsOlderFrames) {
     // klassAt(0) comes back as a first insert, not a replacement.
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(1000)));
 
-    bool stale = false;
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), sampled_old, &stale));
-    EXPECT_TRUE(stale);
-    // Classes that stayed live across the purge still accept their old frames.
-    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(1), sampled_old, &stale));
-    EXPECT_FALSE(stale);
+    KlassRegistry::PinStatus status;
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), sampled_old, &status));
+    EXPECT_EQ(KlassRegistry::PIN_STALE, status);
+    // A frame sampled now matches.
+    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(1), registry.epoch(), &status));
+    EXPECT_EQ(KlassRegistry::PIN_OK, status);
 }
 
 TEST_F(KlassRegistryTest, UnloadedClassIsNotReportedStale) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     uint32_t sampled = registry.epoch();
     heap.collect(&mirrors[0]);
-    bool stale = true;
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), sampled, &stale));
-    EXPECT_FALSE(stale);
+    KlassRegistry::PinStatus status;
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), sampled, &status));
+    EXPECT_EQ(KlassRegistry::PIN_ABSENT, status);
 }
 
 TEST_F(KlassRegistryTest, EpochComparisonSurvivesWraparound) {

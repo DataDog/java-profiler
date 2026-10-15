@@ -74,6 +74,10 @@ private:
     // allocating its jmethodIDs. Called wherever the other modes preload.
     static bool registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 
+    // fjmethodid=lazy: marks `klass` in _klass_registry before a redefinition
+    // (see klassRegistry.h for why its raw frames are refused from then on).
+    static void beforeClassRedefinition(JNIEnv *jni, jclass klass);
+
     // fjmethodid=lazy half of resolve(): pins the class registered under
     // `holder`, refuses it if `tag` (the frame's, see _tag_with_trace_id)
     // shows the frame came from an earlier class at that address, checks that
