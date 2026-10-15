@@ -12,6 +12,7 @@
 #include "guards.h"
 #include "hotspot/hotspotSupport.h"
 #include "hotspot/jitCodeCache.h"
+#include "hotspot/klassTraceId.h"
 #include "hotspot/vmStructs.inline.h"
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
@@ -1470,6 +1471,10 @@ KlassRegistry HotspotSupport::_klass_registry;
 
 bool HotspotSupport::canResolveLazily() {
     return VMStructs::hasKlassMethods();
+}
+
+void HotspotSupport::initLazyResolution(JNIEnv* jni) {
+    KlassTraceId::calibrate(jni);
 }
 
 bool HotspotSupport::registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {

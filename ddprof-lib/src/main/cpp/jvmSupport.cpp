@@ -75,6 +75,7 @@ void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
     JMethodIDLoadStats state = Fully_loaded;
     if (VM::isHotspot() && !HotspotSupport::shouldPreloadJmethodIDs(args)) {
         if (args._lazy_jmethodID && HotspotSupport::canResolveLazily()) {
+            HotspotSupport::initLazyResolution(jni);
             state = Lazy_loaded;
         } else {
             HotspotSupport::initClassloaderInfo(jni);

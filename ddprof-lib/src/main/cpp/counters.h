@@ -189,6 +189,9 @@
   X(METHOD_RESOLVE_LAZY_STALE, "method_resolve_lazy_stale")                   \
   X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
   X(WALKVM_RAW_FRAME_UNTAGGABLE, "walkvm_raw_frame_untaggable")               \
+  /* Gauge: Klass::_trace_id offset found by KlassTraceId::calibrate(), -1 if \
+   * calibration ran and failed, 0 if it has not run. */                     \
+  X(KLASS_TRACE_ID_OFFSET, "klass_trace_id_offset")                           \
   /* Strict subset of SAMPLES_DROPPED_THREAD_LOCAL, not an independent count: \
    * ThreadLocalDataPool::claim() increments this on capacity exhaustion, and \
    * every acquireCurrent() caller that gets nullptr back -- for this or any  \
