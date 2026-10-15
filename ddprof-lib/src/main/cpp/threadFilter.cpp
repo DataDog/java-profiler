@@ -167,7 +167,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
         slot->recording_epoch.store(0, std::memory_order_relaxed);
         slot->context_window_state.store(0, std::memory_order_relaxed);
         if (_block_tracker != nullptr) {
-            _block_tracker->resetSlot(reused_slot, OSThreadState::UNKNOWN);
+            _block_tracker->resetSlotForReuse(reused_slot);
         }
         if (!indexOrRollback(*slot, reused_slot, tid)) {
             pushToFreeList(reused_slot);
@@ -212,7 +212,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
     slot->recording_epoch.store(0, std::memory_order_relaxed);
     slot->context_window_state.store(0, std::memory_order_relaxed);
     if (_block_tracker != nullptr) {
-        _block_tracker->resetSlot(index, OSThreadState::UNKNOWN);
+        _block_tracker->resetSlot(index);
     }
     if (!indexOrRollback(*slot, index, tid)) {
         pushToFreeList(index);
@@ -250,7 +250,7 @@ void ThreadFilter::refreshSlotForRecording(SlotID slot_id, Slot* slot, Recording
     }
 
     if (_block_tracker != nullptr) {
-        _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
+        _block_tracker->resetSlot(slot_id);
     }
     slot->recording_epoch.store(epoch, std::memory_order_release);
 }
@@ -408,6 +408,49 @@ ThreadFilter::Slot* ThreadFilter::activeSlotForId(SlotID slot_id,
     return slot;
 }
 
+ThreadFilter::SlotID ThreadFilter::ensureCurrentThreadSlot(ProfiledThread* current) {
+    int tid = current->tid();
+    if (unlikely(tid < 0)) {
+        return -1;
+    }
+
+    SlotID slot_id = current->filterSlotId();
+    if (likely(slot_id >= 0)) {
+        if (likely(activeSlotForId(slot_id, tid) != nullptr)) {
+            return slot_id;
+        }
+        current->setFilterSlotId(-1);
+    }
+
+    // Bounded to at most once per thread lifetime (cold TLS) plus once per
+    // recording-epoch transition this thread observes (stale cached slot),
+    // not a per-call cost. THREAD_REGISTRY_HOOK_REREGISTRATION counts every
+    // attempt, including lock-free rejections inside registerThread() when
+    // the registry is full (tracked separately by
+    // THREAD_REGISTRY_CAPACITY_EXHAUSTED).
+    Counters::increment(THREAD_REGISTRY_HOOK_REREGISTRATION);
+    slot_id = registerThread(tid);
+    if (slot_id >= 0) {
+        current->setFilterSlotId(slot_id);
+    }
+    return slot_id;
+}
+
+bool ThreadFilter::lookupThreadEntry(ThreadEntry& entry,
+                                     RecordingEpoch epoch) const {
+    SlotID slot_id = -1;
+    Slot* slot = epoch != 0 ? lookupByTid(entry.tid, epoch, &slot_id)
+                            : lookupByTid(entry.tid, &slot_id);
+    if (slot == nullptr) {
+        return false;
+    }
+    entry.slot = slot;
+    entry.slot_id = slot_id;
+    entry.lifecycle_generation = slot->lifecycleGeneration();
+    entry.recording_epoch = slot->recordingEpoch();
+    return true;
+}
+
 void ThreadFilter::initFreeList() {
     // Initialize the free list storage
     for (int i = 0; i < kFreeListSize; ++i) {
@@ -476,14 +519,15 @@ bool ThreadFilter::add(int tid, SlotID slot_id) {
         // A block/park run's exit can be missed (e.g. an exception path with
         // no finally), leaving the slot "owned" forever and permanently
         // suppressed. add() is only ever called by the slot's own thread
-        // (ensureCurrentThreadFilterSlot() uses current->tid()), which
-        // cannot itself be inside a block run at this exact point, so it is
-        // always safe to drop a stuck active block run on every context
-        // entry. Only the active-run fields are cleared, not the
-        // unowned-blocked sampling weight -- see
-        // WallClockBlockTracker::BlockState::clearActiveBlockRun().
+        // (ensureCurrentThreadSlot() uses current->tid()), which cannot
+        // itself be inside a JAVA/JVMTI/NATIVE block run at this exact point,
+        // so it is always safe to drop a stuck one on every context entry.
+        // Only the active-run fields are cleared, not the unowned-blocked
+        // sampling weight -- see
+        // WallClockBlockTracker::BlockState::clearActiveBlockRun(), which
+        // also explains why a TASK_BLOCK run is exempt from this clear.
         if (_block_tracker != nullptr) {
-            _block_tracker->clearActiveBlockRun(slot_id, OSThreadState::UNKNOWN);
+            _block_tracker->clearActiveBlockRun(slot_id);
         }
         slot.enterContextWindow();
         return true;
@@ -524,11 +568,19 @@ void ThreadFilter::unregisterThreadLocked(SlotID slot_id, int expected_tid) {
     int tid = slot->nativeTid();
     if (expected_tid >= 0 && tid != expected_tid) return;
     unindexSlot(slot_id, tid);
+    if (_block_tracker != nullptr && _block_tracker->hasActiveBlockRun(slot_id)) {
+        // A thread should never unregister while still holding an active block
+        // run (its own synchronous begin/end pair must complete on the same
+        // still-live thread first). If this ever fires, block_generation resets
+        // on the next reuse of this slot are relying on an invariant that just
+        // broke -- investigate immediately rather than trusting the reset is safe.
+        Counters::increment(THREAD_REGISTRY_UNREGISTER_ACTIVE_BLOCK_RUN);
+    }
     slot->recording_epoch.store(0, std::memory_order_release);
     slot->tid.store(-1, std::memory_order_release);
     slot->context_window_state.store(0, std::memory_order_release);
     if (_block_tracker != nullptr) {
-        _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
+        _block_tracker->resetSlot(slot_id);
     }
     pushToFreeList(slot_id);
 }
@@ -564,6 +616,9 @@ void ThreadFilter::resetRegistrationsLocked() {
             slot.context_window_state.store(0, std::memory_order_release);
         }
     }
+    // resetAll() intentionally leaves each slot's block_generation untouched:
+    // it must stay monotonic across a stop/restart so a stale pre-restart
+    // token can never numerically collide with a token issued after.
     if (_block_tracker != nullptr) {
         _block_tracker->resetAll();
     }
@@ -714,8 +769,8 @@ void ThreadFilter::clearActive() {
 void ThreadFilter::resetSlotRunState(SlotID slot_id) {
     if (slot_id < 0 || _block_tracker == nullptr) return;
     // Clear stale suppression state so a new thread in this slot cannot inherit
-    // its predecessor's active block or once-per-run sampled marker.
-    _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
+    // its predecessor's active block or sampled generation.
+    _block_tracker->resetSlot(slot_id);
 }
 
 void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {

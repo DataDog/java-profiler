@@ -28,6 +28,7 @@
 
 struct ThreadEntry;  // defined after ThreadFilter; carries a pointer to a ThreadFilter::Slot
 class WallClockBlockTracker;  // wall-clock owned/unowned block-run suppression state, see wallClockBlockTracker.h
+class ProfiledThread;
 
 class ThreadFilter {
 public:
@@ -186,7 +187,23 @@ public:
     Slot* lookupByTid(int tid, SlotID* out_slot_id = nullptr) const;
     Slot* lookupByTid(int tid, RecordingEpoch epoch, SlotID* out_slot_id = nullptr) const;
     Slot* activeSlotForId(SlotID slot_id, int tid) const;
+    // Populates lifecycle metadata from an existing mapping without registering
+    // the TID. Timer-side observation must remain read-only.
+    bool lookupThreadEntry(ThreadEntry& entry, RecordingEpoch epoch) const;
     void deactivateRecording();
+    SlotID slotIdByTid(int tid) const { return lookupSlotIdByTid(tid); }
+
+    // Validates `current`'s cached filter slot against this registry and
+    // self-heals it via registerThread() if it is missing or stale (e.g. an
+    // unfiltered recording restart reset the registry since the slot was
+    // cached). registerThread() returns the same slot number for a tid that
+    // is already indexed, so healing never reassigns a live thread to a
+    // different slot. Every block-run JNI entry point that resolves its own
+    // slot (filterThreadAdd0, beginTaskBlock0, blockEnter0/parkEnter0) must
+    // go through this instead of reading ProfiledThread::filterSlotId()
+    // directly, since a stale cached value would otherwise make slot
+    // comparisons against a block-run token meaningless.
+    SlotID ensureCurrentThreadSlot(ProfiledThread* current);
 
 private:
 

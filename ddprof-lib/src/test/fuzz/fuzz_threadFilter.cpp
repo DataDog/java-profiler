@@ -37,7 +37,7 @@
  *       model still considers tid the current owner of slot_id.
  *   I3. After init() resets the registry, every slot this run ever put into
  *       a blocked run reports UNKNOWN active-block-state and
- *       sampled-this-run == false (resetAll() must have actually run).
+ *       a zero sampled block generation (resetAll() must have actually run).
  *   I4. A generation-checked exitBlockedRun() called with a generation other
  *       than the block run's current one must return false and must not
  *       change that slot's active-block-state (a stale/forged token must
@@ -148,9 +148,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         auto tok_it = g_last_token.find(it->second);
         if (tok_it != g_last_token.end()) {
           uint8_t corruption_byte = nextByte();
-          u32 correct_generation = WallClockBlockTracker::tokenGeneration(tok_it->second);
+          u64 correct_generation = WallClockBlockTracker::tokenGeneration(tok_it->second);
           bool corrupt = (corruption_byte & 0x1) != 0;
-          u32 generation = corrupt
+          u64 generation = corrupt
               ? correct_generation + 1 + (corruption_byte >> 1)
               : correct_generation;
 
@@ -186,7 +186,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         WallClockBlockTracker::BlockState* block_slot = g_tracker->slotForId(slot_id);
         if (block_slot == nullptr) continue;
         if (block_slot->activeBlockState() != OSThreadState::UNKNOWN ||
-            block_slot->sampledThisRun()) {
+            block_slot->sampledBlockGeneration() != 0) {
           // resetAll() must have cleared every slot on registry reset (I3).
           __builtin_trap();
         }
