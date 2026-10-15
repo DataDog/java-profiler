@@ -580,8 +580,13 @@ Ring PerfEvents::_ring;
 CStack PerfEvents::_cstack;
 bool PerfEvents::_use_mmap_page;
 
-static int __intsort(const void *a, const void *b) {
-  return *(const int *)a > *(const int *)b;
+int PerfEvents::compareTids(const void *a, const void *b) {
+  // qsort() needs a negative result when a orders first. Returning only
+  // `a > b` (0 or 1) happens to work with glibc's merge sort, which tests
+  // `cmp <= 0`, but musl's smoothsort then leaves the list unsorted.
+  int x = *(const int *)a;
+  int y = *(const int *)b;
+  return (x > y) - (x < y);
 }
 
 int PerfEvents::registerThread(int tid) {
@@ -989,7 +994,7 @@ Error PerfEvents::start(Arguments &args) {
   }
   delete thread_list;
 
-  qsort(threads, threads_sz, sizeof(int), __intsort);
+  qsort(threads, threads_sz, sizeof(int), compareTids);
 
   int err = 0;
   int threads_idx = 0;
