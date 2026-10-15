@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk11
 
 ## musl-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-10-15 09:27:39 EDT
+**Date:** 2026-10-15 09:57:55 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 77 |
-| CPU Cores (end) | 81 |
+| CPU Cores (start) | 68 |
+| CPU Cores (end) | 66 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 567 |
-| Sample Rate | 9.45/sec |
-| Health Score | 591% |
-| Threads | 8 |
-| Allocations | 374 |
+| CPU Samples | 616 |
+| Sample Rate | 10.27/sec |
+| Health Score | 642% |
+| Threads | 9 |
+| Allocations | 409 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 734 |
-| Sample Rate | 12.23/sec |
-| Health Score | 764% |
+| CPU Samples | 777 |
+| Sample Rate | 12.95/sec |
+| Health Score | 809% |
 | Threads | 9 |
-| Allocations | 532 |
+| Allocations | 500 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 77-81 cores)</summary>
+<summary>CPU Timeline (2 unique values: 66-68 cores)</summary>
 
 ```
-1792070519 77
-1792070524 77
-1792070529 77
-1792070534 77
-1792070539 77
-1792070544 77
-1792070549 77
-1792070554 77
-1792070559 77
-1792070564 77
-1792070569 77
-1792070574 77
-1792070579 77
-1792070584 77
-1792070589 77
-1792070594 77
-1792070599 77
-1792070604 81
-1792070609 81
-1792070614 81
+1792072254 68
+1792072259 68
+1792072264 68
+1792072269 68
+1792072274 68
+1792072279 68
+1792072284 68
+1792072289 68
+1792072294 68
+1792072299 68
+1792072304 68
+1792072309 68
+1792072314 68
+1792072319 66
+1792072324 66
+1792072329 66
+1792072334 66
+1792072339 66
+1792072344 66
+1792072349 66
 ```
 </details>
 
