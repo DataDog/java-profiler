@@ -16,6 +16,7 @@ the runner script.
 | `alloc-storm`     | Java alloc engine + GOT-patched libc malloc/free                         |
 | `trace-context`   | `setTraceContext`/`clearTraceContext` racing signals, span ID propagation |
 | `reapply-context-value` | concurrent per-slot `setContextValue`/`clearContextValue` churn interleaved with span activation, racing the all-native record's write/read window |
+| `park-block-churn` | `ThreadFilter`/`WallClockBlockTracker` registry+block-run races: sleep/park/wait/contended-monitor blocking (some interrupted mid-block) on short-lived threads, racing slot reuse and teardown against the owned/unowned block-run suppression path |
 
 ## Deferred
 
