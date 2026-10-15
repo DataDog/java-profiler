@@ -72,15 +72,16 @@ void JVMSupport::setLoadState(JMethodIDLoadStats state) {
 void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
     JMethodIDLoadStats current_state = getLoadState();
 
-    bool load_all = true;
-    if (VM::isHotspot()) {
-        if (!HotspotSupport::shouldPreloadJmethodIDs(args)) {
+    JMethodIDLoadStats state = Fully_loaded;
+    if (VM::isHotspot() && !HotspotSupport::shouldPreloadJmethodIDs(args)) {
+        if (args._lazy_jmethodID && HotspotSupport::canResolveLazily()) {
+            state = Lazy_loaded;
+        } else {
             HotspotSupport::initClassloaderInfo(jni);
-            load_all = false;
+            state = Partial_loaded;
         }
     }
 
-    JMethodIDLoadStats state = load_all ? Fully_loaded : Partial_loaded;
     if (state == current_state) {
         return;
     }
@@ -149,7 +150,8 @@ void JVMSupport::loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni) {
         }
         jvmti->Deallocate((unsigned char *)classes);
     }
-    TEST_LOG("Preloaded jmethodIDs for %d/%d classes", loaded_count, class_count);
+    TEST_LOG("%s %d/%d classes", getLoadState() == Lazy_loaded ? "Registered (lazy jmethodIDs)" : "Preloaded jmethodIDs for",
+             loaded_count, class_count);
 }
 
 bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
@@ -160,6 +162,9 @@ bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
         return false;
     }
 
+    if (state == Lazy_loaded) {
+        return HotspotSupport::registerClass(jvmti, jni, klass);
+    }
     if (VM::isHotspot()) {
         return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, state == Fully_loaded /* load all */);
     } else {

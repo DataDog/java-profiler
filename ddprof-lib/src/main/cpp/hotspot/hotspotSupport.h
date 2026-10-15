@@ -10,6 +10,7 @@
 #include "guards.h"
 #include "hotspot/hotspotStackFrame.h"
 #include "hotspot/jitCodeCache.h"
+#include "hotspot/klassRegistry.h"
 #include "frame.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
@@ -48,6 +49,20 @@ private:
                                  bool *truncated, HotspotStackFrame::RegisterSnapshot& ctx_snapshot);
 
     static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all);
+
+    // fjmethodid=lazy: liveness registry for every loaded class, consulted by
+    // resolve() before it touches a raw Method*. See klassRegistry.h.
+    static KlassRegistry _klass_registry;
+
+    // fjmethodid=lazy: records `klass` in _klass_registry instead of
+    // allocating its jmethodIDs. Called wherever the other modes preload.
+    static bool registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
+
+    // fjmethodid=lazy half of resolve(): pins the class registered under
+    // `holder`, checks that `vm_method` is still one of its methods, and only
+    // then reads or allocates the jmethodID. `holder` and `idnum` were read
+    // from the unverified Method* and are only used as lookup keys.
+    static jmethodID resolveViaRegistry(VMMethod* vm_method, const void* holder, int idnum);
 
     // Runs getJavaTraceAsync() under withUcontextFaultRecovery(), then layers
     // on its two post-processing steps: resolving frame types for the top
@@ -163,6 +178,11 @@ public:
         return args._force_jmethodID ||
             !(cstack == CSTACK_VM || cstack == CSTACK_DEFAULT); // Can only use Method* when cstack = vm
     }
+
+    // fjmethodid=lazy needs the Klass*/methods-array structs on top of the
+    // ones the raw Method* walk already uses; without them, the caller falls
+    // back to the partial preload mode.
+    static bool canResolveLazily();
 
     // Resolve a method to a jmethodID at dumping time
     static jmethodID resolve(const void* method);

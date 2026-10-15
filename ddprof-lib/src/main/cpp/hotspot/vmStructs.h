@@ -495,6 +495,13 @@ class VMStructs {
         return _has_class_loader_data;
     }
 
+    // What fjmethodid=lazy needs on top of the Method* walk: mapping a
+    // java.lang.Class to its Klass* (KlassRegistry) and reading a Klass*'s
+    // methods array (VMKlass::containsMethod).
+    static bool hasKlassMethods() {
+        return _has_method_structs && _methods_offset >= 0 && _klass != NULL;
+    }
+
     static bool hasNativeThreadId() {
         return _has_native_thread_id;
     }
@@ -718,6 +725,33 @@ DECLARE(VMKlass)
         assert(_jmethod_ids_offset >= 0);
         return __atomic_load_n((jmethodID**) at(_jmethod_ids_offset), __ATOMIC_ACQUIRE);
     }
+
+    // True if `method` is one of the current methods of this InstanceKlass.
+    // InstanceKlass::_methods is an Array<Method*>: an int length followed by
+    // the elements, which start at the next pointer-aligned offset. `method` is
+    // only compared, never dereferenced, so it may be stale. `idnum_hint` is
+    // the method's idnum if known (or -1): HotSpot keeps methods()->at(idnum)
+    // equal to the method with that idnum until a redefinition reorders them,
+    // so the hint usually avoids the linear scan. The klass itself must be
+    // kept alive by the caller.
+    bool containsMethod(const void* method, int idnum_hint) {
+        assert(_methods_offset >= 0);
+        const char* methods = *(const char**) at(_methods_offset);
+        if (methods == NULL) {
+            return false;
+        }
+        int len = *(const int*)methods;
+        const void* const* data = (const void* const*)(methods + sizeof(void*));
+        if (idnum_hint >= 0 && idnum_hint < len && data[idnum_hint] == method) {
+            return true;
+        }
+        for (int i = 0; i < len; i++) {
+            if (data[i] == method) {
+                return true;
+            }
+        }
+        return false;
+    }
 DECLARE_END
 
 DECLARE(VMJavaFrameAnchor)
@@ -905,6 +939,7 @@ DECLARE(VMConstMethod)
     inline VMConstantPool* constants_or_null() const;
     inline VMSymbol* name() const;
     inline VMSymbol* signature() const;
+    inline u16 idnum() const;
 private:
     inline u16 nameIndex() const;
     inline u16 signatureIndex() const;
