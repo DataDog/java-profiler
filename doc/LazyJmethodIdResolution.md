@@ -114,7 +114,7 @@ It is not in `gHotSpotVMStructs`. From the local OpenJDK sources:
   JFR is recording. It is globally monotonic, so it is unique per incarnation.
 - **Encoding:** the low 16 bits are JFR tag/epoch bits that JFR changes while it runs.
   Use `raw >> 16` only.
-- **Not present** in builds without JFR: JDK 8 before the 8u272 backport, and
+- **Not present** in builds without JFR: JDK 8 before 8u262 (when JFR reached upstream 8u), and
   `--disable-jfr` builds. Option A is still needed as a fallback.
 
 | Source tree | `_trace_id` declared after | Nearest vmStructs anchor |
@@ -132,6 +132,38 @@ alone.
 
 Advantages over A: no global state, no trace splitting, and two incarnations get the same
 stored bits only if a multiple of 2^N classes were created between them.
+
+#### Offset discovery — implemented (calibration only, not used by the sampler yet)
+
+Offsets can move even between minor releases, so there is no version table. `KlassTraceId::calibrate()`
+(hotspot/klassTraceId.{h,cpp}) runs when lazy mode is selected:
+
+- It resolves `[[[[[[Ljava/lang/Void;`, which makes the JVM create up to six array klasses back
+  to back, each getting the next trace ID. No classes of our own are defined.
+- It scans every 8-byte-aligned offset in `[8, sizeof(Klass))` and accepts one only if all six
+  probes hold nonzero `raw >> 16` values, pairwise distinct, within `5 + ID_SLACK (64)` of each
+  other. This rejects pointers (a few hundred bytes apart, so `>> 16` collapses them), equal small
+  ints, and compressed-klass bits in a mark word (far apart). More than one match means failure.
+- The result goes to the `klass_trace_id_offset` gauge: the offset, -1 on failure, 0 if
+  calibration hasn't run.
+
+**Assumptions it relies on, swept across 36 GA tags** (17 GA – 17.0.17, 21 GA – 21.0.9, 22–26, 28+18):
+`_trace_id` is declared in `class Klass` (so array klasses have it, and it lies inside
+`sizeof(Klass)`); `arrayKlass.cpp` has `INIT_ID(this)`; `TRACE_ID_SHIFT` is 16; `next_class_id`
+shifts the counter by it. All hold on every tag. The field's neighbour was `_access_flags` through
+24 (with different preceding fields in 24) and `_archived_mirror_index` from 25 on. LTS lines
+swept too, from blob-less partial clones of openjdk/jdk8u, jdk11u and jdk25u:
+
+| Line | GA tags | Result | Declared after |
+|---|---|---|---|
+| 8u | 8u201 – 8u252 (7) | no `_trace_id` (pre-JFR): calibration fails, epoch fallback | — |
+| 8u | 8u262 – 8u504 (29) | all assumptions hold | `_biased_lock_revocation_count` |
+| 11u | 11.0.2 – 11.0.32.1 (36) | all assumptions hold | `_access_flags` |
+| 25u | 25 GA – 25.0.4.1 (6) | all assumptions hold | `_archived_mirror_index` |
+
+So 107 GA tags in total. The sweep compares neighbouring declarations, not absolute byte offsets.
+That's enough, since calibration assumes none. Script: `/tmp/jfrsweep/sweep2.sh <repo> <tag>...`
+(Mac), with `P=hotspot/src/share/vm/` for 8u.
 
 #### Confirming the offset
 

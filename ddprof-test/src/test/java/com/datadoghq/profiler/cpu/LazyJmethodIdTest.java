@@ -133,6 +133,23 @@ public class LazyJmethodIdTest extends AbstractProfilerTest {
         }
     }
 
+    /**
+     * On HotSpot builds with JFR, lazy mode must locate {@code Klass::_trace_id} by probing,
+     * since vmStructs does not expose it.
+     */
+    @Test
+    public void traceIdOffsetIsCalibrated() throws Exception {
+        assumeHotspot();
+        waitForProfilerReady(2000);
+        Long offset = profiler.getDebugCounters().get("klass_trace_id_offset");
+        System.out.println("klass_trace_id_offset=" + offset + " java.version=" + System.getProperty("java.version"));
+        // Absent in builds without counters.
+        Assumptions.assumeTrue(offset != null, "debug counters not available");
+        // JDK 8 has JFR only from 8u272 on; without it there is no field to find.
+        Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11), "JFR may be absent on JDK 8");
+        assertTrue(offset > 0, "Klass::_trace_id offset was not found: " + offset);
+    }
+
     private static void assumeHotspot() {
         // Lazy mode is HotSpot-only (raw Method* frames come from walkVM).
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9() || Platform.isGraal());

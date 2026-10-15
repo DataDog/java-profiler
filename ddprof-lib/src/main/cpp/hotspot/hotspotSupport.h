@@ -186,6 +186,10 @@ public:
     // back to the partial preload mode.
     static bool canResolveLazily();
 
+    // fjmethodid=lazy setup that needs JNI: locates Klass::_trace_id
+    // (KlassTraceId::calibrate).
+    static void initLazyResolution(JNIEnv* jni);
+
     // Resolve a raw-pointer frame to a jmethodID at dumping time. Takes the
     // frame's method field and encoded bci as stored, tag bits included.
     static jmethodID resolve(const void* tagged_method, int bci);
