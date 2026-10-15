@@ -190,6 +190,9 @@
   /* REDEFINED: raw frame of a class that has been redefined (its Method*s   \
    * may have been freed and reused); serializes as "unknown". */            \
   X(METHOD_RESOLVE_LAZY_REDEFINED, "method_resolve_lazy_redefined")           \
+  /* Registered classes marked by the redefinition hooks (once per class   \
+   * per redefine/retransform call). */                                      \
+  X(KLASS_REGISTRY_REDEFINITIONS_MARKED, "klass_registry_redefinitions_marked") \
   /* Registrations whose class trace ID no longer fits in a raw frame's     \
    * 25-bit tag. Nonzero means trace-ID tags of two classes can now collide: \
    * a frame sampled from an unloaded class could then, if a newer class     \

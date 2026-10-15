@@ -1507,8 +1507,8 @@ bool HotspotSupport::isInstanceClass(jvmtiEnv *jvmti, jclass klass) {
 }
 
 void HotspotSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-    if (isInstanceClass(jvmti, klass)) {
-        _klass_registry.markRedefined(VMKlass::fromJavaClass(jni, klass));
+    if (isInstanceClass(jvmti, klass) && _klass_registry.markRedefined(VMKlass::fromJavaClass(jni, klass))) {
+        Counters::increment(KLASS_REGISTRY_REDEFINITIONS_MARKED);
     }
 }
 
