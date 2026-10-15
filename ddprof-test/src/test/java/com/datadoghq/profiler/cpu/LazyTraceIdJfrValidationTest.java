@@ -31,10 +31,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Validates, against JFR itself, the {@code Klass::_trace_id} offset that {@code fjmethodid=lazy}
  * finds by calibration.
  *
- * <p>A child JVM runs both the profiler (lazy mode) and JFR's own CPU sampler while spinning in a
- * probe class. In debug builds the profiler logs the trace ID it reads for each class it allocates
- * jmethodIDs for; JFR records the same class in its {@code jdk.ExecutionSample} stack frames, and
- * {@code RecordedClass.getId()} is JFR's trace ID for it. The two must be equal.
+ * <p>A child JVM runs the profiler in lazy mode and a JFR recording of {@code jdk.ClassDefine} while
+ * it spins in a probe class. In debug builds the profiler logs the trace ID it reads for each class
+ * it allocates jmethodIDs for. JFR emits {@code jdk.ClassDefine} when the probe class is created,
+ * and the event's {@code definedClass} carries JFR's trace ID for it as {@code RecordedClass.getId()}.
+ * The two must be equal. {@code jdk.ClassDefine} is used rather than JFR's execution samples
+ * because it is emitted exactly once per class on every JFR-enabled release (8u262 on), while JFR's
+ * pre-25 sampler recorded almost no {@code jdk.ExecutionSample} events for the spinning probe.
  *
  * <p>This check runs in CI only. The profiler never calls into JFR at runtime: JFR's
  * {@code JVM.getClassId()} touches JFR state that only exists once its recorder has been created,
@@ -55,11 +58,20 @@ public class LazyTraceIdJfrValidationTest extends AbstractProcessProfilerTest {
 
         Path jfrRecording = Files.createTempFile("lazy-trace-id-jfr-", ".jfr");
         Path ddprofRecording = Files.createTempFile("lazy-trace-id-ddprof-", ".jfr");
+        Path jfrSettings = Files.createTempFile("lazy-trace-id-", ".jfc");
+        Files.write(jfrSettings, Arrays.asList(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+                "<configuration version=\"2.0\">",
+                "  <event name=\"jdk.ClassDefine\">",
+                "    <setting name=\"enabled\">true</setting>",
+                "    <setting name=\"stackTrace\">false</setting>",
+                "  </event>",
+                "</configuration>"));
         try {
             AtomicLong loggedId = new AtomicLong(-1);
             AtomicBoolean traceIdTags = new AtomicBoolean(false);
             LaunchResult result = launch("lazy-trace-id",
-                    Arrays.asList("-XX:StartFlightRecording=filename=" + jfrRecording + ",settings=profile,dumponexit=true"),
+                    Arrays.asList("-XX:StartFlightRecording=filename=" + jfrRecording + ",settings=" + jfrSettings + ",dumponexit=true"),
                     "start,cpu=1ms,cstack=vm,fjmethodid=lazy,jfr,file=" + ddprofRecording,
                     line -> {
                         if (line.contains("[TEST::INFO] Raw frame tags: klass trace id")) {
@@ -79,12 +91,13 @@ public class LazyTraceIdJfrValidationTest extends AbstractProcessProfilerTest {
 
             Set<Long> jfrIds = jfrClassIds(jfrRecording, PROBE_CLASS);
             System.out.println("profiler trace id=" + loggedId.get() + ", JFR class ids=" + jfrIds);
-            assertTrue(!jfrIds.isEmpty(), "JFR recorded no execution sample in " + PROBE_CLASS);
+            assertTrue(!jfrIds.isEmpty(), "JFR recorded no jdk.ClassDefine for " + PROBE_CLASS);
             assertEquals(new HashSet<>(Arrays.asList(loggedId.get())), jfrIds,
                     "the calibrated Klass::_trace_id offset does not read JFR's class ID");
         } finally {
             try { Files.deleteIfExists(jfrRecording); } catch (IOException ignored) {}
             try { Files.deleteIfExists(ddprofRecording); } catch (IOException ignored) {}
+            try { Files.deleteIfExists(jfrSettings); } catch (IOException ignored) {}
         }
     }
 
@@ -98,9 +111,9 @@ public class LazyTraceIdJfrValidationTest extends AbstractProcessProfilerTest {
     }
 
     /**
-     * Returns the IDs JFR gave {@code className} in the method types of its
-     * {@code jdk.ExecutionSample} stack frames. Uses jdk.jfr.consumer through reflection because
-     * the test sources compile with {@code --release 8}, which hides jdk.jfr.
+     * Returns the IDs JFR's {@code jdk.ClassDefine} events give {@code className}. Uses
+     * jdk.jfr.consumer through reflection because the test sources compile with
+     * {@code --release 8}, which hides jdk.jfr.
      */
     private static Set<Long> jfrClassIds(Path recording, String className) throws Exception {
         Class<?> recordingFile = Class.forName("jdk.jfr.consumer.RecordingFile");
@@ -108,19 +121,12 @@ public class LazyTraceIdJfrValidationTest extends AbstractProcessProfilerTest {
         Set<Long> ids = new HashSet<>();
         for (Object event : events) {
             Object type = call(event, "getEventType");
-            if (!"jdk.ExecutionSample".equals(call(type, "getName"))) {
+            if (!"jdk.ClassDefine".equals(call(type, "getName"))) {
                 continue;
             }
-            Object stackTrace = call(event, "getStackTrace");
-            if (stackTrace == null) {
-                continue;
-            }
-            for (Object frame : (List<?>) call(stackTrace, "getFrames")) {
-                Object method = call(frame, "getMethod");
-                Object clazz = method != null ? call(method, "getType") : null;
-                if (clazz != null && className.equals(call(clazz, "getName"))) {
-                    ids.add((Long) call(clazz, "getId"));
-                }
+            Object clazz = event.getClass().getMethod("getClass", String.class).invoke(event, "definedClass");
+            if (clazz != null && className.equals(call(clazz, "getName"))) {
+                ids.add((Long) call(clazz, "getId"));
             }
         }
         return ids;

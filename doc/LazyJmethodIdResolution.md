@@ -193,10 +193,15 @@ barrier).
   own sampler (`-XX:StartFlightRecording=…,settings=profile`) while it spins in a probe class.
 - In debug builds, `resolveViaRegistry` logs `Lazy jmethodIDs for <sig>, trace id N` for every
   class it allocates jmethodIDs for.
-- The test reads `jdk.ExecutionSample` stack frames through `jdk.jfr.consumer` (by reflection,
-  because the test sources compile with `--release 8`). It requires the probe class's
-  `RecordedClass.getId()` to equal the logged ID.
-- Result so far: JDK 25.0.1 (macOS) gives profiler 2382 and JFR 2382.
+- The child records only `jdk.ClassDefine` (a `.jfc` written by the test). JFR emits it once
+  when the probe class is created (`define_instance_class` on 8u/11u, `Jfr::on_klass_creation`
+  on mainline); its `definedClass` is the probe's `RecordedClass`. The test reads it through
+  `jdk.jfr.consumer` (by reflection, because the test sources compile with `--release 8`) and
+  requires `getId()` to equal the logged ID.
+- `jdk.ExecutionSample` was tried first. Before JDK 25, JFR's own sampler recorded almost no
+  samples for the spinning probe, even with our profiler not started, so it couldn't serve.
+- Results, profiler ID = JFR ID: 8u (musl) 2077, 11 (musl) 2152, 17 2065, 21 2154, 25 2211;
+  macOS 25 2210.
 
 **Tag kind bit:** kept from the prototype. The tag's top bit records whether a frame carries a
 trace ID or an epoch, so the epoch keeps 25 bits. `resolve()` goes by each frame's own kind, not by
@@ -304,11 +309,10 @@ through the `com.sun.management:type=DiagnosticCommand` MBean. It lives in
 | gtests: `klassRegistry_ut`, `klassTraceId_ut`, `hotspotLazyResolve_ut` (every reuse case under both tag sources), `frame_ut`, `jvmSupport_ut`, `arguments_ut` | pass (macOS; Linux debug + ASan before the trace-ID commits) |
 | `LazyJmethodIdTest` on JDK 8u462, 11.0.28 (musl) and 17.0.16, 21.0.8, 25.0.2 (glibc), aarch64 | pass, trace-ID tags on all five |
 | Calibrated offsets: 8u462 → 184, 11.0.28 → 168, 17.0.16 → 168, 21.0.8 → 184, 25.0.2 → 192 | measured |
-| `LazyTraceIdJfrValidationTest` (CI cross-check against JFR) | pass on JDK 25 (macOS, Linux); 8–21 see below |
+| `LazyTraceIdJfrValidationTest` (CI cross-check against JFR) | pass on JDK 8, 11 (musl), 17, 21, 25 (glibc) and macOS 25: profiler ID = JFR ID on each |
 | Runtime JFR cross-check | dropped, see "Confirming the offset" |
 | Review fixes: `SafeAccess` in `containsMethod`, redefinition marking, per-registration epoch, release link fix, tag-range tripwire | done |
 | Dump-latency benchmark; per-dump cache for repeated raw frames | open |
-| `LazyTraceIdJfrValidationTest` finds no JFR samples for the probe on JDK 8–21 (test setup, not an offset mismatch) | open |
 | `JmethodIdOverheadBenchTest.java`: temporary harness, don't commit | uncommitted |
 
 ### Files touched
