@@ -212,6 +212,11 @@ VMSymbol* VMConstMethod::signature() const {
     return cpool->symbolAt(sig_index);
 }
 
+u16 VMConstMethod::idnum() const {
+    assert(_constmethod_idnum_offset >= 0 && "Invalid idnum");
+    return *(u16*)at(_constmethod_idnum_offset);
+}
+
 u16 VMConstMethod::nameIndex() const {
     assert(_constmethod_name_index_offset >= 0 && "Invalid name index");
     return *(u16*)at(_constmethod_name_index_offset);

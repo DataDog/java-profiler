@@ -1453,6 +1453,23 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
     return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
 }
 
+KlassRegistry HotspotSupport::_klass_registry;
+
+bool HotspotSupport::canResolveLazily() {
+    return VMStructs::hasKlassMethods();
+}
+
+bool HotspotSupport::registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+    jint status = 0;
+    // Array and primitive classes have no methods, so no frame ever names them
+    // as a holder; skipping them keeps GetLoadedClasses() at start cheap.
+    if (jvmti->GetClassStatus(klass, &status) != JVMTI_ERROR_NONE ||
+        (status & (JVMTI_CLASS_STATUS_ARRAY | JVMTI_CLASS_STATUS_PRIMITIVE)) != 0) {
+        return false;
+    }
+    return _klass_registry.add(jni, VMKlass::fromJavaClass(jni, klass), klass);
+}
+
 // The three names resolve() needs, owned by resolve()'s frame. Each name has
 // a fixed-size inline buffer for the common case, with a malloc'd fallback
 // (up to MAX_SYMBOL_LEN) for names that don't fit -- see release() for why
@@ -1659,6 +1676,36 @@ static bool readMethodNames(const void* method, VMMethod** out_vm_method,
   return true;
 }
 
+// PHASE 1, fjmethodid=lazy variant -- runs under the same crash protection as
+// readMethodNames(). Reads only what KlassRegistry needs to decide whether the
+// Method* is still live: its holder Klass* and its idnum. Both come out of
+// metadata that may have been freed and reused, so they are lookup keys, not
+// facts -- resolveViaRegistry() validates them against a pinned class before
+// anything else is read from the Method*.
+static bool readMethodHolder(const void* method, VMMethod** out_vm_method,
+                             const void** out_holder, int* out_idnum) {
+  VMMethod* vm_method = VMMethod::cast_or_null(method);
+  if (vm_method == nullptr) {
+    return false;
+  }
+  VMConstMethod* const_method = vm_method->constMethod_or_null();
+  if (const_method == nullptr) {
+    return false;
+  }
+  VMConstantPool* const_pool = const_method->constants_or_null();
+  if (const_pool == nullptr) {
+    return false;
+  }
+  VMKlass* holder = const_pool->holder_or_null();
+  if (holder == nullptr) {
+    return false;
+  }
+  *out_vm_method = vm_method;
+  *out_holder = holder;
+  *out_idnum = const_method->idnum();
+  return true;
+}
+
 // PHASE 2 -- the JNI/JVMTI lookup, reading only the buffers phase 1 filled.
 // MUST run with crash protection *off*. Two reasons, both about siglongjmp
 // unwinding frames it must not:
@@ -1731,7 +1778,9 @@ static jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& 
   return method_id;
 }
 
-// This method only resolves methods that are loaded by system class loaders
+// Partial mode only reaches here for system-class-loader classes (FindClass
+// must be able to see them); lazy mode reaches here for every class without a
+// jmethodID and resolves it through _klass_registry instead.
 jmethodID HotspotSupport::resolve(const void* method) {
   assert(VM::isHotspot());
   NO_INJECTION_ASSERT(method != nullptr);
@@ -1760,9 +1809,12 @@ jmethodID HotspotSupport::resolve(const void* method) {
     return nullptr;
   }
 
+  const bool lazy = JVMSupport::getLoadState() == JVMSupport::Lazy_loaded;
   ResolvedNames names;
   VMMethod* vm_method = nullptr;
   jmethodID existing_id = nullptr;
+  const void* holder = nullptr;
+  int idnum = -1;
   bool walked = false;
 
   {
@@ -1791,15 +1843,59 @@ jmethodID HotspotSupport::resolve(const void* method) {
     }
     jmp_scope.install(&crash_protection_ctx);
 
-    walked = readMethodNames(method, &vm_method, &existing_id, &names);
+    walked = lazy ? readMethodHolder(method, &vm_method, &holder, &idnum)
+                  : readMethodNames(method, &vm_method, &existing_id, &names);
   }
   // --- crash protection is off from here on; see lookupMethodIdViaJni() ---
 
   if (!walked) {
     return nullptr;
   }
+  if (lazy) {
+    return resolveViaRegistry(vm_method, holder, idnum);
+  }
   if (existing_id != nullptr) {
     return existing_id;
   }
   return lookupMethodIdViaJni(vm_method, names, &HotspotSupport::loadMethodIDsIfNeededImpl);
+}
+
+// Runs with crash protection off (see lookupMethodIdViaJni() for why the
+// GetClassMethods call below must not run under a landing pad). Nothing here
+// dereferences vm_method until the class that owns it is pinned and the
+// method is confirmed to be one of that class's current methods.
+jmethodID HotspotSupport::resolveViaRegistry(VMMethod* vm_method, const void* holder, int idnum) {
+  JNIEnv* jni = VM::jni();
+  jclass clz = _klass_registry.pin(jni, holder);
+  if (clz == nullptr) {
+    // Either the class was unloaded after the sample was taken, or `holder`
+    // was read from a freed Method* and is garbage.
+    Counters::increment(METHOD_RESOLVE_LAZY_UNLOADED);
+    return nullptr;
+  }
+
+  jmethodID method_id = nullptr;
+  // The pinned class keeps its metadata alive, so its methods array is safe
+  // to read. A miss means the Method* was freed (and possibly its holder
+  // address reused), or it is an old version replaced by a redefinition.
+  if (!VMKlass::cast_raw(holder)->containsMethod(vm_method, idnum)) {
+    Counters::increment(METHOD_RESOLVE_LAZY_NOT_CURRENT);
+  } else {
+    method_id = vm_method->validatedId();
+    if (!isValidJMethodID(method_id)) {
+      // First sample from this class: allocate its jmethodIDs now, on the
+      // dump thread, instead of at ClassPrepare.
+      method_id = nullptr;
+      jvmtiEnv* jvmti = VM::jvmti();
+      if (jvmti != nullptr && loadMethodIDsIfNeededImpl(jvmti, jni, clz, true /*load all*/)) {
+        Counters::increment(METHOD_RESOLVE_LAZY_CLASS_LOADED);
+        jmethodID validated = vm_method->validatedId();
+        if (isValidJMethodID(validated)) {
+          method_id = validated;
+        }
+      }
+    }
+  }
+  jni->DeleteLocalRef(clz);
+  return method_id;
 }

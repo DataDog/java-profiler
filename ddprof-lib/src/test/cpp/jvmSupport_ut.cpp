@@ -65,6 +65,7 @@ public:
     static constexpr LoadState NoLoaded()      { return JVMSupport::No_loaded; }
     static constexpr LoadState PartialLoaded() { return JVMSupport::Partial_loaded; }
     static constexpr LoadState FullyLoaded()   { return JVMSupport::Fully_loaded; }
+    static constexpr LoadState LazyLoaded()    { return JVMSupport::Lazy_loaded; }
 };
 
 // ---------------------------------------------------------------------------
@@ -292,4 +293,33 @@ TEST_F(JVMSupportRestartTest, SecondStartWithPartialPreloadIsNotBlockedByStaleFu
     // Regression: before the fix, a stale Fully_loaded state short-circuited initExecution()...
     // so the state stayed Fully_loaded instead of downgrading.
     EXPECT_EQ(JVMSupportTestAccessor::PartialLoaded(), JVMSupportTestAccessor::getLoadState());
+}
+
+// fjmethodid=lazy needs VMStructs::hasKlassMethods(); without the Klass*/methods
+// structs (as in this binary, where no JVM populated VMStructs) it must fall
+// back to the partial preload mode, never enter Lazy_loaded with nothing to
+// resolve frames against.
+TEST_F(JVMSupportRestartTest, LazyFallsBackToPartialWithoutKlassStructs) {
+    Arguments lazy_args;
+    lazy_args._force_jmethodID = false;
+    lazy_args._lazy_jmethodID = true;
+    lazy_args._cstack = CSTACK_VM;
+
+    JVMSupport::initExecution(lazy_args, &mock_jvmti, reinterpret_cast<JNIEnv*>(&mock_jni));
+
+    EXPECT_NE(JVMSupportTestAccessor::LazyLoaded(), JVMSupportTestAccessor::getLoadState());
+    EXPECT_EQ(JVMSupportTestAccessor::PartialLoaded(), JVMSupportTestAccessor::getLoadState());
+}
+
+// Lazy mode, like partial mode, relies on walkVM's raw Method* frames; with a
+// cstack mode that goes through AsyncGetCallTrace it must preload everything.
+TEST_F(JVMSupportRestartTest, LazyRequiresVmStackWalker) {
+    Arguments lazy_args;
+    lazy_args._force_jmethodID = false;
+    lazy_args._lazy_jmethodID = true;
+    lazy_args._cstack = CSTACK_NO;
+
+    JVMSupport::initExecution(lazy_args, &mock_jvmti, reinterpret_cast<JNIEnv*>(&mock_jni));
+
+    EXPECT_EQ(JVMSupportTestAccessor::FullyLoaded(), JVMSupportTestAccessor::getLoadState());
 }

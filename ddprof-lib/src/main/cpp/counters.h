@@ -174,6 +174,14 @@
    * resolves via its malloc fallback and does not land here. The frame        \
    * serializes as "unknown". */                                               \
   X(METHOD_RESOLVE_SYMBOL_UNREADABLE, "method_resolve_symbol_unreadable")     \
+  /* fjmethodid=lazy resolution outcomes. UNLOADED: the frame's class is no   \
+   * longer registered or reachable. NOT_CURRENT: the class is alive but the  \
+   * Method* is not among its current methods (freed or redefined). Both      \
+   * serialize as "unknown". CLASS_LOADED: classes whose jmethodIDs were      \
+   * allocated at dump time because one of their methods was sampled. */      \
+  X(METHOD_RESOLVE_LAZY_UNLOADED, "method_resolve_lazy_unloaded")             \
+  X(METHOD_RESOLVE_LAZY_NOT_CURRENT, "method_resolve_lazy_not_current")       \
+  X(METHOD_RESOLVE_LAZY_CLASS_LOADED, "method_resolve_lazy_class_loaded")     \
   /* Strict subset of SAMPLES_DROPPED_THREAD_LOCAL, not an independent count: \
    * ThreadLocalDataPool::claim() increments this on capacity exhaustion, and \
    * every acquireCurrent() caller that gets nullptr back -- for this or any  \
