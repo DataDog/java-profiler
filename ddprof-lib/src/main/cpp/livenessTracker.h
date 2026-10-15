@@ -571,13 +571,34 @@ private:
   // holder excludes the exclusive one, but only this dedicated lock makes the
   // pool safe for any future second shared-lock mutator. Lock order: _table_lock
   // (any mode) is always acquired BEFORE _leak_tag_pool_lock, never the
-  // reverse; no path acquires _table_lock while holding the pool lock.
+  // reverse; no path acquires _table_lock while holding the pool lock. It also
+  // serializes every write of _leak_tag_incarnation (reads of the stamp take no
+  // lock - see leakTagIncarnation()).
   mutable SpinLock _leak_tag_pool_lock;
   int _leak_tag_free_list[LEAK_TAG_POOL_SIZE];
   int _leak_tag_free_count;
   // Per-tag ownership: set by acquireLeakTag(), cleared by releaseLeakTag(),
   // so a repeated release of a tag that was not re-acquired is ignored.
   bool _leak_tag_in_use[LEAK_TAG_POOL_SIZE];
+  // Per-slot ownership-period stamp. A leak tag is recycled once its object
+  // dies, so the tag alone does not identify one object: (tag, stamp) does.
+  // The stamp changes on every ownership transition of the slot - acquire
+  // (free -> in use), a real release (in use -> free), and every slot whose
+  // in-use bit flips in start()'s rebuild or in leakTagPoolResetForTest() -
+  // and never on a no-op (rejected or out-of-range release, unchanged slot).
+  // Written only under _leak_tag_pool_lock (atomic release stores), read
+  // lock-free with acquire semantics so heap callbacks and reference-chain
+  // code never take the pool lock. The u32 wraps after 2^32 transitions of one
+  // slot; a false "same owner" needs exactly that many transitions between a
+  // stamp's capture and its check, which is accepted as negligible.
+  u32 _leak_tag_incarnation[LEAK_TAG_POOL_SIZE];
+
+  // Advances slot `idx`'s ownership-period stamp. Caller holds
+  // _leak_tag_pool_lock.
+  void bumpLeakTagIncarnationLocked(int idx) {
+    __atomic_store_n(&_leak_tag_incarnation[idx],
+                     _leak_tag_incarnation[idx] + 1, __ATOMIC_RELEASE);
+  }
 
   jlong acquireLeakTag();
   void releaseLeakTag(jlong tag);
@@ -834,7 +855,21 @@ public:
         _gc_generations(false),
         _klass_population_size(0), _klass_count_scratch_size(0),
         _last_class_map_generation(0),
-        _leak_tag_free_count(LEAK_TAG_POOL_SIZE) {}
+        _leak_tag_free_count(LEAK_TAG_POOL_SIZE),
+        _leak_tag_incarnation() {} // value-initialized: every stamp starts at 0
+
+  // Ownership-period stamp of leak tag `tag` (see _leak_tag_incarnation), or 0
+  // when `tag` is outside the pool range. Lock-free (one acquire load): safe
+  // from heap callbacks and while holding reference-chain locks. A cached
+  // reference chain whose captured stamp equals this value was built for the
+  // tag's current owner.
+  u32 leakTagIncarnation(jlong tag) const {
+    if (tag < LEAK_TAG_BASE || tag >= LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE) {
+      return 0;
+    }
+    return __atomic_load_n(&_leak_tag_incarnation[tag - LEAK_TAG_BASE],
+                           __ATOMIC_ACQUIRE);
+  }
 
   // Reset recording-scoped gates at every accepted profiler start. Persistent tracking and
   // population state intentionally survives recording boundaries.
@@ -1075,8 +1110,13 @@ public:
   // tagLeakInstances() itself needs a live JVM (SetTag/NewLocalRef) and stays
   // out of gtest's reach.
   void leakTagPoolResetForTest() {
+    ExclusiveLockGuard guard(&_leak_tag_pool_lock);
     for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
       _leak_tag_free_list[i] = i;
+      if (_leak_tag_in_use[i]) {
+        // Freeing an owned slot is an ownership transition.
+        bumpLeakTagIncarnationLocked(i);
+      }
       _leak_tag_in_use[i] = false;
     }
     _leak_tag_free_count = LEAK_TAG_POOL_SIZE;

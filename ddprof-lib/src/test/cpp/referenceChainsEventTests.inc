@@ -358,13 +358,17 @@ TEST_F(ReferenceChainsBfsTest, RecordDiscoveredInstanceEvictsNoiseSlots) {
     // signal).
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 200, 0, 1, FrontierEntryState::EXPANDED, /*root_kind=*/0));
-    frontier->setLeakTag(200, ReferenceChainsTestAccessor::leakTagBase() + 1);
+    frontier->setLeakTag(200, ReferenceChainsTestAccessor::leakTagBase() + 1,
+                         LivenessTracker::instance()->leakTagIncarnation(
+                             ReferenceChainsTestAccessor::leakTagBase() + 1));
     // Entries for the remaining noise slots so the eviction scan finds all slots leak-tagged.
     for (int d = 1; d < cap; d++) {
         jlong tag = 101 + (d - 1);
         ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
             frontier, tag, 0, 1, FrontierEntryState::EXPANDED, /*root_kind=*/0));
-        frontier->setLeakTag(tag, ReferenceChainsTestAccessor::leakTagBase() + 2);
+        frontier->setLeakTag(tag, ReferenceChainsTestAccessor::leakTagBase() + 2,
+                             LivenessTracker::instance()->leakTagIncarnation(
+                                 ReferenceChainsTestAccessor::leakTagBase() + 2));
     }
     ReferenceChainsTestAccessor::recordDiscoveredInstanceForTest(
         kKlass, 201, true);
@@ -398,6 +402,9 @@ TEST_F(ReferenceChainsBfsTest, CorrelateAdmittedLeakTagSetsEntryAndDiscovers) {
 
     EXPECT_TRUE(tracker->correlateAdmittedLeakTag(300, kLeakTag, kKlass));
     EXPECT_EQ(kLeakTag, (jlong)ReferenceChainsTestAccessor::frontierLeakTag(300));
+    // The binding captures the tag's current ownership-period stamp with it.
+    EXPECT_EQ(LivenessTracker::instance()->leakTagIncarnation(kLeakTag),
+              ReferenceChainsTestAccessor::frontierLeakTagIncarnation(300));
     EXPECT_EQ(1, ReferenceChainsTestAccessor::candidateDiscoveredCountForTest(0));
     EXPECT_EQ((jlong)300,
               ReferenceChainsTestAccessor::candidateDiscoveredTagForTest(0, 0));
@@ -409,6 +416,40 @@ TEST_F(ReferenceChainsBfsTest, CorrelateAdmittedLeakTagSetsEntryAndDiscovers) {
     // Unknown tag: no crash, no discovery side effects.
     EXPECT_FALSE(tracker->correlateAdmittedLeakTag(999, kLeakTag, kKlass));
     EXPECT_EQ(1, ReferenceChainsTestAccessor::candidateDiscoveredCountForTest(0));
+
+    tracker->stop();
+}
+
+// The ownership-period stamp bound with a leak tag travels with the entry into the chain event
+// (buildChainEvent()), and a fresh insert() into the slot clears it together with the leak tag.
+TEST_F(ReferenceChainsBfsTest, BuildChainEventPropagatesLeakTagIncarnation) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr jlong kLeakTag = 0x40000000LL + 7;
+    constexpr u32 kStamp = 12345u;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 400, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::frontierLeakTagIncarnation(400));
+    frontier->setLeakTag(400, kLeakTag, kStamp);
+    EXPECT_EQ(kStamp, ReferenceChainsTestAccessor::frontierLeakTagIncarnation(400));
+
+    ReferenceChainEvent event;
+    ASSERT_TRUE(tracker->buildChainEvent(&mock_jvmti, &mock_jni, 400, &event));
+    EXPECT_EQ((u64)kLeakTag, event._target_tag);
+    EXPECT_EQ(kStamp, event._leak_tag_incarnation);
+
+    // Re-inserting the slot (a new object under that frontier tag) drops both the leak tag and its
+    // stamp.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 400, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    EXPECT_EQ(0, ReferenceChainsTestAccessor::frontierLeakTag(400));
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::frontierLeakTagIncarnation(400));
 
     tracker->stop();
 }

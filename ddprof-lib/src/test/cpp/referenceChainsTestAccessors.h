@@ -313,6 +313,17 @@ public:
         return entry.leak_tag;
     }
 
+    // Ownership-period stamp captured with the entry's leak tag (FrontierEntry::
+    // leak_tag_incarnation), or 0 when the entry does not exist.
+    static u32 frontierLeakTagIncarnation(jlong tag) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        FrontierEntry entry{};
+        if (t->_frontier == nullptr || !t->_frontier->lookup(tag, &entry)) {
+            return 0;
+        }
+        return entry.leak_tag_incarnation;
+    }
+
     static void setCandidateKlassIdForTest(int idx, u32 klass_id) {
         ReferenceChainTracker::instance()->setCandidateKlassIdForTest(idx, klass_id);
     }

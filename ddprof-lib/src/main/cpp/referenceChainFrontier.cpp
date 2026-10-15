@@ -115,6 +115,7 @@ bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
       _table[idx].root_kind = root_kind;
       _table[idx].class_tag = class_tag;
       _table[idx].leak_tag = 0;
+      _table[idx].leak_tag_incarnation = 0;
       _table[idx].referrer_field_index = referrer_field_index;
       _table[idx].edge_kind = edge_kind;
       _table[idx].referrer_class_tag = referrer_class_tag;

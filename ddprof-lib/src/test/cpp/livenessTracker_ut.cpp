@@ -1560,6 +1560,87 @@ TEST_F(LeakTagPoolTest, DoubleReleaseWithFreeRoomListsTagOnce) {
     EXPECT_NE(first, second) << "the same tag was handed out twice";
 }
 
+// Ownership-period stamp (leakTagIncarnation): (tag, stamp) is the identity of
+// a leak-tagged object, because the tag itself is recycled after its object
+// dies. The stamp must change on every ownership transition and on nothing
+// else.
+TEST_F(LeakTagPoolTest, IncarnationChangesOnAcquireAndRelease) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    // LIFO: after the reset the next acquire pops this slot.
+    jlong tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(tag, base);
+    u32 owned = tracker->leakTagIncarnation(tag);
+    tracker->releaseLeakTagForTest(tag);
+    u32 released = tracker->leakTagIncarnation(tag);
+    EXPECT_NE(owned, released) << "release must start a new ownership period";
+    jlong re_tag = tracker->acquireLeakTagForTest();
+    ASSERT_EQ(tag, re_tag) << "released tag should be recycled first (LIFO)";
+    u32 reowned = tracker->leakTagIncarnation(re_tag);
+    EXPECT_NE(released, reowned) << "acquire must start a new ownership period";
+    EXPECT_NE(owned, reowned)
+        << "the tag's new owner must not share the dead owner's stamp";
+}
+
+TEST_F(LeakTagPoolTest, IncarnationUnchangedByNoOpReleases) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    int pool_size = tracker->leakTagPoolSizeForTest();
+    jlong tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(tag, base);
+    tracker->releaseLeakTagForTest(tag);
+    u32 after_release = tracker->leakTagIncarnation(tag);
+    // Rejected repeated release: no ownership transition.
+    tracker->releaseLeakTagForTest(tag);
+    EXPECT_EQ(after_release, tracker->leakTagIncarnation(tag));
+
+    // Out-of-range releases touch no slot.
+    jlong held = tracker->acquireLeakTagForTest();
+    ASSERT_GE(held, base);
+    u32 held_stamp = tracker->leakTagIncarnation(held);
+    u32 first_stamp = tracker->leakTagIncarnation(base);
+    u32 last_stamp = tracker->leakTagIncarnation(base + pool_size - 1);
+    tracker->releaseLeakTagForTest(base - 1);
+    tracker->releaseLeakTagForTest(base + pool_size);
+    tracker->releaseLeakTagForTest(0);
+    tracker->releaseLeakTagForTest(-1);
+    EXPECT_EQ(held_stamp, tracker->leakTagIncarnation(held));
+    EXPECT_EQ(first_stamp, tracker->leakTagIncarnation(base));
+    EXPECT_EQ(last_stamp, tracker->leakTagIncarnation(base + pool_size - 1));
+}
+
+TEST_F(LeakTagPoolTest, IncarnationIsZeroOutOfRange) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    int pool_size = tracker->leakTagPoolSizeForTest();
+    // Bump an in-range stamp first, so out-of-range reads cannot pass by
+    // accidentally aliasing a still-zero slot.
+    jlong tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(tag, base);
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(0));
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(1));
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(-1));
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(base - 1));
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(base + pool_size));
+}
+
+TEST_F(LeakTagPoolTest, ResetForTestBumpsOnlyOwnedSlots) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    jlong owned = tracker->acquireLeakTagForTest();
+    jlong freed = tracker->acquireLeakTagForTest();
+    ASSERT_GE(owned, base);
+    ASSERT_GE(freed, base);
+    tracker->releaseLeakTagForTest(freed);
+    u32 owned_before = tracker->leakTagIncarnation(owned);
+    u32 freed_before = tracker->leakTagIncarnation(freed);
+    tracker->leakTagPoolResetForTest();
+    EXPECT_NE(owned_before, tracker->leakTagIncarnation(owned))
+        << "freeing an owned slot is an ownership transition";
+    EXPECT_EQ(freed_before, tracker->leakTagIncarnation(freed))
+        << "an already-free slot keeps its stamp";
+}
+
 // ---------------------------------------------------------------------------
 // C1 chaos: concurrent acquire/release across forced epoch rotations. The
 // single-threaded tests above pin the sequential mechanics; this one attacks

@@ -91,7 +91,9 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
       if (ctx->frontier->insert(frontier_tag, /*parent_tag=*/0, referrer_klass,
                                 /*depth=*/0, FrontierEntryState::FRONTIER,
                                 translated_root_kind, class_tag)) {
-        ctx->frontier->setLeakTag(frontier_tag, leak_tag);
+        // Capture the current ownership period, as in heapReferenceCallback()'s interception.
+        ctx->frontier->setLeakTag(frontier_tag, leak_tag,
+                                  LivenessTracker::instance()->leakTagIncarnation(leak_tag));
         *tag_ptr = frontier_tag;
         ctx->edges_admitted++;
         ctx->tracker->trackLeakAccumulation(ctx->frontier, class_tag, 0,

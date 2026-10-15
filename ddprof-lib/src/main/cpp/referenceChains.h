@@ -1044,6 +1044,14 @@ private:
   // comment for why this cannot be deferred to dump()-time).
   void enqueuePendingAbandonedEvent();
 
+  // True iff `e` targets a leak tag AND was built during that tag's current ownership period:
+  // e._leak_tag_incarnation == LivenessTracker::leakTagIncarnation(e._target_tag). Leak tags are
+  // recycled once their object dies, while _resolved_chains keeps the dead object's chain, so tag
+  // equality alone would attribute it to the tag's next owner. False for a non-leak (frontier-tag)
+  // target - each caller decides what that means for it. Lock-free (one acquire load); never takes
+  // LivenessTracker's pool lock, so it is safe under _resolved_chains_lock.
+  static bool chainTargetsCurrentLeakOwner(const ReferenceChainEvent &e);
+
 public:
   static ReferenceChainTracker *instance() {
     static ReferenceChainTracker instance;
@@ -1331,7 +1339,11 @@ public:
   // Appends a copy of every currently-cached resolved chain to *out, re-stamped with a fresh
   // _start_time so it lands in the dumping chunk's time window, WITHOUT clearing the cache - a
   // repeatable snapshot, not a drain, so the same live sample's chain is re-emitted into every JFR
-  // chunk it survives into (see _resolved_chains' own comment).
+  // chunk it survives into (see _resolved_chains' own comment). Exception: a chain whose target is
+  // a leak tag but which fails chainTargetsCurrentLeakOwner() (its object died and the tag may have
+  // a new owner) is not emitted - a consumer joins ReferenceChain.targetTag to
+  // HeapLiveObject.leakTag, which would attribute it to the new owner. Such a chain is not erased
+  // either; the existing cache eviction policy still decides when it leaves.
   void drainPendingChainEvents(std::vector<ReferenceChainEvent> *out);
 
   // Appends every abandoned-search event queued since the last call and clears the queue - a true
@@ -1385,12 +1397,15 @@ public:
   // keyed by that frontier tag with source_search_ns == _search_start_ns; restartSearch() keeps
   // _resolved_chains and re-mints frontier tags from 1, so raw frontier-tag equality across
   // generations could match a stale, unrelated chain); a leak tag resolves against any search
-  // generation's cached chain whose event target tag equals it - a leak tag is minted per
-  // tracked object and released only when that object dies, so it identifies the same object
-  // across generations, and the object carries it exactly when no live frontier entry exists
-  // (never intercepted yet, or a restart cleared the frontier tags and the next GC re-tagged
-  // it). 0 otherwise: untagged, or no cached chain for that object in any generation. Samples
-  // _search_start_ns under _engine_lock and _resolved_chains_lock.
+  // generation's cached chain whose event target tag equals it AND whose captured ownership-period
+  // stamp equals the tag's current one (chainTargetsCurrentLeakOwner()). A leak tag is released
+  // when its object dies and then recycled for another object, so leak-tag identity is the pair
+  // (leak tag, ownership-period stamp), not the tag alone; within one ownership period it does
+  // identify the same object across search generations, and the object carries it exactly when
+  // no live frontier entry exists (never intercepted yet, or a restart cleared the frontier tags
+  // and the next GC re-tagged it). 0 otherwise: untagged, or no cached chain for that object's
+  // current ownership period in any generation. Samples _search_start_ns under _engine_lock and
+  // _resolved_chains_lock.
   jlong resolvedChainTargetTagForTest(jlong object_tag);
 
   // Test seam - not part of the production API. Evaluates the real private scheduling gate without

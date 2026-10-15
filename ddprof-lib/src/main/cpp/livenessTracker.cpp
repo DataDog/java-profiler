@@ -451,13 +451,17 @@ jlong LivenessTracker::acquireLeakTag() {
   // other, but any future second shared-lock mutator would corrupt the LIFO
   // free list. The dedicated lock keeps the pool correct independent of which
   // table lock mode the caller holds. Lock order: _table_lock (any mode) is
-  // always acquired BEFORE _leak_tag_pool_lock, never the reverse.
+  // always acquired BEFORE _leak_tag_pool_lock, never the reverse. The same
+  // lock serializes the ownership-period stamp writes (_leak_tag_incarnation),
+  // which are bumped on every ownership transition so a reader can tell this
+  // owner of the tag from an earlier, dead one; stamp reads are lock-free.
   ExclusiveLockGuard guard(&_leak_tag_pool_lock);
   if (_leak_tag_free_count <= 0) {
     return 0; // pool exhausted
   }
   int idx = _leak_tag_free_list[--_leak_tag_free_count];
   _leak_tag_in_use[idx] = true;
+  bumpLeakTagIncarnationLocked(idx); // free -> in use: a new ownership period
   return LEAK_TAG_BASE + idx;
 }
 
@@ -476,6 +480,9 @@ void LivenessTracker::releaseLeakTag(jlong tag) {
     return;
   }
   _leak_tag_in_use[idx] = false;
+  // in use -> free: chains captured during the ending ownership period no longer
+  // describe whoever owns the tag next.
+  bumpLeakTagIncarnationLocked(idx);
   _leak_tag_free_list[_leak_tag_free_count++] = idx;
 }
 
@@ -2039,6 +2046,11 @@ Error LivenessTracker::start(Arguments &args) {
   _leak_tag_pool_lock.lock();
   int free_w = 0;
   for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
+    if (_leak_tag_in_use[i] != tag_owned[i]) {
+      // Ownership of this slot changes in the rebuild; a slot whose owner is
+      // unchanged keeps its stamp, so its cached chains stay attributable.
+      bumpLeakTagIncarnationLocked(i);
+    }
     _leak_tag_in_use[i] = tag_owned[i];
     if (!tag_owned[i]) {
       _leak_tag_free_list[free_w++] = i;
