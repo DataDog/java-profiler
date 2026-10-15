@@ -173,9 +173,9 @@ bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
     }
 }
 
-void JVMSupport::beforeClassRedefinition(JNIEnv *jni, jclass klass) {
+void JVMSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
     if (getLoadState() == Lazy_loaded) {
-        HotspotSupport::beforeClassRedefinition(jni, klass);
+        HotspotSupport::beforeClassRedefinition(jvmti, jni, klass);
     }
 }
 
@@ -183,7 +183,7 @@ void JVMSupport::afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass kla
     if (getLoadState() == Lazy_loaded) {
         // Even after a failed attempt: the class is marked for good, and only
         // jmethodIDs keep its later frames from being raw (and refused).
-        HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, true /* load all */);
+        HotspotSupport::afterClassRedefinition(jvmti, jni, klass);
     } else if (succeeded) {
         loadMethodIDsIfNeeded(jvmti, jni, klass);
     }
