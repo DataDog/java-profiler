@@ -69,8 +69,22 @@ public final class StaticFieldGrowingCollectionScenario {
 
   private static final int TOTAL_ROUNDS = 25;
 
-  // Seeds + lateChunk + one per round: LEAK_BUFFER's elementData never reallocates.
-  private static final int LEAK_BUFFER_CAPACITY = SEED_CHUNKS + 1 + TOTAL_ROUNDS;
+  // Tail attempts (below) rotate the watched chunk they append to LEAK_BUFFER, so the backing
+  // ArrayList's pre-sized capacity must cover them too - see LEAK_BUFFER_CAPACITY's own comment
+  // for why elementData must never reallocate.
+  private static final int TAIL_ATTEMPTS = 40;
+
+  // How many consecutive tail attempts the SAME freshly-appended chunk stays the watched target
+  // before rotating to a new one - see the tail loop's own comment for why a chunk must be given
+  // several attempts (its discovery matures across walk cycles, slower than one 1.5s attempt)
+  // and why a chunk that still has not resolved is assumed record-dead and abandoned.
+  private static final int TAIL_CHUNK_ATTEMPTS = 8;
+
+  // Seeds + lateChunk + one per round + one per tail rotation (sized for the worst case of one
+  // per attempt so the budgets above can be retuned without touching this):
+  // LEAK_BUFFER's elementData never reallocates.
+  private static final int LEAK_BUFFER_CAPACITY =
+      SEED_CHUNKS + 1 + TOTAL_ROUNDS + TAIL_ATTEMPTS;
 
   // FrontierEntryState::EXPANDED (referenceChainFrontier.h), as reported by
   // JavaProfiler.getReferenceChainFrontierStateForTest0().
@@ -132,9 +146,37 @@ public final class StaticFieldGrowingCollectionScenario {
         throw new IllegalStateException("frontier-state seam returned " + untaggedState
             + " for an untagged probe object, expected " + FRONTIER_STATE_NONE);
       }
+      // Wire a representative for the seeded klass BEFORE the seeds (set-representative-first
+      // is the load-bearing order: klassPopulationSetRepresentativeForTest() re-keys the
+      // synthetic entry to the representative's real klass id, and only a representative lets
+      // the entry mint stable_class_tag). Without a representative topKlassesByGenerationCount()
+      // skips the entry (no live instance was ever resolved), _watched_leak_klass_count stays
+      // 0, and runPass() declares the search COMPLETED after every pass - and the terminal
+      // pass itself then releases every frontier tag (releaseSearchTags()) while
+      // restartSearch() re-runs the identical walk. The frontier-state seam below blocks on
+      // _engine_lock mid-pass, so it can only read between passes - where the tags are already
+      // released - and the EXPANDED wait below can never observe its condition (observed as
+      // "holders never all reached EXPANDED within 45s" with states [-1, -1, -1]).
+      // The representative MUST be a byte[] chunk - the leaked klass itself - never the
+      // list holding it: the representative's real klass becomes the candidate klass, and only
+      // candidate-klass instances get leak-tagged by tagLeakInstances() and recorded by the
+      // leak-tag interception path whose chains the seam below reads. A non-byte[]
+      // representative (e.g. LEAK_BUFFER's own SynchronizedList klass, which has no tracked
+      // instances in this child JVM) mints no leak tags at all, and lateChunk is never
+      // discovered (observed as 0/6 runs, the seam returning 0 forever). Watching byte[] does
+      // flood _leak_parent_fanout with unrelated JVM-wide Object[] parents (~9.5k
+      // entries/search observed), starving the leak-accumulation rotation prong - but discovery
+      // does not depend on that prong: the static-anchor descend walk re-walks LEAK_BUFFER's
+      // whole subtree every search and intercepts every leak-tagged chunk in it (observed
+      // 10/10 searches), so lateChunk's chain is rebuilt once per search generation regardless.
+      // The seed chunk is held strongly by the static field, so the tracker's weak
+      // representative ref stays live.
+      JavaProfiler.setKlassPopulationRepresentativeForTest0(LEAK_BUFFER_TEST_KLASS_ID,
+          LEAK_BUFFER.get(0));
       // Seed enough hysteresis-qualifying epochs to unlock ReferenceChainTracker::hasLeakSignal()/
-      // shouldRunPass() - WITHOUT wiring in a representative object yet (setKlassPopulationRepresentativeForTest0
-      // is not called here). hasLeakSignal() only asks selectLeakCandidates() for a nonzero count -
+      // shouldRunPass() - AFTER the representative above (set-representative-first is required,
+      // see that call's own comment). hasLeakSignal() only asks selectLeakCandidates() for a
+      // nonzero count -
       // it never reads/dereferences the representative field - so this step's only job is
       // authorizing the BFS thread's first pass to actually start. Doing this BEFORE waiting on
       // passesRun() advancing below is load-bearing, found the hard way: a pass only ever runs
@@ -219,8 +261,16 @@ public final class StaticFieldGrowingCollectionScenario {
     // later change (advance, or reset-to-lower via a restart) proves a walk that started strictly
     // after lateChunk existed.
     int passesRunBeforeLateChunk = debugBuild ? JavaProfiler.referenceChainPassesRunForTest0() : -1;
-    byte[] lateChunk = new byte[CHUNK_BYTES];
-    LEAK_BUFFER.add(lateChunk);
+    // lateChunk is deliberately NOT held in a local: the main thread's stack is a root-walk root,
+    // so a live local lets the root enumeration admit (and, once the canary candidate aliases to
+    // byte[] and a GC runs tagLeakInstances(), leak-tag) lateChunk directly - the resulting
+    // stack-local-rooted chain never resolves into the static-field chain this scenario watches,
+    // and the pre-existing tag blocks the elementData re-walk from admitting lateChunk under the
+    // stale entry at all (observed as buildChainEvent "target_tag not in frontier" for the whole
+    // run). Re-fetch the chunk from LEAK_BUFFER on every use instead - the only durable path to
+    // it is the static field, so its discovery proves the stale-entry re-expansion.
+    final int LATE_CHUNK_INDEX = SEED_CHUNKS;
+    LEAK_BUFFER.add(new byte[CHUNK_BYTES]);
 
     // From here on, seeded incrementally, one epoch per round below, rather than as a single
     // upfront burst - found the hard way: profiler.execute()'s start() resets
@@ -267,7 +317,8 @@ public final class StaticFieldGrowingCollectionScenario {
             LEAK_BUFFER_TEST_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
         JavaProfiler.seedTidTrendSample0(
             LEAK_BUFFER_TEST_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
-        JavaProfiler.setKlassPopulationRepresentativeForTest0(LEAK_BUFFER_TEST_KLASS_ID, lateChunk);
+        JavaProfiler.setKlassPopulationRepresentativeForTest0(LEAK_BUFFER_TEST_KLASS_ID,
+            LEAK_BUFFER.get(LATE_CHUNK_INDEX));
         JavaProfiler.pollReferenceChainTargets0();
 
         // Only TRUST a match once passesRun() has genuinely changed since the snapshot taken right
@@ -284,7 +335,8 @@ public final class StaticFieldGrowingCollectionScenario {
         // tag is read BEFORE dumping - the dump snapshots the same resolved-chain cache - and a
         // round where the current search has not resolved lateChunk's chain yet is skipped.
         if (JavaProfiler.referenceChainPassesRunForTest0() != passesRunBeforeLateChunk) {
-          long lateChunkTargetTag = JavaProfiler.getReferenceChainResolvedTargetTagForTest0(lateChunk);
+          long lateChunkTargetTag = JavaProfiler.getReferenceChainResolvedTargetTagForTest0(
+              LEAK_BUFFER.get(LATE_CHUNK_INDEX));
           if (lateChunkTargetTag != 0) {
             profiler.dump(scratchDumpPath);
             match = findMatch(scratchDumpPath, lateChunkTargetTag);
@@ -311,19 +363,49 @@ public final class StaticFieldGrowingCollectionScenario {
     // completed (searchState=COMPLETED) and successfully built the chain. Mirrors
     // ExternalProcessReferenceChainTest's own comment on why budget/pausetarget are raised this
     // far for exactly this reason.
-    for (int attempt = 0; match == null && attempt < 40; attempt++) {
+    int watchedIndex = -1;
+    int attemptsOnWatchedChunk = 0;
+    for (int attempt = 0; match == null && attempt < TAIL_ATTEMPTS; attempt++) {
       Thread.sleep(1500);
       // Same passesRun()-advanced check as the round loop above (-DDEBUG builds only:
       // debug/asan/tsan) - by this point in a real run it has virtually always already flipped,
       // but there is no reason to drop the guarantee here just because the round loop above
       // didn't need it.
-      // Same lateChunk-identity pinning as the round loop above.
       long requiredTargetTag = 0;
       if (debugBuild) {
         if (JavaProfiler.referenceChainPassesRunForTest0() == passesRunBeforeLateChunk) {
           continue;
         }
-        requiredTargetTag = JavaProfiler.getReferenceChainResolvedTargetTagForTest0(lateChunk);
+        // The tail watches, one at a time, chunks appended to LEAK_BUFFER well after that
+        // collection was first EXPANDED - exactly the discovery this scenario exists to prove.
+        // Watching a chunk allocated once at scenario start (lateChunk above) is not durable:
+        // the whole leak-tag pipeline keys on the chunk's allocation-tracking record, records
+        // are only minted at allocation, and the tracking table's churn can evict an old
+        // chunk's record for the rest of the run - observed as the representative resolving
+        // that chunk correctly but reading tag=0 for 2000+ consecutive polls (no leak tag ever
+        // minted, so no interception and no chain ever built for it). A FRESHLY appended chunk
+        // has a guaranteed-live record: the explicit poll below tags it immediately, the next
+        // static-anchor descend intercepts it, and a later attempt's poll resolves its chain.
+        // But discovery takes several walk cycles (interception, then a later poll's chain
+        // build) - measured at more than one 1.5s attempt - so the SAME chunk must stay the
+        // watched target for several attempts before rotating to a new one; rotating every
+        // attempt reads a just-allocated chunk that has not matured yet and abandons each
+        // chunk right before it would resolve (observed as 0/8 runs). If a chunk still has
+        // not resolved after TAIL_CHUNK_ATTEMPTS attempts, its record most likely died the
+        // same death lateChunk's can - rotate. Same no-local discipline as lateChunk above:
+        // each watched chunk is reachable only through LEAK_BUFFER, so any walk that reaches
+        // it comes through elementData, never through a stack-local root.
+        if (watchedIndex < 0 || attemptsOnWatchedChunk >= TAIL_CHUNK_ATTEMPTS) {
+          LEAK_BUFFER.add(new byte[CHUNK_BYTES]);
+          watchedIndex = LEAK_BUFFER.size() - 1;
+          attemptsOnWatchedChunk = 0;
+        }
+        attemptsOnWatchedChunk++;
+        JavaProfiler.setKlassPopulationRepresentativeForTest0(LEAK_BUFFER_TEST_KLASS_ID,
+            LEAK_BUFFER.get(watchedIndex));
+        JavaProfiler.pollReferenceChainTargets0();
+        requiredTargetTag = JavaProfiler.getReferenceChainResolvedTargetTagForTest0(
+            LEAK_BUFFER.get(watchedIndex));
         if (requiredTargetTag == 0) {
           continue;
         }
