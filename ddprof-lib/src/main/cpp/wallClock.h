@@ -163,7 +163,7 @@ class BaseWallClock : public Engine {
         epoch.updateNumSamplableThreads(num_samplable_threads);
         epoch.updateNumFailedSamples(num_failures);
         epoch.updateNumSuccessfulSamples(num_successful_samples);
-        epoch.addNumSuppressedSampledRun(WallClockCounters::drainSuppressedSampledRun());
+        epoch.addNumSuppressedOwnedBlock(WallClockCounters::drainSuppressedOwnedBlock());
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
         u64 endTime = TSC::ticks();
