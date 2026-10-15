@@ -54,17 +54,28 @@ private:
     // resolve() before it touches a raw Method*. See klassRegistry.h.
     static KlassRegistry _klass_registry;
 
+    // fjmethodid=lazy: what a raw frame's tag holds (frame.h). True: the low
+    // RAW_TAG_BITS of the holder's JFR trace ID (KlassTraceId), unique per
+    // load of a class. False: _klass_registry's epoch. Set once per process by
+    // initLazyResolution(), before any raw frame exists.
+    static bool _tag_with_trace_id;
+
+    // The tag to store with a raw frame of `method`; false if it cannot be
+    // determined (unreadable holder or trace ID). Signal safe.
+    static bool rawFrameTag(const VMMethod* method, uint32_t* tag);
+
     // fjmethodid=lazy: records `klass` in _klass_registry instead of
     // allocating its jmethodIDs. Called wherever the other modes preload.
     static bool registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 
     // fjmethodid=lazy half of resolve(): pins the class registered under
-    // `holder` (refusing it if registered after `epoch`, the frame's sample
-    // epoch), checks that `vm_method` is still one of its methods, and only
-    // then reads or allocates the jmethodID. `holder` and `idnum` were read
-    // from the unverified Method* and are only used as lookup keys.
+    // `holder`, refuses it if `tag` (the frame's, see _tag_with_trace_id)
+    // shows the frame came from an earlier class at that address, checks that
+    // `vm_method` is still one of its methods, and only then reads or
+    // allocates the jmethodID. `holder` and `idnum` were read from the
+    // unverified Method* and are only used as lookup keys.
     static jmethodID resolveViaRegistry(VMMethod* vm_method, const void* holder, int idnum,
-                                        uint32_t epoch);
+                                        uint32_t tag);
 
     // Runs getJavaTraceAsync() under withUcontextFaultRecovery(), then layers
     // on its two post-processing steps: resolving frame types for the top
@@ -187,7 +198,7 @@ public:
     static bool canResolveLazily();
 
     // fjmethodid=lazy setup that needs JNI: locates Klass::_trace_id
-    // (KlassTraceId::calibrate).
+    // (KlassTraceId::calibrate) and picks the raw-frame tag source.
     static void initLazyResolution(JNIEnv* jni);
 
     // Resolve a raw-pointer frame to a jmethodID at dumping time. Takes the

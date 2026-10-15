@@ -190,21 +190,13 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
 static_assert(KlassRegistry::EPOCH_BITS == FrameType::RAW_TAG_BITS,
               "a raw frame must store the whole KlassRegistry epoch");
 
-// Fill the frame with raw method pointer, tagged with the KlassRegistry epoch
-// it was sampled under (see frame.h for where the tag bits go).
+// Fill the frame with raw method pointer and its tag (see frame.h for where
+// the tag bits go, HotspotSupport::_tag_with_trace_id for what they hold).
 static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method,
-                         uint32_t epoch) {
+                         uint32_t tag) {
     NO_INJECTION_ASSERT(method != nullptr);
-    if (!FrameType::canTagPointer(method)) {
-        // The tag's high bits would collide with address bits. Without the
-        // tag the frame could be mistaken for one of a later class at the same
-        // address, so keep it structurally but resolve it as unknown.
-        Counters::increment(WALKVM_RAW_FRAME_UNTAGGABLE);
-        fillFrame(frame, type, bci, JMETHODID_NOT_WALKABLE);
-        return;
-    }
-    frame.bci = FrameType::encodeRaw(type, bci, epoch);
-    frame.method = FrameType::tagPointer(method, epoch);
+    frame.bci = FrameType::encodeRaw(type, bci, tag);
+    frame.method = FrameType::tagPointer(method, tag);
 }
 
 void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci,
@@ -225,7 +217,17 @@ void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int
         // resolution path; the deferred-dereference race at dump time is
         // inherent to this mode.
         NO_INJECTION_ASSERT(method != nullptr);
-        fillFrameRaw(frame, type, bci, method, _klass_registry.epoch());
+        uint32_t tag;
+        if (!FrameType::canTagPointer(method) || !rawFrameTag(method, &tag)) {
+            // Either the tag's high bits would collide with address bits, or
+            // the holder's trace ID is unreadable. Without a tag the frame
+            // could be mistaken for one of a later class at the same address,
+            // so keep it structurally but resolve it as unknown.
+            Counters::increment(WALKVM_RAW_FRAME_UNTAGGABLE);
+            fillFrame(frame, type, bci, JMETHODID_NOT_WALKABLE);
+        } else {
+            fillFrameRaw(frame, type, bci, method, tag);
+        }
     } else {
         // fjmethodid=true: all jmethodIDs should be preloaded, so nullptr is
         // unexpected — a transient invalidation window or a missed preload.
@@ -1468,13 +1470,33 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
 }
 
 KlassRegistry HotspotSupport::_klass_registry;
+bool HotspotSupport::_tag_with_trace_id = false;
 
 bool HotspotSupport::canResolveLazily() {
     return VMStructs::hasKlassMethods();
 }
 
 void HotspotSupport::initLazyResolution(JNIEnv* jni) {
-    KlassTraceId::calibrate(jni);
+    // calibrate() only probes once per process, so this is stable across
+    // profiler restarts and raw frames of an earlier session keep their meaning.
+    _tag_with_trace_id = KlassTraceId::calibrate(jni);
+    // Counters are reset on every profiler start, but calibration only runs
+    // once, so republish its result here.
+    Counters::set(KLASS_TRACE_ID_OFFSET, _tag_with_trace_id ? KlassTraceId::offset() : -1);
+    TEST_LOG("Raw frame tags: %s", _tag_with_trace_id ? "klass trace id" : "registry epoch");
+}
+
+bool HotspotSupport::rawFrameTag(const VMMethod* method, uint32_t* tag) {
+    if (!_tag_with_trace_id) {
+        *tag = _klass_registry.epoch();
+        return true;
+    }
+    uint64_t id;
+    if (!KlassTraceId::read(method->holderOrNull(), &id)) {
+        return false;
+    }
+    *tag = (uint32_t)id & FrameType::RAW_TAG_MASK;
+    return true;
 }
 
 bool HotspotSupport::registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
@@ -1816,7 +1838,7 @@ jmethodID HotspotSupport::resolve(const void* tagged_method, int bci) {
     return nullptr;
   }
   const void* method = FrameType::untagPointer(tagged_method);
-  const uint32_t epoch = FrameType::rawTag(bci, tagged_method);
+  const uint32_t tag = FrameType::rawTag(bci, tagged_method);
 
   // The Method* was captured at sample time; GC or class unloading may have
   // freed the metadata since, so every dereference below can fault. Install a
@@ -1879,7 +1901,7 @@ jmethodID HotspotSupport::resolve(const void* tagged_method, int bci) {
     return nullptr;
   }
   if (lazy) {
-    return resolveViaRegistry(vm_method, holder, idnum, epoch);
+    return resolveViaRegistry(vm_method, holder, idnum, tag);
   }
   if (existing_id != nullptr) {
     return existing_id;
@@ -1892,10 +1914,14 @@ jmethodID HotspotSupport::resolve(const void* tagged_method, int bci) {
 // dereferences vm_method until the class that owns it is pinned and the
 // method is confirmed to be one of that class's current methods.
 jmethodID HotspotSupport::resolveViaRegistry(VMMethod* vm_method, const void* holder, int idnum,
-                                             uint32_t epoch) {
+                                             uint32_t tag) {
   JNIEnv* jni = VM::jni();
   bool stale = false;
-  jclass clz = _klass_registry.pin(jni, holder, epoch, &stale);
+  // With trace-ID tags the registry's epoch plays no part: passing the current
+  // epoch makes pin() accept any registration, and the trace ID is compared
+  // once the class is pinned.
+  uint32_t sampled_epoch = _tag_with_trace_id ? _klass_registry.epoch() : tag;
+  jclass clz = _klass_registry.pin(jni, holder, sampled_epoch, &stale);
   if (clz == nullptr) {
     // Stale: the class registered at `holder` arrived after the sample, so the
     // frame belongs to an earlier class at the same address. Otherwise the
@@ -1906,6 +1932,14 @@ jmethodID HotspotSupport::resolveViaRegistry(VMMethod* vm_method, const void* ho
   }
 
   jmethodID method_id = nullptr;
+  uint64_t trace_id = 0;
+  if (_tag_with_trace_id &&
+      (!KlassTraceId::read(holder, &trace_id) || ((uint32_t)trace_id & FrameType::RAW_TAG_MASK) != tag)) {
+    // The class at `holder` is a different load than the one sampled.
+    Counters::increment(METHOD_RESOLVE_LAZY_STALE);
+    jni->DeleteLocalRef(clz);
+    return nullptr;
+  }
   // The pinned class keeps its metadata alive, so its methods array is safe
   // to read. A miss means the Method* was freed (and possibly its holder
   // address reused), or it is an old version replaced by a redefinition.

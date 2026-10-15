@@ -12,6 +12,7 @@
 #include <string.h>
 
 int KlassTraceId::_offset = -1;
+bool KlassTraceId::_calibrated = false;
 
 // JFR stores the ID shifted left by TRACE_ID_SHIFT (16) above its tag bits.
 static const int TRACE_ID_SHIFT = 16;
@@ -65,9 +66,11 @@ int KlassTraceId::findOffset(const void* const* klasses, int count, size_t klass
 }
 
 bool KlassTraceId::calibrate(JNIEnv* jni) {
-  if (offset() >= 0) {
-    return true;
+  // Runs from profiler start, which is serialized, so a plain flag will do.
+  if (_calibrated) {
+    return offset() >= 0;
   }
+  _calibrated = true;
   size_t klass_size = (size_t)VMKlass::type_size();
   if (klass_size == 0 || !VMStructs::hasKlassMethods()) {
     return false;
@@ -97,7 +100,6 @@ bool KlassTraceId::calibrate(JNIEnv* jni) {
   }
 
   int found = findOffset(klasses, PROBE_COUNT, klass_size);
-  Counters::set(KLASS_TRACE_ID_OFFSET, found);
   TEST_LOG("KlassTraceId offset=%d (sizeof(Klass)=%d)", found, (int)klass_size);
   if (found < 0) {
     return false;

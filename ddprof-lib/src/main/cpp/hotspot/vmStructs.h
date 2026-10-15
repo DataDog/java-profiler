@@ -957,6 +957,11 @@ DECLARE(VMMethod)
     // Performs extra validation when VMMethod comes from incomplete frame
     inline jmethodID validatedId();
 
+    // The holder Klass* (constMethod -> constants -> pool holder), read with
+    // SafeAccess so it is usable from a signal handler; nullptr if any link
+    // is unreadable.
+    inline const void* holderOrNull() const;
+
     const char* bytecode() {
         assert(_method_constmethod_offset >= 0);
         return *(const char**) at(_method_constmethod_offset) + VMConstMethod::type_size();
