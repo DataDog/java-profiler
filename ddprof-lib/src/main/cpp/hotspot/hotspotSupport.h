@@ -54,46 +54,45 @@ private:
     // resolve() before it touches a raw Method*. See klassRegistry.h.
     static KlassRegistry _klass_registry;
 
-    // fjmethodid=lazy raw frame tags (frame.h). The top bit says what the
-    // rest holds: set, the low TAG_VALUE_BITS of the holder's JFR trace ID
-    // (KlassTraceId), unique per load of a class; clear, _klass_registry's
-    // epoch. resolve() goes by each frame's own kind, never by the current
-    // tag source.
+    // Raw frame tags (frame.h). fjmethodid=lazy frames set the top tag bit
+    // and keep the low 25 bits of the holder's JFR trace ID (KlassTraceId) in
+    // the rest, unique per load of a class. Partial-mode (fjmethodid=false)
+    // frames carry no tag: their method field is the plain Method*, whose top
+    // bit is never set for a user-space address. resolve() goes by each
+    // frame's own kind, never by the current mode.
     static const uint32_t TRACE_ID_TAG = 1u << (FrameType::RAW_TAG_BITS - 1);
     static const uint32_t TAG_VALUE_MASK = TRACE_ID_TAG - 1;
 
-    // Whether new raw frames get trace-ID tags: set by initLazyResolution()
-    // when calibration found the offset.
-    static volatile bool _tag_with_trace_id;
-
-    // The tag to store with a raw frame of `method`; false if it cannot be
-    // determined (unreadable holder or trace ID). Signal safe.
-    static bool rawFrameTag(const VMMethod* method, uint32_t* tag);
+    // The tag to store with a lazy-mode raw frame of `method`; false if the
+    // holder's trace ID is unreadable. Signal safe.
+    static bool lazyFrameTag(const VMMethod* method, uint32_t* tag);
 
     // fjmethodid=lazy: records `klass` in _klass_registry instead of
     // allocating its jmethodIDs. Called wherever the other modes preload.
     static bool registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 
-    // fjmethodid=lazy: marks `klass` in _klass_registry before a redefinition
-    // (see klassRegistry.h for why its raw frames are refused from then on)
-    // and preloads its jmethodIDs after it. `klass` comes straight from the
-    // RedefineClasses/RetransformClasses caller, so anything that is not an
-    // instance class is ignored, as JVMTI itself would reject it.
+    // Around every RedefineClasses/RetransformClasses call, in every mode
+    // once _klass_registry has entries (raw frames of a lazy session can
+    // outlive it): marks `klass` while the call runs and for good if it
+    // succeeds (see klassRegistry.h for why its raw frames are refused), and in
+    // lazy mode preloads its jmethodIDs after a successful call. `klass` comes
+    // straight from the caller, so anything that is not an instance class is
+    // ignored, as JVMTI itself rejects it.
     static void beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
-    static void afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
+    static void afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded);
 
     // True if JVMTI accepts `klass` as a class that is neither an array nor a
     // primitive, i.e. one with a Klass* that has methods.
     static bool isInstanceClass(jvmtiEnv *jvmti, jclass klass);
 
     // fjmethodid=lazy half of resolve(): pins the class registered under
-    // `holder`, refuses it if `tag` (the frame's, see _tag_with_trace_id)
-    // shows the frame came from an earlier class at that address, checks that
-    // `vm_method` is still one of its methods, and only then reads or
-    // allocates the jmethodID. `holder` and `idnum` were read from the
+    // `holder`, refuses it if its trace ID does not match `trace_id_bits` (the
+    // frame came from another load of a class whose memory this one reuses),
+    // checks that `vm_method` is still one of its methods, and only then reads
+    // or allocates the jmethodID. `holder` and `idnum` were read from the
     // unverified Method* and are only used as lookup keys.
     static jmethodID resolveViaRegistry(VMMethod* vm_method, const void* holder, int idnum,
-                                        uint32_t tag);
+                                        uint32_t trace_id_bits);
 
     // Runs getJavaTraceAsync() under withUcontextFaultRecovery(), then layers
     // on its two post-processing steps: resolving frame types for the top
@@ -203,11 +202,18 @@ public:
         return JitCodeCache::runtimeStubsMemoryUsage();
     }
 
-    // If should load all jmethodIDs
-    static inline bool shouldPreloadJmethodIDs(Arguments& args) {
-        CStack cstack = args._cstack;
-        return args._force_jmethodID ||
-            !(cstack == CSTACK_VM || cstack == CSTACK_DEFAULT); // Can only use Method* when cstack = vm
+    // If should load all jmethodIDs. Raw Method* frames only come from walkVM,
+    // so anything but the resolved stack walker mode `cstack` == CSTACK_VM --
+    // including CSTACK_DEFAULT, which resolves to DWARF where the VM walker is
+    // unavailable -- needs every jmethodID preloaded.
+    static inline bool shouldPreloadJmethodIDs(const Arguments& args, CStack cstack) {
+        return args._force_jmethodID || cstack != CSTACK_VM;
+    }
+
+    // The Method* a raw frame stands for: untagged for a lazy-mode frame,
+    // as stored for a partial-mode one.
+    static inline const void* rawFrameMethod(int bci, const void* method) {
+        return (FrameType::rawTag(bci, method) & TRACE_ID_TAG) != 0 ? FrameType::untagPointer(method) : method;
     }
 
     // fjmethodid=lazy needs the Klass*/methods-array structs on top of the
@@ -216,8 +222,10 @@ public:
     static bool canResolveLazily();
 
     // fjmethodid=lazy setup that needs JNI: locates Klass::_trace_id
-    // (KlassTraceId::calibrate) and picks the raw-frame tag source.
-    static void initLazyResolution(JNIEnv* jni);
+    // (KlassTraceId::calibrate). Returns false if it cannot be found; lazy
+    // mode then does not run, since nothing else can tell a stale raw frame
+    // from one of a class that took over its memory.
+    static bool initLazyResolution(JNIEnv* jni);
 
     // Resolve a raw-pointer frame to a jmethodID at dumping time. Takes the
     // frame's method field and encoded bci as stored, tag bits included.

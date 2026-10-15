@@ -24,19 +24,20 @@ KlassRegistry::Entry* KlassRegistry::find(const void* klass) const {
   return &_table[i];
 }
 
-// Called with _lock held. The release store pairs with epoch()'s acquire
-// load: a thread that runs a method of a class registered here, and then
-// samples it, observes at least the epoch that class was registered at.
-uint32_t KlassRegistry::bumpEpoch() {
-  uint32_t next = _epoch + 1;
-  __atomic_store_n(&_epoch, next, __ATOMIC_RELEASE);
-  return next;
+// Called with _lock held. The entry registered for `klass`, or nullptr.
+KlassRegistry::Entry* KlassRegistry::findRegistered(const void* klass) const {
+  if (klass == nullptr || _capacity == 0) {
+    return nullptr;
+  }
+  Entry* e = find(klass);
+  return e->klass == klass ? e : nullptr;
 }
 
 // Moves the live entries into a table sized for them and deletes the weak
 // references of dead ones. Two passes so the old table stays intact if the
-// allocation fails: liveness is only counted in the first, and an entry that
-// dies between the passes is just carried over and purged next time.
+// allocation fails: the first only counts live entries to size the new
+// table, the second checks liveness again and drops whatever is dead by then,
+// so an entry that died in between is purged too.
 bool KlassRegistry::rehash(JNIEnv* jni) {
   size_t live = 0;
   for (size_t i = 0; i < _capacity; i++) {
@@ -93,9 +94,9 @@ bool KlassRegistry::add(JNIEnv* jni, const void* klass, jclass mirror) {
       }
       jni->DeleteWeakGlobalRef(e->mirror);
       e->mirror = ref;
-      // A different class now lives at this address; frames sampled from the
-      // previous one must not match it.
-      e->epoch = bumpEpoch();
+      // A different class now lives at this address; the previous one's
+      // redefinition state does not carry over.
+      e->redefinitions_in_progress = 0;
       e->redefined = false;
       return true;
     }
@@ -111,40 +112,25 @@ bool KlassRegistry::add(JNIEnv* jni, const void* klass, jclass mirror) {
   Entry* e = find(klass);
   e->klass = klass;
   e->mirror = ref;
-  // Every registration gets a new epoch: this class may occupy memory freed
-  // by a class that frames sampled before now came from.
-  e->epoch = bumpEpoch();
+  e->redefinitions_in_progress = 0;
   e->redefined = false;
   _size++;
   return true;
 }
 
-jclass KlassRegistry::pin(JNIEnv* jni, const void* klass, uint32_t sampled_epoch, PinStatus* status) {
+jclass KlassRegistry::pin(JNIEnv* jni, const void* klass, PinStatus* status) {
   PinStatus local_status;
   if (status == nullptr) {
     status = &local_status;
   }
   *status = PIN_ABSENT;
-  if (klass == nullptr) {
-    return nullptr;
-  }
   MutexLocker ml(_lock);
-  if (_capacity == 0) {
+  Entry* e = findRegistered(klass);
+  if (e == nullptr) {
     return nullptr;
   }
-  Entry* e = find(klass);
-  if (e->klass != klass) {
-    return nullptr;
-  }
-  if (e->redefined) {
+  if (e->redefined || e->redefinitions_in_progress > 0) {
     *status = PIN_REDEFINED;
-    return nullptr;
-  }
-  // Serial-number comparison: the frame is at least as new as the entry iff
-  // (sampled - registered) mod 2^EPOCH_BITS lies in the lower half.
-  const uint32_t mask = (1u << EPOCH_BITS) - 1;
-  if (((sampled_epoch - e->epoch) & mask) >= (1u << (EPOCH_BITS - 1))) {
-    *status = PIN_STALE;
     return nullptr;
   }
   // NewLocalRef on a weak global reference returns NULL once the referent has
@@ -157,29 +143,36 @@ jclass KlassRegistry::pin(JNIEnv* jni, const void* klass, uint32_t sampled_epoch
   return ref;
 }
 
-bool KlassRegistry::markRedefined(const void* klass) {
-  if (klass == nullptr) {
-    return false;
-  }
+bool KlassRegistry::beginRedefinition(const void* klass) {
   MutexLocker ml(_lock);
-  if (_capacity == 0) {
+  Entry* e = findRegistered(klass);
+  if (e == nullptr) {
     return false;
   }
-  Entry* e = find(klass);
-  if (e->klass != klass) {
-    return false;
-  }
-  e->redefined = true;
+  e->redefinitions_in_progress++;
   return true;
+}
+
+void KlassRegistry::endRedefinition(const void* klass, bool succeeded) {
+  MutexLocker ml(_lock);
+  Entry* e = findRegistered(klass);
+  if (e == nullptr) {
+    return;
+  }
+  // Clamped: the entry may have been replaced (a new class at this address)
+  // while the call was in progress, which resets the count.
+  if (e->redefinitions_in_progress > 0) {
+    e->redefinitions_in_progress--;
+  }
+  if (succeeded) {
+    e->redefined = true;
+  }
 }
 
 bool KlassRegistry::isRedefined(const void* klass) {
   MutexLocker ml(_lock);
-  if (_capacity == 0) {
-    return false;
-  }
-  Entry* e = find(klass);
-  return e->klass == klass && e->redefined;
+  Entry* e = findRegistered(klass);
+  return e != nullptr && (e->redefined || e->redefinitions_in_progress > 0);
 }
 
 size_t KlassRegistry::size() {

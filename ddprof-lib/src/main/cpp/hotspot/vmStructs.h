@@ -730,14 +730,19 @@ DECLARE(VMKlass)
     // InstanceKlass::_methods is an Array<Method*>: an int length followed by
     // the elements, which start at the next pointer-aligned offset. `method` is
     // only compared, never dereferenced, so it may be stale. `idnum_hint` is
-    // the method's idnum if known (or -1): HotSpot keeps methods()->at(idnum)
-    // equal to the method with that idnum until a redefinition reorders them,
-    // so the hint usually avoids the linear scan.
+    // the method's idnum if known (or -1). HotSpot assigns idnums in method
+    // order when it parses a class, so methods()->at(idnum) is usually the
+    // method itself; methods added later (default-method overpasses merged in
+    // at link time, redefinitions) can break that. Then only a class of at
+    // most MAX_METHODS_SCANNED methods is scanned; for a larger one the
+    // method counts as not found.
     //
     // Keeping the class alive does not keep this array alive: a redefinition
     // swaps in a new array at a safepoint and frees the old one at a later
     // one, and a caller in native state does not hold up either. So every
     // load goes through SafeAccess, and a fault reads as "not a member".
+    static const int MAX_METHODS_SCANNED = 256;
+
     bool containsMethod(const void* method, int idnum_hint) {
         assert(_methods_offset >= 0);
         const char* methods = (const char*) SafeAccess::loadPtr((void**) at(_methods_offset), nullptr);
@@ -753,6 +758,9 @@ DECLARE(VMKlass)
         void** data = (void**)(methods + sizeof(void*));
         if (idnum_hint >= 0 && idnum_hint < len && SafeAccess::loadPtr(&data[idnum_hint], nullptr) == method) {
             return true;
+        }
+        if (len > MAX_METHODS_SCANNED) {
+            return false;
         }
         for (int i = 0; i < len; i++) {
             if (SafeAccess::loadPtr(&data[i], nullptr) == method) {
