@@ -465,6 +465,29 @@ public:
   std::unordered_map<void*, u32, std::hash<void*>, std::equal_to<void*>,
                       CountingAllocator<std::pair<void* const, u32>, NM_JFR_BUFFERS>>
       _vtable_receiver_cache;
+
+  // Per-dump cache of raw Method* frame resolutions (HotSpot cstack=vm frames
+  // whose class had no jmethodID when sampled). The same raw method recurs in
+  // many traces, and each resolution sets up crash protection, takes the
+  // KlassRegistry mutex and pins the class through JNI. Keyed by the untagged
+  // Method* and the frame's tag, so occurrences that differ only in bci or
+  // frame type share one entry. A cached result stays right for the whole
+  // dump: an accepted frame was sampled from that method, and a refused one
+  // stays refused.
+  struct RawMethodKey {
+    const void* method;
+    uint32_t tag;
+    bool operator==(const RawMethodKey& o) const { return method == o.method && tag == o.tag; }
+  };
+  struct RawMethodKeyHash {
+    size_t operator()(const RawMethodKey& k) const {
+      return std::hash<const void*>()(k.method) ^ ((size_t)k.tag * KNUTH_MULTIPLICATIVE_CONSTANT);
+    }
+  };
+  std::unordered_map<RawMethodKey, jmethodID, RawMethodKeyHash, std::equal_to<RawMethodKey>,
+                     CountingAllocator<std::pair<const RawMethodKey, jmethodID>, NM_JFR_BUFFERS>>
+      _raw_method_cache;
+
   Dictionary _packages;
   Dictionary _symbols;
 
@@ -548,6 +571,9 @@ public:
         _symbols() {}
 
   MethodInfo *resolveMethod(ASGCT_CallFrame &frame);
+  // Resolves a raw Method* frame to a jmethodID (nullptr if it must be
+  // treated as unknown), at most once per distinct method and tag per dump.
+  jmethodID resolveRawMethod(const ASGCT_CallFrame &frame);
   u32 getPackage(const char *class_name);
   u32 getSymbol(const char *name);
 };
