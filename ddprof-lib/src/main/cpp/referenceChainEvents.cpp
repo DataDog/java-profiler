@@ -500,7 +500,7 @@ void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
 }
 
 jlong ReferenceChainTracker::resolvedChainTargetTagForTest(jlong object_tag) {
-  if (object_tag <= 0 || isLeakTag(object_tag)) {
+  if (object_tag <= 0) {
     return 0;
   }
   // _search_start_ns is only rewritten by runPass()/restartSearch() under _engine_lock (BFS thread)
@@ -510,6 +510,25 @@ jlong ReferenceChainTracker::resolvedChainTargetTagForTest(jlong object_tag) {
   // _resolved_chains_lock matches finishLoopIterationSerialized() -> pollWatchedTargets().
   MutexLocker engine_guard(_engine_lock);
   ExclusiveLockGuard guard(&_resolved_chains_lock);
+  if (isLeakTag(object_tag)) {
+    // Leak-tag fallback. An object carries its leak tag exactly when no live frontier entry
+    // exists for it - before the current search's first interception, or after a restart's
+    // releaseSearchTags() cleared the frontier tags and the next GC re-tagged it - which is
+    // precisely when the frontier-tag lookup below must miss. A leak tag is minted per tracked
+    // object from LivenessTracker's pool and released only when that object dies, so unlike a
+    // frontier tag (which restartSearch() re-mints from 1 for unrelated objects) it identifies
+    // this exact object across search generations: matching the cached chain event's target
+    // tag (buildChainEvent() copies the frontier entry's stored leak tag into it) cannot hit a
+    // different object's chain, so no generation check applies here. restartSearch() keeps
+    // _resolved_chains, so a chain any earlier search resolved for this object stays reachable
+    // through this scan even after the frontier tags were wiped.
+    for (const auto &cached : _resolved_chains) {
+      if ((jlong)cached.second.event._target_tag == object_tag) {
+        return object_tag;
+      }
+    }
+    return 0;
+  }
   const u64 current_search_ns = load(_search_start_ns);
   if (current_search_ns == 0) {
     return 0;

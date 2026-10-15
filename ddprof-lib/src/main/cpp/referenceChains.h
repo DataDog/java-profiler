@@ -1380,13 +1380,17 @@ public:
   int frontierStateForTest(jlong object_tag);
 
   // Test seam - not part of the production API. Returns the targetTag a datadog.ReferenceChain
-  // event for the object currently carrying JVMTI tag `object_tag` would report, but only if the
-  // CURRENT search has already resolved and cached that object's own chain (_resolved_chains entry
-  // keyed by its frontier tag with source_search_ns == _search_start_ns). 0 otherwise: untagged,
-  // leak-tagged but not yet intercepted, no cached chain, or a chain cached by an earlier search
-  // generation (restartSearch() keeps _resolved_chains and reuses tags from 1, so raw tag equality
-  // alone could match a stale, unrelated chain). Samples _search_start_ns under _engine_lock and
-  // _resolved_chains_lock.
+  // event for the object currently carrying JVMTI tag `object_tag` would report. Two lookups:
+  // a frontier tag resolves only against the CURRENT search's cached chain (_resolved_chains entry
+  // keyed by that frontier tag with source_search_ns == _search_start_ns; restartSearch() keeps
+  // _resolved_chains and re-mints frontier tags from 1, so raw frontier-tag equality across
+  // generations could match a stale, unrelated chain); a leak tag resolves against any search
+  // generation's cached chain whose event target tag equals it - a leak tag is minted per
+  // tracked object and released only when that object dies, so it identifies the same object
+  // across generations, and the object carries it exactly when no live frontier entry exists
+  // (never intercepted yet, or a restart cleared the frontier tags and the next GC re-tagged
+  // it). 0 otherwise: untagged, or no cached chain for that object in any generation. Samples
+  // _search_start_ns under _engine_lock and _resolved_chains_lock.
   jlong resolvedChainTargetTagForTest(jlong object_tag);
 
   // Test seam - not part of the production API. Evaluates the real private scheduling gate without
