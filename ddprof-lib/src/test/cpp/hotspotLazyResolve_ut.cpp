@@ -8,6 +8,7 @@
 #include "../../main/cpp/frame.h"
 #include "../../main/cpp/hotspot/hotspotSupport.h"
 #include "../../main/cpp/hotspot/klassRegistry.h"
+#include "../../main/cpp/hotspot/klassTraceId.h"
 #include "../../main/cpp/hotspot/vmStructs.h"
 #include "../../main/cpp/jvmSupport.h"
 #include "../../main/cpp/profiler.h"
@@ -54,6 +55,8 @@ public:
 class HotspotSupportTestAccessor {
 public:
     static KlassRegistry& registry() { return HotspotSupport::_klass_registry; }
+    static bool getTagWithTraceId() { return HotspotSupport::_tag_with_trace_id; }
+    static void setTagWithTraceId(bool v) { HotspotSupport::_tag_with_trace_id = v; }
 };
 
 class ProfilerTestAccessor {
@@ -143,6 +146,7 @@ struct FakeMethodArray {
 struct FakeKlass {
     FakeIdCache* ids;
     FakeMethodArray* methods;
+    uint64_t trace_id;  // JFR encoding: (id << 16) | tag bits
 };
 
 const VMStructsTestAccessor::State LAYOUT = {
@@ -182,6 +186,7 @@ struct FakeClass {
         cpool.holder = &klass;
         klass.ids = &ids;
         klass.methods = &methods;
+        klass.trace_id = (uint64_t)1000 << 16;
         methods.len = 1;
         methods.data[0] = &method;
         jmethod_id_slot = &method;
@@ -276,7 +281,7 @@ FakeJvm* FakeJvm::s_instance = nullptr;
 
 } // namespace
 
-class HotspotLazyResolveTest : public ::testing::Test {
+class HotspotLazyResolveTest : public ::testing::TestWithParam<bool> {
 protected:
     VMStructsTestAccessor _layout{LAYOUT};
     FakeJvm _jvm;
@@ -285,7 +290,13 @@ protected:
     FakeObject _new_mirror{2};
     bool _saved_hotspot = false;
     bool _saved_force = true;
+    bool _saved_tag_with_trace_id = false;
+    int _saved_trace_id_offset = -1;
     JVMSupportTestAccessor::LoadState _saved_state{};
+
+    // The parameter: tag raw frames with the holder's trace ID (true) or the
+    // registry epoch (false). Every Klass*-reuse case must hold for both.
+    static bool traceIdTags() { return GetParam(); }
 
     void SetUp() override {
         _saved_hotspot = VMTestAccessor::getHotspot();
@@ -296,6 +307,10 @@ protected:
         // not forced, which is how fjmethodid=lazy configures the profiler.
         _saved_force = ProfilerTestAccessor::getForceJmethodID(Profiler::instance());
         ProfilerTestAccessor::setForceJmethodID(Profiler::instance(), false);
+        _saved_tag_with_trace_id = HotspotSupportTestAccessor::getTagWithTraceId();
+        _saved_trace_id_offset = KlassTraceId::offset();
+        HotspotSupportTestAccessor::setTagWithTraceId(traceIdTags());
+        KlassTraceId::setOffsetForTest(traceIdTags() ? (int)offsetof(FakeKlass, trace_id) : -1);
         // resolve() installs crash protection on the current ProfiledThread.
         ProfiledThread::initCurrentThread();
         ASSERT_NE(nullptr, ProfiledThread::current());
@@ -304,6 +319,8 @@ protected:
     void TearDown() override {
         HotspotSupportTestAccessor::registry().clear(_jvm.jni());
         ProfiledThread::release();
+        KlassTraceId::setOffsetForTest(_saved_trace_id_offset);
+        HotspotSupportTestAccessor::setTagWithTraceId(_saved_tag_with_trace_id);
         ProfilerTestAccessor::setForceJmethodID(Profiler::instance(), _saved_force);
         JVMSupportTestAccessor::setLoadState(_saved_state);
         VMTestAccessor::setHotspot(_saved_hotspot);
@@ -312,6 +329,15 @@ protected:
     void registerClass(FakeObject& mirror) {
         ASSERT_TRUE(HotspotSupportTestAccessor::registry().add(_jvm.jni(), _cls.klassPtr(),
                                                                _jvm.mirror(mirror)));
+    }
+
+    // The old class is unloaded and a new class of the same shape is loaded at
+    // the same Klass* and Method* addresses: its mirror is new, and so is the
+    // trace ID JFR assigns at creation.
+    void loadNewClassAtSameAddress() {
+        _jvm.collect(_old_mirror);
+        _cls.klass.trace_id = ((_cls.klass.trace_id >> 16) + 37) << 16;
+        registerClass(_new_mirror);
     }
 
     // What walkVM stores for a frame of a class without a jmethodID yet.
@@ -328,13 +354,13 @@ protected:
     }
 };
 
-TEST_F(HotspotLazyResolveTest, LiveClassResolves) {
+TEST_P(HotspotLazyResolveTest, LiveClassResolves) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
     EXPECT_EQ(_cls.jmethodId(), resolve(frame));
 }
 
-TEST_F(HotspotLazyResolveTest, UnloadedClassDoesNotResolve) {
+TEST_P(HotspotLazyResolveTest, UnloadedClassDoesNotResolve) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
     _jvm.collect(_old_mirror);
@@ -344,12 +370,11 @@ TEST_F(HotspotLazyResolveTest, UnloadedClassDoesNotResolve) {
 // The old class is unloaded and a new one is registered at the same Klass*,
 // with its method at the same Method* address. The frame was sampled from the
 // old class, so it must not resolve to the new class's method.
-TEST_F(HotspotLazyResolveTest, FrameFromBeforeKlassReuseDoesNotResolveToNewClass) {
+TEST_P(HotspotLazyResolveTest, FrameFromBeforeKlassReuseDoesNotResolveToNewClass) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
 
-    _jvm.collect(_old_mirror);
-    registerClass(_new_mirror);
+    loadNewClassAtSameAddress();
 
     EXPECT_EQ(nullptr, resolve(frame));
 }
@@ -357,7 +382,7 @@ TEST_F(HotspotLazyResolveTest, FrameFromBeforeKlassReuseDoesNotResolveToNewClass
 // Same, but the dead entry was purged by a registry rehash before the new
 // class arrived, so the new class's registration looks like a first insert
 // rather than a replacement.
-TEST_F(HotspotLazyResolveTest, FrameFromBeforeKlassReuseAfterPurgeDoesNotResolveToNewClass) {
+TEST_P(HotspotLazyResolveTest, FrameFromBeforeKlassReuseAfterPurgeDoesNotResolveToNewClass) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
     _jvm.collect(_old_mirror);
@@ -374,16 +399,16 @@ TEST_F(HotspotLazyResolveTest, FrameFromBeforeKlassReuseAfterPurgeDoesNotResolve
     ASSERT_EQ(nullptr, registry.pin(_jvm.jni(), _cls.klassPtr(), registry.epoch()))
         << "the dead entry should be gone, purged or at least unpinnable";
 
+    _cls.klass.trace_id = ((_cls.klass.trace_id >> 16) + 37) << 16;  // the new class's ID
     registerClass(_new_mirror);
 
     EXPECT_EQ(nullptr, resolve(frame));
 }
 
 // Frames sampled from the new class after the reuse must still resolve.
-TEST_F(HotspotLazyResolveTest, FrameFromAfterKlassReuseResolves) {
+TEST_P(HotspotLazyResolveTest, FrameFromAfterKlassReuseResolves) {
     registerClass(_old_mirror);
-    _jvm.collect(_old_mirror);
-    registerClass(_new_mirror);
+    loadNewClassAtSameAddress();
 
     ASGCT_CallFrame frame = sample();
     EXPECT_EQ(_cls.jmethodId(), resolve(frame));
@@ -392,12 +417,51 @@ TEST_F(HotspotLazyResolveTest, FrameFromAfterKlassReuseResolves) {
 // A frame from the old class and one from the new class must be told apart
 // already at capture time; otherwise the call trace storage merges them into
 // one trace before resolve() ever runs.
-TEST_F(HotspotLazyResolveTest, FramesFromBeforeAndAfterKlassReuseDiffer) {
+TEST_P(HotspotLazyResolveTest, FramesFromBeforeAndAfterKlassReuseDiffer) {
     registerClass(_old_mirror);
     ASGCT_CallFrame before = sample();
-    _jvm.collect(_old_mirror);
-    registerClass(_new_mirror);
+    loadNewClassAtSameAddress();
     ASGCT_CallFrame after = sample();
 
     EXPECT_FALSE(before.bci == after.bci && before.method == after.method);
 }
+
+// Trace-ID tags identify the class load itself, so a registry epoch bump
+// caused by an unrelated class leaves them unchanged and the same stack keeps
+// deduplicating into one trace. Epoch tags change with every bump.
+TEST_P(HotspotLazyResolveTest, UnrelatedReuseChangesFramesOnlyWithEpochTags) {
+    registerClass(_old_mirror);
+    ASGCT_CallFrame before = sample();
+
+    // Another class at another address is unloaded and its address reused.
+    static FakeObject other_old{10};
+    static FakeObject other_new{11};
+    const void* other_klass = reinterpret_cast<const void*>(0x200000);
+    KlassRegistry& registry = HotspotSupportTestAccessor::registry();
+    ASSERT_TRUE(registry.add(_jvm.jni(), other_klass, _jvm.mirror(other_old)));
+    _jvm.collect(other_old);
+    ASSERT_TRUE(registry.add(_jvm.jni(), other_klass, _jvm.mirror(other_new)));
+
+    ASGCT_CallFrame after = sample();
+    bool same = before.bci == after.bci && before.method == after.method;
+    EXPECT_EQ(traceIdTags(), same);
+    EXPECT_EQ(_cls.jmethodId(), resolve(before));
+    EXPECT_EQ(_cls.jmethodId(), resolve(after));
+}
+
+// The JFR tag bits below the ID change while JFR runs; they must not affect
+// the frame's tag or its resolution.
+TEST_P(HotspotLazyResolveTest, JfrTagBitsDoNotAffectTraceIdTags) {
+    registerClass(_old_mirror);
+    ASGCT_CallFrame before = sample();
+    _cls.klass.trace_id |= 0x0303;
+    ASGCT_CallFrame after = sample();
+    EXPECT_EQ(before.bci, after.bci);
+    EXPECT_EQ(before.method, after.method);
+    EXPECT_EQ(_cls.jmethodId(), resolve(before));
+}
+
+INSTANTIATE_TEST_SUITE_P(TagSource, HotspotLazyResolveTest, ::testing::Bool(),
+                         [](const ::testing::TestParamInfo<bool>& info) {
+                             return info.param ? "TraceId" : "Epoch";
+                         });

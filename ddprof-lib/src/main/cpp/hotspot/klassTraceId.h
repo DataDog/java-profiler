@@ -6,6 +6,8 @@
 #ifndef _HOTSPOT_KLASSTRACEID_H
 #define _HOTSPOT_KLASSTRACEID_H
 
+#include "safeAccess.h"
+
 #include <jni.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -31,6 +33,7 @@
  */
 class KlassTraceId {
   static int _offset;
+  static bool _calibrated;
 
 public:
   // Array dimensions created by calibrate(): one probe klass per dimension.
@@ -48,14 +51,37 @@ public:
   static int findOffset(const void* const* klasses, int count, size_t klass_size);
 
   /**
-   * Creates the probe klasses through JNI and records the offset found. Safe
-   * to call more than once; later calls reuse the existing probes. Returns
-   * true if an offset is known afterwards.
+   * Creates the probe klasses through JNI and records the offset found. Only
+   * the first call per process calibrates; later calls return its result, so
+   * the tag source of raw frames (see HotspotSupport) never changes while
+   * frames from an earlier profiling session may still be stored. Returns
+   * true if an offset is known.
    */
   static bool calibrate(JNIEnv* jni);
 
   /** The calibrated offset, or -1. */
   static int offset() { return __atomic_load_n(&_offset, __ATOMIC_ACQUIRE); }
+
+  /**
+   * Reads the trace ID (`raw >> 16`) of `klass` with SafeAccess, so it is
+   * usable from a signal handler on a Klass* that may be stale. Returns false
+   * if not calibrated or the field is unreadable.
+   */
+  static inline bool read(const void* klass, uint64_t* id) {
+    int off = offset();
+    if (off < 0 || klass == nullptr) {
+      return false;
+    }
+    // An all-ones raw value would mean 2^48 - 1 classes had been created, so
+    // it can serve as the fault marker.
+    void* const fault = (void*)UINTPTR_MAX;
+    void* raw = SafeAccess::loadPtr((void**)((const char*)klass + off), fault);
+    if (raw == fault) {
+      return false;
+    }
+    *id = (uint64_t)(uintptr_t)raw >> 16;
+    return true;
+  }
 
   /** Test hook: forget or force the calibrated offset. */
   static void setOffsetForTest(int offset) { __atomic_store_n(&_offset, offset, __ATOMIC_RELEASE); }

@@ -184,13 +184,14 @@
   /* STALE: the frame predates the class now registered at its Klass*       \
    * address (Klass* reuse after unloading); serializes as "unknown".        \
    * ADD_FAILED: registration failed, so the class was preloaded instead.    \
-   * UNTAGGABLE: a Method* using address bits the raw-frame tag needs; the   \
-   * frame is stored as not walkable. */                                     \
+   * UNTAGGABLE: a Method* using address bits the raw-frame tag needs, or   \
+   * an unreadable holder trace ID; the frame is stored as not walkable. */  \
   X(METHOD_RESOLVE_LAZY_STALE, "method_resolve_lazy_stale")                   \
   X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
   X(WALKVM_RAW_FRAME_UNTAGGABLE, "walkvm_raw_frame_untaggable")               \
-  /* Gauge: Klass::_trace_id offset found by KlassTraceId::calibrate(), -1 if \
-   * calibration ran and failed, 0 if it has not run. */                     \
+  /* Gauge, set at each fjmethodid=lazy start: the Klass::_trace_id offset  \
+   * raw frames are tagged with, or -1 if they use the registry epoch. 0 if   \
+   * lazy mode never started. */                                             \
   X(KLASS_TRACE_ID_OFFSET, "klass_trace_id_offset")                           \
   /* Strict subset of SAMPLES_DROPPED_THREAD_LOCAL, not an independent count: \
    * ThreadLocalDataPool::claim() increments this on capacity exhaustion, and \
