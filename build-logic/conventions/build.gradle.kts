@@ -5,12 +5,18 @@ plugins {
 }
 
 repositories {
-    val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy")
-        .orElse(providers.environmentVariable("MAVEN_REPOSITORY_PROXY"))
-        .orNull?.takeIf { it.isNotBlank() }
+    val gitlabCi = providers.environmentVariable("GITLAB_CI").orNull == "true"
+    val mavenRepositoryProxy = if (gitlabCi) {
+        providers.gradleProperty("mavenRepositoryProxy")
+            .orElse(providers.environmentVariable("MAVEN_REPOSITORY_PROXY"))
+            .orNull?.takeIf { it.isNotBlank() }
+    } else {
+        providers.gradleProperty("mavenRepositoryProxy").orNull
+    }
     if (mavenRepositoryProxy != null) {
         maven { url = uri(mavenRepositoryProxy) }
-    } else {
+    }
+    if (!gitlabCi || mavenRepositoryProxy == null) {
         gradlePluginPortal()
         mavenCentral()
     }

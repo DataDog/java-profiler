@@ -3,6 +3,15 @@
 
 set -euo pipefail
 
+# Preserve the catalog launcher and optional custom repository outside GitLab CI.
+if [ "${GITLAB_CI:-}" != "true" ]; then
+  jbang_args=(--java 25)
+  if [ -n "${MAVEN_REPOSITORY_PROXY:-}" ]; then
+    jbang_args+=("--repos=central=${MAVEN_REPOSITORY_PROXY}")
+  fi
+  exec jbang "${jbang_args[@]}" jfr-shell@btraceio "$@"
+fi
+
 # Pin a Java 25 release and resolve its backend through JBang too. Otherwise
 # jfr-shell auto-installs the backend with its own hardcoded public repositories.
 JAFAR_VERSION="0.26.2"

@@ -2,12 +2,21 @@
 
 pluginManagement {
   includeBuild("build-logic")
-  val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy")
-    .orElse(providers.environmentVariable("MAVEN_REPOSITORY_PROXY"))
-    .orNull?.takeIf { it.isNotBlank() }
-  val gradlePluginProxy = providers.gradleProperty("gradlePluginProxy")
-    .orElse(providers.environmentVariable("GRADLE_PLUGIN_PROXY"))
-    .orNull?.takeIf { it.isNotBlank() }
+  val gitlabCi = providers.environmentVariable("GITLAB_CI").orNull == "true"
+  val mavenRepositoryProxy = if (gitlabCi) {
+    providers.gradleProperty("mavenRepositoryProxy")
+      .orElse(providers.environmentVariable("MAVEN_REPOSITORY_PROXY"))
+      .orNull?.takeIf { it.isNotBlank() }
+  } else {
+    providers.gradleProperty("mavenRepositoryProxy").orNull
+  }
+  val gradlePluginProxy = if (gitlabCi) {
+    providers.gradleProperty("gradlePluginProxy")
+      .orElse(providers.environmentVariable("GRADLE_PLUGIN_PROXY"))
+      .orNull?.takeIf { it.isNotBlank() }
+  } else {
+    null
+  }
   repositories {
     if (mavenRepositoryProxy != null) {
       maven { url = uri(mavenRepositoryProxy) }
@@ -15,7 +24,7 @@ pluginManagement {
     if (gradlePluginProxy != null && gradlePluginProxy != mavenRepositoryProxy) {
       maven { url = uri(gradlePluginProxy) }
     }
-    if (mavenRepositoryProxy == null && gradlePluginProxy == null) {
+    if (!gitlabCi || (mavenRepositoryProxy == null && gradlePluginProxy == null)) {
       gradlePluginPortal()
       mavenCentral()
     }
@@ -25,13 +34,19 @@ pluginManagement {
 // Centralized dependency resolution - subprojects should not define their own repositories
 dependencyResolutionManagement {
   repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
-  val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy")
-    .orElse(providers.environmentVariable("MAVEN_REPOSITORY_PROXY"))
-    .orNull?.takeIf { it.isNotBlank() }
+  val gitlabCi = providers.environmentVariable("GITLAB_CI").orNull == "true"
+  val mavenRepositoryProxy = if (gitlabCi) {
+    providers.gradleProperty("mavenRepositoryProxy")
+      .orElse(providers.environmentVariable("MAVEN_REPOSITORY_PROXY"))
+      .orNull?.takeIf { it.isNotBlank() }
+  } else {
+    providers.gradleProperty("mavenRepositoryProxy").orNull
+  }
   repositories {
     if (mavenRepositoryProxy != null) {
       maven { url = uri(mavenRepositoryProxy) }
-    } else {
+    }
+    if (!gitlabCi || mavenRepositoryProxy == null) {
       mavenCentral()
       gradlePluginPortal()
     }

@@ -1,20 +1,23 @@
 // Copyright 2026, Datadog, Inc.
 
 pluginManagement {
-    def mavenRepositoryProxy = providers.gradleProperty('mavenRepositoryProxy')
-        .orElse(providers.environmentVariable('MAVEN_REPOSITORY_PROXY'))
-        .orNull?.trim()
-    def gradlePluginProxy = providers.gradleProperty('gradlePluginProxy')
-        .orElse(providers.environmentVariable('GRADLE_PLUGIN_PROXY'))
-        .orNull?.trim()
+    def gitlabCi = providers.environmentVariable('GITLAB_CI').orNull == 'true'
+    def mavenRepositoryProxy = gitlabCi
+        ? providers.gradleProperty('mavenRepositoryProxy')
+            .orElse(providers.environmentVariable('MAVEN_REPOSITORY_PROXY')).orNull?.trim() ?: null
+        : providers.gradleProperty('mavenRepositoryProxy').orNull
+    def gradlePluginProxy = gitlabCi
+        ? providers.gradleProperty('gradlePluginProxy')
+            .orElse(providers.environmentVariable('GRADLE_PLUGIN_PROXY')).orNull?.trim() ?: null
+        : null
     repositories {
-        if (mavenRepositoryProxy) {
+        if (mavenRepositoryProxy != null) {
             maven { url = uri(mavenRepositoryProxy) }
         }
         if (gradlePluginProxy && gradlePluginProxy != mavenRepositoryProxy) {
             maven { url = uri(gradlePluginProxy) }
         }
-        if (!mavenRepositoryProxy && !gradlePluginProxy) {
+        if (!gitlabCi || (!mavenRepositoryProxy && !gradlePluginProxy)) {
             gradlePluginPortal()
             mavenCentral()
         }

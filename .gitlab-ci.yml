@@ -13,6 +13,7 @@ variables:
   RUN_RELIABILITY:
     value: "false"
     description: "Run reliability and chaos tests. Set automatically when the test:reliability label is on the PR."
+  # Shared build scripts activate strict repository routing only when GITLAB_CI=true.
   MAVEN_REPOSITORY_PROXY: "https://depot-read-api-java.us1.ddbuild.io/magicmirror/magicmirror/@current/"
   GRADLE_PLUGIN_PROXY: "https://depot-read-api-bzl.us1.ddbuild.io/plugins.gradle.org/m2/"
 

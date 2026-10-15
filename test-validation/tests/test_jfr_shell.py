@@ -35,7 +35,7 @@ else:
     print('SUCCESS: All validations passed')
 """)
         jbang.chmod(0o755)
-        self.env = dict(os.environ, PATH=f"{self.directory}:{os.environ['PATH']}", JBANG_CALLS=str(self.calls))
+        self.env = dict(os.environ, GITLAB_CI="true", PATH=f"{self.directory}:{os.environ['PATH']}", JBANG_CALLS=str(self.calls))
         self.env.pop("MAVEN_REPOSITORY_PROXY", None)
 
     def run_script(self, path, *args):
@@ -56,14 +56,39 @@ else:
         self.assertFalse(any("@btraceio" in arg for arg in args))
         self.assertEqual(args[-2:], ["metadata", str(self.recording)])
 
-    def test_unconfigured_local_build_keeps_default_repository(self):
-        for value in (None, ""):
-            with self.subTest(value=value):
-                if value is not None:
-                    self.env["MAVEN_REPOSITORY_PROXY"] = value
+    def test_non_gitlab_preserves_catalog_and_default_repository(self):
+        for gitlab in (None, "", "false"):
+            with self.subTest(gitlab=gitlab):
+                self.env.pop("GITLAB_CI", None)
+                if gitlab is not None:
+                    self.env["GITLAB_CI"] = gitlab
+                self.env["GITHUB_ACTIONS"] = "true"
                 result = self.run_script("test-validation/jfr-shell.sh", "script", "/dev/null")
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertNotIn("--repos", self.read_calls()[-1])
+                self.assertEqual(self.read_calls()[-1], ["--java", "25", "jfr-shell@btraceio", "script", "/dev/null"])
+
+    def test_non_gitlab_preserves_explicit_custom_repository(self):
+        self.env.pop("GITLAB_CI", None)
+        self.env["MAVEN_REPOSITORY_PROXY"] = "https://custom.example/maven/"
+        result = self.run_script("test-validation/jfr-shell.sh", "metadata", self.recording)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read_calls()[-1], ["--java", "25", "--repos=central=https://custom.example/maven/", "jfr-shell@btraceio", "metadata", str(self.recording)])
+
+    def test_gitlab_without_proxy_keeps_jbang_default_repository(self):
+        result = self.run_script("test-validation/jfr-shell.sh", "script", "/dev/null")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--repos", self.read_calls()[-1])
+        self.assertIn("--deps", self.read_calls()[-1])
+
+    def test_non_gitlab_conformance_uses_existing_catalog(self):
+        self.env.pop("GITLAB_CI", None)
+        result = self.run_script("test-validation/validate-jfr-conformance.sh", self.recording)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        metadata, validation = self.read_calls()
+        self.assertEqual(metadata[:3], ["--java", "25", "jfr-shell@btraceio"])
+        self.assertEqual(validation[:3], ["--java", "25", "jfr-shell@btraceio"])
+        self.assertNotIn("--deps", metadata)
+        self.assertNotIn("--ignore-transitive-repositories", validation)
 
     def test_conformance_preserves_arguments_and_output_modes(self):
         for use_output in (False, True):
