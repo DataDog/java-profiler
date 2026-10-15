@@ -69,9 +69,10 @@ class KlassRegistry {
   uint32_t bumpEpoch();
 
 public:
-  // Width of the epoch as stored in a frame and compared by pin(); must equal
-  // FrameType::RAW_TAG_BITS (checked in hotspotSupport.cpp).
-  static const int EPOCH_BITS = 26;
+  // Width of the epoch as stored in a frame and compared by pin(): a raw
+  // frame's tag minus the bit that says which kind of tag it is (checked in
+  // hotspotSupport.cpp).
+  static const int EPOCH_BITS = 25;
 
   KlassRegistry() : _table(nullptr), _capacity(0), _size(0), _epoch(0) {}
 

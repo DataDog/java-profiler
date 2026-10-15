@@ -54,11 +54,17 @@ private:
     // resolve() before it touches a raw Method*. See klassRegistry.h.
     static KlassRegistry _klass_registry;
 
-    // fjmethodid=lazy: what a raw frame's tag holds (frame.h). True: the low
-    // RAW_TAG_BITS of the holder's JFR trace ID (KlassTraceId), unique per
-    // load of a class. False: _klass_registry's epoch. Set once per process by
-    // initLazyResolution(), before any raw frame exists.
-    static bool _tag_with_trace_id;
+    // fjmethodid=lazy raw frame tags (frame.h). The top bit says what the
+    // rest holds: set, the low TAG_VALUE_BITS of the holder's JFR trace ID
+    // (KlassTraceId), unique per load of a class; clear, _klass_registry's
+    // epoch. resolve() goes by each frame's own kind, never by the current
+    // tag source.
+    static const uint32_t TRACE_ID_TAG = 1u << (FrameType::RAW_TAG_BITS - 1);
+    static const uint32_t TAG_VALUE_MASK = TRACE_ID_TAG - 1;
+
+    // Whether new raw frames get trace-ID tags: set by initLazyResolution()
+    // when calibration found the offset.
+    static volatile bool _tag_with_trace_id;
 
     // The tag to store with a raw frame of `method`; false if it cannot be
     // determined (unreadable holder or trace ID). Signal safe.

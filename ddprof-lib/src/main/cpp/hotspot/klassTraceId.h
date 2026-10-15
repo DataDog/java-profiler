@@ -52,10 +52,8 @@ public:
 
   /**
    * Creates the probe klasses through JNI and records the offset found. Only
-   * the first call per process calibrates; later calls return its result, so
-   * the tag source of raw frames (see HotspotSupport) never changes while
-   * frames from an earlier profiling session may still be stored. Returns
-   * true if an offset is known.
+   * the first call per process calibrates; later calls return its result.
+   * Returns true if an offset is known.
    */
   static bool calibrate(JNIEnv* jni);
 
