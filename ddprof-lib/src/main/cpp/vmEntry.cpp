@@ -678,10 +678,15 @@ void JNICALL VM::VMDeath(jvmtiEnv *jvmti, JNIEnv *jni) {
 jvmtiError
 VM::RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
                         const jvmtiClassDefinition *class_definitions) {
+  // Arguments the original rejects (JVMTI_ERROR_NULL_POINTER) go straight to
+  // it; the loops below must never dereference them first.
+  if (class_count > 0 && class_definitions == NULL) {
+    return _orig_RedefineClasses(jvmti, class_count, class_definitions);
+  }
   JNIEnv *env = jni();
   for (int i = 0; i < class_count; i++) {
     if (class_definitions[i].klass != NULL) {
-      JVMSupport::beforeClassRedefinition(env, class_definitions[i].klass);
+      JVMSupport::beforeClassRedefinition(jvmti, env, class_definitions[i].klass);
     }
   }
 
@@ -700,10 +705,15 @@ VM::RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
 
 jvmtiError VM::RetransformClassesHook(jvmtiEnv *jvmti, jint class_count,
                                       const jclass *classes) {
+  // Arguments the original rejects (JVMTI_ERROR_NULL_POINTER) go straight to
+  // it; the loops below must never dereference them first.
+  if (class_count > 0 && classes == NULL) {
+    return _orig_RetransformClasses(jvmti, class_count, classes);
+  }
   JNIEnv *env = jni();
   for (int i = 0; i < class_count; i++) {
     if (classes[i] != NULL) {
-      JVMSupport::beforeClassRedefinition(env, classes[i]);
+      JVMSupport::beforeClassRedefinition(jvmti, env, classes[i]);
     }
   }
 

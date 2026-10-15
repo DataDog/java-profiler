@@ -1498,16 +1498,30 @@ bool HotspotSupport::rawFrameTag(const VMMethod* method, uint32_t* tag) {
     return true;
 }
 
-void HotspotSupport::beforeClassRedefinition(JNIEnv *jni, jclass klass) {
-    _klass_registry.markRedefined(VMKlass::fromJavaClass(jni, klass));
+bool HotspotSupport::isInstanceClass(jvmtiEnv *jvmti, jclass klass) {
+    jint status = 0;
+    // GetClassStatus also returns JVMTI_ERROR_INVALID_CLASS for an object
+    // that is not a class.
+    return klass != nullptr && jvmti->GetClassStatus(klass, &status) == JVMTI_ERROR_NONE &&
+           (status & (JVMTI_CLASS_STATUS_ARRAY | JVMTI_CLASS_STATUS_PRIMITIVE)) == 0;
+}
+
+void HotspotSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+    if (isInstanceClass(jvmti, klass)) {
+        _klass_registry.markRedefined(VMKlass::fromJavaClass(jni, klass));
+    }
+}
+
+void HotspotSupport::afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+    if (isInstanceClass(jvmti, klass)) {
+        loadMethodIDsIfNeededImpl(jvmti, jni, klass, true /* load all */);
+    }
 }
 
 bool HotspotSupport::registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-    jint status = 0;
     // Array and primitive classes have no methods, so no frame ever names them
     // as a holder; skipping them keeps GetLoadedClasses() at start cheap.
-    if (jvmti->GetClassStatus(klass, &status) != JVMTI_ERROR_NONE ||
-        (status & (JVMTI_CLASS_STATUS_ARRAY | JVMTI_CLASS_STATUS_PRIMITIVE)) != 0) {
+    if (!isInstanceClass(jvmti, klass)) {
         return false;
     }
     const void* vm_klass = VMKlass::fromJavaClass(jni, klass);

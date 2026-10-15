@@ -75,8 +75,16 @@ private:
     static bool registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 
     // fjmethodid=lazy: marks `klass` in _klass_registry before a redefinition
-    // (see klassRegistry.h for why its raw frames are refused from then on).
-    static void beforeClassRedefinition(JNIEnv *jni, jclass klass);
+    // (see klassRegistry.h for why its raw frames are refused from then on)
+    // and preloads its jmethodIDs after it. `klass` comes straight from the
+    // RedefineClasses/RetransformClasses caller, so anything that is not an
+    // instance class is ignored, as JVMTI itself would reject it.
+    static void beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
+    static void afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
+
+    // True if JVMTI accepts `klass` as a class that is neither an array nor a
+    // primitive, i.e. one with a Klass* that has methods.
+    static bool isInstanceClass(jvmtiEnv *jvmti, jclass klass);
 
     // fjmethodid=lazy half of resolve(): pins the class registered under
     // `holder`, refuses it if `tag` (the frame's, see _tag_with_trace_id)

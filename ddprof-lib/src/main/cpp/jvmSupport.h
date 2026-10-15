@@ -70,8 +70,9 @@ public:
     // Called around every RedefineClasses/RetransformClasses for each class.
     // fjmethodid=lazy must know before the methods are swapped; afterwards the
     // class's jmethodIDs are (re)loaded as each mode requires. `succeeded` is
-    // whether the redefinition went through.
-    static void beforeClassRedefinition(JNIEnv *jni, jclass klass);
+    // whether the redefinition went through. `klass` is the caller's argument
+    // and has not been validated by JVMTI yet.
+    static void beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
     static void afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded);
 
     // Resolve a raw-pointer frame (method field and encoded bci) to a jmethodID
