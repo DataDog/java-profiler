@@ -182,6 +182,14 @@
   X(METHOD_RESOLVE_LAZY_UNLOADED, "method_resolve_lazy_unloaded")             \
   X(METHOD_RESOLVE_LAZY_NOT_CURRENT, "method_resolve_lazy_not_current")       \
   X(METHOD_RESOLVE_LAZY_CLASS_LOADED, "method_resolve_lazy_class_loaded")     \
+  /* STALE: the frame predates the class now registered at its Klass*       \
+   * address (Klass* reuse after unloading); serializes as "unknown".        \
+   * ADD_FAILED: registration failed, so the class was preloaded instead.    \
+   * UNTAGGABLE: a Method* using address bits the raw-frame tag needs; the   \
+   * frame is stored as not walkable. */                                     \
+  X(METHOD_RESOLVE_LAZY_STALE, "method_resolve_lazy_stale")                   \
+  X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
+  X(WALKVM_RAW_FRAME_UNTAGGABLE, "walkvm_raw_frame_untaggable")               \
   /* Strict subset of SAMPLES_DROPPED_THREAD_LOCAL, not an independent count: \
    * ThreadLocalDataPool::claim() increments this on capacity exhaustion, and \
    * every acquireCurrent() caller that gets nullptr back -- for this or any  \

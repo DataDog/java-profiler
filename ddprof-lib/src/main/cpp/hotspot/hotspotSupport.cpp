@@ -139,7 +139,7 @@ inline EventType eventTypeFromBCI(jint bci_type) {
 
 static bool hasTheSameMethod(ASGCT_CallFrame& frame, jmethodID method_id, const VMMethod* method) {
     if (FrameType::isRawPointer(frame.bci)) {
-        return frame.method == method;
+        return FrameType::untagPointer(frame.method) == method;
     } else {
         return frame.method_id == method_id;
     }
@@ -186,11 +186,24 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
   }
 }
 
-// Fill the frame with raw method pointer
-static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method) {
+static_assert(KlassRegistry::EPOCH_BITS == FrameType::RAW_TAG_BITS,
+              "a raw frame must store the whole KlassRegistry epoch");
+
+// Fill the frame with raw method pointer, tagged with the KlassRegistry epoch
+// it was sampled under (see frame.h for where the tag bits go).
+static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method,
+                         uint32_t epoch) {
     NO_INJECTION_ASSERT(method != nullptr);
-    frame.bci = FrameType::encode(type, bci, true /*raw method pointer*/);
-    frame.method = static_cast<const void*>(method);
+    if (!FrameType::canTagPointer(method)) {
+        // The tag's high bits would collide with address bits. Without the
+        // tag the frame could be mistaken for one of a later class at the same
+        // address, so keep it structurally but resolve it as unknown.
+        Counters::increment(WALKVM_RAW_FRAME_UNTAGGABLE);
+        fillFrame(frame, type, bci, JMETHODID_NOT_WALKABLE);
+        return;
+    }
+    frame.bci = FrameType::encodeRaw(type, bci, epoch);
+    frame.method = FrameType::tagPointer(method, epoch);
 }
 
 void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci,
@@ -211,7 +224,7 @@ void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int
         // resolution path; the deferred-dereference race at dump time is
         // inherent to this mode.
         NO_INJECTION_ASSERT(method != nullptr);
-        fillFrameRaw(frame, type, bci, method);
+        fillFrameRaw(frame, type, bci, method, _klass_registry.epoch());
     } else {
         // fjmethodid=true: all jmethodIDs should be preloaded, so nullptr is
         // unexpected — a transient invalidation window or a missed preload.
@@ -1467,7 +1480,14 @@ bool HotspotSupport::registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
         (status & (JVMTI_CLASS_STATUS_ARRAY | JVMTI_CLASS_STATUS_PRIMITIVE)) != 0) {
         return false;
     }
-    return _klass_registry.add(jni, VMKlass::fromJavaClass(jni, klass), klass);
+    if (_klass_registry.add(jni, VMKlass::fromJavaClass(jni, klass), klass)) {
+        return true;
+    }
+    // An unregistered class's frames could never be told apart from a later
+    // class at the same address (see klassRegistry.h), so give it jmethodIDs
+    // up front: walkVM then never stores a raw frame for it.
+    Counters::increment(KLASS_REGISTRY_ADD_FAILED);
+    return loadMethodIDsIfNeededImpl(jvmti, jni, klass, true /*load all*/);
 }
 
 // The three names resolve() needs, owned by resolve()'s frame. Each name has
@@ -1781,15 +1801,17 @@ static jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& 
 // Partial mode only reaches here for system-class-loader classes (FindClass
 // must be able to see them); lazy mode reaches here for every class without a
 // jmethodID and resolves it through _klass_registry instead.
-jmethodID HotspotSupport::resolve(const void* method) {
+jmethodID HotspotSupport::resolve(const void* tagged_method, int bci) {
   assert(VM::isHotspot());
-  NO_INJECTION_ASSERT(method != nullptr);
+  NO_INJECTION_ASSERT(tagged_method != nullptr);
   // fillJavaFrame stores the sentinel without the raw flag, so this should
   // never reach the raw-pointer resolve path. Map it to nullptr so the dump
   // thread serializes it as the shared unknown method.
-  if ((jmethodID)method == JMETHODID_NOT_WALKABLE) {
+  if ((jmethodID)tagged_method == JMETHODID_NOT_WALKABLE) {
     return nullptr;
   }
+  const void* method = FrameType::untagPointer(tagged_method);
+  const uint32_t epoch = FrameType::rawTag(bci, tagged_method);
 
   // The Method* was captured at sample time; GC or class unloading may have
   // freed the metadata since, so every dereference below can fault. Install a
@@ -1852,7 +1874,7 @@ jmethodID HotspotSupport::resolve(const void* method) {
     return nullptr;
   }
   if (lazy) {
-    return resolveViaRegistry(vm_method, holder, idnum);
+    return resolveViaRegistry(vm_method, holder, idnum, epoch);
   }
   if (existing_id != nullptr) {
     return existing_id;
@@ -1864,13 +1886,17 @@ jmethodID HotspotSupport::resolve(const void* method) {
 // GetClassMethods call below must not run under a landing pad). Nothing here
 // dereferences vm_method until the class that owns it is pinned and the
 // method is confirmed to be one of that class's current methods.
-jmethodID HotspotSupport::resolveViaRegistry(VMMethod* vm_method, const void* holder, int idnum) {
+jmethodID HotspotSupport::resolveViaRegistry(VMMethod* vm_method, const void* holder, int idnum,
+                                             uint32_t epoch) {
   JNIEnv* jni = VM::jni();
-  jclass clz = _klass_registry.pin(jni, holder);
+  bool stale = false;
+  jclass clz = _klass_registry.pin(jni, holder, epoch, &stale);
   if (clz == nullptr) {
-    // Either the class was unloaded after the sample was taken, or `holder`
-    // was read from a freed Method* and is garbage.
-    Counters::increment(METHOD_RESOLVE_LAZY_UNLOADED);
+    // Stale: the class registered at `holder` arrived after the sample, so the
+    // frame belongs to an earlier class at the same address. Otherwise the
+    // class was unloaded after the sample was taken, or `holder` was read from
+    // a freed Method* and is garbage.
+    Counters::increment(stale ? METHOD_RESOLVE_LAZY_STALE : METHOD_RESOLVE_LAZY_UNLOADED);
     return nullptr;
   }
 

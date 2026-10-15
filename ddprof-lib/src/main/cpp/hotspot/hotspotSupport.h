@@ -59,10 +59,12 @@ private:
     static bool registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 
     // fjmethodid=lazy half of resolve(): pins the class registered under
-    // `holder`, checks that `vm_method` is still one of its methods, and only
+    // `holder` (refusing it if registered after `epoch`, the frame's sample
+    // epoch), checks that `vm_method` is still one of its methods, and only
     // then reads or allocates the jmethodID. `holder` and `idnum` were read
     // from the unverified Method* and are only used as lookup keys.
-    static jmethodID resolveViaRegistry(VMMethod* vm_method, const void* holder, int idnum);
+    static jmethodID resolveViaRegistry(VMMethod* vm_method, const void* holder, int idnum,
+                                        uint32_t epoch);
 
     // Runs getJavaTraceAsync() under withUcontextFaultRecovery(), then layers
     // on its two post-processing steps: resolving frame types for the top
@@ -184,8 +186,9 @@ public:
     // back to the partial preload mode.
     static bool canResolveLazily();
 
-    // Resolve a method to a jmethodID at dumping time
-    static jmethodID resolve(const void* method);
+    // Resolve a raw-pointer frame to a jmethodID at dumping time. Takes the
+    // frame's method field and encoded bci as stored, tag bits included.
+    static jmethodID resolve(const void* tagged_method, int bci);
 
     // Store a Java frame captured from HotSpot metadata. A null jmethodID
     // triggers the raw Method* fallback only when fjmethodid=false; with

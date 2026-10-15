@@ -585,7 +585,7 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveRecoversFromFaultInsteadOfCrash
     // VMMethod::id() reads the same offset through SafeAccess first, so it
     // returns the sentinel rather than faulting; resolve() then falls through to
     // constMethod_or_null(), whose raw *(void**) deref is what actually faults.
-    EXPECT_EQ(nullptr, HotspotSupport::resolve(_region));
+    EXPECT_EQ(nullptr, HotspotSupport::resolve(_region, 0));
 
     EXPECT_EQ(before + 1, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
     // The landing pad must hand the previous (here: absent) context back.
@@ -604,7 +604,7 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveRecoversRepeatedly) {
 
     long long before = Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED);
     for (int i = 0; i < 10; i++) {
-        EXPECT_EQ(nullptr, HotspotSupport::resolve(_region));
+        EXPECT_EQ(nullptr, HotspotSupport::resolve(_region, 0));
         EXPECT_FALSE(_pt->isProtected());
     }
     EXPECT_EQ(before + 10, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
@@ -635,7 +635,7 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveReturnsNullForUnreadableSymbolB
     long long before = Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE);
     long long faults_before = Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED);
 
-    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method));
+    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method, 0));
 
     EXPECT_EQ(before + 1, Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE));
     // Rejected by the readability probe, not by recovering from a real fault.
@@ -677,7 +677,7 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveUsesMallocFallbackForOversizedB
     // The fake JNI's GetMethodID reports "not found", so resolve() itself
     // still returns nullptr -- the point of this test is what it does on the
     // way there, checked below.
-    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method));
+    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method, 0));
 
     // Phase 1 accepted the name via the malloc fallback (no rejection, no
     // fault) and reached phase 2, which called GetMethodID with the fully
@@ -727,7 +727,7 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveRejectsUnreadableSymbolAtMaxLen
 
     long long before = Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE);
 
-    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method));
+    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method, 0));
 
     EXPECT_EQ(before + 1, Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE));
     EXPECT_FALSE(_pt->isProtected());
@@ -748,7 +748,7 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveReturnsNullForEmptySymbol) {
 
     long long before = Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE);
 
-    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method));
+    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method, 0));
 
     EXPECT_EQ(before + 1, Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE));
     EXPECT_FALSE(_pt->isProtected());
@@ -760,7 +760,7 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveShortCircuitsSentinelWithoutPro
     HotspotMethodIdVMHotspotGuard hotspot;
     long long before = Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED);
 
-    EXPECT_EQ(nullptr, HotspotSupport::resolve((const void*)JMETHODID_NOT_WALKABLE));
+    EXPECT_EQ(nullptr, HotspotSupport::resolve((const void*)JMETHODID_NOT_WALKABLE, 0));
 
     EXPECT_EQ(before, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
     EXPECT_FALSE(_pt->isProtected());

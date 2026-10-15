@@ -708,7 +708,7 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
   assert(prof_thread != nullptr);
                                   // Resolve native method
   if (FrameType::isRawPointer(bci)) {
-    method_id = JVMSupport::resolve(frame.method);
+    method_id = JVMSupport::resolve(frame.method, bci);
     if (method_id == nullptr) {
       return unknownMethod();
     }

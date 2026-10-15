@@ -24,6 +24,15 @@ KlassRegistry::Entry* KlassRegistry::find(const void* klass) const {
   return &_table[i];
 }
 
+// Called with _lock held. The release store pairs with epoch()'s acquire
+// load: a thread that runs a method of a class registered here, and then
+// samples it, observes at least the epoch that class was registered at.
+uint32_t KlassRegistry::bumpEpoch() {
+  uint32_t next = _epoch + 1;
+  __atomic_store_n(&_epoch, next, __ATOMIC_RELEASE);
+  return next;
+}
+
 // Moves the live entries into a table sized for them and deletes the weak
 // references of dead ones. Two passes so the old table stays intact if the
 // allocation fails: liveness is only counted in the first, and an entry that
@@ -50,6 +59,7 @@ bool KlassRegistry::rehash(JNIEnv* jni) {
   _table = table;
   _capacity = capacity;
   _size = 0;
+  bool purged = false;
   for (size_t i = 0; i < old_capacity; i++) {
     Entry& e = old_table[i];
     if (e.klass == nullptr) {
@@ -57,12 +67,18 @@ bool KlassRegistry::rehash(JNIEnv* jni) {
     }
     if (jni->IsSameObject(e.mirror, nullptr)) {
       jni->DeleteWeakGlobalRef(e.mirror);
+      purged = true;
     } else {
       *find(e.klass) = e;
       _size++;
     }
   }
   free(old_table);
+  if (purged) {
+    // A purged address may be handed to a new class whose add() then looks
+    // like a first insert; frames of the purged class must stay older.
+    bumpEpoch();
+  }
   return true;
 }
 
@@ -84,6 +100,9 @@ bool KlassRegistry::add(JNIEnv* jni, const void* klass, jclass mirror) {
       }
       jni->DeleteWeakGlobalRef(e->mirror);
       e->mirror = ref;
+      // A different class now lives at this address; frames sampled from the
+      // previous one must not match it.
+      e->epoch = bumpEpoch();
       return true;
     }
   }
@@ -98,11 +117,15 @@ bool KlassRegistry::add(JNIEnv* jni, const void* klass, jclass mirror) {
   Entry* e = find(klass);
   e->klass = klass;
   e->mirror = ref;
+  e->epoch = _epoch;
   _size++;
   return true;
 }
 
-jclass KlassRegistry::pin(JNIEnv* jni, const void* klass) {
+jclass KlassRegistry::pin(JNIEnv* jni, const void* klass, uint32_t sampled_epoch, bool* stale) {
+  if (stale != nullptr) {
+    *stale = false;
+  }
   if (klass == nullptr) {
     return nullptr;
   }
@@ -112,6 +135,15 @@ jclass KlassRegistry::pin(JNIEnv* jni, const void* klass) {
   }
   Entry* e = find(klass);
   if (e->klass != klass) {
+    return nullptr;
+  }
+  // Serial-number comparison: the frame is at least as new as the entry iff
+  // (sampled - registered) mod 2^EPOCH_BITS lies in the lower half.
+  const uint32_t mask = (1u << EPOCH_BITS) - 1;
+  if (((sampled_epoch - e->epoch) & mask) >= (1u << (EPOCH_BITS - 1))) {
+    if (stale != nullptr) {
+      *stale = true;
+    }
     return nullptr;
   }
   // NewLocalRef on a weak global reference returns NULL once the referent has
