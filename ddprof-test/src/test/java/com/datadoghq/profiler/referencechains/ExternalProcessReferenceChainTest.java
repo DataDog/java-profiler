@@ -162,8 +162,19 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
       // (see LeakTagCorrelationReferenceChainTest's own comment for the
       // full analysis); total volume stays capped by the 256KiB interval
       // floor, so the tracking table remains tiny.
+      // painbudget=100 - the safepoint pain budget exists to protect a production
+      // app from back-to-back expensive passes, but here it starves the engine
+      // on a loaded box: a cold external JVM's search costs seconds of measured
+      // safepoint pain, the default cap (5% of wall-clock) clears that debt in
+      // ~a minute, and the tail then watches a terminal engine with all tags
+      // released and no new search for its whole window (observed as 1900+
+      // consecutive blocked-iteration evaluations and the watched chunk reading
+      // tag=0 at every poll - the pass/fail line between otherwise identical
+      // runs). 100% only lets debt clear as fast as it accrues; cadence stays
+      // bounded by each search's own ~seconds of work, so this cannot spin.
       String startCommand = "start,memory=64:l:1.0,generations=true,"
           + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:pausetarget=60000"
+          + ":painbudget=100"
           + ",jfr,file=" + continuousJfrPath.toAbsolutePath();
       String packedCommand = startCommand + "|||" + scratchDumpPath.toAbsolutePath();
 
