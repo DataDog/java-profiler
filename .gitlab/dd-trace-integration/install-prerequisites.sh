@@ -1,4 +1,5 @@
 #!/bin/bash
+# Copyright 2026, Datadog, Inc.
 
 set -euo pipefail
 
@@ -143,25 +144,12 @@ fi
 # ========================================
 # Pre-warm jfr-shell
 # ========================================
-# jafar-shell itself (io.btrace:jafar-shell) is resolved by jbang from Maven Central,
-# which CI runners can't reach directly. Route jbang through the same internal Maven
-# proxy Gradle already uses (MAVEN_REPOSITORY_PROXY) so resolution doesn't depend on
-# public internet egress.
-#
-# jafar-shell also has an optional pluggable "backend" system (io.btrace:jfr-shell-jafar
-# / jfr-shell-jdk) resolved separately at runtime via its own embedded resolver, which
-# does not go through jbang's --repos and so cannot be routed through the proxy. That's
-# fine: the "open"+"show" flow used by validate-jfr-conformance.sh reads JFR files via
-# jafar-shell's own bundled parser and never touches the backend system, so a missing
-# backend does not affect real validation and must not be treated as fatal here.
+# Resolve both the shell and its backend through the shared JBang launcher.
+# A backend on the classpath avoids jfr-shell's separate public Maven resolver.
 if [ ! -f /tmp/skip-jfr-validation ] && command -v jbang &> /dev/null; then
     log_info "Pre-warming jfr-shell..."
-    if [ -n "${MAVEN_REPOSITORY_PROXY:-}" ]; then
-        JBANG_REPOS_OPT="--repos=central=${MAVEN_REPOSITORY_PROXY}"
-    else
-        JBANG_REPOS_OPT=""
-    fi
-    if PREWARM_OUT=$(jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio script /dev/null 2>&1); then
+    JFR_SHELL="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../test-validation" && pwd)/jfr-shell.sh"
+    if PREWARM_OUT=$("${JFR_SHELL}" script /dev/null 2>&1); then
         log_info "jfr-shell ready"
     else
         log_warn "jfr-shell failed to start (io.btrace:jafar-shell not resolvable from Maven)"

@@ -1,6 +1,42 @@
 # JFR Validation
 
+<!-- Copyright 2026, Datadog, Inc. -->
+
 This directory contains JFR (Java Flight Recorder) validation scripts for profiler integration tests.
+
+## Dependency resolution
+
+Use `./test-validation/jfr-shell.sh` from the repository root in place of
+`jbang jfr-shell@btraceio`. The shared launcher pins a Java 25-compatible release
+and resolves its matching backend through JBang, avoiding both the remote
+catalog's public repository and the backend's separate Maven downloader.
+
+Set `MAVEN_REPOSITORY_PROXY` to the Depot repository URL in CI or on the internal
+network. With it set, the launcher uses only that repository and ignores
+repositories declared by transitive dependencies. Without it, local builds keep
+JBang's default repository. Pre-warming and conformance validation use this same
+launcher automatically.
+
+Gradle also reads `MAVEN_REPOSITORY_PROXY` directly, including in child pipelines
+and the included `build-logic` build. The `mavenRepositoryProxy` Gradle property
+takes precedence. Plugin resolution additionally reads `GRADLE_PLUGIN_PROXY`
+(or the `gradlePluginProxy` Gradle property). GitLab CI configures Depot's Java
+API for Maven dependencies and Depot's generic Plugin Portal mirror for
+plugin-only artifacts. Public repositories are declared only when no applicable
+proxy is configured. Depot may redirect cache misses to an upstream while
+populating its cache.
+
+Run the launcher regression tests with:
+
+```bash
+python3 -m unittest discover -s test-validation/tests -v
+```
+
+To check all four effective Gradle repository lists, set `DEPOT_EXPECTED_URL`
+and `DEPOT_EXPECTED_PLUGIN_URL` to the expected proxy URLs and run the build wrapper with
+`help -I .gitlab/scripts/tests/depot-repositories.init.gradle`. Exercise both
+`MAVEN_REPOSITORY_PROXY` and `-PmavenRepositoryProxy` to check environment-based
+configuration and property precedence.
 
 ## Overview
 

@@ -1,14 +1,19 @@
+// Copyright 2026, Datadog, Inc.
+
 plugins {
     `kotlin-dsl`
 }
 
 repositories {
-    val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy").orNull
+    val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy")
+        .orElse(providers.environmentVariable("MAVEN_REPOSITORY_PROXY"))
+        .orNull?.takeIf { it.isNotBlank() }
     if (mavenRepositoryProxy != null) {
         maven { url = uri(mavenRepositoryProxy) }
+    } else {
+        gradlePluginPortal()
+        mavenCentral()
     }
-    gradlePluginPortal()
-    mavenCentral()
 }
 
 dependencies {

@@ -1,11 +1,23 @@
+// Copyright 2026, Datadog, Inc.
+
 pluginManagement {
-    def mavenRepositoryProxy = providers.gradleProperty('mavenRepositoryProxy').orNull
+    def mavenRepositoryProxy = providers.gradleProperty('mavenRepositoryProxy')
+        .orElse(providers.environmentVariable('MAVEN_REPOSITORY_PROXY'))
+        .orNull?.trim()
+    def gradlePluginProxy = providers.gradleProperty('gradlePluginProxy')
+        .orElse(providers.environmentVariable('GRADLE_PLUGIN_PROXY'))
+        .orNull?.trim()
     repositories {
-        if (mavenRepositoryProxy != null) {
+        if (mavenRepositoryProxy) {
             maven { url = uri(mavenRepositoryProxy) }
         }
-        gradlePluginPortal()
-        mavenCentral()
+        if (gradlePluginProxy && gradlePluginProxy != mavenRepositoryProxy) {
+            maven { url = uri(gradlePluginProxy) }
+        }
+        if (!mavenRepositoryProxy && !gradlePluginProxy) {
+            gradlePluginPortal()
+            mavenCentral()
+        }
     }
 }
 
