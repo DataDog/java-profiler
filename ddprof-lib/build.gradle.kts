@@ -174,6 +174,165 @@ afterEvaluate {
 if (project.hasProperty("enableCoverage")) {
   val gtestObjDir = layout.buildDirectory.dir("obj/gtest/coverage")
 
+  // The gcov tool must come from the same toolchain that wrote the .gcno files,
+  // so derive it from the compiler (e.g. /usr/bin/g++-13 -> /usr/bin/gcov-13,
+  // clang++-17 -> llvm-cov-17 gcov) instead of whatever `gcov` is on PATH.
+  fun gcovCommand(compilerPath: String): List<String> {
+    val compiler = File(compilerPath)
+    fun siblingOf(tool: String) = compiler.parentFile?.resolve(tool)?.path ?: tool
+    return when {
+      PlatformUtils.currentPlatform == Platform.MACOS -> listOf("xcrun", "llvm-cov", "gcov")
+      compiler.name.contains("clang") -> listOf(siblingOf(compiler.name.replace(Regex("clang(\\+\\+)?"), "llvm-cov")), "gcov")
+      else -> listOf(siblingOf(compiler.name.replace(Regex("[gc]\\+\\+"), "gcov")))
+    }
+  }
+
+  // gcovr flags coverageReport depends on (see its command line below); 8.3 is the
+  // first gcovr that accepts all of them.
+  val requiredGcovrFlags = listOf("--gcov-ignore-parse-errors", "negative_hits.warn_once_per_file", "--gcov-suspicious-hits-threshold")
+
+  // Fails fast -- before ~30 minutes of instrumented builds and test runs -- when a tool
+  // the coverage run needs is missing, reporting every problem at once with how to fix it.
+  // Every coverage task depends on it (below, and :ddprof-test's coverage test tasks).
+  val checkCoverageTools = tasks.register("checkCoverageTools") {
+    group = "verification"
+    description = "Checks that the tools needed for the coverage build and report are installed"
+    val reportRequested = provider { gradle.taskGraph.hasTask("${project.path}:coverageReport") }
+
+    doLast {
+      // Fetched here, not at configuration time: temporaryDir (re)creates the directory,
+      // which a `clean` in the same invocation would otherwise have deleted by now.
+      val probeDir = temporaryDir
+      val isMacos = PlatformUtils.currentPlatform == Platform.MACOS
+      val isMusl = PlatformUtils.isMusl()
+      fun hint(musl: String, glibc: String, macos: String) = when {
+        isMacos -> macos
+        isMusl -> musl
+        else -> glibc
+      }
+
+      // Runs cmd and returns (exit code, combined output), or null if it cannot be started.
+      fun run(cmd: List<String>): Pair<Int, String>? = try {
+        val process = ProcessBuilder(cmd).directory(probeDir).redirectErrorStream(true).start()
+        val output = process.inputStream.bufferedReader().readText()
+        process.waitFor() to output.trim()
+      } catch (e: java.io.IOException) {
+        null
+      }
+      // The first line carrying a version number, which isn't always the first line
+      // (llvm-cov starts with "LLVM (http://llvm.org/):").
+      val versionNumber = Regex("\\d+\\.\\d+")
+      fun firstLine(output: String) = output.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }
+        .let { lines -> lines.firstOrNull { versionNumber.containsMatchIn(it) } ?: lines.firstOrNull() }.orEmpty()
+
+      val found = mutableListOf<String>()
+      val problems = mutableListOf<String>()
+
+      // 1. C++ compiler able to build *and link* --coverage code (clang needs its profile
+      //    runtime, gcc its libgcov -- both shipped separately on some distros).
+      val compiler = try {
+        PlatformUtils.findCompiler(project)
+      } catch (e: GradleException) {
+        problems += "C++ compiler: ${e.message}"
+        null
+      }
+      if (compiler != null) {
+        val src = probeDir.resolve("probe.cpp").apply { writeText("int main() { return 0; }\n") }
+        val result = run(listOf(compiler, "--coverage", "-fprofile-update=atomic", src.path, "-o", probeDir.resolve("probe").path))
+        if (result != null && result.first == 0) {
+          found += "compiler: $compiler (links with --coverage)"
+        } else {
+          problems += "C++ compiler '$compiler' cannot build with --coverage -fprofile-update=atomic " +
+            "(needed for the instrumented library and gtests):\n" +
+            (result?.second ?: "could not run '$compiler'").prependIndent("      ") + "\n" +
+            "    Install the coverage runtime: " +
+            hint(
+              musl = "'apk add compiler-rt' (clang) or 'apk add g++' (gcc)",
+              glibc = "'apt install libclang-rt-dev' or the libclang-rt-<N>-dev matching your clang (clang), or libgcc-<N>-dev (gcc)",
+              macos = "Xcode command line tools: 'xcode-select --install'",
+            ) + ", or pick another compiler with -Pnative.forceCompiler=<path>"
+        }
+
+        // 2. gcov tool matching that compiler (used by gcovr to read the .gcda files).
+        val gcov = gcovCommand(compiler)
+        val gcovResult = run(gcov + "--version")
+        if (gcovResult != null && gcovResult.first == 0) {
+          found += "gcov: ${gcov.joinToString(" ")} (${firstLine(gcovResult.second)})"
+        } else {
+          problems += "gcov tool '${gcov.joinToString(" ")}' (must match compiler '$compiler') " +
+            (if (gcovResult == null) "not found" else "failed: ${firstLine(gcovResult.second)}") + "\n" +
+            "    Install it: " +
+            hint(
+              musl = "'apk add llvm' (clang) or 'apk add gcc' (gcc)",
+              glibc = "'apt install llvm' or the llvm-<N> matching your clang (clang), or gcc-<N> (gcc)",
+              macos = "Xcode command line tools: 'xcode-select --install'",
+            )
+        }
+      }
+
+      // 3. Google Test: without it the gtest tasks are skipped with only a warning, and
+      //    the C++ report silently loses the gtest half of its coverage.
+      if (PlatformUtils.isGtestAvailable()) {
+        found += "gtest: ${PlatformUtils.gtestLocations.first { File(it).exists() }}"
+      } else {
+        problems += "Google Test not found (looked in ${PlatformUtils.gtestLocations.joinToString()}); " +
+          "gtestCoverage would be skipped\n" +
+          "    Install it: " +
+          hint(musl = "'apk add gtest-dev gmock'", glibc = "'apt install libgtest-dev libgmock-dev'", macos = "'brew install googletest'")
+      }
+
+      // 4. make: buildNativeLibs builds the gtests' helper libraries with it (Linux only).
+      if (!isMacos) {
+        val makeResult = run(listOf("make", "--version"))
+        if (makeResult != null && makeResult.first == 0) {
+          found += "make: ${firstLine(makeResult.second)}"
+        } else {
+          problems += "make not found (buildNativeLibs needs it for the gtests' native libraries)\n" +
+            "    Install it: " + hint(musl = "'apk add make'", glibc = "'apt install make'", macos = "")
+        }
+      }
+
+      // 5. gcovr, only when the report is actually requested (gtestCoverage/testCoverage
+      //    alone just produce .gcda files).
+      if (reportRequested.get()) {
+        val gcovrInstall = hint(
+          musl = "'apk add py3-pip && pip install --break-system-packages gcovr'",
+          glibc = "'pip install gcovr' (distro packages are usually too old)",
+          macos = "'pip install gcovr' or 'brew install gcovr'",
+        )
+        val version = run(listOf("gcovr", "--version"))
+        if (version == null || version.first != 0) {
+          problems += "gcovr not found (generates the C++ report)\n    Install it: $gcovrInstall"
+        } else {
+          val help = run(listOf("gcovr", "--help"))?.second.orEmpty()
+          val missingFlags = requiredGcovrFlags.filterNot { help.contains(it) }
+          if (missingFlags.isEmpty()) {
+            found += "gcovr: ${firstLine(version.second)}"
+          } else {
+            problems += "${firstLine(version.second)} is too old: it lacks ${missingFlags.joinToString()} (gcovr 8.3+ needed)\n" +
+              "    Upgrade it: ${gcovrInstall.replace("pip install", "pip install --upgrade")}"
+          }
+        }
+      }
+
+      found.forEach { project.logger.lifecycle("  [ok] $it") }
+      if (problems.isNotEmpty()) {
+        throw GradleException(
+          "Coverage tools check failed -- ${problems.size} problem(s), no coverage build or test was run:\n" +
+            problems.joinToString("\n") { "  - $it" },
+        )
+      }
+    }
+  }
+  tasks.matching { it.name != "checkCoverageTools" && it.name.contains("Coverage") }.configureEach {
+    dependsOn(checkCoverageTools)
+  }
+  // Not a coverage task by name, but gtestCoverage needs it and it fails without make --
+  // let the check report that instead.
+  tasks.matching { it.name == "buildNativeLibs" }.configureEach {
+    mustRunAfter(checkCoverageTools)
+  }
+
   // gcov adds to existing .gcda counts, and .gcda files left over from before a
   // recompile no longer match the new .gcno stamps -- so every gtest binary must start
   // from zero. Runs before each gtestCoverage_<test> task rather than in gtestCoverage
@@ -187,7 +346,7 @@ if (project.hasProperty("enableCoverage")) {
 
   tasks.register("coverageReport") {
     group = "verification"
-    description = "Generates the Java (JaCoCo) and C++ (gcovr) coverage reports from gtestCoverage and :ddprof-test:testCoverage/testSlowCoverage (requires gcovr)"
+    description = "Generates the Java (JaCoCo) and C++ (gcovr) coverage reports from gtestCoverage and :ddprof-test:testCoverage/testSlowCoverage (requires gcovr 8.3+; see checkCoverageTools)"
     dependsOn("gtestCoverage", ":ddprof-test:testCoverage", ":ddprof-test:testSlowCoverage", ":ddprof-test:jacocoTestReport")
 
     val reportDir = layout.buildDirectory.dir("reports/coverage/cpp")
@@ -195,16 +354,7 @@ if (project.hasProperty("enableCoverage")) {
     val srcRoot = project.file("src/main/cpp")
 
     doLast {
-      // The gcov tool must come from the same toolchain that wrote the .gcno files,
-      // so derive it from the compiler (e.g. /usr/bin/g++-13 -> /usr/bin/gcov-13,
-      // clang++-17 -> llvm-cov-17 gcov) instead of whatever `gcov` is on PATH.
-      val compiler = File(PlatformUtils.findCompiler(project))
-      fun siblingOf(tool: String) = compiler.parentFile?.resolve(tool)?.path ?: tool
-      val gcovExecutable = when {
-        PlatformUtils.currentPlatform == Platform.MACOS -> "xcrun llvm-cov gcov"
-        compiler.name.contains("clang") -> siblingOf(compiler.name.replace(Regex("clang(\\+\\+)?"), "llvm-cov")) + " gcov"
-        else -> siblingOf(compiler.name.replace(Regex("[gc]\\+\\+"), "gcov"))
-      }
+      val gcovExecutable = gcovCommand(PlatformUtils.findCompiler(project)).joinToString(" ")
 
       val outDir = reportDir.get().asFile.also { it.mkdirs() }
       val cmd = listOf(
@@ -227,20 +377,11 @@ if (project.hasProperty("enableCoverage")) {
         libObjDir.get().asFile.absolutePath,
       )
       project.logger.lifecycle("Running: ${cmd.joinToString(" ")}")
-      // A missing gcovr surfaces here as a bare IOException, after the Java report has
-      // already been written -- turn it into the install hint instead.
-      val process = try {
-        ProcessBuilder(cmd)
-          .directory(project.projectDir)
-          .redirectErrorStream(true)
-          .start()
-      } catch (e: java.io.IOException) {
-        throw GradleException(
-          "gcovr not found -- install it with 'pip install gcovr' (Alpine/musl: 'apk add py3-pip && " +
-            "pip install --break-system-packages gcovr'; distro gcovr packages may be too old for the flags used here)",
-          e,
-        )
-      }
+      // checkCoverageTools has already verified gcovr is installed and new enough.
+      val process = ProcessBuilder(cmd)
+        .directory(project.projectDir)
+        .redirectErrorStream(true)
+        .start()
       val output = process.inputStream.bufferedReader().readText()
       val exitCode = process.waitFor()
       println(output)
