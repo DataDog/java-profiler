@@ -156,11 +156,11 @@ TEST_P(WallClockBlockRestartTest, PausedHookDoesNotMutateReplacementAcrossRestar
     // Model only successful sample completion, as finishWallPrecheck() does.
     // Admission and the stale caller's exit above use the actual JNI bodies.
     if (block->activeBlockOwner() != BlockRunOwner::NONE) {
-        block->markSampledThisRun(hookState());
+        block->markBlockGenerationSampled(block->blockGeneration());
     }
     ThreadEntry replacement{current->tid(), identity, replacement_slot,
                              identity->lifecycleGeneration(), identity->recordingEpoch()};
-    EXPECT_FALSE(tracker->shouldSuppressOwnedBlock(registry, replacement))
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(registry, replacement))
         << "A thread that never entered a block became suppressible";
 
     // A bogus active run must also not prevent the new owner arming its own run.
@@ -183,16 +183,16 @@ TEST_P(WallClockBlockRestartTest, SurvivingOwnerRefreshesOnlyRecordingState) {
     auto* block = tracker->slotForId(slot_id);
     u64 generation = identity->lifecycleGeneration();
     u64 epoch = registry->recordingEpoch();
-    block->markSampledThisRun(hookState());
+    block->markBlockGenerationSampled(block->blockGeneration());
     ThreadEntry stale{current->tid(), identity, slot_id, generation, epoch};
-    ASSERT_TRUE(tracker->shouldSuppressOwnedBlock(registry, stale));
+    ASSERT_TRUE(tracker->isOwnedBlockSuppressionCandidate(registry, stale));
 
     registry->deactivateRecording();
     registry->init("", true);
     ASSERT_EQ(identity, registry->lookupByTid(current->tid()));
     EXPECT_EQ(generation, identity->lifecycleGeneration());
     EXPECT_EQ(nullptr, registry->activeSlotForId(slot_id, current->tid()));
-    EXPECT_FALSE(tracker->shouldSuppressOwnedBlock(registry, stale));
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(registry, stale));
     exitHook(old_token);
 
     u64 new_token = enterHook();
@@ -200,7 +200,7 @@ TEST_P(WallClockBlockRestartTest, SurvivingOwnerRefreshesOnlyRecordingState) {
     EXPECT_NE(old_token, new_token);
     EXPECT_EQ(slot_id, current->filterSlotId());
     EXPECT_EQ(registry->recordingEpoch(), identity->recordingEpoch());
-    EXPECT_FALSE(block->sampledThisRun());
+    EXPECT_EQ(0ULL, block->sampledBlockGeneration());
     EXPECT_EQ(hookState(), block->activeBlockState());
     exitHook(new_token);
 }

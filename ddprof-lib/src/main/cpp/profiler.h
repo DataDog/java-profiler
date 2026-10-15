@@ -147,6 +147,9 @@ private:
   // AND referencechains=true - see Profiler::start()). Atomic: also read by
   // onThreadStart()/onThreadEnd() on JVMTI thread-lifecycle callbacks.
   std::atomic<bool> _reference_chains_active{false};
+  std::atomic<bool> _task_block_enabled{false};
+  std::atomic<bool> _task_block_rotation{false};
+  std::atomic<u64> _task_block_inflight{0};
 
   SpinLock _locks[CONCURRENCY_LEVEL];
   CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
@@ -205,6 +208,8 @@ private:
   // that turns it into DICTIONARY_DRAIN_TIMEOUTS and a warning.
   void reportDrainTimeout(const char *what);
   void unlockAll();
+  bool beginTaskBlockRotation();
+  void endTaskBlockRotation();
 
   // Rotate all three dictionaries, then run jfr_op under lockAll().
   //
@@ -274,6 +279,16 @@ public:
       _calltrace_buffer[i] = NULL;
     }
     _thread_filter.setBlockTracker(&_block_tracker);
+
+    // Protects wall-clock unowned-block fallback tail traces (cached in
+    // WallClockBlockTracker::BlockState) from being dropped by a chunk
+    // rotation before flushUnownedBlockedTail() emits them. The tracker lives
+    // in the Profiler singleton, so this is registered once rather than
+    // per-recording.
+    registerLivenessChecker([this](CallTraceIdSet& buffer) {
+      _block_tracker.collectUnownedBlockedTraceIds(
+          [&buffer](u64 call_trace_id) { buffer.insert(call_trace_id); });
+    });
   }
 
   static inline Profiler *instance() {
@@ -487,6 +502,16 @@ public:
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event);
+  // Shared by recordJVMTISample()/recordTaskBlock(): performs the JVMTI stack walk for
+  // `thread` starting at `start_depth`, converts to ASGCT format, and applies the
+  // JDK21+ virtual-thread continuation-boundary fixup (a real stack, from a carrier's
+  // perspective, that GetStackTrace on a VT truncates at the continuation boundary).
+  // Caller must already hold _locks[lock_index] and pass a buffer sized for
+  // _max_stack_depth frames. Returns the number of frames written into
+  // buffer->_asgct_frames, or 0 if JVMTI failed to produce any frame — callers differ
+  // on whether that is a hard failure or a valid empty trace, so this function does
+  // not decide that, and does not call _call_trace_storage.put() itself.
+  int captureJVMTIFrames(jthread thread, int start_depth, CallTraceBuffer* buffer);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,
@@ -495,6 +520,25 @@ public:
   void recordWallClockEpoch(int tid, WallClockEpochEvent *event);
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
+  enum class TaskBlockRecordResult {
+    RECORDED,
+    STACK_CAPTURE_FAILED,
+    RECORD_FAILED,
+  };
+  TaskBlockRecordResult recordTaskBlock(int tid, jthread thread,
+                                        int start_depth,
+                                        TaskBlockEvent *event);
+#ifdef UNIT_TEST
+  using TaskBlockRecordOverride = TaskBlockRecordResult (*)(
+      int tid, jthread thread, int start_depth, TaskBlockEvent *event);
+  static void setTaskBlockRecordOverrideForTest(
+      TaskBlockRecordOverride override);
+#endif
+  bool tryEnterTaskBlockActivity();
+  void leaveTaskBlockActivity();
+  bool taskBlockEnabled() const {
+    return _task_block_enabled.load(std::memory_order_acquire);
+  }
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);
   void writeDatadogProfilerSetting(int tid, int length, const char *name,
@@ -521,6 +565,15 @@ public:
   // Runs the reset steps of a fresh start() in isolation.  Compiled only into
   // gtest binaries.
   int resetRecordingStateForTest() { return resetRecordingState(); }
+
+  bool beginTaskBlockRotationForTest() { return beginTaskBlockRotation(); }
+  void endTaskBlockRotationForTest() { endTaskBlockRotation(); }
+  bool taskBlockRotationActiveForTest() const {
+    return _task_block_rotation.load(std::memory_order_acquire);
+  }
+  int taskBlockInflightForTest() const {
+    return _task_block_inflight.load(std::memory_order_acquire);
+  }
 
   // Returns the tid most recently passed to unregisterThread(), or -1 if it
   // has never been called (or since the last resetUnregisterObservableForTest).
