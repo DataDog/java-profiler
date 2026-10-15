@@ -313,6 +313,8 @@ through the `com.sun.management:type=DiagnosticCommand` MBean. It lives in
 | Runtime JFR cross-check | dropped, see "Confirming the offset" |
 | Review fixes: `SafeAccess` in `containsMethod`, redefinition marking, per-registration epoch, release link fix, tag-range tripwire | done |
 | Per-dump cache for raw frame resolutions (`Lookup::_raw_method_cache`) | done: first dump with nearly every frame raw went from 60.3 ms to 34.3 ms (27,956 hits, ~0.9 µs saved each; macOS debug build, single run); later dumps unchanged (~20 ms) |
+| Redefinition hooks forward invalid arguments to JVMTI untouched (`redefineHooks_ut`) | done |
+| Live-JVM redefinition stress test (`LazyRedefinitionStressTest`: ~1000 redefinitions racing ~47 dumps; every redefinition marked, stale raw frames refused, later frames resolve by name) | pass on JDK 17, 21, 25 (glibc), 21 under ASan, 11 (musl), macOS 25 |
 | Release-build dump latency and memory on a real workload, x64 runs | open |
 | `JmethodIdOverheadBenchTest.java`: temporary harness, don't commit | uncommitted |
 

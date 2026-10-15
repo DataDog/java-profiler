@@ -28,6 +28,17 @@ public final class SpinClasses {
         return new Loader().define(internalName);
     }
 
+    /**
+     * Returns the class file {@link #define} defines for {@code internalName}, e.g. to redefine a
+     * defined class with its own bytes.
+     *
+     * @param internalName the class name in internal form, e.g. {@code a/b/C}
+     * @return the class file bytes
+     */
+    public static byte[] bytes(String internalName) {
+        return generate(internalName);
+    }
+
     private static final class Loader extends ClassLoader {
         Class<?> define(String internalName) {
             byte[] bytes = generate(internalName);
