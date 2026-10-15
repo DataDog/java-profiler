@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include "../../main/cpp/counters.h"
+#include "../../main/cpp/flightRecorder.h"
 #include "../../main/cpp/frame.h"
 #include "../../main/cpp/hotspot/hotspotSupport.h"
 #include "../../main/cpp/hotspot/klassRegistry.h"
@@ -249,6 +250,9 @@ public:
     JNIEnv* jni() { return &_jni_env; }
     jvmtiEnv* jvmti() { return &_jvmti; }
 
+    // KlassRegistry::pin() calls NewLocalRef once per resolution.
+    int new_local_ref_calls = 0;
+
     jclass mirror(FakeObject& obj) { return reinterpret_cast<jclass>(&obj); }
 
     // Class unloading as far as the registry can observe it: the mirror's
@@ -276,7 +280,10 @@ private:
     static jboolean JNICALL isSameObject(JNIEnv*, jobject a, jobject b) {
         return s_instance->resolve(a) == s_instance->resolve(b) ? JNI_TRUE : JNI_FALSE;
     }
-    static jobject JNICALL newLocalRef(JNIEnv*, jobject ref) { return s_instance->resolve(ref); }
+    static jobject JNICALL newLocalRef(JNIEnv*, jobject ref) {
+        s_instance->new_local_ref_calls++;
+        return s_instance->resolve(ref);
+    }
     static void JNICALL deleteLocalRef(JNIEnv*, jobject) {}
     // VMKlass::fromJavaClass() reads java.lang.Class.klass through this.
     static jlong JNICALL getLongField(JNIEnv*, jobject obj, jfieldID) {
@@ -563,6 +570,47 @@ TEST_P(HotspotLazyResolveTest, CountsClassesWithTraceIdBeyondTagRange) {
     ASSERT_TRUE(HotspotSupportTestAccessor::registerClass(_jvm.jvmti(), _jvm.jni(), _jvm.mirror(_new_mirror)));
     EXPECT_EQ(before + 1, Counters::getCounter(KLASS_TRACE_ID_BEYOND_TAG_RANGE));
 #endif
+}
+
+// Lookup resolves each distinct raw method once per dump, however often it
+// recurs, and whatever bci or frame type the occurrences carry.
+TEST_P(HotspotLazyResolveTest, LookupResolvesEachRawMethodOncePerDump) {
+    registerClass(_old_mirror);
+    ASGCT_CallFrame a = sample();
+    ASGCT_CallFrame b{};
+    HotspotSupport::fillJavaFrame(b, FRAME_INTERPRETED, 42, nullptr, _cls.vmMethod());
+    ASSERT_TRUE(FrameType::isRawPointer(b.bci));
+    ASSERT_NE(a.bci, b.bci);
+
+    StringDictionary classes;
+    MethodMap methods;
+    Lookup lookup(nullptr, &methods, &classes);
+    int before = _jvm.new_local_ref_calls;
+    EXPECT_EQ(_cls.jmethodId(), lookup.resolveRawMethod(a));
+    EXPECT_EQ(_cls.jmethodId(), lookup.resolveRawMethod(a));
+    EXPECT_EQ(_cls.jmethodId(), lookup.resolveRawMethod(b));
+    EXPECT_EQ(1, _jvm.new_local_ref_calls - before);
+
+    // The next dump starts with an empty cache.
+    Lookup next(nullptr, &methods, &classes);
+    EXPECT_EQ(_cls.jmethodId(), next.resolveRawMethod(a));
+    EXPECT_EQ(2, _jvm.new_local_ref_calls - before);
+}
+
+// Frames from two loads of a class at the same addresses carry different tags,
+// so the cache keeps their outcomes apart.
+TEST_P(HotspotLazyResolveTest, LookupCacheSeparatesFramesOfDifferentClassLoads) {
+    registerClass(_old_mirror);
+    ASGCT_CallFrame before = sample();
+    loadNewClassAtSameAddress();
+    ASGCT_CallFrame after = sample();
+
+    StringDictionary classes;
+    MethodMap methods;
+    Lookup lookup(nullptr, &methods, &classes);
+    EXPECT_EQ(nullptr, lookup.resolveRawMethod(before));
+    EXPECT_EQ(_cls.jmethodId(), lookup.resolveRawMethod(after));
+    EXPECT_EQ(nullptr, lookup.resolveRawMethod(before));
 }
 
 INSTANTIATE_TEST_SUITE_P(TagSource, HotspotLazyResolveTest, ::testing::Bool(),

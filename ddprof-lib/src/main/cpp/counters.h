@@ -195,6 +195,9 @@
    * a frame sampled from an unloaded class could then, if a newer class     \
    * also took over its Method* memory, resolve to that class's method. */   \
   X(KLASS_TRACE_ID_BEYOND_TAG_RANGE, "klass_trace_id_beyond_tag_range")       \
+  /* Raw Method* frame occurrences answered from Lookup's per-dump cache    \
+   * instead of resolving them again. */                                     \
+  X(RAW_FRAME_RESOLVE_CACHE_HITS, "raw_frame_resolve_cache_hits")             \
   X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
   X(WALKVM_RAW_FRAME_UNTAGGABLE, "walkvm_raw_frame_untaggable")               \
   /* Gauge, set at each fjmethodid=lazy start: the Klass::_trace_id offset  \

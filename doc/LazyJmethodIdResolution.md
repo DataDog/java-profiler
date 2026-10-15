@@ -312,7 +312,8 @@ through the `com.sun.management:type=DiagnosticCommand` MBean. It lives in
 | `LazyTraceIdJfrValidationTest` (CI cross-check against JFR) | pass on JDK 8, 11 (musl), 17, 21, 25 (glibc) and macOS 25: profiler ID = JFR ID on each |
 | Runtime JFR cross-check | dropped, see "Confirming the offset" |
 | Review fixes: `SafeAccess` in `containsMethod`, redefinition marking, per-registration epoch, release link fix, tag-range tripwire | done |
-| Dump-latency benchmark; per-dump cache for repeated raw frames | open |
+| Per-dump cache for raw frame resolutions (`Lookup::_raw_method_cache`) | done: first dump with nearly every frame raw went from 60.3 ms to 34.3 ms (27,956 hits, ~0.9 µs saved each; macOS debug build, single run); later dumps unchanged (~20 ms) |
+| Release-build dump latency and memory on a real workload, x64 runs | open |
 | `JmethodIdOverheadBenchTest.java`: temporary harness, don't commit | uncommitted |
 
 ### Files touched
