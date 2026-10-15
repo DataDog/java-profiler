@@ -133,23 +133,23 @@ protected:
 } // namespace
 
 TEST_F(KlassRegistryTest, PinUnknownKlassReturnsNull) {
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0)));
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), registry.epoch()));
     ASSERT_TRUE(registry.add(jni, klassAt(1), mirror(1)));
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0)));
-    EXPECT_EQ(nullptr, registry.pin(jni, nullptr));
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), registry.epoch()));
+    EXPECT_EQ(nullptr, registry.pin(jni, nullptr, registry.epoch()));
 }
 
 TEST_F(KlassRegistryTest, PinReturnsRegisteredMirror) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     ASSERT_TRUE(registry.add(jni, klassAt(1), mirror(1)));
-    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0)));
-    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(1)));
+    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0), registry.epoch()));
+    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(1), registry.epoch()));
 }
 
 TEST_F(KlassRegistryTest, PinReturnsNullOnceClassIsCollected) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     heap.collect(&mirrors[0]);
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0)));
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), registry.epoch()));
 }
 
 TEST_F(KlassRegistryTest, ReAddingSameMirrorIsNoOp) {
@@ -166,7 +166,7 @@ TEST_F(KlassRegistryTest, ReusedKlassAddressReplacesDeadEntry) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     heap.collect(&mirrors[0]);
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(1)));
-    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(0)));
+    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(0), registry.epoch()));
     EXPECT_EQ(1u, registry.size());
     EXPECT_EQ(1, heap.liveWeaks());
 }
@@ -190,13 +190,13 @@ TEST_F(KlassRegistryTest, GrowthPurgesDeadEntries) {
     EXPECT_EQ((int)registry.size(), heap.liveWeaks());
     EXPECT_EQ(0, heap.double_deletes);
     for (size_t i = 0; i < 10; i++) {
-        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i))) << i;
+        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i), registry.epoch())) << i;
     }
     for (size_t i = 10; i < first; i++) {
-        EXPECT_EQ(nullptr, registry.pin(jni, klassAt(i))) << i;
+        EXPECT_EQ(nullptr, registry.pin(jni, klassAt(i), registry.epoch())) << i;
     }
     for (size_t i = first; i < first + more; i++) {
-        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i))) << i;
+        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i), registry.epoch())) << i;
     }
 }
 
@@ -207,7 +207,7 @@ TEST_F(KlassRegistryTest, GrowthKeepsAllLiveEntries) {
     }
     EXPECT_EQ(n, registry.size());
     for (size_t i = 0; i < n; i++) {
-        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i))) << i;
+        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i), registry.epoch())) << i;
     }
 }
 
@@ -219,10 +219,78 @@ TEST_F(KlassRegistryTest, ClearDeletesEveryWeakRef) {
     EXPECT_EQ(0u, registry.size());
     EXPECT_EQ(0, heap.liveWeaks());
     EXPECT_EQ(0, heap.double_deletes);
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0)));
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), registry.epoch()));
     // Usable again after clear().
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0)));
+    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0), registry.epoch()));
+}
+
+// Epochs: a frame records registry.epoch() when sampled; pin() refuses it when
+// the entry for its Klass* was registered later. Only registrations that may
+// reuse a gone class's address bump the epoch.
+
+TEST_F(KlassRegistryTest, FirstInsertDoesNotBumpEpoch) {
+    uint32_t e0 = registry.epoch();
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    ASSERT_TRUE(registry.add(jni, klassAt(1), mirror(1)));
+    EXPECT_EQ(e0, registry.epoch());
+    // Re-adding the same pair (e.g. after a redefinition) is not a reuse.
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    EXPECT_EQ(e0, registry.epoch());
+}
+
+TEST_F(KlassRegistryTest, ReplacementBumpsEpochAndRejectsOlderFrames) {
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    uint32_t sampled_old = registry.epoch();
+    heap.collect(&mirrors[0]);
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(1)));
+    EXPECT_NE(sampled_old, registry.epoch());
+
+    bool stale = false;
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), sampled_old, &stale));
+    EXPECT_TRUE(stale);
+    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(0), registry.epoch(), &stale));
+    EXPECT_FALSE(stale);
+}
+
+TEST_F(KlassRegistryTest, PurgeBumpsEpochSoReinsertRejectsOlderFrames) {
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    uint32_t sampled_old = registry.epoch();
+    heap.collect(&mirrors[0]);
+    // Grow past the initial table so the dead entry is purged.
+    for (size_t i = 1; i < 1000; i++) {
+        ASSERT_TRUE(registry.add(jni, klassAt(i), mirror(i)));
+    }
+    EXPECT_NE(sampled_old, registry.epoch());
+    // klassAt(0) comes back as a first insert, not a replacement.
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(1000)));
+
+    bool stale = false;
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), sampled_old, &stale));
+    EXPECT_TRUE(stale);
+    // Classes that stayed live across the purge still accept their old frames.
+    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(1), sampled_old, &stale));
+    EXPECT_FALSE(stale);
+}
+
+TEST_F(KlassRegistryTest, UnloadedClassIsNotReportedStale) {
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    uint32_t sampled = registry.epoch();
+    heap.collect(&mirrors[0]);
+    bool stale = true;
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), sampled, &stale));
+    EXPECT_FALSE(stale);
+}
+
+TEST_F(KlassRegistryTest, EpochComparisonSurvivesWraparound) {
+    // Frames and entries are compared modulo 2^EPOCH_BITS, so an entry
+    // registered just before the wrap still accepts frames sampled just after.
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    uint32_t registered = registry.epoch();
+    const uint32_t mask = (1u << KlassRegistry::EPOCH_BITS) - 1;
+    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0), (registered + 5) & mask));
+    // A frame sampled before the registration is refused even across the wrap.
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), (registered - 1) & mask));
 }
 
 // ---------------------------------------------------------------------------

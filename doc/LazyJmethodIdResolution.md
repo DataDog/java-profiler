@@ -79,7 +79,15 @@ check at resolve time can separate them, so **the frame itself has to carry an
 incarnation identity.** The existing modes never hit this, because unloadable classes
 always get jmethodIDs.
 
-### Option A: reuse epoch (portable fallback)
+### Option A: reuse epoch (portable fallback) — implemented
+
+Implemented as described below (`KlassRegistry::epoch()`/`bumpEpoch()`, `pin(…, sampled_epoch, &stale)`,
+counter `method_resolve_lazy_stale`). It also relies on one invariant, which is now enforced: every class is
+registered before any of its methods can run. ClassPrepare guarantees this; if `add()` fails,
+`registerClass` preloads that class's jmethodIDs instead (`klass_registry_add_failed`), so no raw
+frame of an unregistered class is ever produced. Without that, a later class at the same address
+could be inserted fresh, without a bump, and accept the unregistered class's frames.
+
 
 - The registry keeps a global `_epoch`, and each entry records the epoch it was
   registered at.
@@ -156,7 +164,18 @@ initialized, and its own answer can confirm our offset:
 - JNI calls ignore module encapsulation, so `jdk.jfr.internal` not being exported shouldn't
   matter. Verify this when implementing.
 
-### Frame bit budget (both options)
+### Frame bits — implemented
+
+`FrameType::encodeRaw` / `tagPointer` / `rawTag` / `untagPointer` (frame.h) carry a 26-bit tag:
+the low 10 bits in bci bits 16–19 and 24–29, and the high 16 bits in pointer bits 48–63. A
+`Method*` with any of those pointer bits set is stored as `JMETHODID_NOT_WALKABLE` and counted
+(`walkvm_raw_frame_untaggable`), never stored without its tag. `resolve()` now takes
+`(method, bci)` so it can take the tag back out. The JFR writer masks bci to 16 bits and the
+type to 3 bits, so tag bits never reach the recording. `hasTheSameMethod` compares untagged
+pointers.
+
+The original budget analysis:
+
 
 - The bci field has 10 spare bits: 16–19 and 24–29. Bit 31 must stay clear, because
   `isRawPointer()` requires `bci > 0`.
@@ -199,9 +218,11 @@ through the `com.sun.management:type=DiagnosticCommand` MBean. It lives in
 | `fjmethodid=lazy` parsing, `Lazy_loaded` state, registry, resolve path, counters | done |
 | gtests: `klassRegistry_ut` (10), lazy cases in `jvmSupport_ut` and `arguments_ut` | pass (macOS) |
 | `LazyJmethodIdTest`: custom-loader frames resolve; frames of unloaded class dropped (`method_resolve_lazy_unloaded=5`) | pass (macOS) |
-| Deterministic ABA gtest (re-register a new mirror at the same `Klass*` with `M` in its methods; fails before the fix) | open |
-| Frame bits: bci spare bits plus `Method*` top bits with VA check | open |
-| Option A (epoch fallback) | open |
+| ABA gtest `hotspotLazyResolve_ut` (6 cases: controls + replacement, purge-then-reinsert, before/after frames differ) | pass (macOS) |
+| Frame bits: bci spare bits plus `Method*` top bits; untaggable pointers dropped | done |
+| Epoch tests in `klassRegistry_ut`, tag round-trip tests in `frame_ut` | pass (macOS) |
+| Linux-only `hotspotMethodId_ut` cases: `resolve()` call sites updated to `(ptr, 0)` but **not compiled on macOS** | verify on Linux |
+| Option A (epoch fallback) | done |
 | Option B (trace-ID offset, self-calibration, JFR cross-check) | open |
 | Linux runs: Linux-only `hotspotMethodId_ut` cases, ASan, aarch64, musl, benchmark | open |
 | Per-dump cache for repeated raw frames (each occurrence currently re-pins) | open |

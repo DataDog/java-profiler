@@ -67,8 +67,8 @@ public:
     static void loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni);
     static bool loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 
-    // Resolve method pointer to jmethodID
-    static inline jmethodID resolve(const void* method);
+    // Resolve a raw-pointer frame (method field and encoded bci) to a jmethodID
+    static inline jmethodID resolve(const void* method, int bci);
 
     // If a class is hidden class
     static inline bool isHidden(jint modifiers);

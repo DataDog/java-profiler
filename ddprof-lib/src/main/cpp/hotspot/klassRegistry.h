@@ -31,13 +31,29 @@
  * loaded. A Klass* address reused by a newly loaded class simply overwrites
  * the dead entry on that class's ClassPrepare.
  *
- * All operations take an internal mutex and call JNI, so none of them may be
- * used from a signal handler.
+ * Klass* reuse: class space hands a freed Klass* address -- and very likely
+ * the same Method* addresses -- to the next class of the same shape, so a
+ * Method* sampled from an unloaded class can look exactly like a method of
+ * the class that replaced it. The registry therefore keeps an epoch: every
+ * entry records the epoch it was registered at, and the epoch is bumped
+ * whenever a registration may reuse the address of a class that is gone --
+ * when a known Klass* gets a different mirror, and when a rehash purges dead
+ * entries (after which the old address can come back as a first insert).
+ * walkVM stores epoch() in each raw frame; pin() refuses a frame whose epoch
+ * predates the entry, since such a frame can only come from an earlier
+ * occupant of the address. This relies on every class being registered
+ * before any of its methods can run, which ClassPrepare guarantees; when
+ * registration fails, the caller must preload the class's jmethodIDs instead
+ * so that no raw frame of it is ever produced.
+ *
+ * Except for epoch(), all operations take an internal mutex and call JNI, so
+ * none of them may be used from a signal handler.
  */
 class KlassRegistry {
   struct Entry {
     const void* klass;
     jweak mirror;
+    uint32_t epoch;  // _epoch when this mirror was registered
   };
 
   static const size_t INITIAL_CAPACITY = 1024;
@@ -46,12 +62,18 @@ class KlassRegistry {
   Entry* _table;
   size_t _capacity;  // Power of two, or 0 before the first add()
   size_t _size;      // Occupied slots, live or dead
+  volatile uint32_t _epoch;
 
   Entry* find(const void* klass) const;
   bool rehash(JNIEnv* jni);
+  uint32_t bumpEpoch();
 
 public:
-  KlassRegistry() : _table(nullptr), _capacity(0), _size(0) {}
+  // Width of the epoch as stored in a frame and compared by pin(); must equal
+  // FrameType::RAW_TAG_BITS (checked in hotspotSupport.cpp).
+  static const int EPOCH_BITS = 26;
+
+  KlassRegistry() : _table(nullptr), _capacity(0), _size(0), _epoch(0) {}
 
   KlassRegistry(const KlassRegistry&) = delete;
   KlassRegistry& operator=(const KlassRegistry&) = delete;
@@ -64,12 +86,20 @@ public:
   bool add(JNIEnv* jni, const void* klass, jclass mirror);
 
   /**
-   * Returns a new local reference to the mirror registered for `klass`, or
-   * nullptr if none is registered or the class has been unloaded. While the
-   * caller holds the reference the class cannot be unloaded; it must release
-   * it with DeleteLocalRef.
+   * The current epoch, to be stored with a frame sampled now. Signal safe:
+   * a single acquire load.
    */
-  jclass pin(JNIEnv* jni, const void* klass);
+  uint32_t epoch() const { return __atomic_load_n(&_epoch, __ATOMIC_ACQUIRE); }
+
+  /**
+   * Returns a new local reference to the mirror registered for `klass`, or
+   * nullptr if none is registered, the class has been unloaded, or the
+   * registration is newer than `sampled_epoch` (the frame came from an
+   * earlier class at the same address; `*stale` is then set to true). Epochs
+   * compare modulo 2^EPOCH_BITS. While the caller holds the reference the
+   * class cannot be unloaded; it must release it with DeleteLocalRef.
+   */
+  jclass pin(JNIEnv* jni, const void* klass, uint32_t sampled_epoch, bool* stale = nullptr);
 
   /** Number of occupied slots, including dead entries not yet purged. */
   size_t size();
