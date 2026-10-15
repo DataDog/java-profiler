@@ -296,7 +296,10 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                                (u8)reference_kind,
                                parent_tag == 0 ? edge_referrer_class_tag : 0)) {
       // Store the leak tag in the frontier entry
-      ctx->frontier->setLeakTag(frontier_tag, leak_tag);
+      // Capture the tag's current ownership period with it (one lock-free load): this live object
+      // owns leak_tag now, so a chain built from this entry describes it and not an earlier owner.
+      ctx->frontier->setLeakTag(frontier_tag, leak_tag,
+                                LivenessTracker::instance()->leakTagIncarnation(leak_tag));
       *tag_ptr = frontier_tag;
       ctx->edges_admitted++;
       // Queue for expandFrontier() like admitObject() does: FollowReferences usually descends into

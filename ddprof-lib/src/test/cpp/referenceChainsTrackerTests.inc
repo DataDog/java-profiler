@@ -473,10 +473,32 @@ class ResolvedChainCacheTest : public ::testing::Test {
 protected:
     void SetUp() override {
         ReferenceChainsTestAccessor::reset();
+        // Leak-tag ownership-period tests below drive the shared pool; keep its state isolated.
+        LivenessTracker::instance()->leakTagPoolResetForTest();
     }
 
     void TearDown() override {
         ReferenceChainsTestAccessor::reset();
+        LivenessTracker::instance()->leakTagPoolResetForTest();
+    }
+
+    // A cached chain targeting leak tag `leak_tag`, stamped with the ownership period `stamp`
+    // (what buildChainEvent() copies from the frontier entry).
+    static ReferenceChainEvent makeLeakEvent(jlong leak_tag, u32 stamp) {
+        ReferenceChainEvent event = makeEvent((u64)leak_tag);
+        event._leak_tag_incarnation = stamp;
+        return event;
+    }
+
+    static bool drainContainsTarget(u64 target_tag) {
+        std::vector<ReferenceChainEvent> out;
+        ReferenceChainsTestAccessor::drain(&out);
+        for (const auto &e : out) {
+            if (e._target_tag == target_tag) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static ReferenceChainEvent makeEvent(u64 target_tag) {
@@ -841,6 +863,83 @@ TEST_F(ResolvedChainCacheTest, ResolvedTargetTagSeamLockOrder) {
     EXPECT_TRUE(waitForSeamThread(done, 10000));
     seam.join();
     EXPECT_EQ(77, result.load());
+}
+
+// Leak-tag identity is (tag, ownership-period stamp): a chain cached during the tag's current
+// ownership is answered by the seam and emitted by the dump.
+TEST_F(ResolvedChainCacheTest, LeakTagChainOfCurrentOwnerIsResolvedAndEmitted) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    jlong leak = lt->acquireLeakTagForTest();
+    ASSERT_TRUE(ReferenceChainTracker::isLeakTag(leak));
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(1000);
+    ReferenceChainsTestAccessor::cacheChain(5, makeLeakEvent(leak, lt->leakTagIncarnation(leak)),
+                                            5, 1000);
+    EXPECT_EQ(leak, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(leak));
+    EXPECT_TRUE(drainContainsTarget((u64)leak));
+}
+
+// The reviewer's ABA: the chain's object dies (tag released), and the tag is recycled for a new
+// object. The old chain must not be attributed to the new owner by the seam nor emitted into the
+// dump - and it must not be erased either (the eviction policy owns removal).
+TEST_F(ResolvedChainCacheTest, LeakTagChainOfDeadOwnerIsNeitherResolvedNorEmitted) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    jlong leak = lt->acquireLeakTagForTest();
+    ASSERT_TRUE(ReferenceChainTracker::isLeakTag(leak));
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(1000);
+    ReferenceChainsTestAccessor::cacheChain(5, makeLeakEvent(leak, lt->leakTagIncarnation(leak)),
+                                            5, 1000);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
+
+    // Owner dies: released, not yet re-acquired.
+    lt->releaseLeakTagForTest(leak);
+    EXPECT_EQ(0, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(leak));
+    EXPECT_FALSE(drainContainsTarget((u64)leak));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount())
+        << "emission must not erase the stale chain";
+
+    // A new object receives the recycled tag (LIFO).
+    jlong reused = lt->acquireLeakTagForTest();
+    ASSERT_EQ(leak, reused);
+    EXPECT_EQ(0, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(reused))
+        << "the dead owner's chain was attributed to the tag's new owner";
+    EXPECT_FALSE(drainContainsTarget((u64)reused));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
+
+    // Once the new owner's own chain is cached, it is the one that matches.
+    ReferenceChainsTestAccessor::cacheChain(
+        6, makeLeakEvent(reused, lt->leakTagIncarnation(reused)), 6, 1000);
+    EXPECT_EQ(reused, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(reused));
+    std::vector<ReferenceChainEvent> out;
+    ReferenceChainsTestAccessor::drain(&out);
+    ASSERT_EQ(1u, out.size()) << "only the current owner's chain is emitted";
+    EXPECT_EQ(lt->leakTagIncarnation(reused), out[0]._leak_tag_incarnation);
+}
+
+// Within one ownership period the leak-tag path is generation-agnostic: a chain an earlier search
+// cached for the same owner still answers after a restart.
+TEST_F(ResolvedChainCacheTest, LeakTagChainMatchesAcrossGenerationsForSameOwner) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    jlong leak = lt->acquireLeakTagForTest();
+    ASSERT_TRUE(ReferenceChainTracker::isLeakTag(leak));
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(1000);
+    ReferenceChainsTestAccessor::cacheChain(5, makeLeakEvent(leak, lt->leakTagIncarnation(leak)),
+                                            5, 1000);
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(2000);
+    EXPECT_EQ(leak, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(leak));
+    EXPECT_TRUE(drainContainsTarget((u64)leak));
+}
+
+// Chains whose target is a frontier tag (no leak tag) are not subject to the ownership check:
+// emitted regardless of what the leak-tag pool does.
+TEST_F(ResolvedChainCacheTest, FrontierTargetChainsAreEmittedRegardlessOfPoolState) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    ReferenceChainsTestAccessor::cacheChain(1, makeEvent(7), 7, 0);
+    EXPECT_TRUE(drainContainsTarget(7));
+    jlong leak = lt->acquireLeakTagForTest();
+    ASSERT_TRUE(ReferenceChainTracker::isLeakTag(leak));
+    lt->releaseLeakTagForTest(leak);
+    lt->leakTagPoolResetForTest();
+    EXPECT_TRUE(drainContainsTarget(7));
 }
 
 // Pause-time pacing controller: pause-time-SLO feedback loop

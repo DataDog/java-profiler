@@ -685,8 +685,11 @@ public final class JavaProfiler {
     /**
      * Test seam (-DDEBUG native builds only - debug/asan/tsan; returns 0 in release): does not
      * tag {@code target}. The targetTag the {@code datadog.ReferenceChain} event for target
-     * carries, if the current search has already resolved and cached target's own chain; 0
-     * otherwise.
+     * carries, if a cached chain exists for target; 0 otherwise. When target carries a frontier
+     * tag, only the current search's cached chain counts. When target carries a leak tag, a chain
+     * cached by any search generation counts, but only if it was built during target's current
+     * ownership of that leak tag: leak tags are recycled after their object dies, so identity is
+     * the (leak tag, ownership-period stamp) pair, not the tag alone.
      */
     public static native long getReferenceChainResolvedTargetTagForTest0(Object target);
 

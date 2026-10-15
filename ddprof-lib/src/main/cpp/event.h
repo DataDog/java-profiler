@@ -139,10 +139,15 @@ public:
   u64 _target_tag;
   u32 _depth;
   u8 _root_kind;
+  // In-memory only, never serialized: LivenessTracker's ownership-period stamp of _target_tag when
+  // it is a leak tag, captured when the tag was bound to the target's frontier entry. Leak tags are
+  // recycled, so (_target_tag, _leak_tag_incarnation) identifies the target; 0 otherwise.
+  u32 _leak_tag_incarnation;
   std::vector<ReferenceChainHop> _hops;
 
   ReferenceChainEvent()
-      : Event(), _start_time(0), _target_tag(0), _depth(0), _root_kind(0) {}
+      : Event(), _start_time(0), _target_tag(0), _depth(0), _root_kind(0),
+        _leak_tag_incarnation(0) {}
 };
 
 // Search-level abandonment signal: reports why the reference-chain search

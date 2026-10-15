@@ -15,6 +15,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 
 public abstract class AbstractProcessProfilerTest {
+    // Upper bound for joining each output reader thread once the child has exited (or been
+    // destroyed). The readers normally hit EOF right after the child ends; the bound only stops a
+    // descendant that inherited the pipes from keeping launch() from returning.
+    private static final long READER_JOIN_TIMEOUT_MS = 10_000;
+
     public static final class LaunchResult {
         public final boolean inTime;
         public final int exitCode;
@@ -146,6 +151,14 @@ public abstract class AbstractProcessProfilerTest {
             p.destroyForcibly();
             p.waitFor(5, TimeUnit.SECONDS);
         }
+        // Process.waitFor() only orders the child's exit, not the readers' last callbacks. Child modes
+        // that call System.exit(0) skip the [ready] handshake, so nothing else guarantees the final
+        // marker lines have been handed to the callbacks before the caller asserts on the state they
+        // set. Join both readers (bounded, on both the in-time and the timeout path): Thread.join()
+        // makes every callback write visible to the caller. If a reader is still alive after the bound,
+        // return anyway, as before.
+        stdoutReader.join(READER_JOIN_TIMEOUT_MS);
+        stderrReader.join(READER_JOIN_TIMEOUT_MS);
         return new LaunchResult(val, p.exitValue());
     }
 }

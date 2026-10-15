@@ -110,7 +110,7 @@ TEST_F(ReferenceChainsBfsTest, ContainerAnchorLeapsQueueAcrossLargeIndex) {
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, leak_anchor, 0, 0, FrontierEntryState::FRONTIER,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD));
-    frontier->setLeakTag(leak_anchor, 777);
+    frontier->setLeakTag(leak_anchor, 777, /*leak_tag_incarnation=*/0);
     ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
         leak_anchor, 599999, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
     ReferenceChainsTestAccessor::primeClassShapeForTest(
@@ -332,7 +332,8 @@ TEST_F(ReferenceChainsBfsTest, LeakTagChainMarksCanaryFound) {
     // (suppressChainEvent: depth==0, or depth==1 at a transient root) keeps both chains.
     ASSERT_TRUE(frontier->insert(4242, 0, 7, 1, FrontierEntryState::FRONTIER,
                                  8, /*class_tag=*/0, -1, /*kind=*/0));
-    frontier->setLeakTag(4242, 1073742079);
+    frontier->setLeakTag(4242, 1073742079,
+                         LivenessTracker::instance()->leakTagIncarnation(1073742079));
     ReferenceChainsTestAccessor::recordDiscoveredInstanceForTest(7, 4242, true);
     ASSERT_EQ(4242, ReferenceChainsTestAccessor::candidateDiscoveredTagForTest(0, 0));
     ASSERT_TRUE(frontier->insert(5353, 0, 9, 1, FrontierEntryState::FRONTIER,

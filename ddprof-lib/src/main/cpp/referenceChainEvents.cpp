@@ -105,6 +105,9 @@ bool ReferenceChainTracker::buildChainEvent(jvmtiEnv *jvmti, JNIEnv *jni,
            (long long)target_tag, chain.size(), chain.empty() ? 0u : chain[0],
            entry.depth, (unsigned)root_kind, (long long)entry.leak_tag);
   out->_target_tag = entry.leak_tag != 0 ? (u64)entry.leak_tag : (u64)target_tag;
+  // Ownership period of the leak tag at binding time (0 without a leak tag); see
+  // chainTargetsCurrentLeakOwner().
+  out->_leak_tag_incarnation = entry.leak_tag_incarnation;
   out->_depth = entry.depth;
   out->_root_kind = root_kind;
   out->_hops.resize(chain.size());
@@ -514,16 +517,20 @@ jlong ReferenceChainTracker::resolvedChainTargetTagForTest(jlong object_tag) {
     // Leak-tag fallback. An object carries its leak tag exactly when no live frontier entry
     // exists for it - before the current search's first interception, or after a restart's
     // releaseSearchTags() cleared the frontier tags and the next GC re-tagged it - which is
-    // precisely when the frontier-tag lookup below must miss. A leak tag is minted per tracked
-    // object from LivenessTracker's pool and released only when that object dies, so unlike a
-    // frontier tag (which restartSearch() re-mints from 1 for unrelated objects) it identifies
-    // this exact object across search generations: matching the cached chain event's target
-    // tag (buildChainEvent() copies the frontier entry's stored leak tag into it) cannot hit a
-    // different object's chain, so no generation check applies here. restartSearch() keeps
-    // _resolved_chains, so a chain any earlier search resolved for this object stays reachable
-    // through this scan even after the frontier tags were wiped.
+    // precisely when the frontier-tag lookup below must miss. A leak tag is NOT an object
+    // identity on its own: LivenessTracker releases it when its object dies and recycles it for
+    // another object, while _resolved_chains keeps the dead object's chain (restartSearch() keeps
+    // the cache too). Identity is the pair (leak tag, ownership-period stamp): buildChainEvent()
+    // copies the frontier entry's leak tag and the stamp captured when that tag was bound, and
+    // chainTargetsCurrentLeakOwner() accepts the chain only if the stamp is still the tag's
+    // current one. Within one ownership period no generation check applies, so a chain any
+    // earlier search resolved for this object stays reachable through this scan even after the
+    // frontier tags were wiped; a chain cached for an earlier owner of the tag never matches. The
+    // caller holds a strong reference to the target, so its own tag cannot be released (and its
+    // stamp cannot change) during this call.
     for (const auto &cached : _resolved_chains) {
-      if ((jlong)cached.second.event._target_tag == object_tag) {
+      if ((jlong)cached.second.event._target_tag == object_tag &&
+          chainTargetsCurrentLeakOwner(cached.second.event)) {
         return object_tag;
       }
     }
@@ -779,7 +786,10 @@ bool ReferenceChainTracker::correlateAdmittedLeakTag(jlong frontier_tag,
     // re-admission.
     return true;
   }
-  _frontier->setLeakTag(frontier_tag, leak_tag);
+  // The caller's row owns leak_tag now (tagLeakInstances() holds the shared _table_lock, which
+  // excludes cleanup_table()'s release), so this is the owner's ownership-period stamp.
+  _frontier->setLeakTag(frontier_tag, leak_tag,
+                        LivenessTracker::instance()->leakTagIncarnation(leak_tag));
   TEST_LOG_SUMMARY("ReferenceChainTracker::correlateAdmittedLeakTag "
            "frontier_tag=%lld leak_tag=%lld depth=%u parent_tag=%lld",
            (long long)frontier_tag, (long long)leak_tag, entry.depth,
@@ -787,6 +797,12 @@ bool ReferenceChainTracker::correlateAdmittedLeakTag(jlong frontier_tag,
   recordDiscoveredInstance(klass_id, frontier_tag, true,
                            CacheInvalidationMode::SYNCHRONOUS, nullptr, 0);
   return true;
+}
+
+bool ReferenceChainTracker::chainTargetsCurrentLeakOwner(const ReferenceChainEvent &e) {
+  jlong target = (jlong)e._target_tag;
+  return isLeakTag(target) &&
+         e._leak_tag_incarnation == LivenessTracker::instance()->leakTagIncarnation(target);
 }
 
 void ReferenceChainTracker::drainPendingChainEvents(
@@ -803,7 +819,15 @@ void ReferenceChainTracker::drainPendingChainEvents(
   {
     ExclusiveLockGuard guard(&_resolved_chains_lock);
     for (const auto &kv : _resolved_chains) {
-      out->push_back(kv.second.event);
+      const ReferenceChainEvent &event = kv.second.event;
+      if (isLeakTag((jlong)event._target_tag) && !chainTargetsCurrentLeakOwner(event)) {
+        // The leak-tagged target died (its tag was released, and possibly re-acquired by another
+        // object): emitting targetTag = L would let the consumer's ReferenceChain.targetTag ->
+        // HeapLiveObject.leakTag join attribute this chain to L's current owner. Skip it, but do
+        // not erase it - the existing eviction policy decides when it leaves the cache.
+        continue;
+      }
+      out->push_back(event);
       out->back()._start_time = now;
     }
   }
