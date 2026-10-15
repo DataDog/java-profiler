@@ -67,6 +67,13 @@ public:
     static void loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni);
     static bool loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 
+    // Called around every RedefineClasses/RetransformClasses for each class.
+    // fjmethodid=lazy must know before the methods are swapped; afterwards the
+    // class's jmethodIDs are (re)loaded as each mode requires. `succeeded` is
+    // whether the redefinition went through.
+    static void beforeClassRedefinition(JNIEnv *jni, jclass klass);
+    static void afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded);
+
     // Resolve a raw-pointer frame (method field and encoded bci) to a jmethodID
     static inline jmethodID resolve(const void* method, int bci);
 

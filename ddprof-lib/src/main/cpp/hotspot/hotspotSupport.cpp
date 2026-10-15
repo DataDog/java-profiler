@@ -1498,6 +1498,10 @@ bool HotspotSupport::rawFrameTag(const VMMethod* method, uint32_t* tag) {
     return true;
 }
 
+void HotspotSupport::beforeClassRedefinition(JNIEnv *jni, jclass klass) {
+    _klass_registry.markRedefined(VMKlass::fromJavaClass(jni, klass));
+}
+
 bool HotspotSupport::registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
     jint status = 0;
     // Array and primitive classes have no methods, so no frame ever names them
@@ -1506,7 +1510,16 @@ bool HotspotSupport::registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
         (status & (JVMTI_CLASS_STATUS_ARRAY | JVMTI_CLASS_STATUS_PRIMITIVE)) != 0) {
         return false;
     }
-    if (_klass_registry.add(jni, VMKlass::fromJavaClass(jni, klass), klass)) {
+    const void* vm_klass = VMKlass::fromJavaClass(jni, klass);
+    uint64_t trace_id;
+    if (__atomic_load_n(&_tag_with_trace_id, __ATOMIC_ACQUIRE) && KlassTraceId::read(vm_klass, &trace_id) &&
+        trace_id > TAG_VALUE_MASK) {
+        // Two classes' 25-bit trace-ID tags can only collide once their IDs
+        // are at least 2^25 apart, so before any class has an ID this large
+        // no stale frame can be matched to a newer class by its tag.
+        Counters::increment(KLASS_TRACE_ID_BEYOND_TAG_RANGE);
+    }
+    if (_klass_registry.add(jni, vm_klass, klass)) {
         return true;
     }
     // An unregistered class's frames could never be told apart from a later
@@ -1933,18 +1946,21 @@ jmethodID HotspotSupport::resolveViaRegistry(VMMethod* vm_method, const void* ho
   JNIEnv* jni = VM::jni();
   const bool trace_id_tag = (tag & TRACE_ID_TAG) != 0;
   const uint32_t tag_value = tag & TAG_VALUE_MASK;
-  bool stale = false;
+  KlassRegistry::PinStatus status;
   // For a trace-ID tag the registry's epoch plays no part: passing the current
   // epoch makes pin() accept any registration, and the trace ID is compared
   // once the class is pinned.
   uint32_t sampled_epoch = trace_id_tag ? _klass_registry.epoch() : tag_value;
-  jclass clz = _klass_registry.pin(jni, holder, sampled_epoch, &stale);
+  jclass clz = _klass_registry.pin(jni, holder, sampled_epoch, &status);
   if (clz == nullptr) {
     // Stale: the class registered at `holder` arrived after the sample, so the
-    // frame belongs to an earlier class at the same address. Otherwise the
+    // frame belongs to an earlier occupant of that memory. Redefined: the
+    // Method* may have been freed and reused within the class. Otherwise the
     // class was unloaded after the sample was taken, or `holder` was read from
     // a freed Method* and is garbage.
-    Counters::increment(stale ? METHOD_RESOLVE_LAZY_STALE : METHOD_RESOLVE_LAZY_UNLOADED);
+    Counters::increment(status == KlassRegistry::PIN_STALE       ? METHOD_RESOLVE_LAZY_STALE
+                        : status == KlassRegistry::PIN_REDEFINED ? METHOD_RESOLVE_LAZY_REDEFINED
+                                                                 : METHOD_RESOLVE_LAZY_UNLOADED);
     return nullptr;
   }
 
@@ -1957,9 +1973,10 @@ jmethodID HotspotSupport::resolveViaRegistry(VMMethod* vm_method, const void* ho
     jni->DeleteLocalRef(clz);
     return nullptr;
   }
-  // The pinned class keeps its metadata alive, so its methods array is safe
-  // to read. A miss means the Method* was freed (and possibly its holder
-  // address reused), or it is an old version replaced by a redefinition.
+  // A miss means the Method* was freed (and possibly its memory reused), or
+  // it is an old version replaced by a redefinition. containsMethod() and
+  // validatedId() read through SafeAccess: the pinned class stays alive, but
+  // a concurrent redefinition can free its old methods array and Method*s.
   if (!VMKlass::cast_raw(holder)->containsMethod(vm_method, idnum)) {
     Counters::increment(METHOD_RESOLVE_LAZY_NOT_CURRENT);
   } else {
@@ -1980,5 +1997,12 @@ jmethodID HotspotSupport::resolveViaRegistry(VMMethod* vm_method, const void* ho
     }
   }
   jni->DeleteLocalRef(clz);
+  // The class is marked before a redefinition swaps its methods. If the mark
+  // is still absent now, every read above happened before that swap, so the
+  // Method* we validated was the class's own; otherwise we cannot tell.
+  if (method_id != nullptr && _klass_registry.isRedefined(holder)) {
+    Counters::increment(METHOD_RESOLVE_LAZY_REDEFINED);
+    return nullptr;
+  }
   return method_id;
 }

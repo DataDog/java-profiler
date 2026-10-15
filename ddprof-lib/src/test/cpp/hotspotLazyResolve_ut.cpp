@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include "../../main/cpp/counters.h"
 #include "../../main/cpp/frame.h"
 #include "../../main/cpp/hotspot/hotspotSupport.h"
 #include "../../main/cpp/hotspot/klassRegistry.h"
@@ -42,6 +43,8 @@ public:
     static void setHotspot(bool value) { VM::_hotspot = value; }
     static JavaVM* getVm() { return VM::_vm; }
     static void setVm(JavaVM* vm) { VM::_vm = vm; }
+    static jvmtiEnv* getJvmti() { return VM::_jvmti; }
+    static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
 };
 
 class JVMSupportTestAccessor {
@@ -58,6 +61,9 @@ public:
     static bool getTagWithTraceId() { return HotspotSupport::_tag_with_trace_id; }
     static void setTagWithTraceId(bool v) { HotspotSupport::_tag_with_trace_id = v; }
     static uint32_t traceIdTagBit() { return HotspotSupport::TRACE_ID_TAG; }
+    static bool registerClass(jvmtiEnv* jvmti, JNIEnv* jni, jclass klass) {
+        return HotspotSupport::registerClass(jvmti, jni, klass);
+    }
 };
 
 class ProfilerTestAccessor {
@@ -204,6 +210,7 @@ struct FakeClass {
 // the JavaVM that VM::jni() goes through.
 struct FakeObject {
     int id;
+    const void* klass = nullptr;  // what java.lang.Class.klass holds, for mirrors
 };
 
 struct FakeWeak {
@@ -219,13 +226,19 @@ public:
         _jni_tbl.IsSameObject = &isSameObject;
         _jni_tbl.NewLocalRef = &newLocalRef;
         _jni_tbl.DeleteLocalRef = &deleteLocalRef;
+        _jni_tbl.GetLongField = &getLongField;
         _jni_env.functions = &_jni_tbl;
+        _jvmti_tbl.GetClassStatus = &getClassStatus;
+        _jvmti.functions = &_jvmti_tbl;
+        _saved_jvmti = VMTestAccessor::getJvmti();
+        VMTestAccessor::setJvmti(&_jvmti);
         _vm_tbl.GetEnv = &getEnv;
         _vm.functions = &_vm_tbl;
         VMTestAccessor::setVm(reinterpret_cast<JavaVM*>(&_vm));
     }
 
     ~FakeJvm() {
+        VMTestAccessor::setJvmti(_saved_jvmti);
         VMTestAccessor::setVm(_saved_vm);
         for (FakeWeak* w : _weaks) {
             delete w;
@@ -234,6 +247,7 @@ public:
     }
 
     JNIEnv* jni() { return &_jni_env; }
+    jvmtiEnv* jvmti() { return &_jvmti; }
 
     jclass mirror(FakeObject& obj) { return reinterpret_cast<jclass>(&obj); }
 
@@ -264,6 +278,14 @@ private:
     }
     static jobject JNICALL newLocalRef(JNIEnv*, jobject ref) { return s_instance->resolve(ref); }
     static void JNICALL deleteLocalRef(JNIEnv*, jobject) {}
+    // VMKlass::fromJavaClass() reads java.lang.Class.klass through this.
+    static jlong JNICALL getLongField(JNIEnv*, jobject obj, jfieldID) {
+        return (jlong)(uintptr_t)reinterpret_cast<FakeObject*>(obj)->klass;
+    }
+    static jvmtiError JNICALL getClassStatus(jvmtiEnv*, jclass, jint* status) {
+        *status = JVMTI_CLASS_STATUS_PREPARED;
+        return JVMTI_ERROR_NONE;
+    }
     static jint JNICALL getEnv(JavaVM*, void** penv, jint) {
         *penv = &s_instance->_jni_env;
         return JNI_OK;
@@ -276,6 +298,9 @@ private:
     JNIEnv_ _jni_env{};
     JNIInvokeInterface_ _vm_tbl{};
     JavaVM_ _vm{};
+    jvmtiInterface_1_ _jvmti_tbl{};
+    _jvmtiEnv _jvmti{};
+    jvmtiEnv* _saved_jvmti = nullptr;
     std::set<FakeWeak*> _weaks;
 };
 FakeJvm* FakeJvm::s_instance = nullptr;
@@ -478,6 +503,66 @@ TEST_P(HotspotLazyResolveTest, FramesResolveByTheirOwnTagKind) {
     EXPECT_NE(0u, FrameType::rawTag(trace_frame.bci, trace_frame.method) & bit);
     EXPECT_EQ(_cls.jmethodId(), resolve(epoch_frame));
     EXPECT_EQ(_cls.jmethodId(), resolve(trace_frame));
+}
+
+// A redefinition frees the class's old Method*s once they are off every
+// stack, and a later redefinition of the same class can allocate a new method
+// at the same address. The class, its mirror, trace ID and registry epoch all
+// stay the same, so nothing but the redefinition itself tells the frames
+// apart: raw frames of a class marked before its redefinition are refused.
+TEST_P(HotspotLazyResolveTest, FrameOfRedefinedClassIsRefused) {
+    registerClass(_old_mirror);
+    ASGCT_CallFrame before = sample();
+    // What VM::RetransformClassesHook does first. Afterwards the Method* at
+    // the sampled address is (still, or again) among the class's methods.
+    ASSERT_TRUE(HotspotSupportTestAccessor::registry().markRedefined(_cls.klassPtr()));
+    EXPECT_EQ(nullptr, resolve(before));
+}
+
+// The sampled class is unloaded and its Method* memory goes to a class loaded
+// later at a different Klass* address. Reading the holder from the stale
+// Method* now yields the new class, which is alive and lists the method.
+TEST_P(HotspotLazyResolveTest, MethodMemoryReusedByClassAtOtherAddressDoesNotResolve) {
+    registerClass(_old_mirror);
+    ASGCT_CallFrame frame = sample();
+
+    _jvm.collect(_old_mirror);
+    static FakeKlass other_klass;
+    static FakeMethodArray other_methods;
+    other_klass = _cls.klass;
+    other_klass.methods = &other_methods;
+    other_klass.trace_id = ((_cls.klass.trace_id >> 16) + 41) << 16;
+    other_methods = *_cls.klass.methods;
+    _cls.cpool.holder = &other_klass;  // the reused Method* now belongs to it
+    ASSERT_TRUE(HotspotSupportTestAccessor::registry().add(_jvm.jni(), &other_klass,
+                                                           _jvm.mirror(_new_mirror)));
+
+    EXPECT_EQ(nullptr, resolve(frame));
+}
+
+// Tripwire for tag collisions: counts registrations of classes whose trace
+// ID no longer fits in the 25-bit tag, the first point at which a stale frame
+// could match a newer class by its tag.
+TEST_P(HotspotLazyResolveTest, CountsClassesWithTraceIdBeyondTagRange) {
+#ifndef COUNTERS
+    GTEST_SKIP() << "debug counters are not compiled into this build";
+#else
+    if (!traceIdTags()) {
+        GTEST_SKIP() << "only trace-ID tags can run out of range";
+    }
+    long long before = Counters::getCounter(KLASS_TRACE_ID_BEYOND_TAG_RANGE);
+    _old_mirror.klass = _cls.klassPtr();
+    _cls.klass.trace_id = ((uint64_t)(1u << 25) - 1) << 16;  // largest ID that still fits
+    ASSERT_TRUE(HotspotSupportTestAccessor::registerClass(_jvm.jvmti(), _jvm.jni(), _jvm.mirror(_old_mirror)));
+    EXPECT_EQ(before, Counters::getCounter(KLASS_TRACE_ID_BEYOND_TAG_RANGE));
+
+    static FakeKlass big_klass;
+    big_klass = _cls.klass;
+    big_klass.trace_id = ((uint64_t)1 << 25) << 16;
+    _new_mirror.klass = &big_klass;
+    ASSERT_TRUE(HotspotSupportTestAccessor::registerClass(_jvm.jvmti(), _jvm.jni(), _jvm.mirror(_new_mirror)));
+    EXPECT_EQ(before + 1, Counters::getCounter(KLASS_TRACE_ID_BEYOND_TAG_RANGE));
+#endif
 }
 
 INSTANTIATE_TEST_SUITE_P(TagSource, HotspotLazyResolveTest, ::testing::Bool(),

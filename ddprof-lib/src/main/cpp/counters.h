@@ -188,6 +188,14 @@
    * UNTAGGABLE: a Method* using address bits the raw-frame tag needs, or   \
    * an unreadable holder trace ID; the frame is stored as not walkable. */  \
   X(METHOD_RESOLVE_LAZY_STALE, "method_resolve_lazy_stale")                   \
+  /* REDEFINED: raw frame of a class that has been redefined (its Method*s   \
+   * may have been freed and reused); serializes as "unknown". */            \
+  X(METHOD_RESOLVE_LAZY_REDEFINED, "method_resolve_lazy_redefined")           \
+  /* Registrations whose class trace ID no longer fits in a raw frame's     \
+   * 25-bit tag. Nonzero means trace-ID tags of two classes can now collide: \
+   * a frame sampled from an unloaded class could then, if a newer class     \
+   * also took over its Method* memory, resolve to that class's method. */   \
+  X(KLASS_TRACE_ID_BEYOND_TAG_RANGE, "klass_trace_id_beyond_tag_range")       \
   X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
   X(WALKVM_RAW_FRAME_UNTAGGABLE, "walkvm_raw_frame_untaggable")               \
   /* Gauge, set at each fjmethodid=lazy start: the Klass::_trace_id offset  \

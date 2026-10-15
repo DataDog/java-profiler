@@ -31,20 +31,26 @@
  * loaded. A Klass* address reused by a newly loaded class simply overwrites
  * the dead entry on that class's ClassPrepare.
  *
- * Klass* reuse: class space hands a freed Klass* address -- and very likely
- * the same Method* addresses -- to the next class of the same shape, so a
- * Method* sampled from an unloaded class can look exactly like a method of
- * the class that replaced it. The registry therefore keeps an epoch: every
- * entry records the epoch it was registered at, and the epoch is bumped
- * whenever a registration may reuse the address of a class that is gone --
- * when a known Klass* gets a different mirror, and when a rehash purges dead
- * entries (after which the old address can come back as a first insert).
- * walkVM stores epoch() in each raw frame; pin() refuses a frame whose epoch
- * predates the entry, since such a frame can only come from an earlier
- * occupant of the address. This relies on every class being registered
- * before any of its methods can run, which ClassPrepare guarantees; when
- * registration fails, the caller must preload the class's jmethodIDs instead
- * so that no raw frame of it is ever produced.
+ * Metadata reuse: the memory of a freed class -- its Klass* and very likely
+ * its Method* addresses -- goes to classes loaded later, so a Method* sampled
+ * from an unloaded class can look exactly like a method of a newer class,
+ * whether that one sits at the same Klass* or elsewhere. The registry
+ * therefore keeps an epoch: every registration bumps it and records the new
+ * value, so any class registered after a frame was sampled has a newer epoch
+ * than the frame. walkVM can store epoch() in each raw frame (when no JFR
+ * trace ID is available, see HotspotSupport); pin() then refuses a frame
+ * whose epoch predates the entry, since that frame can only come from an
+ * earlier occupant of the memory. This relies on every class being
+ * registered before any of its methods can run, which ClassPrepare
+ * guarantees; when registration fails, the caller must preload the class's
+ * jmethodIDs instead so that no raw frame of it is ever produced.
+ *
+ * Redefinition: a redefined class stays alive, but its old methods array and
+ * old Method*s are freed once no longer on any stack, and later allocations
+ * -- including another redefinition of the same class -- can reuse them. So
+ * markRedefined() is called before every redefinition, the class's
+ * jmethodIDs are preloaded after it (so its later frames are not raw), and
+ * pin() refuses every raw frame of a marked class.
  *
  * Except for epoch(), all operations take an internal mutex and call JNI, so
  * none of them may be used from a signal handler.
@@ -53,7 +59,8 @@ class KlassRegistry {
   struct Entry {
     const void* klass;
     jweak mirror;
-    uint32_t epoch;  // _epoch when this mirror was registered
+    uint32_t epoch;   // _epoch when this mirror was registered
+    bool redefined;   // markRedefined() was called; never reset
   };
 
   static const size_t INITIAL_CAPACITY = 1024;
@@ -76,6 +83,13 @@ public:
 
   KlassRegistry() : _table(nullptr), _capacity(0), _size(0), _epoch(0) {}
 
+  enum PinStatus {
+    PIN_OK,
+    PIN_ABSENT,     // not registered, or the class has been unloaded
+    PIN_STALE,      // registered after the frame was sampled
+    PIN_REDEFINED,  // the class has been redefined since registration
+  };
+
   KlassRegistry(const KlassRegistry&) = delete;
   KlassRegistry& operator=(const KlassRegistry&) = delete;
 
@@ -94,13 +108,24 @@ public:
 
   /**
    * Returns a new local reference to the mirror registered for `klass`, or
-   * nullptr if none is registered, the class has been unloaded, or the
-   * registration is newer than `sampled_epoch` (the frame came from an
-   * earlier class at the same address; `*stale` is then set to true). Epochs
-   * compare modulo 2^EPOCH_BITS. While the caller holds the reference the
-   * class cannot be unloaded; it must release it with DeleteLocalRef.
+   * nullptr -- with the reason in `*status` -- if none is registered, the
+   * class has been unloaded, the registration is newer than `sampled_epoch`,
+   * or the class has been redefined. Epochs compare modulo 2^EPOCH_BITS.
+   * While the caller holds the reference the class cannot be unloaded; it
+   * must release it with DeleteLocalRef.
    */
-  jclass pin(JNIEnv* jni, const void* klass, uint32_t sampled_epoch, bool* stale = nullptr);
+  jclass pin(JNIEnv* jni, const void* klass, uint32_t sampled_epoch, PinStatus* status = nullptr);
+
+  /**
+   * Marks `klass` as redefined, for good. Call before the redefinition
+   * starts, so that a resolution which validated the class's metadata just
+   * before the methods were swapped still sees the mark in isRedefined().
+   * Returns false if `klass` is not registered.
+   */
+  bool markRedefined(const void* klass);
+
+  /** Whether markRedefined() was called for `klass`. */
+  bool isRedefined(const void* klass);
 
   /** Number of occupied slots, including dead entries not yet purged. */
   size_t size();
