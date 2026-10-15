@@ -73,9 +73,11 @@ void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
     JMethodIDLoadStats current_state = getLoadState();
 
     JMethodIDLoadStats state = Fully_loaded;
-    if (VM::isHotspot() && !HotspotSupport::shouldPreloadJmethodIDs(args)) {
-        if (args._lazy_jmethodID && HotspotSupport::canResolveLazily()) {
-            HotspotSupport::initLazyResolution(jni);
+    // The stack walker mode as Profiler::start() resolved it from args.
+    CStack cstack = Profiler::instance()->cstackMode();
+    if (VM::isHotspot() && !HotspotSupport::shouldPreloadJmethodIDs(args, cstack)) {
+        if (args._lazy_jmethodID && HotspotSupport::canResolveLazily() &&
+            HotspotSupport::initLazyResolution(jni)) {
             state = Lazy_loaded;
         } else {
             HotspotSupport::initClassloaderInfo(jni);
@@ -174,17 +176,16 @@ bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
 }
 
 void JVMSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-    if (getLoadState() == Lazy_loaded) {
+    if (VM::isHotspot()) {
         HotspotSupport::beforeClassRedefinition(jvmti, jni, klass);
     }
 }
 
 void JVMSupport::afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded) {
-    if (getLoadState() == Lazy_loaded) {
-        // Even after a failed attempt: the class is marked for good, and only
-        // jmethodIDs keep its later frames from being raw (and refused).
-        HotspotSupport::afterClassRedefinition(jvmti, jni, klass);
-    } else if (succeeded) {
+    if (VM::isHotspot()) {
+        HotspotSupport::afterClassRedefinition(jvmti, jni, klass, succeeded);
+    }
+    if (succeeded && getLoadState() != Lazy_loaded) {
         loadMethodIDsIfNeeded(jvmti, jni, klass);
     }
 }

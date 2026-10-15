@@ -133,23 +133,23 @@ protected:
 } // namespace
 
 TEST_F(KlassRegistryTest, PinUnknownKlassReturnsNull) {
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), registry.epoch()));
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0)));
     ASSERT_TRUE(registry.add(jni, klassAt(1), mirror(1)));
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), registry.epoch()));
-    EXPECT_EQ(nullptr, registry.pin(jni, nullptr, registry.epoch()));
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0)));
+    EXPECT_EQ(nullptr, registry.pin(jni, nullptr));
 }
 
 TEST_F(KlassRegistryTest, PinReturnsRegisteredMirror) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     ASSERT_TRUE(registry.add(jni, klassAt(1), mirror(1)));
-    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0), registry.epoch()));
-    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(1), registry.epoch()));
+    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0)));
+    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(1)));
 }
 
 TEST_F(KlassRegistryTest, PinReturnsNullOnceClassIsCollected) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     heap.collect(&mirrors[0]);
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), registry.epoch()));
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0)));
 }
 
 TEST_F(KlassRegistryTest, ReAddingSameMirrorIsNoOp) {
@@ -166,7 +166,7 @@ TEST_F(KlassRegistryTest, ReusedKlassAddressReplacesDeadEntry) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     heap.collect(&mirrors[0]);
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(1)));
-    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(0), registry.epoch()));
+    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(0)));
     EXPECT_EQ(1u, registry.size());
     EXPECT_EQ(1, heap.liveWeaks());
 }
@@ -190,13 +190,13 @@ TEST_F(KlassRegistryTest, GrowthPurgesDeadEntries) {
     EXPECT_EQ((int)registry.size(), heap.liveWeaks());
     EXPECT_EQ(0, heap.double_deletes);
     for (size_t i = 0; i < 10; i++) {
-        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i), registry.epoch())) << i;
+        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i))) << i;
     }
     for (size_t i = 10; i < first; i++) {
-        EXPECT_EQ(nullptr, registry.pin(jni, klassAt(i), registry.epoch())) << i;
+        EXPECT_EQ(nullptr, registry.pin(jni, klassAt(i))) << i;
     }
     for (size_t i = first; i < first + more; i++) {
-        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i), registry.epoch())) << i;
+        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i))) << i;
     }
 }
 
@@ -207,7 +207,7 @@ TEST_F(KlassRegistryTest, GrowthKeepsAllLiveEntries) {
     }
     EXPECT_EQ(n, registry.size());
     for (size_t i = 0; i < n; i++) {
-        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i), registry.epoch())) << i;
+        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i))) << i;
     }
 }
 
@@ -219,117 +219,93 @@ TEST_F(KlassRegistryTest, ClearDeletesEveryWeakRef) {
     EXPECT_EQ(0u, registry.size());
     EXPECT_EQ(0, heap.liveWeaks());
     EXPECT_EQ(0, heap.double_deletes);
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), registry.epoch()));
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0)));
     // Usable again after clear().
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0), registry.epoch()));
+    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0)));
 }
 
-// Epochs: a frame records registry.epoch() when sampled; pin() refuses it when
-// the entry for its Klass* was registered later. Every new registration bumps
-// the epoch, since any new class may occupy memory of one that is gone.
+// Redefinition: raw frames of a class are refused while a redefinition of it
+// is in progress, and for good once one succeeded. A failed call leaves the
+// class as it was.
 
-TEST_F(KlassRegistryTest, EveryRegistrationBumpsEpochButReAddingDoesNot) {
-    uint32_t e0 = registry.epoch();
-    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    uint32_t e1 = registry.epoch();
-    EXPECT_NE(e0, e1);
-    ASSERT_TRUE(registry.add(jni, klassAt(1), mirror(1)));
-    uint32_t e2 = registry.epoch();
-    EXPECT_NE(e1, e2);
-    // Re-adding the same pair is not a new registration.
-    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    EXPECT_EQ(e2, registry.epoch());
-}
-
-TEST_F(KlassRegistryTest, FrameSampledBeforeAnotherClassRegisteredIsStaleForThatClass) {
-    // A frame whose Method* memory now belongs to a class registered after the
-    // sample -- at any address -- must not match that class.
-    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    uint32_t sampled = registry.epoch();
-    ASSERT_TRUE(registry.add(jni, klassAt(1), mirror(1)));
-    KlassRegistry::PinStatus status;
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(1), sampled, &status));
-    EXPECT_EQ(KlassRegistry::PIN_STALE, status);
-    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0), sampled, &status));
-    EXPECT_EQ(KlassRegistry::PIN_OK, status);
-}
-
-TEST_F(KlassRegistryTest, RedefinedClassIsRefusedForGood) {
+TEST_F(KlassRegistryTest, SuccessfulRedefinitionIsRefusedForGood) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     EXPECT_FALSE(registry.isRedefined(klassAt(0)));
-    EXPECT_TRUE(registry.markRedefined(klassAt(0)));
+    ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
+    EXPECT_TRUE(registry.isRedefined(klassAt(0)));
+    registry.endRedefinition(klassAt(0), true);
     EXPECT_TRUE(registry.isRedefined(klassAt(0)));
     KlassRegistry::PinStatus status;
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), registry.epoch(), &status));
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), &status));
     EXPECT_EQ(KlassRegistry::PIN_REDEFINED, status);
     // Re-registering the same mirror does not clear the mark.
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     EXPECT_TRUE(registry.isRedefined(klassAt(0)));
-    EXPECT_FALSE(registry.markRedefined(klassAt(5)));
+}
+
+TEST_F(KlassRegistryTest, RedefinitionInProgressIsRefused) {
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
+    KlassRegistry::PinStatus status;
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), &status));
+    EXPECT_EQ(KlassRegistry::PIN_REDEFINED, status);
+}
+
+TEST_F(KlassRegistryTest, FailedRedefinitionLeavesClassAsBefore) {
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
+    registry.endRedefinition(klassAt(0), false);
+    EXPECT_FALSE(registry.isRedefined(klassAt(0)));
+    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0)));
+}
+
+TEST_F(KlassRegistryTest, OverlappingRedefinitionsAreTracked) {
+    // Two calls on the same class overlap; the class stays refused until both
+    // have returned, and a failure of one does not undo the other's success.
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
+    ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
+    registry.endRedefinition(klassAt(0), false);
+    EXPECT_TRUE(registry.isRedefined(klassAt(0)));
+    registry.endRedefinition(klassAt(0), false);
+    EXPECT_FALSE(registry.isRedefined(klassAt(0)));
+
+    ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
+    ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
+    registry.endRedefinition(klassAt(0), true);
+    registry.endRedefinition(klassAt(0), false);
+    EXPECT_TRUE(registry.isRedefined(klassAt(0)));
+}
+
+TEST_F(KlassRegistryTest, RedefinitionOfUnregisteredClassIsIgnored) {
+    EXPECT_FALSE(registry.beginRedefinition(klassAt(5)));
+    registry.endRedefinition(klassAt(5), true);
+    EXPECT_FALSE(registry.isRedefined(klassAt(5)));
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    EXPECT_FALSE(registry.beginRedefinition(klassAt(5)));
+    // An unmatched end, e.g. for a class registered while the call ran, does
+    // not underflow the count.
+    registry.endRedefinition(klassAt(0), false);
+    EXPECT_FALSE(registry.isRedefined(klassAt(0)));
 }
 
 TEST_F(KlassRegistryTest, NewClassAtRedefinedClassAddressStartsUnmarked) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    ASSERT_TRUE(registry.markRedefined(klassAt(0)));
+    ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
+    registry.endRedefinition(klassAt(0), true);
     heap.collect(&mirrors[0]);
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(1)));
     EXPECT_FALSE(registry.isRedefined(klassAt(0)));
-    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(0), registry.epoch()));
+    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(0)));
 }
 
-TEST_F(KlassRegistryTest, ReplacementBumpsEpochAndRejectsOlderFrames) {
+TEST_F(KlassRegistryTest, UnloadedClassIsReportedAbsent) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    uint32_t sampled_old = registry.epoch();
-    heap.collect(&mirrors[0]);
-    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(1)));
-    EXPECT_NE(sampled_old, registry.epoch());
-
-    KlassRegistry::PinStatus status;
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), sampled_old, &status));
-    EXPECT_EQ(KlassRegistry::PIN_STALE, status);
-    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(0), registry.epoch(), &status));
-    EXPECT_EQ(KlassRegistry::PIN_OK, status);
-}
-
-TEST_F(KlassRegistryTest, PurgedAddressReinsertedRejectsOlderFrames) {
-    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    uint32_t sampled_old = registry.epoch();
-    heap.collect(&mirrors[0]);
-    // Grow past the initial table so the dead entry is purged.
-    for (size_t i = 1; i < 1000; i++) {
-        ASSERT_TRUE(registry.add(jni, klassAt(i), mirror(i)));
-    }
-    EXPECT_NE(sampled_old, registry.epoch());
-    // klassAt(0) comes back as a first insert, not a replacement.
-    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(1000)));
-
-    KlassRegistry::PinStatus status;
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), sampled_old, &status));
-    EXPECT_EQ(KlassRegistry::PIN_STALE, status);
-    // A frame sampled now matches.
-    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(1), registry.epoch(), &status));
-    EXPECT_EQ(KlassRegistry::PIN_OK, status);
-}
-
-TEST_F(KlassRegistryTest, UnloadedClassIsNotReportedStale) {
-    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    uint32_t sampled = registry.epoch();
     heap.collect(&mirrors[0]);
     KlassRegistry::PinStatus status;
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), sampled, &status));
+    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), &status));
     EXPECT_EQ(KlassRegistry::PIN_ABSENT, status);
-}
-
-TEST_F(KlassRegistryTest, EpochComparisonSurvivesWraparound) {
-    // Frames and entries are compared modulo 2^EPOCH_BITS, so an entry
-    // registered just before the wrap still accepts frames sampled just after.
-    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    uint32_t registered = registry.epoch();
-    const uint32_t mask = (1u << KlassRegistry::EPOCH_BITS) - 1;
-    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0), (registered + 5) & mask));
-    // A frame sampled before the registration is refused even across the wrap.
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), (registered - 1) & mask));
 }
 
 // ---------------------------------------------------------------------------
@@ -387,4 +363,27 @@ TEST(VMKlassContainsMethodTest, NoMethodsArray) {
     FakeKlass klass = {nullptr, nullptr};
     int m;
     EXPECT_FALSE(VMKlass::cast_raw(&klass)->containsMethod(&m, 0));
+}
+
+// A method that is not at its idnum's slot (e.g. after default-method
+// overpasses were merged in at link time) is still found by a scan in small
+// classes, but not in classes beyond MAX_METHODS_SCANNED.
+TEST(VMKlassContainsMethodTest, ScanIsCappedForLargeClasses) {
+    VMStructsTestAccessor layout(offsetof(FakeKlass, methods));
+    for (int count : {10, VMKlass::MAX_METHODS_SCANNED, VMKlass::MAX_METHODS_SCANNED + 1, 1000}) {
+        // Array<Method*>: int length, padding, then `count` pointers.
+        std::vector<uintptr_t> array(1 + count, 0);
+        *reinterpret_cast<int32_t*>(array.data()) = count;
+        std::vector<int> methods(count);
+        for (int i = 0; i < count; i++) {
+            array[1 + i] = reinterpret_cast<uintptr_t>(&methods[i]);
+        }
+        FakeKlass klass = {nullptr, reinterpret_cast<FakeMethodArray*>(array.data())};
+        VMKlass* vk = VMKlass::cast_raw(&klass);
+        const void* m = &methods[count / 2];
+        EXPECT_TRUE(vk->containsMethod(m, count / 2)) << count;
+        bool scanned = count <= VMKlass::MAX_METHODS_SCANNED;
+        EXPECT_EQ(scanned, vk->containsMethod(m, 0)) << count;
+        EXPECT_EQ(scanned, vk->containsMethod(m, -1)) << count;
+    }
 }

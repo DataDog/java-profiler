@@ -43,13 +43,14 @@ enum FrameTypeId {
 //   bits 19–16   raw tag, bits 3–0 — only with RAW_POINTER_MASK, see below
 //   bits 15–0    BCI               — bytecode index (0–65534; never 65535, see BCI_MASK)
 //
-// A raw Method* frame also carries a RAW_TAG_BITS-wide tag: the KlassRegistry
-// epoch the frame was sampled under (hotspot/klassRegistry.h). Its low 10 bits
-// sit in the otherwise unused BCI bits above; its high 16 bits sit in the top
-// 16 bits of the Method* pointer, which user-space addresses below 2^48 leave
-// clear. The tag makes frames sampled from different loads of a class at the
-// same Klass*/Method* addresses differ, and lets resolution reject frames that
-// predate the class currently registered at that address.
+// A raw Method* frame sampled in fjmethodid=lazy mode also carries a
+// RAW_TAG_BITS-wide tag identifying the load of the class it was sampled from
+// (see HotspotSupport::TRACE_ID_TAG). Its low 10 bits sit in the otherwise
+// unused BCI bits above; its high 16 bits sit in the top 16 bits of the
+// Method* pointer, which user-space addresses below 2^48 leave clear. The tag
+// makes frames sampled from different loads of a class at the same
+// Klass*/Method* addresses differ, and lets resolution reject frames whose
+// class's memory has since been taken over by another.
 //
 // When ENCODED_MASK is not set the field is a raw, unencoded BCI from ASGCT (non-VM stack
 // walking modes). Raw values may be negative: HotSpot uses -1 as a sentinel for method-entry

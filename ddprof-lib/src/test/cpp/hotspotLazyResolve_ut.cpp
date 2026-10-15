@@ -54,13 +54,18 @@ public:
     static LoadState getLoadState() { return JVMSupport::getLoadState(); }
     static void setLoadState(LoadState s) { JVMSupport::setLoadState(s); }
     static constexpr LoadState LazyLoaded() { return JVMSupport::Lazy_loaded; }
+    static constexpr LoadState PartialLoaded() { return JVMSupport::Partial_loaded; }
 };
 
 class HotspotSupportTestAccessor {
 public:
     static KlassRegistry& registry() { return HotspotSupport::_klass_registry; }
-    static bool getTagWithTraceId() { return HotspotSupport::_tag_with_trace_id; }
-    static void setTagWithTraceId(bool v) { HotspotSupport::_tag_with_trace_id = v; }
+    static void beforeClassRedefinition(jvmtiEnv* jvmti, JNIEnv* jni, jclass klass) {
+        HotspotSupport::beforeClassRedefinition(jvmti, jni, klass);
+    }
+    static void afterClassRedefinition(jvmtiEnv* jvmti, JNIEnv* jni, jclass klass, bool succeeded) {
+        HotspotSupport::afterClassRedefinition(jvmti, jni, klass, succeeded);
+    }
     static uint32_t traceIdTagBit() { return HotspotSupport::TRACE_ID_TAG; }
     static bool registerClass(jvmtiEnv* jvmti, JNIEnv* jni, jclass klass) {
         return HotspotSupport::registerClass(jvmti, jni, klass);
@@ -230,6 +235,8 @@ public:
         _jni_tbl.GetLongField = &getLongField;
         _jni_env.functions = &_jni_tbl;
         _jvmti_tbl.GetClassStatus = &getClassStatus;
+        _jvmti_tbl.GetClassMethods = &getClassMethods;
+        _jvmti_tbl.Deallocate = &deallocate;
         _jvmti.functions = &_jvmti_tbl;
         _saved_jvmti = VMTestAccessor::getJvmti();
         VMTestAccessor::setJvmti(&_jvmti);
@@ -252,6 +259,7 @@ public:
 
     // KlassRegistry::pin() calls NewLocalRef once per resolution.
     int new_local_ref_calls = 0;
+    int get_class_methods_calls = 0;
 
     jclass mirror(FakeObject& obj) { return reinterpret_cast<jclass>(&obj); }
 
@@ -289,6 +297,15 @@ private:
     static jlong JNICALL getLongField(JNIEnv*, jobject obj, jfieldID) {
         return (jlong)(uintptr_t)reinterpret_cast<FakeObject*>(obj)->klass;
     }
+    // A jmethodID preload (loadMethodIDsIfNeededImpl()); the fake class's IDs
+    // already exist, so only the call is recorded.
+    static jvmtiError JNICALL getClassMethods(jvmtiEnv*, jclass, jint* count, jmethodID** methods) {
+        s_instance->get_class_methods_calls++;
+        *count = 0;
+        *methods = nullptr;
+        return JVMTI_ERROR_NONE;
+    }
+    static jvmtiError JNICALL deallocate(jvmtiEnv*, unsigned char*) { return JVMTI_ERROR_NONE; }
     static jvmtiError JNICALL getClassStatus(jvmtiEnv*, jclass, jint* status) {
         *status = JVMTI_CLASS_STATUS_PREPARED;
         return JVMTI_ERROR_NONE;
@@ -314,7 +331,7 @@ FakeJvm* FakeJvm::s_instance = nullptr;
 
 } // namespace
 
-class HotspotLazyResolveTest : public ::testing::TestWithParam<bool> {
+class HotspotLazyResolveTest : public ::testing::Test {
 protected:
     VMStructsTestAccessor _layout{LAYOUT};
     FakeJvm _jvm;
@@ -323,13 +340,8 @@ protected:
     FakeObject _new_mirror{2};
     bool _saved_hotspot = false;
     bool _saved_force = true;
-    bool _saved_tag_with_trace_id = false;
     int _saved_trace_id_offset = -1;
     JVMSupportTestAccessor::LoadState _saved_state{};
-
-    // The parameter: tag raw frames with the holder's trace ID (true) or the
-    // registry epoch (false). Every Klass*-reuse case must hold for both.
-    static bool traceIdTags() { return GetParam(); }
 
     void SetUp() override {
         _saved_hotspot = VMTestAccessor::getHotspot();
@@ -340,10 +352,11 @@ protected:
         // not forced, which is how fjmethodid=lazy configures the profiler.
         _saved_force = ProfilerTestAccessor::getForceJmethodID(Profiler::instance());
         ProfilerTestAccessor::setForceJmethodID(Profiler::instance(), false);
-        _saved_tag_with_trace_id = HotspotSupportTestAccessor::getTagWithTraceId();
         _saved_trace_id_offset = KlassTraceId::offset();
-        HotspotSupportTestAccessor::setTagWithTraceId(traceIdTags());
-        KlassTraceId::setOffsetForTest(traceIdTags() ? (int)offsetof(FakeKlass, trace_id) : -1);
+        KlassTraceId::setOffsetForTest((int)offsetof(FakeKlass, trace_id));
+        // The redefinition hooks find the class through java.lang.Class.klass.
+        _old_mirror.klass = _cls.klassPtr();
+        _new_mirror.klass = _cls.klassPtr();
         // resolve() installs crash protection on the current ProfiledThread.
         ProfiledThread::initCurrentThread();
         ASSERT_NE(nullptr, ProfiledThread::current());
@@ -353,7 +366,6 @@ protected:
         HotspotSupportTestAccessor::registry().clear(_jvm.jni());
         ProfiledThread::release();
         KlassTraceId::setOffsetForTest(_saved_trace_id_offset);
-        HotspotSupportTestAccessor::setTagWithTraceId(_saved_tag_with_trace_id);
         ProfilerTestAccessor::setForceJmethodID(Profiler::instance(), _saved_force);
         JVMSupportTestAccessor::setLoadState(_saved_state);
         VMTestAccessor::setHotspot(_saved_hotspot);
@@ -381,19 +393,26 @@ protected:
         return frame;
     }
 
+    // What VM::RetransformClassesHook does around the original call.
+    void redefine(bool succeeded) {
+        HotspotSupportTestAccessor::beforeClassRedefinition(_jvm.jvmti(), _jvm.jni(), _jvm.mirror(_old_mirror));
+        HotspotSupportTestAccessor::afterClassRedefinition(_jvm.jvmti(), _jvm.jni(), _jvm.mirror(_old_mirror),
+                                                           succeeded);
+    }
+
     // What Lookup::fillMethod() does with a raw frame at dump time.
     static jmethodID resolve(const ASGCT_CallFrame& frame) {
         return HotspotSupport::resolve(frame.method, frame.bci);
     }
 };
 
-TEST_P(HotspotLazyResolveTest, LiveClassResolves) {
+TEST_F(HotspotLazyResolveTest, LiveClassResolves) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
     EXPECT_EQ(_cls.jmethodId(), resolve(frame));
 }
 
-TEST_P(HotspotLazyResolveTest, UnloadedClassDoesNotResolve) {
+TEST_F(HotspotLazyResolveTest, UnloadedClassDoesNotResolve) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
     _jvm.collect(_old_mirror);
@@ -403,7 +422,7 @@ TEST_P(HotspotLazyResolveTest, UnloadedClassDoesNotResolve) {
 // The old class is unloaded and a new one is registered at the same Klass*,
 // with its method at the same Method* address. The frame was sampled from the
 // old class, so it must not resolve to the new class's method.
-TEST_P(HotspotLazyResolveTest, FrameFromBeforeKlassReuseDoesNotResolveToNewClass) {
+TEST_F(HotspotLazyResolveTest, FrameFromBeforeKlassReuseDoesNotResolveToNewClass) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
 
@@ -415,7 +434,7 @@ TEST_P(HotspotLazyResolveTest, FrameFromBeforeKlassReuseDoesNotResolveToNewClass
 // Same, but the dead entry was purged by a registry rehash before the new
 // class arrived, so the new class's registration looks like a first insert
 // rather than a replacement.
-TEST_P(HotspotLazyResolveTest, FrameFromBeforeKlassReuseAfterPurgeDoesNotResolveToNewClass) {
+TEST_F(HotspotLazyResolveTest, FrameFromBeforeKlassReuseAfterPurgeDoesNotResolveToNewClass) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
     _jvm.collect(_old_mirror);
@@ -429,7 +448,7 @@ TEST_P(HotspotLazyResolveTest, FrameFromBeforeKlassReuseAfterPurgeDoesNotResolve
         const void* key = reinterpret_cast<const void*>(0x100000 + i * 0x200);
         ASSERT_TRUE(registry.add(_jvm.jni(), key, _jvm.mirror(others[i])));
     }
-    ASSERT_EQ(nullptr, registry.pin(_jvm.jni(), _cls.klassPtr(), registry.epoch()))
+    ASSERT_EQ(nullptr, registry.pin(_jvm.jni(), _cls.klassPtr()))
         << "the dead entry should be gone, purged or at least unpinnable";
 
     _cls.klass.trace_id = ((_cls.klass.trace_id >> 16) + 37) << 16;  // the new class's ID
@@ -439,7 +458,7 @@ TEST_P(HotspotLazyResolveTest, FrameFromBeforeKlassReuseAfterPurgeDoesNotResolve
 }
 
 // Frames sampled from the new class after the reuse must still resolve.
-TEST_P(HotspotLazyResolveTest, FrameFromAfterKlassReuseResolves) {
+TEST_F(HotspotLazyResolveTest, FrameFromAfterKlassReuseResolves) {
     registerClass(_old_mirror);
     loadNewClassAtSameAddress();
 
@@ -450,7 +469,7 @@ TEST_P(HotspotLazyResolveTest, FrameFromAfterKlassReuseResolves) {
 // A frame from the old class and one from the new class must be told apart
 // already at capture time; otherwise the call trace storage merges them into
 // one trace before resolve() ever runs.
-TEST_P(HotspotLazyResolveTest, FramesFromBeforeAndAfterKlassReuseDiffer) {
+TEST_F(HotspotLazyResolveTest, FramesFromBeforeAndAfterKlassReuseDiffer) {
     registerClass(_old_mirror);
     ASGCT_CallFrame before = sample();
     loadNewClassAtSameAddress();
@@ -459,14 +478,13 @@ TEST_P(HotspotLazyResolveTest, FramesFromBeforeAndAfterKlassReuseDiffer) {
     EXPECT_FALSE(before.bci == after.bci && before.method == after.method);
 }
 
-// Trace-ID tags identify the class load itself, so a registry epoch bump
-// caused by an unrelated class leaves them unchanged and the same stack keeps
-// deduplicating into one trace. Epoch tags change with every bump.
-TEST_P(HotspotLazyResolveTest, UnrelatedReuseChangesFramesOnlyWithEpochTags) {
+// Tags identify the class load itself, so another class's unloading and the
+// reuse of its address leave this class's frames unchanged, and the same stack
+// keeps deduplicating into one trace.
+TEST_F(HotspotLazyResolveTest, UnrelatedReuseDoesNotChangeFrames) {
     registerClass(_old_mirror);
     ASGCT_CallFrame before = sample();
 
-    // Another class at another address is unloaded and its address reused.
     static FakeObject other_old{10};
     static FakeObject other_new{11};
     const void* other_klass = reinterpret_cast<const void*>(0x200000);
@@ -476,15 +494,14 @@ TEST_P(HotspotLazyResolveTest, UnrelatedReuseChangesFramesOnlyWithEpochTags) {
     ASSERT_TRUE(registry.add(_jvm.jni(), other_klass, _jvm.mirror(other_new)));
 
     ASGCT_CallFrame after = sample();
-    bool same = before.bci == after.bci && before.method == after.method;
-    EXPECT_EQ(traceIdTags(), same);
-    EXPECT_EQ(_cls.jmethodId(), resolve(before));
+    EXPECT_EQ(before.bci, after.bci);
+    EXPECT_EQ(before.method, after.method);
     EXPECT_EQ(_cls.jmethodId(), resolve(after));
 }
 
 // The JFR tag bits below the ID change while JFR runs; they must not affect
 // the frame's tag or its resolution.
-TEST_P(HotspotLazyResolveTest, JfrTagBitsDoNotAffectTraceIdTags) {
+TEST_F(HotspotLazyResolveTest, JfrTagBitsDoNotAffectTraceIdTags) {
     registerClass(_old_mirror);
     ASGCT_CallFrame before = sample();
     _cls.klass.trace_id |= 0x0303;
@@ -494,42 +511,86 @@ TEST_P(HotspotLazyResolveTest, JfrTagBitsDoNotAffectTraceIdTags) {
     EXPECT_EQ(_cls.jmethodId(), resolve(before));
 }
 
-// resolve() goes by the kind each frame records, not by the current tag
-// source: frames of both kinds resolve side by side.
-TEST_P(HotspotLazyResolveTest, FramesResolveByTheirOwnTagKind) {
-    if (!traceIdTags()) {
-        GTEST_SKIP() << "needs a calibrated trace-ID offset to take trace-ID-tagged samples";
-    }
+// Partial mode (fjmethodid=false) stores the plain Method*, untagged, and
+// never reads the holder's trace ID: a frame whose trace ID is unreadable is
+// still stored raw, not turned into an unknown frame.
+TEST_F(HotspotLazyResolveTest, PartialModeFramesAreStoredUntagged) {
+    JVMSupportTestAccessor::setLoadState(JVMSupportTestAccessor::PartialLoaded());
+    KlassTraceId::setOffsetForTest(-1);  // trace ID unreadable
+    ASGCT_CallFrame frame = sample();
+    EXPECT_EQ(static_cast<const void*>(_cls.vmMethod()), frame.method);
+    EXPECT_EQ(0u, FrameType::rawTag(frame.bci, frame.method) & HotspotSupportTestAccessor::traceIdTagBit());
+    EXPECT_EQ(static_cast<const void*>(_cls.vmMethod()), HotspotSupport::rawFrameMethod(frame.bci, frame.method));
+}
+
+// resolve() goes by the mode the frame was sampled in, not the current one:
+// a lazy-mode frame kept across a restart in partial mode still resolves
+// through the registry (partial mode's FindClass lookup cannot see classes of
+// custom loaders).
+TEST_F(HotspotLazyResolveTest, LazyFrameResolvesByRegistryAfterSwitchToPartialMode) {
     registerClass(_old_mirror);
-    HotspotSupportTestAccessor::setTagWithTraceId(false);
-    ASGCT_CallFrame epoch_frame = sample();
-    HotspotSupportTestAccessor::setTagWithTraceId(true);
-    ASGCT_CallFrame trace_frame = sample();
-    const uint32_t bit = HotspotSupportTestAccessor::traceIdTagBit();
-    EXPECT_EQ(0u, FrameType::rawTag(epoch_frame.bci, epoch_frame.method) & bit);
-    EXPECT_NE(0u, FrameType::rawTag(trace_frame.bci, trace_frame.method) & bit);
-    EXPECT_EQ(_cls.jmethodId(), resolve(epoch_frame));
-    EXPECT_EQ(_cls.jmethodId(), resolve(trace_frame));
+    ASGCT_CallFrame frame = sample();
+    ASSERT_NE(0u, FrameType::rawTag(frame.bci, frame.method) & HotspotSupportTestAccessor::traceIdTagBit());
+    JVMSupportTestAccessor::setLoadState(JVMSupportTestAccessor::PartialLoaded());
+    int before = _jvm.new_local_ref_calls;
+    EXPECT_EQ(_cls.jmethodId(), resolve(frame));
+    EXPECT_EQ(1, _jvm.new_local_ref_calls - before);
 }
 
 // A redefinition frees the class's old Method*s once they are off every
 // stack, and a later redefinition of the same class can allocate a new method
-// at the same address. The class, its mirror, trace ID and registry epoch all
+// at the same address. The class, its mirror and its trace ID all
 // stay the same, so nothing but the redefinition itself tells the frames
 // apart: raw frames of a class marked before its redefinition are refused.
-TEST_P(HotspotLazyResolveTest, FrameOfRedefinedClassIsRefused) {
+TEST_F(HotspotLazyResolveTest, FrameOfRedefinedClassIsRefused) {
     registerClass(_old_mirror);
     ASGCT_CallFrame before = sample();
-    // What VM::RetransformClassesHook does first. Afterwards the Method* at
-    // the sampled address is (still, or again) among the class's methods.
-    ASSERT_TRUE(HotspotSupportTestAccessor::registry().markRedefined(_cls.klassPtr()));
+    // Afterwards the Method* at the sampled address is (still, or again)
+    // among the class's methods.
+    redefine(true);
     EXPECT_EQ(nullptr, resolve(before));
+    // Its later frames get jmethodIDs instead of being raw.
+    EXPECT_EQ(1, _jvm.get_class_methods_calls);
+}
+
+// A redefinition JVMTI rejects (e.g. an unmodifiable class) changes nothing:
+// the class's raw frames stay resolvable and no jmethodIDs are preloaded.
+TEST_F(HotspotLazyResolveTest, FailedRedefinitionLeavesFramesResolvable) {
+    registerClass(_old_mirror);
+    ASGCT_CallFrame frame = sample();
+    redefine(false);
+    EXPECT_EQ(_cls.jmethodId(), resolve(frame));
+    EXPECT_EQ(0, _jvm.get_class_methods_calls);
+}
+
+// While the redefinition call runs, the methods may be swapped at any moment.
+TEST_F(HotspotLazyResolveTest, FramesAreRefusedWhileRedefinitionRuns) {
+    registerClass(_old_mirror);
+    ASGCT_CallFrame frame = sample();
+    HotspotSupportTestAccessor::beforeClassRedefinition(_jvm.jvmti(), _jvm.jni(), _jvm.mirror(_old_mirror));
+    EXPECT_EQ(nullptr, resolve(frame));
+    HotspotSupportTestAccessor::afterClassRedefinition(_jvm.jvmti(), _jvm.jni(), _jvm.mirror(_old_mirror), false);
+    EXPECT_EQ(_cls.jmethodId(), resolve(frame));
+}
+
+// Redefinitions are tracked in every mode once the registry has entries:
+// raw frames of a lazy session can outlive a restart in another mode, and a
+// later lazy session must not trust a class redefined in between.
+TEST_F(HotspotLazyResolveTest, RedefinitionIsTrackedOutsideLazyMode) {
+    registerClass(_old_mirror);
+    ASGCT_CallFrame frame = sample();
+    JVMSupportTestAccessor::setLoadState(JVMSupportTestAccessor::PartialLoaded());
+    redefine(true);
+    EXPECT_TRUE(HotspotSupportTestAccessor::registry().isRedefined(_cls.klassPtr()));
+    EXPECT_EQ(nullptr, resolve(frame));
+    // The other modes load jmethodIDs their own way (JVMSupport).
+    EXPECT_EQ(0, _jvm.get_class_methods_calls);
 }
 
 // The sampled class is unloaded and its Method* memory goes to a class loaded
 // later at a different Klass* address. Reading the holder from the stale
 // Method* now yields the new class, which is alive and lists the method.
-TEST_P(HotspotLazyResolveTest, MethodMemoryReusedByClassAtOtherAddressDoesNotResolve) {
+TEST_F(HotspotLazyResolveTest, MethodMemoryReusedByClassAtOtherAddressDoesNotResolve) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
 
@@ -550,15 +611,11 @@ TEST_P(HotspotLazyResolveTest, MethodMemoryReusedByClassAtOtherAddressDoesNotRes
 // Tripwire for tag collisions: counts registrations of classes whose trace
 // ID no longer fits in the 25-bit tag, the first point at which a stale frame
 // could match a newer class by its tag.
-TEST_P(HotspotLazyResolveTest, CountsClassesWithTraceIdBeyondTagRange) {
+TEST_F(HotspotLazyResolveTest, CountsClassesWithTraceIdBeyondTagRange) {
 #ifndef COUNTERS
     GTEST_SKIP() << "debug counters are not compiled into this build";
 #else
-    if (!traceIdTags()) {
-        GTEST_SKIP() << "only trace-ID tags can run out of range";
-    }
     long long before = Counters::getCounter(KLASS_TRACE_ID_BEYOND_TAG_RANGE);
-    _old_mirror.klass = _cls.klassPtr();
     _cls.klass.trace_id = ((uint64_t)(1u << 25) - 1) << 16;  // largest ID that still fits
     ASSERT_TRUE(HotspotSupportTestAccessor::registerClass(_jvm.jvmti(), _jvm.jni(), _jvm.mirror(_old_mirror)));
     EXPECT_EQ(before, Counters::getCounter(KLASS_TRACE_ID_BEYOND_TAG_RANGE));
@@ -574,7 +631,7 @@ TEST_P(HotspotLazyResolveTest, CountsClassesWithTraceIdBeyondTagRange) {
 
 // Lookup resolves each distinct raw method once per dump, however often it
 // recurs, and whatever bci or frame type the occurrences carry.
-TEST_P(HotspotLazyResolveTest, LookupResolvesEachRawMethodOncePerDump) {
+TEST_F(HotspotLazyResolveTest, LookupResolvesEachRawMethodOncePerDump) {
     registerClass(_old_mirror);
     ASGCT_CallFrame a = sample();
     ASGCT_CallFrame b{};
@@ -599,7 +656,7 @@ TEST_P(HotspotLazyResolveTest, LookupResolvesEachRawMethodOncePerDump) {
 
 // Frames from two loads of a class at the same addresses carry different tags,
 // so the cache keeps their outcomes apart.
-TEST_P(HotspotLazyResolveTest, LookupCacheSeparatesFramesOfDifferentClassLoads) {
+TEST_F(HotspotLazyResolveTest, LookupCacheSeparatesFramesOfDifferentClassLoads) {
     registerClass(_old_mirror);
     ASGCT_CallFrame before = sample();
     loadNewClassAtSameAddress();
@@ -613,7 +670,3 @@ TEST_P(HotspotLazyResolveTest, LookupCacheSeparatesFramesOfDifferentClassLoads) 
     EXPECT_EQ(nullptr, lookup.resolveRawMethod(before));
 }
 
-INSTANTIATE_TEST_SUITE_P(TagSource, HotspotLazyResolveTest, ::testing::Bool(),
-                         [](const ::testing::TestParamInfo<bool>& info) {
-                             return info.param ? "TraceId" : "Epoch";
-                         });

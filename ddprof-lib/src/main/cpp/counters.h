@@ -182,8 +182,8 @@
   X(METHOD_RESOLVE_LAZY_UNLOADED, "method_resolve_lazy_unloaded")             \
   X(METHOD_RESOLVE_LAZY_NOT_CURRENT, "method_resolve_lazy_not_current")       \
   X(METHOD_RESOLVE_LAZY_CLASS_LOADED, "method_resolve_lazy_class_loaded")     \
-  /* STALE: the frame predates the class now registered at its Klass*       \
-   * address (Klass* reuse after unloading); serializes as "unknown".        \
+  /* STALE: the class now at the frame's holder address is a different load \
+   * (its trace ID differs); serializes as "unknown".                        \
    * ADD_FAILED: registration failed, so the class was preloaded instead.    \
    * UNTAGGABLE: a Method* using address bits the raw-frame tag needs, or   \
    * an unreadable holder trace ID; the frame is stored as not walkable. */  \
@@ -205,8 +205,8 @@
   X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
   X(WALKVM_RAW_FRAME_UNTAGGABLE, "walkvm_raw_frame_untaggable")               \
   /* Gauge, set at each fjmethodid=lazy start: the Klass::_trace_id offset  \
-   * raw frames are tagged with, or -1 if they use the registry epoch. 0 if   \
-   * lazy mode never started. */                                             \
+   * raw frames are tagged with, or -1 if it was not found (lazy mode then    \
+   * falls back to fjmethodid=false). 0 if lazy mode was never requested. */  \
   X(KLASS_TRACE_ID_OFFSET, "klass_trace_id_offset")                           \
   /* Strict subset of SAMPLES_DROPPED_THREAD_LOCAL, not an independent count: \
    * ThreadLocalDataPool::claim() increments this on capacity exhaustion, and \

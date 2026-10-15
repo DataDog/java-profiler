@@ -82,6 +82,9 @@ public:
     static State getState(Profiler* p) {
         return p->_state.load(std::memory_order_acquire);
     }
+    // The stack walker mode as Profiler::start() resolved it from the arguments.
+    static CStack getCStack(Profiler* p) { return p->_cstack; }
+    static void setCStack(Profiler* p, CStack c) { p->_cstack = c; }
 };
 
 // GetCurrentThread failing is exactly what JVMThread::currentThreadSlow()
@@ -252,12 +255,16 @@ protected:
     JNIEnv_ mock_jni{};
     bool _orig_hotspot;
     JVMSupportTestAccessor::LoadState _orig_load_state;
+    CStack _orig_cstack;
 
     void SetUp() override {
         _orig_hotspot = VMTestAccessor::getHotspot();
         VMTestAccessor::setHotspot(true);
         _orig_load_state = JVMSupportTestAccessor::getLoadState();
         JVMSupportTestAccessor::setLoadState(JVMSupportTestAccessor::NoLoaded());
+        // As if Profiler::start() had resolved the arguments to the VM walker.
+        _orig_cstack = ProfilerTestAccessor::getCStack(Profiler::instance());
+        ProfilerTestAccessor::setCStack(Profiler::instance(), CSTACK_VM);
 
         jvmti_tbl = jvmtiInterface_1_{};
         jvmti_tbl.GetLoadedClasses = &mock_GetLoadedClasses_empty;
@@ -274,6 +281,7 @@ protected:
     void TearDown() override {
         VMTestAccessor::setHotspot(_orig_hotspot);
         JVMSupportTestAccessor::setLoadState(_orig_load_state);
+        ProfilerTestAccessor::setCStack(Profiler::instance(), _orig_cstack);
     }
 };
 
@@ -318,8 +326,28 @@ TEST_F(JVMSupportRestartTest, LazyRequiresVmStackWalker) {
     lazy_args._force_jmethodID = false;
     lazy_args._lazy_jmethodID = true;
     lazy_args._cstack = CSTACK_NO;
+    ProfilerTestAccessor::setCStack(Profiler::instance(), CSTACK_NO);
 
     JVMSupport::initExecution(lazy_args, &mock_jvmti, reinterpret_cast<JNIEnv*>(&mock_jni));
 
     EXPECT_EQ(JVMSupportTestAccessor::FullyLoaded(), JVMSupportTestAccessor::getLoadState());
+}
+
+// What counts is the stack walker mode Profiler::start() resolved, not the
+// argument: cstack=default becomes DWARF where the VM walker is unavailable
+// (macOS, or a JVM without the stack vmStructs), and then Java frames come from
+// AsyncGetCallTrace, which needs every jmethodID preloaded.
+TEST_F(JVMSupportRestartTest, DefaultCstackResolvedToDwarfPreloadsEverything) {
+    ProfilerTestAccessor::setCStack(Profiler::instance(), CSTACK_DWARF);
+    for (bool lazy : {true, false}) {
+        JVMSupportTestAccessor::setLoadState(JVMSupportTestAccessor::NoLoaded());
+        Arguments args;
+        args._force_jmethodID = false;
+        args._lazy_jmethodID = lazy;
+        args._cstack = CSTACK_DEFAULT;
+
+        JVMSupport::initExecution(args, &mock_jvmti, reinterpret_cast<JNIEnv*>(&mock_jni));
+
+        EXPECT_EQ(JVMSupportTestAccessor::FullyLoaded(), JVMSupportTestAccessor::getLoadState()) << lazy;
+    }
 }
