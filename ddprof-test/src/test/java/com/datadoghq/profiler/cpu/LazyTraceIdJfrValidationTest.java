@@ -79,7 +79,11 @@ public class LazyTraceIdJfrValidationTest extends AbstractProcessProfilerTest {
                         }
                         Matcher m = LOGGED_ID.matcher(line);
                         if (m.find()) {
-                            loggedId.set(Long.parseLong(m.group(1)));
+                            try {
+                                loggedId.set(Long.parseLong(m.group(1)));
+                            } catch (NumberFormatException ignored) {
+                                // Leaves loggedId unset; the assertion below reports it.
+                            }
                         }
                         return LineConsumerResult.CONTINUE;
                     }, null);
