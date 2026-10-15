@@ -57,6 +57,7 @@ public:
     static KlassRegistry& registry() { return HotspotSupport::_klass_registry; }
     static bool getTagWithTraceId() { return HotspotSupport::_tag_with_trace_id; }
     static void setTagWithTraceId(bool v) { HotspotSupport::_tag_with_trace_id = v; }
+    static uint32_t traceIdTagBit() { return HotspotSupport::TRACE_ID_TAG; }
 };
 
 class ProfilerTestAccessor {
@@ -459,6 +460,24 @@ TEST_P(HotspotLazyResolveTest, JfrTagBitsDoNotAffectTraceIdTags) {
     EXPECT_EQ(before.bci, after.bci);
     EXPECT_EQ(before.method, after.method);
     EXPECT_EQ(_cls.jmethodId(), resolve(before));
+}
+
+// resolve() goes by the kind each frame records, not by the current tag
+// source: frames of both kinds resolve side by side.
+TEST_P(HotspotLazyResolveTest, FramesResolveByTheirOwnTagKind) {
+    if (!traceIdTags()) {
+        GTEST_SKIP() << "needs a calibrated trace-ID offset to take trace-ID-tagged samples";
+    }
+    registerClass(_old_mirror);
+    HotspotSupportTestAccessor::setTagWithTraceId(false);
+    ASGCT_CallFrame epoch_frame = sample();
+    HotspotSupportTestAccessor::setTagWithTraceId(true);
+    ASGCT_CallFrame trace_frame = sample();
+    const uint32_t bit = HotspotSupportTestAccessor::traceIdTagBit();
+    EXPECT_EQ(0u, FrameType::rawTag(epoch_frame.bci, epoch_frame.method) & bit);
+    EXPECT_NE(0u, FrameType::rawTag(trace_frame.bci, trace_frame.method) & bit);
+    EXPECT_EQ(_cls.jmethodId(), resolve(epoch_frame));
+    EXPECT_EQ(_cls.jmethodId(), resolve(trace_frame));
 }
 
 INSTANTIATE_TEST_SUITE_P(TagSource, HotspotLazyResolveTest, ::testing::Bool(),

@@ -9,14 +9,11 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.SpinClasses;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.objectweb.asm.ClassWriter;
-import org.objectweb.asm.Label;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
 
 import java.io.IOException;
 import java.lang.ref.WeakReference;
@@ -58,7 +55,7 @@ public class LazyJmethodIdTest extends AbstractProfilerTest {
         waitForProfilerReady(2000);
 
         String className = nextClassName("LazySpin");
-        Class<?> clazz = new SpinClassLoader().define(className);
+        Class<?> clazz = SpinClasses.define(className);
         clazz.getMethod("spin", long.class).invoke(null, 1_000_000_000L);
 
         stopProfiler();
@@ -162,49 +159,8 @@ public class LazyJmethodIdTest extends AbstractProfilerTest {
     // Kept out of the caller's frame so no strong reference to the class or its
     // loader survives on the stack.
     private static WeakReference<ClassLoader> spinInUnloadableClass(String className) throws Exception {
-        SpinClassLoader loader = new SpinClassLoader();
-        Class<?> clazz = loader.define(className);
+        Class<?> clazz = SpinClasses.define(className);
         clazz.getMethod("spin", long.class).invoke(null, 300_000_000L);
-        return new WeakReference<>(loader);
-    }
-
-    /**
-     * Defines a class with {@code public static void spin(long nanos)}, which busy-waits so
-     * that CPU samples land in it.
-     */
-    private static final class SpinClassLoader extends ClassLoader {
-        Class<?> define(String internalName) {
-            byte[] bytes = generate(internalName);
-            return defineClass(internalName.replace('/', '.'), bytes, 0, bytes.length);
-        }
-
-        private static byte[] generate(String internalName) {
-            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
-            cw.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, internalName, null, "java/lang/Object", null);
-
-            MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "spin", "(J)V", null, null);
-            mv.visitCode();
-            // long deadline = System.nanoTime() + nanos;
-            mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "nanoTime", "()J", false);
-            mv.visitVarInsn(Opcodes.LLOAD, 0);
-            mv.visitInsn(Opcodes.LADD);
-            mv.visitVarInsn(Opcodes.LSTORE, 2);
-            // while (System.nanoTime() < deadline) {}
-            Label loop = new Label();
-            Label done = new Label();
-            mv.visitLabel(loop);
-            mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "nanoTime", "()J", false);
-            mv.visitVarInsn(Opcodes.LLOAD, 2);
-            mv.visitInsn(Opcodes.LCMP);
-            mv.visitJumpInsn(Opcodes.IFGE, done);
-            mv.visitJumpInsn(Opcodes.GOTO, loop);
-            mv.visitLabel(done);
-            mv.visitInsn(Opcodes.RETURN);
-            mv.visitMaxs(0, 0);
-            mv.visitEnd();
-
-            cw.visitEnd();
-            return cw.toByteArray();
-        }
+        return new WeakReference<>(clazz.getClassLoader());
     }
 }

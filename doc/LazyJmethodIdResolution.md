@@ -60,7 +60,7 @@ HotSpot only, and J9 and Zing keep preloading.
   ref out from under it. Lock ordering is safe: none of the JNI calls made under the lock
   load classes, so a ClassPrepare can't re-enter it.
 
-## Open problem: Klass* address reuse (blocking)
+## Klass* address reuse (solved: frame tags)
 
 Class-space blocks are aligned and reused, so a new class at the exact address of an
 unloaded one is likely. The current checks don't catch it:
@@ -102,7 +102,7 @@ could be inserted fresh, without a bump, and accept the unregistered class's fra
 - Cost: a stack sampled across a bump splits into two traces. In heavy churn, bumps
   follow the reuse rate. A "seen since last bump" flag can reduce how often it bumps.
 
-### Option B: HotSpot's JFR class trace ID, read by offset (preferred)
+### Option B: HotSpot's JFR class trace ID, read by offset — implemented, preferred
 
 Every `Klass` carries `mutable traceid _trace_id` (`JFR_ONLY(DEFINE_TRACE_ID_FIELD)`).
 It is not in `gHotSpotVMStructs`. From the local OpenJDK sources:
@@ -133,7 +133,7 @@ alone.
 Advantages over A: no global state, no trace splitting, and two incarnations get the same
 stored bits only if a multiple of 2^N classes were created between them.
 
-#### Offset discovery — implemented (calibration only, not used by the sampler yet)
+#### Offset discovery — implemented
 
 Offsets can move even between minor releases, so there is no version table. `KlassTraceId::calibrate()`
 (hotspot/klassTraceId.{h,cpp}) runs when lazy mode is selected:
@@ -165,36 +165,41 @@ So 107 GA tags in total. The sweep compares neighbouring declarations, not absol
 That's enough, since calibration assumes none. Script: `/tmp/jfrsweep/sweep2.sh <repo> <tag>...`
 (Mac), with `P=hotspot/src/share/vm/` for 8u.
 
-#### Confirming the offset
+#### Confirming the offset — CI only
 
-**Self-calibration (decides at startup).** Register a few probe classes we define in a
-known order. Check that `(raw >> 16)` at the candidate offset is distinct for each and
-strictly increasing in load order. This has to decide before the first sample, because
-the sampler must know which bits to store from then on.
+Self-calibration is the only production gate. JFR's own class IDs confirm it in CI, never at runtime.
 
-**Cross-check against JFR (confirms later).** dd-trace-java runs a real
-`jdk.jfr.Recording` next to ddprof (`OpenJdkOngoingRecording`; when ddprof is enabled it
-only turns off the overlapping JFR events). So in most production JVMs JFR gets
-initialized, and its own answer can confirm our offset:
+**Why not a runtime cross-check against `JVM.getClassId()`:** prototyped and dropped after it
+crashed the JVM (SIGSEGV in `JfrTraceIdKlassQueue::enqueue`, called from `getClassId`'s load
+barrier).
+- `getClassId()` tags a class JFR hasn't tagged yet, and adds it to JFR's class queue.
+- That queue only exists once JFR's recorder has been created (`JfrRecorder::create_components`
+  → `JfrCheckpointManager::initialize` → `JfrTraceIdLoadBarrier::initialize`).
+- "`jdk.jfr.internal.JVM` is initialized" doesn't mean the recorder exists. The profiler itself
+  initializes that class: `tsc.cpp` does `FindClass("jdk/jfr/internal/JVM")` for JFR's tick
+  frequency. So every lazy-mode session crashed on its first dump.
+- A safe precondition would be "recorder exists and won't be destroyed during the call". There's
+  no race-free way to check that from native code:
+  - `JVM.isRecording()` differs by release: static native on 25+, instance native on 17u,
+    instance Java wrapper on 8u/11u.
+  - JFR's shutdown hook calls `destroyJFR()`, which tears those structures down while the VM is
+    still running.
+  - Our crash protection only recovers faults inside our own library, not inside the JVM.
 
-- **Detect JFR by watching, not by loading.** Don't call JNI `FindClass`: HotSpot's
-  `jni_FindClass` passes `init=true`, which would run `JVM.<clinit>` (`registerNatives`,
-  JFR log-level setup, `Options.ensureInitialized()`). Reflection from Java has the same
-  problem. Lazy mode already sees every class through ClassPrepare and `GetLoadedClasses`.
-  When `Ljdk/jfr/internal/JVM;` shows up, keep a global ref to it, and call into it only
-  once `GetClassStatus` reports `JVMTI_CLASS_STATUS_INITIALIZED`.
-- **`getClassId` is not a pure read.** `jfr_class_id` goes through
-  `JfrTraceIdLoadBarrier::load(klass)`. If the class isn't tagged yet, the barrier marks
-  it used for the current epoch and adds it to JFR's class queue, so the class ends up in
-  the user's recording. Probe only classes that are certainly tagged already
-  (`java.lang.Object`, `java.lang.Thread`); for those `should_tag()` is false and the
-  call is effectively a read. It returns `TRACE_ID(klass)`, which is `raw >> 16`, so the
-  check is a direct equality test.
-- **Mismatch handling.** Switch new samples to Option A. Treat raw frames captured under
-  the unconfirmed offset as unresolvable (unknown) rather than resolve them. Wrong names
-  are worse than dropped frames. Add a counter for both outcomes.
-- JNI calls ignore module encapsulation, so `jdk.jfr.internal` not being exported shouldn't
-  matter. Verify this when implementing.
+**CI validation instead:** `LazyTraceIdJfrValidationTest`, which needs a debug build.
+- A child JVM (`ExternalLauncher lazy-trace-id`) runs the profiler in lazy mode alongside JFR's
+  own sampler (`-XX:StartFlightRecording=…,settings=profile`) while it spins in a probe class.
+- In debug builds, `resolveViaRegistry` logs `Lazy jmethodIDs for <sig>, trace id N` for every
+  class it allocates jmethodIDs for.
+- The test reads `jdk.ExecutionSample` stack frames through `jdk.jfr.consumer` (by reflection,
+  because the test sources compile with `--release 8`). It requires the probe class's
+  `RecordedClass.getId()` to equal the logged ID.
+- Result so far: JDK 25.0.1 (macOS) gives profiler 2382 and JFR 2382.
+
+**Tag kind bit:** kept from the prototype. The tag's top bit records whether a frame carries a
+trace ID or an epoch, so the epoch keeps 25 bits. `resolve()` goes by each frame's own kind, not by
+the current tag source. That keeps frames self-describing; nothing switches sources at runtime any
+more.
 
 ### Frame bits — implemented
 
@@ -247,23 +252,24 @@ through the `com.sun.management:type=DiagnosticCommand` MBean. It lives in
 
 | Item | State |
 |---|---|
-| `fjmethodid=lazy` parsing, `Lazy_loaded` state, registry, resolve path, counters | done |
-| gtests: `klassRegistry_ut` (10), lazy cases in `jvmSupport_ut` and `arguments_ut` | pass (macOS) |
-| `LazyJmethodIdTest`: custom-loader frames resolve; frames of unloaded class dropped (`method_resolve_lazy_unloaded=5`) | pass (macOS) |
-| ABA gtest `hotspotLazyResolve_ut` (6 cases: controls + replacement, purge-then-reinsert, before/after frames differ) | pass (macOS) |
-| Frame bits: bci spare bits plus `Method*` top bits; untaggable pointers dropped | done |
-| Epoch tests in `klassRegistry_ut`, tag round-trip tests in `frame_ut` | pass (macOS) |
-| Linux-only `hotspotMethodId_ut` cases: `resolve()` call sites updated to `(ptr, 0)` but **not compiled on macOS** | verify on Linux |
-| Option A (epoch fallback) | done |
-| Option B (trace-ID offset, self-calibration, JFR cross-check) | open |
-| Linux runs: Linux-only `hotspotMethodId_ut` cases, ASan, aarch64, musl, benchmark | open |
-| Per-dump cache for repeated raw frames (each occurrence currently re-pins) | open |
+| `fjmethodid=lazy`, `KlassRegistry`, resolve path, counters | done |
+| Frame tags: 26 bits (tag-kind bit + 25-bit value) in spare bci bits and `Method*` top bits | done |
+| Epoch tags (fallback) and trace-ID tags (when calibrated) | done |
+| Trace-ID offset calibration; source sweep over 107 GA tags (8u–28) | done |
+| gtests: `klassRegistry_ut`, `klassTraceId_ut`, `hotspotLazyResolve_ut` (every reuse case under both tag sources), `frame_ut`, `jvmSupport_ut`, `arguments_ut` | pass (macOS; Linux debug + ASan before the trace-ID commits) |
+| `LazyJmethodIdTest` on JDK 8u462, 11.0.28 (musl) and 17.0.16, 21.0.8, 25.0.2 (glibc), aarch64 | pass, trace-ID tags on all five |
+| Calibrated offsets: 8u462 → 184, 11.0.28 → 168, 17.0.16 → 168, 21.0.8 → 184, 25.0.2 → 192 | measured |
+| `LazyTraceIdJfrValidationTest` (CI cross-check against JFR) | pass on macOS JDK 25; containers pending |
+| Runtime JFR cross-check | dropped, see "Confirming the offset" |
+| Dump-latency benchmark; per-dump cache for repeated raw frames | open |
 | `JmethodIdOverheadBenchTest.java`: temporary harness, don't commit | uncommitted |
 
 ### Files touched
 
 ```
-ddprof-lib/src/main/cpp/hotspot/klassRegistry.{h,cpp}   new: Klass* → weak mirror registry
+ddprof-lib/src/main/cpp/hotspot/klassRegistry.{h,cpp}   new: Klass* → weak mirror registry, epoch
+ddprof-lib/src/main/cpp/hotspot/klassTraceId.{h,cpp}    new: Klass::_trace_id calibration and signal-safe read
+ddprof-lib/src/main/cpp/frame.h                         raw-frame tag encoding
 ddprof-lib/src/main/cpp/hotspot/hotspotSupport.{h,cpp}  registerClass, readMethodHolder, resolveViaRegistry
 ddprof-lib/src/main/cpp/hotspot/vmStructs{.h,.inline.h} VMKlass::containsMethod, VMConstMethod::idnum, hasKlassMethods
 ddprof-lib/src/main/cpp/jvmSupport.{h,cpp}              Lazy_loaded state and dispatch
@@ -271,6 +277,9 @@ ddprof-lib/src/main/cpp/arguments.{h,cpp}               fjmethodid=lazy
 ddprof-lib/src/main/cpp/counters.h                      method_resolve_lazy_{unloaded,not_current,class_loaded}
 ddprof-lib/src/test/cpp/{klassRegistry,jvmSupport,arguments}_ut.cpp
 ddprof-test/src/test/java/com/datadoghq/profiler/cpu/LazyJmethodIdTest.java
+ddprof-test/src/test/java/com/datadoghq/profiler/cpu/LazyTraceIdJfrValidationTest.java
+ddprof-test/src/test/java/com/datadoghq/profiler/SpinClasses.java + ExternalLauncher lazy-trace-id
+ddprof-lib/src/test/cpp/{klassTraceId,hotspotLazyResolve,frame}_ut.cpp
 ```
 
 ## Continuing on Linux
@@ -284,7 +293,7 @@ git fetch && git switch jmethodid-lazy-resolve
 ./utils/run-containers-tests.sh --arch=aarch64 --config=debug --jdk=21 --tests='*Jmethod*'
 ```
 
-`-Ptests` takes a single pattern. Comma-separated lists don't match.
+`-Ptests` takes a single pattern. Comma-separated lists don't match. The musl runner treats it as a regex (`*Foo` fails there); a plain class name works for both.
 
 ## Alternatives set aside
 

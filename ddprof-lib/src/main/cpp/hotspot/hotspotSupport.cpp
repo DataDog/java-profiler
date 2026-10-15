@@ -187,9 +187,6 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
   }
 }
 
-static_assert(KlassRegistry::EPOCH_BITS == FrameType::RAW_TAG_BITS,
-              "a raw frame must store the whole KlassRegistry epoch");
-
 // Fill the frame with raw method pointer and its tag (see frame.h for where
 // the tag bits go, HotspotSupport::_tag_with_trace_id for what they hold).
 static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method,
@@ -1470,32 +1467,34 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
 }
 
 KlassRegistry HotspotSupport::_klass_registry;
-bool HotspotSupport::_tag_with_trace_id = false;
+volatile bool HotspotSupport::_tag_with_trace_id = false;
+
+static_assert(KlassRegistry::EPOCH_BITS == FrameType::RAW_TAG_BITS - 1,
+              "a raw frame's tag holds a whole epoch plus the tag-kind bit");
 
 bool HotspotSupport::canResolveLazily() {
     return VMStructs::hasKlassMethods();
 }
 
 void HotspotSupport::initLazyResolution(JNIEnv* jni) {
-    // calibrate() only probes once per process, so this is stable across
-    // profiler restarts and raw frames of an earlier session keep their meaning.
-    _tag_with_trace_id = KlassTraceId::calibrate(jni);
+    bool trace_ids = KlassTraceId::calibrate(jni);
+    __atomic_store_n(&_tag_with_trace_id, trace_ids, __ATOMIC_RELEASE);
     // Counters are reset on every profiler start, but calibration only runs
     // once, so republish its result here.
-    Counters::set(KLASS_TRACE_ID_OFFSET, _tag_with_trace_id ? KlassTraceId::offset() : -1);
-    TEST_LOG("Raw frame tags: %s", _tag_with_trace_id ? "klass trace id" : "registry epoch");
+    Counters::set(KLASS_TRACE_ID_OFFSET, trace_ids ? KlassTraceId::offset() : -1);
+    TEST_LOG("Raw frame tags: %s", trace_ids ? "klass trace id" : "registry epoch");
 }
 
 bool HotspotSupport::rawFrameTag(const VMMethod* method, uint32_t* tag) {
-    if (!_tag_with_trace_id) {
-        *tag = _klass_registry.epoch();
+    if (!__atomic_load_n(&_tag_with_trace_id, __ATOMIC_ACQUIRE)) {
+        *tag = _klass_registry.epoch() & TAG_VALUE_MASK;
         return true;
     }
     uint64_t id;
     if (!KlassTraceId::read(method->holderOrNull(), &id)) {
         return false;
     }
-    *tag = (uint32_t)id & FrameType::RAW_TAG_MASK;
+    *tag = TRACE_ID_TAG | ((uint32_t)id & TAG_VALUE_MASK);
     return true;
 }
 
@@ -1909,6 +1908,22 @@ jmethodID HotspotSupport::resolve(const void* tagged_method, int bci) {
   return lookupMethodIdViaJni(vm_method, names, &HotspotSupport::loadMethodIDsIfNeededImpl);
 }
 
+#ifdef DEBUG
+// For CI only: LazyTraceIdJfrValidationTest compares this with the class ID
+// JFR records for the same class.
+static void logLazilyLoadedClass(jvmtiEnv* jvmti, jclass clz, const void* holder) {
+  char* signature = nullptr;
+  uint64_t trace_id = 0;
+  if (KlassTraceId::read(holder, &trace_id) &&
+      jvmti->GetClassSignature(clz, &signature, nullptr) == JVMTI_ERROR_NONE) {
+    TEST_LOG("Lazy jmethodIDs for %s, trace id %llu", signature, (unsigned long long)trace_id);
+  }
+  if (signature != nullptr) {
+    jvmti->Deallocate((unsigned char*)signature);
+  }
+}
+#endif
+
 // Runs with crash protection off (see lookupMethodIdViaJni() for why the
 // GetClassMethods call below must not run under a landing pad). Nothing here
 // dereferences vm_method until the class that owns it is pinned and the
@@ -1916,11 +1931,13 @@ jmethodID HotspotSupport::resolve(const void* tagged_method, int bci) {
 jmethodID HotspotSupport::resolveViaRegistry(VMMethod* vm_method, const void* holder, int idnum,
                                              uint32_t tag) {
   JNIEnv* jni = VM::jni();
+  const bool trace_id_tag = (tag & TRACE_ID_TAG) != 0;
+  const uint32_t tag_value = tag & TAG_VALUE_MASK;
   bool stale = false;
-  // With trace-ID tags the registry's epoch plays no part: passing the current
+  // For a trace-ID tag the registry's epoch plays no part: passing the current
   // epoch makes pin() accept any registration, and the trace ID is compared
   // once the class is pinned.
-  uint32_t sampled_epoch = _tag_with_trace_id ? _klass_registry.epoch() : tag;
+  uint32_t sampled_epoch = trace_id_tag ? _klass_registry.epoch() : tag_value;
   jclass clz = _klass_registry.pin(jni, holder, sampled_epoch, &stale);
   if (clz == nullptr) {
     // Stale: the class registered at `holder` arrived after the sample, so the
@@ -1933,8 +1950,8 @@ jmethodID HotspotSupport::resolveViaRegistry(VMMethod* vm_method, const void* ho
 
   jmethodID method_id = nullptr;
   uint64_t trace_id = 0;
-  if (_tag_with_trace_id &&
-      (!KlassTraceId::read(holder, &trace_id) || ((uint32_t)trace_id & FrameType::RAW_TAG_MASK) != tag)) {
+  if (trace_id_tag &&
+      (!KlassTraceId::read(holder, &trace_id) || ((uint32_t)trace_id & TAG_VALUE_MASK) != tag_value)) {
     // The class at `holder` is a different load than the one sampled.
     Counters::increment(METHOD_RESOLVE_LAZY_STALE);
     jni->DeleteLocalRef(clz);
@@ -1954,6 +1971,7 @@ jmethodID HotspotSupport::resolveViaRegistry(VMMethod* vm_method, const void* ho
       jvmtiEnv* jvmti = VM::jvmti();
       if (jvmti != nullptr && loadMethodIDsIfNeededImpl(jvmti, jni, clz, true /*load all*/)) {
         Counters::increment(METHOD_RESOLVE_LAZY_CLASS_LOADED);
+        DEBUG_ONLY(logLazilyLoadedClass(jvmti, clz, holder));
         jmethodID validated = vm_method->validatedId();
         if (isValidJMethodID(validated)) {
           method_id = validated;
