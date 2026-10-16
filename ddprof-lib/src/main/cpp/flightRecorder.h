@@ -9,6 +9,8 @@
 
 #include <functional>
 #include <map>
+#include <memory>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -118,6 +120,17 @@ public:
   ~SharedLineNumberTable();
 };
 
+// A Java method's names, resolved at GC start (Lookup::resolveAtGC()) while
+// its class was still loaded, for the next chunk to use even if the class has
+// been unloaded by then. Plain strings, not dictionary ids: the ids are only
+// assigned once that chunk is written.
+struct GCResolvedMethod {
+  std::string _class_name;
+  std::string _method_name;
+  std::string _signature;
+  bool _is_entry;
+};
+
 class MethodInfo {
 public:
   MethodInfo()
@@ -135,6 +148,8 @@ public:
   jint _modifiers;
   std::shared_ptr<SharedLineNumberTable> _line_number_table;
   FrameTypeId _type;
+  // Set by Lookup::resolveAtGC(); consumed by the next fillMethod().
+  std::shared_ptr<const GCResolvedMethod> _gc_resolved;
 
   inline jint getLineNumber(jint bci);
   inline bool isHidden();
@@ -311,10 +326,6 @@ private:
     return value < 0 ? 0 : value > 1 ? 1 : value;
   }
 
-  // Set only for the duration of checkpointChunk(): finishChunk() skips the
-  // JVMTI class pinning, and Lookup resolves jmethodID frames through VMStructs.
-  bool _vmstructs_only = false;
-
 public:
   Recording(int fd, Arguments &args);
   ~Recording();
@@ -324,11 +335,10 @@ public:
 
   off_t finishChunk(bool end_recording, bool do_cleanup = false);
   void switchChunk(int fd);
-  // Finishes the current chunk in place and starts the next one in the same
-  // file, resolving every method from VM metadata alone (no JNI/JVMTI), so it
-  // can run inside the JVMTI GarbageCollectionStart callback -- while the
-  // classes the pending samples point at are still loaded.
-  void checkpointChunk();
+  // Lookup::resolveAtGC() on every frame of every trace the next chunk will
+  // write. Caller holds Profiler::lockAll() (no trace writers) and _rec_lock.
+  // Returns the number of methods resolved.
+  int resolvePendingMethods();
 
   void cpuMonitorCycle();
   void appendRecording(const char *target_file, size_t size);
@@ -551,8 +561,8 @@ private:
   // never dereferences it. So for every bci except BCI_VTABLE_RECEIVER -- whose
   // class_id the caller must resolve from a VMSymbol* first -- computing a key
   // touches no VM metadata and cannot fault.
-  unsigned long methodKey(const ASGCT_CallFrame &frame, jmethodID method_id,
-                          jint bci, u32 vtable_class_id);
+  static unsigned long methodKey(const ASGCT_CallFrame &frame, jmethodID method_id,
+                                 jint bci, u32 vtable_class_id);
   // Resolves and fills in the MethodInfo for `frame`. This is the part that
   // reads VM metadata and may therefore fault; resolveMethod() wraps it in the
   // sigsetjmp/siglongjmp window.
@@ -569,6 +579,12 @@ public:
         _symbols() {}
 
   MethodInfo *resolveMethod(ASGCT_CallFrame &frame);
+  // From the JVMTI GarbageCollectionStart callback (Recording::
+  // resolvePendingMethods()): captures the names of a Java frame's method into
+  // its method_map row, reading VM metadata only -- no JNI/JVMTI. Returns true
+  // if it resolved one; false for non-Java frames, rows already captured, and
+  // metadata it could not read.
+  static bool resolveAtGC(MethodMap *method_map, const ASGCT_CallFrame &frame);
   u32 getPackage(const char *class_name);
   u32 getSymbol(const char *name);
 };
@@ -590,12 +606,9 @@ public:
   Error start(Arguments &args, bool reset);
   void stop();
   Error dump(const char *filename, const int length);
-  // Recording::checkpointChunk() on the active recording, split in two so the
-  // caller can do its own work in between. tryCheckpointBegin() never blocks:
-  // it returns true holding _rec_lock if there is a recording, and false
-  // holding nothing otherwise. checkpointAndEnd() writes and releases it.
-  bool tryCheckpointBegin();
-  void checkpointAndEnd();
+  // Recording::resolvePendingMethods() on the active recording, if _rec_lock
+  // is free. Never blocks. Returns false if it could not run.
+  bool tryResolvePendingMethods();
   void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);

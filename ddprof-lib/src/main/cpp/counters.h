@@ -165,11 +165,13 @@
   /* Every siglongjmp recovery, from any protected window, counted centrally  \
    * in Profiler::checkFault(). */                                            \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
-  /* JFR chunks written from GarbageCollectionStart (Profiler::onGCStart()),  \
-   * and GCs that skipped it because a lock was taken. The time it adds to    \
-   * GC pauses is sampler_ticks.gc_checkpoint, under -PenableSamplerPerf. */  \
-  X(GC_CHECKPOINTS, "gc_checkpoints")                                         \
-  X(GC_CHECKPOINTS_SKIPPED, "gc_checkpoints_skipped")                         \
+  /* GarbageCollectionStart passes that resolved pending samples' methods     \
+   * (Profiler::onGCStart()), GCs that skipped it because a lock was taken,   \
+   * and methods resolved. The time it adds to GC pauses is                   \
+   * sampler_ticks.gc_resolve, under -PenableSamplerPerf. */                  \
+  X(GC_RESOLVE_PASSES, "gc_resolve_passes")                                   \
+  X(GC_RESOLVE_SKIPPED, "gc_resolve_skipped")                                 \
+  X(GC_RESOLVED_METHODS, "gc_resolved_methods")                               \
   /* Dump-time method resolution failures. The frame serializes as "unknown". */ \
   X(METHOD_RESOLVE_FAULT_RECOVERED, "method_resolve_fault_recovered")         \
   /* Symbol length/body rejected during the same resolution: unreadable body,  \
@@ -289,8 +291,8 @@
   X(SAMPLER_COUNT_NATIVEMEM, "sampler_count.nativemem")                        \
   X(SAMPLER_TICKS_NATIVESOCKET, "sampler_ticks.nativesocket")                  \
   X(SAMPLER_COUNT_NATIVESOCKET, "sampler_count.nativesocket")                  \
-  X(SAMPLER_TICKS_GC_CHECKPOINT, "sampler_ticks.gc_checkpoint")                \
-  X(SAMPLER_COUNT_GC_CHECKPOINT, "sampler_count.gc_checkpoint")
+  X(SAMPLER_TICKS_GC_RESOLVE, "sampler_ticks.gc_resolve")                      \
+  X(SAMPLER_COUNT_GC_RESOLVE, "sampler_count.gc_resolve")
 #else
 #define DD_COUNTER_TABLE_SAMPLER_PERF(X)
 #endif

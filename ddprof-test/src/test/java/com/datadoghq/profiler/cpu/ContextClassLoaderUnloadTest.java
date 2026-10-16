@@ -114,28 +114,31 @@ public class ContextClassLoaderUnloadTest extends CStackAwareAbstractProfilerTes
         WorkerStacks stacks = WorkerStacks.collect(verifyEvents("datadog.ExecutionSample"));
         System.out.println("[" + cstack + "] after unload: " + stacks);
         stacks.assertResolved();
-        assertGCCheckpointCounters(cstack);
+        assertGCResolveCounters(cstack);
     }
 
     /**
-     * The GCs awaitUnload() forced must have written JFR checkpoints from
-     * GarbageCollectionStart. With -PenableSamplerPerf, they must also have been
-     * timed. Skipped on builds without counters.
+     * The GCs awaitUnload() forced must have resolved the pending samples'
+     * methods from GarbageCollectionStart. With -PenableSamplerPerf, every pass
+     * must also have been timed. Skipped on builds without counters.
      */
-    private void assertGCCheckpointCounters(String cstack) {
+    private void assertGCResolveCounters(String cstack) {
         Map<String, Long> counters = profiler.getDebugCounters();
-        Assumptions.assumeTrue(counters.containsKey("gc_checkpoints"), "Profiler built without counters");
-        long checkpoints = counters.get("gc_checkpoints");
-        long skipped = counters.getOrDefault("gc_checkpoints_skipped", 0L);
-        System.out.println("[" + cstack + "] GC checkpoints: " + checkpoints + " written, " + skipped + " skipped");
-        assertTrue(checkpoints > 0, "No JFR checkpoint was written at GC start");
+        Assumptions.assumeTrue(counters.containsKey("gc_resolve_passes"), "Profiler built without counters");
+        long passes = counters.get("gc_resolve_passes");
+        long skipped = counters.getOrDefault("gc_resolve_skipped", 0L);
+        long methods = counters.getOrDefault("gc_resolved_methods", 0L);
+        System.out.println("[" + cstack + "] GC resolve: " + passes + " passes, " + skipped + " skipped, "
+                + methods + " methods resolved");
+        assertTrue(passes > 0, "No pending-method resolution ran at GC start");
+        assertTrue(methods > 0, "No method was resolved at GC start");
 
-        if (counters.containsKey("sampler_count.gc_checkpoint")) {
-            long timed = counters.get("sampler_count.gc_checkpoint");
-            long timeNs = counters.getOrDefault("sampler_ticks.gc_checkpoint", 0L);
-            System.out.println("[" + cstack + "] GC checkpoint time: " + timeNs + " ns over " + timed + " GCs");
-            assertEquals(checkpoints + skipped, timed, "Every GC-start checkpoint attempt should be timed");
-            assertTrue(timeNs > 0, "GC checkpoint time was not recorded");
+        if (counters.containsKey("sampler_count.gc_resolve")) {
+            long timed = counters.get("sampler_count.gc_resolve");
+            long timeNs = counters.getOrDefault("sampler_ticks.gc_resolve", 0L);
+            System.out.println("[" + cstack + "] GC resolve time: " + timeNs + " ns over " + timed + " GCs");
+            assertEquals(passes + skipped, timed, "Every GC-start resolution attempt should be timed");
+            assertTrue(timeNs > 0, "GC resolve time was not recorded");
         }
     }
 

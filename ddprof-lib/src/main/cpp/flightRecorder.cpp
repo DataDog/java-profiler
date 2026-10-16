@@ -510,22 +510,16 @@ void Lookup::fillJavaMethodNames(MethodInfo *mi, const char *class_name,
   mi->_sig = _symbols.lookup(method_sig);
 }
 
-void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
-  const char *class_name = resolved.klassName();
-  const char *method_name = resolved.methodName();
-  const char *method_sig = resolved.methodSignature();
+// Same entry-frame rules as the jmethodID path: Thread.run (or an override in
+// a Thread subclass), or public static void main(String[]).
+static bool isEntryMethod(ResolvedMethod &resolved) {
+  return resolved.isThreadRun() ||
+         (strcmp(resolved.methodName(), "main") == 0 &&
+          strcmp(resolved.methodSignature(), "([Ljava/lang/String;)V") == 0);
+}
 
-  fillJavaMethodNames(mi, class_name, strlen(class_name), method_name, method_sig);
-  mi->_type = FRAME_INTERPRETED;
-  // Same entry-frame rules as the jmethodID path: Thread.run (or an override
-  // in a Thread subclass), or public static void main(String[]).
-  mi->_is_entry = resolved.isThreadRun() ||
-                  (strcmp(method_name, "main") == 0 &&
-                   strcmp(method_sig, "([Ljava/lang/String;)V") == 0);
-
-  // A raw Method* key can be reused by a different method after its class is
-  // unloaded, so unlike the jmethodID path the table is refreshed on every
-  // fill rather than only the first time.
+// Moves resolved's line number table, if any, into mi.
+static void takeLineNumberTable(MethodInfo *mi, ResolvedMethod &resolved) {
   if (resolved.lineNumberTable() != nullptr) {
     int size = resolved.lineNumberTableSize();
     // Built before ownership moves, so a std::bad_alloc here leaves the table
@@ -540,6 +534,48 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
   } else {
     mi->_line_number_table = nullptr;
   }
+}
+
+void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
+  const char *class_name = resolved.klassName();
+  fillJavaMethodNames(mi, class_name, strlen(class_name), resolved.methodName(),
+                      resolved.methodSignature());
+  mi->_type = FRAME_INTERPRETED;
+  mi->_is_entry = isEntryMethod(resolved);
+  // A raw Method* key can be reused by a different method after its class is
+  // unloaded, so unlike the jmethodID path the table is refreshed on every
+  // fill rather than only the first time.
+  takeLineNumberTable(mi, resolved);
+}
+
+bool Lookup::resolveAtGC(MethodMap *method_map, const ASGCT_CallFrame &frame) {
+  jint bci = frame.bci;
+  jmethodID method_id = frame.method_id;
+  if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME ||
+      bci == BCI_NATIVE_FRAME_REMOTE || bci == BCI_VTABLE_RECEIVER ||
+      method_id == nullptr || method_id == JMETHODID_NOT_WALKABLE) {
+    return false;
+  }
+  unsigned long key = methodKey(frame, method_id, bci, 0);
+  MethodMap::iterator it = method_map->find(key);
+  if (it != method_map->end() && it->second._gc_resolved != nullptr) {
+    // Captured at an earlier GC since the last chunk.
+    return false;
+  }
+  // A jmethodID's Method* is read from its id slot: JVMTI is off limits here.
+  const void *method = FrameType::isRawPointer(bci)
+                           ? frame.method
+                           : (const void *)VMMethod::fromJmethodID(method_id);
+  ResolvedMethod resolved;
+  if (method == nullptr || !JVMSupport::resolve(method, resolved)) {
+    return false;
+  }
+  MethodInfo *mi = it != method_map->end() ? &it->second : &(*method_map)[key];
+  mi->_gc_resolved = std::make_shared<const GCResolvedMethod>(GCResolvedMethod{
+      resolved.klassName(), resolved.methodName(), resolved.methodSignature(),
+      isEntryMethod(resolved)});
+  takeLineNumberTable(mi, resolved);
+  return true;
 }
 
 bool Lookup::resolveVTableReceiver(VMSymbol *sym, char *buf, size_t bufsize,
@@ -862,19 +898,20 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
       mi->_sig = _symbols.lookup("()V");
       mi->_type = FRAME_NATIVE;
       mi->_is_entry = false;
+    } else if (mi->_gc_resolved != nullptr) {
+      // Captured at GC start while the class was still loaded; used as is,
+      // since the class may be gone by now. Consumed here: the next chunk
+      // resolves afresh. The line number table was set at capture.
+      const GCResolvedMethod &gc = *mi->_gc_resolved;
+      fillJavaMethodNames(mi, gc._class_name.c_str(), gc._class_name.size(),
+                          gc._method_name.c_str(), gc._signature.c_str());
+      mi->_type = FRAME_INTERPRETED;
+      mi->_is_entry = gc._is_entry;
+      mi->_gc_resolved.reset();
     } else if (raw_pointer) {
       // resolve() installs its own (nested) landing pad around the metadata
       // walk; a stale Method* leaves this row unfilled, see below.
       filled = JVMSupport::resolve(frame.method, resolved);
-      if (filled) {
-        fillJavaMethodInfo(mi, resolved);
-      }
-    } else if (_rec != nullptr && _rec->_vmstructs_only) {
-      // Inside a GC pause (Recording::checkpointChunk()): JVMTI is off limits,
-      // so read the jmethodID's Method* and resolve that like a raw frame. A
-      // jmethodID that can't be dereferenced leaves the row unfilled.
-      const VMMethod* method = VMMethod::fromJmethodID(method_id);
-      filled = method != nullptr && JVMSupport::resolve(method, resolved);
       if (filled) {
         fillJavaMethodInfo(mi, resolved);
       }
@@ -1021,11 +1058,7 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   // Note: this only guards against concurrent unloading that starts AFTER this
   // call.  Classes already unloaded before finishChunk() was entered are not
   // present in the list and receive no protection here.
-  //
-  // Skipped by checkpointChunk(): it runs inside a GC pause, where JVMTI may not
-  // be called and no class can be unloaded concurrently anyway.
-  jvmtiError err = _vmstructs_only ? JVMTI_ERROR_WRONG_PHASE
-                                   : jvmti->GetLoadedClasses(&count, &classes);
+  jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
 
   flush(&_cpu_monitor_buf);
 
@@ -1194,24 +1227,16 @@ void Recording::switchChunk(int fd) {
   flush(_buf);
 }
 
-void Recording::checkpointChunk() {
-  _vmstructs_only = true;
-  _chunk_start = finishChunk(/*end_recording=*/false, /*do_cleanup=*/true);
-  _vmstructs_only = false;
-
-  _start_time = _stop_time;
-  _start_ticks = _stop_ticks;
-  _bytes_written = 0;
-
-  // Every chunk needs its own header, metadata and settings. Unlike
-  // switchChunk(), the file is not restarted, so the once-per-file info events
-  // stay in its first chunk -- writeJvmInfo() and writeSystemProperties() call
-  // JVMTI, which a GC callback may not -- and _recorded_lib_count carries on,
-  // so finishChunk() keeps writing only libraries loaded since.
-  writeHeader(_buf);
-  writeMetadata(_buf);
-  writeSettings(_buf, _args);
-  flush(_buf);
+int Recording::resolvePendingMethods() {
+  int resolved = 0;
+  Profiler::instance()->forEachPendingTrace([&](const CallTrace *trace) {
+    for (int i = 0; i < trace->num_frames; i++) {
+      if (Lookup::resolveAtGC(&_method_map, trace->frames[i])) {
+        resolved++;
+      }
+    }
+  });
+  return resolved;
 }
 
 void Recording::cpuMonitorCycle() {
@@ -2779,22 +2804,17 @@ Error FlightRecorder::dump(const char *filename, const int length) {
   return Error("No active recording");
 }
 
-bool FlightRecorder::tryCheckpointBegin() {
+bool FlightRecorder::tryResolvePendingMethods() {
   if (!_rec_lock.tryLock()) {
     return false;
   }
-  if (_rec == nullptr) {
-    _rec_lock.unlock();
-    return false;
+  Recording* rec = _rec;
+  if (rec != nullptr) {
+    Counters::increment(GC_RESOLVED_METHODS, rec->resolvePendingMethods());
   }
-  return true;
-}
-
-void FlightRecorder::checkpointAndEnd() {
-  _rec->checkpointChunk();
   _rec_lock.unlock();
+  return rec != nullptr;
 }
-
 void FlightRecorder::wallClockEpoch(int lock_index,
                                     WallClockEpochEvent *event) {
   OptionalSharedLockGuard locker(&_rec_lock);

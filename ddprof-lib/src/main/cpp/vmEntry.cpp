@@ -457,8 +457,8 @@ void JNICALL ForwardedGarbageCollectionFinish(jvmtiEnv *jvmti_env) {
 }
 
 // Same fan-out for GarbageCollectionStart: the reference-chain epoch counter
-// and the profiler's JFR checkpoint (Profiler::onGCStart()). Each callee
-// checks whether it is active.
+// and the profiler's pending-method resolution (Profiler::onGCStart()). Each
+// callee checks whether it is active.
 void JNICALL ForwardedGarbageCollectionStart(jvmtiEnv *jvmti_env) {
   ReferenceChainTracker::GarbageCollectionStart(jvmti_env);
   Profiler::instance()->onGCStart();

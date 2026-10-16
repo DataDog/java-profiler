@@ -520,6 +520,23 @@ void CallTraceHashTable::collect(CallTraceSet &traces, std::function<void(CallTr
 }
 
 
+void CallTraceHashTable::forEach(const std::function<void(const CallTrace*)> &visitor) {
+  for (LongHashTable *table = __atomic_load_n(&_table, __ATOMIC_ACQUIRE);
+       table != nullptr; table = table->prev()) {
+    u64 *keys = table->keys();
+    CallTraceSample *values = table->values();
+    u32 capacity = table->capacity();
+    for (u32 slot = 0; slot < capacity; slot++) {
+      if (keys[slot] != 0) {
+        CallTrace *trace = values[slot].acquireTrace();
+        if (trace != nullptr && trace != CallTraceSample::PREPARING) {
+          visitor(trace);
+        }
+      }
+    }
+  }
+}
+
 void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) {
   // Trace preservation for standby tables (no contention with new puts)
   // This is safe because new put() operations go to the new active table

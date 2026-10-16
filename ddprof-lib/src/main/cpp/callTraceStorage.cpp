@@ -172,6 +172,11 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
  * out and drained (see the class comment).
  * It is not designed to be called concurrently with itself.
  */
+void CallTraceStorage::forEachPendingTrace(const std::function<void(const CallTrace*)> &visitor) {
+    const_cast<CallTraceHashTable*>(__atomic_load_n(&_standby_storage, __ATOMIC_ACQUIRE))->forEach(visitor);
+    const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE))->forEach(visitor);
+}
+
 void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> processor) {
     // PHASE 1: Collect liveness information with simple lock (rare operation)
     {

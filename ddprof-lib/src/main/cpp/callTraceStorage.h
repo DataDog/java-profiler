@@ -96,10 +96,6 @@ public:
 
     // Register a liveness checker (rare operation - uses simple lock)
     void registerLivenessChecker(LivenessChecker checker);
-    bool hasLivenessCheckers() {
-        SharedLockGuard lock(&_liveness_lock);
-        return !_liveness_checkers.empty();
-    }
 
     // Clear liveness checkers (rare operation - uses simple lock)
     void clearLivenessCheckers();
@@ -112,6 +108,11 @@ public:
     // The callback receives traces that are guaranteed to be valid during execution.
     // Tolerates concurrent put() (see the class comment).
     void processTraces(std::function<void(const CallTraceSet&)> processor);
+
+    // Visits every trace the next processTraces() will hand out (the standby
+    // and active tables) without rotating or clearing anything. Requires put()
+    // and processTraces() to be excluded for the duration.
+    void forEachPendingTrace(const std::function<void(const CallTrace*)> &visitor);
 
 #ifdef UNIT_TEST
     // The table put() currently targets.  Compiled only into gtest binaries.
