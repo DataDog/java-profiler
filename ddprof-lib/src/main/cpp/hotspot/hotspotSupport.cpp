@@ -1453,99 +1453,23 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
     return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
 }
 
-// The three names resolve() needs, owned by resolve()'s frame. Each name has
-// a fixed-size inline buffer for the common case, with a malloc'd fallback
-// (up to MAX_SYMBOL_LEN) for names that don't fit -- see release() for why
-// that fallback needs explicit cleanup on the crash-recovery path.
-class ResolvedNames {
-  // Hard ceiling for the malloc fallback in setImpl(), independent of which
-  // field is being resolved. Not a JVM/class-file limit (Symbol::length() is
-  // a u2, so up to 65535 is legal) -- a name that would already have been rejected
-  // as too long for those fields' fixed buffers doesn't get an unbounded
-  // allocation just because it went through the malloc path instead.
-  static constexpr size_t MAX_SYMBOL_LEN = 64 * 1024;
-
-  // Fixed-size fast-path buffers for the common case, sized generously above
-  // the realistic common-case length for each field (see the per-field
-  // comments below) but deliberately not so generous that the malloc
-  // fallback in setImpl() never engages -- these caps are meant to be hit
-  // occasionally so that path stays exercised.
-  // HotSpot's Symbol length field is a u2, so the VM permits up to 65535 bytes.
-  // A name/descriptor that overflows its fixed buffer falls back to malloc
-  // (see ResolvedNames::setImpl), up to MAX_SYMBOL_LEN below; beyond that it is
-  // rejected and the frame serializes as "unknown" -- METHOD_RESOLVE_SYMBOL_UNREADABLE
-  // makes that visible if it bites. Unlike the old stack-only design, the malloc
-  // fallback means this is no longer a leak-proof region: siglongjmp out of
-  // resolve() bypasses ~ResolvedNames(), so the fault-recovery path must call
-  // ResolvedNames::release() explicitly (see resolve()) to free any buffer
-  // allocated before the fault.
-  static constexpr size_t MAX_KLASS_NAME_LEN  = 1024;  // internal names; realistically < 256
-  static constexpr size_t MAX_METHOD_NAME_LEN =  512;  // realistically < 64
-  // A descriptor can in principle exceed this (255 argument *slots*, each able to
-  // carry an arbitrarily long L...; type name), so this cap is a fidelity choice,
-  // not a proof: over-cap descriptors serialize as "unknown" rather than being
-  // truncated. METHOD_RESOLVE_SYMBOL_UNREADABLE makes it visible if that bites.
-  static constexpr size_t MAX_SIGNATURE_LEN   = 1024;
-
-  private:
-  // volatile: resolve() mutates these (via setMethodName/setMethodSignature/
-  // setKlassName, called through readMethodNames()) between sigsetjmp() and a
-  // possible siglongjmp() out of a fault, then release() reads them back at
-  // the landing pad to decide what to free. Per the setjmp/longjmp rules
-  // (C11 7.13.2.1p3, inherited by C++), a non-volatile automatic local
-  // modified in that window has an indeterminate value after longjmp;
-  // volatile is what makes release()'s reads on the recovery path defined.
-  char* volatile _long_method_name;
-  char* volatile _long_method_signature;
-  char* volatile _long_klass_name;
-
-  char _method_name[MAX_METHOD_NAME_LEN];
-  char _method_signature[MAX_SIGNATURE_LEN];
-  char _klass_name[MAX_KLASS_NAME_LEN];
-
-  bool setImpl(char* short_name, char* volatile& long_name, size_t short_limit, VMSymbol* sym);
-public:
-  // Non-copyable
-  ResolvedNames(const ResolvedNames&) = delete;
-  ResolvedNames& operator=(const ResolvedNames&) = delete;
- 
-  ResolvedNames();
-  ~ResolvedNames();
-  void release();
-
-  bool setMethodName(VMSymbol* sym);
-  bool setMethodSignature(VMSymbol* sym);
-  bool setKlassName(VMSymbol* sym);
-
-  const char* methodName() const {
-    return _long_method_name != nullptr ? _long_method_name : _method_name;
-  }
-
-  const char* methodSignature() const {
-    return _long_method_signature != nullptr ? _long_method_signature : _method_signature;
-  }
-
-  const char* klassName() const {
-    return _long_klass_name != nullptr ? _long_klass_name : _klass_name;
-  }
-};
-
-ResolvedNames::ResolvedNames() :
+ResolvedMethod::ResolvedMethod() :
   _long_method_name(nullptr),
   _long_method_signature(nullptr),
-  _long_klass_name(nullptr) {
+  _long_klass_name(nullptr),
+  _line_number_table(nullptr),
+  _line_number_table_size(0),
+  _is_thread_run(false) {
+  _method_name[0] = '\0';
+  _method_signature[0] = '\0';
+  _klass_name[0] = '\0';
 }
 
-ResolvedNames::~ResolvedNames() {
-    release();
-}
-
-void ResolvedNames::release() {
+void ResolvedMethod::release() {
   // Must be idempotent: resolve()'s fault-recovery path calls this explicitly
-  // (siglongjmp bypasses ~ResolvedNames()), and then the destructor runs it
-  // again on the same object when resolve() returns normally afterward.
-  // Nulling out each pointer after freeing makes the second call a no-op
-  // instead of a double free.
+  // (siglongjmp bypasses ~ResolvedMethod()), and the destructor runs it again
+  // on the same object later. Nulling out each pointer after freeing makes
+  // the second call a no-op instead of a double free.
   if (_long_method_name != nullptr) {
     free(_long_method_name);
     _long_method_name = nullptr;
@@ -1558,9 +1482,14 @@ void ResolvedNames::release() {
     free(_long_klass_name);
     _long_klass_name = nullptr;
   }
+  if (_line_number_table != nullptr) {
+    free(_line_number_table);
+    _line_number_table = nullptr;
+  }
+  _line_number_table_size = 0;
 }
 
-bool ResolvedNames::setImpl(char* short_name, char* volatile& long_name, size_t short_limit, VMSymbol* sym) {
+bool ResolvedMethod::setName(char* short_name, char* volatile& long_name, size_t short_limit, VMSymbol* sym) {
   unsigned len = sym->length();  // raw u2 deref; PC stays inside this library
   // A method name, descriptor or class name is never empty; 0 means the Symbol
   // slot has been recycled. `>=` leaves room for the NUL.
@@ -1585,48 +1514,104 @@ bool ResolvedNames::setImpl(char* short_name, char* volatile& long_name, size_t 
   }
 }
 
-bool ResolvedNames::setMethodName(VMSymbol* sym) {
-  return setImpl(_method_name, _long_method_name, MAX_METHOD_NAME_LEN, sym);
-
-}
-bool ResolvedNames::setMethodSignature(VMSymbol* sym) {
-  return setImpl(_method_signature, _long_method_signature, MAX_SIGNATURE_LEN, sym);
+bool ResolvedMethod::setMethodName(VMSymbol* sym) {
+  return setName(_method_name, _long_method_name, MAX_METHOD_NAME_LEN, sym);
 }
 
-bool ResolvedNames::setKlassName(VMSymbol* sym) {
-  return setImpl(_klass_name, _long_klass_name, MAX_KLASS_NAME_LEN, sym);
+bool ResolvedMethod::setMethodSignature(VMSymbol* sym) {
+  return setName(_method_signature, _long_method_signature, MAX_SIGNATURE_LEN, sym);
 }
 
+bool ResolvedMethod::setKlassName(VMSymbol* sym) {
+  return setName(_klass_name, _long_klass_name, MAX_KLASS_NAME_LEN, sym);
+}
 
-// PHASE 1 -- the raw HotSpot metadata walk. MUST run with a jmp ctx installed:
-// every step is a raw *(void**)(this + offset) whose target may have been freed
-// by GC or class unloading since the sample was taken. Deliberately contains no
-// JNI and no JVMTI, so the whole protected region stays inside this library,
-// where Profiler::checkFault() can actually recover. It can allocate, via
-// ResolvedNames::setImpl()'s malloc fallback for over-sized names -- that
-// allocation is self-contained (glibc malloc doesn't call back into JNI/JVMTI),
-// but it does mean a fault after the allocation needs explicit freeing, since
-// siglongjmp out of this scope bypasses ~ResolvedNames() (see resolve()).
-//
-// Returns false if the metadata is unusable. On success either *out_id holds an
-// already-valid jmethodID (and `names` is untouched), or *out_id is null and
-// `names` has been filled in for the JNI lookup the caller does afterwards.
-static bool readMethodNames(const void* method, VMMethod** out_vm_method,
-                            jmethodID* out_id, ResolvedNames* names) {
-  *out_vm_method = nullptr;
-  *out_id = nullptr;
+// Compares a Symbol's contents with `expected` without touching the Symbol
+// memory through libc (a fault inside memcmp() would have a pc outside this
+// library and could not be recovered).
+static bool symbolEquals(VMSymbol* sym, const char* expected, size_t expected_len) {
+  static constexpr size_t MAX_COMPARE_LEN = 64;
+  assert(expected_len <= MAX_COMPARE_LEN);
+  if (sym == nullptr || sym->length() != expected_len) {
+    return false;
+  }
+  char buf[MAX_COMPARE_LEN];
+  return SafeAccess::safeCopy(buf, sym->body(), expected_len) &&
+         memcmp(buf, expected, expected_len) == 0;
+}
 
+// Whether `klass` is java.lang.Thread or one of its subclasses, by walking
+// the Klass::_super chain. Unknown (no _super offset) is reported as false.
+static bool isThreadSubclass(VMKlass* klass) {
+  static const char THREAD_CLASS[] = "java/lang/Thread";
+  // Real hierarchies are far shallower; the cap only guards against a cycle
+  // in stale metadata.
+  static constexpr int MAX_DEPTH = 64;
+  for (int depth = 0; klass != nullptr && depth < MAX_DEPTH; depth++) {
+    if (symbolEquals(klass->name(), THREAD_CLASS, sizeof(THREAD_CLASS) - 1)) {
+      return true;
+    }
+    klass = klass->super_or_null();
+  }
+  return false;
+}
+
+// Decodes the method's compressed line number table into a malloc'd
+// jvmtiLineNumberEntry array, the same shape JVMTI GetLineNumberTable()
+// produces. Returns false only if the table is present but implausible (a
+// bci outside the bytecode or too many entries), i.e. the metadata is stale;
+// a method without a table returns true with no table attached.
+static bool readLineNumberTable(VMConstMethod* const_method,
+                                jvmtiLineNumberEntry* volatile& table, volatile int& table_size) {
+  const unsigned char* compressed = const_method->compressedLineNumberTable();
+  if (compressed == nullptr) {
+    return true;
+  }
+  int code_size = const_method->codeSize();
+
+  // Pass 1: validate and count, so the second pass can fill an exactly-sized
+  // buffer. Every bci must index the bytecode (JVMS 4.7.12).
+  int count = 0;
+  VMLineNumberStream counter(compressed);
+  while (counter.readPair()) {
+    if (counter.bci() < 0 || counter.bci() >= code_size ||
+        ++count > ResolvedMethod::MAX_LINE_NUMBER_TABLE_ENTRIES) {
+      return false;
+    }
+  }
+  if (count == 0) {
+    return true;
+  }
+
+  jvmtiLineNumberEntry* entries = (jvmtiLineNumberEntry*)malloc((size_t)count * sizeof(jvmtiLineNumberEntry));
+  if (entries == nullptr) {
+    return true;  // keep the names; the frame just has no line numbers
+  }
+  // Owned by the ResolvedMethod from here on, so a fault in pass 2 still frees it.
+  table = entries;
+
+  VMLineNumberStream reader(compressed);
+  for (int i = 0; i < count; i++) {
+    if (!reader.readPair()) {
+      return false;   // stream changed under us between the passes
+    }
+    entries[i].start_location = (jlocation)reader.bci();
+    entries[i].line_number = (jint)reader.line();
+  }
+  table_size = count;
+  return true;
+}
+
+// The raw HotSpot metadata walk. MUST run with a jmp ctx installed: every step
+// is a raw *(void**)(this + offset) whose target may have been freed by GC or
+// class unloading since the sample was taken. Contains no JNI and no JVMTI, so
+// the whole protected region stays inside this library, where
+// Profiler::checkFault() can recover. Allocations it makes are owned by
+// `result` as soon as they are made, so resolve()'s landing pad can free them.
+bool HotspotSupport::readMethod(const void* method, ResolvedMethod* result) {
   VMMethod* vm_method = VMMethod::cast_or_null(method);
   if (vm_method == nullptr) {
     return false;
-  }
-  *out_vm_method = vm_method;
-
-  // May have been populated by following code or JMETHODID_NOT_WALKABLE
-  jmethodID method_id = vm_method->validatedId();
-  if (isValidJMethodID(method_id)) {
-    *out_id = method_id;
-    return true;
   }
 
   VMConstMethod* const_method = vm_method->constMethod_or_null();
@@ -1652,101 +1637,37 @@ static bool readMethodNames(const void* method, VMMethod** out_vm_method,
     return false;
   }
 
-  if (!names->setMethodName(name_sym) || !names->setMethodSignature(sig_sym) || !names->setKlassName(klass_sym)) {
+  if (!result->setMethodName(name_sym) || !result->setMethodSignature(sig_sym) || !result->setKlassName(klass_sym)) {
     Counters::increment(METHOD_RESOLVE_SYMBOL_UNREADABLE);
+    return false;
+  }
+
+  if (strcmp(result->methodName(), "run") == 0 && strcmp(result->methodSignature(), "()V") == 0) {
+    result->_is_thread_run = isThreadSubclass(klass);
+  }
+
+  if (!readLineNumberTable(const_method, result->_line_number_table, result->_line_number_table_size)) {
+    Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
     return false;
   }
   return true;
 }
 
-// PHASE 2 -- the JNI/JVMTI lookup, reading only the buffers phase 1 filled.
-// MUST run with crash protection *off*. Two reasons, both about siglongjmp
-// unwinding frames it must not:
-//   - A fault inside libjvm.so is unrecoverable anyway (checkFault() only
-//     recovers PCs inside this library), so a landing pad buys nothing here.
-//   - FindClass() loads the class when it is not already loaded, which
-//     synchronously runs our own JVMTI ClassPrepare callback ->
-//     patchClassLoaderData(), which holds the JVM's ClassLoaderData mutex. That
-//     code *is* in this library, so with a pad installed a fault there would
-//     siglongjmp out of a JVMTI callback with a JVM lock held, an abandoned JNI
-//     local frame and unbalanced safepoint state -- trading a crash for a
-//     JVM-wide deadlock.
-// vm_method->validatedId() below is safefetch-based, so it is safe unprotected.
-//
-// A plain, TU-local helper -- like readMethodNames() -- rather than a
-// HotspotSupport member or friend: it never touches HotspotSupport's private
-// state directly, so nothing about it, including ResolvedNames (a type
-// defined entirely in this file with no header of its own), needs to be
-// declared in hotspotSupport.h. The <clinit> fallback needs the private
-// HotspotSupport::loadMethodIDsIfNeededImpl(), so resolve() -- which does
-// have access, being a member -- passes it in as a plain function pointer
-// instead of this function calling it directly.
-//
-// Returns a jmethodID valid for as long as the declaring class stays loaded
-// (the same ownership/lifetime jmethodIDs always have in this codebase -- no
-// release call is needed), or nullptr if the method could not be found via
-// JNI/JVMTI.
-static jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& names,
-                                       bool (*loadMethodIDsIfNeededImpl)(jvmtiEnv*, JNIEnv*, jclass, bool)) {
-  jmethodID method_id = nullptr;
-  const char* method_name = names.methodName();
-  const char* method_signature = names.methodSignature();
-  const char* klass_name = names.klassName();
-
-  JNIEnv *jni = VM::jni();
-  jclass clz = jni->FindClass(klass_name);
-  if (clz == nullptr) {
-    jni->ExceptionClear();
-  } else {
-    method_id = jni->GetMethodID(clz, method_name, method_signature);
-    if (method_id == nullptr) {
-      jni->ExceptionClear();
-      method_id = jni->GetStaticMethodID(clz, method_name, method_signature);
-      if (method_id == nullptr) {
-        jni->ExceptionClear();
-        // JNI GetMethodID/GetStaticMethodID cannot look up <clinit> because
-        // the JVM intentionally hides class initializers from JNI callers.
-        // Fall back to loadMethodIDsIfNeededImpl(), which covers all methods
-        // including <clinit> and forces jmethodID slot allocation for them
-        // (going through this helper, rather than calling GetClassMethods
-        // directly, ensures the JDK-8062116 patchClassLoaderData() workaround
-        // is applied here too, same as every other jmethodID-preload path).
-        // After the call, re-read the ID directly from VM metadata.
-        if (strcmp(method_name, "<clinit>") == 0) {
-          jvmtiEnv* jvmti = VM::jvmti();
-          if (jvmti != nullptr) {
-            if (loadMethodIDsIfNeededImpl(jvmti, jni, clz, true /*load all*/)) {
-              jmethodID validated = vm_method->validatedId();
-              if (isValidJMethodID(validated)) {
-                method_id = validated;
-              }
-            }
-          }
-        }
-      }
-    }
-    jni->DeleteLocalRef(clz);
-  }
-
-  return method_id;
-}
-
-// This method only resolves methods that are loaded by system class loaders
-jmethodID HotspotSupport::resolve(const void* method) {
+bool HotspotSupport::resolve(const void* method, ResolvedMethod& result) {
   assert(VM::isHotspot());
   NO_INJECTION_ASSERT(method != nullptr);
   // fillJavaFrame stores the sentinel without the raw flag, so this should
-  // never reach the raw-pointer resolve path. Map it to nullptr so the dump
-  // thread serializes it as the shared unknown method.
+  // never reach the raw-pointer resolve path. Report it as unresolved so the
+  // dump thread serializes it as the shared unknown method.
   if ((jmethodID)method == JMETHODID_NOT_WALKABLE) {
-    return nullptr;
+    return false;
   }
 
   // The Method* was captured at sample time; GC or class unloading may have
   // freed the metadata since, so every dereference below can fault. Install a
   // landing pad and report the method as unresolved instead of taking the JVM
-  // down mid-dump -- nullptr is already a first-class result for our caller
-  // (Lookup::resolveMethod serializes it as the shared unknown method).
+  // down mid-dump -- false is already a first-class result for our caller
+  // (Lookup::fillMethod serializes it as the shared unknown method).
   //
   // Runs on the JFR dump thread (Profiler::dump/stop), not in a signal handler.
   // acquireCurrent() rather than current() because JNI_OnUnload reaches
@@ -1757,14 +1678,10 @@ jmethodID HotspotSupport::resolve(const void* method) {
     // rather than risk crashing. Reached only on an unprimed shutdown path or
     // when the thread-local pool is exhausted.
     Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
-    return nullptr;
+    return false;
   }
 
-  ResolvedNames names;
-  VMMethod* vm_method = nullptr;
-  jmethodID existing_id = nullptr;
-  bool walked = false;
-
+  bool resolved = false;
   {
     sigjmp_buf crash_protection_ctx;
     // Chained via JmpCtxScope: the dump thread can be interrupted by a sampling
@@ -1781,25 +1698,19 @@ jmethodID HotspotSupport::resolve(const void* method) {
       // before touching anything that could fault again.
       SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
       jmp_scope.restore();
-      // siglongjmp bypasses ~ResolvedNames(), so a name that was already
-      // malloc'd (in setImpl()'s over-sized-name fallback) before the fault
-      // would otherwise leak. release() is idempotent, so it's safe that the
-      // destructor also runs it when resolve() returns below.
-      names.release();
+      // siglongjmp bypasses ~ResolvedMethod() and skips the cleanup below;
+      // free whatever was allocated before the fault.
+      result.release();
       Counters::increment(METHOD_RESOLVE_FAULT_RECOVERED);
-      return nullptr;
+      return false;
     }
     jmp_scope.install(&crash_protection_ctx);
 
-    walked = readMethodNames(method, &vm_method, &existing_id, &names);
+    resolved = readMethod(method, &result);
   }
-  // --- crash protection is off from here on; see lookupMethodIdViaJni() ---
 
-  if (!walked) {
-    return nullptr;
+  if (!resolved) {
+    result.release();
   }
-  if (existing_id != nullptr) {
-    return existing_id;
-  }
-  return lookupMethodIdViaJni(vm_method, names, &HotspotSupport::loadMethodIDsIfNeededImpl);
+  return resolved;
 }

@@ -456,6 +456,14 @@ void JNICALL ForwardedGarbageCollectionFinish(jvmtiEnv *jvmti_env) {
   ReferenceChainTracker::GarbageCollectionFinish(jvmti_env);
 }
 
+// Same fan-out for GarbageCollectionStart: the reference-chain epoch counter
+// and the profiler's JFR checkpoint (Profiler::onGCStart()). Each callee
+// checks whether it is active.
+void JNICALL ForwardedGarbageCollectionStart(jvmtiEnv *jvmti_env) {
+  ReferenceChainTracker::GarbageCollectionStart(jvmti_env);
+  Profiler::instance()->onGCStart();
+}
+
 bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   TEST_LOG("VM::initProfilerBridge");
   if (!initShared(vm)) {
@@ -530,7 +538,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.ThreadStart = Profiler::ThreadStart;
   callbacks.ThreadEnd = Profiler::ThreadEnd;
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
-  callbacks.GarbageCollectionStart = ReferenceChainTracker::GarbageCollectionStart;
+  callbacks.GarbageCollectionStart = ForwardedGarbageCollectionStart;
   callbacks.GarbageCollectionFinish = ForwardedGarbageCollectionFinish;
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));

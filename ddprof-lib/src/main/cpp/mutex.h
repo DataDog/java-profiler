@@ -18,6 +18,8 @@ class Mutex {
     Mutex();
 
     void lock();
+    // Never blocks; for callers that must not wait (e.g. a JVMTI GC callback).
+    bool tryLock();
     void unlock();
 };
 

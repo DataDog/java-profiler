@@ -1,0 +1,495 @@
+
+package com.datadoghq.native.util
+
+import com.datadoghq.native.model.Architecture
+import com.datadoghq.native.model.Platform
+import org.gradle.api.GradleException
+import org.gradle.api.Project
+import java.io.File
+import kotlin.io.path.createTempFile
+import kotlin.io.path.deleteIfExists
+import kotlin.io.path.writeText
+import java.util.concurrent.TimeUnit
+
+object PlatformUtils {
+    val currentPlatform: Platform by lazy { Platform.current() }
+    val currentArchitecture: Architecture by lazy { Architecture.current() }
+
+    fun isMusl(): Boolean {
+        if (currentPlatform != Platform.LINUX) {
+            return false
+        }
+
+        // Check if running on musl libc by scanning /lib/ld-musl-*.so.1
+        return File("/lib").listFiles()?.any {
+            it.name.startsWith("ld-musl-") && it.name.endsWith(".so.1")
+        } ?: false
+    }
+
+    fun javaHome(): String {
+        return System.getenv("JAVA_HOME")
+            ?: System.getProperty("java.home")
+            ?: throw IllegalStateException("Neither JAVA_HOME environment variable nor java.home system property is set")
+    }
+
+    /**
+     * Resolve JAVA_HOME for test execution, preferring JAVA_TEST_HOME if set.
+     * This allows running tests with a different JDK than the build JDK.
+     */
+    fun testJavaHome(): String {
+        return System.getenv("JAVA_TEST_HOME")
+            ?: System.getenv("JAVA_HOME")
+            ?: System.getProperty("java.home")
+            ?: throw IllegalStateException("Neither JAVA_TEST_HOME, JAVA_HOME, nor java.home is set")
+    }
+
+    /**
+     * Get the java executable path for test execution.
+     */
+    fun testJavaExecutable(): String {
+        return "${testJavaHome()}/bin/java"
+    }
+
+    fun jniIncludePaths(): List<String> {
+        val javaHome = javaHome()
+        val platform = when (currentPlatform) {
+            Platform.LINUX -> "linux"
+            Platform.MACOS -> "darwin"
+        }
+        return listOf(
+            "$javaHome/include",
+            "$javaHome/include/$platform"
+        )
+    }
+
+    /**
+     * Google Test install locations probed by the gtest plugin (and by the coverage
+     * preflight check, since a missing gtest silently drops the gtest half of coverage).
+     */
+    val gtestLocations: List<String>
+        get() = when (currentPlatform) {
+            Platform.MACOS -> listOf(
+                "/opt/homebrew/opt/googletest",
+                "/usr/local/opt/googletest"
+            )
+            Platform.LINUX -> listOf(
+                "/usr/include/gtest",
+                "/usr/local/include/gtest"
+            )
+        }
+
+    fun isGtestAvailable(): Boolean = gtestLocations.any { File(it).exists() }
+
+    /**
+     * Check if a compiler is available and functional
+     */
+    fun isCompilerAvailable(compiler: String): Boolean {
+        return try {
+            val process = ProcessBuilder(compiler, "--version")
+                .redirectErrorStream(true)
+                .start()
+            // Generous beyond the obvious: on a loaded macOS host the /usr/bin/clang++ Xcode
+            // shim can take several seconds to answer --version (Rosetta translation churn,
+            // oahd-helper at 100% CPU), and a 5s budget made this probe fail intermittently
+            // from invocations that accepted the same path minutes earlier.
+            process.waitFor(30, TimeUnit.SECONDS)
+            process.exitValue() == 0
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Locate a library using compiler's -print-file-name.
+     * Uses the specified compiler, falling back to gcc if not available.
+     */
+    fun locateLibrary(libName: String, compiler: String = "gcc"): String? {
+        if (currentPlatform != Platform.LINUX) {
+            return null
+        }
+
+        // Try the specified compiler first
+        if (isCompilerAvailable(compiler)) {
+            try {
+                val process = ProcessBuilder(compiler, "-print-file-name=$libName.so")
+                    .redirectErrorStream(true)
+                    .start()
+
+                val output = process.inputStream.bufferedReader().readText().trim()
+                process.waitFor()
+
+                if (process.exitValue() == 0 && output != "$libName.so") {
+                    return output
+                }
+            } catch (e: Exception) {
+                // Fall through to try gcc
+            }
+        }
+
+        // If the specified compiler didn't find it, try gcc as fallback
+        if (compiler != "gcc" && isCompilerAvailable("gcc")) {
+            try {
+                val process = ProcessBuilder("gcc", "-print-file-name=$libName.so")
+                    .redirectErrorStream(true)
+                    .start()
+
+                val output = process.inputStream.bufferedReader().readText().trim()
+                process.waitFor()
+
+                if (process.exitValue() == 0 && output != "$libName.so") {
+                    return output
+                }
+            } catch (e: Exception) {
+                // Fall through to return null
+            }
+        }
+
+        return null
+    }
+
+    fun locateLibasan(compiler: String = "gcc"): String? {
+        if (currentPlatform != Platform.LINUX) return null
+        // For clang, prefer the architecture-specific clang_rt.asan library over
+        // GCC's libasan. Using GCC's runtime alongside clang's libclang_rt.asan
+        // (which -fsanitize=address links for executables) causes "incompatible
+        // ASan runtimes" at startup. The clang runtime also includes UBSan symbols,
+        // so no separate -lubsan is needed.
+        if (compiler.contains("clang")) {
+            val archSuffix = when (currentArchitecture) {
+                Architecture.X64 -> "x86_64"
+                Architecture.ARM64 -> "aarch64"
+            }
+            val clangAsan = locateLibrary("libclang_rt.asan-$archSuffix", compiler)
+            if (clangAsan != null) return clangAsan
+        }
+        return locateLibrary("libasan", compiler)
+    }
+
+    fun locateLibtsan(compiler: String = "gcc"): String? {
+        if (currentPlatform != Platform.LINUX) return null
+        // For clang, prefer the architecture-specific clang_rt.tsan library over
+        // GCC's libtsan. GCC 11's libtsan only handles 39-bit VMA on aarch64;
+        // clang's compiler-rt tsan handles both 39-bit and 48-bit VMA.
+        if (compiler.contains("clang")) {
+            val archSuffix = when (currentArchitecture) {
+                Architecture.X64 -> "x86_64"
+                Architecture.ARM64 -> "aarch64"
+            }
+            val clangTsan = locateLibrary("libclang_rt.tsan-$archSuffix", compiler)
+            if (clangTsan != null) return clangTsan
+        }
+        return locateLibrary("libtsan", compiler)
+    }
+
+    fun checkFuzzerSupport(): Boolean {
+        return try {
+            val testFile = createTempFile("fuzzer_check", ".cpp")
+            val outFile = createTempFile("fuzzer_check", "")
+            // Remove the pre-created output file so the compiler writes its own binary
+            outFile.deleteIfExists()
+            try {
+                testFile.writeText("extern \"C\" int LLVMFuzzerTestOneInput(const char*, long) { return 0; }")
+
+                // Link (not just compile) to catch missing libclang_rt.fuzzer_osx.a on Apple clang
+                val process = ProcessBuilder(
+                    "clang++",
+                    "-fsanitize=fuzzer",
+                    testFile.toAbsolutePath().toString(),
+                    "-o",
+                    outFile.toAbsolutePath().toString()
+                ).redirectErrorStream(true).start()
+
+                if (!process.waitFor(30, TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                    process.waitFor(5, TimeUnit.SECONDS)
+                    return false
+                }
+                process.exitValue() == 0
+            } finally {
+                testFile.deleteIfExists()
+                outFile.deleteIfExists()
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun hasAsan(compiler: String = "gcc"): Boolean {
+        return !isMusl() && locateLibasan(compiler) != null
+    }
+
+    fun hasTsan(compiler: String = "gcc"): Boolean {
+        return !isMusl() && locateLibtsan(compiler) != null
+    }
+
+    fun hasFuzzer(): Boolean {
+        return !isMusl() && checkFuzzerSupport()
+    }
+
+    fun sharedLibExtension(): String = when (currentPlatform) {
+        Platform.LINUX -> "so"
+        Platform.MACOS -> "dylib"
+    }
+
+    /**
+     * Architecture targeted by the JVM running the build.
+     *
+     * This is used as a Gradle task input on every platform. Native compiler options remain
+     * platform-specific: macOS accepts a portable {@code -arch} flag, whereas Linux cross
+     * compilation requires a configured cross compiler (and usually a sysroot).
+     */
+    fun targetArchitecture(): String = currentArchitecture.toString()
+
+    /**
+     * Returns true unless the given compiler/linker driver is GCC-family (`gcc`, `g++`, or a
+     * versioned variant like `g++-13`), which does not accept Apple Clang's {@code -arch} flag.
+     * Anything else (`clang++`, `c++`, `cc`, or a custom path) is treated as clang-like.
+     */
+    private fun isClangLikeDriver(driver: String): Boolean {
+        val name = File(driver).name
+        return !Regex("""^(gcc|g\+\+)(-\d+(\.\d+)*)?$""").matches(name)
+    }
+
+    /**
+     * Forces Apple Clang to produce objects for the JVM's architecture.
+     *
+     * The compiler process may run through Rosetta even when Gradle and the JVM run natively on
+     * Apple Silicon. Without an explicit target, Apple Clang follows the compiler process
+     * architecture instead, producing objects that cannot be linked with native dependencies for
+     * the JVM architecture. This is intentionally macOS-only: {@code -arch} is an Apple Clang
+     * option; Linux cross compilation must be configured with its own target compiler and sysroot.
+     * GCC (via {@code -Pnative.forceCompiler}) doesn't accept {@code -arch}, so the flag is
+     * skipped when {@code driver} resolves to a GCC-family executable.
+     */
+    fun macosArchitectureArgs(driver: String): List<String> {
+        return macosArchitectureArgsFor(currentPlatform, currentArchitecture, driver)
+    }
+
+    /**
+     * Platform/architecture-parameterized implementation of [macosArchitectureArgs], split out so
+     * it can be unit tested independently of the host OS running the build.
+     */
+    internal fun macosArchitectureArgsFor(
+        platform: Platform,
+        architecture: Architecture,
+        driver: String
+    ): List<String> {
+        if (platform != Platform.MACOS || !isClangLikeDriver(driver)) {
+            return emptyList()
+        }
+
+        val archFlag = when (architecture) {
+            Architecture.X64 -> "x86_64"
+            Architecture.ARM64 -> "arm64"
+            else -> throw GradleException(
+                "Unsupported macOS native build architecture: $architecture"
+            )
+        }
+        return listOf("-arch", archFlag)
+    }
+
+    /**
+     * Find Homebrew LLVM installation on macOS.
+     * Returns the LLVM installation path or null if not found.
+     */
+    fun findHomebrewLLVM(): String? {
+        if (currentPlatform != Platform.MACOS) {
+            return null
+        }
+
+        val possiblePaths = listOf(
+            "/opt/homebrew/opt/llvm", // Apple Silicon
+            "/usr/local/opt/llvm" // Intel Mac
+        )
+
+        for (path in possiblePaths) {
+            if (File(path).exists() && File("$path/bin/clang++").exists()) {
+                return path
+            }
+        }
+
+        // Try using brew command
+        return try {
+            val process = ProcessBuilder("brew", "--prefix", "llvm")
+                .redirectErrorStream(true)
+                .start()
+            process.waitFor(5, TimeUnit.SECONDS)
+            if (process.exitValue() == 0) {
+                val brewPath = process.inputStream.bufferedReader().readText().trim()
+                if (File("$brewPath/bin/clang++").exists()) {
+                    brewPath
+                } else {
+                    null
+                }
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Find the clang resource directory within an LLVM installation.
+     * This is needed for locating libFuzzer on macOS with Homebrew LLVM.
+     */
+    fun findClangResourceDir(llvmPath: String?): String? {
+        if (llvmPath == null) {
+            return null
+        }
+
+        val clangLibDir = File("$llvmPath/lib/clang")
+        if (!clangLibDir.exists()) {
+            return null
+        }
+
+        // Find the version directory (e.g., 18.1.8 or 19)
+        val versions = clangLibDir.listFiles()
+            ?.filter { it.isDirectory }
+            ?.sortedByDescending { it.name }
+
+        return if (versions != null && versions.isNotEmpty()) {
+            "$llvmPath/lib/clang/${versions[0].name}"
+        } else {
+            null
+        }
+    }
+
+    /**
+     * Find a compiler suitable for fuzzing.
+     * On macOS, prefers Homebrew LLVM's clang++ for libFuzzer support.
+     */
+    fun findFuzzerCompiler(project: Project): String {
+        if (currentPlatform == Platform.MACOS) {
+            val homebrewLLVM = findHomebrewLLVM()
+            if (homebrewLLVM != null) {
+                return "$homebrewLLVM/bin/clang++"
+            }
+        }
+        return findCompiler(project)
+    }
+
+    /**
+     * Detect the installed clang-format version.
+     * Returns null if clang-format is not available.
+     */
+    fun clangFormatVersion(): String? {
+        return try {
+            val process = ProcessBuilder("clang-format", "--version").start()
+            process.waitFor(5, TimeUnit.SECONDS)
+            if (process.exitValue() == 0) {
+                val output = process.inputStream.bufferedReader().readText().trim()
+                val match = Regex("""clang-format version (\d+\.\d+\.\d+)""").find(output)
+                match?.groupValues?.get(1)
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Whether native compilation should be skipped for [project].
+     *
+     * `-Pskip-native` (bare, no value) or `skip-native=true` (the form
+     * gradle.properties.template documents) skips it everywhere — the
+     * long-standing behavior, used when consuming a prebuilt shipped library
+     * via -Pwith-libs and never touching a compiler. `skip-native=false` skips
+     * nothing.
+     *
+     * `-Pskip-native=<comma-separated project names>` skips it only for those
+     * projects. This lets a caller substitute the prebuilt *shipped* library
+     * (ddprof-lib) while still compiling something unrelated to its ABI, like
+     * ddprof-test-native's small JNI test helper, which several ddprof-test
+     * suites need on java.library.path regardless of which profiler binary
+     * is under test.
+     */
+    fun isNativeSkipped(project: Project): Boolean {
+        if (!project.hasProperty("skip-native")) {
+            return false
+        }
+        val value = (project.property("skip-native") as? String)?.trim()
+        if (value.isNullOrEmpty() || value.equals("true", ignoreCase = true)) {
+            return true
+        }
+        if (value.equals("false", ignoreCase = true)) {
+            return false
+        }
+        return value.split(",").map { it.trim() }.contains(project.name)
+    }
+
+    /**
+     * Find a C++ compiler, respecting -Pnative.forceCompiler property.
+     * Auto-detects clang++ or g++ if not specified.
+     */
+    fun findCompiler(project: Project): String {
+        // Check for forced compiler override
+        val forcedCompiler = project.findProperty("native.forceCompiler") as? String
+        if (forcedCompiler != null) {
+            if (isCompilerAvailable(forcedCompiler)) {
+                project.logger.info("Using forced compiler: $forcedCompiler")
+                return forcedCompiler
+            }
+            throw GradleException(
+                "Forced compiler '$forcedCompiler' is not available. " +
+                "Verify the path or remove -Pnative.forceCompiler to auto-detect."
+            )
+        }
+
+        // Auto-detect: prefer clang++, then g++, then c++
+        val compilers = listOf("clang++", "g++", "c++")
+        for (compiler in compilers) {
+            if (isCompilerAvailable(compiler)) {
+                project.logger.info("Auto-detected compiler: $compiler")
+                return compiler
+            }
+        }
+
+        throw GradleException(
+            "No C++ compiler found. Please install clang++ or g++, " +
+            "or specify one with -Pnative.forceCompiler=/path/to/compiler"
+        )
+    }
+
+    /**
+     * Returns the major version of the test JVM (e.g. 8, 11, 17, 21, 25).
+     * Returns 0 if the version cannot be determined.
+     */
+    fun testJvmMajorVersion(): Int {
+        val javaHome = testJavaHome()
+        return try {
+            val process = ProcessBuilder("$javaHome/bin/java", "-version")
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().readText()
+            process.waitFor(10, TimeUnit.SECONDS)
+            val match = Regex("""version "(?:1\.)?(\d+)""").find(output)
+            match?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    /**
+     * Returns true if the test JVM (from JAVA_TEST_HOME or JAVA_HOME) is an OpenJ9/J9 JVM.
+     * Probes `java -version` stderr output for "J9" or "OpenJ9".
+     */
+    fun isTestJvmJ9(): Boolean {
+        val javaHome = testJavaHome()
+        return try {
+            val process = ProcessBuilder("$javaHome/bin/java", "-version")
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().readText()
+            process.waitFor(10, TimeUnit.SECONDS)
+            output.contains("J9") || output.contains("OpenJ9")
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+}

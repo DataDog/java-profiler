@@ -103,14 +103,18 @@ struct CpuTimes {
 class SharedLineNumberTable {
 public:
   int _size;
-  // The buffer jvmti->GetLineNumberTable() returned, held directly (not a
-  // copy) and freed via jvmti->Deallocate() (see ~SharedLineNumberTable())
-  // so native-memory-tracking accounting stays correct. Per the JVMTI spec
-  // this array is a fresh, caller-owned allocation decoupled from the
-  // Method's lifetime, so holding onto it is safe across class unload.
+  // Either the buffer jvmti->GetLineNumberTable() returned, held directly (not
+  // a copy) and freed via jvmti->Deallocate() (see ~SharedLineNumberTable())
+  // so native-memory-tracking accounting stays correct, or -- when
+  // _jvmti_allocated is false -- a malloc'd table decoded from VM metadata by
+  // HotspotSupport::resolve(), freed via free(). Either way the array is
+  // decoupled from the Method's lifetime, so holding onto it is safe across
+  // class unload.
   jvmtiLineNumberEntry* _table;
+  bool _jvmti_allocated;
 
-  SharedLineNumberTable(int size, jvmtiLineNumberEntry *ptr) : _size(size), _table(ptr) {}
+  SharedLineNumberTable(int size, jvmtiLineNumberEntry *ptr, bool jvmti_allocated = true) :
+    _size(size), _table(ptr), _jvmti_allocated(jvmti_allocated) {}
   ~SharedLineNumberTable();
 };
 
@@ -307,6 +311,10 @@ private:
     return value < 0 ? 0 : value > 1 ? 1 : value;
   }
 
+  // Set only for the duration of checkpointChunk(): finishChunk() skips the
+  // JVMTI class pinning, and Lookup resolves jmethodID frames through VMStructs.
+  bool _vmstructs_only = false;
+
 public:
   Recording(int fd, Arguments &args);
   ~Recording();
@@ -316,6 +324,11 @@ public:
 
   off_t finishChunk(bool end_recording, bool do_cleanup = false);
   void switchChunk(int fd);
+  // Finishes the current chunk in place and starts the next one in the same
+  // file, resolving every method from VM metadata alone (no JNI/JVMTI), so it
+  // can run inside the JVMTI GarbageCollectionStart callback -- while the
+  // classes the pending samples point at are still loaded.
+  void checkpointChunk();
 
   void cpuMonitorCycle();
   void appendRecording(const char *target_file, size_t size);
@@ -450,6 +463,7 @@ private:
 };
 
 class ResolveMethodState;
+class ResolvedMethod;
 class Lookup {
 public:
   Recording *_rec;
@@ -492,6 +506,14 @@ private:
   // case. Every other path (including the "<unloaded>" stale-jmethodID
   // sentinel) fully populates mi and returns true.
   bool fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time, ResolveMethodState& state);
+  // Fills mi from a raw Method* already resolved by HotspotSupport::resolve(),
+  // taking ownership of its line number table. No JNI/JVMTI.
+  void fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod& resolved);
+  // Sets mi's class/name/signature ids, applying the synthetic-accessor and
+  // LambdaForm class name normalisation. class_name is an internal name
+  // ("java/lang/Object"), not necessarily NUL-terminated at class_name_len.
+  void fillJavaMethodNames(MethodInfo *mi, const char *class_name, size_t class_name_len,
+                           const char *method_name, const char *method_sig);
   bool has_prefix(const char *str, const char *prefix) const {
     return strncmp(str, prefix, strlen(prefix)) == 0;
   }
@@ -568,6 +590,12 @@ public:
   Error start(Arguments &args, bool reset);
   void stop();
   Error dump(const char *filename, const int length);
+  // Recording::checkpointChunk() on the active recording, split in two so the
+  // caller can do its own work in between. tryCheckpointBegin() never blocks:
+  // it returns true holding _rec_lock if there is a recording, and false
+  // holding nothing otherwise. checkpointAndEnd() writes and releases it.
+  bool tryCheckpointBegin();
+  void checkpointAndEnd();
   void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);

@@ -99,6 +99,43 @@ TEST_F(ArgumentsTest, CstackNoIsStillValid) {
     EXPECT_EQ(args._cstack, CSTACK_NO);
 }
 
+// Without an explicit fjmethodid, jmethodIDs are forced only for cstack modes
+// that cannot fall back to a raw Method* (anything but vm/vmx/default).
+TEST_F(ArgumentsTest, FjmethodidDefaultsFromCstack) {
+    struct { const char* args; bool expected; } cases[] = {
+        {"wall=1ms", false},
+        {"wall=1ms,cstack=vm", false},
+        {"wall=1ms,cstack=vmx", false},
+        {"wall=1ms,cstack=fp", true},
+        {"wall=1ms,cstack=dwarf", true},
+        {"wall=1ms,cstack=no", true},
+    };
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.args);
+        Arguments args;
+        EXPECT_FALSE(args.parse(c.args));
+        EXPECT_EQ(args._force_jmethodID, c.expected);
+    }
+}
+
+// An explicit fjmethodid wins over the cstack-derived default, wherever it
+// appears relative to cstack.
+TEST_F(ArgumentsTest, ExplicitFjmethodidOverridesCstackDefault) {
+    struct { const char* args; bool expected; } cases[] = {
+        {"cstack=vm,fjmethodid=true", true},
+        {"fjmethodid=true,cstack=vmx", true},
+        {"fjmethodid=true", true},
+        {"cstack=fp,fjmethodid=false", false},
+        {"fjmethodid=false,cstack=dwarf", false},
+    };
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.args);
+        Arguments args;
+        EXPECT_FALSE(args.parse(c.args));
+        EXPECT_EQ(args._force_jmethodID, c.expected);
+    }
+}
+
 TEST_F(ArgumentsTest, InvalidWallsamplerValueIsAnError) {
     Arguments args;
     Error error = args.parse("wallsampler=x");

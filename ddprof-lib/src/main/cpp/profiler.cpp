@@ -1784,6 +1784,24 @@ Error Profiler::start(Arguments &args, bool reset) {
     // Paired with drainInflight() on the stop side.
     _cpu_engine->enableEvents(true);
 
+    // onGCStart() may resolve frames from VM metadata only: raw Method* frames
+    // directly, jmethodID frames (every frame with cstack=fp/dwarf, and classes
+    // that still get one with cstack=vm) through the Method* their id slot
+    // holds. So the method/class structs must be known and jmethodIDs
+    // dereferenceable. Liveness tracking is excluded: processCallTraces() runs
+    // its checker under a lock that is held across JNI calls.
+    bool gc_checkpoint = VM::isHotspot() && VMStructs::hasMethodStructs() &&
+                         VMStructs::hasClassNames() &&
+                         VMStructs::canDereferenceJmethodID() &&
+                         !_call_trace_storage.hasLivenessCheckers();
+    if (gc_checkpoint) {
+      // Never disabled again: reference chains share the event, and
+      // onGCStart() checks _gc_checkpoint first.
+      VM::jvmti()->SetEventNotificationMode(
+          JVMTI_ENABLE, JVMTI_EVENT_GARBAGE_COLLECTION_START, nullptr);
+    }
+    _gc_checkpoint.store(gc_checkpoint, std::memory_order_release);
+
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -1807,6 +1825,7 @@ Error Profiler::stop() {
   if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
+  _gc_checkpoint.store(false, std::memory_order_release);
 
   // Order matters: disable engines first so the _enabled check inside signal
   // handlers will fail for any new signal delivered from now on. drain() then
@@ -2094,6 +2113,80 @@ void Profiler::lockAll() {
 void Profiler::unlockAll() {
   for (int i = 0; i < CONCURRENCY_LEVEL; i++)
     _locks[i].unlock();
+}
+
+bool Profiler::tryLockAll() {
+  // Holders are signal handlers and JNI writers that keep a lock for a few
+  // microseconds; a short spin rides those out.
+  const int max_spins = 1000;
+  for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+    int spins = 0;
+    while (!_locks[i].tryLock()) {
+      if (++spins >= max_spins) {
+        while (--i >= 0) {
+          _locks[i].unlock();
+        }
+        return false;
+      }
+      spinPause();
+    }
+  }
+  return true;
+}
+
+// Writes a JFR checkpoint -- finishes the current chunk -- at the start of
+// every GC, so samples of methods a GC is about to unload are serialized while
+// their metadata is still there to read, rather than as <unloaded>/unknown at
+// the next dump.
+//
+// Runs in the JVMTI GarbageCollectionStart callback, with the VM stopped: no
+// JNI, almost no JVMTI (Recording::checkpointChunk() resolves every method
+// from VM metadata; start() enables this only where that works), and nothing
+// may block, since a thread holding one of our locks may itself be parked for
+// this pause. So every lock is try-locked, and a GC that finds one taken skips
+// the checkpoint. Locks are taken in dump()'s order (_state_lock, _locks[],
+// then the recording's), and all of them before rotating the dictionaries: a
+// rotation must always be followed by the cpool write that consumes it.
+void Profiler::onGCStart() {
+  if (!_gc_checkpoint.load(std::memory_order_acquire)) {
+    return;
+  }
+  if (!_state_lock.tryLock()) {
+    Counters::increment(GC_CHECKPOINTS_SKIPPED);
+    return;
+  }
+  bool written = false;
+  if (state() == RUNNING && tryLockAll()) {
+    SignalBlocker blocker;
+    if (_jfr.tryCheckpointBegin()) {
+      if (!_class_map.rotate()) {
+        reportDrainTimeout("Class map reused a standby buffer it could not clear");
+      }
+      if (!_string_label_map.rotate()) {
+        reportDrainTimeout("String label map reused a standby buffer it could not clear");
+      }
+      if (!_context_value_map.rotate()) {
+        reportDrainTimeout("Context value map reused a standby buffer it could not clear");
+      }
+      _jfr.checkpointAndEnd();
+      written = true;
+      __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+      unlockAll();
+      if (!_class_map.clearStandby()) {
+        reportDrainTimeout("Class map standby buffer not cleared");
+      }
+      if (!_string_label_map.clearStandby()) {
+        reportDrainTimeout("String label map standby buffer not cleared");
+      }
+      if (!_context_value_map.clearStandby()) {
+        reportDrainTimeout("Context value map standby buffer not cleared");
+      }
+    } else {
+      unlockAll();
+    }
+  }
+  _state_lock.unlock();
+  Counters::increment(written ? GC_CHECKPOINTS : GC_CHECKPOINTS_SKIPPED);
 }
 
 void Profiler::switchThreadEvents(jvmtiEventMode mode) {

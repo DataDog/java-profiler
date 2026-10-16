@@ -165,11 +165,15 @@
   /* Every siglongjmp recovery, from any protected window, counted centrally  \
    * in Profiler::checkFault(). */                                            \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
+  /* JFR chunks written from GarbageCollectionStart (Profiler::onGCStart()),  \
+   * and GCs that skipped it because a lock was taken. */                     \
+  X(GC_CHECKPOINTS, "gc_checkpoints")                                         \
+  X(GC_CHECKPOINTS_SKIPPED, "gc_checkpoints_skipped")                         \
   /* Dump-time method resolution failures. The frame serializes as "unknown". */ \
   X(METHOD_RESOLVE_FAULT_RECOVERED, "method_resolve_fault_recovered")         \
   /* Symbol length/body rejected during the same resolution: unreadable body,  \
    * empty (recycled slot), or over MAX_SYMBOL_LEN. A name that merely exceeds \
-   * the fixed inline buffers in hotspotSupport.cpp's ResolvedNames still      \
+   * the fixed inline buffers in hotspotSupport.h's ResolvedMethod still      \
    * resolves via its malloc fallback and does not land here. The frame        \
    * serializes as "unknown". */                                               \
   X(METHOD_RESOLVE_SYMBOL_UNREADABLE, "method_resolve_symbol_unreadable")     \

@@ -264,6 +264,12 @@ class ProfilerTestPlugin : Plugin<Project> {
             // Configure Java executable - bypasses toolchain system
             testTask.setExecutable(PlatformUtils.testJavaExecutable())
 
+            // Run each test class in a fresh JVM: the profiler's native state
+            // (started engines, preloaded jmethodIDs, patched libraries, counters)
+            // outlives a single test and otherwise leaks into the next class.
+            // Gradle forks per class at most; methods of one class share a JVM.
+            testTask.setForkEvery(1)
+
             // Environment variables (from testConfig which already includes DDPROF_TEST_DISABLE_RATE_LIMIT and CI)
             testConfig.environmentVariables.forEach { (key, value) ->
                 testTask.environment(key, value)
@@ -325,12 +331,9 @@ class ProfilerTestPlugin : Plugin<Project> {
                         !PlatformUtils.isTestJvmJ9()
                     }
                     // The ASAN test JVM is pinned to -Xmx1024m (see ConfigurationPresets.kt)
-                    // to keep the heap below ASan's shadow-memory region. Without forking,
-                    // Gradle reuses one JVM for the whole suite, and per-test allocations
-                    // (JFR recordings, JMC object models) accumulate until it OOMs late in
-                    // the run even though every individual test passes. Restart periodically
-                    // to bound cumulative heap growth.
-                    testTask.setForkEvery(25)
+                    // to keep the heap below ASan's shadow-memory region; forkEvery(1)
+                    // above keeps per-test allocations (JFR recordings, JMC object models)
+                    // from accumulating across the suite until it OOMs.
                 }
                 // TSan + JVM integration tests are incompatible: the profiler's signal
                 // handlers (SIGPROF at 1ms) are TSan-instrumented; when a signal fires

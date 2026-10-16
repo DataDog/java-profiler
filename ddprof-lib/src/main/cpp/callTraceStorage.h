@@ -96,6 +96,10 @@ public:
 
     // Register a liveness checker (rare operation - uses simple lock)
     void registerLivenessChecker(LivenessChecker checker);
+    bool hasLivenessCheckers() {
+        SharedLockGuard lock(&_liveness_lock);
+        return !_liveness_checkers.empty();
+    }
 
     // Clear liveness checkers (rare operation - uses simple lock)
     void clearLivenessCheckers();

@@ -114,7 +114,8 @@ val cleanLibCoverageData = tasks.register<Delete>("cleanLibCoverageData") {
 }
 
 tasks.matching { it.name in coverageTaskNames }.configureEach {
-  dependsOn(cleanLibCoverageData)
+  // Registered by :ddprof-lib only with -PenableCoverage, as are these tasks.
+  dependsOn(":ddprof-lib:checkCoverageTools", cleanLibCoverageData)
   // The failed tests' results are cached like a pass would be, so a rerun must not be
   // UP-TO-DATE and silently skip the deferred failure (or the cleared .gcda counts).
   if (requestingCoverageReport) {

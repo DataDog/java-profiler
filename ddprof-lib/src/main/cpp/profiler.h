@@ -148,6 +148,8 @@ private:
   int _safe_mode;
   CStack _cstack;
   bool _force_jmethodID;
+  // Whether onGCStart() writes a JFR checkpoint; see onGCStart().
+  std::atomic<bool> _gc_checkpoint{false};
 
   volatile jvmtiEventMode _thread_events_state;
 
@@ -189,6 +191,8 @@ private:
   Error checkJvmCapabilities();
 
   void lockAll();
+  // lockAll() that gives up, holding nothing, if any lock stays taken.
+  bool tryLockAll();
   // Resets the dictionaries, the call trace storage and the counters for a
   // fresh recording; returns how many dictionaries were left unchanged because
   // their drain timed out.
@@ -371,6 +375,8 @@ public:
   Error start(Arguments &args, bool reset);
   Error stop();
   Error dump(const char *path, const int length);
+  // JVMTI GarbageCollectionStart hook. See the definition.
+  void onGCStart();
   Error checkState();
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);

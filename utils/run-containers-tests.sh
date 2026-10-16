@@ -1254,6 +1254,10 @@ if $NEEDS_PRIVILEGED; then
     CONTAINER_CMD="$CONTAINER_CMD --privileged"
 fi
 CONTAINER_CMD="$CONTAINER_CMD $CONTAINER_PLATFORM"
+# Podman caps containers at 2048 pids by default (Docker doesn't); thread-churn tests
+# such as StartWithChurningThreadsTest exceed that, especially under the slower
+# coverage build, and fail with "unable to create native thread".
+CONTAINER_CMD="$CONTAINER_CMD --pids-limit=-1"
 CONTAINER_CMD="$CONTAINER_CMD -e LIBC=$LIBC"
 CONTAINER_CMD="$CONTAINER_CMD -e SANITIZER=$CONFIG"
 CONTAINER_CMD="$CONTAINER_CMD -e TEST_CONFIGURATION=$LIBC/${JDK_VERSION}-$CONFIG-$ARCH"
