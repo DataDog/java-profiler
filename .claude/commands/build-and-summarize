@@ -33,11 +33,16 @@ gradle_pid=$!
 #  - Task starts
 #  - Final build status
 #  - Test summary lines
-tail -n0 -F "$LOG" | awk '
+# tail itself is the background job, so $! is its PID and killing it also ends
+# awk. (Backgrounding "tail | awk" would make $! the PID of awk instead: killing
+# awk leaves tail following a log that never grows again, so it never notices,
+# and since it inherits this script's stderr, a caller piping our output never
+# sees end of input.)
+tail -n0 -F "$LOG" 2>/dev/null > >(awk '
   /^> Task / { print; fflush(); next }
   /^BUILD (SUCCESSFUL|FAILED)/ { print; fflush(); next }
   /[0-9]+ tests? (successful|failed|skipped)/ { print; fflush(); next }
-' &
+') &
 tail_pid=$!
 
 # Wait for Gradle to finish
