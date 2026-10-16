@@ -862,7 +862,7 @@ TEST_F(ResolvedChainCacheTest, LeakTagChainOfCurrentOwnerIsResolvedAndEmitted) {
 
 // ABA: the chain's object dies (tag released), and the tag is recycled for a new
 // object. The old chain must not be attributed to the new owner by the seam nor emitted into the
-// dump - and it must not be erased either (the eviction policy owns removal).
+// dump, and the dump evicts it (ownership stamps only advance, so it can never become valid).
 TEST_F(ResolvedChainCacheTest, LeakTagChainOfDeadOwnerIsNeitherResolvedNorEmitted) {
     LivenessTracker *lt = LivenessTracker::instance();
     jlong leak = lt->acquireLeakTagForTest();
@@ -876,8 +876,8 @@ TEST_F(ResolvedChainCacheTest, LeakTagChainOfDeadOwnerIsNeitherResolvedNorEmitte
     lt->releaseLeakTagForTest(leak);
     EXPECT_EQ(0, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(leak));
     EXPECT_FALSE(drainContainsTarget((u64)leak));
-    EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount())
-        << "emission must not erase the stale chain";
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount())
+        << "the dump must evict the dead owner's chain";
 
     // A new object receives the recycled tag (LIFO).
     jlong reused = lt->acquireLeakTagForTest();
@@ -885,7 +885,7 @@ TEST_F(ResolvedChainCacheTest, LeakTagChainOfDeadOwnerIsNeitherResolvedNorEmitte
     EXPECT_EQ(0, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(reused))
         << "the dead owner's chain was attributed to the tag's new owner";
     EXPECT_FALSE(drainContainsTarget((u64)reused));
-    EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount());
 
     // Once the new owner's own chain is cached, it is the one that matches.
     ReferenceChainsTestAccessor::cacheChain(
@@ -895,6 +895,20 @@ TEST_F(ResolvedChainCacheTest, LeakTagChainOfDeadOwnerIsNeitherResolvedNorEmitte
     ReferenceChainsTestAccessor::drain(&out);
     ASSERT_EQ(1u, out.size()) << "only the current owner's chain is emitted";
     EXPECT_EQ(lt->leakTagIncarnation(reused), out[0]._leak_tag_incarnation);
+}
+
+// A chain built from a binding whose leak-tag owner already died is refused by the cache: it
+// would only occupy a MAX_RESOLVED_CHAINS slot until the next dump evicts it.
+TEST_F(ResolvedChainCacheTest, DeadOwnerChainIsNotCached) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    jlong leak = lt->acquireLeakTagForTest();
+    ASSERT_TRUE(ReferenceChainTracker::isLeakTag(leak));
+    u32 stale_stamp = lt->leakTagIncarnation(leak);
+    lt->releaseLeakTagForTest(leak);
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(1000);
+    ReferenceChainsTestAccessor::cacheChain(5, makeLeakEvent(leak, stale_stamp), 5, 1000);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount());
+    EXPECT_FALSE(drainContainsTarget((u64)leak));
 }
 
 // Within one ownership period the leak-tag path is generation-agnostic: a chain an earlier search

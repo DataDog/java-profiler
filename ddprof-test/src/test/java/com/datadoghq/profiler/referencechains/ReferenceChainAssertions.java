@@ -31,6 +31,26 @@ import java.util.Map;
 public final class ReferenceChainAssertions {
   private ReferenceChainAssertions() {}
 
+  /**
+   * Leak-tag pool range, mirrored from referenceChains.h / livenessTracker.h (LEAK_TAG_BASE,
+   * LEAK_TAG_POOL_SIZE): a correlated chain's targetTag and its HeapLiveObject's leakTag must fall
+   * into [LEAK_TAG_BASE, LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE). Asserted against runtime event
+   * values.
+   */
+  public static final long LEAK_TAG_BASE = 0x40000000L;
+
+  public static final long LEAK_TAG_POOL_SIZE = 256;
+
+  /**
+   * True on every native build that compiles javaApi.cpp's {@code #ifdef DEBUG} test seams: debug,
+   * asan and tsan (all add -DDEBUG, ConfigurationPresets.kt). Release builds get no-op seam stubs.
+   * Child JVMs see the same answer because the launchers forward {@code -Dddprof_test.config}.
+   */
+  public static boolean isDebugInstrumentedBuild() {
+    String config = System.getProperty("ddprof_test.config");
+    return config != null && ("debug".equals(config) || config.endsWith("san"));
+  }
+
   /** Result of {@link #findMatchForClass(IItemCollection, Class)}: one resolved chain event's fields. */
   public static final class ChainMatch {
     public final List<IMCType> chain;

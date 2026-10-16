@@ -6,7 +6,7 @@
 package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.ReferenceChainTestHooks;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
@@ -15,12 +15,11 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
-import org.junitpioneer.jupiter.RetryingTest;
 
 import java.nio.file.Files;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.TimeUnit;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -65,10 +64,6 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   // through regardless of root kind.) Cleared in the test's finally so it does not keep its
   // population reachable for later tests in this shared JVM.
   private static List<Object> gcRootHolder;
-
-  // Volatile: handed to the allocator thread every round. The request queue already provides
-  // happens-before; this keeps the cross-thread visibility explicit.
-  private static volatile List<Object> currentBatch;
 
   // consecutive_positive only starts incrementing once ring_fill reaches
   // KLASS_POPULATION_MIN_FILL_FOR_TREND=10 (ringThirdsStats()'s fill < min_fill guard resets it to
@@ -169,7 +164,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
    * {@code datadog.ReferenceChain} JFR setting (flightRecorder.cpp's
    * {@code writeBoolSetting(buf, T_REFERENCE_CHAIN, "enabled", args._reference_chains)}).
    */
-  @RetryingTest(5)
+  @Test
   public void shouldExposeReferenceChainsSettingWhenEnabled() {
     stopProfiler();
     JfrEvents settings = verifyEvents("jdk.ActiveSetting");
@@ -208,46 +203,18 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     // whichever array the walk snapshots is non-empty.
     gcRootHolder = new ArrayList<>();
     gcRootHolder.add(new ChainLink("gc-root-seed"));
-    if ("debug".equals(System.getProperty("ddprof_test.config"))) {
+    if (ReferenceChainAssertions.isDebugInstrumentedBuild()) {
       // @Order(1) only orders this class: another test class in this no-forkEvery JVM may have
       // left the singleton search non-RUNNING, after which runPass() never takes its root-seeded
       // walk again. The population reset is needed for the same reason: _klass_population
       // survives stop()/start(), and a leftover klass already past the hysteresis gate would let
       // the first pass start regardless of this method's own seeding, masking whether it is
       // sufficient. Debug-only: these native seams do not exist in a release build.
-      JavaProfiler.resetKlassPopulationForTest0();
-      JavaProfiler.resetReferenceChainSearchForTest0();
+      ReferenceChainTestHooks.resetKlassPopulationForTest0();
+      ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     }
-      // One persistent allocator thread, reused by every round: SampledObjectAlloc does not fire
-      // for this JUnit worker thread's own allocations, but does for threads created after
-      // Profiler::start(). Keeping a single tid lets the per-(klass, tid) qualification trend
-      // accumulate real samples every round (foldKlassCountsLocked()), so qualification cannot
-      // age out mid-test the way a fresh short-lived tid per round did (slope decayed to ~0 at
-      // ring_fill=22 and the candidate dropped out with the crawl unfinished).
-      LinkedBlockingQueue<Integer> allocRequests = new LinkedBlockingQueue<>();
-      Semaphore roundDone = new Semaphore(0);
-      AtomicLong allocatorTid = new AtomicLong(-1);
-      Thread allocator = new Thread(() -> {
-        allocatorTid.set(JavaProfiler.getTid());
-        try {
-          Integer requested;
-          while ((requested = allocRequests.take()) != null) {
-            List<Object> batch = currentBatch;
-            for (int i = 0; i < requested; i++) {
-              batch.add(new ChainLink("leak-" + requested + "-" + i));
-            }
-            roundDone.release();
-          }
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt(); // test shutdown - see finally below
-        }
-      }, "togcroot-leak-allocator");
-      allocator.start();
-      // The seeding block below needs the allocator's tid; the thread publishes
-      // its own tid as its first action, so this wait is bounded by thread start.
-      while (allocatorTid.get() == -1) {
-        Thread.sleep(1);
-      }
+    // Every ChainLink is allocated by one persistent thread - see PersistentAllocator.
+    PersistentAllocator allocator = new PersistentAllocator("togcroot-leak-allocator");
 
     Path scratchDumpPath = Paths.get("referencechains-population-scratch.jfr");
     try {
@@ -271,18 +238,17 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       for (int round = 1; round <= totalRounds && match == null; round++) {
         int newInstances = Math.min(round, 10) * 600;
         List<Object> newLinks = new ArrayList<>(newInstances);
-        currentBatch = newLinks; // published before the request - see the allocator's loop
-        if (!allocRequests.offer(newInstances)) {
-          throw new IllegalStateException(
-              "allocRequests queue rejected instance count " + newInstances);
-        }
-        roundDone.acquireUninterruptibly();
+        allocator.run(() -> {
+          for (int i = 0; i < newInstances; i++) {
+            newLinks.add(new ChainLink("leak-" + newInstances + "-" + i));
+          }
+        });
         gcRootHolder.addAll(newLinks);
         System.gc();
         dump(scratchDumpPath);
         match = ReferenceChainAssertions.findMatchForClass(verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false), ChainLink.class);
 
-        if (match == null && "debug".equals(System.getProperty("ddprof_test.config"))) {
+        if (match == null && ReferenceChainAssertions.isDebugInstrumentedBuild()) {
           // Under generations=true, shouldRunPass() gates even the first pass on hasLeakSignal(),
           // which this early falls through to selectLeakCandidates()'s hysteresis gate for some
           // klass. Seeding SEED_EPOCHS_FOR_HYSTERESIS epochs clears it, authorizing the BFS
@@ -296,22 +262,22 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           // Representative before seeding: setting it aliases the synthetic id to the
           // representative's real klass id, so the seeds land in the real population entry
           // (seeds under a bare synthetic id satisfy only hasLeakSignal()'s candidate count).
-          JavaProfiler.setKlassPopulationRepresentativeForTest0(CHAIN_LINK_TEST_KLASS_ID, gcRootHolder.get(0));
+          ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(CHAIN_LINK_TEST_KLASS_ID, gcRootHolder.get(0));
           if (!seededTestKlassTrend) {
             // The allocator thread owns every ChainLink allocation, so its tid is the qualifying
             // one; the seeds accelerate the organic per-tid growth it produces every round.
-            int leakTid = (int) allocatorTid.get();
+            int leakTid = allocator.tid();
             // Seed counts match the organic ramp (+1 per epoch): hasQualifyingGrowth() compares
             // third-window means over seeds followed by real folds, and inflated seeds (epoch*10)
             // made the slope go negative (-20..-40 observed) once real samples displaced them.
             // With matched scale ([1..15, 1, 2, 3, ...]) every window pairing stays positive.
             for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
-              JavaProfiler.seedKlassPopulationSample0(CHAIN_LINK_TEST_KLASS_ID, epoch, epoch);
-              JavaProfiler.seedTidTrendSample0(CHAIN_LINK_TEST_KLASS_ID, leakTid, epoch, epoch);
+              ReferenceChainTestHooks.seedKlassPopulationSample0(CHAIN_LINK_TEST_KLASS_ID, epoch, epoch);
+              ReferenceChainTestHooks.seedTidTrendSample0(CHAIN_LINK_TEST_KLASS_ID, leakTid, epoch, epoch);
             }
             seededTestKlassTrend = true;
           }
-          JavaProfiler.pollReferenceChainTargets0();
+          ReferenceChainTestHooks.pollReferenceChainTargets0();
           dump(scratchDumpPath);
           match = ReferenceChainAssertions.findMatchForClass(verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false), ChainLink.class);
         }
@@ -350,11 +316,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       assertTrue(!gcRootHolder.isEmpty()); // keeps every allocated ChainLink reachable until here
     } finally {
       gcRootHolder = null; // shared-JVM hygiene - see the static holder's own comment
-      currentBatch = null;
-      // A leftover allocator thread would keep its tid trend alive into later tests in this
-      // shared, no-forkEvery JVM.
-      allocator.interrupt();
-      allocator.join(1000);
+      allocator.close();
       Files.deleteIfExists(scratchDumpPath);
     }
   }
@@ -377,15 +339,17 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     // gcRootHolder's seeding: HashMap's table is only allocated on the first put().
     Map<String, CachedPayload> cache = new HashMap<>();
     cache.put("cache-leak-seed", new CachedPayload("cache-leak-seed"));
-    if ("debug".equals(System.getProperty("ddprof_test.config"))) {
+    if (ReferenceChainAssertions.isDebugInstrumentedBuild()) {
       // The natural restart after the @Order(1) search ends is gated on canAffordNewSearch() and
       // not guaranteed within this method's retry budget, so force a fresh search. The population
       // reset is also needed: resetReferenceChainSearchForTest0() leaves LivenessTracker's rings
       // alone, and ChainLink's leftover positive slope could outrank CachedPayload.
       // Debug-only: these native seams do not exist in a release build.
-      JavaProfiler.resetKlassPopulationForTest0();
-      JavaProfiler.resetReferenceChainSearchForTest0();
+      ReferenceChainTestHooks.resetKlassPopulationForTest0();
+      ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     }
+    // Every CachedPayload is allocated by one persistent thread - see PersistentAllocator.
+    PersistentAllocator allocator = new PersistentAllocator("cache-leak-allocator");
     Path scratchDumpPath = Paths.get("referencechains-cache-leak-scratch.jfr");
     try {
       // Same round-growth/retry shape (and caps) as shouldReconstructReferrerChainToGcRoot().
@@ -411,33 +375,34 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
         // lower rate let CachedPayload's ring stall short of KLASS_POPULATION_MIN_FILL_FOR_TREND.
         int newEntries = Math.min(round, 10) * 600;
         int keyOffset = nextKey;
-        Thread allocator = new Thread(() -> {
+        allocator.run(() -> {
           for (int i = 0; i < newEntries; i++) {
             String key = keys[keyOffset + i];
             cache.put(key, new CachedPayload(key));
           }
         });
-        allocator.start();
-        allocator.join();
         nextKey += newEntries;
         System.gc();
         dump(scratchDumpPath);
         JfrEvents events1 = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
         match = ReferenceChainAssertions.findMatchForClass(events1, CachedPayload.class);
 
-        if (match == null && "debug".equals(System.getProperty("ddprof_test.config"))) {
+        if (match == null && ReferenceChainAssertions.isDebugInstrumentedBuild()) {
           // Same seed-once, representative-first, best-effort-poll rationale as
           // shouldReconstructReferrerChainToGcRoot().
-          JavaProfiler.setKlassPopulationRepresentativeForTest0(CACHED_PAYLOAD_TEST_KLASS_ID, cache.get(keys[0]));
+          ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(CACHED_PAYLOAD_TEST_KLASS_ID, cache.get(keys[0]));
           if (!seededTestKlassTrend) {
-            int leakTid = JavaProfiler.getTid();
+            // The allocator thread owns every CachedPayload allocation, and the seeds use the
+            // organic ramp's scale - both for the reasons shouldReconstructReferrerChainToGcRoot()
+            // gives.
+            int leakTid = allocator.tid();
             for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
-              JavaProfiler.seedKlassPopulationSample0(CACHED_PAYLOAD_TEST_KLASS_ID, epoch * 10, epoch);
-              JavaProfiler.seedTidTrendSample0(CACHED_PAYLOAD_TEST_KLASS_ID, leakTid, epoch * 3, epoch);
+              ReferenceChainTestHooks.seedKlassPopulationSample0(CACHED_PAYLOAD_TEST_KLASS_ID, epoch, epoch);
+              ReferenceChainTestHooks.seedTidTrendSample0(CACHED_PAYLOAD_TEST_KLASS_ID, leakTid, epoch, epoch);
             }
             seededTestKlassTrend = true;
           }
-          JavaProfiler.pollReferenceChainTargets0();
+          ReferenceChainTestHooks.pollReferenceChainTargets0();
           dump(scratchDumpPath);
           JfrEvents events2 = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
           match = ReferenceChainAssertions.findMatchForClass(events2, CachedPayload.class);
@@ -484,6 +449,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
               + "storage (cache is a HashMap) - chain was: " + match.chain);
       assertTrue(!cache.isEmpty()); // keeps every cached CachedPayload reachable until here
     } finally {
+      allocator.close();
       Files.deleteIfExists(scratchDumpPath);
     }
   }
@@ -518,7 +484,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   @Test
   @Order(3)
   public void shouldReportAbandonedSearchOnTinyFrontierCap() throws Exception {
-    if ("debug".equals(System.getProperty("ddprof_test.config"))) {
+    if (ReferenceChainAssertions.isDebugInstrumentedBuild()) {
       // GC + throwaway dump before seeding - see javadoc.
       System.gc();
       Path warmupDumpPath = Paths.get("referencechains-abandoned-test-warmup.jfr");
@@ -527,14 +493,14 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       } finally {
         Files.deleteIfExists(warmupDumpPath);
       }
-      JavaProfiler.resetKlassPopulationForTest0();
+      ReferenceChainTestHooks.resetKlassPopulationForTest0();
       // Gate-only seeding: no tagged instance needs to match, so any tid would do.
-      int abandonTid = JavaProfiler.getTid();
+      int abandonTid = ReferenceChainTestHooks.getTid();
       for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
-        JavaProfiler.seedKlassPopulationSample0(ABANDON_TEST_KLASS_ID, epoch * 10, epoch);
-        JavaProfiler.seedTidTrendSample0(ABANDON_TEST_KLASS_ID, abandonTid, epoch * 3, epoch);
+        ReferenceChainTestHooks.seedKlassPopulationSample0(ABANDON_TEST_KLASS_ID, epoch * 10, epoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(ABANDON_TEST_KLASS_ID, abandonTid, epoch * 3, epoch);
       }
-      JavaProfiler.resetReferenceChainSearchForTest0();
+      ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     }
     List<Object> gcRootHolder = new ArrayList<>();
     gcRootHolder.add(new ChainLink("middle", new ChainLink("leaf")));

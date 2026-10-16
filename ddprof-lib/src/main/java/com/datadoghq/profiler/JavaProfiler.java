@@ -468,7 +468,7 @@ public final class JavaProfiler {
      * against. Must be called ON the leaking thread, or the seeded tid will match no
      * tracked instance and no leak tag will be assigned.
      */
-    public static int getTid() {
+    static int getTid() {
         return getTid0();
     }
 
@@ -549,7 +549,7 @@ public final class JavaProfiler {
      * bypassing {@code initialize()}'s live-JVM requirement. Returns {@code true} on
      * debug builds.
      */
-    public static native boolean setGcGenerationsEnabled0(boolean enabled);
+    static native boolean setGcGenerationsEnabled0(boolean enabled);
 
     /**
      * Test seam (debug native builds only): seeds one epoch's worth of population
@@ -558,7 +558,7 @@ public final class JavaProfiler {
      * {@code epoch} values) build up a trend {@link #selectLeakCandidateKlassIds0()}
      * can then rank.
      */
-    public static native void seedKlassPopulationSample0(int klassId, int count, long epoch);
+    static native void seedKlassPopulationSample0(int klassId, int count, long epoch);
 
     /**
      * Test seam (debug native builds only): seeds one epoch's worth of per-tid trend
@@ -569,7 +569,7 @@ public final class JavaProfiler {
      * must come from {@link #getTid()} whenever the scenario relies on leak tagging of
      * real tracked instances.
      */
-    public static native void seedTidTrendSample0(int klassId, int tid, int count, long epoch);
+    static native void seedTidTrendSample0(int klassId, int tid, int count, long epoch);
 
     /**
      * Test seam (debug native builds only): wires {@code representative} in as {@code klassId}'s
@@ -579,13 +579,13 @@ public final class JavaProfiler {
      * {@link #pollReferenceChainTargets0()}'s bridging step run without the real sampler or
      * root-seeded walk.
      */
-    public static native void setKlassPopulationRepresentativeForTest0(int klassId, Object representative);
+    static native void setKlassPopulationRepresentativeForTest0(int klassId, Object representative);
 
     /**
      * Test seam (debug native builds only): clears LivenessTracker's per-klass population table,
      * so a later test in the same JVM does not observe leak candidates seeded by an earlier one.
      */
-    public static native void resetKlassPopulationForTest0();
+    static native void resetKlassPopulationForTest0();
 
     /**
      * Test seam (debug native builds only): returns the klass ids LivenessTracker's
@@ -593,7 +593,7 @@ public final class JavaProfiler {
      * selects - the same call ReferenceChainTracker's restart gate and target-polling
      * bridge use in production. Does not require a reference-chain search to be running.
      */
-    public static native int[] selectLeakCandidateKlassIds0();
+    static native int[] selectLeakCandidateKlassIds0();
 
     /**
      * Test seam (debug native builds only): tags {@code target} and inserts it
@@ -604,7 +604,7 @@ public final class JavaProfiler {
      * {@code datadog.ReferenceChain} event reports), or {@code 0} on failure (reference
      * chains disabled, or the frontier table is at capacity).
      */
-    public static native long tagAsReferenceChainRoot0(Object target);
+    static native long tagAsReferenceChainRoot0(Object target);
 
     /**
      * Test seam (debug native builds only): runs exactly one bounded BFS pass of the
@@ -612,7 +612,7 @@ public final class JavaProfiler {
      * background thread/cadence. Returns {@code false} if reference chains are
      * disabled or the tracker was never started.
      */
-    public static native boolean runReferenceChainPass0();
+    static native boolean runReferenceChainPass0();
 
     /**
      * Test seam (debug native builds only): runs one poll of
@@ -621,15 +621,16 @@ public final class JavaProfiler {
      * {@link #runReferenceChainPass0()} walk, reconstructs and queues its chain
      * event, rather than waiting on the background thread's own scheduling cycle.
      */
-    public static native void pollReferenceChainTargets0();
+    static native void pollReferenceChainTargets0();
 
     /**
-     * Test seam (debug native builds only): drains and returns the number of
-     * reference-chain events queued by {@link #pollReferenceChainTargets0()} so far
-     * (the same queue {@code Profiler.dump()} drains in production to write
-     * {@code datadog.ReferenceChain} JFR events).
+     * Test seam (debug native builds only): drains the reference-chain events queued by
+     * {@link #pollReferenceChainTargets0()} so far (the same queue {@code Profiler.dump()} drains
+     * in production to write {@code datadog.ReferenceChain} JFR events) and returns how many of
+     * them have {@code leaf}'s class as their leaf (first) hop. Chains for other targets, e.g. left
+     * cached by an earlier test in the same JVM, are not counted.
      */
-    public static native int drainReferenceChainEventCount0();
+    static native int drainReferenceChainEventCountForLeaf0(Object leaf);
 
     /**
      * Test seam (debug native builds only): resets ReferenceChainTracker's search/frontier state
@@ -637,7 +638,7 @@ public final class JavaProfiler {
      * is a process-wide singleton and runPass() walks from the roots only once per search, so an
      * in-process test needing its own root-seeded walk must call this first.
      */
-    public static native void resetReferenceChainSearchForTest0();
+    static native void resetReferenceChainSearchForTest0();
 
     /**
      * Test seam (debug native builds only): diagnostic-only, does not tag {@code target}. Reads
@@ -646,14 +647,14 @@ public final class JavaProfiler {
      * (0 = expands next) if still queued, {@code -1} if tagged but no longer queued (already
      * expanded), or {@code -2} if never admitted at all.
      */
-    public static native long getReferenceChainPendingPositionForTest0(Object target);
+    static native long getReferenceChainPendingPositionForTest0(Object target);
 
     /**
      * Test seam (debug native builds only): the current size of ReferenceChainTracker's
      * pending-expansion queue, for computing {@link #getReferenceChainPendingPositionForTest0}'s
      * position as a fraction of the current backlog.
      */
-    public static native long getReferenceChainPendingSizeForTest0();
+    static native long getReferenceChainPendingSizeForTest0();
 
     /**
      * Test seam (-DDEBUG native builds only - debug/asan/tsan; returns -1 in release): does not
@@ -664,7 +665,7 @@ public final class JavaProfiler {
      * {@code -1} if target has no frontier entry (never admitted, or still carrying only a leak
      * tag).
      */
-    public static native int getReferenceChainFrontierStateForTest0(Object target);
+    static native int getReferenceChainFrontierStateForTest0(Object target);
 
     /**
      * Test seam (-DDEBUG native builds only - debug/asan/tsan; returns 0 in release): does not
@@ -675,7 +676,7 @@ public final class JavaProfiler {
      * ownership of that leak tag: leak tags are recycled after their object dies, so identity is
      * the (leak tag, ownership-period stamp) pair, not the tag alone.
      */
-    public static native long getReferenceChainResolvedTargetTagForTest0(Object target);
+    static native long getReferenceChainResolvedTargetTagForTest0(Object target);
 
     /**
      * Test seam (debug native builds only): seeds one heap-floor-ring sample - the input to
@@ -684,14 +685,14 @@ public final class JavaProfiler {
      * compared against each other, never against a real wall clock, so any strictly increasing
      * sequence is valid.
      */
-    public static native void heapFloorRecordForTest0(long usedBytes, long timestampNs);
+    static native void heapFloorRecordForTest0(long usedBytes, long timestampNs);
 
     /**
      * Test seam (debug native builds only): overrides the max-heap-size {@code secondsToOOM()}
      * projects against, bypassing the real {@code Runtime.maxMemory()} resolution, so the
      * projection does not depend on the test JVM's {@code -Xmx}.
      */
-    public static native void setMaxHeapBytesForTest0(long maxHeapBytes);
+    static native void setMaxHeapBytesForTest0(long maxHeapBytes);
 
     /**
      * Test seam (debug native builds only): temporarily disables {@code onGC()}'s own
@@ -700,17 +701,19 @@ public final class JavaProfiler {
      * with a real {@code OS::nanotime()} timestamp and real heap usage, corrupting
      * {@code secondsToOOM()}'s projection. Pass {@code false} to disable, {@code true} to restore.
      */
-    public static native void setHeapFloorRecordingForTest0(boolean enabled);
+    static native void setHeapFloorRecordingForTest0(boolean enabled);
 
     /**
      * Test seam (debug native builds only): reports whether ReferenceChainTracker's search-restart
      * gate ({@code canAffordNewSearch()} -&gt; {@code hasLeakSignal()}) would currently allow a
      * fresh/terminal search to start - in particular, whether {@code secondsToOOM()}'s urgent-OOM
      * bypass opens this gate even with zero per-klass leak candidates. Unlike
-     * {@link #runReferenceChainPass0()}, which calls {@code runPass()} unconditionally, this reads
-     * the gate without running a pass.
+     * {@link #runReferenceChainPass0()}, which calls {@code runPass()} unconditionally, this
+     * evaluates the gate without running a pass. This is not a read-only query: under the native
+     * engine lock it may account a completed search's pain and restart/reset terminal search
+     * state.
      */
-    public static native boolean shouldRunPassForTest0();
+    static native boolean shouldRunPassForTest0();
 
     /**
      * Test seam (debug native builds only): the number of BFS passes run for the current/most
@@ -719,7 +722,7 @@ public final class JavaProfiler {
      * therefore {@code collectStaleExpandedEntriesForRotation()}) ran strictly after the object
      * existed, not from a pass racing its creation.
      */
-    public static native int referenceChainPassesRunForTest0();
+    static native int referenceChainPassesRunForTest0();
 
     // ---- Test-only reads of the current thread's OTEP record ----------------------------------
     // Each resolves the current carrier's record directly (like the write primitives above) with

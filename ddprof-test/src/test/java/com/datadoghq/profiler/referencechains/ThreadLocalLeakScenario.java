@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -22,6 +23,9 @@ import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
+
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.LEAK_TAG_BASE;
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.LEAK_TAG_POOL_SIZE;
 
 /**
  * The thread-local taxonomy of the leak-tag correlation use case, run inside a
@@ -80,10 +84,6 @@ public final class ThreadLocalLeakScenario {
    */
   private static final int CHUNK_BYTES = 1_000_000;
 
-  // Mirrored from referenceChains.h (LEAK_TAG_BASE/LEAK_TAG_POOL_SIZE).
-  private static final long LEAK_TAG_BASE = 0x40000000L;
-  private static final long LEAK_TAG_POOL_SIZE = 256;
-
   /**
    * Handoff for the leak thread's profiler tid and one seed chunk - the
    * main thread seeds LivenessTracker's per-(klass, tid) qualification with
@@ -134,9 +134,17 @@ public final class ThreadLocalLeakScenario {
   /** Printed to stdout (with the tag) if no HeapLiveObject matched the chain's tag. */
   public static final String NO_LIVE_OBJECT_MARKER = "[tl-correlation-no-live-object] ";
 
+  /**
+   * Printed to stdout if the leak thread never published its tid and seed chunk - a fixture
+   * failure, reported apart from a correlation miss.
+   */
+  public static final String HANDOFF_TIMEOUT_MARKER = "[tl-correlation-handoff-timeout]";
+
   private static final class ScanResult {
     ReferenceChainAssertions.ChainMatch payloadChain;
     boolean payloadChainInPool;
+    // ReferenceChain.leakTagIncarnation of payloadChain; -1 when the field is absent.
+    long payloadChainIncarnation = -1;
     int liveObjectMatchesForChainTag;
   }
 
@@ -184,7 +192,7 @@ public final class ThreadLocalLeakScenario {
       for (int i = 0; i < SEED_CHUNKS; i++) {
         SINK.get().add(new byte[CHUNK_BYTES]);
       }
-      handoff.publish(JavaProfiler.getTid(), SINK.get().get(0));
+      handoff.publish(ReferenceChainTestHooks.getTid(), SINK.get().get(0));
       while (true) {
         try {
           if (rounds.poll(50, TimeUnit.MILLISECONDS) == null) {
@@ -209,21 +217,21 @@ public final class ThreadLocalLeakScenario {
       leakThread.start();
     }
     if (!handoff.awaitPublication(30000)) {
-      System.out.println(NOT_FOUND_MARKER);
+      System.out.println(HANDOFF_TIMEOUT_MARKER);
       return;
     }
 
-    boolean debugBuild = "debug".equals(System.getProperty("ddprof_test.config"));
+    boolean debugBuild = ReferenceChainAssertions.isDebugInstrumentedBuild();
     int leakTid = 0;
     if (debugBuild) {
       // Representative first, seeds second: the rep's real klass id must
       // own the seeds or they authorize nothing. take() drops the handoff's
       // reference, so the rep chunk stays reachable only via ThreadLocalMap.
-      JavaProfiler.setKlassPopulationRepresentativeForTest0(LEAK_KLASS_ID, handoff.take());
+      ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(LEAK_KLASS_ID, handoff.take());
       leakTid = handoff.tid;
       for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
-        JavaProfiler.seedKlassPopulationSample0(LEAK_KLASS_ID, epoch * 10, epoch);
-        JavaProfiler.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
+        ReferenceChainTestHooks.seedKlassPopulationSample0(LEAK_KLASS_ID, epoch * 10, epoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
       }
       // Maintenance continues the seeded ramp (next epoch =
       // SEED_EPOCHS_FOR_HYSTERESIS + 1) instead of restarting at 1 - same as
@@ -231,14 +239,14 @@ public final class ThreadLocalLeakScenario {
       hysteresisEpoch = SEED_EPOCHS_FOR_HYSTERESIS;
       // Wait for the BFS thread's first full pass, then poll - same
       // load-bearing wait as LeakTagCorrelationScenario.
-      int initialPasses = JavaProfiler.referenceChainPassesRunForTest0();
+      int initialPasses = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
       for (int i = 0; i < 300; i++) {
-        if (JavaProfiler.referenceChainPassesRunForTest0() != initialPasses) {
+        if (ReferenceChainTestHooks.referenceChainPassesRunForTest0() != initialPasses) {
           break;
         }
         Thread.sleep(100);
       }
-      JavaProfiler.pollReferenceChainTargets0();
+      ReferenceChainTestHooks.pollReferenceChainTargets0();
     } else {
       // Drop the handoff's chunk reference: the lambda (captured by the
       // Thread's runnable) retains `handoff`, so a never-taken seedChunk
@@ -255,9 +263,9 @@ public final class ThreadLocalLeakScenario {
       }
       if (debugBuild) {
         hysteresisEpoch++;
-        JavaProfiler.seedKlassPopulationSample0(
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
             LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        JavaProfiler.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
       }
       Thread.sleep(300);
       System.gc();
@@ -279,9 +287,9 @@ public final class ThreadLocalLeakScenario {
       }
       if (debugBuild) {
         hysteresisEpoch++;
-        JavaProfiler.seedKlassPopulationSample0(
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
             LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        JavaProfiler.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
       }
       if (!rounds.offer(attempt)) {
         throw new IllegalStateException(
@@ -355,6 +363,8 @@ public final class ThreadLocalLeakScenario {
           ReferenceChainAssertions.findAccessor(type, "chain");
       IMemberAccessor<?, IItem> targetTagAccessor =
           ReferenceChainAssertions.findAccessor(type, "targetTag");
+      IMemberAccessor<?, IItem> incarnationAccessor =
+          ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
       for (IItem item : iterable) {
         Object chainValue = chainAccessor.getMember(item);
         if (!(chainValue instanceof Object[])) {
@@ -387,6 +397,8 @@ public final class ThreadLocalLeakScenario {
           }
           result.payloadChain = new ReferenceChainAssertions.ChainMatch(chain, targetTag, 0);
           result.payloadChainInPool = inPool;
+          result.payloadChainIncarnation = incarnationAccessor != null
+              ? ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item)) : -1;
         }
       }
     }
@@ -400,10 +412,16 @@ public final class ThreadLocalLeakScenario {
             ReferenceChainAssertions.findAccessor(type, "leakTag");
         IMemberAccessor<?, IItem> objectClassAccessor =
             ReferenceChainAssertions.findAccessor(type, "objectClass");
+        IMemberAccessor<?, IItem> incarnationAccessor =
+            ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
         for (IItem item : iterable) {
           long leakTag = leakTagAccessor != null
               ? ReferenceChainAssertions.numberValue(leakTagAccessor.getMember(item)) : -1;
-          if (leakTag != result.payloadChain.targetTag) {
+          long incarnation = incarnationAccessor != null
+              ? ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item)) : -1;
+          // Leak tags are recycled: the tag alone is ambiguous across chunks.
+          if (leakTag != result.payloadChain.targetTag
+              || incarnation != result.payloadChainIncarnation) {
             continue;
           }
           Object objectClass = objectClassAccessor != null

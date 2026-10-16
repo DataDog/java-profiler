@@ -2423,12 +2423,14 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
           ? ((event->_alloc._weight * event->_alloc._size) + event->_skipped) /
                 event->_alloc._size
           : 0);
-  // leak_tag precedes the context snapshot to match the metadata field
-  // order (jfrMetadata.cpp: leakTag is declared between weight and spanId,
-  // before || contextAttributes) - a field written on the opposite side of
-  // writeContextSnapshot() than where the metadata declares it makes every
-  // parser read it from the first context-attribute byte.
+  // leak_tag and leak_tag_incarnation precede the context snapshot to match
+  // the metadata field order (jfrMetadata.cpp: leakTag, leakTagIncarnation
+  // are declared between weight and spanId, before || contextAttributes) - a
+  // field written on the opposite side of writeContextSnapshot() than where
+  // the metadata declares it makes every parser read it from the first
+  // context-attribute byte.
   buf->putVar64(event->leak_tag);
+  buf->putVar64((u64)event->leak_tag_incarnation);
   writeContextSnapshot(buf, event->_ctx);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
@@ -2524,6 +2526,7 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   buf->putVar64(T_REFERENCE_CHAIN);
   buf->putVar64(event->_start_time);
   buf->putVar64(event->_target_tag);
+  buf->putVar64((u64)event->_leak_tag_incarnation);
   buf->putVar32(event->_depth);
   buf->putUtf8(root_kind_name);
   // Original (pre-truncation) chain length, so a consumer can tell a full

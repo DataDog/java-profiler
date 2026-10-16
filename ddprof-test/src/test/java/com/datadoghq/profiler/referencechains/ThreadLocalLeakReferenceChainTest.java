@@ -19,6 +19,8 @@ import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.LEAK_TAG_BASE;
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.LEAK_TAG_POOL_SIZE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -37,10 +39,6 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
  */
 @Tag("slow")
 public class ThreadLocalLeakReferenceChainTest extends AbstractProcessProfilerTest {
-
-  // Mirrored from referenceChains.h (LEAK_TAG_BASE/LEAK_TAG_POOL_SIZE).
-  private static final long LEAK_TAG_BASE = 0x40000000L;
-  private static final long LEAK_TAG_POOL_SIZE = 256;
 
   @Test
   void shouldCorrelateThreadLocalHeldLeakChain() throws Exception {
@@ -68,25 +66,30 @@ public class ThreadLocalLeakReferenceChainTest extends AbstractProcessProfilerTe
       AtomicReference<String> resultLine = new AtomicReference<>();
       LaunchResult result = launch("threadlocal-leak", jvmArgs, packedCommand,
           Collections.emptyMap(),
-          150,
+          childTimeoutSeconds(150),
           line -> {
             if (line.startsWith(ThreadLocalLeakScenario.FOUND_MARKER)
                 || line.equals(ThreadLocalLeakScenario.NOT_FOUND_MARKER)
                 || line.startsWith(ThreadLocalLeakScenario.TAG_OUT_OF_POOL_MARKER)
-                || line.startsWith(ThreadLocalLeakScenario.NO_LIVE_OBJECT_MARKER)) {
+                || line.startsWith(ThreadLocalLeakScenario.NO_LIVE_OBJECT_MARKER)
+                || line.equals(ThreadLocalLeakScenario.HANDOFF_TIMEOUT_MARKER)) {
               resultLine.set(line);
             }
             if (line.startsWith("[TEST::INFO]")) {
-              testLogTail.addLast(line);
-              while (testLogTail.size() > 2000) {
-                testLogTail.removeFirst();
+              // Synchronized: the reader thread can outlive a join timeout.
+              synchronized (testLogTail) {
+                testLogTail.addLast(line);
+                while (testLogTail.size() > 2000) {
+                  testLogTail.removeFirst();
+                }
               }
             }
             return LineConsumerResult.CONTINUE;
           },
           null);
 
-      assertTrue(result.inTime, "Child process did not exit within the wait timeout");
+      assertTrue(result.inTime, "Child process did not exit within the wait timeout"
+          + diagnostics(testLogTail));
       assertEquals(0, result.exitCode, "Child process exited with a non-zero code");
       assertNotNull(resultLine.get(), "Child process never printed a recognizable result "
           + "marker on stdout" + diagnostics(testLogTail));
@@ -141,25 +144,30 @@ public class ThreadLocalLeakReferenceChainTest extends AbstractProcessProfilerTe
       AtomicReference<String> resultLine = new AtomicReference<>();
       LaunchResult result = launch("threadlocal-leak-late", jvmArgs, packedCommand,
           Collections.emptyMap(),
-          150,
+          childTimeoutSeconds(150),
           line -> {
             if (line.startsWith(ThreadLocalLeakScenario.FOUND_MARKER)
                 || line.equals(ThreadLocalLeakScenario.NOT_FOUND_MARKER)
                 || line.startsWith(ThreadLocalLeakScenario.TAG_OUT_OF_POOL_MARKER)
-                || line.startsWith(ThreadLocalLeakScenario.NO_LIVE_OBJECT_MARKER)) {
+                || line.startsWith(ThreadLocalLeakScenario.NO_LIVE_OBJECT_MARKER)
+                || line.equals(ThreadLocalLeakScenario.HANDOFF_TIMEOUT_MARKER)) {
               resultLine.set(line);
             }
             if (line.startsWith("[TEST::INFO]")) {
-              testLogTail.addLast(line);
-              while (testLogTail.size() > 2000) {
-                testLogTail.removeFirst();
+              // Synchronized: the reader thread can outlive a join timeout.
+              synchronized (testLogTail) {
+                testLogTail.addLast(line);
+                while (testLogTail.size() > 2000) {
+                  testLogTail.removeFirst();
+                }
               }
             }
             return LineConsumerResult.CONTINUE;
           },
           null);
 
-      assertTrue(result.inTime, "Child process did not exit within the wait timeout");
+      assertTrue(result.inTime, "Child process did not exit within the wait timeout"
+          + diagnostics(testLogTail));
       assertEquals(0, result.exitCode, "Child process exited with a non-zero code");
       assertNotNull(resultLine.get(), "Child process never printed a recognizable result "
           + "marker on stdout" + diagnostics(testLogTail));
@@ -174,7 +182,11 @@ public class ThreadLocalLeakReferenceChainTest extends AbstractProcessProfilerTe
   }
 
   /** Filtered summary of the child's TEST_LOG stream, embedded in failure messages. */
-  private static String diagnostics(Deque<String> testLogTail) {
+  private static String diagnostics(Deque<String> testLogTailRef) {
+    List<String> testLogTail;
+    synchronized (testLogTailRef) {
+      testLogTail = new ArrayList<>(testLogTailRef);
+    }
     if (testLogTail.isEmpty()) {
       return "\n(no TEST_LOG output captured - non-debug build or no reference-chain passes ran)";
     }
