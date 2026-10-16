@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -18,9 +19,12 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Map;
+
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.LEAK_TAG_BASE;
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.LEAK_TAG_POOL_SIZE;
 
 /**
  * The "leak-tag correlation" use case, run inside a genuinely separate child JVM by
@@ -31,9 +35,8 @@ import java.util.List;
  * matching a {@code datadog.HeapLiveObject} event's {@code leakTag} for the same object -
  * the chain-to-live-heap-sample correlation the whole leak-tag pool exists to provide.
  *
- * <p>Each ingredient exists to reproduce, in miniature, a condition that only showed
- * against real large deployments before this scenario existed (all observed live on a
- * production-like pod, each escaping every earlier local test):
+ * <p>Each ingredient reproduces, in miniature, a condition of large deployments that
+ * smaller local tests do not reach:
  * <ul>
  *   <li><b>Scale</b> ({@link #FILLER}): ~100k live filler objects grow the JVMTI tag map
  *   enough that {@code GetObjectsWithTags} has a real per-call cost floor, the BFS
@@ -52,7 +55,12 @@ import java.util.List;
  *   chunk's chain must carry a {@code targetTag} in the leak-tag pool's range -
  *   mirrored here from {@code LEAK_TAG_BASE}/{@code LEAK_TAG_POOL_SIZE}
  *   (referenceChains.h) - and at least one {@code datadog.HeapLiveObject} event for a
- *   {@code byte[]} must carry the same value in {@code leakTag}.</li>
+ *   {@code byte[]} must carry the same value in {@code leakTag} (joined on
+ *   {@code (tag, leakTagIncarnation)}, since leak tags are recycled). On -DDEBUG builds the
+ *   chain must also be the one {@code getReferenceChainResolvedTargetTagForTest0} resolves for
+ *   a live {@link #LEAK_SINK} chunk (instance identity, not just class), and after that owner
+ *   chunk is dropped and its tag released, its chain must stop being emitted under that
+ *   {@code (tag, leakTagIncarnation)}.</li>
  * </ul>
  *
  * <p>Same separate-process rationale as {@code LeakingCacheScenario}'s own class comment
@@ -106,13 +114,6 @@ public final class LeakTagCorrelationScenario {
   private static void addChunk() {
     LEAK_SINK.add(new byte[CHUNK_BYTES]);
   }
-
-  // Mirrored from referenceChains.h (LEAK_TAG_BASE/LEAK_TAG_POOL_SIZE): the pool range a
-  // correlated chain's targetTag must fall into, and the range a matching HeapLiveObject's
-  // leakTag must fall into. This is the contract under test, asserted against runtime
-  // event values - not constants compared to constants.
-  private static final long LEAK_TAG_BASE = 0x40000000L;
-  private static final long LEAK_TAG_POOL_SIZE = 256;
 
   /**
    * Transient handoff channel for the noise representative - deliberately a local of
@@ -184,12 +185,34 @@ public final class LeakTagCorrelationScenario {
   public static final String NOISE_CHAIN_MARKER = "[correlation-noise-chain-emitted] ";
 
   /**
+   * Printed (with the tag) if no correlated in-pool byte[] chain was the chain the identity seam
+   * resolves for a live {@link #LEAK_SINK} chunk. -DDEBUG builds only.
+   */
+  public static final String NOT_OWNER_VERIFIED_MARKER = "[correlation-not-owner-verified] ";
+
+  /**
+   * Printed (with the tag) if, after the verified owner chunk was dropped, every dump still
+   * emitted a byte[] chain under the owner's {@code (tag, leakTagIncarnation)} - the dead
+   * owner's cached chain outliving its tag (ownership-stamp regression). -DDEBUG builds only.
+   */
+  public static final String STALE_OWNER_CHAIN_MARKER = "[correlation-stale-owner-chain] ";
+
+  /** Dumps the stale-owner check waits through for the dropped chunk's tag to be released. */
+  private static final int STALE_CHECK_ATTEMPTS = 10;
+
+  /**
    * Scan outcome: payload fields from one dump; transientViolations/noiseChains accumulated
    * across all scans by keepBest().
    */
   private static final class ScanResult {
     ReferenceChainAssertions.ChainMatch payloadChain;
     boolean payloadChainInPool;
+    // In-pool and (on -DDEBUG builds) resolved by the identity seam for a live LEAK_SINK chunk.
+    boolean payloadChainOwnerVerified;
+    // LEAK_SINK index of that chunk at scan time; -1 when not verified or on release builds.
+    int payloadOwnerIndex = -1;
+    // ReferenceChain.leakTagIncarnation of payloadChain; -1 when the field is absent.
+    long payloadChainIncarnation = -1;
     int liveObjectMatchesForChainTag;
     final List<String> transientViolations = new ArrayList<>();
     final List<String> noiseChains = new ArrayList<>();
@@ -219,7 +242,7 @@ public final class LeakTagCorrelationScenario {
       }
       // The tid must be captured on THIS thread: the per-(klass, tid) seeding below
       // qualifies the allocating thread, and the noise instances are all allocated here.
-      handoff.publish(held[0], JavaProfiler.getTid());
+      handoff.publish(held[0], ReferenceChainTestHooks.getTid());
       long slot = 0;
       while (true) {
         try {
@@ -242,7 +265,7 @@ public final class LeakTagCorrelationScenario {
       profiler.execute(startCommand);
     }
 
-    boolean debugBuild = "debug".equals(System.getProperty("ddprof_test.config"));
+    boolean debugBuild = ReferenceChainAssertions.isDebugInstrumentedBuild();
     int leakTid = 0;
     int noiseTid = 0;
     if (debugBuild) {
@@ -268,8 +291,8 @@ public final class LeakTagCorrelationScenario {
       if (handoff.representative == null || handoff.tid <= 0) {
         throw new IllegalStateException("Noise thread did not publish a representative and tid");
       }
-      JavaProfiler.setKlassPopulationRepresentativeForTest0(LEAK_KLASS_ID, LEAK_SINK.get(0));
-      JavaProfiler.setKlassPopulationRepresentativeForTest0(NOISE_KLASS_ID, handoff.take());
+      ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(LEAK_KLASS_ID, LEAK_SINK.get(0));
+      ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(NOISE_KLASS_ID, handoff.take());
       // Per-(klass, tid) qualification seeds: selectLeakCandidates() now also
       // requires a qualifying ALLOCATING THREAD, and tagLeakInstances() scopes leak
       // tags to exactly those tids' instances - so the seeded qualification must
@@ -278,13 +301,13 @@ public final class LeakTagCorrelationScenario {
       // the tagging scope. Same epoch-aligned ramp shape as the klass seeds
       // (scaled to fit the per-tid u8 ring); the synthetic flag keeps these
       // ramps immune to the real fold's absent-tid decay between rounds.
-      leakTid = JavaProfiler.getTid();
+      leakTid = ReferenceChainTestHooks.getTid();
       noiseTid = handoff.tid;
       for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
-        JavaProfiler.seedKlassPopulationSample0(LEAK_KLASS_ID, epoch * 10, epoch);
-        JavaProfiler.seedKlassPopulationSample0(NOISE_KLASS_ID, epoch * 10, epoch);
-        JavaProfiler.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
-        JavaProfiler.seedTidTrendSample0(NOISE_KLASS_ID, noiseTid, epoch * 3, epoch);
+        ReferenceChainTestHooks.seedKlassPopulationSample0(LEAK_KLASS_ID, epoch * 10, epoch);
+        ReferenceChainTestHooks.seedKlassPopulationSample0(NOISE_KLASS_ID, epoch * 10, epoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(NOISE_KLASS_ID, noiseTid, epoch * 3, epoch);
       }
       // Maintenance continues the seeded ramp instead of restarting at 1.
       hysteresisEpoch = SEED_EPOCHS_FOR_HYSTERESIS;
@@ -292,16 +315,16 @@ public final class LeakTagCorrelationScenario {
       // expansion) before any growth round - same load-bearing wait and rationale as
       // StaticFieldGrowingCollectionScenario: the late chunks added afterward must be
       // discovered via rotation re-walks, not by a first pass that has not even run yet.
-      int initialPasses = JavaProfiler.referenceChainPassesRunForTest0();
+      int initialPasses = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
       for (int i = 0; i < 300; i++) {
-        if (JavaProfiler.referenceChainPassesRunForTest0() != initialPasses) {
+        if (ReferenceChainTestHooks.referenceChainPassesRunForTest0() != initialPasses) {
           break;
         }
         Thread.sleep(100);
       }
-      JavaProfiler.pollReferenceChainTargets0();
+      ReferenceChainTestHooks.pollReferenceChainTargets0();
     } else {
-      // No debug seams outside debug builds - give the real allocation sampler and the
+      // No test seams outside -DDEBUG builds (debug/asan/tsan) - give the real allocation sampler and the
       // pass loop time to notice the seeded population on their own.
       Thread.sleep(5000);
     }
@@ -322,13 +345,13 @@ public final class LeakTagCorrelationScenario {
       addChunk();
       if (debugBuild) {
         hysteresisEpoch++;
-        JavaProfiler.seedKlassPopulationSample0(
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
             LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        JavaProfiler.seedKlassPopulationSample0(
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
             NOISE_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        JavaProfiler.seedTidTrendSample0(
+        ReferenceChainTestHooks.seedTidTrendSample0(
             LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
-        JavaProfiler.seedTidTrendSample0(
+        ReferenceChainTestHooks.seedTidTrendSample0(
             NOISE_KLASS_ID, noiseTid, hysteresisEpoch * 3, hysteresisEpoch);
       }
       System.gc();
@@ -342,9 +365,10 @@ public final class LeakTagCorrelationScenario {
       // win the tagging priority. Rounds are still dumped every time so
       // the final dump always holds the freshest chains.
       if (round % 3 == 0) {
-        best = keepBest(best, scan(scratchDumpPath));
-        if (best != null && best.payloadChainInPool
-            && best.liveObjectMatchesForChainTag > 0) {
+        // The identity seam is read after the dump: a chain in the dump for a live chunk stays
+        // cached (snapshot-and-keep), and chains built since only add keys the dump lacks.
+        best = keepBest(best, scan(scratchDumpPath, debugBuild ? liveOwnerTags() : null));
+        if (correlated(best)) {
           break; // full correlation achieved - no need to grow further
         }
       }
@@ -352,24 +376,24 @@ public final class LeakTagCorrelationScenario {
     }
 
     for (int attempt = 0; attempt < 5; attempt++) {
-      if (best != null && best.payloadChainInPool && best.liveObjectMatchesForChainTag > 0) {
+      if (correlated(best)) {
         break;
       }
       if (debugBuild) {
         hysteresisEpoch++;
-        JavaProfiler.seedKlassPopulationSample0(
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
             LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        JavaProfiler.seedKlassPopulationSample0(
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
             NOISE_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        JavaProfiler.seedTidTrendSample0(
+        ReferenceChainTestHooks.seedTidTrendSample0(
             LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
-        JavaProfiler.seedTidTrendSample0(
+        ReferenceChainTestHooks.seedTidTrendSample0(
             NOISE_KLASS_ID, noiseTid, hysteresisEpoch * 3, hysteresisEpoch);
       }
       Thread.sleep(1000);
       System.gc();
       profiler.dump(scratchDumpPath);
-      best = keepBest(best, scan(scratchDumpPath));
+      best = keepBest(best, scan(scratchDumpPath, debugBuild ? liveOwnerTags() : null));
     }
 
     // Gate violations are 'ever emitted' contracts, independent of whether a payload chain
@@ -391,11 +415,105 @@ public final class LeakTagCorrelationScenario {
       System.out.println(TAG_OUT_OF_POOL_MARKER + best.payloadChain.targetTag);
       return;
     }
+    if (!best.payloadChainOwnerVerified) {
+      System.out.println(NOT_OWNER_VERIFIED_MARKER + best.payloadChain.targetTag);
+      return;
+    }
     if (best.liveObjectMatchesForChainTag == 0) {
       System.out.println(NO_LIVE_OBJECT_MARKER + best.payloadChain.targetTag);
       return;
     }
+    if (debugBuild) {
+      long ownedTag = best.payloadChain.targetTag;
+      long ownedIncarnation = best.payloadChainIncarnation;
+      // Drop the verified owner: its tracked entry dies, cleanup_table() releases the leak tag
+      // (stamp bump), and the next acquire may hand the same tag to another object. The dead
+      // owner's chain must never be emitted under its old (tag, stamp) again. The removed chunk
+      // is deliberately not kept in a local.
+      LEAK_SINK.remove(best.payloadOwnerIndex);
+      boolean clean = false;
+      for (int attempt = 0; attempt < STALE_CHECK_ATTEMPTS && !clean; attempt++) {
+        System.gc();
+        Thread.sleep(500);
+        profiler.dump(scratchDumpPath);
+        clean = !hasByteArrayChain(scratchDumpPath, ownedTag, ownedIncarnation)
+            // Without the stamp field the tag alone cannot tell a new owner from the dead one.
+            || (ownedIncarnation < 0 && liveOwnerTags().containsKey(ownedTag));
+      }
+      if (!clean) {
+        System.out.println(STALE_OWNER_CHAIN_MARKER + ownedTag);
+        return;
+      }
+    }
     System.out.println(FOUND_MARKER + best.payloadChain.targetTag);
+  }
+
+  private static boolean correlated(ScanResult r) {
+    return r != null && r.payloadChainInPool && r.payloadChainOwnerVerified
+        && r.liveObjectMatchesForChainTag > 0;
+  }
+
+  /**
+   * Leak tag -> LEAK_SINK index of the chunk whose own cached chain carries it, via the identity
+   * seam (0 means no chain resolved for that chunk). Stores indices, never chunk references, so
+   * an owner can still die.
+   */
+  private static Map<Long, Integer> liveOwnerTags() {
+    Map<Long, Integer> owners = new HashMap<>();
+    for (int i = 0; i < LEAK_SINK.size(); i++) {
+      long tag =
+          ReferenceChainTestHooks.getReferenceChainResolvedTargetTagForTest0(LEAK_SINK.get(i));
+      if (tag != 0) {
+        owners.put(tag, i);
+      }
+    }
+    return owners;
+  }
+
+  /**
+   * Whether the dump holds a byte[] chain with this targetTag and leakTagIncarnation (-1 matches
+   * a chain without the field).
+   */
+  private static boolean hasByteArrayChain(Path scratchDumpPath, long tag, long incarnation)
+      throws Exception {
+    if (!Files.exists(scratchDumpPath)) {
+      return false;
+    }
+    IItemCollection events;
+    try (InputStream in = Files.newInputStream(scratchDumpPath)) {
+      events = JfrLoaderToolkit.loadEvents(in);
+    }
+    IItemCollection chains = events.apply(
+        org.openjdk.jmc.common.item.ItemFilters.type("datadog.ReferenceChain"));
+    for (IItemIterable iterable : chains) {
+      IType<IItem> type = iterable.getType();
+      IMemberAccessor<?, IItem> chainAccessor = ReferenceChainAssertions.findAccessor(type, "chain");
+      IMemberAccessor<?, IItem> targetTagAccessor =
+          ReferenceChainAssertions.findAccessor(type, "targetTag");
+      IMemberAccessor<?, IItem> incarnationAccessor =
+          ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
+      if (chainAccessor == null || targetTagAccessor == null) {
+        continue;
+      }
+      for (IItem item : iterable) {
+        Object chainValue = chainAccessor.getMember(item);
+        if (!(chainValue instanceof Object[])) {
+          continue;
+        }
+        Object[] rawChain = (Object[]) chainValue;
+        if (rawChain.length == 0 || !(rawChain[0] instanceof IMCType)
+            || !"byte[]".equals(((IMCType) rawChain[0]).getFullName())) {
+          continue;
+        }
+        long chainIncarnation = incarnationAccessor != null
+            ? ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item)) : -1;
+        if (ReferenceChainAssertions.numberValue(targetTagAccessor.getMember(item)) == tag
+            && chainIncarnation == incarnation) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   /**
@@ -426,12 +544,17 @@ public final class LeakTagCorrelationScenario {
   }
 
   /**
-   * Scans one dump: the first leaked {@code byte[]} chain (if any), whether its targetTag is
-   * in the leak-tag pool, how many {@code datadog.HeapLiveObject} events for a
-   * leaked {@code byte[]} carry that same tag in {@code leakTag}, plus the two gate
-   * regressions (transient-rooted depth<=1 chains, any {@link NoisePayload} chain).
+   * Scans one dump: the best leaked {@code byte[]} chain (if any), whether its targetTag is
+   * in the leak-tag pool and owned by a live LEAK_SINK chunk, how many
+   * {@code datadog.HeapLiveObject} events for a leaked {@code byte[]} carry that same
+   * {@code (leakTag, leakTagIncarnation)}, plus the two gate regressions (transient-rooted
+   * depth<=1 chains, any {@link NoisePayload} chain).
+   *
+   * @param liveOwners {@link #liveOwnerTags()} read after this dump, or null on release builds
+   *     (no identity seam: any in-pool chain counts as owner-verified)
    */
-  private static ScanResult scan(Path scratchDumpPath) throws Exception {
+  private static ScanResult scan(Path scratchDumpPath, Map<Long, Integer> liveOwners)
+      throws Exception {
     if (!Files.exists(scratchDumpPath)) {
       return null;
     }
@@ -451,6 +574,8 @@ public final class LeakTagCorrelationScenario {
       IMemberAccessor<?, IItem> depthAccessor = ReferenceChainAssertions.findAccessor(type, "depth");
       IMemberAccessor<?, IItem> rootKindAccessor =
           ReferenceChainAssertions.findAccessor(type, "rootKind");
+      IMemberAccessor<?, IItem> incarnationAccessor =
+          ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
       for (IItem item : iterable) {
         Object chainValue = chainAccessor.getMember(item);
         if (!(chainValue instanceof Object[])) {
@@ -478,9 +603,14 @@ public final class LeakTagCorrelationScenario {
           // instance of the candidate class gets one, and only the tracked-and-
           // tagged instances carry a pool-range targetTag - the rest legitimately
           // carry their frontier tag (the correlation is additive on top of the
-          // chain, not a property of every chain). Prefer the first in-pool
-          // (correlated) chain over any out-of-pool one seen earlier.
-          if ((inPool && !result.payloadChainInPool) || result.payloadChain == null) {
+          // chain, not a property of every chain). Prefer the first owner-verified
+          // in-pool chain, then any in-pool one, over an out-of-pool one seen earlier.
+          boolean ownerVerified =
+              inPool && (liveOwners == null || liveOwners.containsKey(targetTag));
+          int score = inPool ? (ownerVerified ? 2 : 1) : 0;
+          int currentScore = result.payloadChain == null ? -1
+              : result.payloadChainInPool ? (result.payloadChainOwnerVerified ? 2 : 1) : 0;
+          if (score > currentScore) {
             List<IMCType> chain = new ArrayList<>(rawChain.length);
             for (Object element : rawChain) {
               chain.add((IMCType) element);
@@ -488,6 +618,11 @@ public final class LeakTagCorrelationScenario {
             result.payloadChain = new ReferenceChainAssertions.ChainMatch(
                 chain, targetTag, depth);
             result.payloadChainInPool = inPool;
+            result.payloadChainOwnerVerified = ownerVerified;
+            result.payloadOwnerIndex =
+                ownerVerified && liveOwners != null ? liveOwners.get(targetTag) : -1;
+            result.payloadChainIncarnation = incarnationAccessor != null
+                ? ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item)) : -1;
           }
         }
       }
@@ -502,10 +637,16 @@ public final class LeakTagCorrelationScenario {
             ReferenceChainAssertions.findAccessor(type, "leakTag");
         IMemberAccessor<?, IItem> objectClassAccessor =
             ReferenceChainAssertions.findAccessor(type, "objectClass");
+        IMemberAccessor<?, IItem> incarnationAccessor =
+            ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
         for (IItem item : iterable) {
           long leakTag = leakTagAccessor != null
               ? ReferenceChainAssertions.numberValue(leakTagAccessor.getMember(item)) : -1;
-          if (leakTag != result.payloadChain.targetTag) {
+          long incarnation = incarnationAccessor != null
+              ? ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item)) : -1;
+          // Leak tags are recycled: the tag alone is ambiguous across chunks.
+          if (leakTag != result.payloadChain.targetTag
+              || incarnation != result.payloadChainIncarnation) {
             continue;
           }
           Object objectClass = objectClassAccessor != null

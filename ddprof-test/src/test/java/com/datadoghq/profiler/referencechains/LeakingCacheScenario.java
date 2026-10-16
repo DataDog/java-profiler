@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.ItemFilters;
@@ -94,7 +95,7 @@ public final class LeakingCacheScenario {
     }
     System.out.println("[debug] profiler.execute() returned");
 
-    boolean debugBuild = "debug".equals(System.getProperty("ddprof_test.config"));
+    boolean debugBuild = ReferenceChainAssertions.isDebugInstrumentedBuild();
     boolean seededTestKlassTrend = false;
     ReferenceChainAssertions.ChainMatch match = null;
     int totalRounds = 25;
@@ -121,19 +122,19 @@ public final class LeakingCacheScenario {
         // Representative BEFORE seeding: setKlassPopulationRepresentativeForTest0 aliases the
         // synthetic id to the representative's real klass id, so the seeds below land in the
         // real population entry (candidate matching is keyed by real id).
-        JavaProfiler.setKlassPopulationRepresentativeForTest0(CACHED_PAYLOAD_TEST_KLASS_ID, cache.get("seed-0"));
+        ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(CACHED_PAYLOAD_TEST_KLASS_ID, cache.get("seed-0"));
         if (!seededTestKlassTrend) {
           // The qualifying tid is THIS thread's - the creator of "seed-0". The per-round
           // allocator threads are one-shot, so none of their tids carries a sustained
           // per-tid signal.
-          int leakTid = JavaProfiler.getTid();
+          int leakTid = ReferenceChainTestHooks.getTid();
           for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
-            JavaProfiler.seedKlassPopulationSample0(CACHED_PAYLOAD_TEST_KLASS_ID, epoch * 10, epoch);
-            JavaProfiler.seedTidTrendSample0(CACHED_PAYLOAD_TEST_KLASS_ID, leakTid, epoch * 3, epoch);
+            ReferenceChainTestHooks.seedKlassPopulationSample0(CACHED_PAYLOAD_TEST_KLASS_ID, epoch * 10, epoch);
+            ReferenceChainTestHooks.seedTidTrendSample0(CACHED_PAYLOAD_TEST_KLASS_ID, leakTid, epoch * 3, epoch);
           }
           seededTestKlassTrend = true;
         }
-        JavaProfiler.pollReferenceChainTargets0();
+        ReferenceChainTestHooks.pollReferenceChainTargets0();
         profiler.dump(scratchDumpPath);
         match = findMatch(scratchDumpPath);
       }

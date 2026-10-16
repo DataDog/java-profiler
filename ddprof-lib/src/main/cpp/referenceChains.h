@@ -998,7 +998,9 @@ private:
 
   // Inserts (or refreshes) klass_id's resolved chain in _resolved_chains, recording the
   // source_tag/source_search_ns it was reconstructed from so a later poll can tell a stale entry
-  // from a current one.
+  // from a current one. Returns false when nothing was stored: the cache is full (counted in
+  // REFERENCE_CHAIN_EVENTS_DROPPED), or the chain targets a leak tag whose owner already died
+  // (fails chainTargetsCurrentLeakOwner(); not counted - it is a correctness reject).
   bool cacheResolvedChain(jlong source_tag, ReferenceChainEvent &&event,
                           jlong source_tag_val, u64 source_search_ns);
 
@@ -1029,8 +1031,9 @@ private:
 
   // True iff `e` targets a leak tag AND was built during that tag's current ownership period:
   // e._leak_tag_incarnation == LivenessTracker::leakTagIncarnation(e._target_tag). Leak tags are
-  // recycled once their object dies, while _resolved_chains keeps the dead object's chain, so tag
-  // equality alone would attribute it to the tag's next owner. False for a non-leak (frontier-tag)
+  // recycled once their object dies, so tag equality alone would attribute a dead object's chain to
+  // the tag's next owner; the (tag, stamp) pair is the identity, in memory and in the serialized
+  // ReferenceChain/HeapLiveObject leakTagIncarnation fields. False for a non-leak (frontier-tag)
   // target - each caller decides what that means for it. Lock-free (one acquire load); never takes
   // LivenessTracker's pool lock, so it is safe under _resolved_chains_lock.
   static bool chainTargetsCurrentLeakOwner(const ReferenceChainEvent &e);
@@ -1320,9 +1323,9 @@ public:
   // repeatable snapshot, not a drain, so the same live sample's chain is re-emitted into every JFR
   // chunk it survives into (see _resolved_chains' own comment). Exception: a chain whose target is
   // a leak tag but which fails chainTargetsCurrentLeakOwner() (its object died and the tag may have
-  // a new owner) is not emitted - a consumer joins ReferenceChain.targetTag to
-  // HeapLiveObject.leakTag, which would attribute it to the new owner. Such a chain is not erased
-  // either; the existing cache eviction policy still decides when it leaves.
+  // a new owner) is not emitted - it no longer describes the object that
+  // HeapLiveObject(leakTag, leakTagIncarnation) names. Such a chain is erased from the cache:
+  // ownership stamps only advance, so it can never become valid again.
   void drainPendingChainEvents(std::vector<ReferenceChainEvent> *out);
 
   // Appends every abandoned-search event queued since the last call and clears the queue - a true

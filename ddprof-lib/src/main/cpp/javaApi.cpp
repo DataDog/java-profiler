@@ -1109,6 +1109,7 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
 // no-op stubs below.
 #ifdef DEBUG
 #include "livenessTracker.h"
+#include "objectSampler.h"
 #include "referenceChains.h"
 #include <vector>
 
@@ -1241,13 +1242,48 @@ Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
   ReferenceChainTracker::instance()->finishLoopIterationSerialized(jvmti, env);
 }
 
+// Counts only the drained chains whose leaf hop (hops are stored leaf-first) is `leaf`'s class,
+// so a chain left cached by an earlier test in the same JVM cannot satisfy the caller. The class
+// id is resolved with the same GetClassSignature + normalizeClassSignature() + lookupClass()
+// sequence the chain collector uses (LivenessTracker::resolveKlassId()).
 extern "C" DLLEXPORT jint JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCount0(
-    JNIEnv *env, jclass unused) {
+Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCountForLeaf0(
+    JNIEnv *env, jclass unused, jobject leaf) {
   ProfiledThread::initCurrentThreadSignalSafe();
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (leaf == nullptr || jvmti == nullptr) {
+    return 0;
+  }
+  u32 leaf_id = 0;
+  jclass clz = env->GetObjectClass(leaf);
+  if (clz != nullptr) {
+    char *sig = nullptr;
+    if (jvmti->GetClassSignature(clz, &sig, nullptr) == JVMTI_ERROR_NONE &&
+        sig != nullptr) {
+      const char *name = nullptr;
+      size_t name_len = 0;
+      if (ObjectSampler::normalizeClassSignature(sig, &name, &name_len)) {
+        int id = Profiler::instance()->lookupClass(name, name_len);
+        if (id > 0) {
+          leaf_id = (u32)id;
+        }
+      }
+      jvmti->Deallocate((unsigned char *)sig);
+    }
+    env->DeleteLocalRef(clz);
+  }
+  if (leaf_id == 0) {
+    return 0;
+  }
   std::vector<ReferenceChainEvent> events;
   ReferenceChainTracker::instance()->drainPendingChainEvents(&events);
-  return (jint)events.size();
+  jint count = 0;
+  for (const ReferenceChainEvent &event : events) {
+    if (!event._hops.empty() && event._hops[0].klass_id == leaf_id) {
+      count++;
+    }
+  }
+  return count;
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -1429,8 +1465,8 @@ Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
     JNIEnv *env, jclass unused) {}
 
 extern "C" DLLEXPORT jint JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCount0(
-    JNIEnv *env, jclass unused) {
+Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCountForLeaf0(
+    JNIEnv *env, jclass unused, jobject leaf) {
   return 0;
 }
 

@@ -51,22 +51,19 @@ public class ReferenceChainJfrParserTest {
 
   private static final String EVENT_TYPE = "datadog.ReferenceChain";
 
-  /**
-   * Must match the companion gtest's {@code chainRoundtripJfrPath()} (TMPDIR, else /tmp): the
-   * two run in different Gradle modules with no other shared filesystem contract.
-   */
-  private static Path roundtripJfrPath() {
-    String tmp = System.getenv("TMPDIR");
-    String dir = (tmp != null && !tmp.isEmpty()) ? tmp : "/tmp";
-    return Paths.get(dir, "datadog_reference_chain_roundtrip.jfr");
-  }
+  /** Set by the build for both this test and the companion gtest (see build.gradle.kts). */
+  private static final String ROUNDTRIP_JFR_ENV = "DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR";
 
   @Test
   public void chainFieldResolvesToSeededClassNamesInLeafToRootOrder()
       throws IOException, CouldNotLoadRecordingException {
-    Path jfrPath = roundtripJfrPath();
+    String configured = System.getenv(ROUNDTRIP_JFR_ENV);
+    Assumptions.assumeTrue(configured != null && !configured.isEmpty(),
+        ROUNDTRIP_JFR_ENV + " is not set - this test only runs from the Gradle test tasks");
+    Path jfrPath = Paths.get(configured);
     // Assumption, not assertion: the producing gtest does not run on CI runners without Google
-    // Test (e.g. the el7 testRelease job), where the file can never exist.
+    // Test (e.g. the el7 testRelease job) or with -Pskip-gtest. The build deletes the file before
+    // the gtest runs, and when the gtest is skipped, so an existing file is always this build's.
     Assumptions.assumeTrue(Files.exists(jfrPath),
         "Expected " + jfrPath + " to exist - run "
             + ":ddprof-lib:gtestDebug_referenceChainJfrRoundtrip_ut first "
@@ -81,6 +78,7 @@ public class ReferenceChainJfrParserTest {
 
     List<IMCType> resolvedChain = null;
     long targetTag = -1;
+    long leakTagIncarnation = -1;
     int depth = -1;
     for (IItemIterable iterable : chainEvents) {
       IType<IItem> type = iterable.getType();
@@ -88,6 +86,9 @@ public class ReferenceChainJfrParserTest {
       IMemberAccessor<?, IItem> edgesAccessor = findAccessor(type, "edges");
       IMemberAccessor<?, IItem> targetTagAccessor = findAccessor(type, "targetTag");
       IMemberAccessor<?, IItem> depthAccessor = findAccessor(type, "depth");
+      IMemberAccessor<?, IItem> incarnationAccessor = findAccessor(type, "leakTagIncarnation");
+      assertNotNull(incarnationAccessor, "No accessor for 'leakTagIncarnation' field on "
+          + EVENT_TYPE);
       assertNotNull(chainAccessor, "No accessor for 'chain' field on " + EVENT_TYPE);
       assertNotNull(edgesAccessor, "No accessor for 'edges' field on " + EVENT_TYPE
           + " - the new retention-edge label array (T_STRING|F_ARRAY) did not make it "
@@ -137,6 +138,7 @@ public class ReferenceChainJfrParserTest {
             targetTag = ((org.openjdk.jmc.common.unit.IQuantity) v).longValue();
           }
         }
+        leakTagIncarnation = longValue(incarnationAccessor.getMember(item));
         if (depthAccessor != null) {
           Object v = depthAccessor.getMember(item);
           if (v instanceof Number) {
@@ -162,6 +164,17 @@ public class ReferenceChainJfrParserTest {
     assertEquals("com.test.ChainRoot", resolvedChain.get(2).getFullName());
     assertEquals(3L, targetTag, "targetTag should be the leaf's frontier tag (3)");
     assertEquals(2, depth, "depth should be the leaf's own depth (2 hops from the root)");
+    assertEquals(5L, leakTagIncarnation,
+        "leakTagIncarnation should carry the event's ownership stamp (5)");
+  }
+
+  private static long longValue(Object v) {
+    if (v instanceof Number) {
+      return ((Number) v).longValue();
+    } else if (v instanceof org.openjdk.jmc.common.unit.IQuantity) {
+      return ((org.openjdk.jmc.common.unit.IQuantity) v).longValue();
+    }
+    return -1;
   }
 
   private static IMemberAccessor<?, IItem> findAccessor(IType<IItem> type, String identifier) {

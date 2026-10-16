@@ -83,7 +83,7 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
           Collections.emptyMap(),
           // Generous: a separate JVM's startup/classloading cost on top of the up-to-25-round
           // growth loop plus grace period (~20s in-process).
-          90,
+          childTimeoutSeconds(90),
           line -> {
             if (line.startsWith(LeakingCacheScenario.FOUND_MARKER)
                 || line.equals(LeakingCacheScenario.NOT_FOUND_MARKER)
@@ -163,7 +163,7 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
           // own tail wait (StaticFieldGrowingCollectionScenario.run()) needs up to ~60s on top of
           // the round loop for a cold JVM's first full pass to actually complete - see that
           // method's own comment.
-          150,
+          childTimeoutSeconds(150),
           line -> {
             if (line.startsWith(StaticFieldGrowingCollectionScenario.FOUND_MARKER)
                 || line.equals(StaticFieldGrowingCollectionScenario.NOT_FOUND_MARKER)) {

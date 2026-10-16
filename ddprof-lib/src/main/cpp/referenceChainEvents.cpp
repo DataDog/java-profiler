@@ -447,10 +447,21 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
 
 // Inserts or refreshes klass_id's resolved chain - see _resolved_chains' comment
 // (referenceChains.h) for why a resolved chain is cached and re-emitted rather than emitted once.
+// Returns false when the chain was not stored: the cache is full, or the chain targets a leak tag
+// whose owner already died.
 bool ReferenceChainTracker::cacheResolvedChain(jlong source_tag,
                                                ReferenceChainEvent &&event,
                                                jlong source_tag_val,
                                                u64 source_search_ns) {
+  if (isLeakTag((jlong)event._target_tag) && !chainTargetsCurrentLeakOwner(event)) {
+    // Built from a frontier binding whose leak-tag owner already died. Ownership stamps only
+    // advance, so it can never become valid again; caching it would only take a slot until the
+    // next dump evicts it. A release racing past this check is evicted by that dump.
+    TEST_LOG("ReferenceChainTracker::cacheResolvedChain rejected dead-owner chain "
+             "source_tag=%lld target_tag=%lld",
+             (long long)source_tag, (long long)event._target_tag);
+    return false;
+  }
   {
     ExclusiveLockGuard guard(&_resolved_chains_lock);
     auto it = _resolved_chains.find(source_tag);
@@ -816,17 +827,22 @@ void ReferenceChainTracker::drainPendingChainEvents(
   u64 now = TSC::ticks();
   {
     ExclusiveLockGuard guard(&_resolved_chains_lock);
-    for (const auto &kv : _resolved_chains) {
-      const ReferenceChainEvent &event = kv.second.event;
+    for (auto it = _resolved_chains.begin(); it != _resolved_chains.end();) {
+      const ReferenceChainEvent &event = it->second.event;
       if (isLeakTag((jlong)event._target_tag) && !chainTargetsCurrentLeakOwner(event)) {
         // The leak-tagged target died (its tag was released, and possibly re-acquired by another
-        // object): emitting targetTag = L would let the consumer's ReferenceChain.targetTag ->
-        // HeapLiveObject.leakTag join attribute this chain to L's current owner. Skip it, but do
-        // not erase it - the existing eviction policy decides when it leaves the cache.
+        // object), so the chain no longer describes the object (targetTag, leakTagIncarnation)
+        // names. Ownership stamps only advance, so the mismatch is permanent: erase the chain now
+        // instead of letting it occupy a MAX_RESOLVED_CHAINS slot for the rest of the search.
+        TEST_LOG("ReferenceChainTracker::drainPendingChainEvents evicted dead-owner chain "
+                 "source_tag=%lld target_tag=%lld",
+                 (long long)it->first, (long long)event._target_tag);
+        it = _resolved_chains.erase(it);
         continue;
       }
       out->push_back(event);
       out->back()._start_time = now;
+      ++it;
     }
   }
   TEST_LOG_SUMMARY("ReferenceChainTracker::drainPendingChainEvents re-emitted=%d",

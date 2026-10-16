@@ -1929,6 +1929,9 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
       event._skipped = _table[i].skipped;
       event._ctx = _table[i].ctx;
       event.leak_tag = _table[i].leak_tag;
+      // The exclusive _table_lock keeps the tag's owner fixed (release only happens in
+      // cleanup_table()), so this is the current owner's stamp.
+      event.leak_tag_incarnation = leakTagIncarnation(_table[i].leak_tag);
 
       int class_id = 0;
       if (_table[i].cached_klass_id != 0 && class_map_generation_matches) {

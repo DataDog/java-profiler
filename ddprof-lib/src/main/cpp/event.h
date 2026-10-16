@@ -94,6 +94,11 @@ public:
   // flush_table() overwrites it from the entry's own tag (track() zeroes it
   // at insert).
   int64_t leak_tag = 0;
+  // LivenessTracker::leakTagIncarnation(leak_tag), read by flush_table() under the exclusive
+  // _table_lock (so it is the owner's stamp); 0 when untagged. Serialized as
+  // HeapLiveObject.leakTagIncarnation: leak tags are recycled, so (leakTag, leakTagIncarnation)
+  // identifies the object across chunks.
+  u32 leak_tag_incarnation = 0;
   Context _ctx;
 };
 
@@ -139,9 +144,11 @@ public:
   u64 _target_tag;
   u32 _depth;
   u8 _root_kind;
-  // In-memory only, never serialized: LivenessTracker's ownership-period stamp of _target_tag when
-  // it is a leak tag, captured when the tag was bound to the target's frontier entry. Leak tags are
-  // recycled, so (_target_tag, _leak_tag_incarnation) identifies the target; 0 otherwise.
+  // LivenessTracker's ownership-period stamp of _target_tag when it is a leak tag, captured when the
+  // tag was bound to the target's frontier entry; 0 otherwise. Serialized as
+  // ReferenceChain.leakTagIncarnation. Leak tags are recycled, so consumers join
+  // ReferenceChain(targetTag, leakTagIncarnation) to HeapLiveObject(leakTag, leakTagIncarnation):
+  // the tag alone is only unambiguous within one chunk.
   u32 _leak_tag_incarnation;
   std::vector<ReferenceChainHop> _hops;
 
