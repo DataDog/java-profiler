@@ -2151,9 +2151,15 @@ void Profiler::onGCStart() {
   if (!_gc_checkpoint.load(std::memory_order_acquire)) {
     return;
   }
+  // Times everything this adds to the GC pause, skipped attempts included:
+  // their try-lock spins count too.
+  SAMPLER_PERF_PROBE(SP_GC_CHECKPOINT);
+  Counters::increment(tryGCCheckpoint() ? GC_CHECKPOINTS : GC_CHECKPOINTS_SKIPPED);
+}
+
+bool Profiler::tryGCCheckpoint() {
   if (!_state_lock.tryLock()) {
-    Counters::increment(GC_CHECKPOINTS_SKIPPED);
-    return;
+    return false;
   }
   bool written = false;
   if (state() == RUNNING && tryLockAll()) {
@@ -2186,7 +2192,7 @@ void Profiler::onGCStart() {
     }
   }
   _state_lock.unlock();
-  Counters::increment(written ? GC_CHECKPOINTS : GC_CHECKPOINTS_SKIPPED);
+  return written;
 }
 
 void Profiler::switchThreadEvents(jvmtiEventMode mode) {

@@ -166,7 +166,8 @@
    * in Profiler::checkFault(). */                                            \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
   /* JFR chunks written from GarbageCollectionStart (Profiler::onGCStart()),  \
-   * and GCs that skipped it because a lock was taken. */                     \
+   * and GCs that skipped it because a lock was taken. The time it adds to    \
+   * GC pauses is sampler_ticks.gc_checkpoint, under -PenableSamplerPerf. */  \
   X(GC_CHECKPOINTS, "gc_checkpoints")                                         \
   X(GC_CHECKPOINTS_SKIPPED, "gc_checkpoints_skipped")                         \
   /* Dump-time method resolution failures. The frame serializes as "unknown". */ \
@@ -287,7 +288,9 @@
   X(SAMPLER_TICKS_NATIVEMEM, "sampler_ticks.nativemem")                        \
   X(SAMPLER_COUNT_NATIVEMEM, "sampler_count.nativemem")                        \
   X(SAMPLER_TICKS_NATIVESOCKET, "sampler_ticks.nativesocket")                  \
-  X(SAMPLER_COUNT_NATIVESOCKET, "sampler_count.nativesocket")
+  X(SAMPLER_COUNT_NATIVESOCKET, "sampler_count.nativesocket")                  \
+  X(SAMPLER_TICKS_GC_CHECKPOINT, "sampler_ticks.gc_checkpoint")                \
+  X(SAMPLER_COUNT_GC_CHECKPOINT, "sampler_count.gc_checkpoint")
 #else
 #define DD_COUNTER_TABLE_SAMPLER_PERF(X)
 #endif

@@ -54,6 +54,7 @@ and `JavaProfiler.getDebugCounters()`. The average is derived, not stored.
 | `liveness` | `LivenessTracker` | `track` |
 | `nativemem` | `MallocTracer` | `recordMalloc` |
 | `nativesocket` | `NativeSocketSampler` | `recordEvent` |
+| `gc_checkpoint` | — (not a sampler: the JFR checkpoint written at GC start) | `Profiler::onGCStart` |
 
 Only one CPU engine and one wallclock engine is ever live in a run
 (`Profiler::selectCpuEngine` / `selectWallEngine`), so the variants share a slot;

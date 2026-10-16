@@ -193,6 +193,8 @@ private:
   void lockAll();
   // lockAll() that gives up, holding nothing, if any lock stays taken.
   bool tryLockAll();
+  // onGCStart()'s checkpoint itself; false if it was skipped.
+  bool tryGCCheckpoint();
   // Resets the dictionaries, the call trace storage and the counters for a
   // fresh recording; returns how many dictionaries were left unchanged because
   // their drain timed out.

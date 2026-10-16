@@ -114,6 +114,29 @@ public class ContextClassLoaderUnloadTest extends CStackAwareAbstractProfilerTes
         WorkerStacks stacks = WorkerStacks.collect(verifyEvents("datadog.ExecutionSample"));
         System.out.println("[" + cstack + "] after unload: " + stacks);
         stacks.assertResolved();
+        assertGCCheckpointCounters(cstack);
+    }
+
+    /**
+     * The GCs awaitUnload() forced must have written JFR checkpoints from
+     * GarbageCollectionStart. With -PenableSamplerPerf, they must also have been
+     * timed. Skipped on builds without counters.
+     */
+    private void assertGCCheckpointCounters(String cstack) {
+        Map<String, Long> counters = profiler.getDebugCounters();
+        Assumptions.assumeTrue(counters.containsKey("gc_checkpoints"), "Profiler built without counters");
+        long checkpoints = counters.get("gc_checkpoints");
+        long skipped = counters.getOrDefault("gc_checkpoints_skipped", 0L);
+        System.out.println("[" + cstack + "] GC checkpoints: " + checkpoints + " written, " + skipped + " skipped");
+        assertTrue(checkpoints > 0, "No JFR checkpoint was written at GC start");
+
+        if (counters.containsKey("sampler_count.gc_checkpoint")) {
+            long timed = counters.get("sampler_count.gc_checkpoint");
+            long timeNs = counters.getOrDefault("sampler_ticks.gc_checkpoint", 0L);
+            System.out.println("[" + cstack + "] GC checkpoint time: " + timeNs + " ns over " + timed + " GCs");
+            assertEquals(checkpoints + skipped, timed, "Every GC-start checkpoint attempt should be timed");
+            assertTrue(timeNs > 0, "GC checkpoint time was not recorded");
+        }
     }
 
     /** Swaps the caller's strong references for weak ones; clears {@code loaders}. */
