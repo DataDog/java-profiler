@@ -761,11 +761,10 @@ TEST_F(SelectLeakCandidatesTest, HeapFloorCorroborationLowersRequiredHysteresis)
 }
 
 // --- Per-(klass, tid) qualification gate (TidTrend, livenessTracker.h) ---
-// The disjoint-tagged-vs-frontier pod finding: a whole-klass rising
-// generation count can come from churn spread across MANY allocating
-// threads, each retaining a STABLE handful of instances. A klass with a
-// qualifying klass-level trend but NO thread whose own trend qualifies is
-// NOT a leak candidate.
+// A whole-klass rising generation count can come from churn spread across
+// MANY allocating threads, each retaining a STABLE handful of instances. A
+// klass with a qualifying klass-level trend but NO thread whose own trend
+// qualifies is NOT a leak candidate.
 TEST_F(SelectLeakCandidatesTest, KlassTrendWithoutQualifyingTidIsNotSelected) {
     LivenessTracker *tracker = LivenessTracker::instance();
 
@@ -839,9 +838,7 @@ TEST_F(SelectLeakCandidatesTest, RetainedCountBarQualifiesOneCohortShape) {
 }
 
 // A rising per-tid trend alone (below the retained-count bar) qualifies:
-// small leaks grow their age span long before their count clears the bar -
-// the hotdog pod's simulated-memory-leak thread (12 tracked [B instances,
-// age_count rising 2->3) is exactly this shape.
+// small leaks grow their age span long before their count clears the bar.
 TEST_F(SelectLeakCandidatesTest, RisingTidTrendQualifiesBelowCountBar) {
     LivenessTracker *tracker = LivenessTracker::instance();
 
@@ -1558,6 +1555,87 @@ TEST_F(LeakTagPoolTest, DoubleReleaseWithFreeRoomListsTagOnce) {
     jlong first = tracker->acquireLeakTagForTest();
     jlong second = tracker->acquireLeakTagForTest();
     EXPECT_NE(first, second) << "the same tag was handed out twice";
+}
+
+// Ownership-period stamp (leakTagIncarnation): (tag, stamp) is the identity of
+// a leak-tagged object, because the tag itself is recycled after its object
+// dies. The stamp must change on every ownership transition and on nothing
+// else.
+TEST_F(LeakTagPoolTest, IncarnationChangesOnAcquireAndRelease) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    // LIFO: after the reset the next acquire pops this slot.
+    jlong tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(tag, base);
+    u32 owned = tracker->leakTagIncarnation(tag);
+    tracker->releaseLeakTagForTest(tag);
+    u32 released = tracker->leakTagIncarnation(tag);
+    EXPECT_NE(owned, released) << "release must start a new ownership period";
+    jlong re_tag = tracker->acquireLeakTagForTest();
+    ASSERT_EQ(tag, re_tag) << "released tag should be recycled first (LIFO)";
+    u32 reowned = tracker->leakTagIncarnation(re_tag);
+    EXPECT_NE(released, reowned) << "acquire must start a new ownership period";
+    EXPECT_NE(owned, reowned)
+        << "the tag's new owner must not share the dead owner's stamp";
+}
+
+TEST_F(LeakTagPoolTest, IncarnationUnchangedByNoOpReleases) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    int pool_size = tracker->leakTagPoolSizeForTest();
+    jlong tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(tag, base);
+    tracker->releaseLeakTagForTest(tag);
+    u32 after_release = tracker->leakTagIncarnation(tag);
+    // Rejected repeated release: no ownership transition.
+    tracker->releaseLeakTagForTest(tag);
+    EXPECT_EQ(after_release, tracker->leakTagIncarnation(tag));
+
+    // Out-of-range releases touch no slot.
+    jlong held = tracker->acquireLeakTagForTest();
+    ASSERT_GE(held, base);
+    u32 held_stamp = tracker->leakTagIncarnation(held);
+    u32 first_stamp = tracker->leakTagIncarnation(base);
+    u32 last_stamp = tracker->leakTagIncarnation(base + pool_size - 1);
+    tracker->releaseLeakTagForTest(base - 1);
+    tracker->releaseLeakTagForTest(base + pool_size);
+    tracker->releaseLeakTagForTest(0);
+    tracker->releaseLeakTagForTest(-1);
+    EXPECT_EQ(held_stamp, tracker->leakTagIncarnation(held));
+    EXPECT_EQ(first_stamp, tracker->leakTagIncarnation(base));
+    EXPECT_EQ(last_stamp, tracker->leakTagIncarnation(base + pool_size - 1));
+}
+
+TEST_F(LeakTagPoolTest, IncarnationIsZeroOutOfRange) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    int pool_size = tracker->leakTagPoolSizeForTest();
+    // Bump an in-range stamp first, so out-of-range reads cannot pass by
+    // accidentally aliasing a still-zero slot.
+    jlong tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(tag, base);
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(0));
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(1));
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(-1));
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(base - 1));
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(base + pool_size));
+}
+
+TEST_F(LeakTagPoolTest, ResetForTestBumpsOnlyOwnedSlots) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    jlong owned = tracker->acquireLeakTagForTest();
+    jlong freed = tracker->acquireLeakTagForTest();
+    ASSERT_GE(owned, base);
+    ASSERT_GE(freed, base);
+    tracker->releaseLeakTagForTest(freed);
+    u32 owned_before = tracker->leakTagIncarnation(owned);
+    u32 freed_before = tracker->leakTagIncarnation(freed);
+    tracker->leakTagPoolResetForTest();
+    EXPECT_NE(owned_before, tracker->leakTagIncarnation(owned))
+        << "freeing an owned slot is an ownership transition";
+    EXPECT_EQ(freed_before, tracker->leakTagIncarnation(freed))
+        << "an already-free slot keeps its stamp";
 }
 
 // ---------------------------------------------------------------------------
@@ -2602,6 +2680,70 @@ TEST_F(LivenessTrackerMockJvmTest, SharedObjectLeakTagHasSingleOwner) {
     sweep();
     EXPECT_EQ(pool - 1, tracker->leakTagFreeCountForTest())
         << "the object's leak tag must go back to the pool exactly once";
+}
+
+// start() rebuilds the leak-tag pool from the surviving tracking table. A tag
+// whose owner is unchanged (a table row still holds it) must keep its stamp, so
+// chains cached for that object stay attributable; a tag whose in-use bit flips
+// (held without a row owning it) starts a new ownership period; a tag that
+// stays free keeps its stamp.
+TEST_F(LivenessTrackerMockJvmTest, StartRebuildBumpsStampOnlyWhenOwnershipFlips) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    u32 retained_id = classIdOf(kRetainedSignature);
+    ASSERT_NE(0u, retained_id);
+
+    constexpr jint kTid = 7;
+    jobject obj = trackNew(&jvm.retained_class, kTid);
+    jobject reclaimed_obj = trackNew(&jvm.retained_class, kTid);
+    // Resolves the rows' cached class id, which tagLeakInstances() matches on.
+    sweep();
+    KlassCandidate candidate{};
+    candidate.klass_id = retained_id;
+    candidate.qualifying_tids[0] = kTid;
+    candidate.qualifying_tid_count = 1;
+    ASSERT_EQ(2, tracker->tagLeakInstances(&jvm.jvmti, &candidate, 1));
+    jlong row_tag = 0;
+    mockGetTag(&jvm.jvmti, obj, &row_tag);
+    ASSERT_GE(row_tag, tracker->leakTagBaseForTest());
+
+    // In use, but no table row owns it: the rebuild frees it.
+    jlong orphan_tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(orphan_tag, tracker->leakTagBaseForTest());
+    // Free before and after the rebuild.
+    jlong free_tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(free_tag, tracker->leakTagBaseForTest());
+    tracker->releaseLeakTagForTest(free_tag);
+
+    // A row still holds it, but the pool lists it free: the rebuild reclaims it.
+    // Released last, so no acquire above pops it back off the LIFO free list.
+    jlong reclaimed_tag = 0;
+    mockGetTag(&jvm.jvmti, reclaimed_obj, &reclaimed_tag);
+    ASSERT_GE(reclaimed_tag, tracker->leakTagBaseForTest());
+    ASSERT_NE(row_tag, reclaimed_tag);
+    tracker->releaseLeakTagForTest(reclaimed_tag);
+    ASSERT_FALSE(tracker->leakTagInUseForTest(reclaimed_tag));
+
+    u32 row_stamp = tracker->leakTagIncarnation(row_tag);
+    u32 reclaimed_stamp = tracker->leakTagIncarnation(reclaimed_tag);
+    u32 orphan_stamp = tracker->leakTagIncarnation(orphan_tag);
+    u32 free_stamp = tracker->leakTagIncarnation(free_tag);
+
+    Arguments args;
+    ASSERT_FALSE(args.parse("generations=true"));
+    ASSERT_FALSE(tracker->start(args));
+
+    EXPECT_TRUE(tracker->leakTagInUseForTest(row_tag));
+    EXPECT_EQ(row_stamp, tracker->leakTagIncarnation(row_tag))
+        << "a tag whose owning row survived the rebuild must keep its stamp";
+    EXPECT_TRUE(tracker->leakTagInUseForTest(reclaimed_tag));
+    EXPECT_NE(reclaimed_stamp, tracker->leakTagIncarnation(reclaimed_tag))
+        << "reclaiming a free-listed tag for its row is an ownership transition";
+    EXPECT_FALSE(tracker->leakTagInUseForTest(orphan_tag));
+    EXPECT_NE(orphan_stamp, tracker->leakTagIncarnation(orphan_tag))
+        << "freeing an in-use tag in the rebuild is an ownership transition";
+    EXPECT_FALSE(tracker->leakTagInUseForTest(free_tag));
+    EXPECT_EQ(free_stamp, tracker->leakTagIncarnation(free_tag))
+        << "a tag that stays free keeps its stamp";
 }
 
 // Profiler::start() resets the class map, restarting its ids at 1, while the

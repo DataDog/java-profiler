@@ -73,6 +73,10 @@ public abstract class AbstractProfilerTest {
   protected JavaProfiler profiler;
   private Path jfrDump;
 
+  // Set before getProfilerCommand() is consulted, so a subclass can vary its
+  // command per @Test method instead of needing one test class per configuration.
+  protected TestInfo testInfo;
+
   private Duration cpuInterval;
   private Duration wallInterval;
 
@@ -200,6 +204,7 @@ public abstract class AbstractProfilerTest {
 
   @BeforeEach
   public void setupProfiler(TestInfo testInfo) throws Exception {
+    this.testInfo = testInfo;
     Assumptions.assumeTrue(isPlatformSupported());
     withTestAssumptions();
 
