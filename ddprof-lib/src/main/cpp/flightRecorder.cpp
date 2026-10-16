@@ -78,15 +78,20 @@ static inline u64 safeDuration(u64 start_time, u64 end_time) {
 }
 
 SharedLineNumberTable::~SharedLineNumberTable() {
-  // _ptr is the buffer jvmti->GetLineNumberTable() itself returned (see
-  // Lookup::fillJavaMethodInfo), not a copy -- freed here via
+  // A JVMTI table is the buffer jvmti->GetLineNumberTable() itself returned
+  // (see Lookup::fillJavaMethodInfo), not a copy -- freed here via
   // jvmti->Deallocate(), not plain free(). On HotSpot, JvmtiEnv
   // Allocate()/Deallocate() are os::malloc()/os::free(), which route through
   // native memory tracking; freeing with plain free() can result in crash
   // whenever -XX:NativeMemoryTracking is enabled, because native memory tracking
-  // adds a header to malloc'd block.
+  // adds a header to malloc'd block. A table decoded from VM metadata
+  // (ResolvedMethod) is our own malloc() and goes back to free().
   if (_table != nullptr) {
-    VM::jvmti()->Deallocate((unsigned char *)_table);
+    if (_jvmti_allocated) {
+      VM::jvmti()->Deallocate((unsigned char *)_table);
+    } else {
+      free(_table);
+    }
     Counters::decrement(LINE_NUMBER_TABLES);
     // _size is the JVMTI entry count passed at construction (see
     // fillJavaMethodInfo), so the byte size matches the allocation.
@@ -266,9 +271,6 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   char* volatile &class_name = state._class_name;
   char* volatile &method_name = state._method_name;
   char* volatile &method_sig = state._method_signature;
-  u32 class_name_id = 0;
-  u32 method_name_id = 0;
-  u32 method_sig_id = 0;
 
   jint line_number_table_size = 0;
   jvmtiLineNumberEntry *line_number_table = NULL;
@@ -385,95 +387,15 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         entry = true;
       }
 
-      // maybe we should store the lookups below in initialisation-time
-      // constants...
-      if (has_prefix(class_name,
-                     "Ljdk/internal/reflect/GeneratedConstructorAccessor")) {
-        class_name_id = _classes->lookupDuringDump(
-            "jdk/internal/reflect/GeneratedConstructorAccessor",
-            strlen("jdk/internal/reflect/GeneratedConstructorAccessor"),
-            Profiler::maxClassMapSize());
-        method_name_id =
-            _symbols.lookup("Object "
-                            "jdk.internal.reflect.GeneratedConstructorAccessor."
-                            "newInstance(Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name,
-                            "Lsun/reflect/GeneratedConstructorAccessor")) {
-        class_name_id = _classes->lookupDuringDump(
-            "sun/reflect/GeneratedConstructorAccessor",
-            strlen("sun/reflect/GeneratedConstructorAccessor"),
-            Profiler::maxClassMapSize());
-        method_name_id = _symbols.lookup(
-            "Object "
-            "sun.reflect.GeneratedConstructorAccessor.newInstance(Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name,
-                            "Ljdk/internal/reflect/GeneratedMethodAccessor")) {
-        class_name_id = _classes->lookupDuringDump(
-            "jdk/internal/reflect/GeneratedMethodAccessor",
-            strlen("jdk/internal/reflect/GeneratedMethodAccessor"),
-            Profiler::maxClassMapSize());
-        method_name_id =
-            _symbols.lookup("Object "
-                            "jdk.internal.reflect.GeneratedMethodAccessor."
-                            "invoke(Object, Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name,
-                            "Lsun/reflect/GeneratedMethodAccessor")) {
-        class_name_id = _classes->lookupDuringDump(
-            "sun/reflect/GeneratedMethodAccessor",
-            strlen("sun/reflect/GeneratedMethodAccessor"),
-            Profiler::maxClassMapSize());
-        method_name_id = _symbols.lookup(
-            "Object sun.reflect.GeneratedMethodAccessor.invoke(Object, "
-            "Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name, "Ljava/lang/invoke/LambdaForm$")) {
-        const int lambdaFormPrefixLength =
-            strlen("Ljava/lang/invoke/LambdaForm$");
-        // we want to normalise to java/lang/invoke/LambdaForm$MH,
-        // java/lang/invoke/LambdaForm$DMH, java/lang/invoke/LambdaForm$BMH,
-        if (has_prefix(class_name + lambdaFormPrefixLength, "MH")) {
-          class_name_id = _classes->lookupDuringDump(
-              "java/lang/invoke/LambdaForm$MH",
-              strlen("java/lang/invoke/LambdaForm$MH"),
-              Profiler::maxClassMapSize());
-        } else if (has_prefix(class_name + lambdaFormPrefixLength, "BMH")) {
-          class_name_id = _classes->lookupDuringDump(
-              "java/lang/invoke/LambdaForm$BMH",
-              strlen("java/lang/invoke/LambdaForm$BMH"),
-              Profiler::maxClassMapSize());
-        } else if (has_prefix(class_name + lambdaFormPrefixLength, "DMH")) {
-          class_name_id = _classes->lookupDuringDump(
-              "java/lang/invoke/LambdaForm$DMH",
-              strlen("java/lang/invoke/LambdaForm$DMH"),
-              Profiler::maxClassMapSize());
-        } else {
-          // don't recognise the suffix, so don't normalise
-          class_name_id = _classes->lookupDuringDump(
-              normalized_class_name, normalized_class_name_len,
-              Profiler::maxClassMapSize());
-        }
-        method_name_id = _symbols.lookup(method_name);
-        method_sig_id = _symbols.lookup(method_sig);
-      } else {
-        class_name_id = _classes->lookupDuringDump(
-            normalized_class_name, normalized_class_name_len,
-            Profiler::maxClassMapSize());
-        method_name_id = _symbols.lookup(method_name);
-        method_sig_id = _symbols.lookup(method_sig);
-      }
+      fillJavaMethodNames(mi, normalized_class_name, normalized_class_name_len,
+                          method_name, method_sig);
     } else {
       Counters::increment(JMETHODID_SKIPPED);
-      class_name_id = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
-      method_name_id = _symbols.lookup("<unloaded>");
-      method_sig_id = _symbols.lookup("()L;");
+      mi->_class = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
+      mi->_name = _symbols.lookup("<unloaded>");
+      mi->_sig = _symbols.lookup("()L;");
     }
 
-    mi->_class = class_name_id;
-    mi->_name = method_name_id;
-    mi->_sig = method_sig_id;
     mi->_type = FRAME_INTERPRETED;
     mi->_is_entry = entry;
     // Only touch mi->_line_number_table when a table was actually fetched
@@ -499,6 +421,123 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   // still fills mi with the deliberate "<unloaded>" sentinel and returns true
   // via the return above).
   return false;
+}
+
+void Lookup::fillJavaMethodNames(MethodInfo *mi, const char *class_name,
+                                 size_t class_name_len, const char *method_name,
+                                 const char *method_sig) {
+  u32 class_name_id;
+  u32 method_name_id;
+  // maybe we should store the lookups below in initialisation-time
+  // constants...
+  if (has_prefix_n(class_name, class_name_len,
+                   "jdk/internal/reflect/GeneratedConstructorAccessor")) {
+    class_name_id = _classes->lookupDuringDump(
+        "jdk/internal/reflect/GeneratedConstructorAccessor",
+        strlen("jdk/internal/reflect/GeneratedConstructorAccessor"),
+        Profiler::maxClassMapSize());
+    method_name_id =
+        _symbols.lookup("Object "
+                        "jdk.internal.reflect.GeneratedConstructorAccessor."
+                        "newInstance(Object[])");
+  } else if (has_prefix_n(class_name, class_name_len,
+                          "sun/reflect/GeneratedConstructorAccessor")) {
+    class_name_id = _classes->lookupDuringDump(
+        "sun/reflect/GeneratedConstructorAccessor",
+        strlen("sun/reflect/GeneratedConstructorAccessor"),
+        Profiler::maxClassMapSize());
+    method_name_id = _symbols.lookup(
+        "Object "
+        "sun.reflect.GeneratedConstructorAccessor.newInstance(Object[])");
+  } else if (has_prefix_n(class_name, class_name_len,
+                          "jdk/internal/reflect/GeneratedMethodAccessor")) {
+    class_name_id = _classes->lookupDuringDump(
+        "jdk/internal/reflect/GeneratedMethodAccessor",
+        strlen("jdk/internal/reflect/GeneratedMethodAccessor"),
+        Profiler::maxClassMapSize());
+    method_name_id =
+        _symbols.lookup("Object "
+                        "jdk.internal.reflect.GeneratedMethodAccessor."
+                        "invoke(Object, Object[])");
+  } else if (has_prefix_n(class_name, class_name_len,
+                          "sun/reflect/GeneratedMethodAccessor")) {
+    class_name_id = _classes->lookupDuringDump(
+        "sun/reflect/GeneratedMethodAccessor",
+        strlen("sun/reflect/GeneratedMethodAccessor"),
+        Profiler::maxClassMapSize());
+    method_name_id = _symbols.lookup(
+        "Object sun.reflect.GeneratedMethodAccessor.invoke(Object, "
+        "Object[])");
+  } else if (has_prefix_n(class_name, class_name_len,
+                          "java/lang/invoke/LambdaForm$")) {
+    const size_t lambdaFormPrefixLength =
+        strlen("java/lang/invoke/LambdaForm$");
+    const char *suffix = class_name + lambdaFormPrefixLength;
+    const size_t suffix_len = class_name_len - lambdaFormPrefixLength;
+    // we want to normalise to java/lang/invoke/LambdaForm$MH,
+    // java/lang/invoke/LambdaForm$DMH, java/lang/invoke/LambdaForm$BMH,
+    if (has_prefix_n(suffix, suffix_len, "MH")) {
+      class_name_id = _classes->lookupDuringDump(
+          "java/lang/invoke/LambdaForm$MH",
+          strlen("java/lang/invoke/LambdaForm$MH"),
+          Profiler::maxClassMapSize());
+    } else if (has_prefix_n(suffix, suffix_len, "BMH")) {
+      class_name_id = _classes->lookupDuringDump(
+          "java/lang/invoke/LambdaForm$BMH",
+          strlen("java/lang/invoke/LambdaForm$BMH"),
+          Profiler::maxClassMapSize());
+    } else if (has_prefix_n(suffix, suffix_len, "DMH")) {
+      class_name_id = _classes->lookupDuringDump(
+          "java/lang/invoke/LambdaForm$DMH",
+          strlen("java/lang/invoke/LambdaForm$DMH"),
+          Profiler::maxClassMapSize());
+    } else {
+      // don't recognise the suffix, so don't normalise
+      class_name_id = _classes->lookupDuringDump(
+          class_name, class_name_len, Profiler::maxClassMapSize());
+    }
+    method_name_id = _symbols.lookup(method_name);
+  } else {
+    class_name_id = _classes->lookupDuringDump(
+        class_name, class_name_len, Profiler::maxClassMapSize());
+    method_name_id = _symbols.lookup(method_name);
+  }
+
+  mi->_class = class_name_id;
+  mi->_name = method_name_id;
+  mi->_sig = _symbols.lookup(method_sig);
+}
+
+void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
+  const char *class_name = resolved.klassName();
+  const char *method_name = resolved.methodName();
+  const char *method_sig = resolved.methodSignature();
+
+  fillJavaMethodNames(mi, class_name, strlen(class_name), method_name, method_sig);
+  mi->_type = FRAME_INTERPRETED;
+  // Same entry-frame rules as the jmethodID path: Thread.run (or an override
+  // in a Thread subclass), or public static void main(String[]).
+  mi->_is_entry = resolved.isThreadRun() ||
+                  (strcmp(method_name, "main") == 0 &&
+                   strcmp(method_sig, "([Ljava/lang/String;)V") == 0);
+
+  // Raw rows are refilled at their first use in every chunk (see
+  // fillRawMethod()), so the table is replaced each time rather than kept
+  // from the first fill as on the jmethodID path.
+  if (resolved.lineNumberTable() != nullptr) {
+    int size = resolved.lineNumberTableSize();
+    // Built before ownership moves, so a std::bad_alloc here leaves the table
+    // with `resolved`, which frees it.
+    auto table = std::make_shared<SharedLineNumberTable>(
+        size, const_cast<jvmtiLineNumberEntry *>(resolved.lineNumberTable()),
+        false /* malloc'd */);
+    resolved.takeLineNumberTable(&size);
+    mi->_line_number_table = std::move(table);
+    Counters::increment(LINE_NUMBER_TABLES);
+    NativeMem::record(NM_LINE_TABLES, (long long)((size_t)size * sizeof(jvmtiLineNumberEntry)));
+  } else {
+    mi->_line_number_table = nullptr;
+  }
 }
 
 bool Lookup::resolveVTableReceiver(VMSymbol *sym, char *buf, size_t bufsize,
@@ -672,7 +711,14 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     return unknown_method;
   }
 
-  // Fast path, deliberately unprotected. For anything but a raw-pointer or
+  // Raw Method* frames take their own path: resolution pins classes through
+  // JNI, so it must not run under fillMethod()'s landing pad, and it installs
+  // its own around the metadata reads.
+  if (FrameType::isRawPointer(bci)) {
+    return fillRawMethod(frame);
+  }
+
+  // Fast path, deliberately unprotected. For anything but a
   // BCI_VTABLE_RECEIVER frame, methodKey() reads no VM metadata (see its
   // comment) and an already-marked row needs no symbolication -- there is
   // nothing here that can fault, hence nothing to recover from. Worth
@@ -680,7 +726,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   // arming the protection below is not free: initCurrentThreadSignalSafe()
   // blocks and unblocks signals and sigsetjmp(..., 1) reads the signal mask,
   // three syscalls on a loop that runs once per frame per trace.
-  if (!FrameType::isRawPointer(bci) && bci != BCI_VTABLE_RECEIVER) {
+  if (bci != BCI_VTABLE_RECEIVER) {
     MethodMap::iterator it = _method_map->find(methodKey(frame, method_id, bci, 0));
     if (it != _method_map->end() && it->second._mark) {
       return &it->second;
@@ -702,30 +748,40 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   return fillMethod(frame, method_id, bci, prof_thread);
 }
 
-jmethodID Lookup::resolveRawMethod(const ASGCT_CallFrame &frame) {
+MethodInfo *Lookup::fillRawMethod(const ASGCT_CallFrame &frame) {
   RawMethodKey key{FrameType::untagPointer(frame.method), FrameType::rawTag(frame.bci, frame.method)};
   auto cached = _raw_method_cache.find(key);
   if (cached != _raw_method_cache.end()) {
     Counters::increment(RAW_FRAME_RESOLVE_CACHE_HITS);
+    if (cached->second == nullptr) {
+      return unknownMethod();
+    }
     return cached->second;
   }
-  jmethodID method_id = JVMSupport::resolve(frame.method, frame.bci);
-  _raw_method_cache.emplace(key, method_id);
-  return method_id;
+
+  ResolvedMethod resolved;
+  if (!JVMSupport::resolve(frame.method, frame.bci, resolved)) {
+    _raw_method_cache.emplace(key, nullptr);
+    return unknownMethod();
+  }
+  // Refilled even if the row was filled in an earlier chunk: that only proves
+  // the frame's (Method*, tag) named this method then, while resolve() just
+  // checked it again. The fill reads only `resolved`, never VM metadata, so
+  // unlike fillMethod() it needs no landing pad.
+  MethodInfo *mi = &(*_method_map)[MethodMap::makeRawKey(key.method, key.tag)];
+  fillJavaMethodInfo(mi, resolved);
+  if (mi->_key == 0) {
+    mi->_key = _method_map->allocId();  // see fillMethod() on why not size()+1
+  }
+  mi->_mark = true;
+  _raw_method_cache.emplace(key, mi);
+  return mi;
 }
 
 MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
                                jint bci, ProfiledThread* const prof_thread) {
 
   assert(prof_thread != nullptr);
-                                  // Resolve native method
-  if (FrameType::isRawPointer(bci)) {
-    method_id = resolveRawMethod(frame);
-    if (method_id == nullptr) {
-      return unknownMethod();
-    }
-  }
-
   assert(method_id != nullptr && "Already filtered by caller");
   // Reinstates the thread's previous landing pad on every exit from this frame,
   // including a std::bad_alloc thrown by one of the map or dictionary inserts

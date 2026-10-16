@@ -14,9 +14,18 @@ import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Method;
+import java.math.BigInteger;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Random;
+import java.util.TreeMap;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * External launcher for the profiler under test.
@@ -61,6 +70,10 @@ import java.util.concurrent.atomic.LongAdder;
  *     {@link ThreadLocalLeakScenario}: a growing {@code byte[]} collection held only through the
  *     leaking thread's {@code ThreadLocal} map; the {@code -late} variant starts the leak thread
  *     only after the recording began (see that scenario's own comment).</li>
+ *     <li>line-numbers &lt;';'-delimited profiler command lists, required&gt; - for each command list in
+ *     turn, starts the profiler, runs the same JDK-heavy workload, prints the
+ *     {@code method_resolve_lazy_resolved} counter and stops the profiler; see
+ *     {@code LazyLineNumberConsistencyTest}</li>
  * </ul>
  */
 public class ExternalLauncher {
@@ -164,6 +177,41 @@ public class ExternalLauncher {
         return new String[] {packed.substring(0, sep), packed.substring(sep + "|||".length())};
     }
 
+    /** How long the {@code line-numbers} workload runs under each command list. */
+    private static final long LINE_NUMBER_WORKLOAD_MILLIS = 1500;
+
+    private static volatile long lineNumberSink;
+
+    /**
+     * Spends its time in many different JDK methods (regular expressions, formatting, maps,
+     * sorting, big-integer arithmetic), so that their frames, and the lines of their bytecode
+     * indices, show up in the recording.
+     */
+    private static void runLineNumberWorkload() {
+        Pattern pattern = Pattern.compile("([a-z]+)-(\\d+)");
+        Random rnd = new Random(42);
+        long acc = 0;
+        long deadline = System.currentTimeMillis() + LINE_NUMBER_WORKLOAD_MILLIS;
+        while (System.currentTimeMillis() < deadline) {
+            Map<String, Integer> counts = new HashMap<>();
+            TreeMap<Integer, String> sorted = new TreeMap<>();
+            List<String> words = new ArrayList<>();
+            for (int i = 0; i < 200; i++) {
+                String word = String.format("%s-%d", Long.toString(rnd.nextInt(1 << 20), 36), i);
+                Matcher m = pattern.matcher(word);
+                if (m.matches()) {
+                    counts.merge(m.group(1), Integer.parseInt(m.group(2)), Integer::sum);
+                }
+                sorted.put(word.hashCode(), word);
+                words.add(word.toUpperCase());
+            }
+            Collections.sort(words);
+            BigInteger big = BigInteger.valueOf(rnd.nextLong()).pow(8).mod(BigInteger.valueOf(1_000_000_007L));
+            acc += counts.size() + sorted.firstKey() + words.get(0).length() + big.intValue();
+        }
+        lineNumberSink = acc;
+    }
+
     public static void main(String[] args) throws Exception {
         Thread worker = null;
         try {
@@ -213,6 +261,20 @@ public class ExternalLauncher {
                 probe.getMethod("spin", long.class).invoke(null, 2_000_000_000L);
                 // Stopping dumps the recording, which resolves the probe's raw frames.
                 instance.stop();
+            } else if (args[0].equals("line-numbers")) {
+                if (args.length < 2 || args[1].isEmpty()) {
+                    throw new IllegalArgumentException("line-numbers requires profiler command lists");
+                }
+                JavaProfiler instance = JavaProfiler.getInstance();
+                for (String commands : args[1].split(";")) {
+                    instance.execute(commands);
+                    runLineNumberWorkload();
+                    // Counters are reset on start, so read them while this session's are current;
+                    // the dump on stop() resolves the raw frames, so stop first.
+                    instance.stop();
+                    System.out.println("[line-numbers] method_resolve_lazy_resolved="
+                            + instance.getDebugCounters().get("method_resolve_lazy_resolved"));
+                }
             } else if (args[0].equals("entry-frames")) {
                 // Unlike the modes above, this one is only meaningful with a running profiler:
                 // silently skipping the start would leave the parent process parsing an empty
