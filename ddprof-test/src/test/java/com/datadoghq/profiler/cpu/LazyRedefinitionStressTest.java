@@ -19,6 +19,8 @@ import java.lang.instrument.ClassDefinition;
 import java.lang.instrument.Instrumentation;
 import java.lang.management.ManagementFactory;
 import java.lang.reflect.Method;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -166,10 +168,8 @@ public class LazyRedefinitionStressTest extends AbstractProfilerTest {
         if (RetransformAgent.instrumentation != null) {
             return RetransformAgent.instrumentation;
         }
-        Class<?> vmClass;
-        try {
-            vmClass = Class.forName("com.sun.tools.attach.VirtualMachine");
-        } catch (ClassNotFoundException e) {
+        Class<?> vmClass = attachApi();
+        if (vmClass == null) {
             return null;
         }
         Path jar = Files.createTempFile("lazy-redefinition-agent-", ".jar");
@@ -191,5 +191,27 @@ public class LazyRedefinitionStressTest extends AbstractProfilerTest {
             Files.deleteIfExists(jar);
         }
         return RetransformAgent.instrumentation;
+    }
+
+    /**
+     * Returns {@code com.sun.tools.attach.VirtualMachine}, or null if this JVM has no attach API.
+     * On JDK 9+ it comes from the jdk.attach module. On JDK 8 it lives in the JDK's
+     * {@code lib/tools.jar}, which isn't on the test classpath, so it is loaded from there with a
+     * child class loader; {@code AttachProvider} finds its Linux/macOS provider through the
+     * same loader.
+     */
+    private static Class<?> attachApi() throws Exception {
+        try {
+            return Class.forName("com.sun.tools.attach.VirtualMachine");
+        } catch (ClassNotFoundException e) {
+            // JDK 8: java.home is <jdk>/jre
+            Path toolsJar = Paths.get(System.getProperty("java.home"), "..", "lib", "tools.jar").normalize();
+            if (!Files.isRegularFile(toolsJar)) {
+                return null;
+            }
+            ClassLoader loader = new URLClassLoader(new URL[] {toolsJar.toUri().toURL()},
+                    LazyRedefinitionStressTest.class.getClassLoader());
+            return Class.forName("com.sun.tools.attach.VirtualMachine", true, loader);
+        }
     }
 }
