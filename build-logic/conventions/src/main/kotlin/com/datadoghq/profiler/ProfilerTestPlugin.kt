@@ -78,6 +78,23 @@ import javax.inject.Inject
  */
 class ProfilerTestPlugin : Plugin<Project> {
 
+    companion object {
+        private const val ADDITIONAL_JVM_ARGS_EXTENSION = "additionalJvmArgs"
+
+        /**
+         * Extra JVM args a build script can contribute to a musl Exec test task (e.g.
+         * ddprof-test's JaCoCo agent for the coverage tasks, which Gradle only attaches to
+         * Test tasks). Get-or-create, since a build script's configureEach on the task can
+         * run before the plugin's own configuration of it.
+         */
+        @Suppress("UNCHECKED_CAST")
+        fun additionalJvmArgs(task: Exec): ListProperty<String> =
+            task.extensions.findByName(ADDITIONAL_JVM_ARGS_EXTENSION) as ListProperty<String>?
+                ?: task.project.objects.listProperty(String::class.java).also {
+                    task.extensions.add(ADDITIONAL_JVM_ARGS_EXTENSION, it)
+                }
+    }
+
     override fun apply(project: Project) {
         val extension = project.extensions.create(
             "profilerTest",
@@ -247,6 +264,12 @@ class ProfilerTestPlugin : Plugin<Project> {
             // Configure Java executable - bypasses toolchain system
             testTask.setExecutable(PlatformUtils.testJavaExecutable())
 
+            // Run each test class in a fresh JVM: the profiler's native state
+            // (started engines, preloaded jmethodIDs, patched libraries, counters)
+            // outlives a single test and otherwise leaks into the next class.
+            // Gradle forks per class at most; methods of one class share a JVM.
+            testTask.setForkEvery(1)
+
             // Environment variables (from testConfig which already includes DDPROF_TEST_DISABLE_RATE_LIMIT and CI)
             testConfig.environmentVariables.forEach { (key, value) ->
                 testTask.environment(key, value)
@@ -308,12 +331,9 @@ class ProfilerTestPlugin : Plugin<Project> {
                         !PlatformUtils.isTestJvmJ9()
                     }
                     // The ASAN test JVM is pinned to -Xmx1024m (see ConfigurationPresets.kt)
-                    // to keep the heap below ASan's shadow-memory region. Without forking,
-                    // Gradle reuses one JVM for the whole suite, and per-test allocations
-                    // (JFR recordings, JMC object models) accumulate until it OOMs late in
-                    // the run even though every individual test passes. Restart periodically
-                    // to bound cumulative heap growth.
-                    testTask.setForkEvery(25)
+                    // to keep the heap below ASan's shadow-memory region; forkEvery(1)
+                    // above keeps per-test allocations (JFR recordings, JMC object models)
+                    // from accumulating across the suite until it OOMs.
                 }
                 // TSan + JVM integration tests are incompatible: the profiler's signal
                 // handlers (SIGPROF at 1ms) are TSan-instrumented; when a signal fires
@@ -362,6 +382,9 @@ class ProfilerTestPlugin : Plugin<Project> {
                 }
                 allArgs.addAll(testConfig.extraJvmArgs)
                 allArgs.addAll(testConfig.configJvmArgs)
+                // Read here, not contributed via a doFirst of the build script's own: that
+                // would run before this one and its args would be overwritten.
+                allArgs.addAll(additionalJvmArgs(execTask).get())
 
                 // System properties
                 testConfig.systemProperties.forEach { (key, value) ->

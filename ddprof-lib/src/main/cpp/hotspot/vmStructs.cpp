@@ -931,6 +931,26 @@ bool VMMethod::check_jmethodID(jmethodID id) {
     return check_jmethodID_hotspot(id);
 }
 
+const VMMethod* VMMethod::fromJmethodID(jmethodID id) {
+    if (id == nullptr || !_can_dereference_jmethod_id) {
+        return nullptr;
+    }
+    const void* method = SafeAccess::load((void**)id);
+    // Same empty-slot values check_jmethodID_hotspot() rejects
+    // (JNIMethodBlock::_free_method is 55).
+    if (method == nullptr || (size_t)method == 55) {
+        return nullptr;
+    }
+    return (const VMMethod*)method;
+}
+
+const void* VMMethod::constMethodOf(const void* method) {
+    if (method == nullptr || _method_constmethod_offset < 0) {
+        return nullptr;
+    }
+    return SafeAccess::load((void**)((const char*)method + _method_constmethod_offset));
+}
+
 bool VMMethod::check_jmethodID_hotspot(jmethodID id) {
     if (VM::hotspot_version() > 25) {
         // In https://bugs.openjdk.org/browse/JDK-8268406 the jmethodids are completely reworked

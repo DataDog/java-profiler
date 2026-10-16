@@ -19,6 +19,8 @@
 #include <cstring>
 #include <new>
 #include <string>
+#include <vector>
+#include <cstddef>
 
 #ifdef __linux__
 #include <sys/mman.h>
@@ -58,6 +60,17 @@ public:
     }
 
     ~VMStructsTestAccessor() { _restore(_saved); }
+
+    // Scoped override for Klass::_class_loader_data.
+    class ClassLoaderDataOffset {
+    public:
+        explicit ClassLoaderDataOffset(int offset) : _saved(VMStructs::_class_loader_data_offset) {
+            VMStructs::_class_loader_data_offset = offset;
+        }
+        ~ClassLoaderDataOffset() { VMStructs::_class_loader_data_offset = _saved; }
+    private:
+        int _saved;
+    };
 
     // Offsets beyond the id() set, needed to walk a fake Method* all the way to
     // its name/signature/class Symbols the way HotspotSupport::resolve() does.
@@ -120,6 +133,53 @@ public:
             VMStructs::TYPE_SIZE_NAME(VMConstantPool) = t.constant_pool;
             VMStructs::TYPE_SIZE_NAME(VMKlass) = t.klass;
             VMStructs::TYPE_SIZE_NAME(VMSymbol) = t.symbol;
+        }
+    };
+
+    // Scoped override for what resolve() needs to locate and decode a
+    // ConstMethod's line number table and to walk Klass::_super.
+    class LineTableLayout {
+    public:
+        LineTableLayout(int flags_offset, int code_size_offset, int has_table_mask,
+                        unsigned char unsigned5_base, int klass_super_offset) {
+            _saved = _read();
+            VMStructs::_constmethod_flags_offset = flags_offset;
+            VMStructs::_constmethod_code_size_offset = code_size_offset;
+            // Model JDK 21+ (u4 ConstMethodFlags); the u2 constant stays unset.
+            VMStructs::_ConstMethodFlags__misc_has_linenumber_table = has_table_mask;
+            VMStructs::_ConstMethod__has_linenumber_table = -1;
+            VMStructs::_unsigned5_base = unsigned5_base;
+            VMStructs::_klass_super_offset = klass_super_offset;
+        }
+
+        ~LineTableLayout() {
+            VMStructs::_constmethod_flags_offset = _saved.flags_offset;
+            VMStructs::_constmethod_code_size_offset = _saved.code_size_offset;
+            VMStructs::_ConstMethodFlags__misc_has_linenumber_table = _saved.flags_mask;
+            VMStructs::_ConstMethod__has_linenumber_table = _saved.legacy_mask;
+            VMStructs::_unsigned5_base = _saved.unsigned5_base;
+            VMStructs::_klass_super_offset = _saved.klass_super_offset;
+        }
+
+    private:
+        struct Saved {
+            int flags_offset;
+            int code_size_offset;
+            int flags_mask;
+            int legacy_mask;
+            unsigned char unsigned5_base;
+            int klass_super_offset;
+        } _saved;
+
+        static Saved _read() {
+            return {
+                VMStructs::_constmethod_flags_offset,
+                VMStructs::_constmethod_code_size_offset,
+                VMStructs::_ConstMethodFlags__misc_has_linenumber_table,
+                VMStructs::_ConstMethod__has_linenumber_table,
+                VMStructs::_unsigned5_base,
+                VMStructs::_klass_super_offset,
+            };
         }
     };
 
@@ -327,12 +387,12 @@ TEST(HotspotMethodIdTest, IdReturnsValidIdForPopulatedSlot) {
 // ---------------------------------------------------------------------------
 // HotspotSupport::resolve() crash protection
 //
-// resolve() turns a raw Method* captured at sample time into a jmethodID on the
-// JFR dump thread. GC or class unloading can free that metadata in between, so
+// resolve() turns a raw Method* captured at sample time into its class name,
+// method name, signature and line number table on the JFR dump thread. GC or class unloading can free that metadata in between, so
 // every dereference in the walk (constMethod -> constants -> name/signature ->
 // holder -> klass->name, then Symbol length/body) can fault. resolve() installs
 // a sigsetjmp landing pad via JmpCtxScope so Profiler::checkFault() recovers and
-// resolve() reports the method as unresolved (nullptr) instead of taking the JVM
+// resolve() reports the method as unresolved (false) instead of taking the JVM
 // down mid-dump.
 //
 // checkFault() gates recovery on the faulting pc lying inside the profiler
@@ -374,7 +434,7 @@ size_t kPageSize() { return OS::page_size; }
 // and consistent with the struct layouts below.
 constexpr VMStructsTestAccessor::TypeSizes RESOLVE_TYPE_SIZES = {
     /*method*/        sizeof(void*),
-    /*const_method*/  2 * sizeof(void*),
+    /*const_method*/  24,              // == offsetof(ResolveFakes::ConstMethod, code)
     /*constant_pool*/ sizeof(void*),   // base() = cpool + this, i.e. &symbols[0]
     /*klass*/         sizeof(void*),
     /*symbol*/        8,
@@ -413,7 +473,11 @@ struct ResolveFakes {
         uint16_t name_index;
         uint16_t sig_index;
         uint16_t idnum;
-        uint16_t pad;
+        uint16_t code_size;      // RESOLVE_CODE_SIZE_OFFSET
+        uint32_t flags;          // RESOLVE_FLAGS_OFFSET
+        uint32_t pad;
+        // Bytecodes, then the compressed line number table (code_end()).
+        unsigned char code[64];
     } const_method;
     struct ConstantPool {
         void* holder;
@@ -422,11 +486,13 @@ struct ResolveFakes {
     struct Klass {
         void* name_symbol;   // klass_name offset 0
         void* jmethod_ids;   // stays null so VMMethod::id() reports "no cache"
-    } klass;
+        void* super_klass;   // RESOLVE_KLASS_SUPER_OFFSET
+        void* class_loader_data;  // RESOLVE_KLASS_CLD_OFFSET
+    } klass, super_klass;
     struct Symbol {
         uint16_t length;
         char body[64];
-    } name_sym, sig_sym, klass_sym;
+    } name_sym, sig_sym, klass_sym, super_sym;
 
     // Wires the chain up so resolve() walks Method -> ConstMethod -> ConstantPool
     // -> {name, signature} Symbols and ConstantPool -> Klass -> class-name Symbol.
@@ -446,74 +512,26 @@ struct ResolveFakes {
         s.length = (uint16_t)strlen(text);
         memcpy(s.body, text, s.length);
     }
+
+    // Marks the method as having a line number table and copies `table`
+    // (already compressed) right after `code_size` bytes of bytecode.
+    void setLineNumberTable(uint16_t code_size, const unsigned char* table, size_t len) {
+        const_method.code_size = code_size;
+        const_method.flags |= 1;
+        memcpy(const_method.code + code_size, table, len);
+    }
 };
 
-// Minimal fake JavaVM/JNIEnv so HotspotSupport::resolve()'s unprotected JNI
-// phase (lookupMethodIdViaJni) can run to completion without a live JVM.
-// FindClass always reports success against an opaque, never-dereferenced
-// jclass; GetMethodID/GetStaticMethodID record the name/signature they were
-// called with and report "not found" -- the same real-world path resolve()
-// takes for a method it can't find -- so nothing beyond that is exercised.
-// Recording the arguments is what lets a test prove the malloc-fallback path
-// copied the right bytes, rather than just checking resolve() didn't crash.
-class ScopedFakeJni {
-public:
-    ScopedFakeJni() : _saved_vm(VMTestAccessor::getVm()) {
-        _jni_tbl = JNINativeInterface_{};
-        _jni_tbl.FindClass = &findClass;
-        _jni_tbl.ExceptionClear = &exceptionClear;
-        _jni_tbl.GetMethodID = &getMethodId;
-        _jni_tbl.GetStaticMethodID = &getMethodId;
-        _jni_tbl.DeleteLocalRef = &deleteLocalRef;
-        _jni_env.functions = &_jni_tbl;
+// Must stay below the 1024-byte mark ResolveUsesMallocFallbackForOversizedButReadableName
+// writes its long Symbol at.
+static_assert(sizeof(ResolveFakes) <= 1024, "fakes overlap the long symbol");
+static_assert(offsetof(ResolveFakes::ConstMethod, code) == 24, "RESOLVE_TYPE_SIZES.const_method");
 
-        _vm_tbl = JNIInvokeInterface_{};
-        _vm_tbl.GetEnv = &getEnv;
-        _vm.functions = &_vm_tbl;
+constexpr int RESOLVE_CODE_SIZE_OFFSET   = offsetof(ResolveFakes::ConstMethod, code_size);
+constexpr int RESOLVE_FLAGS_OFFSET       = offsetof(ResolveFakes::ConstMethod, flags);
+constexpr int RESOLVE_KLASS_SUPER_OFFSET = offsetof(ResolveFakes::Klass, super_klass);
+constexpr int RESOLVE_KLASS_CLD_OFFSET   = offsetof(ResolveFakes::Klass, class_loader_data);
 
-        s_instance = this;
-        VMTestAccessor::setVm(reinterpret_cast<JavaVM*>(&_vm));
-    }
-
-    ~ScopedFakeJni() {
-        VMTestAccessor::setVm(_saved_vm);
-        s_instance = nullptr;
-    }
-
-    int getMethodIdCalls() const { return _get_method_id_calls; }
-    const std::string& lastMethodName() const { return _last_method_name; }
-    const std::string& lastMethodSignature() const { return _last_method_sig; }
-
-private:
-    static jclass JNICALL findClass(JNIEnv*, const char*) {
-        return reinterpret_cast<jclass>(&s_instance->_fake_class);
-    }
-    static jmethodID JNICALL getMethodId(JNIEnv*, jclass, const char* name, const char* sig) {
-        s_instance->_get_method_id_calls++;
-        s_instance->_last_method_name = name != nullptr ? name : "";
-        s_instance->_last_method_sig = sig != nullptr ? sig : "";
-        return nullptr;
-    }
-    static void JNICALL exceptionClear(JNIEnv*) {}
-    static void JNICALL deleteLocalRef(JNIEnv*, jobject) {}
-    static jint JNICALL getEnv(JavaVM*, void** penv, jint) {
-        *penv = reinterpret_cast<JNIEnv*>(&s_instance->_jni_env);
-        return JNI_OK;
-    }
-
-    static ScopedFakeJni* s_instance;
-
-    JavaVM* _saved_vm;
-    JNINativeInterface_ _jni_tbl{};
-    JNIEnv_ _jni_env{};
-    JNIInvokeInterface_ _vm_tbl{};
-    JavaVM_ _vm{};
-    int _fake_class = 0;  // address-only sentinel; never dereferenced
-    int _get_method_id_calls = 0;
-    std::string _last_method_name;
-    std::string _last_method_sig;
-};
-ScopedFakeJni* ScopedFakeJni::s_instance = nullptr;
 
 } // namespace
 
@@ -585,7 +603,8 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveRecoversFromFaultInsteadOfCrash
     // VMMethod::id() reads the same offset through SafeAccess first, so it
     // returns the sentinel rather than faulting; resolve() then falls through to
     // constMethod_or_null(), whose raw *(void**) deref is what actually faults.
-    EXPECT_EQ(nullptr, HotspotSupport::resolve(_region));
+    ResolvedMethod result;
+    EXPECT_FALSE(HotspotSupport::resolve(_region, result));
 
     EXPECT_EQ(before + 1, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
     // The landing pad must hand the previous (here: absent) context back.
@@ -604,7 +623,8 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveRecoversRepeatedly) {
 
     long long before = Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED);
     for (int i = 0; i < 10; i++) {
-        EXPECT_EQ(nullptr, HotspotSupport::resolve(_region));
+        ResolvedMethod result;
+        EXPECT_FALSE(HotspotSupport::resolve(_region, result));
         EXPECT_FALSE(_pt->isProtected());
     }
     EXPECT_EQ(before + 10, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
@@ -635,7 +655,8 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveReturnsNullForUnreadableSymbolB
     long long before = Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE);
     long long faults_before = Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED);
 
-    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method));
+    ResolvedMethod result;
+    EXPECT_FALSE(HotspotSupport::resolve(&f->method, result));
 
     EXPECT_EQ(before + 1, Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE));
     // Rejected by the readability probe, not by recovering from a real fault.
@@ -644,10 +665,10 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveReturnsNullForUnreadableSymbolB
 }
 
 // A method name longer than the fixed inline buffer (MAX_METHOD_NAME_LEN,
-// 512 bytes) but fully readable must take ResolvedNames::setImpl()'s malloc
-// fallback and still resolve successfully through to the JNI phase, with the
-// full, correctly NUL-terminated name -- not get rejected the way a name
-// this size would be by the *unreadable*-body case below.
+// 512 bytes) but fully readable must take ResolvedMethod::setName()'s malloc
+// fallback and still resolve successfully, with the full, correctly
+// NUL-terminated name -- not get rejected the way a name this size would be
+// by the *unreadable*-body case below.
 TEST_F(HotspotResolveCrashProtectionTest, ResolveUsesMallocFallbackForOversizedButReadableName) {
     HotspotMethodIdVMHotspotGuard hotspot;
     VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
@@ -669,34 +690,24 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveUsesMallocFallbackForOversizedB
     memcpy(long_symbol + RESOLVE_SYMBOL_OFFSETS.symbol_body, long_name.data(), long_name.size());
     f->cpool.symbols[1] = (intptr_t)long_symbol;  // name_index slot, see link()
 
-    ScopedFakeJni fake_jni;
-
     long long unreadable_before = Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE);
     long long fault_before = Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED);
 
-    // The fake JNI's GetMethodID reports "not found", so resolve() itself
-    // still returns nullptr -- the point of this test is what it does on the
-    // way there, checked below.
-    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method));
+    ResolvedMethod result;
+    ASSERT_TRUE(HotspotSupport::resolve(&f->method, result));
 
-    // Phase 1 accepted the name via the malloc fallback (no rejection, no
-    // fault) and reached phase 2, which called GetMethodID with the fully
-    // copied name -- proof the fallback copied all 600 bytes and
-    // NUL-terminated them correctly rather than truncating to the inline
-    // buffer or leaving it uninitialized.
+    // The fallback copied all 600 bytes and NUL-terminated them, rather than
+    // truncating to the inline buffer or leaving it uninitialized.
+    EXPECT_EQ(long_name, result.methodName());
+    EXPECT_STREQ("()V", result.methodSignature());
+    EXPECT_STREQ("java/lang/Object", result.klassName());
     EXPECT_EQ(unreadable_before, Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE));
     EXPECT_EQ(fault_before, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
-    // GetMethodID and GetStaticMethodID share this mock and both report "not
-    // found", so lookupMethodIdViaJni() falls through from one to the other --
-    // two calls, both carrying the same (correct) captured name/signature.
-    EXPECT_EQ(2, fake_jni.getMethodIdCalls());
-    EXPECT_EQ(long_name, fake_jni.lastMethodName());
-    EXPECT_EQ("()V", fake_jni.lastMethodSignature());
     EXPECT_FALSE(_pt->isProtected());
 }
 
 // NOTE for reviewers: a companion test asserting the *hard* MAX_SYMBOL_LEN
-// ceiling (`len >= MAX_SYMBOL_LEN` in ResolvedNames::setImpl) rejects a
+// ceiling (`len >= MAX_SYMBOL_LEN` in ResolvedMethod::setName) rejects a
 // symbol is intentionally not included here. VMSymbol::length() returns
 // `unsigned short` (vmStructs.h), so the largest value it can ever produce is
 // 65535 -- which is already below MAX_SYMBOL_LEN (64 * 1024 = 65536). That
@@ -727,7 +738,8 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveRejectsUnreadableSymbolAtMaxLen
 
     long long before = Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE);
 
-    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method));
+    ResolvedMethod result;
+    EXPECT_FALSE(HotspotSupport::resolve(&f->method, result));
 
     EXPECT_EQ(before + 1, Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE));
     EXPECT_FALSE(_pt->isProtected());
@@ -748,7 +760,8 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveReturnsNullForEmptySymbol) {
 
     long long before = Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE);
 
-    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method));
+    ResolvedMethod result;
+    EXPECT_FALSE(HotspotSupport::resolve(&f->method, result));
 
     EXPECT_EQ(before + 1, Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE));
     EXPECT_FALSE(_pt->isProtected());
@@ -760,10 +773,364 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveShortCircuitsSentinelWithoutPro
     HotspotMethodIdVMHotspotGuard hotspot;
     long long before = Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED);
 
-    EXPECT_EQ(nullptr, HotspotSupport::resolve((const void*)JMETHODID_NOT_WALKABLE));
+    ResolvedMethod result;
+    EXPECT_FALSE(HotspotSupport::resolve((const void*)JMETHODID_NOT_WALKABLE, result));
 
     EXPECT_EQ(before, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
     EXPECT_FALSE(_pt->isProtected());
+}
+
+// ---------------------------------------------------------------------------
+// resolve(): names, line number table and Thread.run detection
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Signed CompressedStream int, valid for small values only: single-byte
+// UNSIGNED5 needs the zigzag-encoded value to stay below 191.
+unsigned char encodeSmallSigned(int v, unsigned char base) {
+    unsigned int zigzag = ((unsigned int)v << 1) ^ (unsigned int)(v >> 31);
+    EXPECT_LT(zigzag, 191u);
+    return (unsigned char)(zigzag + base);
+}
+
+// Compressed form of {(0,10), (4,11), (9,15), (12,13)}: escaped, inline,
+// inline, escaped with a negative line delta.
+std::vector<unsigned char> sampleLineTable(unsigned char base) {
+    return {
+        0xFF, encodeSmallSigned(0, base), encodeSmallSigned(10, base),
+        (4 << 3) | 1,
+        (5 << 3) | 4,
+        0xFF, encodeSmallSigned(3, base), encodeSmallSigned(-2, base),
+        0x00,
+    };
+}
+
+} // namespace
+
+TEST_F(HotspotResolveCrashProtectionTest, ResolveReturnsNamesWithoutLineNumberTable) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+    VMStructsTestAccessor::LineTableLayout lines(RESOLVE_FLAGS_OFFSET, RESOLVE_CODE_SIZE_OFFSET,
+                                                 1, 1, RESOLVE_KLASS_SUPER_OFFSET);
+
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    f->link();
+    ResolveFakes::setSymbol(f->name_sym, "compute");
+    ResolveFakes::setSymbol(f->sig_sym, "(I)J");
+    ResolveFakes::setSymbol(f->klass_sym, "com/example/Foo");
+    f->const_method.code_size = 8;   // has_linenumber_table bit stays clear
+
+    ResolvedMethod result;
+    ASSERT_TRUE(HotspotSupport::resolve(&f->method, result));
+    EXPECT_STREQ("compute", result.methodName());
+    EXPECT_STREQ("(I)J", result.methodSignature());
+    EXPECT_STREQ("com/example/Foo", result.klassName());
+    EXPECT_EQ(nullptr, result.lineNumberTable());
+    EXPECT_EQ(0, result.lineNumberTableSize());
+    EXPECT_FALSE(result.isThreadRun());
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// Both UNSIGNED5 flavours: base 0 (JDK < 20) and base 1 (JDK-8292758).
+TEST_F(HotspotResolveCrashProtectionTest, ResolveDecodesLineNumberTable) {
+    for (int b : {0, 1}) {
+        SCOPED_TRACE(b);
+        const unsigned char base = (unsigned char)b;
+        HotspotMethodIdVMHotspotGuard hotspot;
+        VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+        VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+        VMStructsTestAccessor::LineTableLayout lines(RESOLVE_FLAGS_OFFSET, RESOLVE_CODE_SIZE_OFFSET,
+                                                     1, base, RESOLVE_KLASS_SUPER_OFFSET);
+
+        ResolveFakes* f = new (_region) ResolveFakes{};
+        f->link();
+        ResolveFakes::setSymbol(f->name_sym, "compute");
+        ResolveFakes::setSymbol(f->sig_sym, "()V");
+        ResolveFakes::setSymbol(f->klass_sym, "com/example/Foo");
+        std::vector<unsigned char> table = sampleLineTable(base);
+        f->setLineNumberTable(16, table.data(), table.size());
+
+        ResolvedMethod result;
+        ASSERT_TRUE(HotspotSupport::resolve(&f->method, result));
+        ASSERT_EQ(4, result.lineNumberTableSize());
+        const jvmtiLineNumberEntry* entries = result.lineNumberTable();
+        ASSERT_NE(nullptr, entries);
+        const jlocation expected_bci[] = {0, 4, 9, 12};
+        const jint expected_line[] = {10, 11, 15, 13};
+        for (int i = 0; i < 4; i++) {
+            EXPECT_EQ(expected_bci[i], entries[i].start_location) << i;
+            EXPECT_EQ(expected_line[i], entries[i].line_number) << i;
+        }
+
+        int size = 0;
+        jvmtiLineNumberEntry* owned = result.takeLineNumberTable(&size);
+        EXPECT_EQ(entries, owned);
+        EXPECT_EQ(4, size);
+        EXPECT_EQ(nullptr, result.lineNumberTable());
+        free(owned);
+    }
+}
+
+// A bci outside the bytecode means the metadata is not what it claims to be.
+TEST_F(HotspotResolveCrashProtectionTest, ResolveRejectsLineNumberTableWithBciOutOfRange) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+    VMStructsTestAccessor::LineTableLayout lines(RESOLVE_FLAGS_OFFSET, RESOLVE_CODE_SIZE_OFFSET,
+                                                 1, 1, RESOLVE_KLASS_SUPER_OFFSET);
+
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    f->link();
+    ResolveFakes::setSymbol(f->name_sym, "compute");
+    ResolveFakes::setSymbol(f->sig_sym, "()V");
+    ResolveFakes::setSymbol(f->klass_sym, "com/example/Foo");
+    std::vector<unsigned char> table = sampleLineTable(1);
+    f->setLineNumberTable(12, table.data(), table.size());   // last bci is 12
+
+    long long before = Counters::getCounter(LINE_NUMBER_TABLE_UNREADABLE);
+
+    ResolvedMethod result;
+    EXPECT_FALSE(HotspotSupport::resolve(&f->method, result));
+    EXPECT_EQ(nullptr, result.lineNumberTable());
+    EXPECT_EQ(before + 1, Counters::getCounter(LINE_NUMBER_TABLE_UNREADABLE));
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// A table running off the readable page faults mid-decode; the landing pad
+// must report failure (and free any partially built table).
+TEST_F(HotspotResolveCrashProtectionTest, ResolveRecoversFromFaultInLineNumberTable) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+    VMStructsTestAccessor::LineTableLayout lines(RESOLVE_FLAGS_OFFSET, RESOLVE_CODE_SIZE_OFFSET,
+                                                 1, 1, RESOLVE_KLASS_SUPER_OFFSET);
+
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    f->link();
+    ResolveFakes::setSymbol(f->name_sym, "compute");
+    ResolveFakes::setSymbol(f->sig_sym, "()V");
+    ResolveFakes::setSymbol(f->klass_sym, "com/example/Foo");
+    // code_size is a u2, so the table can start up to 64K past the bytecode
+    // base: point it into the guard page.
+    f->const_method.flags |= 1;
+    f->const_method.code_size = (uint16_t)(kPageSize() - 16);
+
+    long long before = Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED);
+
+    ResolvedMethod result;
+    EXPECT_FALSE(HotspotSupport::resolve(&f->method, result));
+    EXPECT_EQ(before + 1, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+TEST_F(HotspotResolveCrashProtectionTest, ResolveDetectsRunOfThreadSubclass) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+    VMStructsTestAccessor::LineTableLayout lines(RESOLVE_FLAGS_OFFSET, RESOLVE_CODE_SIZE_OFFSET,
+                                                 1, 1, RESOLVE_KLASS_SUPER_OFFSET);
+
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    f->link();
+    ResolveFakes::setSymbol(f->name_sym, "run");
+    ResolveFakes::setSymbol(f->sig_sym, "()V");
+    ResolveFakes::setSymbol(f->klass_sym, "com/example/Worker");
+    ResolveFakes::setSymbol(f->super_sym, "java/lang/Thread");
+    f->super_klass.name_symbol = &f->super_sym;
+    f->klass.super_klass = &f->super_klass;
+
+    {
+        ResolvedMethod result;
+        ASSERT_TRUE(HotspotSupport::resolve(&f->method, result));
+        EXPECT_TRUE(result.isThreadRun());
+    }
+
+    // Same method on a class that does not extend Thread.
+    ResolveFakes::setSymbol(f->super_sym, "java/lang/Object");
+    {
+        ResolvedMethod result;
+        ASSERT_TRUE(HotspotSupport::resolve(&f->method, result));
+        EXPECT_FALSE(result.isThreadRun());
+    }
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// ---------------------------------------------------------------------------
+// CachedMethodNames: names kept on a method_map row across chunks, validated
+// by the fingerprint of the method the key refers to (Lookup::useCachedNames).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A raw-Method* Java frame for `method`, as walkVM records it.
+ASGCT_CallFrame rawFrame(void* method) {
+    ASGCT_CallFrame frame{};
+    frame.bci = FrameType::encode(FRAME_INTERPRETED, 3, /*rawPointer=*/true);
+    frame.method = method;
+    return frame;
+}
+
+void fillFoo(ResolveFakes* f, const char* method_name) {
+    f->link();
+    ResolveFakes::setSymbol(f->name_sym, method_name);
+    ResolveFakes::setSymbol(f->sig_sym, "(I)J");
+    ResolveFakes::setSymbol(f->klass_sym, "com/example/Foo");
+    f->const_method.code_size = 8;
+}
+
+} // namespace
+
+// The next chunk names the method from the kept names even though resolving
+// it again would fail (here: its name Symbol is now empty, as after reuse of
+// freed metadata), because the key still refers to the same ConstMethod.
+TEST_F(HotspotResolveCrashProtectionTest, KeptNamesOutliveUnreadableMetadata) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+    VMStructsTestAccessor::LineTableLayout lines(RESOLVE_FLAGS_OFFSET, RESOLVE_CODE_SIZE_OFFSET,
+                                                 1, 1, RESOLVE_KLASS_SUPER_OFFSET);
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    fillFoo(f, "compute");
+    ASGCT_CallFrame frame = rawFrame(&f->method);
+
+    StringDictionary classes;
+    MethodMap methods;
+    MethodInfo* first;
+    {
+        Lookup chunk1(nullptr, &methods, &classes);
+        first = chunk1.resolveMethod(frame);
+        ASSERT_NE(&chunk1._unknown_method, first);
+    }
+    ASSERT_NE(nullptr, first->_cached_names);
+    EXPECT_STREQ("compute", first->_cached_names->methodName());
+    EXPECT_STREQ("com/example/Foo", first->_cached_names->className());
+
+    first->_mark = false;  // what writeMethods() does at the end of a chunk
+    f->name_sym.length = 0;
+    ResolvedMethod direct;
+    ASSERT_FALSE(HotspotSupport::resolve(&f->method, direct));
+
+    long long hits = Counters::getCounter(METHOD_NAMES_CACHE_HITS);
+    Lookup chunk2(nullptr, &methods, &classes);
+    MethodInfo* second = chunk2.resolveMethod(frame);
+    EXPECT_EQ(first, second);
+    EXPECT_TRUE(second->_mark);
+    ASSERT_NE(nullptr, second->_cached_names);
+    EXPECT_STREQ("compute", second->_cached_names->methodName());
+    EXPECT_EQ(hits + 1, Counters::getCounter(METHOD_NAMES_CACHE_HITS));
+}
+
+// Once the key refers to a different method (the Method* now points at
+// another ConstMethod), the kept names are dropped and the method resolved
+// again.
+TEST_F(HotspotResolveCrashProtectionTest, KeptNamesAreDroppedWhenTheKeyIsReused) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+    VMStructsTestAccessor::LineTableLayout lines(RESOLVE_FLAGS_OFFSET, RESOLVE_CODE_SIZE_OFFSET,
+                                                 1, 1, RESOLVE_KLASS_SUPER_OFFSET);
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    fillFoo(f, "compute");
+    ResolveFakes* other = new ((char*)_region + 1024) ResolveFakes{};
+    fillFoo(other, "replaced");
+    ASGCT_CallFrame frame = rawFrame(&f->method);
+
+    StringDictionary classes;
+    MethodMap methods;
+    MethodInfo* first;
+    {
+        Lookup chunk1(nullptr, &methods, &classes);
+        first = chunk1.resolveMethod(frame);
+    }
+    ASSERT_NE(nullptr, first->_cached_names);
+    EXPECT_STREQ("compute", first->_cached_names->methodName());
+
+    first->_mark = false;
+    f->method.const_method = &other->const_method;  // same Method*, new method
+
+    long long stale = Counters::getCounter(METHOD_NAMES_CACHE_STALE);
+    Lookup chunk2(nullptr, &methods, &classes);
+    MethodInfo* second = chunk2.resolveMethod(frame);
+    EXPECT_EQ(first, second);
+    ASSERT_NE(nullptr, second->_cached_names);
+    EXPECT_STREQ("replaced", second->_cached_names->methodName());
+    EXPECT_EQ(&other->const_method, second->_cached_names->fingerprint());
+    EXPECT_EQ(stale + 1, Counters::getCounter(METHOD_NAMES_CACHE_STALE));
+}
+
+// When the method's memory is gone altogether -- its fingerprint can't be read
+// -- nothing can have replaced it, so the kept names still apply.
+TEST_F(HotspotResolveCrashProtectionTest, KeptNamesApplyWhenTheMethodIsUnreadable) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+    VMStructsTestAccessor::LineTableLayout lines(RESOLVE_FLAGS_OFFSET, RESOLVE_CODE_SIZE_OFFSET,
+                                                 1, 1, RESOLVE_KLASS_SUPER_OFFSET);
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    fillFoo(f, "compute");
+    ASGCT_CallFrame frame = rawFrame(&f->method);
+
+    StringDictionary classes;
+    MethodMap methods;
+    MethodInfo* first;
+    {
+        Lookup chunk1(nullptr, &methods, &classes);
+        first = chunk1.resolveMethod(frame);
+    }
+    ASSERT_NE(nullptr, first->_cached_names);
+    first->_mark = false;
+
+    ASSERT_EQ(0, mprotect(_region, kPageSize(), PROT_NONE));
+    MethodInfo* second;
+    {
+        Lookup chunk2(nullptr, &methods, &classes);
+        second = chunk2.resolveMethod(frame);
+    }
+    ASSERT_EQ(0, mprotect(_region, kPageSize(), PROT_READ | PROT_WRITE));
+    EXPECT_EQ(first, second);
+    EXPECT_TRUE(second->_mark);
+    ASSERT_NE(nullptr, second->_cached_names);
+    EXPECT_STREQ("compute", second->_cached_names->methodName());
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// A method whose class belongs to a never-unloaded loader keeps no names: its
+// row is marked instead, so neither later chunks nor GC passes try again.
+TEST_F(HotspotResolveCrashProtectionTest, NoNamesKeptForClassesThatAreNeverUnloaded) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+    VMStructsTestAccessor::LineTableLayout lines(RESOLVE_FLAGS_OFFSET, RESOLVE_CODE_SIZE_OFFSET,
+                                                 1, 1, RESOLVE_KLASS_SUPER_OFFSET);
+    VMStructsTestAccessor::ClassLoaderDataOffset cld_offset(RESOLVE_KLASS_CLD_OFFSET);
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    fillFoo(f, "compute");
+    static int boot_loader_data;
+    f->klass.class_loader_data = &boot_loader_data;
+    ASGCT_CallFrame frame = rawFrame(&f->method);
+
+    StringDictionary classes;
+    MethodMap methods;
+    {
+        // Not yet known to be permanent: names are kept.
+        Lookup chunk(nullptr, &methods, &classes);
+        MethodInfo* info = chunk.resolveMethod(frame);
+        ASSERT_NE(&chunk._unknown_method, info);
+        EXPECT_NE(nullptr, info->_cached_names);
+        EXPECT_FALSE(info->_never_unloaded);
+        methods.clear();
+    }
+
+    HotspotSupport::setPermanentLoaderDataForTest(&boot_loader_data);
+    Lookup chunk(nullptr, &methods, &classes);
+    MethodInfo* info = chunk.resolveMethod(frame);
+    HotspotSupport::setPermanentLoaderDataForTest(nullptr);
+    ASSERT_NE(&chunk._unknown_method, info);
+    EXPECT_EQ(nullptr, info->_cached_names);
+    EXPECT_TRUE(info->_never_unloaded);
+    EXPECT_FALSE(Lookup::resolveAtGC(&methods, frame));
 }
 
 #endif // __linux__

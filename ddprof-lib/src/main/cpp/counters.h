@@ -166,11 +166,23 @@
   /* Every siglongjmp recovery, from any protected window, counted centrally  \
    * in Profiler::checkFault(). */                                            \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
+  /* GarbageCollectionStart passes that resolved pending samples' methods     \
+   * (Profiler::onGCStart()), GCs that skipped it because a lock was taken,   \
+   * and methods whose names a pass kept. The time it adds to GC pauses is    \
+   * sampler_ticks.gc_resolve, under -PenableSamplerPerf. */                  \
+  X(GC_RESOLVE_PASSES, "gc_resolve_passes")                                   \
+  X(GC_RESOLVE_SKIPPED, "gc_resolve_skipped")                                 \
+  X(GC_RESOLVED_METHODS, "gc_resolved_methods")                               \
+  /* Method rows a chunk filled from names kept by an earlier resolution      \
+   * (CachedMethodNames), and kept names dropped because the row's raw        \
+   * Method* had been reused by another method. */                            \
+  X(METHOD_NAMES_CACHE_HITS, "method_names_cache_hits")                       \
+  X(METHOD_NAMES_CACHE_STALE, "method_names_cache_stale")                     \
   /* Dump-time method resolution failures. The frame serializes as "unknown". */ \
   X(METHOD_RESOLVE_FAULT_RECOVERED, "method_resolve_fault_recovered")         \
   /* Symbol length/body rejected during the same resolution: unreadable body,  \
    * empty (recycled slot), or over MAX_SYMBOL_LEN. A name that merely exceeds \
-   * the fixed inline buffers in hotspotSupport.cpp's ResolvedNames still      \
+   * the fixed inline buffers in hotspotSupport.h's ResolvedMethod still      \
    * resolves via its malloc fallback and does not land here. The frame        \
    * serializes as "unknown". */                                               \
   X(METHOD_RESOLVE_SYMBOL_UNREADABLE, "method_resolve_symbol_unreadable")     \
@@ -187,6 +199,10 @@
    * because no ProfiledThread could be allocated for the dump thread (OOM):  \
    * there is nowhere to publish a landing pad. Expected to stay at 0. */     \
   X(METHOD_RESOLUTION_DROPPED_TLS, "method_resolution_dropped_tls")           \
+  /* Liveness checkers CallTraceStorage::processTraces() runs on every dump.  \
+   * Profiler::start() clears them and LivenessTracker::start() registers its \
+   * own, so this is 1 with liveness tracking on and 0 otherwise. */          \
+  X(LIVENESS_CHECKERS, "liveness_checkers")                                   \
   /* writeElement() guards against a corrupted/dangling JfrMetadata tree.     \
    * Root cause is still unconfirmed, so these counters are the durable       \
    * signal for spotting a recurrence. */                                     \
@@ -288,7 +304,9 @@
   X(SAMPLER_TICKS_NATIVEMEM, "sampler_ticks.nativemem")                        \
   X(SAMPLER_COUNT_NATIVEMEM, "sampler_count.nativemem")                        \
   X(SAMPLER_TICKS_NATIVESOCKET, "sampler_ticks.nativesocket")                  \
-  X(SAMPLER_COUNT_NATIVESOCKET, "sampler_count.nativesocket")
+  X(SAMPLER_COUNT_NATIVESOCKET, "sampler_count.nativesocket")                  \
+  X(SAMPLER_TICKS_GC_RESOLVE, "sampler_ticks.gc_resolve")                      \
+  X(SAMPLER_COUNT_GC_RESOLVE, "sampler_count.gc_resolve")
 #else
 #define DD_COUNTER_TABLE_SAMPLER_PERF(X)
 #endif

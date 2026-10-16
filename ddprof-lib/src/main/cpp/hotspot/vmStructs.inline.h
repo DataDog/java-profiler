@@ -212,6 +212,32 @@ VMSymbol* VMConstMethod::signature() const {
     return cpool->symbolAt(sig_index);
 }
 
+u16 VMConstMethod::codeSize() const {
+    assert(_constmethod_code_size_offset >= 0);
+    return *(u16*)at(_constmethod_code_size_offset);
+}
+
+const unsigned char* VMConstMethod::compressedLineNumberTable() const {
+    if (_constmethod_flags_offset < 0 || _constmethod_code_size_offset < 0) {
+        return nullptr;
+    }
+    bool has_table;
+    if (_ConstMethodFlags__misc_has_linenumber_table != -1) {
+        // JDK 21+: u4 ConstMethodFlags::_flags
+        has_table = (*(u32*)at(_constmethod_flags_offset) & (u32)_ConstMethodFlags__misc_has_linenumber_table) != 0;
+    } else if (_ConstMethod__has_linenumber_table != -1) {
+        // JDK 8 - 20: u2 ConstMethod::_flags
+        has_table = (*(u16*)at(_constmethod_flags_offset) & (u16)_ConstMethod__has_linenumber_table) != 0;
+    } else {
+        return nullptr;
+    }
+    if (!has_table) {
+        return nullptr;
+    }
+    // ConstMethod::compressed_linenumber_table() == code_end()
+    return (const unsigned char*)at((int)type_size()) + codeSize();
+}
+
 u16 VMConstMethod::nameIndex() const {
     assert(_constmethod_name_index_offset >= 0 && "Invalid name index");
     return *(u16*)at(_constmethod_name_index_offset);

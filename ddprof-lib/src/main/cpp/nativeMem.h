@@ -36,6 +36,7 @@
   X(THREAD_INFO, "thread_info")                                                \
   X(JFR_BUFFERS, "jfr_buffers")                                                \
   X(METHOD_MAP, "method_map")                                                  \
+  X(METHOD_NAMES, "method_names")                                              \
   X(LIVENESS, "liveness")                                                      \
   X(WALLCLOCK, "wallclock")                                                    \
   X(MISC, "misc")

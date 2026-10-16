@@ -161,6 +161,10 @@ public:
   void clearAfterFailedDrain();
 
   void collect(CallTraceSet &traces, std::function<void(CallTrace*)> trace_hook = nullptr);
+  // Calls visitor on every published trace, like collect() but without
+  // gathering them (or the overflow trace) into a set. Same read-only
+  // contract as collect().
+  void forEach(const std::function<void(const CallTrace*)> &visitor);
 
   u64 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
   /**

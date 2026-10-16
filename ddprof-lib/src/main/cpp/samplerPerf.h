@@ -120,7 +120,8 @@
   X(ALLOC, "alloc")                                                            \
   X(LIVENESS, "liveness")                                                      \
   X(NATIVEMEM, "nativemem")                                                    \
-  X(NATIVESOCKET, "nativesocket")
+  X(NATIVESOCKET, "nativesocket")                                              \
+  X(GC_RESOLVE, "gc_resolve")
 
 #define X_SAMPLER_ENUM(id, name) SP_##id,
 typedef enum SamplerId : int {
