@@ -170,10 +170,44 @@
   X(METHOD_RESOLVE_FAULT_RECOVERED, "method_resolve_fault_recovered")         \
   /* Symbol length/body rejected during the same resolution: unreadable body,  \
    * empty (recycled slot), or over MAX_SYMBOL_LEN. A name that merely exceeds \
-   * the fixed inline buffers in hotspotSupport.cpp's ResolvedNames still      \
+   * the fixed inline buffers in ResolvedMethod (hotspotSupport.h) still     \
    * resolves via its malloc fallback and does not land here. The frame        \
    * serializes as "unknown". */                                               \
   X(METHOD_RESOLVE_SYMBOL_UNREADABLE, "method_resolve_symbol_unreadable")     \
+  /* fjmethodid=lazy resolution outcomes. UNLOADED: the frame's class is no   \
+   * longer registered or reachable. NOT_CURRENT: the class is alive but the  \
+   * Method* is not among its current methods (freed or redefined). Both      \
+   * serialize as "unknown". RESOLVED: raw frames whose names were read from  \
+   * VM metadata, once per method and tag per dump. */                        \
+  X(METHOD_RESOLVE_LAZY_UNLOADED, "method_resolve_lazy_unloaded")             \
+  X(METHOD_RESOLVE_LAZY_NOT_CURRENT, "method_resolve_lazy_not_current")       \
+  X(METHOD_RESOLVE_LAZY_RESOLVED, "method_resolve_lazy_resolved")             \
+  /* STALE: the class now at the frame's holder address is a different load \
+   * (its trace ID differs); serializes as "unknown".                        \
+   * ADD_FAILED: registration failed, so the class was preloaded instead.    \
+   * UNTAGGABLE: a Method* using address bits the raw-frame tag needs, or   \
+   * an unreadable holder trace ID; the frame is stored as not walkable. */  \
+  X(METHOD_RESOLVE_LAZY_STALE, "method_resolve_lazy_stale")                   \
+  /* REDEFINED: raw frame of a class that has been redefined (its Method*s   \
+   * may have been freed and reused); serializes as "unknown". */            \
+  X(METHOD_RESOLVE_LAZY_REDEFINED, "method_resolve_lazy_redefined")           \
+  /* Registered classes marked by the redefinition hooks (once per class   \
+   * per redefine/retransform call). */                                      \
+  X(KLASS_REGISTRY_REDEFINITIONS_MARKED, "klass_registry_redefinitions_marked") \
+  /* Registrations whose class trace ID no longer fits in a raw frame's     \
+   * 25-bit tag. Nonzero means trace-ID tags of two classes can now collide: \
+   * a frame sampled from an unloaded class could then, if a newer class     \
+   * also took over its Method* memory, resolve to that class's method. */   \
+  X(KLASS_TRACE_ID_BEYOND_TAG_RANGE, "klass_trace_id_beyond_tag_range")       \
+  /* Raw Method* frame occurrences answered from Lookup's per-dump cache    \
+   * instead of resolving them again. */                                     \
+  X(RAW_FRAME_RESOLVE_CACHE_HITS, "raw_frame_resolve_cache_hits")             \
+  X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
+  X(WALKVM_RAW_FRAME_UNTAGGABLE, "walkvm_raw_frame_untaggable")               \
+  /* Gauge, set at each fjmethodid=lazy start: the Klass::_trace_id offset  \
+   * raw frames are tagged with, or -1 if it was not found (lazy mode then    \
+   * falls back to fjmethodid=false). 0 if lazy mode was never requested. */  \
+  X(KLASS_TRACE_ID_OFFSET, "klass_trace_id_offset")                           \
   /* Strict subset of SAMPLES_DROPPED_THREAD_LOCAL, not an independent count: \
    * ThreadLocalDataPool::claim() increments this on capacity exhaustion, and \
    * every acquireCurrent() caller that gets nullptr back -- for this or any  \
