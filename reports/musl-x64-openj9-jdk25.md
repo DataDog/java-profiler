@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk25
 
 ## musl-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-10-16 10:46:19 EDT
+**Date:** 2026-10-16 11:26:18 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,7 +18,7 @@ title: musl-x64-openj9-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 30 |
+| CPU Cores (start) | 32 |
 | CPU Cores (end) | 32 |
 | Throttling | 0% |
 
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 426 |
-| Sample Rate | 7.10/sec |
-| Health Score | 444% |
+| CPU Samples | 512 |
+| Sample Rate | 8.53/sec |
+| Health Score | 533% |
 | Threads | 8 |
-| Allocations | 415 |
+| Allocations | 400 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 518 |
-| Sample Rate | 8.63/sec |
-| Health Score | 539% |
+| CPU Samples | 566 |
+| Sample Rate | 9.43/sec |
+| Health Score | 589% |
 | Threads | 9 |
-| Allocations | 523 |
+| Allocations | 502 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 30-32 cores)</summary>
 
 ```
-1792161425 30
-1792161430 30
-1792161435 30
-1792161440 30
-1792161445 30
-1792161450 30
-1792161455 30
-1792161460 30
-1792161465 30
-1792161470 30
-1792161475 30
-1792161480 30
-1792161485 30
-1792161490 30
-1792161495 30
-1792161500 30
-1792161505 32
-1792161510 32
-1792161515 32
-1792161520 32
+1792164001 32
+1792164006 32
+1792164011 32
+1792164016 32
+1792164021 32
+1792164026 32
+1792164031 32
+1792164036 32
+1792164041 32
+1792164046 32
+1792164051 30
+1792164056 30
+1792164061 30
+1792164066 30
+1792164071 30
+1792164076 30
+1792164081 32
+1792164086 32
+1792164091 32
+1792164096 32
 ```
 </details>
 
