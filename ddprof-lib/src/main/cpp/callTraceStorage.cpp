@@ -109,11 +109,13 @@ CallTrace* CallTraceStorage::getDroppedTrace() {
 void CallTraceStorage::registerLivenessChecker(LivenessChecker checker) {
     ExclusiveLockGuard lock(&_liveness_lock);
     _liveness_checkers.push_back(checker);
+    Counters::set(LIVENESS_CHECKERS, (long long)_liveness_checkers.size());
 }
 
 void CallTraceStorage::clearLivenessCheckers() {
     ExclusiveLockGuard lock(&_liveness_lock);
     _liveness_checkers.clear();
+    Counters::set(LIVENESS_CHECKERS, 0);
 }
 
 

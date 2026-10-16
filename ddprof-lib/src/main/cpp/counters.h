@@ -198,6 +198,10 @@
    * because no ProfiledThread could be allocated for the dump thread (OOM):  \
    * there is nowhere to publish a landing pad. Expected to stay at 0. */     \
   X(METHOD_RESOLUTION_DROPPED_TLS, "method_resolution_dropped_tls")           \
+  /* Liveness checkers CallTraceStorage::processTraces() runs on every dump.  \
+   * Profiler::start() clears them and LivenessTracker::start() registers its \
+   * own, so this is 1 with liveness tracking on and 0 otherwise. */          \
+  X(LIVENESS_CHECKERS, "liveness_checkers")                                   \
   /* writeElement() guards against a corrupted/dangling JfrMetadata tree.     \
    * Root cause is still unconfirmed, so these counters are the durable       \
    * signal for spotting a recurrence. */                                     \

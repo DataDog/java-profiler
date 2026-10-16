@@ -1663,6 +1663,13 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
 
+  // LivenessTracker::start() (via _alloc_engine->start() below) registers a
+  // checker on every start, and nothing unregisters it at stop: stop()'s final
+  // dump still needs it to preserve live traces. Drop the previous session's
+  // checker here, so repeated starts don't stack duplicates and a session
+  // without liveness tracking runs none.
+  _call_trace_storage.clearLivenessCheckers();
+
   // Must precede every signal-based engine's start() below: SamplerPerfProbe
   // (samplerPerf.h) calls OS::nanotime() from inside the signal handler, and
   // on macOS that can be the lazy, non-atomic first-call init of
