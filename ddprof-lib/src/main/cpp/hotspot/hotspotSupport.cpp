@@ -13,6 +13,7 @@
 #include "hotspot/hotspotSupport.h"
 #include "hotspot/jitCodeCache.h"
 #include "hotspot/klassTraceId.h"
+#include "hotspot/unloadCapture.h"
 #include "hotspot/vmStructs.inline.h"
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
@@ -222,9 +223,10 @@ void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int
         // inherent to this mode.
         NO_INJECTION_ASSERT(method != nullptr);
         uint32_t tag;
+        const void* holder = nullptr;
         if (JVMSupport::getLoadState() != JVMSupport::Lazy_loaded) {
             fillFrameRaw(frame, type, bci, method);
-        } else if (!FrameType::canTagPointer(method) || !lazyFrameTag(method, &tag)) {
+        } else if (!FrameType::canTagPointer(method) || !lazyFrameTag(method, &tag, &holder)) {
             // fjmethodid=lazy, but either the tag's high bits would collide
             // with address bits, or the holder's trace ID is unreadable.
             // Without a tag the frame could be mistaken for one of a later
@@ -234,6 +236,7 @@ void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int
             fillFrame(frame, type, bci, JMETHODID_NOT_WALKABLE);
         } else {
             fillFrameRawTagged(frame, type, bci, method, tag);
+            UnloadCapture::onRawFrame(method, holder, tag);
         }
     } else {
         // fjmethodid=true: all jmethodIDs should be preloaded, so nullptr is
@@ -1488,13 +1491,24 @@ bool HotspotSupport::initLazyResolution(JNIEnv* jni) {
     // once, so republish its result here.
     Counters::set(KLASS_TRACE_ID_OFFSET, calibrated ? KlassTraceId::offset() : -1);
     TEST_LOG("Raw frame tags: %s", calibrated ? "klass trace id" : "unavailable, lazy mode off");
+    if (calibrated) {
+        UnloadCapture::init(VM::jvmti());
+        if (UnloadCapture::enabled()) {
+            // registerClass() tells permanent loaders apart through these.
+            initClassloaderInfo(jni);
+        }
+    }
     return calibrated;
 }
 
-bool HotspotSupport::lazyFrameTag(const VMMethod* method, uint32_t* tag) {
+bool HotspotSupport::lazyFrameTag(const VMMethod* method, uint32_t* tag, const void** holder) {
     uint64_t id;
-    if (!KlassTraceId::read(method->holderOrNull(), &id)) {
+    const void* klass = method->holderOrNull();
+    if (!KlassTraceId::read(klass, &id)) {
         return false;
+    }
+    if (holder != nullptr) {
+        *holder = klass;
     }
     *tag = TRACE_ID_TAG | ((uint32_t)id & TAG_VALUE_MASK);
     return true;
@@ -1537,6 +1551,16 @@ bool HotspotSupport::registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
         return false;
     }
     const void* vm_klass = VMKlass::fromJavaClass(jni, klass);
+    if (UnloadCapture::enabled()) {
+        jobject loader = nullptr;
+        if (jvmti->GetClassLoader(klass, &loader) == JVMTI_ERROR_NONE &&
+            (loader == nullptr || isSystemClassLoader(jni, loader))) {
+            UnloadCapture::notePermanentLoaderData(VMKlass::cast_raw(vm_klass)->classLoaderData());
+        }
+        if (loader != nullptr) {
+            jni->DeleteLocalRef(loader);
+        }
+    }
     uint64_t trace_id;
     if (KlassTraceId::read(vm_klass, &trace_id) && trace_id > TAG_VALUE_MASK) {
         // Two classes' 25-bit trace-ID tags can only collide once their IDs
@@ -1925,4 +1949,22 @@ bool HotspotSupport::resolveViaRegistry(ProfiledThread* prof_thread, VMMethod* v
     TEST_LOG("Lazy resolution of %s, trace id %llu", result.klassName(), (unsigned long long)trace_id);
   }
   return resolved;
+}
+
+bool HotspotSupport::captureMethod(ProfiledThread* prof_thread, const void* method, uint32_t tag,
+                                   ResolvedMethod& result) {
+  const uint32_t bits = tag & TAG_VALUE_MASK;
+  VMMethod* vm_method = nullptr;
+  const void* holder = nullptr;
+  int idnum = -1;
+  return protectedWalk(prof_thread, result, [&] {
+    if (!readMethodHolder(method, &vm_method, &holder, &idnum)) {
+      return false;
+    }
+    uint64_t trace_id = 0;
+    if (!KlassTraceId::read(holder, &trace_id) || ((uint32_t)trace_id & TAG_VALUE_MASK) != bits) {
+      return false;
+    }
+    return VMKlass::cast_raw(holder)->containsMethod(vm_method, idnum) && readMethod(vm_method, &result);
+  });
 }

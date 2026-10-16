@@ -202,6 +202,17 @@
    * instead of resolving them again. */                                     \
   X(RAW_FRAME_RESOLVE_CACHE_HITS, "raw_frame_resolve_cache_hits")             \
   X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
+  /* PROTOTYPE UnloadCapture (DDPROF_CAPTURE_UNLOADING=1). */                 \
+  X(UNLOAD_CAPTURE_PENDING_ADDED, "unload_capture_pending_added")             \
+  X(UNLOAD_CAPTURE_PENDING_OVERFLOW, "unload_capture_pending_overflow")       \
+  X(UNLOAD_CAPTURE_HOOK_CALLS, "unload_capture_hook_calls")                   \
+  X(UNLOAD_CAPTURE_HOOK_BUSY, "unload_capture_hook_busy")                     \
+  X(UNLOAD_CAPTURE_HOOK_NS, "unload_capture_hook_ns")                         \
+  X(UNLOAD_CAPTURE_HOOK_MAX_NS, "unload_capture_hook_max_ns")                 \
+  X(UNLOAD_CAPTURE_CAPTURED, "unload_capture_captured")                       \
+  X(UNLOAD_CAPTURE_REFUSED, "unload_capture_refused")                         \
+  X(UNLOAD_CAPTURE_CACHE_FULL, "unload_capture_cache_full")                   \
+  X(UNLOAD_CAPTURE_USED, "unload_capture_used")                               \
   X(WALKVM_RAW_FRAME_UNTAGGABLE, "walkvm_raw_frame_untaggable")               \
   /* Gauge, set at each fjmethodid=lazy start: the Klass::_trace_id offset  \
    * raw frames are tagged with, or -1 if it was not found (lazy mode then    \

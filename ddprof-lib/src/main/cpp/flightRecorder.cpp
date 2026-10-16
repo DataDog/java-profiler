@@ -41,6 +41,7 @@
 #include "threadState.h"
 #include "tsc.h"
 #include "hotspot/vmStructs.h"
+#include "hotspot/unloadCapture.h"
 #include <arpa/inet.h>
 #include <cxxabi.h>
 #include <errno.h>
@@ -761,6 +762,35 @@ MethodInfo *Lookup::fillRawMethod(const ASGCT_CallFrame &frame) {
 
   ResolvedMethod resolved;
   if (!JVMSupport::resolve(frame.method, frame.bci, resolved)) {
+    UnloadCapture::Entry captured;
+    if (UnloadCapture::take(key.method, key.tag, &captured)) {
+      // PROTOTYPE: the class was refused (unloaded or replaced), but its
+      // names were copied at a GC start while it was still loaded.
+      MethodInfo *mi = &(*_method_map)[MethodMap::makeRawKey(key.method, key.tag)];
+      fillJavaMethodNames(mi, captured.klass_name, strlen(captured.klass_name),
+                          captured.method_name, captured.signature);
+      mi->_type = FRAME_INTERPRETED;
+      mi->_is_entry = captured.is_thread_run ||
+                      (strcmp(captured.method_name, "main") == 0 &&
+                       strcmp(captured.signature, "([Ljava/lang/String;)V") == 0);
+      if (captured.line_table != nullptr) {
+        mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
+            captured.line_table_size, captured.line_table, false /* malloc'd */);
+        captured.line_table = nullptr;
+        Counters::increment(LINE_NUMBER_TABLES);
+        NativeMem::record(NM_LINE_TABLES, (long long)((size_t)captured.line_table_size * sizeof(jvmtiLineNumberEntry)));
+      } else {
+        mi->_line_number_table = nullptr;
+      }
+      UnloadCapture::freeEntry(captured);
+      if (mi->_key == 0) {
+        mi->_key = _method_map->allocId();
+      }
+      mi->_mark = true;
+      _raw_method_cache.emplace(key, mi);
+      Counters::increment(UNLOAD_CAPTURE_USED);
+      return mi;
+    }
     _raw_method_cache.emplace(key, nullptr);
     return unknownMethod();
   }
@@ -1781,6 +1811,7 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
   // VARIABLE pools: each returns 1 if emitted, 0 if empty (and thus skipped).
   pool_count += writeStackTraces(buf, &lookup);
   pool_count += writeMethods(buf, &lookup);
+  UnloadCapture::endDump();
   pool_count += writeClasses(buf, &lookup);
   pool_count += writePackages(buf, &lookup);
   pool_count += writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
