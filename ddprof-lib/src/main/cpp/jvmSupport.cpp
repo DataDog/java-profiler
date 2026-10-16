@@ -143,7 +143,7 @@ void JVMSupport::loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni) {
 
     if (jvmti->GetLoadedClasses(&class_count, &classes) == JVMTI_ERROR_NONE) {
         for (int i = 0; i < class_count; i++) {
-            if(loadMethodIDsIfNeeded(jvmti, jni, classes[i])) {
+            if(loadMethodIDsIfNeeded(jvmti, jni, classes[i], /*force_patch=*/false)) {
                 loaded_count++;
             }
         }
@@ -152,7 +152,7 @@ void JVMSupport::loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni) {
     TEST_LOG("Preloaded jmethodIDs for %d/%d classes", loaded_count, class_count);
 }
 
-bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool force_patch) {
     JMethodIDLoadStats state = getLoadState();
     // Callback from JVMTI for class loading - We don't have to deal with it before
     // the first execution - loadAllMethodIDsIfNeeded() will fix it.
@@ -161,7 +161,7 @@ bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
     }
 
     if (VM::isHotspot()) {
-        return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, state == Fully_loaded /* load all */);
+        return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, state == Fully_loaded /* load all */, force_patch);
     } else {
         return loadMethodIDsImpl(jvmti, jni, klass);
     }
