@@ -464,7 +464,7 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
             *tag_ptr, ctx->resolved_chain_tags,
             ctx->resolved_chain_tag_count);
         if (was_root_attached_durable) {
-          // Demotion push (B'): the replaced entry's static/JNI-global attribution was its only
+          // Demotion push: the replaced entry's static/JNI-global attribution was its only
           // anchor-tier eligibility, and it is gone now.
           ctx->tracker->pushAtRiskStaticAnchor(
               *tag_ptr, ctx->tracker->classTags()->resolve(class_tag));

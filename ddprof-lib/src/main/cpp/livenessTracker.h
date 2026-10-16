@@ -652,10 +652,8 @@ private:
   // --- Per-klass population tracking (cleanup_table()'s epoch-advance pass only) ---
 
   // Resolves the StringDictionary id for `ref`'s class (GetObjectClass +
-  // GetClassSignature + Profiler::lookupClass(), also used by flush_table())
-  // - this is the "genuinely new
-  // cost on an existing pass" the design doc flags, previously paid only at
-  // JFR-flush time. Returns 0 (StringDictionary's own "no entry" sentinel)
+  // GetClassSignature + Profiler::lookupClass(), also used by flush_table()).
+  // Returns 0 (StringDictionary's own "no entry" sentinel)
   // if the name could not be resolved or interned.
   u32 resolveKlassId(JNIEnv *env, jobject ref);
 
@@ -781,8 +779,7 @@ private:
 
   // The sustained-trend gate (this class's own header comment above,
   // "Sustained-trend gate") - both-required growth-magnitude and floor-rise
-  // tests, design doc's original "mean of thirds" choice since replaced by
-  // full-window least-squares regression (see ringWindowStats,
+  // tests, computed by full-window least-squares regression (see ringWindowStats,
   // livenessTracker.cpp - cheap, allocation-free, one pass over the
   // ring, no sorting or extra storage). A single scan
   // (ringWindowStats(), livenessTracker.cpp) both derives the pass/fail
@@ -792,8 +789,7 @@ private:
   // false (leaving entry.cached_slope untouched) if entry.ring_fill is below
   // KLASS_POPULATION_MIN_FILL_FOR_TREND - not enough history yet to trust a
   // trend; callers must check ring_fill themselves before trusting
-  // cached_slope, exactly as they checked this method's own return value
-  // before cached_slope existed.
+  // cached_slope.
   //
   // Called from recordKlassPopulationSampleLocked() every time a new sample
   // is pushed (both the production path,
@@ -1411,9 +1407,8 @@ public:
         removeKlassPopulationEntryLocked(syn_slot);
       }
     }
-    // Find-or-create the entry under real_id (previously a silent no-op
-    // when absent - but with aliasing, set-representative-first is the
-    // load-bearing order: scenarios must establish the alias BEFORE any
+    // Find-or-create the entry under real_id: with aliasing,
+    // set-representative-first is the load-bearing order: scenarios must establish the alias BEFORE any
     // seeding, and with no entry yet there is nothing to store the
     // representative into. Creating via a count-0, epoch-0 ring sample
     // reuses recordKlassPopulationSampleLocked()'s own creation branch

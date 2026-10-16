@@ -9,13 +9,14 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // Hierarchy mirroring the spec's own numbering example shape: interface IBase { int p; } 1 own
-    // field interface ISub extends IBase { int x; } 1 own field class Base { int base_f; } 1 own
-    // field, no super class Holder extends Base implements ISub { int holder_a; Object leakList; }
-    // interface ISink { Object CONST_A; Object CONST_B; } Spec ordinal spaces
-    // (jvmtiHeapReferenceInfoField): Holder (class branch): base = ISub(1) + IBase(1) = 2
-    // (transitive interfaces, each once); then the superclass chain root-first: base_f@2; then own
-    // fields in GetClassFields order: holder_a@3, leakList@4.
+    // Hierarchy mirroring the spec's numbering example:
+    //   interface IBase { int p; }  interface ISub extends IBase { int x; }
+    //   class Base { int base_f; }
+    //   class Holder extends Base implements ISub { int holder_a; Object leakList; }
+    //   interface ISink { Object CONST_A; Object CONST_B; }
+    // Holder's ordinal space (jvmtiHeapReferenceInfoField): transitive interfaces once each
+    // (ISub + IBase = 2), then the superclass chain root-first (base_f@2), then own fields in
+    // GetClassFields order (holder_a@3, leakList@4).
     void *ibase = (void *)0x5001, *isub = (void *)0x5002, *base = (void *)0x5003,
          *holder = (void *)0x5004, *isink = (void *)0x5005;
     addClass(ibase, "Lcom/rc/labels/IBase;");
@@ -194,7 +195,6 @@ TEST_F(ReferenceChainsBfsTest, PriorityExpandCapStopsRotationCollectorPushes) {
     ASSERT_FALSE(tracker->start(args));
     FrontierTable *frontier = tracker->frontierTable();
 
-    // One eligible stale-EXPANDED entry.
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 1, 0, 0, FrontierEntryState::EXPANDED,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD));
@@ -260,8 +260,8 @@ TEST_F(ReferenceChainsBfsTest, StaleRotationPrefersLeakParentsOverBlindLap) {
 
 // reparentToDurableRoot: a depth-1 entry first admitted through a transient root (stack/JNI local)
 // is re-parented to a durable root-attached parent at equal depth - the case improveChain() cannot
-// express (it requires a strictly deeper path), and exactly the hotdog shape where the singleton
-// collection is a depth-0 static root and its elements depth 1.
+// express (it requires a strictly deeper path): a singleton collection as a depth-0 static root
+// with its elements at depth 1.
 TEST_F(ReferenceChainsBfsTest, ReparentToDurableRootSwapsTransientForDurable) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -305,9 +305,8 @@ TEST_F(ReferenceChainsBfsTest, ReparentToDurableRootSwapsTransientForDurable) {
 }
 
 // recordDiscoveredInstance eviction: noise instances fill discovery slots first-come-first-served,
-// but a leak-correlated discovery must evict a noise slot when all are full - without eviction, the
-// 8 noise instances observed on-pod permanently blocked every later leak-tagged instance of the
-// watched class.
+// but a leak-correlated discovery must evict a noise slot when all are full - without eviction,
+// noise instances permanently block every later leak-tagged instance of the watched class.
 TEST_F(ReferenceChainsBfsTest, RecordDiscoveredInstanceEvictsNoiseSlots) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));

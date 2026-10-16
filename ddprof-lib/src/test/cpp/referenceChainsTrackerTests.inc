@@ -64,17 +64,15 @@ protected:
         if (active_fixture->dead_refs.count(ref) > 0) {
             return nullptr;
         }
-        return ref; // identity passthrough - see this fixture's own comment
+        return ref; // identity passthrough: fake jobjects are not real JNI refs
     }
 
     static void JNICALL mock_DeleteLocalRef(JNIEnv *, jobject) {
         // no-op: this fixture's fake jobject values are not real JNI refs.
     }
 
-    // pollWatchedTargets()'s diagnostic class-name lookup on the candidate's representative: this
-    // fixture's fake jobjects carry no real class identity, so a fixed non-null jclass plus a fixed
-    // signature is all GetObjectClass()/GetClassSignature() need to return for that lookup to
-    // complete without touching a real JVM.
+    // Fake jobjects carry no class identity; a fixed jclass and signature let
+    // pollWatchedTargets()'s diagnostic class-name lookup complete.
     static jclass JNICALL mock_GetObjectClass(JNIEnv *, jobject) {
         return (jclass)0xC1A55;
     }
@@ -94,11 +92,9 @@ protected:
         return JVMTI_ERROR_NONE;
     }
 
-    // Seeds LivenessTracker's real population table with a growing series for `klass_id` (20
-    // strictly-increasing samples - satisfies selectLeakCandidates()'s min-fill, growth/floor
-    // magnitude, and sustained-trend hysteresis requirements, livenessTracker.h; 20 rather than the
-    // 10-sample minimum fill leaves comfortable margin past the hysteresis threshold rather than
-    // sitting exactly on its boundary) and points its representative at `rep`.
+    // Seeds a growing population for `klass_id` with representative `rep`. 20 strictly-increasing
+    // samples clear selectLeakCandidates()'s min-fill and hysteresis gates with margin rather than
+    // sitting on the 10-sample boundary.
     void seedGrowingCandidate(u32 klass_id, jweak rep) {
         int slot;
         bool created;
@@ -179,8 +175,8 @@ TEST_F(PollWatchedTargetsTest, NoDuplicateOnRepeatPoll) {
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
     ASSERT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
 
-    // Klass 1 is still flagged (LivenessTracker's ranking doesn't know an event was already emitted
-    // for it) - a second, third, ...
+    // Klass 1 stays flagged (the ranking doesn't know a chain was emitted); repeat polls must not
+    // add duplicates.
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
     EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
@@ -212,12 +208,6 @@ TEST_F(PollWatchedTargetsTest, SkipsCandidateWhoseWeakReferenceDied) {
     tracker->stop();
 }
 
-// A cached chain must not re-emit forever: once the klass's representative stops resolving
-// (collected, or LRU-evicted from LivenessTracker's population table -
-// klassPopulationSetRepresentativeForTest()'s ref is the stand-in for either), the very next poll
-// must prune it from _resolved_chains rather than leaving a dump keep re-emitting a chain for a
-// sample that is gone (see _resolved_chains' own comment, referenceChains.h, and
-// pollWatchedTargets()'s "candidate died, or was evicted" branch).
 TEST_F(PollWatchedTargetsTest, ChainPersistsAfterRepresentativeDies) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
@@ -251,12 +241,9 @@ TEST_F(PollWatchedTargetsTest, ChainPersistsAfterRepresentativeDies) {
     tracker->stop();
 }
 
-// Recording-boundary hygiene (start()'s comment, referenceChains.cpp): a new recording must not
-// inherit the previous one's cached resolved chains or queued abandoned events - both would
-// re-emit into the new recording's JFR chunks with StringDictionary ids from the wiped class
-// dictionary generation. The test seeds both states, restarts through the real stop()/start()
-// path (NOT resetSearchStateForTest(), which is an out-of-band reset that also clears this state
-// itself), and asserts both are gone while the resolve path still works in the new recording.
+// A new recording must not inherit the previous one's cached chains or queued abandoned events:
+// both would carry StringDictionary ids from the wiped class dictionary. Restarts through the real
+// stop()/start() path, not resetSearchStateForTest(), which would clear this state itself.
 TEST_F(PollWatchedTargetsTest, RestartDropsPriorRecordingsChainsAndAbandonedEvents) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
@@ -448,9 +435,8 @@ TEST_F(PollWatchedTargetsTest, NoOpWhenGcGenerationsDisabled) {
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // Overrides this fixture's own SetUp() default - exercises the pollWatchedTargets() guard
-    // covering LivenessTracker's own _gc_generations gate (population tracking's own gate), not
-    // just this tracker's own _enabled.
+    // Overrides SetUp(): exercises pollWatchedTargets()'s LivenessTracker _gc_generations guard,
+    // not just the tracker's own _enabled.
     LivenessTracker::instance()->setGcGenerationsForTest(false);
 
     int fake_object_storage = 0;
@@ -466,8 +452,6 @@ TEST_F(PollWatchedTargetsTest, NoOpWhenGcGenerationsDisabled) {
 
     tracker->stop();
 }
-
-// Resolved-chain cache (ReferenceChainTracker::cacheResolvedChain()/
 
 class ResolvedChainCacheTest : public ::testing::Test {
 protected:
@@ -640,10 +624,9 @@ TEST_F(ResolvedChainCacheTest, RestartDropsPendingTagsBeforeNumericTagReuse) {
     EXPECT_EQ(101u, dump[0]._target_tag);
 }
 
-// A brand-new klass arriving with the cache already at MAX_RESOLVED_CHAINS is dropped (and counted
-// via REFERENCE_CHAIN_EVENTS_DROPPED, this codebase's own "dropped-event-without-counter" review
-// lens) rather than evicting some other still-live sample's chain - but refreshing a klass that is
-// already cached still succeeds even at capacity.
+// At MAX_RESOLVED_CHAINS a brand-new klass is dropped and counted in
+// REFERENCE_CHAIN_EVENTS_DROPPED rather than evicting a live sample's chain; refreshing an
+// already-cached klass still succeeds.
 TEST_F(ResolvedChainCacheTest, OverflowDropsNewKlassButAllowsRefresh) {
     const int cap = ReferenceChainsTestAccessor::maxResolvedChains();
     long long droppedBefore = Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED);
@@ -664,8 +647,7 @@ TEST_F(ResolvedChainCacheTest, OverflowDropsNewKlassButAllowsRefresh) {
     EXPECT_EQ(droppedBefore + 1, Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED));
     EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag((u32)cap));
 
-    // Refreshing an already-cached klass at capacity must still succeed - it reuses that klass's
-    // existing slot rather than needing a free one.
+    // A refresh reuses the klass's existing slot.
     ReferenceChainsTestAccessor::cacheChain(/*source_tag=*/0, makeEvent(999),
                                             /*source_tag=*/999, 0);
     EXPECT_EQ((size_t)cap, ReferenceChainsTestAccessor::resolvedChainCount());
@@ -878,7 +860,7 @@ TEST_F(ResolvedChainCacheTest, LeakTagChainOfCurrentOwnerIsResolvedAndEmitted) {
     EXPECT_TRUE(drainContainsTarget((u64)leak));
 }
 
-// The reviewer's ABA: the chain's object dies (tag released), and the tag is recycled for a new
+// ABA: the chain's object dies (tag released), and the tag is recycled for a new
 // object. The old chain must not be attributed to the new owner by the seam nor emitted into the
 // dump - and it must not be erased either (the eviction policy owns removal).
 TEST_F(ResolvedChainCacheTest, LeakTagChainOfDeadOwnerIsNeitherResolvedNorEmitted) {
@@ -954,9 +936,7 @@ TEST_F(ReferenceChainsTest, PacingHoldsSteadyWhenPassesLandExactlyOnCeiling) {
     u64 startCadence = ReferenceChainsTestAccessor::effectiveCadenceNs();
     ASSERT_EQ(4000, startBudget); // starts pinned at the configured ceiling
 
-    // A pass landing exactly on the pause-time target is a zero error every call - the controller
-    // should never move away from its starting point, regardless of how many such passes are
-    // observed in a row.
+    // Passes landing exactly on the target are zero error: the controller must never move.
     for (int i = 0; i < 10; i++) {
         ReferenceChainsTestAccessor::updatePacing(5 * 1000000ULL); // 5ms
         EXPECT_EQ(startBudget, ReferenceChainsTestAccessor::effectiveBudget());
@@ -975,8 +955,7 @@ TEST_F(ReferenceChainsTest, PacingShrinksBudgetAndWidensCadenceWhenOverCeiling) 
     int initialBudget = ReferenceChainsTestAccessor::effectiveBudget();
     u64 initialCadence = ReferenceChainsTestAccessor::effectiveCadenceNs();
 
-    // A pass taking 10x the pause-time ceiling, fed repeatedly (a constant input - the plan's own
-    // "does not oscillate indefinitely" scenario).
+    // Constant input at 10x the pause-time ceiling: must converge, not oscillate.
     int lastBudget = initialBudget;
     u64 lastCadence = initialCadence;
     for (int i = 0; i < 20; i++) {
@@ -992,8 +971,7 @@ TEST_F(ReferenceChainsTest, PacingShrinksBudgetAndWidensCadenceWhenOverCeiling) 
     // Moved in the correct direction...
     EXPECT_LT(lastBudget, initialBudget);
     EXPECT_GT(lastCadence, initialCadence);
-    // ...and converged to a fixed point rather than oscillating: one more identical input produces
-    // no further change.
+    // ...and converged: one more identical input produces no further change.
     ReferenceChainsTestAccessor::updatePacing(50 * 1000000ULL);
     EXPECT_EQ(lastBudget, ReferenceChainsTestAccessor::effectiveBudget());
     EXPECT_EQ(lastCadence, ReferenceChainsTestAccessor::effectiveCadenceNs());
@@ -1007,13 +985,9 @@ TEST_F(ReferenceChainsTest, PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeili
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // Start from a controlled below-ceiling/above-baseline point (as if an earlier over-ceiling run
-    // had already shrunk/widened them - see the previous test) with a freshly reset controller,
-    // rather than chaining directly off a constant-input sequence like the previous test's own:
-    // _pause_pid's integral state would otherwise still be recovering from that sequence's windup
-    // for many iterations after switching to a smaller-magnitude error, muddying this test's
-    // per-step "moves in the correct direction every step" assertions with a transient this test is
-    // not about.
+    // Start from a shrunk budget / widened cadence with a freshly reset controller: chaining off an
+    // over-ceiling sequence would leave _pause_pid's integral windup breaking the per-step
+    // direction assertions below.
     ReferenceChainsTestAccessor::setEffectiveBudget(2400);
     ReferenceChainsTestAccessor::setEffectiveCadenceNs(
         2 * ReferenceChainsTestAccessor::baselineCadenceNs());
@@ -1021,8 +995,6 @@ TEST_F(ReferenceChainsTest, PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeili
     int shrunkBudget = ReferenceChainsTestAccessor::effectiveBudget();
     u64 widenedCadence = ReferenceChainsTestAccessor::effectiveCadenceNs();
 
-    // Now feed passes comfortably under the ceiling, repeatedly (a constant input, to check
-    // convergence rather than oscillation).
     int lastBudget = shrunkBudget;
     u64 lastCadence = widenedCadence;
     for (int i = 0; i < 200; i++) {
@@ -1035,10 +1007,8 @@ TEST_F(ReferenceChainsTest, PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeili
         lastCadence = cadence;
     }
 
-    // Moved in the correct direction... and, since 50 identical comfortably-under-target passes is
-    // well past BORROW_WARMUP_PASSES, past the configured ceiling too - budget-borrowing lets it
-    // converge at the borrowed ceiling (configured budget * multiplier) instead of stalling at the
-    // plain configured budget.
+    // Moved in the correct direction, and past the configured ceiling: 200 under-target passes is
+    // well past BORROW_WARMUP_PASSES, so it converges at the borrowed ceiling (budget * multiplier).
     EXPECT_GT(lastBudget, shrunkBudget);
     EXPECT_EQ(4000 * ReferenceChainsTestAccessor::borrowCeilingMultiplier(), lastBudget);
     EXPECT_LT(lastCadence, widenedCadence);
@@ -1080,9 +1050,8 @@ TEST_F(ReferenceChainsTest, MaybeRevokeBorrowForRootEnumPassRevokesJustPastBound
     ReferenceChainsTestAccessor::setConsecutiveUnderTargetPasses(5);
     ReferenceChainsTestAccessor::setEffectiveBudget(1500); // as if borrow had raised the ceiling
 
-    // Just past the boundary: no longer comfortably under target, so the grant is revoked
-    // immediately, including re-clamping _effective_budget down to the plain (non-borrowed) budget
-    // rather than leaving it borrow-inflated until the next ordinary pass's updatePacing() call.
+    // Just past the boundary: the grant is revoked and _effective_budget re-clamped immediately,
+    // not left borrow-inflated until the next updatePacing().
     ReferenceChainsTestAccessor::maybeRevokeBorrowForRootEnumPass(6 * 1000000ULL);
     EXPECT_EQ(0, ReferenceChainsTestAccessor::borrowedBudget());
     EXPECT_EQ(0, ReferenceChainsTestAccessor::consecutiveUnderTargetPasses());
@@ -1102,7 +1071,6 @@ TEST(PainBudgetTest, SpendCreatesDebtThatBlocksAnImmediateSecondCall) {
     PainBudget budget(0.01); // 1%
     ASSERT_TRUE(budget.canStartNow(1000)); // establishes the drain baseline
     budget.spend(100); // 100ms of debt
-    // No time has elapsed since the baseline call above - the debt cannot have drained at all yet.
     EXPECT_FALSE(budget.canStartNow(1000));
 }
 
@@ -1118,11 +1086,8 @@ TEST(PainBudgetTest, ZeroRefillRateNeverClearsDebt) {
     PainBudget budget(0.0);
     ASSERT_TRUE(budget.canStartNow(0));
     budget.spend(1);
-    // An enormous elapsed time still drains nothing at a 0 refill rate.
     EXPECT_FALSE(budget.canStartNow(1000000000000ULL));
 }
-
-// Search restart (referenceChains.h's own header comment: gating a
 
 class SearchRestartTest : public ::testing::Test {
 protected:
@@ -1153,10 +1118,8 @@ protected:
         VMTestAccessor::setJvmti(orig_jvmti);
         LivenessTracker::instance()->klassPopulationResetForTest();
         LivenessTracker::instance()->setGcGenerationsForTest(false);
-        // UrgentOOMProjectionBypassesCandidateGate below sets this - reset it here (TearDown always
-        // runs, even after a fatal ASSERT_* return) rather than as a trailing statement in that
-        // test body, so a failed assertion can't leak a stale max-heap value into the next test
-        // sharing this singleton.
+        // Set by UrgentOOMProjectionBypassesCandidateGate; reset here so a failed ASSERT_* there
+        // can't leak a stale max heap into the next test.
         LivenessTracker::instance()->setMaxHeapBytesForTest(-1);
     }
 
@@ -1168,8 +1131,8 @@ protected:
         return JVMTI_ERROR_NONE;
     }
 
-    // ReferenceChainTracker::start() -> autoTuneDefaults() queries this whenever LivenessTracker
-    // reports a max heap > 0 - which UrgentOOMProjectionBypassesCandidateGate below sets.
+    // start() -> autoTuneDefaults() queries this when max heap > 0
+    // (UrgentOOMProjectionBypassesCandidateGate).
     static jvmtiError JNICALL mock_GetAvailableProcessors(jvmtiEnv *,
                                                            jint *nprocs) {
         *nprocs = 1;
@@ -1184,18 +1147,14 @@ protected:
         return JVMTI_ERROR_NONE;
     }
 
-    // runPassManualWalk()'s root enumeration - never invokes the root callback, same "nothing
-    // reachable from any root" heap model as mock_FollowReferences() above, so the first pass still
-    // completes immediately with 0 admitted edges.
+    // runPassManualWalk()'s root enumeration; same empty-heap model as mock_FollowReferences().
     static jvmtiError JNICALL mock_IterateOverReachableObjects(
         jvmtiEnv *, jvmtiHeapRootCallback, jvmtiStackReferenceCallback,
         jvmtiObjectReferenceCallback, const void *) {
         return JVMTI_ERROR_NONE;
     }
 
-    // Same seeding helper as PollWatchedTargetsTest above (20 strictly- increasing samples -
-    // satisfies selectLeakCandidates()'s min-fill, growth/floor magnitude, and sustained-trend
-    // hysteresis requirements).
+    // Same as PollWatchedTargetsTest::seedGrowingCandidate().
     void seedGrowingCandidate(u32 klass_id, jweak rep) {
         int slot;
         bool created;
@@ -1212,10 +1171,8 @@ protected:
 };
 
 TEST_F(SearchRestartTest, WithoutGenerationsSignalRestartStaysUnconditional) {
-    // gc_generations off (this fixture's SetUp default): canAffordNewSearch() has no candidate
-    // signal to gate on at all, so a terminal search is immediately eligible to restart - preserves
-    // this tracker's pre-restart behavior for a referencechains-without-generations setup (this
-    // class's own header comment, last paragraph).
+    // gc_generations off (SetUp default): canAffordNewSearch() has no candidate signal, so a
+    // terminal search is immediately eligible to restart.
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -1231,9 +1188,8 @@ TEST_F(SearchRestartTest, WithoutGenerationsSignalRestartStaysUnconditional) {
 }
 
 TEST_F(SearchRestartTest, GenerationsEnabledButNoCandidateBlocksFirstSearch) {
-    // A brand-new tracker must not pay for the initial whole-heap walk/tagging pass either when
-    // there is no leak candidate yet - shouldRunPass()'s !_search_started branch now shares
-    // canAffordNewSearch() with the restart gate below (this class's own header comment).
+    // No leak candidate yet: even the first whole-heap walk is skipped, because
+    // shouldRunPass()'s !_search_started branch shares canAffordNewSearch() with the restart gate.
     LivenessTracker::instance()->setGcGenerationsForTest(true);
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
@@ -1287,8 +1243,7 @@ TEST_F(SearchRestartTest, RestartsOnceACandidateAppearsAndResetsPerSearchState) 
     EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
     EXPECT_EQ(0, tracker->passesRun()); // restartSearch() zeroed per-search state
 
-    // The next runPass() call takes the "first pass of a search" branch again, exactly like a
-    // brand-new tracker.
+    // The next runPass() takes the first-pass branch again.
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, nullptr));
     EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
     EXPECT_EQ(1, tracker->passesRun());
@@ -1306,24 +1261,18 @@ TEST_F(SearchRestartTest, PainBudgetBlocksARestartUntilItDrains) {
     int fake_object_storage = 0;
     seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)&fake_object_storage);
 
-    // First-ever search: called via runPass() directly here, bypassing shouldRunPass()'s
-    // canAffordNewSearch() gate entirely - the candidate seeded above would satisfy that gate
-    // anyway (this class's own header comment).
+    // First-ever search via runPass() directly; the seeded candidate would pass the gate anyway.
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, nullptr));
     ASSERT_EQ(SearchState::COMPLETED, tracker->searchState());
 
-    // Restart #1: _safepoint_pain_budget has never had anything spent into it yet, so this is
-    // always immediately affordable regardless of this first search's own cost - the cost a search
-    // incurs only debits the *next* restart's affordability (restartSearch()'s own spend-then-reset
-    // order), not its own.
+    // Restart #1: nothing has been spent into _safepoint_pain_budget yet, so it is immediately
+    // affordable.
     ASSERT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(1));
     ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, nullptr));
     ASSERT_EQ(SearchState::COMPLETED, tracker->searchState());
 
-    // Pretend this second search cost 1000ms of safepoint time - a mocked FollowReferences call in
-    // this fixture takes ~0 real wall-clock time, so this accessor stands in for what a real,
-    // expensive pass would have accumulated into _search_pain_ms on its own.
+    // The mocked walk costs ~0ms; stand in for an expensive search's _search_pain_ms.
     ReferenceChainsTestAccessor::setSearchPainMs(1000);
 
     // Restart #2: the terminal gate charges the finished search's OWN 1000ms cost BEFORE checking
@@ -1332,7 +1281,6 @@ TEST_F(SearchRestartTest, PainBudgetBlocksARestartUntilItDrains) {
     EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(2));
     EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
 
-    // Well past the drain point - the debt has cleared, restart #2 proceeds.
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(1ULL + 200000000000ULL));
     EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, nullptr));
@@ -1343,9 +1291,8 @@ TEST_F(SearchRestartTest, PainBudgetBlocksARestartUntilItDrains) {
 
 // hasLeakSignal()'s OOM_URGENT_THRESHOLD_S fast path (referenceChains.h/.cpp): a heap-wide leak
 // growing fast enough to project exhaustion sooner than the threshold must start a search
-// immediately, without waiting for any klass to clear selectLeakCandidates()'s own per-klass
-// ring-fill/hysteresis gate - this is the aggressive-leak gap
-// GenerationsEnabledButNoCandidateBlocksFirstSearch above documents for the non-urgent case.
+// immediately, without waiting for any klass to clear selectLeakCandidates()'s per-klass
+// ring-fill/hysteresis gate.
 TEST_F(SearchRestartTest, UrgentOOMProjectionBypassesCandidateGate) {
     LivenessTracker::instance()->setGcGenerationsForTest(true);
     constexpr u64 SEC_NS = 1000000000ULL;
@@ -1369,6 +1316,4 @@ TEST_F(SearchRestartTest, UrgentOOMProjectionBypassesCandidateGate) {
 
     tracker->stop();
 }
-
-// Durability re-verification (correctness hardening).
 

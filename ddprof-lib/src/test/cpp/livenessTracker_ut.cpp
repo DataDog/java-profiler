@@ -761,11 +761,10 @@ TEST_F(SelectLeakCandidatesTest, HeapFloorCorroborationLowersRequiredHysteresis)
 }
 
 // --- Per-(klass, tid) qualification gate (TidTrend, livenessTracker.h) ---
-// The disjoint-tagged-vs-frontier pod finding: a whole-klass rising
-// generation count can come from churn spread across MANY allocating
-// threads, each retaining a STABLE handful of instances. A klass with a
-// qualifying klass-level trend but NO thread whose own trend qualifies is
-// NOT a leak candidate.
+// A whole-klass rising generation count can come from churn spread across
+// MANY allocating threads, each retaining a STABLE handful of instances. A
+// klass with a qualifying klass-level trend but NO thread whose own trend
+// qualifies is NOT a leak candidate.
 TEST_F(SelectLeakCandidatesTest, KlassTrendWithoutQualifyingTidIsNotSelected) {
     LivenessTracker *tracker = LivenessTracker::instance();
 
@@ -839,9 +838,7 @@ TEST_F(SelectLeakCandidatesTest, RetainedCountBarQualifiesOneCohortShape) {
 }
 
 // A rising per-tid trend alone (below the retained-count bar) qualifies:
-// small leaks grow their age span long before their count clears the bar -
-// the hotdog pod's simulated-memory-leak thread (12 tracked [B instances,
-// age_count rising 2->3) is exactly this shape.
+// small leaks grow their age span long before their count clears the bar.
 TEST_F(SelectLeakCandidatesTest, RisingTidTrendQualifiesBelowCountBar) {
     LivenessTracker *tracker = LivenessTracker::instance();
 

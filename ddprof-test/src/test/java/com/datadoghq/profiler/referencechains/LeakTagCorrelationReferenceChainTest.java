@@ -60,7 +60,7 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
    * The pod-regime variant of the correlation use case: the same scenario under a
    * pod-like tight pass window (pausetarget in single-digit ms, as on the production-like
    * pod whose expand window was ~10ms against a 14-41ms GetObjectsWithTags floor at a
-   * 242k-entry tag map, ev-leaktag-onpod-round4). Full correlation cannot be the pass
+   * 242k-entry tag map). Full correlation cannot be the pass
    * criterion at this window width: the scenario's trend gates were tuned for the loose
    * window's crawl/GC interleaving, and under tight windows the leak klass's real-fold
    * trend can flip within a single run - the same knife-edge the pod itself lives on
@@ -68,8 +68,8 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
    * race; observed: [correlation-tag-out-of-pool] with zero interceptions). What CAN be
    * asserted deterministically here is the machinery this window exists to exercise:
    * the leak-accumulation rotation must engage and select FRONTIER-state (un-expanded
-   * backlog) holders - the round-4 fix whose absence made that tier select zero on the
-   * pod while holding 51k known parent candidates. GetObjectsWithTags batch control is
+   * backlog) holders - without that, the tier selected zero on the pod while holding 51k
+   * known parent candidates. GetObjectsWithTags batch control is
    * covered unit-level (gotwWindowNs() widening): a real child JVM's local tag map
    * (~100k filler) keeps the per-call floor under the nominal window, so the widening
    * regime cannot be reproduced end-to-end locally without a 242k-entry tag map.
@@ -79,11 +79,6 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
     assertCorrelationFound("pausetarget=10", /*requireFrontierRotation=*/ true);
   }
 
-  /**
-   * Drives the leak-correlation child JVM and asserts the correlated chain, with the
-   * referencechains pausetarget given by {@code pauseTargetOption} (everything else held
-   * fixed across the two callers so the variant differs in exactly the pass-window regime).
-   */
   private void assertCorrelationFound(String pauseTargetOption) throws Exception {
     assertCorrelationFound(pauseTargetOption, /*requireFrontierRotation=*/ false);
   }
@@ -96,10 +91,9 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
    * leak-accumulation rotation's FRONTIER-state selection is additionally asserted, and
    * the correlation result markers that the pod regime legitimately produces without the
    * full correlation completing (not-found, tag-out-of-pool - see the tight variant's own
-   * comment) are accepted instead of failed. That FRONTIER signal is a level-2
-   * {@code TEST_LOG} line, so this variant runs only on DEBUG-instrumented native builds and
-   * forces reference-chains debug level 2 in the child; the loose variant does not depend on
-   * logging and runs on every build.
+   * comment) are accepted instead of failed. This variant runs only on DEBUG-instrumented
+   * native builds and forces reference-chains debug level 2 in the child; the loose variant
+   * runs on every build.
    */
   private void assertCorrelationFound(String pauseTargetOption,
       boolean requireFrontierRotation) throws Exception {
@@ -127,17 +121,12 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
       // Same raised budget as ExternalProcessReferenceChainTest's own scenarios: a genuinely
       // fresh, cold external JVM's reachable graph is far larger than the in-process tests',
       // and this scenario adds ~100k filler objects on top. The pausetarget varies by caller.
-      // memory=64:l:1.0 - the explicit liveness-sample ratio is load-bearing,
-      // not decoration: without a ratio segment, the default is 10%
-      // (arguments.h's _live_samples_ratio) and LivenessTracker::track()
-      // drops 90% of tracked instances probabilistically. This scenario's
-      // leak cohort is only tens of 1MB chunks, so the default makes the
-      // (klass, tid) population a per-run Bernoulli lottery - observed live
-      // as the intermittent "tagLeakInstances ZERO" runs where zero chunks
-      // survived the filter (passing runs' stable "tagged=5" is exactly the
-      // ~10% tail of ~50 chunks). 1.0 makes the scenario's documented
-      // assumption ("every allocation is sampled, tracked, and taggable",
-      // LeakTagCorrelationScenario) actually true.
+      // memory=64:l:1.0 - the explicit liveness-sample ratio is load-bearing: the default
+      // (10%, arguments.h's _live_samples_ratio) makes LivenessTracker::track() drop 90% of
+      // tracked instances, and with only tens of 1MB leak chunks the (klass, tid) population
+      // becomes a per-run lottery (observed as intermittent "tagLeakInstances ZERO" runs).
+      // 1.0 makes LeakTagCorrelationScenario's "every allocation is sampled, tracked, and
+      // taggable" assumption true.
       String startCommand = "start,memory=64:l:1.0,generations=true,"
           + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:"
           + pauseTargetOption

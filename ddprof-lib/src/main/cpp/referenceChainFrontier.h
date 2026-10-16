@@ -188,7 +188,7 @@ public:
   }
 
   // Same as lookup() above, but assumes the caller already holds the shared lock via
-  // withSharedLock() below.
+  // withSharedLock().
   bool lookupLocked(jlong tag, FrontierEntry *out) const;
 
   // Marks metadata abandoned; the caller must clear the JVMTI tag.
@@ -246,7 +246,7 @@ public:
                         std::vector<ChainHopEdge> *out_edges = nullptr,
                         FrontierEntry *out_terminal = nullptr);
 
-  // Search restart (ReferenceChainTracker::restartSearch(), this class's own header comment): marks
+  // Search restart (ReferenceChainTracker::restartSearch()): marks
   // every slot unoccupied again without releasing _table's allocation - a new search's nextTag()
   // sequence restarts at 1, reusing these same slot indices, so lookup()/insert() must not read
   // back the previous search's now-irrelevant entries for them.
