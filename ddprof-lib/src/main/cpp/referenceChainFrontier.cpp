@@ -80,8 +80,7 @@ bool FrontierTable::growLocked(int required_cap) {
         "ReferenceChains: frontier table resize to %d entries failed", newcap);
     return false;
   }
-  // realloc() does not zero the newly grown region - clear it so lookup() never returns garbage
-  // state for a slot that hasn't been inserted yet.
+  // Zero the grown region so lookup() never returns garbage for a not-yet-inserted slot.
   memset(tmp + _table_cap, 0, sizeof(FrontierEntry) * (newcap - _table_cap));
   Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_BYTES,
                        (jlong)(newcap - _table_cap) * sizeof(FrontierEntry));
@@ -131,8 +130,6 @@ bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
       while (sz < idx + 1 &&
              !_table_size.compare_exchange_weak(sz, idx + 1,
                                                  std::memory_order_relaxed)) {
-        // sz reloaded with the current value by compare_exchange_weak on failure; retry until
-        // either this thread wins or another thread already advanced _table_size past idx + 1.
       }
       return true;
     }
@@ -225,8 +222,6 @@ bool FrontierTable::improveChain(jlong tag, jlong parent_tag,
                                   u32 referrer_klass, u32 depth,
                                   u8 root_kind, jint referrer_field_index,
                                   u8 edge_kind, jlong referrer_class_tag) {
-  // Replace a shallow root-attached entry (parent_tag == 0, depth == 0) with a deeper
-  // chain-attached entry when the object is reached via a longer path.
   if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
     return false;
   }
@@ -290,8 +285,8 @@ bool FrontierTable::reparentToDurableRoot(jlong tag, jlong new_parent_tag,
                                           u32 referrer_klass,
                                           jint referrer_field_index,
                                           u8 edge_kind) {
-  // See the declaration's own comment (referenceChains.h) for why this exists as a sibling of
-  // improveChain(): equal-depth depth-1 noise->real re-parenting.
+  // See the declaration's comment (referenceChainFrontier.h) for why this exists as a sibling of
+  // improveChain(): equal-depth depth-1 transient->durable re-parenting.
   if (tag <= 0 || tag - 1 >= (jlong)INT_MAX || new_parent_tag <= 0 ||
       new_parent_tag - 1 >= (jlong)INT_MAX || new_parent_tag == tag) {
     return false;
@@ -340,7 +335,7 @@ bool FrontierTable::reconstructChain(jlong target_tag,
   u8 root_kind = 0;
   int hops = 0;
   // Bounded by maxCapacity(): every tag maps to a distinct slot (this table's "tags/slots are never
-  // reused" invariant, see the class comment above), so a well-formed parent_tag chain can visit at
+  // reused" invariant, see _table_size's comment), so a well-formed parent_tag chain can visit at
   // most maxCapacity() slots before either reaching parent_tag == 0 or repeating a slot.
   const int hop_bound = maxCapacity();
   for (; hops <= hop_bound && tag != 0; hops++) {

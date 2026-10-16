@@ -71,9 +71,7 @@ public final class LeakTagCorrelationScenario {
    * discovering contents added after a resize is exactly the hard production case
    * this scenario must prove works: the live holder's re-walk has to admit each new
    * backing array, and only then can its new chunks be admitted and leak-tag
-   * intercepted. (An earlier fixed-array version of this fixture sidestepped that
-   * requirement and still failed - see the scenario history in the investigation
-   * notes - which is what exposed the rotation starvation this fixture now encodes.)
+   * intercepted.
    */
   static final List<byte[]> LEAK_SINK = new ArrayList<>();
 
@@ -245,8 +243,6 @@ public final class LeakTagCorrelationScenario {
     }
 
     boolean debugBuild = "debug".equals(System.getProperty("ddprof_test.config"));
-    // Declared at method scope: the per-round and final-attempt maintenance
-    // seeding below (in their own debugBuild blocks) reuse these tids.
     int leakTid = 0;
     int noiseTid = 0;
     if (debugBuild) {
@@ -290,8 +286,7 @@ public final class LeakTagCorrelationScenario {
         JavaProfiler.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
         JavaProfiler.seedTidTrendSample0(NOISE_KLASS_ID, noiseTid, epoch * 3, epoch);
       }
-      // Maintenance continues the seeded ramp (next epoch = SEED_EPOCHS_FOR_HYSTERESIS + 1)
-      // instead of restarting at 1 - same as StaticFieldGrowingCollectionScenario.
+      // Maintenance continues the seeded ramp instead of restarting at 1.
       hysteresisEpoch = SEED_EPOCHS_FOR_HYSTERESIS;
       // Wait for the BFS thread to fully complete its first pass (static sweep AND frontier
       // expansion) before any growth round - same load-bearing wait and rationale as

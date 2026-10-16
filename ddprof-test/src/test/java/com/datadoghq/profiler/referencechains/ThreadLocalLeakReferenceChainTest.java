@@ -33,16 +33,12 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
  * {@code ThreadLocal} map must still produce a correlated
  * {@code datadog.ReferenceChain} - {@code targetTag} in the leak-tag pool
  * range, matched by a {@code datadog.HeapLiveObject} {@code leakTag}. The
- * scenario is {@code ThreadLocalLeakScenario}; this test drives it and
- * asserts the reported correlation, with a filtered child-log tail embedded
- * in any failure message for diagnosability without a redeploy.
+ * scenario is {@code ThreadLocalLeakScenario}.
  */
 @Tag("slow")
 public class ThreadLocalLeakReferenceChainTest extends AbstractProcessProfilerTest {
 
-  // Mirrored from referenceChains.h (LEAK_TAG_BASE/LEAK_TAG_POOL_SIZE) - the
-  // contract under test, asserted against the runtime event values the child
-  // reports.
+  // Mirrored from referenceChains.h (LEAK_TAG_BASE/LEAK_TAG_POOL_SIZE).
   private static final long LEAK_TAG_BASE = 0x40000000L;
   private static final long LEAK_TAG_POOL_SIZE = 256;
 
@@ -177,13 +173,7 @@ public class ThreadLocalLeakReferenceChainTest extends AbstractProcessProfilerTe
     }
   }
 
-  /**
-   * A filtered summary of the child's TEST_LOG stream for failure messages -
-   * same first-things-to-check selection as
-   * LeakTagCorrelationReferenceChainTest.diagnostics(): the thread-walk and
-   * pass summaries (the new machinery this scenario exercises), the gotw
-   * batch-size trace, and any leak-tag interception or correlation lines.
-   */
+  /** Filtered summary of the child's TEST_LOG stream, embedded in failure messages. */
   private static String diagnostics(Deque<String> testLogTail) {
     if (testLogTail.isEmpty()) {
       return "\n(no TEST_LOG output captured - non-debug build or no reference-chain passes ran)";

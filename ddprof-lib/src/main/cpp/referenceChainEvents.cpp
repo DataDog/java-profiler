@@ -25,8 +25,6 @@
 #include <cstring>
 #include <unordered_set>
 
-// Target-selection bridging step - LivenessTracker's leak-candidate ranking feeds
-
 void ReferenceChainTracker::requeueChainRootForRotation(jlong tag) {
   if (_frontier == nullptr || tag <= 0) {
     return;

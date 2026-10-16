@@ -69,20 +69,15 @@ public final class StaticFieldGrowingCollectionScenario {
 
   private static final int TOTAL_ROUNDS = 25;
 
-  // Tail attempts (below) rotate the watched chunk they append to LEAK_BUFFER, so the backing
-  // ArrayList's pre-sized capacity must cover them too - see LEAK_BUFFER_CAPACITY's own comment
-  // for why elementData must never reallocate.
+  // Each tail rotation appends a chunk to LEAK_BUFFER, so LEAK_BUFFER_CAPACITY covers these too.
   private static final int TAIL_ATTEMPTS = 40;
 
-  // How many consecutive tail attempts the SAME freshly-appended chunk stays the watched target
-  // before rotating to a new one - see the tail loop's own comment for why a chunk must be given
-  // several attempts (its discovery matures across walk cycles, slower than one 1.5s attempt)
-  // and why a chunk that still has not resolved is assumed record-dead and abandoned.
+  // Consecutive tail attempts the same chunk stays the watched target before rotating - see the
+  // tail loop.
   private static final int TAIL_CHUNK_ATTEMPTS = 8;
 
-  // Seeds + lateChunk + one per round + one per tail rotation (sized for the worst case of one
-  // per attempt so the budgets above can be retuned without touching this):
-  // LEAK_BUFFER's elementData never reallocates.
+  // Seeds + lateChunk + one per round + one per tail attempt (worst case), so LEAK_BUFFER's
+  // elementData never reallocates.
   private static final int LEAK_BUFFER_CAPACITY =
       SEED_CHUNKS + 1 + TOTAL_ROUNDS + TAIL_ATTEMPTS;
 
@@ -129,8 +124,6 @@ public final class StaticFieldGrowingCollectionScenario {
         && ("debug".equals(testConfig) || testConfig.endsWith("san"));
     System.out.println(SEAM_PATH_MARKER + debugBuild);
     int hysteresisEpoch = 0;
-    // Declared at method scope: the per-round maintenance seeding below (in
-    // its own debugBuild block) reuses this tid.
     int leakTid = 0;
     // Snapshotted BEFORE seeding anything, while the BFS thread's search has not run a single
     // pass yet (referenceChainPassesRunForTest0() reads 0 here) - see the wait loop below for why
@@ -173,19 +166,11 @@ public final class StaticFieldGrowingCollectionScenario {
       // representative ref stays live.
       JavaProfiler.setKlassPopulationRepresentativeForTest0(LEAK_BUFFER_TEST_KLASS_ID,
           LEAK_BUFFER.get(0));
-      // Seed enough hysteresis-qualifying epochs to unlock ReferenceChainTracker::hasLeakSignal()/
-      // shouldRunPass() - AFTER the representative above (set-representative-first is required,
-      // see that call's own comment). hasLeakSignal() only asks selectLeakCandidates() for a
-      // nonzero count -
-      // it never reads/dereferences the representative field - so this step's only job is
-      // authorizing the BFS thread's first pass to actually start. Doing this BEFORE waiting on
-      // passesRun() advancing below is load-bearing, found the hard way: a pass only ever runs
-      // once shouldRunPass() sees a leak signal - waiting on passesRun() before seeding anything is
-      // a deadlock, not just a slow path.
-      // Per-(klass, tid) qualification seeds (see LeakTagCorrelationScenario's own
-      // seeding block for the rationale): the qualifying tid must be the thread that
-      // allocates the tracked instances - this thread allocates every LEAK_BUFFER
-      // chunk, including the lateChunk this scenario watches.
+      // Seed hysteresis-qualifying epochs so hasLeakSignal()/shouldRunPass() authorize the BFS
+      // thread's first pass. Must precede the passesRun() wait below: a pass only runs once
+      // shouldRunPass() sees a leak signal, so waiting first deadlocks. Per-(klass, tid) seeds
+      // (see LeakTagCorrelationScenario): the qualifying tid must be the allocating thread, and
+      // this thread allocates every LEAK_BUFFER chunk.
       leakTid = JavaProfiler.getTid();
       for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
         JavaProfiler.seedKlassPopulationSample0(LEAK_BUFFER_TEST_KLASS_ID, epoch * 10, epoch);
@@ -199,14 +184,9 @@ public final class StaticFieldGrowingCollectionScenario {
     // entire point of this scenario: proving that an element appended to a static field's
     // collection AFTER that field's List is already EXPANDED gets discovered via a LATER
     // re-expansion of that stale entry, not via the very first pass that admitted it.
-    // admitStaticFieldRoots() and expandFrontier() are two steps of the SAME runPass() call, and
-    // neither the static-field sweep's completion nor a changed pass counter proves the holders
-    // were expanded (see the debug branch below), so the wait reads their frontier state directly.
-    // Release (non-DEBUG) builds have no such seam and fall back to a generous sleep - acceptable
-    // there because the non-debug path never pins a specific representative anyway (see the
-    // debugBuild branch below): it just waits on real, much-slower allocation sampling to notice
-    // the growth on its own, so a few extra seconds of margin either way changes nothing about
-    // what the eventual match would prove.
+    // Release (non-DEBUG) builds have no frontier-state seam and fall back to a sleep: they never
+    // pin a specific representative and rely on much-slower real allocation sampling, so the
+    // margin changes nothing about what the eventual match proves.
     if (debugBuild) {
       // A changed pass counter alone is not proof that LEAK_BUFFER's holders were expanded:
       // truncated passes also bump it, and admitStaticFieldRoots() only processes a bounded
@@ -282,14 +262,10 @@ public final class StaticFieldGrowingCollectionScenario {
     // per round instead is self-healing exactly the way the real leak this scenario mirrors is:
     // LEAK_BUFFER keeps growing every round regardless of any one-time startup housekeeping, so
     // however many rounds a wipe costs, the trend simply resumes accumulating from the next
-    // round's seed call. (Waiting for the first pass to fully complete above already makes this
-    // particular race very unlikely to matter by this point, but there is no reason to give up the
-    // self-healing margin now that it costs nothing.)
+    // round's seed call.
     ReferenceChainAssertions.ChainMatch match = null;
     for (int round = 1; round <= TOTAL_ROUNDS && match == null; round++) {
-      // Continues growing LEAK_BUFFER every round after lateChunk - mirrors the real leak's own
-      // continuous growth - but lateChunk itself (created above, strictly after the first sweep)
-      // stays the fixed target this scenario watches for throughout.
+      // Mirrors the real leak's continuous growth; lateChunk stays the watched target.
       LEAK_BUFFER.add(new byte[CHUNK_BYTES]);
       System.gc();
 
@@ -305,13 +281,9 @@ public final class StaticFieldGrowingCollectionScenario {
         // legitimately produces a continuous real signal in production; seeding continuously here
         // is what actually mirrors that, not an artifact to gate away.
         //
-        // Same debug-only seeded-representative short-circuit as LeakingCacheScenario's own -
-        // watches lateChunk specifically (added after the static field's first sweep), not
-        // whatever the real allocation sampler happens to pick. See SEED_EPOCHS_FOR_HYSTERESIS's
-        // own comment for the minimum epoch count this needs - kept uncapped here (not stopped
-        // once that minimum is reached) specifically so a wipe that costs an early round or two
-        // still leaves enough remaining rounds to reach it, rather than exhausting a fixed budget
-        // of calls before ever getting there.
+        // The representative pins lateChunk, not whatever the real sampler picks. Seeding stays
+        // uncapped past SEED_EPOCHS_FOR_HYSTERESIS so a wipe costing early rounds still leaves
+        // enough rounds to requalify.
         hysteresisEpoch++;
         JavaProfiler.seedKlassPopulationSample0(
             LEAK_BUFFER_TEST_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
@@ -357,20 +329,13 @@ public final class StaticFieldGrowingCollectionScenario {
     }
 
     // A cold external JVM's one-shot root-seeded walk over its whole reachable graph (full
-    // JUnit/JMC/Gradle-worker classpath) takes far longer than this scenario's own round loop -
-    // found the hard way: a first attempt at this scenario's tail wait (5 x 1s) gave up and
-    // printed NOT_FOUND_MARKER mere moments before the tracker's own runPass() actually
-    // completed (searchState=COMPLETED) and successfully built the chain. Mirrors
-    // ExternalProcessReferenceChainTest's own comment on why budget/pausetarget are raised this
-    // far for exactly this reason.
+    // JUnit/JMC/Gradle-worker classpath) takes far longer than the round loop - a 5 x 1s tail
+    // gave up moments before runPass() completed and built the chain.
     int watchedIndex = -1;
     int attemptsOnWatchedChunk = 0;
     for (int attempt = 0; match == null && attempt < TAIL_ATTEMPTS; attempt++) {
       Thread.sleep(1500);
-      // Same passesRun()-advanced check as the round loop above (-DDEBUG builds only:
-      // debug/asan/tsan) - by this point in a real run it has virtually always already flipped,
-      // but there is no reason to drop the guarantee here just because the round loop above
-      // didn't need it.
+      // Same passesRun()-changed guard as the round loop.
       long requiredTargetTag = 0;
       if (debugBuild) {
         if (JavaProfiler.referenceChainPassesRunForTest0() == passesRunBeforeLateChunk) {

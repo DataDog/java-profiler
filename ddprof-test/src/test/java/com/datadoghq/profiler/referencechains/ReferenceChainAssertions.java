@@ -21,18 +21,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Shared {@code datadog.ReferenceChain} JFR-parsing helpers, extracted out of
- * {@code ReferenceChainTrackingTest} so both that in-process JUnit test and
- * {@link LeakingCacheScenario} (run inside a genuinely separate child JVM by
- * {@code ExternalProcessReferenceChainTest}) can reuse the exact same JMC-accessor logic
- * rather than maintaining two copies.
+ * Shared {@code datadog.ReferenceChain} JFR-parsing helpers.
  *
- * <p>{@link #findMatchForClass(JfrEvents, Class)} is a separate, jafar-backed counterpart to
- * {@link #findMatchForClass(IItemCollection, Class)} for {@code ReferenceChainTrackingTest}, which
- * loads recordings via {@code AbstractProfilerTest}'s {@code JfrEvents}-returning helpers.
- * {@link LeakingCacheScenario} and {@code ReferenceChainJfrParserTest}
- * load recordings directly via JMC's {@code JfrLoaderToolkit} and keep using the
- * {@code IItemCollection} overload unchanged.
+ * <p>Two overloads because callers load recordings differently:
+ * {@code ReferenceChainTrackingTest} uses {@code AbstractProfilerTest}'s {@code JfrEvents}
+ * helpers ({@link #findMatchForClass(JfrEvents, Class)}), while {@link LeakingCacheScenario} loads
+ * via JMC's {@code JfrLoaderToolkit} ({@link #findMatchForClass(IItemCollection, Class)}).
  */
 public final class ReferenceChainAssertions {
   private ReferenceChainAssertions() {}
@@ -155,15 +149,9 @@ public final class ReferenceChainAssertions {
   }
 
   /**
-   * {@code targetClass}'s name in the same format {@code IMCType.getFullName()} uses for array
-   * types - found the hard way: {@code Class.getName()} renders {@code byte[].class} as {@code
-   * "[B"} (JVM internal signature notation), but JMC's chunk parser renders the same array class's
-   * {@code IMCType.getFullName()} as {@code "byte[]"} (Java source notation), so comparing {@link
-   * Class#getName()} directly against {@code getFullName()} - as both {@code findMatchForClass}
-   * overloads above used to - can never match an array-typed leaf class, even when the correct
-   * event is genuinely present in the recording. Only affects array {@code targetClass} values
-   * (e.g. {@code byte[].class}); a non-array class's {@code getName()} already matches {@code
-   * getFullName()} as-is.
+   * {@code targetClass}'s name in {@code IMCType.getFullName()} format: {@code Class.getName()}
+   * renders {@code byte[].class} as {@code "[B"}, but JMC renders it as {@code "byte[]"}, so a
+   * direct comparison never matches an array-typed leaf. Non-array names are unchanged.
    */
   private static String jmcStyleName(Class<?> targetClass) {
     int dimensions = 0;

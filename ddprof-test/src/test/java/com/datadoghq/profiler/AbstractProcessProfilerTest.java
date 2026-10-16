@@ -46,10 +46,8 @@ public abstract class AbstractProcessProfilerTest {
 
     /**
      * Same as the 6-arg overload above, but with a caller-supplied wait timeout instead of the
-     * hardcoded 10 seconds - needed by scenarios that run substantially longer than a plain
-     * attach/init check, e.g. {@code ExternalProcessReferenceChainTest}'s population-growth loop
-     * (up to 25 rounds plus a grace period, ~20s+ observed in-process, plus a whole separate
-     * JVM's own startup/classloading cost on top).
+     * default 10 seconds, for child scenarios that run substantially longer than an attach/init
+     * check.
      */
     protected final LaunchResult launch(String target, List<String> jvmArgs, String commands, Map<String, String> env, long timeoutSeconds, Function<String, LineConsumerResult> onStdoutLine, Function<String, LineConsumerResult> onStderrLine) throws Exception {
         String javaHome = System.getenv("JAVA_TEST_HOME");
@@ -154,9 +152,8 @@ public abstract class AbstractProcessProfilerTest {
         // Process.waitFor() only orders the child's exit, not the readers' last callbacks. Child modes
         // that call System.exit(0) skip the [ready] handshake, so nothing else guarantees the final
         // marker lines have been handed to the callbacks before the caller asserts on the state they
-        // set. Join both readers (bounded, on both the in-time and the timeout path): Thread.join()
-        // makes every callback write visible to the caller. If a reader is still alive after the bound,
-        // return anyway, as before.
+        // set. Thread.join() makes every callback write visible to the caller; the join is bounded
+        // and a reader still alive after the bound is left behind.
         stdoutReader.join(READER_JOIN_TIMEOUT_MS);
         stderrReader.join(READER_JOIN_TIMEOUT_MS);
         return new LaunchResult(val, p.exitValue());

@@ -44,9 +44,8 @@ private:
   volatile bool _enabled;
 
   // Frontier metadata table. Constructed lazily on the first start() with the flag enabled, sized
-  // from args._reference_chains_frontier_cap; like LivenessTracker's table (LivenessTracker's own
-  // table does the same) it survives stop() so it persists across multiple start/stop recording
-  // cycles.
+  // from args._reference_chains_frontier_cap; like LivenessTracker's table it survives stop() so it
+  // persists across multiple start/stop recording cycles.
   FrontierTable *_frontier;
 
   // args._reference_chains_frontier_cap as of the most recent start() call - recorded
@@ -215,7 +214,7 @@ private:
   // klass_ids from LivenessTracker::topKlassesByGenerationCount() (a faster, un-hysteresis-gated
   // ranking than the canary candidate set above - see that method's own comment), refreshed once
   // per BFS-thread tick but only once hasLeakSignal() has already fired via the slower,
-  // hysteresis-gated selectLeakCandidates() path (per design discussion: this whole mechanism only
+  // hysteresis-gated selectLeakCandidates() path (this whole mechanism only
   // cranks once the trend detector has already triggered, so it never needs to wait out that same
   // hysteresis a second time on its own).
   u32 _watched_leak_klass_ids[MAX_WATCHED_LEAK_KLASSES];
@@ -336,8 +335,7 @@ private:
   // block there and _configured_budget's own comment).
   bool _urgency_budget_boosted;
 
-  // Hysteresis state behind isUrgent(), which used to be a bare `secondsToOOM() <
-  // OOM_URGENT_THRESHOLD_S` comparison.
+  // Hysteresis state behind isUrgent().
   mutable bool _urgent_latched;
   mutable int _urgent_release_ticks;
   mutable bool _urgent_search_spent;
@@ -414,7 +412,6 @@ private:
           return false;
         }
         i = (i + 1) & SLOT_MASK;
-        // Wrapped around: table full.
         if (i == start) {
           return false;
         }
@@ -437,8 +434,7 @@ private:
     }
   } _priority_expand_set;
 
-  // B' (find-anchor-holder-eviction / find-anchor-live-feed-design): a static holder richly
-  // referenced from the running graph is EXCLUDED from the static-anchor tier forever once its
+  // A static holder richly referenced from the running graph is EXCLUDED from the static-anchor tier forever once its
   // frontier entry is chain-attached (first admitted via a non-root path, or demoted by
   // improveChain) - maybeUpgradeRootAttachedRootKind() refuses entries with parent_tag != 0 by
   // design, so collectStaticFieldAnchorsForRotation() (parent_tag == 0 filter) can never select it.
@@ -550,14 +546,9 @@ private:
   // GetObjectsWithTags call for the batch + a depth-bounded interface walk per class).
   static constexpr int ANCHOR_SHAPE_RECONCILE_BUDGET = 128;
 
-  // Per-pass cap on how many AT-RISK static holders (frontier entries with parent_tag != 0 - the
-  // find-anchor-holder-eviction population) drainStaticAnchorFifo() pops for the same
-  // walkStaticFieldAnchors() batch.
+  // Per-pass cap on how many AT-RISK static holders (frontier entries with parent_tag != 0)
+  // drainStaticAnchorFifo() pops for the same walkStaticFieldAnchors() batch.
   static constexpr int STATIC_ANCHOR_FIFO_DRAIN = 16;
-
-  // (Removed: the old single wrapping-index-cursor selection was replaced by tiered selection with
-  // per-tier cursors — see collectStaticFieldAnchorsForRotation()'s own comment and
-  // _anchor_container_cursor/_anchor_other_cursor.)
 
   // Cursor over the flattened (slot, tid) enumeration of _candidate_qualifying_tids above, so
   // walkCandidateThreadLocals()'s THREAD_WALK_MAX_ANCHORS-per-pass cap rotates fairly instead of
@@ -655,8 +646,6 @@ private:
   static constexpr long URGENT_PAUSE_TARGET_MS = 100; // ceiling STW ms per pass
   static constexpr u64 URGENT_CADENCE_NS = 10000000ULL;  // 10ms floor between passes
 
-  // True when LivenessTracker::secondsToOOM() projects exhaustion sooner
-
   // Auto-scaled default for _first_pass_budget when Arguments::_reference_chains_first_pass_budget
   // is unset (0) - see _first_pass_budget's own comment for why plain _budget is the wrong
   // fallback.
@@ -677,7 +666,7 @@ private:
   static constexpr u64 MAX_EFFECTIVE_CADENCE_NS = PASS_CADENCE_NS * 4; // 4s
 
   // Conversion factor from "edges of budget signal updatePacing()'s clamp could not absorb" to a
-  // cadence adjustment in nanoseconds - the two are different units (edge count vs.
+  // cadence adjustment in nanoseconds.
   static constexpr u64 CADENCE_NS_PER_EDGE_OVERFLOW = 1000000ULL; // 1ms/edge
 
   // Budget-borrowing (see _borrowed_budget's own comment): how many consecutive
@@ -704,12 +693,9 @@ private:
 
   // Agent-owned BFS thread; startThread()/stopThread() own its lifecycle.
   pthread_t _thread;
-  // std::atomic<bool> rather than plain volatile bool - volatile alone gives no C++ memory-model
-  // acquire/release guarantees (it only prevents the compiler from eliding/reordering that one
-  // variable's own accesses), so a weakly-ordered CPU (e.g. arm64) could let the BFS thread's
-  // stopThread()- side write (see stopThread()'s own comment) become visible to threadLoop() later
-  // than intended, missing the shutdown request on one wakeup and sleeping/looping an extra cycle
-  // before pthread_join() unblocks it.
+  // Atomic, not volatile: on a weakly-ordered CPU (e.g. arm64) a volatile stopThread() write could
+  // become visible to threadLoop() late, missing the shutdown request on one wakeup and looping an
+  // extra cycle before pthread_join() unblocks it.
   std::atomic<bool> _running;
 
   // Cooperative-cancellation flag for an in-flight JVMTI FollowReferences walk: stopThread() sets
@@ -788,7 +774,7 @@ private:
   // see _urgent_latched for the latch/release rules and why the raw comparison flaps.
   bool isUrgent() const;
 
-  // Search restart gate (this class's own header comment): true once _safepoint_pain_budget has
+  // Search restart gate: true once _safepoint_pain_budget has
   // drained back to zero (canStartNow()) *and* hasLeakSignal() above reports at least one leak
   // candidate.
   bool canAffordNewSearch(u64 now_ns);
@@ -896,9 +882,6 @@ private:
                                 const jlong *resolved_chain_tags,
                                 int resolved_chain_tag_count);
 
-  // Correlate a leak tag with an instance the BFS admitted BEFORE tagLeakInstances() tagged it (its
-  // JVMTI tag is a frontier tag, its frontier entry has leak_tag == 0).
-
   // One-time retroactive catch-up for a klass_id the moment it FIRST enters _watched_leak_klass_ids
   // (pollWatchedTargets() calls this only for the newly-added ids in each refresh, never for ones
   // already being watched).
@@ -942,8 +925,8 @@ private:
                          int *edges_admitted, bool *truncated,
                          bool *frontier_cap_hit, u64 *safepoint_ns);
 
-  // Prong 1 of the candidate-scoped reach design (thread-retained taxonomy: ThreadLocal-held caches
-  // and thread-owned collections): per pass, walk up to THREAD_WALK_MAX_ANCHORS of the current
+  // Candidate-scoped reach for thread-retained leaks (ThreadLocal-held caches and thread-owned
+  // collections): per pass, walk up to THREAD_WALK_MAX_ANCHORS of the current
   // candidates' qualifying tids' live Thread objects (registerThreadObject()'s map above) with
   // descendFromAnchor() (anchor-gated to ThreadLocalMap, see above).
   void walkCandidateThreadLocals(jvmtiEnv *jvmti, JNIEnv *jni, int budget,
@@ -1127,8 +1110,6 @@ public:
     return tag >= LEAK_TAG_BASE && tag < LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE;
   }
 
-  // Max candidates LivenessTracker::selectLeakCandidates() can return.
-
   // Test accessor for _passes_since_last_progress.
   int passesSinceLastProgressForTest() const { return _passes_since_last_progress; }
   // Canary-lane backoff state - see _canary_backoff_mult's own comment.
@@ -1159,9 +1140,8 @@ public:
   void setCandidateFoundBitsForTest(u64 bits) { _candidate_found_bits = bits; }
   void setSearchStartedForTest(bool v) { _search_started = v; }
   // OOM-urgency hysteresis state (isUrgent()'s latch/release machine,
-  // referenceChains.cpp) - the whole point of C5's chaos assertions is this
-  // state's reaction to a projected-exhaustion sequence, so tests need both
-  // the drive (isUrgentForTest()) and the raw latch/tick/entitlement reads.
+  // referenceChains.cpp): tests drive it via isUrgentForTest() and assert on
+  // the raw latch/tick/entitlement reads.
   bool isUrgentForTest() const { return isUrgent(); }
   bool urgentLatchedForTest() const { return _urgent_latched; }
   int urgentReleaseTicksForTest() const { return _urgent_release_ticks; }
@@ -1312,8 +1292,7 @@ public:
 
   // Reports a search's termination state without needing a target tag.
   bool buildAbandonedEvent(ReferenceChainAbandonedEvent *out) {
-    // Acquire-load, not a plain relaxed load - see searchState()'s own comment for why: this is the
-    // same guard-then-read-details pattern.
+    // Acquire-load: the detail fields below are read only after observing ABANDONED.
     if (out == nullptr || loadAcquire(_search_state) != SearchState::ABANDONED) {
       return false;
     }
