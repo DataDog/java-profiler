@@ -3,9 +3,9 @@ layout: default
 title: glibc-x64-hotspot-jdk25
 ---
 
-## glibc-x64-hotspot-jdk25 - ✅ PASS
+## glibc-x64-hotspot-jdk25 - ❌ FAIL
 
-**Date:** 2026-10-16 07:09:28 EDT
+**Date:** 2026-10-16 09:11:59 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,56 +18,50 @@ title: glibc-x64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 64 |
-| CPU Cores (end) | 74 |
+| CPU Cores (start) | 86 |
+| CPU Cores (end) | 86 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ✅
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 418 |
-| Sample Rate | 6.97/sec |
-| Health Score | 436% |
-| Threads | 9 |
-| Allocations | 387 |
+| Status | FAIL |
+| CPU Samples | 0 |
+| Sample Rate | 0.00/sec |
+| Health Score | 0% |
+| Threads | 0 |
+| Allocations | 408 |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 590 |
-| Sample Rate | 9.83/sec |
-| Health Score | 614% |
-| Threads | 10 |
-| Allocations | 523 |
+| Status | N/A |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (3 unique values: 64-74 cores)</summary>
+<summary>CPU Timeline (1 unique values: 86-86 cores)</summary>
 
 ```
-1792148660 64
-1792148665 66
-1792148670 66
-1792148675 66
-1792148680 66
-1792148685 66
-1792148690 66
-1792148695 66
-1792148700 66
-1792148705 66
-1792148710 66
-1792148715 66
-1792148720 66
-1792148725 66
-1792148730 66
-1792148735 66
-1792148740 74
-1792148745 74
-1792148750 74
-1792148755 74
+1792156082 86
+1792156087 86
+1792156092 86
+1792156097 86
+1792156102 86
+1792156107 86
+1792156112 86
+1792156117 86
+1792156122 86
+1792156127 86
+1792156132 86
+1792156137 86
+1792156142 86
+1792156147 86
 ```
 </details>
 
