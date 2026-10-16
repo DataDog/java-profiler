@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <atomic>
 #include <climits>
 #include <cstdlib>
 #include "asyncSampleMutex.h"
@@ -1422,7 +1423,115 @@ static bool isHiddenClassBySignature(const char* signature) {
     return slash != nullptr && slash[1] >= '0' && slash[1] <= '9';
 }
 
+// ClassLoaderData of the boot, platform and application class loaders; see
+// HotspotSupport::isPermanentLoaderData().
+enum { PERMANENT_BOOT, PERMANENT_PLATFORM, PERMANENT_APPLICATION, PERMANENT_COUNT };
+static std::atomic<const void*> PERMANENT_LOADER_DATA[PERMANENT_COUNT];
+
+static bool permanentLoaderDataComplete() {
+    return PERMANENT_LOADER_DATA[PERMANENT_APPLICATION].load(std::memory_order_acquire) != nullptr &&
+           (JAVA_PLATFORM_CLASSLOADER == nullptr ||  // JDK 8
+            PERMANENT_LOADER_DATA[PERMANENT_PLATFORM].load(std::memory_order_acquire) != nullptr);
+}
+
+// fromJavaClass() needs java.lang.Class's klass field, part of hasClassNames().
+static bool canReadLoaderData() {
+    return VMStructs::class_loader_data_offset() >= 0 && VMStructs::hasClassNames();
+}
+
+const void* HotspotSupport::classLoaderDataOf(JNIEnv* jni, jclass klass) {
+    if (!canReadLoaderData()) {
+        return nullptr;
+    }
+    VMKlass* vmklass = VMKlass::fromJavaClass(jni, klass);
+    // As in readMethod(): the field's value, not a typed VMClassLoaderData*.
+    return vmklass != nullptr
+               ? *(const void* const*)((const char*)vmklass + VMStructs::class_loader_data_offset())
+               : nullptr;
+}
+
+void HotspotSupport::initPermanentLoaderData(jvmtiEnv* jvmti, JNIEnv* jni) {
+    if (!canReadLoaderData()) {
+        return;
+    }
+    initClassloaderInfo(jni);
+    if (PERMANENT_LOADER_DATA[PERMANENT_BOOT].load(std::memory_order_acquire) == nullptr) {
+        jclass object_class = jni->FindClass("java/lang/Object");
+        if (object_class != nullptr) {
+            PERMANENT_LOADER_DATA[PERMANENT_BOOT].store(classLoaderDataOf(jni, object_class),
+                                                        std::memory_order_release);
+            jni->DeleteLocalRef(object_class);
+        } else {
+            jni->ExceptionClear();
+        }
+    }
+    if (permanentLoaderDataComplete()) {
+        return;
+    }
+    jint count = 0;
+    jclass* classes = nullptr;
+    if (jvmti->GetLoadedClasses(&count, &classes) != JVMTI_ERROR_NONE) {
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        if (!permanentLoaderDataComplete()) {
+            notePermanentLoaderData(jvmti, jni, classes[i]);
+        }
+        jni->DeleteLocalRef(classes[i]);
+    }
+    jvmti->Deallocate((unsigned char*)classes);
+}
+
+void HotspotSupport::notePermanentLoaderData(jvmtiEnv* jvmti, JNIEnv* jni, jclass klass) {
+    if (!canReadLoaderData() || permanentLoaderDataComplete()) {
+        return;
+    }
+    jobject cl = nullptr;
+    if (jvmti->GetClassLoader(klass, &cl) != JVMTI_ERROR_NONE || cl == nullptr) {
+        return;  // the boot loader's is taken from java.lang.Object
+    }
+    int slot = jni->IsSameObject(cl, JAVA_APPLICATION_CLASSLOADER) ? PERMANENT_APPLICATION
+             : JAVA_PLATFORM_CLASSLOADER != nullptr &&
+               jni->IsSameObject(cl, JAVA_PLATFORM_CLASSLOADER) ? PERMANENT_PLATFORM
+             : PERMANENT_COUNT;
+    jni->DeleteLocalRef(cl);
+    if (slot == PERMANENT_COUNT ||
+        PERMANENT_LOADER_DATA[slot].load(std::memory_order_acquire) != nullptr) {
+        return;
+    }
+    // A hidden or VM-anonymous class has a ClassLoaderData of its own, not
+    // its loader's.
+    char* signature = nullptr;
+    if (jvmti->GetClassSignature(klass, &signature, nullptr) != JVMTI_ERROR_NONE) {
+        return;
+    }
+    bool hidden = isHiddenClassBySignature(signature) || isLambdaClass(signature);
+    jvmti->Deallocate((unsigned char*)signature);
+    if (!hidden && !isHiddenClass(jvmti, klass)) {
+        PERMANENT_LOADER_DATA[slot].store(classLoaderDataOf(jni, klass), std::memory_order_release);
+    }
+}
+
+#ifdef UNIT_TEST
+void HotspotSupport::setPermanentLoaderDataForTest(const void* class_loader_data) {
+    PERMANENT_LOADER_DATA[PERMANENT_BOOT].store(class_loader_data, std::memory_order_release);
+}
+#endif
+
+bool HotspotSupport::isPermanentLoaderData(const void* class_loader_data) {
+    if (class_loader_data == nullptr) {
+        return false;
+    }
+    for (int i = 0; i < PERMANENT_COUNT; i++) {
+        if (PERMANENT_LOADER_DATA[i].load(std::memory_order_acquire) == class_loader_data) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all) {
+    notePermanentLoaderData(jvmti, jni, klass);
     if (!load_all) {
         jobject cl = nullptr;
         // Hidden/lambda classes can be unloaded, fallback to use jmethodIDs, so preload them.
@@ -1459,7 +1568,8 @@ ResolvedMethod::ResolvedMethod() :
   _long_klass_name(nullptr),
   _line_number_table(nullptr),
   _line_number_table_size(0),
-  _is_thread_run(false) {
+  _is_thread_run(false),
+  _class_loader_data(nullptr) {
   _method_name[0] = '\0';
   _method_signature[0] = '\0';
   _klass_name[0] = '\0';
@@ -1644,6 +1754,13 @@ bool HotspotSupport::readMethod(const void* method, ResolvedMethod* result) {
 
   if (strcmp(result->methodName(), "run") == 0 && strcmp(result->methodSignature(), "()V") == 0) {
     result->_is_thread_run = isThreadSubclass(klass);
+  }
+  if (VMStructs::class_loader_data_offset() >= 0) {
+    // Only ever compared, never dereferenced: read the field rather than go
+    // through classLoaderData(), whose typed cast needs ClassLoaderData's
+    // size from the JVM's exported types.
+    result->_class_loader_data =
+        *(const void* const*)((const char*)klass + VMStructs::class_loader_data_offset());
   }
 
   if (!readLineNumberTable(const_method, result->_line_number_table, result->_line_number_table_size)) {

@@ -115,6 +115,24 @@ public class ContextClassLoaderUnloadTest extends CStackAwareAbstractProfilerTes
         System.out.println("[" + cstack + "] after unload: " + stacks);
         stacks.assertResolved();
         assertGCResolveCounters(cstack);
+        assertMethodNamesAccounted(cstack);
+    }
+
+    /** The kept method names must show up in the native-memory accounting. */
+    private void assertMethodNamesAccounted(String cstack) {
+        long maxBytes = 0;
+        long overheadBytes = 0;
+        for (JfrEvent counter : verifyEvents("datadog.ProfilerCounter", false)) {
+            String name = counter.getString(NAME);
+            if ("native_mem_max_bytes.method_names".equals(name)) {
+                maxBytes = Math.max(maxBytes, counter.getLong(COUNT, 0));
+            } else if ("native_mem_chunk_overhead_bytes.method_names".equals(name)) {
+                overheadBytes = Math.max(overheadBytes, counter.getLong(COUNT, 0));
+            }
+        }
+        System.out.println("[" + cstack + "] method_names native memory: " + maxBytes
+                + " bytes peak, " + overheadBytes + " bytes allocator overhead");
+        assertTrue(maxBytes > 0, "Kept method names are not counted under native_mem_*.method_names");
     }
 
     /**
@@ -132,6 +150,10 @@ public class ContextClassLoaderUnloadTest extends CStackAwareAbstractProfilerTes
                 + methods + " methods resolved");
         assertTrue(passes > 0, "No pending-method resolution ran at GC start");
         assertTrue(methods > 0, "No method was resolved at GC start");
+        // The recording, written after the unload, named the workers from those
+        // kept names.
+        assertTrue(counters.getOrDefault("method_names_cache_hits", 0L) > 0,
+                "No method was named from the names kept at GC start");
 
         if (counters.containsKey("sampler_count.gc_resolve")) {
             long timed = counters.get("sampler_count.gc_resolve");

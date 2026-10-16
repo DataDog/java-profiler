@@ -74,6 +74,7 @@ void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
 
     bool load_all = true;
     if (VM::isHotspot()) {
+        HotspotSupport::initPermanentLoaderData(jvmti, jni);
         if (!HotspotSupport::shouldPreloadJmethodIDs(args)) {
             HotspotSupport::initClassloaderInfo(jni);
             load_all = false;

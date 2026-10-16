@@ -61,6 +61,17 @@ public:
 
     ~VMStructsTestAccessor() { _restore(_saved); }
 
+    // Scoped override for Klass::_class_loader_data.
+    class ClassLoaderDataOffset {
+    public:
+        explicit ClassLoaderDataOffset(int offset) : _saved(VMStructs::_class_loader_data_offset) {
+            VMStructs::_class_loader_data_offset = offset;
+        }
+        ~ClassLoaderDataOffset() { VMStructs::_class_loader_data_offset = _saved; }
+    private:
+        int _saved;
+    };
+
     // Offsets beyond the id() set, needed to walk a fake Method* all the way to
     // its name/signature/class Symbols the way HotspotSupport::resolve() does.
     struct SymbolOffsets {
@@ -476,6 +487,7 @@ struct ResolveFakes {
         void* name_symbol;   // klass_name offset 0
         void* jmethod_ids;   // stays null so VMMethod::id() reports "no cache"
         void* super_klass;   // RESOLVE_KLASS_SUPER_OFFSET
+        void* class_loader_data;  // RESOLVE_KLASS_CLD_OFFSET
     } klass, super_klass;
     struct Symbol {
         uint16_t length;
@@ -518,6 +530,7 @@ static_assert(offsetof(ResolveFakes::ConstMethod, code) == 24, "RESOLVE_TYPE_SIZ
 constexpr int RESOLVE_CODE_SIZE_OFFSET   = offsetof(ResolveFakes::ConstMethod, code_size);
 constexpr int RESOLVE_FLAGS_OFFSET       = offsetof(ResolveFakes::ConstMethod, flags);
 constexpr int RESOLVE_KLASS_SUPER_OFFSET = offsetof(ResolveFakes::Klass, super_klass);
+constexpr int RESOLVE_KLASS_CLD_OFFSET   = offsetof(ResolveFakes::Klass, class_loader_data);
 
 
 } // namespace
@@ -942,6 +955,182 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveDetectsRunOfThreadSubclass) {
         EXPECT_FALSE(result.isThreadRun());
     }
     EXPECT_FALSE(_pt->isProtected());
+}
+
+// ---------------------------------------------------------------------------
+// CachedMethodNames: names kept on a method_map row across chunks, validated
+// by the fingerprint of the method the key refers to (Lookup::useCachedNames).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A raw-Method* Java frame for `method`, as walkVM records it.
+ASGCT_CallFrame rawFrame(void* method) {
+    ASGCT_CallFrame frame{};
+    frame.bci = FrameType::encode(FRAME_INTERPRETED, 3, /*rawPointer=*/true);
+    frame.method = method;
+    return frame;
+}
+
+void fillFoo(ResolveFakes* f, const char* method_name) {
+    f->link();
+    ResolveFakes::setSymbol(f->name_sym, method_name);
+    ResolveFakes::setSymbol(f->sig_sym, "(I)J");
+    ResolveFakes::setSymbol(f->klass_sym, "com/example/Foo");
+    f->const_method.code_size = 8;
+}
+
+} // namespace
+
+// The next chunk names the method from the kept names even though resolving
+// it again would fail (here: its name Symbol is now empty, as after reuse of
+// freed metadata), because the key still refers to the same ConstMethod.
+TEST_F(HotspotResolveCrashProtectionTest, KeptNamesOutliveUnreadableMetadata) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+    VMStructsTestAccessor::LineTableLayout lines(RESOLVE_FLAGS_OFFSET, RESOLVE_CODE_SIZE_OFFSET,
+                                                 1, 1, RESOLVE_KLASS_SUPER_OFFSET);
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    fillFoo(f, "compute");
+    ASGCT_CallFrame frame = rawFrame(&f->method);
+
+    StringDictionary classes;
+    MethodMap methods;
+    MethodInfo* first;
+    {
+        Lookup chunk1(nullptr, &methods, &classes);
+        first = chunk1.resolveMethod(frame);
+        ASSERT_NE(&chunk1._unknown_method, first);
+    }
+    ASSERT_NE(nullptr, first->_cached_names);
+    EXPECT_STREQ("compute", first->_cached_names->methodName());
+    EXPECT_STREQ("com/example/Foo", first->_cached_names->className());
+
+    first->_mark = false;  // what writeMethods() does at the end of a chunk
+    f->name_sym.length = 0;
+    ResolvedMethod direct;
+    ASSERT_FALSE(HotspotSupport::resolve(&f->method, direct));
+
+    long long hits = Counters::getCounter(METHOD_NAMES_CACHE_HITS);
+    Lookup chunk2(nullptr, &methods, &classes);
+    MethodInfo* second = chunk2.resolveMethod(frame);
+    EXPECT_EQ(first, second);
+    EXPECT_TRUE(second->_mark);
+    ASSERT_NE(nullptr, second->_cached_names);
+    EXPECT_STREQ("compute", second->_cached_names->methodName());
+    EXPECT_EQ(hits + 1, Counters::getCounter(METHOD_NAMES_CACHE_HITS));
+}
+
+// Once the key refers to a different method (the Method* now points at
+// another ConstMethod), the kept names are dropped and the method resolved
+// again.
+TEST_F(HotspotResolveCrashProtectionTest, KeptNamesAreDroppedWhenTheKeyIsReused) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+    VMStructsTestAccessor::LineTableLayout lines(RESOLVE_FLAGS_OFFSET, RESOLVE_CODE_SIZE_OFFSET,
+                                                 1, 1, RESOLVE_KLASS_SUPER_OFFSET);
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    fillFoo(f, "compute");
+    ResolveFakes* other = new ((char*)_region + 1024) ResolveFakes{};
+    fillFoo(other, "replaced");
+    ASGCT_CallFrame frame = rawFrame(&f->method);
+
+    StringDictionary classes;
+    MethodMap methods;
+    MethodInfo* first;
+    {
+        Lookup chunk1(nullptr, &methods, &classes);
+        first = chunk1.resolveMethod(frame);
+    }
+    ASSERT_NE(nullptr, first->_cached_names);
+    EXPECT_STREQ("compute", first->_cached_names->methodName());
+
+    first->_mark = false;
+    f->method.const_method = &other->const_method;  // same Method*, new method
+
+    long long stale = Counters::getCounter(METHOD_NAMES_CACHE_STALE);
+    Lookup chunk2(nullptr, &methods, &classes);
+    MethodInfo* second = chunk2.resolveMethod(frame);
+    EXPECT_EQ(first, second);
+    ASSERT_NE(nullptr, second->_cached_names);
+    EXPECT_STREQ("replaced", second->_cached_names->methodName());
+    EXPECT_EQ(&other->const_method, second->_cached_names->fingerprint());
+    EXPECT_EQ(stale + 1, Counters::getCounter(METHOD_NAMES_CACHE_STALE));
+}
+
+// When the method's memory is gone altogether -- its fingerprint can't be read
+// -- nothing can have replaced it, so the kept names still apply.
+TEST_F(HotspotResolveCrashProtectionTest, KeptNamesApplyWhenTheMethodIsUnreadable) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+    VMStructsTestAccessor::LineTableLayout lines(RESOLVE_FLAGS_OFFSET, RESOLVE_CODE_SIZE_OFFSET,
+                                                 1, 1, RESOLVE_KLASS_SUPER_OFFSET);
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    fillFoo(f, "compute");
+    ASGCT_CallFrame frame = rawFrame(&f->method);
+
+    StringDictionary classes;
+    MethodMap methods;
+    MethodInfo* first;
+    {
+        Lookup chunk1(nullptr, &methods, &classes);
+        first = chunk1.resolveMethod(frame);
+    }
+    ASSERT_NE(nullptr, first->_cached_names);
+    first->_mark = false;
+
+    ASSERT_EQ(0, mprotect(_region, kPageSize(), PROT_NONE));
+    MethodInfo* second;
+    {
+        Lookup chunk2(nullptr, &methods, &classes);
+        second = chunk2.resolveMethod(frame);
+    }
+    ASSERT_EQ(0, mprotect(_region, kPageSize(), PROT_READ | PROT_WRITE));
+    EXPECT_EQ(first, second);
+    EXPECT_TRUE(second->_mark);
+    ASSERT_NE(nullptr, second->_cached_names);
+    EXPECT_STREQ("compute", second->_cached_names->methodName());
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// A method whose class belongs to a never-unloaded loader keeps no names: its
+// row is marked instead, so neither later chunks nor GC passes try again.
+TEST_F(HotspotResolveCrashProtectionTest, NoNamesKeptForClassesThatAreNeverUnloaded) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+    VMStructsTestAccessor::LineTableLayout lines(RESOLVE_FLAGS_OFFSET, RESOLVE_CODE_SIZE_OFFSET,
+                                                 1, 1, RESOLVE_KLASS_SUPER_OFFSET);
+    VMStructsTestAccessor::ClassLoaderDataOffset cld_offset(RESOLVE_KLASS_CLD_OFFSET);
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    fillFoo(f, "compute");
+    static int boot_loader_data;
+    f->klass.class_loader_data = &boot_loader_data;
+    ASGCT_CallFrame frame = rawFrame(&f->method);
+
+    StringDictionary classes;
+    MethodMap methods;
+    {
+        // Not yet known to be permanent: names are kept.
+        Lookup chunk(nullptr, &methods, &classes);
+        MethodInfo* info = chunk.resolveMethod(frame);
+        ASSERT_NE(&chunk._unknown_method, info);
+        EXPECT_NE(nullptr, info->_cached_names);
+        EXPECT_FALSE(info->_never_unloaded);
+        methods.clear();
+    }
+
+    HotspotSupport::setPermanentLoaderDataForTest(&boot_loader_data);
+    Lookup chunk(nullptr, &methods, &classes);
+    MethodInfo* info = chunk.resolveMethod(frame);
+    HotspotSupport::setPermanentLoaderDataForTest(nullptr);
+    ASSERT_NE(&chunk._unknown_method, info);
+    EXPECT_EQ(nullptr, info->_cached_names);
+    EXPECT_TRUE(info->_never_unloaded);
+    EXPECT_FALSE(Lookup::resolveAtGC(&methods, frame));
 }
 
 #endif // __linux__

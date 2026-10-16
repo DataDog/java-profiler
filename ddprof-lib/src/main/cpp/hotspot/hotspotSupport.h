@@ -52,6 +52,7 @@ class ResolvedMethod {
   jvmtiLineNumberEntry* volatile _line_number_table;
   volatile int _line_number_table_size;
   volatile bool _is_thread_run;
+  const void* volatile _class_loader_data;
 
   char _method_name[MAX_METHOD_NAME_LEN];
   char _method_signature[MAX_SIGNATURE_LEN];
@@ -94,6 +95,9 @@ public:
 
   // True for run()V declared by java.lang.Thread or one of its subclasses.
   bool isThreadRun() const { return _is_thread_run; }
+
+  // The declaring class's ClassLoaderData*, or nullptr if unknown.
+  const void* classLoaderData() const { return _class_loader_data; }
 
   // Decoded line number table, sorted by bci as HotSpot stores it, or
   // nullptr if the method has none. Allocated with malloc().
@@ -156,6 +160,26 @@ private:
                                                 bool* truncated, ProfiledThread* prof_thread);
 public:
     static void initClassloaderInfo(JNIEnv* jni);
+
+    // Classes defined by the boot, platform and application class loaders are
+    // never unloaded, so their method keys never go stale and their names can
+    // always be read again (see CachedMethodNames). These record those
+    // loaders' ClassLoaderData. A hidden class has a ClassLoaderData of its
+    // own, so it never matches.
+    //
+    // initPermanentLoaderData() runs at profiler start; classes loaded later
+    // fill in what it missed through notePermanentLoaderData() (ClassPrepare).
+    static void initPermanentLoaderData(jvmtiEnv* jvmti, JNIEnv* jni);
+    static void notePermanentLoaderData(jvmtiEnv* jvmti, JNIEnv* jni, jclass klass);
+    // Lock-free, no JNI/JVMTI: safe from a GC callback.
+    static bool isPermanentLoaderData(const void* class_loader_data);
+    // klass's ClassLoaderData*, or nullptr if this JVM's layout doesn't allow
+    // reading it.
+    static const void* classLoaderDataOf(JNIEnv* jni, jclass klass);
+#ifdef UNIT_TEST
+    // Makes class_loader_data the boot loader's; nullptr clears it.
+    static void setPermanentLoaderDataForTest(const void* class_loader_data);
+#endif
 
     // Runs `work` under the ucontext-fault-recovery protocol walkJavaStack()
     // needs around getJavaTraceAsync(): installs a sigsetjmp/siglongjmp

@@ -959,6 +959,10 @@ DECLARE(VMMethod)
     // no JNI/JVMTI. nullptr if this JVM's jmethodIDs can't be dereferenced
     // (JDK-8268406) or the slot is empty/freed.
     static const VMMethod* fromJmethodID(jmethodID id);
+
+    // The ConstMethod* of a raw Method*, read through SafeAccess; nullptr if
+    // unreadable or the offset is unknown.
+    static const void* constMethodOf(const void* method);
 DECLARE_END
 
 // Inline string comparison to avoid indirect call to strncmp

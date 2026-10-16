@@ -167,11 +167,16 @@
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
   /* GarbageCollectionStart passes that resolved pending samples' methods     \
    * (Profiler::onGCStart()), GCs that skipped it because a lock was taken,   \
-   * and methods resolved. The time it adds to GC pauses is                   \
+   * and methods whose names a pass kept. The time it adds to GC pauses is    \
    * sampler_ticks.gc_resolve, under -PenableSamplerPerf. */                  \
   X(GC_RESOLVE_PASSES, "gc_resolve_passes")                                   \
   X(GC_RESOLVE_SKIPPED, "gc_resolve_skipped")                                 \
   X(GC_RESOLVED_METHODS, "gc_resolved_methods")                               \
+  /* Method rows a chunk filled from names kept by an earlier resolution      \
+   * (CachedMethodNames), and kept names dropped because the row's raw        \
+   * Method* had been reused by another method. */                            \
+  X(METHOD_NAMES_CACHE_HITS, "method_names_cache_hits")                       \
+  X(METHOD_NAMES_CACHE_STALE, "method_names_cache_stale")                     \
   /* Dump-time method resolution failures. The frame serializes as "unknown". */ \
   X(METHOD_RESOLVE_FAULT_RECOVERED, "method_resolve_fault_recovered")         \
   /* Symbol length/body rejected during the same resolution: unreadable body,  \

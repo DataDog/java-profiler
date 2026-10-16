@@ -120,26 +120,67 @@ public:
   ~SharedLineNumberTable();
 };
 
-// A Java method's names, resolved at GC start (Lookup::resolveAtGC()) while
-// its class was still loaded, for the next chunk to use even if the class has
-// been unloaded by then. Plain strings, not dictionary ids: the ids are only
-// assigned once that chunk is written.
-struct GCResolvedMethod {
-  std::string _class_name;
-  std::string _method_name;
-  std::string _signature;
+// A Java method's names, kept on its method_map row so that later chunks can
+// still name it once its class is unloaded. Captured by the first successful
+// resolution: at GC start (Lookup::resolveAtGC()) or when a chunk is written
+// (fillMethod()). Plain strings, not dictionary ids: those are only valid
+// within one chunk.
+//
+// Kept only for classes that can be unloaded. One defined by the boot,
+// platform or application class loader never is, so its row is marked
+// _never_unloaded instead: its names can always be read again.
+//
+// A jmethodID is never reused, so the names of a jmethodID row always stay
+// valid. A raw Method* can be reused by a different method once its class is
+// unloaded, so for those rows _fingerprint records which method the names
+// belong to, and Lookup::useCachedNames() checks it first.
+//
+// One allocation: this header, then the three NUL-terminated strings. Counted
+// under NM_METHOD_NAMES.
+class CachedMethodNames {
+public:
+  static CachedMethodNames *create(const void *fingerprint, const char *class_name,
+                                   size_t class_name_len, const char *method_name,
+                                   const char *signature, bool is_entry);
+  static void destroy(CachedMethodNames *names);
+
+  struct Deleter {
+    void operator()(CachedMethodNames *names) const { destroy(names); }
+  };
+
+  const char *className() const { return _data; }
+  size_t classNameLength() const { return _class_name_len; }
+  const char *methodName() const { return _data + _class_name_len + 1; }
+  const char *signature() const { return methodName() + _method_name_len + 1; }
+  bool isEntry() const { return _is_entry; }
+  // Raw Method* rows: Lookup::methodFingerprint(). jmethodID rows: nullptr.
+  const void *fingerprint() const { return _fingerprint; }
+
+private:
+  CachedMethodNames() = default;
+  size_t size() const;
+
+  const void *_fingerprint;
+  // Each a Symbol, whose length is a u2.
+  u16 _class_name_len;
+  u16 _method_name_len;
+  u16 _signature_len;
   bool _is_entry;
+  char _data[1];
 };
 
 class MethodInfo {
 public:
   MethodInfo()
-      : _mark(false), _is_entry(false), _referenced(false), _age(0), _key(0), _class(0),
-        _name(0), _sig(0), _modifiers(0), _line_number_table(nullptr), _type() {}
+      : _mark(false), _is_entry(false), _referenced(false), _never_unloaded(false), _age(0),
+        _key(0), _class(0), _name(0), _sig(0), _modifiers(0), _line_number_table(nullptr),
+        _type() {}
 
   bool _mark;
   bool _is_entry;
   bool _referenced;  // Tracked during writeStackTraces() for cleanup
+  // The method's class can't be unloaded, so it gets no _cached_names.
+  bool _never_unloaded;
   int _age;          // Consecutive chunks without reference (0 = recently used)
   u32 _key;
   u32 _class;
@@ -148,8 +189,7 @@ public:
   jint _modifiers;
   std::shared_ptr<SharedLineNumberTable> _line_number_table;
   FrameTypeId _type;
-  // Set by Lookup::resolveAtGC(); consumed by the next fillMethod().
-  std::shared_ptr<const GCResolvedMethod> _gc_resolved;
+  std::unique_ptr<CachedMethodNames, CachedMethodNames::Deleter> _cached_names;
 
   inline jint getLineNumber(jint bci);
   inline bool isHidden();
@@ -524,6 +564,13 @@ private:
   // ("java/lang/Object"), not necessarily NUL-terminated at class_name_len.
   void fillJavaMethodNames(MethodInfo *mi, const char *class_name, size_t class_name_len,
                            const char *method_name, const char *method_sig);
+  // Fills mi from its cached names if they still belong to the method frame
+  // refers to; otherwise drops them. Returns whether it filled mi.
+  bool useCachedNames(MethodInfo *mi, const ASGCT_CallFrame &frame);
+  // Which method a raw Method* frame's key refers to right now: its
+  // ConstMethod*. A Method* reused by another method yields another
+  // ConstMethod*. nullptr if it can't be read -- the class is gone.
+  static const void *methodFingerprint(const ASGCT_CallFrame &frame);
   bool has_prefix(const char *str, const char *prefix) const {
     return strncmp(str, prefix, strlen(prefix)) == 0;
   }
@@ -580,10 +627,11 @@ public:
 
   MethodInfo *resolveMethod(ASGCT_CallFrame &frame);
   // From the JVMTI GarbageCollectionStart callback (Recording::
-  // resolvePendingMethods()): captures the names of a Java frame's method into
-  // its method_map row, reading VM metadata only -- no JNI/JVMTI. Returns true
-  // if it resolved one; false for non-Java frames, rows already captured, and
-  // metadata it could not read.
+  // resolvePendingMethods()): keeps the names of a Java frame's method on its
+  // method_map row, reading VM metadata only -- no JNI/JVMTI. Returns true if
+  // it kept them; false for non-Java frames, methods whose class is never
+  // unloaded, rows whose kept names are still valid, and metadata it could
+  // not read.
   static bool resolveAtGC(MethodMap *method_map, const ASGCT_CallFrame &frame);
   u32 getPackage(const char *class_name);
   u32 getSymbol(const char *name);

@@ -254,6 +254,69 @@ void Lookup::cutArguments(char *func) {
   }
 }
 
+size_t CachedMethodNames::size() const {
+  return offsetof(CachedMethodNames, _data) + _class_name_len + 1 +
+         _method_name_len + 1 + _signature_len + 1;
+}
+
+CachedMethodNames *CachedMethodNames::create(const void *fingerprint,
+                                             const char *class_name,
+                                             size_t class_name_len,
+                                             const char *method_name,
+                                             const char *signature,
+                                             bool is_entry) {
+  size_t method_name_len = strlen(method_name);
+  size_t signature_len = strlen(signature);
+  if (class_name_len > USHRT_MAX || method_name_len > USHRT_MAX ||
+      signature_len > USHRT_MAX) {
+    return nullptr;
+  }
+  size_t size = offsetof(CachedMethodNames, _data) + class_name_len + 1 +
+                method_name_len + 1 + signature_len + 1;
+  void *mem = malloc(size);
+  if (mem == nullptr) {
+    return nullptr;
+  }
+  NativeMem::recordAlloc(NM_METHOD_NAMES, mem, size);
+  CachedMethodNames *names = new (mem) CachedMethodNames();
+  names->_fingerprint = fingerprint;
+  names->_class_name_len = (u16)class_name_len;
+  names->_method_name_len = (u16)method_name_len;
+  names->_signature_len = (u16)signature_len;
+  names->_is_entry = is_entry;
+  char *p = names->_data;
+  memcpy(p, class_name, class_name_len);
+  p[class_name_len] = '\0';
+  p += class_name_len + 1;
+  memcpy(p, method_name, method_name_len + 1);
+  p += method_name_len + 1;
+  memcpy(p, signature, signature_len + 1);
+  return names;
+}
+
+void CachedMethodNames::destroy(CachedMethodNames *names) {
+  if (names != nullptr) {
+    NativeMem::recordFreeBefore(NM_METHOD_NAMES, names, names->size());
+    free(names);
+  }
+}
+
+// Keeps mi's names for later chunks -- unless its class is never unloaded,
+// which marks the row instead (see CachedMethodNames). fingerprint is nullptr
+// for a jmethodID row.
+static void keepNames(MethodInfo *mi, const void *class_loader_data,
+                      const void *fingerprint, const char *class_name,
+                      size_t class_name_len, const char *method_name,
+                      const char *method_sig, bool is_entry) {
+  if (HotspotSupport::isPermanentLoaderData(class_loader_data)) {
+    mi->_never_unloaded = true;
+    mi->_cached_names.reset();
+    return;
+  }
+  mi->_cached_names.reset(CachedMethodNames::create(
+      fingerprint, class_name, class_name_len, method_name, method_sig, is_entry));
+}
+
 bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
                                 bool first_time, ResolveMethodState& state) {
   JNIEnv *jni = VM::jni();
@@ -388,6 +451,12 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
 
       fillJavaMethodNames(mi, normalized_class_name, normalized_class_name_len,
                           method_name, method_sig);
+      // HotSpot never reuses a jmethodID; J9 frees them on class unload.
+      if (VM::isHotspot() && !mi->_never_unloaded) {
+        keepNames(mi, HotspotSupport::classLoaderDataOf(jni, method_class),
+                  /*fingerprint=*/nullptr, normalized_class_name,
+                  normalized_class_name_len, method_name, method_sig, entry);
+      }
     } else {
       Counters::increment(JMETHODID_SKIPPED);
       mi->_class = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
@@ -536,6 +605,42 @@ static void takeLineNumberTable(MethodInfo *mi, ResolvedMethod &resolved) {
   }
 }
 
+static void keepNames(MethodInfo *mi, const void *fingerprint,
+                      ResolvedMethod &resolved) {
+  const char *class_name = resolved.klassName();
+  keepNames(mi, resolved.classLoaderData(), fingerprint, class_name,
+            strlen(class_name), resolved.methodName(),
+            resolved.methodSignature(), isEntryMethod(resolved));
+}
+
+const void *Lookup::methodFingerprint(const ASGCT_CallFrame &frame) {
+  return VMMethod::constMethodOf(frame.method);
+}
+
+bool Lookup::useCachedNames(MethodInfo *mi, const ASGCT_CallFrame &frame) {
+  if (mi->_cached_names == nullptr) {
+    return false;
+  }
+  if (FrameType::isRawPointer(frame.bci)) {
+    // An unreadable fingerprint means the class is gone and nothing has taken
+    // its place, so the cached names are still the right ones for its samples.
+    const void *fingerprint = methodFingerprint(frame);
+    if (fingerprint != nullptr && fingerprint != mi->_cached_names->fingerprint()) {
+      // The Method* now belongs to a different method.
+      Counters::increment(METHOD_NAMES_CACHE_STALE);
+      mi->_cached_names.reset();
+      return false;
+    }
+  }
+  const CachedMethodNames &names = *mi->_cached_names;
+  fillJavaMethodNames(mi, names.className(), names.classNameLength(),
+                      names.methodName(), names.signature());
+  mi->_type = FRAME_INTERPRETED;
+  mi->_is_entry = names.isEntry();
+  Counters::increment(METHOD_NAMES_CACHE_HITS);
+  return true;
+}
+
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
   const char *class_name = resolved.klassName();
   fillJavaMethodNames(mi, class_name, strlen(class_name), resolved.methodName(),
@@ -558,24 +663,39 @@ bool Lookup::resolveAtGC(MethodMap *method_map, const ASGCT_CallFrame &frame) {
   }
   unsigned long key = methodKey(frame, method_id, bci, 0);
   MethodMap::iterator it = method_map->find(key);
-  if (it != method_map->end() && it->second._gc_resolved != nullptr) {
-    // Captured at an earlier GC since the last chunk.
+  if (it != method_map->end() && it->second._never_unloaded) {
+    // Resolvable from VM metadata whenever its chunk is written.
     return false;
   }
-  // A jmethodID's Method* is read from its id slot: JVMTI is off limits here.
-  const void *method = FrameType::isRawPointer(bci)
-                           ? frame.method
-                           : (const void *)VMMethod::fromJmethodID(method_id);
+  const bool raw_pointer = FrameType::isRawPointer(bci);
+  const void *fingerprint = nullptr;
+  if (raw_pointer) {
+    fingerprint = methodFingerprint(frame);
+    if (fingerprint == nullptr) {
+      // Nothing to resolve from (or to tell a reused Method* by).
+      return false;
+    }
+  }
+  if (it != method_map->end() && it->second._cached_names != nullptr &&
+      it->second._cached_names->fingerprint() == fingerprint) {
+    // Kept names still valid (always, for a jmethodID).
+    return false;
+  }
+  // A jmethodID's Method* is read from its id slot, since JVMTI is off limits
+  // here.
+  const void *method = raw_pointer ? frame.method
+                                   : (const void *)VMMethod::fromJmethodID(method_id);
+  if (method == nullptr) {
+    return false;
+  }
   ResolvedMethod resolved;
-  if (method == nullptr || !JVMSupport::resolve(method, resolved)) {
+  if (!JVMSupport::resolve(method, resolved)) {
     return false;
   }
   MethodInfo *mi = it != method_map->end() ? &it->second : &(*method_map)[key];
-  mi->_gc_resolved = std::make_shared<const GCResolvedMethod>(GCResolvedMethod{
-      resolved.klassName(), resolved.methodName(), resolved.methodSignature(),
-      isEntryMethod(resolved)});
+  keepNames(mi, fingerprint, resolved);
   takeLineNumberTable(mi, resolved);
-  return true;
+  return mi->_cached_names != nullptr;
 }
 
 bool Lookup::resolveVTableReceiver(VMSymbol *sym, char *buf, size_t bufsize,
@@ -898,21 +1018,18 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
       mi->_sig = _symbols.lookup("()V");
       mi->_type = FRAME_NATIVE;
       mi->_is_entry = false;
-    } else if (mi->_gc_resolved != nullptr) {
-      // Captured at GC start while the class was still loaded; used as is,
-      // since the class may be gone by now. Consumed here: the next chunk
-      // resolves afresh. The line number table was set at capture.
-      const GCResolvedMethod &gc = *mi->_gc_resolved;
-      fillJavaMethodNames(mi, gc._class_name.c_str(), gc._class_name.size(),
-                          gc._method_name.c_str(), gc._signature.c_str());
-      mi->_type = FRAME_INTERPRETED;
-      mi->_is_entry = gc._is_entry;
-      mi->_gc_resolved.reset();
+    } else if (useCachedNames(mi, frame)) {
+      // Names kept from an earlier resolution of this same method, possibly
+      // before its class was unloaded. The line number table was kept too.
     } else if (raw_pointer) {
       // resolve() installs its own (nested) landing pad around the metadata
       // walk; a stale Method* leaves this row unfilled, see below.
       filled = JVMSupport::resolve(frame.method, resolved);
       if (filled) {
+        const void *fingerprint = methodFingerprint(frame);
+        if (fingerprint != nullptr && !mi->_never_unloaded) {
+          keepNames(mi, fingerprint, resolved);
+        }
         fillJavaMethodInfo(mi, resolved);
       }
     } else {
