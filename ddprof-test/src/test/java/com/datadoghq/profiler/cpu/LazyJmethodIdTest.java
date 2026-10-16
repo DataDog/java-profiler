@@ -7,6 +7,7 @@ package com.datadoghq.profiler.cpu;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrFrame;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.SpinClasses;
@@ -27,8 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Tests {@code fjmethodid=lazy}: no jmethodIDs are preloaded at ClassPrepare. walkVM stores
  * raw {@code Method*} frames, and the dump thread resolves them only after
- * {@code KlassRegistry} confirms the owning class is still loaded, allocating jmethodIDs for
- * that one class on first use.
+ * {@code KlassRegistry} confirms the owning class is still loaded, reading names and line
+ * numbers from VM metadata without allocating any jmethodIDs.
  *
  * <p>The sampled class is defined by a custom class loader. In the partial mode
  * ({@code fjmethodid=false}) such classes are still preloaded, because the dump-time
@@ -46,8 +47,8 @@ public class LazyJmethodIdTest extends AbstractProfilerTest {
     }
 
     /**
-     * Frames from a custom-loader class must resolve to their real names, and the class's
-     * jmethodIDs must have been allocated at dump time rather than preloaded.
+     * Frames from a custom-loader class must resolve to their real names and line numbers, read
+     * from VM metadata at dump time.
      */
     @RetryingTest(3)
     public void customLoaderFramesResolve() throws Exception {
@@ -61,21 +62,26 @@ public class LazyJmethodIdTest extends AbstractProfilerTest {
         stopProfiler();
 
         String simpleName = className.substring(className.lastIndexOf('/') + 1);
-        boolean found = false;
+        int spinFrames = 0;
         for (JfrEvent sample : verifyEvents("datadog.ExecutionSample")) {
-            String stackTrace = sample.getStackTraceString();
-            if (stackTrace != null && stackTrace.contains(simpleName) && stackTrace.contains("spin")) {
-                found = true;
-                break;
+            if (!sample.has("stackTrace")) {
+                continue;
+            }
+            for (JfrFrame frame : sample.getStackTrace().frames()) {
+                String frameClass = frame.className();
+                if (frameClass != null && frameClass.endsWith(simpleName) && "spin".equals(frame.methodName())) {
+                    spinFrames++;
+                    assertTrue(SpinClasses.SPIN_LINES.contains(frame.lineNumber()),
+                            "spin frame has line " + frame.lineNumber() + ", expected one of " + SpinClasses.SPIN_LINES);
+                }
             }
         }
-        assertTrue(found, "No CPU sample contained a resolved " + simpleName + ".spin frame");
+        assertTrue(spinFrames > 0, "No CPU sample contained a resolved " + simpleName + ".spin frame");
 
         // Absent in builds without counters; only check when present.
-        Long classesLoaded = profiler.getDebugCounters().get("method_resolve_lazy_class_loaded");
-        if (classesLoaded != null) {
-            assertTrue(classesLoaded > 0,
-                    "Expected jmethodIDs to be allocated at dump time for at least one class");
+        Long resolved = profiler.getDebugCounters().get("method_resolve_lazy_resolved");
+        if (resolved != null) {
+            assertTrue(resolved > 0, "Expected raw frames to be resolved from VM metadata");
         }
     }
 

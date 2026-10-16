@@ -20,6 +20,99 @@
 #include <jvmti.h>
 
 class VMMethod;
+class VMSymbol;
+
+// What HotspotSupport::resolve() extracts from a raw Method*: the holder's
+// internal class name, the method name and signature, and the decoded line
+// number table. Everything is copied out of the VM metadata, so the result
+// stays valid after the class has been unloaded.
+//
+// Each name has a fixed-size inline buffer for the common case, with a
+// malloc'd fallback (up to MAX_SYMBOL_LEN) for names that don't fit. The line
+// number table is always malloc'd. resolve() can siglongjmp out of a fault
+// after any of these allocations, bypassing ~ResolvedMethod(), which is why
+// its fault-recovery path calls release() explicitly.
+class ResolvedMethod {
+  // Hard ceiling for the malloc fallback in setName(). Not a JVM/class-file
+  // limit (Symbol::length() is a u2, so up to 65535 is legal).
+  static constexpr size_t MAX_SYMBOL_LEN = 64 * 1024;
+
+  // Fast-path buffer sizes, deliberately small enough that the malloc
+  // fallback in setName() still gets exercised occasionally. A name that does
+  // not fit even the fallback serializes as "unknown";
+  // METHOD_RESOLVE_SYMBOL_UNREADABLE makes that visible.
+  static constexpr size_t MAX_KLASS_NAME_LEN  = 1024;  // internal names; realistically < 256
+  static constexpr size_t MAX_METHOD_NAME_LEN =  512;  // realistically < 64
+  static constexpr size_t MAX_SIGNATURE_LEN   = 1024;
+
+  // volatile: resolve() mutates these between sigsetjmp() and a possible
+  // siglongjmp() out of a fault, and release() reads them back at the landing
+  // pad. Per C11 7.13.2.1p3 a non-volatile automatic modified in that window
+  // has an indeterminate value after longjmp.
+  char* volatile _long_method_name;
+  char* volatile _long_method_signature;
+  char* volatile _long_klass_name;
+  jvmtiLineNumberEntry* volatile _line_number_table;
+  volatile int _line_number_table_size;
+  volatile bool _is_thread_run;
+
+  char _method_name[MAX_METHOD_NAME_LEN];
+  char _method_signature[MAX_SIGNATURE_LEN];
+  char _klass_name[MAX_KLASS_NAME_LEN];
+
+  bool setName(char* short_name, char* volatile& long_name, size_t short_limit, VMSymbol* sym);
+
+  friend class HotspotSupport;
+
+public:
+  // Upper bound on decoded line number table entries; mirrors the u2
+  // code_length limit of JVMS 4.7.3.
+  static constexpr int MAX_LINE_NUMBER_TABLE_ENTRIES = 65535;
+
+  ResolvedMethod(const ResolvedMethod&) = delete;
+  ResolvedMethod& operator=(const ResolvedMethod&) = delete;
+
+  ResolvedMethod();
+  ~ResolvedMethod() { release(); }
+
+  // Frees everything still owned. Idempotent.
+  void release();
+
+  bool setMethodName(VMSymbol* sym);
+  bool setMethodSignature(VMSymbol* sym);
+  bool setKlassName(VMSymbol* sym);
+
+  // Internal (slash-separated) class name, e.g. "java/lang/Thread".
+  const char* klassName() const {
+    return _long_klass_name != nullptr ? _long_klass_name : _klass_name;
+  }
+
+  const char* methodName() const {
+    return _long_method_name != nullptr ? _long_method_name : _method_name;
+  }
+
+  const char* methodSignature() const {
+    return _long_method_signature != nullptr ? _long_method_signature : _method_signature;
+  }
+
+  // True for run()V declared by java.lang.Thread or one of its subclasses.
+  bool isThreadRun() const { return _is_thread_run; }
+
+  // Decoded line number table, sorted by bci as HotSpot stores it, or
+  // nullptr if the method has none. Allocated with malloc().
+  const jvmtiLineNumberEntry* lineNumberTable() const { return _line_number_table; }
+  int lineNumberTableSize() const { return _line_number_table_size; }
+
+  // Hands ownership of the line number table to the caller, who must free()
+  // it. Returns nullptr if there is none.
+  jvmtiLineNumberEntry* takeLineNumberTable(int* size) {
+    jvmtiLineNumberEntry* table = _line_number_table;
+    *size = _line_number_table_size;
+    _line_number_table = nullptr;
+    _line_number_table_size = 0;
+    return table;
+  }
+};
 
 class HotspotSupport {
     friend class JVMSupport;
@@ -89,10 +182,17 @@ private:
     // `holder`, refuses it if its trace ID does not match `trace_id_bits` (the
     // frame came from another load of a class whose memory this one reuses),
     // checks that `vm_method` is still one of its methods, and only then reads
-    // or allocates the jmethodID. `holder` and `idnum` were read from the
-    // unverified Method* and are only used as lookup keys.
-    static jmethodID resolveViaRegistry(VMMethod* vm_method, const void* holder, int idnum,
-                                        uint32_t trace_id_bits);
+    // its names and line number table into `result`, with the class still
+    // pinned. `holder` and `idnum` were read from the unverified Method* and
+    // are only used as lookup keys.
+    static bool resolveViaRegistry(ProfiledThread* prof_thread, VMMethod* vm_method,
+                                   const void* holder, int idnum, uint32_t trace_id_bits,
+                                   ResolvedMethod& result);
+
+    // The raw metadata walk behind resolve(): names, signature, Thread.run
+    // detection and line number table of `method`. Must run with crash
+    // protection installed; uses no JNI or JVMTI.
+    static bool readMethod(const void* method, ResolvedMethod* result);
 
     // Runs getJavaTraceAsync() under withUcontextFaultRecovery(), then layers
     // on its two post-processing steps: resolving frame types for the top
@@ -227,9 +327,13 @@ public:
     // from one of a class that took over its memory.
     static bool initLazyResolution(JNIEnv* jni);
 
-    // Resolve a raw-pointer frame to a jmethodID at dumping time. Takes the
+    // Resolves a raw-pointer frame at dump time into its class name, method
+    // name, signature and line number table, read from VM metadata. Takes the
     // frame's method field and encoded bci as stored, tag bits included.
-    static jmethodID resolve(const void* tagged_method, int bci);
+    // Returns false, leaving `result` empty, if the frame must be treated as
+    // unknown: the JMETHODID_NOT_WALKABLE sentinel, metadata that is stale or
+    // unreadable, or a lazy-mode frame the class registry refuses.
+    static bool resolve(const void* tagged_method, int bci, ResolvedMethod& result);
 
     // Store a Java frame captured from HotSpot metadata. A null jmethodID
     // triggers the raw Method* fallback only when fjmethodid=false; with

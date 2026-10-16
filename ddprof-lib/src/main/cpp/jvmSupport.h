@@ -22,6 +22,7 @@ enum StackRecovery {
 };
 
 class HotspotSupport;
+class ResolvedMethod;
 
 class JVMSupport {
     enum JMethodIDLoadStats {
@@ -75,8 +76,9 @@ public:
     static void beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
     static void afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded);
 
-    // Resolve a raw-pointer frame (method field and encoded bci) to a jmethodID
-    static inline jmethodID resolve(const void* method, int bci);
+    // Resolve a raw-pointer frame (method field and encoded bci) into names and
+    // line number table (HotSpot only); false if it must be treated as unknown
+    static inline bool resolve(const void* method, int bci, ResolvedMethod& result);
 
     // If a class is hidden class
     static inline bool isHidden(jint modifiers);

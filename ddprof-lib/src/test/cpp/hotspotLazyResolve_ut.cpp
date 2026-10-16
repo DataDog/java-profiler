@@ -29,9 +29,10 @@
 //
 // The metadata is fake but laid out the way the offsets below tell
 // VMStructs to read it: Method -> ConstMethod -> ConstantPool -> Klass, with
-// the Klass holding both its jmethodID cache and its methods array. None of
-// it is ever freed, so no fault handling is needed and the tests run on every
-// platform.
+// the constant pool holding the method's name and signature Symbols and the
+// Klass its name and methods array. The class has no jmethodIDs at all, as in
+// lazy mode. None of it is ever freed, so no fault handling is needed and the
+// tests run on every platform.
 //
 // The Klass*-reuse tests model what aligned, reused class space makes likely:
 // a class is unloaded, and a new class of the same shape is loaded at the
@@ -85,7 +86,9 @@ public:
     struct State {
         int method_constmethod, constmethod_constants, constmethod_idnum, pool_holder;
         int jmethod_ids, methods;
-        uint64_t method_size, const_method_size, constant_pool_size, klass_size;
+        int constmethod_name_index, constmethod_sig_index, klass_name, symbol_length, symbol_body;
+        int constmethod_flags, constmethod_code_size, klass_super;
+        uint64_t method_size, const_method_size, constant_pool_size, klass_size, symbol_size;
         bool can_dereference_jmethod_id;
     };
 
@@ -103,10 +106,19 @@ private:
             VMStructs::_pool_holder_offset,
             VMStructs::_jmethod_ids_offset,
             VMStructs::_methods_offset,
+            VMStructs::_constmethod_name_index_offset,
+            VMStructs::_constmethod_sig_index_offset,
+            VMStructs::_klass_name_offset,
+            VMStructs::_symbol_length_offset,
+            VMStructs::_symbol_body_offset,
+            VMStructs::_constmethod_flags_offset,
+            VMStructs::_constmethod_code_size_offset,
+            VMStructs::_klass_super_offset,
             VMStructs::TYPE_SIZE_NAME(VMMethod),
             VMStructs::TYPE_SIZE_NAME(VMConstMethod),
             VMStructs::TYPE_SIZE_NAME(VMConstantPool),
             VMStructs::TYPE_SIZE_NAME(VMKlass),
+            VMStructs::TYPE_SIZE_NAME(VMSymbol),
             VMStructs::_can_dereference_jmethod_id,
         };
     }
@@ -118,10 +130,19 @@ private:
         VMStructs::_pool_holder_offset = s.pool_holder;
         VMStructs::_jmethod_ids_offset = s.jmethod_ids;
         VMStructs::_methods_offset = s.methods;
+        VMStructs::_constmethod_name_index_offset = s.constmethod_name_index;
+        VMStructs::_constmethod_sig_index_offset = s.constmethod_sig_index;
+        VMStructs::_klass_name_offset = s.klass_name;
+        VMStructs::_symbol_length_offset = s.symbol_length;
+        VMStructs::_symbol_body_offset = s.symbol_body;
+        VMStructs::_constmethod_flags_offset = s.constmethod_flags;
+        VMStructs::_constmethod_code_size_offset = s.constmethod_code_size;
+        VMStructs::_klass_super_offset = s.klass_super;
         VMStructs::TYPE_SIZE_NAME(VMMethod) = s.method_size;
         VMStructs::TYPE_SIZE_NAME(VMConstMethod) = s.const_method_size;
         VMStructs::TYPE_SIZE_NAME(VMConstantPool) = s.constant_pool_size;
         VMStructs::TYPE_SIZE_NAME(VMKlass) = s.klass_size;
+        VMStructs::TYPE_SIZE_NAME(VMSymbol) = s.symbol_size;
         VMStructs::_can_dereference_jmethod_id = s.can_dereference_jmethod_id;
     }
 };
@@ -135,18 +156,20 @@ struct FakeMethod {
 struct FakeConstMethod {
     void* cpool;
     uint16_t idnum;
-    uint16_t pad[3];
+    uint16_t name_index;
+    uint16_t sig_index;
+    uint16_t pad;
 };
 
+// VMConstantPool::base() is `this + type_size()`, so the slots follow holder.
 struct FakeConstantPool {
     void* holder;
+    intptr_t symbols[3];
 };
 
-// jmethodID cache: [length (i32), padding, id[0], id[1], ...].
-struct FakeIdCache {
-    int32_t len;
-    int32_t pad;
-    jmethodID slots[2];
+struct FakeSymbol {
+    uint16_t length;
+    char body[30];
 };
 
 // HotSpot's Array<Method*>: int length, then pointer-aligned elements.
@@ -157,9 +180,10 @@ struct FakeMethodArray {
 };
 
 struct FakeKlass {
-    FakeIdCache* ids;
+    void* ids;          // jmethodID cache; stays null
     FakeMethodArray* methods;
     uint64_t trace_id;  // JFR encoding: (id << 16) | tag bits
+    FakeSymbol* name;
 };
 
 const VMStructsTestAccessor::State LAYOUT = {
@@ -169,47 +193,65 @@ const VMStructsTestAccessor::State LAYOUT = {
     /*pool_holder*/           (int)offsetof(FakeConstantPool, holder),
     /*jmethod_ids*/           (int)offsetof(FakeKlass, ids),
     /*methods*/               (int)offsetof(FakeKlass, methods),
+    /*constmethod_name_index*/ (int)offsetof(FakeConstMethod, name_index),
+    /*constmethod_sig_index*/ (int)offsetof(FakeConstMethod, sig_index),
+    /*klass_name*/            (int)offsetof(FakeKlass, name),
+    /*symbol_length*/         (int)offsetof(FakeSymbol, length),
+    /*symbol_body*/           (int)offsetof(FakeSymbol, body),
+    /*constmethod_flags*/     -1,  // no line number tables
+    /*constmethod_code_size*/ -1,
+    /*klass_super*/           -1,
     /*method_size*/           sizeof(FakeMethod),
     /*const_method_size*/     sizeof(FakeConstMethod),
-    /*constant_pool_size*/    sizeof(FakeConstantPool),
+    /*constant_pool_size*/    offsetof(FakeConstantPool, symbols),
     /*klass_size*/            sizeof(FakeKlass),
+    /*symbol_size*/           sizeof(FakeSymbol),
     /*can_dereference*/       true,
 };
 
-// One class with one method whose jmethodID already exists, so resolve()
-// never needs JVMTI. Klass* and Method* addresses are those of these fields,
-// which is what lets a test "reload" a class at the same addresses: it only
-// has to register a new mirror for the same FakeKlass.
+// One class, com/example/Spin, with one method, spin(J)V, and no jmethodIDs.
+// Klass* and Method* addresses are those of these fields, which is what lets
+// a test "reload" a class at the same addresses: it only has to register a
+// new mirror for the same FakeKlass.
 struct FakeClass {
+    static constexpr const char* KLASS_NAME = "com/example/Spin";
+    static constexpr const char* METHOD_NAME = "spin";
+    static constexpr const char* SIGNATURE = "(J)V";
+
     FakeMethod method;
     FakeConstMethod const_method;
     FakeConstantPool cpool;
     FakeKlass klass;
-    FakeIdCache ids;
     FakeMethodArray methods;
-    // A jmethodID is a pointer to a slot holding the Method*; validatedId()
-    // checks exactly that when _can_dereference_jmethod_id is set.
-    void* jmethod_id_slot;
+    FakeSymbol klass_name, method_name, signature;
 
     FakeClass() {
         memset(this, 0, sizeof(*this));
         method.const_method = &const_method;
         const_method.cpool = &cpool;
         const_method.idnum = 0;
+        const_method.name_index = 1;
+        const_method.sig_index = 2;
         cpool.holder = &klass;
-        klass.ids = &ids;
+        cpool.symbols[1] = (intptr_t)&method_name;
+        cpool.symbols[2] = (intptr_t)&signature;
         klass.methods = &methods;
         klass.trace_id = (uint64_t)1000 << 16;
+        klass.name = &klass_name;
         methods.len = 1;
         methods.data[0] = &method;
-        jmethod_id_slot = &method;
-        ids.len = 1;
-        ids.slots[0] = jmethodId();
+        setSymbol(klass_name, KLASS_NAME);
+        setSymbol(method_name, METHOD_NAME);
+        setSymbol(signature, SIGNATURE);
+    }
+
+    static void setSymbol(FakeSymbol& sym, const char* text) {
+        sym.length = (uint16_t)strlen(text);
+        memcpy(sym.body, text, sym.length);
     }
 
     const void* klassPtr() const { return &klass; }
     VMMethod* vmMethod() { return reinterpret_cast<VMMethod*>(&method); }
-    jmethodID jmethodId() { return reinterpret_cast<jmethodID>(&jmethod_id_slot); }
 };
 
 // Fake JNI with weak-reference semantics, as in klassRegistry_ut.cpp, plus
@@ -297,8 +339,9 @@ private:
     static jlong JNICALL getLongField(JNIEnv*, jobject obj, jfieldID) {
         return (jlong)(uintptr_t)reinterpret_cast<FakeObject*>(obj)->klass;
     }
-    // A jmethodID preload (loadMethodIDsIfNeededImpl()); the fake class's IDs
-    // already exist, so only the call is recorded.
+    // A jmethodID preload (loadMethodIDsIfNeededImpl()); only the call is
+    // recorded. Resolution never makes it: only a successful redefinition
+    // preloads.
     static jvmtiError JNICALL getClassMethods(jvmtiEnv*, jclass, jint* count, jmethodID** methods) {
         s_instance->get_class_methods_calls++;
         *count = 0;
@@ -400,23 +443,35 @@ protected:
                                                            succeeded);
     }
 
-    // What Lookup::fillMethod() does with a raw frame at dump time.
-    static jmethodID resolve(const ASGCT_CallFrame& frame) {
-        return HotspotSupport::resolve(frame.method, frame.bci);
+    // What Lookup::fillRawMethod() does with a raw frame at dump time.
+    static bool resolve(const ASGCT_CallFrame& frame) {
+        ResolvedMethod result;
+        return HotspotSupport::resolve(frame.method, frame.bci, result);
+    }
+
+    // Whether `frame` resolves, and to the names of the fake class's method.
+    static bool resolvesToSpin(const ASGCT_CallFrame& frame) {
+        ResolvedMethod result;
+        return HotspotSupport::resolve(frame.method, frame.bci, result) &&
+               strcmp(FakeClass::KLASS_NAME, result.klassName()) == 0 &&
+               strcmp(FakeClass::METHOD_NAME, result.methodName()) == 0 &&
+               strcmp(FakeClass::SIGNATURE, result.methodSignature()) == 0;
     }
 };
 
+// The names come from VM metadata: no jmethodIDs are allocated.
 TEST_F(HotspotLazyResolveTest, LiveClassResolves) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
-    EXPECT_EQ(_cls.jmethodId(), resolve(frame));
+    EXPECT_TRUE(resolvesToSpin(frame));
+    EXPECT_EQ(0, _jvm.get_class_methods_calls);
 }
 
 TEST_F(HotspotLazyResolveTest, UnloadedClassDoesNotResolve) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
     _jvm.collect(_old_mirror);
-    EXPECT_EQ(nullptr, resolve(frame));
+    EXPECT_FALSE(resolve(frame));
 }
 
 // The old class is unloaded and a new one is registered at the same Klass*,
@@ -428,7 +483,7 @@ TEST_F(HotspotLazyResolveTest, FrameFromBeforeKlassReuseDoesNotResolveToNewClass
 
     loadNewClassAtSameAddress();
 
-    EXPECT_EQ(nullptr, resolve(frame));
+    EXPECT_FALSE(resolve(frame));
 }
 
 // Same, but the dead entry was purged by a registry rehash before the new
@@ -454,7 +509,7 @@ TEST_F(HotspotLazyResolveTest, FrameFromBeforeKlassReuseAfterPurgeDoesNotResolve
     _cls.klass.trace_id = ((_cls.klass.trace_id >> 16) + 37) << 16;  // the new class's ID
     registerClass(_new_mirror);
 
-    EXPECT_EQ(nullptr, resolve(frame));
+    EXPECT_FALSE(resolve(frame));
 }
 
 // Frames sampled from the new class after the reuse must still resolve.
@@ -463,7 +518,7 @@ TEST_F(HotspotLazyResolveTest, FrameFromAfterKlassReuseResolves) {
     loadNewClassAtSameAddress();
 
     ASGCT_CallFrame frame = sample();
-    EXPECT_EQ(_cls.jmethodId(), resolve(frame));
+    EXPECT_TRUE(resolvesToSpin(frame));
 }
 
 // A frame from the old class and one from the new class must be told apart
@@ -496,7 +551,7 @@ TEST_F(HotspotLazyResolveTest, UnrelatedReuseDoesNotChangeFrames) {
     ASGCT_CallFrame after = sample();
     EXPECT_EQ(before.bci, after.bci);
     EXPECT_EQ(before.method, after.method);
-    EXPECT_EQ(_cls.jmethodId(), resolve(after));
+    EXPECT_TRUE(resolvesToSpin(after));
 }
 
 // The JFR tag bits below the ID change while JFR runs; they must not affect
@@ -508,7 +563,7 @@ TEST_F(HotspotLazyResolveTest, JfrTagBitsDoNotAffectTraceIdTags) {
     ASGCT_CallFrame after = sample();
     EXPECT_EQ(before.bci, after.bci);
     EXPECT_EQ(before.method, after.method);
-    EXPECT_EQ(_cls.jmethodId(), resolve(before));
+    EXPECT_TRUE(resolvesToSpin(before));
 }
 
 // Partial mode (fjmethodid=false) stores the plain Method*, untagged, and
@@ -525,15 +580,15 @@ TEST_F(HotspotLazyResolveTest, PartialModeFramesAreStoredUntagged) {
 
 // resolve() goes by the mode the frame was sampled in, not the current one:
 // a lazy-mode frame kept across a restart in partial mode still resolves
-// through the registry (partial mode's FindClass lookup cannot see classes of
-// custom loaders).
+// through the registry, which is what keeps a custom loader's class from
+// being unloaded while its metadata is read.
 TEST_F(HotspotLazyResolveTest, LazyFrameResolvesByRegistryAfterSwitchToPartialMode) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
     ASSERT_NE(0u, FrameType::rawTag(frame.bci, frame.method) & HotspotSupportTestAccessor::traceIdTagBit());
     JVMSupportTestAccessor::setLoadState(JVMSupportTestAccessor::PartialLoaded());
     int before = _jvm.new_local_ref_calls;
-    EXPECT_EQ(_cls.jmethodId(), resolve(frame));
+    EXPECT_TRUE(resolvesToSpin(frame));
     EXPECT_EQ(1, _jvm.new_local_ref_calls - before);
 }
 
@@ -548,7 +603,7 @@ TEST_F(HotspotLazyResolveTest, FrameOfRedefinedClassIsRefused) {
     // Afterwards the Method* at the sampled address is (still, or again)
     // among the class's methods.
     redefine(true);
-    EXPECT_EQ(nullptr, resolve(before));
+    EXPECT_FALSE(resolve(before));
     // Its later frames get jmethodIDs instead of being raw.
     EXPECT_EQ(1, _jvm.get_class_methods_calls);
 }
@@ -559,7 +614,7 @@ TEST_F(HotspotLazyResolveTest, FailedRedefinitionLeavesFramesResolvable) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
     redefine(false);
-    EXPECT_EQ(_cls.jmethodId(), resolve(frame));
+    EXPECT_TRUE(resolvesToSpin(frame));
     EXPECT_EQ(0, _jvm.get_class_methods_calls);
 }
 
@@ -568,9 +623,9 @@ TEST_F(HotspotLazyResolveTest, FramesAreRefusedWhileRedefinitionRuns) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
     HotspotSupportTestAccessor::beforeClassRedefinition(_jvm.jvmti(), _jvm.jni(), _jvm.mirror(_old_mirror));
-    EXPECT_EQ(nullptr, resolve(frame));
+    EXPECT_FALSE(resolve(frame));
     HotspotSupportTestAccessor::afterClassRedefinition(_jvm.jvmti(), _jvm.jni(), _jvm.mirror(_old_mirror), false);
-    EXPECT_EQ(_cls.jmethodId(), resolve(frame));
+    EXPECT_TRUE(resolvesToSpin(frame));
 }
 
 // Redefinitions are tracked in every mode once the registry has entries:
@@ -582,7 +637,7 @@ TEST_F(HotspotLazyResolveTest, RedefinitionIsTrackedOutsideLazyMode) {
     JVMSupportTestAccessor::setLoadState(JVMSupportTestAccessor::PartialLoaded());
     redefine(true);
     EXPECT_TRUE(HotspotSupportTestAccessor::registry().isRedefined(_cls.klassPtr()));
-    EXPECT_EQ(nullptr, resolve(frame));
+    EXPECT_FALSE(resolve(frame));
     // The other modes load jmethodIDs their own way (JVMSupport).
     EXPECT_EQ(0, _jvm.get_class_methods_calls);
 }
@@ -605,7 +660,7 @@ TEST_F(HotspotLazyResolveTest, MethodMemoryReusedByClassAtOtherAddressDoesNotRes
     ASSERT_TRUE(HotspotSupportTestAccessor::registry().add(_jvm.jni(), &other_klass,
                                                            _jvm.mirror(_new_mirror)));
 
-    EXPECT_EQ(nullptr, resolve(frame));
+    EXPECT_FALSE(resolve(frame));
 }
 
 // Tripwire for tag collisions: counts registrations of classes whose trace
@@ -643,15 +698,22 @@ TEST_F(HotspotLazyResolveTest, LookupResolvesEachRawMethodOncePerDump) {
     MethodMap methods;
     Lookup lookup(nullptr, &methods, &classes);
     int before = _jvm.new_local_ref_calls;
-    EXPECT_EQ(_cls.jmethodId(), lookup.resolveRawMethod(a));
-    EXPECT_EQ(_cls.jmethodId(), lookup.resolveRawMethod(a));
-    EXPECT_EQ(_cls.jmethodId(), lookup.resolveRawMethod(b));
+    MethodInfo* row = lookup.resolveMethod(a);
+    ASSERT_NE(&lookup._unknown_method, row);
+    EXPECT_EQ(lookup.getSymbol(FakeClass::METHOD_NAME), row->_name);
+    EXPECT_EQ(lookup.getSymbol(FakeClass::SIGNATURE), row->_sig);
+    EXPECT_EQ(row, lookup.resolveMethod(a));
+    EXPECT_EQ(row, lookup.resolveMethod(b));
     EXPECT_EQ(1, _jvm.new_local_ref_calls - before);
 
-    // The next dump starts with an empty cache.
+    // The next dump starts with an empty cache, resolves the frame again and
+    // refills the same row.
+    row->_mark = false;  // what writeMethods() does at the end of a chunk
     Lookup next(nullptr, &methods, &classes);
-    EXPECT_EQ(_cls.jmethodId(), next.resolveRawMethod(a));
+    EXPECT_EQ(row, next.resolveMethod(a));
+    EXPECT_TRUE(row->_mark);
     EXPECT_EQ(2, _jvm.new_local_ref_calls - before);
+    EXPECT_EQ(0, _jvm.get_class_methods_calls);
 }
 
 // Frames from two loads of a class at the same addresses carry different tags,
@@ -665,8 +727,10 @@ TEST_F(HotspotLazyResolveTest, LookupCacheSeparatesFramesOfDifferentClassLoads) 
     StringDictionary classes;
     MethodMap methods;
     Lookup lookup(nullptr, &methods, &classes);
-    EXPECT_EQ(nullptr, lookup.resolveRawMethod(before));
-    EXPECT_EQ(_cls.jmethodId(), lookup.resolveRawMethod(after));
-    EXPECT_EQ(nullptr, lookup.resolveRawMethod(before));
+    EXPECT_EQ(&lookup._unknown_method, lookup.resolveMethod(before));
+    MethodInfo* row = lookup.resolveMethod(after);
+    EXPECT_NE(&lookup._unknown_method, row);
+    EXPECT_EQ(&lookup._unknown_method, lookup.resolveMethod(before));
+    EXPECT_EQ(row, lookup.resolveMethod(after));
 }
 

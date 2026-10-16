@@ -217,12 +217,15 @@ typedef void* address;
         field(_constmethod_idnum_offset, offset, MATCH_SYMBOLS("_method_idnum"))                                    \
         field(_constmethod_name_index_offset, offset, MATCH_SYMBOLS("_name_index"))                                 \
         field(_constmethod_sig_index_offset, offset, MATCH_SYMBOLS("_signature_index"))                             \
+        field(_constmethod_flags_offset, offset, MATCH_SYMBOLS("_flags", "_flags._flags"))                          \
+        field(_constmethod_code_size_offset, offset, MATCH_SYMBOLS("_code_size"))                                   \
     type_end()                                                                                                      \
     type_begin(VMConstantPool, MATCH_SYMBOLS("ConstantPool"))                                                       \
         field(_pool_holder_offset, offset, MATCH_SYMBOLS("_pool_holder"))                                           \
     type_end()                                                                                                      \
     type_begin(VMKlass, MATCH_SYMBOLS("Klass", "InstanceKlass"))                                                    \
         field(_klass_name_offset, offset, MATCH_SYMBOLS("_name"))                                                   \
+        field(_klass_super_offset, offset, MATCH_SYMBOLS("_super"))                                                 \
         field(_class_loader_data_offset, offset, MATCH_SYMBOLS("_class_loader_data"))                               \
         field(_methods_offset, offset, MATCH_SYMBOLS("_methods"))                                                   \
         field(_jmethod_ids_offset, offset, MATCH_SYMBOLS("_methods_jmethod_ids"))                                   \
@@ -328,8 +331,12 @@ typedef void* address;
  *   - constant defines a constant of a class
  */
 
-#define DECLARE_INT_CONSTANTS_DO(constant, constant_with_version) \
-    constant(frame, entry_frame_call_wrapper_offset)
+// The has_linenumber_table bit of ConstMethod::_flags. JDK 21 moved the flags
+// into ConstMethodFlags (and widened _flags from u2 to u4).
+#define DECLARE_INT_CONSTANTS_DO(constant, constant_with_version)                 \
+    constant(frame, entry_frame_call_wrapper_offset)                             \
+    constant_with_version(ConstMethod, _has_linenumber_table, 8, 20)             \
+    constant_with_version(ConstMethodFlags, _misc_has_linenumber_table, 21, MAX_VERSION)
 
 #define DECLARE_LONG_CONSTANTS_DO(constant, constant_with_version)  \
     constant_with_version(markWord, klass_shift, 24, MAX_VERSION)   \
@@ -710,6 +717,13 @@ DECLARE(VMKlass)
         return VMSymbol::load_then_cast(at(_klass_name_offset));
     }
 
+    // Super class, or nullptr for java.lang.Object and interfaces, or when the
+    // VM does not export Klass::_super.
+    VMKlass* super_or_null() {
+        if (_klass_super_offset < 0) return nullptr;
+        return VMKlass::load_then_cast(at(_klass_super_offset));
+    }
+
     VMClassLoaderData* classLoaderData() {
         assert(_class_loader_data_offset >= 0);
         return VMClassLoaderData::load_then_cast(at(_class_loader_data_offset));
@@ -957,6 +971,11 @@ DECLARE(VMConstMethod)
     inline VMSymbol* name() const;
     inline VMSymbol* signature() const;
     inline u16 idnum() const;
+    inline u16 codeSize() const;
+    // Start of the compressed line number table, which HotSpot places right
+    // after the bytecodes, or nullptr if the method has none (or the VM does
+    // not export what is needed to locate it).
+    inline const unsigned char* compressedLineNumberTable() const;
 private:
     inline u16 nameIndex() const;
     inline u16 signatureIndex() const;
@@ -1265,6 +1284,62 @@ class ScopeDesc : VMStructs {
     int bci() {
         return _bci;
     }
+};
+
+// Decoder for ConstMethod's compressed line number table, a mirror of
+// HotSpot's CompressedLineNumberReadStream. Each entry is either a single byte
+// holding (bci_delta << 3 | line_delta), or 0xFF followed by the two deltas as
+// signed CompressedStream ints. A 0 byte terminates the table.
+//
+// Reads the raw stream without any safety checks: callers must run with crash
+// protection installed and bound the number of entries they accept.
+class VMLineNumberStream : VMStructs {
+  private:
+    const unsigned char* _stream;
+    int _bci;
+    int _line;
+
+    // Same UNSIGNED5 decoding as ScopeDesc::readInt() (see JDK-8292758 for
+    // the _unsigned5_base shift).
+    unsigned int readUInt() {
+        unsigned char c = *_stream++;
+        unsigned int n = c - _unsigned5_base;
+        if (c >= 192) {
+            for (int shift = 6; ; shift += 6) {
+                c = *_stream++;
+                n += (c - _unsigned5_base) << shift;
+                if (c < 192 || shift >= 24) break;
+            }
+        }
+        return n;
+    }
+
+    int readSignedInt() {
+        unsigned int n = readUInt();
+        return (int)(n >> 1) ^ -(int)(n & 1);
+    }
+
+  public:
+    explicit VMLineNumberStream(const unsigned char* table) : _stream(table), _bci(0), _line(0) {}
+
+    // Advances to the next (bci, line) pair; returns false at the terminator.
+    bool readPair() {
+        unsigned char next = *_stream++;
+        if (next == 0) {
+            return false;
+        }
+        if (next == 0xFF) {
+            _bci += readSignedInt();
+            _line += readSignedInt();
+        } else {
+            _bci += next >> 3;
+            _line += next & 0x7;
+        }
+        return true;
+    }
+
+    int bci() const { return _bci; }
+    int line() const { return _line; }
 };
 
 class InterpreterFrame : VMStructs {

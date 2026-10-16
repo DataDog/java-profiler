@@ -32,8 +32,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * finds by calibration.
  *
  * <p>A child JVM runs the profiler in lazy mode and a JFR recording of {@code jdk.ClassDefine} while
- * it spins in a probe class. In debug builds the profiler logs the trace ID it reads for each class
- * it allocates jmethodIDs for. JFR emits {@code jdk.ClassDefine} when the probe class is created,
+ * it spins in a probe class. In debug builds the profiler logs the trace ID it reads for the class
+ * of every raw frame it resolves. JFR emits {@code jdk.ClassDefine} when the probe class is created,
  * and the event's {@code definedClass} carries JFR's trace ID for it as {@code RecordedClass.getId()}.
  * The two must be equal. {@code jdk.ClassDefine} is used rather than JFR's execution samples
  * because it is emitted exactly once per class on every JFR-enabled release (8u262 on), while JFR's
@@ -46,7 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class LazyTraceIdJfrValidationTest extends AbstractProcessProfilerTest {
     private static final String PROBE_CLASS = "com.datadoghq.profiler.generated.LazyTraceIdProbe";
     private static final Pattern LOGGED_ID = Pattern.compile(
-            "\\[TEST::INFO\\] Lazy jmethodIDs for L" + Pattern.quote(PROBE_CLASS.replace('.', '/')) + ";, trace id (\\d+)");
+            "\\[TEST::INFO\\] Lazy resolution of " + Pattern.quote(PROBE_CLASS.replace('.', '/')) + ", trace id (\\d+)");
 
     @Test
     @Timeout(120)
