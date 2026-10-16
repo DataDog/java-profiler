@@ -1,11 +1,165 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import com.datadoghq.profiler.ProfilerTestExtension
+import com.datadoghq.profiler.ProfilerTestPlugin
+import org.gradle.api.tasks.SourceSetContainer
+import java.util.concurrent.ConcurrentHashMap
 
 plugins {
   java
   `java-library`
   application
+  jacoco
   id("com.datadoghq.profiler-test")
   id("com.datadoghq.java-conventions")
+}
+
+jacoco {
+  toolVersion = "0.8.14"
+}
+
+// :ddprof-lib:coverageReport produces both the Java (JaCoCo) and the C++ (gcovr) report
+// from a single run of the Java test suites: testCoverage and testSlowCoverage (created
+// by the profiler-test plugin only with -PenableCoverage) load ddprof-lib's
+// gcov-instrumented `coverage` library *and* carry the JaCoCo agent.
+//
+// JaCoCo's plugin auto-attaches a JacocoTaskExtension (enabled by default) to every Test
+// task in this project. Instrument only the coverage config's tasks: ordinary testDebug
+// runs (CI included) keep running the profiler against unmodified bytecode -- JaCoCo's
+// injected $jacocoInit methods and probe arrays would otherwise show up in the allocation
+// and stack-sampling data those tests assert on -- and asan/tsan already carry sanitizer
+// instrumentation.
+val coverageTaskNames: Set<String> = setOf("testCoverage", "testSlowCoverage")
+val requestingCoverageReport = gradle.startParameter.taskNames.any { it.contains("coverageReport") }
+
+// When a coverage report is requested, a handful of known-flaky native-thread/CPU tests
+// (already @RetryingTest-annotated; see NativeThreadTest, DynamicNativeThread,
+// VtableReceiverFrameTest, ThreadEntryDetectionTest) must not keep the report from being
+// generated. Their failures are deferred, not ignored: the test task records them and
+// lets the report run, and the report task fails the build once the report is written.
+val deferredTestFailures: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+fun Task.deferFailuresToCoverageReport() {
+  val taskName = name
+  when (this) {
+    is Test -> {
+      ignoreFailures = true
+      addTestListener(object : TestListener {
+        override fun beforeSuite(suite: TestDescriptor) {}
+        override fun beforeTest(testDescriptor: TestDescriptor) {}
+        override fun afterTest(testDescriptor: TestDescriptor, result: TestResult) {}
+        override fun afterSuite(suite: TestDescriptor, result: TestResult) {
+          if (suite.parent == null && result.resultType == TestResult.ResultType.FAILURE) {
+            deferredTestFailures.add(taskName)
+          }
+        }
+      })
+    }
+    is Exec -> {
+      isIgnoreExitValue = true
+      doLast {
+        if (executionResult.get().exitValue != 0) {
+          deferredTestFailures.add(taskName)
+        }
+      }
+    }
+  }
+}
+
+fun failOnDeferredTestFailures(taskNames: Collection<String>) {
+  val failed = taskNames.filter { it in deferredTestFailures }
+  if (failed.isNotEmpty()) {
+    throw GradleException("Coverage report generated, but tests failed in: ${failed.joinToString()}")
+  }
+}
+
+tasks.withType<Test>().configureEach {
+  extensions.configure<JacocoTaskExtension> {
+    isEnabled = name in coverageTaskNames
+  }
+}
+
+// On musl the profiler-test plugin creates the test tasks as Exec tasks (running its own
+// ProfilerTestRunner), which the jacoco plugin doesn't instrument -- attach the agent
+// by hand so they write the same build/jacoco/<task>.exec file a Test task would.
+// The agent jar ships nested inside the org.jacoco.agent artifact (`jacocoAgent`).
+val extractJacocoAgent = tasks.register<Sync>("extractJacocoAgent") {
+  from(configurations.named("jacocoAgent").map { zipTree(it.singleFile) }) {
+    include("jacocoagent.jar")
+  }
+  into(layout.buildDirectory.dir("tmp/jacocoAgent"))
+}
+
+tasks.withType<Exec>().matching { it.name in coverageTaskNames }.configureEach {
+  dependsOn(extractJacocoAgent)
+  val agentJar = extractJacocoAgent.map { it.destinationDir.resolve("jacocoagent.jar") }
+  val execFile = layout.buildDirectory.file("jacoco/$name.exec")
+  outputs.file(execFile)
+  ProfilerTestPlugin.additionalJvmArgs(this).add(
+    provider { "-javaagent:${agentJar.get().absolutePath}=destfile=${execFile.get().asFile.absolutePath},append=false" },
+  )
+}
+
+// Every test JVM that loads the coverage library writes .gcda counts next to the
+// library's objects when it exits, and :ddprof-lib:coverageReport folds them into the
+// C++ report. gcov adds to existing .gcda counts, so clear them once before the coverage
+// test tasks run -- not in each task, which would wipe the counts the other one just
+// wrote (.gcno files, written at compile time, stay).
+val libCoverageObjDir = project(":ddprof-lib").layout.buildDirectory.dir("obj/main/coverage")
+val cleanLibCoverageData = tasks.register<Delete>("cleanLibCoverageData") {
+  delete(fileTree(libCoverageObjDir) { include("**/*.gcda") })
+}
+
+tasks.matching { it.name in coverageTaskNames }.configureEach {
+  dependsOn(cleanLibCoverageData)
+  // The failed tests' results are cached like a pass would be, so a rerun must not be
+  // UP-TO-DATE and silently skip the deferred failure (or the cleared .gcda counts).
+  if (requestingCoverageReport) {
+    deferFailuresToCoverageReport()
+    outputs.upToDateWhen { false }
+  }
+}
+
+// Runs after coverageReport's own gcovr doLast, so both reports are written first.
+project(":ddprof-lib").tasks.matching { it.name == "coverageReport" }.configureEach {
+  doLast { failOnDeferredTestFailures(coverageTaskNames) }
+}
+
+// The jacoco plugin already registers a default "jacocoTestReport" task (wired to the
+// disabled "test" task); reconfigure it as the Java half of :ddprof-lib:coverageReport
+// instead of registering a new one.
+tasks.named<JacocoReport>("jacocoTestReport") {
+  group = "verification"
+  description = "Java half of :ddprof-lib:coverageReport (run that instead; requires -PenableCoverage)"
+
+  val coverageTasks = tasks.matching { it.name in coverageTaskNames }
+  dependsOn(coverageTasks)
+  executionData.setFrom(
+    coverageTasks.map { task ->
+      fileTree(task.project.layout.buildDirectory) { include("jacoco/${task.name}.exec") }
+    },
+  )
+
+  // The tests here exercise ddprof-lib's classes (the profiler itself), not this
+  // project's own trivial main sourceSet (just the UnwindingValidator app) -- so
+  // coverage must be measured against ddprof-lib, the actual target under test.
+  val libMainSourceSet = project(":ddprof-lib").extensions.getByType<SourceSetContainer>()["main"]
+  sourceDirectories.setFrom(libMainSourceSet.allSource.srcDirs)
+  classDirectories.setFrom(libMainSourceSet.output)
+
+  // Test failures are checked by coverageReport, after both reports are written.
+
+  // Next to the C++ report (ddprof-lib/build/reports/coverage/cpp).
+  val javaReportDir = project(":ddprof-lib").layout.buildDirectory.dir("reports/coverage/java")
+  reports {
+    html.required.set(true)
+    xml.required.set(true)
+    html.outputLocation.set(javaReportDir.map { it.dir("html") })
+    xml.outputLocation.set(javaReportDir.map { it.file("jacoco.xml") })
+  }
 }
 
 // Reference to native test helpers library directory

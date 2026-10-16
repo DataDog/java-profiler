@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 
 package com.datadoghq.native.config
 
@@ -54,6 +59,16 @@ object ConfigurationPresets {
         // reason: those configs instrument every memory access, so the measured
         // per-sample times say more about the sanitizer than about the sampler.
         val samplerPerf = project.hasProperty("enableSamplerPerf")
+
+        // Opt-in gcov/llvm-cov instrumented build. Inactive by default -- only
+        // registered as an active configuration (and thus only gets its
+        // compile/link/assemble/gtest tasks created at all, see
+        // NativeBuildPlugin/GtestPlugin filtering on getActiveConfigurations)
+        // when -PenableCoverage is passed. This keeps coverage instrumentation
+        // completely out of the default build and out of CI runs that don't
+        // ask for it, mirroring how asan/tsan are gated off when unsupported.
+        val enableCoverage = project.hasProperty("enableCoverage")
+
         extension.buildConfigurations.apply {
             register("release") {
                 configureRelease(this, currentPlatform, currentArch, version)
@@ -73,6 +88,9 @@ object ConfigurationPresets {
             }
             register("fuzzer") {
                 configureFuzzer(this, currentPlatform, currentArch, version, rootDir, compiler)
+            }
+            register("coverage") {
+                configureCoverage(this, currentPlatform, currentArch, version, enableCoverage)
             }
         }
 
@@ -403,6 +421,47 @@ object ConfigurationPresets {
                     put("ASAN_OPTIONS", "allocator_may_return_null=1:detect_stack_use_after_return=0:abort_on_error=1:symbolize=1")
                     put("UBSAN_OPTIONS", "halt_on_error=1:abort_on_error=1:print_stacktrace=1")
                 }
+            }
+        }
+    }
+
+    /**
+     * gcov/llvm-cov-instrumented debug build (`--coverage` is understood by both
+     * gcc and clang and emits gcov-compatible .gcno/.gcda files, so one preset
+     * covers both toolchains/platforms without a separate clang source-based
+     * coverage format). Inactive unless the caller opts in via -PenableCoverage.
+     *
+     * `-fprofile-update=atomic`: the default counter updates are plain
+     * read-modify-writes, so the profiler's concurrent threads (samplers, signal
+     * handlers, JVM threads) lose and corrupt counts -- a Linux run produced
+     * negative branch counts (GCC bug 68080) that gcovr refuses to parse.
+     */
+    fun configureCoverage(
+        config: BuildConfiguration,
+        platform: Platform,
+        architecture: Architecture,
+        version: String,
+        active: Boolean
+    ) {
+        config.platform.set(platform)
+        config.architecture.set(architecture)
+        config.active.set(active)
+
+        when (platform) {
+            Platform.LINUX -> {
+                config.compilerArgs.set(
+                    listOf("-O0", "-g", "-DDEBUG", "--coverage", "-fprofile-update=atomic") + commonLinuxCompilerArgs(version)
+                )
+                // -z,nodelete: same as configureDebug -- testCoverage loads this library
+                // into the same JVMs, so it is exposed to the same unmap-while-executing
+                // SIGSEGV on the DestroyJavaVM path.
+                config.linkerArgs.set(commonLinuxLinkerArgs() + listOf("-Wl,-z,nodelete", "--coverage"))
+            }
+            Platform.MACOS -> {
+                config.compilerArgs.set(
+                    commonMacosCompilerArgs(version) + listOf("-O0", "-g", "-DDEBUG", "--coverage", "-fprofile-update=atomic")
+                )
+                config.linkerArgs.set(listOf("--coverage"))
             }
         }
     }
