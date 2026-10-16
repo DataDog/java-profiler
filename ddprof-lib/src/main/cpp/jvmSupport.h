@@ -27,7 +27,8 @@ class JVMSupport {
     enum JMethodIDLoadStats {
         No_loaded,          // Has not yet executed any profiling command, no jmethodIDs are loaded
         Partial_loaded,     // Partially loaded, see HotspotSupport::shouldPreloadJmethodIDs()
-        Fully_loaded        // All jmethodIDs are loaded
+        Fully_loaded,       // All jmethodIDs are loaded
+        Lazy_loaded         // None preloaded; allocated at dump time for sampled classes (fjmethodid=lazy)
     };
 
     friend class HotspotSupport;
@@ -66,8 +67,16 @@ public:
     static void loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni);
     static bool loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 
-    // Resolve method pointer to jmethodID
-    static inline jmethodID resolve(const void* method);
+    // Called around every RedefineClasses/RetransformClasses for each class.
+    // fjmethodid=lazy must know before the methods are swapped; afterwards the
+    // class's jmethodIDs are (re)loaded as each mode requires. `succeeded` is
+    // whether the redefinition went through. `klass` is the caller's argument
+    // and has not been validated by JVMTI yet.
+    static void beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
+    static void afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded);
+
+    // Resolve a raw-pointer frame (method field and encoded bci) to a jmethodID
+    static inline jmethodID resolve(const void* method, int bci);
 
     // If a class is hidden class
     static inline bool isHidden(jint modifiers);

@@ -26,6 +26,9 @@ import java.util.concurrent.atomic.LongAdder;
  *     <li>profiler-sequence [';'-delimited steps] - runs a sequence of start/stop calls in this
  *     process; each step is either the literal {@code STOP} (calls {@link JavaProfiler#stop()})
  *     or a comma delimited profiler command list (calls {@link JavaProfiler#execute(String)})</li>
+ *     <li>lazy-trace-id &lt;comma delimited profiler command list, required&gt; - starts the profiler, spins
+ *     in {@code com.datadoghq.profiler.generated.LazyTraceIdProbe} (defined by its own class loader, so it
+ *     has no jmethodIDs until the profiler resolves its frames) and stops the profiler</li>
  *     <li>entry-frames &lt;comma delimited profiler command list, required&gt; - starts the profiler, then burns
  *     CPU concurrently on the main thread, on a plain {@code new Thread(Runnable)} and on a
  *     two-level {@link Thread} subclass, and stops the profiler again. The resulting recording
@@ -158,6 +161,16 @@ public class ExternalLauncher {
                         }
                     }
                 }
+            } else if (args[0].equals("lazy-trace-id")) {
+                if (args.length < 2 || args[1].isEmpty()) {
+                    throw new IllegalArgumentException("lazy-trace-id requires a profiler command list");
+                }
+                JavaProfiler instance = JavaProfiler.getInstance();
+                instance.execute(args[1]);
+                Class<?> probe = SpinClasses.define("com/datadoghq/profiler/generated/LazyTraceIdProbe");
+                probe.getMethod("spin", long.class).invoke(null, 2_000_000_000L);
+                // Stopping dumps the recording, which resolves the probe's raw frames.
+                instance.stop();
             } else if (args[0].equals("entry-frames")) {
                 // Unlike the modes above, this one is only meaningful with a running profiler:
                 // silently skipping the start would leave the parent process parsing an empty

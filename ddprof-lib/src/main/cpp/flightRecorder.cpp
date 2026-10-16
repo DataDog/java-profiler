@@ -702,13 +702,25 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   return fillMethod(frame, method_id, bci, prof_thread);
 }
 
+jmethodID Lookup::resolveRawMethod(const ASGCT_CallFrame &frame) {
+  RawMethodKey key{FrameType::untagPointer(frame.method), FrameType::rawTag(frame.bci, frame.method)};
+  auto cached = _raw_method_cache.find(key);
+  if (cached != _raw_method_cache.end()) {
+    Counters::increment(RAW_FRAME_RESOLVE_CACHE_HITS);
+    return cached->second;
+  }
+  jmethodID method_id = JVMSupport::resolve(frame.method, frame.bci);
+  _raw_method_cache.emplace(key, method_id);
+  return method_id;
+}
+
 MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
                                jint bci, ProfiledThread* const prof_thread) {
 
   assert(prof_thread != nullptr);
                                   // Resolve native method
   if (FrameType::isRawPointer(bci)) {
-    method_id = JVMSupport::resolve(frame.method);
+    method_id = resolveRawMethod(frame);
     if (method_id == nullptr) {
       return unknownMethod();
     }

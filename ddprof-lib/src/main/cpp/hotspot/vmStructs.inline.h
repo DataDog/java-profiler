@@ -123,6 +123,19 @@ VMConstMethod* VMMethod::constMethod_or_null() const {
     return VMConstMethod::load_then_cast(at(_method_constmethod_offset));
 }
 
+const void* VMMethod::holderOrNull() const {
+    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+    if (!goodPtr(const_method)) {
+        return nullptr;
+    }
+    const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));
+    if (!goodPtr(cpool)) {
+        return nullptr;
+    }
+    const void* holder = SafeAccess::loadPtr((void**)(cpool + _pool_holder_offset), nullptr);
+    return goodPtr(holder) ? holder : nullptr;
+}
+
 jmethodID VMMethod::id() {
     // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
     const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
@@ -210,6 +223,11 @@ VMSymbol* VMConstMethod::signature() const {
 
     u16 sig_index = signatureIndex();
     return cpool->symbolAt(sig_index);
+}
+
+u16 VMConstMethod::idnum() const {
+    assert(_constmethod_idnum_offset >= 0 && "Invalid idnum");
+    return *(u16*)at(_constmethod_idnum_offset);
 }
 
 u16 VMConstMethod::nameIndex() const {

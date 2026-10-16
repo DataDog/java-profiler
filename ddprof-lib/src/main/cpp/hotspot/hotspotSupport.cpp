@@ -12,6 +12,7 @@
 #include "guards.h"
 #include "hotspot/hotspotSupport.h"
 #include "hotspot/jitCodeCache.h"
+#include "hotspot/klassTraceId.h"
 #include "hotspot/vmStructs.inline.h"
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
@@ -139,7 +140,7 @@ inline EventType eventTypeFromBCI(jint bci_type) {
 
 static bool hasTheSameMethod(ASGCT_CallFrame& frame, jmethodID method_id, const VMMethod* method) {
     if (FrameType::isRawPointer(frame.bci)) {
-        return frame.method == method;
+        return HotspotSupport::rawFrameMethod(frame.bci, frame.method) == method;
     } else {
         return frame.method_id == method_id;
     }
@@ -186,11 +187,20 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
   }
 }
 
-// Fill the frame with raw method pointer
+// Fill the frame with raw method pointer, as partial mode stores it.
 static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method) {
     NO_INJECTION_ASSERT(method != nullptr);
     frame.bci = FrameType::encode(type, bci, true /*raw method pointer*/);
     frame.method = static_cast<const void*>(method);
+}
+
+// Fill the frame with raw method pointer and its lazy-mode tag (see frame.h
+// for where the tag bits go, HotspotSupport::TRACE_ID_TAG for what they hold).
+static void fillFrameRawTagged(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method,
+                               uint32_t tag) {
+    NO_INJECTION_ASSERT(method != nullptr);
+    frame.bci = FrameType::encodeRaw(type, bci, tag);
+    frame.method = FrameType::tagPointer(method, tag);
 }
 
 void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci,
@@ -211,7 +221,20 @@ void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int
         // resolution path; the deferred-dereference race at dump time is
         // inherent to this mode.
         NO_INJECTION_ASSERT(method != nullptr);
-        fillFrameRaw(frame, type, bci, method);
+        uint32_t tag;
+        if (JVMSupport::getLoadState() != JVMSupport::Lazy_loaded) {
+            fillFrameRaw(frame, type, bci, method);
+        } else if (!FrameType::canTagPointer(method) || !lazyFrameTag(method, &tag)) {
+            // fjmethodid=lazy, but either the tag's high bits would collide
+            // with address bits, or the holder's trace ID is unreadable.
+            // Without a tag the frame could be mistaken for one of a later
+            // class at the same address, so keep it structurally but resolve
+            // it as unknown.
+            Counters::increment(WALKVM_RAW_FRAME_UNTAGGABLE);
+            fillFrame(frame, type, bci, JMETHODID_NOT_WALKABLE);
+        } else {
+            fillFrameRawTagged(frame, type, bci, method, tag);
+        }
     } else {
         // fjmethodid=true: all jmethodIDs should be preloaded, so nullptr is
         // unexpected — a transient invalidation window or a missed preload.
@@ -1453,6 +1476,84 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
     return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
 }
 
+KlassRegistry HotspotSupport::_klass_registry;
+
+bool HotspotSupport::canResolveLazily() {
+    return VMStructs::hasKlassMethods();
+}
+
+bool HotspotSupport::initLazyResolution(JNIEnv* jni) {
+    bool calibrated = KlassTraceId::calibrate(jni);
+    // Counters are reset on every profiler start, but calibration only runs
+    // once, so republish its result here.
+    Counters::set(KLASS_TRACE_ID_OFFSET, calibrated ? KlassTraceId::offset() : -1);
+    TEST_LOG("Raw frame tags: %s", calibrated ? "klass trace id" : "unavailable, lazy mode off");
+    return calibrated;
+}
+
+bool HotspotSupport::lazyFrameTag(const VMMethod* method, uint32_t* tag) {
+    uint64_t id;
+    if (!KlassTraceId::read(method->holderOrNull(), &id)) {
+        return false;
+    }
+    *tag = TRACE_ID_TAG | ((uint32_t)id & TAG_VALUE_MASK);
+    return true;
+}
+
+bool HotspotSupport::isInstanceClass(jvmtiEnv *jvmti, jclass klass) {
+    jint status = 0;
+    // GetClassStatus also returns JVMTI_ERROR_INVALID_CLASS for an object
+    // that is not a class.
+    return klass != nullptr && jvmti->GetClassStatus(klass, &status) == JVMTI_ERROR_NONE &&
+           (status & (JVMTI_CLASS_STATUS_ARRAY | JVMTI_CLASS_STATUS_PRIMITIVE)) == 0;
+}
+
+void HotspotSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+    if (_klass_registry.size() == 0 || !isInstanceClass(jvmti, klass)) {
+        return;
+    }
+    if (_klass_registry.beginRedefinition(VMKlass::fromJavaClass(jni, klass))) {
+        Counters::increment(KLASS_REGISTRY_REDEFINITIONS_MARKED);
+    }
+}
+
+void HotspotSupport::afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded) {
+    if (_klass_registry.size() == 0 || !isInstanceClass(jvmti, klass)) {
+        return;
+    }
+    _klass_registry.endRedefinition(VMKlass::fromJavaClass(jni, klass), succeeded);
+    // The class's raw frames are refused from now on, so give its later
+    // frames jmethodIDs. After a failed call nothing changed: its frames
+    // stay raw and resolvable.
+    if (succeeded && JVMSupport::getLoadState() == JVMSupport::Lazy_loaded) {
+        loadMethodIDsIfNeededImpl(jvmti, jni, klass, true /* load all */);
+    }
+}
+
+bool HotspotSupport::registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+    // Array and primitive classes have no methods, so no frame ever names them
+    // as a holder; skipping them keeps GetLoadedClasses() at start cheap.
+    if (!isInstanceClass(jvmti, klass)) {
+        return false;
+    }
+    const void* vm_klass = VMKlass::fromJavaClass(jni, klass);
+    uint64_t trace_id;
+    if (KlassTraceId::read(vm_klass, &trace_id) && trace_id > TAG_VALUE_MASK) {
+        // Two classes' 25-bit trace-ID tags can only collide once their IDs
+        // are at least 2^25 apart, so before any class has an ID this large
+        // no stale frame can be matched to a newer class by its tag.
+        Counters::increment(KLASS_TRACE_ID_BEYOND_TAG_RANGE);
+    }
+    if (_klass_registry.add(jni, vm_klass, klass)) {
+        return true;
+    }
+    // An unregistered class's raw frames could never be resolved (pin() finds
+    // no entry), so give it jmethodIDs up front: walkVM then never stores a
+    // raw frame for it.
+    Counters::increment(KLASS_REGISTRY_ADD_FAILED);
+    return loadMethodIDsIfNeededImpl(jvmti, jni, klass, true /*load all*/);
+}
+
 // The three names resolve() needs, owned by resolve()'s frame. Each name has
 // a fixed-size inline buffer for the common case, with a malloc'd fallback
 // (up to MAX_SYMBOL_LEN) for names that don't fit -- see release() for why
@@ -1659,6 +1760,31 @@ static bool readMethodNames(const void* method, VMMethod** out_vm_method,
   return true;
 }
 
+// PHASE 1, fjmethodid=lazy variant -- runs under the same crash protection as
+// readMethodNames(). Reads only what KlassRegistry needs to decide whether the
+// Method* is still live: its holder Klass* and its idnum. Both come out of
+// metadata that may have been freed and reused, so they are lookup keys, not
+// facts -- resolveViaRegistry() validates them against a pinned class before
+// anything else is read from the Method*.
+static bool readMethodHolder(const void* method, VMMethod** out_vm_method,
+                             const void** out_holder, int* out_idnum) {
+  VMMethod* vm_method = VMMethod::cast_or_null(method);
+  if (vm_method == nullptr) {
+    return false;
+  }
+  // The same constMethod -> constants -> pool holder walk the sampler does
+  // when it tags the frame (lazyFrameTag()).
+  const void* holder = vm_method->holderOrNull();
+  VMConstMethod* const_method = vm_method->constMethod_or_null();
+  if (holder == nullptr || const_method == nullptr) {
+    return false;
+  }
+  *out_vm_method = vm_method;
+  *out_holder = holder;
+  *out_idnum = const_method->idnum();
+  return true;
+}
+
 // PHASE 2 -- the JNI/JVMTI lookup, reading only the buffers phase 1 filled.
 // MUST run with crash protection *off*. Two reasons, both about siglongjmp
 // unwinding frames it must not:
@@ -1731,16 +1857,24 @@ static jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& 
   return method_id;
 }
 
-// This method only resolves methods that are loaded by system class loaders
-jmethodID HotspotSupport::resolve(const void* method) {
+// Partial mode only reaches here for system-class-loader classes (FindClass
+// must be able to see them); lazy mode reaches here for every class without a
+// jmethodID and resolves it through _klass_registry instead.
+jmethodID HotspotSupport::resolve(const void* tagged_method, int bci) {
   assert(VM::isHotspot());
-  NO_INJECTION_ASSERT(method != nullptr);
+  NO_INJECTION_ASSERT(tagged_method != nullptr);
   // fillJavaFrame stores the sentinel without the raw flag, so this should
   // never reach the raw-pointer resolve path. Map it to nullptr so the dump
   // thread serializes it as the shared unknown method.
-  if ((jmethodID)method == JMETHODID_NOT_WALKABLE) {
+  if ((jmethodID)tagged_method == JMETHODID_NOT_WALKABLE) {
     return nullptr;
   }
+  // The frame says which mode sampled it, whatever mode the profiler is in
+  // now: a lazy-mode frame (tag-kind bit set) carries the holder's trace ID,
+  // a partial-mode frame is a plain Method*.
+  const uint32_t tag = FrameType::rawTag(bci, tagged_method);
+  const bool lazy = (tag & TRACE_ID_TAG) != 0;
+  const void* method = rawFrameMethod(bci, tagged_method);
 
   // The Method* was captured at sample time; GC or class unloading may have
   // freed the metadata since, so every dereference below can fault. Install a
@@ -1763,6 +1897,8 @@ jmethodID HotspotSupport::resolve(const void* method) {
   ResolvedNames names;
   VMMethod* vm_method = nullptr;
   jmethodID existing_id = nullptr;
+  const void* holder = nullptr;
+  int idnum = -1;
   bool walked = false;
 
   {
@@ -1791,15 +1927,96 @@ jmethodID HotspotSupport::resolve(const void* method) {
     }
     jmp_scope.install(&crash_protection_ctx);
 
-    walked = readMethodNames(method, &vm_method, &existing_id, &names);
+    walked = lazy ? readMethodHolder(method, &vm_method, &holder, &idnum)
+                  : readMethodNames(method, &vm_method, &existing_id, &names);
   }
   // --- crash protection is off from here on; see lookupMethodIdViaJni() ---
 
   if (!walked) {
     return nullptr;
   }
+  if (lazy) {
+    return resolveViaRegistry(vm_method, holder, idnum, tag & TAG_VALUE_MASK);
+  }
   if (existing_id != nullptr) {
     return existing_id;
   }
   return lookupMethodIdViaJni(vm_method, names, &HotspotSupport::loadMethodIDsIfNeededImpl);
+}
+
+#ifdef DEBUG
+// For CI only: LazyTraceIdJfrValidationTest compares this with the class ID
+// JFR records for the same class.
+static void logLazilyLoadedClass(jvmtiEnv* jvmti, jclass clz, const void* holder) {
+  char* signature = nullptr;
+  uint64_t trace_id = 0;
+  if (KlassTraceId::read(holder, &trace_id) &&
+      jvmti->GetClassSignature(clz, &signature, nullptr) == JVMTI_ERROR_NONE) {
+    TEST_LOG("Lazy jmethodIDs for %s, trace id %llu", signature, (unsigned long long)trace_id);
+  }
+  if (signature != nullptr) {
+    jvmti->Deallocate((unsigned char*)signature);
+  }
+}
+#endif
+
+// Runs with crash protection off (see lookupMethodIdViaJni() for why the
+// GetClassMethods call below must not run under a landing pad). Nothing here
+// dereferences vm_method until the class that owns it is pinned and the
+// method is confirmed to be one of that class's current methods.
+jmethodID HotspotSupport::resolveViaRegistry(VMMethod* vm_method, const void* holder, int idnum,
+                                             uint32_t trace_id_bits) {
+  JNIEnv* jni = VM::jni();
+  KlassRegistry::PinStatus status;
+  jclass clz = _klass_registry.pin(jni, holder, &status);
+  if (clz == nullptr) {
+    // Redefined: the Method* may have been freed and reused within the class.
+    // Otherwise the class was unloaded after the sample was taken, or `holder`
+    // was read from a freed Method* and is garbage.
+    Counters::increment(status == KlassRegistry::PIN_REDEFINED ? METHOD_RESOLVE_LAZY_REDEFINED
+                                                               : METHOD_RESOLVE_LAZY_UNLOADED);
+    return nullptr;
+  }
+
+  jmethodID method_id = nullptr;
+  uint64_t trace_id = 0;
+  if (!KlassTraceId::read(holder, &trace_id) || ((uint32_t)trace_id & TAG_VALUE_MASK) != trace_id_bits) {
+    // The class at `holder` is a different load than the one sampled: its
+    // memory was taken over after the sample.
+    Counters::increment(METHOD_RESOLVE_LAZY_STALE);
+    jni->DeleteLocalRef(clz);
+    return nullptr;
+  }
+  // A miss means the Method* was freed (and possibly its memory reused), or
+  // it is an old version replaced by a redefinition. containsMethod() and
+  // validatedId() read through SafeAccess: the pinned class stays alive, but
+  // a concurrent redefinition can free its old methods array and Method*s.
+  if (!VMKlass::cast_raw(holder)->containsMethod(vm_method, idnum)) {
+    Counters::increment(METHOD_RESOLVE_LAZY_NOT_CURRENT);
+  } else {
+    method_id = vm_method->validatedId();
+    if (!isValidJMethodID(method_id)) {
+      // First sample from this class: allocate its jmethodIDs now, on the
+      // dump thread, instead of at ClassPrepare.
+      method_id = nullptr;
+      jvmtiEnv* jvmti = VM::jvmti();
+      if (jvmti != nullptr && loadMethodIDsIfNeededImpl(jvmti, jni, clz, true /*load all*/)) {
+        Counters::increment(METHOD_RESOLVE_LAZY_CLASS_LOADED);
+        DEBUG_ONLY(logLazilyLoadedClass(jvmti, clz, holder));
+        jmethodID validated = vm_method->validatedId();
+        if (isValidJMethodID(validated)) {
+          method_id = validated;
+        }
+      }
+    }
+  }
+  jni->DeleteLocalRef(clz);
+  // The class is marked before a redefinition swaps its methods. If the mark
+  // is still absent now, every read above happened before that swap, so the
+  // Method* we validated was the class's own; otherwise we cannot tell.
+  if (method_id != nullptr && _klass_registry.isRedefined(holder)) {
+    Counters::increment(METHOD_RESOLVE_LAZY_REDEFINED);
+    return nullptr;
+  }
+  return method_id;
 }
