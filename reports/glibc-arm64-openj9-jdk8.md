@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-10-16 04:26:42 EDT
+**Date:** 2026-10-16 04:44:28 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 109 |
-| Sample Rate | 1.82/sec |
-| Health Score | 114% |
-| Threads | 5 |
+| CPU Samples | 95 |
+| Sample Rate | 1.58/sec |
+| Health Score | 99% |
+| Threads | 9 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 98 |
-| Sample Rate | 1.63/sec |
-| Health Score | 102% |
-| Threads | 10 |
+| CPU Samples | 379 |
+| Sample Rate | 6.32/sec |
+| Health Score | 395% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1792138978 48
-1792138983 48
-1792138988 48
-1792138993 48
-1792138998 48
-1792139003 48
-1792139008 48
-1792139013 48
-1792139018 48
-1792139023 48
-1792139028 48
-1792139033 48
-1792139038 48
-1792139043 48
-1792139048 48
-1792139053 48
-1792139058 48
-1792139063 48
-1792139068 48
-1792139073 48
+1792139975 48
+1792139980 48
+1792139985 48
+1792139990 48
+1792139995 48
+1792140000 48
+1792140005 48
+1792140010 48
+1792140015 48
+1792140020 48
+1792140025 48
+1792140030 48
+1792140035 48
+1792140040 48
+1792140045 48
+1792140050 48
+1792140055 48
+1792140060 48
+1792140065 48
+1792140070 48
 ```
 </details>
 
