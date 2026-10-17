@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk8
 
 ## musl-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-10-17 01:04:38 EDT
+**Date:** 2026-10-17 05:53:59 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 17 |
-| CPU Cores (end) | 17 |
+| CPU Cores (start) | 96 |
+| CPU Cores (end) | 96 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 275 |
-| Sample Rate | 4.58/sec |
-| Health Score | 286% |
-| Threads | 7 |
+| CPU Samples | 391 |
+| Sample Rate | 6.52/sec |
+| Health Score | 407% |
+| Threads | 8 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 178 |
-| Sample Rate | 2.97/sec |
-| Health Score | 186% |
+| CPU Samples | 419 |
+| Sample Rate | 6.98/sec |
+| Health Score | 436% |
 | Threads | 9 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 15-17 cores)</summary>
+<summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1792213220 17
-1792213225 17
-1792213230 17
-1792213235 17
-1792213240 17
-1792213245 17
-1792213250 15
-1792213255 15
-1792213260 15
-1792213265 15
-1792213270 15
-1792213275 15
-1792213280 15
-1792213285 15
-1792213290 15
-1792213295 15
-1792213300 17
-1792213305 17
-1792213310 17
-1792213315 17
+1792230605 96
+1792230610 96
+1792230615 96
+1792230620 96
+1792230625 96
+1792230630 96
+1792230635 96
+1792230640 96
+1792230645 96
+1792230650 96
+1792230655 96
+1792230660 96
+1792230665 96
+1792230670 96
+1792230675 96
+1792230680 96
+1792230685 96
+1792230690 96
+1792230695 96
+1792230700 96
 ```
 </details>
 
