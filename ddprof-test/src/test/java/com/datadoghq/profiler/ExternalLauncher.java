@@ -204,7 +204,7 @@ public class ExternalLauncher {
                 String word = String.format("%s-%d", Long.toString(rnd.nextInt(1 << 20), 36), i);
                 Matcher m = pattern.matcher(word);
                 if (m.matches()) {
-                    counts.merge(m.group(1), Integer.parseInt(m.group(2)), Integer::sum);
+                    counts.merge(m.group(1), m.group(2).length(), Integer::sum);
                 }
                 sorted.put(word.hashCode(), word);
                 words.add(word.toUpperCase());
