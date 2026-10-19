@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk17
 
 ## musl-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-10-19 17:08:16 EDT
+**Date:** 2026-10-19 18:19:18 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-hotspot-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 29 |
-| CPU Cores (end) | 29 |
+| CPU Cores (start) | 30 |
+| CPU Cores (end) | 12 |
 | Throttling | 0% |
 
 ### Test Results
@@ -32,42 +32,42 @@ title: musl-x64-hotspot-jdk17
 | Sample Rate | 9.55/sec |
 | Health Score | 597% |
 | Threads | 8 |
-| Allocations | 354 |
+| Allocations | 383 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 754 |
-| Sample Rate | 12.57/sec |
-| Health Score | 786% |
+| CPU Samples | 567 |
+| Sample Rate | 9.45/sec |
+| Health Score | 591% |
 | Threads | 9 |
-| Allocations | 511 |
+| Allocations | 466 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 29-29 cores)</summary>
+<summary>CPU Timeline (3 unique values: 12-32 cores)</summary>
 
 ```
-1792443741 29
-1792443746 29
-1792443751 29
-1792443756 29
-1792443761 29
-1792443766 29
-1792443771 29
-1792443776 29
-1792443781 29
-1792443786 29
-1792443791 29
-1792443796 29
-1792443801 29
-1792443806 29
-1792443811 29
-1792443816 29
-1792443821 29
-1792443826 29
-1792443831 29
-1792443836 29
+1792448071 30
+1792448076 30
+1792448081 30
+1792448086 30
+1792448091 30
+1792448096 32
+1792448101 32
+1792448106 32
+1792448111 32
+1792448116 32
+1792448121 32
+1792448126 32
+1792448131 32
+1792448136 32
+1792448141 32
+1792448146 32
+1792448151 32
+1792448156 12
+1792448161 12
+1792448166 12
 ```
 </details>
 
