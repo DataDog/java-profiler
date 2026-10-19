@@ -857,6 +857,11 @@ public:
         _klass_population_size(0), _klass_count_scratch_size(0),
         _last_class_map_generation(0),
         _leak_tag_free_count(LEAK_TAG_POOL_SIZE),
+        // Value-initialized alongside the stamps: start() rebuilds the pool by
+        // comparing every _leak_tag_in_use[i] against the table's owners, so a
+        // non-statically constructed tracker must read all-false there. (The
+        // singleton is static-storage and zero-initialized regardless.)
+        _leak_tag_in_use(), // value-initialized: every slot starts free
         _leak_tag_incarnation() {} // value-initialized: every stamp starts at 0
 
   // Ownership-period stamp of leak tag `tag` (see _leak_tag_incarnation), or 0
