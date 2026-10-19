@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler;
 
 import java.io.BufferedReader;
@@ -15,6 +20,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 
 public abstract class AbstractProcessProfilerTest {
+    // Upper bound for joining each output reader thread once the child has exited (or been
+    // destroyed). The readers normally hit EOF right after the child ends; the bound only stops a
+    // descendant that inherited the pipes from keeping launch() from returning.
+    private static final long READER_JOIN_TIMEOUT_MS = 10_000;
+
     public static final class LaunchResult {
         public final boolean inTime;
         public final int exitCode;
@@ -31,11 +41,29 @@ public abstract class AbstractProcessProfilerTest {
         IGNORE
     }
 
+    /**
+     * Scales a child-process wait budget for sanitizer builds (asan/tsan), whose native code runs
+     * several times slower than debug/release.
+     */
+    protected static long childTimeoutSeconds(long baseSeconds) {
+        String config = System.getProperty("ddprof_test.config");
+        return config != null && config.endsWith("san") ? baseSeconds * 3 : baseSeconds;
+    }
+
     protected final LaunchResult launch(String target, List<String> jvmArgs, String commands, Function<String, LineConsumerResult> onStdoutLine, Function<String, LineConsumerResult> onStderrLine) throws Exception {
         return launch(target, jvmArgs, commands, Collections.emptyMap(), onStdoutLine, onStderrLine);
     }
 
     protected final LaunchResult launch(String target, List<String> jvmArgs, String commands, Map<String, String> env, Function<String, LineConsumerResult> onStdoutLine, Function<String, LineConsumerResult> onStderrLine) throws Exception {
+        return launch(target, jvmArgs, commands, env, 10, onStdoutLine, onStderrLine);
+    }
+
+    /**
+     * Same as the 6-arg overload above, but with a caller-supplied wait timeout instead of the
+     * default 10 seconds, for child scenarios that run substantially longer than an attach/init
+     * check.
+     */
+    protected final LaunchResult launch(String target, List<String> jvmArgs, String commands, Map<String, String> env, long timeoutSeconds, Function<String, LineConsumerResult> onStdoutLine, Function<String, LineConsumerResult> onStderrLine) throws Exception {
         String javaHome = System.getenv("JAVA_TEST_HOME");
         if (javaHome == null) {
             javaHome = System.getenv("JAVA_HOME");
@@ -59,6 +87,17 @@ public abstract class AbstractProcessProfilerTest {
         ProcessBuilder pb = new ProcessBuilder(args);
         pb.environment().putAll(env);
         Process p = pb.start();
+        try {
+            return awaitChild(p, timeoutSeconds, onStdoutLine, onStderrLine);
+        } finally {
+            // Covers an interrupted launch() as well as a child that outlived destroyForcibly().
+            if (p.isAlive()) {
+                p.destroyForcibly();
+            }
+        }
+    }
+
+    private static LaunchResult awaitChild(Process p, long timeoutSeconds, Function<String, LineConsumerResult> onStdoutLine, Function<String, LineConsumerResult> onStderrLine) throws Exception {
         Thread stdoutReader = new Thread(() -> {
             Function<String, LineConsumerResult> lineProcessor = onStdoutLine != null ? onStdoutLine : l -> LineConsumerResult.CONTINUE;
             try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
@@ -130,11 +169,20 @@ public abstract class AbstractProcessProfilerTest {
         stdoutReader.start();
         stderrReader.start();
 
-        boolean val = p.waitFor(10, TimeUnit.SECONDS);
+        boolean val = p.waitFor(timeoutSeconds, TimeUnit.SECONDS);
         if (!val) {
             p.destroyForcibly();
             p.waitFor(5, TimeUnit.SECONDS);
         }
-        return new LaunchResult(val, p.exitValue());
+        // Process.waitFor() only orders the child's exit, not the readers' last callbacks. Child modes
+        // that call System.exit(0) skip the [ready] handshake, so nothing else guarantees the final
+        // marker lines have been handed to the callbacks before the caller asserts on the state they
+        // set. Thread.join() makes every callback write visible to the caller; the join is bounded
+        // and a reader still alive after the bound is left behind.
+        stdoutReader.join(READER_JOIN_TIMEOUT_MS);
+        stderrReader.join(READER_JOIN_TIMEOUT_MS);
+        // exitValue() throws while the child is still alive (it survived destroyForcibly()); report
+        // -1 instead so the caller still sees inTime=false rather than an IllegalThreadStateException.
+        return new LaunchResult(val, p.isAlive() ? -1 : p.exitValue());
     }
 }

@@ -5,6 +5,7 @@
 
 package com.datadoghq.profiler;
 
+import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -72,6 +73,10 @@ public abstract class AbstractProfilerTest {
 
   protected JavaProfiler profiler;
   private Path jfrDump;
+
+  // Set before getProfilerCommand() is consulted, so a subclass can vary its
+  // command per @Test method instead of needing one test class per configuration.
+  protected TestInfo testInfo;
 
   private Duration cpuInterval;
   private Duration wallInterval;
@@ -143,7 +148,7 @@ public abstract class AbstractProfilerTest {
 
   private static long getPid() {
     try {
-      String name = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
+      String name = ManagementFactory.getRuntimeMXBean().getName();
       return Long.parseLong(name.split("@")[0]);
     } catch (NumberFormatException e) {
       return 0L;
@@ -200,6 +205,7 @@ public abstract class AbstractProfilerTest {
 
   @BeforeEach
   public void setupProfiler(TestInfo testInfo) throws Exception {
+    this.testInfo = testInfo;
     Assumptions.assumeTrue(isPlatformSupported());
     withTestAssumptions();
 

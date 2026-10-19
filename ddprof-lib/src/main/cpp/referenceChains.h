@@ -44,9 +44,8 @@ private:
   volatile bool _enabled;
 
   // Frontier metadata table. Constructed lazily on the first start() with the flag enabled, sized
-  // from args._reference_chains_frontier_cap; like LivenessTracker's table (LivenessTracker's own
-  // table does the same) it survives stop() so it persists across multiple start/stop recording
-  // cycles.
+  // from args._reference_chains_frontier_cap; like LivenessTracker's table it survives stop() so it
+  // persists across multiple start/stop recording cycles.
   FrontierTable *_frontier;
 
   // args._reference_chains_frontier_cap as of the most recent start() call - recorded
@@ -215,7 +214,7 @@ private:
   // klass_ids from LivenessTracker::topKlassesByGenerationCount() (a faster, un-hysteresis-gated
   // ranking than the canary candidate set above - see that method's own comment), refreshed once
   // per BFS-thread tick but only once hasLeakSignal() has already fired via the slower,
-  // hysteresis-gated selectLeakCandidates() path (per design discussion: this whole mechanism only
+  // hysteresis-gated selectLeakCandidates() path (this whole mechanism only
   // cranks once the trend detector has already triggered, so it never needs to wait out that same
   // hysteresis a second time on its own).
   u32 _watched_leak_klass_ids[MAX_WATCHED_LEAK_KLASSES];
@@ -336,8 +335,7 @@ private:
   // block there and _configured_budget's own comment).
   bool _urgency_budget_boosted;
 
-  // Hysteresis state behind isUrgent(), which used to be a bare `secondsToOOM() <
-  // OOM_URGENT_THRESHOLD_S` comparison.
+  // Hysteresis state behind isUrgent().
   mutable bool _urgent_latched;
   mutable int _urgent_release_ticks;
   mutable bool _urgent_search_spent;
@@ -414,7 +412,6 @@ private:
           return false;
         }
         i = (i + 1) & SLOT_MASK;
-        // Wrapped around: table full.
         if (i == start) {
           return false;
         }
@@ -437,8 +434,7 @@ private:
     }
   } _priority_expand_set;
 
-  // B' (find-anchor-holder-eviction / find-anchor-live-feed-design): a static holder richly
-  // referenced from the running graph is EXCLUDED from the static-anchor tier forever once its
+  // A static holder richly referenced from the running graph is EXCLUDED from the static-anchor tier forever once its
   // frontier entry is chain-attached (first admitted via a non-root path, or demoted by
   // improveChain) - maybeUpgradeRootAttachedRootKind() refuses entries with parent_tag != 0 by
   // design, so collectStaticFieldAnchorsForRotation() (parent_tag == 0 filter) can never select it.
@@ -550,14 +546,9 @@ private:
   // GetObjectsWithTags call for the batch + a depth-bounded interface walk per class).
   static constexpr int ANCHOR_SHAPE_RECONCILE_BUDGET = 128;
 
-  // Per-pass cap on how many AT-RISK static holders (frontier entries with parent_tag != 0 - the
-  // find-anchor-holder-eviction population) drainStaticAnchorFifo() pops for the same
-  // walkStaticFieldAnchors() batch.
+  // Per-pass cap on how many AT-RISK static holders (frontier entries with parent_tag != 0)
+  // drainStaticAnchorFifo() pops for the same walkStaticFieldAnchors() batch.
   static constexpr int STATIC_ANCHOR_FIFO_DRAIN = 16;
-
-  // (Removed: the old single wrapping-index-cursor selection was replaced by tiered selection with
-  // per-tier cursors — see collectStaticFieldAnchorsForRotation()'s own comment and
-  // _anchor_container_cursor/_anchor_other_cursor.)
 
   // Cursor over the flattened (slot, tid) enumeration of _candidate_qualifying_tids above, so
   // walkCandidateThreadLocals()'s THREAD_WALK_MAX_ANCHORS-per-pass cap rotates fairly instead of
@@ -655,8 +646,6 @@ private:
   static constexpr long URGENT_PAUSE_TARGET_MS = 100; // ceiling STW ms per pass
   static constexpr u64 URGENT_CADENCE_NS = 10000000ULL;  // 10ms floor between passes
 
-  // True when LivenessTracker::secondsToOOM() projects exhaustion sooner
-
   // Auto-scaled default for _first_pass_budget when Arguments::_reference_chains_first_pass_budget
   // is unset (0) - see _first_pass_budget's own comment for why plain _budget is the wrong
   // fallback.
@@ -677,7 +666,7 @@ private:
   static constexpr u64 MAX_EFFECTIVE_CADENCE_NS = PASS_CADENCE_NS * 4; // 4s
 
   // Conversion factor from "edges of budget signal updatePacing()'s clamp could not absorb" to a
-  // cadence adjustment in nanoseconds - the two are different units (edge count vs.
+  // cadence adjustment in nanoseconds.
   static constexpr u64 CADENCE_NS_PER_EDGE_OVERFLOW = 1000000ULL; // 1ms/edge
 
   // Budget-borrowing (see _borrowed_budget's own comment): how many consecutive
@@ -704,12 +693,9 @@ private:
 
   // Agent-owned BFS thread; startThread()/stopThread() own its lifecycle.
   pthread_t _thread;
-  // std::atomic<bool> rather than plain volatile bool - volatile alone gives no C++ memory-model
-  // acquire/release guarantees (it only prevents the compiler from eliding/reordering that one
-  // variable's own accesses), so a weakly-ordered CPU (e.g. arm64) could let the BFS thread's
-  // stopThread()- side write (see stopThread()'s own comment) become visible to threadLoop() later
-  // than intended, missing the shutdown request on one wakeup and sleeping/looping an extra cycle
-  // before pthread_join() unblocks it.
+  // Atomic, not volatile: on a weakly-ordered CPU (e.g. arm64) a volatile stopThread() write could
+  // become visible to threadLoop() late, missing the shutdown request on one wakeup and looping an
+  // extra cycle before pthread_join() unblocks it.
   std::atomic<bool> _running;
 
   // Cooperative-cancellation flag for an in-flight JVMTI FollowReferences walk: stopThread() sets
@@ -788,7 +774,7 @@ private:
   // see _urgent_latched for the latch/release rules and why the raw comparison flaps.
   bool isUrgent() const;
 
-  // Search restart gate (this class's own header comment): true once _safepoint_pain_budget has
+  // Search restart gate: true once _safepoint_pain_budget has
   // drained back to zero (canStartNow()) *and* hasLeakSignal() above reports at least one leak
   // candidate.
   bool canAffordNewSearch(u64 now_ns);
@@ -896,9 +882,6 @@ private:
                                 const jlong *resolved_chain_tags,
                                 int resolved_chain_tag_count);
 
-  // Correlate a leak tag with an instance the BFS admitted BEFORE tagLeakInstances() tagged it (its
-  // JVMTI tag is a frontier tag, its frontier entry has leak_tag == 0).
-
   // One-time retroactive catch-up for a klass_id the moment it FIRST enters _watched_leak_klass_ids
   // (pollWatchedTargets() calls this only for the newly-added ids in each refresh, never for ones
   // already being watched).
@@ -942,8 +925,8 @@ private:
                          int *edges_admitted, bool *truncated,
                          bool *frontier_cap_hit, u64 *safepoint_ns);
 
-  // Prong 1 of the candidate-scoped reach design (thread-retained taxonomy: ThreadLocal-held caches
-  // and thread-owned collections): per pass, walk up to THREAD_WALK_MAX_ANCHORS of the current
+  // Candidate-scoped reach for thread-retained leaks (ThreadLocal-held caches and thread-owned
+  // collections): per pass, walk up to THREAD_WALK_MAX_ANCHORS of the current
   // candidates' qualifying tids' live Thread objects (registerThreadObject()'s map above) with
   // descendFromAnchor() (anchor-gated to ThreadLocalMap, see above).
   void walkCandidateThreadLocals(jvmtiEnv *jvmti, JNIEnv *jni, int budget,
@@ -1015,7 +998,9 @@ private:
 
   // Inserts (or refreshes) klass_id's resolved chain in _resolved_chains, recording the
   // source_tag/source_search_ns it was reconstructed from so a later poll can tell a stale entry
-  // from a current one.
+  // from a current one. Returns false when nothing was stored: the cache is full (counted in
+  // REFERENCE_CHAIN_EVENTS_DROPPED), or the chain targets a leak tag whose owner already died
+  // (fails chainTargetsCurrentLeakOwner(); not counted - it is a correctness reject).
   bool cacheResolvedChain(jlong source_tag, ReferenceChainEvent &&event,
                           jlong source_tag_val, u64 source_search_ns);
 
@@ -1043,6 +1028,15 @@ private:
   // buildAbandonedEvent()'s source fields are still valid (see _pending_abandoned_events' own
   // comment for why this cannot be deferred to dump()-time).
   void enqueuePendingAbandonedEvent();
+
+  // True iff `e` targets a leak tag AND was built during that tag's current ownership period:
+  // e._leak_tag_incarnation == LivenessTracker::leakTagIncarnation(e._target_tag). Leak tags are
+  // recycled once their object dies, so tag equality alone would attribute a dead object's chain to
+  // the tag's next owner; the (tag, stamp) pair is the identity, in memory and in the serialized
+  // ReferenceChain/HeapLiveObject leakTagIncarnation fields. False for a non-leak (frontier-tag)
+  // target - each caller decides what that means for it. Lock-free (one acquire load); never takes
+  // LivenessTracker's pool lock, so it is safe under _resolved_chains_lock.
+  static bool chainTargetsCurrentLeakOwner(const ReferenceChainEvent &e);
 
 public:
   static ReferenceChainTracker *instance() {
@@ -1119,8 +1113,6 @@ public:
     return tag >= LEAK_TAG_BASE && tag < LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE;
   }
 
-  // Max candidates LivenessTracker::selectLeakCandidates() can return.
-
   // Test accessor for _passes_since_last_progress.
   int passesSinceLastProgressForTest() const { return _passes_since_last_progress; }
   // Canary-lane backoff state - see _canary_backoff_mult's own comment.
@@ -1151,9 +1143,8 @@ public:
   void setCandidateFoundBitsForTest(u64 bits) { _candidate_found_bits = bits; }
   void setSearchStartedForTest(bool v) { _search_started = v; }
   // OOM-urgency hysteresis state (isUrgent()'s latch/release machine,
-  // referenceChains.cpp) - the whole point of C5's chaos assertions is this
-  // state's reaction to a projected-exhaustion sequence, so tests need both
-  // the drive (isUrgentForTest()) and the raw latch/tick/entitlement reads.
+  // referenceChains.cpp): tests drive it via isUrgentForTest() and assert on
+  // the raw latch/tick/entitlement reads.
   bool isUrgentForTest() const { return isUrgent(); }
   bool urgentLatchedForTest() const { return _urgent_latched; }
   int urgentReleaseTicksForTest() const { return _urgent_release_ticks; }
@@ -1204,9 +1195,11 @@ public:
 
   // Held by runPassSerialized() and finishLoopIterationSerialized() around the engine work, by
   // threadLoop() around shouldRunPass() (whose restart branch mutates _pending_expand/
-  // _priority_expand the same way a pass does), and by the pendingExpand*ForTest() seams below so
-  // they never observe those deques mid-mutation from the BFS thread. Mutable because the test
-  // seams are const (read-only from the caller's perspective) but still need to take the lock.
+  // _priority_expand the same way a pass does), and by the pendingExpand*ForTest()/
+  // frontierStateForTest()/resolvedChainTargetTagForTest() test seams below so they never observe
+  // engine state mid-mutation from the BFS thread. Mutable because the test seams are const
+  // (read-only from the caller's perspective) but still need to take the lock. Recursive
+  // (mutex.cpp); never acquire it while holding _resolved_chains_lock.
   mutable Mutex _engine_lock;
   jlong tagObject(jvmtiEnv *jvmti, jobject obj);
   jlong getTag(jvmtiEnv *jvmti, jobject obj);
@@ -1302,8 +1295,7 @@ public:
 
   // Reports a search's termination state without needing a target tag.
   bool buildAbandonedEvent(ReferenceChainAbandonedEvent *out) {
-    // Acquire-load, not a plain relaxed load - see searchState()'s own comment for why: this is the
-    // same guard-then-read-details pattern.
+    // Acquire-load: the detail fields below are read only after observing ABANDONED.
     if (out == nullptr || loadAcquire(_search_state) != SearchState::ABANDONED) {
       return false;
     }
@@ -1329,7 +1321,11 @@ public:
   // Appends a copy of every currently-cached resolved chain to *out, re-stamped with a fresh
   // _start_time so it lands in the dumping chunk's time window, WITHOUT clearing the cache - a
   // repeatable snapshot, not a drain, so the same live sample's chain is re-emitted into every JFR
-  // chunk it survives into (see _resolved_chains' own comment).
+  // chunk it survives into (see _resolved_chains' own comment). Exception: a chain whose target is
+  // a leak tag but which fails chainTargetsCurrentLeakOwner() (its object died and the tag may have
+  // a new owner) is not emitted - it no longer describes the object that
+  // HeapLiveObject(leakTag, leakTagIncarnation) names. Such a chain is erased from the cache:
+  // ownership stamps only advance, so it can never become valid again.
   void drainPendingChainEvents(std::vector<ReferenceChainEvent> *out);
 
   // Appends every abandoned-search event queued since the last call and clears the queue - a true
@@ -1367,6 +1363,32 @@ public:
   // Test seam - not part of the production API. Companion to pendingExpandPositionForTest() above,
   // for computing a position's fraction of the current backlog.
   size_t pendingExpandSizeForTest() const;
+
+  // Test seam - not part of the production API. The raw FrontierEntryState (canonical values:
+  // referenceChainFrontier.h) of the current search's frontier entry for the object carrying JVMTI
+  // tag `object_tag` - FRONTIER(0)/EXPANDED(1)/ABANDONED(3); EDGE(2) is retired and never produced
+  // by the production walk (FrontierTable::markEdge() has no production caller) - or -1 if there is
+  // no such entry: untagged, leak-tagged (not yet intercepted by the walk), or no frontier table /
+  // slot. Lets a test synchronize on an object's actual expansion rather than inferring it from
+  // pass counters. Serialized with the BFS thread via _engine_lock.
+  int frontierStateForTest(jlong object_tag);
+
+  // Test seam - not part of the production API. Returns the targetTag a datadog.ReferenceChain
+  // event for the object currently carrying JVMTI tag `object_tag` would report. Two lookups:
+  // a frontier tag resolves only against the CURRENT search's cached chain (_resolved_chains entry
+  // keyed by that frontier tag with source_search_ns == _search_start_ns; restartSearch() keeps
+  // _resolved_chains and re-mints frontier tags from 1, so raw frontier-tag equality across
+  // generations could match a stale, unrelated chain); a leak tag resolves against any search
+  // generation's cached chain whose event target tag equals it AND whose captured ownership-period
+  // stamp equals the tag's current one (chainTargetsCurrentLeakOwner()). A leak tag is released
+  // when its object dies and then recycled for another object, so leak-tag identity is the pair
+  // (leak tag, ownership-period stamp), not the tag alone; within one ownership period it does
+  // identify the same object across search generations, and the object carries it exactly when
+  // no live frontier entry exists (never intercepted yet, or a restart cleared the frontier tags
+  // and the next GC re-tagged it). 0 otherwise: untagged, or no cached chain for that object's
+  // current ownership period in any generation. Samples _search_start_ns under _engine_lock and
+  // _resolved_chains_lock.
+  jlong resolvedChainTargetTagForTest(jlong object_tag);
 
   // Test seam - not part of the production API. Evaluates the real private scheduling gate without
   // executing a BFS pass. This is not read-only: while holding _engine_lock like threadLoop(), the

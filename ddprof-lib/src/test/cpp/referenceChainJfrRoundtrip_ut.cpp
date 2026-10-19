@@ -234,12 +234,15 @@ protected:
 };
 
 // Path agreed with the companion Java parser test in ddprof-test, which
-// reads the same file back via JMC's
-// JfrLoaderToolkit. Both sides resolve it via the OS temp dir so the
-// producer (this gtest) and the consumer (the Java test, run afterwards by
-// the same operator/CI job on the same machine) agree without either side
-// needing to know the other module's build directory layout.
+// reads the same file back via JMC's JfrLoaderToolkit. The build passes the
+// same DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR to both sides (ddprof-lib and
+// ddprof-test build.gradle.kts) and deletes the file before this gtest runs;
+// the OS temp dir is only a fallback for running the binary by hand.
 static std::string chainRoundtripJfrPath() {
+    const char *configured = getenv("DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR");
+    if (configured != nullptr && *configured != 0) {
+        return configured;
+    }
     const char *tmp = getenv("TMPDIR");
     std::string dir = (tmp != nullptr && *tmp != 0) ? tmp : "/tmp";
     if (dir.back() != '/') {
@@ -318,12 +321,18 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     // serializes into the T_CLASS checkpoint - this is the exact API
     // Profiler::lookupClass() already-existing tests use (e.g.
     // referenceChains_ut.cpp's ReconstructsChainForSyntheticGraph).
+    // The constants feed both the lookup and the .expected sidecar below, so
+    // the companion Java parser test reads the seeded values from a single
+    // source instead of duplicating them.
+    static constexpr const char *kLeafClass = "com/test/ChainLeaf";
+    static constexpr const char *kMiddleClass = "com/test/ChainMiddle";
+    static constexpr const char *kRootClass = "com/test/ChainRoot";
     int leafKlass = Profiler::instance()->lookupClass(
-        "com/test/ChainLeaf", strlen("com/test/ChainLeaf"));
+        kLeafClass, strlen(kLeafClass));
     int middleKlass = Profiler::instance()->lookupClass(
-        "com/test/ChainMiddle", strlen("com/test/ChainMiddle"));
+        kMiddleClass, strlen(kMiddleClass));
     int rootKlass = Profiler::instance()->lookupClass(
-        "com/test/ChainRoot", strlen("com/test/ChainRoot"));
+        kRootClass, strlen(kRootClass));
     ASSERT_NE(-1, leafKlass);
     ASSERT_NE(-1, middleKlass);
     ASSERT_NE(-1, rootKlass);
@@ -345,6 +354,8 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     // pins the JFR encoding, so the event is built directly).
     ReferenceChainEvent event;
     event._target_tag = 3;
+    // Non-zero so the Java parser test can pin the serialized field.
+    event._leak_tag_incarnation = 5;
     event._depth = 2;
     event._root_kind = 21; // JVMTI_HEAP_REFERENCE_JNI_GLOBAL - exercises the
                            // rootKind field end to end (the engine's admission
@@ -381,6 +392,29 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
         // middleKlass/rootKlass resolvable to their names at all), patches
         // the chunk header's size/cpool-offset fields, and closes fd - the
         // same finalization every real recording chunk goes through.
+    }
+
+    // The values this test seeds, written next to the recording: the companion
+    // Java parser test (ReferenceChainJfrParserTest) asserts against this
+    // sidecar instead of hard-coding them, so a change to the seeding shows
+    // up as a deliberate gtest-only diff rather than an opaque assertion
+    // failure in the other module. The Java side maps the slashed internal
+    // names to JMC's dotted IMCType full names.
+    {
+        std::string expectedPath = path + ".expected";
+        FILE *expected = fopen(expectedPath.c_str(), "w");
+        ASSERT_NE(nullptr, expected) << "could not open " << expectedPath;
+        fprintf(expected, "chain.length=%d\n", 3);
+        fprintf(expected, "chain.0=%s\n", kLeafClass);
+        fprintf(expected, "chain.1=%s\n", kMiddleClass);
+        fprintf(expected, "chain.2=%s\n", kRootClass);
+        fprintf(expected, "edges.0=field\n");
+        fprintf(expected, "edges.1=element\n");
+        fprintf(expected, "edges.2=jni_global\n");
+        fprintf(expected, "targetTag=%lld\n", (long long)event._target_tag);
+        fprintf(expected, "depth=%u\n", event._depth);
+        fprintf(expected, "leakTagIncarnation=%u\n", event._leak_tag_incarnation);
+        fclose(expected);
     }
 
     FILE *f = fopen(path.c_str(), "rb");
@@ -481,6 +515,7 @@ TEST_F(ReferenceChainJfrRoundtripTest, TruncatesOversizeChainAndKeepsEmittedLabe
     off += sizeOfVar64((u64)T_REFERENCE_CHAIN); // type id
     off += sizeOfVar64(event._start_time);
     off += sizeOfVar64(event._target_tag);
+    off += sizeOfVar64((u64)event._leak_tag_incarnation);
     off += sizeOfVar64(event._depth); // depth, small by construction
     // rootKind putUtf8: 1 encoding-tag byte + var32 length + payload.
     const char *root_kind_name = "jni_global"; // rootKindName(21)
@@ -511,4 +546,5 @@ TEST_F(ReferenceChainJfrRoundtripTest, TruncatesOversizeChainAndKeepsEmittedLabe
 TEST_F(ReferenceChainJfrRoundtripTest, DefaultLivenessEventHasZeroLeakTag) {
     ObjectLivenessEvent event;
     EXPECT_EQ(0, event.leak_tag);
+    EXPECT_EQ(0u, event.leak_tag_incarnation);
 }
