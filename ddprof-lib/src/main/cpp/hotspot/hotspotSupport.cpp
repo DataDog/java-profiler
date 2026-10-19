@@ -1479,6 +1479,7 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
 
 KlassRegistry HotspotSupport::_klass_registry;
 bool HotspotSupport::_lazy_used = false;
+bool HotspotSupport::_redefinitions_untracked = false;
 const jclass* HotspotSupport::_dump_jclasses = nullptr;
 int HotspotSupport::_dump_jclass_count = 0;
 const void** HotspotSupport::_dump_classes = nullptr;
@@ -1496,7 +1497,7 @@ bool HotspotSupport::initLazyResolution(JNIEnv* jni) {
     _klass_registry.publishCounters();
     TEST_LOG("Raw frame tags: %s", calibrated ? "klass trace id" : "unavailable, lazy mode off");
     if (calibrated) {
-        _lazy_used = true;
+        __atomic_store_n(&_lazy_used, true, __ATOMIC_RELEASE);
     }
     return calibrated;
 }
@@ -1519,18 +1520,23 @@ bool HotspotSupport::isInstanceClass(jvmtiEnv *jvmti, jclass klass) {
 }
 
 void HotspotSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-    if (!_lazy_used || !isInstanceClass(jvmti, klass)) {
+    if (!__atomic_load_n(&_lazy_used, __ATOMIC_ACQUIRE) || !isInstanceClass(jvmti, klass)) {
         return;
     }
     // Only redefined classes are registered, so the mark has a place to live.
     const void* vm_klass = VMKlass::fromJavaClass(jni, klass);
     if (_klass_registry.add(jni, vm_klass, klass) && _klass_registry.beginRedefinition(vm_klass)) {
         Counters::increment(KLASS_REGISTRY_REDEFINITIONS_MARKED);
+    } else {
+        // Out of memory for the mark: nothing can tell this class's frames
+        // apart any more, so refuse every lazy frame from now on.
+        Counters::increment(KLASS_REGISTRY_ADD_FAILED);
+        __atomic_store_n(&_redefinitions_untracked, true, __ATOMIC_RELEASE);
     }
 }
 
 void HotspotSupport::afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded) {
-    if (!_lazy_used || !isInstanceClass(jvmti, klass)) {
+    if (!__atomic_load_n(&_lazy_used, __ATOMIC_ACQUIRE) || !isInstanceClass(jvmti, klass)) {
         return;
     }
     _klass_registry.endRedefinition(VMKlass::fromJavaClass(jni, klass), succeeded);
@@ -1568,7 +1574,7 @@ bool HotspotSupport::isDumpClass(const void* klass) {
 
 void HotspotSupport::beginDump(JNIEnv* jni, const jclass* classes, int count) {
     endDump();
-    if (!_lazy_used || count <= 0) {
+    if (!__atomic_load_n(&_lazy_used, __ATOMIC_ACQUIRE) || classes == nullptr || count <= 0) {
         return;
     }
     _dump_jclasses = classes;
@@ -1585,7 +1591,10 @@ void HotspotSupport::buildDumpClasses() {
     while (capacity < (size_t)count * 2) {
         capacity <<= 1;
     }
-    const void** table = (const void**)calloc(capacity, sizeof(const void*));
+    // mmap rather than malloc: at hundreds of thousands of classes this is
+    // megabytes, allocated and freed every dump, which would fragment the
+    // malloc arenas. Zero-filled.
+    const void** table = (const void**)OS::safeAlloc(capacity * sizeof(const void*));
     if (table == nullptr) {
         _dump_jclasses = nullptr;  // every lazy frame of this dump resolves as unknown
         return;
@@ -1623,7 +1632,9 @@ void HotspotSupport::buildDumpClasses() {
 }
 
 void HotspotSupport::endDump() {
-    free(_dump_classes);
+    if (_dump_classes != nullptr) {
+        OS::safeFree(_dump_classes, _dump_classes_capacity * sizeof(const void*));
+    }
     _dump_classes = nullptr;
     _dump_classes_capacity = 0;
     _dump_jclasses = nullptr;
@@ -1916,7 +1927,7 @@ static bool protectedWalk(ProfiledThread* prof_thread, ResolvedMethod& result, W
 // boot, platform and application loaders, which are never unloaded) and for
 // methods a class's jmethodID cache does not cover after a redefinition;
 // lazy mode reaches here for every class without a jmethodID and resolves it
-// through _klass_registry.
+// against the classes the current dump pins.
 bool HotspotSupport::resolve(const void* tagged_method, int bci, ResolvedMethod& result) {
   assert(VM::isHotspot());
   NO_INJECTION_ASSERT(tagged_method != nullptr);
@@ -1977,7 +1988,8 @@ bool HotspotSupport::resolveLazily(ProfiledThread* prof_thread, VMMethod* vm_met
     Counters::increment(METHOD_RESOLVE_LAZY_UNLOADED);
     return false;
   }
-  if (_klass_registry.isRedefined(VM::jni(), holder)) {
+  if (__atomic_load_n(&_redefinitions_untracked, __ATOMIC_ACQUIRE) ||
+      _klass_registry.isRedefined(VM::jni(), holder)) {
     // The Method* may have been freed and reused within the class.
     Counters::increment(METHOD_RESOLVE_LAZY_REDEFINED);
     return false;

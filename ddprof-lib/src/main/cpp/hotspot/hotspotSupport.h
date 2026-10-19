@@ -160,6 +160,10 @@ private:
     // on.
     static bool _lazy_used;
 
+    // Set if a redefinition could not be marked (out of memory for the
+    // registry entry): from then on every lazy frame is refused.
+    static bool _redefinitions_untracked;
+
     // fjmethodid=lazy: the classes GetLoadedClasses() returned at the start
     // of the current dump. The dump holds a local reference to each of them,
     // so none can be unloaded until it ends. nullptr outside a dump.

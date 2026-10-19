@@ -207,12 +207,16 @@
    * class's method. */                                                      \
   X(KLASS_TRACE_ID_BEYOND_TAG_RANGE, "klass_trace_id_beyond_tag_range")       \
   /* Gauges, set by each dump that resolves lazy raw frames: the classes it \
-   * pinned, and the nanoseconds it took to collect their Klass*s. */        \
+   * pinned (array classes included), and the nanoseconds it took to collect \
+   * their Klass*s. */                                                        \
   X(LAZY_DUMP_CLASSES, "lazy_dump_classes")                                   \
   X(LAZY_DUMP_PIN_NS, "lazy_dump_pin_ns")                                     \
   /* Raw Method* frame occurrences answered from Lookup's per-dump cache    \
    * instead of resolving them again. */                                     \
   X(RAW_FRAME_RESOLVE_CACHE_HITS, "raw_frame_resolve_cache_hits")             \
+  /* Redefinitions whose mark could not be recorded (out of memory); every \
+   * lazy frame is refused once this is nonzero. */                         \
+  X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
   /* Gauges: KlassRegistry's table slots (24 B each; NMT does not see the    \
    * table) and occupied slots, live or dead. It holds only redefined        \
    * classes. PURGED: dead entries dropped when the table was rebuilt. */    \

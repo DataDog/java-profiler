@@ -711,9 +711,10 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     return unknown_method;
   }
 
-  // Raw Method* frames take their own path: resolution pins classes through
-  // JNI, so it must not run under fillMethod()'s landing pad, and it installs
-  // its own around the metadata reads.
+  // Raw Method* frames take their own path: resolution makes JNI calls (it
+  // collects the dump's pinned classes on first use and takes the registry
+  // mutex), so it must not run under fillMethod()'s landing pad, and it
+  // installs its own around the metadata reads.
   if (FrameType::isRawPointer(bci)) {
     return fillRawMethod(frame);
   }
@@ -1028,10 +1029,13 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   // present in the list and receive no protection here.
   jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
   // fjmethodid=lazy resolves raw frames only of these classes: they stay
-  // pinned until the local references are deleted below.
-  if (!err) {
-    JVMSupport::beginDump(env, classes, count);
-  }
+  // pinned until the local references are deleted below. Always called, so a
+  // failed GetLoadedClasses() leaves no list at all rather than a stale one,
+  // and ended on every exit from this function, including a std::bad_alloc.
+  JVMSupport::beginDump(env, err ? nullptr : classes, err ? 0 : count);
+  struct DumpScope {
+    ~DumpScope() { JVMSupport::endDump(); }
+  } dump_scope;
 
   flush(&_cpu_monitor_buf);
 

@@ -29,7 +29,8 @@
  * Only redefined classes are added. Each entry holds a JNI weak global
  * reference to the class's mirror, so a mark is only reported while that
  * class is alive: once it is unloaded, a new class at the same Klass* address
- * does not inherit it, and that class's own add() replaces the entry. Dead
+ * does not inherit it, and if that class is redefined too, its add()
+ * replaces the entry. Dead
  * entries are purged whenever the table would have to grow.
  *
  * All operations take an internal mutex and call JNI, so none of them may be

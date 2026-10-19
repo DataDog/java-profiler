@@ -27,13 +27,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests {@code fjmethodid=lazy}: no jmethodIDs are preloaded at ClassPrepare. walkVM stores
- * raw {@code Method*} frames, and the dump thread resolves them only after
- * {@code KlassRegistry} confirms the owning class is still loaded, reading names and line
- * numbers from VM metadata without allocating any jmethodIDs.
+ * raw {@code Method*} frames, and the dump thread resolves them only if the owning class is
+ * among the classes the dump pins, reading names and line numbers from VM metadata without
+ * allocating any jmethodIDs.
  *
  * <p>The sampled class is defined by a custom class loader. In the partial mode
- * ({@code fjmethodid=false}) such classes are still preloaded, because the dump-time
- * {@code FindClass} lookup cannot see them; lazy mode must resolve them without either.
+ * ({@code fjmethodid=false}) such classes are still preloaded; lazy mode must resolve them
+ * without preloading.
  */
 public class LazyJmethodIdTest extends AbstractProfilerTest {
 

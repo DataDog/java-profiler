@@ -140,6 +140,9 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
 
 void JVMSupport::loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni) {
     assert(getLoadState() != No_loaded && "Should not call before profiler execution");
+    if (getLoadState() == Lazy_loaded) {
+        return;  // nothing to preload; each dump pins the classes it needs
+    }
 
     jint class_count = 0;
     jclass *classes = nullptr;
@@ -153,8 +156,7 @@ void JVMSupport::loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni) {
         }
         jvmti->Deallocate((unsigned char *)classes);
     }
-    TEST_LOG("%s %d/%d classes", getLoadState() == Lazy_loaded ? "Registered (lazy jmethodIDs)" : "Preloaded jmethodIDs for",
-             loaded_count, class_count);
+    TEST_LOG("Preloaded jmethodIDs for %d/%d classes", loaded_count, class_count);
 }
 
 bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {

@@ -63,6 +63,7 @@ class HotspotSupportTestAccessor {
 public:
     static KlassRegistry& registry() { return HotspotSupport::_klass_registry; }
     static void setLazyUsed(bool used) { HotspotSupport::_lazy_used = used; }
+    static void setRedefinitionsUntracked(bool v) { HotspotSupport::_redefinitions_untracked = v; }
     static bool dumpClassesBuilt() { return HotspotSupport::_dump_classes != nullptr; }
     static void beforeClassRedefinition(jvmtiEnv* jvmti, JNIEnv* jni, jclass klass) {
         HotspotSupport::beforeClassRedefinition(jvmti, jni, klass);
@@ -305,6 +306,7 @@ public:
 
     int new_local_ref_calls = 0;
     int get_class_methods_calls = 0;
+    bool fail_weak_refs = false;  // NewWeakGlobalRef fails, as when out of memory
 
     jclass mirror(FakeObject& obj) { return reinterpret_cast<jclass>(&obj); }
 
@@ -326,6 +328,9 @@ private:
     }
 
     static jweak JNICALL newWeakGlobalRef(JNIEnv*, jobject obj) {
+        if (s_instance->fail_weak_refs) {
+            return nullptr;
+        }
         FakeWeak* w = new FakeWeak{reinterpret_cast<FakeObject*>(s_instance->resolve(obj))};
         s_instance->_weaks.insert(w);
         return reinterpret_cast<jweak>(w);
@@ -413,6 +418,7 @@ protected:
     void TearDown() override {
         HotspotSupport::endDump();
         HotspotSupportTestAccessor::setLazyUsed(false);
+        HotspotSupportTestAccessor::setRedefinitionsUntracked(false);
         HotspotSupportTestAccessor::registry().clear(_jvm.jni());
         ProfiledThread::release();
         KlassTraceId::setOffsetForTest(_saved_trace_id_offset);
@@ -643,6 +649,50 @@ TEST_F(HotspotLazyResolveTest, RedefinitionMarkDoesNotCarryOverToNewClassAtSameA
     ASSERT_FALSE(resolve(sample()));
     loadNewClassAtSameAddress();
     EXPECT_TRUE(resolvesToSpin(sample()));
+}
+
+// A dump whose GetLoadedClasses() failed passes no list; it must not fall back
+// to an earlier dump's list, whose local references are gone.
+TEST_F(HotspotLazyResolveTest, DumpWithoutClassListPinsNothing) {
+    registerClass(_old_mirror);
+    ASGCT_CallFrame frame = sample();
+    ASSERT_TRUE(resolvesToSpin(frame));  // an earlier dump, ended without endDump()
+    HotspotSupport::beginDump(_jvm.jni(), nullptr, 0);
+    ResolvedMethod result;
+    EXPECT_FALSE(HotspotSupport::resolve(frame.method, frame.bci, result));
+}
+
+// Enough pinned classes to grow the set past its minimum size, so lookups
+// probe across a larger table.
+TEST_F(HotspotLazyResolveTest, ClassIsFoundAmongManyPinnedClasses) {
+    static FakeKlass others[3000];
+    static FakeObject other_mirrors[3000];
+    for (int i = 0; i < 3000; i++) {
+        others[i] = _cls.klass;
+        other_mirrors[i] = FakeObject{100 + i, &others[i]};
+        registerClass(other_mirrors[i]);
+    }
+    registerClass(_old_mirror);
+    EXPECT_TRUE(resolvesToSpin(sample()));
+}
+
+// If a redefinition cannot be marked, nothing tells its class's frames apart
+// any more, so every lazy frame is refused from then on.
+TEST_F(HotspotLazyResolveTest, UnmarkableRedefinitionRefusesAllLazyFrames) {
+    registerClass(_old_mirror);
+    ASGCT_CallFrame frame = sample();
+    _jvm.fail_weak_refs = true;
+    redefine(false);
+    _jvm.fail_weak_refs = false;
+    EXPECT_FALSE(resolve(frame));
+}
+
+// Before lazy mode has started there are no lazy frames, so redefinitions
+// are not tracked.
+TEST_F(HotspotLazyResolveTest, RedefinitionBeforeLazyModeIsNotTracked) {
+    HotspotSupportTestAccessor::setLazyUsed(false);
+    redefine(true);
+    EXPECT_EQ(0u, HotspotSupportTestAccessor::registry().size());
 }
 
 // Outside a dump no class is pinned, so a lazy frame is never read.
