@@ -332,6 +332,11 @@ public final class ThreadLocalLeakScenario {
     if (scan == null) {
       return best;
     }
+    // Unlike LeakTagCorrelationScenario.keepBest, the losing scan has nothing
+    // to merge: this scenario's ScanResult carries no transient/noise evidence
+    // (that is LeakTagCorrelation's contract), and a scan without a payload
+    // chain has no other populated field worth keeping. If evidence fields are
+    // ever added here, merge them like LeakTagCorrelationScenario's mergeDistinct.
     if (best == null || best.payloadChain == null) {
       return scan;
     }
@@ -436,16 +441,22 @@ public final class ThreadLocalLeakScenario {
             ReferenceChainAssertions.findAccessor(type, "objectClass");
         IMemberAccessor<?, IItem> incarnationAccessor =
             ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
-        // Fail loud if the field is missing: without it every live object
-        // reads -1 and the correlation below would degrade to tag-only
-        // matching, which a recycled tag's stale chunk could satisfy.
+        // Fail loud if either identity field is missing: without the tag, every
+        // live object reads -1 and never matches the chain's targetTag; without
+        // the incarnation, the match degrades to tag-only, which a recycled
+        // tag's stale chunk could satisfy. Both must surface as errors, not as
+        // an empty correlation with no diagnostic.
         if (incarnationAccessor == null) {
           throw new IllegalStateException(
               "datadog.HeapLiveObject events have no leakTagIncarnation accessor");
         }
+        if (leakTagAccessor == null) {
+          throw new IllegalStateException(
+              "datadog.HeapLiveObject events have no leakTag accessor");
+        }
         for (IItem item : iterable) {
-          long leakTag = leakTagAccessor != null
-              ? ReferenceChainAssertions.numberValue(leakTagAccessor.getMember(item)) : -1;
+          long leakTag =
+              ReferenceChainAssertions.numberValue(leakTagAccessor.getMember(item));
           long incarnation =
               ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item));
           // Leak tags are recycled: the tag alone is ambiguous across chunks.

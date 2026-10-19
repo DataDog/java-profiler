@@ -407,6 +407,10 @@ public final class LeakTagCorrelationScenario {
       System.out.println(NOISE_CHAIN_MARKER + best.noiseChains);
       return;
     }
+    // Marker order mirrors the evidence ranking in evidenceScore() below:
+    // out-of-pool (0) < unverified in-pool (1) < owner-verified in-pool (2) -
+    // report the weakest evidence first, and keep this cascade in lockstep with
+    // evidenceScore() if the ranking ever changes.
     if (best == null || best.payloadChain == null) {
       System.out.println(NOT_FOUND_MARKER);
       return;
@@ -550,7 +554,15 @@ public final class LeakTagCorrelationScenario {
     if (scan.payloadChain == null) {
       return -1;
     }
-    return scan.payloadChainInPool ? (scan.payloadChainOwnerVerified ? 2 : 1) : 0;
+    return evidenceRank(scan.payloadChainInPool, scan.payloadChainOwnerVerified);
+  }
+
+  // The single definition of the scan-evidence ranking: owner-verified in-pool (2)
+  // > unverified in-pool (1) > out-of-pool (0). scan()'s within-dump candidate
+  // selection and keepBest()'s cross-dump merge both derive from this, so a
+  // ranking change cannot leave one site disagreeing with the others.
+  private static int evidenceRank(boolean inPool, boolean ownerVerified) {
+    return inPool ? (ownerVerified ? 2 : 1) : 0;
   }
 
   private static void mergeDistinct(List<String> into, List<String> from) {
@@ -625,9 +637,9 @@ public final class LeakTagCorrelationScenario {
           // in-pool chain, then any in-pool one, over an out-of-pool one seen earlier.
           boolean ownerVerified =
               inPool && (liveOwners == null || liveOwners.containsKey(targetTag));
-          int score = inPool ? (ownerVerified ? 2 : 1) : 0;
+          int score = evidenceRank(inPool, ownerVerified);
           int currentScore = result.payloadChain == null ? -1
-              : result.payloadChainInPool ? (result.payloadChainOwnerVerified ? 2 : 1) : 0;
+              : evidenceRank(result.payloadChainInPool, result.payloadChainOwnerVerified);
           if (score > currentScore) {
             List<IMCType> chain = new ArrayList<>(rawChain.length);
             for (Object element : rawChain) {
@@ -657,11 +669,24 @@ public final class LeakTagCorrelationScenario {
             ReferenceChainAssertions.findAccessor(type, "objectClass");
         IMemberAccessor<?, IItem> incarnationAccessor =
             ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
+        // Fail loud if either identity field is missing, mirroring
+        // ThreadLocalLeakScenario's guard: without the tag every live object
+        // reads -1 and never matches, without the incarnation the match
+        // degrades to tag-only - both must surface as errors, not as an empty
+        // correlation with no diagnostic.
+        if (leakTagAccessor == null) {
+          throw new IllegalStateException(
+              "datadog.HeapLiveObject events have no leakTag accessor");
+        }
+        if (incarnationAccessor == null) {
+          throw new IllegalStateException(
+              "datadog.HeapLiveObject events have no leakTagIncarnation accessor");
+        }
         for (IItem item : iterable) {
-          long leakTag = leakTagAccessor != null
-              ? ReferenceChainAssertions.numberValue(leakTagAccessor.getMember(item)) : -1;
-          long incarnation = incarnationAccessor != null
-              ? ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item)) : -1;
+          long leakTag =
+              ReferenceChainAssertions.numberValue(leakTagAccessor.getMember(item));
+          long incarnation =
+              ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item));
           // Leak tags are recycled: the tag alone is ambiguous across chunks.
           if (leakTag != result.payloadChain.targetTag
               || incarnation != result.payloadChainIncarnation) {
