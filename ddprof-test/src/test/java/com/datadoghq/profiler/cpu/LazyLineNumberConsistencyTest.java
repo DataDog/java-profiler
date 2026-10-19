@@ -22,8 +22,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -52,6 +54,7 @@ public class LazyLineNumberConsistencyTest extends AbstractProcessProfilerTest {
         Path jvmtiRecording = Files.createTempFile("lazy-lines-jvmti-", ".jfr");
         try {
             AtomicLong lazyResolved = new AtomicLong(-1);
+            AtomicReference<String> malformed = new AtomicReference<>();
             LaunchResult result = launch("line-numbers", Collections.emptyList(),
                     "start," + LAZY + ",jfr,file=" + lazyRecording + ";start," + JVMTI + ",jfr,file=" + jvmtiRecording,
                     line -> {
@@ -59,12 +62,18 @@ public class LazyLineNumberConsistencyTest extends AbstractProcessProfilerTest {
                         // The first line is the lazy session's.
                         if (line.startsWith(prefix) && lazyResolved.get() < 0) {
                             String value = line.substring(prefix.length());
-                            lazyResolved.set("null".equals(value) ? 0 : Long.parseLong(value));
+                            try {
+                                lazyResolved.set("null".equals(value) ? 0 : Long.parseLong(value));
+                            } catch (NumberFormatException e) {
+                                // Reported below; an unset count would only skip the test.
+                                malformed.compareAndSet(null, line);
+                            }
                         }
                         return LineConsumerResult.CONTINUE;
                     }, null);
             assertTrue(result.inTime, "child JVM did not finish in time");
             assertEquals(0, result.exitCode, "child JVM failed");
+            assertNull(malformed.get(), "unparsable counter line from the child JVM");
             // Lazy mode falls back to partial mode where it cannot run (e.g. no JFR trace IDs);
             // its frames still come from VM metadata, but the counter stays 0.
             Assumptions.assumeTrue(lazyResolved.get() > 0, "lazy mode resolved no raw frames");

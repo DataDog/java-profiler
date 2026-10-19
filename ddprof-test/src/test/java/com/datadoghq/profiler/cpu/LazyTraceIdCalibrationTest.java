@@ -16,8 +16,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -38,6 +40,7 @@ public class LazyTraceIdCalibrationTest extends AbstractProcessProfilerTest {
     public void calibratesWhenLowProbeDimensionsAlreadyExist() throws Exception {
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9() || Platform.isGraal(), "HotSpot only");
         AtomicLong offset = new AtomicLong(Long.MIN_VALUE);
+        AtomicReference<String> malformed = new AtomicReference<>();
         Path recording = Files.createTempFile("lazy-calibration-", ".jfr");
         LaunchResult result;
         try {
@@ -46,7 +49,12 @@ public class LazyTraceIdCalibrationTest extends AbstractProcessProfilerTest {
                     if (line.startsWith(PREFIX)) {
                         String value = line.substring(PREFIX.length()).split(" ")[0];
                         if (!"null".equals(value)) {
-                            offset.set(Long.parseLong(value));
+                            try {
+                                offset.set(Long.parseLong(value));
+                            } catch (NumberFormatException e) {
+                                // Reported below; an unset offset would only skip the test.
+                                malformed.compareAndSet(null, line);
+                            }
                         }
                     }
                     return LineConsumerResult.CONTINUE;
@@ -56,6 +64,7 @@ public class LazyTraceIdCalibrationTest extends AbstractProcessProfilerTest {
         }
         assertTrue(result.inTime, "child JVM did not finish in time");
         assertEquals(0, result.exitCode, "child JVM failed");
+        assertNull(malformed.get(), "unparsable offset line from the child JVM");
         Assumptions.assumeTrue(offset.get() != Long.MIN_VALUE, "build without debug counters");
         // Without JFR (e.g. 8u before 8u262) there is no trace ID to find.
         Assumptions.assumeTrue(Platform.hasJfr(), "JDK without JFR");
