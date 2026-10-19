@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "hotspot/unloadCapture.h"
 #include "common.h"
 #include "vmEntry.h"
 #include "arguments.h"
@@ -451,6 +452,11 @@ bool VM::initializeRequestStackTrace() {
 // both static callbacks. Order is irrelevant (each only does lock-free
 // bookkeeping); LivenessTracker's callback keeps its own
 // initCurrentThreadSignalSafe() behavior.
+void JNICALL ForwardedGarbageCollectionStart(jvmtiEnv *jvmti_env) {
+  UnloadCapture::GarbageCollectionStart(jvmti_env);
+  ReferenceChainTracker::GarbageCollectionStart(jvmti_env);
+}
+
 void JNICALL ForwardedGarbageCollectionFinish(jvmtiEnv *jvmti_env) {
   LivenessTracker::GarbageCollectionFinish(jvmti_env);
   ReferenceChainTracker::GarbageCollectionFinish(jvmti_env);
@@ -530,7 +536,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.ThreadStart = Profiler::ThreadStart;
   callbacks.ThreadEnd = Profiler::ThreadEnd;
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
-  callbacks.GarbageCollectionStart = ReferenceChainTracker::GarbageCollectionStart;
+  callbacks.GarbageCollectionStart = ForwardedGarbageCollectionStart;
   callbacks.GarbageCollectionFinish = ForwardedGarbageCollectionFinish;
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));

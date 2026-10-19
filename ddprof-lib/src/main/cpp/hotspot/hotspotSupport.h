@@ -158,7 +158,7 @@ private:
 
     // The tag to store with a lazy-mode raw frame of `method`; false if the
     // holder's trace ID is unreadable. Signal safe.
-    static bool lazyFrameTag(const VMMethod* method, uint32_t* tag);
+    static bool lazyFrameTag(const VMMethod* method, uint32_t* tag, const void** holder = nullptr);
 
     // fjmethodid=lazy: records `klass` in _klass_registry instead of
     // allocating its jmethodIDs. Called wherever the other modes preload.
@@ -187,7 +187,7 @@ private:
     // are only used as lookup keys.
     static bool resolveViaRegistry(ProfiledThread* prof_thread, VMMethod* vm_method,
                                    const void* holder, int idnum, uint32_t trace_id_bits,
-                                   ResolvedMethod& result);
+                                   ResolvedMethod& result, bool count = true);
 
     // The raw metadata walk behind resolve(): names, signature, Thread.run
     // detection and line number table of `method`. Must run with crash
@@ -334,6 +334,19 @@ public:
     // unknown: the JMETHODID_NOT_WALKABLE sentinel, metadata that is stale or
     // unreadable, or a lazy-mode frame the class registry refuses.
     static bool resolve(const void* tagged_method, int bci, ResolvedMethod& result);
+
+    // PROTOTYPE (UnloadCapture): reads `method`'s names under crash protection
+    // if its holder's trace ID still matches `tag` and it is one of the
+    // holder's current methods. No JNI, no JVMTI, no locks: callable from a
+    // GarbageCollectionStart callback.
+    static bool captureMethod(ProfiledThread* prof_thread, const void* method, uint32_t tag,
+                              ResolvedMethod& result);
+
+    // PROTOTYPE (UnloadCapture background drain): resolve() for a lazy
+    // (Method*, tag) pair, pinning the class through the registry, without
+    // touching the method_resolve_lazy_* counters. Needs an attached thread.
+    static bool capturePinned(ProfiledThread* prof_thread, const void* method, uint32_t tag,
+                              ResolvedMethod& result);
 
     // Store a Java frame captured from HotSpot metadata. A null jmethodID
     // triggers the raw Method* fallback only when fjmethodid=false; with
