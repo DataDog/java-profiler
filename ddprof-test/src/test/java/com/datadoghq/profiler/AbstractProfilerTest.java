@@ -5,6 +5,7 @@
 
 package com.datadoghq.profiler;
 
+import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -147,7 +148,7 @@ public abstract class AbstractProfilerTest {
 
   private static long getPid() {
     try {
-      String name = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
+      String name = ManagementFactory.getRuntimeMXBean().getName();
       return Long.parseLong(name.split("@")[0]);
     } catch (NumberFormatException e) {
       return 0L;

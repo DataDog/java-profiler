@@ -25,6 +25,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.lang.reflect.Method;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -84,7 +85,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   @Override
   protected String getProfilerCommand() {
     String testName = testInfo != null
-        ? testInfo.getTestMethod().map(java.lang.reflect.Method::getName).orElse("")
+        ? testInfo.getTestMethod().map(Method::getName).orElse("")
         : "";
     if ("shouldReconstructReferrerChainToGcRoot".equals(testName)
         || "shouldReconstructReferrerChainThroughUnboundedCacheLeak".equals(testName)) {

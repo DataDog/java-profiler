@@ -13,6 +13,7 @@ import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.item.IType;
+import org.openjdk.jmc.common.item.ItemFilters;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
 import java.io.InputStream;
@@ -370,7 +371,7 @@ public final class ThreadLocalLeakScenario {
     ScanResult result = new ScanResult();
 
     IItemCollection chains = events.apply(
-        org.openjdk.jmc.common.item.ItemFilters.type("datadog.ReferenceChain"));
+        ItemFilters.type("datadog.ReferenceChain"));
     for (IItemIterable iterable : chains) {
       IType<IItem> type = iterable.getType();
       IMemberAccessor<?, IItem> chainAccessor =
@@ -432,7 +433,7 @@ public final class ThreadLocalLeakScenario {
 
     if (result.payloadChainInPool) {
       IItemCollection liveObjects = events.apply(
-          org.openjdk.jmc.common.item.ItemFilters.type("datadog.HeapLiveObject"));
+          ItemFilters.type("datadog.HeapLiveObject"));
       for (IItemIterable iterable : liveObjects) {
         IType<IItem> type = iterable.getType();
         IMemberAccessor<?, IItem> leakTagAccessor =

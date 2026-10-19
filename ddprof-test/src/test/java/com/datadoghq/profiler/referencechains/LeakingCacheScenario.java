@@ -8,7 +8,11 @@ package com.datadoghq.profiler.referencechains;
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.openjdk.jmc.common.IMCType;
+import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.item.IItemIterable;
+import org.openjdk.jmc.common.item.IMemberAccessor;
+import org.openjdk.jmc.common.item.IType;
 import org.openjdk.jmc.common.item.ItemFilters;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
@@ -243,15 +247,15 @@ public final class LeakingCacheScenario {
       IItemCollection abandoned = events.apply(ItemFilters.type("datadog.ReferenceChainAbandoned"));
       long totalAbandoned = abandoned.stream().mapToLong(it -> it.getItemCount()).sum();
       System.out.println("[debug] datadog.ReferenceChainAbandoned total events: " + totalAbandoned);
-      for (org.openjdk.jmc.common.item.IItemIterable iterable : chains) {
-        org.openjdk.jmc.common.item.IType<org.openjdk.jmc.common.item.IItem> type = iterable.getType();
-        org.openjdk.jmc.common.item.IMemberAccessor<?, org.openjdk.jmc.common.item.IItem> chainAccessor =
+      for (IItemIterable iterable : chains) {
+        IType<IItem> type = iterable.getType();
+        IMemberAccessor<?, IItem> chainAccessor =
             ReferenceChainAssertions.findAccessor(type, "chain");
         if (chainAccessor == null) {
           System.out.println("[debug] no chain accessor found");
           continue;
         }
-        for (org.openjdk.jmc.common.item.IItem item : iterable) {
+        for (IItem item : iterable) {
           Object chainValue = chainAccessor.getMember(item);
           if (chainValue instanceof Object[]) {
             Object[] raw = (Object[]) chainValue;
