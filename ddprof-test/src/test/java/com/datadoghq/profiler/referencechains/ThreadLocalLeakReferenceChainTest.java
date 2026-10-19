@@ -61,7 +61,7 @@ public class ThreadLocalLeakReferenceChainTest extends AbstractProcessProfilerTe
       String packedCommand = startCommand + "|||" + scratchDumpPath.toAbsolutePath();
 
       List<String> jvmArgs = Collections.singletonList(
-          "-Dddprof_test.config=" + System.getProperty("ddprof_test.config"));
+          "-Dddprof_test.config=" + ReferenceChainAssertions.requiredTestConfig());
 
       AtomicReference<String> resultLine = new AtomicReference<>();
       LaunchResult result = launch("threadlocal-leak", jvmArgs, packedCommand,
@@ -139,7 +139,7 @@ public class ThreadLocalLeakReferenceChainTest extends AbstractProcessProfilerTe
       String packedCommand = startCommand + "|||" + scratchDumpPath.toAbsolutePath();
 
       List<String> jvmArgs = Collections.singletonList(
-          "-Dddprof_test.config=" + System.getProperty("ddprof_test.config"));
+          "-Dddprof_test.config=" + ReferenceChainAssertions.requiredTestConfig());
 
       AtomicReference<String> resultLine = new AtomicReference<>();
       LaunchResult result = launch("threadlocal-leak-late", jvmArgs, packedCommand,

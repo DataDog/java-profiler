@@ -51,6 +51,22 @@ public final class ReferenceChainAssertions {
     return config != null && ("debug".equals(config) || config.endsWith("san"));
   }
 
+  /**
+   * The {@code ddprof_test.config} value ProfilerTestPlugin.kt sets on every test&lt;config&gt; task.
+   * Launchers forwarding it to a child JVM must fail loud when it is unset (a test run directly
+   * from an IDE, outside the Gradle tasks) instead of concatenating the literal "null", which the
+   * child would silently classify as a release build and take the unseeded, flakier path.
+   */
+  public static String requiredTestConfig() {
+    String config = System.getProperty("ddprof_test.config");
+    if (config == null) {
+      throw new IllegalStateException(
+          "ddprof_test.config is not set; run via a test<config> Gradle task so the child "
+              + "JVM sees the right build configuration");
+    }
+    return config;
+  }
+
   /** Result of {@link #findMatchForClass(IItemCollection, Class)}: one resolved chain event's fields. */
   public static final class ChainMatch {
     public final List<IMCType> chain;

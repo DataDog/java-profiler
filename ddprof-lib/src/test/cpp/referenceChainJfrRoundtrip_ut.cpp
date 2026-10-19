@@ -321,12 +321,18 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     // serializes into the T_CLASS checkpoint - this is the exact API
     // Profiler::lookupClass() already-existing tests use (e.g.
     // referenceChains_ut.cpp's ReconstructsChainForSyntheticGraph).
+    // The constants feed both the lookup and the .expected sidecar below, so
+    // the companion Java parser test reads the seeded values from a single
+    // source instead of duplicating them.
+    static constexpr const char *kLeafClass = "com/test/ChainLeaf";
+    static constexpr const char *kMiddleClass = "com/test/ChainMiddle";
+    static constexpr const char *kRootClass = "com/test/ChainRoot";
     int leafKlass = Profiler::instance()->lookupClass(
-        "com/test/ChainLeaf", strlen("com/test/ChainLeaf"));
+        kLeafClass, strlen(kLeafClass));
     int middleKlass = Profiler::instance()->lookupClass(
-        "com/test/ChainMiddle", strlen("com/test/ChainMiddle"));
+        kMiddleClass, strlen(kMiddleClass));
     int rootKlass = Profiler::instance()->lookupClass(
-        "com/test/ChainRoot", strlen("com/test/ChainRoot"));
+        kRootClass, strlen(kRootClass));
     ASSERT_NE(-1, leafKlass);
     ASSERT_NE(-1, middleKlass);
     ASSERT_NE(-1, rootKlass);
@@ -386,6 +392,29 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
         // middleKlass/rootKlass resolvable to their names at all), patches
         // the chunk header's size/cpool-offset fields, and closes fd - the
         // same finalization every real recording chunk goes through.
+    }
+
+    // The values this test seeds, written next to the recording: the companion
+    // Java parser test (ReferenceChainJfrParserTest) asserts against this
+    // sidecar instead of hard-coding them, so a change to the seeding shows
+    // up as a deliberate gtest-only diff rather than an opaque assertion
+    // failure in the other module. The Java side maps the slashed internal
+    // names to JMC's dotted IMCType full names.
+    {
+        std::string expectedPath = path + ".expected";
+        FILE *expected = fopen(expectedPath.c_str(), "w");
+        ASSERT_NE(nullptr, expected) << "could not open " << expectedPath;
+        fprintf(expected, "chain.length=%d\n", 3);
+        fprintf(expected, "chain.0=%s\n", kLeafClass);
+        fprintf(expected, "chain.1=%s\n", kMiddleClass);
+        fprintf(expected, "chain.2=%s\n", kRootClass);
+        fprintf(expected, "edges.0=field\n");
+        fprintf(expected, "edges.1=element\n");
+        fprintf(expected, "edges.2=jni_global\n");
+        fprintf(expected, "targetTag=%lld\n", (long long)event._target_tag);
+        fprintf(expected, "depth=%u\n", event._depth);
+        fprintf(expected, "leakTagIncarnation=%u\n", event._leak_tag_incarnation);
+        fclose(expected);
     }
 
     FILE *f = fopen(path.c_str(), "rb");

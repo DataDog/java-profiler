@@ -127,7 +127,7 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
       String packedCommand = startCommand + "|||" + scratchDumpPath.toAbsolutePath();
 
       List<String> jvmArgs = Collections.singletonList(
-          "-Dddprof_test.config=" + System.getProperty("ddprof_test.config"));
+          "-Dddprof_test.config=" + ReferenceChainAssertions.requiredTestConfig());
 
       AtomicReference<String> resultLine = new AtomicReference<>();
       // Level 2 is required for the FRONTIER-selection TEST_LOG line (rcDebugLevel.h); the

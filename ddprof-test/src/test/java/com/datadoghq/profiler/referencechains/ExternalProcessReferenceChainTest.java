@@ -75,8 +75,10 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
 
       // ddprof_test.config is set on the Test task by ProfilerTestPlugin.kt and is not inherited
       // by a ProcessBuilder-launched child; the scenario needs it for its debug-only seeding.
+      // requiredTestConfig() also fails loud when the property is unset instead of forwarding
+      // the literal "null", which the child would classify as a release build.
       List<String> jvmArgs = Collections.singletonList(
-          "-Dddprof_test.config=" + System.getProperty("ddprof_test.config"));
+          "-Dddprof_test.config=" + ReferenceChainAssertions.requiredTestConfig());
 
       AtomicReference<String> resultLine = new AtomicReference<>();
       LaunchResult result = launch("leak-cache", jvmArgs, packedCommand,
@@ -147,7 +149,7 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
       String packedCommand = startCommand + "|||" + scratchDumpPath.toAbsolutePath();
 
       List<String> jvmArgs = new ArrayList<>();
-      jvmArgs.add("-Dddprof_test.config=" + System.getProperty("ddprof_test.config"));
+      jvmArgs.add("-Dddprof_test.config=" + ReferenceChainAssertions.requiredTestConfig());
       // --add-opens: the scenario reflects into Collections$SynchronizedList.list and
       // ArrayList.elementData to check its holders' expansion state before creating lateChunk.
       // JDK 8 has no module system (that reflection needs no opening) and rejects the option.
@@ -178,9 +180,9 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
       assertTrue(result.inTime, "Child process did not exit within the wait timeout");
       assertEquals(0, result.exitCode, "Child process exited with a non-zero code");
       // The scenario's native test seams are compiled into every -DDEBUG build (debug/asan/tsan),
-      // so the strong seam path must be taken on exactly those configs.
-      String config = System.getProperty("ddprof_test.config");
-      boolean expectSeams = config != null && ("debug".equals(config) || config.endsWith("san"));
+      // so the strong seam path must be taken on exactly those configs - the same single
+      // encoding the child itself uses, not an independent string match here.
+      boolean expectSeams = ReferenceChainAssertions.isDebugInstrumentedBuild();
       assertEquals(StaticFieldGrowingCollectionScenario.SEAM_PATH_MARKER + expectSeams,
           seamPathLine.get(),
           "scenario's seam-path predicate must match the native -DDEBUG build set");

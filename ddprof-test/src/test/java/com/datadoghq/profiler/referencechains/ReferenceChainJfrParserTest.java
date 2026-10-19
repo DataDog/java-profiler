@@ -68,6 +68,18 @@ public class ReferenceChainJfrParserTest {
         "Expected " + jfrPath + " to exist - run "
             + ":ddprof-lib:gtestDebug_referenceChainJfrRoundtrip_ut first "
             + "(referenceChainJfrRoundtrip_ut.cpp produces this file).");
+    // The seeded values the companion gtest wrote next to the recording - the
+    // single source of truth for this test's expectations, so the producer and
+    // this consumer cannot drift apart silently.
+    Path expectedPath = Paths.get(configured + ".expected");
+    Assumptions.assumeTrue(Files.exists(expectedPath),
+        "Expected " + expectedPath + " to exist - run "
+            + ":ddprof-lib:gtestDebug_referenceChainJfrRoundtrip_ut first "
+            + "(referenceChainJfrRoundtrip_ut.cpp produces this sidecar).");
+    java.util.Properties expected = new java.util.Properties();
+    try (InputStream in = Files.newInputStream(expectedPath)) {
+      expected.load(in);
+    }
 
     IItemCollection events;
     try (InputStream in = Files.newInputStream(jfrPath)) {
@@ -121,15 +133,16 @@ public class ReferenceChainJfrParserTest {
             "'edges' field resolved to " + edgesValue.getClass()
                 + ", expected an array");
         Object[] rawEdges = (Object[]) edgesValue;
-        assertEquals(3, rawEdges.length, "edges must align with the chain, one label per hop");
+        assertEquals(expectedInt(expected, "chain.length"), rawEdges.length,
+            "edges must align with the chain, one label per hop");
         for (Object e : rawEdges) {
           assertTrue(e instanceof String,
               "edges[] element resolved to " + (e == null ? "null" : e.getClass())
                   + ", expected a String");
         }
-        assertEquals("field", rawEdges[0]);
-        assertEquals("element", rawEdges[1]);
-        assertEquals("jni_global", rawEdges[2]);
+        assertEquals(expected.getProperty("edges.0"), rawEdges[0]);
+        assertEquals(expected.getProperty("edges.1"), rawEdges[1]);
+        assertEquals(expected.getProperty("edges.2"), rawEdges[2]);
         if (targetTagAccessor != null) {
           Object v = targetTagAccessor.getMember(item);
           if (v instanceof Number) {
@@ -155,17 +168,31 @@ public class ReferenceChainJfrParserTest {
     }
 
     assertNotNull(resolvedChain, "Never iterated a " + EVENT_TYPE + " item");
-    assertEquals(3, resolvedChain.size(), "Expected leaf/middle/root - 3 entries");
+    assertEquals(expectedInt(expected, "chain.length"), resolvedChain.size(),
+        "Expected leaf/middle/root - as many entries as the gtest seeded");
     // Leaf-to-root order, matching ReferenceChainTracker::buildChainEvent()'s
     // FrontierTable::reconstructChain() contract and the gtest's insert() calls
-    // (tag=3 leaf -> tag=2 middle -> tag=1 root).
-    assertEquals("com.test.ChainLeaf", resolvedChain.get(0).getFullName());
-    assertEquals("com.test.ChainMiddle", resolvedChain.get(1).getFullName());
-    assertEquals("com.test.ChainRoot", resolvedChain.get(2).getFullName());
-    assertEquals(3L, targetTag, "targetTag should be the leaf's frontier tag (3)");
-    assertEquals(2, depth, "depth should be the leaf's own depth (2 hops from the root)");
-    assertEquals(5L, leakTagIncarnation,
-        "leakTagIncarnation should carry the event's ownership stamp (5)");
+    // (tag=3 leaf -> tag=2 middle -> tag=1 root). The sidecar carries the gtest's
+    // slashed internal names; JMC renders IMCType full names with dots.
+    for (int i = 0; i < resolvedChain.size(); i++) {
+      assertEquals(expected.getProperty("chain." + i).replace('/', '.'),
+          resolvedChain.get(i).getFullName(),
+          "chain[" + i + "] must be the gtest's seeded class in leaf-to-root order");
+    }
+    assertEquals(expectedLong(expected, "targetTag"), targetTag,
+        "targetTag should be the leaf's frontier tag the gtest seeded");
+    assertEquals(expectedInt(expected, "depth"), depth,
+        "depth should be the leaf's own depth the gtest seeded");
+    assertEquals(expectedLong(expected, "leakTagIncarnation"), leakTagIncarnation,
+        "leakTagIncarnation should carry the event's ownership stamp the gtest seeded");
+  }
+
+  private static int expectedInt(java.util.Properties expected, String key) {
+    return Integer.parseInt(expected.getProperty(key));
+  }
+
+  private static long expectedLong(java.util.Properties expected, String key) {
+    return Long.parseLong(expected.getProperty(key));
   }
 
   private static long longValue(Object v) {
