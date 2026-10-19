@@ -120,6 +120,10 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
           "The passes that just ran must still have had zero per-klass candidates - the "
               + "aggregate urgent-OOM projection was the only possible trigger");
     } finally {
+      // Reset the ring while recording is still disabled so the restore below cannot
+      // let a real GC interleave a sample with the reset, and so the next test in this
+      // JVM does not inherit this test's seeded samples into its secondsToOOM().
+      ReferenceChainTestHooks.heapFloorResetForTest0();
       ReferenceChainTestHooks.setMaxHeapBytesForTest0(-1);
       ReferenceChainTestHooks.setHeapFloorRecordingForTest0(true);
     }
@@ -151,6 +155,8 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
           "Expected the search-restart gate to stay closed: no heap growth and no per-klass "
               + "candidate give hasLeakSignal() nothing to trust");
     } finally {
+      // Same order as the seeding test above: ring reset first, still disabled.
+      ReferenceChainTestHooks.heapFloorResetForTest0();
       ReferenceChainTestHooks.setMaxHeapBytesForTest0(-1);
       ReferenceChainTestHooks.setHeapFloorRecordingForTest0(true);
     }

@@ -76,6 +76,12 @@ final class PersistentAllocator implements AutoCloseable {
       throw new IllegalStateException("allocator thread " + thread.getName() + " is no longer running");
     }
     try {
+      // A previous run() that timed out left its outcome in the slot (the worker
+      // finishes the abandoned task and offers into the then-empty queue). Drop it
+      // before the handoff so it can never be attributed to this task: the worker is
+      // parked at handoff.take() at this point, so nothing new can arrive between
+      // the clear and the rendezvous.
+      completion.clear();
       if (!handoff.offer(task, HANDOFF_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
         throw new IllegalStateException("allocator thread " + thread.getName() + " did not accept a task");
       }

@@ -526,13 +526,31 @@ public final class LeakTagCorrelationScenario {
     if (scan == null) {
       return best;
     }
-    ScanResult result = scan.payloadChain != null || best == null ? scan : best;
+    if (best == null) {
+      return scan;
+    }
+    // Same evidence ranking scan() applies within one dump: an owner-verified
+    // in-pool chain (2) outranks an unverified in-pool one (1), which outranks
+    // any out-of-pool chain (0). A later scan only wins on equal or better
+    // evidence, so noise churn and tag recycling cannot displace the
+    // best-evidenced correlation mid-run.
+    int bestScore = evidenceScore(best);
+    int scanScore = evidenceScore(scan);
+    ScanResult result = scanScore > bestScore || (scanScore == bestScore
+        && scan.payloadChain != null) ? scan : best;
     ScanResult other = result == scan ? best : scan;
     if (other != null) {
       mergeDistinct(result.transientViolations, other.transientViolations);
       mergeDistinct(result.noiseChains, other.noiseChains);
     }
     return result;
+  }
+
+  private static int evidenceScore(ScanResult scan) {
+    if (scan.payloadChain == null) {
+      return -1;
+    }
+    return scan.payloadChainInPool ? (scan.payloadChainOwnerVerified ? 2 : 1) : 0;
   }
 
   private static void mergeDistinct(List<String> into, List<String> from) {

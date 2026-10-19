@@ -92,6 +92,16 @@ public final class ReferenceChainTestHooks {
     }
 
     /**
+     * Clears the heap-floor ring seeded via {@link #heapFloorRecordForTest0(long, long)} so
+     * the next test in the same JVM starts from an empty ring. Call before the
+     * {@link #setHeapFloorRecordingForTest0(boolean)} restore, while recording is still
+     * disabled, so a real GC cannot interleave a sample with the reset.
+     */
+    public static void heapFloorResetForTest0() {
+        JavaProfiler.heapFloorResetForTest0();
+    }
+
+    /**
      * Not a read-only query: under the native engine lock the gate may account a completed
      * search's pain and restart/reset terminal search state.
      */

@@ -332,10 +332,19 @@ public final class ThreadLocalLeakScenario {
     if (scan == null) {
       return best;
     }
-    if (scan.payloadChain != null) {
+    if (best == null || best.payloadChain == null) {
       return scan;
     }
-    return best != null ? best : scan;
+    if (scan.payloadChain == null) {
+      return best;
+    }
+    // Mirror scan()'s own within-scan preference: an in-pool (correlated)
+    // chain outranks an out-of-pool one no matter which scan observed it, so
+    // a later out-of-pool chain cannot displace an earlier correlated one.
+    if (best.payloadChainInPool != scan.payloadChainInPool) {
+      return best.payloadChainInPool ? best : scan;
+    }
+    return scan;
   }
 
   /**
@@ -397,8 +406,21 @@ public final class ThreadLocalLeakScenario {
           }
           result.payloadChain = new ReferenceChainAssertions.ChainMatch(chain, targetTag, 0);
           result.payloadChainInPool = inPool;
-          result.payloadChainIncarnation = incarnationAccessor != null
-              ? ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item)) : -1;
+          // The (tag, incarnation) pair is the chain's identity; an unresolved
+          // -1 stamp must fail loud rather than degrade to tag-only matching,
+          // which a recycled tag's chunk could satisfy.
+          if (incarnationAccessor == null) {
+            throw new IllegalStateException(
+                "datadog.ReferenceChain events have no leakTagIncarnation accessor");
+          }
+          long chainIncarnation =
+              ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item));
+          if (chainIncarnation == -1) {
+            throw new IllegalStateException(
+                "chain leakTagIncarnation is not a numeric value; "
+                    + "tag-only correlation is ambiguous across recycled tags");
+          }
+          result.payloadChainIncarnation = chainIncarnation;
         }
       }
     }
@@ -414,13 +436,24 @@ public final class ThreadLocalLeakScenario {
             ReferenceChainAssertions.findAccessor(type, "objectClass");
         IMemberAccessor<?, IItem> incarnationAccessor =
             ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
+        // Fail loud if the field is missing: without it every live object
+        // reads -1 and the correlation below would degrade to tag-only
+        // matching, which a recycled tag's stale chunk could satisfy.
+        if (incarnationAccessor == null) {
+          throw new IllegalStateException(
+              "datadog.HeapLiveObject events have no leakTagIncarnation accessor");
+        }
         for (IItem item : iterable) {
           long leakTag = leakTagAccessor != null
               ? ReferenceChainAssertions.numberValue(leakTagAccessor.getMember(item)) : -1;
-          long incarnation = incarnationAccessor != null
-              ? ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item)) : -1;
+          long incarnation =
+              ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item));
           // Leak tags are recycled: the tag alone is ambiguous across chunks.
-          if (leakTag != result.payloadChain.targetTag
+          // An unresolved -1 incarnation is a hard mismatch, never a tag-only
+          // match: a stale chunk that inherited the recycled tag must not
+          // count as this chain's live object.
+          if (incarnation == -1
+              || leakTag != result.payloadChain.targetTag
               || incarnation != result.payloadChainIncarnation) {
             continue;
           }
