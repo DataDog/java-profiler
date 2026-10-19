@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-10-19 09:36:00 EDT
+**Date:** 2026-10-19 12:22:24 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 93 |
-| Sample Rate | 1.55/sec |
-| Health Score | 97% |
+| CPU Samples | 97 |
+| Sample Rate | 1.62/sec |
+| Health Score | 101% |
 | Threads | 9 |
 | Allocations | 0 |
 
@@ -38,9 +38,9 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 130 |
-| Sample Rate | 2.17/sec |
-| Health Score | 136% |
+| CPU Samples | 117 |
+| Sample Rate | 1.95/sec |
+| Health Score | 122% |
 | Threads | 12 |
 | Allocations | 0 |
 
@@ -48,26 +48,26 @@ title: glibc-arm64-hotspot-jdk8
 <summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1792416519 51
-1792416524 51
-1792416529 51
-1792416534 51
-1792416539 51
-1792416544 51
-1792416549 51
-1792416554 51
-1792416559 51
-1792416564 51
-1792416569 51
-1792416574 51
-1792416580 51
-1792416585 51
-1792416590 51
-1792416595 51
-1792416600 51
-1792416605 51
-1792416610 51
-1792416615 51
+1792426646 51
+1792426651 51
+1792426656 51
+1792426661 51
+1792426666 51
+1792426671 51
+1792426676 51
+1792426681 51
+1792426686 51
+1792426691 51
+1792426696 51
+1792426701 51
+1792426706 51
+1792426711 51
+1792426716 51
+1792426721 51
+1792426726 51
+1792426731 51
+1792426736 51
+1792426741 51
 ```
 </details>
 
