@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk8
 
 ## musl-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-10-19 14:36:21 EDT
+**Date:** 2026-10-19 15:32:49 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 396 |
-| Sample Rate | 6.60/sec |
-| Health Score | 412% |
-| Threads | 9 |
+| CPU Samples | 203 |
+| Sample Rate | 3.38/sec |
+| Health Score | 211% |
+| Threads | 6 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 451 |
-| Sample Rate | 7.52/sec |
-| Health Score | 470% |
-| Threads | 9 |
+| CPU Samples | 445 |
+| Sample Rate | 7.42/sec |
+| Health Score | 464% |
+| Threads | 11 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 76-78 cores)</summary>
 
 ```
-1792434684 78
-1792434689 78
-1792434694 78
-1792434699 78
-1792434704 76
-1792434709 76
-1792434714 76
-1792434719 76
-1792434724 76
-1792434729 76
-1792434734 76
-1792434739 76
-1792434744 76
-1792434749 76
-1792434754 76
-1792434759 76
-1792434764 76
-1792434769 76
-1792434774 76
-1792434779 76
+1792438000 78
+1792438005 78
+1792438010 78
+1792438015 78
+1792438020 78
+1792438025 78
+1792438030 78
+1792438035 78
+1792438040 78
+1792438045 78
+1792438050 78
+1792438055 78
+1792438060 78
+1792438065 78
+1792438070 78
+1792438075 78
+1792438080 76
+1792438085 76
+1792438090 76
+1792438095 76
 ```
 </details>
 
