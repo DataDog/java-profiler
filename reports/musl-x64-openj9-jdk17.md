@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk17
 
 ## musl-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-10-18 05:54:43 EDT
+**Date:** 2026-10-18 21:23:48 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 501 |
-| Sample Rate | 8.35/sec |
-| Health Score | 522% |
+| CPU Samples | 578 |
+| Sample Rate | 9.63/sec |
+| Health Score | 602% |
 | Threads | 9 |
-| Allocations | 388 |
+| Allocations | 350 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 590 |
-| Sample Rate | 9.83/sec |
-| Health Score | 614% |
+| CPU Samples | 827 |
+| Sample Rate | 13.78/sec |
+| Health Score | 861% |
 | Threads | 11 |
-| Allocations | 502 |
+| Allocations | 466 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 66-66 cores)</summary>
 
 ```
-1792316922 66
-1792316927 66
-1792316932 66
-1792316937 66
-1792316942 66
-1792316947 66
-1792316952 66
-1792316957 66
-1792316962 66
-1792316967 66
-1792316972 66
-1792316977 66
-1792316982 66
-1792316987 66
-1792316992 66
-1792316997 66
-1792317002 66
-1792317007 66
-1792317012 66
-1792317017 66
+1792372765 66
+1792372770 66
+1792372775 66
+1792372780 66
+1792372785 66
+1792372790 66
+1792372795 66
+1792372800 66
+1792372805 66
+1792372810 66
+1792372815 66
+1792372820 66
+1792372825 66
+1792372830 66
+1792372835 66
+1792372840 66
+1792372846 66
+1792372851 66
+1792372856 66
+1792372861 66
 ```
 </details>
 
