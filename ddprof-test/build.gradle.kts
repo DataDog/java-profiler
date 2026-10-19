@@ -63,9 +63,25 @@ dependencies {
 // Additional test task configuration beyond what the plugin provides
 // The plugin creates Test tasks on glibc/macOS and Exec tasks on musl
 // Both need the native test library to be built first
+val referenceChainRoundtripJfr =
+  rootProject.layout.buildDirectory
+    .file("tmp/reference-chain-roundtrip/datadog_reference_chain_roundtrip.jfr")
+    .get()
+    .asFile
+val skipGtest = project.hasProperty("skip-gtest")
 tasks.matching { it.name.startsWith("test") && it.name != "test" }.configureEach {
   // Ensure native test library is built before running tests
   dependsOn(":ddprof-test-native:linkLib")
+
+  // Written by :ddprof-lib's referenceChainJfrRoundtrip_ut gtest (same path, see
+  // ddprof-lib/build.gradle.kts) and read by ReferenceChainJfrParserTest.
+  val jfr = referenceChainRoundtripJfr
+  (this as? ProcessForkOptions)?.environment("DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR", jfr.absolutePath)
+  if (skipGtest) {
+    // The producing gtest does not run in this invocation: drop any file from an earlier one
+    // so the parser test skips instead of checking a stale recording.
+    doFirst { jfr.delete() }
+  }
 }
 
 // Disable the default 'test' task - we use config-specific tasks instead

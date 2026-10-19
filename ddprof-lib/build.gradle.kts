@@ -72,6 +72,26 @@ gtest {
   failFast.set(true)
 }
 
+// referenceChainJfrRoundtrip_ut writes a .jfr that :ddprof-test's ReferenceChainJfrParserTest
+// reads back. Both sides get the path from this env var (set here and in ddprof-test's
+// build.gradle.kts), and the producer deletes the file before it runs, so the consumer never
+// parses a recording left behind by an older binary.
+val referenceChainRoundtripJfr =
+  rootProject.layout.buildDirectory
+    .file("tmp/reference-chain-roundtrip/datadog_reference_chain_roundtrip.jfr")
+    .get()
+    .asFile
+tasks.withType<Exec>().matching {
+  it.name.startsWith("gtest") && it.name.endsWith("_referenceChainJfrRoundtrip_ut")
+}.configureEach {
+  val jfr = referenceChainRoundtripJfr
+  environment("DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR", jfr.absolutePath)
+  doFirst {
+    jfr.parentFile.mkdirs()
+    jfr.delete()
+  }
+}
+
 java {
   sourceCompatibility = JavaVersion.VERSION_1_8
   targetCompatibility = JavaVersion.VERSION_1_8
