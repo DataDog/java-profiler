@@ -14,6 +14,7 @@
 #include "event.h"
 #include "spinLock.h"
 #include "xorshift.h"
+#include <assert.h>
 #include <atomic>
 #include <jvmti.h>
 #include <pthread.h>
@@ -1572,10 +1573,24 @@ public:
   // heapFloorRecordForTest() leaves "used" values behind that the next
   // test in the same JVM would otherwise inherit into its secondsToOOM()
   // projection. storeRelease() matches recordHeapFloorSampleUnchecked()'s
-  // own publication of these indices; call while heap-floor recording is
-  // disabled (the state every seeding test already holds) so a concurrent
-  // real recordHeapFloorSample() cannot interleave with the reset.
+  // own publication of these indices. The two index stores are not atomic
+  // as a pair - a concurrent reader could observe a torn old-fill/new-head
+  // window, and no store ordering closes that (seeing the first store's new
+  // value while the second is still old is possible either way) - so the
+  // documented precondition, heap-floor recording disabled, is what
+  // excludes every reader (onGC() skips recordHeapFloorSample() and no
+  // selectLeakCandidates() scan runs mid-test). Enforce it in DEBUG builds
+  // (where the flag exists): a caller that resets while recording is
+  // enabled fails the assert instead of racing a live reader. Non-DEBUG
+  // builds compile the reset bare - the flag does not exist there and the
+  // JNI entry that reaches this seam is compiled out.
   void heapFloorResetForTest() {
+#ifdef DEBUG
+    if (!_heap_floor_recording_disabled_for_test.load(std::memory_order_acquire)) {
+      assert(!"heapFloorResetForTest() called while heap-floor recording is enabled");
+      return;
+    }
+#endif
     storeRelease(_heap_floor_ring_head, (u8)0);
     storeRelease(_heap_floor_ring_fill, (u8)0);
   }

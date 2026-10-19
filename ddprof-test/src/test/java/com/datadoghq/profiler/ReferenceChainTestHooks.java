@@ -95,10 +95,19 @@ public final class ReferenceChainTestHooks {
      * Clears the heap-floor ring seeded via {@link #heapFloorRecordForTest0(long, long)} so
      * the next test in the same JVM starts from an empty ring. Call before the
      * {@link #setHeapFloorRecordingForTest0(boolean)} restore, while recording is still
-     * disabled, so a real GC cannot interleave a sample with the reset.
+     * disabled - the native seam asserts when called while recording is enabled.
      */
     public static void heapFloorResetForTest0() {
         JavaProfiler.heapFloorResetForTest0();
+    }
+
+    /**
+     * Reports whether the seeded heap-floor ring currently shows a sustained rise
+     * ({@code heapFloorRising()}). {@code false} before any seeding and after
+     * {@link #heapFloorResetForTest0()} emptied the ring.
+     */
+    public static boolean heapFloorRisingForTest0() {
+        return JavaProfiler.heapFloorRisingForTest0();
     }
 
     /**

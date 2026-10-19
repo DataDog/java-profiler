@@ -1405,6 +1405,15 @@ Java_com_datadoghq_profiler_JavaProfiler_heapFloorResetForTest0(
   LivenessTracker::instance()->heapFloorResetForTest();
 }
 
+// Reports whether the seeded heap-floor ring currently shows a sustained rise
+// (heapFloorRising()) - the direct read over the ring the reset seam clears.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_heapFloorRisingForTest0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return LivenessTracker::instance()->heapFloorRisingForTest() ? JNI_TRUE : JNI_FALSE;
+}
+
 // Evaluates the real scheduling gate without executing a BFS pass. This is not read-only: under
 // the engine lock it may account completed-search pain and restart/reset terminal search state.
 extern "C" DLLEXPORT jboolean JNICALL
@@ -1522,6 +1531,12 @@ Java_com_datadoghq_profiler_JavaProfiler_setHeapFloorRecordingForTest0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_heapFloorResetForTest0(
     JNIEnv *env, jclass unused) {}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_heapFloorRisingForTest0(
+    JNIEnv *env, jclass unused) {
+  return JNI_FALSE;
+}
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_shouldRunPassForTest0(JNIEnv *env,

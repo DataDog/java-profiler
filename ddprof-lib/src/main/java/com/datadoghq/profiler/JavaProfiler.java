@@ -710,10 +710,21 @@ public final class JavaProfiler {
      * {@link #heapFloorRecordForTest0(long, long)} so the next test in the same JVM does not
      * inherit this test's samples into its {@code secondsToOOM()} projection. Must be called
      * while heap-floor recording is disabled (i.e. before the
-     * {@link #setHeapFloorRecordingForTest0(boolean)} restore in a finally block) so a real GC
-     * cannot interleave a sample with the reset.
+     * {@link #setHeapFloorRecordingForTest0(boolean)} restore in a finally block) - the seam
+     * asserts when called while recording is enabled, because a concurrent sample cannot be
+     * excluded from the two non-atomic index stores otherwise.
      */
     static native void heapFloorResetForTest0();
+
+    /**
+     * Test seam (debug native builds only): reports whether the seeded heap-floor ring
+     * currently shows a sustained rise ({@code heapFloorRising()}) - the aggregate growth
+     * read {@code hasLeakSignal()}'s gate uses alongside {@code secondsToOOM()}'s urgent
+     * projection. Returns {@code false} both before any seeding and after
+     * {@link #heapFloorResetForTest0()} emptied the ring, which is how tests assert the
+     * reset actually cleared the indices.
+     */
+    static native boolean heapFloorRisingForTest0();
 
     /**
      * Test seam (debug native builds only): reports whether ReferenceChainTracker's search-restart
