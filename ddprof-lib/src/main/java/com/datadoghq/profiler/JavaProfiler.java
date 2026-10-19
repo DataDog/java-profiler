@@ -463,10 +463,12 @@ public final class JavaProfiler {
     private static native int getTid0();
 
     /**
-     * Test seam (debug native builds only): returns the calling thread's profiler tid
+     * Test seam: returns the calling thread's profiler tid
      * (ProfiledThread::currentTid()), the tid space {@code seedTidTrendSample0} matches
-     * against. Must be called ON the leaking thread, or the seeded tid will match no
-     * tracked instance and no leak tag will be assigned.
+     * against. Unlike the tracker-mutating seams it only reads thread state, so it is
+     * compiled unconditionally and works in release builds too. Must be called ON the
+     * leaking thread, or the seeded tid will match no tracked instance and no leak tag
+     * will be assigned.
      */
     static int getTid() {
         return getTid0();
@@ -702,6 +704,16 @@ public final class JavaProfiler {
      * {@code secondsToOOM()}'s projection. Pass {@code false} to disable, {@code true} to restore.
      */
     static native void setHeapFloorRecordingForTest0(boolean enabled);
+
+    /**
+     * Test seam (debug native builds only): clears the heap-floor ring seeded via
+     * {@link #heapFloorRecordForTest0(long, long)} so the next test in the same JVM does not
+     * inherit this test's samples into its {@code secondsToOOM()} projection. Must be called
+     * while heap-floor recording is disabled (i.e. before the
+     * {@link #setHeapFloorRecordingForTest0(boolean)} restore in a finally block) so a real GC
+     * cannot interleave a sample with the reset.
+     */
+    static native void heapFloorResetForTest0();
 
     /**
      * Test seam (debug native builds only): reports whether ReferenceChainTracker's search-restart

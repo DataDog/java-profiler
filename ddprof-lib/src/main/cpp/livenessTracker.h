@@ -594,10 +594,14 @@ private:
   u32 _leak_tag_incarnation[LEAK_TAG_POOL_SIZE];
 
   // Advances slot `idx`'s ownership-period stamp. Caller holds
-  // _leak_tag_pool_lock.
+  // _leak_tag_pool_lock. The read is atomic as well: heap callbacks and
+  // reference-chain code read the same slot lock-free (leakTagIncarnation()),
+  // and a plain read racing those loads is UB under the C++ memory model even
+  // though the store itself is a release store.
   void bumpLeakTagIncarnationLocked(int idx) {
     __atomic_store_n(&_leak_tag_incarnation[idx],
-                     _leak_tag_incarnation[idx] + 1, __ATOMIC_RELEASE);
+                     __atomic_load_n(&_leak_tag_incarnation[idx], __ATOMIC_RELAXED) + 1,
+                     __ATOMIC_RELEASE);
   }
 
   jlong acquireLeakTag();
@@ -1561,6 +1565,20 @@ public:
     recordHeapFloorSampleUnchecked(used, timestamp_ns, container_used);
   }
   bool heapFloorRisingForTest() const { return heapFloorRising(); }
+  // Ring-only companion to the heapFloorRecordForTest() seam: clears
+  // _heap_floor_ring/_heap_floor_time_ring/_container_mem_ring via their
+  // shared head/fill - all three become empty once fill is 0 (see
+  // ringWindowStats()'s min-fill gate in heapFloorRising()). Seeding via
+  // heapFloorRecordForTest() leaves "used" values behind that the next
+  // test in the same JVM would otherwise inherit into its secondsToOOM()
+  // projection. storeRelease() matches recordHeapFloorSampleUnchecked()'s
+  // own publication of these indices; call while heap-floor recording is
+  // disabled (the state every seeding test already holds) so a concurrent
+  // real recordHeapFloorSample() cannot interleave with the reset.
+  void heapFloorResetForTest() {
+    storeRelease(_heap_floor_ring_head, (u8)0);
+    storeRelease(_heap_floor_ring_fill, (u8)0);
+  }
   // Bypasses initialize_table()'s JNI-dependent HeapUsage::getMaxHeap() call
   // (out of gtest's reach, same reason setGcGenerationsForTest() exists) so
   // secondsToOOM() can be exercised directly against a fake max heap size.
