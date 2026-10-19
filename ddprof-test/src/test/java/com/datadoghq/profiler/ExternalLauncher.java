@@ -42,6 +42,10 @@ import java.util.regex.Pattern;
  *     CPU concurrently on the main thread, on a plain {@code new Thread(Runnable)} and on a
  *     two-level {@link Thread} subclass, and stops the profiler again. The resulting recording
  *     holds samples rooted at each of the three thread entry points; see {@code EntryFrameTest}</li>
+ *     <li>lazy-calibration-preexisting-arrays &lt;comma delimited profiler command list, required&gt; -
+ *     creates {@code Void[]} and {@code Void[][]} with a few hundred class definitions in between, so their
+ *     JFR trace IDs are far apart, then starts the profiler, prints the {@code klass_trace_id_offset}
+ *     counter and stops it; see {@code LazyTraceIdCalibrationTest}</li>
  *     <li>line-numbers &lt;';'-delimited profiler command lists, required&gt; - for each command list in
  *     turn, starts the profiler, runs the same JDK-heavy workload, prints the
  *     {@code method_resolve_lazy_resolved} counter and stops the profiler; see
@@ -218,6 +222,21 @@ public class ExternalLauncher {
                 Class<?> probe = SpinClasses.define("com/datadoghq/profiler/generated/LazyTraceIdProbe");
                 probe.getMethod("spin", long.class).invoke(null, 2_000_000_000L);
                 // Stopping dumps the recording, which resolves the probe's raw frames.
+                instance.stop();
+            } else if (args[0].equals("lazy-calibration-preexisting-arrays")) {
+                if (args.length < 2 || args[1].isEmpty()) {
+                    throw new IllegalArgumentException("lazy-calibration-preexisting-arrays requires a profiler command list");
+                }
+                Object lowDimension = java.lang.reflect.Array.newInstance(Void.class, 0);
+                for (int i = 0; i < 200; i++) {
+                    SpinClasses.define("com/datadoghq/profiler/generated/CalibrationGap" + i);
+                }
+                Object secondDimension = java.lang.reflect.Array.newInstance(lowDimension.getClass(), 0);
+                JavaProfiler instance = JavaProfiler.getInstance();
+                instance.execute(args[1]);
+                System.out.println("[calibration] klass_trace_id_offset="
+                        + instance.getDebugCounters().get("klass_trace_id_offset")
+                        + " arrays=" + secondDimension.getClass().getName());
                 instance.stop();
             } else if (args[0].equals("line-numbers")) {
                 if (args.length < 2 || args[1].isEmpty()) {
