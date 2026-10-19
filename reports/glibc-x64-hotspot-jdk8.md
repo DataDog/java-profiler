@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-10-19 05:04:26 EDT
+**Date:** 2026-10-19 05:55:47 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 208 |
-| Sample Rate | 3.47/sec |
-| Health Score | 217% |
+| CPU Samples | 223 |
+| Sample Rate | 3.72/sec |
+| Health Score | 233% |
 | Threads | 6 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 428 |
-| Sample Rate | 7.13/sec |
-| Health Score | 446% |
-| Threads | 11 |
+| CPU Samples | 406 |
+| Sample Rate | 6.77/sec |
+| Health Score | 423% |
+| Threads | 10 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
+<summary>CPU Timeline (2 unique values: 30-32 cores)</summary>
 
 ```
-1792400078 32
-1792400083 32
-1792400088 32
-1792400093 32
-1792400098 32
-1792400103 32
-1792400108 32
-1792400113 32
-1792400118 32
-1792400123 32
-1792400128 32
-1792400133 32
-1792400138 32
-1792400143 32
-1792400148 32
-1792400153 32
-1792400158 32
-1792400163 32
-1792400168 32
-1792400173 32
+1792403439 32
+1792403444 32
+1792403449 32
+1792403454 32
+1792403459 32
+1792403464 30
+1792403469 30
+1792403474 30
+1792403479 30
+1792403484 30
+1792403489 30
+1792403494 30
+1792403499 30
+1792403504 30
+1792403509 30
+1792403514 30
+1792403519 30
+1792403524 30
+1792403529 30
+1792403534 30
 ```
 </details>
 
