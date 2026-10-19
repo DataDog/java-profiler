@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <cctype>
 #include <climits>
 #include <cstdlib>
 #include "asyncSampleMutex.h"
@@ -1628,6 +1629,20 @@ bool ResolvedMethod::setKlassName(VMSymbol* sym) {
   return setName(_klass_name, _long_klass_name, MAX_KLASS_NAME_LEN, sym);
 }
 
+void ResolvedMethod::useHiddenClassSignatureName() {
+  char* name = _long_klass_name != nullptr ? _long_klass_name : _klass_name;
+  char* plus = strrchr(name, '+');
+  if (plus == nullptr || plus[1] != '0' || plus[2] != 'x' || plus[3] == '\0') {
+    return;
+  }
+  for (const char* c = plus + 3; *c != '\0'; c++) {
+    if (!isxdigit((unsigned char)*c)) {
+      return;
+    }
+  }
+  *plus = '.';
+}
+
 // Compares a Symbol's contents with `expected` without touching the Symbol
 // memory through libc (a fault inside memcmp() would have a pc outside this
 // library and could not be recovered).
@@ -1744,6 +1759,7 @@ bool HotspotSupport::readMethod(const void* method, ResolvedMethod* result) {
     Counters::increment(METHOD_RESOLVE_SYMBOL_UNREADABLE);
     return false;
   }
+  result->useHiddenClassSignatureName();
 
   if (strcmp(result->methodName(), "run") == 0 && strcmp(result->methodSignature(), "()V") == 0) {
     result->_is_thread_run = isThreadSubclass(klass);
@@ -1821,9 +1837,11 @@ static bool protectedWalk(ProfiledThread* prof_thread, ResolvedMethod& result, W
   return ok;
 }
 
-// Partial mode only reaches here for system-class-loader classes, which are
-// never unloaded; lazy mode reaches here for every class without a jmethodID
-// and resolves it through _klass_registry.
+// Partial mode reaches here for classes it did not preload (those of the
+// boot, platform and application loaders, which are never unloaded) and for
+// methods a class's jmethodID cache does not cover after a redefinition;
+// lazy mode reaches here for every class without a jmethodID and resolves it
+// through _klass_registry.
 bool HotspotSupport::resolve(const void* tagged_method, int bci, ResolvedMethod& result) {
   assert(VM::isHotspot());
   NO_INJECTION_ASSERT(tagged_method != nullptr);
@@ -1854,9 +1872,9 @@ bool HotspotSupport::resolve(const void* tagged_method, int bci, ResolvedMethod&
   }
 
   if (!lazy) {
-    // A redefinition can free a system class's replaced Method* and reuse its
-    // memory; nothing here can tell, so such a frame may resolve to the
-    // method now at that address.
+    // A redefinition can free a replaced Method* and reuse its memory, and
+    // partial mode has no registry to tell, so such a frame may resolve to
+    // the method now at that address.
     return protectedWalk(prof_thread, result, [&] { return readMethod(method, &result); });
   }
   VMMethod* vm_method = nullptr;

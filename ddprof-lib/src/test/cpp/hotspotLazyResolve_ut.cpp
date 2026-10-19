@@ -459,6 +459,28 @@ protected:
     }
 };
 
+// A hidden class gets the name JVMTI GetClassSignature() reports, so its
+// frames are named the same with and without jmethodIDs; other names that
+// merely contain a '+' are left alone.
+TEST_F(HotspotLazyResolveTest, HiddenClassNamedAsJvmtiSignature) {
+    registerClass(_old_mirror);
+    const struct { const char* vm_name; const char* expected; } cases[] = {
+        {"a/Spin$$Lambda+0x8010a0", "a/Spin$$Lambda.0x8010a0"},
+        {"a/B+0x1+0x2f", "a/B+0x1.0x2f"},
+        {"a/Plus+Sign", "a/Plus+Sign"},
+        {"a/Spin+0x", "a/Spin+0x"},
+        {"a/Spin+0x12g", "a/Spin+0x12g"},
+    };
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.vm_name);
+        FakeClass::setSymbol(_cls.klass_name, c.vm_name);
+        ASGCT_CallFrame frame = sample();
+        ResolvedMethod result;
+        ASSERT_TRUE(HotspotSupport::resolve(frame.method, frame.bci, result));
+        EXPECT_STREQ(c.expected, result.klassName());
+    }
+}
+
 // The names come from VM metadata: no jmethodIDs are allocated.
 TEST_F(HotspotLazyResolveTest, LiveClassResolves) {
     registerClass(_old_mirror);

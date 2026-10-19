@@ -78,8 +78,12 @@ public class LazyLineNumberConsistencyTest extends AbstractProcessProfilerTest {
             // its frames still come from VM metadata, but the counter stays 0.
             Assumptions.assumeTrue(lazyResolved.get() > 0, "lazy mode resolved no raw frames");
 
-            Map<String, Integer> lazyLines = linesByFrame(lazyRecording);
-            Map<String, Integer> jvmtiLines = linesByFrame(jvmtiRecording);
+            List<String> vmHiddenNames = new ArrayList<>();
+            Map<String, Integer> lazyLines = linesByFrame(lazyRecording, vmHiddenNames);
+            Map<String, Integer> jvmtiLines = linesByFrame(jvmtiRecording, vmHiddenNames);
+            // JVMTI reports a hidden class "Foo$$Lambda+0x…" as "Foo$$Lambda.0x…", and lazy
+            // mode must do the same, or a lambda's frames are named differently per mode.
+            assertTrue(vmHiddenNames.isEmpty(), "hidden classes not named as JVMTI does: " + vmHiddenNames);
             List<String> mismatches = new ArrayList<>();
             int common = 0;
             for (Map.Entry<String, Integer> e : lazyLines.entrySet()) {
@@ -105,9 +109,10 @@ public class LazyLineNumberConsistencyTest extends AbstractProcessProfilerTest {
     /**
      * Maps "class.method descriptor @bci" to the line the recording gives that frame, for every
      * frame of {@code datadog.ExecutionSample}. Frames without a line are kept, so that a table
-     * one side failed to decode shows up as a mismatch.
+     * one side failed to decode shows up as a mismatch. Adds class names still in HotSpot's
+     * internal hidden-class form ({@code +0x} suffix) to {@code vmHiddenNames}.
      */
-    private static Map<String, Integer> linesByFrame(Path recording) throws Exception {
+    private static Map<String, Integer> linesByFrame(Path recording, List<String> vmHiddenNames) throws Exception {
         Map<String, Integer> lines = new HashMap<>();
         JfrEvents.forEach(recording, "datadog.ExecutionSample"::equals, event -> {
             if (!event.has("stackTrace")) {
@@ -116,6 +121,9 @@ public class LazyLineNumberConsistencyTest extends AbstractProcessProfilerTest {
             for (JfrFrame frame : event.getStackTrace().frames()) {
                 if (frame.className() == null || frame.bytecodeIndex() < 0) {
                     continue;
+                }
+                if (frame.className().contains("+0x") && !vmHiddenNames.contains(frame.className())) {
+                    vmHiddenNames.add(frame.className());
                 }
                 lines.put(frame.className() + "." + frame.methodName() + frame.methodDescriptor()
                         + " @" + frame.bytecodeIndex(), frame.lineNumber());

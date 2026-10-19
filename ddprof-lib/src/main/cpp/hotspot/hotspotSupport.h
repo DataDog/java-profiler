@@ -82,6 +82,14 @@ public:
   bool setMethodSignature(VMSymbol* sym);
   bool setKlassName(VMSymbol* sym);
 
+  // Gives a hidden class the name JVMTI GetClassSignature() reports for it,
+  // so frames are named the same in every fjmethodid mode. HotSpot names a
+  // hidden class "<name>+0x<hex>" (ClassFileParser::mangle_hidden_class_name)
+  // and InstanceKlass::signature_name() turns that last '+' into '.'. The
+  // hidden flag itself is not in vmStructs on JDK 21+, so the suffix is what
+  // identifies a hidden class here.
+  void useHiddenClassSignatureName();
+
   // Internal (slash-separated) class name, e.g. "java/lang/Thread".
   const char* klassName() const {
     return _long_klass_name != nullptr ? _long_klass_name : _klass_name;
