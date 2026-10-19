@@ -191,6 +191,11 @@
   /* REDEFINED: raw frame of a class that has been redefined (its Method*s   \
    * may have been freed and reused); serializes as "unknown". */            \
   X(METHOD_RESOLVE_LAZY_REDEFINED, "method_resolve_lazy_redefined")           \
+  /* UNREADABLE: the frame's Method* no longer leads to a holder Klass* and  \
+   * ConstMethod (the metadata was freed when its class was unloaded, or the \
+   * read faulted), so no class could even be looked up; serializes as      \
+   * "unknown". Under class churn this is most of the frames lost. */        \
+  X(METHOD_RESOLVE_LAZY_UNREADABLE, "method_resolve_lazy_unreadable")         \
   /* Registered classes marked by the redefinition hooks (once per class   \
    * per redefine/retransform call). */                                      \
   X(KLASS_REGISTRY_REDEFINITIONS_MARKED, "klass_registry_redefinitions_marked") \
