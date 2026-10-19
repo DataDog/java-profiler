@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-10-19 06:39:49 EDT
+**Date:** 2026-10-19 06:50:18 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 84 |
-| Sample Rate | 1.40/sec |
-| Health Score | 87% |
-| Threads | 8 |
+| CPU Samples | 346 |
+| Sample Rate | 5.77/sec |
+| Health Score | 361% |
+| Threads | 12 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 395 |
-| Sample Rate | 6.58/sec |
-| Health Score | 411% |
-| Threads | 9 |
+| CPU Samples | 107 |
+| Sample Rate | 1.78/sec |
+| Health Score | 111% |
+| Threads | 13 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 37-37 cores)</summary>
 
 ```
-1792406140 37
-1792406145 37
-1792406150 37
-1792406155 37
-1792406160 37
-1792406165 37
-1792406170 37
-1792406175 37
-1792406180 37
-1792406186 37
-1792406191 37
-1792406196 37
-1792406201 37
-1792406206 37
-1792406211 37
-1792406216 37
-1792406221 37
-1792406226 37
-1792406231 37
-1792406236 37
+1792406790 37
+1792406795 37
+1792406800 37
+1792406805 37
+1792406810 37
+1792406815 37
+1792406820 37
+1792406825 37
+1792406830 37
+1792406835 37
+1792406840 37
+1792406845 37
+1792406850 37
+1792406855 37
+1792406860 37
+1792406865 37
+1792406870 37
+1792406875 37
+1792406880 37
+1792406885 37
 ```
 </details>
 
