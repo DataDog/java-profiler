@@ -1864,6 +1864,7 @@ bool HotspotSupport::resolve(const void* tagged_method, int bci, ResolvedMethod&
   int idnum = -1;
   if (!protectedWalk(prof_thread, result,
                      [&] { return readMethodHolder(method, &vm_method, &holder, &idnum); })) {
+    Counters::increment(METHOD_RESOLVE_LAZY_UNREADABLE);
     return false;
   }
   return resolveViaRegistry(prof_thread, vm_method, holder, idnum, tag & TAG_VALUE_MASK, result);

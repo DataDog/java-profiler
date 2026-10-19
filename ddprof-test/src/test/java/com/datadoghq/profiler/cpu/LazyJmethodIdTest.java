@@ -129,6 +129,7 @@ public class LazyJmethodIdTest extends AbstractProfilerTest {
             Map<String, Long> counters = profiler.getDebugCounters();
             System.out.println("method_resolve_lazy_unloaded=" + counters.get("method_resolve_lazy_unloaded")
                     + ", method_resolve_lazy_not_current=" + counters.get("method_resolve_lazy_not_current")
+                    + ", method_resolve_lazy_unreadable=" + counters.get("method_resolve_lazy_unreadable")
                     + ", method_resolve_fault_recovered=" + counters.get("method_resolve_fault_recovered"));
         } finally {
             try { Files.deleteIfExists(baseFile); } catch (IOException ignored) {}

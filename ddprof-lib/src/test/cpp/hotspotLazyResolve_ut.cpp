@@ -684,6 +684,37 @@ TEST_F(HotspotLazyResolveTest, CountsClassesWithTraceIdBeyondTagRange) {
 #endif
 }
 
+// A frame whose Method* metadata was freed after the sample (here: its
+// ConstMethod pointer cleared) cannot even be traced to a class. It is
+// refused and counted as unreadable, not as any of the registry outcomes.
+TEST_F(HotspotLazyResolveTest, FrameWithFreedMethodIsCountedUnreadable) {
+#ifndef COUNTERS
+    GTEST_SKIP() << "debug counters are not compiled into this build";
+#else
+    registerClass(_old_mirror);
+    ASGCT_CallFrame frame = sample();
+    _jvm.collect(_old_mirror);
+    _cls.method.const_method = nullptr;
+
+    const CounterId registry_outcomes[] = {METHOD_RESOLVE_LAZY_UNLOADED, METHOD_RESOLVE_LAZY_STALE,
+                                           METHOD_RESOLVE_LAZY_NOT_CURRENT, METHOD_RESOLVE_LAZY_REDEFINED,
+                                           METHOD_RESOLVE_LAZY_RESOLVED};
+    long long before[5];
+    for (int i = 0; i < 5; i++) {
+        before[i] = Counters::getCounter(registry_outcomes[i]);
+    }
+    long long unreadable = Counters::getCounter(METHOD_RESOLVE_LAZY_UNREADABLE);
+
+    EXPECT_FALSE(resolve(frame));
+
+    EXPECT_EQ(unreadable + 1, Counters::getCounter(METHOD_RESOLVE_LAZY_UNREADABLE));
+    for (int i = 0; i < 5; i++) {
+        EXPECT_EQ(before[i], Counters::getCounter(registry_outcomes[i])) << "counter " << registry_outcomes[i];
+    }
+    _cls.method.const_method = &_cls.const_method;
+#endif
+}
+
 // Lookup resolves each distinct raw method once per dump, however often it
 // recurs, and whatever bci or frame type the occurrences carry.
 TEST_F(HotspotLazyResolveTest, LookupResolvesEachRawMethodOncePerDump) {
