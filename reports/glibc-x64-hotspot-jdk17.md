@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk17
 
 ## glibc-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-10-19 06:50:18 EDT
+**Date:** 2026-10-19 07:24:39 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 11 |
-| CPU Cores (end) | 11 |
+| CPU Cores (start) | 63 |
+| CPU Cores (end) | 27 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 363 |
-| Sample Rate | 6.05/sec |
-| Health Score | 378% |
-| Threads | 8 |
-| Allocations | 372 |
+| CPU Samples | 440 |
+| Sample Rate | 7.33/sec |
+| Health Score | 458% |
+| Threads | 9 |
+| Allocations | 378 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 506 |
-| Sample Rate | 8.43/sec |
-| Health Score | 527% |
-| Threads | 10 |
-| Allocations | 420 |
+| CPU Samples | 700 |
+| Sample Rate | 11.67/sec |
+| Health Score | 729% |
+| Threads | 11 |
+| Allocations | 463 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 11-11 cores)</summary>
+<summary>CPU Timeline (3 unique values: 27-63 cores)</summary>
 
 ```
-1792406748 11
-1792406753 11
-1792406758 11
-1792406763 11
-1792406768 11
-1792406773 11
-1792406778 11
-1792406783 11
-1792406788 11
-1792406793 11
-1792406798 11
-1792406803 11
-1792406808 11
-1792406813 11
-1792406818 11
-1792406823 11
-1792406828 11
-1792406833 11
-1792406838 11
-1792406843 11
+1792408800 63
+1792408805 63
+1792408810 63
+1792408815 63
+1792408820 63
+1792408825 63
+1792408830 63
+1792408835 63
+1792408840 63
+1792408845 63
+1792408850 30
+1792408855 30
+1792408860 30
+1792408865 30
+1792408870 30
+1792408875 30
+1792408880 30
+1792408885 30
+1792408890 30
+1792408895 30
 ```
 </details>
 
