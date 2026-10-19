@@ -48,7 +48,10 @@ spec.
    - `FrontierTable::setLeakTag` takes the stamp as a required argument with no default.
    - `insert()` zeroes the stamp.
 3. **R-PROPAGATE (A-R4).** `buildChainEvent()` copies the entry's stamp into a new in-memory field,
-   `ReferenceChainEvent::_leak_tag_incarnation`. That field defaults to 0 and is never serialized.
+   `ReferenceChainEvent::_leak_tag_incarnation`. That field defaults to 0. It is serialized as
+   `ReferenceChain.leakTagIncarnation`, and `flush_table()` writes the owner's stamp as
+   `HeapLiveObject.leakTagIncarnation`, so consumers join on `(tag, leakTagIncarnation)`: the tag
+   alone is only unambiguous within one chunk.
 4. **R-OWNER (A-R5).** A cached chain describes the current owner of its leak tag if and only if
    both of these hold:
    - `isLeakTag(_target_tag)`;
@@ -62,8 +65,8 @@ spec.
    - The frontier-tag path, the `<= 0` guard and the lock order are unchanged.
 6. **R-EMIT (A-R7).** `drainPendingChainEvents()` does not emit a cached chain that has a leak-tag
    target and fails R-OWNER.
-   - It also does not erase that chain. The existing eviction policy still decides when it leaves
-     the cache.
+   - It erases that chain under `_resolved_chains_lock`: stamps only advance, so the mismatch is
+     permanent. `cacheResolvedChain()` also refuses to cache such a chain.
    - Every other chain is emitted exactly as before.
 7. **R-JOIN (B-R2/B-R3).** On both exit paths of `launch()` (in-time exit, and timeout followed by
    forced destroy), the method joins `stdoutReader` and `stderrReader` before it returns.
@@ -150,7 +153,7 @@ child-process test goes through that one `launch()`.
   - (a) a chain whose stamp equals the current stamp is returned by the seam for `L` and emitted
     by `drain`;
   - (b) after `acquire` + `release` (+ re-`acquire`) of `L`, the same cached chain is rejected by
-    the seam (0) and is absent from `drain`, while `resolvedChainCount()` is unchanged (no erase);
+    the seam (0) and is absent from `drain`, and the drain evicts it (`resolvedChainCount()` drops);
   - (c) the seam still matches across a search-generation change when the stamp is unchanged;
   - (d) chains with a frontier-tag target are emitted regardless of pool state.
 
