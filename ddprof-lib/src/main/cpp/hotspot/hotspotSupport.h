@@ -187,7 +187,7 @@ private:
     // are only used as lookup keys.
     static bool resolveViaRegistry(ProfiledThread* prof_thread, VMMethod* vm_method,
                                    const void* holder, int idnum, uint32_t trace_id_bits,
-                                   ResolvedMethod& result);
+                                   ResolvedMethod& result, bool count = true);
 
     // The raw metadata walk behind resolve(): names, signature, Thread.run
     // detection and line number table of `method`. Must run with crash
@@ -340,6 +340,12 @@ public:
     // holder's current methods. No JNI, no JVMTI, no locks: callable from a
     // GarbageCollectionStart callback.
     static bool captureMethod(ProfiledThread* prof_thread, const void* method, uint32_t tag,
+                              ResolvedMethod& result);
+
+    // PROTOTYPE (UnloadCapture background drain): resolve() for a lazy
+    // (Method*, tag) pair, pinning the class through the registry, without
+    // touching the method_resolve_lazy_* counters. Needs an attached thread.
+    static bool capturePinned(ProfiledThread* prof_thread, const void* method, uint32_t tag,
                               ResolvedMethod& result);
 
     // Store a Java frame captured from HotSpot metadata. A null jmethodID

@@ -64,18 +64,24 @@ public class Bench3 {
         long resolved = c.getOrDefault("method_resolve_lazy_resolved", 0L);
         long unloaded = c.getOrDefault("method_resolve_lazy_unloaded", 0L);
         long stale = c.getOrDefault("method_resolve_lazy_stale", 0L);
-        long notCurrent = c.getOrDefault("method_resolve_lazy_not_current", 0L); long skipped = c.getOrDefault("jmethodid_skipped_count", 0L);
+        long notCurrent = c.getOrDefault("method_resolve_lazy_not_current", 0L);
+        long unreadable = c.getOrDefault("method_resolve_lazy_unreadable", 0L);
+        long used = c.getOrDefault("unload_capture_used", 0L);
+        long skipped = c.getOrDefault("jmethodid_skipped_count", 0L);
         long gcs = 0;
         StringBuilder gcInfo = new StringBuilder();
         for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
             gcInfo.append(gc.getName().replace(' ', '_')).append('=').append(gc.getCollectionCount()).append(' ');
         }
         System.out.printf("RESULT dump_s=%d gen_ms=%d dumps=%d generations=%d classes_loaded=%d unloaded_classes=%d "
-                        + "skipped=" + skipped + " resolved=%d unloaded=%d stale=%d not_current=%d lost_pct=%.1f max_dump_ms=%d %s%n",
+                        + "skipped=" + skipped + " resolved=%d unloaded=%d stale=%d not_current=%d unreadable=%d used=%d failed_pct=%.1f lost_pct=%.1f max_dump_ms=%d %s%n",
                 dumpMs / 1000, genMs, dumps, generations.get(), counter.get(),
                 ManagementFactory.getClassLoadingMXBean().getUnloadedClassCount(),
-                resolved, unloaded, stale, notCurrent,
-                100.0 * unloaded / Math.max(1, resolved + unloaded + stale + notCurrent), maxDumpMs, gcInfo);
+                resolved, unloaded, stale, notCurrent, unreadable, used,
+                // failed: frames resolve() refused; lost: those the capture did not name either.
+                100.0 * (unloaded + stale + notCurrent + unreadable) / Math.max(1, resolved + unloaded + stale + notCurrent + unreadable),
+                100.0 * Math.max(0, unloaded + stale + notCurrent + unreadable - used) / Math.max(1, resolved + unloaded + stale + notCurrent + unreadable),
+                maxDumpMs, gcInfo);
         StringBuilder uc = new StringBuilder();
         for (Map.Entry<String, Long> e : new TreeMap<>(c).entrySet()) {
             if (e.getKey().startsWith("unload_capture_")) uc.append(e.getKey().substring(15)).append('=').append(e.getValue()).append(' ');

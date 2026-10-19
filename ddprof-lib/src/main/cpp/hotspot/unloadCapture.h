@@ -22,8 +22,13 @@
  *   nothing pending it costs one atomic load.
  * - The dump takes a frame's captured name when resolve() refuses the frame.
  *
- * Enabled with DDPROF_CAPTURE_UNLOADING=1 in lazy mode, so one build can be
- * measured with and without it.
+ * - A background thread (modes 2 and 3) drains the same set every
+ *   DDPROF_CAPTURE_INTERVAL_MS (default 100) outside any pause, resolving
+ *   pairs through the class registry as the dump does.
+ *
+ * Enabled with DDPROF_CAPTURE_UNLOADING in lazy mode, so one build can be
+ * measured in every variant: 1 = GC hook only, 2 = background drain + GC
+ * hook, 3 = background drain only.
  */
 class UnloadCapture {
 public:
@@ -64,6 +69,7 @@ public:
 
 private:
   static bool _enabled;
+  static bool _gc_hook;
 };
 
 #endif // _HOTSPOT_UNLOADCAPTURE_H

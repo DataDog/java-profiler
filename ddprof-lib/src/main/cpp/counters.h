@@ -213,6 +213,17 @@
   X(UNLOAD_CAPTURE_REFUSED, "unload_capture_refused")                         \
   X(UNLOAD_CAPTURE_CACHE_FULL, "unload_capture_cache_full")                   \
   X(UNLOAD_CAPTURE_USED, "unload_capture_used")                               \
+  X(UNLOAD_CAPTURE_BG_PASSES, "unload_capture_bg_passes")                     \
+  X(UNLOAD_CAPTURE_BG_NS, "unload_capture_bg_ns")                             \
+  X(UNLOAD_CAPTURE_BG_CPU_NS, "unload_capture_bg_cpu_ns")                     \
+  X(UNLOAD_CAPTURE_PENDING_EVICTED, "unload_capture_pending_evicted")         \
+  X(UNLOAD_CAPTURE_BG_MAX_NS, "unload_capture_bg_max_ns")                     \
+  X(UNLOAD_CAPTURE_BG_CAPTURED, "unload_capture_bg_captured")                 \
+  X(UNLOAD_CAPTURE_BG_REFUSED, "unload_capture_bg_refused")                   \
+  X(UNLOAD_CAPTURE_HOOK_DRAINED, "unload_capture_hook_drained")               \
+  /* PROTOTYPE: lazy frames whose Method* could not even be read at dump      \
+   * (freed metadata), not covered by the method_resolve_lazy_* counters. */  \
+  X(METHOD_RESOLVE_LAZY_UNREADABLE, "method_resolve_lazy_unreadable")         \
   X(WALKVM_RAW_FRAME_UNTAGGABLE, "walkvm_raw_frame_untaggable")               \
   /* Gauge, set at each fjmethodid=lazy start: the Klass::_trace_id offset  \
    * raw frames are tagged with, or -1 if it was not found (lazy mode then    \
