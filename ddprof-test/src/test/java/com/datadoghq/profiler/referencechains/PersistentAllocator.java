@@ -7,6 +7,7 @@ package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.ReferenceChainTestHooks;
 
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -30,8 +31,13 @@ final class PersistentAllocator implements AutoCloseable {
   private static final long HANDOFF_TIMEOUT_SECONDS = 30;
 
   private final SynchronousQueue<Runnable> handoff = new SynchronousQueue<>();
-  // Worker-to-caller completion slot: null = success, Throwable = the batch's failure.
-  private final SynchronousQueue<Object> completion = new SynchronousQueue<>();
+  // Worker-to-caller completion slot: an Object marker = success, a Throwable = the batch's
+  // failure. It is buffered (one slot) because the protocol is single-in-flight, and the
+  // worker's offer() must retain the signal even when the batch finishes in the window
+  // between the handoff rendezvous and the caller entering poll(): a SynchronousQueue would
+  // drop that bare offer and turn a completed batch (or its rethrown failure) into a
+  // 30-second poll timeout.
+  private final ArrayBlockingQueue<Object> completion = new ArrayBlockingQueue<>(1);
   private final Thread thread;
   private volatile int tid;
   private volatile boolean closed;
