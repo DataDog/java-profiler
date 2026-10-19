@@ -64,6 +64,7 @@ class KlassRegistry {
   Entry* find(const void* klass) const;
   Entry* findRegistered(const void* klass) const;
   bool rehash(JNIEnv* jni);
+  void publishLocked();
 
 public:
   enum PinStatus {
@@ -112,6 +113,12 @@ public:
 
   /** Number of occupied slots, including dead entries not yet purged. */
   size_t size();
+
+  /**
+   * Sets the klass_registry_capacity and klass_registry_entries gauges.
+   * They are updated on every change; call this after counters are reset.
+   */
+  void publishCounters();
 
   /** Deletes every weak reference and frees the table. */
   void clear(JNIEnv* jni);

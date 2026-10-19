@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include "../../main/cpp/counters.h"
 #include "../../main/cpp/hotspot/klassRegistry.h"
 #include "../../main/cpp/hotspot/vmStructs.inline.h"
 
@@ -198,6 +199,38 @@ TEST_F(KlassRegistryTest, GrowthPurgesDeadEntries) {
     for (size_t i = first; i < first + more; i++) {
         EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i))) << i;
     }
+}
+
+// The table is invisible to NMT, so its size and its purges are reported as
+// counters: here 690 of the first 700 classes are dead when the 769th
+// registration crosses the 3/4 load factor of the initial 1024 slots.
+TEST_F(KlassRegistryTest, CountersReportTableSizeAndPurges) {
+#ifndef COUNTERS
+    GTEST_SKIP() << "debug counters are not compiled into this build";
+#else
+    long long purged_before = Counters::getCounter(KLASS_REGISTRY_PURGED);
+    const size_t first = 700;
+    for (size_t i = 0; i < first; i++) {
+        ASSERT_TRUE(registry.add(jni, klassAt(i), mirror(i)));
+    }
+    EXPECT_EQ(1024, Counters::getCounter(KLASS_REGISTRY_CAPACITY));
+    EXPECT_EQ((long long)first, Counters::getCounter(KLASS_REGISTRY_ENTRIES));
+    for (size_t i = 10; i < first; i++) {
+        heap.collect(&mirrors[i]);
+    }
+    const size_t more = 200;
+    for (size_t i = first; i < first + more; i++) {
+        ASSERT_TRUE(registry.add(jni, klassAt(i), mirror(i)));
+    }
+    EXPECT_EQ(690, Counters::getCounter(KLASS_REGISTRY_PURGED) - purged_before);
+    EXPECT_EQ(1024, Counters::getCounter(KLASS_REGISTRY_CAPACITY));
+    EXPECT_EQ((long long)registry.size(), Counters::getCounter(KLASS_REGISTRY_ENTRIES));
+    EXPECT_EQ(10 + (long long)more, Counters::getCounter(KLASS_REGISTRY_ENTRIES));
+
+    registry.clear(jni);
+    EXPECT_EQ(0, Counters::getCounter(KLASS_REGISTRY_CAPACITY));
+    EXPECT_EQ(0, Counters::getCounter(KLASS_REGISTRY_ENTRIES));
+#endif
 }
 
 TEST_F(KlassRegistryTest, GrowthKeepsAllLiveEntries) {

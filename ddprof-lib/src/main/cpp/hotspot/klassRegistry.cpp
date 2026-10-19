@@ -5,6 +5,8 @@
 
 #include "hotspot/klassRegistry.h"
 
+#include "counters.h"
+
 #include <stdlib.h>
 
 static inline size_t slotFor(const void* klass, size_t capacity) {
@@ -57,6 +59,7 @@ bool KlassRegistry::rehash(JNIEnv* jni) {
 
   Entry* old_table = _table;
   size_t old_capacity = _capacity;
+  size_t old_size = _size;
   _table = table;
   _capacity = capacity;
   _size = 0;
@@ -73,7 +76,19 @@ bool KlassRegistry::rehash(JNIEnv* jni) {
     }
   }
   free(old_table);
+  Counters::increment(KLASS_REGISTRY_PURGED, (long long)(old_size - _size));
+  publishLocked();
   return true;
+}
+
+void KlassRegistry::publishLocked() {
+  Counters::set(KLASS_REGISTRY_CAPACITY, (long long)_capacity);
+  Counters::set(KLASS_REGISTRY_ENTRIES, (long long)_size);
+}
+
+void KlassRegistry::publishCounters() {
+  MutexLocker ml(_lock);
+  publishLocked();
 }
 
 bool KlassRegistry::add(JNIEnv* jni, const void* klass, jclass mirror) {
@@ -115,6 +130,7 @@ bool KlassRegistry::add(JNIEnv* jni, const void* klass, jclass mirror) {
   e->redefinitions_in_progress = 0;
   e->redefined = false;
   _size++;
+  publishLocked();
   return true;
 }
 
@@ -191,4 +207,5 @@ void KlassRegistry::clear(JNIEnv* jni) {
   _table = nullptr;
   _capacity = 0;
   _size = 0;
+  publishLocked();
 }

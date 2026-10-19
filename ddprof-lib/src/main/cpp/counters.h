@@ -208,6 +208,12 @@
    * instead of resolving them again. */                                     \
   X(RAW_FRAME_RESOLVE_CACHE_HITS, "raw_frame_resolve_cache_hits")             \
   X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
+  /* Gauges: KlassRegistry's table slots (24 B each; NMT does not see the    \
+   * table) and occupied slots, live or dead. PURGED: dead entries dropped   \
+   * when the table was rebuilt. */                                          \
+  X(KLASS_REGISTRY_CAPACITY, "klass_registry_capacity")                       \
+  X(KLASS_REGISTRY_ENTRIES, "klass_registry_entries")                         \
+  X(KLASS_REGISTRY_PURGED, "klass_registry_purged")                           \
   X(WALKVM_RAW_FRAME_UNTAGGABLE, "walkvm_raw_frame_untaggable")               \
   /* Gauge, set at each fjmethodid=lazy start: the Klass::_trace_id offset  \
    * raw frames are tagged with, or -1 if it was not found (lazy mode then    \
