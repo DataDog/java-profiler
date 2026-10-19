@@ -221,9 +221,11 @@ public:
         ReferenceChainTracker::instance()->drainPendingChainEvents(out);
     }
 
-    static void cacheChain(jlong source_tag, ReferenceChainEvent event,
+    // Returns cacheResolvedChain()'s own verdict so tests can assert a
+    // dead-owner chain is refused, not merely absent from the snapshot.
+    static bool cacheChain(jlong source_tag, ReferenceChainEvent event,
                            jlong source_tag_val, u64 source_search_ns) {
-        ReferenceChainTracker::instance()->cacheResolvedChain(
+        return ReferenceChainTracker::instance()->cacheResolvedChain(
             source_tag, std::move(event), source_tag_val, source_search_ns);
     }
 

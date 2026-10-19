@@ -898,7 +898,9 @@ TEST_F(ResolvedChainCacheTest, LeakTagChainOfDeadOwnerIsNeitherResolvedNorEmitte
 }
 
 // A chain built from a binding whose leak-tag owner already died is refused by the cache: it
-// would only occupy a MAX_RESOLVED_CHAINS slot until the next dump evicts it.
+// would only occupy a MAX_RESOLVED_CHAINS slot until the next dump evicts it. Recycling the tag
+// for a new owner must not revive the dead owner's chain either - the new ownership period's
+// stamp does not match the stale one the chain carries.
 TEST_F(ResolvedChainCacheTest, DeadOwnerChainIsNotCached) {
     LivenessTracker *lt = LivenessTracker::instance();
     jlong leak = lt->acquireLeakTagForTest();
@@ -906,9 +908,37 @@ TEST_F(ResolvedChainCacheTest, DeadOwnerChainIsNotCached) {
     u32 stale_stamp = lt->leakTagIncarnation(leak);
     lt->releaseLeakTagForTest(leak);
     ReferenceChainsTestAccessor::setSearchStartNsForTest(1000);
-    ReferenceChainsTestAccessor::cacheChain(5, makeLeakEvent(leak, stale_stamp), 5, 1000);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::cacheChain(
+        5, makeLeakEvent(leak, stale_stamp), 5, 1000))
+        << "a chain whose leak-tag owner already died must be refused by the cache";
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount());
     EXPECT_FALSE(drainContainsTarget((u64)leak));
+
+    // The recycled tag's new owner must not inherit the dead owner's stamp.
+    jlong reused = lt->acquireLeakTagForTest();
+    ASSERT_EQ(leak, reused);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::cacheChain(
+        5, makeLeakEvent(reused, stale_stamp), 5, 1000))
+        << "a chain carrying the dead owner's stamp must be refused for the new owner too";
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount());
+}
+
+// Only the current search's cached chain counts: after a restart moved _search_start_ns, a
+// frontier chain cached by the superseded search must not answer the seam (the
+// source_search_ns != current gate), and with no active search (start ns 0) nothing answers.
+TEST_F(ResolvedChainCacheTest, FrontierChainFromSupersededSearchIsRejected) {
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(1000);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(5, makeEvent(77), 5, 1000));
+    EXPECT_EQ(77, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(5));
+
+    // Restart: the cached chain belongs to the superseded search.
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(2000);
+    EXPECT_EQ(0, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(5))
+        << "a frontier chain cached by an earlier search must not answer the seam";
+
+    // No active search: the gate stays closed even though a chain is cached.
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(0);
+    EXPECT_EQ(0, ReferenceChainTracker::instance()->resolvedChainTargetTagForTest(5));
 }
 
 // Within one ownership period the leak-tag path is generation-agnostic: a chain an earlier search

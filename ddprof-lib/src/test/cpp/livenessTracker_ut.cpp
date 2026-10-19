@@ -1126,6 +1126,17 @@ public:
         t->_table_max_cap = table_max_cap;
     }
 
+    // Writes a canary cached class id into a table row (possibly one past
+    // _table_size, still within _table_cap) so tests can pin whole-table
+    // clear-loop bounds. Returns false when idx is outside the allocation.
+    static bool setCachedKlassIdForTest(LivenessTracker *t, u32 idx, u32 id) {
+        if (t->_table == nullptr || idx >= (u32)t->_table_cap) {
+            return false;
+        }
+        t->_table[idx].cached_klass_id = id;
+        return true;
+    }
+
     static int tableSizeFieldForTest(LivenessTracker *t) {
         return t->_table_size;
     }
@@ -2744,6 +2755,38 @@ TEST_F(LivenessTrackerMockJvmTest, StartRebuildBumpsStampOnlyWhenOwnershipFlips)
     EXPECT_FALSE(tracker->leakTagInUseForTest(free_tag));
     EXPECT_EQ(free_stamp, tracker->leakTagIncarnation(free_tag))
         << "a tag that stays free keeps its stamp";
+}
+
+// classMapGenerationSetForTest()'s whole-table cached_klass_id clear: every row
+// below _table_size loses its cached id (those ids resolved against the old
+// class-map namespace and could alias an unrelated class), and the row at
+// _table_size - a canary inside the allocated table but outside the valid
+// rows - keeps its value, pinning the loop bound (<, not <=).
+TEST_F(LivenessTrackerMockJvmTest, GenerationChangeClearsCachedKlassIdsWholeTable) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    trackNew(&jvm.retained_class, /*tid=*/7);
+    trackNew(&jvm.retained_class, /*tid=*/7);
+    sweep();
+    ASSERT_EQ(2u, tracker->tableSizeForTest());
+    ASSERT_NE(0u, cachedKlassIdAt(0));
+    ASSERT_NE(0u, cachedKlassIdAt(1));
+
+    constexpr u32 kCanaryId = 0xC0FFEE;
+    // Row 2 is one past the valid rows but inside the allocated table (the
+    // canary write fails the test if the allocation is exactly 2 rows).
+    ASSERT_TRUE(LivenessTrackerTestAccessor::setCachedKlassIdForTest(
+        tracker, /*idx=*/2, kCanaryId));
+
+    // Two calls make the generation change deterministic even if a previous
+    // test already adopted generation + 1: first aligns, second changes.
+    u64 generation = Profiler::instance()->classMap()->generation();
+    tracker->classMapGenerationSetForTest(generation);
+    tracker->classMapGenerationSetForTest(generation + 1);
+
+    EXPECT_EQ(0u, cachedKlassIdAt(0)) << "row 0's cached id must clear on a generation change";
+    EXPECT_EQ(0u, cachedKlassIdAt(1)) << "row 1's cached id must clear on a generation change";
+    EXPECT_EQ(kCanaryId, cachedKlassIdAt(2))
+        << "the clear loop must stop at _table_size, not write the row past it";
 }
 
 // Profiler::start() resets the class map, restarting its ids at 1, while the
