@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-10-18 21:28:14 EDT
+**Date:** 2026-10-19 00:53:01 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 55 |
-| Sample Rate | 0.92/sec |
-| Health Score | 57% |
+| CPU Samples | 266 |
+| Sample Rate | 4.43/sec |
+| Health Score | 277% |
 | Threads | 7 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 97 |
-| Sample Rate | 1.62/sec |
-| Health Score | 101% |
-| Threads | 7 |
+| CPU Samples | 110 |
+| Sample Rate | 1.83/sec |
+| Health Score | 114% |
+| Threads | 12 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1792372984 48
-1792372989 48
-1792372994 48
-1792372999 48
-1792373004 48
-1792373009 48
-1792373014 48
-1792373019 48
-1792373024 48
-1792373029 48
-1792373034 48
-1792373039 48
-1792373044 48
-1792373049 48
-1792373054 48
-1792373059 48
-1792373064 48
-1792373069 48
-1792373074 48
-1792373079 48
+1792385343 48
+1792385348 48
+1792385353 48
+1792385358 48
+1792385363 48
+1792385368 48
+1792385373 48
+1792385378 48
+1792385383 48
+1792385388 48
+1792385393 48
+1792385398 48
+1792385403 48
+1792385408 48
+1792385413 48
+1792385418 48
+1792385423 48
+1792385428 48
+1792385433 48
+1792385438 48
 ```
 </details>
 
