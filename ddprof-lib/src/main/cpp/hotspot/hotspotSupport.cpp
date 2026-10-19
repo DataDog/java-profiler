@@ -388,7 +388,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     // Advances through a continuation boundary to the carrier frame.
     // Without carrier_frames (default, cstack=vm): always stops with a "JVM Continuation"
-    // synthetic root frame — VT frames are complete, carrier internals are noise.
+    // synthetic root frame; frozen VT callers are not reconstructed.
     // With carrier_frames (cstack=vmx): attempts to walk through; failures emit BCI_ERROR
     // so the sample is truthfully marked truncated.
     // Walks cont_entry->parent() on repeated calls to handle nested continuations
@@ -404,6 +404,11 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     //
     // Returns true to continue the walk, false to break.
     auto walkThroughContinuation = [&](bool all_frames_thawed) -> bool {
+        // A return barrier leaves older Java callers in heap chunks, which this
+        // walker skips even when carrier walking succeeds.
+        if (!all_frames_thawed && truncated != nullptr) {
+            *truncated = true;
+        }
         if (depth >= actual_max_depth) return false;
         if (!features.carrier_frames) {
             fillFrame(frames[depth++], BCI_NATIVE_FRAME, CONT_ROOT_FRAME);
