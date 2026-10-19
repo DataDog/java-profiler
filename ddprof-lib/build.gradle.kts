@@ -74,17 +74,29 @@ gtest {
 
 // referenceChainJfrRoundtrip_ut writes a .jfr that :ddprof-test's ReferenceChainJfrParserTest
 // reads back. Both sides get the path from this env var (set here and in ddprof-test's
-// build.gradle.kts), and the producer deletes the file before it runs, so the consumer never
-// parses a recording left behind by an older binary.
-val referenceChainRoundtripJfr =
-  rootProject.layout.buildDirectory
-    .file("tmp/reference-chain-roundtrip/datadog_reference_chain_roundtrip.jfr")
+// build.gradle.kts). The path is scoped per build configuration (derived from the gtest task
+// name, which encodes it) so a multi-configuration invocation cannot delete or overwrite
+// another configuration's recording, and the producer deletes the file before it runs, so
+// the consumer never parses a recording left behind by an older binary.
+val roundtripSuiteSuffix = "_referenceChainJfrRoundtrip_ut"
+val roundtripProducers = tasks.withType<Exec>().matching {
+  it.name.startsWith("gtest") && it.name.endsWith(roundtripSuiteSuffix)
+}
+// The gtest plugin registers one producer per build configuration; zero matches can only
+// mean the suite id or the gtest task naming changed. Fail the build instead of letting
+// ReferenceChainJfrParserTest silently degrade to a skip.
+gradle.projectsEvaluated {
+  check(roundtripProducers.isNotEmpty()) {
+    "No gtest task matching 'gtest*$roundtripSuiteSuffix' was registered - the " +
+      "reference-chain JFR roundtrip wiring is stale (suite renamed?)"
+  }
+}
+roundtripProducers.configureEach {
+  val config = name.removePrefix("gtest").removeSuffix(roundtripSuiteSuffix).lowercase()
+  val jfr = rootProject.layout.buildDirectory
+    .file("tmp/reference-chain-roundtrip/$config/datadog_reference_chain_roundtrip.jfr")
     .get()
     .asFile
-tasks.withType<Exec>().matching {
-  it.name.startsWith("gtest") && it.name.endsWith("_referenceChainJfrRoundtrip_ut")
-}.configureEach {
-  val jfr = referenceChainRoundtripJfr
   environment("DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR", jfr.absolutePath)
   doFirst {
     jfr.parentFile.mkdirs()
