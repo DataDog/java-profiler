@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk25
 
 ## glibc-arm64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-10-19 00:53:01 EDT
+**Date:** 2026-10-19 01:06:09 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 345 |
-| Sample Rate | 5.75/sec |
-| Health Score | 359% |
+| CPU Samples | 511 |
+| Sample Rate | 8.52/sec |
+| Health Score | 532% |
 | Threads | 8 |
-| Allocations | 385 |
+| Allocations | 392 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 58 |
-| Sample Rate | 0.97/sec |
-| Health Score | 61% |
+| CPU Samples | 227 |
+| Sample Rate | 3.78/sec |
+| Health Score | 236% |
 | Threads | 11 |
-| Allocations | 40 |
+| Allocations | 138 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 18-18 cores)</summary>
+<summary>CPU Timeline (2 unique values: 13-18 cores)</summary>
 
 ```
-1792385356 18
-1792385361 18
-1792385366 18
-1792385371 18
-1792385376 18
-1792385381 18
-1792385386 18
-1792385391 18
-1792385396 18
-1792385401 18
-1792385406 18
-1792385411 18
-1792385416 18
-1792385421 18
-1792385426 18
-1792385431 18
-1792385436 18
-1792385441 18
-1792385446 18
-1792385451 18
+1792386125 18
+1792386130 18
+1792386135 18
+1792386140 18
+1792386145 18
+1792386150 18
+1792386155 18
+1792386160 18
+1792386165 18
+1792386170 18
+1792386175 18
+1792386180 18
+1792386185 18
+1792386190 18
+1792386195 18
+1792386200 13
+1792386205 13
+1792386210 13
+1792386215 13
+1792386220 13
 ```
 </details>
 

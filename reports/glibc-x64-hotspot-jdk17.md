@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk17
 
 ## glibc-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-10-19 00:53:02 EDT
+**Date:** 2026-10-19 01:06:10 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 424 |
-| Sample Rate | 7.07/sec |
-| Health Score | 442% |
+| CPU Samples | 467 |
+| Sample Rate | 7.78/sec |
+| Health Score | 486% |
 | Threads | 8 |
-| Allocations | 375 |
+| Allocations | 363 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 635 |
-| Sample Rate | 10.58/sec |
-| Health Score | 661% |
-| Threads | 10 |
-| Allocations | 475 |
+| CPU Samples | 509 |
+| Sample Rate | 8.48/sec |
+| Health Score | 530% |
+| Threads | 9 |
+| Allocations | 474 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 27-27 cores)</summary>
 
 ```
-1792385357 27
-1792385362 27
-1792385367 27
-1792385372 27
-1792385377 27
-1792385382 27
-1792385387 27
-1792385392 27
-1792385397 27
-1792385402 27
-1792385407 27
-1792385412 27
-1792385417 27
-1792385422 27
-1792385427 27
-1792385432 27
-1792385437 27
-1792385442 27
-1792385447 27
-1792385452 27
+1792386048 27
+1792386053 27
+1792386058 27
+1792386063 27
+1792386068 27
+1792386073 27
+1792386078 27
+1792386083 27
+1792386088 27
+1792386093 27
+1792386098 27
+1792386103 27
+1792386108 27
+1792386113 27
+1792386118 27
+1792386123 27
+1792386128 27
+1792386133 27
+1792386138 27
+1792386143 27
 ```
 </details>
 
