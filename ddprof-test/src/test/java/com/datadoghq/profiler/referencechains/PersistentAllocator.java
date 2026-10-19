@@ -30,17 +30,47 @@ final class PersistentAllocator implements AutoCloseable {
 
   private static final long HANDOFF_TIMEOUT_SECONDS = 30;
 
-  private final SynchronousQueue<Runnable> handoff = new SynchronousQueue<>();
-  // Worker-to-caller completion slot: an Object marker = success, a Throwable = the batch's
-  // failure. It is buffered (one slot) because the protocol is single-in-flight, and the
-  // worker's offer() must retain the signal even when the batch finishes in the window
-  // between the handoff rendezvous and the caller entering poll(): a SynchronousQueue would
-  // drop that bare offer and turn a completed batch (or its rethrown failure) into a
-  // 30-second poll timeout.
-  private final ArrayBlockingQueue<Object> completion = new ArrayBlockingQueue<>(1);
+  // One unit of work handed to the worker; carries the caller-side generation
+  // so the worker can echo it back in the Outcome. The CLOSE poison rides in a
+  // Job too (generation -1, never a real generation).
+  private static final class Job {
+    final Runnable task;
+    final int generation;
+
+    Job(Runnable task, int generation) {
+      this.task = task;
+      this.generation = generation;
+    }
+  }
+
+  // The worker's completion entry; the generation identifies which run()
+  // produced it, so a stale outcome left by an abandoned (timed-out) run is
+  // discarded by the caller instead of being misattributed to the next task.
+  private static final class Outcome {
+    final int generation;
+    final Object result; // Object marker = success, a Throwable = the batch's failure
+
+    Outcome(int generation, Object result) {
+      this.generation = generation;
+      this.result = result;
+    }
+  }
+
+  private final SynchronousQueue<Job> handoff = new SynchronousQueue<>();
+  // Worker-to-caller completion slot: an Outcome with the caller's generation
+  // = this task's verdict (Object marker = success, a Throwable = the batch's
+  // failure). It is buffered (one slot) because the protocol is single-in-flight,
+  // and the worker's offer() must retain the signal even when the batch finishes
+  // in the window between the handoff rendezvous and the caller entering poll():
+  // a SynchronousQueue would drop that bare offer and turn a completed batch
+  // (or its rethrown failure) into a 30-second poll timeout.
+  private final ArrayBlockingQueue<Outcome> completion = new ArrayBlockingQueue<>(1);
   private final Thread thread;
   private volatile int tid;
   private volatile boolean closed;
+  // Monotonic per-run() token; only the caller thread runs tasks through run(),
+  // so plain int arithmetic is sufficient.
+  private int nextGeneration;
 
   PersistentAllocator(String name) {
     thread = new Thread(this::loop, name);
@@ -76,24 +106,37 @@ final class PersistentAllocator implements AutoCloseable {
       throw new IllegalStateException("allocator thread " + thread.getName() + " is no longer running");
     }
     try {
-      // A previous run() that timed out left its outcome in the slot (the worker
-      // finishes the abandoned task and offers into the then-empty queue). Drop it
-      // before the handoff so it can never be attributed to this task: the worker is
-      // parked at handoff.take() at this point, so nothing new can arrive between
-      // the clear and the rendezvous.
+      // A previous run() that timed out may still have its outcome parked in
+      // the slot (the worker finishes the abandoned task and offers into the
+      // then-empty queue). Drop what is already there; the generation check
+      // below then discards any stale outcome that lands after this clear -
+      // a plain clear alone cannot close that window, because the worker only
+      // parks at handoff.take() AFTER offering the abandoned task's outcome.
       completion.clear();
-      if (!handoff.offer(task, HANDOFF_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+      int generation = nextGeneration++;
+      if (!handoff.offer(new Job(task, generation), HANDOFF_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
         throw new IllegalStateException("allocator thread " + thread.getName() + " did not accept a task");
       }
-      Object outcome = completion.poll(HANDOFF_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-      if (outcome == null) {
-        throw new IllegalStateException("allocator thread " + thread.getName() + " never finished a task");
-      }
-      if (outcome instanceof RuntimeException) {
-        throw (RuntimeException) outcome;
-      }
-      if (outcome instanceof Error) {
-        throw (Error) outcome;
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(HANDOFF_TIMEOUT_SECONDS);
+      while (true) {
+        Outcome outcome = completion.poll(deadline - System.nanoTime(), TimeUnit.NANOSECONDS);
+        if (outcome == null) {
+          throw new IllegalStateException("allocator thread " + thread.getName() + " never finished a task");
+        }
+        // Discard an abandoned earlier run()'s outcome and keep waiting for this
+        // generation's verdict. The stale entry is always offered before our own:
+        // the worker offers it before looping back to handoff.take(), through
+        // which alone our Job can be accepted.
+        if (outcome.generation != generation) {
+          continue;
+        }
+        if (outcome.result instanceof RuntimeException) {
+          throw (RuntimeException) outcome.result;
+        }
+        if (outcome.result instanceof Error) {
+          throw (Error) outcome.result;
+        }
+        return;
       }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -109,7 +152,7 @@ final class PersistentAllocator implements AutoCloseable {
     }
     closed = true;
     try {
-      if (thread.isAlive() && handoff.offer(CLOSE, HANDOFF_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+      if (thread.isAlive() && handoff.offer(new Job(CLOSE, -1), HANDOFF_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
         // Drain the exit acknowledgement so close() returns only after the thread is done.
         completion.poll(HANDOFF_TIMEOUT_SECONDS, TimeUnit.SECONDS);
       }
@@ -123,18 +166,18 @@ final class PersistentAllocator implements AutoCloseable {
     tid = ReferenceChainTestHooks.getTid();
     try {
       while (true) {
-        Runnable task = handoff.take();
-        if (task == CLOSE) {
-          completion.offer(new Object()); // exit acknowledgement; no further work arrives
+        Job job = handoff.take();
+        if (job.task == CLOSE) {
+          completion.offer(new Outcome(job.generation, new Object())); // exit acknowledgement; no further work arrives
           return;
         }
         Object outcome = null;
         try {
-          task.run();
+          job.task.run();
         } catch (RuntimeException | Error t) {
           outcome = t;
         }
-        completion.offer(outcome != null ? outcome : new Object());
+        completion.offer(new Outcome(job.generation, outcome != null ? outcome : new Object()));
       }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
