@@ -133,24 +133,24 @@ protected:
 
 } // namespace
 
-TEST_F(KlassRegistryTest, PinUnknownKlassReturnsNull) {
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0)));
+TEST_F(KlassRegistryTest, UnknownKlassIsNotContained) {
+    EXPECT_FALSE(registry.contains(jni, klassAt(0)));
     ASSERT_TRUE(registry.add(jni, klassAt(1), mirror(1)));
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0)));
-    EXPECT_EQ(nullptr, registry.pin(jni, nullptr));
+    EXPECT_FALSE(registry.contains(jni, klassAt(0)));
+    EXPECT_FALSE(registry.contains(jni, nullptr));
 }
 
-TEST_F(KlassRegistryTest, PinReturnsRegisteredMirror) {
+TEST_F(KlassRegistryTest, RegisteredClassesAreContained) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     ASSERT_TRUE(registry.add(jni, klassAt(1), mirror(1)));
-    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0)));
-    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(1)));
+    EXPECT_TRUE(registry.contains(jni, klassAt(0)));
+    EXPECT_TRUE(registry.contains(jni, klassAt(1)));
 }
 
-TEST_F(KlassRegistryTest, PinReturnsNullOnceClassIsCollected) {
+TEST_F(KlassRegistryTest, CollectedClassIsNotContained) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     heap.collect(&mirrors[0]);
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0)));
+    EXPECT_FALSE(registry.contains(jni, klassAt(0)));
 }
 
 TEST_F(KlassRegistryTest, ReAddingSameMirrorIsNoOp) {
@@ -162,12 +162,12 @@ TEST_F(KlassRegistryTest, ReAddingSameMirrorIsNoOp) {
 }
 
 TEST_F(KlassRegistryTest, ReusedKlassAddressReplacesDeadEntry) {
-    // A class is unloaded and a new one is loaded at the same Klass* address:
-    // the new class's ClassPrepare must win, and the old weak ref be freed.
+    // A class is unloaded and a new one is registered at the same Klass*
+    // address: the new class must win, and the old weak ref be freed.
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     heap.collect(&mirrors[0]);
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(1)));
-    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(0)));
+    EXPECT_TRUE(registry.contains(jni, klassAt(0)));
     EXPECT_EQ(1u, registry.size());
     EXPECT_EQ(1, heap.liveWeaks());
 }
@@ -191,13 +191,13 @@ TEST_F(KlassRegistryTest, GrowthPurgesDeadEntries) {
     EXPECT_EQ((int)registry.size(), heap.liveWeaks());
     EXPECT_EQ(0, heap.double_deletes);
     for (size_t i = 0; i < 10; i++) {
-        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i))) << i;
+        EXPECT_TRUE(registry.contains(jni, klassAt(i))) << i;
     }
     for (size_t i = 10; i < first; i++) {
-        EXPECT_EQ(nullptr, registry.pin(jni, klassAt(i))) << i;
+        EXPECT_FALSE(registry.contains(jni, klassAt(i))) << i;
     }
     for (size_t i = first; i < first + more; i++) {
-        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i))) << i;
+        EXPECT_TRUE(registry.contains(jni, klassAt(i))) << i;
     }
 }
 
@@ -240,7 +240,7 @@ TEST_F(KlassRegistryTest, GrowthKeepsAllLiveEntries) {
     }
     EXPECT_EQ(n, registry.size());
     for (size_t i = 0; i < n; i++) {
-        EXPECT_EQ(mirror(i), registry.pin(jni, klassAt(i))) << i;
+        EXPECT_TRUE(registry.contains(jni, klassAt(i))) << i;
     }
 }
 
@@ -252,10 +252,10 @@ TEST_F(KlassRegistryTest, ClearDeletesEveryWeakRef) {
     EXPECT_EQ(0u, registry.size());
     EXPECT_EQ(0, heap.liveWeaks());
     EXPECT_EQ(0, heap.double_deletes);
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0)));
+    EXPECT_FALSE(registry.contains(jni, klassAt(0)));
     // Usable again after clear().
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0)));
+    EXPECT_TRUE(registry.contains(jni, klassAt(0)));
 }
 
 // Redefinition: raw frames of a class are refused while a redefinition of it
@@ -264,33 +264,28 @@ TEST_F(KlassRegistryTest, ClearDeletesEveryWeakRef) {
 
 TEST_F(KlassRegistryTest, SuccessfulRedefinitionIsRefusedForGood) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    EXPECT_FALSE(registry.isRedefined(klassAt(0)));
+    EXPECT_FALSE(registry.isRedefined(jni, klassAt(0)));
     ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
-    EXPECT_TRUE(registry.isRedefined(klassAt(0)));
+    EXPECT_TRUE(registry.isRedefined(jni, klassAt(0)));
     registry.endRedefinition(klassAt(0), true);
-    EXPECT_TRUE(registry.isRedefined(klassAt(0)));
-    KlassRegistry::PinStatus status;
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), &status));
-    EXPECT_EQ(KlassRegistry::PIN_REDEFINED, status);
+    EXPECT_TRUE(registry.isRedefined(jni, klassAt(0)));
     // Re-registering the same mirror does not clear the mark.
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
-    EXPECT_TRUE(registry.isRedefined(klassAt(0)));
+    EXPECT_TRUE(registry.isRedefined(jni, klassAt(0)));
 }
 
 TEST_F(KlassRegistryTest, RedefinitionInProgressIsRefused) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
-    KlassRegistry::PinStatus status;
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), &status));
-    EXPECT_EQ(KlassRegistry::PIN_REDEFINED, status);
+    EXPECT_TRUE(registry.isRedefined(jni, klassAt(0)));
 }
 
 TEST_F(KlassRegistryTest, FailedRedefinitionLeavesClassAsBefore) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
     registry.endRedefinition(klassAt(0), false);
-    EXPECT_FALSE(registry.isRedefined(klassAt(0)));
-    EXPECT_EQ(mirror(0), registry.pin(jni, klassAt(0)));
+    EXPECT_FALSE(registry.isRedefined(jni, klassAt(0)));
+    EXPECT_TRUE(registry.contains(jni, klassAt(0)));
 }
 
 TEST_F(KlassRegistryTest, OverlappingRedefinitionsAreTracked) {
@@ -300,27 +295,27 @@ TEST_F(KlassRegistryTest, OverlappingRedefinitionsAreTracked) {
     ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
     ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
     registry.endRedefinition(klassAt(0), false);
-    EXPECT_TRUE(registry.isRedefined(klassAt(0)));
+    EXPECT_TRUE(registry.isRedefined(jni, klassAt(0)));
     registry.endRedefinition(klassAt(0), false);
-    EXPECT_FALSE(registry.isRedefined(klassAt(0)));
+    EXPECT_FALSE(registry.isRedefined(jni, klassAt(0)));
 
     ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
     ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
     registry.endRedefinition(klassAt(0), true);
     registry.endRedefinition(klassAt(0), false);
-    EXPECT_TRUE(registry.isRedefined(klassAt(0)));
+    EXPECT_TRUE(registry.isRedefined(jni, klassAt(0)));
 }
 
 TEST_F(KlassRegistryTest, RedefinitionOfUnregisteredClassIsIgnored) {
     EXPECT_FALSE(registry.beginRedefinition(klassAt(5)));
     registry.endRedefinition(klassAt(5), true);
-    EXPECT_FALSE(registry.isRedefined(klassAt(5)));
+    EXPECT_FALSE(registry.isRedefined(jni, klassAt(5)));
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     EXPECT_FALSE(registry.beginRedefinition(klassAt(5)));
     // An unmatched end, e.g. for a class registered while the call ran, does
     // not underflow the count.
     registry.endRedefinition(klassAt(0), false);
-    EXPECT_FALSE(registry.isRedefined(klassAt(0)));
+    EXPECT_FALSE(registry.isRedefined(jni, klassAt(0)));
 }
 
 TEST_F(KlassRegistryTest, NewClassAtRedefinedClassAddressStartsUnmarked) {
@@ -329,16 +324,26 @@ TEST_F(KlassRegistryTest, NewClassAtRedefinedClassAddressStartsUnmarked) {
     registry.endRedefinition(klassAt(0), true);
     heap.collect(&mirrors[0]);
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(1)));
-    EXPECT_FALSE(registry.isRedefined(klassAt(0)));
-    EXPECT_EQ(mirror(1), registry.pin(jni, klassAt(0)));
+    EXPECT_FALSE(registry.isRedefined(jni, klassAt(0)));
+    EXPECT_TRUE(registry.contains(jni, klassAt(0)));
 }
 
 TEST_F(KlassRegistryTest, UnloadedClassIsReportedAbsent) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     heap.collect(&mirrors[0]);
-    KlassRegistry::PinStatus status;
-    EXPECT_EQ(nullptr, registry.pin(jni, klassAt(0), &status));
-    EXPECT_EQ(KlassRegistry::PIN_ABSENT, status);
+    EXPECT_FALSE(registry.contains(jni, klassAt(0)));
+}
+
+// Once a redefined class is unloaded, its mark is no longer reported, even
+// before a new class at the same address replaces the entry: that class was
+// never redefined.
+TEST_F(KlassRegistryTest, MarkOfUnloadedClassIsNotReported) {
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
+    registry.endRedefinition(klassAt(0), true);
+    ASSERT_TRUE(registry.isRedefined(jni, klassAt(0)));
+    heap.collect(&mirrors[0]);
+    EXPECT_FALSE(registry.isRedefined(jni, klassAt(0)));
 }
 
 // ---------------------------------------------------------------------------

@@ -151,9 +151,30 @@ private:
 
     static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all);
 
-    // fjmethodid=lazy: liveness registry for every loaded class, consulted by
-    // resolve() before it touches a raw Method*. See klassRegistry.h.
+    // fjmethodid=lazy: redefinition marks of the classes redefined while lazy
+    // mode was in use (see klassRegistry.h). Only redefined classes are in it.
     static KlassRegistry _klass_registry;
+
+    // Set once lazy mode has started; raw frames of a lazy session can
+    // outlive it, so redefinitions are tracked and dumps pin classes from then
+    // on.
+    static bool _lazy_used;
+
+    // fjmethodid=lazy: the classes GetLoadedClasses() returned at the start
+    // of the current dump. The dump holds a local reference to each of them,
+    // so none can be unloaded until it ends. nullptr outside a dump.
+    static const jclass* _dump_jclasses;
+    static int _dump_jclass_count;
+
+    // Their Klass*s (open addressing, power-of-two capacity), built by the
+    // dump's first lazy resolution, so a dump without lazy frames never
+    // builds it. nullptr until then.
+    static const void** _dump_classes;
+    static size_t _dump_classes_capacity;
+
+    // Whether `klass` is one of the classes pinned by the current dump.
+    static bool isDumpClass(const void* klass);
+    static void buildDumpClasses();
 
     // Raw frame tags (frame.h). fjmethodid=lazy frames set the top tag bit
     // and keep the low 25 bits of the holder's JFR trace ID (KlassTraceId) in
@@ -168,15 +189,17 @@ private:
     // holder's trace ID is unreadable. Signal safe.
     static bool lazyFrameTag(const VMMethod* method, uint32_t* tag);
 
-    // fjmethodid=lazy: records `klass` in _klass_registry instead of
-    // allocating its jmethodIDs. Called wherever the other modes preload.
+    // fjmethodid=lazy: does nothing instead of allocating `klass`'s
+    // jmethodIDs; each dump pins the classes it resolves frames of
+    // (beginDump()). Called wherever the other modes preload.
     static bool registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 
     // Around every RedefineClasses/RetransformClasses call, in every mode
-    // once _klass_registry has entries (raw frames of a lazy session can
-    // outlive it): marks `klass` while the call runs and for good if it
-    // succeeds (see klassRegistry.h for why its raw frames are refused), and in
-    // lazy mode preloads its jmethodIDs after a successful call. `klass` comes
+    // once lazy mode has started (raw frames of a lazy session can outlive
+    // it): registers `klass` in _klass_registry and marks it while the call
+    // runs and for good if it succeeds (see klassRegistry.h for why its raw
+    // frames are refused), and in lazy mode preloads its jmethodIDs after a
+    // successful call. `klass` comes
     // straight from the caller, so anything that is not an instance class is
     // ignored, as JVMTI itself rejects it.
     static void beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
@@ -186,14 +209,14 @@ private:
     // primitive, i.e. one with a Klass* that has methods.
     static bool isInstanceClass(jvmtiEnv *jvmti, jclass klass);
 
-    // fjmethodid=lazy half of resolve(): pins the class registered under
-    // `holder`, refuses it if its trace ID does not match `trace_id_bits` (the
-    // frame came from another load of a class whose memory this one reuses),
-    // checks that `vm_method` is still one of its methods, and only then reads
-    // its names and line number table into `result`, with the class still
-    // pinned. `holder` and `idnum` were read from the unverified Method* and
-    // are only used as lookup keys.
-    static bool resolveViaRegistry(ProfiledThread* prof_thread, VMMethod* vm_method,
+    // fjmethodid=lazy half of resolve(): refuses the frame unless `holder` is
+    // one of the classes the current dump pins and is not marked redefined,
+    // refuses it if its trace ID does not match `trace_id_bits` (the frame
+    // came from another load of a class whose memory this one reuses), checks
+    // that `vm_method` is still one of its methods, and only then reads its
+    // names and line number table into `result`. `holder` and `idnum` were
+    // read from the unverified Method* and are only used as lookup keys.
+    static bool resolveLazily(ProfiledThread* prof_thread, VMMethod* vm_method,
                                    const void* holder, int idnum, uint32_t trace_id_bits,
                                    ResolvedMethod& result);
 
@@ -215,6 +238,12 @@ private:
                                                 bool* truncated, ProfiledThread* prof_thread);
 public:
     static void initClassloaderInfo(JNIEnv* jni);
+
+    // Around each dump, with the classes GetLoadedClasses() returned. The
+    // caller keeps the array and its local references valid until after
+    // endDump(). resolve() accepts raw frames of exactly these classes.
+    static void beginDump(JNIEnv* jni, const jclass* classes, int count);
+    static void endDump();
 
     // Runs `work` under the ucontext-fault-recovery protocol walkJavaStack()
     // needs around getJavaTraceAsync(): installs a sigsetjmp/siglongjmp
@@ -340,7 +369,8 @@ public:
     // frame's method field and encoded bci as stored, tag bits included.
     // Returns false, leaving `result` empty, if the frame must be treated as
     // unknown: the JMETHODID_NOT_WALKABLE sentinel, metadata that is stale or
-    // unreadable, or a lazy-mode frame the class registry refuses.
+    // unreadable, or a lazy-mode frame whose class the dump does not pin, was
+    // replaced by another class, or was redefined.
     static bool resolve(const void* tagged_method, int bci, ResolvedMethod& result);
 
     // Store a Java frame captured from HotSpot metadata. A null jmethodID

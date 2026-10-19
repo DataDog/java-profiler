@@ -491,8 +491,9 @@ public:
   // Per-dump cache of raw Method* frame resolutions (HotSpot cstack=vm frames
   // whose class had no jmethodID when sampled): the filled row, or nullptr if
   // the frame was refused. The same raw method recurs in many traces, and
-  // each resolution sets up crash protection, takes the KlassRegistry mutex,
-  // pins the class through JNI and reads names and line numbers. Keyed by the
+  // each resolution sets up crash protection, checks the class against the
+  // dump's pinned classes and its redefinition mark, and reads names and line
+  // numbers. Keyed by the
   // untagged Method* and the frame's full tag, so occurrences that differ
   // only in bci or frame type share one entry. A cached result stays right
   // for the whole dump: an accepted frame was sampled from that method, and a

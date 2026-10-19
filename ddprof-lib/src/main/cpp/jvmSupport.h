@@ -76,6 +76,12 @@ public:
     static void beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
     static void afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded);
 
+    // Around each dump: `classes` are the ones GetLoadedClasses() returned,
+    // referenced by the caller until after endDump(). Raw frames of other
+    // classes resolve as unknown.
+    static void beginDump(JNIEnv *jni, const jclass *classes, int count);
+    static void endDump();
+
     // Resolve a raw-pointer frame (method field and encoded bci) into names and
     // line number table (HotSpot only); false if it must be treated as unknown
     static inline bool resolve(const void* method, int bci, ResolvedMethod& result);

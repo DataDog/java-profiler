@@ -1027,6 +1027,11 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   // call.  Classes already unloaded before finishChunk() was entered are not
   // present in the list and receive no protection here.
   jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
+  // fjmethodid=lazy resolves raw frames only of these classes: they stay
+  // pinned until the local references are deleted below.
+  if (!err) {
+    JVMSupport::beginDump(env, classes, count);
+  }
 
   flush(&_cpu_monitor_buf);
 
@@ -1145,6 +1150,7 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   // values rather than pre-.
   capturePostFlushNativeMem();
 
+  JVMSupport::endDump();
   if (!err) {
     // delete all local references
     for (int i = 0; i < count; i++) {

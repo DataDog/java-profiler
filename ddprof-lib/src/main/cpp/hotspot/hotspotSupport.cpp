@@ -1478,6 +1478,11 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
 }
 
 KlassRegistry HotspotSupport::_klass_registry;
+bool HotspotSupport::_lazy_used = false;
+const jclass* HotspotSupport::_dump_jclasses = nullptr;
+int HotspotSupport::_dump_jclass_count = 0;
+const void** HotspotSupport::_dump_classes = nullptr;
+size_t HotspotSupport::_dump_classes_capacity = 0;
 
 bool HotspotSupport::canResolveLazily() {
     return VMStructs::hasKlassMethods();
@@ -1490,6 +1495,9 @@ bool HotspotSupport::initLazyResolution(JNIEnv* jni) {
     Counters::set(KLASS_TRACE_ID_OFFSET, calibrated ? KlassTraceId::offset() : -1);
     _klass_registry.publishCounters();
     TEST_LOG("Raw frame tags: %s", calibrated ? "klass trace id" : "unavailable, lazy mode off");
+    if (calibrated) {
+        _lazy_used = true;
+    }
     return calibrated;
 }
 
@@ -1511,16 +1519,18 @@ bool HotspotSupport::isInstanceClass(jvmtiEnv *jvmti, jclass klass) {
 }
 
 void HotspotSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-    if (_klass_registry.size() == 0 || !isInstanceClass(jvmti, klass)) {
+    if (!_lazy_used || !isInstanceClass(jvmti, klass)) {
         return;
     }
-    if (_klass_registry.beginRedefinition(VMKlass::fromJavaClass(jni, klass))) {
+    // Only redefined classes are registered, so the mark has a place to live.
+    const void* vm_klass = VMKlass::fromJavaClass(jni, klass);
+    if (_klass_registry.add(jni, vm_klass, klass) && _klass_registry.beginRedefinition(vm_klass)) {
         Counters::increment(KLASS_REGISTRY_REDEFINITIONS_MARKED);
     }
 }
 
 void HotspotSupport::afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded) {
-    if (_klass_registry.size() == 0 || !isInstanceClass(jvmti, klass)) {
+    if (!_lazy_used || !isInstanceClass(jvmti, klass)) {
         return;
     }
     _klass_registry.endRedefinition(VMKlass::fromJavaClass(jni, klass), succeeded);
@@ -1533,27 +1543,91 @@ void HotspotSupport::afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass
 }
 
 bool HotspotSupport::registerClass(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-    // Array and primitive classes have no methods, so no frame ever names them
-    // as a holder; skipping them keeps GetLoadedClasses() at start cheap.
-    if (!isInstanceClass(jvmti, klass)) {
+    // Nothing to do at ClassPrepare: each dump pins the classes it resolves
+    // frames of (beginDump()).
+    return true;
+}
+
+bool HotspotSupport::isDumpClass(const void* klass) {
+    if (_dump_classes == nullptr) {
+        buildDumpClasses();
+    }
+    if (_dump_classes == nullptr || klass == nullptr) {
         return false;
     }
-    const void* vm_klass = VMKlass::fromJavaClass(jni, klass);
-    uint64_t trace_id;
-    if (KlassTraceId::read(vm_klass, &trace_id) && trace_id > TAG_VALUE_MASK) {
-        // Two classes' 25-bit trace-ID tags can only collide once their IDs
-        // are at least 2^25 apart, so before any class has an ID this large
-        // no stale frame can be matched to a newer class by its tag.
-        Counters::increment(KLASS_TRACE_ID_BEYOND_TAG_RANGE);
+    size_t mask = _dump_classes_capacity - 1;
+    for (size_t i = ((uintptr_t)klass >> 3) * 0x9E3779B97F4A7C15ULL >> 32 & mask; ; i = (i + 1) & mask) {
+        if (_dump_classes[i] == klass) {
+            return true;
+        }
+        if (_dump_classes[i] == nullptr) {
+            return false;
+        }
     }
-    if (_klass_registry.add(jni, vm_klass, klass)) {
-        return true;
+}
+
+void HotspotSupport::beginDump(JNIEnv* jni, const jclass* classes, int count) {
+    endDump();
+    if (!_lazy_used || count <= 0) {
+        return;
     }
-    // An unregistered class's raw frames could never be resolved (pin() finds
-    // no entry), so give it jmethodIDs up front: walkVM then never stores a
-    // raw frame for it.
-    Counters::increment(KLASS_REGISTRY_ADD_FAILED);
-    return loadMethodIDsIfNeededImpl(jvmti, jni, klass, true /*load all*/);
+    _dump_jclasses = classes;
+    _dump_jclass_count = count;
+}
+
+void HotspotSupport::buildDumpClasses() {
+    if (_dump_jclasses == nullptr) {
+        return;  // not in a dump
+    }
+    u64 start = OS::nanotime();
+    const int count = _dump_jclass_count;
+    size_t capacity = 1024;
+    while (capacity < (size_t)count * 2) {
+        capacity <<= 1;
+    }
+    const void** table = (const void**)calloc(capacity, sizeof(const void*));
+    if (table == nullptr) {
+        _dump_jclasses = nullptr;  // every lazy frame of this dump resolves as unknown
+        return;
+    }
+    JNIEnv* jni = VM::jni();
+    size_t mask = capacity - 1;
+    long long beyond_tag_range = 0;
+    for (int c = 0; c < count; c++) {
+        const void* klass = VMKlass::fromJavaClass(jni, _dump_jclasses[c]);
+        if (klass == nullptr) {
+            continue;
+        }
+        uint64_t trace_id;
+        if (KlassTraceId::read(klass, &trace_id) && trace_id > TAG_VALUE_MASK) {
+            beyond_tag_range++;
+        }
+        for (size_t i = ((uintptr_t)klass >> 3) * 0x9E3779B97F4A7C15ULL >> 32 & mask; ; i = (i + 1) & mask) {
+            if (table[i] == klass) {
+                break;
+            }
+            if (table[i] == nullptr) {
+                table[i] = klass;
+                break;
+            }
+        }
+    }
+    // Two classes' 25-bit trace-ID tags can only collide once their IDs are at
+    // least 2^25 apart, so while no loaded class has an ID this large no stale
+    // frame can be matched to a newer class by its tag.
+    Counters::set(KLASS_TRACE_ID_BEYOND_TAG_RANGE, beyond_tag_range);
+    Counters::set(LAZY_DUMP_CLASSES, count);
+    Counters::set(LAZY_DUMP_PIN_NS, (long long)(OS::nanotime() - start));
+    _dump_classes_capacity = capacity;
+    _dump_classes = table;
+}
+
+void HotspotSupport::endDump() {
+    free(_dump_classes);
+    _dump_classes = nullptr;
+    _dump_classes_capacity = 0;
+    _dump_jclasses = nullptr;
+    _dump_jclass_count = 0;
 }
 
 ResolvedMethod::ResolvedMethod() :
@@ -1774,11 +1848,11 @@ bool HotspotSupport::readMethod(const void* method, ResolvedMethod* result) {
 }
 
 // fjmethodid=lazy counterpart of readMethod(), under the same protection.
-// Reads only what KlassRegistry needs to decide whether the Method* is still
-// live: its holder Klass* and its idnum. Both come out of metadata that may
-// have been freed and reused, so they are lookup keys, not facts --
-// resolveViaRegistry() validates them against a pinned class before anything
-// else is read from the Method*.
+// Reads only what resolveLazily() needs to decide whether the Method* is
+// still live: its holder Klass* and its idnum. Both come out of metadata that
+// may have been freed and reused, so they are lookup keys, not facts --
+// resolveLazily() validates them against a pinned class before anything else
+// is read from the Method*.
 static bool readMethodHolder(const void* method, VMMethod** out_vm_method,
                              const void** out_holder, int* out_idnum) {
   VMMethod* vm_method = VMMethod::cast_or_null(method);
@@ -1874,8 +1948,8 @@ bool HotspotSupport::resolve(const void* tagged_method, int bci, ResolvedMethod&
 
   if (!lazy) {
     // A redefinition can free a replaced Method* and reuse its memory, and
-    // partial mode has no registry to tell, so such a frame may resolve to
-    // the method now at that address.
+    // partial mode keeps no redefinition marks to tell, so such a frame may
+    // resolve to the method now at that address.
     return protectedWalk(prof_thread, result, [&] { return readMethod(method, &result); });
   }
   VMMethod* vm_method = nullptr;
@@ -1886,25 +1960,26 @@ bool HotspotSupport::resolve(const void* tagged_method, int bci, ResolvedMethod&
     Counters::increment(METHOD_RESOLVE_LAZY_UNREADABLE);
     return false;
   }
-  return resolveViaRegistry(prof_thread, vm_method, holder, idnum, tag & TAG_VALUE_MASK, result);
+  return resolveLazily(prof_thread, vm_method, holder, idnum, tag & TAG_VALUE_MASK, result);
 }
 
-// Pins the class through JNI, so this runs outside any landing pad (see
-// protectedWalk()); only the readMethod() call is protected. Nothing here
-// dereferences vm_method until the class that owns it is pinned and the
-// method is confirmed to be one of that class's current methods.
-bool HotspotSupport::resolveViaRegistry(ProfiledThread* prof_thread, VMMethod* vm_method,
-                                        const void* holder, int idnum, uint32_t trace_id_bits,
-                                        ResolvedMethod& result) {
-  JNIEnv* jni = VM::jni();
-  KlassRegistry::PinStatus status;
-  jclass clz = _klass_registry.pin(jni, holder, &status);
-  if (clz == nullptr) {
-    // Redefined: the Method* may have been freed and reused within the class.
-    // Otherwise the class was unloaded after the sample was taken, or `holder`
-    // was read from a freed Method* and is garbage.
-    Counters::increment(status == KlassRegistry::PIN_REDEFINED ? METHOD_RESOLVE_LAZY_REDEFINED
-                                                               : METHOD_RESOLVE_LAZY_UNLOADED);
+// Runs on the dump thread between beginDump() and endDump(), so every class in
+// _dump_classes stays loaded throughout. Nothing here dereferences vm_method
+// until its holder is confirmed to be one of those classes and the method one
+// of the holder's current methods; only the readMethod() call needs the
+// landing pad, for a concurrent redefinition.
+bool HotspotSupport::resolveLazily(ProfiledThread* prof_thread, VMMethod* vm_method,
+                                   const void* holder, int idnum, uint32_t trace_id_bits,
+                                   ResolvedMethod& result) {
+  if (!isDumpClass(holder)) {
+    // The class was unloaded after the sample was taken, or `holder` was read
+    // from a freed Method* and is garbage.
+    Counters::increment(METHOD_RESOLVE_LAZY_UNLOADED);
+    return false;
+  }
+  if (_klass_registry.isRedefined(VM::jni(), holder)) {
+    // The Method* may have been freed and reused within the class.
+    Counters::increment(METHOD_RESOLVE_LAZY_REDEFINED);
     return false;
   }
 
@@ -1913,7 +1988,6 @@ bool HotspotSupport::resolveViaRegistry(ProfiledThread* prof_thread, VMMethod* v
     // The class at `holder` is a different load than the one sampled: its
     // memory was taken over after the sample.
     Counters::increment(METHOD_RESOLVE_LAZY_STALE);
-    jni->DeleteLocalRef(clz);
     return false;
   }
   bool resolved = false;
@@ -1929,11 +2003,10 @@ bool HotspotSupport::resolveViaRegistry(ProfiledThread* prof_thread, VMMethod* v
     // the mark check below rejects whatever it read.
     resolved = protectedWalk(prof_thread, result, [&] { return readMethod(vm_method, &result); });
   }
-  jni->DeleteLocalRef(clz);
   // The class is marked before a redefinition swaps its methods. If the mark
   // is still absent now, every read above happened before that swap, so the
   // Method* we validated was the class's own; otherwise we cannot tell.
-  if (resolved && _klass_registry.isRedefined(holder)) {
+  if (resolved && _klass_registry.isRedefined(VM::jni(), holder)) {
     result.release();
     Counters::increment(METHOD_RESOLVE_LAZY_REDEFINED);
     return false;

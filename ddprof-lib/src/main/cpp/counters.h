@@ -174,9 +174,11 @@
    * resolves via its malloc fallback and does not land here. The frame        \
    * serializes as "unknown". */                                               \
   X(METHOD_RESOLVE_SYMBOL_UNREADABLE, "method_resolve_symbol_unreadable")     \
-  /* fjmethodid=lazy resolution outcomes. UNLOADED: the frame's class is no   \
-   * longer registered or reachable. NOT_CURRENT: the class is alive but the  \
-   * Method* is not among its current methods (freed or redefined). Both      \
+  /* fjmethodid=lazy resolution outcomes. UNLOADED: the frame's class is not \
+   * among the classes the dump pins (unloaded since the sample, or the      \
+   * holder read from a freed Method* is garbage). NOT_CURRENT: the class  \
+   * is alive but the Method* is not among its current methods (freed or    \
+   * redefined). Both                                                        \
    * serialize as "unknown". RESOLVED: raw frames whose names were read from  \
    * VM metadata, once per method and tag per dump. */                        \
   X(METHOD_RESOLVE_LAZY_UNLOADED, "method_resolve_lazy_unloaded")             \
@@ -184,7 +186,6 @@
   X(METHOD_RESOLVE_LAZY_RESOLVED, "method_resolve_lazy_resolved")             \
   /* STALE: the class now at the frame's holder address is a different load \
    * (its trace ID differs); serializes as "unknown".                        \
-   * ADD_FAILED: registration failed, so the class was preloaded instead.    \
    * UNTAGGABLE: a Method* using address bits the raw-frame tag needs, or   \
    * an unreadable holder trace ID; the frame is stored as not walkable. */  \
   X(METHOD_RESOLVE_LAZY_STALE, "method_resolve_lazy_stale")                   \
@@ -196,21 +197,25 @@
    * read faulted), so no class could even be looked up; serializes as      \
    * "unknown". Under class churn this is most of the frames lost. */        \
   X(METHOD_RESOLVE_LAZY_UNREADABLE, "method_resolve_lazy_unreadable")         \
-  /* Registered classes marked by the redefinition hooks (once per class   \
-   * per redefine/retransform call). */                                      \
+  /* Classes marked by the redefinition hooks (once per class per          \
+   * redefine/retransform call). */                                          \
   X(KLASS_REGISTRY_REDEFINITIONS_MARKED, "klass_registry_redefinitions_marked") \
-  /* Registrations whose class trace ID no longer fits in a raw frame's     \
-   * 25-bit tag. Nonzero means trace-ID tags of two classes can now collide: \
-   * a frame sampled from an unloaded class could then, if a newer class     \
-   * also took over its Method* memory, resolve to that class's method. */   \
+  /* Gauge, set at each dump: loaded classes whose trace ID no longer fits  \
+   * in a raw frame's 25-bit tag. Nonzero means trace-ID tags of two classes \
+   * can now collide: a frame sampled from an unloaded class could then, if  \
+   * a newer class also took over its Method* memory, resolve to that        \
+   * class's method. */                                                      \
   X(KLASS_TRACE_ID_BEYOND_TAG_RANGE, "klass_trace_id_beyond_tag_range")       \
+  /* Gauges, set by each dump that resolves lazy raw frames: the classes it \
+   * pinned, and the nanoseconds it took to collect their Klass*s. */        \
+  X(LAZY_DUMP_CLASSES, "lazy_dump_classes")                                   \
+  X(LAZY_DUMP_PIN_NS, "lazy_dump_pin_ns")                                     \
   /* Raw Method* frame occurrences answered from Lookup's per-dump cache    \
    * instead of resolving them again. */                                     \
   X(RAW_FRAME_RESOLVE_CACHE_HITS, "raw_frame_resolve_cache_hits")             \
-  X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
   /* Gauges: KlassRegistry's table slots (24 B each; NMT does not see the    \
-   * table) and occupied slots, live or dead. PURGED: dead entries dropped   \
-   * when the table was rebuilt. */                                          \
+   * table) and occupied slots, live or dead. It holds only redefined        \
+   * classes. PURGED: dead entries dropped when the table was rebuilt. */    \
   X(KLASS_REGISTRY_CAPACITY, "klass_registry_capacity")                       \
   X(KLASS_REGISTRY_ENTRIES, "klass_registry_entries")                         \
   X(KLASS_REGISTRY_PURGED, "klass_registry_purged")                           \

@@ -134,29 +134,10 @@ bool KlassRegistry::add(JNIEnv* jni, const void* klass, jclass mirror) {
   return true;
 }
 
-jclass KlassRegistry::pin(JNIEnv* jni, const void* klass, PinStatus* status) {
-  PinStatus local_status;
-  if (status == nullptr) {
-    status = &local_status;
-  }
-  *status = PIN_ABSENT;
+bool KlassRegistry::contains(JNIEnv* jni, const void* klass) {
   MutexLocker ml(_lock);
   Entry* e = findRegistered(klass);
-  if (e == nullptr) {
-    return nullptr;
-  }
-  if (e->redefined || e->redefinitions_in_progress > 0) {
-    *status = PIN_REDEFINED;
-    return nullptr;
-  }
-  // NewLocalRef on a weak global reference returns NULL once the referent has
-  // been collected. Done under the lock so a concurrent rehash() cannot delete
-  // the weak reference out from under the call.
-  jclass ref = (jclass)jni->NewLocalRef(e->mirror);
-  if (ref != nullptr) {
-    *status = PIN_OK;
-  }
-  return ref;
+  return e != nullptr && !jni->IsSameObject(e->mirror, nullptr);
 }
 
 bool KlassRegistry::beginRedefinition(const void* klass) {
@@ -185,10 +166,11 @@ void KlassRegistry::endRedefinition(const void* klass, bool succeeded) {
   }
 }
 
-bool KlassRegistry::isRedefined(const void* klass) {
+bool KlassRegistry::isRedefined(JNIEnv* jni, const void* klass) {
   MutexLocker ml(_lock);
   Entry* e = findRegistered(klass);
-  return e != nullptr && (e->redefined || e->redefinitions_in_progress > 0);
+  return e != nullptr && (e->redefined || e->redefinitions_in_progress > 0) &&
+         !jni->IsSameObject(e->mirror, nullptr);
 }
 
 size_t KlassRegistry::size() {

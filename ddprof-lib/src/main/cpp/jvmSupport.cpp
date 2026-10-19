@@ -190,6 +190,18 @@ void JVMSupport::afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass kla
     }
 }
 
+void JVMSupport::beginDump(JNIEnv *jni, const jclass *classes, int count) {
+    if (VM::isHotspot()) {
+        HotspotSupport::beginDump(jni, classes, count);
+    }
+}
+
+void JVMSupport::endDump() {
+    if (VM::isHotspot()) {
+        HotspotSupport::endDump();
+    }
+}
+
 bool JVMSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
   // CRITICAL: GetClassMethods must be called to preallocate jmethodIDs for AsyncGetCallTrace.
   // AGCT operates in signal handlers where lock acquisition is forbidden, so jmethodIDs must
