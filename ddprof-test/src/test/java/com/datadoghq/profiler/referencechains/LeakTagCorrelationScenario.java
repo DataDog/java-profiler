@@ -13,6 +13,7 @@ import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.item.IType;
+import org.openjdk.jmc.common.item.ItemFilters;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
 import java.io.InputStream;
@@ -488,7 +489,7 @@ public final class LeakTagCorrelationScenario {
       events = JfrLoaderToolkit.loadEvents(in);
     }
     IItemCollection chains = events.apply(
-        org.openjdk.jmc.common.item.ItemFilters.type("datadog.ReferenceChain"));
+        ItemFilters.type("datadog.ReferenceChain"));
     for (IItemIterable iterable : chains) {
       IType<IItem> type = iterable.getType();
       IMemberAccessor<?, IItem> chainAccessor = ReferenceChainAssertions.findAccessor(type, "chain");
@@ -543,10 +544,10 @@ public final class LeakTagCorrelationScenario {
     ScanResult result = scanScore > bestScore || (scanScore == bestScore
         && scan.payloadChain != null) ? scan : best;
     ScanResult other = result == scan ? best : scan;
-    if (other != null) {
-      mergeDistinct(result.transientViolations, other.transientViolations);
-      mergeDistinct(result.noiseChains, other.noiseChains);
-    }
+    // Both non-null here: the early returns above already handled a null scan
+    // (kept best) and a null best (kept scan), so the loser always exists.
+    mergeDistinct(result.transientViolations, other.transientViolations);
+    mergeDistinct(result.noiseChains, other.noiseChains);
     return result;
   }
 
@@ -595,7 +596,7 @@ public final class LeakTagCorrelationScenario {
     ScanResult result = new ScanResult();
 
     IItemCollection chains = events.apply(
-        org.openjdk.jmc.common.item.ItemFilters.type("datadog.ReferenceChain"));
+        ItemFilters.type("datadog.ReferenceChain"));
     for (IItemIterable iterable : chains) {
       IType<IItem> type = iterable.getType();
       IMemberAccessor<?, IItem> chainAccessor = ReferenceChainAssertions.findAccessor(type, "chain");
@@ -660,7 +661,7 @@ public final class LeakTagCorrelationScenario {
 
     if (result.payloadChainInPool) {
       IItemCollection liveObjects = events.apply(
-          org.openjdk.jmc.common.item.ItemFilters.type("datadog.HeapLiveObject"));
+          ItemFilters.type("datadog.HeapLiveObject"));
       for (IItemIterable iterable : liveObjects) {
         IType<IItem> type = iterable.getType();
         IMemberAccessor<?, IItem> leakTagAccessor =

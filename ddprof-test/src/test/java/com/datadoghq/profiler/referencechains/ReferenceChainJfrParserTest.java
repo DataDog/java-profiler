@@ -15,6 +15,7 @@ import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.item.IType;
 import org.openjdk.jmc.common.item.ItemFilters;
+import org.openjdk.jmc.common.unit.IQuantity;
 import org.openjdk.jmc.flightrecorder.CouldNotLoadRecordingException;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
@@ -26,6 +27,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -76,7 +78,7 @@ public class ReferenceChainJfrParserTest {
         "Expected " + expectedPath + " to exist - run "
             + ":ddprof-lib:gtestDebug_referenceChainJfrRoundtrip_ut first "
             + "(referenceChainJfrRoundtrip_ut.cpp produces this sidecar).");
-    java.util.Properties expected = new java.util.Properties();
+    Properties expected = new Properties();
     try (InputStream in = Files.newInputStream(expectedPath)) {
       expected.load(in);
     }
@@ -147,8 +149,8 @@ public class ReferenceChainJfrParserTest {
           Object v = targetTagAccessor.getMember(item);
           if (v instanceof Number) {
             targetTag = ((Number) v).longValue();
-          } else if (v instanceof org.openjdk.jmc.common.unit.IQuantity) {
-            targetTag = ((org.openjdk.jmc.common.unit.IQuantity) v).longValue();
+          } else if (v instanceof IQuantity) {
+            targetTag = ((IQuantity) v).longValue();
           }
         }
         leakTagIncarnation = longValue(incarnationAccessor.getMember(item));
@@ -156,8 +158,8 @@ public class ReferenceChainJfrParserTest {
           Object v = depthAccessor.getMember(item);
           if (v instanceof Number) {
             depth = ((Number) v).intValue();
-          } else if (v instanceof org.openjdk.jmc.common.unit.IQuantity) {
-            depth = (int) ((org.openjdk.jmc.common.unit.IQuantity) v).longValue();
+          } else if (v instanceof IQuantity) {
+            depth = (int) ((IQuantity) v).longValue();
           }
         }
         break; // referenceChainJfrRoundtrip_ut.cpp writes exactly one event
@@ -187,19 +189,34 @@ public class ReferenceChainJfrParserTest {
         "leakTagIncarnation should carry the event's ownership stamp the gtest seeded");
   }
 
-  private static int expectedInt(java.util.Properties expected, String key) {
-    return Integer.parseInt(expected.getProperty(key));
+  // Both sidecar readers report the offending key with the value: a bare parse
+  // exception names neither, and a MISSING key surfaces as a null parse whose
+  // built-in message ("null") says nothing about which sidecar entry is absent.
+  private static int expectedInt(Properties expected, String key) {
+    String value = expected.getProperty(key);
+    try {
+      return Integer.parseInt(value);
+    } catch (RuntimeException e) {
+      throw new IllegalStateException(
+          "malformed or missing '" + key + "' in the roundtrip sidecar (value: " + value + ")", e);
+    }
   }
 
-  private static long expectedLong(java.util.Properties expected, String key) {
-    return Long.parseLong(expected.getProperty(key));
+  private static long expectedLong(Properties expected, String key) {
+    String value = expected.getProperty(key);
+    try {
+      return Long.parseLong(value);
+    } catch (RuntimeException e) {
+      throw new IllegalStateException(
+          "malformed or missing '" + key + "' in the roundtrip sidecar (value: " + value + ")", e);
+    }
   }
 
   private static long longValue(Object v) {
     if (v instanceof Number) {
       return ((Number) v).longValue();
-    } else if (v instanceof org.openjdk.jmc.common.unit.IQuantity) {
-      return ((org.openjdk.jmc.common.unit.IQuantity) v).longValue();
+    } else if (v instanceof IQuantity) {
+      return ((IQuantity) v).longValue();
     }
     return -1;
   }

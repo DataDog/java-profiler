@@ -168,7 +168,11 @@ final class PersistentAllocator implements AutoCloseable {
       while (true) {
         Job job = handoff.take();
         if (job.task == CLOSE) {
-          completion.offer(new Outcome(job.generation, new Object())); // exit acknowledgement; no further work arrives
+          // put (blocking), not offer: after an abandoned run() the slot can still
+          // hold that run's stale outcome, and a dropped exit acknowledgement would
+          // leave close()'s poll draining the stale entry instead. close() always
+          // drains exactly one entry after the handoff, which unblocks this put.
+          completion.put(new Outcome(job.generation, new Object())); // exit acknowledgement; no further work arrives
           return;
         }
         Object outcome = null;
@@ -177,7 +181,13 @@ final class PersistentAllocator implements AutoCloseable {
         } catch (RuntimeException | Error t) {
           outcome = t;
         }
-        completion.offer(new Outcome(job.generation, outcome != null ? outcome : new Object()));
+        // put (blocking), not offer: with one slot, a stale outcome left by an
+        // abandoned (timed-out) run() can still occupy the queue when this
+        // task finishes, and a dropped outcome would turn a completed task into
+        // the caller's 30s poll timeout. The caller's generation loop drains the
+        // stale entry (discard-by-generation), which unblocks this put; if the
+        // caller already gave up, the next run()'s clear() or close()'s poll does.
+        completion.put(new Outcome(job.generation, outcome != null ? outcome : new Object()));
       }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
