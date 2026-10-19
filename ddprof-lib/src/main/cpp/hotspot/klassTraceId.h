@@ -29,15 +29,18 @@
  * accepts the one 8-byte-aligned offset within sizeof(Klass) at which all of
  * them hold distinct IDs no further apart than consecutive creation allows.
  * Builds without JFR, or a layout where no single offset qualifies, leave the
- * offset unknown, and callers fall back to KlassRegistry's epoch.
+ * offset unknown, and fjmethodid=lazy does not run.
  */
 class KlassTraceId {
   static int _offset;
-  static bool _calibrated;
 
 public:
-  // Array dimensions created by calibrate(): one probe klass per dimension.
+  // Array dimensions created by one calibration attempt: one probe klass per
+  // dimension.
   static const int PROBE_COUNT = 6;
+  // Attempts calibrate() makes, each on PROBE_COUNT dimensions above the
+  // previous attempt's, so each probes klasses it has just created.
+  static const int MAX_ATTEMPTS = 4;
   // How many trace IDs other threads may consume while the probes are
   // created, i.e. how far apart beyond PROBE_COUNT - 1 the probes' IDs may be.
   static const uint64_t ID_SLACK = 64;
@@ -51,9 +54,10 @@ public:
   static int findOffset(const void* const* klasses, int count, size_t klass_size);
 
   /**
-   * Creates the probe klasses through JNI and records the offset found. Only
-   * the first call per process calibrates; later calls return its result.
-   * Returns true if an offset is known.
+   * Creates the probe klasses through JNI and records the offset found.
+   * Once an offset is found, later calls return true without probing again;
+   * after a failure, the next call tries again on fresh dimensions. Returns
+   * true if an offset is known.
    */
   static bool calibrate(JNIEnv* jni);
 

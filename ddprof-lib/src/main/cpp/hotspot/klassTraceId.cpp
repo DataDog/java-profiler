@@ -12,7 +12,6 @@
 #include <string.h>
 
 int KlassTraceId::_offset = -1;
-bool KlassTraceId::_calibrated = false;
 
 // JFR stores the ID shifted left by TRACE_ID_SHIFT (16) above its tag bits.
 static const int TRACE_ID_SHIFT = 16;
@@ -65,45 +64,89 @@ int KlassTraceId::findOffset(const void* const* klasses, int count, size_t klass
   return found;
 }
 
-bool KlassTraceId::calibrate(JNIEnv* jni) {
-  // Runs from profiler start, which is serialized, so a plain flag will do.
-  if (_calibrated) {
-    return offset() >= 0;
-  }
-  _calibrated = true;
-  size_t klass_size = (size_t)VMKlass::type_size();
-  if (klass_size == 0 || !VMStructs::hasKlassMethods()) {
-    return false;
-  }
+// Highest dimension any attempt has created so far; the next attempt probes
+// the PROBE_COUNT dimensions above it.
+static int _probed_dims = 0;
 
-  // "[Ljava/lang/Void;" .. "[[[[[[Ljava/lang/Void;". Resolving the deepest
-  // one makes the JVM create every missing dimension in order, each getting
-  // the next trace ID; java.lang.Void has no other use for such arrays.
+// Dumps what each probe holds at every offset findOffset() looked at, so a
+// release whose layout calibration rejects can be diagnosed from a debug CI
+// log.
+static void logProbes(const void* const* klasses, size_t klass_size) {
+#ifdef DEBUG
+  for (size_t offset = 8; offset + sizeof(uint64_t) <= klass_size; offset += 8) {
+    uint64_t raw[KlassTraceId::PROBE_COUNT];
+    for (int i = 0; i < KlassTraceId::PROBE_COUNT; i++) {
+      memcpy(&raw[i], (const char*)klasses[i] + offset, sizeof(raw[i]));
+    }
+    TEST_LOG("KlassTraceId probe @%3d: %016llx %016llx %016llx %016llx %016llx %016llx%s", (int)offset,
+             (unsigned long long)raw[0], (unsigned long long)raw[1], (unsigned long long)raw[2],
+             (unsigned long long)raw[3], (unsigned long long)raw[4], (unsigned long long)raw[5],
+             plausibleIds(klasses, KlassTraceId::PROBE_COUNT, offset) ? " plausible" : "");
+  }
+#endif
+}
+
+// One attempt: makes the JVM create array klasses of java.lang.Void with
+// dimensions first_dim .. first_dim + PROBE_COUNT - 1 and looks for the
+// offset in them. Resolving the deepest one creates every missing dimension
+// in order, each getting the next trace ID; java.lang.Void has no other use
+// for such arrays. Earlier attempts (or other code) may have created lower
+// dimensions already, so only the top PROBE_COUNT dimensions are probed, and
+// those are new. Returns the offset, or -1.
+static int probe(JNIEnv* jni, int first_dim, size_t klass_size) {
   static const char ELEMENT[] = "Ljava/lang/Void;";
-  char name[PROBE_COUNT + sizeof(ELEMENT)];
-  memset(name, '[', PROBE_COUNT);
-  memcpy(name + PROBE_COUNT, ELEMENT, sizeof(ELEMENT));
+  const int top_dim = first_dim + KlassTraceId::PROBE_COUNT - 1;
+  char name[KlassTraceId::MAX_ATTEMPTS * KlassTraceId::PROBE_COUNT + sizeof(ELEMENT)];
+  memset(name, '[', top_dim);
+  memcpy(name + top_dim, ELEMENT, sizeof(ELEMENT));
 
-  const void* klasses[PROBE_COUNT];
-  for (int dims = PROBE_COUNT; dims >= 1; dims--) {
-    const char* dim_name = name + (PROBE_COUNT - dims);
-    jclass cls = jni->FindClass(dim_name);
+  const void* klasses[KlassTraceId::PROBE_COUNT];
+  for (int i = KlassTraceId::PROBE_COUNT - 1; i >= 0; i--) {
+    const int dims = first_dim + i;
+    jclass cls = jni->FindClass(name + (top_dim - dims));
     if (cls == nullptr) {
       jni->ExceptionClear();
-      return false;
+      TEST_LOG("KlassTraceId: FindClass failed for %d dimensions", dims);
+      return -1;
     }
-    klasses[dims - 1] = VMKlass::fromJavaClass(jni, cls);
+    klasses[i] = VMKlass::fromJavaClass(jni, cls);
     jni->DeleteLocalRef(cls);
-    if (klasses[dims - 1] == nullptr) {
-      return false;
+    if (klasses[i] == nullptr) {
+      TEST_LOG("KlassTraceId: no Klass* for %d dimensions", dims);
+      return -1;
     }
   }
 
-  int found = findOffset(klasses, PROBE_COUNT, klass_size);
-  TEST_LOG("KlassTraceId offset=%d (sizeof(Klass)=%d)", found, (int)klass_size);
+  int found = KlassTraceId::findOffset(klasses, KlassTraceId::PROBE_COUNT, klass_size);
+  TEST_LOG("KlassTraceId offset=%d (sizeof(Klass)=%d, dimensions %d-%d)", found, (int)klass_size,
+           first_dim, top_dim);
   if (found < 0) {
+    logProbes(klasses, klass_size);
+  }
+  return found;
+}
+
+bool KlassTraceId::calibrate(JNIEnv* jni) {
+  // Runs from profiler start, which is serialized, so plain statics will do.
+  if (offset() >= 0) {
+    return true;
+  }
+  size_t klass_size = (size_t)VMKlass::type_size();
+  if (klass_size == 0 || !VMStructs::hasKlassMethods()) {
+    TEST_LOG("KlassTraceId: no Klass layout from vmStructs");
     return false;
   }
-  __atomic_store_n(&_offset, found, __ATOMIC_RELEASE);
-  return true;
+  // A failed attempt usually means the probes' IDs were not consecutive:
+  // other threads created many classes meanwhile, or some of the dimensions
+  // already existed. Fresh dimensions make either unlikely to repeat.
+  while (_probed_dims + PROBE_COUNT <= MAX_ATTEMPTS * PROBE_COUNT) {
+    const int first_dim = _probed_dims + 1;
+    _probed_dims += PROBE_COUNT;
+    int found = probe(jni, first_dim, klass_size);
+    if (found >= 0) {
+      __atomic_store_n(&_offset, found, __ATOMIC_RELEASE);
+      return true;
+    }
+  }
+  return false;
 }

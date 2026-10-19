@@ -1484,8 +1484,8 @@ bool HotspotSupport::canResolveLazily() {
 
 bool HotspotSupport::initLazyResolution(JNIEnv* jni) {
     bool calibrated = KlassTraceId::calibrate(jni);
-    // Counters are reset on every profiler start, but calibration only runs
-    // once, so republish its result here.
+    // Counters are reset on every profiler start, and a calibration found
+    // once is kept, so republish its result here.
     Counters::set(KLASS_TRACE_ID_OFFSET, calibrated ? KlassTraceId::offset() : -1);
     TEST_LOG("Raw frame tags: %s", calibrated ? "klass trace id" : "unavailable, lazy mode off");
     return calibrated;
