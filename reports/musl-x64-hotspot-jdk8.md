@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk8
 
 ## musl-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-10-20 05:55:29 EDT
+**Date:** 2026-10-20 06:11:50 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,19 +28,19 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 358 |
-| Sample Rate | 5.97/sec |
-| Health Score | 373% |
-| Threads | 7 |
+| CPU Samples | 196 |
+| Sample Rate | 3.27/sec |
+| Health Score | 204% |
+| Threads | 6 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 202 |
-| Sample Rate | 3.37/sec |
-| Health Score | 211% |
+| CPU Samples | 181 |
+| Sample Rate | 3.02/sec |
+| Health Score | 189% |
 | Threads | 8 |
 | Allocations | 0 |
 
@@ -48,26 +48,26 @@ title: musl-x64-hotspot-jdk8
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1792489851 32
-1792489856 32
-1792489861 32
-1792489866 32
-1792489871 32
-1792489876 32
-1792489881 32
-1792489886 32
-1792489891 32
-1792489896 32
-1792489901 32
-1792489906 32
-1792489911 32
-1792489916 32
-1792489921 32
-1792489926 32
-1792489931 32
-1792489936 32
-1792489941 32
-1792489946 32
+1792490623 32
+1792490628 32
+1792490633 32
+1792490638 32
+1792490643 32
+1792490648 32
+1792490653 32
+1792490658 32
+1792490663 32
+1792490668 32
+1792490673 32
+1792490678 32
+1792490683 32
+1792490688 32
+1792490693 32
+1792490698 32
+1792490703 32
+1792490708 32
+1792490713 32
+1792490718 32
 ```
 </details>
 
