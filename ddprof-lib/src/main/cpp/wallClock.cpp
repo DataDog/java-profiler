@@ -392,6 +392,8 @@ WallClockCandidateOutcome BaseWallClock::sampleThreadCommon(
       entry.recording_epoch = slot->recordingEpoch();
     }
   }
+  // Missing entries, including capacity rejections, stay eligible for ordinary
+  // sampling. Registry admission is only a precheck optimization in unfiltered mode.
   // Timer-thread fast path (wallprecheck=true): skip the kernel IPI entirely
   // only when an explicit lifecycle hook still owns an already-sampled blocked
   // run. Raw OS thread state is intentionally not used here because the timer

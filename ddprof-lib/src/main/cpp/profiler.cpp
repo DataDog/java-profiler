@@ -90,10 +90,11 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
   current->setJavaThread(true);
   int tid = current->tid();
-  // Java lifecycle callbacks own registry allocation. The wall timer only
-  // looks up these entries and must never allocate slots for arbitrary OS
-  // threads returned by OS::listThreads().
-  if (_thread_filter.registryActive()) {
+  // Context-filtered recordings pre-register Java threads. Unfiltered wall
+  // tracking binds lazily in context/block/park hooks, so an idle thread that
+  // never uses those hooks does not reserve one of the bounded registry slots.
+  // The wall timer only looks up entries; it never allocates them.
+  if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread(tid);
     current->setFilterSlotId(slot_id);
   }
@@ -1602,19 +1603,16 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_filter.clearActive();
   }
 
-  // Preserve the context-filter fast path, and extend it to unfiltered
-  // wall-precheck tracking: the calling thread must have a slot immediately,
-  // not only lazily via block/park/filterThreadAdd0 hooks. Other pre-existing
-  // Java threads are still registered lazily via those hooks or ThreadStart
-  // callbacks (both filter modes) - proactive registration here is only for
-  // the one thread that cannot update its own TLS from another thread's start().
-  // A retained slot still needs a recording-epoch refresh after an unfiltered
-  // restart. activeSlotForId() rejects it until that refresh is complete.
+  // Set up the sampled thread's TLS in both modes. Context filtering also
+  // pre-registers the caller; unfiltered tracking waits for its first hook.
+  // Retained unfiltered slots remain ineligible until their owner refreshes
+  // against the new recording epoch in ensureCurrentThreadFilterSlot().
   if (_thread_filter.registryActive()) {
     ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);
     int tid = current->tid();
-    if (_thread_filter.activeSlotForId(current->filterSlotId(), tid) == nullptr) {
+    if (_thread_filter.enabled() &&
+        _thread_filter.activeSlotForId(current->filterSlotId(), tid) == nullptr) {
       current->setFilterSlotId(_thread_filter.registerThread(tid));
     }
   }

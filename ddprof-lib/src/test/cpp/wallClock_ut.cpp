@@ -32,6 +32,7 @@ TEST(WallClockStartTest, StartReturnsErrorWhenForced) {
 class AccountingWallClock : public BaseWallClock {
 public:
     const char* name() override { return "Accounting test timer"; }
+    using BaseWallClock::sampleThreadCommon;
 
     bool awaitPhase(int phase) const {
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -132,4 +133,65 @@ TEST_F(WallClockAccountingTest, IndependentTimersBalanceGrowthAndShrink) {
     EXPECT_EQ(baseline, NativeMem::live(NM_WALLCLOCK));
     second.stop();
     EXPECT_EQ(baseline, NativeMem::live(NM_WALLCLOCK));
+}
+
+static volatile sig_atomic_t sampling_signal_received = 0;
+
+class WallClockCapacityTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        struct sigaction action = {};
+        action.sa_handler = +[](int) { sampling_signal_received = 1; };
+        sigemptyset(&action.sa_mask);
+        ASSERT_EQ(0, sigaction(SIGVTALRM, &action, &previous_action));
+        handler_installed = true;
+        sigset_t signal;
+        sigemptyset(&signal);
+        sigaddset(&signal, SIGVTALRM);
+        ASSERT_EQ(0, pthread_sigmask(SIG_UNBLOCK, &signal, &previous_mask));
+        mask_saved = true;
+    }
+
+    void TearDown() override {
+        if (handler_installed) sigaction(SIGVTALRM, &previous_action, nullptr);
+        if (mask_saved) pthread_sigmask(SIG_SETMASK, &previous_mask, nullptr);
+    }
+
+    struct sigaction previous_action = {};
+    sigset_t previous_mask;
+    bool handler_installed = false;
+    bool mask_saved = false;
+};
+
+TEST_F(WallClockCapacityTest, ExhaustionKeepsSendingSignalsAcrossRecordings) {
+    ThreadFilter registry;
+    WallClockBlockTracker tracker;
+    registry.setBlockTracker(&tracker);
+    registry.init("", true);
+    for (int i = 0; i < ThreadFilter::kMaxThreads; ++i) {
+        ASSERT_GE(registry.registerThread(1000000 + i), 0);
+    }
+
+    AccountingWallClock clock;
+    int tid = OS::threadId();
+    for (int recording = 0; recording < 2; ++recording) {
+        ASSERT_EQ(-1, registry.registerThread(tid));
+        sampling_signal_received = 0;
+        ThreadEntry entry{tid, nullptr, -1, 0, 0};
+        int failures = 0, exited = 0, denied = 0, lookups = 0;
+        EXPECT_EQ(WallClockCandidateOutcome::SIGNAL_SENT,
+                  clock.sampleThreadCommon(entry, failures, exited, denied, lookups,
+                                           true, true, &registry, registry.recordingEpoch()));
+        EXPECT_EQ(0, failures);
+        EXPECT_EQ(1, lookups);
+
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (sampling_signal_received == 0 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        EXPECT_EQ(1, sampling_signal_received)
+            << "Unfiltered registry exhaustion must fall back to ordinary signals";
+        registry.deactivateRecording();
+        registry.init("", true);
+    }
 }

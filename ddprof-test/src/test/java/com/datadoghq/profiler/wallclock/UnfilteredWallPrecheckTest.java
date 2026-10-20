@@ -116,16 +116,58 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   }
 
   /**
-   * Retains coverage for post-start threads, whose owned-block hook must register a slot lazily.
+   * Verifies ordinary sampling for a post-start thread with TLS but no registry entry, as also
+   * occurs at capacity.
+   *
+   * @throws Exception if the worker cannot complete
+   */
+  @RetryingTest(3)
+  public void unregisteredThreadUsesNormalSampling() throws Exception {
+    long registrationsBefore =
+        profiler.getDebugCounters().getOrDefault("thread_registry_hook_reregistration", -1L);
+    String threadName = "unfiltered-precheck-unregistered";
+    FutureTask<Void> sleep =
+        new FutureTask<>(
+            () -> {
+              Thread.sleep(SLEEP_MILLIS);
+              return null;
+            });
+    Thread worker = new Thread(sleep, threadName);
+    worker.start();
+    sleep.get();
+    if (registrationsBefore >= 0) {
+      assertEquals(
+          registrationsBefore,
+          profiler.getDebugCounters().get("thread_registry_hook_reregistration").longValue(),
+          "Ordinary sampling should not allocate a registry slot");
+    }
+
+    stopProfiler();
+    long sampleCount = samplesForThread(threadName);
+    assertTrue(
+        sampleCount >= 10,
+        "Expected ordinary samples without a registry entry, got: " + sampleCount);
+  }
+
+  /**
+   * Verifies that post-start threads reserve a registry slot only on their first owned-block hook.
    *
    * @throws Exception if the worker cannot complete
    */
   @RetryingTest(3)
   public void postStartSleepingThreadLazilyRegistersOwnedBlock() throws Exception {
     String threadName = "unfiltered-precheck-post-start";
+    long registrationsBefore =
+        profiler.getDebugCounters().getOrDefault("thread_registry_hook_reregistration", -1L);
     assertTrue(
         runPostStartSleepingWorker(threadName) != 0,
         "Expected the owned-block hook to register and arm SLEEPING state");
+    if (registrationsBefore >= 0) {
+      assertTrue(
+          profiler.getDebugCounters().get("thread_registry_hook_reregistration")
+              > registrationsBefore,
+          "The first owned-block hook should register lazily; ThreadStart must not reserve a slot");
+    }
 
     stopProfiler();
     assertSuppressedSamples(threadName);

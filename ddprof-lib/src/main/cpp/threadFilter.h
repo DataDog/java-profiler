@@ -124,8 +124,9 @@ public:
     ThreadFilter();
     ~ThreadFilter();
 
-    // Retains native ownership across recordings. Live idle owners continue to
-    // consume capacity; unfiltered recording payload is refreshed lazily by its owner.
+    // Retains native ownership across recordings. Unfiltered owners register on
+    // their first context/block/park hook; live owners continue to consume capacity
+    // until teardown. Their recording payload is refreshed lazily by its owner.
     void init(const char* filter, bool track_unfiltered_wall = false);
     void initFreeList();
     bool enabled() const;

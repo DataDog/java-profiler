@@ -244,7 +244,7 @@ TEST_P(WallClockBlockRestartTest, ThreadExitWhileStoppedRetiresIdentity) {
     registry->init("", true);
     u64 new_token = enterHook();
     ASSERT_NE(0u, new_token);
-    EXPECT_EQ(worker_slot, current->filterSlotId());
+    EXPECT_NE(nullptr, registry->activeSlotForId(current->filterSlotId(), current->tid()));
     EXPECT_NE(token, new_token);
     exitHook(new_token);
 }
