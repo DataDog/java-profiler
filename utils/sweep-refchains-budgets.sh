@@ -59,6 +59,34 @@ echo "GC: ${GC_DESC}"
 echo "Duration per point: ${DURATION_SECONDS}s"
 echo "Working directory: ${WORKDIR}"
 
+# Caller's fixed sub-options, captured once: REFCHAINS_ARGS itself is rebuilt
+# per run below (swept knob + these).
+FIXED_REFCHAINS_ARGS="${REFCHAINS_ARGS:-}"
+
+# Prints FIXED_REFCHAINS_ARGS minus any "<SWEEP_PARAM>=..." entry (key matched
+# case-insensitively, like arguments.cpp), warning on stderr for each one
+# dropped - stdout is the result, captured by the caller. Without this, a fixed
+# entry for the swept knob would be appended AFTER the swept "<knob>=<value>"
+# and arguments.cpp's last-occurrence-wins parsing would silently run every
+# sweep point with the fixed value, rendering a flat, misleading curve (the
+# sibling sweep-refchains-all.sh has the same guard).
+fixed_args_without() {
+  local drop="$1" out="" kv key
+  local parts=()
+  if [ -n "${FIXED_REFCHAINS_ARGS}" ]; then
+    IFS=':' read -r -a parts <<< "${FIXED_REFCHAINS_ARGS}"
+  fi
+  for kv in ${parts[@]+"${parts[@]}"}; do
+    key=$(printf '%s' "${kv%%=*}" | tr '[:upper:]' '[:lower:]')
+    if [ "${key}" = "${drop}" ]; then
+      echo "WARN: ignoring REFCHAINS_ARGS entry '${kv}' while sweeping ${drop}" >&2
+      continue
+    fi
+    out="${out:+${out}:}${kv}"
+  done
+  printf '%s' "${out}"
+}
+
 echo "param_value,entries_per_sec,avg_round_ms,max_round_ms,heap_growth_mb,stw_count,stw_total_s,stw_avg_s,stw_max_s,peak_rss_kb,wall_seconds" > "${CSV}"
 
 # Parses one run's logs into a single space-separated metrics line - same
@@ -114,7 +142,8 @@ for value in "${SWEEP_VALUES[@]}"; do
   echo
   echo "=== running ${SWEEP_PARAM}=${value} ==="
 
-  REFCHAINS_ENABLED="true" REFCHAINS_ARGS="${SWEEP_PARAM}=${value}${REFCHAINS_ARGS:+:${REFCHAINS_ARGS}}" \
+  fixed_args="$(fixed_args_without "${SWEEP_PARAM}")"
+  REFCHAINS_ENABLED="true" REFCHAINS_ARGS="${SWEEP_PARAM}=${value}${fixed_args:+:${fixed_args}}" \
     "${HERE}/run-refchains-repro.sh" "${jfr}" "${DURATION_SECONDS}" \
     > "${WORKDIR}/${label}.stdout.log" 2>&1 &
   pid=$!

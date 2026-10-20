@@ -61,12 +61,20 @@ fixed_args_without() {
 }
 
 KNOBS=(budget firstpassbudget pausetarget painbudget)
-declare -A KNOB_VALUES=(
-  [budget]="${REFCHAINS_SWEEP_BUDGET_VALUES:-1000,4000,10000,40000,100000}"
-  [firstpassbudget]="${REFCHAINS_SWEEP_FIRSTPASSBUDGET_VALUES:-2000,10000,50000,200000}"
-  [pausetarget]="${REFCHAINS_SWEEP_PAUSETARGET_VALUES:-50,100,250,500,1000}"
-  [painbudget]="${REFCHAINS_SWEEP_PAINBUDGET_VALUES:-10,50,100,500,1000}"
-)
+
+# Per-knob sweep value lists (env-overridable). A function + case instead of an
+# associative array: macOS ships /bin/bash 3.2, which has no `declare -A`, and
+# run-refchains-repro.sh (which this script drives) deliberately supports it -
+# same ${var,,}-free, ${arr[@]+...}-guarded discipline as the sibling scripts.
+knob_values() {
+  case "$1" in
+    budget)          printf '%s' "${REFCHAINS_SWEEP_BUDGET_VALUES:-1000,4000,10000,40000,100000}" ;;
+    firstpassbudget) printf '%s' "${REFCHAINS_SWEEP_FIRSTPASSBUDGET_VALUES:-2000,10000,50000,200000}" ;;
+    pausetarget)     printf '%s' "${REFCHAINS_SWEEP_PAUSETARGET_VALUES:-50,100,250,500,1000}" ;;
+    painbudget)      printf '%s' "${REFCHAINS_SWEEP_PAINBUDGET_VALUES:-10,50,100,500,1000}" ;;
+    *) return 1 ;;
+  esac
+}
 
 WORKDIR="$(mktemp -d /tmp/refchains_sweep_all.XXXXXX)"
 CSV="${WORKDIR}/sweep.csv"
@@ -76,7 +84,7 @@ GC_DESC="${REFCHAINS_GC:-JVM ergonomic default}"
 
 TOTAL_RUNS=0
 for k in "${KNOBS[@]}"; do
-  IFS=',' read -r -a vals <<< "${KNOB_VALUES[${k}]}"
+  IFS=',' read -r -a vals <<< "$(knob_values "${k}")"
   TOTAL_RUNS=$((TOTAL_RUNS + ${#vals[@]}))
 done
 
@@ -126,26 +134,41 @@ parse_run() {
   read -r stw_count stw_total stw_avg stw_max <<< "${stw_stats:-0 0 0 0}"
 
   # jfr print/summary require a ".jfr" extension - the repro app's periodic
-  # dump target ("<jfr>.snapshot", see ReferenceChainLeakDemo's own header
-  # comment on SNAPSHOT_SUFFIX) doesn't have one, so copy it under a .jfr
-  # name before handing it to refchains-jfr-metrics.py.
-  local snapshot="${WORKDIR}/${label}.jfr.snapshot"
+  # dump targets ("<jfr>.snapshot" and "<jfr>.snapshot.<round>", see
+  # ReferenceChainLeakDemo's own header comment on SNAPSHOT_SUFFIX) don't have
+  # one, so copy each under a .jfr name before handing it to
+  # refchains-jfr-metrics.py.
+  #
+  # A drained chain event is written exactly once, into whichever snapshot file
+  # was current at its dump - so the final bare ".jfr.snapshot" holds only the
+  # chains drained after the last periodic dump, and reading it alone
+  # undercounts chain_count/abandoned_count (often to 0/-1). Aggregate every
+  # snapshot file of this run: counts summed, time-to-first-chain taken as the
+  # smallest non-negative value (the earliest chain observed anywhere).
+  local snapshot_base="${WORKDIR}/${label}.jfr.snapshot"
   local chain_count=0 abandoned_count=0 time_to_first_chain_s=-1
-  if [ -f "${snapshot}" ]; then
-    local tmp_jfr="${WORKDIR}/${label}.metrics.jfr"
-    cp "${snapshot}" "${tmp_jfr}"
-    local chain_stats
-    chain_stats=$(python3 "${HERE}/refchains-jfr-metrics.py" "${tmp_jfr}" 2>/dev/null || echo "0 0 -1")
-    read -r chain_count abandoned_count time_to_first_chain_s <<< "${chain_stats}"
+  local snap tmp_jfr per_stats per_count per_abandoned per_ttf
+  for snap in "${snapshot_base}" "${snapshot_base}".*; do
+    [ -f "${snap}" ] || continue
+    tmp_jfr="${WORKDIR}/${label}.metrics.jfr"
+    cp "${snap}" "${tmp_jfr}"
+    per_stats=$(python3 "${HERE}/refchains-jfr-metrics.py" "${tmp_jfr}" 2>/dev/null || echo "0 0 -1")
+    read -r per_count per_abandoned per_ttf <<< "${per_stats}"
+    chain_count=$((chain_count + ${per_count:-0}))
+    abandoned_count=$((abandoned_count + ${per_abandoned:-0}))
+    if [ "${per_ttf:--1}" -ge 0 ] \
+        && { [ "${time_to_first_chain_s}" -lt 0 ] || [ "${per_ttf}" -lt "${time_to_first_chain_s}" ]; }; then
+      time_to_first_chain_s="${per_ttf}"
+    fi
     rm -f "${tmp_jfr}"
-  fi
+  done
 
   echo "${entries_per_sec:-0} ${avg_round_ms:-0} ${max_round_ms:-0} ${heap_growth_mb:-0} ${stw_count} ${stw_total} ${stw_avg} ${stw_max} ${peak_rss_kb} ${wall_seconds:-0} ${chain_count} ${abandoned_count} ${time_to_first_chain_s}"
 }
 
 run_idx=0
 for knob in "${KNOBS[@]}"; do
-  IFS=',' read -r -a vals <<< "${KNOB_VALUES[${knob}]}"
+  IFS=',' read -r -a vals <<< "$(knob_values "${knob}")"
   for value in "${vals[@]}"; do
     run_idx=$((run_idx + 1))
     label="${knob}_${value}"

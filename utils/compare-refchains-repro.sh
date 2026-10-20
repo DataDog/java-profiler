@@ -93,14 +93,22 @@ parse_variant() {
   #    no per-name "Safepoint" prefix, value already in seconds not ns)
   # Try the ns-based JDK17+ shape first; fall back to the seconds-based one.
   local stw_stats
+  # Every pipeline tolerates "no match" (`|| true`): under set -euo pipefail a
+  # JDK <=16 log (no JDK 17+ "Safepoint ... Total: N ns" shape) or a crashed
+  # variant's missing safepoint log would otherwise abort parse_variant inside
+  # the command substitution before the <=16 fallback below could run - the
+  # same guard sweep-refchains-all.sh/sweep-refchains-budgets.sh carry on
+  # these identical pipelines.
   stw_stats=$(grep -oE 'Safepoint "[^"]+".*Total: [0-9]+ ns' "${safepoint_log}" 2>/dev/null \
     | grep -oE 'Total: [0-9]+ ns' \
     | grep -oE '[0-9]+' \
-    | awk '{sec=$1/1e9; sum+=sec; if(sec>max) max=sec; n+=1} END {if(n>0) printf "%d %.4f %.4f %.4f", n, sum, sum/n, max}')
+    | awk '{sec=$1/1e9; sum+=sec; if(sec>max) max=sec; n+=1} END {if(n>0) printf "%d %.4f %.4f %.4f", n, sum, sum/n, max}' \
+    || true)
   if [ -z "${stw_stats}" ]; then
     stw_stats=$(grep -oE 'Total time for which application threads were stopped: [0-9.]+ seconds' "${safepoint_log}" 2>/dev/null \
       | grep -oE '[0-9.]+' \
-      | awk '{sec=$1; sum+=sec; if(sec>max) max=sec; n+=1} END {if(n>0) printf "%d %.4f %.4f %.4f", n, sum, sum/n, max}')
+      | awk '{sec=$1; sum+=sec; if(sec>max) max=sec; n+=1} END {if(n>0) printf "%d %.4f %.4f %.4f", n, sum, sum/n, max}' \
+      || true)
   fi
   read -r stw_count stw_total stw_avg stw_max <<< "${stw_stats:-0 0 0 0}"
 
