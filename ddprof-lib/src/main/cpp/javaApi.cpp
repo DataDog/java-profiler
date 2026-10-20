@@ -228,9 +228,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     return;  // Failed to register thread
   }
   if (unlikely(!thread_filter->add(tid, slot_id))) {
-    // The cached slot_id went stale between ensureCurrentThreadFilterSlot()
-    // and add(): an unfiltered recording restart reset the registry, so the
-    // slot no longer carries this thread's tid.
+    // The cached slot_id no longer carries this thread's tid.
     // Clear the cache so the next filterThreadAdd0()/parkEnter0()/blockEnter0()
     // call re-runs ensureCurrentThreadFilterSlot()'s registerThread() path
     // instead of leaving this thread permanently outside the context window.

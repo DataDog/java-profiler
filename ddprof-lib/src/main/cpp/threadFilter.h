@@ -92,8 +92,7 @@ public:
         // RMW into a plain store on every context-filtered enter/exit.
         //
         // Other threads can also write this field:
-        // - unregisterThreadLocked()/resetRegistrationsLocked() zero it while
-        //   tearing down or resetting the slot entirely.
+        // - unregisterThreadLocked() zeroes it during thread teardown.
         // - clearActive() calls exitContextWindow() from the thread running
         //   Profiler::start(). Racing an owner's exit+enter, its store can move
         //   the epoch backwards. This is benign: clearActive() only runs in
@@ -125,6 +124,8 @@ public:
     ThreadFilter();
     ~ThreadFilter();
 
+    // Retains native ownership across recordings. Live idle owners continue to
+    // consume capacity; unfiltered recording payload is refreshed lazily by its owner.
     void init(const char* filter, bool track_unfiltered_wall = false);
     void initFreeList();
     bool enabled() const;
@@ -133,16 +134,15 @@ public:
     RecordingEpoch recordingEpoch() const;
     // Hot path methods - slot_id MUST be from registerThread(), undefined behavior otherwise.
     // add() is lock-free. It returns false, without touching the slot, when the slot no
-    // longer belongs to `tid` (its cached slot id went stale, e.g. an unfiltered
-    // recording restart reset the registry); callers must not assume membership on
-    // failure and should clear any cached slot id so registerThread() re-derives it.
+    // longer belongs to `tid` (the previous owner has exited). On failure, clear any
+    // cached slot id so registerThread() re-derives it before assuming membership.
     bool accept(SlotID slot_id) const;
     bool add(int tid, SlotID slot_id);
     void remove(SlotID slot_id);
     void collect(std::vector<int>& tids) const;
     void collect(std::vector<ThreadEntry>& entries) const;
     // Clears per-recording membership and suppression state while keeping
-    // process-lifetime slot ownership intact. Threads must opt in again with add().
+    // native slot ownership intact. Threads must opt in again with add().
     void clearActive();
     // Forwards to WallClockBlockTracker::resetSlot(). Not called from
     // production code (registry-lifecycle paths call the tracker directly);
@@ -151,7 +151,7 @@ public:
 
     // Non-owning; wired up once by Profiler so ThreadFilter's own
     // registry-lifecycle resets (registerThread/unregisterThread/
-    // resetRegistrationsLocked/clearActive) also clear the tracker's
+    // refreshSlotForRecording/clearActive) also clear the tracker's
     // parallel per-slot state. See wallClockBlockTracker.h.
     void setBlockTracker(WallClockBlockTracker* tracker) { _block_tracker = tracker; }
 
@@ -261,7 +261,6 @@ private:
     void rollbackFailedIndex(Slot& slot);
     bool indexOrRollback(Slot& slot, SlotID slot_id, int tid);
     void refreshSlotForRecording(SlotID slot_id, Slot* slot, RecordingEpoch epoch);
-    void resetRegistrationsLocked();
     void ensureTidIndexLocked();
     void unregisterThreadLocked(SlotID slot_id, int expected_tid = -1);
     SlotID lookupSlotIdByTid(int tid) const;

@@ -452,24 +452,9 @@ bool ThreadFilter::add(int tid, SlotID slot_id) {
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (likely(chunk != nullptr)) {
         Slot& slot = chunk->slots[slot_idx];
-        // registerThread() publishes the owner's tid before returning the slot,
-        // so a mismatch means the caller's cached slot_id went stale: an
-        // unfiltered init() reset the registry (clearing the tid) and the slot
-        // may since have been handed to another thread. Never write to it -
-        // enterContextWindow() relies on the owning thread being the only
-        // writer - and never re-publish the tid here, since after a reset the
-        // allocator considers this slot free and will hand it out again.
-        // The caller clears its cached slot_id and re-registers.
-        //
-        // A reset landing between this check and the store below can still let
-        // one stray transition through. That only happens in unfiltered mode
-        // (context-filter recordings never reset registrations), where context
-        // membership only gates owned-block suppression, and it only errs
-        // towards more samples: if the slot is still unassigned,
-        // registerThread() zeroes context_window_state before handing it out;
-        // if it already has a new owner, that owner is treated as in-context
-        // and the epoch bump disqualifies its in-flight owned block run, both
-        // of which disable suppression rather than enable it.
+        // Never publish a TID here or write another owner's context state.
+        // Ownership lasts until thread teardown, so a recording restart cannot
+        // reassign this slot while its owner's hook is still using it.
         if (unlikely(tid < 0 || slot.nativeTid() != tid)) {
             return false;
         }
@@ -547,34 +532,6 @@ void ThreadFilter::unregisterThreadByTid(int tid) {
     if (slot_id >= 0) {
         unregisterThreadLocked(slot_id);
     }
-}
-
-void ThreadFilter::resetRegistrationsLocked() {
-    int num_chunks = _num_chunks.load(std::memory_order_acquire);
-    for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
-        ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
-        if (chunk == nullptr) continue;
-        for (int slot_idx = 0; slot_idx < kChunkSize; ++slot_idx) {
-            Slot& slot = chunk->slots[slot_idx];
-            if (slot.nativeTid() != -1) {
-                slot.lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
-            }
-            slot.recording_epoch.store(0, std::memory_order_release);
-            slot.tid.store(-1, std::memory_order_release);
-            slot.context_window_state.store(0, std::memory_order_release);
-        }
-    }
-    if (_block_tracker != nullptr) {
-        _block_tracker->resetAll();
-    }
-    std::atomic<int>* tid_index = _tid_index.load(std::memory_order_acquire);
-    if (tid_index != nullptr) {
-        for (int i = 0; i < kTidIndexSize; ++i) {
-            tid_index[i].store(0, std::memory_order_relaxed);
-        }
-    }
-    _next_index.store(0, std::memory_order_relaxed);
-    initFreeList();
 }
 
 void ThreadFilter::ensureTidIndexLocked() {
@@ -724,19 +681,18 @@ void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
     // extra flag only retains metadata for unfiltered wall prechecks.
     bool context_filter = filter != nullptr && strlen(filter) > 0;
     bool unfiltered_tracking = track_unfiltered_wall && !context_filter;
-    // Close registration before clearing identities from a previous unfiltered
-    // recording. Other threads retain only stale slot IDs; activeSlotForId()
-    // rejects them until their next context or owned-block hook registers lazily.
-    // Serialized against registerThread()'s in-lock recheck of _registry_active
-    // so a thread can't publish a slot after admission has been closed here.
+    // Keep native ownership until thread teardown: an in-flight owner hook
+    // can still carry its slot ID across this recording transition. The new
+    // recording epoch makes old payload ineligible until its owner refreshes it.
+    // Close registration while switching modes, serialized against the
+    // in-lock admission check in registerThread().
+    // Idle live owners still count against kMaxThreads between recordings;
+    // reclaiming them here would allow a paused hook to write a new owner's slot.
     {
         std::lock_guard<std::mutex> lock(_registry_lock);
         _registry_active.store(false, std::memory_order_release);
         if (unfiltered_tracking || context_filter) {
             ensureTidIndexLocked();
-        }
-        if (unfiltered_tracking) {
-            resetRegistrationsLocked();
         }
     }
     RecordingEpoch epoch = 0;
@@ -774,9 +730,9 @@ ThreadFilter::RecordingEpoch ThreadFilter::recordingEpoch() const {
 
 void ThreadFilter::deactivateRecording() {
     // Close producer admission before invalidating the recording epoch.
-    // Context-filtered recordings may retain slots; a new unfiltered recording
-    // resets them before reopening admission. Serialize against
-    // registerThread()'s in-lock recheck of _registry_active so a thread can't
+    // Identities remain owned until thread teardown, including stopped gaps.
+    // A new unfiltered epoch invalidates their old recording state. Serialize
+    // against registerThread()'s in-lock recheck of _registry_active so a thread can't
     // publish a slot after this admission-closing store has been observed.
     std::lock_guard<std::mutex> lock(_registry_lock);
     _registry_active.store(false, std::memory_order_release);

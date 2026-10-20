@@ -69,9 +69,9 @@ static void block_run_churn_worker(ThreadFilter* filter, WallClockBlockTracker* 
   }
 }
 
-// Periodically re-activates unfiltered tracking, driving
-// resetRegistrationsLocked() -> WallClockBlockTracker::resetAll() while
-// churn workers are concurrently mid-registration/mid-block-run.
+// Periodically advances the unfiltered recording epoch while churn workers are
+// mid-registration/mid-block-run. Each retained owner refreshes its block state
+// when it registers against the new epoch.
 static void registry_restart_thread(ThreadFilter* filter) {
   while (g_run.load(std::memory_order_relaxed)) {
     filter->init("", /*track_unfiltered_wall=*/true);

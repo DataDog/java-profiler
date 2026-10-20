@@ -1595,8 +1595,9 @@ Error Profiler::start(Arguments &args, bool reset) {
       _wall_engine->supportsUnfilteredThreadRegistryTracking();
   _thread_filter.init(filter, track_unfiltered_wall);
 
-  // Unfiltered init resets registrations before publishing registry admission.
-  // Context-filtered recordings retain identities but must clear membership.
+  // Both modes retain native identities across recordings. Unfiltered owners
+  // refresh payload lazily against the new recording epoch; context-filtered
+  // recordings must clear membership before threads opt in again.
   if (_thread_filter.enabled()) {
     _thread_filter.clearActive();
   }
@@ -1607,9 +1608,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Java threads are still registered lazily via those hooks or ThreadStart
   // callbacks (both filter modes) - proactive registration here is only for
   // the one thread that cannot update its own TLS from another thread's start().
-  // A cached slot id is not proof of registration: an unfiltered restart resets
-  // the registry, leaving it pointing at a free slot or one now owned by another
-  // thread. activeSlotForId() rejects both (tid and recording-epoch mismatch).
+  // A retained slot still needs a recording-epoch refresh after an unfiltered
+  // restart. activeSlotForId() rejects it until that refresh is complete.
   if (_thread_filter.registryActive()) {
     ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);

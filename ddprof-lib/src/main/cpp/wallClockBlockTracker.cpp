@@ -26,6 +26,11 @@ WallClockBlockTracker::~WallClockBlockTracker() {
 
 u64 WallClockBlockTracker::enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
                                            OSThreadState state, BlockRunOwner owner) {
+#ifdef UNIT_TEST
+    if (_block_admission_hook != nullptr) {
+        _block_admission_hook(_block_admission_hook_arg);
+    }
+#endif
     ThreadFilter::Slot* identity_slot = registry->slotForId(slot_id);
     BlockState* block_slot = slotForId(slot_id);
     if (identity_slot == nullptr || block_slot == nullptr) {

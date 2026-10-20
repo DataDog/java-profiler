@@ -262,6 +262,14 @@ public:
     bool shouldSuppressOwnedBlock(ThreadFilter* registry, const ThreadEntry& entry) const;
 
 #ifdef UNIT_TEST
+    // Pauses a JNI park/block hook after its caller resolved the registry slot,
+    // before admission reads or changes that slot's block state.
+    using BlockAdmissionHook = void (*)(void*);
+    void setBlockAdmissionHookForTest(BlockAdmissionHook hook, void* arg) {
+        _block_admission_hook = hook;
+        _block_admission_hook_arg = arg;
+    }
+
     using SuppressionSnapshotHook = void (*)(void*);
     void setSuppressionSnapshotHookForTest(SuppressionSnapshotHook hook, void* arg) {
         _suppression_snapshot_hook = hook;
@@ -273,6 +281,8 @@ private:
     std::array<BlockState, ThreadFilter::kMaxThreads> _slots;
 
 #ifdef UNIT_TEST
+    BlockAdmissionHook _block_admission_hook = nullptr;
+    void* _block_admission_hook_arg = nullptr;
     SuppressionSnapshotHook _suppression_snapshot_hook = nullptr;
     void* _suppression_snapshot_hook_arg = nullptr;
 #endif

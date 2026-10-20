@@ -88,16 +88,9 @@ TEST_F(WallClockBlockTrackerTest, NewGenerationRejectsStaleToken) {
 // state, since the two classes coordinate via one non-owning pointer
 // (ThreadFilter::setBlockTracker()) rather than a shared struct.
 //
-// refreshSlotForRecording()'s own resetSlot() call is not covered here: its
-// reset branch only fires when a slot's published recording epoch differs
-// from the registry's current one while the slot's tid mapping survives -
-// unreachable through sequential registerThread()/init() calls, since every
-// transition into unfiltered tracking mode (the only way the epoch changes)
-// goes through resetRegistrationsLocked() first, which already clears the
-// tid mapping. It is only reachable via a registration racing a concurrent
-// init(), which the existing ConcurrentSameTidRegistrationConvergesOnOneSlot
-// stress test in threadFilter_ut.cpp already exercises for the identity side
-// of that race.
+// A recording restart retains identities and invalidates their payload by
+// epoch. The retained owner resets its payload through refreshSlotForRecording()
+// when it next registers, covered by NewRecordingRefreshesBlockStateLazily.
 
 TEST_F(WallClockBlockTrackerTest, RegisterThreadReuseResetsBlockState) {
     int slot_id = filter->registerThread(1001);
@@ -139,7 +132,7 @@ TEST_F(WallClockBlockTrackerTest, UnregisterThreadResetsBlockState) {
     EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
 }
 
-TEST_F(WallClockBlockTrackerTest, InitResetRegistrationsLockedResetsBlockState) {
+TEST_F(WallClockBlockTrackerTest, NewRecordingRefreshesBlockStateLazily) {
     ThreadFilter registry;
     registry.init("", true);
     registry.setBlockTracker(tracker.get());
@@ -149,13 +142,26 @@ TEST_F(WallClockBlockTrackerTest, InitResetRegistrationsLockedResetsBlockState) 
     ASSERT_NE(0u, tracker->enterBlockedRun(&registry, slot_id, OSThreadState::SLEEPING));
     tracker->slotForId(slot_id)->markSampledThisRun(OSThreadState::SLEEPING);
 
-    // Re-entering unfiltered tracking mode drives resetRegistrationsLocked(),
-    // which must clear every slot's block state via a single resetAll() call.
+    ThreadFilter::Slot* identity = registry.slotForId(slot_id);
+    ThreadEntry stale{5001, identity, slot_id, identity->lifecycleGeneration(),
+                      identity->recordingEpoch()};
+    ASSERT_TRUE(tracker->shouldSuppressOwnedBlock(&registry, stale));
+
+    // Epoch invalidation makes retained payload ineligible before its owner
+    // refreshes. No other thread resets an owner's live block state on restart.
     registry.init("", true);
+    EXPECT_FALSE(tracker->shouldSuppressOwnedBlock(&registry, stale));
+    EXPECT_EQ(identity, registry.lookupByTid(5001));
+    EXPECT_EQ(nullptr, registry.activeSlotForId(slot_id, 5001));
 
     WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
+    EXPECT_EQ(OSThreadState::SLEEPING, block_slot->activeBlockState());
+    EXPECT_TRUE(block_slot->sampledThisRun());
+
+    ASSERT_EQ(slot_id, registry.registerThread(5001));
     EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
     EXPECT_FALSE(block_slot->sampledThisRun());
+    EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
 }
 
 TEST_F(WallClockBlockTrackerTest, ClearActiveResetsBlockState) {

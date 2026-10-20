@@ -606,9 +606,7 @@ TEST_F(ThreadRegistryTest, LookupByTidPopulatesOutSlotId) {
 }
 
 // add() validates ownership against the slot's published tid. The two tests
-// below cover the ways a cached slot id goes stale: the slot belongs to another
-// thread, or an unfiltered init() reset it (and it may since have been handed
-// out again).
+// below cover another thread's slot and a slot retired during thread teardown.
 TEST_F(ThreadRegistryTest, AddRejectsSlotOwnedByAnotherTid) {
     constexpr int tid = 5555;
     int slot_a = registry.registerThread(tid);
@@ -632,7 +630,7 @@ TEST_F(ThreadRegistryTest, AddRejectsSlotOwnedByAnotherTid) {
     EXPECT_TRUE(slot_b_ptr->inContextWindow());
 }
 
-TEST_F(ThreadRegistryTest, StaleAddAfterUnfilteredResetDoesNotResurrectSlot) {
+TEST_F(ThreadRegistryTest, StaleAddAfterTeardownDoesNotResurrectSlot) {
     constexpr int stale_tid = 7001;
     constexpr int new_tid = 7002;
     int stale_slot = registry.registerThread(stale_tid);
@@ -640,9 +638,8 @@ TEST_F(ThreadRegistryTest, StaleAddAfterUnfilteredResetDoesNotResurrectSlot) {
     ThreadFilter::Slot* slot = registry.slotForId(stale_slot);
     ASSERT_NE(nullptr, slot);
 
-    // A new unfiltered recording resets every registration; the thread still
-    // holds its old slot id in TLS.
-    registry.init("", true);
+    // Teardown retires the identity; a stale slot ID must not publish it again.
+    registry.unregisterThread(stale_slot, stale_tid);
     ASSERT_EQ(-1, slot->nativeTid());
 
     // The allocator now considers the slot free: add() must not re-publish
@@ -904,7 +901,7 @@ TEST_F(ThreadRegistryTest, ConfigurationSeparatesFilterAndUnfilteredTracking) {
     EXPECT_TRUE(registry.unfilteredWallTrackingActive());
 }
 
-TEST_F(ThreadRegistryTest, NewUnfilteredRecordingReclaimsRetainedSlot) {
+TEST_F(ThreadRegistryTest, NewUnfilteredRecordingRetainsIdentityAndRefreshesPayload) {
     constexpr int tid = 6101;
     int slot_id = registry.registerThread(tid);
     ASSERT_GE(slot_id, 0);
@@ -927,9 +924,10 @@ TEST_F(ThreadRegistryTest, NewUnfilteredRecordingReclaimsRetainedSlot) {
     ASSERT_NE(first_epoch, second_epoch);
     EXPECT_EQ(nullptr, registry.lookupByTid(tid, first_epoch));
     EXPECT_EQ(nullptr, registry.lookupByTid(tid, second_epoch));
-    EXPECT_EQ(nullptr, registry.lookupByTid(tid));
-    EXPECT_EQ(-1, slot->nativeTid());
-    EXPECT_GT(slot->lifecycleGeneration(), first_lifecycle_generation);
+    EXPECT_EQ(slot, registry.lookupByTid(tid));
+    EXPECT_EQ(tid, slot->nativeTid());
+    EXPECT_EQ(first_lifecycle_generation, slot->lifecycleGeneration());
+    EXPECT_EQ(nullptr, registry.activeSlotForId(slot_id, tid));
     EXPECT_FALSE(tracker.shouldSuppressOwnedBlock(&registry, stale));
 
     EXPECT_EQ(slot_id, registry.registerThread(tid));
@@ -940,7 +938,7 @@ TEST_F(ThreadRegistryTest, NewUnfilteredRecordingReclaimsRetainedSlot) {
     EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
 }
 
-TEST_F(ThreadRegistryTest, NewUnfilteredRecordingReclaimsFullCapacity) {
+TEST_F(ThreadRegistryTest, NewUnfilteredRecordingRetainsLiveOwnersAtFullCapacity) {
     for (int i = 0; i < ThreadFilter::kMaxThreads; ++i) {
         ASSERT_GE(registry.registerThread(10000 + i), 0) << "tid index=" << i;
     }
@@ -948,11 +946,25 @@ TEST_F(ThreadRegistryTest, NewUnfilteredRecordingReclaimsFullCapacity) {
 
     registry.init("", true);
 
-    EXPECT_EQ(nullptr, registry.lookupByTid(10000));
+    ThreadFilter::Slot* retained = registry.lookupByTid(10000);
+    ASSERT_NE(nullptr, retained);
+    EXPECT_EQ(nullptr, registry.activeSlotForId(0, 10000));
+    EXPECT_EQ(-1, registry.registerThread(30000));
+
+    // Known owners can still refresh while full; an idle live owner keeps its
+    // capacity until teardown, even if it has not opted into this recording.
     for (int i = 0; i < ThreadFilter::kMaxThreads; ++i) {
-        ASSERT_GE(registry.registerThread(30000 + i), 0) << "tid index=" << i;
+        ASSERT_EQ(i, registry.registerThread(10000 + i)) << "tid index=" << i;
     }
-    EXPECT_EQ(-1, registry.registerThread(40000));
+    EXPECT_EQ(retained, registry.lookupByTid(10000, registry.recordingEpoch()));
+    EXPECT_EQ(-1, registry.registerThread(30000));
+
+    registry.deactivateRecording();
+    registry.unregisterThreadByTid(10000);
+    EXPECT_EQ(nullptr, registry.lookupByTid(10000));
+    registry.init("", true);
+    EXPECT_EQ(0, registry.registerThread(30000));
+    EXPECT_EQ(-1, registry.registerThread(30001));
 }
 
 TEST_F(ThreadRegistryTest, ExpectedTidProtectsReusedSlotDuringTeardown) {
@@ -1061,7 +1073,7 @@ TEST_F(ThreadRegistryTest, FreedSlotReopensRegistrationAfterExhaustion) {
     EXPECT_EQ(0, lock_attempts.load());
 }
 
-TEST_F(ThreadRegistryTest, UnfilteredResetReopensRegistrationAfterExhaustion) {
+TEST_F(ThreadRegistryTest, UnfilteredRestartKeepsCapacityRejectionLockFree) {
     fillRegistry(registry, 10000);
     ASSERT_EQ(-1, registry.registerThread(20000));
 
@@ -1069,7 +1081,9 @@ TEST_F(ThreadRegistryTest, UnfilteredResetReopensRegistrationAfterExhaustion) {
 
     std::atomic<int> lock_attempts{0};
     registry.setPostActiveCheckHookForTest(countLockAttempt, &lock_attempts);
-    EXPECT_GE(registry.registerThread(20000), 0);
+    EXPECT_EQ(-1, registry.registerThread(20000));
+    EXPECT_EQ(0, lock_attempts.load());
+    EXPECT_EQ(0, registry.registerThread(10000));
     registry.setPostActiveCheckHookForTest(nullptr, nullptr);
     EXPECT_EQ(1, lock_attempts.load());
 }
