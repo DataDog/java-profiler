@@ -1,275 +1,44 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Runs Gradle with the full output captured to a timestamped log so an agent
+# session never ingests a multi-thousand-line build log. Prints the status
+# line; on failure, extracts the "What went wrong" blocks and failing-test
+# lines. The log file remains the source of truth for anything rarer.
+#
+# Usage: build-and-summarize [gradle-task...]  (default: build)
+#
+# No live tail and no summary artifacts: a harness tool result arrives
+# atomically after the run anyway, so streaming filters only added a
+# background process to manage, and the failures section below is everything
+# an agent needs before deciding to grep the full log.
+set -u
 
-mkdir -p build/logs build/reports/claude .claude/out
-STAMP="$(date +%Y%m%d-%H%M%S)"
-
-# Args (default to 'build')
 ARGS=("$@")
-if [ "${#ARGS[@]}" -eq 0 ]; then
-  ARGS=(build)
-fi
+[ "${#ARGS[@]}" -eq 0 ] && ARGS=(build)
 
-# Label for the log file from the first arg
+STAMP="$(date +%Y%m%d-%H%M%S)"
 LABEL="$(printf '%s' "${ARGS[0]}" | tr '/:' '__')"
 LOG="build/logs/${STAMP}-${LABEL}.log"
+mkdir -p "$(dirname "$LOG")"
 
-# Ensure we clean the tail on exit
-tail_pid=""
-cleanup() { [ -n "${tail_pid:-}" ] && kill "$tail_pid" 2>/dev/null || true; }
-trap cleanup EXIT INT TERM
+# One log per build, hundreds of KB each, and agent sessions generate many:
+# prune to the newest 20 so the directory stays bounded.
+ls -t build/logs/*.log 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null || true
 
-echo "▶ Logging full Gradle output to: $LOG"
-echo "▶ Running: ./gradlew ${ARGS[*]} -i --console=plain"
-echo "   (Console output here is minimized; the full log is in the file.)"
-echo
+echo "▶ ./gradlew ${ARGS[*]} -i --console=plain (full log: $LOG)"
+./gradlew "${ARGS[@]}" -i --console=plain >"$LOG" 2>&1
+status=$?
 
-# Start Gradle fully redirected to the log (no stdout/stderr to this session)
-# Use stdbuf to make the output line-buffered in the log for timely tailing.
-( stdbuf -oL -eL ./gradlew "${ARGS[@]}" -i --console=plain ) >"$LOG" 2>&1 &
-gradle_pid=$!
-
-# Minimal live progress: follow the log and print only interesting lines
-#  - Task starts
-#  - Final build status
-#  - Test summary lines
-# tail itself is the background job, so $! is its PID and killing it also ends
-# awk. (Backgrounding "tail | awk" would make $! the PID of awk instead: killing
-# awk leaves tail following a log that never grows again, so it never notices,
-# and since it inherits this script's stderr, a caller piping our output never
-# sees end of input.)
-tail -n0 -F "$LOG" 2>/dev/null > >(awk '
-  /^> Task / { print; fflush(); next }
-  /^BUILD (SUCCESSFUL|FAILED)/ { print; fflush(); next }
-  /[0-9]+ tests? (successful|failed|skipped)/ { print; fflush(); next }
-') &
-tail_pid=$!
-
-# Wait for Gradle to finish. set -e would abort right here on a failed build (before any summary
-# runs), so capture the status instead of letting errexit see it.
-status=0
-wait "$gradle_pid" || status=$?
-
-# Stop the tail and print a compact summary from the log
-kill "$tail_pid" 2>/dev/null || true
-tail_pid=""
-
-echo
-echo "=== Summary ==="
-# Grab the last BUILD line and nearest test summary lines
-awk '
-  /^BUILD (SUCCESSFUL|FAILED)/ { lastbuild=$0 }
-  /[0-9]+ tests? (successful|failed|skipped)/ { tests=$0 }
-  END {
-    if (lastbuild) print lastbuild;
-    if (tests) print tests;
-  }
-' "$LOG" || true
-
-echo
-if [ $status -eq 0 ]; then
+if [ "$status" -eq 0 ]; then
   echo "✔ Gradle completed. Full log at: $LOG"
 else
   echo "✖ Gradle failed with status $status. Full log at: $LOG"
-fi
-
-# Generate the summary artifacts deterministically — no LLM, no claude spawn.
-# (The old tail spawned a headless `claude` per build; managed settings pin that
-# to sonnet-5 via the AI gateway, billing real money for every log parse.)
-echo
-echo "Generating gradle summary…"
-# Single writer for the UNKNOWN artifact pair: every path that cannot produce a real summary
-# (unusable log, generator exception, missing python3) goes through here, so the schema lives once.
-# Keys/order match the generator's success-path JSON below.
-write_unknown_summary() {
-  local out=build/reports/claude detail detail_json
-  detail="$1, see $LOG"
-  detail_json="$(printf '%s' "$detail" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
-  mkdir -p "$out"
-  printf '# Gradle Summary\n\n- Status: UNKNOWN (%s)\n- Log: %s\n' "$1" "$LOG" > "$out/gradle-summary.md"
-  printf '{"status": "UNKNOWN", "totalTime": null, "failedTasks": [], "primaryFailures": [], "warnings": [], "tests": {"total": 0, "failed": 0, "skipped": 0, "modules": {}}, "slowTasks": [], "depIssues": ["%s"], "actions": []}\n' "$detail_json" > "$out/gradle-summary.json"
-}
-
-# A generator failure (exception, missing python3) must not leave stale or missing artifacts
-# behind: capture its rc and write an UNKNOWN pair below. Gradle's own status stays authoritative
-# for the exit code.
-summary_rc=0
-if [ ! -s "$LOG" ]; then
-  if [ -f "$LOG" ]; then why="log is empty"; else why="log not found"; fi
-  write_unknown_summary "$why"
-  echo "Gradle log unusable ($why); wrote build/reports/claude/gradle-summary.{md,json}"
-else
-python3 - "$LOG" <<'PYEOF' || summary_rc=$?
-import json, os, re, sys
-
-log_path = sys.argv[1] if len(sys.argv) > 1 else ""
-OUT_DIR = os.path.join("build", "reports", "claude")
-MD = os.path.join(OUT_DIR, "gradle-summary.md")
-JS = os.path.join(OUT_DIR, "gradle-summary.json")
-
-status, total_time, cur_task = "UNKNOWN", None, None
-failed_tasks, headlines, dep_issues, test_failures = [], [], [], []
-warnings, seen_warnings = [], set()
-tests = {"total": 0, "failed": 0, "skipped": 0, "modules": {}}
-
-RE_STATUS   = re.compile(r"^BUILD (SUCCESSFUL|FAILED)(?: in (.+?))?\s*$")
-RE_TASK     = re.compile(r"^> Task (\S+)")
-# A summary line may carry several counts ("N tests successful, M failed, K skipped"): RE_GSUM
-# matches the whole run of counts, RE_GSUM_PART splits it so none of them is dropped.
-RE_GSUM     = re.compile(r"\d+ tests? (?:successful|failed|skipped)"
-                         r"(?:,\s*\d+ (?:tests? )?(?:successful|failed|skipped))*")
-RE_GSUM_PART = re.compile(r"(\d+) (?:tests? )?(successful|failed|skipped)")
-RE_HL_TASK  = re.compile(r"task '([^']+)'")
-RE_COMP     = re.compile(r"(\d+) tests? completed(?:, (\d+) failed)?(?:, (\d+) skipped)?")
-RE_GTEST_P  = re.compile(r"\[  PASSED  \] (\d+) tests?")
-RE_GTEST_F  = re.compile(r"\[  FAILED  \] (\d+) tests?")
-RE_DEP      = re.compile(r"Could not (?:resolve|find|get)|timed out|status code: 40[13]|artifact .* not found", re.I)
-RE_WARN     = re.compile(r"\bw: |warning:|deprecat", re.I)
-
-def mod(name):
-    return tests["modules"].setdefault(name, {"total": 0, "failed": 0, "skipped": 0})
-
-def add_counts(name, ok, failed, skipped):
-    m = mod(name)
-    m["total"] += ok + failed + skipped
-    m["failed"] += failed
-    m["skipped"] += skipped
-    tests["total"] += ok + failed + skipped
-    tests["failed"] += failed
-    tests["skipped"] += skipped
-
-grab_headline = False
-with open(log_path, encoding="utf-8", errors="replace") as f:
-    for line in f:
-        line = line.rstrip("\n")
-        m = RE_STATUS.match(line)
-        if m:
-            status = m.group(1)
-            total_time = m.group(2)
-            continue
-        m = RE_TASK.match(line)
-        if m:
-            cur_task = m.group(1)
-            if line.endswith("FAILED") and m.group(1) not in failed_tasks:
-                failed_tasks.append(m.group(1))
-            continue
-        # Gradle prints one "* What went wrong" block per failure ("FAILURE: Build failed with
-        # an exception." for one, "FAILURE: Build completed with N failures." + numbered blocks
-        # for several), so capture a headline at every such block, not just after the banner.
-        if line.startswith("FAILURE: Build "):
-            continue
-        if line.strip().startswith("* What went wrong"):
-            headlines.append("")
-            grab_headline = True
-            continue
-        if grab_headline:
-            s = line.strip()
-            if s.startswith("*") or not s:
-                if headlines and headlines[-1]:
-                    grab_headline = False
-                continue
-            if len(headlines[-1]) < 200:
-                headlines[-1] += (" " if headlines[-1] else "") + s
-            continue
-        m = RE_COMP.search(line)
-        if m:
-            total = int(m.group(1))
-            failed = int(m.group(2) or 0)
-            skipped = int(m.group(3) or 0)
-            add_counts(cur_task or "(unknown)", total - failed - skipped, failed, skipped)
-            continue
-        m = RE_GSUM.search(line)
-        if m:
-            counts = {"successful": 0, "failed": 0, "skipped": 0}
-            for pm in RE_GSUM_PART.finditer(m.group(0)):
-                counts[pm.group(2)] += int(pm.group(1))
-            add_counts(cur_task or "(unknown)", counts["successful"], counts["failed"], counts["skipped"])
-            continue
-        m = RE_GTEST_P.search(line)
-        if m:
-            add_counts(cur_task or "(gtest)", int(m.group(1)), 0, 0)
-            continue
-        m = RE_GTEST_F.search(line)
-        if m:
-            add_counts(cur_task or "(gtest)", 0, int(m.group(1)), 0)
-            continue
-        if re.search(r" > \S+(?:\.\S+)+.* FAILED$", line) or re.search(r"\[  FAILED  \] (\S+)", line):
-            test_failures.append(line.strip())
-            continue
-        if RE_DEP.search(line) and len(dep_issues) < 20:
-            if line not in dep_issues:
-                dep_issues.append(line.strip())
-            continue
-        wm = RE_WARN.search(line)
-        if wm and len(warnings) < 40:
-            key = line.strip()[:160]
-            if key not in seen_warnings:
-                seen_warnings.add(key)
-                warnings.append(key)
-
-# Pair each failed task with the headline that names it ("Execution failed for task ':x:y'.");
-# a task with no naming headline points at the build-level Primary Failure section instead of
-# being paired positionally with an unrelated headline.
-primary_failures = [h for h in headlines if h]
-headline_by_task = {}
-for h in primary_failures:
-    hm = RE_HL_TASK.search(h)
-    if hm and hm.group(1) not in headline_by_task:
-        headline_by_task[hm.group(1)] = h
-fallback = "(see Primary Failure)" if primary_failures else ""
-failed = []
-for t in failed_tasks:
-    h = headline_by_task.get(t) or fallback
-    failed.append(t + (" — " + h if h else ""))
-data = {"status": status, "totalTime": total_time, "failedTasks": failed,
-        "primaryFailures": primary_failures, "warnings": warnings,
-        "tests": tests, "slowTasks": [], "depIssues": dep_issues, "actions": []}
-
-os.makedirs(OUT_DIR, exist_ok=True)
-with open(JS, "w") as f:
-    json.dump(data, f, indent=1)
-
-L = ["# Gradle Summary\n", f"- Status: {status}", f"- Total time: {total_time or 'UNKNOWN'}",
-     f"- Log: {log_path}\n"]
-if failed:
-    L.append("## Failing Tasks")
-    L += [f"- {t}" for t in failed]
-    L.append("")
-if primary_failures:
-    L.append("## Primary Failure")
-    L += [f"```text\n{h}\n```" for h in primary_failures[:3]]
-    if len(primary_failures) > 3:
-        L.append(f"… {len(primary_failures) - 3} more (see primaryFailures in {JS})")
-    L.append("")
-if tests["total"]:
-    L.append("## Tests")
-    L.append(f"- Total: {tests['total']}, failed: {tests['failed']}, skipped: {tests['skipped']}")
-    for name, m in tests["modules"].items():
-        L.append(f"  - {name}: {m['total']} total, {m['failed']} failed, {m['skipped']} skipped")
-    if test_failures:
-        L.append("- Top failing tests:")
-        L += [f"  - {t}" for t in test_failures[:10]]
-    L.append("")
-if warnings:
-    L.append("## Warnings")
-    L += [f"- {w}" for w in warnings[:20]]
-    L.append("")
-if dep_issues:
-    L.append("## Dependency / Network Issues")
-    L += [f"- {d}" for d in dep_issues[:10]]
-    L.append("")
-L.append("- Per-task durations are not present in plain `-i` console logs; slowTasks omitted.")
-open(MD, "w").write("\n".join(L) + "\n")
-
-print(f"{status} (time: {total_time or 'n/a'}); {len(failed)} failing task(s), {tests['failed']} test failure(s)")
-print(f"Wrote {MD} and {JS}")
-PYEOF
-fi
-
-if [ "$summary_rc" -ne 0 ]; then
-  echo "⚠ gradle summary generation failed (rc=$summary_rc) — full log at: $LOG"
-  write_unknown_summary "summary generation failed, rc=$summary_rc"
-  # Gradle's own status is authoritative; the generator rc surfaces only when the build passed.
-  exit $(( status != 0 ? status : summary_rc ))
+  echo
+  echo "=== What went wrong ==="
+  sed -n '/^\* What went wrong:/,/^\* Try:/p' "$LOG" | head -40
+  echo
+  echo "=== Failing tasks/tests ==="
+  grep -E '^> Task .+FAILED$' "$LOG" | head -10
+  grep -E '[0-9]+ tests completed(, [0-9]+ failed)?' "$LOG" | head -5
+  grep -E '[a-zA-Z0-9_.$]+ > [A-Za-z0-9_.$()]+ FAILED$' "$LOG" | head -20
 fi
 exit "$status"

@@ -43,12 +43,11 @@ You are the **Main Orchestrator** for this repository.
 
 ### Goals
 - When I ask you to build, you MUST:
-    1) run the Gradle task with plain console and increased verbosity,
-    2) capture stdout into `build/logs/<timestamp>-<task>.log`,
-    3) **delegate** parsing to the sub-agent `gradle-log-analyst`,
-    4) respond in chat with only a short status and the two output file paths:
-        - `build/reports/claude/gradle-summary.md`
-        - `build/reports/claude/gradle-summary.json`
+    1) invoke the wrapper `./.claude/commands/build-and-summarize <gradle-task...>` —
+       it runs Gradle with `--console=plain -i`, captures the full output into
+       `build/logs/<timestamp>-<task>.log`, and prints only the status line;
+    2) on failure, read the wrapper's extracted "What went wrong" section and the
+       failing task/test lines; grep the log file for anything rarer.
 
 ### Rules
 - **Never** paste large log chunks into the chat.
@@ -56,13 +55,6 @@ You are the **Main Orchestrator** for this repository.
 - If no log path is provided, use the newest `build/logs/*.log`.
 - Assume macOS/Linux unless I explicitly say Windows; if Windows, use PowerShell equivalents.
 - If a step fails, print the failing command and a one-line hint, then stop.
-
-### Implementation Hints
-- For builds, always use: `--console=plain -i` (or `-d` if I ask for debug).
-- Use `mkdir -p build/logs build/reports/claude` before writing.
-- Timestamp format: `$(date +%Y%m%d-%H%M%S)`.
-- After the build finishes, call the sub-agent like:
-  "Use `gradle-log-analyst` to parse LOG_PATH; write the two reports; reply with only a 3–6 line status and the two relative file paths."
 
 ### Shortcuts I Expect
 - `./gradlew <gradle-task...>` to do everything in one step.
