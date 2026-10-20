@@ -10,8 +10,10 @@
 package com.datadoghq.profiler.repro;
 
 import com.datadoghq.profiler.JavaProfiler;
+import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryUsage;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
@@ -95,6 +97,11 @@ public final class ReferenceChainLeakDemo {
     // call, not just this app's own memory growth, is load-bearing for the repro.
     private static final int DUMP_EVERY_N_ROUNDS = 10;
 
+    // Periodic snapshot files kept in the default run-forever mode (see the dump block in
+    // run()): older periodic snapshots are deleted once this many newer ones exist, so a
+    // multi-hour manual session cannot fill /tmp with full-window dumps.
+    private static final int KEEP_PERIODIC_SNAPSHOTS = 5;
+
     private static final String USAGE =
             "usage: ReferenceChainLeakDemo <jfr-dump-path> <agent-so-path> [duration-seconds] "
                     + "(both required args must match the -agentpath:<agent-so-path>=...jfr,file=<jfr-dump-path> values; "
@@ -147,7 +154,7 @@ public final class ReferenceChainLeakDemo {
     private static long totalRoundNanos = 0;
     private static long maxRoundNanos = 0;
 
-    private static void run(Map<String, CachedEntry> cache, Path recordingPath, String agentSoPath, long durationSeconds) throws InterruptedException {
+    private static void run(Map<String, CachedEntry> cache, Path recordingPath, String agentSoPath, long durationSeconds) throws InterruptedException, IOException {
         // Must differ from recordingPath itself - see SNAPSHOT_SUFFIX's comment. Final
         // (bounded-run) drain target; periodic drains use snapshotPath + "." + round.
         Path snapshotPath = recordingPath.resolveSibling(recordingPath.getFileName() + SNAPSHOT_SUFFIX);
@@ -211,6 +218,18 @@ public final class ReferenceChainLeakDemo {
                 Path roundSnapshotPath =
                         snapshotPath.resolveSibling(snapshotPath.getFileName() + "." + round);
                 profiler.dump(roundSnapshotPath);
+                // Run-forever mode writes a new snapshot every DUMP_EVERY_N_ROUNDS rounds and
+                // each dump contains the full recording window, so unbounded retention fills
+                // /tmp during long manual repro sessions. Keep only the most recent
+                // KEEP_PERIODIC_SNAPSHOTS periodic snapshots; the bounded-run .snapshot dump
+                // (the path the sweep scripts read) is never touched.
+                if (durationSeconds < 0) {
+                    long expireRound = round - (long) KEEP_PERIODIC_SNAPSHOTS * DUMP_EVERY_N_ROUNDS;
+                    if (expireRound > 0) {
+                        Files.deleteIfExists(snapshotPath.resolveSibling(
+                                snapshotPath.getFileName() + "." + expireRound));
+                    }
+                }
                 System.out.println("[repro] dumped " + roundSnapshotPath);
             }
 

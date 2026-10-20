@@ -14,12 +14,18 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Grows an ever-referenced, never-evicted cache to give the reference-chains
+ * Grows an ever-referenced cache to give the reference-chains
  * feature (LivenessTracker/ReferenceChainTracker) a real, steadily growing
- * population to detect and walk. Growth is capped, not open-ended: once
- * {@link #CAP_ENTRIES} is reached the cache stops growing and the antagonist
- * just holds it there for the rest of the run, so a long chaos duration
- * (hours) still produces the same bounded leak instead of eventually OOMing
+ * population to detect and walk. Memory stays bounded: once the live entry
+ * count reaches {@link #CAP_ENTRIES} the antagonist switches to a bounded
+ * recycle cycle - it evicts the oldest {@link #RECYCLE_EVICT_ENTRIES} entries
+ * and then regrows to the cap - so the population keeps going through rising
+ * legs for the whole run instead of freezing at a flat count (a cache that
+ * grows to a fixed size and then sits flat stops being a growing population:
+ * the trend detection's earliest-vs-recent ring comparison reads a ~zero slope
+ * and the feature gets no leak signal for the rest of a multi-hour run). The
+ * recycle fraction keeps at least 3/4 of the cap alive at all times, so a long
+ * chaos duration still produces a bounded leak instead of eventually OOMing
  * the JVM out from under the other antagonists sharing its heap.
  *
  * <p>Same object shape as {@code LeakingCacheScenario.CachedPayload}
@@ -30,12 +36,18 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class ReferenceChainLeakAntagonist implements Antagonist {
 
-    // ~64MiB of CachedEntry payloads at steady state (entries are a little
+    // ~64MiB of CachedEntry payloads at the cap (entries are a little
     // over 300 bytes with object header/field overhead) — enough for the
     // liveness tracker's population-growth trend detection to have a real,
     // sustained trend to lock onto, without meaningfully competing with the
     // other antagonists' own memory budget for the run's whole duration.
     private static final int CAP_ENTRIES = 200_000;
+
+    // Entries evicted per recycle cycle once the cap is reached (25% of the
+    // cap): large enough that each regrow leg is a visible rising population
+    // trend, small enough that 3/4 of the population stays alive at all times.
+    private static final int RECYCLE_EVICT_ENTRIES = 50_000;
+
     private static final int BATCH_SIZE = 200;
     private static final long BATCH_INTERVAL_MS = 50L;
 
@@ -43,6 +55,8 @@ public final class ReferenceChainLeakAntagonist implements Antagonist {
     private volatile boolean running;
     private Thread growthDriver;
     private long nextKey;
+    private long evictKey;
+    private long liveEntries;
 
     @Override
     public String name() {
@@ -68,28 +82,37 @@ public final class ReferenceChainLeakAntagonist implements Antagonist {
     }
 
     private void growthLoop() {
-        // nextKey, not cache.size(): ConcurrentHashMap.size() sums every counter cell, too
-        // costly per put. Equivalent here - this thread is the only writer, keys are unique
-        // and nothing is ever removed, so nextKey always equals the entry count.
-        while (running && nextKey < CAP_ENTRIES) {
-            for (int i = 0; i < BATCH_SIZE && nextKey < CAP_ENTRIES; i++) {
-                String key = "refchain-leak-" + (nextKey++);
-                cache.put(key, new CachedEntry(key));
-                MemoryGovernor.pace();
+        // liveEntries, not cache.size(): ConcurrentHashMap.size() sums every counter cell, too
+        // costly per put/remove. Exact here - this thread is the only writer, keys are unique
+        // and evictions only remove what a previous put added, so the counter always matches.
+        while (running) {
+            if (liveEntries >= CAP_ENTRIES) {
+                // Cap reached: recycle phase - evict the oldest entries, then the loop's
+                // growth phase regrows them with fresh keys, giving the population trend
+                // detection a repeated rising signal instead of a flat count.
+                long evictTarget = Math.min(evictKey + RECYCLE_EVICT_ENTRIES, nextKey);
+                for (; running && evictKey < evictTarget; evictKey++) {
+                    cache.remove("refchain-leak-" + evictKey);
+                    liveEntries--;
+                    MemoryGovernor.pace();
+                }
+            }
+            while (running && liveEntries < CAP_ENTRIES) {
+                for (int i = 0; i < BATCH_SIZE && liveEntries < CAP_ENTRIES; i++) {
+                    String key = "refchain-leak-" + (nextKey++);
+                    cache.put(key, new CachedEntry(key));
+                    liveEntries++;
+                    MemoryGovernor.pace();
+                }
+                try {
+                    Thread.sleep(BATCH_INTERVAL_MS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
             }
             try {
                 Thread.sleep(BATCH_INTERVAL_MS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-        }
-        // Cap reached: keep the reference alive (do nothing) for the rest of
-        // the run instead of exiting the thread, so `cache` stays reachable
-        // via this antagonist's own field for as long as the harness runs.
-        while (running) {
-            try {
-                Thread.sleep(1_000L);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
