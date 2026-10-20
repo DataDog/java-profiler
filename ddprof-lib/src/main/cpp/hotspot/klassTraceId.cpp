@@ -64,13 +64,6 @@ int KlassTraceId::findOffset(const void* const* klasses, int count, size_t klass
   return found;
 }
 
-// Highest dimension any attempt has created so far; the next attempt probes
-// the PROBE_COUNT dimensions above it.
-static int _probed_dims = 0;
-// The offset the last successful attempt found, waiting for a second attempt
-// to confirm it.
-static int _candidate = -1;
-
 // Dumps what each probe holds at every offset findOffset() looked at, so a
 // release whose layout calibration rejects can be diagnosed from a debug CI
 // log.
@@ -89,50 +82,77 @@ static void logProbes(const void* const* klasses, size_t klass_size) {
 #endif
 }
 
-// One attempt: makes the JVM create array klasses of java.lang.Void with
-// dimensions first_dim .. first_dim + PROBE_COUNT - 1 and looks for the
-// offset in them. Resolving the deepest one creates every missing dimension
-// in order, each getting the next trace ID; java.lang.Void has no other use
-// for such arrays. Earlier attempts (or other code) may have created lower
-// dimensions already, so only the top PROBE_COUNT dimensions are probed, and
-// those are new. Returns the offset, or -1.
-static int probe(JNIEnv* jni, int first_dim, size_t klass_size) {
-  static const char ELEMENT[] = "Ljava/lang/Void;";
-  const int top_dim = first_dim + KlassTraceId::PROBE_COUNT - 1;
-  char name[KlassTraceId::MAX_DIMENSIONS + sizeof(ELEMENT)];
-  assert(first_dim >= 1 && top_dim <= KlassTraceId::MAX_DIMENSIONS);
-  memset(name, '[', top_dim);
-  memcpy(name + top_dim, ELEMENT, sizeof(ELEMENT));
+// The class file of `public class datadog/ddprof/KlassTraceIdProbe`, with no
+// fields and no methods: just enough for DefineClass() to create a Klass.
+static const unsigned char PROBE_CLASS_FILE[] = {
+    0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00, 0x00, 0x32,  // magic, version 50.0
+    0x00, 0x05,                                      // constant pool count
+    0x01, 0x00, 0x20, 'd', 'a', 't', 'a', 'd', 'o', 'g', '/', 'd', 'd', 'p', 'r', 'o', 'f', '/',
+    'K', 'l', 'a', 's', 's', 'T', 'r', 'a', 'c', 'e', 'I', 'd', 'P', 'r', 'o', 'b', 'e',  // #1 Utf8
+    0x07, 0x00, 0x01,                                // #2 Class #1
+    0x01, 0x00, 0x10, 'j', 'a', 'v', 'a', '/', 'l', 'a', 'n', 'g', '/', 'O', 'b', 'j', 'e', 'c', 't',  // #3 Utf8
+    0x07, 0x00, 0x03,                                // #4 Class #3
+    0x00, 0x21,                                      // ACC_PUBLIC | ACC_SUPER
+    0x00, 0x02, 0x00, 0x04,                          // this #2, super #4
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // no interfaces, fields, methods, attributes
+};
+static const char PROBE_CLASS_NAME[] = "datadog/ddprof/KlassTraceIdProbe";
 
-  const void* klasses[KlassTraceId::PROBE_COUNT];
-  for (int i = KlassTraceId::PROBE_COUNT - 1; i >= 0; i--) {
-    const int dims = first_dim + i;
-    jclass cls = jni->FindClass(name + (top_dim - dims));
-    if (cls == nullptr) {
-      jni->ExceptionClear();
-      TEST_LOG("KlassTraceId: FindClass failed for %d dimensions", dims);
-      return -1;
-    }
-    klasses[i] = VMKlass::fromJavaClass(jni, cls);
-    jni->DeleteLocalRef(cls);
+// Creates the probe klasses of one attempt, in creation order: arrays of
+// dimensions 1 .. PROBE_COUNT of a class defined in a new class loader for
+// this attempt, so none of them can have existed before. Probes that existed
+// already, created far apart, would let the right field fail the check while
+// another passes it (the mirrors' heap addresses, shifted right by 16, can be
+// distinct and close together). Nothing keeps the loader reachable
+// afterwards, so it and its classes can be unloaded. Returns false on any JNI
+// failure. Must run inside a JNI local frame.
+static bool createProbes(JNIEnv* jni, const void** klasses) {
+  jclass loader_class = jni->FindClass("java/security/SecureClassLoader");
+  jmethodID init = loader_class == nullptr ? nullptr : jni->GetMethodID(loader_class, "<init>", "(Ljava/lang/ClassLoader;)V");
+  // JNI does not check access, so the protected constructor will do; the
+  // parent is the bootstrap loader.
+  jobject loader = init == nullptr ? nullptr : jni->NewObject(loader_class, init, (jobject)nullptr);
+  jclass cls = loader == nullptr ? nullptr
+                                 : jni->DefineClass(PROBE_CLASS_NAME, loader, (const jbyte*)PROBE_CLASS_FILE,
+                                                    (jsize)sizeof(PROBE_CLASS_FILE));
+  for (int i = 0; i < KlassTraceId::PROBE_COUNT && cls != nullptr; i++) {
+    // An empty array of `cls` makes the JVM create the next dimension.
+    jobjectArray array = jni->NewObjectArray(0, cls, nullptr);
+    cls = array == nullptr ? nullptr : jni->GetObjectClass(array);
+    klasses[i] = cls == nullptr ? nullptr : VMKlass::fromJavaClass(jni, cls);
     if (klasses[i] == nullptr) {
-      TEST_LOG("KlassTraceId: no Klass* for %d dimensions", dims);
-      return -1;
+      cls = nullptr;
     }
   }
-
-  int found = KlassTraceId::findOffset(klasses, KlassTraceId::PROBE_COUNT, klass_size);
-  TEST_LOG("KlassTraceId offset=%d (sizeof(Klass)=%d, dimensions %d-%d)", found, (int)klass_size,
-           first_dim, top_dim);
-  if (found < 0) {
-    logProbes(klasses, klass_size);
+  if (cls == nullptr) {
+    jni->ExceptionClear();
+    TEST_LOG("KlassTraceId: could not create the probe classes");
+    return false;
   }
+  return true;
+}
+
+// One attempt: creates fresh probe klasses and looks for the offset in them.
+// Returns the offset, or -1.
+static int probe(JNIEnv* jni, size_t klass_size) {
+  if (jni->PushLocalFrame(2 * KlassTraceId::PROBE_COUNT + 8) != JNI_OK) {
+    jni->ExceptionClear();
+    return -1;
+  }
+  const void* klasses[KlassTraceId::PROBE_COUNT];
+  int found = -1;
+  if (createProbes(jni, klasses)) {
+    found = KlassTraceId::findOffset(klasses, KlassTraceId::PROBE_COUNT, klass_size);
+    TEST_LOG("KlassTraceId offset=%d (sizeof(Klass)=%d)", found, (int)klass_size);
+    if (found < 0) {
+      logProbes(klasses, klass_size);
+    }
+  }
+  jni->PopLocalFrame(nullptr);
   return found;
 }
 
 bool KlassTraceId::calibrate(JNIEnv* jni) {
-  // Runs from Profiler::start() with _state_lock held, so plain statics will
-  // do.
   if (offset() >= 0) {
     return true;
   }
@@ -141,25 +161,13 @@ bool KlassTraceId::calibrate(JNIEnv* jni) {
     TEST_LOG("KlassTraceId: no Klass layout from vmStructs");
     return false;
   }
-  // A failed attempt usually means the probes' IDs were not consecutive:
-  // other threads created many classes meanwhile, or some of the dimensions
-  // already existed. Fresh dimensions make either unlikely to repeat.
-  // If all of an attempt's dimensions already existed, created far apart,
-  // their trace IDs fail the check while another field can pass it: the
-  // mirrors' heap addresses, shifted right by 16, can be distinct and close
-  // together. Probes created back to back have adjacent mirrors, which that
-  // shift makes equal, so an offset is only taken once two attempts on
-  // different dimensions agree on it.
-  for (int attempt = 0; attempt < MAX_ATTEMPTS && _probed_dims + PROBE_COUNT <= MAX_DIMENSIONS; attempt++) {
-    const int first_dim = _probed_dims + 1;
-    _probed_dims += PROBE_COUNT;
-    int found = probe(jni, first_dim, klass_size);
-    if (found >= 0 && found == _candidate) {
+  // A failed attempt usually means other threads created many classes while
+  // the probes were created; that is unlikely to repeat right away.
+  for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    int found = probe(jni, klass_size);
+    if (found >= 0) {
       __atomic_store_n(&_offset, found, __ATOMIC_RELEASE);
       return true;
-    }
-    if (found >= 0) {
-      _candidate = found;
     }
   }
   return false;

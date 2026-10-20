@@ -163,10 +163,9 @@ private:
     static bool _lazy_used;
 
     // Set if a redefinition could not be marked (no memory for the registry
-    // entry, or the hook was called with a Java exception pending): from then
-    // on every lazy frame is refused, for the rest of the process, since raw
-    // frames sampled before that redefinition can outlive any profiler
-    // session. klass_registry_add_failed counts these.
+    // entry): from then on every lazy frame is refused, for the rest of the
+    // process, since raw frames sampled before that redefinition can outlive
+    // any profiler session. klass_registry_add_failed counts these.
     static bool _redefinitions_untracked;
 
     // fjmethodid=lazy: the classes GetLoadedClasses() returned at the start

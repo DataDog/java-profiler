@@ -162,9 +162,10 @@ void KlassRegistry::endRedefinition(const void* klass, bool succeeded) {
   if (e == nullptr) {
     return;
   }
-  // Clamped: the entry may have been replaced (a new class at this address)
-  // while the call was in progress, which resets the count. Then the
-  // permanent mark is not applied either: the new class was not redefined.
+  // An end without a matching begin, e.g. after the begin could not register
+  // the class but another call did meanwhile, changes nothing. (The entry is
+  // not replaced while a call runs: its caller holds the class, so it cannot
+  // be unloaded and its Klass* reused.)
   if (e->redefinitions_in_progress == 0) {
     return;
   }

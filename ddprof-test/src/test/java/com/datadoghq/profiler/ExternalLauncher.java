@@ -71,13 +71,10 @@ import java.util.regex.Pattern;
  *     leaking thread's {@code ThreadLocal} map; the {@code -late} variant starts the leak thread
  *     only after the recording began (see that scenario's own comment).</li>
  *     <li>lazy-calibration-preexisting-arrays &lt;comma delimited profiler command list, required&gt; -
- *     creates {@code Void[]} and {@code Void[][]} with a few hundred class definitions in between, so their
- *     JFR trace IDs are far apart, then starts the profiler, prints the {@code klass_trace_id_offset}
- *     counter and stops it; see {@code LazyTraceIdCalibrationTest}</li>
- *     <li>lazy-calibration-retry &lt;comma delimited profiler command list, required&gt; - creates
- *     {@code Void} arrays of every dimension the first profiler start probes, each with a few hundred
- *     class definitions in between, then starts the profiler twice, printing the
- *     {@code klass_trace_id_offset} counter after each start; see {@code LazyTraceIdCalibrationTest}</li>
+ *     creates {@code Void} arrays of dimensions 1 to the {@code ddprof_test.calibration_dims} system
+ *     property (default 0), each with a hundred class definitions in between, then starts the
+ *     profiler, prints the {@code klass_trace_id_offset} counter and stops it; see
+ *     {@code LazyTraceIdCalibrationTest}</li>
  *     <li>line-numbers &lt;';'-delimited profiler command lists, required&gt; - for each command list in
  *     turn, starts the profiler, runs the same JDK-heavy workload, prints the
  *     {@code method_resolve_lazy_resolved} counter and stops the profiler; see
@@ -273,38 +270,20 @@ public class ExternalLauncher {
                 if (args.length < 2 || args[1].isEmpty()) {
                     throw new IllegalArgumentException("lazy-calibration-preexisting-arrays requires a profiler command list");
                 }
-                Object lowDimension = java.lang.reflect.Array.newInstance(Void.class, 0);
-                for (int i = 0; i < 200; i++) {
-                    SpinClasses.define("com/datadoghq/profiler/generated/CalibrationGap" + i);
-                }
-                Object secondDimension = java.lang.reflect.Array.newInstance(lowDimension.getClass(), 0);
-                JavaProfiler instance = JavaProfiler.getInstance();
-                instance.execute(args[1]);
-                System.out.println("[calibration] klass_trace_id_offset="
-                        + instance.getDebugCounters().get("klass_trace_id_offset")
-                        + " arrays=" + secondDimension.getClass().getName());
-                instance.stop();
-            } else if (args[0].equals("lazy-calibration-retry")) {
-                if (args.length < 2 || args[1].isEmpty()) {
-                    throw new IllegalArgumentException("lazy-calibration-retry requires a profiler command list");
-                }
-                // KlassTraceId::MAX_ATTEMPTS * PROBE_COUNT: every dimension one calibrate() call probes.
-                final int firstCallDimensions = 24;
+                int dims = Integer.getInteger("ddprof_test.calibration_dims", 0);
                 Class<?> arrayClass = Void.class;
-                for (int dim = 1; dim <= firstCallDimensions; dim++) {
+                for (int dim = 1; dim <= dims; dim++) {
                     for (int i = 0; i < 100; i++) {
-                        SpinClasses.define("com/datadoghq/profiler/generated/CalibrationRetryGap" + dim + "_" + i);
+                        SpinClasses.define("com/datadoghq/profiler/generated/CalibrationGap" + dim + "_" + i);
                     }
                     arrayClass = java.lang.reflect.Array.newInstance(arrayClass, 0).getClass();
                 }
                 JavaProfiler instance = JavaProfiler.getInstance();
-                for (String start : new String[] {"first", "second"}) {
-                    instance.execute(args[1]);
-                    System.out.println("[calibration] " + start + " klass_trace_id_offset="
-                            + instance.getDebugCounters().get("klass_trace_id_offset")
-                            + " arrays=" + arrayClass.getName().length());
-                    instance.stop();
-                }
+                instance.execute(args[1]);
+                System.out.println("[calibration] klass_trace_id_offset="
+                        + instance.getDebugCounters().get("klass_trace_id_offset")
+                        + " arrays=" + arrayClass.getName());
+                instance.stop();
             } else if (args[0].equals("line-numbers")) {
                 if (args.length < 2 || args[1].isEmpty()) {
                     throw new IllegalArgumentException("line-numbers requires profiler command lists");

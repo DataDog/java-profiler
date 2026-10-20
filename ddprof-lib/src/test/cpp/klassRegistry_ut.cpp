@@ -328,9 +328,9 @@ TEST_F(KlassRegistryTest, NewClassAtRedefinedClassAddressStartsUnmarked) {
     EXPECT_TRUE(registry.contains(jni, klassAt(0)));
 }
 
-// A class unloaded while its redefinition call runs can be replaced by a new
-// class at the same address before the call returns; the call's success must
-// not mark the new class, which was never redefined.
+// The hooks never see this (the caller of RedefineClasses holds the class),
+// but the registry alone does not rely on it: an end that finds a different
+// class at the address does not mark it.
 TEST_F(KlassRegistryTest, RedefinitionEndingAfterReplacementDoesNotMarkNewClass) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));

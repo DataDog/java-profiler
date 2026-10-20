@@ -1524,17 +1524,40 @@ bool HotspotSupport::isInstanceClass(jvmtiEnv *jvmti, jclass klass) {
            (status & (JVMTI_CLASS_STATUS_ARRAY | JVMTI_CLASS_STATUS_PRIMITIVE)) == 0;
 }
 
+// JVMTI allows RedefineClasses/RetransformClasses with a Java exception
+// pending, but JNI forbids most calls then. The redefinition hooks set such an
+// exception aside while they work, and throw it again before the original
+// function runs or returns to its caller.
+class PendingExceptionScope {
+    JNIEnv* _jni;
+    jthrowable _pending;
+
+public:
+    explicit PendingExceptionScope(JNIEnv* jni) : _jni(jni), _pending(jni->ExceptionOccurred()) {
+        if (_pending != nullptr) {
+            _jni->ExceptionClear();
+        }
+    }
+    ~PendingExceptionScope() {
+        if (_pending != nullptr) {
+            _jni->ExceptionClear();
+            _jni->Throw(_pending);
+            _jni->DeleteLocalRef(_pending);
+        }
+    }
+    PendingExceptionScope(const PendingExceptionScope&) = delete;
+    PendingExceptionScope& operator=(const PendingExceptionScope&) = delete;
+};
+
 void HotspotSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
     if (!__atomic_load_n(&_lazy_used, __ATOMIC_ACQUIRE) || !isInstanceClass(jvmti, klass)) {
         return;
     }
-    // JVMTI allows RedefineClasses with a Java exception pending, but JNI
-    // forbids the calls that marking the class needs; then the class can't be
-    // marked, as when there is no memory for the mark.
+    PendingExceptionScope pending(jni);
     // Only redefined classes are registered, so the mark has a place to live.
     // An entry stays after a call JVMTI rejects (without a lasting mark), and
     // is purged when the table next grows after its class is unloaded.
-    const void* vm_klass = jni->ExceptionCheck() ? nullptr : VMKlass::fromJavaClass(jni, klass);
+    const void* vm_klass = VMKlass::fromJavaClass(jni, klass);
     if (vm_klass != nullptr && _klass_registry.add(jni, vm_klass, klass) &&
         _klass_registry.beginRedefinition(vm_klass)) {
         Counters::increment(KLASS_REGISTRY_REDEFINITIONS_MARKED);
@@ -1553,11 +1576,9 @@ void HotspotSupport::afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass
     if (!__atomic_load_n(&_lazy_used, __ATOMIC_ACQUIRE) || !isInstanceClass(jvmti, klass)) {
         return;
     }
-    if (jni->ExceptionCheck()) {
-        // No JNI calls allowed. The class stays marked as being redefined,
-        // so its raw frames are refused for good: safe, if lossy.
-        return;
-    }
+    PendingExceptionScope pending(jni);
+    // The caller holds `klass` throughout the call, so the class cannot have
+    // been unloaded, and its Klass* still names the entry begin marked.
     _klass_registry.endRedefinition(VMKlass::fromJavaClass(jni, klass), succeeded);
     // The class's raw frames are refused from now on, so give its later
     // frames jmethodIDs. After a failed call nothing changed: its frames

@@ -221,9 +221,9 @@
   /* Raw Method* frame occurrences answered from Lookup's per-dump cache    \
    * instead of resolving them again. */                                     \
   X(RAW_FRAME_RESOLVE_CACHE_HITS, "raw_frame_resolve_cache_hits")             \
-  /* Redefinitions whose mark could not be recorded (no memory for it, or   \
-   * the hook was called with a Java exception pending); every lazy frame   \
-   * is refused for the rest of the process once this is nonzero. */        \
+  /* Redefinitions whose mark could not be recorded (no memory for it);     \
+   * every lazy frame is refused for the rest of the process once this is   \
+   * nonzero. */                                                             \
   X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
   /* Gauges: KlassRegistry's table slots (24 B each; NMT does not see the    \
    * table) and occupied slots, live or dead. It holds only redefined        \

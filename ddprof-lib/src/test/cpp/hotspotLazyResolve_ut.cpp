@@ -282,6 +282,8 @@ public:
         _jni_tbl.GetLongField = &getLongField;
         _jni_tbl.ExceptionCheck = &exceptionCheck;
         _jni_tbl.ExceptionClear = &exceptionClear;
+        _jni_tbl.ExceptionOccurred = &exceptionOccurred;
+        _jni_tbl.Throw = &throwException;
         _jni_env.functions = &_jni_tbl;
         _jvmti_tbl.GetClassStatus = &getClassStatus;
         _jvmti_tbl.GetClassMethods = &getClassMethods;
@@ -310,6 +312,9 @@ public:
     int get_class_methods_calls = 0;
     bool fail_weak_refs = false;  // NewWeakGlobalRef fails, as when out of memory
     bool exception_pending = false;  // set by a failed NewWeakGlobalRef, as JNI does
+    int throws = 0;
+    // JNI forbids these calls while an exception is pending.
+    int calls_with_exception_pending = 0;
 
     jclass mirror(FakeObject& obj) { return reinterpret_cast<jclass>(&obj); }
 
@@ -330,7 +335,13 @@ private:
         return _weaks.count(w) != 0 ? reinterpret_cast<jobject>(w->referent) : ref;
     }
 
+    static void checkNoException() {
+        if (s_instance->exception_pending) {
+            s_instance->calls_with_exception_pending++;
+        }
+    }
     static jweak JNICALL newWeakGlobalRef(JNIEnv*, jobject obj) {
+        checkNoException();
         if (s_instance->fail_weak_refs) {
             s_instance->exception_pending = true;  // OutOfMemoryError
             return nullptr;
@@ -344,16 +355,27 @@ private:
         return s_instance->exception_pending ? JNI_TRUE : JNI_FALSE;
     }
     static void JNICALL exceptionClear(JNIEnv*) { s_instance->exception_pending = false; }
+    static jthrowable JNICALL exceptionOccurred(JNIEnv*) {
+        return s_instance->exception_pending ? reinterpret_cast<jthrowable>(&s_instance->_throwable) : nullptr;
+    }
+    static jint JNICALL throwException(JNIEnv*, jthrowable) {
+        s_instance->throws++;
+        s_instance->exception_pending = true;
+        return 0;
+    }
     static jboolean JNICALL isSameObject(JNIEnv*, jobject a, jobject b) {
+        checkNoException();
         return s_instance->resolve(a) == s_instance->resolve(b) ? JNI_TRUE : JNI_FALSE;
     }
     static jobject JNICALL newLocalRef(JNIEnv*, jobject ref) {
+        checkNoException();
         s_instance->new_local_ref_calls++;
         return s_instance->resolve(ref);
     }
     static void JNICALL deleteLocalRef(JNIEnv*, jobject) {}
     // VMKlass::fromJavaClass() reads java.lang.Class.klass through this.
     static jlong JNICALL getLongField(JNIEnv*, jobject obj, jfieldID) {
+        checkNoException();
         return (jlong)(uintptr_t)reinterpret_cast<FakeObject*>(obj)->klass;
     }
     // A jmethodID preload (loadMethodIDsIfNeededImpl()); only the call is
@@ -386,6 +408,7 @@ private:
     _jvmtiEnv _jvmti{};
     jvmtiEnv* _saved_jvmti = nullptr;
     std::set<FakeWeak*> _weaks;
+    int _throwable = 0;  // what ExceptionOccurred() returns
 };
 FakeJvm* FakeJvm::s_instance = nullptr;
 
@@ -713,18 +736,35 @@ TEST_F(HotspotLazyResolveTest, UnmarkableRedefinitionRefusesAllLazyFrames) {
     EXPECT_FALSE(resolve(frame));
 }
 
-// A hook called with a Java exception pending cannot make JNI calls, so it
-// cannot mark the class; every lazy frame is refused instead, and the
-// exception is left for the caller of RedefineClasses.
-TEST_F(HotspotLazyResolveTest, RedefinitionWithPendingExceptionRefusesAllLazyFrames) {
+// JVMTI allows a redefinition with a Java exception pending. The hooks set it
+// aside instead of calling JNI with it pending, mark the class as usual, and
+// throw it again for the caller of RedefineClasses.
+TEST_F(HotspotLazyResolveTest, RedefinitionWithPendingExceptionIsMarked) {
     registerClass(_old_mirror);
     ASGCT_CallFrame frame = sample();
+    long long add_failed = Counters::getCounter(KLASS_REGISTRY_ADD_FAILED);
     _jvm.exception_pending = true;
     redefine(true);
     EXPECT_TRUE(_jvm.exception_pending);
+    EXPECT_EQ(2, _jvm.throws);  // once per hook
+    EXPECT_EQ(0, _jvm.calls_with_exception_pending);
     _jvm.exception_pending = false;
-    EXPECT_EQ(0u, HotspotSupportTestAccessor::registry().size());
+    EXPECT_EQ(1u, HotspotSupportTestAccessor::registry().size());
     EXPECT_FALSE(resolve(frame));
+    EXPECT_EQ(add_failed, Counters::getCounter(KLASS_REGISTRY_ADD_FAILED));
+}
+
+// A rejected call with an exception pending leaves the class as it was: no
+// mark is left behind, so its frames still resolve.
+TEST_F(HotspotLazyResolveTest, RejectedRedefinitionWithPendingExceptionLeavesFramesResolvable) {
+    registerClass(_old_mirror);
+    ASGCT_CallFrame frame = sample();
+    _jvm.exception_pending = true;
+    redefine(false);
+    EXPECT_TRUE(_jvm.exception_pending);
+    EXPECT_EQ(0, _jvm.calls_with_exception_pending);
+    _jvm.exception_pending = false;
+    EXPECT_TRUE(resolvesToSpin(frame));
 }
 
 // Before lazy mode has started there are no lazy frames, so redefinitions
