@@ -13,6 +13,8 @@
 #include "mutex.h"
 #include "pidController.h"
 
+class ProfiledThread;
+
 // Manages GOT-patching for malloc interception across all loaded native libraries.
 class MallocHooker {
   private:
@@ -41,6 +43,7 @@ class MallocTracer : public Engine {
     static const int TARGET_SAMPLES_PER_WINDOW = 100;
 
     static volatile bool _running;
+    static NativeMemoryOutput _output;
     static PidController _pid;
 
     static u64 nextPoissonInterval();
@@ -53,6 +56,7 @@ class MallocTracer : public Engine {
     }
 
     Error start(Arguments& args);
+    Error check(Arguments& args) override;
     void stop();
 
     static inline bool running() {
@@ -65,9 +69,30 @@ class MallocTracer : public Engine {
 
     static void recordMalloc(void* address, size_t size, int tid);
 
-    // Entry point for the malloc hooks (mallocTracer.cpp): gates on the
-    // sampling decision before touching thread-local state.
+    // Entry point for malloc hooks. Thread-local and critical-section guards
+    // must be acquired before the shared sampling state is touched.
     static void maybeRecord(void* ret, size_t size);
+
+#ifdef UNIT_TEST
+    using AcquireCurrentTestHook = ProfiledThread* (*)();
+    using CriticalSectionTestHook = bool (*)(bool);
+    using ShouldSampleTestHook = bool (*)(size_t);
+    using JfrSinkTestHook = void (*)(void*, size_t, int, MallocEvent*);
+    using UsdtActiveTestHook = bool (*)();
+    using UsdtEmitTestHook = void (*)(void*, uint64_t, uint64_t);
+    using StageTestHook = void (*)(const char*);
+
+    static void setTestHooks(AcquireCurrentTestHook acquire,
+                             CriticalSectionTestHook critical_section,
+                             ShouldSampleTestHook should_sample,
+                             JfrSinkTestHook jfr_sink,
+                             UsdtActiveTestHook usdt_active,
+                             UsdtEmitTestHook usdt_emit,
+                             StageTestHook stage);
+    static void resetTestHooks();
+    static void configureForTest(NativeMemoryOutput output, u64 interval,
+                                 bool running);
+#endif
 };
 
 #endif // _MALLOCTRACER_H

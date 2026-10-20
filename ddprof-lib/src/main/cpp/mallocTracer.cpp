@@ -14,6 +14,7 @@
 #include "guards.h"
 #include "libraries.h"
 #include "mallocTracer.h"
+#include "nativeAllocationUsdt.h"
 #include "os.h"
 #include "pidController.h"
 #include "profiler.h"
@@ -87,6 +88,7 @@ u64 MallocTracer::_configured_interval;
 volatile u64 MallocTracer::_sample_count;
 volatile u64 MallocTracer::_last_config_update_ts;
 volatile bool MallocTracer::_running = false;
+NativeMemoryOutput MallocTracer::_output = NATIVE_MEMORY_JFR;
 PidController MallocTracer::_pid(MallocTracer::TARGET_SAMPLES_PER_WINDOW,
     31, 511, 3, MallocTracer::CONFIG_UPDATE_CHECK_PERIOD_SECS, 15);
 
@@ -101,6 +103,20 @@ static u64 _xo_state[2];
 static pthread_t _current_thread;
 static volatile bool _nested_malloc = false;
 static volatile bool _nested_posix_memalign = false;
+
+#ifdef UNIT_TEST
+static MallocTracer::AcquireCurrentTestHook _test_acquire_current;
+static MallocTracer::CriticalSectionTestHook _test_critical_section;
+static MallocTracer::ShouldSampleTestHook _test_should_sample;
+static MallocTracer::JfrSinkTestHook _test_jfr_sink;
+static MallocTracer::UsdtActiveTestHook _test_usdt_active;
+static MallocTracer::UsdtEmitTestHook _test_usdt_emit;
+static MallocTracer::StageTestHook _test_stage;
+
+static inline void testStage(const char* stage) {
+    if (_test_stage != NULL) _test_stage(stage);
+}
+#endif
 
 // Test if calloc() implementation calls malloc()
 static void* nested_malloc_hook(size_t size) {
@@ -313,15 +329,33 @@ void MallocTracer::maybeRecord(void* ret, size_t size) {
     if (running() && ret && size) {
         // Even we are not in a signal handler, we cannot malloc or
         // we may get into indefinite loop
+#ifdef UNIT_TEST
+        ProfiledThread* prof_thread = _test_acquire_current == NULL
+            ? ProfiledThread::acquireCurrent() : _test_acquire_current();
+        testStage("acquire");
+#else
         ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
+#endif
         if (prof_thread == nullptr) {
             Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
             return;
         }
         CriticalSection cs(prof_thread);
+#ifdef UNIT_TEST
+        bool entered = _test_critical_section == NULL
+            ? cs.entered() : _test_critical_section(cs.entered());
+        testStage("critical-section");
+        if (entered) {
+            bool sampled = _test_should_sample == NULL
+                ? shouldSample(size) : _test_should_sample(size);
+            testStage("sampling");
+            if (sampled) recordMalloc(ret, size, prof_thread->tid());
+        }
+#else
         if (cs.entered() && shouldSample(size)) {
             recordMalloc(ret, size, prof_thread->tid());
         }
+#endif
     }
 }
 
@@ -347,18 +381,53 @@ void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
     SAMPLER_PERF_PROBE(SP_NATIVEMEM);
 
     u64 current_interval = __atomic_load_n(&_interval, __ATOMIC_ACQUIRE);
-    MallocEvent event;
-    event._start_time = TSC::ticks();
-    event._address = (uintptr_t)address;
-    event._size = size;
-    // _interval == 0 means sample every allocation; weight is 1.0.
-    if (size == 0 || current_interval <= 1) {
-        event._weight = 1.0f;
-    } else {
-        event._weight = (float)(1.0 / (1.0 - exp(-(double)size / (double)current_interval)));
+    if (_output != NATIVE_MEMORY_USDT) {
+        MallocEvent event;
+        event._start_time = TSC::ticks();
+        event._address = (uintptr_t)address;
+        event._size = size;
+        // _interval == 0 means sample every allocation; weight is 1.0.
+        if (size == 0 || current_interval <= 1) {
+            event._weight = 1.0f;
+        } else {
+            event._weight = (float)(1.0 / (1.0 - exp(-(double)size / (double)current_interval)));
+        }
+
+#ifdef UNIT_TEST
+        testStage("jfr");
+        if (_test_jfr_sink != NULL) {
+            _test_jfr_sink(address, size, tid, &event);
+        } else {
+            Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event);
+        }
+#else
+        Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event);
+#endif
     }
 
-    Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event);
+    bool usdt_active = false;
+    if (_output != NATIVE_MEMORY_JFR && size <= (size_t)INT64_MAX) {
+#ifdef UNIT_TEST
+        usdt_active = _test_usdt_active == NULL
+            ? isNativeAllocationUsdtEnabled() : _test_usdt_active();
+#else
+        usdt_active = isNativeAllocationUsdtEnabled();
+#endif
+    }
+    if (usdt_active) {
+        uint64_t weighted_bytes = nativeAllocationUsdtWeight(size, current_interval);
+#ifdef UNIT_TEST
+        testStage("usdt");
+        if (_test_usdt_emit != NULL) {
+            _test_usdt_emit(address, (uint64_t)size, weighted_bytes);
+        } else {
+            emitNativeAllocationUsdt(address, (uint64_t)size, weighted_bytes);
+        }
+#else
+        emitNativeAllocationUsdt(address, (uint64_t)size,
+                                 weighted_bytes);
+#endif
+    }
 
     u64 current_samples = __atomic_add_fetch(&_sample_count, 1, __ATOMIC_RELAXED);
     if ((current_samples % TARGET_SAMPLES_PER_WINDOW) == 0) {
@@ -375,9 +444,13 @@ void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
             }
         }
     }
+#ifdef UNIT_TEST
+    testStage("accounting");
+#endif
 }
 
 Error MallocTracer::start(Arguments& args) {
+    _output = args._nativemem_output;
     _configured_interval = args._nativemem > 0 ? args._nativemem : 0;
     __atomic_store_n(&_interval, _configured_interval, __ATOMIC_RELEASE);
     __atomic_store_n(&_bytes_until_sample,
@@ -403,8 +476,54 @@ Error MallocTracer::start(Arguments& args) {
     return Error::OK;
 }
 
+Error MallocTracer::check(Arguments& args) {
+    if (args._nativemem_output_set && args._nativemem < 0) {
+        return Error("nativememoutput requires nativemem");
+    }
+#if !defined(__linux__)
+    if (args._nativemem_output != NATIVE_MEMORY_JFR) {
+        return Error("nativememoutput=usdt and both are supported only on Linux");
+    }
+#endif
+    return Error::OK;
+}
+
 void MallocTracer::stop() {
     // Ideally, we should reset original malloc entries, but it's not currently safe
     // in the view of library unloading. Consider using dl_iterate_phdr.
     __atomic_store_n(&_running, false, __ATOMIC_RELEASE);
 }
+
+#ifdef UNIT_TEST
+void MallocTracer::setTestHooks(AcquireCurrentTestHook acquire,
+                                CriticalSectionTestHook critical_section,
+                                ShouldSampleTestHook should_sample,
+                                JfrSinkTestHook jfr_sink,
+                                UsdtActiveTestHook usdt_active,
+                                UsdtEmitTestHook usdt_emit,
+                                StageTestHook stage) {
+    _test_acquire_current = acquire;
+    _test_critical_section = critical_section;
+    _test_should_sample = should_sample;
+    _test_jfr_sink = jfr_sink;
+    _test_usdt_active = usdt_active;
+    _test_usdt_emit = usdt_emit;
+    _test_stage = stage;
+}
+
+void MallocTracer::resetTestHooks() {
+    setTestHooks(NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    configureForTest(NATIVE_MEMORY_JFR, 0, false);
+}
+
+void MallocTracer::configureForTest(NativeMemoryOutput output, u64 interval,
+                                    bool running) {
+    _output = output;
+    _configured_interval = interval;
+    __atomic_store_n(&_interval, interval, __ATOMIC_RELEASE);
+    __atomic_store_n(&_bytes_until_sample, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&_sample_count, (u64)0, __ATOMIC_RELEASE);
+    __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
+    __atomic_store_n(&_running, running, __ATOMIC_RELEASE);
+}
+#endif

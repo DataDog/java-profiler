@@ -112,6 +112,12 @@ enum Ring {
   RING_ANY = RING_KERNEL | RING_USER,
 };
 
+enum NativeMemoryOutput {
+  NATIVE_MEMORY_JFR,
+  NATIVE_MEMORY_USDT,
+  NATIVE_MEMORY_BOTH
+};
+
 enum Style {
   STYLE_SIMPLE = 1,
   STYLE_DOTTED = 2,
@@ -254,6 +260,8 @@ public:
   u8 _reference_chains_tuned_mask;
   // Explicit opt-in for the legacy whole-graph JVMTI FollowReferences walk.
   long _nativemem;
+  NativeMemoryOutput _nativemem_output;
+  bool _nativemem_output_set;
   int  _jstackdepth;
   int _safe_mode;
   StackWalkFeatures _features;
@@ -305,6 +313,8 @@ public:
         _reference_chains_first_pass_budget(DEFAULT_REFERENCE_CHAINS_FIRST_PASS_BUDGET),
         _reference_chains_tuned_mask(0),
         _nativemem(-1),
+        _nativemem_output(NATIVE_MEMORY_JFR),
+        _nativemem_output_set(false),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
         _features{1, 1, 1, 1, 1, 1},
