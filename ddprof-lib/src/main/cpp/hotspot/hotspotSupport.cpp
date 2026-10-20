@@ -2032,8 +2032,9 @@ bool HotspotSupport::resolveLazily(ProfiledThread* prof_thread, VMMethod* vm_met
   // it is an old version replaced by a redefinition. containsMethod() reads
   // through SafeAccess: the pinned class stays alive, but a concurrent
   // redefinition can free its old methods array and Method*s.
-  if (!VMKlass::cast_raw(holder)->containsMethod(vm_method, idnum)) {
-    Counters::increment(METHOD_RESOLVE_LAZY_NOT_CURRENT);
+  bool not_scanned = false;
+  if (!VMKlass::cast_raw(holder)->containsMethod(vm_method, idnum, &not_scanned)) {
+    Counters::increment(not_scanned ? METHOD_RESOLVE_LAZY_CLASS_TOO_LARGE : METHOD_RESOLVE_LAZY_NOT_CURRENT);
   } else {
     // While the class is pinned its metadata stays allocated, except what a
     // concurrent redefinition frees; protectedWalk() covers that case, and

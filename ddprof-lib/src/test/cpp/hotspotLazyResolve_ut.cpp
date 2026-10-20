@@ -861,10 +861,10 @@ TEST_F(HotspotLazyResolveTest, FrameWithFreedMethodIsCountedUnreadable) {
     _cls.method.const_method = nullptr;
 
     const CounterId registry_outcomes[] = {METHOD_RESOLVE_LAZY_UNLOADED, METHOD_RESOLVE_LAZY_STALE,
-                                           METHOD_RESOLVE_LAZY_NOT_CURRENT, METHOD_RESOLVE_LAZY_REDEFINED,
-                                           METHOD_RESOLVE_LAZY_RESOLVED};
-    long long before[5];
-    for (int i = 0; i < 5; i++) {
+                                           METHOD_RESOLVE_LAZY_NOT_CURRENT, METHOD_RESOLVE_LAZY_CLASS_TOO_LARGE,
+                                           METHOD_RESOLVE_LAZY_REDEFINED, METHOD_RESOLVE_LAZY_RESOLVED};
+    long long before[6];
+    for (int i = 0; i < 6; i++) {
         before[i] = Counters::getCounter(registry_outcomes[i]);
     }
     long long unreadable = Counters::getCounter(METHOD_RESOLVE_LAZY_UNREADABLE);
@@ -872,7 +872,7 @@ TEST_F(HotspotLazyResolveTest, FrameWithFreedMethodIsCountedUnreadable) {
     EXPECT_FALSE(resolve(frame));
 
     EXPECT_EQ(unreadable + 1, Counters::getCounter(METHOD_RESOLVE_LAZY_UNREADABLE));
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         EXPECT_EQ(before[i], Counters::getCounter(registry_outcomes[i])) << "counter " << registry_outcomes[i];
     }
     _cls.method.const_method = &_cls.const_method;

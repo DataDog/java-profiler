@@ -185,6 +185,11 @@
    * VM metadata, once per method and tag per dump. */                        \
   X(METHOD_RESOLVE_LAZY_UNLOADED, "method_resolve_lazy_unloaded")             \
   X(METHOD_RESOLVE_LAZY_NOT_CURRENT, "method_resolve_lazy_not_current")       \
+  /* CLASS_TOO_LARGE: like NOT_CURRENT, but the Method* was not at its      \
+   * idnum's index and the class has too many methods to scan               \
+   * (VMKlass::MAX_METHODS_SCANNED), so it may well be current; serializes  \
+   * as "unknown". */                                                        \
+  X(METHOD_RESOLVE_LAZY_CLASS_TOO_LARGE, "method_resolve_lazy_class_too_large") \
   X(METHOD_RESOLVE_LAZY_RESOLVED, "method_resolve_lazy_resolved")             \
   /* STALE: the class now at the frame's holder address is a different load \
    * (its trace ID differs); serializes as "unknown".                        \

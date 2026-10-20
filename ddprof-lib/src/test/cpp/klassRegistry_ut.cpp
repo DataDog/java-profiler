@@ -433,7 +433,16 @@ TEST(VMKlassContainsMethodTest, ScanIsCappedForLargeClasses) {
         const void* m = &methods[count / 2];
         EXPECT_TRUE(vk->containsMethod(m, count / 2)) << count;
         bool scanned = count <= VMKlass::MAX_METHODS_SCANNED;
-        EXPECT_EQ(scanned, vk->containsMethod(m, 0)) << count;
-        EXPECT_EQ(scanned, vk->containsMethod(m, -1)) << count;
+        bool not_scanned = false;
+        EXPECT_EQ(scanned, vk->containsMethod(m, 0, &not_scanned)) << count;
+        EXPECT_EQ(!scanned, not_scanned) << count;
+        not_scanned = false;
+        EXPECT_EQ(scanned, vk->containsMethod(m, -1, &not_scanned)) << count;
+        EXPECT_EQ(!scanned, not_scanned) << count;
+        // A method found at its idnum, or absent from a scanned class, is not
+        // reported as unscanned.
+        not_scanned = false;
+        EXPECT_TRUE(vk->containsMethod(m, count / 2, &not_scanned)) << count;
+        EXPECT_FALSE(not_scanned) << count;
     }
 }

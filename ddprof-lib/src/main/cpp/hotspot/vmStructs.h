@@ -749,7 +749,7 @@ DECLARE(VMKlass)
     // method itself; methods added later (default-method overpasses merged in
     // at link time, redefinitions) can break that. Then only a class of at
     // most MAX_METHODS_SCANNED methods is scanned; for a larger one the
-    // method counts as not found.
+    // method counts as not found, and `*not_scanned` (if given) is set.
     //
     // Keeping the class alive does not keep this array alive: a redefinition
     // swaps in a new array at a safepoint and frees the old one at a later
@@ -757,7 +757,7 @@ DECLARE(VMKlass)
     // load goes through SafeAccess, and a fault reads as "not a member".
     static const int MAX_METHODS_SCANNED = 256;
 
-    bool containsMethod(const void* method, int idnum_hint) {
+    bool containsMethod(const void* method, int idnum_hint, bool* not_scanned = nullptr) {
         assert(_methods_offset >= 0);
         const char* methods = (const char*) SafeAccess::loadPtr((void**) at(_methods_offset), nullptr);
         if (methods == NULL) {
@@ -776,6 +776,9 @@ DECLARE(VMKlass)
             return true;
         }
         if (len > MAX_METHODS_SCANNED) {
+            if (not_scanned != nullptr) {
+                *not_scanned = true;
+            }
             return false;
         }
         for (int i = 0; i < len; i++) {
