@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright 2026, Datadog, Inc
 #
 # One-factor-at-a-time (OFAT) sweep across all four referencechains budget
 # knobs (budget, firstpassbudget, pausetarget, painbudget): for each knob,
@@ -136,32 +137,35 @@ parse_run() {
   # jfr print/summary require a ".jfr" extension - the repro app's periodic
   # dump targets ("<jfr>.snapshot" and "<jfr>.snapshot.<round>", see
   # ReferenceChainLeakDemo's own header comment on SNAPSHOT_SUFFIX) don't have
-  # one, so copy each under a .jfr name before handing it to
+  # one, so copy each under a distinct .jfr name before handing them to
   # refchains-jfr-metrics.py.
   #
-  # A drained chain event is written exactly once, into whichever snapshot file
-  # was current at its dump - so the final bare ".jfr.snapshot" holds only the
-  # chains drained after the last periodic dump, and reading it alone
-  # undercounts chain_count/abandoned_count (often to 0/-1). Aggregate every
-  # snapshot file of this run: counts summed, time-to-first-chain taken as the
-  # smallest non-negative value (the earliest chain observed anywhere).
+  # Every dump() finishes one chunk, so each snapshot file holds exactly one
+  # chunk whose own start is the previous dump - and the tracker re-stamps every
+  # cached chain into every dump. Per-file "chain time - chunk start" therefore
+  # collapses to ~one dump interval. Instead, all of this run's snapshots go to
+  # ONE refchains-jfr-metrics.py call, which sums the counts and measures
+  # time-to-first-chain against the ORIGINAL recording start
+  # (jdk.ActiveRecording). Resolution is one dump interval.
   local snapshot_base="${WORKDIR}/${label}.jfr.snapshot"
-  local chain_count=0 abandoned_count=0 time_to_first_chain_s=-1
-  local snap tmp_jfr per_stats per_count per_abandoned per_ttf
+  local chain_count abandoned_count time_to_first_chain_s
+  local jfr_stats="0 0 -1" snap n_snaps=0
+  local tmp_jfrs=()
   for snap in "${snapshot_base}" "${snapshot_base}".*; do
     [ -f "${snap}" ] || continue
-    tmp_jfr="${WORKDIR}/${label}.metrics.jfr"
-    cp "${snap}" "${tmp_jfr}"
-    per_stats=$(python3 "${HERE}/refchains-jfr-metrics.py" "${tmp_jfr}" 2>/dev/null || echo "0 0 -1")
-    read -r per_count per_abandoned per_ttf <<< "${per_stats}"
-    chain_count=$((chain_count + ${per_count:-0}))
-    abandoned_count=$((abandoned_count + ${per_abandoned:-0}))
-    if [ "${per_ttf:--1}" -ge 0 ] \
-        && { [ "${time_to_first_chain_s}" -lt 0 ] || [ "${per_ttf}" -lt "${time_to_first_chain_s}" ]; }; then
-      time_to_first_chain_s="${per_ttf}"
-    fi
-    rm -f "${tmp_jfr}"
+    n_snaps=$((n_snaps + 1))
+    tmp_jfrs+=("${WORKDIR}/${label}.metrics.${n_snaps}.jfr")
+    cp "${snap}" "${WORKDIR}/${label}.metrics.${n_snaps}.jfr"
   done
+  if [ "${n_snaps}" -gt 0 ]; then
+    # stderr is NOT discarded: a jfr/REFCHAINS_JAVA_HOME problem must be visible
+    # rather than silently recorded as "no chains" (parse_run runs under $(...),
+    # which captures stdout only, so the 13-field echo below stays clean).
+    jfr_stats=$(python3 "${HERE}/refchains-jfr-metrics.py" "${tmp_jfrs[@]}") \
+      || { echo "WARN: refchains-jfr-metrics failed for '${label}'; recording 0 0 -1" >&2; jfr_stats="0 0 -1"; }
+    rm -f "${tmp_jfrs[@]}"
+  fi
+  read -r chain_count abandoned_count time_to_first_chain_s <<< "${jfr_stats:-0 0 -1}"
 
   echo "${entries_per_sec:-0} ${avg_round_ms:-0} ${max_round_ms:-0} ${heap_growth_mb:-0} ${stw_count} ${stw_total} ${stw_avg} ${stw_max} ${peak_rss_kb} ${wall_seconds:-0} ${chain_count} ${abandoned_count} ${time_to_first_chain_s}"
 }

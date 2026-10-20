@@ -261,7 +261,8 @@ public final class LeakTagCorrelationScenario {
       noiseTid = handoff.tid;
       if (noiseRepresentative == null || noiseTid == 0) {
         throw new IllegalStateException("noise thread never published its representative/tid"
-            + " within 5s (representative=" + noiseRepresentative + ", tid=" + noiseTid + ")");
+            + " within 5s (representative=" + (noiseRepresentative == null ? "null" : "present")
+            + ", tid=" + noiseTid + ")");
       }
       ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
           NOISE_KLASS_ID, noiseRepresentative);

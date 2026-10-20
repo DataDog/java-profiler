@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright 2026, Datadog, Inc
 #
 # Runs the standalone reference-chains repro app (ddprof-stresstest/src/repro)
 # with -agentpath and a set of referencechains sub-options known to actually

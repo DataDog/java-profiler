@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright 2026, Datadog, Inc
 """Renders sweep-refchains-all.sh's combined (knob,param_value,<metrics>) CSV
 into a single self-contained HTML report: one tab per knob, one Chart.js line
 chart per metric within each tab. Chart.js is vendored under utils/vendor and

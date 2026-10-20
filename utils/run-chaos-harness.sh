@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright 2026, Datadog, Inc
 #
 # Standalone chaos-harness runner. Builds/locates the ddprof jar, patches a
 # dd-java-agent build with it, and runs the long-running chaos harness

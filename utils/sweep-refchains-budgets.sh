@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright 2026, Datadog, Inc
 #
 # Sweeps referencechains=... budget-related sub-options (budget,
 # firstpassbudget, pausetarget, painbudget) across a matrix of values and

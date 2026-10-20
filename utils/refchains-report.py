@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright 2026, Datadog, Inc
 """Renders sweep-refchains-budgets.sh's CSV into a self-contained HTML report
 with one line chart per metric (param value on x, metric on y). No external
 JS/CSS dependencies - everything (SVG chart bodies, tooltip behavior) is

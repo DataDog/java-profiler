@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright 2026, Datadog, Inc
 #
 # Runs the reference-chains repro app (run-refchains-repro.sh) twice, back to
 # back, over an identical bounded window - once with referencechains=true and
@@ -11,6 +12,10 @@
 # Prints a markdown comparison table plus explicit answers to those three
 # questions, and saves the same content as report.md in the run's temp
 # working directory alongside the raw stdout/safepoint logs.
+#
+# If either variant exits non-zero or prints no "[metrics]" line, no
+# comparison is made: report.md is written as an INVALID report naming the
+# failed variant(s) and the script exits 1.
 #
 # Usage: compare-refchains-repro.sh [duration-seconds]
 #
@@ -34,6 +39,10 @@ echo "JDK: ${JDK_DESC}"
 echo "GC: ${GC_DESC}"
 echo "Working directory: ${WORKDIR}"
 
+# Space-prefixed list of "<label>(exit=<rc>)" / "<label>(no-metrics)" entries,
+# appended by run_variant (runs in this shell, so the assignment persists).
+FAILED_VARIANTS=""
+
 run_variant() {
   local label="$1" enabled="$2" jfr="${WORKDIR}/${1}.jfr"
   echo
@@ -53,12 +62,34 @@ run_variant() {
     fi
     sleep 1
   done
-  wait "${pid}" || echo "WARN: variant '${label}' exited non-zero"
+  local rc=0
+  wait "${pid}" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "FAIL: variant '${label}' exited with status ${rc} (log: ${WORKDIR}/${label}.stdout.log)" >&2
+    FAILED_VARIANTS="${FAILED_VARIANTS} ${label}(exit=${rc})"
+  elif ! grep -q '^\[metrics\]' "${WORKDIR}/${label}.stdout.log"; then
+    echo "FAIL: variant '${label}' printed no [metrics] line (log: ${WORKDIR}/${label}.stdout.log)" >&2
+    FAILED_VARIANTS="${FAILED_VARIANTS} ${label}(no-metrics)"
+  fi
   echo "${peak_rss_kb}" > "${WORKDIR}/${label}.peak_rss_kb"
 }
 
 run_variant "on" "true"
 run_variant "off" "false"
+
+# A failed variant's metrics would be parsed as zeros below and still produce
+# definitive-looking answers - abort instead (checked here at top level, not in
+# parse_variant, which runs inside $(...) where exit would not stop the script).
+if [ -n "${FAILED_VARIANTS}" ]; then
+  REPORT="${WORKDIR}/report.md"
+  {
+    echo "# reference-chains overhead comparison: INVALID"
+    echo
+    echo "Failed variant(s):${FAILED_VARIANTS}. No comparison was made - see the raw logs in \`${WORKDIR}\`."
+  } > "${REPORT}"
+  echo "FAIL: comparison aborted - failed variant(s):${FAILED_VARIANTS}; report: ${REPORT}; logs: ${WORKDIR}" >&2
+  exit 1
+fi
 
 # Parses one variant's logs and echoes a single space-separated line of
 # metrics (entriesPerSec avgRoundMs maxRoundMs heapGrowthMb stwCount stwTotalSec
