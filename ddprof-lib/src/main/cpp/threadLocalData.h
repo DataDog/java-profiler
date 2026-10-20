@@ -200,6 +200,9 @@ public:
     u32 recording_epoch;
     u32 misc_flags;
     u64 park_block_token;
+    u64 task_block_start_ticks;
+    u64 task_block_token;
+    Context task_block_context;
     int filter_slot_id;
     uint8_t init_window;
     int signal_depth;
@@ -214,7 +217,8 @@ public:
       __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED),
       _cpu_epoch, _wall_epoch, _call_trace_id, _recording_epoch,
       __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED),
-      _park_block_token, _filter_slot_id, _init_window,
+      _park_block_token, _task_block_start_ticks, _task_block_token,
+      _task_block_context, _filter_slot_id, _init_window,
       __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED),
       _in_critical_section, _otel_ctx_initialized, _otel_local_root_span_id
     };
