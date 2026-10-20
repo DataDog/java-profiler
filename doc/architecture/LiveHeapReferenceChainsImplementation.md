@@ -183,10 +183,14 @@ These values are tuning inputs. They do not state guaranteed overhead.
 
 ## Configuration
 
+Reference-chain collection requires the allocation engine and generation tracking. Enable them in
+the same command:
+
 ```text
-referencechains=true:hops=N:budget=N:ttl=N:framecap=N:pausetarget=N:painbudget=N:firstpassbudget=N
+generations=true,referencechains=true:hops=N:budget=N:ttl=N:framecap=N:pausetarget=N:painbudget=N:firstpassbudget=N
 ```
 
+- `generations=true` activates the allocation engine and supplies leak candidates.
 - `hops` limits chain depth.
 - `budget` supplies the base edge-admission budget.
 - `ttl` sets search lifetime in milliseconds. A value at or below zero disables this time check.
