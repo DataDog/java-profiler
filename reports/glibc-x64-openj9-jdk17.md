@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk17
 
 ## glibc-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-10-20 06:11:48 EDT
+**Date:** 2026-10-20 06:42:07 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 517 |
-| Sample Rate | 8.62/sec |
-| Health Score | 539% |
+| CPU Samples | 462 |
+| Sample Rate | 7.70/sec |
+| Health Score | 481% |
 | Threads | 8 |
-| Allocations | 369 |
+| Allocations | 345 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 558 |
-| Sample Rate | 9.30/sec |
-| Health Score | 581% |
-| Threads | 8 |
-| Allocations | 518 |
+| CPU Samples | 700 |
+| Sample Rate | 11.67/sec |
+| Health Score | 729% |
+| Threads | 10 |
+| Allocations | 437 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1792490654 32
-1792490659 32
-1792490664 32
-1792490669 32
-1792490674 32
-1792490679 32
-1792490684 32
-1792490689 32
-1792490694 32
-1792490699 32
-1792490704 32
-1792490709 32
-1792490714 32
-1792490719 32
-1792490724 32
-1792490729 32
-1792490734 32
-1792490739 32
-1792490744 32
-1792490749 32
+1792492592 32
+1792492597 32
+1792492602 32
+1792492607 32
+1792492612 32
+1792492617 32
+1792492622 32
+1792492627 32
+1792492632 32
+1792492637 32
+1792492642 32
+1792492647 32
+1792492652 32
+1792492657 32
+1792492662 32
+1792492667 32
+1792492672 32
+1792492677 32
+1792492682 32
+1792492687 32
 ```
 </details>
 
