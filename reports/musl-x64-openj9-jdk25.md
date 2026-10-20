@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk25
 
 ## musl-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-10-20 10:08:05 EDT
+**Date:** 2026-10-20 10:11:05 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 459 |
-| Sample Rate | 7.65/sec |
-| Health Score | 478% |
+| CPU Samples | 567 |
+| Sample Rate | 9.45/sec |
+| Health Score | 591% |
 | Threads | 8 |
-| Allocations | 401 |
+| Allocations | 403 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 632 |
-| Sample Rate | 10.53/sec |
-| Health Score | 658% |
+| CPU Samples | 744 |
+| Sample Rate | 12.40/sec |
+| Health Score | 775% |
 | Threads | 10 |
-| Allocations | 522 |
+| Allocations | 520 |
 
 <details>
-<summary>CPU Timeline (4 unique values: 24-29 cores)</summary>
+<summary>CPU Timeline (2 unique values: 27-29 cores)</summary>
 
 ```
-1792504976 27
-1792504981 27
-1792504986 27
-1792504991 27
-1792504996 27
-1792505001 27
-1792505006 27
-1792505011 25
-1792505016 25
-1792505021 27
-1792505026 27
-1792505031 24
-1792505036 24
-1792505041 24
-1792505046 24
-1792505051 24
-1792505057 24
-1792505062 24
-1792505067 24
-1792505072 29
+1792504995 27
+1792505000 27
+1792505005 29
+1792505010 29
+1792505015 29
+1792505020 29
+1792505025 29
+1792505030 29
+1792505035 29
+1792505040 29
+1792505045 29
+1792505050 29
+1792505055 29
+1792505060 29
+1792505065 29
+1792505070 29
+1792505075 29
+1792505080 29
+1792505085 29
+1792505090 29
 ```
 </details>
 
