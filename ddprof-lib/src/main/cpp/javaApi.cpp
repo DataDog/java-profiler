@@ -1181,11 +1181,8 @@ Java_com_datadoghq_profiler_JavaProfiler_resetKlassPopulationForTest0(
   // recordings (each Profiler::start() clearAll() bumps the generation)
   // before this test's seeding, and no GC may land between start() and
   // the seeded selectLeakCandidates() call. After the wipe above there is
-  // no stale-namespace population data left, and
-  // classMapGenerationSetForTest() itself invalidates every tracking entry's
-  // cached_klass_id when the generation changes (the same thing
-  // cleanup_table()'s reset branch does), so adopting the current
-  // generation is safe.
+  // no stale-namespace population data left to protect, so adopting the
+  // current generation is safe.
   LivenessTracker::instance()->classMapGenerationSetForTest(
       Profiler::instance()->classMap()->generation());
 }
@@ -1242,48 +1239,21 @@ Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
   ReferenceChainTracker::instance()->finishLoopIterationSerialized(jvmti, env);
 }
 
-// Counts only the drained chains whose leaf hop (hops are stored leaf-first) is `leaf`'s class,
-// so a chain left cached by an earlier test in the same JVM cannot satisfy the caller. The class
-// id is resolved with the same GetClassSignature + normalizeClassSignature() + lookupClass()
-// sequence the chain collector uses (LivenessTracker::resolveKlassId()).
+// Drains and returns the number of reference-chain events queued by
+// pollReferenceChainTargets0() so far (the same queue Profiler::dump() drains in production
+// to write datadog.ReferenceChain JFR events) - lets a test assert a chain was actually
+// reconstructed without needing a real JFR dump.
 extern "C" DLLEXPORT jint JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCountForLeaf0(
-    JNIEnv *env, jclass unused, jobject leaf) {
+Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCount0(
+    JNIEnv *env, jclass unused) {
   ProfiledThread::initCurrentThreadSignalSafe();
   jvmtiEnv *jvmti = VM::jvmti();
-  if (leaf == nullptr || jvmti == nullptr) {
-    return 0;
-  }
-  u32 leaf_id = 0;
-  jclass clz = env->GetObjectClass(leaf);
-  if (clz != nullptr) {
-    char *sig = nullptr;
-    if (jvmti->GetClassSignature(clz, &sig, nullptr) == JVMTI_ERROR_NONE &&
-        sig != nullptr) {
-      const char *name = nullptr;
-      size_t name_len = 0;
-      if (ObjectSampler::normalizeClassSignature(sig, &name, &name_len)) {
-        int id = Profiler::instance()->lookupClass(name, name_len);
-        if (id > 0) {
-          leaf_id = (u32)id;
-        }
-      }
-      jvmti->Deallocate((unsigned char *)sig);
-    }
-    env->DeleteLocalRef(clz);
-  }
-  if (leaf_id == 0) {
+  if (jvmti == nullptr) {
     return 0;
   }
   std::vector<ReferenceChainEvent> events;
   ReferenceChainTracker::instance()->drainPendingChainEvents(&events);
-  jint count = 0;
-  for (const ReferenceChainEvent &event : events) {
-    if (!event._hops.empty() && event._hops[0].klass_id == leaf_id) {
-      count++;
-    }
-  }
-  return count;
+  return (jint)events.size();
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -1483,8 +1453,8 @@ Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
     JNIEnv *env, jclass unused) {}
 
 extern "C" DLLEXPORT jint JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCountForLeaf0(
-    JNIEnv *env, jclass unused, jobject leaf) {
+Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCount0(
+    JNIEnv *env, jclass unused) {
   return 0;
 }
 

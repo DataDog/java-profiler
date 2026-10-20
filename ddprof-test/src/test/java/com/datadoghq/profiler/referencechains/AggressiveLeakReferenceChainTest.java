@@ -6,8 +6,8 @@
 package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.ReferenceChainTestHooks;
 import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * seed {@code LivenessTracker}'s aggregate heap-floor-ring history and its max-heap-bytes cache
  * directly, so {@code secondsToOOM()}'s projection can be driven under
  * {@code OOM_URGENT_THRESHOLD_S} (referenceChains.h) deterministically, decoupled from this JVM's
- * real {@code -Xmx} and from real GC timing. {@code shouldRunPassForTest0()} then reads
+ * real {@code -Xmx} and from real GC timing. {@code shouldRunPassForTest0()} then evaluates
  * {@code ReferenceChainTracker::shouldRunPass()} - the search-restart gate {@code hasLeakSignal()}
  * feeds - directly, rather than running a real pass, so this class never depends on
  * {@code selectLeakCandidates()} ranking anything, a real JVMTI heap walk, or a JFR event.
@@ -58,7 +58,25 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
   private static void assumeDebugBuild() {
     assumeTrue(ReferenceChainAssertions.isDebugInstrumentedBuild(),
         "heapFloorRecordForTest0/setMaxHeapBytesForTest0/shouldRunPassForTest0 only exist in a "
-            + "-DDEBUG native build - debug/asan/tsan (javaApi.cpp's #ifdef DEBUG guard)");
+            + "-DDEBUG native build (debug/asan/tsan - javaApi.cpp's #ifdef DEBUG guard)");
+  }
+
+  /**
+   * Undoes this class's synthetic seeding so later tests in this shared, no-forkEvery JVM never
+   * see it. {@code resetKlassPopulationForTest0()} also zeroes LivenessTracker's heap-floor ring
+   * (head/fill - {@code klassPopulationResetForTest()}, livenessTracker.h), so
+   * {@code secondsToOOM()} reports "insufficient fill" until real GC samples build up again; it
+   * runs while heap-floor recording is still disabled so no real sample can interleave.
+   * {@code resetReferenceChainSearchForTest0()} then clears any urgency latch and spent one-shot
+   * entitlement ({@code _urgent_latched}/{@code _urgent_search_spent}) plus the search state the
+   * urgent bypass started - after the ring reset, so the BFS thread cannot re-latch from the
+   * stale projection. Recording is re-enabled last.
+   */
+  private static void restoreHeapFloorDefaults() {
+    ReferenceChainTestHooks.setMaxHeapBytesForTest0(-1);
+    ReferenceChainTestHooks.resetKlassPopulationForTest0();
+    ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
+    ReferenceChainTestHooks.setHeapFloorRecordingForTest0(true);
   }
 
   /**
@@ -120,12 +138,7 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
           "The passes that just ran must still have had zero per-klass candidates - the "
               + "aggregate urgent-OOM projection was the only possible trigger");
     } finally {
-      // Reset the ring while recording is still disabled so the restore below cannot
-      // let a real GC interleave a sample with the reset, and so the next test in this
-      // JVM does not inherit this test's seeded samples into its secondsToOOM().
-      ReferenceChainTestHooks.heapFloorResetForTest0();
-      ReferenceChainTestHooks.setMaxHeapBytesForTest0(-1);
-      ReferenceChainTestHooks.setHeapFloorRecordingForTest0(true);
+      restoreHeapFloorDefaults();
     }
   }
 
@@ -151,14 +164,20 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
       assertTrue(candidates == null || candidates.length == 0,
           "This test's own precondition: no per-klass candidate should exist either");
 
-      assertFalse(ReferenceChainTestHooks.shouldRunPassForTest0(),
+      // shouldRunPassForTest0() is NOT a pure predicate (see JavaProfiler's own javadoc): under the
+      // native engine lock it may account a finished search's pain, restart terminal search state,
+      // or spend the urgent one-shot entitlement. Reset the search right before it so any mutation
+      // lands on a fresh tracker (_search_started == false) instead of whatever search an earlier
+      // class in this shared JVM left behind. Only the search is reset here, not the population:
+      // resetKlassPopulationForTest0() also zeroes the heap-floor ring seeded above, which would
+      // turn this control into a trivial "insufficient fill" pass.
+      ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
+      boolean gateOpen = ReferenceChainTestHooks.shouldRunPassForTest0();
+      assertFalse(gateOpen,
           "Expected the search-restart gate to stay closed: no heap growth and no per-klass "
               + "candidate give hasLeakSignal() nothing to trust");
     } finally {
-      // Same order as the seeding test above: ring reset first, still disabled.
-      ReferenceChainTestHooks.heapFloorResetForTest0();
-      ReferenceChainTestHooks.setMaxHeapBytesForTest0(-1);
-      ReferenceChainTestHooks.setHeapFloorRecordingForTest0(true);
+      restoreHeapFloorDefaults();
     }
   }
 

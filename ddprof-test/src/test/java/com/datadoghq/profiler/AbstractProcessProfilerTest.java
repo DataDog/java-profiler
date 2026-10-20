@@ -60,8 +60,10 @@ public abstract class AbstractProcessProfilerTest {
 
     /**
      * Same as the 6-arg overload above, but with a caller-supplied wait timeout instead of the
-     * default 10 seconds, for child scenarios that run substantially longer than an attach/init
-     * check.
+     * hardcoded 10 seconds - needed by scenarios that run substantially longer than a plain
+     * attach/init check, e.g. {@code ExternalProcessReferenceChainTest}'s population-growth loop
+     * (up to 25 rounds plus a grace period, ~20s+ observed in-process, plus a whole separate
+     * JVM's own startup/classloading cost on top).
      */
     protected final LaunchResult launch(String target, List<String> jvmArgs, String commands, Map<String, String> env, long timeoutSeconds, Function<String, LineConsumerResult> onStdoutLine, Function<String, LineConsumerResult> onStderrLine) throws Exception {
         String javaHome = System.getenv("JAVA_TEST_HOME");

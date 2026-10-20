@@ -238,6 +238,8 @@ protected:
 // same DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR to both sides (ddprof-lib and
 // ddprof-test build.gradle.kts) and deletes the file before this gtest runs;
 // the OS temp dir is only a fallback for running the binary by hand.
+// The file is consume-once: ProducesValidStandaloneJfrWithChainEvent unlinks it before
+// writing and the Java test deletes it after reading.
 static std::string chainRoundtripJfrPath() {
     const char *configured = getenv("DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR");
     if (configured != nullptr && *configured != 0) {
@@ -280,6 +282,10 @@ static u32 decodeVar32(const char *data, int *off) {
 }
 
 TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent) {
+    // Drop any fixture left by an earlier (possibly different-revision) run before any ASSERT
+    // below can bail out, so a failed run never leaves a stale file for the Java parser test
+    // (ReferenceChainJfrParserTest) to validate. ENOENT is expected and ignored.
+    unlink(chainRoundtripJfrPath().c_str());
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     // Skip OS/CPU info, JVM info, system properties and native library
@@ -321,9 +327,9 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     // serializes into the T_CLASS checkpoint - this is the exact API
     // Profiler::lookupClass() already-existing tests use (e.g.
     // referenceChains_ut.cpp's ReconstructsChainForSyntheticGraph).
-    // The constants feed both the lookup and the .expected sidecar below, so
-    // the companion Java parser test reads the seeded values from a single
-    // source instead of duplicating them.
+    // The constants feed the lookup below; the companion Java parser test
+    // (ReferenceChainJfrParserTest) hardcodes the same values, so a change to
+    // the seeding must update both sides - a deliberate two-module diff.
     static constexpr const char *kLeafClass = "com/test/ChainLeaf";
     static constexpr const char *kMiddleClass = "com/test/ChainMiddle";
     static constexpr const char *kRootClass = "com/test/ChainRoot";
@@ -394,28 +400,9 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
         // same finalization every real recording chunk goes through.
     }
 
-    // The values this test seeds, written next to the recording: the companion
-    // Java parser test (ReferenceChainJfrParserTest) asserts against this
-    // sidecar instead of hard-coding them, so a change to the seeding shows
-    // up as a deliberate gtest-only diff rather than an opaque assertion
-    // failure in the other module. The Java side maps the slashed internal
-    // names to JMC's dotted IMCType full names.
-    {
-        std::string expectedPath = path + ".expected";
-        FILE *expected = fopen(expectedPath.c_str(), "w");
-        ASSERT_NE(nullptr, expected) << "could not open " << expectedPath;
-        fprintf(expected, "chain.length=%d\n", 3);
-        fprintf(expected, "chain.0=%s\n", kLeafClass);
-        fprintf(expected, "chain.1=%s\n", kMiddleClass);
-        fprintf(expected, "chain.2=%s\n", kRootClass);
-        fprintf(expected, "edges.0=field\n");
-        fprintf(expected, "edges.1=element\n");
-        fprintf(expected, "edges.2=jni_global\n");
-        fprintf(expected, "targetTag=%lld\n", (long long)event._target_tag);
-        fprintf(expected, "depth=%u\n", event._depth);
-        fprintf(expected, "leakTagIncarnation=%u\n", event._leak_tag_incarnation);
-        fclose(expected);
-    }
+    // No .expected sidecar: the Java parser test hardcodes the seeded values
+    // (chain names, edges labels, targetTag=3, depth=2), so writing a sidecar
+    // nothing reads would only leave a stale file in the temp/build dir.
 
     FILE *f = fopen(path.c_str(), "rb");
     ASSERT_NE(nullptr, f) << "expected " << path << " to have been written";

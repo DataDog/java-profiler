@@ -6,15 +6,14 @@
 package com.datadoghq.profiler;
 
 /**
- * Test bridge for the package-private reference-chain/liveness test seams on {@link JavaProfiler},
- * so tests outside {@code com.datadoghq.profiler} can call them without the seams becoming public
- * API of the shipped jar. The native seams exist only in -DDEBUG builds (debug/asan/tsan); release
- * builds get no-op stubs.
+ * Test bridge for {@link JavaProfiler}'s package-private reference-chain / liveness test seams
+ * (same pattern as {@link ProfilerOwnedBlockHooks}). The seams mutate the process-wide profiler
+ * singleton's state, so they stay non-public in the shipped library; tests in other packages
+ * reach them only through this class. All are debug-native-build only, no-ops in release builds.
  */
 public final class ReferenceChainTestHooks {
     private ReferenceChainTestHooks() {}
 
-    /** The calling thread's profiler tid. Call it on the allocating (leaking) thread. */
     public static int getTid() {
         return JavaProfiler.getTid();
     }
@@ -55,8 +54,8 @@ public final class ReferenceChainTestHooks {
         JavaProfiler.pollReferenceChainTargets0();
     }
 
-    public static int drainReferenceChainEventCountForLeaf0(Object leaf) {
-        return JavaProfiler.drainReferenceChainEventCountForLeaf0(leaf);
+    public static int drainReferenceChainEventCount0() {
+        return JavaProfiler.drainReferenceChainEventCount0();
     }
 
     public static void resetReferenceChainSearchForTest0() {
@@ -110,10 +109,7 @@ public final class ReferenceChainTestHooks {
         return JavaProfiler.heapFloorRisingForTest0();
     }
 
-    /**
-     * Not a read-only query: under the native engine lock the gate may account a completed
-     * search's pain and restart/reset terminal search state.
-     */
+    /** Not a pure predicate - see {@link JavaProfiler}'s own {@code shouldRunPassForTest0()} doc. */
     public static boolean shouldRunPassForTest0() {
         return JavaProfiler.shouldRunPassForTest0();
     }

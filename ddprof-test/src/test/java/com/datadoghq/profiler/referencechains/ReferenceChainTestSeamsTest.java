@@ -6,56 +6,55 @@
 package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.JavaProfiler;
-import com.datadoghq.profiler.ReferenceChainTestHooks;
 import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * {@code ReferenceChainTrackingTest} exercises {@code LivenessTracker}'s probabilistic slope
- * detection and {@code ReferenceChainTracker}'s root-seeded BFS discovery together, which is
- * reliable only when both line up within the same retry window. This class decouples them via the
- * debug-build-only seams on {@link JavaProfiler} (javaApi.cpp), verifying each in isolation:
+ * PROF-15341 follow-up: {@code ReferenceChainTrackingTest} drives slope detection and chain
+ * reconstruction together and only passes when both happen to line up. This class decouples
+ * them via the debug-build-only test seams on {@code JavaProfiler}, reached via
+ * {@link ReferenceChainTestHooks} (backed by {@code LivenessTracker}'s existing
+ * {@code *ForTest} seams and {@code ReferenceChainTracker::tagAsRootForTest()}, see javaApi.cpp):
  * <ul>
- *   <li>{@link #shouldSelectSeededKlassAsLeakCandidateOnPositiveSlope()} - asserts a slope signal
- *   would fire from directly-seeded population history, with no allocation sampling involved.</li>
- *   <li>{@link #shouldReconstructChainForDirectlyTaggedRoot()} - asserts the BFS/chain-
- *   reconstruction/event-emission path fires for a directly-tagged, known live object, with no
- *   dependency on {@code selectLeakCandidates()} organically picking the right klass.</li>
+ *   <li>{@link #shouldSelectSeededKlassAsLeakCandidateOnPositiveSlope()} - slope signal from
+ *   directly-seeded population history, no allocation sampling involved.</li>
+ *   <li>{@link #shouldReconstructChainForDirectlyTaggedRoot()} - BFS/chain-reconstruction/
+ *   event-emission for a directly-tagged, known live object, without depending on
+ *   {@code selectLeakCandidates()} organically picking the right klass.</li>
  * </ul>
  *
- * <p>Only runs under -DDEBUG native builds (debug/asan/tsan) - the backing native methods are
- * no-op stubs in a release build (javaApi.cpp's {@code #ifdef DEBUG} guard).
+ * <p>Only runs under the debug native build ({@code testdebug}) - the backing native methods do
+ * not exist in a release build (see javaApi.cpp's {@code #ifdef DEBUG} guard), same pattern as
+ * {@code JVMAccessTest}.
  */
 public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
 
-  // Arbitrary klass ids, opaque to the population table except when a representative is set:
-  // that aliases the representative's real class id onto the synthetic id, so the chain test
-  // targets a unique nested class - a real entry with existing (noisy) history, e.g.
-  // java.lang.Object's, would outrank the seeded ramp.
+  // Arbitrary, test-chosen klass ids. setKlassPopulationRepresentativeForTest() aliases the
+  // representative's REAL class id onto the seeded synthetic id, so the chain test must target
+  // a class whose real population entry does not already exist - otherwise the real entry's
+  // genuine history outranks the seeded ramp.
   private static final int SLOPE_TEST_KLASS_ID = 987001;
   private static final int CHAIN_TEST_KLASS_ID = 987002;
 
-  /** Unique class for {@link #shouldReconstructChainForDirectlyTaggedRoot()}'s target. */
   private static final class ChainTarget {}
 
-  /**
-   * Durable root for {@link #shouldReconstructChainForDirectlyTaggedRoot()}'s target: the
-   * noise gate (suppressChainEvent) drops depth&lt;2 chains whose root is transient (stack/JNI
-   * local), so a static holder is required for the chain event to be emitted at all.
-   */
+  // The target must be reachable ONLY through this static holder (nulled in a finally so the
+  // next test in this no-forkEvery JVM does not inherit the reference). Binding it to a live
+  // local would make it a STACK_LOCAL root for the whole test body, and the noise gate
+  // (suppressChainEvent) drops depth<2 chains rooted in a transient stack slot - holding it
+  // statically (the canonical leak shape) is required for the chain event to be emitted at all.
   private static Object chainTargetHolder;
 
   @Override
   protected String getProfilerCommand() {
-    // generations=true: required for selectLeakCandidates() to return anything, real or seeded.
-    // referencechains=true: constructs the FrontierTable the seams insert into.
-    // framecap=2000000: the first pass's IterateOverReachableObjects admits every GC root in the
-    // JVM, and a small framecap fills with them before the tagged root is expanded, abandoning
-    // with FRONTIER_CAP and no chain event.
+    // framecap=2000000 (not 1024): the first BFS pass runs IterateOverReachableObjects, which
+    // admits every GC root in the whole JVM into the frontier; a small framecap fills with that
+    // ambient count before the tagged root gets to expandFrontier(), hitting FRONTIER_CAP with
+    // no chain event queued. Same value as ReferenceChainTrackingTest's success-path tests.
     return "generations=true,referencechains=true:hops=32:budget=500:ttl=60000:framecap=2000000";
   }
 
@@ -68,26 +67,21 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
     assumeTrue(ReferenceChainAssertions.isDebugInstrumentedBuild());
   }
 
-  /**
-   * Seeds twenty epochs of strictly increasing population counts for {@link #SLOPE_TEST_KLASS_ID}
-   * directly into LivenessTracker's ring buffer - bypassing real allocation sampling entirely -
-   * then asserts {@code selectLeakCandidates()} ranks it as a leak candidate. This is the "assert
-   * a slope signal would be generated" seam: it proves the ranking logic itself works without
-   * depending on the real JVMTI heap sampler ever surfacing this specific klass.
-   */
+  /** Seeds twenty epochs of strictly increasing population counts, then asserts
+   *  {@code selectLeakCandidates()} ranks the klass as a leak candidate - proving the ranking
+   *  logic works without the real JVMTI heap sampler ever surfacing this klass. */
   @Test
   public void shouldSelectSeededKlassAsLeakCandidateOnPositiveSlope() {
     assumeDebugBuild();
     ReferenceChainTestHooks.resetKlassPopulationForTest0();
     ReferenceChainTestHooks.setGcGenerationsEnabled0(true);
 
-    // KLASS_POPULATION_MIN_FILL_FOR_TREND = 10 only makes a trend eligible; selectLeakCandidates()
-    // also needs LEAK_TREND_HYSTERESIS_BASE = 5 consecutive qualifying epochs, so at least
-    // 10 + (5 - 1) = 14 increasing samples are needed; 20 gives headroom.
+    // selectLeakCandidates() requires consecutive_positive to reach LEAK_TREND_HYSTERESIS_BASE
+    // = 5 epochs on top of KLASS_POPULATION_MIN_FILL_FOR_TREND = 10, so at least 14 strictly
+    // increasing samples are needed; 20 gives headroom.
     for (int epoch = 1; epoch <= 20; epoch++) {
       ReferenceChainTestHooks.seedKlassPopulationSample0(SLOPE_TEST_KLASS_ID, epoch * 10, epoch);
-      // selectLeakCandidates() also requires a qualifying allocating thread. No tracked instance
-      // needs to match here, so a fixed synthetic tid suffices.
+      // Fixed synthetic tid suffices: this test only asserts the klass-level candidate list.
       ReferenceChainTestHooks.seedTidTrendSample0(SLOPE_TEST_KLASS_ID, 4242, epoch * 3, epoch);
     }
 
@@ -103,69 +97,66 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
         + " to be selected as a leak candidate after a seeded positive-slope population history");
   }
 
-  /**
-   * Tags a real, live, caller-chosen object directly as a reference-chain frontier root
-   * (bypassing ReferenceChainTracker's normal root-seeded discovery walk), wires it in as a
-   * seeded leak candidate's representative, then drives one BFS pass and one poll cycle
-   * synchronously. This is the "trigger the refchain on a known live heap sample" seam: it
-   * proves {@code runPass()}/{@code pollWatchedTargets()}/{@code buildChainEvent()} correctly
-   * produce a chain event whose leaf is this test's {@link ChainTarget}, decoupled from whether
-   * LivenessTracker's probabilistic sampler would have picked the same object on its own. Only
-   * chains with a {@code ChainTarget} leaf count, so a chain another test left cached in this
-   * shared JVM cannot satisfy the assertion.
-   */
+  /** Tags a live object directly as a frontier root (bypassing the normal root-seeded
+   *  discovery walk), wires it in as a seeded leak candidate's representative, then drives
+   *  pass/poll cycles synchronously - proving {@code runPass()}/{@code pollWatchedTargets()}/
+   *  {@code buildChainEvent()} produce a chain event for a target this test controls directly. */
   @Test
   public void shouldReconstructChainForDirectlyTaggedRoot() {
     assumeDebugBuild();
     ReferenceChainTestHooks.resetKlassPopulationForTest0();
     ReferenceChainTestHooks.setGcGenerationsEnabled0(true);
-    // Guards against inheriting a full/tiny FrontierTable from an earlier test in this
-    // no-forkEvery JVM (e.g. ReferenceChainTrackingTest's framecap=1 abandonment test), against
-    // which tagAsReferenceChainRoot0()'s insert() could fail.
+    // Guards against inheriting a FrontierTable an earlier test in this same, no-forkEvery
+    // JVM left permanently full/tiny - e.g. ReferenceChainTrackingTest's
+    // shouldReportAbandonedSearchOnTinyFrontierCap drives the shared table to framecap=1 and
+    // leaves it that way; without the reset, insert() below can fail.
     ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
 
-    // Referenced only through the static holder, never a local: a local would make the target a
-    // stack-local GC root for the whole test body, and the noise gate suppresses chains rooted in
-    // a transient stack slot.
     chainTargetHolder = new ChainTarget();
+    try {
+      // Representative BEFORE seeding: setting it registers the synthetic->real id alias, so
+      // the seeding below lands re-keyed under the target's real class id.
+      ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
+          CHAIN_TEST_KLASS_ID, chainTargetHolder);
 
-    // Representative before seeding: setting it registers the synthetic->real id alias, so the
-    // seeds land under the target's real class id.
-    ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(CHAIN_TEST_KLASS_ID, chainTargetHolder);
+      // See shouldSelectSeededKlassAsLeakCandidateOnPositiveSlope()'s comment above for why 20
+      // (not just KLASS_POPULATION_MIN_FILL_FOR_TREND = 10) is needed to clear the hysteresis gate.
+      for (int epoch = 1; epoch <= 20; epoch++) {
+        ReferenceChainTestHooks.seedKlassPopulationSample0(CHAIN_TEST_KLASS_ID, epoch * 10, epoch);
+        // Belt-and-braces: seed THIS thread's real tid so any path hinging on leak tagging
+        // of the target as a tracked instance finds a qualifying tid.
+        ReferenceChainTestHooks.seedTidTrendSample0(
+            CHAIN_TEST_KLASS_ID, ReferenceChainTestHooks.getTid(), epoch * 3, epoch);
+      }
 
-    // 20 epochs to clear the hysteresis gate - see the slope test above.
-    for (int epoch = 1; epoch <= 20; epoch++) {
-      ReferenceChainTestHooks.seedKlassPopulationSample0(CHAIN_TEST_KLASS_ID, epoch * 10, epoch);
-      // This thread's real tid, since the target was allocated here. Belt-and-braces: the
-      // chain's primary path is the directly-tagged root plus the seeded representative.
-      ReferenceChainTestHooks.seedTidTrendSample0(
-          CHAIN_TEST_KLASS_ID, ReferenceChainTestHooks.getTid(), epoch * 3, epoch);
-    }
-
-    // Poll before the direct tag: it admits the seeded klass as a watched candidate, and
-    // tagAsRootForTest's recordDiscoveredInstance only lands when a candidate slot already
-    // watches the klass.
-    ReferenceChainTestHooks.pollReferenceChainTargets0();
-
-    long tag = ReferenceChainTestHooks.tagAsReferenceChainRoot0(chainTargetHolder);
-    assertTrue(tag > 0, "Expected tagAsReferenceChainRoot0 to assign a valid frontier tag");
-
-    // One pass is not enough: admitStaticFieldRoots() sweeps loaded classes in budget-bounded
-    // chunks, and the target's durable root_kind is only discovered on the pass whose chunk
-    // covers ChainTarget's holder class. 40 passes give several full sweep laps of headroom
-    // (~10 passes for ~4000 classes). The engine lock (runPassSerialized/
-    // pollWatchedTargetsSerialized) keeps the BFS thread from racing these calls.
-    int eventCount = 0;
-    for (int pass = 0; pass < 40 && eventCount == 0; pass++) {
-      boolean sawPassRun = ReferenceChainTestHooks.runReferenceChainPass0();
-      assertTrue(sawPassRun || pass > 0,
-          "Expected the first runReferenceChainPass0 to run (reference chains enabled)");
+      // One poll BEFORE the direct tag: the first poll admits the seeded klass as a watched
+      // candidate, and tagAsRootForTest's recordDiscoveredInstance only lands when a candidate
+      // slot already watches the klass - the marker-tag path the original pre-poll tag rode is
+      // gone in the leak-tag redesign.
       ReferenceChainTestHooks.pollReferenceChainTargets0();
-      eventCount = ReferenceChainTestHooks.drainReferenceChainEventCountForLeaf0(chainTargetHolder);
+
+      long tag = ReferenceChainTestHooks.tagAsReferenceChainRoot0(chainTargetHolder);
+      assertTrue(tag > 0, "Expected tagAsReferenceChainRoot0 to assign a valid frontier tag");
+
+      // One pass is NOT enough: admitStaticFieldRoots() sweeps loaded classes in chunks and
+      // the first pass truncates before reaching this test's class - the durable static-field
+      // root discovery that upgrades the target's root_kind only happens on the pass whose
+      // chunk covers ChainTarget's holder class. 40 gives the full sweep lap (~10 passes for
+      // ~4000 loaded classes) several round trips of headroom; the engine lock keeps the BFS
+      // thread from racing these calls.
+      int eventCount = 0;
+      for (int pass = 0; pass < 40 && eventCount == 0; pass++) {
+        boolean sawPassRun = ReferenceChainTestHooks.runReferenceChainPass0();
+        assertTrue(sawPassRun || pass > 0,
+            "Expected the first runReferenceChainPass0 to run (reference chains enabled)");
+        ReferenceChainTestHooks.pollReferenceChainTargets0();
+        eventCount = ReferenceChainTestHooks.drainReferenceChainEventCount0();
+      }
+      assertTrue(eventCount > 0,
+          "Expected pollWatchedTargets() to have queued at least one chain event for the "
+              + "directly-tagged, seeded-representative target");
+    } finally {
+      chainTargetHolder = null; // shared-JVM hygiene
     }
-    assertTrue(eventCount > 0,
-        "Expected pollWatchedTargets() to have queued at least one chain event whose leaf is "
-            + "ChainTarget (the directly-tagged, seeded-representative target)");
-    chainTargetHolder = null; // shared-JVM hygiene
   }
 }

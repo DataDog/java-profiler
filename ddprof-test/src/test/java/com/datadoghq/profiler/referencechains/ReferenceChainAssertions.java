@@ -52,7 +52,7 @@ public final class ReferenceChainAssertions {
   }
 
   /**
-   * The {@code ddprof_test.config} value ProfilerTestPlugin.kt sets on every test&lt;config&gt; task.
+   * The {@code ddprof_test.config} value ProfilerTestPlugin.kt sets on every test<config> task.
    * Launchers forwarding it to a child JVM must fail loud when it is unset (a test run directly
    * from an IDE, outside the Gradle tasks) instead of concatenating the literal "null", which the
    * child would silently classify as a release build and take the unseeded, flakier path.
@@ -185,9 +185,11 @@ public final class ReferenceChainAssertions {
   }
 
   /**
-   * {@code targetClass}'s name in {@code IMCType.getFullName()} format: {@code Class.getName()}
-   * renders {@code byte[].class} as {@code "[B"}, but JMC renders it as {@code "byte[]"}, so a
-   * direct comparison never matches an array-typed leaf. Non-array names are unchanged.
+   * {@code targetClass}'s name in the format {@code IMCType.getFullName()} uses for array types:
+   * {@code Class.getName()} renders {@code byte[].class} as {@code "[B"} (JVM internal signature
+   * notation) but JMC's chunk parser renders the same class as {@code "byte[]"} (Java source
+   * notation), so comparing {@link Class#getName()} directly against {@code getFullName()} can
+   * never match an array-typed leaf class. Only affects array {@code targetClass} values.
    */
   private static String jmcStyleName(Class<?> targetClass) {
     int dimensions = 0;
@@ -230,12 +232,9 @@ public final class ReferenceChainAssertions {
 
   /**
    * Looks up a field's accessor by identifier rather than via {@code Attribute.attr(...)}: JMC's
-   * v1 chunk parser (internal.parser.v1.ValueReaders.ArrayReader#getContentType()) registers
-   * {@code UnitLookup.UNKNOWN} as the declared content type for every array field regardless of
-   * what its element reader resolves to, so an {@code F_ARRAY} field like {@code chain}
-   * (T_CLASS, F_CPOOL|F_ARRAY, jfrMetadata.cpp) cannot be bound via a compile-time-typed
-   * {@code Attribute}. Mirrors {@code ReferenceChainJfrParserTest}'s identical lookup, which
-   * already proves this resolves {@code chain}'s array elements to real {@link IMCType}s.
+   * v1 chunk parser registers {@code UnitLookup.UNKNOWN} as the declared content type for every
+   * array field regardless of what its element reader resolves to, so an {@code F_ARRAY} field
+   * like {@code chain} cannot be bound via a compile-time-typed {@code Attribute}.
    */
   public static IMemberAccessor<?, IItem> findAccessor(IType<IItem> type, String identifier) {
     for (IAccessorKey<?> key : type.getAccessorKeys().keySet()) {
