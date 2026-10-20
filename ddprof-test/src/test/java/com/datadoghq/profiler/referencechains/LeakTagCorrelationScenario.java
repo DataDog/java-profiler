@@ -184,6 +184,8 @@ public final class LeakTagCorrelationScenario {
   static final class ScanResult {
     ReferenceChainAssertions.ChainMatch payloadChain;
     boolean payloadChainInPool;
+    // ReferenceChain.leakTagIncarnation of payloadChain; -1 when the field is absent.
+    long payloadChainIncarnation = -1;
     int liveObjectMatchesForChainTag;
     final List<String> transientViolations = new ArrayList<>();
     final List<String> noiseChains = new ArrayList<>();
@@ -460,6 +462,8 @@ public final class LeakTagCorrelationScenario {
       IMemberAccessor<?, IItem> depthAccessor = ReferenceChainAssertions.findAccessor(type, "depth");
       IMemberAccessor<?, IItem> rootKindAccessor =
           ReferenceChainAssertions.findAccessor(type, "rootKind");
+      IMemberAccessor<?, IItem> incarnationAccessor =
+          ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
       for (IItem item : iterable) {
         Object chainValue = chainAccessor.getMember(item);
         if (!(chainValue instanceof Object[])) {
@@ -495,6 +499,20 @@ public final class LeakTagCorrelationScenario {
             result.payloadChain = new ReferenceChainAssertions.ChainMatch(
                 chain, targetTag, depth);
             result.payloadChainInPool = inPool;
+            // The (tag, incarnation) pair is the chain's identity. Fail loud on a
+            // missing or -1 stamp: tag-only matching is ambiguous across recycled tags.
+            if (incarnationAccessor == null) {
+              throw new IllegalStateException(
+                  "datadog.ReferenceChain events have no leakTagIncarnation accessor");
+            }
+            long chainIncarnation =
+                ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item));
+            if (chainIncarnation == -1) {
+              throw new IllegalStateException(
+                  "chain leakTagIncarnation is not a numeric value; "
+                      + "tag-only correlation is ambiguous across recycled tags");
+            }
+            result.payloadChainIncarnation = chainIncarnation;
           }
         }
       }
@@ -509,10 +527,27 @@ public final class LeakTagCorrelationScenario {
             ReferenceChainAssertions.findAccessor(type, "leakTag");
         IMemberAccessor<?, IItem> objectClassAccessor =
             ReferenceChainAssertions.findAccessor(type, "objectClass");
+        IMemberAccessor<?, IItem> incarnationAccessor =
+            ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
+        // Fail loud when either identity accessor is missing; a silent fallback
+        // would degrade to tag-only matching.
+        if (incarnationAccessor == null) {
+          throw new IllegalStateException(
+              "datadog.HeapLiveObject events have no leakTagIncarnation accessor");
+        }
+        if (leakTagAccessor == null) {
+          throw new IllegalStateException(
+              "datadog.HeapLiveObject events have no leakTag accessor");
+        }
         for (IItem item : iterable) {
-          long leakTag = leakTagAccessor != null
-              ? ReferenceChainAssertions.numberValue(leakTagAccessor.getMember(item)) : -1;
-          if (leakTag != result.payloadChain.targetTag) {
+          long leakTag =
+              ReferenceChainAssertions.numberValue(leakTagAccessor.getMember(item));
+          long incarnation =
+              ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item));
+          // Leak tags are recycled: match on (tag, incarnation), never tag alone.
+          if (incarnation == -1
+              || leakTag != result.payloadChain.targetTag
+              || incarnation != result.payloadChainIncarnation) {
             continue;
           }
           Object objectClass = objectClassAccessor != null

@@ -259,12 +259,14 @@ public final class ReferenceChainLeakDemo {
         double entriesPerSec = wallSeconds > 0 ? totalEntriesAdded / wallSeconds : 0;
         long heapGrowthMb = heapUsedMb() - startHeapUsedMb;
 
-        System.out.println("[metrics] wallSeconds=" + String.format("%.1f", wallSeconds)
+        // Locale.ROOT: a comma-decimal default locale would emit 0,450, which
+        // the parsing scripts' [0-9.]+ patterns silently read as zero.
+        System.out.println("[metrics] wallSeconds=" + String.format(java.util.Locale.ROOT, "%.1f", wallSeconds)
                 + " rounds=" + roundCount
                 + " entriesAdded=" + totalEntriesAdded
-                + " entriesPerSec=" + String.format("%.1f", entriesPerSec)
-                + " avgRoundMs=" + String.format("%.3f", avgRoundMs)
-                + " maxRoundMs=" + String.format("%.3f", maxRoundMs)
+                + " entriesPerSec=" + String.format(java.util.Locale.ROOT, "%.1f", entriesPerSec)
+                + " avgRoundMs=" + String.format(java.util.Locale.ROOT, "%.3f", avgRoundMs)
+                + " maxRoundMs=" + String.format(java.util.Locale.ROOT, "%.3f", maxRoundMs)
                 + " heapUsedMbStart=" + startHeapUsedMb
                 + " heapUsedMbEnd=" + heapUsedMb()
                 + " heapGrowthMb=" + heapGrowthMb);
