@@ -280,6 +280,8 @@ public:
         _jni_tbl.NewLocalRef = &newLocalRef;
         _jni_tbl.DeleteLocalRef = &deleteLocalRef;
         _jni_tbl.GetLongField = &getLongField;
+        _jni_tbl.ExceptionCheck = &exceptionCheck;
+        _jni_tbl.ExceptionClear = &exceptionClear;
         _jni_env.functions = &_jni_tbl;
         _jvmti_tbl.GetClassStatus = &getClassStatus;
         _jvmti_tbl.GetClassMethods = &getClassMethods;
@@ -307,6 +309,7 @@ public:
     int new_local_ref_calls = 0;
     int get_class_methods_calls = 0;
     bool fail_weak_refs = false;  // NewWeakGlobalRef fails, as when out of memory
+    bool exception_pending = false;  // set by a failed NewWeakGlobalRef, as JNI does
 
     jclass mirror(FakeObject& obj) { return reinterpret_cast<jclass>(&obj); }
 
@@ -329,6 +332,7 @@ private:
 
     static jweak JNICALL newWeakGlobalRef(JNIEnv*, jobject obj) {
         if (s_instance->fail_weak_refs) {
+            s_instance->exception_pending = true;  // OutOfMemoryError
             return nullptr;
         }
         FakeWeak* w = new FakeWeak{reinterpret_cast<FakeObject*>(s_instance->resolve(obj))};
@@ -336,6 +340,10 @@ private:
         return reinterpret_cast<jweak>(w);
     }
     static void JNICALL deleteWeakGlobalRef(JNIEnv*, jweak) {}
+    static jboolean JNICALL exceptionCheck(JNIEnv*) {
+        return s_instance->exception_pending ? JNI_TRUE : JNI_FALSE;
+    }
+    static void JNICALL exceptionClear(JNIEnv*) { s_instance->exception_pending = false; }
     static jboolean JNICALL isSameObject(JNIEnv*, jobject a, jobject b) {
         return s_instance->resolve(a) == s_instance->resolve(b) ? JNI_TRUE : JNI_FALSE;
     }
@@ -684,6 +692,9 @@ TEST_F(HotspotLazyResolveTest, UnmarkableRedefinitionRefusesAllLazyFrames) {
     _jvm.fail_weak_refs = true;
     redefine(false);
     _jvm.fail_weak_refs = false;
+    // The failed allocation's OutOfMemoryError must not reach the caller of
+    // RedefineClasses.
+    EXPECT_FALSE(_jvm.exception_pending);
     EXPECT_FALSE(resolve(frame));
 }
 

@@ -91,6 +91,18 @@ void KlassRegistry::publishCounters() {
   publishLocked();
 }
 
+// NewWeakGlobalRef raises an OutOfMemoryError when it fails. add() runs in the
+// redefinition hooks, on the thread that called RedefineClasses, which must
+// not see an exception it did not cause. JNI forbids calling NewWeakGlobalRef
+// with an exception pending, so one pending afterwards is its own.
+static jweak newWeakRef(JNIEnv* jni, jobject obj) {
+  jweak ref = jni->NewWeakGlobalRef(obj);
+  if (ref == nullptr && jni->ExceptionCheck()) {
+    jni->ExceptionClear();
+  }
+  return ref;
+}
+
 bool KlassRegistry::add(JNIEnv* jni, const void* klass, jclass mirror) {
   if (klass == nullptr || mirror == nullptr) {
     return false;
@@ -103,7 +115,7 @@ bool KlassRegistry::add(JNIEnv* jni, const void* klass, jclass mirror) {
       if (jni->IsSameObject(e->mirror, mirror)) {
         return true;
       }
-      jweak ref = jni->NewWeakGlobalRef(mirror);
+      jweak ref = newWeakRef(jni, mirror);
       if (ref == nullptr) {
         return false;
       }
@@ -120,7 +132,7 @@ bool KlassRegistry::add(JNIEnv* jni, const void* klass, jclass mirror) {
   if ((_size + 1) * 4 > _capacity * 3 && !rehash(jni)) {
     return false;
   }
-  jweak ref = jni->NewWeakGlobalRef(mirror);
+  jweak ref = newWeakRef(jni, mirror);
   if (ref == nullptr) {
     return false;
   }
