@@ -562,7 +562,7 @@ TEST_F(WallClockBlockTrackerTest, ContextEntryWithoutActiveBlockRunPreservesUnow
 
     u64 call_trace_id = 0, weight = 0;
     OSThreadState state = OSThreadState::UNKNOWN;
-    EXPECT_TRUE(block_slot->flushUnownedBlockedTail(call_trace_id, weight, state));
+    EXPECT_TRUE(block_slot->prepareUnownedBlockedTail(call_trace_id, weight, state));
     EXPECT_EQ(0xABCDULL, call_trace_id);
     EXPECT_EQ(2ULL, weight);
     EXPECT_EQ(OSThreadState::CONDVAR_WAIT, state);

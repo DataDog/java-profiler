@@ -679,9 +679,52 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
   _locks[lock_index].unlock();
 }
 
+void Profiler::recordUnownedBlockedTail(
+    int tid, WallClockBlockTracker::BlockState *slot, u64 weight) {
+  atomicIncRelaxed(_total_samples);
+
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    atomicIncRelaxed(_failures[-ticks_skipped]);
+    slot->discardUnownedBlockedTail();
+    return;
+  }
+
+  // Preparation leaves this reference visible to the liveness checker. Load it
+  // under the stripe as a slot reset may have discarded it since preparation.
+  u64 call_trace_id = slot->unowned_blocked_call_trace_id.load(std::memory_order_acquire);
+  OSThreadState state = slot->unowned_blocked_state.load(std::memory_order_acquire);
+  if (call_trace_id != 0 && state != OSThreadState::UNKNOWN) {
+    ExecutionEvent event;
+    event._thread_state = state;
+    event._execution_mode = ExecutionMode::UNKNOWN;
+    event._weight = weight;
+    _jfr.recordEvent(lock_index, tid, call_trace_id, BCI_WALL, &event);
+  }
+  slot->discardUnownedBlockedTail();
+  _locks[lock_index].unlock();
+}
+
 bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
-                            jint event_type, u64 call_trace_id, Event *event,
-                            u64 *recorded_call_trace_id) {
+                            jint event_type, u64 call_trace_id, Event *event) {
+  return recordSampleImpl<false>(ucontext, counter, tid, event_type,
+                                  call_trace_id, event, nullptr);
+}
+
+bool Profiler::recordWallSample(
+    void *ucontext, u64 counter, int tid, u64 call_trace_id,
+    ExecutionEvent *event, WallClockBlockTracker::BlockState *unowned_slot) {
+  return recordSampleImpl<true>(ucontext, counter, tid, BCI_WALL,
+                                 call_trace_id, event, unowned_slot);
+}
+
+template<bool cache_unowned_wall>
+bool Profiler::recordSampleImpl(
+    void *ucontext, u64 counter, int tid, jint event_type,
+    u64 call_trace_id, Event *event,
+    WallClockBlockTracker::BlockState *unowned_slot) {
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -744,8 +787,11 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
 #endif // COUNTERS
   }
   bool recorded = _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
-  if (recorded && recorded_call_trace_id != nullptr) {
-    *recorded_call_trace_id = call_trace_id;
+  if constexpr (cache_unowned_wall) {
+    if (recorded && call_trace_id != 0 && unowned_slot != nullptr) {
+      unowned_slot->recordUnownedBlockedSample(
+          call_trace_id, static_cast<ExecutionEvent *>(event)->_thread_state);
+    }
   }
 
   _locks[lock_index].unlock();

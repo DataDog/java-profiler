@@ -208,6 +208,11 @@ private:
   // that turns it into DICTIONARY_DRAIN_TIMEOUTS and a warning.
   void reportDrainTimeout(const char *what);
   void unlockAll();
+  // Compile the wall-only cache publication out of the CPU/other sample paths.
+  template<bool cache_unowned_wall>
+  bool recordSampleImpl(void *ucontext, u64 weight, int tid, jint event_type,
+                        u64 call_trace_id, Event *event,
+                        WallClockBlockTracker::BlockState *unowned_slot);
   bool beginTaskBlockRotation();
   void endTaskBlockRotation();
 
@@ -282,7 +287,7 @@ public:
 
     // Protects wall-clock unowned-block fallback tail traces (cached in
     // WallClockBlockTracker::BlockState) from being dropped by a chunk
-    // rotation before flushUnownedBlockedTail() emits them. The tracker lives
+    // rotation before recordUnownedBlockedTail() emits them. The tracker lives
     // in the Profiler singleton, so this is registered once rather than
     // per-recording.
     registerLivenessChecker([this](CallTraceIdSet& buffer) {
@@ -493,8 +498,16 @@ public:
                          ASGCT_CallFrame *frames, int lock_index,
                          bool skip_hook_prefix);
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
-                    u64 call_trace_id, Event *event,
-                    u64 *recorded_call_trace_id = nullptr);
+                    u64 call_trace_id, Event *event);
+  // Publishes a reusable unowned-block trace before releasing the writer stripe,
+  // so dump's lockAll() cannot retire it between insertion and publication.
+  bool recordWallSample(void *ucontext, u64 weight, int tid, u64 call_trace_id,
+                        ExecutionEvent *event,
+                        WallClockBlockTracker::BlockState *unowned_slot);
+  // Reads and releases the cached trace while holding a writer stripe. Failed
+  // acquisition drops the tail, matching recordDeferredSample's drop policy.
+  void recordUnownedBlockedTail(int tid, WallClockBlockTracker::BlockState *slot,
+                               u64 weight);
   // Delegated sample path: stack-walking is performed by the HotSpot JFR
   // RequestStackTrace extension (the JVM emits the stack trace into its own
   // JFR recording). We only emit the CPU/wall sample event with no

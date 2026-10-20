@@ -165,16 +165,23 @@ public:
             unowned_blocked_state.store(state, std::memory_order_relaxed);
             unowned_blocked_call_trace_id.store(call_trace_id, std::memory_order_release);
         }
-        inline bool flushUnownedBlockedTail(u64& call_trace_id, u64& weight,
+        // Leave the trace published until the deferred writer holds a profiler
+        // stripe. Removing it here would let a dump retire it before the write.
+        inline bool prepareUnownedBlockedTail(u64& call_trace_id, u64& weight,
                                             OSThreadState& state) {
-            call_trace_id = unowned_blocked_call_trace_id.exchange(0, std::memory_order_acq_rel);
+            call_trace_id = unowned_blocked_call_trace_id.load(std::memory_order_acquire);
             weight = unowned_blocked_pending_weight.exchange(0, std::memory_order_relaxed);
-            state = unowned_blocked_state.exchange(OSThreadState::UNKNOWN, std::memory_order_relaxed);
+            state = unowned_blocked_state.load(std::memory_order_acquire);
             unowned_blocked_decision_count.store(0, std::memory_order_relaxed);
             if (call_trace_id == 0 || weight == 0 || state == OSThreadState::UNKNOWN) {
+                discardUnownedBlockedTail();
                 return false;
             }
             return true;
+        }
+        inline void discardUnownedBlockedTail() {
+            unowned_blocked_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
+            unowned_blocked_call_trace_id.store(0, std::memory_order_release);
         }
         // identity_slot supplies the context-window state, which lives on
         // ThreadFilter::Slot. See ThreadFilter::Slot::rawContextWindowState().
@@ -329,7 +336,7 @@ public:
     bool hasActiveBlockRun(ThreadFilter::SlotID slot_id) const;
     // Liveness hook for CallTraceStorage::processTraces: a slot may cache a
     // call_trace_id for a still-blocked thread's weighted fallback tail
-    // (recordUnownedBlockedSample) well before flushUnownedBlockedTail() emits
+    // (recordUnownedBlockedSample) well before recordUnownedBlockedTail() emits
     // it. Without this, a chunk rotation racing that window drops the trace,
     // and the eventual deferred sample references an id with no constant-pool
     // entry in the chunk it lands in.

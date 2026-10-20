@@ -345,6 +345,21 @@ Java_com_datadoghq_profiler_JavaProfilerTestSupport_isThreadRegistryActiveForTes
   return Profiler::instance()->threadFilter()->registryActive();
 }
 
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfilerTestSupport_recordUnownedWallTailAcrossDumpForTest0(
+    JNIEnv *env, jclass unused, jthread thread, jstring snapshot,
+    jboolean before_publication, jboolean reset_before_tail) {
+#ifdef DEBUG
+  JniString path(env, snapshot);
+  return BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
+      thread, path.c_str(), path.length(), before_publication == JNI_TRUE,
+      reset_before_tail == JNI_TRUE)
+      ? JNI_TRUE : JNI_FALSE;
+#else
+  return JNI_FALSE;
+#endif
+}
+
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
     JNIEnv *env, jclass unused, jstring name, jstring value, jstring unit) {

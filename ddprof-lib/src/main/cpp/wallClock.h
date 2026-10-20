@@ -239,6 +239,13 @@ public:
     static std::atomic<bool> _force_start_failure_for_test;
   public:
 #endif
+#ifdef DEBUG
+    // Drives the real precheck/recording path with controlled OS-state inputs
+    // and an intervening JFR dump. Called synchronously from the JNI test hook.
+    static bool recordUnownedWallTailAcrossDumpForTest(
+        jthread thread, const char* path, int path_length, bool before_publication,
+        bool reset_before_tail);
+#endif
 };
 
 class WallClockASGCT : public BaseWallClock {
