@@ -88,23 +88,35 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   }
 
   /**
-   * Verifies that a thread which already owns a registry slot still receives ordinary per-signal
-   * sampling outside an explicitly owned block.
+   * Verifies that an unowned sleep after an owned block preserves sampling weight. The fallback
+   * combines suppressed observations into weighted events, so event count is not coverage.
    *
    * @throws Exception if the worker cannot complete
    */
   @RetryingTest(3)
-  public void unownedSleepAfterOwnedBlockUsesNormalSampling() throws Exception {
+  public void unownedSleepAfterOwnedBlockPreservesSampleWeight() throws Exception {
     assertTrue(
         runPreExistingUnownedSleepingWorker() != 0,
         "Expected the setup block to register the worker");
 
     stopProfiler();
 
-    long sampleCount = samplesForThread(PRE_EXISTING_THREAD_NAME);
+    long sampleCount = 0;
+    long totalWeight = 0;
+    for (JfrEvent event : verifyEvents("datadog.MethodSample", false)) {
+      if (PRE_EXISTING_THREAD_NAME.equals(event.getThreadName("eventThread"))) {
+        sampleCount++;
+        totalWeight += event.getLong(WEIGHT, 0);
+      }
+    }
     assertTrue(
-        sampleCount >= 10,
-        "Expected normal MethodSample volume for an unowned sleep, got: " + sampleCount);
+        totalWeight >= 10,
+        "Expected at least 10 represented observations for the unowned sleep, count="
+            + sampleCount + ", weight=" + totalWeight);
+    assertTrue(
+        totalWeight > sampleCount,
+        "Expected suppressed observations to be represented by weight, count="
+            + sampleCount + ", weight=" + totalWeight);
   }
 
   /**
