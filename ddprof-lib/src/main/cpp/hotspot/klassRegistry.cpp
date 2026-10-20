@@ -9,17 +9,11 @@
 
 #include <stdlib.h>
 
-static inline size_t slotFor(const void* klass, size_t capacity) {
-  // Klass* is at least 8-byte aligned; drop the always-zero bits before mixing.
-  uint64_t h = ((uintptr_t)klass >> 3) * 0x9E3779B97F4A7C15ULL;
-  return (size_t)(h >> 32) & (capacity - 1);
-}
-
 // Linear probing. Returns the slot holding `klass`, or the empty slot where it
 // would go. The table is never full (rehash() keeps the load factor <= 3/4),
 // so the probe always terminates.
 KlassRegistry::Entry* KlassRegistry::find(const void* klass) const {
-  size_t i = slotFor(klass, _capacity);
+  size_t i = klassSlot(klass, _capacity);
   while (_table[i].klass != nullptr && _table[i].klass != klass) {
     i = (i + 1) & (_capacity - 1);
   }
@@ -169,10 +163,12 @@ void KlassRegistry::endRedefinition(const void* klass, bool succeeded) {
     return;
   }
   // Clamped: the entry may have been replaced (a new class at this address)
-  // while the call was in progress, which resets the count.
-  if (e->redefinitions_in_progress > 0) {
-    e->redefinitions_in_progress--;
+  // while the call was in progress, which resets the count. Then the
+  // permanent mark is not applied either: the new class was not redefined.
+  if (e->redefinitions_in_progress == 0) {
+    return;
   }
+  e->redefinitions_in_progress--;
   if (succeeded) {
     e->redefined = true;
   }

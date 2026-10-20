@@ -1779,6 +1779,8 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
   // classes are inserted into the new-active by fillJavaMethodInfo during
   // writeStackTraces/writeMethods, and those would not appear in the snapshot —
   // standby() captures the pre-rotation state which writeClasses extends.
+  // One Lookup per dump: its raw frame cache holds this dump's answers (see
+  // Lookup::_raw_method_cache), which the next dump's pinned classes can change.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
   // CONSTANT pools: always non-empty, always emitted -> 5 sections.
   // writeThreads always emits: it inserts _tid unconditionally before checking.

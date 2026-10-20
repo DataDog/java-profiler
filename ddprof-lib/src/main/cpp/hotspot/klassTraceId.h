@@ -26,8 +26,9 @@
  * 17u/21u, after _archived_mirror_index on mainline, where it also depends on
  * the CDS Java heap build option), so instead of a per-version offset table
  * calibrate() makes the JVM create a few array klasses back to back and
- * accepts the one 8-byte-aligned offset within sizeof(Klass) at which all of
- * them hold distinct IDs no further apart than consecutive creation allows.
+ * looks for the one 8-byte-aligned offset within sizeof(Klass) at which all
+ * of them hold distinct IDs no further apart than consecutive creation
+ * allows, accepting it once two such attempts agree.
  * Builds without JFR, or a layout where no single offset qualifies, leave the
  * offset unknown, and fjmethodid=lazy does not run.
  */
@@ -38,9 +39,13 @@ public:
   // Array dimensions created by one calibration attempt: one probe klass per
   // dimension.
   static const int PROBE_COUNT = 6;
-  // Attempts calibrate() makes, each on PROBE_COUNT dimensions above the
-  // previous attempt's, so each probes klasses it has just created.
+  // Attempts each calibrate() call makes, each on PROBE_COUNT dimensions
+  // above the previous attempt's (of this call or an earlier one), so each
+  // probes klasses it has just created.
   static const int MAX_ATTEMPTS = 4;
+  // The JVM's limit on array dimensions (JVMS 4.4.1), which bounds the
+  // dimensions all calibrate() calls of the process can probe together.
+  static const int MAX_DIMENSIONS = 255;
   // How many trace IDs other threads may consume while the probes are
   // created, i.e. how far apart beyond PROBE_COUNT - 1 the probes' IDs may be.
   static const uint64_t ID_SLACK = 64;
@@ -54,10 +59,12 @@ public:
   static int findOffset(const void* const* klasses, int count, size_t klass_size);
 
   /**
-   * Creates the probe klasses through JNI and records the offset found.
-   * Once an offset is found, later calls return true without probing again;
-   * after a failure, the next call tries again on fresh dimensions. Returns
-   * true if an offset is known.
+   * Creates the probe klasses through JNI and records the offset that two
+   * attempts on different dimensions agree on. Once an offset is found, later calls return true without probing again;
+   * after a failure, the next call makes up to MAX_ATTEMPTS new attempts on
+   * fresh dimensions, until MAX_DIMENSIONS are used up. Returns true if an
+   * offset is known. Callers must be serialized: Profiler::start() calls it
+   * with _state_lock held.
    */
   static bool calibrate(JNIEnv* jni);
 

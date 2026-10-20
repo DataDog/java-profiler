@@ -623,6 +623,21 @@ TEST_F(HotspotLazyResolveTest, PartialModeFramesAreStoredUntagged) {
     EXPECT_EQ(static_cast<const void*>(_cls.vmMethod()), HotspotSupport::rawFrameMethod(frame.bci, frame.method));
 }
 
+// A raw frame is later looked up by its Method* with the bits above 2^48
+// masked off, so a Method* that uses them is stored as an unknown frame in
+// every mode instead of one that would resolve to another address.
+TEST_F(HotspotLazyResolveTest, RawFrameAboveTaggableAddressesIsStoredUnknown) {
+    const VMMethod* high = reinterpret_cast<const VMMethod*>((uintptr_t)1 << 52 | (uintptr_t)_cls.vmMethod());
+    for (bool lazy : {true, false}) {
+        JVMSupportTestAccessor::setLoadState(lazy ? JVMSupportTestAccessor::LazyLoaded()
+                                                  : JVMSupportTestAccessor::PartialLoaded());
+        ASGCT_CallFrame frame{};
+        HotspotSupport::fillJavaFrame(frame, FRAME_JIT_COMPILED, 7, nullptr, high);
+        EXPECT_FALSE(FrameType::isRawPointer(frame.bci)) << "lazy=" << lazy;
+        EXPECT_EQ(JMETHODID_NOT_WALKABLE, frame.method_id) << "lazy=" << lazy;
+    }
+}
+
 // resolve() goes by the mode the frame was sampled in, not the current one:
 // a lazy-mode frame kept across a restart in partial mode still resolves
 // against the classes the dump pins, which is what keeps a custom loader's
@@ -695,6 +710,20 @@ TEST_F(HotspotLazyResolveTest, UnmarkableRedefinitionRefusesAllLazyFrames) {
     // The failed allocation's OutOfMemoryError must not reach the caller of
     // RedefineClasses.
     EXPECT_FALSE(_jvm.exception_pending);
+    EXPECT_FALSE(resolve(frame));
+}
+
+// A hook called with a Java exception pending cannot make JNI calls, so it
+// cannot mark the class; every lazy frame is refused instead, and the
+// exception is left for the caller of RedefineClasses.
+TEST_F(HotspotLazyResolveTest, RedefinitionWithPendingExceptionRefusesAllLazyFrames) {
+    registerClass(_old_mirror);
+    ASGCT_CallFrame frame = sample();
+    _jvm.exception_pending = true;
+    redefine(true);
+    EXPECT_TRUE(_jvm.exception_pending);
+    _jvm.exception_pending = false;
+    EXPECT_EQ(0u, HotspotSupportTestAccessor::registry().size());
     EXPECT_FALSE(resolve(frame));
 }
 

@@ -222,12 +222,17 @@ void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int
         // resolution path; the deferred-dereference race at dump time is
         // inherent to this mode.
         NO_INJECTION_ASSERT(method != nullptr);
+        // Every raw frame is resolved by its untagged Method* (and keyed by
+        // it in Lookup::makeRawKey), both of which assume the address bits
+        // above 2^48 are clear; this check is the one place that ensures it.
         uint32_t tag;
-        if (JVMSupport::getLoadState() != JVMSupport::Lazy_loaded) {
+        if (!FrameType::canTagPointer(method)) {
+            Counters::increment(WALKVM_RAW_FRAME_UNTAGGABLE);
+            fillFrame(frame, type, bci, JMETHODID_NOT_WALKABLE);
+        } else if (JVMSupport::getLoadState() != JVMSupport::Lazy_loaded) {
             fillFrameRaw(frame, type, bci, method);
-        } else if (!FrameType::canTagPointer(method) || !lazyFrameTag(method, &tag)) {
-            // fjmethodid=lazy, but either the tag's high bits would collide
-            // with address bits, or the holder's trace ID is unreadable.
+        } else if (!lazyFrameTag(method, &tag)) {
+            // fjmethodid=lazy, but the holder's trace ID is unreadable.
             // Without a tag the frame could be mistaken for one of a later
             // class at the same address, so keep it structurally but resolve
             // it as unknown.
@@ -1523,13 +1528,20 @@ void HotspotSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclas
     if (!__atomic_load_n(&_lazy_used, __ATOMIC_ACQUIRE) || !isInstanceClass(jvmti, klass)) {
         return;
     }
+    // JVMTI allows RedefineClasses with a Java exception pending, but JNI
+    // forbids the calls that marking the class needs; then the class can't be
+    // marked, as when there is no memory for the mark.
     // Only redefined classes are registered, so the mark has a place to live.
-    const void* vm_klass = VMKlass::fromJavaClass(jni, klass);
-    if (_klass_registry.add(jni, vm_klass, klass) && _klass_registry.beginRedefinition(vm_klass)) {
+    // An entry stays after a call JVMTI rejects (without a lasting mark), and
+    // is purged when the table next grows after its class is unloaded.
+    const void* vm_klass = jni->ExceptionCheck() ? nullptr : VMKlass::fromJavaClass(jni, klass);
+    if (vm_klass != nullptr && _klass_registry.add(jni, vm_klass, klass) &&
+        _klass_registry.beginRedefinition(vm_klass)) {
         Counters::increment(KLASS_REGISTRY_REDEFINITIONS_MARKED);
     } else {
-        // Out of memory for the mark: nothing can tell this class's frames
-        // apart any more, so refuse every lazy frame from now on.
+        // Nothing can tell this class's frames apart any more, so refuse
+        // every lazy frame from now on. Deliberately never reset: raw frames
+        // sampled before the redefinition can outlive any session boundary.
         Counters::increment(KLASS_REGISTRY_ADD_FAILED);
         // Sequentially consistent, pairing with the fence in resolveLazily():
         // a resolution that misses this store read everything before it.
@@ -1539,6 +1551,11 @@ void HotspotSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclas
 
 void HotspotSupport::afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded) {
     if (!__atomic_load_n(&_lazy_used, __ATOMIC_ACQUIRE) || !isInstanceClass(jvmti, klass)) {
+        return;
+    }
+    if (jni->ExceptionCheck()) {
+        // No JNI calls allowed. The class stays marked as being redefined,
+        // so its raw frames are refused for good: safe, if lossy.
         return;
     }
     _klass_registry.endRedefinition(VMKlass::fromJavaClass(jni, klass), succeeded);
@@ -1564,7 +1581,7 @@ bool HotspotSupport::isDumpClass(const void* klass) {
         return false;
     }
     size_t mask = _dump_classes_capacity - 1;
-    for (size_t i = ((uintptr_t)klass >> 3) * 0x9E3779B97F4A7C15ULL >> 32 & mask; ; i = (i + 1) & mask) {
+    for (size_t i = klassSlot(klass, _dump_classes_capacity); ; i = (i + 1) & mask) {
         if (_dump_classes[i] == klass) {
             return true;
         }
@@ -1613,7 +1630,7 @@ void HotspotSupport::buildDumpClasses() {
         if (KlassTraceId::read(klass, &trace_id) && trace_id > TAG_VALUE_MASK) {
             beyond_tag_range++;
         }
-        for (size_t i = ((uintptr_t)klass >> 3) * 0x9E3779B97F4A7C15ULL >> 32 & mask; ; i = (i + 1) & mask) {
+        for (size_t i = klassSlot(klass, capacity); ; i = (i + 1) & mask) {
             if (table[i] == klass) {
                 break;
             }
@@ -1791,18 +1808,24 @@ static bool readLineNumberTable(VMConstMethod* const_method,
 
   jvmtiLineNumberEntry* entries = (jvmtiLineNumberEntry*)malloc((size_t)count * sizeof(jvmtiLineNumberEntry));
   if (entries == nullptr) {
+    Counters::increment(LINE_NUMBER_TABLE_ALLOC_FAILED);
     return true;  // keep the names; the frame just has no line numbers
   }
   // Owned by the ResolvedMethod from here on, so a fault in pass 2 still frees it.
   table = entries;
 
+  // Pass 2 checks every entry again and that the stream still ends after
+  // `count` of them: if it changed between the passes, the metadata is stale.
   VMLineNumberStream reader(compressed);
   for (int i = 0; i < count; i++) {
-    if (!reader.readPair()) {
-      return false;   // stream changed under us between the passes
+    if (!reader.readPair() || reader.bci() < 0 || reader.bci() > code_size) {
+      return false;
     }
     entries[i].start_location = (jlocation)reader.bci();
     entries[i].line_number = (jint)reader.line();
+  }
+  if (reader.readPair()) {
+    return false;
   }
   table_size = count;
   return true;

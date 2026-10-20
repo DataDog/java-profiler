@@ -6,6 +6,7 @@
 #ifndef _HOTSPOT_KLASSREGISTRY_H
 #define _HOTSPOT_KLASSREGISTRY_H
 
+#include "common.h"
 #include "mutex.h"
 
 #include <jni.h>
@@ -26,7 +27,8 @@
  * preloaded, so its later frames are not raw.) A failed call leaves the
  * methods untouched, and the class as it was.
  *
- * Only redefined classes are added. Each entry holds a JNI weak global
+ * Only classes passed to a redefinition call are added, including calls
+ * that JVMTI then rejects; such an entry has no mark. Each entry holds a JNI weak global
  * reference to the class's mirror, so a mark is only reported while that
  * class is alive: once it is unloaded, a new class at the same Klass* address
  * does not inherit it, and if that class is redefined too, its add()
@@ -36,6 +38,15 @@
  * All operations take an internal mutex and call JNI, so none of them may be
  * used from a signal handler.
  */
+// The home slot of `klass` in an open-addressing table of `capacity` (a power
+// of two) slots, probed linearly from there. Shared by KlassRegistry and the
+// per-dump class set in HotspotSupport, whose inserts and lookups must agree.
+static inline size_t klassSlot(const void* klass, size_t capacity) {
+  // Klass* is at least 8-byte aligned; drop the always-zero bits before mixing.
+  uint64_t h = ((uintptr_t)klass >> 3) * KNUTH_MULTIPLICATIVE_CONSTANT;
+  return (size_t)(h >> 32) & (capacity - 1);
+}
+
 class KlassRegistry {
   struct Entry {
     const void* klass;

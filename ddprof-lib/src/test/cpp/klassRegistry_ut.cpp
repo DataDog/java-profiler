@@ -328,6 +328,18 @@ TEST_F(KlassRegistryTest, NewClassAtRedefinedClassAddressStartsUnmarked) {
     EXPECT_TRUE(registry.contains(jni, klassAt(0)));
 }
 
+// A class unloaded while its redefinition call runs can be replaced by a new
+// class at the same address before the call returns; the call's success must
+// not mark the new class, which was never redefined.
+TEST_F(KlassRegistryTest, RedefinitionEndingAfterReplacementDoesNotMarkNewClass) {
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
+    ASSERT_TRUE(registry.beginRedefinition(klassAt(0)));
+    heap.collect(&mirrors[0]);
+    ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(1)));
+    registry.endRedefinition(klassAt(0), true);
+    EXPECT_FALSE(registry.isRedefined(jni, klassAt(0)));
+}
+
 TEST_F(KlassRegistryTest, UnloadedClassIsReportedAbsent) {
     ASSERT_TRUE(registry.add(jni, klassAt(0), mirror(0)));
     heap.collect(&mirrors[0]);

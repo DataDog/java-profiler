@@ -71,6 +71,8 @@ public:
 
   ResolvedMethod(const ResolvedMethod&) = delete;
   ResolvedMethod& operator=(const ResolvedMethod&) = delete;
+  ResolvedMethod(ResolvedMethod&&) = delete;
+  ResolvedMethod& operator=(ResolvedMethod&&) = delete;
 
   ResolvedMethod();
   ~ResolvedMethod() { release(); }
@@ -160,8 +162,11 @@ private:
     // on.
     static bool _lazy_used;
 
-    // Set if a redefinition could not be marked (out of memory for the
-    // registry entry): from then on every lazy frame is refused.
+    // Set if a redefinition could not be marked (no memory for the registry
+    // entry, or the hook was called with a Java exception pending): from then
+    // on every lazy frame is refused, for the rest of the process, since raw
+    // frames sampled before that redefinition can outlive any profiler
+    // session. klass_registry_add_failed counts these.
     static bool _redefinitions_untracked;
 
     // fjmethodid=lazy: the classes GetLoadedClasses() returned at the start
@@ -246,6 +251,8 @@ public:
     // Around each dump, with the classes GetLoadedClasses() returned. The
     // caller keeps the array and its local references valid until after
     // endDump(). resolve() accepts raw frames of exactly these classes.
+    // endDump() is idempotent: Recording::finishChunk() calls it before
+    // deleting the local references, and again from its DumpScope guard.
     static void beginDump(JNIEnv* jni, const jclass* classes, int count);
     static void endDump();
 

@@ -769,6 +769,8 @@ DECLARE(VMKlass)
         if (len < 0 || len > 0xffff) {
             return false;
         }
+        // HotSpot's Array<T> (oops/array.hpp) is `int _length; T _data[1];`,
+        // so for pointer elements the data starts at the pointer size.
         void** data = (void**)(methods + sizeof(void*));
         if (idnum_hint >= 0 && idnum_hint < len && SafeAccess::loadPtr(&data[idnum_hint], nullptr) == method) {
             return true;

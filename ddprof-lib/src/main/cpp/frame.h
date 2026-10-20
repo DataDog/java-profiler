@@ -95,6 +95,8 @@ public:
     return ((uintptr_t)ptr & ~POINTER_ADDRESS_MASK) == 0;
   }
 
+  // Every caller has checked canTagPointer(ptr) first: HotspotSupport::
+  // fillJavaFrame() refuses raw frames whose Method* fails it.
   static inline const void* tagPointer(const void* ptr, uint32_t tag) {
     assert(canTagPointer(ptr));
     uintptr_t high = (uintptr_t)((tag & RAW_TAG_MASK) >> RAW_TAG_BCI_BITS);

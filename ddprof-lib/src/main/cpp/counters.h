@@ -94,6 +94,8 @@
   X(CALLTRACE_STORAGE_EXPANSION_SKIPPED, "calltrace_storage_expansion_skipped") \
   X(LINE_NUMBER_TABLES, "line_number_tables")                                  \
   X(LINE_NUMBER_TABLE_UNREADABLE, "line_number_table_unreadable")              \
+  /* Raw frames' line number tables dropped because malloc() failed. */      \
+  X(LINE_NUMBER_TABLE_ALLOC_FAILED, "line_number_table_alloc_failed")          \
   X(REMOTE_SYMBOLICATION_FRAMES, "remote_symbolication_frames")                \
   X(REMOTE_SYMBOLICATION_LIBS_WITH_BUILD_ID, "remote_symbolication_libs_with_build_id") \
   X(REMOTE_SYMBOLICATION_BUILD_ID_CACHE_HITS, "remote_symbolication_build_id_cache_hits") \
@@ -200,8 +202,8 @@
   /* Classes marked by the redefinition hooks (once per class per          \
    * redefine/retransform call). */                                          \
   X(KLASS_REGISTRY_REDEFINITIONS_MARKED, "klass_registry_redefinitions_marked") \
-  /* Gauge, set at each dump: loaded classes whose trace ID no longer fits  \
-   * in a raw frame's 25-bit tag. Nonzero means trace-ID tags of two classes \
+  /* Gauge, set by each dump that resolves lazy raw frames: loaded classes  \
+   * whose trace ID no longer fits in a raw frame's 25-bit tag. Nonzero means trace-ID tags of two classes \
    * can now collide: a frame sampled from an unloaded class could then, if  \
    * a newer class also took over its Method* memory, resolve to that        \
    * class's method. */                                                      \
@@ -214,8 +216,9 @@
   /* Raw Method* frame occurrences answered from Lookup's per-dump cache    \
    * instead of resolving them again. */                                     \
   X(RAW_FRAME_RESOLVE_CACHE_HITS, "raw_frame_resolve_cache_hits")             \
-  /* Redefinitions whose mark could not be recorded (out of memory); every \
-   * lazy frame is refused once this is nonzero. */                         \
+  /* Redefinitions whose mark could not be recorded (no memory for it, or   \
+   * the hook was called with a Java exception pending); every lazy frame   \
+   * is refused for the rest of the process once this is nonzero. */        \
   X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
   /* Gauges: KlassRegistry's table slots (24 B each; NMT does not see the    \
    * table) and occupied slots, live or dead. It holds only redefined        \

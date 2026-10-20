@@ -29,7 +29,7 @@ class JVMSupport {
         No_loaded,          // Has not yet executed any profiling command, no jmethodIDs are loaded
         Partial_loaded,     // Partially loaded, see HotspotSupport::shouldPreloadJmethodIDs()
         Fully_loaded,       // All jmethodIDs are loaded
-        Lazy_loaded         // None preloaded; allocated at dump time for sampled classes (fjmethodid=lazy)
+        Lazy_loaded         // None preloaded (fjmethodid=lazy); only classes redefined meanwhile get them, from the redefinition hook
     };
 
     friend class HotspotSupport;
@@ -78,7 +78,8 @@ public:
 
     // Around each dump: `classes` are the ones GetLoadedClasses() returned,
     // referenced by the caller until after endDump(). Raw frames of other
-    // classes resolve as unknown.
+    // classes resolve as unknown. endDump() may be called more than once, and
+    // without a beginDump().
     static void beginDump(JNIEnv *jni, const jclass *classes, int count);
     static void endDump();
 

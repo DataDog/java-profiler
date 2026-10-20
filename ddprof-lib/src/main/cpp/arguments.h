@@ -274,7 +274,7 @@ public:
   bool _nativesocket;
   long _nativesocket_interval;  // initial sampling period in nanoseconds; 0 = engine default
   bool _force_jmethodID;       // Load all jmethodIDs, true by default
-  bool _lazy_jmethodID;        // fjmethodid=lazy: allocate jmethodIDs only for sampled classes, at dump time
+  bool _lazy_jmethodID;        // fjmethodid=lazy: preload no jmethodIDs; resolve raw Method* frames from VM metadata at dump time
 
   Arguments(bool persistent = false)
       : _buf(NULL),

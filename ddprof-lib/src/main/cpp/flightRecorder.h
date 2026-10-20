@@ -117,6 +117,11 @@ public:
   SharedLineNumberTable(int size, jvmtiLineNumberEntry *ptr, bool jvmti_allocated = true) :
     _size(size), _table(ptr), _jvmti_allocated(jvmti_allocated) {}
   ~SharedLineNumberTable();
+  // The destructor frees _table, so a copy would free it twice.
+  SharedLineNumberTable(const SharedLineNumberTable&) = delete;
+  SharedLineNumberTable& operator=(const SharedLineNumberTable&) = delete;
+  SharedLineNumberTable(SharedLineNumberTable&&) = delete;
+  SharedLineNumberTable& operator=(SharedLineNumberTable&&) = delete;
 };
 
 class MethodInfo {
@@ -185,8 +190,8 @@ public:
     assert((key & KEY_TYPE_MASK) == 0);
     return (key | REMOTE_FRAME_MARK);}
 
-  // A raw frame's row: its untagged Method* (below 2^48, see
-  // FrameType::untagPointer()), the low 13 bits of its tag, and
+  // A raw frame's row: its untagged Method* (below 2^48, which
+  // HotspotSupport::fillJavaFrame() checks when it stores the frame), the low 13 bits of its tag, and
   // RAW_METHOD_MARK, which keeps it apart from every jmethodID. The truncated
   // tag only has to separate loads of a class at the same address that are
   // both accepted in one dump; Lookup::fillRawMethod() keeps refused frames
@@ -497,8 +502,9 @@ public:
   // untagged Method* and the frame's full tag, so occurrences that differ
   // only in bci or frame type share one entry. A cached result stays right
   // for the whole dump: an accepted frame was sampled from that method, and a
-  // refused one stays refused. MethodMap nodes are not erased while a Lookup
-  // exists, so the row pointers stay valid.
+  // refused one stays refused. Recording::writeCpool() constructs a Lookup
+  // for each dump, so the cache never outlives one. MethodMap nodes are not
+  // erased while a Lookup exists, so the row pointers stay valid.
   struct RawMethodKey {
     const void* method;
     uint32_t tag;

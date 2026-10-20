@@ -67,6 +67,9 @@ int KlassTraceId::findOffset(const void* const* klasses, int count, size_t klass
 // Highest dimension any attempt has created so far; the next attempt probes
 // the PROBE_COUNT dimensions above it.
 static int _probed_dims = 0;
+// The offset the last successful attempt found, waiting for a second attempt
+// to confirm it.
+static int _candidate = -1;
 
 // Dumps what each probe holds at every offset findOffset() looked at, so a
 // release whose layout calibration rejects can be diagnosed from a debug CI
@@ -96,7 +99,8 @@ static void logProbes(const void* const* klasses, size_t klass_size) {
 static int probe(JNIEnv* jni, int first_dim, size_t klass_size) {
   static const char ELEMENT[] = "Ljava/lang/Void;";
   const int top_dim = first_dim + KlassTraceId::PROBE_COUNT - 1;
-  char name[KlassTraceId::MAX_ATTEMPTS * KlassTraceId::PROBE_COUNT + sizeof(ELEMENT)];
+  char name[KlassTraceId::MAX_DIMENSIONS + sizeof(ELEMENT)];
+  assert(first_dim >= 1 && top_dim <= KlassTraceId::MAX_DIMENSIONS);
   memset(name, '[', top_dim);
   memcpy(name + top_dim, ELEMENT, sizeof(ELEMENT));
 
@@ -127,7 +131,8 @@ static int probe(JNIEnv* jni, int first_dim, size_t klass_size) {
 }
 
 bool KlassTraceId::calibrate(JNIEnv* jni) {
-  // Runs from profiler start, which is serialized, so plain statics will do.
+  // Runs from Profiler::start() with _state_lock held, so plain statics will
+  // do.
   if (offset() >= 0) {
     return true;
   }
@@ -139,13 +144,22 @@ bool KlassTraceId::calibrate(JNIEnv* jni) {
   // A failed attempt usually means the probes' IDs were not consecutive:
   // other threads created many classes meanwhile, or some of the dimensions
   // already existed. Fresh dimensions make either unlikely to repeat.
-  while (_probed_dims + PROBE_COUNT <= MAX_ATTEMPTS * PROBE_COUNT) {
+  // If all of an attempt's dimensions already existed, created far apart,
+  // their trace IDs fail the check while another field can pass it: the
+  // mirrors' heap addresses, shifted right by 16, can be distinct and close
+  // together. Probes created back to back have adjacent mirrors, which that
+  // shift makes equal, so an offset is only taken once two attempts on
+  // different dimensions agree on it.
+  for (int attempt = 0; attempt < MAX_ATTEMPTS && _probed_dims + PROBE_COUNT <= MAX_DIMENSIONS; attempt++) {
     const int first_dim = _probed_dims + 1;
     _probed_dims += PROBE_COUNT;
     int found = probe(jni, first_dim, klass_size);
-    if (found >= 0) {
+    if (found >= 0 && found == _candidate) {
       __atomic_store_n(&_offset, found, __ATOMIC_RELEASE);
       return true;
+    }
+    if (found >= 0) {
+      _candidate = found;
     }
   }
   return false;
