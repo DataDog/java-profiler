@@ -117,5 +117,5 @@ The design also uses native metadata for the frontier. The frontier cap bounds t
 
 ## Sources
 
-- [JVM TI specification: Heap functions](https://docs.oracle.com/en/java/javase/25/docs/specs/jvmti.html#heap)
+- [JVM TI specification: Heap functions](https://docs.oracle.com/en/java/javase/25/docs/specs/jvmti.html#Heap)
 - [OpenJDK JFR leak-profiler chain implementation](https://github.com/openjdk/jdk/tree/master/src/hotspot/share/jfr/leakprofiler/chains)
