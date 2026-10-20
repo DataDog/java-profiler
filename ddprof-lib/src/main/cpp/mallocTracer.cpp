@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "codeCache.h"
+#include "common.h"
 #include "counters.h"
 #include "guards.h"
 #include "libraries.h"
@@ -482,7 +483,9 @@ Error MallocTracer::check(Arguments& args) {
     }
 #if !defined(__linux__)
     if (args._nativemem_output != NATIVE_MEMORY_JFR) {
-        return Error("nativememoutput=usdt and both are supported only on Linux");
+        const char* output = args._nativemem_output == NATIVE_MEMORY_USDT ? "usdt" : "both";
+        LOG_WARN("nativememoutput=%s is supported only on Linux; falling back to JFR", output);
+        args._nativemem_output = NATIVE_MEMORY_JFR;
     }
 #endif
     return Error::OK;

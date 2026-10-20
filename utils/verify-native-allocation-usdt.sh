@@ -51,17 +51,18 @@ esac
 
 notes=$(readelf -nW "$so")
 provider_count=$(printf '%s\n' "$notes" | grep -c 'Provider: ddheap' || true)
-alloc_count=$(printf '%s\n' "$notes" | grep -c 'Name: alloc' || true)
 [ "$provider_count" -eq 1 ] || die "expected one ddheap provider note, found $provider_count"
+ddheap_note=$(printf '%s\n' "$notes" | grep -A3 'Provider: ddheap')
+alloc_count=$(printf '%s\n' "$ddheap_note" | grep -c 'Name: alloc' || true)
 [ "$alloc_count" -eq 1 ] || die "expected one alloc probe note, found $alloc_count"
-if printf '%s\n' "$notes" | grep -q 'Name: free'; then
+if printf '%s\n' "$ddheap_note" | grep -q 'Name: free'; then
   die "unexpected ddheap:free probe in allocation-only artifact"
 fi
-printf '%s\n' "$notes" | grep -Fq "Arguments: $expected_args" ||
+printf '%s\n' "$ddheap_note" | grep -Fq "Arguments: $expected_args" ||
   die "unexpected alloc arguments; expected: $expected_args"
 
-location=$(printf '%s\n' "$notes" | sed -n 's/.*Location: \(0x[[:xdigit:]]*\).*/\1/p')
-semaphore=$(printf '%s\n' "$notes" | sed -n 's/.*Semaphore: \(0x[[:xdigit:]]*\).*/\1/p')
+location=$(printf '%s\n' "$ddheap_note" | sed -n 's/.*Location: \(0x[[:xdigit:]]*\).*/\1/p')
+semaphore=$(printf '%s\n' "$ddheap_note" | sed -n 's/.*Semaphore: \(0x[[:xdigit:]]*\).*/\1/p')
 [ -n "$location" ] || die "probe location is missing"
 [ -n "$semaphore" ] || die "probe semaphore is missing"
 (( semaphore != 0 )) || die "probe semaphore address is zero"

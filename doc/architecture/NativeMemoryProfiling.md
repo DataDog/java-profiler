@@ -12,16 +12,18 @@ requiring a custom allocator. Free events are not intercepted or recorded.
 
 By default, sampled allocation events carry a full Java + native stack trace and
 are emitted as `datadog.NativeMemoryAllocation` JFR events. Linux x86-64 and
-AArch64 builds can instead expose sampled allocations through the semaphored
+AArch64 builds also expose sampled allocations through the semaphored
 `ddheap:alloc(address, size, weighted_bytes)` USDT probe for an external eBPF
 profiler.
 
 The feature is activated by passing `nativemem=<interval>` to the profiler, where
 `<interval>` is the byte-sampling interval (e.g. `nativemem=524288` samples roughly
 one event per 512 KiB allocated). Passing `nativemem=0` records every allocation.
-`nativememoutput=jfr|usdt|both` selects the destination; `jfr` is the default.
-The output option does not activate profiling by itself and `usdt`/`both` are
-rejected outside Linux.
+`nativememoutput=jfr|usdt|both` selects the destination; `both` is the default.
+Pass `jfr` to disable USDT output or `usdt` to disable JFR output. The output
+option does not activate profiling by itself. On non-Linux platforms the implicit
+default emits JFR only. Explicit `usdt`/`both` values emit a warning and fall back
+to JFR.
 
 USDT output is allocation-only. It deliberately does not add a free probe or
 retain live-heap state. `weighted_bytes` is the allocation size divided by its

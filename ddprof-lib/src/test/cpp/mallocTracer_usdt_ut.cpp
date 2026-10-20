@@ -162,7 +162,7 @@ TEST_F(MallocTracerUsdtTest, EveryNonzeroSemaphoreValueIsActive) {
 
 #if defined(__linux__)
 TEST_F(MallocTracerUsdtTest, SemaphoreUsesTheKernelReferenceCountSemantics) {
-    for (uint16_t value : {uint16_t(0), uint16_t(1), uint16_t(2), UINT16_MAX}) {
+    for (uint16_t value : {uint16_t(0), uint16_t(1), uint16_t(2), uint16_t(UINT16_MAX)}) {
         setNativeAllocationUsdtSemaphoreForTest(value);
         EXPECT_EQ(value != 0, isNativeAllocationUsdtEnabled());
     }

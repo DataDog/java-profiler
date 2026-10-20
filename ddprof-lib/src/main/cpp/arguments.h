@@ -118,6 +118,12 @@ enum NativeMemoryOutput {
   NATIVE_MEMORY_BOTH
 };
 
+#if defined(__linux__)
+const NativeMemoryOutput DEFAULT_NATIVE_MEMORY_OUTPUT = NATIVE_MEMORY_BOTH;
+#else
+const NativeMemoryOutput DEFAULT_NATIVE_MEMORY_OUTPUT = NATIVE_MEMORY_JFR;
+#endif
+
 enum Style {
   STYLE_SIMPLE = 1,
   STYLE_DOTTED = 2,
@@ -313,7 +319,7 @@ public:
         _reference_chains_first_pass_budget(DEFAULT_REFERENCE_CHAINS_FIRST_PASS_BUDGET),
         _reference_chains_tuned_mask(0),
         _nativemem(-1),
-        _nativemem_output(NATIVE_MEMORY_JFR),
+        _nativemem_output(DEFAULT_NATIVE_MEMORY_OUTPUT),
         _nativemem_output_set(false),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),

@@ -29,14 +29,17 @@ protected:
     void TearDown() override {}
 };
 
-TEST_F(ArgumentsTest, NativeMemoryOutputDefaultsToJfrAndIsNotExplicit) {
+TEST_F(ArgumentsTest, NativeMemoryOutputDefaultsForThePlatformAndIsNotExplicit) {
     Arguments args;
-    EXPECT_EQ(args._nativemem_output, NATIVE_MEMORY_JFR);
+    EXPECT_EQ(args._nativemem_output, DEFAULT_NATIVE_MEMORY_OUTPUT);
     EXPECT_FALSE(args._nativemem_output_set);
 
     ASSERT_FALSE(args.parse("nativemem=512"));
-    EXPECT_EQ(args._nativemem_output, NATIVE_MEMORY_JFR);
+    EXPECT_EQ(args._nativemem_output, DEFAULT_NATIVE_MEMORY_OUTPUT);
     EXPECT_FALSE(args._nativemem_output_set);
+
+    MallocTracer tracer;
+    EXPECT_FALSE(tracer.check(args));
 }
 
 TEST_F(ArgumentsTest, NativeMemoryOutputParsesAllValuesCaseInsensitively) {
@@ -78,16 +81,28 @@ TEST_F(ArgumentsTest, NativeMemoryOutputRequiresNativeMemoryRegardlessOfOrder) {
     ASSERT_FALSE(output_first.parse("nativememoutput=usdt,nativemem=512"));
 #if defined(__linux__)
     EXPECT_FALSE(tracer.check(output_first));
+    EXPECT_EQ(output_first._nativemem_output, NATIVE_MEMORY_USDT);
 #else
-    EXPECT_TRUE(tracer.check(output_first));
+    testing::internal::CaptureStderr();
+    EXPECT_FALSE(tracer.check(output_first));
+    std::string usdt_warning = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(output_first._nativemem_output, NATIVE_MEMORY_JFR);
+    EXPECT_NE(std::string::npos, usdt_warning.find(
+        "nativememoutput=usdt is supported only on Linux; falling back to JFR"));
 #endif
 
     Arguments memory_first;
     ASSERT_FALSE(memory_first.parse("nativemem=512,nativememoutput=both"));
 #if defined(__linux__)
     EXPECT_FALSE(tracer.check(memory_first));
+    EXPECT_EQ(memory_first._nativemem_output, NATIVE_MEMORY_BOTH);
 #else
-    EXPECT_TRUE(tracer.check(memory_first));
+    testing::internal::CaptureStderr();
+    EXPECT_FALSE(tracer.check(memory_first));
+    std::string both_warning = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(memory_first._nativemem_output, NATIVE_MEMORY_JFR);
+    EXPECT_NE(std::string::npos, both_warning.find(
+        "nativememoutput=both is supported only on Linux; falling back to JFR"));
 #endif
 }
 
