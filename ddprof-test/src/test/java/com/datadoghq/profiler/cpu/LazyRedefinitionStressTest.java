@@ -7,6 +7,7 @@ package com.datadoghq.profiler.cpu;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrFrame;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.SpinClasses;
 import org.junit.jupiter.api.Assumptions;
@@ -45,7 +46,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * redefinition of the same class. Raw frames sampled before a redefinition must be refused
  * ({@code method_resolve_lazy_redefined}) rather than read through freed metadata or resolved to
  * a reused address; frames sampled after it carry the jmethodIDs the redefinition hook preloads
- * and resolve normally.
+ * and resolve normally. A second thread retransforms the class meanwhile, which goes through the
+ * profiler's RetransformClasses hook instead.
  */
 public class LazyRedefinitionStressTest extends AbstractProfilerTest {
     private static final String CLASS_NAME = "com/datadoghq/profiler/generated/LazyRedefinitionProbe";
@@ -63,6 +65,13 @@ public class LazyRedefinitionStressTest extends AbstractProfilerTest {
         Instrumentation inst = loadAgent();
         Assumptions.assumeTrue(inst != null && inst.isRedefineClassesSupported(), "class redefinition not available");
         waitForProfilerReady(2000);
+        Long traceIdOffset = profiler.getDebugCounters().get("klass_trace_id_offset");
+        if (traceIdOffset != null) {
+            // Absent in builds without counters. Without a trace ID offset the profiler preloads
+            // jmethodIDs as in fjmethodid=false, and nothing here would exercise lazy mode.
+            Assumptions.assumeTrue(Platform.hasJfr(), "JDK without JFR");
+            assertTrue(traceIdOffset > 0, "lazy mode is not active: klass_trace_id_offset=" + traceIdOffset);
+        }
 
         Class<?> probe = SpinClasses.define(CLASS_NAME);
         byte[] bytes = SpinClasses.bytes(CLASS_NAME);
@@ -70,6 +79,7 @@ public class LazyRedefinitionStressTest extends AbstractProfilerTest {
         AtomicBoolean done = new AtomicBoolean(false);
         AtomicReference<Throwable> failure = new AtomicReference<>();
         AtomicInteger redefinitions = new AtomicInteger();
+        AtomicInteger retransformations = new AtomicInteger();
 
         Thread spinner = new Thread(() -> {
             try {
@@ -91,16 +101,41 @@ public class LazyRedefinitionStressTest extends AbstractProfilerTest {
                 failure.compareAndSet(null, t);
             }
         }, "lazy-redefinition-redefiner");
+        Thread retransformer = new Thread(() -> {
+            try {
+                while (!done.get()) {
+                    inst.retransformClasses(probe);
+                    retransformations.incrementAndGet();
+                    Thread.sleep(5);
+                }
+            } catch (Throwable t) {
+                failure.compareAndSet(null, t);
+            }
+        }, "lazy-redefinition-retransformer");
         spinner.start();
         // Let raw frames of the class pile up first, with no dump in between, so
         // that the first dumps after redefinitions start have stale raw frames of
         // a marked class to refuse.
         Thread.sleep(300);
         redefiner.start();
+        if (inst.isRetransformClassesSupported()) {
+            retransformer.start();
+        }
 
         Path dir = Paths.get(System.getProperty("java.io.tmpdir"), "recordings");
         Files.createDirectories(dir);
         Path dumpFile = Files.createTempFile(dir, "lazy-redefinition-", ".jfr");
+        try {
+            runScenario(spin, dumpFile, done, failure, redefinitions, retransformations, spinner, redefiner,
+                    retransformer);
+        } finally {
+            try { Files.deleteIfExists(dumpFile); } catch (IOException ignored) {}
+        }
+    }
+
+    private void runScenario(Method spin, Path dumpFile, AtomicBoolean done, AtomicReference<Throwable> failure,
+            AtomicInteger redefinitions, AtomicInteger retransformations, Thread spinner, Thread redefiner,
+            Thread retransformer) throws Exception {
         int dumps = 0;
         try {
             long deadline = System.nanoTime() + DURATION_NANOS;
@@ -115,6 +150,7 @@ public class LazyRedefinitionStressTest extends AbstractProfilerTest {
             done.set(true);
             spinner.join();
             redefiner.join();
+            retransformer.join();
         }
         assertNull(failure.get(), "workload thread failed: " + failure.get());
 
@@ -129,10 +165,12 @@ public class LazyRedefinitionStressTest extends AbstractProfilerTest {
         });
         tail.start();
         tail.join();
+        assertNull(failure.get(), "tail spin failed: " + failure.get());
         stopProfiler();
 
         Map<String, Long> counters = profiler.getDebugCounters();
-        System.out.println("redefinitions=" + redefinitions.get() + " dumps=" + dumps
+        System.out.println("redefinitions=" + redefinitions.get() + " retransformations=" + retransformations.get()
+                + " dumps=" + dumps
                 + " klass_registry_redefinitions_marked=" + counters.get("klass_registry_redefinitions_marked")
                 + " method_resolve_lazy_redefined=" + counters.get("method_resolve_lazy_redefined")
                 + " method_resolve_lazy_not_current=" + counters.get("method_resolve_lazy_not_current")
@@ -146,17 +184,24 @@ public class LazyRedefinitionStressTest extends AbstractProfilerTest {
             assertTrue(refused != null && refused > 0, "no raw frame of the redefined class was refused");
         }
 
+        // A frame resolved through a freed or reused Method* would decode some other method's
+        // line number table, so every resolved spin frame must have one of spin's lines.
         String simpleName = CLASS_NAME.substring(CLASS_NAME.lastIndexOf('/') + 1);
-        boolean resolved = false;
+        int spinFrames = 0;
         for (JfrEvent sample : verifyEvents("datadog.ExecutionSample")) {
-            String stackTrace = sample.getStackTraceString();
-            if (stackTrace != null && stackTrace.contains(simpleName) && stackTrace.contains("spin")) {
-                resolved = true;
-                break;
+            if (!sample.has("stackTrace")) {
+                continue;
+            }
+            for (JfrFrame frame : sample.getStackTrace().frames()) {
+                String frameClass = frame.className();
+                if (frameClass != null && frameClass.endsWith(simpleName) && "spin".equals(frame.methodName())) {
+                    spinFrames++;
+                    assertTrue(SpinClasses.SPIN_LINES.contains(frame.lineNumber()),
+                            "spin frame has line " + frame.lineNumber() + ", expected one of " + SpinClasses.SPIN_LINES);
+                }
             }
         }
-        assertTrue(resolved, "frames of the redefined class sampled after the redefinitions did not resolve");
-        try { Files.deleteIfExists(dumpFile); } catch (IOException ignored) {}
+        assertTrue(spinFrames > 0, "frames of the redefined class sampled after the redefinitions did not resolve");
     }
 
     /**

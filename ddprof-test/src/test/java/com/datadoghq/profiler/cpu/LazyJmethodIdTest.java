@@ -87,7 +87,9 @@ public class LazyJmethodIdTest extends AbstractProfilerTest {
 
     /**
      * Frames whose class was unloaded between the sample and the dump must not be
-     * dereferenced: the dump completes and those frames serialize as unknown.
+     * dereferenced: the dump completes and those frames serialize as unknown. Where debug
+     * counters are available, the dump must also have refused raw frames, so the class was
+     * sampled and the refusal path ran.
      */
     @Test
     @Timeout(60)
@@ -103,7 +105,7 @@ public class LazyJmethodIdTest extends AbstractProfilerTest {
         try {
             profiler.execute("start," + LAZY_COMMAND + ",jfr,file=" + baseFile.toAbsolutePath());
             try {
-                Thread.sleep(200);
+                waitForProfilerReady(2000);
                 WeakReference<ClassLoader> loaderRef = spinInUnloadableClass(className);
 
                 long deadline = System.currentTimeMillis() + 8_000;
@@ -131,6 +133,13 @@ public class LazyJmethodIdTest extends AbstractProfilerTest {
                     + ", method_resolve_lazy_not_current=" + counters.get("method_resolve_lazy_not_current")
                     + ", method_resolve_lazy_unreadable=" + counters.get("method_resolve_lazy_unreadable")
                     + ", method_resolve_fault_recovered=" + counters.get("method_resolve_fault_recovered"));
+            // Absent in builds without counters; only check when present.
+            if (counters.containsKey("method_resolve_lazy_unloaded")) {
+                long refused = counters.getOrDefault("method_resolve_lazy_unloaded", 0L)
+                        + counters.getOrDefault("method_resolve_lazy_not_current", 0L)
+                        + counters.getOrDefault("method_resolve_lazy_unreadable", 0L);
+                assertTrue(refused > 0, "No raw frame was refused, so the unloaded class was never sampled");
+            }
         } finally {
             try { Files.deleteIfExists(baseFile); } catch (IOException ignored) {}
             try { Files.deleteIfExists(dumpFile); } catch (IOException ignored) {}
@@ -167,7 +176,7 @@ public class LazyJmethodIdTest extends AbstractProfilerTest {
     // loader survives on the stack.
     private static WeakReference<ClassLoader> spinInUnloadableClass(String className) throws Exception {
         Class<?> clazz = SpinClasses.define(className);
-        clazz.getMethod("spin", long.class).invoke(null, 300_000_000L);
+        clazz.getMethod("spin", long.class).invoke(null, 1_000_000_000L);
         return new WeakReference<>(clazz.getClassLoader());
     }
 }

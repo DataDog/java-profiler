@@ -79,8 +79,10 @@ public class LazyLineNumberConsistencyTest extends AbstractProcessProfilerTest {
             Assumptions.assumeTrue(lazyResolved.get() > 0, "lazy mode resolved no raw frames");
 
             List<String> vmHiddenNames = new ArrayList<>();
-            Map<String, Integer> lazyLines = linesByFrame(lazyRecording, vmHiddenNames);
-            Map<String, Integer> jvmtiLines = linesByFrame(jvmtiRecording, vmHiddenNames);
+            List<String> inconsistent = new ArrayList<>();
+            Map<String, Integer> lazyLines = linesByFrame(lazyRecording, vmHiddenNames, inconsistent);
+            Map<String, Integer> jvmtiLines = linesByFrame(jvmtiRecording, vmHiddenNames, inconsistent);
+            assertTrue(inconsistent.isEmpty(), "line numbers differ within one recording: " + inconsistent);
             // JVMTI reports a hidden class "Foo$$Lambda+0x…" as "Foo$$Lambda.0x…", and lazy
             // mode must do the same, or a lambda's frames are named differently per mode.
             assertTrue(vmHiddenNames.isEmpty(), "hidden classes not named as JVMTI does: " + vmHiddenNames);
@@ -110,9 +112,11 @@ public class LazyLineNumberConsistencyTest extends AbstractProcessProfilerTest {
      * Maps "class.method descriptor @bci" to the line the recording gives that frame, for every
      * frame of {@code datadog.ExecutionSample}. Frames without a line are kept, so that a table
      * one side failed to decode shows up as a mismatch. Adds class names still in HotSpot's
-     * internal hidden-class form ({@code +0x} suffix) to {@code vmHiddenNames}.
+     * internal hidden-class form ({@code +0x} suffix) to {@code vmHiddenNames}, and frames the
+     * recording gives different lines in different samples to {@code inconsistent}.
      */
-    private static Map<String, Integer> linesByFrame(Path recording, List<String> vmHiddenNames) throws Exception {
+    private static Map<String, Integer> linesByFrame(Path recording, List<String> vmHiddenNames,
+            List<String> inconsistent) throws Exception {
         Map<String, Integer> lines = new HashMap<>();
         JfrEvents.forEach(recording, "datadog.ExecutionSample"::equals, event -> {
             if (!event.has("stackTrace")) {
@@ -125,8 +129,12 @@ public class LazyLineNumberConsistencyTest extends AbstractProcessProfilerTest {
                 if (frame.className().contains("+0x") && !vmHiddenNames.contains(frame.className())) {
                     vmHiddenNames.add(frame.className());
                 }
-                lines.put(frame.className() + "." + frame.methodName() + frame.methodDescriptor()
-                        + " @" + frame.bytecodeIndex(), frame.lineNumber());
+                String key = frame.className() + "." + frame.methodName() + frame.methodDescriptor()
+                        + " @" + frame.bytecodeIndex();
+                Integer previous = lines.put(key, frame.lineNumber());
+                if (previous != null && previous != frame.lineNumber()) {
+                    inconsistent.add(recording.getFileName() + " " + key + ": " + previous + " and " + frame.lineNumber());
+                }
             }
         });
         return lines;

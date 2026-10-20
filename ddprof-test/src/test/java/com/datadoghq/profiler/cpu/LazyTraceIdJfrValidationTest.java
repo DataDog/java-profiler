@@ -70,12 +70,16 @@ public class LazyTraceIdJfrValidationTest extends AbstractProcessProfilerTest {
         try {
             AtomicLong loggedId = new AtomicLong(-1);
             AtomicBoolean traceIdTags = new AtomicBoolean(false);
+            AtomicBoolean tagsLogged = new AtomicBoolean(false);
             LaunchResult result = launch("lazy-trace-id",
                     Arrays.asList("-XX:StartFlightRecording=filename=" + jfrRecording + ",settings=" + jfrSettings + ",dumponexit=true"),
                     "start,cpu=1ms,cstack=vm,fjmethodid=lazy,jfr,file=" + ddprofRecording,
                     line -> {
-                        if (line.contains("[TEST::INFO] Raw frame tags: klass trace id")) {
-                            traceIdTags.set(true);
+                        if (line.contains("[TEST::INFO] Raw frame tags: ")) {
+                            tagsLogged.set(true);
+                            if (line.contains("[TEST::INFO] Raw frame tags: klass trace id")) {
+                                traceIdTags.set(true);
+                            }
                         }
                         Matcher m = LOGGED_ID.matcher(line);
                         if (m.find()) {
@@ -89,8 +93,11 @@ public class LazyTraceIdJfrValidationTest extends AbstractProcessProfilerTest {
                     }, null);
             assertTrue(result.inTime, "child JVM did not finish in time");
             assertEquals(0, result.exitCode, "child JVM failed");
-            // Builds without JFR (e.g. 8u before 8u262) have no trace ID; lazy mode uses the epoch.
-            Assumptions.assumeTrue(traceIdTags.get(), "calibration found no trace ID");
+            assertTrue(tagsLogged.get(), "the profiler did not log its raw frame tags");
+            // JDKs without JFR (e.g. 8u before 8u262) have no trace ID, and lazy mode stays off;
+            // on every other JDK calibration must find it.
+            Assumptions.assumeTrue(Platform.hasJfr(), "JDK without JFR");
+            assertTrue(traceIdTags.get(), "calibration did not find the trace ID offset");
             assertTrue(loggedId.get() > 0, "the profiler did not log the probe class's trace ID");
 
             Set<Long> jfrIds = jfrClassIds(jfrRecording, PROBE_CLASS);
