@@ -463,10 +463,12 @@ public final class JavaProfiler {
     private static native int getTid0();
 
     /**
-     * Test seam (debug native builds only): returns the calling thread's profiler tid - the same
-     * tid space {@code seedTidTrendSample0} matches tracked instances' allocating threads against.
-     * Scenarios seeding per-(klass, tid) ramps must call this ON the leaking thread, or the
-     * qualifying tid matches no tracked instance and no leak tag is ever assigned.
+     * Test seam: returns the calling thread's profiler tid
+     * (ProfiledThread::currentTid()), the tid space {@code seedTidTrendSample0} matches
+     * against. Unlike the tracker-mutating seams it only reads thread state, so it is
+     * compiled unconditionally and works in release builds too. Must be called ON the
+     * leaking thread, or the seeded tid will match no tracked instance and no leak tag
+     * will be assigned.
      */
     static int getTid() {
         return getTid0();
@@ -667,6 +669,28 @@ public final class JavaProfiler {
     static native long getReferenceChainPendingSizeForTest0();
 
     /**
+     * Test seam (-DDEBUG native builds only - debug/asan/tsan; returns -1 in release): does not
+     * tag {@code target}. The raw {@code FrontierEntryState} (canonical values:
+     * referenceChainFrontier.h) of the current search's frontier entry for target - 0 = FRONTIER
+     * (admitted, not yet expanded), 1 = EXPANDED, 2 = EDGE (retired: never produced by the
+     * production walk, so this seam does not return it in practice), 3 = ABANDONED - or
+     * {@code -1} if target has no frontier entry (never admitted, or still carrying only a leak
+     * tag).
+     */
+    static native int getReferenceChainFrontierStateForTest0(Object target);
+
+    /**
+     * Test seam (-DDEBUG native builds only - debug/asan/tsan; returns 0 in release): does not
+     * tag {@code target}. The targetTag the {@code datadog.ReferenceChain} event for target
+     * carries, if a cached chain exists for target; 0 otherwise. When target carries a frontier
+     * tag, only the current search's cached chain counts. When target carries a leak tag, a chain
+     * cached by any search generation counts, but only if it was built during target's current
+     * ownership of that leak tag: leak tags are recycled after their object dies, so identity is
+     * the (leak tag, ownership-period stamp) pair, not the tag alone.
+     */
+    static native long getReferenceChainResolvedTargetTagForTest0(Object target);
+
+    /**
      * Test seam (debug native builds only): seeds one heap-floor-ring sample - the input to
      * {@code LivenessTracker::secondsToOOM()}'s time-to-OOM projection - directly, bypassing the
      * real {@code GarbageCollectionFinish} callback. {@code timestampNs} values are only ever
@@ -692,6 +716,27 @@ public final class JavaProfiler {
      * {@code secondsToOOM()}'s projection. Pass {@code false} to disable, {@code true} to restore.
      */
     static native void setHeapFloorRecordingForTest0(boolean enabled);
+
+    /**
+     * Test seam (debug native builds only): clears the heap-floor ring seeded via
+     * {@link #heapFloorRecordForTest0(long, long)} so the next test in the same JVM does not
+     * inherit this test's samples into its {@code secondsToOOM()} projection. Must be called
+     * while heap-floor recording is disabled (i.e. before the
+     * {@link #setHeapFloorRecordingForTest0(boolean)} restore in a finally block) - the seam
+     * asserts when called while recording is enabled, because a concurrent sample cannot be
+     * excluded from the two non-atomic index stores otherwise.
+     */
+    static native void heapFloorResetForTest0();
+
+    /**
+     * Test seam (debug native builds only): reports whether the seeded heap-floor ring
+     * currently shows a sustained rise ({@code heapFloorRising()}) - the aggregate growth
+     * read {@code hasLeakSignal()}'s gate uses alongside {@code secondsToOOM()}'s urgent
+     * projection. Returns {@code false} both before any seeding and after
+     * {@link #heapFloorResetForTest0()} emptied the ring, which is how tests assert the
+     * reset actually cleared the indices.
+     */
+    static native boolean heapFloorRisingForTest0();
 
     /**
      * Test seam (debug native builds only): reports whether ReferenceChainTracker's search-restart

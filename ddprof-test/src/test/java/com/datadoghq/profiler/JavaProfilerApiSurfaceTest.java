@@ -35,7 +35,9 @@ public class JavaProfilerApiSurfaceTest {
             "tagAsReferenceChainRoot0", "runReferenceChainPass0", "pollReferenceChainTargets0",
             "drainReferenceChainEventCount0", "resetReferenceChainSearchForTest0",
             "getReferenceChainPendingPositionForTest0", "getReferenceChainPendingSizeForTest0",
+            "getReferenceChainFrontierStateForTest0", "getReferenceChainResolvedTargetTagForTest0",
             "heapFloorRecordForTest0", "setMaxHeapBytesForTest0", "setHeapFloorRecordingForTest0",
+            "heapFloorResetForTest0", "heapFloorRisingForTest0",
             "shouldRunPassForTest0", "referenceChainPassesRunForTest0"));
 
     @Test
