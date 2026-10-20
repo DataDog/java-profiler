@@ -13,6 +13,7 @@ import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.item.IType;
+import org.openjdk.jmc.common.item.ItemFilters;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
 import java.io.InputStream;
@@ -23,6 +24,9 @@ import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
+
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.LEAK_TAG_BASE;
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.LEAK_TAG_POOL_SIZE;
 
 /**
  * The thread-local taxonomy of the leak-tag correlation use case, run inside a
@@ -53,10 +57,9 @@ public final class ThreadLocalLeakScenario {
   private ThreadLocalLeakScenario() {}
 
   /**
-   * The leak sink: a per-thread growing list, touched ONLY by the leaking
-   * thread below. Deliberately NOT static-retained anywhere - the whole
-   * point is that the only durable path to the chunks runs through the
-   * leaking thread's ThreadLocalMap.
+   * The leak sink, touched ONLY by the leaking thread. Deliberately NOT
+   * static-retained: the only durable path to the chunks must run through
+   * the leaking thread's ThreadLocalMap.
    */
   private static final ThreadLocal<List<byte[]>> SINK =
       ThreadLocal.withInitial(() -> new ArrayList<>());
@@ -82,10 +85,6 @@ public final class ThreadLocalLeakScenario {
    */
   private static final int CHUNK_BYTES = 1_000_000;
 
-  // Mirrored from referenceChains.h (LEAK_TAG_BASE/LEAK_TAG_POOL_SIZE).
-  private static final long LEAK_TAG_BASE = 0x40000000L;
-  private static final long LEAK_TAG_POOL_SIZE = 256;
-
   /**
    * Handoff for the leak thread's profiler tid and one seed chunk - the
    * main thread seeds LivenessTracker's per-(klass, tid) qualification with
@@ -109,12 +108,10 @@ public final class ThreadLocalLeakScenario {
     }
 
     /**
-     * Bounded wait for the leak thread's first publish. Both modes need it:
-     * in the late-thread mode the thread is started only after
-     * {@code profiler.execute()} returned, and in the default mode the leak
-     * thread must still allocate {@code SEED_CHUNKS} chunks before it
-     * publishes - so neither mode can assume publication has happened by the
-     * time the main thread seeds.
+     * Required in both thread-start modes: neither starting the thread
+     * before {@code profiler.execute()} nor after it guarantees it has
+     * published by the time run() consumes the handoff. Must be called
+     * before take() (it polls seedChunk, which take() clears).
      */
     boolean awaitPublication(long timeoutMs) throws InterruptedException {
       long deadline = System.nanoTime()
@@ -138,9 +135,17 @@ public final class ThreadLocalLeakScenario {
   /** Printed to stdout (with the tag) if no HeapLiveObject matched the chain's tag. */
   public static final String NO_LIVE_OBJECT_MARKER = "[tl-correlation-no-live-object] ";
 
+  /**
+   * Printed to stdout if the leak thread never published its tid and seed chunk - a fixture
+   * failure, reported apart from a correlation miss.
+   */
+  public static final String HANDOFF_TIMEOUT_MARKER = "[tl-correlation-handoff-timeout]";
+
   private static final class ScanResult {
     ReferenceChainAssertions.ChainMatch payloadChain;
     boolean payloadChainInPool;
+    // ReferenceChain.leakTagIncarnation of payloadChain; -1 when the field is absent.
+    long payloadChainIncarnation = -1;
     int liveObjectMatchesForChainTag;
   }
 
@@ -179,17 +184,22 @@ public final class ThreadLocalLeakScenario {
     // always allocated on the same qualifying tid).
     BlockingQueue<Integer> rounds = new ArrayBlockingQueue<>(32);
     Thread leakThread = new Thread(() -> {
-      List<byte[]> sink = SINK.get();
+      // No local ever holds the sink: re-fetch it via SINK on every use so
+      // the only durable path to the chunks is Thread.threadLocals ->
+      // ThreadLocalMap. A live stack local would let root enumeration reach
+      // ArrayList -> elementData -> byte[] directly (a depth-2 stack-local
+      // chain the transient-root gate does not suppress), bypassing the
+      // thread-scoped walk this scenario exists to prove.
       for (int i = 0; i < SEED_CHUNKS; i++) {
-        sink.add(new byte[CHUNK_BYTES]);
+        SINK.get().add(new byte[CHUNK_BYTES]);
       }
-      handoff.publish(ReferenceChainTestHooks.getTid(), sink.get(0));
+      handoff.publish(ReferenceChainTestHooks.getTid(), SINK.get().get(0));
       while (true) {
         try {
           if (rounds.poll(50, TimeUnit.MILLISECONDS) == null) {
             continue;
           }
-          sink.add(new byte[CHUNK_BYTES]);
+          SINK.get().add(new byte[CHUNK_BYTES]);
         } catch (InterruptedException e) {
           return;
         }
@@ -207,32 +217,26 @@ public final class ThreadLocalLeakScenario {
     if (lateThread) {
       leakThread.start();
     }
-    // The debug seeding below consumes the handoff immediately; in both modes
-    // the leak thread must first allocate SEED_CHUNKS chunks before it
-    // publishes, so wait (bounded) for its first publish rather than race it.
     if (!handoff.awaitPublication(30000)) {
-      System.out.println(NOT_FOUND_MARKER);
+      System.out.println(HANDOFF_TIMEOUT_MARKER);
       return;
     }
 
-    boolean debugBuild = "debug".equals(System.getProperty("ddprof_test.config"));
+    boolean debugBuild = ReferenceChainAssertions.isDebugInstrumentedBuild();
     int leakTid = 0;
     if (debugBuild) {
-      // Representative first, seeds second - same aliasing rationale as
-      // LeakTagCorrelationScenario (the rep's real klass id must own the
-      // seeds or the seeds authorize nothing). The rep chunk stays durably
-      // reachable only through the leak thread's ThreadLocalMap - the
-      // take() above dropped this handoff's reference.
-      ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
-          LEAK_KLASS_ID, handoff.take());
+      // Representative first, seeds second: the rep's real klass id must
+      // own the seeds or they authorize nothing. take() drops the handoff's
+      // reference, so the rep chunk stays reachable only via ThreadLocalMap.
+      ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(LEAK_KLASS_ID, handoff.take());
       leakTid = handoff.tid;
       for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
         ReferenceChainTestHooks.seedKlassPopulationSample0(LEAK_KLASS_ID, epoch * 10, epoch);
         ReferenceChainTestHooks.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
       }
-      // Continue the rising epoch sequence past the seeded range so each
-      // per-round maintenance seed below pushes a fresh, strictly increasing
-      // epoch (same as StaticFieldGrowingCollectionScenario).
+      // Maintenance continues the seeded ramp (next epoch =
+      // SEED_EPOCHS_FOR_HYSTERESIS + 1) instead of restarting at 1 - same as
+      // StaticFieldGrowingCollectionScenario.
       hysteresisEpoch = SEED_EPOCHS_FOR_HYSTERESIS;
       // Wait for the BFS thread's first full pass, then poll - same
       // load-bearing wait as LeakTagCorrelationScenario.
@@ -245,6 +249,10 @@ public final class ThreadLocalLeakScenario {
       }
       ReferenceChainTestHooks.pollReferenceChainTargets0();
     } else {
+      // Drop the handoff's chunk reference: the lambda (captured by the
+      // Thread's runnable) retains `handoff`, so a never-taken seedChunk
+      // would be a second, non-ThreadLocalMap path to a chunk.
+      handoff.take();
       Thread.sleep(5000);
     }
 
@@ -258,8 +266,7 @@ public final class ThreadLocalLeakScenario {
         hysteresisEpoch++;
         ReferenceChainTestHooks.seedKlassPopulationSample0(
             LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        ReferenceChainTestHooks.seedTidTrendSample0(
-            LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
       }
       Thread.sleep(300);
       System.gc();
@@ -283,8 +290,7 @@ public final class ThreadLocalLeakScenario {
         hysteresisEpoch++;
         ReferenceChainTestHooks.seedKlassPopulationSample0(
             LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
-        ReferenceChainTestHooks.seedTidTrendSample0(
-            LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
       }
       if (!rounds.offer(attempt)) {
         throw new IllegalStateException(
@@ -311,39 +317,48 @@ public final class ThreadLocalLeakScenario {
     System.out.println(FOUND_MARKER + best.payloadChain.targetTag);
   }
 
-  /**
-   * Monotonic: never downgrades an already better result (e.g. a fully
-   * correlated in-pool chain) to a later out-of-pool/unmatched scan; at equal
-   * quality the newer scan wins.
-   */
+  private static boolean passesThroughThreadLocalMap(Object[] rawChain) {
+    for (Object element : rawChain) {
+      if (element instanceof IMCType) {
+        String name = ((IMCType) element).getFullName();
+        if (name != null && name.contains("ThreadLocalMap")) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   private static ScanResult keepBest(ScanResult best, ScanResult scan) {
     if (scan == null) {
       return best;
     }
-    if (best == null) {
+    // Unlike LeakTagCorrelationScenario.keepBest, the losing scan has nothing
+    // to merge: this scenario's ScanResult carries no transient/noise evidence
+    // (that is LeakTagCorrelation's contract), and a scan without a payload
+    // chain has no other populated field worth keeping. If evidence fields are
+    // ever added here, merge them like LeakTagCorrelationScenario's mergeDistinct.
+    if (best == null || best.payloadChain == null) {
       return scan;
     }
-    return quality(scan) >= quality(best) ? scan : best;
-  }
-
-  /** 0: no chain, 1: out-of-pool chain, 2: in-pool chain, 3: in-pool and correlated. */
-  private static int quality(ScanResult r) {
-    if (r == null || r.payloadChain == null) {
-      return 0;
+    if (scan.payloadChain == null) {
+      return best;
     }
-    if (!r.payloadChainInPool) {
-      return 1;
+    // Mirror scan()'s own within-scan preference: an in-pool (correlated)
+    // chain outranks an out-of-pool one no matter which scan observed it, so
+    // a later out-of-pool chain cannot displace an earlier correlated one.
+    if (best.payloadChainInPool != scan.payloadChainInPool) {
+      return best.payloadChainInPool ? best : scan;
     }
-    return r.liveObjectMatchesForChainTag > 0 ? 3 : 2;
+    return scan;
   }
 
   /**
-   * Scans one dump: the first leaked {@code byte[]} chain (if any), whether
-   * its targetTag is in the leak-tag pool, and how many
-   * {@code datadog.HeapLiveObject} events for a leaked {@code byte[]} carry
-   * that same tag in {@code leakTag}. Simplified from
-   * LeakTagCorrelationScenario.scan() - no transient/noise gate scans (those
-   * are that scenario's own contracts).
+   * Scans one dump for a leaked {@code byte[]} chain through a ThreadLocalMap
+   * hop, whether its targetTag is in the leak-tag pool, and how many
+   * {@code datadog.HeapLiveObject} {@code byte[]} events carry that tag in
+   * {@code leakTag}. No transient/noise gate scans - those are
+   * LeakTagCorrelationScenario's contracts.
    */
   private static ScanResult scan(Path scratchDumpPath) throws Exception {
     if (!Files.exists(scratchDumpPath)) {
@@ -356,13 +371,15 @@ public final class ThreadLocalLeakScenario {
     ScanResult result = new ScanResult();
 
     IItemCollection chains = events.apply(
-        org.openjdk.jmc.common.item.ItemFilters.type("datadog.ReferenceChain"));
+        ItemFilters.type("datadog.ReferenceChain"));
     for (IItemIterable iterable : chains) {
       IType<IItem> type = iterable.getType();
       IMemberAccessor<?, IItem> chainAccessor =
           ReferenceChainAssertions.findAccessor(type, "chain");
       IMemberAccessor<?, IItem> targetTagAccessor =
           ReferenceChainAssertions.findAccessor(type, "targetTag");
+      IMemberAccessor<?, IItem> incarnationAccessor =
+          ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
       for (IItem item : iterable) {
         Object chainValue = chainAccessor.getMember(item);
         if (!(chainValue instanceof Object[])) {
@@ -374,6 +391,13 @@ public final class ThreadLocalLeakScenario {
         long targetTag = targetTagAccessor != null
             ? ReferenceChainAssertions.numberValue(targetTagAccessor.getMember(item)) : -1;
         if (!"byte[]".equals(leaf)) {
+          continue;
+        }
+        // Only a chain through the leaking thread's ThreadLocalMap proves the
+        // thread-scoped walk; any other byte[] chain must not satisfy this
+        // scenario (with thread registration broken it would be the only
+        // kind of chain left, and the scenario must report NOT_FOUND).
+        if (!passesThroughThreadLocalMap(rawChain)) {
           continue;
         }
         boolean inPool =
@@ -388,23 +412,61 @@ public final class ThreadLocalLeakScenario {
           }
           result.payloadChain = new ReferenceChainAssertions.ChainMatch(chain, targetTag, 0);
           result.payloadChainInPool = inPool;
+          // The (tag, incarnation) pair is the chain's identity; an unresolved
+          // -1 stamp must fail loud rather than degrade to tag-only matching,
+          // which a recycled tag's chunk could satisfy.
+          if (incarnationAccessor == null) {
+            throw new IllegalStateException(
+                "datadog.ReferenceChain events have no leakTagIncarnation accessor");
+          }
+          long chainIncarnation =
+              ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item));
+          if (chainIncarnation == -1) {
+            throw new IllegalStateException(
+                "chain leakTagIncarnation is not a numeric value; "
+                    + "tag-only correlation is ambiguous across recycled tags");
+          }
+          result.payloadChainIncarnation = chainIncarnation;
         }
       }
     }
 
     if (result.payloadChainInPool) {
       IItemCollection liveObjects = events.apply(
-          org.openjdk.jmc.common.item.ItemFilters.type("datadog.HeapLiveObject"));
+          ItemFilters.type("datadog.HeapLiveObject"));
       for (IItemIterable iterable : liveObjects) {
         IType<IItem> type = iterable.getType();
         IMemberAccessor<?, IItem> leakTagAccessor =
             ReferenceChainAssertions.findAccessor(type, "leakTag");
         IMemberAccessor<?, IItem> objectClassAccessor =
             ReferenceChainAssertions.findAccessor(type, "objectClass");
+        IMemberAccessor<?, IItem> incarnationAccessor =
+            ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
+        // Fail loud if either identity field is missing: without the tag, every
+        // live object reads -1 and never matches the chain's targetTag; without
+        // the incarnation, the match degrades to tag-only, which a recycled
+        // tag's stale chunk could satisfy. Both must surface as errors, not as
+        // an empty correlation with no diagnostic.
+        if (incarnationAccessor == null) {
+          throw new IllegalStateException(
+              "datadog.HeapLiveObject events have no leakTagIncarnation accessor");
+        }
+        if (leakTagAccessor == null) {
+          throw new IllegalStateException(
+              "datadog.HeapLiveObject events have no leakTag accessor");
+        }
         for (IItem item : iterable) {
-          long leakTag = leakTagAccessor != null
-              ? ReferenceChainAssertions.numberValue(leakTagAccessor.getMember(item)) : -1;
-          if (leakTag != result.payloadChain.targetTag) {
+          long leakTag =
+              ReferenceChainAssertions.numberValue(leakTagAccessor.getMember(item));
+          long incarnation =
+              ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item));
+          // Leak tags are recycled: the tag alone is ambiguous across chunks.
+          // An unresolved -1 incarnation is a hard mismatch, never a tag-only
+          // match: a stale chunk that inherited the recycled tag must not
+          // count as this chain's live object.
+          if (incarnation == -1
+              || leakTag != result.payloadChain.targetTag
+              || incarnation != result.payloadChainIncarnation) {
             continue;
           }
           Object objectClass = objectClassAccessor != null

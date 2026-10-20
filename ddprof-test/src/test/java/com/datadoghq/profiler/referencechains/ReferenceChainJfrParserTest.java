@@ -61,13 +61,17 @@ public class ReferenceChainJfrParserTest {
   private static final String EVENT_TYPE = "datadog.ReferenceChain";
 
   /**
-   * Same path the companion gtest resolves to: the OS temp dir (TMPDIR, falling back to /tmp),
-   * agreed by both sides - the gtest (ddprof-lib) and this test (ddprof-test) are different
-   * Gradle modules with no other filesystem contract between them. The file is consume-once: this
-   * test deletes it after loading and the gtest unlinks it before regenerating, so a stale fixture
-   * from an earlier build can never satisfy the existence assumption below.
+   * The path the companion gtest resolves to: {@code DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR} when
+   * set (ddprof-lib's build sets it to a build-dir path for both the gtest and this test task),
+   * otherwise the OS temp dir (TMPDIR, falling back to /tmp) for standalone runs. The file is
+   * consume-once: this test deletes it after loading and the gtest unlinks it before regenerating,
+   * so a stale fixture from an earlier build can never satisfy the existence assumption below.
    */
   private static Path roundtripJfrPath() {
+    String configured = System.getenv("DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR");
+    if (configured != null && !configured.isEmpty()) {
+      return Paths.get(configured);
+    }
     String tmp = System.getenv("TMPDIR");
     String dir = (tmp != null && !tmp.isEmpty()) ? tmp : "/tmp";
     return Paths.get(dir, "datadog_reference_chain_roundtrip.jfr");
@@ -77,8 +81,9 @@ public class ReferenceChainJfrParserTest {
   public void chainFieldResolvesToSeededClassNamesInLeafToRootOrder()
       throws IOException, CouldNotLoadRecordingException {
     Path jfrPath = roundtripJfrPath();
-    // CI runners without Google Test (e.g. el7), or runs where the gtest has not re-run since the
-    // fixture was last consumed, have no fixture - skip rather than fail.
+    // Assumption, not assertion: the producing gtest does not run on CI runners without Google
+    // Test (e.g. the el7 testRelease job) or with -Pskip-gtest. The build deletes the file before
+    // the gtest runs, and when the gtest is skipped, so an existing file is always this build's.
     Assumptions.assumeTrue(Files.exists(jfrPath),
         "Expected " + jfrPath + " to exist - run "
             + ":ddprof-lib:gtestDebug_referenceChainJfrRoundtrip_ut first "

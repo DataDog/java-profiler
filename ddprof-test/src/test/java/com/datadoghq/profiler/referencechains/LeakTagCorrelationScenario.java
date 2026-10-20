@@ -223,7 +223,10 @@ public final class LeakTagCorrelationScenario {
         }
         // Churn one slot at a time: the population stays live-but-ephemeral (constant live
         // count, nothing durably retained beyond the frame) while still allocating.
-        held[(int) (slot++ % held.length)] = new NoisePayload();
+        // held[0] is reserved: it is the published noise representative, and after
+        // handoff.take() this frame is its only strong reference (the tracker holds just a
+        // weak ref) - churning it would let the representative be collected.
+        held[1 + (int) (slot++ % (held.length - 1))] = new NoisePayload();
       }
     }, "leak-correlation-noise");
     noiseThread.setDaemon(true);
@@ -233,7 +236,7 @@ public final class LeakTagCorrelationScenario {
       profiler.execute(startCommand);
     }
 
-    boolean debugBuild = "debug".equals(System.getProperty("ddprof_test.config"));
+    boolean debugBuild = ReferenceChainAssertions.isDebugInstrumentedBuild();
     // Declared at method scope: the per-round and final-attempt maintenance
     // seeding below (in their own debugBuild blocks) reuse these tids.
     int leakTid = 0;

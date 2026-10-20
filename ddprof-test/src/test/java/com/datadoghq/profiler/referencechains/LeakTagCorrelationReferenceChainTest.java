@@ -17,14 +17,18 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.LEAK_TAG_BASE;
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.LEAK_TAG_POOL_SIZE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * End-to-end coverage of the leak-tag correlation use case in a genuinely separate child
@@ -98,6 +102,14 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
     assumeFalse(Platform.isJavaVersion(8));
     assumeFalse(Platform.isJ9());
     assumeFalse(Platform.isZing());
+    if (requireFrontierRotation) {
+      // The FRONTIER-rotation signal is a level-2 TEST_LOG line (referenceChainWalk.cpp,
+      // collectLeakAccumulationCandidatesForRotation) - compiled out without -DDEBUG
+      // (debug/asan/tsan only) and silent unless DD_PROFILING_REFERENCE_CHAINS_DEBUG=2.
+      assumeTrue(ReferenceChainAssertions.isDebugInstrumentedBuild(),
+          "FRONTIER-rotation assertion needs the reference-chains TEST_LOG stream, only "
+              + "compiled into DEBUG-instrumented builds (debug/asan/tsan)");
+    }
 
     Path scratchDumpPath = Files.createTempFile("referencechains-correlation-", ".jfr");
     Files.deleteIfExists(scratchDumpPath);
@@ -129,15 +141,21 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
       String packedCommand = startCommand + "|||" + scratchDumpPath.toAbsolutePath();
 
       List<String> jvmArgs = Collections.singletonList(
-          "-Dddprof_test.config=" + System.getProperty("ddprof_test.config"));
+          "-Dddprof_test.config=" + ReferenceChainAssertions.requiredTestConfig());
 
       AtomicReference<String> resultLine = new AtomicReference<>();
+      // Level 2 is required for the FRONTIER-selection TEST_LOG line (rcDebugLevel.h); the
+      // loose variant keeps the default (silent) level.
+      Map<String, String> childEnv = requireFrontierRotation
+          ? Collections.singletonMap("DD_PROFILING_REFERENCE_CHAINS_DEBUG", "2")
+          : Collections.<String, String>emptyMap();
       LaunchResult result = launch("leak-correlation", jvmArgs, packedCommand,
-          Collections.emptyMap(),
+          childEnv,
           // The scenario's own round loop (up to 25 rounds plus a 5-attempt grace period,
           // ~40-60s observed) on top of a cold external JVM's startup/classloading cost and
-          // this scenario's larger graph - same margin logic as the existing scenarios.
-          150,
+          // this scenario's larger graph - same margin logic as the existing scenarios. The
+          // stale-owner check after a debug-build correlation adds up to ~10s.
+          childTimeoutSeconds(150),
           line -> {
             if (line.startsWith(LeakTagCorrelationScenario.FOUND_MARKER)
                 || line.equals(LeakTagCorrelationScenario.NOT_FOUND_MARKER)
@@ -158,9 +176,13 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
                   || line.contains("reconstructChain")) {       // reconstruction attempted, failed
                 correlationActivitySeen.set(true);
               }
-              testLogTail.addLast(line);
-              while (testLogTail.size() > 2000) {
-                testLogTail.removeFirst();
+              // The reader thread can still be running after a join timeout, so every access
+              // to the tail is synchronized (diagnostics() reads a snapshot).
+              synchronized (testLogTail) {
+                testLogTail.addLast(line);
+                while (testLogTail.size() > 2000) {
+                  testLogTail.removeFirst();
+                }
               }
             }
             return LineConsumerResult.CONTINUE;
@@ -213,7 +235,11 @@ public class LeakTagCorrelationReferenceChainTest extends AbstractProcessProfile
    * gotw batch-size trace (batch control regressions), and any leak-tag interception or
    * correlation lines. Capped so the message stays readable.
    */
-  private static String diagnostics(Deque<String> testLogTail) {
+  private static String diagnostics(Deque<String> testLogTailRef) {
+    List<String> testLogTail;
+    synchronized (testLogTailRef) {
+      testLogTail = new ArrayList<>(testLogTailRef);
+    }
     if (testLogTail.isEmpty()) {
       return "\n(no TEST_LOG output captured - non-debug build or no reference-chain passes ran)";
     }

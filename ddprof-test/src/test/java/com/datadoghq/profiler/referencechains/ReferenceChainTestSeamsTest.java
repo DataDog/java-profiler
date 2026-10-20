@@ -64,7 +64,7 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
   }
 
   private static void assumeDebugBuild() {
-    assumeTrue("debug".equals(System.getProperty("ddprof_test.config")));
+    assumeTrue(ReferenceChainAssertions.isDebugInstrumentedBuild());
   }
 
   /** Seeds twenty epochs of strictly increasing population counts, then asserts

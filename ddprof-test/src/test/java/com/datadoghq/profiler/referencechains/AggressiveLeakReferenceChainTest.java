@@ -56,9 +56,9 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
   }
 
   private static void assumeDebugBuild() {
-    assumeTrue("debug".equals(System.getProperty("ddprof_test.config")),
+    assumeTrue(ReferenceChainAssertions.isDebugInstrumentedBuild(),
         "heapFloorRecordForTest0/setMaxHeapBytesForTest0/shouldRunPassForTest0 only exist in a "
-            + "debug native build (javaApi.cpp's #ifdef DEBUG guard)");
+            + "-DDEBUG native build (debug/asan/tsan - javaApi.cpp's #ifdef DEBUG guard)");
   }
 
   /**
@@ -104,6 +104,9 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
     ReferenceChainTestHooks.resetKlassPopulationForTest0();
     ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     try {
+      // Baseline BEFORE publishing any urgency input: the live BFS thread may run the one
+      // urgency-authorized search as soon as the samples below land, and that pass must count.
+      int passesBefore = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
       // 1000 MiB fake max heap, rising from 100 MiB to 991 MiB over 9 (fake) seconds: ~99 MiB/s,
       // 9 MiB of headroom left at the last sample -> projected time-to-OOM ~= 9/99 s, far under
       // OOM_URGENT_THRESHOLD_S = 300s.
@@ -119,7 +122,6 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
           "This test's own precondition: no per-klass candidate should exist, so passes running "
               + "below can only come from the aggregate urgent-OOM bypass");
 
-      int passesBefore = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
       // Idle BFS cadence is ~1s/pass; urgency ramps it to ~10ms after the latch. 20s covers the
       // first evaluation landing up to one idle cadence after the seeding loop.
       long deadline = System.currentTimeMillis() + 20_000;
@@ -176,6 +178,42 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
               + "candidate give hasLeakSignal() nothing to trust");
     } finally {
       restoreHeapFloorDefaults();
+    }
+  }
+
+  /**
+   * Kills a no-op'd {@code heapFloorResetForTest0()} mutation: every other call site resets in
+   * a finally block that no assertion observes, so without this test a reset whose body was
+   * dropped (or whose JNI entry was left as the release stub) would leave the whole suite
+   * green while leaking one test's seeded samples into the next test's JVM. The rising-then-
+   * empty pair is asserted directly through {@code heapFloorRising()} - the same read the
+   * aggregate gate uses - so the reset's effect is checked, not assumed.
+   */
+  @Test
+  public void shouldEmptyHeapFloorRingOnReset() {
+    assumeDebugBuild();
+    ReferenceChainTestHooks.setHeapFloorRecordingForTest0(false);
+    ReferenceChainTestHooks.resetKlassPopulationForTest0();
+    ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
+    try {
+      // Same rising seeds as shouldOpenSearchGateOnAggressiveHeapWideGrowthWithNoLeakCandidate:
+      // 100 MiB to 991 MiB over 9 fake seconds, which clears heapFloorRising()'s growth and
+      // floor bars at exactly the min-fill trend window (fill = 10 samples).
+      for (int i = 0; i < 10; i++) {
+        long usedBytes = (100L + i * 99L) * 1024 * 1024;
+        long timestampNs = i * 1_000_000_000L;
+        ReferenceChainTestHooks.heapFloorRecordForTest0(usedBytes, timestampNs);
+      }
+      assertTrue(ReferenceChainTestHooks.heapFloorRisingForTest0(),
+          "Precondition: the seeded samples must read as a sustained rise before the reset");
+      ReferenceChainTestHooks.heapFloorResetForTest0();
+      assertFalse(ReferenceChainTestHooks.heapFloorRisingForTest0(),
+          "heapFloorResetForTest0() must empty the ring: fill = 0 falls below the min-fill "
+              + "trend gate heapFloorRising() requires");
+    } finally {
+      // Same order as the other tests: ring reset first, still disabled.
+      ReferenceChainTestHooks.heapFloorResetForTest0();
+      ReferenceChainTestHooks.setHeapFloorRecordingForTest0(true);
     }
   }
 }

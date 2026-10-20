@@ -247,14 +247,9 @@ public class ExternalLauncher {
                 // "<start command>|||<scratch dump path>" packed into one args[1] string rather
                 // than extending launch()'s generic (target, commands) contract with a 3rd
                 // argument every other mode would have to ignore.
-                String packed = args.length == 2 ? args[1] : "";
-                int sep = packed.indexOf("|||");
-                if (sep < 0) {
-                    throw new IllegalArgumentException(
-                        "leak-cache requires \"<start command>|||<scratch dump path>\", got: " + packed);
-                }
-                String commands = packed.substring(0, sep);
-                String scratchPath = packed.substring(sep + "|||".length());
+                String[] packed = unpackScenarioArgs("leak-cache", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
                 JavaProfiler instance = JavaProfiler.getInstance();
                 // The scenario itself calls execute(commands) - it needs to seed its cache fixture
                 // *before* starting the profiler.
@@ -265,59 +260,40 @@ public class ExternalLauncher {
                 // result line.
                 System.exit(0);
             } else if (args[0].equals("leak-static-field")) {
-                // Same "<start command>|||<scratch dump path>" packing as leak-cache above.
-                String packed = args.length == 2 ? args[1] : "";
-                int sep = packed.indexOf("|||");
-                if (sep < 0) {
-                    throw new IllegalArgumentException(
-                        "leak-static-field requires \"<start command>|||<scratch dump path>\", got: " + packed);
-                }
-                String commands = packed.substring(0, sep);
-                String scratchPath = packed.substring(sep + "|||".length());
+                // Same packing as leak-cache (unpackScenarioArgs()).
+                String[] packed = unpackScenarioArgs("leak-static-field", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
                 JavaProfiler instance = JavaProfiler.getInstance();
                 StaticFieldGrowingCollectionScenario.run(instance, commands, Paths.get(scratchPath));
                 System.out.flush();
                 System.exit(0);
             } else if (args[0].equals("leak-correlation")) {
-                // Same "<start command>|||<scratch dump path>" packing as leak-cache above.
-                String packed = args.length == 2 ? args[1] : "";
-                int sep = packed.indexOf("|||");
-                if (sep < 0) {
-                    throw new IllegalArgumentException(
-                        "leak-correlation requires \"<start command>|||<scratch dump path>\", got: " + packed);
-                }
-                String commands = packed.substring(0, sep);
-                String scratchPath = packed.substring(sep + "|||".length());
+                // Same packing as leak-cache (unpackScenarioArgs()).
+                String[] packed = unpackScenarioArgs("leak-correlation", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
                 JavaProfiler instance = JavaProfiler.getInstance();
                 LeakTagCorrelationScenario.run(instance, commands, Paths.get(scratchPath));
                 System.out.flush();
                 System.exit(0);
             } else if (args[0].equals("threadlocal-leak")) {
-                // Same "<start command>|||<scratch dump path>" packing as leak-cache above.
-                String packed = args.length == 2 ? args[1] : "";
-                int sep = packed.indexOf("|||");
-                if (sep < 0) {
-                    throw new IllegalArgumentException(
-                        "threadlocal-leak requires \"<start command>|||<scratch dump path>\", got: " + packed);
-                }
-                String commands = packed.substring(0, sep);
-                String scratchPath = packed.substring(sep + "|||".length());
+                // Same packing as leak-cache (unpackScenarioArgs()).
+                String[] packed = unpackScenarioArgs("threadlocal-leak", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
                 JavaProfiler instance = JavaProfiler.getInstance();
                 ThreadLocalLeakScenario.run(instance, commands, Paths.get(scratchPath));
                 System.out.flush();
                 System.exit(0);
             } else if (args[0].equals("threadlocal-leak-late")) {
-                // Same packing as threadlocal-leak, but the leak thread is started only AFTER the
-                // recording began - the regression shape for Profiler::onThreadStart's
-                // registerThreadObject() wiring (ThreadLocalLeakScenario.run()'s lateThread comment).
-                String packed = args.length == 2 ? args[1] : "";
-                int sep = packed.indexOf("|||");
-                if (sep < 0) {
-                    throw new IllegalArgumentException(
-                        "threadlocal-leak-late requires \"<start command>|||<scratch dump path>\", got: " + packed);
-                }
-                String commands = packed.substring(0, sep);
-                String scratchPath = packed.substring(sep + "|||".length());
+                // Same packing as threadlocal-leak (unpackScenarioArgs()), but the leak thread is
+                // started only AFTER the recording began - the regression shape for
+                // Profiler::onThreadStart's registerThreadObject() wiring
+                // (ThreadLocalLeakScenario.run()'s lateThread comment).
+                String[] packed = unpackScenarioArgs("threadlocal-leak-late", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
                 JavaProfiler instance = JavaProfiler.getInstance();
                 ThreadLocalLeakScenario.run(instance, commands, Paths.get(scratchPath), true);
                 System.out.flush();

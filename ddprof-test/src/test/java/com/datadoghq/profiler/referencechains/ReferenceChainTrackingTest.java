@@ -15,7 +15,6 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
-import org.junitpioneer.jupiter.RetryingTest;
 
 import java.nio.file.Files;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -111,6 +110,13 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   // for the same cheap-insurance-against-collision reason those two are distinct from each other.
   private static final int ABANDON_TEST_KLASS_ID = 987203;
 
+  /**
+   * The {@code datadog.ReferenceChain} ActiveSetting's {@code id} (flightRecorder.cpp's
+   * T_REFERENCE_CHAIN). ActiveSetting events from cpu/wall/memory/nativemem also read
+   * "enabled"="true", so the id is the only unambiguous discriminator.
+   */
+  private static final long REFERENCE_CHAIN_EVENT_ID = 129;
+
   // Upper bound on any single main-thread wait for the persistent allocator thread: a
   // dead/stuck allocator must fail the test, not hang the shared test fork.
   private static final long ALLOCATOR_HANDOFF_TIMEOUT_MS = 30_000;
@@ -186,13 +192,15 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     // (restartSearch()/resetSearchStateForTest() both call _pain_budget.spend(_search_pain_ms)
     // unconditionally) - at the default 1% refill, draining that debt would take minutes.
     if ("shouldReportAbandonedSearchOnTinyFrontierCap".equals(testName)) {
-      return "referencechains=true:hops=32:budget=500:framecap=1:ttl=100:painbudget=100";
+      // memory=64:l:1.0 is load-bearing: Profiler::start() only starts the ReferenceChainTracker
+      // when allocation sampling activated (activated & EM_ALLOC); a bare referencechains=... falls
+      // back to cpu-only and never runs the search. No generations=true: LivenessTracker::initialize()
+      // then clears _gc_generations, so hasLeakSignal() returns true without any population trend.
+      return "memory=64:l:1.0,referencechains=true:hops=32:budget=500:framecap=1:ttl=100:painbudget=100";
     }
-    // Deliberately does not request cpu/wall/memory/nativemem: those categories also write an
-    // "enabled" ActiveSetting, so "enabled"="true" is unambiguous evidence of the
-    // datadog.ReferenceChain setting without needing to disambiguate by the "id" field (JMC's
-    // generic accessor lookup does not resolve that field for this custom event type - not worth
-    // a bespoke accessor for one assertion).
+    // shouldExposeReferenceChainsSettingWhenEnabled: a referencechains-only command. Arguments::parse()
+    // implicitly falls back to cpu profiling, whose ActiveSetting is also "enabled"="true", so the
+    // test also matches on the ActiveSetting "id" (T_REFERENCE_CHAIN, REFERENCE_CHAIN_EVENT_ID).
     return "referencechains=true:hops=32:budget=500:ttl=2000:framecap=256";
   }
 
@@ -210,14 +218,17 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
    * {@code datadog.ReferenceChain} JFR setting (flightRecorder.cpp:1143's
    * {@code writeBoolSetting(buf, T_REFERENCE_CHAIN, "enabled", args._reference_chains)}).
    */
-  @RetryingTest(5)
+  @Test
   public void shouldExposeReferenceChainsSettingWhenEnabled() {
     stopProfiler();
     JfrEvents settings = verifyEvents("jdk.ActiveSetting");
     boolean sawEnabledSetting = false;
     for (JfrEvent item : settings) {
-      if ("enabled".equals(item.getString("name")) && "true".equals(item.getString("value"))) {
+      if (item.getLong("id", -1) == REFERENCE_CHAIN_EVENT_ID
+          && "enabled".equals(item.getString("name"))
+          && "true".equals(item.getString("value"))) {
         sawEnabledSetting = true;
+        break;
       }
     }
     assertTrue(sawEnabledSetting, "datadog.ReferenceChain#enabled setting was not found");
@@ -259,7 +270,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     // array, so index 0 is always present in whichever array the walk snapshots.
     gcRootHolder = new ArrayList<>();
     gcRootHolder.add(new ChainLink("gc-root-seed"));
-    if ("debug".equals(System.getProperty("ddprof_test.config"))) {
+    if (ReferenceChainAssertions.isDebugInstrumentedBuild()) {
       // Being pinned first within this class does not make this the first reference-chain test in
       // the whole shared JVM - another test class can run first and leave the singleton search
       // already non-RUNNING/already-tagged, in which case runPass() never takes its real
@@ -352,7 +363,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
         dump(scratchDumpPath);
         match = ReferenceChainAssertions.findMatchForClass(verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false), ChainLink.class);
 
-        if (match == null && "debug".equals(System.getProperty("ddprof_test.config"))) {
+        if (match == null && ReferenceChainAssertions.isDebugInstrumentedBuild()) {
           // Debug-only native seams - a no-op in release builds, so release-build coverage of the
           // organic path below is unchanged.
           //
@@ -477,7 +488,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     // applies here too.
     Map<String, CachedPayload> cache = new HashMap<>();
     cache.put("cache-leak-seed", new CachedPayload("cache-leak-seed"));
-    if ("debug".equals(System.getProperty("ddprof_test.config"))) {
+    if (ReferenceChainAssertions.isDebugInstrumentedBuild()) {
       // Force a genuine fresh search rather than depend on the natural restartSearch() cycle being
       // gated on cadence/pacing budget (canAffordNewSearch()) firing again within this method's
       // retry budget.
@@ -563,7 +574,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
         JfrEvents events1 = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
         match = ReferenceChainAssertions.findMatchForClass(events1, CachedPayload.class);
 
-        if (match == null && "debug".equals(System.getProperty("ddprof_test.config"))) {
+        if (match == null && ReferenceChainAssertions.isDebugInstrumentedBuild()) {
           // Same deterministic short-circuit as the gc-root test: the seed is what authorizes the
           // background BFS thread's next real pass, so the explicit poll below is best-effort;
           // and seed exactly once, since reseeding would corrupt the ring into a non-monotonic
@@ -573,13 +584,16 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           if (!seededTestKlassTrend) {
             // The seeds name the allocator thread's tid: it allocated every CachedPayload,
             // including the keys[0] representative - NOT this JUnit worker's tid, which allocated
-            // none of them.
+            // none of them. Seeds match the organic ramp (epoch, not epoch*10): inflated seeds
+            // made the slope go negative (-20..-40 observed) once real samples (about 1..15 per
+            // epoch) pushed the seeds out of the trend window - see the gc-root test's identical
+            // seeding for the derivation.
             int leakTid = (int) allocatorTid.get();
             for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
               ReferenceChainTestHooks.seedKlassPopulationSample0(
-                  CACHED_PAYLOAD_TEST_KLASS_ID, epoch * 10, epoch);
+                  CACHED_PAYLOAD_TEST_KLASS_ID, epoch, epoch);
               ReferenceChainTestHooks.seedTidTrendSample0(
-                  CACHED_PAYLOAD_TEST_KLASS_ID, leakTid, epoch * 3, epoch);
+                  CACHED_PAYLOAD_TEST_KLASS_ID, leakTid, epoch, epoch);
             }
             seededTestKlassTrend = true;
           }
@@ -688,7 +702,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   @Test
   @Order(3)
   public void shouldReportAbandonedSearchOnTinyFrontierCap() throws Exception {
-    if ("debug".equals(System.getProperty("ddprof_test.config"))) {
+    if (ReferenceChainAssertions.isDebugInstrumentedBuild()) {
       // See the javadoc above for why the seeding is needed despite no generations=true of this
       // method's own, and why both a gc() and a throwaway dump() must precede it.
       System.gc();

@@ -98,7 +98,7 @@ public final class LeakingCacheScenario {
     }
     System.out.println("[debug] profiler.execute() returned");
 
-    boolean debugBuild = "debug".equals(System.getProperty("ddprof_test.config"));
+    boolean debugBuild = ReferenceChainAssertions.isDebugInstrumentedBuild();
     boolean seededTestKlassTrend = false;
     ReferenceChainAssertions.ChainMatch match = null;
     int totalRounds = 25;
