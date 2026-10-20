@@ -53,7 +53,11 @@ A terminal search releases its search-owned tags. A later search can start only 
 4. Ordinary frontier expansion.
 5. Rotation and static-anchor traversal.
 
-Each phase that uses a callback deadline receives a new deadline. Work spent by an earlier phase does not consume the next phase's deadline.
+Candidate thread traversal, ordinary frontier expansion, and rotation each receive a fresh
+callback deadline. Static-field scanning does not receive a fresh deadline. It shares the
+candidate-thread deadline when that phase runs. Otherwise, it uses the deadline set before root
+enumeration. Earlier work can therefore reduce or consume the time available for static-field
+scanning.
 
 The tracker measures total pass time and in-safepoint time separately. It charges the remainder to the CPU cost budget.
 

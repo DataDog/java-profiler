@@ -111,7 +111,9 @@ threshold is a hard real-time guarantee.
 
 ## OOM response
 
-`secondsToOOM()` uses a confirmed rising heap-floor trend. A negative result means that the estimate is not available or that the trend is not rising.
+`secondsToOOM()` independently projects exhaustion from confirmed rising JVM heap-floor and
+container-memory trends. It returns the shorter valid estimate. A negative result means that
+neither source provides a valid estimate.
 
 Two ranges have different purposes:
 
