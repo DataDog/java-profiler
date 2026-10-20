@@ -83,6 +83,9 @@ class BaseWallClock : public Engine {
 
       std::vector<ThreadType> threads;
       threads.reserve(reservoirSize);
+      size_t accounted_capacity = threads.capacity();
+      NativeMem::record(NM_WALLCLOCK,
+                        static_cast<long long>(accounted_capacity * sizeof(ThreadType)));
       int self = OS::threadId();
       ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
       
@@ -104,7 +107,14 @@ class BaseWallClock : public Engine {
 
       while (_running.load(std::memory_order_relaxed)) {
         collectThreads(threads);
-        NativeMem::setLive(NM_WALLCLOCK, (long long)threads.capacity() * sizeof(ThreadType));
+        size_t capacity = threads.capacity();
+        if (capacity != accounted_capacity) {
+          NativeMem::record(NM_WALLCLOCK,
+                            (static_cast<long long>(capacity) -
+                             static_cast<long long>(accounted_capacity)) *
+                            static_cast<long long>(sizeof(ThreadType)));
+          accounted_capacity = capacity;
+        }
         // The epoch's samplePoolSize counts every candidate, including threads
         // the precheck suppresses below, so it means the same in both precheck
         // modes: lazy backfill only discovers suppression while visiting.
@@ -188,10 +198,10 @@ class BaseWallClock : public Engine {
                            ((_interval * 2) - 1)));
       }
 
-      // `threads` goes out of scope (and frees its buffer) when this function
-      // returns; reset the gauge here so a final JFR flush after stop()
-      // doesn't keep reporting the last observed capacity as live.
-      NativeMem::setLive(NM_WALLCLOCK, 0);
+      // Retract only this timer's backing allocation. The tracker and any other
+      // timers account for their own storage in the same category.
+      NativeMem::record(NM_WALLCLOCK,
+                        -static_cast<long long>(accounted_capacity * sizeof(ThreadType)));
     }
 
 public:
