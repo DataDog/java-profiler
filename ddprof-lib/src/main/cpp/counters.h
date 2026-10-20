@@ -137,6 +137,11 @@
   X(WALKVM_FP_CHAIN_REACHED_CODEHEAP, "walkvm_fp_chain_reached_codeheap")    \
   X(WALKVM_ANCHOR_NOT_IN_JAVA,  "walkvm_anchor_not_in_java")                   \
   X(WALKVM_CONT_BARRIER_HIT,    "walkvm_cont_barrier_hit")                     \
+  X(WALKVM_FROZEN_RECOVERED,    "walkvm_frozen_recovered")                     \
+  X(WALKVM_FROZEN_FAILED,       "walkvm_frozen_failed")                        \
+  X(WALKVM_FROZEN_INTERPRETED,  "walkvm_frozen_interpreted")                   \
+  X(WALKVM_FROZEN_COMPILED,     "walkvm_frozen_compiled")                      \
+  X(WALKVM_FROZEN_PARENT,       "walkvm_frozen_parent")                        \
   X(WALKVM_ENTER_SPECIAL_HIT,   "walkvm_enter_special_hit")                    \
   X(WALKVM_CONT_SPECULATIVE_HIT,"walkvm_cont_speculative_hit")                 \
   X(WALKVM_CONT_ENTRY_NULL,     "walkvm_cont_entry_null")                      \

@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include "hotspot/vmStructs.inline.h"
+#include "hotspot/frozenStackWalker.h"
 #include "vmEntry.h"
 #include "jniHelper.h"
 #include "jvmHeap.h"
@@ -125,6 +126,7 @@ void VMStructs::init(CodeCache* libjvm) {
 // Run when VM is initialized and JNI is available
 void VMStructs::ready() {
     resolveOffsets();
+    FrozenStackWalker::init();
     patchSafeFetch();
 }
 

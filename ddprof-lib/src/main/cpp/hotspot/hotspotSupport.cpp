@@ -11,6 +11,7 @@
 #include "frames.h"
 #include "guards.h"
 #include "hotspot/hotspotSupport.h"
+#include "hotspot/frozenStackWalker.h"
 #include "hotspot/jitCodeCache.h"
 #include "hotspot/vmStructs.inline.h"
 #include "jvmSupport.inline.h"
@@ -361,6 +362,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     // Last ContinuationEntry crossed; advanced via parent() for nested continuations.
     VMContinuationEntry* cont_entry = nullptr;
+    unsigned int continuation_depth = 0;
 
     // Saved anchor data — preserved across anchor consumption so inline
     // recovery can redirect even after the anchor pointer has been set to NULL.
@@ -388,7 +390,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     // Advances through a continuation boundary to the carrier frame.
     // Without carrier_frames (default, cstack=vm): always stops with a "JVM Continuation"
-    // synthetic root frame; frozen VT callers are not reconstructed.
+    // synthetic root frame after recovering frozen callers where supported.
     // With carrier_frames (cstack=vmx): attempts to walk through; failures emit BCI_ERROR
     // so the sample is truthfully marked truncated.
     // Walks cont_entry->parent() on repeated calls to handle nested continuations
@@ -404,11 +406,19 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     //
     // Returns true to continue the walk, false to break.
     auto walkThroughContinuation = [&](bool all_frames_thawed) -> bool {
-        // A return barrier leaves older Java callers in heap chunks, which this
-        // walker skips even when carrier walking succeeds.
-        if (!all_frames_thawed && truncated != nullptr) {
-            *truncated = true;
+        if (!all_frames_thawed) {
+            bool was_truncated = truncated != nullptr && *truncated;
+            // A recovered fault can bypass append's return and the rest of this
+            // lambda. Keep the partial trace truncated unless recovery completes.
+            if (truncated != nullptr) *truncated = true;
+            if (FrozenStackWalker::append(vm_thread, entry_pc, continuation_depth, frames, depth, actual_max_depth, details)) {
+                Counters::increment(WALKVM_FROZEN_RECOVERED);
+                if (truncated != nullptr) *truncated = was_truncated;
+            } else {
+                Counters::increment(WALKVM_FROZEN_FAILED);
+            }
         }
+        continuation_depth++;
         if (depth >= actual_max_depth) return false;
         if (!features.carrier_frames) {
             fillFrame(frames[depth++], BCI_NATIVE_FRAME, CONT_ROOT_FRAME);
