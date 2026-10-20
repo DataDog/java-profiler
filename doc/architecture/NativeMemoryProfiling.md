@@ -22,8 +22,8 @@ one event per 512 KiB allocated). Passing `nativemem=0` records every allocation
 `nativememoutput=jfr|usdt|both` selects the destination; `both` is the default.
 Pass `jfr` to disable USDT output or `usdt` to disable JFR output. The output
 option does not activate profiling by itself. On non-Linux platforms the implicit
-default emits JFR only. Explicit `usdt`/`both` values emit a warning and fall back
-to JFR.
+default emits JFR only. Explicit `usdt` emits a warning and disables native-memory
+profiling, while explicit `both` emits a warning and continues with JFR only.
 
 USDT output is allocation-only. It deliberately does not add a free probe or
 retain live-heap state. `weighted_bytes` is the allocation size divided by its

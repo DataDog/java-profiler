@@ -382,7 +382,7 @@ void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
     SAMPLER_PERF_PROBE(SP_NATIVEMEM);
 
     u64 current_interval = __atomic_load_n(&_interval, __ATOMIC_ACQUIRE);
-    if (_output != NATIVE_MEMORY_USDT) {
+    if (_output == NATIVE_MEMORY_JFR || _output == NATIVE_MEMORY_BOTH) {
         MallocEvent event;
         event._start_time = TSC::ticks();
         event._address = (uintptr_t)address;
@@ -407,7 +407,8 @@ void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
     }
 
     bool usdt_active = false;
-    if (_output != NATIVE_MEMORY_JFR && size <= (size_t)INT64_MAX) {
+    if ((_output == NATIVE_MEMORY_USDT || _output == NATIVE_MEMORY_BOTH) &&
+        size <= (size_t)INT64_MAX) {
 #ifdef UNIT_TEST
         usdt_active = _test_usdt_active == NULL
             ? isNativeAllocationUsdtEnabled() : _test_usdt_active();
@@ -452,6 +453,11 @@ void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
 
 Error MallocTracer::start(Arguments& args) {
     _output = args._nativemem_output;
+    if (_output == NATIVE_MEMORY_NOOP) {
+        __atomic_store_n(&_running, false, __ATOMIC_RELEASE);
+        return Error::OK;
+    }
+
     _configured_interval = args._nativemem > 0 ? args._nativemem : 0;
     __atomic_store_n(&_interval, _configured_interval, __ATOMIC_RELEASE);
     __atomic_store_n(&_bytes_until_sample,
@@ -482,9 +488,12 @@ Error MallocTracer::check(Arguments& args) {
         return Error("nativememoutput requires nativemem");
     }
 #if !defined(__linux__)
-    if (args._nativemem_output != NATIVE_MEMORY_JFR) {
-        const char* output = args._nativemem_output == NATIVE_MEMORY_USDT ? "usdt" : "both";
-        LOG_WARN("nativememoutput=%s is supported only on Linux; falling back to JFR", output);
+    if (args._nativemem_output == NATIVE_MEMORY_USDT) {
+        LOG_WARN("nativememoutput=usdt is supported only on Linux; "
+                 "native memory profiling will be disabled");
+        args._nativemem_output = NATIVE_MEMORY_NOOP;
+    } else if (args._nativemem_output == NATIVE_MEMORY_BOTH) {
+        LOG_WARN("USDT output is supported only on Linux; continuing with JFR only");
         args._nativemem_output = NATIVE_MEMORY_JFR;
     }
 #endif

@@ -123,6 +123,28 @@ TEST_F(MallocTracerUsdtTest, JfrModeNeverQueriesOrEmitsUsdt) {
     expectStages({"jfr", "accounting"});
 }
 
+TEST_F(MallocTracerUsdtTest, NoopModeProducesNoOutput) {
+    active_value = 1;
+    MallocTracer::configureForTest(NATIVE_MEMORY_NOOP, 512, true);
+    MallocTracer::recordMalloc(reinterpret_cast<void*>(0x1234), 512, 7);
+
+    EXPECT_EQ(0, jfr_count);
+    EXPECT_EQ(0, active_count);
+    EXPECT_EQ(0, emit_count);
+    expectStages({"accounting"});
+}
+
+TEST_F(MallocTracerUsdtTest, NoopModeDoesNotStartTracer) {
+    Arguments args;
+    args._nativemem = 512;
+    args._nativemem_output = NATIVE_MEMORY_NOOP;
+    MallocTracer tracer;
+
+    EXPECT_FALSE(tracer.start(args));
+    EXPECT_FALSE(MallocTracer::running());
+    expectStages({});
+}
+
 TEST_F(MallocTracerUsdtTest, UsdtModeSkipsJfrAndEmitsWeightedPayload) {
     active_value = 2;
     void* address = reinterpret_cast<void*>(0x1234);

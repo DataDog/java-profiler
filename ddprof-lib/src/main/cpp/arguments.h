@@ -115,7 +115,8 @@ enum Ring {
 enum NativeMemoryOutput {
   NATIVE_MEMORY_JFR,
   NATIVE_MEMORY_USDT,
-  NATIVE_MEMORY_BOTH
+  NATIVE_MEMORY_BOTH,
+  NATIVE_MEMORY_NOOP
 };
 
 #if defined(__linux__)
