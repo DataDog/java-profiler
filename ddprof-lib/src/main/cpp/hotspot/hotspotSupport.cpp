@@ -1531,7 +1531,9 @@ void HotspotSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclas
         // Out of memory for the mark: nothing can tell this class's frames
         // apart any more, so refuse every lazy frame from now on.
         Counters::increment(KLASS_REGISTRY_ADD_FAILED);
-        __atomic_store_n(&_redefinitions_untracked, true, __ATOMIC_RELEASE);
+        // Sequentially consistent, pairing with the fence in resolveLazily():
+        // a resolution that misses this store read everything before it.
+        __atomic_store_n(&_redefinitions_untracked, true, __ATOMIC_SEQ_CST);
     }
 }
 
@@ -2017,8 +2019,15 @@ bool HotspotSupport::resolveLazily(ProfiledThread* prof_thread, VMMethod* vm_met
   }
   // The class is marked before a redefinition swaps its methods. If the mark
   // is still absent now, every read above happened before that swap, so the
-  // Method* we validated was the class's own; otherwise we cannot tell.
-  if (resolved && _klass_registry.isRedefined(VM::jni(), holder)) {
+  // Method* we validated was the class's own; otherwise we cannot tell. A
+  // redefinition that could not be marked sets _redefinitions_untracked
+  // instead, so that is checked again too. The fence keeps the metadata reads
+  // above from being reordered past that load.
+  if (resolved) {
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+  }
+  if (resolved && (__atomic_load_n(&_redefinitions_untracked, __ATOMIC_SEQ_CST) ||
+                   _klass_registry.isRedefined(VM::jni(), holder))) {
     result.release();
     Counters::increment(METHOD_RESOLVE_LAZY_REDEFINED);
     return false;
