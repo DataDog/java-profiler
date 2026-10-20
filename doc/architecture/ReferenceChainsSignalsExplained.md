@@ -99,7 +99,15 @@ Five consecutive passes at no more than half the pause target can start budget b
 
 Root-enumeration passes do not update the PID controller because they use a separate edge budget. Their safepoint time still contributes to search cost and can revoke borrowed budget.
 
-The pause target is a control target. It is not a maximum-pause guarantee. A JVMTI operation can do work between callback checks, and root enumeration has work that the admission budget does not control.
+The pause target controls resumable traversal phases. A callback asks JVMTI to stop when
+it observes the deadline, but callback granularity and JVM work can cause overshoot.
+
+Root enumeration does not use the deadline. JVMTI provides no cursor that lets the next
+attempt resume after an abort, and the admission budget does not count every examined
+root. For this release, a root-enumeration pause is acceptable if it is shorter than
+three seconds. [PROF-16284](https://datadoghq.atlassian.net/browse/PROF-16284)
+tracks measurement and improvement. Neither the pause target nor this acceptance
+threshold is a hard real-time guarantee.
 
 ## OOM response
 

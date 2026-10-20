@@ -67,6 +67,16 @@ The first pass always performs root enumeration. A later pass performs it after 
 
 Root enumeration uses `firstpassbudget`. The name is historical: the implementation can use this budget again during later root-enumeration attempts.
 
+This phase does not use the callback deadline. JVMTI does not expose a cursor for
+resuming `IterateOverReachableObjects()`. An aborted attempt starts again from the first
+root and can repeatedly omit roots later in the enumeration order. The edge budget does
+not bound elapsed time when callbacks examine roots that the frontier already contains.
+
+For this release, a root-enumeration pause is acceptable if it is shorter than three
+seconds. This threshold is not the desired latency and is not a hard real-time
+guarantee. [PROF-16284](https://datadoghq.atlassian.net/browse/PROF-16284)
+tracks separate measurement and a progress-preserving mitigation.
+
 ### Static fields
 
 Root callbacks do not provide the static-field edges needed by this implementation. `admitStaticFieldRoots()` therefore scans loaded classes with `FollowReferences()`.
@@ -154,7 +164,9 @@ The implementation controls different costs separately:
 - `_configured_frontier_cap` limits native metadata.
 - `_ttl_ms` limits search lifetime.
 
-The pause target is an adaptive target, not a deadline guarantee. See [Reference-chain scheduling and cost control](ReferenceChainsSignalsExplained.md).
+For resumable traversal phases, the pause target controls when a callback asks JVMTI to
+stop. Callback granularity and JVM work can cause overshoot. Root enumeration does not
+use this deadline. See [Reference-chain scheduling and cost control](ReferenceChainsSignalsExplained.md).
 
 ## Automatic defaults
 
@@ -205,6 +217,6 @@ The implementation does not guarantee:
 - The only retaining path.
 - A result for every candidate.
 - Observation of every reference mutation.
-- A maximum pause duration.
+- A hard real-time pause limit.
 
 Consumers must use the chain as diagnostic evidence and must also inspect abandonment events and drop counters.

@@ -78,7 +78,16 @@ The implementation uses several independent controls:
 - A frontier cap limits metadata growth.
 - A search TTL and no-progress checks stop searches that do not converge.
 
-These controls are adaptive limits, not a strict pause-time guarantee. A JVMTI heap operation can exceed the pause target before a callback observes its deadline. Root enumeration also has fixed work that the edge budget cannot remove.
+Most traversal work is resumable. A callback asks JVMTI to stop when it observes the
+pause deadline, and a later pass continues from the saved frontier. The operation can
+still exceed the target because the JVM can work between callbacks.
+
+Root enumeration is the main exception. JVMTI does not expose a cursor for resuming
+`IterateOverReachableObjects()`, and the edge budget counts admitted roots rather than
+all examined roots. For this release, a root-enumeration pause is acceptable if it is
+shorter than three seconds. This is an acceptance threshold, not the desired latency or
+a hard real-time guarantee. [PROF-16284](https://datadoghq.atlassian.net/browse/PROF-16284)
+tracks measurement and improvement of this phase.
 
 `stopThread()` requests cooperative cancellation. The heap callback checks the request on each invocation. Cancellation therefore depends on the JVM reaching another callback; it is not instantaneous.
 

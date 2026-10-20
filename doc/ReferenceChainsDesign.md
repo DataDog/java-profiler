@@ -20,7 +20,7 @@ The chain is diagnostic data. It is not an exact retainer analysis.
 
 - The profiler must work on supported stock JDKs.
 - The profiler must not require a patched JVM.
-- A single walk must not require one unbounded stop-the-world operation.
+- Graph expansion must not require one unbounded stop-the-world operation.
 - The feature must limit memory use and background work.
 - The result can be incomplete.
 
@@ -85,7 +85,15 @@ The tracker separates root discovery from frontier expansion.
 3. Frontier expansion resolves a batch of tags and follows one bounded step from those objects.
 4. Rotation revisits selected expanded objects whose outgoing references can change.
 
-The edge budget and callback deadline stop admission after the current limit. They do not make pause duration a hard real-time bound. JVMTI can perform work before or between callbacks.
+The edge budget and callback deadline stop admission after the current limit. A later
+pass continues frontier expansion from saved tags. JVMTI can still perform work before
+or between callbacks, so the deadline is not a hard real-time bound.
+
+Root enumeration is not resumable through the JVMTI API. Aborting it and retrying starts
+again from the first root, which can prevent later roots from being examined. The current
+release therefore permits this phase to finish. For this release, a root-enumeration
+pause is acceptable if it is shorter than three seconds. Improvement is
+tracked in [PROF-16284](https://datadoghq.atlassian.net/browse/PROF-16284).
 
 ## Scheduling
 
