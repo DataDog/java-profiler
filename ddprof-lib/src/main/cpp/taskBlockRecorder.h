@@ -15,6 +15,12 @@
 void initializeTaskBlockDurationThreshold();
 bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks);
 
+// Starts a producer-owned run after flushing the preceding unowned wall tail.
+// Called on the slot's owning thread, so pausing fallback accumulation also
+// prevents a profiling signal from adding weight between the flush and admission.
+u64 enterOwnedBlockRun(ProfiledThread* current, ThreadFilter::SlotID slot_id,
+                       OSThreadState state, BlockRunOwner owner = BlockRunOwner::JAVA);
+
 bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
                            WallClockBlockTracker* tracker, jthread thread,
                            int start_depth, u64 block_token, u64 blocker,
@@ -25,12 +31,33 @@ bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
 // Cleanup is deliberately performed even when admission is rejected so an
 // application thread never waits for rotation and suppression cannot be left
 // armed.
+// 'end_ticks' lets a caller that already had to sample the clock (e.g. to decide
+// whether the interval is worth resolving a blocker identity for) share the exact
+// same end timestamp with the eligibility check; 0 means "sample it here".
 bool finishTaskBlockAtExit(ProfiledThread* current,
                            ThreadFilter* thread_filter,
                            WallClockBlockTracker* tracker, jthread thread,
                            int start_depth, u64 block_token, u64 start_ticks,
                            const Context& context, u64 blocker,
-                           u64 unblocking_span_id);
+                           u64 unblocking_span_id, u64 end_ticks = 0);
+
+// JVMTI event callbacks for the native monitor-contention/Object.wait task-block
+// producer. Registered directly into jvmtiEventCallbacks by vmEntry.cpp.
+void JNICALL MonitorContendedEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                   jobject object);
+void JNICALL MonitorContendedEntered(jvmtiEnv *jvmti, JNIEnv *jni,
+                                     jthread thread, jobject object);
+void JNICALL MonitorWait(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                         jobject object, jlong timeout);
+void JNICALL MonitorWaited(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                           jobject object, jboolean timed_out);
+
+// Enables/disables the native monitor-contention/Object.wait JVMTI events that
+// back the MonitorContendedEnter/Entered/Wait/Waited callbacks above. Returns
+// whether the events ended up enabled after the attempt; callers use this to
+// gate their own admission flag rather than assuming success. Disabling is a
+// no-op when the capability was never enabled.
+bool setNativeMonitorTaskBlockEventsEnabled(bool enabled);
 
 class TaskBlockActivity {
  private:

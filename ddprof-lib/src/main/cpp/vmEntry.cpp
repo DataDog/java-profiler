@@ -8,6 +8,7 @@
 #include "vmEntry.h"
 #include "arguments.h"
 #include "context.h"
+#include "context_api.h"
 #include "counters.h"
 #include "j9/j9Support.h"
 #include "jniHelper.h"
@@ -15,12 +16,15 @@
 #include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
+#include "mutex.h"
 #include "os.h"
 #include "profiler.h"
 #include "referenceChains.h"
 #include "safeAccess.h"
 #include "samplerPerf.h"
 #include "threadLocalData.h"
+#include "taskBlockRecorder.h"
+#include "tsc.h"
 // Pulls in vmStructs.h plus the definitions of crashProtectionActive()/cast_to() that its inline
 // accessors odr-use here; the light vmStructs.h alone leaves those unresolved in assertion-enabled
 // builds (see the note in hotspotStackFrame_aarch64.cpp).
@@ -50,7 +54,15 @@ bool VM::_hotspot = false;
 bool VM::_zing = false;
 bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
+NegotiatedSetting<bool> VM::_monitor_wait_events_delegated{};
+std::atomic<bool> VM::_native_monitor_events_available{false};
+std::atomic<bool> VM::_profiler_bridge_initialized{false};
 bool VM::_is_adaptive_gc_boundary_flag_set = false;
+
+// Serializes the one-time bridge installation and ownership negotiation.
+// The flags above are still std::atomic because setNativeMonitorEventsEnabled()
+// and the Java-facing getters read them without holding this lock.
+static Mutex profiler_bridge_init_lock;
 
 jvmtiExtensionFunction VM::_request_stack_trace = nullptr;
 jvmtiExtensionFunction VM::_init_request_stack_trace = nullptr;
@@ -387,6 +399,11 @@ bool VM::initShared(JavaVM* vm) {
 }
 
 bool VM::initLibrary(JavaVM *vm) {
+  MutexLocker init_locker(profiler_bridge_init_lock);
+  if (_profiler_bridge_initialized.load(std::memory_order_acquire)) {
+    return true;
+  }
+
   TEST_LOG("VM::initLibrary");
   if (!initShared(vm)) {
     return false;
@@ -456,15 +473,35 @@ void JNICALL ForwardedGarbageCollectionFinish(jvmtiEnv *jvmti_env) {
   ReferenceChainTracker::GarbageCollectionFinish(jvmti_env);
 }
 
-bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
+void VM::configureMonitorEvents(bool delegateMonitorWaitEvents) {
+  jvmtiCapabilities actual_capabilities = {0};
+  jvmtiError rc = _jvmti->GetCapabilities(&actual_capabilities);
+  if (rc != JVMTI_ERROR_NONE) {
+    Log::warn("GetCapabilities failed: %d; native monitor events treated as unavailable", rc);
+  }
+  _native_monitor_events_available.store(
+      rc == JVMTI_ERROR_NONE && actual_capabilities.can_generate_monitor_events,
+      std::memory_order_release);
+  _monitor_wait_events_delegated.set(delegateMonitorWaitEvents);
+}
+
+ProfilerBridgeInitResult VM::initProfilerBridge(JavaVM *vm, bool attach,
+                                                bool delegateMonitorWaitEvents) {
+  MutexLocker init_locker(profiler_bridge_init_lock);
+  if (_profiler_bridge_initialized.load(std::memory_order_acquire)) {
+    return _monitor_wait_events_delegated.matches(delegateMonitorWaitEvents)
+        ? ProfilerBridgeInitResult::SUCCESS
+        : ProfilerBridgeInitResult::MONITOR_EVENTS_DELEGATION_CONFLICT;
+  }
+
   TEST_LOG("VM::initProfilerBridge");
   if (!initShared(vm)) {
-    return false;
+    return ProfilerBridgeInitResult::FAILURE;
   }
 
   CodeCache *lib = openJvmLibrary();
   if (lib == nullptr) {
-    return false;
+    return ProfilerBridgeInitResult::FAILURE;
   }
 
   // Under Agent_OnLoad (attach == false), this is the first native entry point and
@@ -495,6 +532,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   _can_intercept_binding =
       potential_capabilities.can_generate_native_method_bind_events &&
       HeapUsage::needsNativeBindingInterception();
+  bool can_add_monitor_events =
+      potential_capabilities.can_generate_monitor_events;
 
   jvmtiCapabilities capabilities = {0};
   capabilities.can_generate_all_class_hook_events = 1;
@@ -511,10 +550,12 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   capabilities.can_get_source_file_name = 1;
   capabilities.can_get_line_numbers = 1;
   capabilities.can_generate_compiled_method_load_events = 1;
-  capabilities.can_generate_monitor_events = 1;
+  capabilities.can_generate_monitor_events = can_add_monitor_events ? 1 : 0;
   capabilities.can_tag_objects = 1;
 
   _jvmti->AddCapabilities(&capabilities);
+
+  configureMonitorEvents(delegateMonitorWaitEvents);
 
   if (_hotspot) {
     probeJFRRequestStackTrace();
@@ -533,6 +574,12 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.GarbageCollectionStart = ReferenceChainTracker::GarbageCollectionStart;
   callbacks.GarbageCollectionFinish = ForwardedGarbageCollectionFinish;
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
+  if (_native_monitor_events_available.load(std::memory_order_acquire)) {
+    callbacks.MonitorContendedEnter = MonitorContendedEnter;
+    callbacks.MonitorContendedEntered = MonitorContendedEntered;
+    callbacks.MonitorWait = MonitorWait;
+    callbacks.MonitorWaited = MonitorWaited;
+  }
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
@@ -585,7 +632,78 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 
   OS::installSignalHandler(WAKEUP_SIGNAL, NULL, wakeupHandler);
 
-  return true;
+  _profiler_bridge_initialized.store(true, std::memory_order_release);
+  return ProfilerBridgeInitResult::SUCCESS;
+}
+
+bool VM::setNativeMonitorEventsEnabled(bool enabled) {
+  if (!_native_monitor_events_available.load(std::memory_order_acquire)) return false;
+
+  jvmtiError enter = JVMTI_ERROR_NONE;
+  jvmtiError entered = JVMTI_ERROR_NONE;
+  jvmtiError wait = JVMTI_ERROR_NONE;
+  jvmtiError waited = JVMTI_ERROR_NONE;
+  bool delegated = _monitor_wait_events_delegated.value();
+
+  if (enabled) {
+    // JVMTI enables each event independently and does not queue events that
+    // occur while disabled. Install every terminal notification before its
+    // entry notification so an admitted interval always has an exit path.
+    entered = _jvmti->SetEventNotificationMode(
+        JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
+    if (entered != JVMTI_ERROR_NONE) goto enable_failed;
+
+    if (!delegated) {
+      waited = _jvmti->SetEventNotificationMode(
+          JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAITED, NULL);
+      if (waited != JVMTI_ERROR_NONE) goto enable_failed;
+    }
+
+    enter = _jvmti->SetEventNotificationMode(
+        JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTER, NULL);
+    if (enter != JVMTI_ERROR_NONE) goto enable_failed;
+
+    if (!delegated) {
+      wait = _jvmti->SetEventNotificationMode(
+          JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAIT, NULL);
+      if (wait != JVMTI_ERROR_NONE) goto enable_failed;
+    }
+    return true;
+
+enable_failed:
+    // wait/waited are skipped (left JVMTI_ERROR_NONE) rather than attempted
+    // when delegated is true; log that explicitly so a 0 there isn't read as success.
+    if (delegated) {
+      Log::warn("Unable to enable JVMTI monitor events: enter=%d/entered=%d "
+                "(wait/waited skipped: delegated to Java)", enter, entered);
+    } else {
+      Log::warn("Unable to enable JVMTI monitor events: enter=%d/entered=%d/wait=%d/waited=%d",
+                enter, entered, wait, waited);
+    }
+    setNativeMonitorEventsEnabled(false);
+    return false;
+  }
+
+  // Stop admitting new intervals before removing the terminal notifications.
+  // Disable all four events even when Object.wait is delegated so teardown
+  // also cleans up modes established before ownership was configured.
+  enter = _jvmti->SetEventNotificationMode(
+      JVMTI_DISABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTER, NULL);
+  wait = _jvmti->SetEventNotificationMode(
+      JVMTI_DISABLE, JVMTI_EVENT_MONITOR_WAIT, NULL);
+  entered = _jvmti->SetEventNotificationMode(
+      JVMTI_DISABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
+  waited = _jvmti->SetEventNotificationMode(
+      JVMTI_DISABLE, JVMTI_EVENT_MONITOR_WAITED, NULL);
+
+  if (enter == JVMTI_ERROR_NONE && entered == JVMTI_ERROR_NONE &&
+      wait == JVMTI_ERROR_NONE && waited == JVMTI_ERROR_NONE) {
+    return true;
+  }
+
+  Log::warn("Unable to disable JVMTI monitor events: %d/%d/%d/%d",
+            enter, entered, wait, waited);
+  return false;
 }
 
 // Run late initialization when JVM is ready. May be called more than once (from
@@ -722,7 +840,8 @@ Agent_OnLoad(JavaVM* vm, char* options, void* reserved) {
         return ARGUMENTS_ERROR;
     }
 
-    if (!VM::initProfilerBridge(vm, false)) {
+    if (VM::initProfilerBridge(vm, false) !=
+        ProfilerBridgeInitResult::SUCCESS) {
         Log::error("JVM does not support Tool Interface");
         return COMMAND_ERROR;
     }

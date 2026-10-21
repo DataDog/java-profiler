@@ -1,4 +1,3 @@
-
 package com.datadoghq.native.config
 
 import com.datadoghq.native.model.Architecture

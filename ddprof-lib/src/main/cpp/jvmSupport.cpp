@@ -7,6 +7,7 @@
 
 #include "asyncSampleMutex.h"
 #include "common.h"
+#include "counters.h"
 #include "frames.h"
 #include "os.h"
 #include "profiler.h"
@@ -17,6 +18,8 @@
 #include "hotspot/hotspotSupport.h"
 
 #include <jni.h>
+
+#include <atomic>
 
 using JniFunction = void (JNICALL*)();
 using IsVirtualThreadFunction = jboolean (JNICALL*)(JNIEnv*, jobject);
@@ -44,11 +47,23 @@ bool JVMSupport::isPlatformThread(JNIEnv* jni, jthread thread) {
 
     const JniFunction* functions =
         reinterpret_cast<const JniFunction*>(jni->functions);
+    if (functions == nullptr) return false;
     IsVirtualThreadFunction is_virtual_thread =
         reinterpret_cast<IsVirtualThreadFunction>(
             functions[IS_VIRTUAL_THREAD_INDEX]);
-    return is_virtual_thread != nullptr &&
-        is_virtual_thread(jni, thread) == JNI_FALSE;
+    if (is_virtual_thread == nullptr) {
+        Counters::increment(TASK_BLOCK_VIRTUAL_THREAD_DETECTION_FAILED);
+        static std::atomic<bool> warning_emitted{false};
+        bool expected = false;
+        if (warning_emitted.compare_exchange_strong(expected, true,
+                                                     std::memory_order_relaxed)) {
+            LOG_WARN("Failed to resolve IsVirtualThread from the JNI function table "
+                     "even though JNI version is 19 or later; JVM producer callbacks "
+                     "will be ignored");
+        }
+        return false;
+    }
+    return is_virtual_thread(jni, thread) == JNI_FALSE;
 }
 
 bool JVMSupport::initialize() {
