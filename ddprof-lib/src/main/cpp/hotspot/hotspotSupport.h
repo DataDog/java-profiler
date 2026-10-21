@@ -87,9 +87,12 @@ public:
   // Gives a hidden class the name JVMTI GetClassSignature() reports for it,
   // so frames are named the same in every fjmethodid mode. HotSpot names a
   // hidden class "<name>+0x<hex>" (ClassFileParser::mangle_hidden_class_name)
-  // and InstanceKlass::signature_name() turns that last '+' into '.'. The
-  // hidden flag itself is not in vmStructs on JDK 21+, so the suffix is what
-  // identifies a hidden class here.
+  // and InstanceKlass::signature_name() turns that last '+' into '.'. Only
+  // called for classes that may be hidden (mayBeHiddenClass() in the .cpp):
+  // on JDK 24+ the hidden flag cannot be read, so there a non-hidden class
+  // whose own name ends in "+0x<hex>" (javac never produces one, since '+'
+  // is not a Java identifier character, but bytecode generators may) is
+  // reported with '.' instead of '+'.
   void useHiddenClassSignatureName();
 
   // Internal (slash-separated) class name, e.g. "java/lang/Thread".
@@ -161,6 +164,14 @@ private:
     // outlive it, so redefinitions are tracked and dumps pin classes from then
     // on.
     static bool _lazy_used;
+    // Redefinition calls that started before _lazy_used was set and have not
+    // returned: their classes were not marked.
+    static int _untracked_redefinition_calls;
+    // How long initLazyResolution() waits for those calls to end.
+    static const u64 MAX_UNTRACKED_REDEFINITION_WAIT_NS = 5000000000ULL;
+    // Waits up to `max_wait_ns` until no untracked redefinition call is
+    // running. Returns false on timeout.
+    static bool awaitUntrackedRedefinitions(u64 max_wait_ns);
 
     // Set if a redefinition could not be marked (no memory for the registry
     // entry): from then on every lazy frame is refused, for the rest of the
@@ -212,6 +223,12 @@ private:
     // ignored, as JVMTI itself rejects it.
     static void beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
     static void afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded);
+    // Around each RedefineClasses/RetransformClasses call, outside the
+    // per-class hooks. enterRedefinitionCall() returns true if the call is
+    // not tracked (lazy mode had not started); pass that to
+    // exitRedefinitionCall().
+    static bool enterRedefinitionCall();
+    static void exitRedefinitionCall(bool untracked);
 
     // True if JVMTI accepts `klass` as a class that is neither an array nor a
     // primitive, i.e. one with a Klass* that has methods.

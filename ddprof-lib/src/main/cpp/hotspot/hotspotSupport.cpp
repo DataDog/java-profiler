@@ -1484,6 +1484,7 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
 
 KlassRegistry HotspotSupport::_klass_registry;
 bool HotspotSupport::_lazy_used = false;
+int HotspotSupport::_untracked_redefinition_calls = 0;
 bool HotspotSupport::_redefinitions_untracked = false;
 const jclass* HotspotSupport::_dump_jclasses = nullptr;
 int HotspotSupport::_dump_jclass_count = 0;
@@ -1501,10 +1502,50 @@ bool HotspotSupport::initLazyResolution(JNIEnv* jni) {
     Counters::set(KLASS_TRACE_ID_OFFSET, calibrated ? KlassTraceId::offset() : -1);
     _klass_registry.publishCounters();
     TEST_LOG("Raw frame tags: %s", calibrated ? "klass trace id" : "unavailable, lazy mode off");
-    if (calibrated) {
-        __atomic_store_n(&_lazy_used, true, __ATOMIC_RELEASE);
+    if (!calibrated) {
+        Log::warn("fjmethodid=lazy: could not locate the JFR class trace ID (a JVM without JFR?); "
+                  "preloading jmethodIDs as with fjmethodid=false");
+        return false;
     }
-    return calibrated;
+    // From here on every redefinition call that starts is tracked; the calls
+    // already running are not, so no lazy frame may be sampled before they
+    // end.
+    __atomic_store_n(&_lazy_used, true, __ATOMIC_SEQ_CST);
+    if (!awaitUntrackedRedefinitions(MAX_UNTRACKED_REDEFINITION_WAIT_NS)) {
+        Log::warn("fjmethodid=lazy: class redefinitions that started before lazy mode are still running; "
+                  "preloading jmethodIDs as with fjmethodid=false for this session");
+        return false;
+    }
+    return true;
+}
+
+bool HotspotSupport::enterRedefinitionCall() {
+    // Pairs with initLazyResolution(), both sequentially consistent: either
+    // this call sees _lazy_used and its classes are marked, or
+    // initLazyResolution() sees the count and waits for the call to end.
+    __atomic_add_fetch(&_untracked_redefinition_calls, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&_lazy_used, __ATOMIC_SEQ_CST)) {
+        __atomic_sub_fetch(&_untracked_redefinition_calls, 1, __ATOMIC_SEQ_CST);
+        return false;
+    }
+    return true;
+}
+
+void HotspotSupport::exitRedefinitionCall(bool untracked) {
+    if (untracked) {
+        __atomic_sub_fetch(&_untracked_redefinition_calls, 1, __ATOMIC_SEQ_CST);
+    }
+}
+
+bool HotspotSupport::awaitUntrackedRedefinitions(u64 max_wait_ns) {
+    u64 deadline = OS::nanotime() + max_wait_ns;
+    while (__atomic_load_n(&_untracked_redefinition_calls, __ATOMIC_SEQ_CST) != 0) {
+        if (OS::nanotime() >= deadline) {
+            return false;
+        }
+        OS::sleep(1000000);  // 1 ms
+    }
+    return true;
 }
 
 bool HotspotSupport::lazyFrameTag(const VMMethod* method, uint32_t* tag) {
@@ -1550,6 +1591,9 @@ public:
 };
 
 void HotspotSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+    // Before lazy mode there is nothing to mark for; a call that is still
+    // running when lazy mode starts holds up that start instead
+    // (enterRedefinitionCall()).
     if (!__atomic_load_n(&_lazy_used, __ATOMIC_ACQUIRE) || !isInstanceClass(jvmti, klass)) {
         return;
     }
@@ -1785,6 +1829,25 @@ static bool symbolEquals(VMSymbol* sym, const char* expected, size_t expected_le
 
 // Whether `klass` is java.lang.Thread or one of its subclasses, by walking
 // the Klass::_super chain. Unknown (no _super offset) is reported as false.
+// Whether `klass` may be a hidden class, so that its name needs the
+// treatment useHiddenClassSignatureName() gives it. Hidden classes came with
+// JDK 15. Up to JDK 23 they carry JVM_ACC_IS_HIDDEN_CLASS in
+// Klass::_access_flags (utilities/accessFlags.hpp); JDK 24 moved the flag to
+// Klass::_misc_flags, which vmStructs does not export, so from then on only
+// the name tells.
+static bool mayBeHiddenClass(VMKlass* klass) {
+  static const uint32_t JVM_ACC_IS_HIDDEN_CLASS = 0x04000000;
+  int version = VM::hotspot_version();
+  if (version < 15) {
+    return false;
+  }
+  uint32_t flags;
+  if (version <= 23 && klass->accessFlags(&flags)) {
+    return (flags & JVM_ACC_IS_HIDDEN_CLASS) != 0;
+  }
+  return true;
+}
+
 static bool isThreadSubclass(VMKlass* klass) {
   static const char THREAD_CLASS[] = "java/lang/Thread";
   // Real hierarchies are far shallower; the cap only guards against a cycle
@@ -1891,7 +1954,9 @@ bool HotspotSupport::readMethod(const void* method, ResolvedMethod* result) {
     Counters::increment(METHOD_RESOLVE_SYMBOL_UNREADABLE);
     return false;
   }
-  result->useHiddenClassSignatureName();
+  if (mayBeHiddenClass(klass)) {
+    result->useHiddenClassSignatureName();
+  }
 
   if (strcmp(result->methodName(), "run") == 0 && strcmp(result->methodSignature(), "()V") == 0) {
     result->_is_thread_run = isThreadSubclass(klass);

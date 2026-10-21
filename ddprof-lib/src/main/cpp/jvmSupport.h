@@ -75,6 +75,11 @@ public:
     // and has not been validated by JVMTI yet.
     static void beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
     static void afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded);
+    // Called once around each whole RedefineClasses/RetransformClasses call,
+    // outside the per-class hooks: pass what enterRedefinitionCall() returned
+    // to exitRedefinitionCall().
+    static bool enterRedefinitionCall();
+    static void exitRedefinitionCall(bool token);
 
     // Around each dump: `classes` are the ones GetLoadedClasses() returned,
     // referenced by the caller until after endDump(). Raw frames of other

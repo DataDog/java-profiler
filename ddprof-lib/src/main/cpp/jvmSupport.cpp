@@ -8,6 +8,7 @@
 #include "asyncSampleMutex.h"
 #include "common.h"
 #include "frames.h"
+#include "log.h"
 #include "os.h"
 #include "profiler.h"
 #include "threadLocalData.inline.h"
@@ -76,13 +77,24 @@ void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
     // The stack walker mode as Profiler::start() resolved it from args.
     CStack cstack = Profiler::instance()->cstackMode();
     if (VM::isHotspot() && !HotspotSupport::shouldPreloadJmethodIDs(args, cstack)) {
-        if (args._lazy_jmethodID && HotspotSupport::canResolveLazily() &&
-            HotspotSupport::initLazyResolution(jni)) {
+        if (!args._lazy_jmethodID) {
+            state = Partial_loaded;
+        } else if (!HotspotSupport::canResolveLazily()) {
+            Log::warn("fjmethodid=lazy: this JVM does not expose the class and method structures it needs; "
+                      "preloading jmethodIDs as with fjmethodid=false");
+            state = Partial_loaded;
+        } else if (HotspotSupport::initLazyResolution(jni)) {
             state = Lazy_loaded;
         } else {
-            HotspotSupport::initClassloaderInfo(jni);
+            // initLazyResolution() has logged why.
             state = Partial_loaded;
         }
+        if (state == Partial_loaded) {
+            HotspotSupport::initClassloaderInfo(jni);
+        }
+    } else if (args._lazy_jmethodID) {
+        Log::warn(VM::isHotspot() ? "fjmethodid=lazy needs cstack=vm; preloading all jmethodIDs"
+                                  : "fjmethodid=lazy is only supported on HotSpot; preloading all jmethodIDs");
     }
 
     if (state == current_state) {
@@ -174,6 +186,16 @@ bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
         return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, state == Fully_loaded /* load all */);
     } else {
         return loadMethodIDsImpl(jvmti, jni, klass);
+    }
+}
+
+bool JVMSupport::enterRedefinitionCall() {
+    return VM::isHotspot() && HotspotSupport::enterRedefinitionCall();
+}
+
+void JVMSupport::exitRedefinitionCall(bool token) {
+    if (VM::isHotspot()) {
+        HotspotSupport::exitRedefinitionCall(token);
     }
 }
 

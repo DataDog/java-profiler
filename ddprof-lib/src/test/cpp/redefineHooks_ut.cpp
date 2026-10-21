@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include "../../main/cpp/hotspot/hotspotSupport.h"
 #include "../../main/cpp/jvmSupport.h"
 #include "../../main/cpp/vmEntry.h"
 
@@ -42,6 +43,12 @@ public:
     static constexpr LoadState FullyLoaded() { return JVMSupport::Fully_loaded; }
 };
 
+class HotspotSupportTestAccessor {
+public:
+    static int untrackedCalls() { return HotspotSupport::_untracked_redefinition_calls; }
+    static void setLazyUsed(bool used) { HotspotSupport::_lazy_used = used; }
+};
+
 namespace {
 
 struct Calls {
@@ -53,11 +60,13 @@ struct Calls {
     const void* last_array = nullptr;
     jint class_status = JVMTI_CLASS_STATUS_PREPARED;
     jvmtiError class_status_error = JVMTI_ERROR_NONE;
+    int untracked_during_call = -1;  // untracked redefinition calls seen by the original
 };
 Calls* g_calls = nullptr;
 
 jvmtiError JNICALL origRedefine(jvmtiEnv*, jint count, const jvmtiClassDefinition* defs) {
     g_calls->redefine++;
+    g_calls->untracked_during_call = HotspotSupportTestAccessor::untrackedCalls();
     g_calls->last_count = count;
     g_calls->last_array = defs;
     return count > 0 && defs == nullptr ? JVMTI_ERROR_NULL_POINTER : JVMTI_ERROR_INVALID_CLASS;
@@ -65,6 +74,7 @@ jvmtiError JNICALL origRedefine(jvmtiEnv*, jint count, const jvmtiClassDefinitio
 
 jvmtiError JNICALL origRetransform(jvmtiEnv*, jint count, const jclass* classes) {
     g_calls->retransform++;
+    g_calls->untracked_during_call = HotspotSupportTestAccessor::untrackedCalls();
     g_calls->last_count = count;
     g_calls->last_array = classes;
     return count > 0 && classes == nullptr ? JVMTI_ERROR_NULL_POINTER : JVMTI_ERROR_INVALID_CLASS;
@@ -192,6 +202,27 @@ TEST_P(RedefineHooksTest, ArrayClassElementIsNotTouched) {
     EXPECT_EQ(1, _calls.retransform);
     EXPECT_EQ(0, _calls.get_long_field);
     EXPECT_EQ(0, _calls.get_class_methods);
+}
+
+// A call that starts before lazy mode is counted while it runs, so that the
+// first lazy start can wait for it (its classes are not marked); one that
+// starts after is tracked and not counted.
+TEST_P(RedefineHooksTest, CallsBeforeLazyModeAreCountedWhileTheyRun) {
+    jclass classes[] = {nullptr};
+    jvmtiClassDefinition defs[] = {{nullptr, 0, nullptr}};
+    HotspotSupportTestAccessor::setLazyUsed(false);
+    VM::RetransformClassesHook(&_jvmti, 1, classes);
+    EXPECT_EQ(1, _calls.untracked_during_call);
+    VM::RedefineClassesHook(&_jvmti, 1, defs);
+    EXPECT_EQ(1, _calls.untracked_during_call);
+    EXPECT_EQ(0, HotspotSupportTestAccessor::untrackedCalls());
+
+    HotspotSupportTestAccessor::setLazyUsed(true);
+    VM::RetransformClassesHook(&_jvmti, 1, classes);
+    EXPECT_EQ(0, _calls.untracked_during_call);
+    VM::RedefineClassesHook(&_jvmti, 1, defs);
+    EXPECT_EQ(0, _calls.untracked_during_call);
+    HotspotSupportTestAccessor::setLazyUsed(false);
 }
 
 // A null element inside a valid array is skipped as before.

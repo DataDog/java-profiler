@@ -48,6 +48,8 @@ public:
     static void setVm(JavaVM* vm) { VM::_vm = vm; }
     static jvmtiEnv* getJvmti() { return VM::_jvmti; }
     static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
+    static int getHotspotVersion() { return VM::_hotspot_version; }
+    static void setHotspotVersion(int v) { VM::_hotspot_version = v; }
 };
 
 class JVMSupportTestAccessor {
@@ -63,6 +65,11 @@ class HotspotSupportTestAccessor {
 public:
     static KlassRegistry& registry() { return HotspotSupport::_klass_registry; }
     static void setLazyUsed(bool used) { HotspotSupport::_lazy_used = used; }
+    static bool enterRedefinitionCall() { return HotspotSupport::enterRedefinitionCall(); }
+    static void exitRedefinitionCall(bool untracked) { HotspotSupport::exitRedefinitionCall(untracked); }
+    static bool awaitUntrackedRedefinitions(u64 max_wait_ns) {
+        return HotspotSupport::awaitUntrackedRedefinitions(max_wait_ns);
+    }
     static void setRedefinitionsUntracked(bool v) { HotspotSupport::_redefinitions_untracked = v; }
     static bool dumpClassesBuilt() { return HotspotSupport::_dump_classes != nullptr; }
     static void beforeClassRedefinition(jvmtiEnv* jvmti, JNIEnv* jni, jclass klass) {
@@ -91,7 +98,7 @@ public:
         int method_constmethod, constmethod_constants, constmethod_idnum, pool_holder;
         int jmethod_ids, methods;
         int constmethod_name_index, constmethod_sig_index, klass_name, symbol_length, symbol_body;
-        int constmethod_flags, constmethod_code_size, klass_super;
+        int constmethod_flags, constmethod_code_size, klass_super, klass_access_flags;
         uint64_t method_size, const_method_size, constant_pool_size, klass_size, symbol_size;
         bool can_dereference_jmethod_id;
     };
@@ -118,6 +125,7 @@ private:
             VMStructs::_constmethod_flags_offset,
             VMStructs::_constmethod_code_size_offset,
             VMStructs::_klass_super_offset,
+            VMStructs::_klass_access_flags_offset,
             VMStructs::TYPE_SIZE_NAME(VMMethod),
             VMStructs::TYPE_SIZE_NAME(VMConstMethod),
             VMStructs::TYPE_SIZE_NAME(VMConstantPool),
@@ -142,6 +150,7 @@ private:
         VMStructs::_constmethod_flags_offset = s.constmethod_flags;
         VMStructs::_constmethod_code_size_offset = s.constmethod_code_size;
         VMStructs::_klass_super_offset = s.klass_super;
+        VMStructs::_klass_access_flags_offset = s.klass_access_flags;
         VMStructs::TYPE_SIZE_NAME(VMMethod) = s.method_size;
         VMStructs::TYPE_SIZE_NAME(VMConstMethod) = s.const_method_size;
         VMStructs::TYPE_SIZE_NAME(VMConstantPool) = s.constant_pool_size;
@@ -188,6 +197,7 @@ struct FakeKlass {
     FakeMethodArray* methods;
     uint64_t trace_id;  // JFR encoding: (id << 16) | tag bits
     FakeSymbol* name;
+    uint32_t access_flags;  // AccessFlags, as on JDK 15-23
 };
 
 const VMStructsTestAccessor::State LAYOUT = {
@@ -205,6 +215,7 @@ const VMStructsTestAccessor::State LAYOUT = {
     /*constmethod_flags*/     -1,  // no line number tables
     /*constmethod_code_size*/ -1,
     /*klass_super*/           -1,
+    /*klass_access_flags*/    (int)offsetof(FakeKlass, access_flags),
     /*method_size*/           sizeof(FakeMethod),
     /*const_method_size*/     sizeof(FakeConstMethod),
     /*constant_pool_size*/    offsetof(FakeConstantPool, symbols),
@@ -528,7 +539,8 @@ protected:
 
 // A hidden class gets the name JVMTI GetClassSignature() reports, so its
 // frames are named the same with and without jmethodIDs; other names that
-// merely contain a '+' are left alone.
+// merely contain a '+' are left alone. On JDK 24+, where the hidden flag is
+// not readable, the name alone decides.
 TEST_F(HotspotLazyResolveTest, HiddenClassNamedAsJvmtiSignature) {
     registerClass(_old_mirror);
     const struct { const char* vm_name; const char* expected; } cases[] = {
@@ -538,6 +550,8 @@ TEST_F(HotspotLazyResolveTest, HiddenClassNamedAsJvmtiSignature) {
         {"a/Spin+0x", "a/Spin+0x"},
         {"a/Spin+0x12g", "a/Spin+0x12g"},
     };
+    int saved_version = VMTestAccessor::getHotspotVersion();
+    VMTestAccessor::setHotspotVersion(25);
     beginDump();
     for (const auto& c : cases) {
         SCOPED_TRACE(c.vm_name);
@@ -547,6 +561,36 @@ TEST_F(HotspotLazyResolveTest, HiddenClassNamedAsJvmtiSignature) {
         ASSERT_TRUE(HotspotSupport::resolve(frame.method, frame.bci, result));
         EXPECT_STREQ(c.expected, result.klassName());
     }
+    VMTestAccessor::setHotspotVersion(saved_version);
+}
+
+// Where the hidden flag is readable (JDK 15-23, Klass::_access_flags), only
+// a class that has it is renamed: an ordinary class may be named
+// "a/Plain+0x1234" too. Before JDK 15 there are no hidden classes.
+TEST_F(HotspotLazyResolveTest, OnlyClassesFlaggedHiddenAreRenamed) {
+    static const uint32_t JVM_ACC_IS_HIDDEN_CLASS = 0x04000000;
+    registerClass(_old_mirror);
+    FakeClass::setSymbol(_cls.klass_name, "a/Plain+0x1234");
+    const struct { int version; uint32_t flags; const char* expected; } cases[] = {
+        {21, 0, "a/Plain+0x1234"},
+        {21, JVM_ACC_IS_HIDDEN_CLASS, "a/Plain.0x1234"},
+        {17, JVM_ACC_IS_HIDDEN_CLASS, "a/Plain.0x1234"},
+        {23, 0, "a/Plain+0x1234"},
+        {11, JVM_ACC_IS_HIDDEN_CLASS, "a/Plain+0x1234"},
+    };
+    int saved_version = VMTestAccessor::getHotspotVersion();
+    beginDump();
+    for (const auto& c : cases) {
+        SCOPED_TRACE(testing::Message() << "JDK " << c.version << " flags " << c.flags);
+        VMTestAccessor::setHotspotVersion(c.version);
+        _cls.klass.access_flags = c.flags;
+        ASGCT_CallFrame frame = sample();
+        ResolvedMethod result;
+        ASSERT_TRUE(HotspotSupport::resolve(frame.method, frame.bci, result));
+        EXPECT_STREQ(c.expected, result.klassName());
+    }
+    _cls.klass.access_flags = 0;
+    VMTestAccessor::setHotspotVersion(saved_version);
 }
 
 // The names come from VM metadata: no jmethodIDs are allocated.
@@ -765,6 +809,24 @@ TEST_F(HotspotLazyResolveTest, RejectedRedefinitionWithPendingExceptionLeavesFra
     EXPECT_EQ(0, _jvm.calls_with_exception_pending);
     _jvm.exception_pending = false;
     EXPECT_TRUE(resolvesToSpin(frame));
+}
+
+// A redefinition call that started before lazy mode does not mark its
+// classes, so lazy mode must not start sampling until it has returned.
+TEST_F(HotspotLazyResolveTest, LazyStartWaitsForRedefinitionsStartedBeforeIt) {
+    HotspotSupportTestAccessor::setLazyUsed(false);
+    bool untracked = HotspotSupportTestAccessor::enterRedefinitionCall();
+    EXPECT_TRUE(untracked);
+    HotspotSupportTestAccessor::setLazyUsed(true);  // what initLazyResolution() does first
+    EXPECT_FALSE(HotspotSupportTestAccessor::awaitUntrackedRedefinitions(10 * 1000 * 1000));
+    HotspotSupportTestAccessor::exitRedefinitionCall(untracked);
+    EXPECT_TRUE(HotspotSupportTestAccessor::awaitUntrackedRedefinitions(10 * 1000 * 1000));
+
+    // A call that starts once lazy mode is on is tracked, and not waited for.
+    bool later = HotspotSupportTestAccessor::enterRedefinitionCall();
+    EXPECT_FALSE(later);
+    EXPECT_TRUE(HotspotSupportTestAccessor::awaitUntrackedRedefinitions(0));
+    HotspotSupportTestAccessor::exitRedefinitionCall(later);
 }
 
 // Before lazy mode has started there are no lazy frames, so redefinitions

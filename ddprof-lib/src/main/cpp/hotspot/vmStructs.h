@@ -226,6 +226,7 @@ typedef void* address;
     type_begin(VMKlass, MATCH_SYMBOLS("Klass", "InstanceKlass"))                                                    \
         field(_klass_name_offset, offset, MATCH_SYMBOLS("_name"))                                                   \
         field(_klass_super_offset, offset, MATCH_SYMBOLS("_super"))                                                 \
+        field(_klass_access_flags_offset, offset, MATCH_SYMBOLS("_access_flags"))                                   \
         field(_class_loader_data_offset, offset, MATCH_SYMBOLS("_class_loader_data"))                               \
         field(_methods_offset, offset, MATCH_SYMBOLS("_methods"))                                                   \
         field(_jmethod_ids_offset, offset, MATCH_SYMBOLS("_methods_jmethod_ids"))                                   \
@@ -722,6 +723,14 @@ DECLARE(VMKlass)
     VMKlass* super_or_null() {
         if (_klass_super_offset < 0) return nullptr;
         return VMKlass::load_then_cast(at(_klass_super_offset));
+    }
+
+    // Klass::_access_flags (an AccessFlags, i.e. one jint) into `*flags`, or
+    // false if the VM does not export it.
+    bool accessFlags(uint32_t* flags) {
+        if (_klass_access_flags_offset < 0) return false;
+        *flags = *(const uint32_t*)at(_klass_access_flags_offset);
+        return true;
     }
 
     VMClassLoaderData* classLoaderData() {

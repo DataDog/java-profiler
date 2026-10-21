@@ -684,6 +684,7 @@ VM::RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
     return _orig_RedefineClasses(jvmti, class_count, class_definitions);
   }
   JNIEnv *env = jni();
+  bool call_token = JVMSupport::enterRedefinitionCall();
   for (int i = 0; i < class_count; i++) {
     if (class_definitions[i].klass != NULL) {
       JVMSupport::beforeClassRedefinition(jvmti, env, class_definitions[i].klass);
@@ -699,6 +700,7 @@ VM::RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
       JVMSupport::afterClassRedefinition(jvmti, env, class_definitions[i].klass, result == 0);
     }
   }
+  JVMSupport::exitRedefinitionCall(call_token);
 
   return result;
 }
@@ -711,6 +713,7 @@ jvmtiError VM::RetransformClassesHook(jvmtiEnv *jvmti, jint class_count,
     return _orig_RetransformClasses(jvmti, class_count, classes);
   }
   JNIEnv *env = jni();
+  bool call_token = JVMSupport::enterRedefinitionCall();
   for (int i = 0; i < class_count; i++) {
     if (classes[i] != NULL) {
       JVMSupport::beforeClassRedefinition(jvmti, env, classes[i]);
@@ -725,6 +728,7 @@ jvmtiError VM::RetransformClassesHook(jvmtiEnv *jvmti, jint class_count,
       JVMSupport::afterClassRedefinition(jvmti, env, classes[i], result == 0);
     }
   }
+  JVMSupport::exitRedefinitionCall(call_token);
 
   return result;
 }
