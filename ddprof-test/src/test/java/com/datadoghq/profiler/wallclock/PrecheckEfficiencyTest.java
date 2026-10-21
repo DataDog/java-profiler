@@ -296,6 +296,9 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
+        // The workload deliberately has no tracing context; it relies on the
+        // default context-filter scope (filter="0") plus each worker thread
+        // explicitly registering itself via registerCurrentThreadForWallClockProfiling().
         return "wall=1ms";
     }
 }

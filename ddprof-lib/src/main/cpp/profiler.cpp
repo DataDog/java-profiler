@@ -90,11 +90,13 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
   current->setJavaThread(true);
   int tid = current->tid();
+  // Context-filtered recordings pre-register Java threads. Unfiltered wall
+  // tracking binds lazily in context/block/park hooks, so an idle thread that
+  // never uses those hooks does not reserve one of the bounded registry slots.
+  // The wall timer only looks up entries; it never allocates them.
   if (_thread_filter.enabled()) {
-    int slot_id = _thread_filter.registerThread();
+    int slot_id = _thread_filter.registerThread(tid);
     current->setFilterSlotId(slot_id);
-    _thread_filter.resetSlotRunState(slot_id);
-    _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   if (thread != NULL) {
     updateThreadName(jvmti, jni, thread, true);
@@ -122,9 +124,11 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     int slot_id = current->filterSlotId();
     tid = current->tid();
     
-    if (_thread_filter.enabled()) {
-      _thread_filter.unregisterThread(slot_id);
+    if (slot_id >= 0) {
+      _thread_filter.unregisterThread(slot_id, tid);
       current->setFilterSlotId(-1);
+    } else {
+      _thread_filter.unregisterThreadByTid(tid);
     }
 
     updateThreadName(jvmti, jni, thread, false);
@@ -156,6 +160,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   }
 
   updateThreadName(jvmti, jni, thread, false);
+  _thread_filter.unregisterThreadByTid(tid);
   if (_reference_chains_active) {
     ReferenceChainTracker::instance()->unregisterThreadObject(jni, tid);
   }
@@ -609,14 +614,7 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
     if (VM::jvmti()->GetStackTrace(thread, 0, _max_stack_depth, jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
       // Convert to AsyncGetCallTrace format.
       // Note: jvmti_frames and frames may overlap.
-      for (int i = 0; i < num_frames; i++) {
-        jint bci = jvmti_frames[i].location;
-        jmethodID mid = jvmti_frames[i].method;
-        frames[i].method_id = mid;
-        frames[i].bci = bci;
-        // see https://github.com/async-profiler/async-profiler/pull/1090
-        LP64_ONLY(frames[i].padding = 0;)
-      }
+      copyJvmtiFrames(frames, jvmti_frames, num_frames);
       // On JDK 21+, GetStackTrace on a virtual thread returns only the VT's
       // logical stack; it stops at the continuation boundary and never includes
       // carrier-thread frames.  Without a synthetic root the trace appears
@@ -1588,24 +1586,37 @@ Error Profiler::start(Arguments &args, bool reset) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
   }
 
-  // TODO: Current way of setting filter is weird with the recent changes
-  _thread_filter.init(args._filter ? args._filter : "0");
-  
-  // Minor optim: Register the current thread (start thread won't be called)
-  if (_thread_filter.enabled()) {
-    _thread_filter.clearActive();
-    ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-    assert(current != nullptr);
-    int slot_id = current->filterSlotId();
-    if (slot_id < 0) {
-      slot_id = _thread_filter.registerThread();
-      current->setFilterSlotId(slot_id);
-    }
-    _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
-  }
-
   _cpu_engine = selectCpuEngine(args);
   _wall_engine = selectWallEngine(args);
+
+  const char *filter = args._filter != nullptr ? args._filter : "0";
+  const bool track_unfiltered_wall =
+      (_event_mask & EM_WALL) != 0 && args._wall_precheck &&
+      args._filter != nullptr && args._filter[0] == '\0' &&
+      _wall_engine->supportsUnfilteredThreadRegistryTracking();
+  _thread_filter.init(filter, track_unfiltered_wall);
+
+  // Both modes retain native identities across recordings. Unfiltered owners
+  // refresh payload lazily against the new recording epoch; context-filtered
+  // recordings must clear membership before threads opt in again.
+  if (_thread_filter.enabled()) {
+    _thread_filter.clearActive();
+  }
+
+  // Set up the sampled thread's TLS in both modes. Context filtering also
+  // pre-registers the caller; unfiltered tracking waits for its first hook.
+  // Retained unfiltered slots remain ineligible until their owner refreshes
+  // against the new recording epoch in ensureCurrentThreadFilterSlot().
+  if (_thread_filter.registryActive()) {
+    ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+    assert(current != nullptr);
+    int tid = current->tid();
+    if (_thread_filter.enabled() &&
+        _thread_filter.activeSlotForId(current->filterSlotId(), tid) == nullptr) {
+      current->setFilterSlotId(_thread_filter.registerThread(tid));
+    }
+  }
+
   _cstack = args._cstack;
   _force_jmethodID = args._force_jmethodID;
   if (_cstack == CSTACK_DEFAULT) {
@@ -1663,6 +1674,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   _num_context_attributes = args._context_attributes.size();
   error = _jfr.start(args, reset);
   if (error) {
+    _thread_filter.deactivateRecording();
     switchLibraryTrap(false);
     _libs->stopRefresher();
     return error;
@@ -1736,6 +1748,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       Log::warn("%s", error.message());
       if (_event_mask == EM_NATIVEMEM) {
         // nativemem is the only requested mode: propagate the real error
+        _thread_filter.deactivateRecording();
         disableEngines();
         switchLibraryTrap(false);
         _libs->stopRefresher();
@@ -1758,6 +1771,14 @@ Error Profiler::start(Arguments &args, bool reset) {
       activated |= EM_NATIVESOCKET;
     }
   }
+
+  // A recoverable wall-engine failure must not leave registry work enabled for
+  // unrelated engines that did start successfully.
+  if (track_unfiltered_wall && (activated & EM_WALL) == 0) {
+    _thread_filter.deactivateRecording();
+  }
+
+  _activated_mask = activated;
 
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
@@ -1795,6 +1816,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error::OK;
   }
   // no engine was activated; perform cleanup
+  _thread_filter.deactivateRecording();
   disableEngines();
   switchLibraryTrap(false);
   _libs->stopRefresher();
@@ -1829,7 +1851,11 @@ Error Profiler::stop() {
     return Error("signal handlers did not drain; teardown skipped, retry stop()");
   }
 
-  if (_event_mask & EM_ALLOC)
+  // Gate on _activated_mask, not _event_mask: a mixed-success start() can
+  // leave _event_mask requesting an engine whose start() actually failed
+  // (see the "recoverable" error handling in start()), and that engine
+  // must not have stop() called on it since it never ran.
+  if (_activated_mask & EM_ALLOC)
     _alloc_engine->stop();
   if (_reference_chains_active) {
     // Cleared first so new onThreadStart()/onThreadEnd() calls skip the
@@ -1871,7 +1897,7 @@ Error Profiler::stop() {
     // now instead of leaking until (and across) the next recording.
     ReferenceChainTracker::instance()->releaseAllThreadObjects(VM::jni());
   }
-  if (_event_mask & EM_NATIVEMEM)
+  if (_activated_mask & EM_NATIVEMEM)
     malloc_tracer.stop();
   // Stop the refresher BEFORE socket unpatch: the refresher calls
   // install_socket_hooks() which re-reads _socket_active before acquiring the
@@ -1879,12 +1905,14 @@ Error Profiler::stop() {
   // it can see _socket_active=true, wait for the lock, then re-patch PLT slots
   // that unpatch just restored.  Stopping the refresher here closes that window.
   _libs->stopRefresher();
-  if (_event_mask & EM_NATIVESOCKET)
+  if (_activated_mask & EM_NATIVESOCKET)
     NativeSocketSampler::instance()->stop();
-  if (_event_mask & EM_WALL)
+  if (_activated_mask & EM_WALL)
     _wall_engine->stop();
-  if (_event_mask & EM_CPU)
+  if (_activated_mask & EM_CPU)
     _cpu_engine->stop();
+
+  _thread_filter.deactivateRecording();
 
   switchLibraryTrap(false);
   switchThreadEvents(JVMTI_DISABLE);
