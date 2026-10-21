@@ -139,7 +139,8 @@ jobs:
           # GDB watchdog for debug config: dumps all native threads if the JVM hangs
           # inside JVMTI (e.g. the IBM SDK 8 slow-suite deadlock) before the 180-min
           # job timeout fires, so a thread dump lands in the test-reports artifact.
-          # prepare_reports.sh copies build/logs/gdb-watchdog.log on failure.
+          # prepare_reports.sh copies build/logs/gdb-watchdog.log, and the test
+          # reports are uploaded on failure or, if the dump exists, on timeout.
           if [[ "${{ matrix.config }}" == "debug" ]]; then
             mkdir -p build/logs
             (
@@ -233,9 +234,11 @@ jobs:
         with:
           name: (unwinding-reports) unwinding-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: unwinding-reports
+      # A hang that runs into the job timeout ends the job as cancelled, not
+      # failed; upload then too if the gdb watchdog left a thread dump.
       - name: Upload test reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        if: failure() || (cancelled() && hashFiles('build/logs/gdb-watchdog.log') != '')
         with:
           name: (test-reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: test-reports
@@ -607,9 +610,11 @@ jobs:
         with:
           name: (unwinding-reports) unwinding-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: unwinding-reports
+      # A hang that runs into the job timeout ends the job as cancelled, not
+      # failed; upload then too if the gdb watchdog left a thread dump.
       - name: Upload test reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        if: failure() || (cancelled() && hashFiles('build/logs/gdb-watchdog.log') != '')
         with:
           name: (test-reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: test-reports
