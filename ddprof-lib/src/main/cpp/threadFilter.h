@@ -157,6 +157,12 @@ public:
     void setBlockTracker(WallClockBlockTracker* tracker) { _block_tracker = tracker; }
 
 #ifdef UNIT_TEST
+    // Expose published bucket state for reclamation tests without timing assertions.
+    int tidIndexEntryForTest(int bucket) const;
+    static unsigned tidIndexBucketForTest(int tid) {
+        return hashTid(tid) & kTidIndexMask;
+    }
+
     // Invoked by registerThread() immediately before _registry_lock is
     // acquired, once the pre-lock _registry_active and capacity checks have
     // passed - lets tests inject a deactivation between the lock-free
@@ -202,6 +208,16 @@ private:
         std::array<Slot, kChunkSize> slots;
     };
 
+    struct TidIndex {
+        std::array<std::atomic<int>, kTidIndexSize> entries;
+        // Number of live entries whose home-to-destination probe path crosses
+        // each bucket, excluding the destination itself. Writers alone access
+        // these counts, under _registry_lock. A tombstone is needed exactly
+        // while its count is nonzero; readers only inspect entries.
+        std::array<uint16_t, kTidIndexSize> probe_through{};
+    };
+    static_assert(kMaxThreads <= UINT16_MAX, "TID probe counts must fit in uint16_t");
+
     std::atomic<bool> _enabled{false};
     std::atomic<bool> _registry_active{false};
     std::atomic<bool> _track_unfiltered_wall{false};
@@ -224,12 +240,12 @@ private:
     std::atomic<int> _free_count{0};
     // Entries contain slot_id + 1. Zero terminates a lookup probe; -1 is a
     // tombstone left by unregister. The slot's published TID is the key.
-    // Allocated (kTidIndexSize entries) by the first init() that activates the
-    // registry and kept until destruction, so processes that never use a
+    // Entries and probe counts share one allocation made by the first init()
+    // that activates the registry and kept until destruction, so processes that never use a
     // context filter or unfiltered precheck don't pay for it. Null until then:
     // lookups find nothing, and nothing can be indexed while it is null because
     // registration requires an active registry.
-    std::atomic<std::atomic<int>*> _tid_index{nullptr};
+    std::atomic<TidIndex*> _tid_index{nullptr};
     // Registration and teardown never run in a signal handler. Serializing
     // writers prevents duplicate TID mappings while lookups remain lock-free.
     std::mutex _registry_lock;

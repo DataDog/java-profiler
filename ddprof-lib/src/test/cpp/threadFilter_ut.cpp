@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <set>
 #include <chrono>
+#include <random>
 
 // Test name for crash handler
 static constexpr char THREAD_FILTER_TEST_NAME[] = "ThreadFilterTest";
@@ -884,6 +885,208 @@ TEST_F(ThreadRegistryTest, TidIndexRemainsReusableAcrossLongThreadChurn) {
     }
 }
 
+// The odd multiplicative hash maps tids 1..kTidIndexSize onto every home bucket.
+// Construct adversarial probe paths without depending on the hash multiplier.
+static std::array<int, ThreadFilter::kTidIndexSize> tidsByIndexBucket() {
+    std::array<int, ThreadFilter::kTidIndexSize> tids{};
+    for (int tid = 1; tid <= ThreadFilter::kTidIndexSize; ++tid) {
+        tids[ThreadFilter::tidIndexBucketForTest(tid)] = tid;
+    }
+    return tids;
+}
+
+static int emptyIndexBuckets(const ThreadFilter& registry) {
+    int empty = 0;
+    for (int bucket = 0; bucket < ThreadFilter::kTidIndexSize; ++bucket) {
+        empty += registry.tidIndexEntryForTest(bucket) == 0;
+    }
+    return empty;
+}
+
+TEST_F(ThreadRegistryTest, AdjacentHomeBucketsDoNotRequireTombstones) {
+    auto tids = tidsByIndexBucket();
+    int first = registry.registerThread(tids[0]);
+    int second = registry.registerThread(tids[1]);
+    ASSERT_GE(first, 0);
+    ASSERT_GE(second, 0);
+
+    registry.unregisterThread(first, tids[0]);
+    EXPECT_EQ(0, registry.tidIndexEntryForTest(0));
+    EXPECT_EQ(registry.slotForId(second), registry.lookupByTid(tids[1]));
+    EXPECT_EQ(second + 1, registry.tidIndexEntryForTest(1));
+
+    registry.unregisterThreadByTid(tids[1]);
+    EXPECT_EQ(ThreadFilter::kTidIndexSize, emptyIndexBuckets(registry));
+}
+
+TEST_F(ThreadRegistryTest, WrappedCollisionChainRetainsOnlyRequiredTombstones) {
+    auto tids = tidsByIndexBucket();
+    constexpr int home = ThreadFilter::kTidIndexSize - 2;
+    std::array<int, 4> slots{};
+    for (int i = 0; i < 4; ++i) {
+        slots[i] = registry.registerThread(tids[home] + i * ThreadFilter::kTidIndexSize);
+        ASSERT_GE(slots[i], 0);
+    }
+    // Keep the bucket after the chain occupied with an unrelated home entry.
+    int neighbor = registry.registerThread(tids[2]);
+    ASSERT_GE(neighbor, 0);
+
+    registry.unregisterThread(slots[1]);
+    EXPECT_EQ(-1, registry.tidIndexEntryForTest(ThreadFilter::kTidIndexSize - 1));
+    EXPECT_EQ(registry.slotForId(slots[2]),
+              registry.lookupByTid(tids[home] + 2 * ThreadFilter::kTidIndexSize));
+    EXPECT_EQ(slots[2] + 1, registry.tidIndexEntryForTest(0));
+
+    registry.unregisterThread(slots[3]);
+    EXPECT_EQ(0, registry.tidIndexEntryForTest(1));
+    registry.unregisterThread(slots[0]);
+    EXPECT_EQ(-1, registry.tidIndexEntryForTest(home));
+
+    registry.unregisterThreadByTid(tids[home] + 2 * ThreadFilter::kTidIndexSize);
+    EXPECT_EQ(nullptr, registry.lookupByTid(tids[home] + 2 * ThreadFilter::kTidIndexSize));
+    EXPECT_EQ(ThreadFilter::kTidIndexSize - 1, emptyIndexBuckets(registry));
+    EXPECT_EQ(neighbor + 1, registry.tidIndexEntryForTest(2));
+    registry.unregisterThread(neighbor);
+    EXPECT_EQ(ThreadFilter::kTidIndexSize, emptyIndexBuckets(registry));
+}
+
+TEST_F(ThreadRegistryTest, ReusedTombstoneAndDuplicateRegistrationPreserveProbePaths) {
+    auto tids = tidsByIndexBucket();
+    int first = registry.registerThread(tids[0]);
+    int second_tid = tids[0] + ThreadFilter::kTidIndexSize;
+    int second = registry.registerThread(second_tid);
+    ASSERT_GE(first, 0);
+    ASSERT_GE(second, 0);
+    registry.unregisterThread(first);
+    ASSERT_EQ(-1, registry.tidIndexEntryForTest(0));
+
+    int replacement = registry.registerThread(tids[0] + 2 * ThreadFilter::kTidIndexSize);
+    ASSERT_GE(replacement, 0);
+    EXPECT_EQ(replacement + 1, registry.tidIndexEntryForTest(0));
+    for (int repeat = 0; repeat < 4; ++repeat) {
+        EXPECT_EQ(second, registry.registerThread(second_tid));
+    }
+    registry.unregisterThread(replacement);
+    EXPECT_EQ(-1, registry.tidIndexEntryForTest(0));
+    EXPECT_EQ(registry.slotForId(second), registry.lookupByTid(second_tid));
+    registry.unregisterThreadByTid(second_tid);
+    EXPECT_EQ(ThreadFilter::kTidIndexSize, emptyIndexBuckets(registry));
+}
+
+TEST_F(ThreadRegistryTest, TwoLiveOwnersCannotSaturateIndexWithDeletedHistory) {
+    auto tids = tidsByIndexBucket();
+    int previous = -1;
+    for (int recording = 0; recording < 2; ++recording) {
+        for (int bucket = 0; bucket < ThreadFilter::kTidIndexSize; ++bucket) {
+            int current = registry.registerThread(tids[bucket]);
+            ASSERT_GE(current, 0);
+            if (previous >= 0) registry.unregisterThread(previous);
+            previous = current;
+        }
+        // Retain the final owner across restart; index metadata must remain valid.
+        registry.deactivateRecording();
+        registry.init("", true);
+        EXPECT_EQ(registry.slotForId(previous), registry.lookupByTid(tids.back()));
+    }
+    registry.unregisterThread(previous);
+    EXPECT_EQ(ThreadFilter::kTidIndexSize, emptyIndexBuckets(registry));
+    EXPECT_EQ(nullptr, registry.lookupByTid(1000000));
+}
+
+TEST_F(ThreadRegistryTest, FullCollisionChainReclaimsPathsAfterLastDependentExits) {
+    auto tids = tidsByIndexBucket();
+    int base = tids.back();
+    std::array<int, ThreadFilter::kMaxThreads> slots{};
+    for (int i = 0; i < ThreadFilter::kMaxThreads; ++i) {
+        slots[i] = registry.registerThread(base + i * ThreadFilter::kTidIndexSize);
+        ASSERT_GE(slots[i], 0);
+    }
+    int last_tid = base + (ThreadFilter::kMaxThreads - 1) * ThreadFilter::kTidIndexSize;
+    for (int i = 0; i < ThreadFilter::kMaxThreads - 1; ++i) {
+        registry.unregisterThread(slots[i]);
+        ASSERT_EQ(registry.slotForId(slots.back()), registry.lookupByTid(last_tid));
+    }
+    // Only the last owner remains, but every preceding bucket is still needed
+    // to reach it. Its removal must reclaim the entire wrapped probe path.
+    EXPECT_EQ(ThreadFilter::kTidIndexSize - ThreadFilter::kMaxThreads,
+              emptyIndexBuckets(registry));
+    registry.unregisterThreadByTid(last_tid);
+    EXPECT_EQ(ThreadFilter::kTidIndexSize, emptyIndexBuckets(registry));
+}
+
+TEST_F(ThreadRegistryTest, CollisionChurnMatchesLiveOwnersAcrossRecordingRestarts) {
+    auto tids = tidsByIndexBucket();
+    std::mt19937 random(663);
+    std::vector<std::pair<int, int>> live;
+    for (int operation = 0; operation < 10000; ++operation) {
+        if (!live.empty() && (live.size() == 32 || (random() & 1) != 0)) {
+            size_t selected = random() % live.size();
+            registry.unregisterThreadByTid(live[selected].first);
+            EXPECT_EQ(nullptr, registry.lookupByTid(live[selected].first));
+            live.erase(live.begin() + selected);
+        } else {
+            // Concentrate home buckets around the wrap boundary and force collisions.
+            int bucket = (ThreadFilter::kTidIndexSize - 4 + random() % 8) &
+                         ThreadFilter::kTidIndexMask;
+            int tid = tids[bucket] + (random() % 64) * ThreadFilter::kTidIndexSize;
+            int slot_id = registry.registerThread(tid);
+            ASSERT_GE(slot_id, 0);
+            auto existing = std::find_if(live.begin(), live.end(),
+                                        [tid](const auto& owner) { return owner.first == tid; });
+            if (existing == live.end()) {
+                live.push_back({tid, slot_id});
+            } else {
+                EXPECT_EQ(existing->second, slot_id);
+            }
+        }
+        if (operation % 127 == 0) {
+            registry.deactivateRecording();
+            registry.init("", true);
+        }
+        for (const auto& owner : live) {
+            EXPECT_EQ(registry.slotForId(owner.second), registry.lookupByTid(owner.first));
+        }
+    }
+    for (const auto& owner : live) registry.unregisterThreadByTid(owner.first);
+    EXPECT_EQ(ThreadFilter::kTidIndexSize, emptyIndexBuckets(registry));
+}
+
+TEST_F(ThreadRegistryTest, ConcurrentChurnDoesNotHideStableDisplacedOwner) {
+    auto tids = tidsByIndexBucket();
+    int base = tids.back();
+    int first = registry.registerThread(base);
+    int stable_tid = base + ThreadFilter::kTidIndexSize;
+    int stable = registry.registerThread(stable_tid);
+    ASSERT_GE(first, 0);
+    ASSERT_GE(stable, 0);
+    registry.unregisterThread(first);
+
+    std::atomic<bool> stop{false};
+    std::atomic<unsigned> reads{0};
+    std::atomic<unsigned> misses{0};
+    std::thread reader([&] {
+        while (!stop.load(std::memory_order_acquire)) {
+            if (registry.lookupByTid(stable_tid) != registry.slotForId(stable)) {
+                misses.fetch_add(1, std::memory_order_relaxed);
+            }
+            reads.fetch_add(1, std::memory_order_release);
+        }
+    });
+    while (reads.load(std::memory_order_acquire) == 0) std::this_thread::yield();
+    for (int iteration = 0; iteration < 4000; ++iteration) {
+        int tid = base + (2 + iteration % 32) * ThreadFilter::kTidIndexSize;
+        int slot_id = registry.registerThread(tid);
+        // Always join the reader, including when registration unexpectedly fails.
+        EXPECT_GE(slot_id, 0);
+        if (slot_id >= 0) registry.unregisterThread(slot_id, tid);
+    }
+    stop.store(true, std::memory_order_release);
+    reader.join();
+    EXPECT_EQ(0u, misses.load());
+    registry.unregisterThreadByTid(stable_tid);
+    EXPECT_EQ(ThreadFilter::kTidIndexSize, emptyIndexBuckets(registry));
+}
+
 TEST_F(ThreadRegistryTest, ConfigurationSeparatesFilterAndUnfilteredTracking) {
     registry.init("0", false);
     EXPECT_TRUE(registry.enabled());
@@ -1105,7 +1308,7 @@ TEST_F(ThreadFilterTest, FullContextFilterRejectsWithoutLocking) {
 // embedding it would keep it resident from library load even for recordings
 // that never activate the registry (no context filter, no unfiltered precheck).
 static constexpr long long kTidIndexBytes =
-    (long long)(ThreadFilter::kTidIndexSize * sizeof(std::atomic<int>));
+    (long long)(ThreadFilter::kTidIndexSize * (sizeof(std::atomic<int>) + sizeof(uint16_t)));
 
 TEST(ThreadFilterTidIndexStorageTest, FilterEmbedsNoTidIndex) {
     EXPECT_LT((long long)sizeof(ThreadFilter), kTidIndexBytes);
@@ -1147,4 +1350,14 @@ TEST(ThreadFilterTidIndexStorageTest, TidLookupsBeforeActivationFindNothing) {
     filter.unregisterThreadByTid(9101);  // ThreadEnd path, runs for every exiting thread
     EXPECT_EQ(-1, filter.registerThread(9101));
     EXPECT_EQ(constructed, NativeMem::live(NM_THREAD_FILTER));
+}
+
+TEST(ThreadFilterTidIndexStorageTest, DestructionBalancesIndexAndProbeCountStorage) {
+    const long long baseline = NativeMem::live(NM_THREAD_FILTER);
+    {
+        ThreadFilter filter;
+        filter.init("", true);
+        EXPECT_GT(NativeMem::live(NM_THREAD_FILTER), baseline);
+    }
+    EXPECT_EQ(baseline, NativeMem::live(NM_THREAD_FILTER));
 }
