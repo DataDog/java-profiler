@@ -85,6 +85,27 @@ TEST_F(TaskBlockRecorderTest, DurationThresholdIncludesExactBoundary) {
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
 }
 
+TEST_F(TaskBlockRecorderTest, ShortContentionIsNotRecordedAndDoesNotSuppressNextEvent) {
+  Context context{};
+  u64 start_ticks = TSC::ticks();
+  u64 one_millisecond = TSC::frequency() / 1000;
+  ASSERT_GT(one_millisecond, 1ULL);
+  u64 passing_end = start_ticks + one_millisecond;
+
+  EXPECT_FALSE(recordTaskBlockIfEligible(
+      12345, nullptr, 0, start_ticks, passing_end - 1, context, 0, 0,
+      OSThreadState::MONITOR_WAIT));
+  EXPECT_EQ(0, g_record_calls.load(std::memory_order_acquire));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_EMITTED));
+
+  EXPECT_TRUE(recordTaskBlockIfEligible(
+      12345, nullptr, 0, start_ticks, passing_end, context, 0, 0,
+      OSThreadState::MONITOR_WAIT));
+  EXPECT_EQ(1, g_record_calls.load(std::memory_order_acquire));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
+}
+
 TEST_F(TaskBlockRecorderTest, RotationRejectsNewActivity) {
   Profiler* profiler = Profiler::instance();
   profiler->beginTaskBlockRotationForTest();

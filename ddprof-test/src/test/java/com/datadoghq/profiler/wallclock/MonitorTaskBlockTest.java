@@ -17,6 +17,7 @@ import com.datadoghq.profiler.JfrEvents;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Assumptions;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -79,13 +80,15 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     TaskBlockAssertions.assertContainsObservedState(events, "CONTENDED");
   }
 
+  /** Verifies that repeated monitor contention leaves the producer able to record later blocks. */
   @Test
-  public void shortMonitorContentionIsFilteredAndDoesNotSuppressLongerOnes() throws Exception {
-    Object shortMonitor = new Object();
+  public void contentionBurstDoesNotSuppressLongerContention() throws Exception {
+    Object burstMonitor = new Object();
     Object longMonitor = new Object();
 
-    // Burst of genuinely contended, microsecond-long enters: two threads hammer the same
-    // monitor with an empty critical section, so no interval can reach the 1ms threshold.
+    // Exercise repeated contention before the positive control. An empty critical section
+    // can still exceed 1ms if a thread is descheduled, so burst events are allowed here.
+    // TaskBlockRecorderTest checks duration filtering with explicit timestamps.
     CountDownLatch start = new CountDownLatch(1);
     AtomicReference<Throwable> burstFailure = new AtomicReference<>();
     int[] counter = new int[1];
@@ -95,20 +98,21 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
         try {
           assertTrue(start.await(5, TimeUnit.SECONDS));
           for (int n = 0; n < 20_000; n++) {
-            synchronized (shortMonitor) {
+            synchronized (burstMonitor) {
               counter[0]++;
             }
           }
         } catch (Throwable t) {
           burstFailure.set(t);
         }
-      }, "taskblock-short-contention-" + i);
+      }, "taskblock-burst-contention-" + i);
       burst[i].start();
     }
     start.countDown();
     for (Thread thread : burst) {
       assertCompleted(thread, burstFailure);
     }
+    assertEquals(40_000, counter[0], "contention burst did not complete");
 
     // One long contended enter, the positive control: it proves the producer was alive.
     CountDownLatch attempting = new CountDownLatch(1);
@@ -134,8 +138,6 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     JfrEvents events = verifyEvents("datadog.TaskBlock");
     assertTrue(TaskBlockAssertions.containsBlocker(events, identityHash(longMonitor)),
         "long contention was not emitted");
-    assertFalse(TaskBlockAssertions.containsBlocker(events, identityHash(shortMonitor)),
-        "sub-threshold contention must be filtered");
     assertTaskBlockStackReference(events);
   }
 
