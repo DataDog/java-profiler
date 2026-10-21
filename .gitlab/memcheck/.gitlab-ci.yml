@@ -1,0 +1,32 @@
+# Copyright 2026, Datadog, Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# One-off Phase 0 noise measurement for the memory part of the PR overhead
+# check (PROF-16186), on the runner type the gate will use. Runs only in a
+# pipeline started from the web UI with RUN_MEMCHECK_PHASE0=true. It is split
+# into parallel jobs so that the results show how much the means move between
+# runners (what a gate comparing a PR job with a baseline job sees), not just
+# the noise within one job.
+memcheck-phase0:x64:
+  stage: benchmarks
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $RUN_MEMCHECK_PHASE0 == "true"'
+      when: always
+    - when: never
+  needs: []
+  tags: ["arch:amd64"]
+  image: ${BUILD_IMAGE_X64_GLIBC}
+  # A push to the branch must not cancel a 45-minute measurement.
+  interruptible: false
+  timeout: 2h
+  parallel: 5
+  variables:
+    REPS: "3"
+    NOPROF_REPS: "1"
+  script:
+    - utils/memcheck/ci-phase0.sh "build/memcheck-${CI_NODE_INDEX}"
+  artifacts:
+    when: always
+    paths:
+      - build/memcheck-*/
+    expire_in: 30 days

@@ -31,6 +31,8 @@ All under `utils/memcheck/`:
 | `run_scenario.sh` | One run of one scenario in one arm. Scenario table (sizes, engines) is at the top. |
 | `phase0.sh` | Interleaved repetitions of all scenarios × arms; failures are logged, not fatal. |
 | `phase0-container.sh` | Host wrapper: builds the release lib from a clean clone of the committed HEAD inside the test image, then runs `phase0.sh`. |
+| `ci-phase0.sh` | The same run directly on a CI runner (no container, no core pinning): records the runner's shape in `runner.txt`, builds the release lib from the checkout, runs `phase0.sh`. |
+| `.gitlab/memcheck/.gitlab-ci.yml` | GitLab job `memcheck-phase0:x64` that runs `ci-phase0.sh` (below). |
 | `analyze_phase0.py` | Host-side: `phase0-report.md` + `phase0-stats.csv` (mean/SD/CV/range per scenario × arm × metric, noise class, NMT delta vs no-profiler). |
 | `results/2026-10-08-aarch64-docker-mac/` | First results (below). The CSV keeps only the `native_mem_*`, NMT and RSS rows. |
 | `results/2026-10-08-x64-aws-m5d4xlarge/` | amd64 Linux results (below), same filtering. |
@@ -293,10 +295,26 @@ NMT `Code` moved by up to −28 MiB, and the profiler's `Code` delta in
 4. **arm64 bare-metal box**: confirms whether Docker Desktop distorted
    anything, and whether arm64 can be a second gated platform.
 5. Commit each result set under `results/<date>-<arch>-<host>/`.
-6. Then the final run on the actual CI runner type (GitHub `ubuntu-latest`
-   or the GitLab `arch:amd64` runners), and Phase 1: a report-only sticky PR
-   comment from the nmt arm, baseline from `main` artifacts.
+6. **Final run on the CI runner type: GitLab `arch:amd64`** (decided
+   2026-10-21; the PR-comment helper `.gitlab/scripts/upsert-github-pr-comment.sh`
+   and the benchmark/reliability precedent are on GitLab). Job
+   `memcheck-phase0:x64` in `.gitlab/memcheck/.gitlab-ci.yml`: 5 parallel
+   jobs × (3 reps of counters/nmt + 1 noprof) of all scenarios, ~45 min each.
+   Splitting it shows how much the means move *between* jobs (a PR job
+   against a baseline job), which no run so far has measured.
+   - Trigger: GitLab → Run pipeline on the branch, variable
+     `RUN_MEMCHECK_PHASE0=true`. A web-started pipeline also passes the PR
+     gate in `prepare.sh`, so it runs the whole PR pipeline alongside;
+     that is also the load a real PR job would share nodes with.
+   - Analysis: download the `build/memcheck-<n>/` artifacts; check that
+     `runner.txt` agrees across jobs (CPU count, quota, model); run
+     `analyze_phase0.py` per job and compare per-job means against
+     `max(256 KiB, 4·SD)`.
+   - The job's image (`BUILD_IMAGE_X64_GLIBC`, el8) has JDK 21.0.3; the
+     committed sets used 21.0.8. Baselines will come from CI, so this only
+     limits direct comparison with the committed sets.
+7. Phase 1: a report-only sticky PR comment from the nmt arm, baseline from
+   `main` artifacts.
 
-Open decisions (from the plan): GitHub vs GitLab for the PR gate; gate
-reference (delta vs merge-base, committed budget file, or both); how much of
-the `memory-usage-sweep-handoff` tooling to merge.
+Open decisions: gate reference (delta vs merge-base, committed budget file,
+or both); how much of the `memory-usage-sweep-handoff` tooling to merge.
