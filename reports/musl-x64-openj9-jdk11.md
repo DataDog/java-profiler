@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk11
 
 ## musl-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-10-21 10:48:12 EDT
+**Date:** 2026-10-21 11:27:14 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 489 |
-| Sample Rate | 8.15/sec |
-| Health Score | 509% |
-| Threads | 8 |
-| Allocations | 384 |
+| CPU Samples | 607 |
+| Sample Rate | 10.12/sec |
+| Health Score | 632% |
+| Threads | 9 |
+| Allocations | 372 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 702 |
-| Sample Rate | 11.70/sec |
-| Health Score | 731% |
+| CPU Samples | 764 |
+| Sample Rate | 12.73/sec |
+| Health Score | 796% |
 | Threads | 9 |
-| Allocations | 522 |
+| Allocations | 489 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 63-63 cores)</summary>
 
 ```
-1792593767 63
-1792593772 63
-1792593777 63
-1792593782 63
-1792593787 63
-1792593792 63
-1792593797 63
-1792593802 63
-1792593807 63
-1792593812 63
-1792593817 63
-1792593822 63
-1792593827 63
-1792593832 63
-1792593837 63
-1792593842 63
-1792593847 63
-1792593852 63
-1792593857 63
-1792593862 63
+1792596172 63
+1792596177 63
+1792596182 63
+1792596187 63
+1792596192 63
+1792596197 63
+1792596202 63
+1792596207 63
+1792596212 63
+1792596217 63
+1792596222 63
+1792596227 63
+1792596232 63
+1792596237 63
+1792596242 63
+1792596247 63
+1792596252 63
+1792596257 63
+1792596262 63
+1792596267 63
 ```
 </details>
 
