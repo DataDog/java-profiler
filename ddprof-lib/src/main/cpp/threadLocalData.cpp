@@ -172,6 +172,7 @@ void ProfiledThread::unclaimAndReset() {
   _park_slot = {};
   _task_block_slot = {};
   _monitor_slot = {};
+  _block_recording_epoch = 0;
   _filter_slot_id = -1;
   _init_window = 0;
   _signal_depth = 0;

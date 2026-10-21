@@ -26,6 +26,7 @@
 #include "engine.h"
 #include "hotspot/vmStructs.inline.h"
 #include "incbin.h"
+#include "javaApi.h"
 #include "jvmSupport.h"
 #include "jvmThread.h"
 #include "os.h"
@@ -379,6 +380,47 @@ Java_com_datadoghq_profiler_JavaProfilerTestSupport_recordUnownedWallTailAcrossD
 #endif
 }
 
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfilerTestSupport_recordUnownedWallTailBeforeOwnedBlockForTest0(
+    JNIEnv *env, jclass unused, jthread thread, jstring snapshot, jint producer) {
+#ifdef DEBUG
+  SignalBlocker blocker;
+  if (!BaseWallClock::seedUnownedWallTailForTest(thread)) return JNI_FALSE;
+  Profiler* profiler = Profiler::instance();
+  JniString path(env, snapshot);
+  if (profiler->dump(path.c_str(), path.length())) return JNI_FALSE;
+  u64 token = 0;
+  switch (producer) {
+    case 0:
+      token = Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(env, nullptr, thread);
+      Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(env, nullptr, thread, token, 0, 0);
+      break;
+    case 1:
+      token = Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
+          env, nullptr, JNI_FALSE, static_cast<jint>(OSThreadState::SLEEPING));
+      Java_com_datadoghq_profiler_JavaProfiler_blockExit0(env, nullptr, JNI_FALSE, token, 0, 0);
+      break;
+    case 2:
+      if (Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(env, nullptr, thread, JNI_FALSE)) {
+        token = profiler->blockTracker()->hasActiveBlockRun(
+            ProfiledThread::current()->filterSlotId()) ? 1 : 0;
+        Java_com_datadoghq_profiler_JavaProfiler_parkExit0(env, nullptr, thread, JNI_FALSE, 0, 0);
+      }
+      break;
+    case 3:
+      MonitorContendedEnter(VM::jvmti(), env, thread, nullptr);
+      token = ProfiledThread::current()->monitorBlockToken();
+      MonitorContendedEntered(VM::jvmti(), env, thread, nullptr);
+      break;
+    default:
+      return JNI_FALSE;
+  }
+  return token != 0 ? JNI_TRUE : JNI_FALSE;
+#else
+  return JNI_FALSE;
+#endif
+}
+
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
     JNIEnv *env, jclass unused, jstring name, jstring value, jstring unit) {
@@ -460,22 +502,20 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
   }
   Profiler *profiler = Profiler::instance();
   ThreadFilter *tf = profiler->threadFilter();
-  if (!tf->registryActive() ||
-      !(profiler->taskBlockEnabled() || tf->enabled())) {
-    return JNI_FALSE;
-  }
   Context context = ContextApi::snapshot();
+  ThreadFilter::SlotID slot_id = tf->registryActive() && context.spanId == 0
+      ? tf->ensureCurrentThreadSlot(current) : -1;
+  // Use the owner's epoch rather than a second global epoch read: stop/start
+  // may race admission, but only this thread refreshes its retained identity.
+  current->refreshBlockState(slot_id >= 0
+      ? tf->slotForId(slot_id)->recordingEpoch() : tf->recordingEpoch());
   if (!current->parkEnter(TSC::ticks(), context)) {
     return JNI_FALSE;
   }
 
-  if (context.spanId == 0) {
-    ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
-    if (slot_id >= 0) {
-      WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
-      current->setParkBlockToken(
-          tracker->enterBlockedRun(tf, slot_id, OSThreadState::CONDVAR_WAIT));
-    }
+  if (slot_id >= 0) {
+    current->setParkBlockToken(
+        enterOwnedBlockRun(current, slot_id, OSThreadState::CONDVAR_WAIT));
   }
   return JNI_TRUE;
 }
@@ -555,41 +595,14 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   }
   ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
   if (slot_id < 0) return 0;
+  current->refreshBlockState(tf->slotForId(slot_id)->recordingEpoch());
   WallClockBlockTracker *tracker = profiler->blockTracker();
-  u64 token = tracker->enterBlockedRun(tf, slot_id, decoded);
+  u64 token = enterOwnedBlockRun(current, slot_id, decoded);
   if (token == 0) return 0;
-  // Also arm the TaskBlock recording slot so blockExit0 can produce an event
-  // with blocker identity, matching the beginTaskBlock0/endTaskBlock0 pair.
-  // Skipped when TaskBlock recording is disabled so this stays purely a
-  // wall-clock suppression marker for the precheck tests that exercise it
-  // with task-block recording off.
-  if (task_block_armable &&
-      !current->taskBlockEnter(token, TSC::ticks(), context)) {
-    // FLAG_TASK_BLOCKED is sticky across recordings (unlike the WallClockBlockTracker
-    // blocked-run, which is generation-scoped), so a worker whose previous
-    // interval was abandoned mid-run (e.g. profiler stop/restart without a
-    // matching blockExit0) can still be holding it. Mirror monitorBlockEnter's
-    // stale-slot check: only refuse the new interval if the old token still
-    // maps to a genuinely active, same-generation blocked run.
-    u64 stale_token = current->taskBlockToken();
-    bool current_owner = false;
-    if (stale_token != 0) {
-      ThreadFilter::SlotID stale_slot_id = WallClockBlockTracker::tokenSlotId(stale_token);
-      ThreadFilter::Slot *stale_slot = current->filterSlotId() == stale_slot_id
-          ? tf->activeSlotForId(stale_slot_id, current->tid())
-          : nullptr;
-      if (stale_slot != nullptr) {
-        WallClockBlockTracker::BlockState *block_state = tracker->slotForId(stale_slot_id);
-        current_owner = block_state != nullptr &&
-            block_state->activeBlockState() != OSThreadState::UNKNOWN &&
-            block_state->activeBlockOwner() == BlockRunOwner::JAVA &&
-            block_state->blockGeneration() == WallClockBlockTracker::tokenGeneration(stale_token);
-      }
-    }
-    if (current_owner) {
-      tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(token));
-      return 0;
-    }
+  if (task_block_armable) {
+    // enterOwnedBlockRun() acquired the slot's sole ownership above. Any older
+    // TLS token is therefore abandoned (for example, addThread() cleared its
+    // JAVA-owned run) and cannot still own a live interval.
     current->clearTaskBlock();
     if (!current->taskBlockEnter(token, TSC::ticks(), context)) {
       tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(token));
@@ -614,11 +627,6 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
   }
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   ThreadFilter::SlotID slot_id = WallClockBlockTracker::tokenSlotId(block_token);
-  if (current->filterSlotId() != slot_id ||
-      tf->activeSlotForId(slot_id, current->tid()) == nullptr) {
-    return;
-  }
-
   u64 start_ticks = 0;
   Context context{};
   if (current->taskBlockExit(block_token, start_ticks, context)) {
@@ -632,7 +640,8 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
     return;
   }
 
-  if (tf->registryActive()) {
+  if (tf->registryActive() && current->filterSlotId() == slot_id &&
+      tf->activeSlotForId(slot_id, current->tid()) != nullptr) {
     WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
     tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(block_token));
   }
@@ -659,19 +668,22 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
   ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
   if (slot_id < 0) return 0;
 
+  current->refreshBlockState(tf->slotForId(slot_id)->recordingEpoch());
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
     Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return 0;
   }
   WallClockBlockTracker *tracker = profiler->blockTracker();
-  u64 token = tracker->enterBlockedRun(
-      tf, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+  u64 token = enterOwnedBlockRun(
+      current, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+  if (token == 0) return 0;
+  // A successfully acquired run excludes any previous registry owner, even
+  // when its TLS payload survived a context-window transition.
+  current->clearTaskBlock();
   if (!current->taskBlockEnter(token, TSC::ticks(), context)) {
-    if (token != 0) {
-      tracker->exitBlockedRun(slot_id,
-                              WallClockBlockTracker::tokenGeneration(token));
-    }
+    tracker->exitBlockedRun(slot_id,
+                            WallClockBlockTracker::tokenGeneration(token));
     return 0;
   }
   return static_cast<jlong>(token);

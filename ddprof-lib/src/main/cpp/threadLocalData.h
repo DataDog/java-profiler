@@ -103,6 +103,7 @@ private:
   BlockSlot _park_slot;
   BlockSlot _task_block_slot;
   BlockSlot _monitor_slot;
+  u64 _block_recording_epoch;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   volatile int _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
@@ -125,7 +126,7 @@ private:
   ProfiledThread(int tid)
       : ThreadLocalData(), _jmp_buf(nullptr), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
-        _park_slot{}, _task_block_slot{}, _monitor_slot{},
+        _park_slot{}, _task_block_slot{}, _monitor_slot{}, _block_recording_epoch(0),
         _filter_slot_id(-1),
         _init_window(0),
         _signal_depth(0),
@@ -215,6 +216,7 @@ public:
     u64 task_block_start_ticks;
     u64 task_block_token;
     Context task_block_context;
+    u64 block_recording_epoch;
     int filter_slot_id;
     uint8_t init_window;
     int signal_depth;
@@ -230,7 +232,7 @@ public:
       _cpu_epoch, _wall_epoch, _call_trace_id, _recording_epoch,
       __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED),
       _park_slot.block_token, _task_block_slot.start_ticks, _task_block_slot.block_token,
-      _task_block_slot.context, _filter_slot_id, _init_window,
+      _task_block_slot.context, _block_recording_epoch, _filter_slot_id, _init_window,
       __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED),
       _in_critical_section, _otel_ctx_initialized, _otel_local_root_span_id
     };
@@ -430,6 +432,20 @@ public:
     _otel_local_root_span_id = 0;
   }
 
+  // Called by the owning thread before admitting a producer interval. Registry
+  // identities survive restart, but their old producer payload must not: an
+  // exit callback may have been disabled while the thread was blocked.
+  inline void refreshBlockState(u64 recording_epoch) {
+    if (_block_recording_epoch == recording_epoch) return;
+    __atomic_fetch_and(&_misc_flags,
+                       ~(FLAG_PARKED | FLAG_TASK_BLOCKED | FLAG_MONITOR_BLOCKED),
+                       __ATOMIC_ACQ_REL);
+    _park_slot = {};
+    _task_block_slot = {};
+    _monitor_slot = {};
+    _block_recording_epoch = recording_epoch;
+  }
+
   inline bool parkEnter(u64 start_ticks, const Context& context) {
     return blockSlotEnter<FLAG_PARKED>(_park_slot, start_ticks, context,
                                        /*blocker=*/0, OSThreadState::UNKNOWN);
@@ -488,8 +504,9 @@ public:
   }
 #endif
 
-  // Object.wait owns its interval until MonitorWaited, including monitor
-  // reacquisition. A nested contention callback must not overwrite that state.
+  // Object.wait owns its interval until MonitorWaited. HotSpot 21 posts that
+  // callback before monitor reacquisition (ObjectMonitor::wait()). A nested
+  // contention callback must not overwrite an interval that is still open.
   inline bool monitorEnter(u64 start_ticks, const Context& context, u64 blocker,
                            OSThreadState state) {
     return blockSlotEnter<FLAG_MONITOR_BLOCKED>(_monitor_slot, start_ticks,

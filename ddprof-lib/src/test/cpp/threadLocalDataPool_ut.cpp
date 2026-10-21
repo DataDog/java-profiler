@@ -179,6 +179,7 @@ TEST(ProfiledThreadTest, UnclaimAndResetMatchesFreshInstance) {
     ProfiledThread* fresh = ProfiledThread::forTid(0);
 
     sigjmp_buf fake_jmp_buf;
+    dirty->refreshBlockState(17);
     dirty->set_unwinding_Java(true);
     dirty->setJmpCtx(&fake_jmp_buf);
     // Falls through to the cache-miss path (fresh _call_trace_id is 0),
@@ -238,6 +239,7 @@ TEST(ProfiledThreadTest, UnclaimAndResetMatchesFreshInstance) {
     EXPECT_EQ(reset_snapshot.park_block_token, fresh_snapshot.park_block_token);
     EXPECT_EQ(reset_snapshot.task_block_start_ticks, fresh_snapshot.task_block_start_ticks);
     EXPECT_EQ(reset_snapshot.task_block_token, fresh_snapshot.task_block_token);
+    EXPECT_EQ(reset_snapshot.block_recording_epoch, fresh_snapshot.block_recording_epoch);
     EXPECT_EQ(reset_snapshot.task_block_context.spanId, fresh_snapshot.task_block_context.spanId);
     EXPECT_EQ(reset_snapshot.task_block_context.rootSpanId, fresh_snapshot.task_block_context.rootSpanId);
     for (u32 i = 0; i < DD_TAGS_CAPACITY; i++) {

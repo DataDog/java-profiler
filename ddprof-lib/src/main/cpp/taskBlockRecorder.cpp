@@ -29,6 +29,40 @@ bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks) {
   return end_ticks > start_ticks && end_ticks - start_ticks >= min_ticks;
 }
 
+u64 enterOwnedBlockRun(ProfiledThread* current, ThreadFilter::SlotID slot_id,
+                       OSThreadState state, BlockRunOwner owner) {
+  Profiler* profiler = Profiler::instance();
+  ThreadFilter* registry = profiler->threadFilter();
+  WallClockBlockTracker* tracker = profiler->blockTracker();
+  WallClockBlockTracker::BlockState* slot = tracker->slotForId(slot_id);
+  if (slot == nullptr) return 0;
+
+  bool fallback_enabled = slot->pauseUnownedBlockedFallback();
+  if (fallback_enabled &&
+      slot->unowned_blocked_pending_weight.load(std::memory_order_acquire) != 0) {
+    // Signal handlers normally own this write path. A producer needs the
+    // same stop/dump exclusion before replaying a cached trace into JFR.
+    TaskBlockActivity activity;
+    if (!activity.active() || !registry->unfilteredWallTrackingActive() ||
+        registry->activeSlotForId(slot_id, current->tid()) == nullptr) {
+      slot->resumeUnownedBlockedFallback();
+      return 0;
+    }
+    CriticalSection cs(current);
+    u64 call_trace_id = 0, weight = 0;
+    OSThreadState tail_state = OSThreadState::UNKNOWN;
+    if (slot->prepareUnownedBlockedTail(call_trace_id, weight, tail_state)) {
+      // Keep the trace published until recordUnownedBlockedTail() holds its
+      // writer stripe, preserving the core branch's JFR liveness protocol.
+      profiler->recordUnownedBlockedTail(current->tid(), slot, weight);
+    }
+  }
+
+  u64 token = tracker->enterBlockedRun(registry, slot_id, state, owner);
+  if (token == 0 && fallback_enabled) slot->resumeUnownedBlockedFallback();
+  return token;
+}
+
 bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
                            WallClockBlockTracker* tracker, jthread thread,
                            int start_depth, u64 block_token, u64 blocker,
@@ -59,8 +93,8 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   u64 generation = WallClockBlockTracker::tokenGeneration(block_token);
   // beginTaskBlock0 resolves its slot through ThreadFilter::ensureCurrentThreadSlot(),
   // which self-heals a cached-but-stale slot_id (e.g. after a recording restart
-  // reset the registry) back to this tid's real slot. The block duration between
-  // enter and exit can span such a reset, so re-validate here too instead of
+  // changed the epoch) back to this tid's real slot. The block duration between
+  // enter and exit can span such a restart, so re-validate here too instead of
   // trusting the cached value directly - otherwise a stale cache makes the slot
   // comparison below meaningless and silently drops the event uncounted.
   ThreadFilter::SlotID current_slot = thread_filter->ensureCurrentThreadSlot(current);
@@ -113,9 +147,12 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
     return;
   }
 
+  ThreadFilter *tf = profiler->threadFilter();
+  ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
+  if (!tf->unfilteredWallTrackingActive() || slot_id < 0) return;
+  current->refreshBlockState(tf->slotForId(slot_id)->recordingEpoch());
   if (!current->monitorEnter(TSC::ticks(), context, /*blocker=*/0, state)) {
     u64 token = current->monitorBlockToken();
-    ThreadFilter *tf = profiler->threadFilter();
     bool current_owner = false;
     if (token != 0) {
       ThreadFilter::SlotID slot_id = WallClockBlockTracker::tokenSlotId(token);
@@ -139,14 +176,7 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
     }
   }
 
-  ThreadFilter *tf = profiler->threadFilter();
-  ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
-  if (!tf->unfilteredWallTrackingActive() || slot_id < 0) {
-    current->clearMonitorBlock();
-    return;
-  }
-  u64 token =
-      profiler->blockTracker()->enterBlockedRun(tf, slot_id, state, BlockRunOwner::JVMTI);
+  u64 token = enterOwnedBlockRun(current, slot_id, state, BlockRunOwner::JVMTI);
   if (token == 0) {
     ThreadFilter::Slot *slot = tf->slotForId(slot_id);
     if (slot != nullptr && slot->inContextWindow()) {
@@ -161,12 +191,9 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
 static void monitorBlockExit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                              jobject object, OSThreadState state) {
   Profiler *profiler = Profiler::instance();
-  if (!profiler->taskBlockEnabled() || !profiler->nativeMonitorTaskBlockEnabled()) {
-    return;
-  }
-  if (!JVMSupport::isPlatformThread(jni, thread)) return;
   ProfiledThread *current = ProfiledThread::current();
   if (current == nullptr) return;
+  if (!JVMSupport::isPlatformThread(jni, thread)) return;
 
   u64 start_ticks = 0;
   Context context{};
@@ -181,12 +208,13 @@ static void monitorBlockExit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
   // Resolve the blocker identity hash only for intervals that will actually pass
   // the eligibility filter. GetObjectHashCode mutates the object's mark word on
   // HotSpot, so it must not run for short, high-frequency contention that gets
-  // discarded anyway. That mutation also permanently disables biased locking for
-  // this object, a cost borne by the profiled application, not just the profiler.
+  // discarded anyway. On older HotSpot versions with biased locking, assigning
+  // an identity hash also prevents the object from being biased again.
   // These conditions mirror taskBlockPassesBasicEligibility, and the same
   // end_ticks is handed down so there is no boundary drift.
   u64 end_ticks = TSC::ticks();
-  if (context.spanId == 0 && exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
+  if (profiler->taskBlockEnabled() && profiler->nativeMonitorTaskBlockEnabled() &&
+      context.spanId == 0 && exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
     blocker = monitorBlockerHash(jvmti, object);
   }
 

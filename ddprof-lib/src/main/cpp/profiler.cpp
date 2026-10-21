@@ -2308,10 +2308,8 @@ Error Profiler::dump(const char *path, const int length) {
     Error err = Error::OK;
     // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
     // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
-    // the rotated buffers. StringDictionary's rotate()/standby()/clearStandby()
-    // protocol handles the dump's own writer/reader coordination for each
-    // dictionary, including _class_map (see flightRecorder.cpp's writeCpool:
-    // classMap()->standby() stays stable for the dump's lifetime).
+    // the rotated buffers. StringDictionary's RefCountGuard protocol handles
+    // its own writer/reader coordination.
     if (beginTaskBlockRotation()) {
       rotateDictsAndRun([&]{
         err = _jfr.dump(path, length);

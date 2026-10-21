@@ -131,6 +131,13 @@ public:
         inline bool unownedBlockedFallbackEnabled() const {
             return unowned_blocked_fallback_enabled.load(std::memory_order_acquire) != 0;
         }
+        // Stop signal-side accumulation without discarding the pending tail.
+        inline bool pauseUnownedBlockedFallback() {
+            return unowned_blocked_fallback_enabled.exchange(0, std::memory_order_acq_rel) != 0;
+        }
+        inline void resumeUnownedBlockedFallback() {
+            unowned_blocked_fallback_enabled.store(1, std::memory_order_release);
+        }
         inline void enableUnownedBlockedFallback() {
             resetUnownedBlockedSampling();
             unowned_blocked_fallback_enabled.store(1, std::memory_order_release);

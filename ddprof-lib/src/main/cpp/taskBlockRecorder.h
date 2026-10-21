@@ -15,6 +15,12 @@
 void initializeTaskBlockDurationThreshold();
 bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks);
 
+// Starts a producer-owned run after flushing the preceding unowned wall tail.
+// Called on the slot's owning thread, so pausing fallback accumulation also
+// prevents a profiling signal from adding weight between the flush and admission.
+u64 enterOwnedBlockRun(ProfiledThread* current, ThreadFilter::SlotID slot_id,
+                       OSThreadState state, BlockRunOwner owner = BlockRunOwner::JAVA);
+
 bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
                            WallClockBlockTracker* tracker, jthread thread,
                            int start_depth, u64 block_token, u64 blocker,

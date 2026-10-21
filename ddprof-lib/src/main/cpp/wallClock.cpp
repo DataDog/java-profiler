@@ -272,6 +272,32 @@ bool BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
   return recordAsgctWallSample(nullptr, 1, current->tid(), 0, &event, tail, &dump_test) &&
       !dump_test.error;
 }
+
+bool BaseWallClock::seedUnownedWallTailForTest(jthread thread) {
+  Profiler* profiler = Profiler::instance();
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  ThreadFilter* registry = profiler->threadFilter();
+  if (current == nullptr || !profiler->isRunning() ||
+      !registry->unfilteredWallTrackingActive()) return false;
+  ThreadFilter::SlotID slot_id = registry->ensureCurrentThreadSlot(current);
+  WallClockBlockTracker::BlockState* slot = profiler->blockTracker()->slotForId(slot_id);
+  if (slot == nullptr || slot->activeBlockOwner() != BlockRunOwner::NONE) return false;
+  slot->resetUnownedBlockedSampling();
+  ExecutionEvent event;
+  event._thread_state = OSThreadState::SLEEPING;
+  event._execution_mode = ExecutionMode::JAVA;
+  WallPrecheckResult first = prepareWallPrecheck(current, true, true, OSThreadState::SLEEPING);
+  if (first.suppress || first.unowned_weight_slot != slot) return false;
+  u64 trace_id = profiler->recordJVMTISample(
+      1, current->tid(), thread, BCI_WALL, &event, true);
+  if (trace_id == 0 || !profiler->recordWallSample(
+      nullptr, 1, current->tid(), trace_id, &event, slot)) return false;
+  finishWallPrecheck(first, true);
+  for (int i = 0; i < 5; i++) {
+    if (!prepareWallPrecheck(current, true, true, OSThreadState::SLEEPING).suppress) return false;
+  }
+  return true;
+}
 #endif
 
 bool BaseWallClock::inSyscall(void *ucontext) {
