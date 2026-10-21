@@ -21,6 +21,8 @@ memcheck-phase0:x64:
   timeout: 2h
   parallel: 5
   variables:
+    # ci-phase0.sh pins the scenarios to this many of the pod's CPUs.
+    CPUS: "4"
     REPS: "3"
     NOPROF_REPS: "1"
   script:

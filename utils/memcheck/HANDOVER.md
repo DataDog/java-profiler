@@ -37,6 +37,7 @@ All under `utils/memcheck/`:
 | `results/2026-10-08-aarch64-docker-mac/` | First results (below). The CSV keeps only the `native_mem_*`, NMT and RSS rows. |
 | `results/2026-10-08-x64-aws-m5d4xlarge/` | amd64 Linux results (below), same filtering. |
 | `results/2026-10-09-x64-aws-m5d4xlarge-cpus{2,8}/` | CPU-count sensitivity on the same box, 3 reps (below). |
+| `results/2026-10-21-gitlab-amd64-shared/` | First GitLab CI run, 5 jobs, unpinned (below). `runner.txt` per job, internal host details stripped. |
 | `results/2026-10-21-x64-aws-m5d4xlarge-warmup-cpus{2,4}/` | Verification of the warm-up: `classesM` on 2 CPUs (6 reps), `classesM`/`traces`/`allocs` on 4 CPUs (3 reps). |
 
 Scenarios (each run is a fresh JVM, `-Xms512m -Xmx512m -XX:+AlwaysPreTouch`,
@@ -313,6 +314,32 @@ NMT `Code` moved by up to −28 MiB, and the profiler's `Code` delta in
    - The job's image (`BUILD_IMAGE_X64_GLIBC`, el8) has JDK 21.0.3; the
      committed sets used 21.0.8. Baselines will come from CI, so this only
      limits direct comparison with the committed sets.
+   **First run (2026-10-21, `7cd55c5ec`, 5 jobs, 175 runs, 0 failures),
+   unpinned.** `results/2026-10-21-gitlab-amd64-shared/`.
+   - Each job got a pod in `gitlab-runner-amd64-shared` on a Xeon 8375C node
+     with 52, 66, 68, 72 or 93 usable CPUs, no CPU quota (`cpu.max` = max)
+     and a 6 GiB memory limit. The JVM sized itself to all of them: NMT `GC`
+     in `threads` was 132–156 MiB per job (52 MiB at 4 pinned CPUs).
+   - No gated metric moved between jobs by more than `max(256 KiB, 4·SD)`
+     (largest ratio 0.37); only NMT `Code` crossed it, in one job.
+   - Profiler counters: `threads`, `traces`, `allocs`, `mixed` SD ≤ 69 KiB.
+     `classesM` was much noisier than on the pinned box: within-job SD up to
+     292 KiB for `native_mem_max_bytes` and 238 KiB for `calltrace` max
+     (≤ 17 KiB pinned), in two of the five jobs (52 and 93 CPUs); the other
+     three had 20–56 KiB. Five jobs are too few to tell CPU count from node
+     load.
+   - `JAVA_TOOL_OPTIONS` is set in CI (proxy settings). Every JVM in the
+     harness picks it up; it is the same for baseline and PR jobs.
+
+   **Change after the first run:** `ci-phase0.sh` runs the scenarios under
+   `taskset` on the first `CPUS` (4) CPUs the pod is allowed, so the JVM,
+   `nproc` and the profiler see 4 cores, as in the pinned container runs.
+   Other pods can still run on those cores (no quota). Also fixed:
+   `jdk.txt` (it captured the `JAVA_TOOL_OPTIONS` line), scratch files moved
+   out of the artifact paths (`build/mc-scratch`), `JAVA_TOOL_OPTIONS` kept
+   out of `runner.txt`. Next: rerun the 5-job pipeline and compare. If
+   `classesM` is still noisy, the options are a larger floor for `classesM`,
+   gating it on live instead of max values, or dedicated runners.
 7. Phase 1: a report-only sticky PR comment from the nmt arm, baseline from
    `main` artifacts.
 
