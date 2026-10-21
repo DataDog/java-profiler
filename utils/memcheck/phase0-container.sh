@@ -31,7 +31,7 @@ CPUS="${CPUS:-4}"
 # shellcheck disable=SC2086  # DOCKER_EXTRA_ARGS is a list of flags
 docker run --rm --cpuset-cpus="0-$((CPUS - 1))" ${DOCKER_EXTRA_ARGS:-} \
   -v "$ROOT":/source:ro -v "$HERE":/memcheck:ro -v "$OUT":/out \
-  -e REPS -e NOPROF_REPS -e SCENARIOS -e SKIP_BUILD -e STEADY_MS -e DUMP_AFTER_MS -e SAMPLE_DELAY_S \
+  -e CPUS -e REPS -e NOPROF_REPS -e SCENARIOS -e SKIP_BUILD -e STEADY_MS -e DUMP_AFTER_MS -e SAMPLE_DELAY_S \
   -e GRADLE_USER_HOME=/gradle-cache \
   "$IMAGE" /bin/bash -c '
 set -euo pipefail

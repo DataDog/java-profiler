@@ -38,6 +38,7 @@ All under `utils/memcheck/`:
 | `results/2026-10-08-x64-aws-m5d4xlarge/` | amd64 Linux results (below), same filtering. |
 | `results/2026-10-09-x64-aws-m5d4xlarge-cpus{2,8}/` | CPU-count sensitivity on the same box, 3 reps (below). |
 | `results/2026-10-21-gitlab-amd64-shared/` | First GitLab CI run, 5 jobs, unpinned (below). `runner.txt` per job, internal host details stripped. |
+| `results/2026-10-21-gitlab-amd64-shared-pinned/` | Second GitLab CI run, pinned with `taskset` (below; the pinning was dropped afterwards). |
 | `results/2026-10-21-x64-aws-m5d4xlarge-warmup-cpus{2,4}/` | Verification of the warm-up: `classesM` on 2 CPUs (6 reps), `classesM`/`traces`/`allocs` on 4 CPUs (3 reps). |
 
 Scenarios (each run is a fresh JVM, `-Xms512m -Xmx512m -XX:+AlwaysPreTouch`,
@@ -331,15 +332,42 @@ NMT `Code` moved by up to −28 MiB, and the profiler's `Code` delta in
    - `JAVA_TOOL_OPTIONS` is set in CI (proxy settings). Every JVM in the
      harness picks it up; it is the same for baseline and PR jobs.
 
-   **Change after the first run:** `ci-phase0.sh` runs the scenarios under
-   `taskset` on the first `CPUS` (4) CPUs the pod is allowed, so the JVM,
-   `nproc` and the profiler see 4 cores, as in the pinned container runs.
-   Other pods can still run on those cores (no quota). Also fixed:
-   `jdk.txt` (it captured the `JAVA_TOOL_OPTIONS` line), scratch files moved
-   out of the artifact paths (`build/mc-scratch`), `JAVA_TOOL_OPTIONS` kept
-   out of `runner.txt`. Next: rerun the 5-job pipeline and compare. If
-   `classesM` is still noisy, the options are a larger floor for `classesM`,
-   gating it on live instead of max values, or dedicated runners.
+   **Second run (`3e6e73950`), pinned with `taskset` to the first 4 allowed
+   CPUs: made things worse; the pinning was replaced.**
+   `results/2026-10-21-gitlab-amd64-shared-pinned/`.
+   - NMT `GC` became bimodal: ~50 MiB or 1.7 MiB (Serial GC instead of G1)
+     in 47 of 75 nmt runs (0 of 75 unpinned), in clusters over time, in the
+     noprof arm too (15 of 25). A pod's CPU set changes *during* a job: one
+     job of the first run saw 9 different `Cpus_allowed_list` values across
+     its 35 JVMs, CPU 0 in all of them. Pinning to fixed CPU IDs on a
+     shrinking set fits the JVM seeing a single CPU; JDK 21 with
+     `-XX:ActiveProcessorCount=1` picks Serial GC ergonomically (checked
+     locally). The single-CPU state itself was not observed (run 2 kept no
+     per-run `status.txt`).
+   - The gated metrics still did not move between jobs beyond the threshold
+     (largest ratio 0.48), and `classesM` stayed noisy.
+
+   **Now:** no pinning. `run_scenario.sh` passes `-XX:+UseG1GC
+   -XX:ActiveProcessorCount=$CPUS` (default 4) in every arm, so the JVM's
+   collector and its GC/compiler thread counts no longer depend on the pod
+   or on ergonomics that differ between JDK versions. With 8 CPUs visible
+   this gives NMT `GC` 51.7 MiB in `threads`, the committed 4-CPU value
+   (8 CPUs: 59.9), so the local 4-CPU sets stay comparable. Both flags
+   exist in Temurin 21 and 8u462. `phase0-container.sh` passes `CPUS` into
+   the container.
+
+   **`classesM` noise on CI is sampling coverage, not accounting noise.**
+   `line_number_tables` (distinct methods whose line tables were resolved,
+   i.e. methods seen in sampled stacks) ranged 6,083–7,753 per run on CI
+   (SD ~400; 36 on the dedicated box) and correlates +0.96…+0.99 with
+   `method_map`, `calltrace` max and total max. The cost per method seen is
+   stable (~550 B for total max, ~380 B `calltrace` max, ~120 B
+   `method_map`, the same in both runs); after regressing on
+   `line_number_tables` the residual SD is 38–46 KiB. **Decision (option A):
+   gate `classesM` on cost per method seen** (or the residual after
+   correcting for coverage), not on raw bytes. The other scenarios keep the
+   raw-bytes threshold. Next: one more 5-job run with the forced flags, then
+   build the gate on that.
 7. Phase 1: a report-only sticky PR comment from the nmt arm, baseline from
    `main` artifacts.
 
