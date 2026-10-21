@@ -1630,7 +1630,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   args._cstack = _cstack;
-  // Prepare JVMSupport for execution
+  // Prepare JVMSupport for execution. Must follow the _cstack resolution
+  // above: initExecution() picks the jmethodID mode from cstackMode().
   JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
 
   // Must precede the first updateSymbols(): it is what allows LibraryPatcher to

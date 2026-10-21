@@ -22,12 +22,14 @@ enum StackRecovery {
 };
 
 class HotspotSupport;
+class ResolvedMethod;
 
 class JVMSupport {
     enum JMethodIDLoadStats {
         No_loaded,          // Has not yet executed any profiling command, no jmethodIDs are loaded
         Partial_loaded,     // Partially loaded, see HotspotSupport::shouldPreloadJmethodIDs()
-        Fully_loaded        // All jmethodIDs are loaded
+        Fully_loaded,       // All jmethodIDs are loaded
+        Lazy_loaded         // None preloaded (fjmethodid=lazy); only classes redefined meanwhile get them, from the redefinition hook
     };
 
     friend class HotspotSupport;
@@ -66,8 +68,29 @@ public:
     static void loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni);
     static bool loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 
-    // Resolve method pointer to jmethodID
-    static inline jmethodID resolve(const void* method);
+    // Called around every RedefineClasses/RetransformClasses for each class.
+    // fjmethodid=lazy must know before the methods are swapped; afterwards the
+    // class's jmethodIDs are (re)loaded as each mode requires. `succeeded` is
+    // whether the redefinition went through. `klass` is the caller's argument
+    // and has not been validated by JVMTI yet.
+    static void beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
+    static void afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded);
+    // Called once around each whole RedefineClasses/RetransformClasses call,
+    // outside the per-class hooks: pass what enterRedefinitionCall() returned
+    // to exitRedefinitionCall().
+    static bool enterRedefinitionCall();
+    static void exitRedefinitionCall(bool token);
+
+    // Around each dump: `classes` are the ones GetLoadedClasses() returned,
+    // referenced by the caller until after endDump(). Raw frames of other
+    // classes resolve as unknown. endDump() may be called more than once, and
+    // without a beginDump().
+    static void beginDump(JNIEnv *jni, const jclass *classes, int count);
+    static void endDump();
+
+    // Resolve a raw-pointer frame (method field and encoded bci) into names and
+    // line number table (HotSpot only); false if it must be treated as unknown
+    static inline bool resolve(const void* method, int bci, ResolvedMethod& result);
 
     // If a class is hidden class
     static inline bool isHidden(jint modifiers);
