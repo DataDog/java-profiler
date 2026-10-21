@@ -61,4 +61,10 @@ public class JvmtiBasedPrecheckTest extends PrecheckTest {
     protected String getPrecheckDisabledProfilerCommand() {
         return "wall=1ms,filter=,wallprecheck=false,jvmtistacks=true";
     }
+
+    /** Delegated stacks cannot replay weighted tails through a local call-trace ID. */
+    @Override
+    protected boolean usesWeightedUnownedFallback() {
+        return false;
+    }
 }

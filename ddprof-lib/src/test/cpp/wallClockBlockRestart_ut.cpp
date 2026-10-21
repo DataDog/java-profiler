@@ -207,8 +207,11 @@ TEST_P(WallClockBlockRestartTest, SurvivingOwnerRefreshesOnlyRecordingState) {
 
 TEST_P(WallClockBlockRestartTest, ThreadExitWhileStoppedRetiresIdentity) {
     AdmissionPause pause;
+    // Make the caller register again rather than refresh a retained identity.
+    registry->unregisterThreadByTid(current->tid());
     int worker_tid = -1;
     int worker_slot = -1;
+    u64 worker_lifecycle_generation = 0;
     u64 token = 0;
     std::thread worker([&] {
         auto* self = ProfiledThread::initCurrentThreadSignalSafe();
@@ -216,6 +219,7 @@ TEST_P(WallClockBlockRestartTest, ThreadExitWhileStoppedRetiresIdentity) {
         worker_tid = self->tid();
         token = enterHook();
         worker_slot = self->filterSlotId();
+        worker_lifecycle_generation = registry->slotForId(worker_slot)->lifecycleGeneration();
         AdmissionPause::pause(&pause);
         // No ThreadEnd callback or explicit unregister: pthread teardown must
         // retire this identity while registry admission is disabled.
@@ -236,6 +240,10 @@ TEST_P(WallClockBlockRestartTest, ThreadExitWhileStoppedRetiresIdentity) {
     ASSERT_TRUE(reached);
     ASSERT_NE(0u, token);
     EXPECT_EQ(nullptr, registry->lookupByTid(worker_tid));
+    auto* retired_identity = registry->slotForId(worker_slot);
+    ASSERT_NE(nullptr, retired_identity);
+    EXPECT_EQ(-1, retired_identity->nativeTid());
+    EXPECT_EQ(0u, retired_identity->recordingEpoch());
     auto* block = tracker->slotForId(worker_slot);
     ASSERT_NE(nullptr, block);
     EXPECT_EQ(BlockRunOwner::NONE, block->activeBlockOwner());
@@ -244,7 +252,18 @@ TEST_P(WallClockBlockRestartTest, ThreadExitWhileStoppedRetiresIdentity) {
     registry->init("", true);
     u64 new_token = enterHook();
     ASSERT_NE(0u, new_token);
-    EXPECT_NE(nullptr, registry->activeSlotForId(current->filterSlotId(), current->tid()));
-    EXPECT_NE(token, new_token);
+    auto* new_identity = registry->activeSlotForId(current->filterSlotId(), current->tid());
+    ASSERT_NE(nullptr, new_identity);
+    EXPECT_EQ(current->tid(), new_identity->nativeTid());
+    // popFromFreeList() starts at a shard selected by the calling thread's ID,
+    // so the caller may receive another free slot. Lifecycle counters belong
+    // to individual slots and can only be compared when the slot is reused.
+    if (current->filterSlotId() == worker_slot) {
+        EXPECT_GT(new_identity->lifecycleGeneration(), worker_lifecycle_generation);
+    }
+    auto* new_block = tracker->slotForId(current->filterSlotId());
+    ASSERT_NE(nullptr, new_block);
+    EXPECT_EQ(BlockRunOwner::JAVA, new_block->activeBlockOwner());
+    EXPECT_EQ(hookState(), new_block->activeBlockState());
     exitHook(new_token);
 }

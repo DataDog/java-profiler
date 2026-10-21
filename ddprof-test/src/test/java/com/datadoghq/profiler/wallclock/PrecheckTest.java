@@ -134,18 +134,13 @@ public class PrecheckTest extends AbstractProfilerTest {
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
         leaveClearedInitializedContext();
 
+        registerOutsideContextWindow();
+
         Thread.sleep(300);
 
         stopProfiler();
 
-        long sampleCount = samplesForThread(Thread.currentThread().getName());
-        assertTrue(sampleCount > 0,
-                "Unowned Thread.sleep must remain sampled; got: " + sampleCount);
-        Map<String, Long> counters = profiler.getDebugCounters();
-        assertTrue(counters.getOrDefault("wc_unowned_blocked_recorded", 0L) > 0,
-                "Expected the weighted unowned-block fallback to record samples");
-        assertTrue(counters.getOrDefault("wc_unowned_blocked_suppressed", 0L) > 0,
-                "Expected the weighted unowned-block fallback to suppress intermediate samples");
+        assertUnownedSamples(Thread.currentThread().getName());
     }
 
     @Test
@@ -154,6 +149,7 @@ public class PrecheckTest extends AbstractProfilerTest {
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
 
         Thread sleeper = new Thread(() -> {
+            registerOutsideContextWindow();
             try {
                 for (int i = 0; i < TAIL_WEIGHT_ITERATIONS; i++) {
                     Thread.sleep(TAIL_WEIGHT_SLEEP_MILLIS);
@@ -172,16 +168,7 @@ public class PrecheckTest extends AbstractProfilerTest {
 
         stopProfiler();
 
-        WeightedSamples weightedSamples = weightedSamplesForThread(TAIL_WEIGHT_THREAD);
-        assertTrue(weightedSamples.count > 0,
-                "Expected MethodSample events for " + TAIL_WEIGHT_THREAD);
-        assertTrue(weightedSamples.weight > weightedSamples.count,
-                "Expected preserved suppressed tail weight for " + TAIL_WEIGHT_THREAD
-                        + ", count=" + weightedSamples.count
-                        + ", weight=" + weightedSamples.weight);
-        assertTrue(profiler.getDebugCounters()
-                        .getOrDefault("wc_unowned_blocked_suppressed", 0L) > 0,
-                "Expected unowned blocked samples to be suppressed and represented by weight");
+        assertUnownedSamples(TAIL_WEIGHT_THREAD);
     }
 
     @Test
@@ -251,18 +238,29 @@ public class PrecheckTest extends AbstractProfilerTest {
         profiler.clearTraceContext();
     }
 
+    /** Registers the calling thread lazily, then leaves its sleep outside the context window. */
+    private void registerOutsideContextWindow() {
+        profiler.addThread();
+        profiler.removeThread();
+    }
+
     @Override
     protected String getProfilerCommand() {
         // This suite verifies sampling and suppression for threads outside a
         // tracing-context window. Owned-block suppression only applies to the
         // unfiltered wall-clock scope (explicit empty filter=), and only while
-        // the thread stays outside the context window, so threads must not
-        // call addThread().
+        // the thread stays outside the context window. Threads that register
+        // through addThread() must call removeThread() before the sampled workload.
         return "wall=1ms,filter=,wallprecheck=true";
     }
 
     protected String getPrecheckDisabledProfilerCommand() {
         return "wall=1ms,filter=,wallprecheck=false";
+    }
+
+    /** Returns whether the engine can replay unowned blocked samples with a cached stack. */
+    protected boolean usesWeightedUnownedFallback() {
+        return true;
     }
 
     private long samplesForThread(String threadName) {
@@ -276,7 +274,8 @@ public class PrecheckTest extends AbstractProfilerTest {
         return count;
     }
 
-    private WeightedSamples weightedSamplesForThread(String threadName) {
+    /** Verifies weighted ASGCT fallback or ordinary delegated sampling for the named thread. */
+    private void assertUnownedSamples(String threadName) {
         long count = 0;
         long weight = 0;
         JfrEvents events = verifyEvents("datadog.MethodSample", false);
@@ -284,18 +283,25 @@ public class PrecheckTest extends AbstractProfilerTest {
             if (threadName.equals(item.getThreadName("eventThread"))) {
                 count++;
                 weight += item.getLong(WEIGHT, 0);
+                if (!usesWeightedUnownedFallback()) {
+                    assertEquals(1L, item.getLong(WEIGHT, 0),
+                            "Delegated unowned samples must retain unit weight");
+                }
             }
         }
-        return new WeightedSamples(count, weight);
-    }
-
-    private static final class WeightedSamples {
-        final long count;
-        final long weight;
-
-        WeightedSamples(long count, long weight) {
-            this.count = count;
-            this.weight = weight;
+        assertTrue(count > 0, "Expected MethodSample events for " + threadName);
+        Map<String, Long> counters = profiler.getDebugCounters();
+        long suppressed = counters.getOrDefault("wc_unowned_blocked_suppressed", 0L);
+        long recorded = counters.getOrDefault("wc_unowned_blocked_recorded", 0L);
+        if (usesWeightedUnownedFallback()) {
+            assertTrue(weight > count,
+                    "Expected suppressed observations to be represented by weight for " + threadName
+                            + ", count=" + count + ", weight=" + weight);
+            assertTrue(recorded > 0, "Expected weighted unowned-block fallback samples");
+            assertTrue(suppressed > 0, "Expected weighted unowned-block fallback suppression");
+        } else {
+            assertEquals(0L, suppressed, "Delegated unowned observations must remain sampled");
+            assertEquals(0L, recorded, "Delegated samples must bypass the weighted fallback");
         }
     }
 }

@@ -239,6 +239,13 @@ public:
     static std::atomic<bool> _force_start_failure_for_test;
   public:
 #endif
+#ifdef UNIT_TEST
+    // Exercises precheck decisions and successful/failed recording completion
+    // with controlled thread states, without a JVM or signal delivery.
+    static bool wallPrecheckForTest(
+        ProfiledThread* current, bool unowned_fallback, OSThreadState observed_state,
+        u64& weight, bool recorded = false);
+#endif
 #ifdef DEBUG
     // Drives the real precheck/recording path with controlled OS-state inputs
     // and an intervening JFR dump. Called synchronously from the JNI test hook.

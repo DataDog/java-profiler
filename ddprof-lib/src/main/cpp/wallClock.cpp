@@ -84,8 +84,8 @@ bool BaseWallClock::suppressAlreadySampled(const ThreadEntry& entry) {
 }
 
 static inline WallPrecheckResult prepareWallPrecheck(
-    ProfiledThread* current, bool precheck
-#ifdef DEBUG
+    ProfiledThread* current, bool precheck, bool unowned_fallback
+#if defined(DEBUG) || defined(UNIT_TEST)
     , OSThreadState observed_state_for_test = OSThreadState::UNKNOWN
 #endif
     ) {
@@ -132,11 +132,13 @@ static inline WallPrecheckResult prepareWallPrecheck(
     result.owned_block_generation = block_generation;
     return result;
   }
-  if (!block_slot->unownedBlockedFallbackEnabled()) {
+  // Delegated samples have no reusable local trace ID for replaying a weighted
+  // tail. Bypass only the unowned fallback when the engine cannot emit it.
+  if (!unowned_fallback || !block_slot->unownedBlockedFallbackEnabled()) {
     return result;
   }
 
-#ifdef DEBUG
+#if defined(DEBUG) || defined(UNIT_TEST)
   result.observed_state = observed_state_for_test != OSThreadState::UNKNOWN
       ? observed_state_for_test : getOSThreadState();
 #else
@@ -172,6 +174,18 @@ static inline void finishWallPrecheck(const WallPrecheckResult& precheck,
     Counters::increment(WC_UNOWNED_BLOCKED_RECORDED);
   }
 }
+
+#ifdef UNIT_TEST
+bool BaseWallClock::wallPrecheckForTest(
+    ProfiledThread* current, bool unowned_fallback, OSThreadState observed_state,
+    u64& weight, bool recorded) {
+  WallPrecheckResult result =
+      prepareWallPrecheck(current, true, unowned_fallback, observed_state);
+  weight = result.unowned_weight;
+  finishWallPrecheck(result, recorded);
+  return result.suppress;
+}
+#endif
 
 static inline void emitUnownedBlockedTailForWallPrecheck(
     int tid, const WallPrecheckResult& precheck) {
@@ -245,14 +259,14 @@ bool BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
   ExecutionEvent event;
   event._thread_state = OSThreadState::SLEEPING;
   event._execution_mode = ExecutionMode::JAVA;
-  WallPrecheckResult first = prepareWallPrecheck(current, true, OSThreadState::SLEEPING);
+  WallPrecheckResult first = prepareWallPrecheck(current, true, true, OSThreadState::SLEEPING);
   if (first.suppress || first.unowned_weight_slot != slot) return false;
   if (!recordAsgctWallSample(nullptr, 1, current->tid(), 0, &event, first, &dump_test) ||
       dump_test.error) return false;
 
   // One further blocked observation contributes exactly one pending unit.
-  if (!prepareWallPrecheck(current, true, OSThreadState::SLEEPING).suppress) return false;
-  WallPrecheckResult tail = prepareWallPrecheck(current, true, OSThreadState::RUNNABLE);
+  if (!prepareWallPrecheck(current, true, true, OSThreadState::SLEEPING).suppress) return false;
+  WallPrecheckResult tail = prepareWallPrecheck(current, true, true, OSThreadState::RUNNABLE);
   if (!tail.flush_unowned_tail || tail.flush_weight != 1) return false;
   event._thread_state = OSThreadState::RUNNABLE;
   return recordAsgctWallSample(nullptr, 1, current->tid(), 0, &event, tail, &dump_test) &&
@@ -335,7 +349,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   // its first successful MethodSample and suppresses subsequent signals.
   // Unowned blocked observations use weighted fallback sampling because raw OS
   // state cannot distinguish one long sleep from several shorter runs.
-  WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck);
+  WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck, true);
   if (precheck.suppress) {
     return;
   }
@@ -582,7 +596,7 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
     return;
   }
 
-  WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck);
+  WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck, false);
   if (precheck.suppress) {
     return;
   }
@@ -608,8 +622,8 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
     // Pass nullptr ucontext so the JVM uses safepoint-based stack walking.
     // Passing the signal-frame PC causes the extension to reject samples where
     // the thread is currently inside JVM-internal (non-Java) code.
-    // JVMTI-delegated samples carry a correlation_id, not a call_trace_id, so
-    // unowned tail flushing remains limited to the ASGCT wall engine.
+    // Unowned observations retain unit weight: this engine cannot replay a
+    // cached blocked stack to account for suppressed tail observations.
     bool recorded = Profiler::instance()->recordSampleDelegated(
         nullptr, last_sample, tid, BCI_WALL, &event);
     finishWallPrecheck(precheck, recorded);
