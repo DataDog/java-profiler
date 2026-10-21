@@ -42,7 +42,7 @@ public class ConcurrentOwnedBlockChurnTest extends AbstractProfilerTest {
   private static final long BLOCK_MILLIS = 250;
   private static final int WORKERS_PER_ROUND = 24;
   private static final int ROUNDS = 8;
-  private static final String SUPPRESSED_RUN_COUNTER = "wc_signals_suppressed_sampled_run";
+  private static final String SUPPRESSED_OWNED_BLOCK_COUNTER = "wc_signals_suppressed_owned_block";
 
   private static final String WORKER_NAME_PREFIX = "owned-block-churn-";
 
@@ -196,6 +196,6 @@ public class ConcurrentOwnedBlockChurnTest extends AbstractProfilerTest {
   }
 
   private long suppressedSignals() {
-    return profiler.getDebugCounters().getOrDefault(SUPPRESSED_RUN_COUNTER, -1L);
+    return profiler.getDebugCounters().getOrDefault(SUPPRESSED_OWNED_BLOCK_COUNTER, -1L);
   }
 }

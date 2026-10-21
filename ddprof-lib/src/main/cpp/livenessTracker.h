@@ -1655,6 +1655,7 @@ public:
   }
 
 private:
+  // Appends published live-object IDs to the shared dump-time preservation set.
   void getLiveTraceIds(CallTraceIdSet& out_buffer);
 };
 
