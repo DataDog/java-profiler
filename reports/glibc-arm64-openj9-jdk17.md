@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk17
 
 ## glibc-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-10-21 17:25:08 EDT
+**Date:** 2026-10-21 17:49:34 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 82 |
-| Sample Rate | 1.37/sec |
-| Health Score | 86% |
-| Threads | 9 |
-| Allocations | 61 |
+| CPU Samples | 305 |
+| Sample Rate | 5.08/sec |
+| Health Score | 318% |
+| Threads | 10 |
+| Allocations | 171 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 289 |
-| Sample Rate | 4.82/sec |
-| Health Score | 301% |
-| Threads | 14 |
-| Allocations | 110 |
+| CPU Samples | 86 |
+| Sample Rate | 1.43/sec |
+| Health Score | 89% |
+| Threads | 13 |
+| Allocations | 70 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1792617602 48
-1792617607 48
-1792617612 48
-1792617617 48
-1792617622 48
-1792617627 48
-1792617632 48
-1792617637 48
-1792617642 48
-1792617647 48
-1792617652 48
-1792617657 48
-1792617663 48
-1792617668 48
-1792617673 48
-1792617678 48
-1792617683 48
-1792617688 48
-1792617693 48
-1792617698 48
+1792619134 48
+1792619139 48
+1792619144 48
+1792619149 48
+1792619154 48
+1792619159 48
+1792619164 48
+1792619169 48
+1792619174 48
+1792619179 48
+1792619184 48
+1792619189 48
+1792619194 48
+1792619199 48
+1792619204 48
+1792619209 48
+1792619214 48
+1792619219 48
+1792619224 48
+1792619229 48
 ```
 </details>
 
