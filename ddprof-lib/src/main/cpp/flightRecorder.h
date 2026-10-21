@@ -68,7 +68,8 @@ const int MAX_VAR32_LENGTH = 5;
 // a release-mode write past the buffer).
 const int REFERENCE_CHAIN_EVENT_FIXED_BYTES =
     MAX_VAR32_LENGTH /* multi-byte event size prefix */ +
-    3 * MAX_VAR64_LENGTH /* type id, start_time, target_tag */ +
+    4 * MAX_VAR64_LENGTH /* type id, start_time, target_tag,
+                            leak_tag_incarnation */ +
     3 * MAX_VAR32_LENGTH /* depth, totalHops, chain count */ +
     32 /* rootKind string, generous */ +
     MAX_VAR32_LENGTH /* edges count */;

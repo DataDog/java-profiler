@@ -5,10 +5,16 @@
 
 package com.datadoghq.profiler;
 
+import com.datadoghq.profiler.referencechains.LeakTagCorrelationScenario;
+import com.datadoghq.profiler.referencechains.LeakingCacheScenario;
+import com.datadoghq.profiler.referencechains.StaticFieldGrowingCollectionScenario;
+import com.datadoghq.profiler.referencechains.ThreadLocalLeakScenario;
+
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Method;
+import java.nio.file.Paths;
 import java.util.Random;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -30,6 +36,28 @@ import java.util.concurrent.atomic.LongAdder;
  *     CPU concurrently on the main thread, on a plain {@code new Thread(Runnable)} and on a
  *     two-level {@link Thread} subclass, and stops the profiler again. The resulting recording
  *     holds samples rooted at each of the three thread entry points; see {@code EntryFrameTest}</li>
+ *     <li>leak-cache "&lt;start command&gt;|||&lt;scratch dump path&gt;" - starts the profiler with
+ *     the given start command, then runs {@link LeakingCacheScenario} in this process and exits
+ *     directly once it prints its one result line (no readiness/stdin-signal handshake, unlike
+ *     the modes above). Used by {@code ExternalProcessReferenceChainTest} to prove the
+ *     reference-chains mechanism against a genuinely separate JVM - a separate process is
+ *     load-bearing there because the one-shot root-seeded BFS walk is a process-wide,
+ *     once-ever resource.</li>
+ *     <li>leak-static-field "&lt;start command&gt;|||&lt;scratch dump path&gt;" - same packing and
+ *     lifecycle as {@code leak-cache} above, but runs {@link StaticFieldGrowingCollectionScenario}:
+ *     a {@code static final List<byte[]>} field appended to (never reassigned) after its owning
+ *     class has already been swept once by {@code admitStaticFieldRoots()} - mirroring the real
+ *     leak generator found in the {@code prof-analyzer-hotdog-jb} pod.</li>
+ *     <li>leak-correlation "&lt;start command&gt;|||&lt;scratch dump path&gt;" - same packing and
+ *     lifecycle as {@code leak-cache} above, but runs {@link LeakTagCorrelationScenario}: a
+ *     static-collection leak coexisting with ephemeral stack-local noise and a large live filler
+ *     graph, asserting the emitted chain's targetTag is a leak-tag-pool tag matching a
+ *     HeapLiveObject's leakTag.</li>
+ *     <li>threadlocal-leak / threadlocal-leak-late "&lt;start command&gt;|||&lt;scratch dump path&gt;" -
+ *     same packing and lifecycle as {@code leak-cache} above, but runs
+ *     {@link ThreadLocalLeakScenario}: a growing {@code byte[]} collection held only through the
+ *     leaking thread's {@code ThreadLocal} map; the {@code -late} variant starts the leak thread
+ *     only after the recording began (see that scenario's own comment).</li>
  * </ul>
  */
 public class ExternalLauncher {
@@ -119,6 +147,20 @@ public class ExternalLauncher {
         entryFrameSink = acc;
     }
 
+    /**
+     * Splits a scenario mode's single {@code "<start command>|||<scratch dump path>"} argument
+     * (packed so launch()'s (target, commands) contract needs no extra argument).
+     */
+    private static String[] unpackScenarioArgs(String mode, String[] args) {
+        String packed = args.length == 2 ? args[1] : "";
+        int sep = packed.indexOf("|||");
+        if (sep < 0) {
+            throw new IllegalArgumentException(
+                mode + " requires \"<start command>|||<scratch dump path>\", got: " + packed);
+        }
+        return new String[] {packed.substring(0, sep), packed.substring(sep + "|||".length())};
+    }
+
     public static void main(String[] args) throws Exception {
         Thread worker = null;
         try {
@@ -201,6 +243,61 @@ public class ExternalLauncher {
                         worker.start();
                     }
                 }
+            } else if (args[0].equals("leak-cache")) {
+                // "<start command>|||<scratch dump path>" packed into one args[1] string rather
+                // than extending launch()'s generic (target, commands) contract with a 3rd
+                // argument every other mode would have to ignore.
+                String[] packed = unpackScenarioArgs("leak-cache", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
+                JavaProfiler instance = JavaProfiler.getInstance();
+                // The scenario itself calls execute(commands) - it needs to seed its cache fixture
+                // *before* starting the profiler.
+                LeakingCacheScenario.run(instance, commands, Paths.get(scratchPath));
+                System.out.flush();
+                // Exits here rather than falling through to the shared "[ready]" + stdin-signal
+                // handshake: this mode runs to completion in one shot and has already printed its
+                // result line.
+                System.exit(0);
+            } else if (args[0].equals("leak-static-field")) {
+                // Same packing as leak-cache (unpackScenarioArgs()).
+                String[] packed = unpackScenarioArgs("leak-static-field", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
+                JavaProfiler instance = JavaProfiler.getInstance();
+                StaticFieldGrowingCollectionScenario.run(instance, commands, Paths.get(scratchPath));
+                System.out.flush();
+                System.exit(0);
+            } else if (args[0].equals("leak-correlation")) {
+                // Same packing as leak-cache (unpackScenarioArgs()).
+                String[] packed = unpackScenarioArgs("leak-correlation", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
+                JavaProfiler instance = JavaProfiler.getInstance();
+                LeakTagCorrelationScenario.run(instance, commands, Paths.get(scratchPath));
+                System.out.flush();
+                System.exit(0);
+            } else if (args[0].equals("threadlocal-leak")) {
+                // Same packing as leak-cache (unpackScenarioArgs()).
+                String[] packed = unpackScenarioArgs("threadlocal-leak", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
+                JavaProfiler instance = JavaProfiler.getInstance();
+                ThreadLocalLeakScenario.run(instance, commands, Paths.get(scratchPath));
+                System.out.flush();
+                System.exit(0);
+            } else if (args[0].equals("threadlocal-leak-late")) {
+                // Same packing as threadlocal-leak (unpackScenarioArgs()), but the leak thread is
+                // started only AFTER the recording began - the regression shape for
+                // Profiler::onThreadStart's registerThreadObject() wiring
+                // (ThreadLocalLeakScenario.run()'s lateThread comment).
+                String[] packed = unpackScenarioArgs("threadlocal-leak-late", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
+                JavaProfiler instance = JavaProfiler.getInstance();
+                ThreadLocalLeakScenario.run(instance, commands, Paths.get(scratchPath), true);
+                System.out.flush();
+                System.exit(0);
             }
         } finally {
             System.out.println("[ready]");

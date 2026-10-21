@@ -91,7 +91,9 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
       if (ctx->frontier->insert(frontier_tag, /*parent_tag=*/0, referrer_klass,
                                 /*depth=*/0, FrontierEntryState::FRONTIER,
                                 translated_root_kind, class_tag)) {
-        ctx->frontier->setLeakTag(frontier_tag, leak_tag);
+        // Capture the current ownership period, as in heapReferenceCallback()'s interception.
+        ctx->frontier->setLeakTag(frontier_tag, leak_tag,
+                                  LivenessTracker::instance()->leakTagIncarnation(leak_tag));
         *tag_ptr = frontier_tag;
         ctx->edges_admitted++;
         ctx->tracker->trackLeakAccumulation(ctx->frontier, class_tag, 0,
@@ -380,7 +382,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
                           ? OS::nanotime() + (u64)_effective_pause_target_ms * 1000000ULL
                           : 0;
   bool rotation_frontier_cap_hit = false;
-  // Prong 2 static-anchor descend walks run FIRST inside rotation's slice: they are the
+  // Static-anchor descend walks run FIRST inside rotation's slice: they are the
   // highest-value rotation work (bounded, targeted, and the only rotation tier that can reach a
   // collection-shaped static holder's internals in one pass), and their edges draw down the same
   // rotation budget the queue-tier batch below uses - a pass whose anchor walks admit the holder's
@@ -398,7 +400,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     rotation_edges_admitted += static_anchor_edges_admitted;
     rotation_budget -= static_anchor_edges_admitted;
     *truncated = *truncated || static_anchor_truncated;
-    // B' requeue: resolved-but-unwalked anchors that came from this pass's FIFO drain go back to
+    // Requeue: resolved-but-unwalked anchors that came from this pass's FIFO drain go back to
     // the FIFO front, order-preserving, so a pass whose budget died mid-batch walks them first next
     // pass instead of waiting for the next sweep lap's re-push.
     if (!static_anchor_unwalked.empty() &&
@@ -1234,8 +1236,6 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
 
   return err == JVMTI_ERROR_NONE;
 }
-
-// Pause-time-SLO feedback loop (see this method's declaration in
 
 void ReferenceChainTracker::updatePacing(u64 pass_wall_ns) {
   // Truncating to whole milliseconds matches every other PidController usage in this codebase

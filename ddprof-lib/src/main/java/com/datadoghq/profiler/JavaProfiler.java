@@ -463,8 +463,12 @@ public final class JavaProfiler {
     private static native int getTid0();
 
     /**
-     * Returns the calling thread's profiler tid. Tests seeding per-tid trends
-     * via {@link #seedTidTrendSample0} must call this on the leaking thread.
+     * Test seam: returns the calling thread's profiler tid
+     * (ProfiledThread::currentTid()), the tid space {@code seedTidTrendSample0} matches
+     * against. Unlike the tracker-mutating seams it only reads thread state, so it is
+     * compiled unconditionally and works in release builds too. Must be called ON the
+     * leaking thread, or the seeded tid will match no tracked instance and no leak tag
+     * will be assigned.
      */
     static int getTid() {
         return getTid0();
@@ -539,107 +543,222 @@ public final class JavaProfiler {
     public static native boolean testTlsPrimingAvailable();
 
     /**
-     * Test seam. The test seams below are implemented in debug native builds only;
-     * in release builds they are no-ops.
+     * Test seam (debug native builds only - a no-op returning {@code false}/{@code 0}/an
+     * empty array in release builds). This and every reference-chain/liveness seam below
+     * (plus {@link #getTid()}) are deliberately package-private: they mutate state of the
+     * process-wide profiler singleton, so they must not be callable by application code
+     * sharing the JVM with a debug native build. Tests outside this package reach them only
+     * through the test-source bridge {@code com.datadoghq.profiler.ReferenceChainTestHooks}
+     * (ddprof-test), same pattern as {@code ProfilerOwnedBlockHooks}. Collectively the seams
+     * decouple LivenessTracker's leak-candidate detection from ReferenceChainTracker's chain
+     * reconstruction, so each is verifiable end-to-end without depending on both the
+     * probabilistic JVMTI heap sampler and the BFS search organically producing the right
+     * conditions in the same test run.
      * <p>
-     * Enables/disables per-klass population tracking without a live-JVM
-     * {@code initialize()}. Returns {@code true} on debug builds.
+     * Enables/disables LivenessTracker's per-klass population tracking directly,
+     * bypassing {@code initialize()}'s live-JVM requirement. Returns {@code true} on
+     * debug builds.
      */
     static native boolean setGcGenerationsEnabled0(boolean enabled);
 
     /**
-     * Test seam: seeds one epoch of population history for {@code klassId}.
+     * Test seam (debug native builds only): seeds one epoch's worth of population
+     * history for {@code klassId} directly into LivenessTracker's ring buffer,
+     * bypassing real allocation sampling. Repeated calls (with distinct
+     * {@code epoch} values) build up a trend {@link #selectLeakCandidateKlassIds0()}
+     * can then rank, letting a test assert a slope signal would be generated for a
+     * chosen klass id without waiting on real GC epochs.
      */
     static native void seedKlassPopulationSample0(int klassId, int count, long epoch);
 
     /**
-     * Test seam: seeds one epoch of per-tid trend history for {@code klassId}.
-     * {@code tid} should come from {@link #getTid()}.
+     * Test seam (debug native builds only): seeds one epoch's worth of per-tid trend history for
+     * {@code klassId} - the (klass, tid) qualification selectLeakCandidates() requires on top of
+     * the klass-level ramp. {@code tid} must be the leaking thread's real profiler tid from
+     * {@link #getTid()} whenever the scenario also relies on leak tagging of real tracked
+     * instances.
      */
     static native void seedTidTrendSample0(int klassId, int tid, int count, long epoch);
 
     /**
-     * Test seam: makes {@code representative} the leak-candidate representative
-     * of {@code klassId}.
+     * Test seam (debug native builds only): wires {@code representative} in as {@code klassId}'s
+     * leak-candidate representative directly (a fresh weak global ref owned by LivenessTracker),
+     * bypassing the real allocation-sampling path. Lets a test join a synthetic slope signal to
+     * a real, directly-tagged object so {@link #pollReferenceChainTargets0()}'s bridging step can
+     * be exercised end-to-end.
      */
     static native void setKlassPopulationRepresentativeForTest0(int klassId, Object representative);
 
     /**
-     * Test seam: clears the per-klass population table.
+     * Test seam (debug native builds only): clears LivenessTracker's per-klass population table,
+     * so a later test in the same JVM does not observe leak candidates seeded by an earlier one.
      */
     static native void resetKlassPopulationForTest0();
 
     /**
-     * Test seam: the klass ids currently selected as leak candidates (top 5).
+     * Test seam (debug native builds only): returns the klass ids LivenessTracker's real
+     * leak-candidate ranking (positive population slope, top 5) currently selects - the same
+     * call the restart gate and target-polling bridge use in production, exposed so a test can
+     * assert a slope signal was generated without a reference-chain search also running.
      */
     static native int[] selectLeakCandidateKlassIds0();
 
     /**
-     * Test seam: tags {@code target} as a reference-chain frontier root.
-     * Returns the frontier tag, or {@code 0} on failure.
+     * Test seam (debug native builds only): tags {@code target} and inserts it
+     * directly as a reference-chain frontier root, bypassing ReferenceChainTracker's
+     * normal discovery path (a root-seeded FollowReferences walk) and
+     * LivenessTracker's leak-candidate selection entirely. Lets a test drive
+     * {@link #runReferenceChainPass0()}/{@link #pollReferenceChainTargets0()} against
+     * a known, caller-chosen live object. Returns the assigned frontier tag (matching
+     * the {@code target_tag} a resulting {@code datadog.ReferenceChain} event
+     * reports), or {@code 0} on failure (reference chains disabled, or the frontier
+     * table is at capacity).
      */
     static native long tagAsReferenceChainRoot0(Object target);
 
     /**
-     * Test seam: runs one reference-chain search pass synchronously. Returns
-     * {@code false} if reference chains are disabled or not started.
+     * Test seam (debug native builds only): runs exactly one bounded BFS pass of the
+     * reference-chain search synchronously, rather than waiting on the tracker's own
+     * background thread/cadence. Returns {@code false} if reference chains are
+     * disabled or the tracker was never started.
      */
     static native boolean runReferenceChainPass0();
 
     /**
-     * Test seam: runs one poll of the leak-candidate to chain bridge synchronously.
+     * Test seam (debug native builds only): runs one poll of
+     * ReferenceChainTracker's LivenessTracker-to-chain-reconstruction bridging step
+     * synchronously - for each current leak candidate already discovered by a prior
+     * {@link #runReferenceChainPass0()} walk, reconstructs and queues its chain
+     * event, rather than waiting on the background thread's own scheduling cycle.
      */
     static native void pollReferenceChainTargets0();
 
     /**
-     * Test seam: drains queued reference-chain events and returns their count.
+     * Test seam (debug native builds only): drains and returns the number of
+     * reference-chain events queued by {@link #pollReferenceChainTargets0()} so far
+     * (the same queue {@code Profiler.dump()} drains in production to write
+     * {@code datadog.ReferenceChain} JFR events) - lets a test assert a chain was
+     * actually reconstructed without needing a real JFR dump.
      */
     static native int drainReferenceChainEventCount0();
 
     /**
-     * Test seam: resets the search state and releases held tags, so the next
-     * pass walks from the roots again.
+     * Test seam (debug native builds only): resets ReferenceChainTracker's search/frontier state
+     * back to a brand-new tracker's, releasing any tags a previous search still held. Since the
+     * tracker is a process-wide singleton, an in-process test that needs its own genuine first
+     * root-seeded walk (runPass() only re-walks from the roots once per search's whole lifetime)
+     * calls this at the start of its test body to force one, rather than depending on being the
+     * first reference-chain test to run in a shared test JVM.
      */
     static native void resetReferenceChainSearchForTest0();
 
     /**
-     * Test seam: position of {@code target} in the pending-expansion queue
-     * ({@code 0} = next), {@code -1} if already expanded, {@code -2} if never
-     * admitted. Does not tag {@code target}.
+     * Test seam (debug native builds only): diagnostic-only, does not tag {@code target}. Reads
+     * target's existing JVMTI tag (0 if the real search has never admitted it) and reports its
+     * FIFO distance from the front of ReferenceChainTracker's pending-expansion queue: {@code >=0}
+     * (0 = expands next) if still queued, {@code -1} if tagged but no longer queued (already
+     * expanded), or {@code -2} if never admitted at all.
      */
     static native long getReferenceChainPendingPositionForTest0(Object target);
 
     /**
-     * Test seam: size of the pending-expansion queue.
+     * Test seam (debug native builds only): the current size of ReferenceChainTracker's
+     * pending-expansion queue, for computing {@link #getReferenceChainPendingPositionForTest0}'s
+     * position as a fraction of the current backlog.
      */
     static native long getReferenceChainPendingSizeForTest0();
 
     /**
-     * Test seam: seeds one heap-floor sample for the time-to-OOM projection.
-     * Timestamps only need to be increasing.
+     * Test seam (-DDEBUG native builds only - debug/asan/tsan; returns -1 in release): does not
+     * tag {@code target}. The raw {@code FrontierEntryState} (canonical values:
+     * referenceChainFrontier.h) of the current search's frontier entry for target - 0 = FRONTIER
+     * (admitted, not yet expanded), 1 = EXPANDED, 2 = EDGE (retired: never produced by the
+     * production walk, so this seam does not return it in practice), 3 = ABANDONED - or
+     * {@code -1} if target has no frontier entry (never admitted, or still carrying only a leak
+     * tag).
+     */
+    static native int getReferenceChainFrontierStateForTest0(Object target);
+
+    /**
+     * Test seam (-DDEBUG native builds only - debug/asan/tsan; returns 0 in release): does not
+     * tag {@code target}. The targetTag the {@code datadog.ReferenceChain} event for target
+     * carries, if a cached chain exists for target; 0 otherwise. When target carries a frontier
+     * tag, only the current search's cached chain counts. When target carries a leak tag, a chain
+     * cached by any search generation counts, but only if it was built during target's current
+     * ownership of that leak tag: leak tags are recycled after their object dies, so identity is
+     * the (leak tag, ownership-period stamp) pair, not the tag alone.
+     */
+    static native long getReferenceChainResolvedTargetTagForTest0(Object target);
+
+    /**
+     * Test seam (debug native builds only): seeds one heap-floor-ring sample - the input to
+     * {@code LivenessTracker::secondsToOOM()}'s time-to-OOM projection - directly, bypassing the
+     * real {@code GarbageCollectionFinish} callback. {@code timestampNs} values are only ever
+     * compared against each other, never against a real wall clock, so a test may use any
+     * self-consistent, strictly increasing sequence to build an arbitrary rising or flat
+     * heap-usage-over-time history without waiting on real GCs.
      */
     static native void heapFloorRecordForTest0(long usedBytes, long timestampNs);
 
     /**
-     * Test seam: overrides the max heap size used by the time-to-OOM projection.
+     * Test seam (debug native builds only): overrides the max-heap-size {@code secondsToOOM()}
+     * projects against, bypassing the real {@code Runtime.maxMemory()} resolution - so a test can
+     * exercise the projection deterministically, independent of whatever {@code -Xmx} this JVM's
+     * own shared, no-{@code forkEvery} fork happens to run with.
      */
     static native void setMaxHeapBytesForTest0(long maxHeapBytes);
 
     /**
-     * Test seam: {@code false} stops GCs from recording heap-floor samples,
-     * {@code true} restores it.
+     * Test seam (debug native builds only): temporarily disables {@code onGC()}'s own
+     * {@code recordHeapFloorSample()} call so a test can seed the heap-floor ring exclusively
+     * via {@link #heapFloorRecordForTest0(long, long)} without a real GC interleaving a sample
+     * with a real {@code OS::nanotime()} timestamp and real heap usage, corrupting
+     * {@code secondsToOOM()}'s projection. Pass {@code false} to disable, {@code true} to restore.
      */
     static native void setHeapFloorRecordingForTest0(boolean enabled);
 
     /**
-     * Test seam: evaluates the real search scheduling gate without executing a BFS pass.
-     * This is not a read-only query: under the native engine lock it may account a completed
-     * search's pain and restart/reset terminal search state.
+     * Test seam (debug native builds only): clears the heap-floor ring seeded via
+     * {@link #heapFloorRecordForTest0(long, long)} so the next test in the same JVM does not
+     * inherit this test's samples into its {@code secondsToOOM()} projection. Must be called
+     * while heap-floor recording is disabled (i.e. before the
+     * {@link #setHeapFloorRecordingForTest0(boolean)} restore in a finally block) - the seam
+     * asserts when called while recording is enabled, because a concurrent sample cannot be
+     * excluded from the two non-atomic index stores otherwise.
+     */
+    static native void heapFloorResetForTest0();
+
+    /**
+     * Test seam (debug native builds only): reports whether the seeded heap-floor ring
+     * currently shows a sustained rise ({@code heapFloorRising()}) - the aggregate growth
+     * read {@code hasLeakSignal()}'s gate uses alongside {@code secondsToOOM()}'s urgent
+     * projection. Returns {@code false} both before any seeding and after
+     * {@link #heapFloorResetForTest0()} emptied the ring, which is how tests assert the
+     * reset actually cleared the indices.
+     */
+    static native boolean heapFloorRisingForTest0();
+
+    /**
+     * Test seam (debug native builds only): reports whether ReferenceChainTracker's search-restart
+     * gate ({@code canAffordNewSearch()} -&gt; {@code hasLeakSignal()}) would currently allow a
+     * fresh/terminal search to start - in particular, whether {@code secondsToOOM()}'s urgent-OOM
+     * bypass opens this gate even with zero per-klass leak candidate (confirmable in the same test
+     * via {@link #selectLeakCandidateKlassIds0()}). Unlike {@link #runReferenceChainPass0()}, which
+     * calls {@code runPass()} unconditionally, this evaluates the real gate without executing a
+     * BFS pass - but it is NOT a read-only query: under the native engine lock it may account a
+     * completed search's pain and restart/reset terminal search state, and opening the gate on
+     * the urgent-OOM bypass spends the episode's one-shot urgency entitlement. Do not treat it
+     * as a pure predicate (e.g. inside an assertion) when a scenario's search state matters.
      */
     static native boolean shouldRunPassForTest0();
 
     /**
-     * Test seam: number of passes run for the current search.
+     * Test seam (debug native builds only): the number of BFS passes run for the current/most
+     * recent reference-chain search. Lets a test note this count before creating an object, then
+     * wait for it to advance before trusting a match against that object - the only way to be
+     * certain the match came from a pass whose own {@code expandFrontier()} (and therefore {@code
+     * collectStaleExpandedEntriesForRotation()}) ran strictly after the object existed, rather
+     * than from the same pass racing the object's creation.
      */
     static native int referenceChainPassesRunForTest0();
 
