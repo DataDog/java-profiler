@@ -35,13 +35,12 @@ long long JVMSupport::runtimeStubsMemoryUsage() {
     }
 }
 
-// Resolve method pointer to jmethodID
-jmethodID JVMSupport::resolve(const void* method) {
+bool JVMSupport::resolve(const void* method, ResolvedMethod& result) {
     if (VM::isHotspot()) {
-        return HotspotSupport::resolve(method);
+        return HotspotSupport::resolve(method, result);
     } else {
         assert(false && "Should not reach here");
-        return nullptr;
+        return false;
     }
 }
 

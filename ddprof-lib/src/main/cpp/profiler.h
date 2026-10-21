@@ -148,6 +148,8 @@ private:
   int _safe_mode;
   CStack _cstack;
   bool _force_jmethodID;
+  // Whether onGCStart() resolves pending methods; see onGCStart().
+  std::atomic<bool> _gc_resolve{false};
 
   volatile jvmtiEventMode _thread_events_state;
 
@@ -189,6 +191,10 @@ private:
   Error checkJvmCapabilities();
 
   void lockAll();
+  // lockAll() that gives up, holding nothing, if any lock stays taken.
+  bool tryLockAll();
+  // onGCStart()'s resolution pass itself; false if it was skipped.
+  bool tryResolveAtGC();
   // Resets the dictionaries, the call trace storage and the counters for a
   // fresh recording; returns how many dictionaries were left unchanged because
   // their drain timed out.
@@ -343,6 +349,13 @@ public:
 
   const char* cstack() const;
   int lookupClass(const char *key, size_t length);
+  // See CallTraceStorage::forEachPendingTrace(); caller holds lockAll().
+  void forEachPendingTrace(const std::function<void(const CallTrace*)> &visitor) {
+    if (!_omit_stacktraces) {
+      _call_trace_storage.forEachPendingTrace(visitor);
+    }
+  }
+
   void processCallTraces(std::function<void(const CallTraceSet&)> processor) {
     if (!_omit_stacktraces) {
       _call_trace_storage.processTraces(processor);
@@ -371,6 +384,8 @@ public:
   Error start(Arguments &args, bool reset);
   Error stop();
   Error dump(const char *path, const int length);
+  // JVMTI GarbageCollectionStart hook. See the definition.
+  void onGCStart();
   Error checkState();
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);

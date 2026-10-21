@@ -81,6 +81,8 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
             String state = sample.getEnumName(THREAD_STATE);
             if ("CONTENDED".equals(state)) {
                 String stackTrace = sample.getStackTraceString();
+                System.out.println("StackTrace: ");
+                System.out.println(stackTrace);
                 if (!stackTrace.endsWith(".GC_active()")) {
                     // shortcut the assertions for sanitized runs
                     // the samples are not that good, but it still makes sense to run this load under sanitizers

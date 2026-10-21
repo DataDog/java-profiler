@@ -128,9 +128,17 @@ val copyExternalLibs by tasks.registering(Copy::class) {
 }
 
 // Create JAR tasks for each build configuration using nativeBuild extension utilities
-// Uses afterEvaluate to discover configurations dynamically from NativeBuildExtension
+// Uses afterEvaluate to discover configurations dynamically from NativeBuildExtension.
+// `coverage` is only packaged with -PenableCoverage: nativeBuild.buildConfigurations.names
+// lists every registered config regardless of its `active` flag (the same quirk already
+// lets inactive asan/tsan show up here on platforms where they're unsupported). With the
+// flag, its jar and consumable configuration are what ddprof-test's testCoverage loads;
+// it is still never published (see the publishing block below).
 afterEvaluate {
-  nativeBuild.buildConfigurations.names.forEach { name ->
+  val packagedConfigNames = nativeBuild.buildConfigurations.names.filter {
+    it != "coverage" || project.hasProperty("enableCoverage")
+  }
+  packagedConfigNames.forEach { name ->
     val capitalizedName = name.replaceFirstChar { it.uppercase() }
 
     val copyTask = tasks.register("copy${capitalizedName}Libs", Copy::class) {
@@ -183,6 +191,106 @@ afterEvaluate {
   }
 }
 
+// Java + C++ coverage report (only meaningful, and only registered, alongside the
+// opt-in `coverage` build configuration -- see ConfigurationPresets.configureCoverage).
+// The Java half is :ddprof-test:jacocoTestReport (reports/coverage/java); this task
+// itself writes the C++ half (reports/coverage/cpp). That needs gcovr
+// (`pip install gcovr`), which reads the gcc/clang-compatible .gcno/.gcda files
+// directly, so one tool covers both toolchains without a separate lcov+genhtml install.
+//
+// Two runs feed the C++ report: the gtest binaries (gtestCoverage, objects under
+// obj/gtest/coverage) and the Java integration tests (:ddprof-test:testCoverage and
+// testSlowCoverage -- the same runs that produce the JaCoCo data, against the
+// coverage-instrumented library, objects under obj/main/coverage). gcovr merges both
+// into one per-source-file report.
+if (project.hasProperty("enableCoverage")) {
+  val gtestObjDir = layout.buildDirectory.dir("obj/gtest/coverage")
+
+  // gcov adds to existing .gcda counts, and .gcda files left over from before a
+  // recompile no longer match the new .gcno stamps -- so every gtest binary must start
+  // from zero. Runs before each gtestCoverage_<test> task rather than in gtestCoverage
+  // itself, which is only an aggregate that executes after its test tasks.
+  val cleanGtestCoverageData = tasks.register<Delete>("cleanGtestCoverageData") {
+    delete(fileTree(gtestObjDir) { include("**/*.gcda") })
+  }
+  tasks.matching { it.name.startsWith("gtestCoverage_") }.configureEach {
+    dependsOn(cleanGtestCoverageData)
+  }
+
+  tasks.register("coverageReport") {
+    group = "verification"
+    description = "Generates the Java (JaCoCo) and C++ (gcovr) coverage reports from gtestCoverage and :ddprof-test:testCoverage/testSlowCoverage (requires gcovr)"
+    dependsOn("gtestCoverage", ":ddprof-test:testCoverage", ":ddprof-test:testSlowCoverage", ":ddprof-test:jacocoTestReport")
+
+    val reportDir = layout.buildDirectory.dir("reports/coverage/cpp")
+    val libObjDir = layout.buildDirectory.dir("obj/main/coverage")
+    val srcRoot = project.file("src/main/cpp")
+
+    doLast {
+      // The gcov tool must come from the same toolchain that wrote the .gcno files,
+      // so derive it from the compiler (e.g. /usr/bin/g++-13 -> /usr/bin/gcov-13,
+      // clang++-17 -> llvm-cov-17 gcov) instead of whatever `gcov` is on PATH.
+      val compiler = File(PlatformUtils.findCompiler(project))
+      fun siblingOf(tool: String) = compiler.parentFile?.resolve(tool)?.path ?: tool
+      val gcovExecutable = when {
+        PlatformUtils.currentPlatform == Platform.MACOS -> "xcrun llvm-cov gcov"
+        compiler.name.contains("clang") -> siblingOf(compiler.name.replace(Regex("clang(\\+\\+)?"), "llvm-cov")) + " gcov"
+        else -> siblingOf(compiler.name.replace(Regex("[gc]\\+\\+"), "gcov"))
+      }
+
+      val outDir = reportDir.get().asFile.also { it.mkdirs() }
+      val cmd = listOf(
+        "gcovr",
+        "--root", srcRoot.absolutePath,
+        "--gcov-executable", gcovExecutable,
+        "--html", "--html-details",
+        "-o", "${outDir.absolutePath}/index.html",
+        "--print-summary",
+        // Safety net only: -fprofile-update=atomic (see configureCoverage) should keep
+        // counters consistent, but a stray negative count must not discard a
+        // ~20-minute run -- warn and ignore it instead of failing.
+        "--gcov-ignore-parse-errors=negative_hits.warn_once_per_file",
+        // gcovr flags any count above 2^32 as a GCC-68080 artifact, but the 64-bit atomic
+        // counters legitimately pass that on hot paths (e.g. threadLocal.h's isKeyValid()
+        // hit ~4.4e9 over testCoverage + testSlowCoverage). Real counts stay far below
+        // 1e15 (1e9 hits/s for ~11 days), while wrapped/garbage counts land near 2^64.
+        "--gcov-suspicious-hits-threshold=1000000000000000",
+        gtestObjDir.get().asFile.absolutePath,
+        libObjDir.get().asFile.absolutePath,
+      )
+      project.logger.lifecycle("Running: ${cmd.joinToString(" ")}")
+      // A missing gcovr surfaces here as a bare IOException, after the Java report has
+      // already been written -- turn it into the install hint instead.
+      val process = try {
+        ProcessBuilder(cmd)
+          .directory(project.projectDir)
+          .redirectErrorStream(true)
+          .start()
+      } catch (e: java.io.IOException) {
+        throw GradleException(
+          "gcovr not found -- install it with 'pip install gcovr' (Alpine/musl: 'apk add py3-pip && " +
+            "pip install --break-system-packages gcovr'; distro gcovr packages may be too old for the flags used here)",
+          e,
+        )
+      }
+      val output = process.inputStream.bufferedReader().readText()
+      val exitCode = process.waitFor()
+      println(output)
+      if (exitCode != 0) {
+        throw GradleException("gcovr failed (exit $exitCode) -- see its output above")
+      }
+      project.logger.lifecycle("C++ coverage report written to file://${outDir.absolutePath}/index.html")
+      val javaReport = outDir.resolveSibling("java/html/index.html")
+      if (javaReport.isFile) {
+        project.logger.lifecycle("Java coverage report written to file://${javaReport.absolutePath}")
+      } else {
+        // jacocoTestReport is skipped when no test task wrote JaCoCo execution data.
+        project.logger.warn("No Java coverage report: no JaCoCo execution data was recorded")
+      }
+    }
+  }
+}
+
 // Add runBenchmarks task
 tasks.register("runBenchmarks") {
   dependsOn(":ddprof-lib:benchmarks:runBenchmark")
@@ -231,9 +339,10 @@ publishing {
       groupId = "com.datadoghq"
       artifactId = "ddprof"
 
-      // Add artifacts from each build configuration
+      // Add artifacts from each build configuration (coverage excluded -- see the
+      // packagedConfigNames comment above)
       afterEvaluate {
-        nativeBuild.buildConfigurations.names.forEach { name ->
+        nativeBuild.buildConfigurations.names.filterNot { it == "coverage" }.forEach { name ->
           val capitalizedName = name.replaceFirstChar { it.uppercase() }
           artifact(tasks.named("assemble${capitalizedName}Jar"))
         }

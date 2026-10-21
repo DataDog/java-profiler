@@ -9,6 +9,8 @@
 
 #include <functional>
 #include <map>
+#include <memory>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -104,26 +106,82 @@ struct CpuTimes {
 class SharedLineNumberTable {
 public:
   int _size;
-  // The buffer jvmti->GetLineNumberTable() returned, held directly (not a
-  // copy) and freed via jvmti->Deallocate() (see ~SharedLineNumberTable())
-  // so native-memory-tracking accounting stays correct. Per the JVMTI spec
-  // this array is a fresh, caller-owned allocation decoupled from the
-  // Method's lifetime, so holding onto it is safe across class unload.
+  // Either the buffer jvmti->GetLineNumberTable() returned, held directly (not
+  // a copy) and freed via jvmti->Deallocate() (see ~SharedLineNumberTable())
+  // so native-memory-tracking accounting stays correct, or -- when
+  // _jvmti_allocated is false -- a malloc'd table decoded from VM metadata by
+  // HotspotSupport::resolve(), freed via free(). Either way the array is
+  // decoupled from the Method's lifetime, so holding onto it is safe across
+  // class unload.
   jvmtiLineNumberEntry* _table;
+  bool _jvmti_allocated;
 
-  SharedLineNumberTable(int size, jvmtiLineNumberEntry *ptr) : _size(size), _table(ptr) {}
+  SharedLineNumberTable(int size, jvmtiLineNumberEntry *ptr, bool jvmti_allocated = true) :
+    _size(size), _table(ptr), _jvmti_allocated(jvmti_allocated) {}
   ~SharedLineNumberTable();
+};
+
+// A Java method's names, kept on its method_map row so that later chunks can
+// still name it once its class is unloaded. Captured by the first successful
+// resolution: at GC start (Lookup::resolveAtGC()) or when a chunk is written
+// (fillMethod()). Plain strings, not dictionary ids: those are only valid
+// within one chunk.
+//
+// Kept only for classes that can be unloaded. One defined by the boot,
+// platform or application class loader never is, so its row is marked
+// _never_unloaded instead: its names can always be read again.
+//
+// A jmethodID is never reused, so the names of a jmethodID row always stay
+// valid. A raw Method* can be reused by a different method once its class is
+// unloaded, so for those rows _fingerprint records which method the names
+// belong to, and Lookup::useCachedNames() checks it first.
+//
+// One allocation: this header, then the three NUL-terminated strings. Counted
+// under NM_METHOD_NAMES.
+class CachedMethodNames {
+public:
+  static CachedMethodNames *create(const void *fingerprint, const char *class_name,
+                                   size_t class_name_len, const char *method_name,
+                                   const char *signature, bool is_entry);
+  static void destroy(CachedMethodNames *names);
+
+  struct Deleter {
+    void operator()(CachedMethodNames *names) const { destroy(names); }
+  };
+
+  const char *className() const { return _data; }
+  size_t classNameLength() const { return _class_name_len; }
+  const char *methodName() const { return _data + _class_name_len + 1; }
+  const char *signature() const { return methodName() + _method_name_len + 1; }
+  bool isEntry() const { return _is_entry; }
+  // Raw Method* rows: Lookup::methodFingerprint(). jmethodID rows: nullptr.
+  const void *fingerprint() const { return _fingerprint; }
+
+private:
+  CachedMethodNames() = default;
+  size_t size() const;
+
+  const void *_fingerprint;
+  // Each a Symbol, whose length is a u2.
+  u16 _class_name_len;
+  u16 _method_name_len;
+  u16 _signature_len;
+  bool _is_entry;
+  char _data[1];
 };
 
 class MethodInfo {
 public:
   MethodInfo()
-      : _mark(false), _is_entry(false), _referenced(false), _age(0), _key(0), _class(0),
-        _name(0), _sig(0), _modifiers(0), _line_number_table(nullptr), _type() {}
+      : _mark(false), _is_entry(false), _referenced(false), _never_unloaded(false), _age(0),
+        _key(0), _class(0), _name(0), _sig(0), _modifiers(0), _line_number_table(nullptr),
+        _type() {}
 
   bool _mark;
   bool _is_entry;
   bool _referenced;  // Tracked during writeStackTraces() for cleanup
+  // The method's class can't be unloaded, so it gets no _cached_names.
+  bool _never_unloaded;
   int _age;          // Consecutive chunks without reference (0 = recently used)
   u32 _key;
   u32 _class;
@@ -132,6 +190,7 @@ public:
   jint _modifiers;
   std::shared_ptr<SharedLineNumberTable> _line_number_table;
   FrameTypeId _type;
+  std::unique_ptr<CachedMethodNames, CachedMethodNames::Deleter> _cached_names;
 
   inline jint getLineNumber(jint bci);
   inline bool isHidden();
@@ -317,6 +376,10 @@ public:
 
   off_t finishChunk(bool end_recording, bool do_cleanup = false);
   void switchChunk(int fd);
+  // Lookup::resolveAtGC() on every frame of every trace the next chunk will
+  // write. Caller holds Profiler::lockAll() (no trace writers) and _rec_lock.
+  // Returns the number of methods resolved.
+  int resolvePendingMethods();
 
   void cpuMonitorCycle();
   void appendRecording(const char *target_file, size_t size);
@@ -451,6 +514,7 @@ private:
 };
 
 class ResolveMethodState;
+class ResolvedMethod;
 class Lookup {
 public:
   Recording *_rec;
@@ -493,6 +557,21 @@ private:
   // case. Every other path (including the "<unloaded>" stale-jmethodID
   // sentinel) fully populates mi and returns true.
   bool fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time, ResolveMethodState& state);
+  // Fills mi from a raw Method* already resolved by HotspotSupport::resolve(),
+  // taking ownership of its line number table. No JNI/JVMTI.
+  void fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod& resolved);
+  // Sets mi's class/name/signature ids, applying the synthetic-accessor and
+  // LambdaForm class name normalisation. class_name is an internal name
+  // ("java/lang/Object"), not necessarily NUL-terminated at class_name_len.
+  void fillJavaMethodNames(MethodInfo *mi, const char *class_name, size_t class_name_len,
+                           const char *method_name, const char *method_sig);
+  // Fills mi from its cached names if they still belong to the method frame
+  // refers to; otherwise drops them. Returns whether it filled mi.
+  bool useCachedNames(MethodInfo *mi, const ASGCT_CallFrame &frame);
+  // Which method a raw Method* frame's key refers to right now: its
+  // ConstMethod*. A Method* reused by another method yields another
+  // ConstMethod*. nullptr if it can't be read -- the class is gone.
+  static const void *methodFingerprint(const ASGCT_CallFrame &frame);
   bool has_prefix(const char *str, const char *prefix) const {
     return strncmp(str, prefix, strlen(prefix)) == 0;
   }
@@ -530,8 +609,8 @@ private:
   // never dereferences it. So for every bci except BCI_VTABLE_RECEIVER -- whose
   // class_id the caller must resolve from a VMSymbol* first -- computing a key
   // touches no VM metadata and cannot fault.
-  unsigned long methodKey(const ASGCT_CallFrame &frame, jmethodID method_id,
-                          jint bci, u32 vtable_class_id);
+  static unsigned long methodKey(const ASGCT_CallFrame &frame, jmethodID method_id,
+                                 jint bci, u32 vtable_class_id);
   // Resolves and fills in the MethodInfo for `frame`. This is the part that
   // reads VM metadata and may therefore fault; resolveMethod() wraps it in the
   // sigsetjmp/siglongjmp window.
@@ -548,6 +627,13 @@ public:
         _symbols() {}
 
   MethodInfo *resolveMethod(ASGCT_CallFrame &frame);
+  // From the JVMTI GarbageCollectionStart callback (Recording::
+  // resolvePendingMethods()): keeps the names of a Java frame's method on its
+  // method_map row, reading VM metadata only -- no JNI/JVMTI. Returns true if
+  // it kept them; false for non-Java frames, methods whose class is never
+  // unloaded, rows whose kept names are still valid, and metadata it could
+  // not read.
+  static bool resolveAtGC(MethodMap *method_map, const ASGCT_CallFrame &frame);
   u32 getPackage(const char *class_name);
   u32 getSymbol(const char *name);
 };
@@ -569,6 +655,9 @@ public:
   Error start(Arguments &args, bool reset);
   void stop();
   Error dump(const char *filename, const int length);
+  // Recording::resolvePendingMethods() on the active recording, if _rec_lock
+  // is free. Never blocks. Returns false if it could not run.
+  bool tryResolvePendingMethods();
   void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);

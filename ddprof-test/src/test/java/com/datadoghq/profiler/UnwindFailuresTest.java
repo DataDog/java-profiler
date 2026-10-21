@@ -40,11 +40,11 @@ public class UnwindFailuresTest extends AbstractProfilerTest {
     @Test
     public void unwindFailureEventsHaveSaneSchemaWhenPresent() throws Exception {
         // UnwindFailures/UnwindStats are compiled out unless the native lib is built with
-        // -DDEBUG (debug/asan/tsan configs); on a release build datadog.UnwindFailure can
+        // -DDEBUG (debug/coverage/asan/tsan configs); on a release build datadog.UnwindFailure can
         // never appear, so there is nothing to check.
-        String config = System.getProperty("ddprof_test.config");
-        assumeTrue(config != null && ("debug".equals(config) || config.endsWith("san")),
-                "datadog.UnwindFailure is only recorded in DEBUG-instrumented builds (debug/asan/tsan)");
+        String config = NativeBuildConfig.name();
+        assumeTrue(NativeBuildConfig.isDebug() || (config != null && config.endsWith("san")),
+                "datadog.UnwindFailure is only recorded in DEBUG-instrumented builds (debug/coverage/asan/tsan)");
 
         // HotspotSupport::walkVM (and therefore UnwindFailures recording) is Hotspot-only.
         assumeFalse(Platform.isZing() || Platform.isJ9() || Platform.isGraal());

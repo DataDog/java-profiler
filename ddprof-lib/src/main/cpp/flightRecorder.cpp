@@ -86,7 +86,11 @@ SharedLineNumberTable::~SharedLineNumberTable() {
   // whenever -XX:NativeMemoryTracking is enabled, because native memory tracking
   // adds a header to malloc'd block.
   if (_table != nullptr) {
-    VM::jvmti()->Deallocate((unsigned char *)_table);
+    if (_jvmti_allocated) {
+      VM::jvmti()->Deallocate((unsigned char *)_table);
+    } else {
+      free(_table);
+    }
     Counters::decrement(LINE_NUMBER_TABLES);
     // _size is the JVMTI entry count passed at construction (see
     // fillJavaMethodInfo), so the byte size matches the allocation.
@@ -250,6 +254,69 @@ void Lookup::cutArguments(char *func) {
   }
 }
 
+size_t CachedMethodNames::size() const {
+  return offsetof(CachedMethodNames, _data) + _class_name_len + 1 +
+         _method_name_len + 1 + _signature_len + 1;
+}
+
+CachedMethodNames *CachedMethodNames::create(const void *fingerprint,
+                                             const char *class_name,
+                                             size_t class_name_len,
+                                             const char *method_name,
+                                             const char *signature,
+                                             bool is_entry) {
+  size_t method_name_len = strlen(method_name);
+  size_t signature_len = strlen(signature);
+  if (class_name_len > USHRT_MAX || method_name_len > USHRT_MAX ||
+      signature_len > USHRT_MAX) {
+    return nullptr;
+  }
+  size_t size = offsetof(CachedMethodNames, _data) + class_name_len + 1 +
+                method_name_len + 1 + signature_len + 1;
+  void *mem = malloc(size);
+  if (mem == nullptr) {
+    return nullptr;
+  }
+  NativeMem::recordAlloc(NM_METHOD_NAMES, mem, size);
+  CachedMethodNames *names = new (mem) CachedMethodNames();
+  names->_fingerprint = fingerprint;
+  names->_class_name_len = (u16)class_name_len;
+  names->_method_name_len = (u16)method_name_len;
+  names->_signature_len = (u16)signature_len;
+  names->_is_entry = is_entry;
+  char *p = names->_data;
+  memcpy(p, class_name, class_name_len);
+  p[class_name_len] = '\0';
+  p += class_name_len + 1;
+  memcpy(p, method_name, method_name_len + 1);
+  p += method_name_len + 1;
+  memcpy(p, signature, signature_len + 1);
+  return names;
+}
+
+void CachedMethodNames::destroy(CachedMethodNames *names) {
+  if (names != nullptr) {
+    NativeMem::recordFreeBefore(NM_METHOD_NAMES, names, names->size());
+    free(names);
+  }
+}
+
+// Keeps mi's names for later chunks -- unless its class is never unloaded,
+// which marks the row instead (see CachedMethodNames). fingerprint is nullptr
+// for a jmethodID row.
+static void keepNames(MethodInfo *mi, const void *class_loader_data,
+                      const void *fingerprint, const char *class_name,
+                      size_t class_name_len, const char *method_name,
+                      const char *method_sig, bool is_entry) {
+  if (HotspotSupport::isPermanentLoaderData(class_loader_data)) {
+    mi->_never_unloaded = true;
+    mi->_cached_names.reset();
+    return;
+  }
+  mi->_cached_names.reset(CachedMethodNames::create(
+      fingerprint, class_name, class_name_len, method_name, method_sig, is_entry));
+}
+
 bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
                                 bool first_time, ResolveMethodState& state) {
   JNIEnv *jni = VM::jni();
@@ -266,9 +333,6 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   char* volatile &class_name = state._class_name;
   char* volatile &method_name = state._method_name;
   char* volatile &method_sig = state._method_signature;
-  u32 class_name_id = 0;
-  u32 method_name_id = 0;
-  u32 method_sig_id = 0;
 
   jint line_number_table_size = 0;
   jvmtiLineNumberEntry *line_number_table = NULL;
@@ -385,95 +449,21 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         entry = true;
       }
 
-      // maybe we should store the lookups below in initialisation-time
-      // constants...
-      if (has_prefix(class_name,
-                     "Ljdk/internal/reflect/GeneratedConstructorAccessor")) {
-        class_name_id = _classes->lookupDuringDump(
-            "jdk/internal/reflect/GeneratedConstructorAccessor",
-            strlen("jdk/internal/reflect/GeneratedConstructorAccessor"),
-            Profiler::maxClassMapSize());
-        method_name_id =
-            _symbols.lookup("Object "
-                            "jdk.internal.reflect.GeneratedConstructorAccessor."
-                            "newInstance(Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name,
-                            "Lsun/reflect/GeneratedConstructorAccessor")) {
-        class_name_id = _classes->lookupDuringDump(
-            "sun/reflect/GeneratedConstructorAccessor",
-            strlen("sun/reflect/GeneratedConstructorAccessor"),
-            Profiler::maxClassMapSize());
-        method_name_id = _symbols.lookup(
-            "Object "
-            "sun.reflect.GeneratedConstructorAccessor.newInstance(Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name,
-                            "Ljdk/internal/reflect/GeneratedMethodAccessor")) {
-        class_name_id = _classes->lookupDuringDump(
-            "jdk/internal/reflect/GeneratedMethodAccessor",
-            strlen("jdk/internal/reflect/GeneratedMethodAccessor"),
-            Profiler::maxClassMapSize());
-        method_name_id =
-            _symbols.lookup("Object "
-                            "jdk.internal.reflect.GeneratedMethodAccessor."
-                            "invoke(Object, Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name,
-                            "Lsun/reflect/GeneratedMethodAccessor")) {
-        class_name_id = _classes->lookupDuringDump(
-            "sun/reflect/GeneratedMethodAccessor",
-            strlen("sun/reflect/GeneratedMethodAccessor"),
-            Profiler::maxClassMapSize());
-        method_name_id = _symbols.lookup(
-            "Object sun.reflect.GeneratedMethodAccessor.invoke(Object, "
-            "Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name, "Ljava/lang/invoke/LambdaForm$")) {
-        const int lambdaFormPrefixLength =
-            strlen("Ljava/lang/invoke/LambdaForm$");
-        // we want to normalise to java/lang/invoke/LambdaForm$MH,
-        // java/lang/invoke/LambdaForm$DMH, java/lang/invoke/LambdaForm$BMH,
-        if (has_prefix(class_name + lambdaFormPrefixLength, "MH")) {
-          class_name_id = _classes->lookupDuringDump(
-              "java/lang/invoke/LambdaForm$MH",
-              strlen("java/lang/invoke/LambdaForm$MH"),
-              Profiler::maxClassMapSize());
-        } else if (has_prefix(class_name + lambdaFormPrefixLength, "BMH")) {
-          class_name_id = _classes->lookupDuringDump(
-              "java/lang/invoke/LambdaForm$BMH",
-              strlen("java/lang/invoke/LambdaForm$BMH"),
-              Profiler::maxClassMapSize());
-        } else if (has_prefix(class_name + lambdaFormPrefixLength, "DMH")) {
-          class_name_id = _classes->lookupDuringDump(
-              "java/lang/invoke/LambdaForm$DMH",
-              strlen("java/lang/invoke/LambdaForm$DMH"),
-              Profiler::maxClassMapSize());
-        } else {
-          // don't recognise the suffix, so don't normalise
-          class_name_id = _classes->lookupDuringDump(
-              normalized_class_name, normalized_class_name_len,
-              Profiler::maxClassMapSize());
-        }
-        method_name_id = _symbols.lookup(method_name);
-        method_sig_id = _symbols.lookup(method_sig);
-      } else {
-        class_name_id = _classes->lookupDuringDump(
-            normalized_class_name, normalized_class_name_len,
-            Profiler::maxClassMapSize());
-        method_name_id = _symbols.lookup(method_name);
-        method_sig_id = _symbols.lookup(method_sig);
+      fillJavaMethodNames(mi, normalized_class_name, normalized_class_name_len,
+                          method_name, method_sig);
+      // HotSpot never reuses a jmethodID; J9 frees them on class unload.
+      if (VM::isHotspot() && !mi->_never_unloaded) {
+        keepNames(mi, HotspotSupport::classLoaderDataOf(jni, method_class),
+                  /*fingerprint=*/nullptr, normalized_class_name,
+                  normalized_class_name_len, method_name, method_sig, entry);
       }
     } else {
       Counters::increment(JMETHODID_SKIPPED);
-      class_name_id = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
-      method_name_id = _symbols.lookup("<unloaded>");
-      method_sig_id = _symbols.lookup("()L;");
+      mi->_class = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
+      mi->_name = _symbols.lookup("<unloaded>");
+      mi->_sig = _symbols.lookup("()L;");
     }
 
-    mi->_class = class_name_id;
-    mi->_name = method_name_id;
-    mi->_sig = method_sig_id;
     mi->_type = FRAME_INTERPRETED;
     mi->_is_entry = entry;
     // Only touch mi->_line_number_table when a table was actually fetched
@@ -499,6 +489,213 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   // still fills mi with the deliberate "<unloaded>" sentinel and returns true
   // via the return above).
   return false;
+}
+
+void Lookup::fillJavaMethodNames(MethodInfo *mi, const char *class_name,
+                                 size_t class_name_len, const char *method_name,
+                                 const char *method_sig) {
+
+//  TEST_LOG("fillJavaMethodNames: %s, %s", method_name, method_sig);
+                                  
+  u32 class_name_id;
+  u32 method_name_id;
+  // maybe we should store the lookups below in initialisation-time
+  // constants...
+  if (has_prefix_n(class_name, class_name_len,
+                   "jdk/internal/reflect/GeneratedConstructorAccessor")) {
+    class_name_id = _classes->lookupDuringDump(
+        "jdk/internal/reflect/GeneratedConstructorAccessor",
+        strlen("jdk/internal/reflect/GeneratedConstructorAccessor"),
+        Profiler::maxClassMapSize());
+    method_name_id =
+        _symbols.lookup("Object "
+                        "jdk.internal.reflect.GeneratedConstructorAccessor."
+                        "newInstance(Object[])");
+  } else if (has_prefix_n(class_name, class_name_len,
+                          "sun/reflect/GeneratedConstructorAccessor")) {
+    class_name_id = _classes->lookupDuringDump(
+        "sun/reflect/GeneratedConstructorAccessor",
+        strlen("sun/reflect/GeneratedConstructorAccessor"),
+        Profiler::maxClassMapSize());
+    method_name_id = _symbols.lookup(
+        "Object "
+        "sun.reflect.GeneratedConstructorAccessor.newInstance(Object[])");
+  } else if (has_prefix_n(class_name, class_name_len,
+                          "jdk/internal/reflect/GeneratedMethodAccessor")) {
+    class_name_id = _classes->lookupDuringDump(
+        "jdk/internal/reflect/GeneratedMethodAccessor",
+        strlen("jdk/internal/reflect/GeneratedMethodAccessor"),
+        Profiler::maxClassMapSize());
+    method_name_id =
+        _symbols.lookup("Object "
+                        "jdk.internal.reflect.GeneratedMethodAccessor."
+                        "invoke(Object, Object[])");
+  } else if (has_prefix_n(class_name, class_name_len,
+                          "sun/reflect/GeneratedMethodAccessor")) {
+    class_name_id = _classes->lookupDuringDump(
+        "sun/reflect/GeneratedMethodAccessor",
+        strlen("sun/reflect/GeneratedMethodAccessor"),
+        Profiler::maxClassMapSize());
+    method_name_id = _symbols.lookup(
+        "Object sun.reflect.GeneratedMethodAccessor.invoke(Object, "
+        "Object[])");
+  } else if (has_prefix_n(class_name, class_name_len,
+                          "java/lang/invoke/LambdaForm$")) {
+    const size_t lambdaFormPrefixLength =
+        strlen("java/lang/invoke/LambdaForm$");
+    const char *suffix = class_name + lambdaFormPrefixLength;
+    const size_t suffix_len = class_name_len - lambdaFormPrefixLength;
+    // we want to normalise to java/lang/invoke/LambdaForm$MH,
+    // java/lang/invoke/LambdaForm$DMH, java/lang/invoke/LambdaForm$BMH,
+    if (has_prefix_n(suffix, suffix_len, "MH")) {
+      class_name_id = _classes->lookupDuringDump(
+          "java/lang/invoke/LambdaForm$MH",
+          strlen("java/lang/invoke/LambdaForm$MH"),
+          Profiler::maxClassMapSize());
+    } else if (has_prefix_n(suffix, suffix_len, "BMH")) {
+      class_name_id = _classes->lookupDuringDump(
+          "java/lang/invoke/LambdaForm$BMH",
+          strlen("java/lang/invoke/LambdaForm$BMH"),
+          Profiler::maxClassMapSize());
+    } else if (has_prefix_n(suffix, suffix_len, "DMH")) {
+      class_name_id = _classes->lookupDuringDump(
+          "java/lang/invoke/LambdaForm$DMH",
+          strlen("java/lang/invoke/LambdaForm$DMH"),
+          Profiler::maxClassMapSize());
+    } else {
+      // don't recognise the suffix, so don't normalise
+      class_name_id = _classes->lookupDuringDump(
+          class_name, class_name_len, Profiler::maxClassMapSize());
+    }
+    method_name_id = _symbols.lookup(method_name);
+  } else {
+    class_name_id = _classes->lookupDuringDump(
+        class_name, class_name_len, Profiler::maxClassMapSize());
+    method_name_id = _symbols.lookup(method_name);
+  }
+
+  mi->_class = class_name_id;
+  mi->_name = method_name_id;
+  mi->_sig = _symbols.lookup(method_sig);
+}
+
+// Same entry-frame rules as the jmethodID path: Thread.run (or an override in
+// a Thread subclass), or public static void main(String[]).
+static bool isEntryMethod(ResolvedMethod &resolved) {
+  return resolved.isThreadRun() ||
+         (strcmp(resolved.methodName(), "main") == 0 &&
+          strcmp(resolved.methodSignature(), "([Ljava/lang/String;)V") == 0);
+}
+
+// Moves resolved's line number table, if any, into mi.
+static void takeLineNumberTable(MethodInfo *mi, ResolvedMethod &resolved) {
+  if (resolved.lineNumberTable() != nullptr) {
+    int size = resolved.lineNumberTableSize();
+    // Built before ownership moves, so a std::bad_alloc here leaves the table
+    // with `resolved`, which frees it.
+    auto table = std::make_shared<SharedLineNumberTable>(
+        size, const_cast<jvmtiLineNumberEntry *>(resolved.lineNumberTable()),
+        false /* malloc'd */);
+    resolved.takeLineNumberTable(&size);
+    mi->_line_number_table = std::move(table);
+    Counters::increment(LINE_NUMBER_TABLES);
+    NativeMem::record(NM_LINE_TABLES, (long long)((size_t)size * sizeof(jvmtiLineNumberEntry)));
+  } else {
+    mi->_line_number_table = nullptr;
+  }
+}
+
+static void keepNames(MethodInfo *mi, const void *fingerprint,
+                      ResolvedMethod &resolved) {
+  const char *class_name = resolved.klassName();
+  keepNames(mi, resolved.classLoaderData(), fingerprint, class_name,
+            strlen(class_name), resolved.methodName(),
+            resolved.methodSignature(), isEntryMethod(resolved));
+}
+
+const void *Lookup::methodFingerprint(const ASGCT_CallFrame &frame) {
+  return VMMethod::constMethodOf(frame.method);
+}
+
+bool Lookup::useCachedNames(MethodInfo *mi, const ASGCT_CallFrame &frame) {
+  if (mi->_cached_names == nullptr) {
+    return false;
+  }
+  if (FrameType::isRawPointer(frame.bci)) {
+    // An unreadable fingerprint means the class is gone and nothing has taken
+    // its place, so the cached names are still the right ones for its samples.
+    const void *fingerprint = methodFingerprint(frame);
+    if (fingerprint != nullptr && fingerprint != mi->_cached_names->fingerprint()) {
+      // The Method* now belongs to a different method.
+      Counters::increment(METHOD_NAMES_CACHE_STALE);
+      mi->_cached_names.reset();
+      return false;
+    }
+  }
+  const CachedMethodNames &names = *mi->_cached_names;
+  fillJavaMethodNames(mi, names.className(), names.classNameLength(),
+                      names.methodName(), names.signature());
+  mi->_type = FRAME_INTERPRETED;
+  mi->_is_entry = names.isEntry();
+  Counters::increment(METHOD_NAMES_CACHE_HITS);
+  return true;
+}
+
+void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
+  const char *class_name = resolved.klassName();
+  fillJavaMethodNames(mi, class_name, strlen(class_name), resolved.methodName(),
+                      resolved.methodSignature());
+  mi->_type = FRAME_INTERPRETED;
+  mi->_is_entry = isEntryMethod(resolved);
+  // A raw Method* key can be reused by a different method after its class is
+  // unloaded, so unlike the jmethodID path the table is refreshed on every
+  // fill rather than only the first time.
+  takeLineNumberTable(mi, resolved);
+}
+
+bool Lookup::resolveAtGC(MethodMap *method_map, const ASGCT_CallFrame &frame) {
+  jint bci = frame.bci;
+  jmethodID method_id = frame.method_id;
+  if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME ||
+      bci == BCI_NATIVE_FRAME_REMOTE || bci == BCI_VTABLE_RECEIVER ||
+      method_id == nullptr || method_id == JMETHODID_NOT_WALKABLE) {
+    return false;
+  }
+  unsigned long key = methodKey(frame, method_id, bci, 0);
+  MethodMap::iterator it = method_map->find(key);
+  if (it != method_map->end() && it->second._never_unloaded) {
+    // Resolvable from VM metadata whenever its chunk is written.
+    return false;
+  }
+  const bool raw_pointer = FrameType::isRawPointer(bci);
+  const void *fingerprint = nullptr;
+  if (raw_pointer) {
+    fingerprint = methodFingerprint(frame);
+    if (fingerprint == nullptr) {
+      // Nothing to resolve from (or to tell a reused Method* by).
+      return false;
+    }
+  }
+  if (it != method_map->end() && it->second._cached_names != nullptr &&
+      it->second._cached_names->fingerprint() == fingerprint) {
+    // Kept names still valid (always, for a jmethodID).
+    return false;
+  }
+  // A jmethodID's Method* is read from its id slot, since JVMTI is off limits
+  // here.
+  const void *method = raw_pointer ? frame.method
+                                   : (const void *)VMMethod::fromJmethodID(method_id);
+  if (method == nullptr) {
+    return false;
+  }
+  ResolvedMethod resolved;
+  if (!JVMSupport::resolve(method, resolved)) {
+    return false;
+  }
+  MethodInfo *mi = it != method_map->end() ? &it->second : &(*method_map)[key];
+  keepNames(mi, fingerprint, resolved);
+  takeLineNumberTable(mi, resolved);
+  return mi->_cached_names != nullptr;
 }
 
 bool Lookup::resolveVTableReceiver(VMSymbol *sym, char *buf, size_t bufsize,
@@ -652,6 +849,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   jint bci = frame.bci;
   jmethodID method_id = frame.method_id;
 
+//  TEST_LOG("ResolveMethod: method_id = %zx", (void*)method_id);
   // HotSpot's VM stack walker uses this sentinel when it could not validate a
   // Method*. It is not a JNI/JVMTI jmethodID and must never reach
   // fillJavaMethodInfo(). Keep the frame structurally intact, but serialize it
@@ -672,15 +870,16 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     return unknown_method;
   }
 
-  // Fast path, deliberately unprotected. For anything but a raw-pointer or
-  // BCI_VTABLE_RECEIVER frame, methodKey() reads no VM metadata (see its
-  // comment) and an already-marked row needs no symbolication -- there is
+  // Fast path, deliberately unprotected. For anything but a
+  // BCI_VTABLE_RECEIVER frame, methodKey() reads no VM metadata (raw-pointer
+  // frames are keyed by the Method* address itself) and an already-marked row
+  // needs no symbolication -- there is
   // nothing here that can fault, hence nothing to recover from. Worth
   // special-casing because it is the common case once a chunk is warm, and
   // arming the protection below is not free: initCurrentThreadSignalSafe()
   // blocks and unblocks signals and sigsetjmp(..., 1) reads the signal mask,
   // three syscalls on a loop that runs once per frame per trace.
-  if (!FrameType::isRawPointer(bci) && bci != BCI_VTABLE_RECEIVER) {
+  if (bci != BCI_VTABLE_RECEIVER) {
     MethodMap::iterator it = _method_map->find(methodKey(frame, method_id, bci, 0));
     if (it != _method_map->end() && it->second._mark) {
       return &it->second;
@@ -706,15 +905,15 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
                                jint bci, ProfiledThread* const prof_thread) {
 
   assert(prof_thread != nullptr);
-                                  // Resolve native method
-  if (FrameType::isRawPointer(bci)) {
-    method_id = JVMSupport::resolve(frame.method);
-    if (method_id == nullptr) {
-      return unknownMethod();
-    }
-  }
-
   assert(method_id != nullptr && "Already filtered by caller");
+
+  // Raw Method*: symbolicate straight from VM metadata (no JNI/JVMTI) and key
+  // the MethodMap row by the Method* itself, which method_id already holds
+  // (ASGCT_CallFrame's method/method_id share storage).
+  // Declared before sigsetjmp() below so its landing pad can release it.
+  const bool raw_pointer = FrameType::isRawPointer(bci);
+  ResolvedMethod resolved;
+
   // Reinstates the thread's previous landing pad on every exit from this frame,
   // including a std::bad_alloc thrown by one of the map or dictionary inserts
   // underneath. Leaving ours installed past the end of this frame would leave
@@ -738,6 +937,9 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
     // state.release() may fault. Unfortunately, it faults outside of profiler
     // code where checkFault() can not absorb.
     state.release();
+    // siglongjmp bypasses ~ResolvedMethod(); free a line number table that
+    // was not yet handed over to a MethodInfo.
+    resolved.release();
     // A member, already filled above -- no map lookup, no allocation, and no
     // reliance on a local surviving siglongjmp (the value of a non-volatile
     // local assigned after sigsetjmp() is indeterminate here).
@@ -816,6 +1018,20 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
       mi->_sig = _symbols.lookup("()V");
       mi->_type = FRAME_NATIVE;
       mi->_is_entry = false;
+    } else if (useCachedNames(mi, frame)) {
+      // Names kept from an earlier resolution of this same method, possibly
+      // before its class was unloaded. The line number table was kept too.
+    } else if (raw_pointer) {
+      // resolve() installs its own (nested) landing pad around the metadata
+      // walk; a stale Method* leaves this row unfilled, see below.
+      filled = JVMSupport::resolve(frame.method, resolved);
+      if (filled) {
+        const void *fingerprint = methodFingerprint(frame);
+        if (fingerprint != nullptr && !mi->_never_unloaded) {
+          keepNames(mi, fingerprint, resolved);
+        }
+        fillJavaMethodInfo(mi, resolved);
+      }
     } else {
       filled = fillJavaMethodInfo(mi, method_id, first_time, state);
     }
@@ -826,7 +1042,8 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
     //      unwind skips this statement (and everything below it) entirely.
     //   2. fillJavaMethodInfo() can return normally without touching mi at
     //      all (PushLocalFrame failed, or the JVM isn't in JVMTI_PHASE_START/
-    //      JVMTI_PHASE_LIVE) -- control returns here just like the success
+    //      JVMTI_PHASE_LIVE), or resolve() can reject a stale raw Method*
+    //      -- control returns here just like the success
     //      case, so ordering alone does NOT catch this one; its `filled`
     //      return value does.
     // Marking (or allocating a key for) an unfilled row would leave it
@@ -1125,6 +1342,18 @@ void Recording::switchChunk(int fd) {
     _recorded_lib_count = -1;
   }
   flush(_buf);
+}
+
+int Recording::resolvePendingMethods() {
+  int resolved = 0;
+  Profiler::instance()->forEachPendingTrace([&](const CallTrace *trace) {
+    for (int i = 0; i < trace->num_frames; i++) {
+      if (Lookup::resolveAtGC(&_method_map, trace->frames[i])) {
+        resolved++;
+      }
+    }
+  });
+  return resolved;
 }
 
 void Recording::cpuMonitorCycle() {
@@ -2695,6 +2924,17 @@ Error FlightRecorder::dump(const char *filename, const int length) {
   return Error("No active recording");
 }
 
+bool FlightRecorder::tryResolvePendingMethods() {
+  if (!_rec_lock.tryLock()) {
+    return false;
+  }
+  Recording* rec = _rec;
+  if (rec != nullptr) {
+    Counters::increment(GC_RESOLVED_METHODS, rec->resolvePendingMethods());
+  }
+  _rec_lock.unlock();
+  return rec != nullptr;
+}
 void FlightRecorder::wallClockEpoch(int lock_index,
                                     WallClockEpochEvent *event) {
   OptionalSharedLockGuard locker(&_rec_lock);

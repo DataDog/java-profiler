@@ -161,6 +161,7 @@ Error Arguments::parse(const char *args) {
   char *args_copy = strcpy(_buf + EXTRA_BUF_SIZE, args);
 
   const char *msg = NULL;
+  bool force_jmethodID_set = false;
 
   for (char *arg = strtok(args_copy, ","); arg != NULL;
        arg = strtok(NULL, ",")) {
@@ -302,6 +303,7 @@ Error Arguments::parse(const char *args) {
 
       CASE("fjmethodid")
       if (value != nullptr) {
+        force_jmethodID_set = true;
         if (strcmp(value, "false") == 0) {
           _force_jmethodID = false;
         } else if (strcmp(value, "true") == 0) {
@@ -515,6 +517,13 @@ Error Arguments::parse(const char *args) {
 
   if (_event == NULL && _cpu < 0 && _wall < 0 && _memory < 0 && _nativemem < 0) {
     _event = EVENT_CPU;
+  }
+
+  // Without an explicit fjmethodid, only the VMStructs walker (cstack=vm/vmx,
+  // and default, which resolves to vm where supported) can store a raw Method*
+  // for a frame without a jmethodID; every other mode needs them preloaded.
+  if (!force_jmethodID_set) {
+    _force_jmethodID = !(_cstack == CSTACK_VM || _cstack == CSTACK_DEFAULT);
   }
 
   if (VM::isOpenJ9()) {

@@ -1668,6 +1668,13 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
 
+  // LivenessTracker::start() (via _alloc_engine->start() below) registers a
+  // checker on every start, and nothing unregisters it at stop: stop()'s final
+  // dump still needs it to preserve live traces. Drop the previous session's
+  // checker here, so repeated starts don't stack duplicates and a session
+  // without liveness tracking runs none.
+  _call_trace_storage.clearLivenessCheckers();
+
   // Must precede every signal-based engine's start() below: SamplerPerfProbe
   // (samplerPerf.h) calls OS::nanotime() from inside the signal handler, and
   // on macOS that can be the lazy, non-atomic first-call init of
@@ -1789,6 +1796,22 @@ Error Profiler::start(Arguments &args, bool reset) {
     // Paired with drainInflight() on the stop side.
     _cpu_engine->enableEvents(true);
 
+    // onGCStart() may resolve frames from VM metadata only: raw Method* frames
+    // directly, jmethodID frames (every frame with cstack=fp/dwarf, and classes
+    // that still get one with cstack=vm) through the Method* their id slot
+    // holds. So the method/class structs must be known and jmethodIDs
+    // dereferenceable.
+    bool gc_resolve = VM::isHotspot() && VMStructs::hasMethodStructs() &&
+                      VMStructs::hasClassNames() &&
+                      VMStructs::canDereferenceJmethodID();
+    if (gc_resolve) {
+      // Never disabled again: reference chains share the event, and
+      // onGCStart() checks _gc_resolve first.
+      VM::jvmti()->SetEventNotificationMode(
+          JVMTI_ENABLE, JVMTI_EVENT_GARBAGE_COLLECTION_START, nullptr);
+    }
+    _gc_resolve.store(gc_resolve, std::memory_order_release);
+
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -1812,6 +1835,7 @@ Error Profiler::stop() {
   if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
+  _gc_resolve.store(false, std::memory_order_release);
 
   // Order matters: disable engines first so the _enabled check inside signal
   // handlers will fail for any new signal delivered from now on. drain() then
@@ -2102,6 +2126,60 @@ void Profiler::lockAll() {
 void Profiler::unlockAll() {
   for (int i = 0; i < CONCURRENCY_LEVEL; i++)
     _locks[i].unlock();
+}
+
+bool Profiler::tryLockAll() {
+  // Holders are signal handlers and JNI writers that keep a lock for a few
+  // microseconds; a short spin rides those out.
+  const int max_spins = 1000;
+  for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+    int spins = 0;
+    while (!_locks[i].tryLock()) {
+      if (++spins >= max_spins) {
+        while (--i >= 0) {
+          _locks[i].unlock();
+        }
+        return false;
+      }
+      spinPause();
+    }
+  }
+  return true;
+}
+
+// At the start of every GC, resolves the methods of every pending sample --
+// the traces the next chunk will write -- while their classes are still
+// loaded, and keeps the names on the method_map rows (Lookup::resolveAtGC()).
+// Without that, a method whose class this GC unloads comes out as
+// <unloaded>/unknown when the chunk is written.
+//
+// Runs in the JVMTI GarbageCollectionStart callback, with the VM stopped: no
+// JNI, almost no JVMTI (resolution reads VM metadata only; start() enables
+// this only where that works), and nothing may block, since a thread holding
+// one of our locks may itself be parked for this pause. So every lock is
+// try-locked, and a GC that finds one taken skips the pass. Locks are taken in
+// dump()'s order: _state_lock, _locks[] (no trace writers), the recording's.
+void Profiler::onGCStart() {
+  if (!_gc_resolve.load(std::memory_order_acquire)) {
+    return;
+  }
+  // Times everything this adds to the GC pause, skipped attempts included:
+  // their try-lock spins count too.
+  SAMPLER_PERF_PROBE(SP_GC_RESOLVE);
+  Counters::increment(tryResolveAtGC() ? GC_RESOLVE_PASSES : GC_RESOLVE_SKIPPED);
+}
+
+bool Profiler::tryResolveAtGC() {
+  if (!_state_lock.tryLock()) {
+    return false;
+  }
+  bool done = false;
+  if (state() == RUNNING && !_omit_stacktraces && tryLockAll()) {
+    done = _jfr.tryResolvePendingMethods();
+    unlockAll();
+  }
+  _state_lock.unlock();
+  return done;
 }
 
 void Profiler::switchThreadEvents(jvmtiEventMode mode) {
