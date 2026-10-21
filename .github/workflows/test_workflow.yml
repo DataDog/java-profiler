@@ -148,7 +148,12 @@ jobs:
               echo "::warning::GDB watchdog triggered after 20 minutes"
               for pid in $(pgrep -f 'java.*ddprof-test'); do
                 echo "=== Thread dump for PID $pid ===" >> build/logs/gdb-watchdog.log
-                gdb -batch -ex 'thread apply all bt full' -p "$pid" >> build/logs/gdb-watchdog.log 2>&1 || true
+                # Java-level stacks and lock owners: HotSpot prints them to stdout,
+                # J9 writes a javacore file that prepare_reports.sh collects.
+                kill -QUIT "$pid" 2>/dev/null || true
+                # sudo: Ubuntu's yama ptrace_scope=1 only lets a process attach to its
+                # own descendants, and the JVM is not one of the watchdog's.
+                sudo gdb -batch -ex 'thread apply all bt full' -p "$pid" >> build/logs/gdb-watchdog.log 2>&1 || true
               done
             ) &
             GDB_WATCHDOG_PID=$!
@@ -524,7 +529,12 @@ jobs:
               echo "::warning::GDB watchdog triggered after 25 minutes"
               for pid in $(pgrep -f 'java.*ddprof-test'); do
                 echo "=== Thread dump for PID $pid ===" >> build/logs/gdb-watchdog.log
-                gdb -batch -ex 'thread apply all bt full' -p "$pid" >> build/logs/gdb-watchdog.log 2>&1 || true
+                # Java-level stacks and lock owners: HotSpot prints them to stdout,
+                # J9 writes a javacore file that prepare_reports.sh collects.
+                kill -QUIT "$pid" 2>/dev/null || true
+                # sudo: Ubuntu's yama ptrace_scope=1 only lets a process attach to its
+                # own descendants, and the JVM is not one of the watchdog's.
+                sudo gdb -batch -ex 'thread apply all bt full' -p "$pid" >> build/logs/gdb-watchdog.log 2>&1 || true
               done
             ) &
             GDB_WATCHDOG_PID=$!
