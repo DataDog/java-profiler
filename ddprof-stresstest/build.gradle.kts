@@ -70,11 +70,15 @@ tasks.named<Jar>("jmhJar") {
 // --- chaos harness ---------------------------------------------------------
 // Long-running antagonist workload driven by the reliability CI cell. NOT a JMH
 // benchmark — runs for a wall-clock budget and exits 0 on clean shutdown; JVM
-// crashes propagate as non-zero exit codes. Black-box w.r.t. the profiler:
+// crashes and workload failures propagate as non-zero exit codes. By default it
 // runs under a dd-java-agent.jar patched with the locally built ddprof.jar.
 
 sourceSets {
   create("chaos")
+  create("chaosTest") {
+    compileClasspath += sourceSets["chaos"].output
+    runtimeClasspath += sourceSets["chaos"].output
+  }
 }
 
 dependencies {
@@ -85,6 +89,8 @@ dependencies {
   // ddprof-lib public API: compile-only; the patched dd-java-agent provides the
   // classes at runtime for antagonists that call JavaProfiler directly.
   "chaosCompileOnly"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
+  "chaosTestImplementation"(libs.bundles.testing)
+  "chaosTestImplementation"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
 }
 
 tasks.register<Jar>("chaosJar") {
@@ -99,6 +105,19 @@ tasks.register<Jar>("chaosJar") {
   manifest {
     attributes("Main-Class" to "com.datadoghq.profiler.chaos.Main")
   }
+}
+
+tasks.register<Test>("testOwnedBlockPrecheck") {
+  group = "verification"
+  description = "Verify native owned-block chaos coverage with enabled and disabled prechecks"
+  testClassesDirs = sourceSets["chaosTest"].output.classesDirs
+  classpath = sourceSets["chaosTest"].runtimeClasspath
+  setExecutable(PlatformUtils.testJavaExecutable())
+  useJUnitPlatform()
+}
+
+tasks.named("check") {
+  dependsOn("testOwnedBlockPrecheck")
 }
 
 tasks.register<Exec>("runStressTests") {
