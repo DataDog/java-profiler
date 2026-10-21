@@ -16,7 +16,8 @@ import java.nio.file.Paths;
  * attached via {@code -agentpath}.
  *
  * <p>Every run has two phases. A completion-bounded load phase (loading the
- * classes precompiled by {@link GenSources}, or starting threads) ends with a
+ * classes precompiled by {@link GenSources} and calling every method
+ * {@link #WARMUP_PASSES} times, or starting threads) ends with a
  * {@code MEMCHECK_LOADED} marker on stdout; a time-bounded steady-state phase
  * then runs for the requested duration. With {@code -Dmemcheck.dumpAfterMs=N}
  * the recording is rotated once, N ms into the steady state, and
@@ -34,6 +35,19 @@ import java.nio.file.Paths;
  * attaches to the running agent instead of loading a second copy.
  */
 public class MemCheckMain {
+
+    /**
+     * Passes run before {@code MEMCHECK_LOADED} in the reflective modes. Each
+     * generated method is called through {@link Method#invoke}, which goes
+     * through a per-method method handle. {@code MethodHandle.maybeCustomize()}
+     * customizes that handle's LambdaForm, spinning one {@code LambdaForm$MH}
+     * hidden class, on its 128th call ({@code CUSTOMIZE_THRESHOLD}, default
+     * 127). In classesM that is ~40k
+     * classes arriving together after ~128 passes, which on a slow runner
+     * lands on the NMT sample. Running past that point first keeps the class
+     * count fixed during the steady state.
+     */
+    private static final int WARMUP_PASSES = 130;
 
     public static void main(String[] args) throws Exception {
         String mode = args[0];
@@ -58,6 +72,12 @@ public class MemCheckMain {
             case "classesM": steadyState = loadClassesM(n, Integer.parseInt(args[4]), genDir); break;
             case "allocs": steadyState = loadAllocs(n, genDir); break;
             default: throw new IllegalArgumentException(mode);
+        }
+
+        if (!mode.equals("threads")) {
+            for (int i = 0; i < WARMUP_PASSES; i++) {
+                steadyState.run();
+            }
         }
 
         System.out.println("MEMCHECK_LOADED " + System.currentTimeMillis());

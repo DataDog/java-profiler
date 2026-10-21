@@ -35,6 +35,7 @@ All under `utils/memcheck/`:
 | `results/2026-10-08-aarch64-docker-mac/` | First results (below). The CSV keeps only the `native_mem_*`, NMT and RSS rows. |
 | `results/2026-10-08-x64-aws-m5d4xlarge/` | amd64 Linux results (below), same filtering. |
 | `results/2026-10-09-x64-aws-m5d4xlarge-cpus{2,8}/` | CPU-count sensitivity on the same box, 3 reps (below). |
+| `results/2026-10-21-x64-aws-m5d4xlarge-warmup-cpus{2,4}/` | Verification of the warm-up: `classesM` on 2 CPUs (6 reps), `classesM`/`traces`/`allocs` on 4 CPUs (3 reps). |
 
 Scenarios (each run is a fresh JVM, `-Xms512m -Xmx512m -XX:+AlwaysPreTouch`,
 40 s steady state, rotation at 20 s, sample 5 s after the rotation):
@@ -208,11 +209,8 @@ mean is compared with the 10-rep CPUS=4 set against the planned threshold
   5 of 9 nmt runs), and `Class` committed tracks that count (~1.7 KiB per
   class), so it dropped by up to 3.7 MiB. All runs at 4 and 8 CPUs
   reached the full count. The workload simply had not finished at sample
-  time: before `Class` is gated, `classesM` should reach a fixed class count
-  before `MEMCHECK_LOADED`, or the sample should wait for it. CI runners
-  slower than this box could show the same thing at 4 cores. The reruns that
-  keep the full NMT output are in `build/memcheck-cpus2-classes/work/`
-  (not committed).
+  time. CI runners slower than this box could show the same thing at 4 cores.
+  Fixed by the warm-up described in "Warm-up before the steady state" below.
 - **CPU-dependent, so the runner type has to be pinned for these**: NMT `GC`
   (−4.0 MiB at 2 CPUs, +8.1 MiB at 8, in every scenario) and therefore NMT `total`; `Code` (up to −6.4 MiB
   at 2 and +3.9 MiB at 8 in the nmt arm, and the profiler delta moves too);
@@ -221,6 +219,54 @@ mean is compared with the 10-rep CPUS=4 set against the planned threshold
   across runner sizes. `Class` is safe once the `classesM` workload is made
   deterministic. Anything report-only can still vary with the runner's core
   count, so baselines should come from the same runner type.
+
+## Warm-up before the steady state (harness change, 2026-10-21)
+
+**Cause of the 2-CPU `Class` spread.** `traces`, `classesM` and `allocs` call
+each generated method through `Method.invoke`. Every call goes through a
+per-method method handle, and `MethodHandle.maybeCustomize()` customizes its
+LambdaForm, spinning one `LambdaForm$MH` hidden class, once the handle's
+`customizationCount` reaches `CUSTOMIZE_THRESHOLD` (default 127), so on its
+128th call. Each method is called once per pass, so in `classesM` all ~40,000
+of these classes load together after ~128 passes. Class-load logging on 2
+CPUs put the burst at 20–26 s after `MEMCHECK_LOADED`, on top of the NMT
+sample (~25 s). A run with `CUSTOMIZE_THRESHOLD=60` moved it to 10–14 s, as
+predicted, and the total stayed at 40,018.
+
+**Correction.** An earlier suggestion here (in the session, not in this file)
+was to fall back to waiting until the loaded-class count stops changing.
+That would not work: the count stays flat for ~20 s before the burst.
+
+**Fix.** `MemCheckMain` runs 130 passes of the reflective workloads before
+`MEMCHECK_LOADED` (`WARMUP_PASSES`); `threads` is unchanged. The JVM runs in its
+default configuration. The rejected alternative, `-Djava.lang.invoke.MethodHandle.CUSTOMIZE_THRESHOLD=0`
+plus one pass (0 and −1 both mean "customize on the first call", since the
+check is `count >= threshold`), also fixed `Class` but changed JIT behaviour:
+NMT `Code` moved by up to −28 MiB, and the profiler's `Code` delta in
+`classesM` went from +4.85 to +1.44 MiB.
+
+**Verified** (`results/2026-10-21-...-warmup-*`, same x64 box):
+
+- 2 CPUs: all 6 nmt runs had 42,847 classes at sample time and `Class`
+  committed 70,037–70,040 KiB. Class-load logging: ~20 classes load after
+  `MEMCHECK_LOADED` (dumper thread, rotation, shutdown), against ~40,000
+  before.
+- 4 CPUs against the committed CPUS=4 set: NMT `Class` and `Internal` within
+  0.2 MiB in every arm, so the profiler's `Class`/`Internal` deltas are
+  unchanged. The profiler's `Code` delta moved by ≤ 0.4 MiB, while absolute
+  `Code` rose in both arms (+3 MiB in `traces`). `Code` SD at 4 CPUs is lower
+  (`traces` 411 → 135 KiB).
+- **Baseline boundary for the `classesM` counters**: `method_map` 370 →
+  981 KiB, `line_tables` 195 → 361 KiB, max `calltrace` 5.55 → 6.54 MiB,
+  total live +0.78 MiB, total max +1.73 MiB. SDs stay ≤ 21 KiB, and the
+  2-CPU and 4-CPU values agree within 38 KiB, so the shift does not depend
+  on runner speed. Unverified, but consistent with this: the customized
+  LambdaForm frames are now in sampled stacks for the whole recording
+  instead of from ~20 s on. `traces`/`allocs` counters did not cross the
+  threshold.
+- So the committed result sets above stay valid for noise classes and for
+  `Class`/`Internal`, but not as baselines for `classesM` counters or for
+  absolute `Code`.
 
 ## Gotchas found on the way
 
@@ -242,9 +288,8 @@ mean is compared with the 10-rep CPUS=4 set against the planned threshold
 1. ~~**amd64 Linux box**~~ — done, see the x64 results above. Same noise
    classes; the absolute values are per-architecture.
 2. ~~**perf enabled**~~: dropped, see "perf events" above.
-3. ~~**CPU-count sensitivity**~~: done, see above. Follow-up: make
-   `classesM` reach its full class count before sampling, then re-check
-   `Class` on 2 CPUs.
+3. ~~**CPU-count sensitivity**~~: done, see above. The `classesM` follow-up
+   is done too (warm-up, above).
 4. **arm64 bare-metal box**: confirms whether Docker Desktop distorted
    anything, and whether arm64 can be a second gated platform.
 5. Commit each result set under `results/<date>-<arch>-<host>/`.
