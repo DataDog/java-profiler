@@ -615,6 +615,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             }
 
             if (nm->isInterpreter()) {
+                continuation_stack_args = 0;
                 if (vm_thread != NULL && vm_thread->inDeopt()) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_deopt");
                     break;
@@ -633,7 +634,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
                         walk_pc.setReturnAddress(stripPointer(((void**)fp)[FRAME_PC_SLOT]));
                         fp = *(uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
-                        continuation_stack_args = 0;
                         continue;
                     }
                 }
@@ -684,6 +684,14 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 jmethodID method_id = method->id();
                 HotspotSupport::fillJavaFrame(frames[depth++], type, 0, method_id, method);
 
+                // Prologue/epilogue unwinds can reach a return barrier without the frame-size step.
+                if (features.carrier_frames && VMContinuationEntry::type_size() == 0) {
+                    VMConstMethod* const_method = method->constMethod_or_null();
+                    continuation_stack_args = const_method != nullptr ? const_method->stackArgWords() : -1;
+                    // nmethod sets its stack-argument count to zero for OSR entries.
+                    if (continuation_stack_args > 0 && nm->isOsr()) continuation_stack_args = 0;
+                }
+
                 if (nm->isFrameCompleteAt(walk_pc.raw())) {
                     const void* epilogue_pc = walk_pc.raw();
                     if (depth == 1 && frame.unwindEpilogue(nm, (uintptr_t&)epilogue_pc, sp, fp)) {
@@ -725,12 +733,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         break;
                     }
                     sp = (uintptr_t)INJECT_FAULT_ADDRESS_UNLIKELY(sp);
-                    if (features.carrier_frames && VMContinuationEntry::type_size() == 0) {
-                        VMConstMethod* const_method = method->constMethod_or_null();
-                        continuation_stack_args = const_method != nullptr ? const_method->stackArgWords() : -1;
-                        // nmethod sets its stack-argument count to zero for OSR entries.
-                        if (continuation_stack_args > 0 && nm->isOsr()) continuation_stack_args = 0;
-                    }
                     fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
                     // Saved return address of the caller frame.
                     walk_pc.setReturnAddress(((const void**)sp)[-FRAME_PC_SLOT]);
@@ -927,6 +929,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                             const char* bcp = ((const char**)recovery_fp)[bcp_offset];
                             int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
                             HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
+                            continuation_stack_args = 0;
                             sp = ((uintptr_t*)recovery_fp)[InterpreterFrame::sender_sp_offset];
                             walk_pc.setReturnAddress(stripPointer(((void**)recovery_fp)[FRAME_PC_SLOT]));
                             fp = *(uintptr_t*)recovery_fp;
@@ -1026,6 +1029,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     const char* bcp = ((const char**)anchor_fp)[bcp_offset];
                     int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
                     HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
+                    continuation_stack_args = 0;
                     sp = ((uintptr_t*)anchor_fp)[InterpreterFrame::sender_sp_offset];
                     walk_pc.setReturnAddress(stripPointer(((void**)anchor_fp)[FRAME_PC_SLOT]));
                     fp = *(uintptr_t*)anchor_fp;
