@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk17
 
 ## musl-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-10-22 18:25:50 EDT
+**Date:** 2026-10-22 19:06:02 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-hotspot-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 48 |
-| CPU Cores (end) | 48 |
+| CPU Cores (start) | 51 |
+| CPU Cores (end) | 51 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,46 +28,46 @@ title: musl-arm64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 70 |
-| Sample Rate | 1.17/sec |
-| Health Score | 73% |
-| Threads | 10 |
-| Allocations | 62 |
+| CPU Samples | 111 |
+| Sample Rate | 1.85/sec |
+| Health Score | 116% |
+| Threads | 11 |
+| Allocations | 70 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 73 |
-| Sample Rate | 1.22/sec |
-| Health Score | 76% |
+| CPU Samples | 834 |
+| Sample Rate | 13.90/sec |
+| Health Score | 869% |
 | Threads | 11 |
-| Allocations | 48 |
+| Allocations | 481 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
+<summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1792707653 48
-1792707658 48
-1792707663 48
-1792707668 48
-1792707673 48
-1792707678 48
-1792707683 48
-1792707688 48
-1792707693 48
-1792707698 48
-1792707703 48
-1792707708 48
-1792707713 48
-1792707718 48
-1792707723 48
-1792707728 48
-1792707733 48
-1792707738 48
-1792707743 48
-1792707748 48
+1792710091 51
+1792710096 51
+1792710101 51
+1792710106 51
+1792710111 51
+1792710116 51
+1792710121 51
+1792710126 51
+1792710131 51
+1792710136 51
+1792710141 51
+1792710146 51
+1792710151 51
+1792710156 51
+1792710161 51
+1792710166 51
+1792710171 51
+1792710176 51
+1792710181 51
+1792710186 51
 ```
 </details>
 
