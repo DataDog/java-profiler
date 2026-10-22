@@ -262,7 +262,7 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
     /** The same parked workload on a platform thread keeps its application callers on the stack. */
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx"})
-    public void keepsPlatformCallersComplete(@CStack String cstack) throws Exception {
+    public void keepsPlatformCallersComplete() throws Exception {
         runWorkload(false, true);
         assertCompleteCallers();
     }
@@ -270,7 +270,7 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
     /** Ending at a fully thawed continuation is a complete logical stack in the ordinary VM mode. */
     @TestTemplate
     @ValueSource(strings = {"vm"})
-    public void keepsFullyThawedContinuationComplete(@CStack String cstack) throws Exception {
+    public void keepsFullyThawedContinuationComplete() throws Exception {
         runWorkload(true, false);
         assertCompleteCallers();
     }
