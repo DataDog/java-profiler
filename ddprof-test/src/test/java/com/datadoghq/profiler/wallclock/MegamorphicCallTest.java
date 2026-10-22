@@ -15,13 +15,14 @@ import java.util.concurrent.ThreadLocalRandom;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class MegamorphicCallTest extends AbstractProfilerTest {
+    private static final long ASAN_DURATION_NS = 1_000_000_000L;
+
     @Override
     protected String getProfilerCommand() {
-        // wall=100us over the fixed workload below is ~10k samples/s. Under ASAN each
-        // invocation is much slower, so the same fixed-rate sampling over a much longer
-        // wall-clock duration produces hundreds of thousands of samples, and stack-trace
-        // stringification of all of them (below) OOMs the test-runner heap. Sample 10x
-        // coarser under ASAN, combined with a smaller workload, to bound the sample count.
+        // wall=100us over the fixed workload below is ~10k samples/s. Under ASAN that rate
+        // produced hundreds of thousands of samples, and stack-trace stringification of
+        // all of them (below) OOMs the test-runner heap. Sample 10x coarser under ASAN,
+        // over a fixed duration, to bound the sample count.
         return isAsan() ? "wall=1ms" : "wall=100us";
     }
 
@@ -78,11 +79,21 @@ public class MegamorphicCallTest extends AbstractProfilerTest {
         // same stub layout, as with the other itable/vtable stub tests in this suite.
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9() || Platform.isGraal());
         registerCurrentThreadForWallClockProfiling();
-        // Reduce workload under ASAN: combined with the coarser wall rate above, this
-        // bounds the number of samples (and thus the stack-trace strings materialized
-        // below) regardless of how much ASAN slows down each invocation.
-        int iterations = isAsan() ? 100_000 : 1_000_000;
-        int result = profiledWork(iterations, new Calculator1(), new Calculator2(), new Calculator3());
+        Calculator[] calculators = {new Calculator1(), new Calculator2(), new Calculator3()};
+        int result;
+        if (isAsan()) {
+            // ASAN does not instrument JIT-compiled code, so a fixed iteration count
+            // finishes within a few 1ms sampling periods. Run for a fixed duration
+            // instead: at most ~1000 samples at wall=1ms, enough to hit the itable stub while
+            // still bounding the stack-trace strings materialized below.
+            result = 0;
+            long start = System.nanoTime();
+            while (System.nanoTime() - start < ASAN_DURATION_NS) {
+                result += profiledWork(100_000, calculators);
+            }
+        } else {
+            result = profiledWork(1_000_000, calculators);
+        }
         System.err.println(result);
         stopProfiler();
 

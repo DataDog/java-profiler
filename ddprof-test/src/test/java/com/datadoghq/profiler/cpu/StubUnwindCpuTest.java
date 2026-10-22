@@ -50,9 +50,13 @@ public class StubUnwindCpuTest extends CStackAwareAbstractProfilerTest {
     private static final int ROUNDS = 40;
     // The debug build samples 10x coarser than release (see getProfilerCommand)
     // and runs 10x the rounds so the number of samples landing in each stub
-    // stays the same. ASan always sampled at 1ms with ROUNDS and keeps that:
-    // its instrumented workload is already slow enough.
+    // stays the same.
     private static final int DEBUG_ROUND_FACTOR = 10;
+    // ASan instruments only the native library, so the JIT-compiled workload
+    // runs at full speed and ROUNDS at wall=1ms yield too few samples to
+    // reliably hit the itable stub. Keep running rounds under ASan until this
+    // much wall-clock time has passed.
+    private static final long ASAN_MIN_DURATION_NS = 1_000_000_000L;
 
     interface Calculator {
         int calculate();
@@ -139,7 +143,9 @@ public class StubUnwindCpuTest extends CStackAwareAbstractProfilerTest {
 
         long acc = 0;
         int rounds = isDebugBuild() && !isAsan() ? ROUNDS * DEBUG_ROUND_FACTOR : ROUNDS;
-        for (int round = 0; round < rounds; round++) {
+        long minDurationNs = isAsan() ? ASAN_MIN_DURATION_NS : 0;
+        long start = System.nanoTime();
+        for (int round = 0; round < rounds || System.nanoTime() - start < minDurationNs; round++) {
             acc += megamorphicWork(10_000, calculators);
             acc += arraycopyWork(data, dst, acc);
             acc += hashWork(sha256, data, acc);

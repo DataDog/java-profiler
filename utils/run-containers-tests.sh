@@ -1280,11 +1280,17 @@ else
     CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/source${CONTAINER_VOLUME_RO_OPTIONS}"
     CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
 
-    # Build clone and test command - clone from local mounted source
+    # Build clone and test command - clone from local mounted source.
+    # With a rootful runtime (e.g. Docker) the container's root doesn't own the
+    # host repo, and git refuses to clone it ("detected dubious ownership").
+    # Trust exactly the mounted .git; the container is discarded. Passing
+    # "-c safe.directory=..." to git clone is not enough (tested with git 2.34.1
+    # in the glibc image), unlike for the commands in utils/compute-version.sh.
+    SAFE_DIR_CMD="git config --global --add safe.directory /source/.git && "
     if $SHELL_MODE; then
-        CLONE_CMD="git clone --depth 1 file:///source /workspace && cd /workspace && /bin/bash"
+        CLONE_CMD="${SAFE_DIR_CMD}git clone --depth 1 file:///source /workspace && cd /workspace && /bin/bash"
     else
-        CLONE_CMD="git clone --depth 1 file:///source /workspace && cd /workspace && ${SYSCTL_PREP}${GRADLE_CMD}"
+        CLONE_CMD="${SAFE_DIR_CMD}git clone --depth 1 file:///source /workspace && cd /workspace && ${SYSCTL_PREP}${GRADLE_CMD}"
     fi
 
     echo ""

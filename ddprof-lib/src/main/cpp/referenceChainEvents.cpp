@@ -25,8 +25,6 @@
 #include <cstring>
 #include <unordered_set>
 
-// Target-selection bridging step - LivenessTracker's leak-candidate ranking feeds
-
 void ReferenceChainTracker::requeueChainRootForRotation(jlong tag) {
   if (_frontier == nullptr || tag <= 0) {
     return;
@@ -105,6 +103,9 @@ bool ReferenceChainTracker::buildChainEvent(jvmtiEnv *jvmti, JNIEnv *jni,
            (long long)target_tag, chain.size(), chain.empty() ? 0u : chain[0],
            entry.depth, (unsigned)root_kind, (long long)entry.leak_tag);
   out->_target_tag = entry.leak_tag != 0 ? (u64)entry.leak_tag : (u64)target_tag;
+  // Ownership period of the leak tag at binding time (0 without a leak tag); see
+  // chainTargetsCurrentLeakOwner().
+  out->_leak_tag_incarnation = entry.leak_tag_incarnation;
   out->_depth = entry.depth;
   out->_root_kind = root_kind;
   out->_hops.resize(chain.size());
@@ -148,6 +149,9 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     // Avoid candidate-table work when generation tracking is disabled.
     return;
   }
+
+  // Don't rebuild chains against cache entries the heap callback asked to drop.
+  drainPendingChainInvalidations();
 
   // Stamp every entry this poll refreshes with the current search generation.
   const u64 current_search_ns = load(_search_start_ns);
@@ -443,10 +447,21 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
 
 // Inserts or refreshes klass_id's resolved chain - see _resolved_chains' comment
 // (referenceChains.h) for why a resolved chain is cached and re-emitted rather than emitted once.
+// Returns false when the chain was not stored: the cache is full, or the chain targets a leak tag
+// whose owner already died.
 bool ReferenceChainTracker::cacheResolvedChain(jlong source_tag,
                                                ReferenceChainEvent &&event,
                                                jlong source_tag_val,
                                                u64 source_search_ns) {
+  if (isLeakTag((jlong)event._target_tag) && !chainTargetsCurrentLeakOwner(event)) {
+    // Built from a frontier binding whose leak-tag owner already died. Ownership stamps only
+    // advance, so it can never become valid again; caching it would only take a slot until the
+    // next dump evicts it. A release racing past this check is evicted by that dump.
+    TEST_LOG("ReferenceChainTracker::cacheResolvedChain rejected dead-owner chain "
+             "source_tag=%lld target_tag=%lld",
+             (long long)source_tag, (long long)event._target_tag);
+    return false;
+  }
   {
     ExclusiveLockGuard guard(&_resolved_chains_lock);
     auto it = _resolved_chains.find(source_tag);
@@ -494,6 +509,123 @@ void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
     TEST_LOG("ReferenceChainTracker::invalidateResolvedChain source_tag=%lld",
              (long long)source_tag);
   }
+}
+
+jlong ReferenceChainTracker::resolvedChainTargetTagForTest(jlong object_tag) {
+  if (object_tag <= 0) {
+    return 0;
+  }
+  // _search_start_ns is only rewritten by runPass()/restartSearch() under _engine_lock (BFS thread)
+  // or after stopThread() - NOT under _resolved_chains_lock - so hold _engine_lock too, then sample
+  // the generation only once both locks are held: a concurrent restart/new pass cannot change it
+  // between the load and the source_search_ns comparison below. Lock order _engine_lock ->
+  // _resolved_chains_lock matches finishLoopIterationSerialized() -> pollWatchedTargets().
+  MutexLocker engine_guard(_engine_lock);
+  ExclusiveLockGuard guard(&_resolved_chains_lock);
+  if (isLeakTag(object_tag)) {
+    // Leak-tag fallback. An object carries its leak tag exactly when no live frontier entry
+    // exists for it - before the current search's first interception, or after a restart's
+    // releaseSearchTags() cleared the frontier tags and the next GC re-tagged it - which is
+    // precisely when the frontier-tag lookup below must miss. A leak tag is NOT an object
+    // identity on its own: LivenessTracker releases it when its object dies and recycles it for
+    // another object, while _resolved_chains keeps the dead object's chain (restartSearch() keeps
+    // the cache too). Identity is the pair (leak tag, ownership-period stamp): buildChainEvent()
+    // copies the frontier entry's leak tag and the stamp captured when that tag was bound, and
+    // chainTargetsCurrentLeakOwner() accepts the chain only if the stamp is still the tag's
+    // current one. Within one ownership period no generation check applies, so a chain any
+    // earlier search resolved for this object stays reachable through this scan even after the
+    // frontier tags were wiped; a chain cached for an earlier owner of the tag never matches. The
+    // caller holds a strong reference to the target, so its own tag cannot be released (and its
+    // stamp cannot change) during this call.
+    for (const auto &cached : _resolved_chains) {
+      if ((jlong)cached.second.event._target_tag == object_tag &&
+          chainTargetsCurrentLeakOwner(cached.second.event)) {
+        return object_tag;
+      }
+    }
+    return 0;
+  }
+  const u64 current_search_ns = load(_search_start_ns);
+  if (current_search_ns == 0) {
+    return 0;
+  }
+  auto it = _resolved_chains.find(object_tag);
+  if (it == _resolved_chains.end() ||
+      it->second.source_search_ns != current_search_ns) {
+    return 0;
+  }
+  return (jlong)it->second.event._target_tag;
+}
+
+int ReferenceChainTracker::snapshotResolvedChainTags(jlong *out) {
+  if (out == nullptr) {
+    return 0;
+  }
+  ExclusiveLockGuard guard(&_resolved_chains_lock);
+  int count = 0;
+  for (const auto &entry : _resolved_chains) {
+    assert(count < MAX_RESOLVED_CHAINS);
+    out[count++] = entry.first;
+  }
+  return count;
+}
+
+void ReferenceChainTracker::deferResolvedChainInvalidation(
+    jlong source_tag, const jlong *resolved_chain_tags,
+    int resolved_chain_tag_count) {
+  bool was_cached = false;
+  for (int i = 0; i < resolved_chain_tag_count; i++) {
+    if (resolved_chain_tags[i] == source_tag) {
+      was_cached = true;
+      break;
+    }
+  }
+  if (!was_cached) {
+    return;
+  }
+
+  _pending_chain_invalidations_lock.lock();
+  for (jlong tag : _pending_chain_invalidations) {
+    if (tag == source_tag) {
+      _pending_chain_invalidations_lock.unlock();
+      return;
+    }
+  }
+  // Cache insertion is serialized with traversals on the engine thread and dumps can only remove
+  // keys, so one pre-traversal snapshot bounds distinct eligible tags to the cache cap.
+  assert((int)_pending_chain_invalidations.size() <
+         MAX_PENDING_CHAIN_INVALIDATIONS);
+  if ((int)_pending_chain_invalidations.size() <
+      MAX_PENDING_CHAIN_INVALIDATIONS) {
+    _pending_chain_invalidations.push_back(source_tag);
+  }
+  _pending_chain_invalidations_lock.unlock();
+}
+
+void ReferenceChainTracker::drainPendingChainInvalidations() {
+  // Serialize drainers and scratch-buffer use with the cache. The producer lock is held only for
+  // the O(1) handoff, never for unordered_map erase or node destruction.
+  ExclusiveLockGuard guard(&_resolved_chains_lock);
+  _pending_chain_invalidations_lock.lock();
+  assert(_draining_chain_invalidations.empty());
+  _pending_chain_invalidations.swap(_draining_chain_invalidations);
+  _pending_chain_invalidations_lock.unlock();
+
+  for (jlong tag : _draining_chain_invalidations) {
+    if (_resolved_chains.erase(tag) > 0) {
+      TEST_LOG("ReferenceChainTracker::drainPendingChainInvalidations source_tag=%lld",
+               (long long)tag);
+    }
+  }
+  _draining_chain_invalidations.clear();
+}
+
+void ReferenceChainTracker::clearPendingChainInvalidations() {
+  ExclusiveLockGuard cache_guard(&_resolved_chains_lock);
+  _pending_chain_invalidations_lock.lock();
+  _pending_chain_invalidations.clear();
+  _draining_chain_invalidations.clear();
+  _pending_chain_invalidations_lock.unlock();
 }
 
 // Builds and caches chain events for every auto-marked discovered instance recorded against a slot
@@ -595,9 +727,10 @@ for (int s = 0; s < _candidate_count; s++) {
 }
 }
 
-void ReferenceChainTracker::recordDiscoveredInstance(u32 klass_id,
-                                                     jlong frontier_tag,
-                                                     bool leak_correlated) {
+void ReferenceChainTracker::recordDiscoveredInstance(
+    u32 klass_id, jlong frontier_tag, bool leak_correlated,
+    CacheInvalidationMode invalidation_mode,
+    const jlong *resolved_chain_tags, int resolved_chain_tag_count) {
   // See the declaration's own comment (referenceChains.h) for the noise-eviction rationale.
   for (int s = 0; s < _candidate_count; s++) {
     if (_candidate_klass_ids[s] != klass_id) {
@@ -624,7 +757,12 @@ void ReferenceChainTracker::recordDiscoveredInstance(u32 klass_id,
           !_frontier->lookup(victim, &victim_entry) ||
           victim_entry.leak_tag == 0) {
         _candidate_discovered_tags[s][d] = frontier_tag;
-        invalidateResolvedChain(victim);
+        if (invalidation_mode == CacheInvalidationMode::DEFERRED) {
+          deferResolvedChainInvalidation(victim, resolved_chain_tags,
+                                         resolved_chain_tag_count);
+        } else {
+          invalidateResolvedChain(victim);
+        }
         TEST_LOG("ReferenceChainTracker::recordDiscoveredInstance evicted "
                  "noise slot=%d idx=%d victim_tag=%lld for leak tag=%lld",
                  s, d, (long long)victim, (long long)frontier_tag);
@@ -657,13 +795,23 @@ bool ReferenceChainTracker::correlateAdmittedLeakTag(jlong frontier_tag,
     // re-admission.
     return true;
   }
-  _frontier->setLeakTag(frontier_tag, leak_tag);
+  // The caller's row owns leak_tag now (tagLeakInstances() holds the shared _table_lock, which
+  // excludes cleanup_table()'s release), so this is the owner's ownership-period stamp.
+  _frontier->setLeakTag(frontier_tag, leak_tag,
+                        LivenessTracker::instance()->leakTagIncarnation(leak_tag));
   TEST_LOG_SUMMARY("ReferenceChainTracker::correlateAdmittedLeakTag "
            "frontier_tag=%lld leak_tag=%lld depth=%u parent_tag=%lld",
            (long long)frontier_tag, (long long)leak_tag, entry.depth,
            (long long)entry.parent_tag);
-  recordDiscoveredInstance(klass_id, frontier_tag, true);
+  recordDiscoveredInstance(klass_id, frontier_tag, true,
+                           CacheInvalidationMode::SYNCHRONOUS, nullptr, 0);
   return true;
+}
+
+bool ReferenceChainTracker::chainTargetsCurrentLeakOwner(const ReferenceChainEvent &e) {
+  jlong target = (jlong)e._target_tag;
+  return isLeakTag(target) &&
+         e._leak_tag_incarnation == LivenessTracker::instance()->leakTagIncarnation(target);
 }
 
 void ReferenceChainTracker::drainPendingChainEvents(
@@ -671,15 +819,30 @@ void ReferenceChainTracker::drainPendingChainEvents(
   if (out == nullptr) {
     return;
   }
+  // Apply deferred evictions first so the dump doesn't export an already-evicted chain.
+  drainPendingChainInvalidations();
   // Snapshot-and-keep, not a drain: every cached chain is copied out (and re-stamped so it lands in
   // the dumping chunk's window) while the cache itself is left intact, so the same live sample's
   // chain re-emits into every chunk it survives into (see _resolved_chains' comment).
   u64 now = TSC::ticks();
   {
     ExclusiveLockGuard guard(&_resolved_chains_lock);
-    for (const auto &kv : _resolved_chains) {
-      out->push_back(kv.second.event);
+    for (auto it = _resolved_chains.begin(); it != _resolved_chains.end();) {
+      const ReferenceChainEvent &event = it->second.event;
+      if (isLeakTag((jlong)event._target_tag) && !chainTargetsCurrentLeakOwner(event)) {
+        // The leak-tagged target died (its tag was released, and possibly re-acquired by another
+        // object), so the chain no longer describes the object (targetTag, leakTagIncarnation)
+        // names. Ownership stamps only advance, so the mismatch is permanent: erase the chain now
+        // instead of letting it occupy a MAX_RESOLVED_CHAINS slot for the rest of the search.
+        TEST_LOG("ReferenceChainTracker::drainPendingChainEvents evicted dead-owner chain "
+                 "source_tag=%lld target_tag=%lld",
+                 (long long)it->first, (long long)event._target_tag);
+        it = _resolved_chains.erase(it);
+        continue;
+      }
+      out->push_back(event);
       out->back()._start_time = now;
+      ++it;
     }
   }
   TEST_LOG_SUMMARY("ReferenceChainTracker::drainPendingChainEvents re-emitted=%d",

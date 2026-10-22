@@ -42,6 +42,7 @@
   X(DICTIONARY_ENDPOINTS_ARENA_WASTE_BYTES, "dictionary_endpoints_arena_waste_bytes") \
   X(DICTIONARY_CONTEXT_ARENA_WASTE_BYTES, "dictionary_context_arena_waste_bytes")     \
   X(DICTIONARY_DRAIN_TIMEOUTS, "dictionary_drain_timeouts")                    \
+  X(DICTIONARY_ID_CONFLICTS, "dictionary_id_conflicts")                        \
   X(CLASS_MAP_AT_CAPACITY, "class_map_at_capacity_drops")                      \
   X(CONTEXT_STORAGE_BYTES, "context_storage_bytes")                            \
   X(CONTEXT_STORAGE_PAGES, "context_storage_pages")                            \
@@ -93,6 +94,8 @@
   X(CALLTRACE_STORAGE_EXPANSION_SKIPPED, "calltrace_storage_expansion_skipped") \
   X(LINE_NUMBER_TABLES, "line_number_tables")                                  \
   X(LINE_NUMBER_TABLE_UNREADABLE, "line_number_table_unreadable")              \
+  /* Raw frames' line number tables dropped because malloc() failed. */      \
+  X(LINE_NUMBER_TABLE_ALLOC_FAILED, "line_number_table_alloc_failed")          \
   X(REMOTE_SYMBOLICATION_FRAMES, "remote_symbolication_frames")                \
   X(REMOTE_SYMBOLICATION_LIBS_WITH_BUILD_ID, "remote_symbolication_libs_with_build_id") \
   X(REMOTE_SYMBOLICATION_BUILD_ID_CACHE_HITS, "remote_symbolication_build_id_cache_hits") \
@@ -169,10 +172,70 @@
   X(METHOD_RESOLVE_FAULT_RECOVERED, "method_resolve_fault_recovered")         \
   /* Symbol length/body rejected during the same resolution: unreadable body,  \
    * empty (recycled slot), or over MAX_SYMBOL_LEN. A name that merely exceeds \
-   * the fixed inline buffers in hotspotSupport.cpp's ResolvedNames still      \
+   * the fixed inline buffers in ResolvedMethod (hotspotSupport.h) still     \
    * resolves via its malloc fallback and does not land here. The frame        \
    * serializes as "unknown". */                                               \
   X(METHOD_RESOLVE_SYMBOL_UNREADABLE, "method_resolve_symbol_unreadable")     \
+  /* fjmethodid=lazy resolution outcomes. UNLOADED: the frame's class is not \
+   * among the classes the dump pins (unloaded since the sample, or the      \
+   * holder read from a freed Method* is garbage). NOT_CURRENT: the class  \
+   * is alive but the Method* is not among its current methods (freed or    \
+   * redefined). Both                                                        \
+   * serialize as "unknown". RESOLVED: raw frames whose names were read from  \
+   * VM metadata, once per method and tag per dump. */                        \
+  X(METHOD_RESOLVE_LAZY_UNLOADED, "method_resolve_lazy_unloaded")             \
+  X(METHOD_RESOLVE_LAZY_NOT_CURRENT, "method_resolve_lazy_not_current")       \
+  /* CLASS_TOO_LARGE: like NOT_CURRENT, but the Method* was not at its      \
+   * idnum's index and the class has too many methods to scan               \
+   * (VMKlass::MAX_METHODS_SCANNED), so it may well be current; serializes  \
+   * as "unknown". */                                                        \
+  X(METHOD_RESOLVE_LAZY_CLASS_TOO_LARGE, "method_resolve_lazy_class_too_large") \
+  X(METHOD_RESOLVE_LAZY_RESOLVED, "method_resolve_lazy_resolved")             \
+  /* STALE: the class now at the frame's holder address is a different load \
+   * (its trace ID differs); serializes as "unknown".                        \
+   * UNTAGGABLE: a Method* using address bits the raw-frame tag needs, or   \
+   * an unreadable holder trace ID; the frame is stored as not walkable. */  \
+  X(METHOD_RESOLVE_LAZY_STALE, "method_resolve_lazy_stale")                   \
+  /* REDEFINED: raw frame of a class that has been redefined (its Method*s   \
+   * may have been freed and reused); serializes as "unknown". */            \
+  X(METHOD_RESOLVE_LAZY_REDEFINED, "method_resolve_lazy_redefined")           \
+  /* UNREADABLE: the frame's Method* no longer leads to a holder Klass* and  \
+   * ConstMethod (the metadata was freed when its class was unloaded, or the \
+   * read faulted), so no class could even be looked up; serializes as      \
+   * "unknown". Under class churn this is most of the frames lost. */        \
+  X(METHOD_RESOLVE_LAZY_UNREADABLE, "method_resolve_lazy_unreadable")         \
+  /* Classes marked by the redefinition hooks (once per class per          \
+   * redefine/retransform call). */                                          \
+  X(KLASS_REGISTRY_REDEFINITIONS_MARKED, "klass_registry_redefinitions_marked") \
+  /* Gauge, set by each dump that resolves lazy raw frames: loaded classes  \
+   * whose trace ID no longer fits in a raw frame's 25-bit tag. Nonzero means trace-ID tags of two classes \
+   * can now collide: a frame sampled from an unloaded class could then, if  \
+   * a newer class also took over its Method* memory, resolve to that        \
+   * class's method. */                                                      \
+  X(KLASS_TRACE_ID_BEYOND_TAG_RANGE, "klass_trace_id_beyond_tag_range")       \
+  /* Gauges, set by each dump that resolves lazy raw frames: the classes it \
+   * pinned (array classes included), and the nanoseconds it took to collect \
+   * their Klass*s. */                                                        \
+  X(LAZY_DUMP_CLASSES, "lazy_dump_classes")                                   \
+  X(LAZY_DUMP_PIN_NS, "lazy_dump_pin_ns")                                     \
+  /* Raw Method* frame occurrences answered from Lookup's per-dump cache    \
+   * instead of resolving them again. */                                     \
+  X(RAW_FRAME_RESOLVE_CACHE_HITS, "raw_frame_resolve_cache_hits")             \
+  /* Redefinitions whose mark could not be recorded (no memory for it);     \
+   * every lazy frame is refused for the rest of the process once this is   \
+   * nonzero. */                                                             \
+  X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
+  /* Gauges: KlassRegistry's table slots (24 B each; NMT does not see the    \
+   * table) and occupied slots, live or dead. It holds only redefined        \
+   * classes. PURGED: dead entries dropped when the table was rebuilt. */    \
+  X(KLASS_REGISTRY_CAPACITY, "klass_registry_capacity")                       \
+  X(KLASS_REGISTRY_ENTRIES, "klass_registry_entries")                         \
+  X(KLASS_REGISTRY_PURGED, "klass_registry_purged")                           \
+  X(WALKVM_RAW_FRAME_UNTAGGABLE, "walkvm_raw_frame_untaggable")               \
+  /* Gauge, set at each fjmethodid=lazy start: the Klass::_trace_id offset  \
+   * raw frames are tagged with, or -1 if it was not found (lazy mode then    \
+   * falls back to fjmethodid=false). 0 if lazy mode was never requested. */  \
+  X(KLASS_TRACE_ID_OFFSET, "klass_trace_id_offset")                           \
   /* Strict subset of SAMPLES_DROPPED_THREAD_LOCAL, not an independent count: \
    * ThreadLocalDataPool::claim() increments this on capacity exhaustion, and \
    * every acquireCurrent() caller that gets nullptr back -- for this or any  \
@@ -210,6 +273,10 @@
    * and re-emits it on a later dump while the leak candidate is still      \
    * live. */                                                                \
   X(REFERENCE_CHAIN_WRITE_DROPPED, "reference_chain_write_dropped")            \
+  /* LivenessTracker urgency boost: admissions below the table cap vs.    \
+   * admissions that hit the cap and fell back to the subsample ratio. */  \
+  X(LIVENESS_URGENT_BOOST_ADMITS, "liveness_urgent_boost_admits")             \
+  X(LIVENESS_URGENT_BOOST_BACKED_OFF, "liveness_urgent_boost_backed_off")     \
   /* FrontierTable's own calloc/realloc-backed storage (referenceChains.cpp) -   \
    * outside NMT's visibility since it bypasses os::malloc, so this is the only \
    * way to attribute its native RSS contribution. */                          \

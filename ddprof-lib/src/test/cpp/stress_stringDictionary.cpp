@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <map>
 #include <mutex>
 #include <shared_mutex>
@@ -652,4 +653,73 @@ TEST(StressStringDictionary, ClearAllUnderConcurrentReaders) {
     clearer.join();
     for (auto& th : inserters) th.join();
     for (auto& th : readers) th.join();
+}
+
+// Invariant: a key first seen while rotate() is running gets one
+// id, no matter which side of the rotation each caller lands on.  All threads
+// walk the same never-before-seen keys while a rotator spins, so first-time
+// inserts keep straddling the transition window.  IdStabilityUnderConcurrentRotation
+// pre-inserts every key before rotating and cannot reach this window.
+TEST(StressStringDictionary, FreshKeysKeepOneIdUnderConcurrentRotation) {
+    StringDictionary dict;
+    constexpr int N_WRITERS = 4;
+    constexpr int N_KEYS = 20000;
+    const long long base_timeouts = Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS);
+    std::atomic<bool> done{false};
+    // Clears skipped and buffers reused uncleared: stalls that, unlike a
+    // timed-out rotate() drain, DICTIONARY_DRAIN_TIMEOUTS does not count.
+    std::atomic<int> skipped_clears{0};
+
+    std::vector<std::string> keys;
+    keys.reserve(N_KEYS);
+    for (int i = 0; i < N_KEYS; i++) keys.push_back("fresh_" + std::to_string(i));
+
+    std::thread rotator([&dict, &done, &skipped_clears]() {
+        while (!done.load(std::memory_order_relaxed)) {
+            if (!dict.rotate()) skipped_clears.fetch_add(1);
+            if (!dict.clearStandby()) skipped_clears.fetch_add(1);
+        }
+    });
+
+    std::vector<std::vector<u32>> seen(N_WRITERS, std::vector<u32>(N_KEYS, 0));
+    std::vector<std::thread> writers;
+    for (int t = 0; t < N_WRITERS; t++) {
+        writers.emplace_back([&dict, &keys, &seen, t]() {
+            for (int i = 0; i < N_KEYS; i++) {
+                seen[t][i] = dict.lookup(keys[i].c_str(), keys[i].size());
+            }
+        });
+    }
+    for (auto& th : writers) th.join();
+    done.store(true);
+    rotator.join();
+
+    int conflicts = 0;
+    for (int i = 0; i < N_KEYS; i++) {
+        u32 current = dict.bounded_lookup(keys[i].c_str(), keys[i].size());
+        for (int t = 0; t < N_WRITERS; t++) {
+            if (seen[t][i] != 0 && seen[t][i] != current) conflicts++;
+        }
+    }
+    // Mid-rotation misses take guards on the old active, which rotate() is
+    // draining; they must not keep the drain from completing.  A single stall
+    // - an accessor holding a guard for ~500ms on a loaded CI runner - is
+    // survivable by design, but the rotator runs nonstop, so drains that the
+    // guards starve would time out again and again.
+    const long long stalls = Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS) - base_timeouts +
+                             skipped_clears.load();
+    constexpr long long MAX_STALLS = 2;
+    EXPECT_LE(stalls, MAX_STALLS) << "drains keep timing out: mid-rotation guards may be starving them";
+    // After a stall a straggler can legitimately leave a caller holding a
+    // dump-only id (the documented residual).  Each writer holds one guard at
+    // a time, so a stall leaves at most N_WRITERS late keys, and each key has
+    // N_WRITERS entries in seen: at most N_WRITERS^2 conflicts per stall.  The
+    // race this test targets produces conflicts with no stall at all (33-81
+    // per run on main), so with no stall any conflict fails the test.
+    if (stalls > 0) {
+        printf("NOTE: FreshKeysKeepOneIdUnderConcurrentRotation: %lld stalls, %d conflicting ids\n",
+               stalls, conflicts);
+    }
+    EXPECT_LE(conflicts, stalls * N_WRITERS * N_WRITERS)
+        << "ids handed out that no longer match the dictionary (" << stalls << " stalls)";
 }

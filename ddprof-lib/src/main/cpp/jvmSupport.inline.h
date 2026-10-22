@@ -35,13 +35,14 @@ long long JVMSupport::runtimeStubsMemoryUsage() {
     }
 }
 
-// Resolve method pointer to jmethodID
-jmethodID JVMSupport::resolve(const void* method) {
+// Resolve a raw-pointer frame (method field and encoded bci) into names and
+// line number table
+bool JVMSupport::resolve(const void* method, int bci, ResolvedMethod& result) {
     if (VM::isHotspot()) {
-        return HotspotSupport::resolve(method);
+        return HotspotSupport::resolve(method, bci, result);
     } else {
         assert(false && "Should not reach here");
-        return nullptr;
+        return false;
     }
 }
 

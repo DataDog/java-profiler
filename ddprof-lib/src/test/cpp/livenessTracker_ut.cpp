@@ -17,9 +17,11 @@
 #include <gtest/gtest.h>
 #include "livenessTracker.h"
 #include "arguments.h"
+#include "counters.h"
 #include "objectSampler.h"
 #include "profiler.h"
 #include "referenceChainsTestAccessors.h"
+#include "vmEntry.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 #include <atomic>
 #include <cstdlib>
@@ -514,6 +516,34 @@ TEST_F(KlassPopulationTest, EvictsLeastRecentlyUpdatedEntryWhenFull) {
     EXPECT_EQ(new_entry.ring_fill, 1);
 }
 
+TEST_F(KlassPopulationTest, TidTrendCreationReturnsEvictedRepresentatives) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    const int cap = 256;
+    for (u32 klass_id = 1; klass_id <= (u32)cap; klass_id++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(klass_id, 1, klass_id, &slot,
+                                               &created);
+        ASSERT_TRUE(created);
+    }
+    jweak victim_ref = fakeRef(0xbeef);
+    tracker->klassPopulationSetRepresentativeForTest(nullptr, 1, victim_ref);
+
+    jweak evicted[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
+    int evicted_count = 0;
+    tracker->tidTrendRecordForTest(
+        /*klass_id=*/cap + 1, /*tid=*/7, /*count=*/12, /*epoch=*/cap + 1,
+        evicted, &evicted_count,
+        KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
+
+    ASSERT_EQ(1, evicted_count);
+    EXPECT_EQ(victim_ref, evicted[0]);
+    EXPECT_EQ(cap, tracker->klassPopulationSizeForTest());
+    KlassPopulationEntry replacement{};
+    EXPECT_TRUE(tracker->klassPopulationLookupForTest(cap + 1,
+                                                       &replacement));
+}
+
 // ---------------------------------------------------------------------------
 // Slope computation and candidate ranking. Same rationale as KlassPopulationTest above
 // for exercising LivenessTracker::instance() directly: selectLeakCandidates()
@@ -731,11 +761,10 @@ TEST_F(SelectLeakCandidatesTest, HeapFloorCorroborationLowersRequiredHysteresis)
 }
 
 // --- Per-(klass, tid) qualification gate (TidTrend, livenessTracker.h) ---
-// The disjoint-tagged-vs-frontier pod finding: a whole-klass rising
-// generation count can come from churn spread across MANY allocating
-// threads, each retaining a STABLE handful of instances. A klass with a
-// qualifying klass-level trend but NO thread whose own trend qualifies is
-// NOT a leak candidate.
+// A whole-klass rising generation count can come from churn spread across
+// MANY allocating threads, each retaining a STABLE handful of instances. A
+// klass with a qualifying klass-level trend but NO thread whose own trend
+// qualifies is NOT a leak candidate.
 TEST_F(SelectLeakCandidatesTest, KlassTrendWithoutQualifyingTidIsNotSelected) {
     LivenessTracker *tracker = LivenessTracker::instance();
 
@@ -809,9 +838,7 @@ TEST_F(SelectLeakCandidatesTest, RetainedCountBarQualifiesOneCohortShape) {
 }
 
 // A rising per-tid trend alone (below the retained-count bar) qualifies:
-// small leaks grow their age span long before their count clears the bar -
-// the hotdog pod's simulated-memory-leak thread (12 tracked [B instances,
-// age_count rising 2->3) is exactly this shape.
+// small leaks grow their age span long before their count clears the bar.
 TEST_F(SelectLeakCandidatesTest, RisingTidTrendQualifiesBelowCountBar) {
     LivenessTracker *tracker = LivenessTracker::instance();
 
@@ -1092,7 +1119,191 @@ public:
 #endif
         return recorded;
     }
+
+    static void setTableCapsForTest(LivenessTracker *t, int table_size,
+                                     int table_max_cap) {
+        t->_table_size = table_size;
+        t->_table_max_cap = table_max_cap;
+    }
+
+    // Writes a canary cached class id into a table row (possibly one past
+    // _table_size, still within _table_cap) so tests can pin whole-table
+    // clear-loop bounds. Returns false when idx is outside the allocation.
+    static bool setCachedKlassIdForTest(LivenessTracker *t, u32 idx, u32 id) {
+        if (t->_table == nullptr || idx >= (u32)t->_table_cap) {
+            return false;
+        }
+        t->_table[idx].cached_klass_id = id;
+        return true;
+    }
+
+    static int tableSizeFieldForTest(LivenessTracker *t) {
+        return t->_table_size;
+    }
+
+    static int tableMaxCapForTest(LivenessTracker *t) {
+        return t->_table_max_cap;
+    }
+
+    static void callCleanupTableForTest(LivenessTracker *t, bool forced,
+                                         bool allow_resolve, bool account_epoch) {
+        t->cleanup_table(forced, allow_resolve, account_epoch);
+    }
+
+    static void setGcEpochForTest(LivenessTracker *t, u64 epoch) {
+        t->_gc_epoch = epoch;
+    }
+
+    static void setLastGcEpochForTest(LivenessTracker *t, u64 epoch) {
+        t->_last_gc_epoch = epoch;
+    }
+
+    static u64 lastGcEpochForTest(LivenessTracker *t) {
+        return t->_last_gc_epoch;
+    }
+
+    static void setSessionGatesForTest(LivenessTracker *t, bool enabled,
+                                       bool generations) {
+        t->_enabled = enabled;
+        t->_gc_generations.store(generations, std::memory_order_relaxed);
+    }
+
+    static bool enabledForTest(LivenessTracker *t) {
+        return t->_enabled;
+    }
+
+    static bool entryAgeAndAdmissionForTest(LivenessTracker *t, u32 idx,
+                                             jlong *age,
+                                             u64 *admission_epoch) {
+        if (t->_table == nullptr || idx >= t->_table_size ||
+            __atomic_load_n(&t->_table[idx].ready, __ATOMIC_ACQUIRE) != 1) {
+            return false;
+        }
+        *age = t->_table[idx].age;
+        *admission_epoch = t->_table[idx].admission_epoch;
+        return true;
+    }
 };
+
+TEST(LivenessTrackerSessionTest, ResetSessionClearsOnlyRecordingGates) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/true, /*generations=*/true);
+    tracker->resetSession();
+    EXPECT_FALSE(LivenessTrackerTestAccessor::enabledForTest(tracker));
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+}
+
+// cleanup_table() calls VM::jni(), so install a fake JavaVM.
+static JNIEnv_ g_cleanup_table_mock_jni_env{};
+
+static jint JNICALL cleanupTableMockGetEnv(JavaVM *, void **penv, jint) {
+    *penv = &g_cleanup_table_mock_jni_env;
+    return 0; // JNI_OK
+}
+
+// Empty table, so cleanup_table() makes no JNI calls beyond VM::jni().
+class CleanupTableAccountEpochTest : public ::testing::Test {
+protected:
+    JNIInvokeInterface_ vm_tbl{};
+    JavaVM_ mock_vm{};
+    JavaVM *orig_vm = nullptr;
+    int saved_table_size = 0;
+    int saved_table_max_cap = 0;
+
+    void SetUp() override {
+        installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
+        orig_vm = VMTestAccessor::getVm();
+        vm_tbl = JNIInvokeInterface_{};
+        vm_tbl.GetEnv = &cleanupTableMockGetEnv;
+        mock_vm.functions = &vm_tbl;
+        VMTestAccessor::setVm(&mock_vm);
+
+        LivenessTracker::instance()->klassPopulationResetForTest();
+        LivenessTracker::instance()->setGcGenerationsForTest(true);
+        LivenessTracker::instance()->classMapGenerationSetForTest(
+            Profiler::instance()->classMap()->generation());
+        saved_table_size = LivenessTrackerTestAccessor::tableSizeFieldForTest(
+            LivenessTracker::instance());
+        saved_table_max_cap = LivenessTrackerTestAccessor::tableMaxCapForTest(
+            LivenessTracker::instance());
+        LivenessTrackerTestAccessor::setTableCapsForTest(
+            LivenessTracker::instance(), /*table_size=*/0, /*table_max_cap=*/0);
+    }
+
+    void TearDown() override {
+        VMTestAccessor::setVm(orig_vm);
+        LivenessTrackerTestAccessor::setGcEpochForTest(LivenessTracker::instance(), 0);
+        LivenessTrackerTestAccessor::setLastGcEpochForTest(LivenessTracker::instance(), 0);
+        LivenessTracker::instance()->klassPopulationResetForTest();
+        LivenessTracker::instance()->setGcGenerationsForTest(false);
+        LivenessTrackerTestAccessor::setTableCapsForTest(
+            LivenessTracker::instance(), saved_table_size, saved_table_max_cap);
+        restoreDefaultSignalHandlers();
+    }
+};
+
+TEST_F(CleanupTableAccountEpochTest, AccountEpochFalseSkipsEpochClaim) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 5);
+    ASSERT_EQ(0u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false, /*account_epoch=*/false);
+    EXPECT_EQ(0u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker))
+        << "account_epoch=false must not claim the GC epoch";
+
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false, /*account_epoch=*/false);
+    EXPECT_EQ(0u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+}
+
+TEST_F(CleanupTableAccountEpochTest, AccountEpochTrueClaimsEpoch) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 5);
+    ASSERT_EQ(0u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false, /*account_epoch=*/true);
+    EXPECT_EQ(5u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker))
+        << "account_epoch=true must claim the newer GC epoch";
+}
+
+TEST_F(CleanupTableAccountEpochTest, EpochOwnerStillClaimsAfterReaperSweep) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 7);
+
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false, /*account_epoch=*/false);
+    ASSERT_EQ(0u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false, /*account_epoch=*/true);
+    EXPECT_EQ(7u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+}
+
+TEST_F(CleanupTableAccountEpochTest, EpochOwnerFoldsKnownKlassOnEmptyTable) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    int slot;
+    bool created;
+    tracker->klassPopulationRecordForTest(42, /*count=*/9, /*epoch=*/4,
+                                           &slot, &created);
+    ASSERT_TRUE(created);
+    LivenessTrackerTestAccessor::setLastGcEpochForTest(tracker, 4);
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 5);
+
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false,
+        /*account_epoch=*/true);
+
+    EXPECT_EQ(5u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+    KlassPopulationEntry entry{};
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(42, &entry));
+    EXPECT_EQ(5u, entry.last_updated_epoch);
+    ASSERT_EQ(2, entry.ring_fill);
+    u8 newest = (u8)((entry.ring_head + 30 - 1) % 30);
+    EXPECT_EQ(0u, entry.count_ring[newest]);
+}
 
 class SecondsToOOMTest : public ::testing::Test {
 protected:
@@ -1126,7 +1337,7 @@ protected:
 };
 
 // Fewer than KLASS_POPULATION_MIN_FILL_FOR_TREND (10) heap-floor samples -
-// same "not enough history yet" gate ringThirdsStats() applies to every
+// same "not enough history yet" gate ringWindowStats() applies to every
 // other trend check in this class.
 TEST_F(SecondsToOOMTest, NotEnoughSamplesReturnsNegative) {
     LivenessTracker *tracker = LivenessTracker::instance();
@@ -1205,6 +1416,39 @@ TEST_F(SecondsToOOMTest, RisingFloorProjectsExpectedSeconds) {
     seedRisingFloor(tracker);
 
     EXPECT_NEAR(tracker->secondsToOOM(), 9.0, 1e-6);
+}
+
+// Dip-then-recover: the recent half rises but the full-window delta is 0, so
+// there must be no projection (and no +inf). No container limit is set.
+TEST_F(SecondsToOOMTest, DipThenRecoverFloorReturnsNegativeNotInf) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    // Symmetric V: the fitted slope is exactly 0.
+    static const long shape[] = {1900, 1800, 1700, 1600, 1500,
+                                 1500, 1600, 1700, 1800, 1900};
+    for (int i = 0; i < 10; i++) {
+        tracker->heapFloorRecordForTest((u64)shape[i] * MiB, (u64)i * SEC_NS);
+    }
+    double secs = tracker->secondsToOOM();
+    EXPECT_LT(secs, 0.0)
+        << "a dip-then-recover window must not offer a projection";
+    EXPECT_TRUE(secs > -1e18 && secs < 1e18)
+        << "the projection must be finite, never +inf";
+}
+
+// Odd-length window: fill/2 rounds down, so the recent half excludes the
+// median sample; a steady rise must still project.
+TEST_F(SecondsToOOMTest, OddLengthRisingWindowStillProjects) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(3000 * MiB));
+    // 1000..2000MiB, 100MiB/s.
+    for (int i = 0; i < 11; i++) {
+        tracker->heapFloorRecordForTest(1000 * MiB + (u64)i * 100 * MiB,
+                                         (u64)i * SEC_NS);
+    }
+    double secs = tracker->secondsToOOM();
+    EXPECT_GT(secs, 0.0);
+    EXPECT_NEAR(secs, 9.0, 1.5);
 }
 
 // The floor's own recent-third mean has already reached the max heap size -
@@ -1322,6 +1566,87 @@ TEST_F(LeakTagPoolTest, DoubleReleaseWithFreeRoomListsTagOnce) {
     jlong first = tracker->acquireLeakTagForTest();
     jlong second = tracker->acquireLeakTagForTest();
     EXPECT_NE(first, second) << "the same tag was handed out twice";
+}
+
+// Ownership-period stamp (leakTagIncarnation): (tag, stamp) is the identity of
+// a leak-tagged object, because the tag itself is recycled after its object
+// dies. The stamp must change on every ownership transition and on nothing
+// else.
+TEST_F(LeakTagPoolTest, IncarnationChangesOnAcquireAndRelease) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    // LIFO: after the reset the next acquire pops this slot.
+    jlong tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(tag, base);
+    u32 owned = tracker->leakTagIncarnation(tag);
+    tracker->releaseLeakTagForTest(tag);
+    u32 released = tracker->leakTagIncarnation(tag);
+    EXPECT_NE(owned, released) << "release must start a new ownership period";
+    jlong re_tag = tracker->acquireLeakTagForTest();
+    ASSERT_EQ(tag, re_tag) << "released tag should be recycled first (LIFO)";
+    u32 reowned = tracker->leakTagIncarnation(re_tag);
+    EXPECT_NE(released, reowned) << "acquire must start a new ownership period";
+    EXPECT_NE(owned, reowned)
+        << "the tag's new owner must not share the dead owner's stamp";
+}
+
+TEST_F(LeakTagPoolTest, IncarnationUnchangedByNoOpReleases) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    int pool_size = tracker->leakTagPoolSizeForTest();
+    jlong tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(tag, base);
+    tracker->releaseLeakTagForTest(tag);
+    u32 after_release = tracker->leakTagIncarnation(tag);
+    // Rejected repeated release: no ownership transition.
+    tracker->releaseLeakTagForTest(tag);
+    EXPECT_EQ(after_release, tracker->leakTagIncarnation(tag));
+
+    // Out-of-range releases touch no slot.
+    jlong held = tracker->acquireLeakTagForTest();
+    ASSERT_GE(held, base);
+    u32 held_stamp = tracker->leakTagIncarnation(held);
+    u32 first_stamp = tracker->leakTagIncarnation(base);
+    u32 last_stamp = tracker->leakTagIncarnation(base + pool_size - 1);
+    tracker->releaseLeakTagForTest(base - 1);
+    tracker->releaseLeakTagForTest(base + pool_size);
+    tracker->releaseLeakTagForTest(0);
+    tracker->releaseLeakTagForTest(-1);
+    EXPECT_EQ(held_stamp, tracker->leakTagIncarnation(held));
+    EXPECT_EQ(first_stamp, tracker->leakTagIncarnation(base));
+    EXPECT_EQ(last_stamp, tracker->leakTagIncarnation(base + pool_size - 1));
+}
+
+TEST_F(LeakTagPoolTest, IncarnationIsZeroOutOfRange) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    int pool_size = tracker->leakTagPoolSizeForTest();
+    // Bump an in-range stamp first, so out-of-range reads cannot pass by
+    // accidentally aliasing a still-zero slot.
+    jlong tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(tag, base);
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(0));
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(1));
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(-1));
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(base - 1));
+    EXPECT_EQ(0u, tracker->leakTagIncarnation(base + pool_size));
+}
+
+TEST_F(LeakTagPoolTest, ResetForTestBumpsOnlyOwnedSlots) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    jlong owned = tracker->acquireLeakTagForTest();
+    jlong freed = tracker->acquireLeakTagForTest();
+    ASSERT_GE(owned, base);
+    ASSERT_GE(freed, base);
+    tracker->releaseLeakTagForTest(freed);
+    u32 owned_before = tracker->leakTagIncarnation(owned);
+    u32 freed_before = tracker->leakTagIncarnation(freed);
+    tracker->leakTagPoolResetForTest();
+    EXPECT_NE(owned_before, tracker->leakTagIncarnation(owned))
+        << "freeing an owned slot is an ownership transition";
+    EXPECT_EQ(freed_before, tracker->leakTagIncarnation(freed))
+        << "an already-free slot keeps its stamp";
 }
 
 // ---------------------------------------------------------------------------
@@ -1662,6 +1987,55 @@ TEST_F(AdmissionBoostTest, ZeroCandidatePollClearsWatchedSet) {
     tracker->noteSelectedCandidates(nullptr, 0);
     EXPECT_EQ(tracker->watchedTidCountForTest(), 0);
     EXPECT_FALSE(tracker->admitForTrackingForTest(77));
+}
+
+// At the table cap the urgency boost stops admitting everything; watched tids
+// are still admitted.
+TEST_F(AdmissionBoostTest, VolumeBackstopCapsUrgencyAdmission) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setUrgentTracking(true);
+    int saved_table_size = LivenessTrackerTestAccessor::tableSizeFieldForTest(tracker);
+    int saved_table_max_cap = LivenessTrackerTestAccessor::tableMaxCapForTest(tracker);
+
+    // max_cap == 0 disables the backstop.
+    LivenessTrackerTestAccessor::setTableCapsForTest(tracker, /*table_size=*/999,
+                                                       /*table_max_cap=*/0);
+    long long admits = Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS);
+    long long backed_off = Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF);
+    EXPECT_TRUE(tracker->admitForTrackingForTest(1));
+    EXPECT_EQ(admits + 1, Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS));
+    EXPECT_EQ(backed_off, Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF));
+
+    // Below the cap.
+    LivenessTrackerTestAccessor::setTableCapsForTest(tracker, /*table_size=*/5,
+                                                       /*table_max_cap=*/10);
+    admits = Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS);
+    EXPECT_TRUE(tracker->admitForTrackingForTest(2));
+    EXPECT_EQ(admits + 1, Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS));
+    EXPECT_EQ(backed_off, Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF));
+    admits = Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS);
+
+    // At the cap: falls back to the ratio gate, which is 0 here.
+    LivenessTrackerTestAccessor::setTableCapsForTest(tracker, /*table_size=*/10,
+                                                       /*table_max_cap=*/10);
+    EXPECT_FALSE(tracker->admitForTrackingForTest(3));
+    EXPECT_EQ(admits, Counters::getCounter(LIVENESS_URGENT_BOOST_ADMITS));
+    EXPECT_EQ(backed_off + 1, Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF));
+
+    // Above the cap.
+    LivenessTrackerTestAccessor::setTableCapsForTest(tracker, /*table_size=*/11,
+                                                       /*table_max_cap=*/10);
+    EXPECT_FALSE(tracker->admitForTrackingForTest(4));
+    EXPECT_EQ(backed_off + 2, Counters::getCounter(LIVENESS_URGENT_BOOST_BACKED_OFF));
+
+    // A watched tid is still admitted.
+    KlassCandidate kc;
+    fillCandidate(&kc, 5);
+    tracker->noteSelectedCandidates(&kc, 1);
+    EXPECT_TRUE(tracker->admitForTrackingForTest(5));
+
+    LivenessTrackerTestAccessor::setTableCapsForTest(tracker, saved_table_size,
+                                                       saved_table_max_cap);
 }
 
 // ---------------------------------------------------------------------------
@@ -2183,6 +2557,44 @@ protected:
 
 u64 LivenessTrackerMockJvmTest::fake_now_ns = 0;
 
+TEST_F(LivenessTrackerMockJvmTest, SurvivorAgingStartsAtAdmissionEpoch) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    ASSERT_EQ(0u, tracker->tableSizeForTest());
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 0);
+    LivenessTrackerTestAccessor::setLastGcEpochForTest(tracker, 0);
+
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 1);
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false,
+        /*account_epoch=*/true);
+
+    jlong old_age = -1;
+    u64 old_admission = UINT64_MAX;
+    ASSERT_TRUE(LivenessTrackerTestAccessor::entryAgeAndAdmissionForTest(
+        tracker, 0, &old_age, &old_admission));
+    EXPECT_EQ(0u, old_admission);
+    EXPECT_EQ(1, old_age);
+
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 3);
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    LivenessTrackerTestAccessor::setGcEpochForTest(tracker, 5);
+    LivenessTrackerTestAccessor::callCleanupTableForTest(
+        tracker, /*forced=*/true, /*allow_resolve=*/false,
+        /*account_epoch=*/true);
+
+    jlong new_age = -1;
+    u64 new_admission = UINT64_MAX;
+    ASSERT_TRUE(LivenessTrackerTestAccessor::entryAgeAndAdmissionForTest(
+        tracker, 0, &old_age, &old_admission));
+    ASSERT_TRUE(LivenessTrackerTestAccessor::entryAgeAndAdmissionForTest(
+        tracker, 1, &new_age, &new_admission));
+    EXPECT_EQ(5, old_age);
+    EXPECT_EQ(3u, new_admission);
+    EXPECT_EQ(2, new_age) << "entry must not age for epochs before admission";
+    EXPECT_EQ(5u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+}
+
 // Each sweep resolves the class of at most RESOLVE_BUDGET_PER_SWEEP (256,
 // livenessTracker.cpp) survivors. Survivors keep their table order across
 // compaction, so the budget must go to entries that have no cached class id
@@ -2279,6 +2691,102 @@ TEST_F(LivenessTrackerMockJvmTest, SharedObjectLeakTagHasSingleOwner) {
     sweep();
     EXPECT_EQ(pool - 1, tracker->leakTagFreeCountForTest())
         << "the object's leak tag must go back to the pool exactly once";
+}
+
+// start() rebuilds the leak-tag pool from the surviving tracking table. A tag
+// whose owner is unchanged (a table row still holds it) must keep its stamp, so
+// chains cached for that object stay attributable; a tag whose in-use bit flips
+// (held without a row owning it) starts a new ownership period; a tag that
+// stays free keeps its stamp.
+TEST_F(LivenessTrackerMockJvmTest, StartRebuildBumpsStampOnlyWhenOwnershipFlips) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    u32 retained_id = classIdOf(kRetainedSignature);
+    ASSERT_NE(0u, retained_id);
+
+    constexpr jint kTid = 7;
+    jobject obj = trackNew(&jvm.retained_class, kTid);
+    jobject reclaimed_obj = trackNew(&jvm.retained_class, kTid);
+    // Resolves the rows' cached class id, which tagLeakInstances() matches on.
+    sweep();
+    KlassCandidate candidate{};
+    candidate.klass_id = retained_id;
+    candidate.qualifying_tids[0] = kTid;
+    candidate.qualifying_tid_count = 1;
+    ASSERT_EQ(2, tracker->tagLeakInstances(&jvm.jvmti, &candidate, 1));
+    jlong row_tag = 0;
+    mockGetTag(&jvm.jvmti, obj, &row_tag);
+    ASSERT_GE(row_tag, tracker->leakTagBaseForTest());
+
+    // In use, but no table row owns it: the rebuild frees it.
+    jlong orphan_tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(orphan_tag, tracker->leakTagBaseForTest());
+    // Free before and after the rebuild.
+    jlong free_tag = tracker->acquireLeakTagForTest();
+    ASSERT_GE(free_tag, tracker->leakTagBaseForTest());
+    tracker->releaseLeakTagForTest(free_tag);
+
+    // A row still holds it, but the pool lists it free: the rebuild reclaims it.
+    // Released last, so no acquire above pops it back off the LIFO free list.
+    jlong reclaimed_tag = 0;
+    mockGetTag(&jvm.jvmti, reclaimed_obj, &reclaimed_tag);
+    ASSERT_GE(reclaimed_tag, tracker->leakTagBaseForTest());
+    ASSERT_NE(row_tag, reclaimed_tag);
+    tracker->releaseLeakTagForTest(reclaimed_tag);
+    ASSERT_FALSE(tracker->leakTagInUseForTest(reclaimed_tag));
+
+    u32 row_stamp = tracker->leakTagIncarnation(row_tag);
+    u32 reclaimed_stamp = tracker->leakTagIncarnation(reclaimed_tag);
+    u32 orphan_stamp = tracker->leakTagIncarnation(orphan_tag);
+    u32 free_stamp = tracker->leakTagIncarnation(free_tag);
+
+    Arguments args;
+    ASSERT_FALSE(args.parse("generations=true"));
+    ASSERT_FALSE(tracker->start(args));
+
+    EXPECT_TRUE(tracker->leakTagInUseForTest(row_tag));
+    EXPECT_EQ(row_stamp, tracker->leakTagIncarnation(row_tag))
+        << "a tag whose owning row survived the rebuild must keep its stamp";
+    EXPECT_TRUE(tracker->leakTagInUseForTest(reclaimed_tag));
+    EXPECT_NE(reclaimed_stamp, tracker->leakTagIncarnation(reclaimed_tag))
+        << "reclaiming a free-listed tag for its row is an ownership transition";
+    EXPECT_FALSE(tracker->leakTagInUseForTest(orphan_tag));
+    EXPECT_NE(orphan_stamp, tracker->leakTagIncarnation(orphan_tag))
+        << "freeing an in-use tag in the rebuild is an ownership transition";
+    EXPECT_FALSE(tracker->leakTagInUseForTest(free_tag));
+    EXPECT_EQ(free_stamp, tracker->leakTagIncarnation(free_tag))
+        << "a tag that stays free keeps its stamp";
+}
+
+// classMapGenerationSetForTest()'s whole-table cached_klass_id clear: every row
+// below _table_size loses its cached id (those ids resolved against the old
+// class-map namespace and could alias an unrelated class), and the row at
+// _table_size - a canary inside the allocated table but outside the valid
+// rows - keeps its value, pinning the loop bound (<, not <=).
+TEST_F(LivenessTrackerMockJvmTest, GenerationChangeClearsCachedKlassIdsWholeTable) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    trackNew(&jvm.retained_class, /*tid=*/7);
+    trackNew(&jvm.retained_class, /*tid=*/7);
+    sweep();
+    ASSERT_EQ(2u, tracker->tableSizeForTest());
+    ASSERT_NE(0u, cachedKlassIdAt(0));
+    ASSERT_NE(0u, cachedKlassIdAt(1));
+
+    constexpr u32 kCanaryId = 0xC0FFEE;
+    // Row 2 is one past the valid rows but inside the allocated table (the
+    // canary write fails the test if the allocation is exactly 2 rows).
+    ASSERT_TRUE(LivenessTrackerTestAccessor::setCachedKlassIdForTest(
+        tracker, /*idx=*/2, kCanaryId));
+
+    // Two calls make the generation change deterministic even if a previous
+    // test already adopted generation + 1: first aligns, second changes.
+    u64 generation = Profiler::instance()->classMap()->generation();
+    tracker->classMapGenerationSetForTest(generation);
+    tracker->classMapGenerationSetForTest(generation + 1);
+
+    EXPECT_EQ(0u, cachedKlassIdAt(0)) << "row 0's cached id must clear on a generation change";
+    EXPECT_EQ(0u, cachedKlassIdAt(1)) << "row 1's cached id must clear on a generation change";
+    EXPECT_EQ(kCanaryId, cachedKlassIdAt(2))
+        << "the clear loop must stop at _table_size, not write the row past it";
 }
 
 // Profiler::start() resets the class map, restarting its ids at 1, while the

@@ -91,7 +91,9 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
       if (ctx->frontier->insert(frontier_tag, /*parent_tag=*/0, referrer_klass,
                                 /*depth=*/0, FrontierEntryState::FRONTIER,
                                 translated_root_kind, class_tag)) {
-        ctx->frontier->setLeakTag(frontier_tag, leak_tag);
+        // Capture the current ownership period, as in heapReferenceCallback()'s interception.
+        ctx->frontier->setLeakTag(frontier_tag, leak_tag,
+                                  LivenessTracker::instance()->leakTagIncarnation(leak_tag));
         *tag_ptr = frontier_tag;
         ctx->edges_admitted++;
         ctx->tracker->trackLeakAccumulation(ctx->frontier, class_tag, 0,
@@ -105,7 +107,10 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
         }
         if (ctx->tracker->_candidate_count > 0) {
           u32 klass_id = ctx->tracker->classTags()->resolve(class_tag);
-          ctx->tracker->recordDiscoveredInstance(klass_id, frontier_tag, true);
+          ctx->tracker->recordDiscoveredInstance(
+              klass_id, frontier_tag, true,
+              CacheInvalidationMode::DEFERRED, ctx->resolved_chain_tags,
+              ctx->resolved_chain_tag_count);
         }
         // Queue for expandFrontier() - the plain backlog lane, mirroring admitObject()'s
         // non-priority push tail.
@@ -118,9 +123,14 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
       }
       break;
     }
-    // Prefer the more durable root when an object is rediscovered.
-    ctx->tracker->maybeUpgradeRootAttachedRootKind(ctx->frontier, *tag_ptr,
-                                                   translated_root_kind);
+    // Prefer the more durable root when an object is rediscovered and invalidate a cached chain so
+    // its root attribution is rebuilt.
+    if (ctx->tracker->maybeUpgradeRootAttachedRootKind(
+            ctx->frontier, *tag_ptr, translated_root_kind)) {
+      ctx->tracker->deferResolvedChainInvalidation(
+          *tag_ptr, ctx->resolved_chain_tags,
+          ctx->resolved_chain_tag_count);
+    }
     break;
   default:
     break;
@@ -187,8 +197,11 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // comment) - so even when it runs this pass, the expandFrontier() call below is still needed to
   // make any further progress.
   if (run_root_enum) {
+    jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
     ReferenceChainPassContext ctx;
     ctx.tracker = this;
+    ctx.resolved_chain_tags = resolved_chain_tags;
+    ctx.resolved_chain_tag_count = snapshotResolvedChainTags(resolved_chain_tags);
     ctx.frontier = _frontier;
     ctx.hop_cap = _hop_cap;
     ctx.budget = root_enum_budget;
@@ -369,7 +382,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
                           ? OS::nanotime() + (u64)_effective_pause_target_ms * 1000000ULL
                           : 0;
   bool rotation_frontier_cap_hit = false;
-  // Prong 2 static-anchor descend walks run FIRST inside rotation's slice: they are the
+  // Static-anchor descend walks run FIRST inside rotation's slice: they are the
   // highest-value rotation work (bounded, targeted, and the only rotation tier that can reach a
   // collection-shaped static holder's internals in one pass), and their edges draw down the same
   // rotation budget the queue-tier batch below uses - a pass whose anchor walks admit the holder's
@@ -387,7 +400,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     rotation_edges_admitted += static_anchor_edges_admitted;
     rotation_budget -= static_anchor_edges_admitted;
     *truncated = *truncated || static_anchor_truncated;
-    // B' requeue: resolved-but-unwalked anchors that came from this pass's FIFO drain go back to
+    // Requeue: resolved-but-unwalked anchors that came from this pass's FIFO drain go back to
     // the FIFO front, order-preserving, so a pass whose budget died mid-batch walks them first next
     // pass instead of waiting for the next sweep lap's re-push.
     if (!static_anchor_unwalked.empty() &&
@@ -429,6 +442,9 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // last one that ran.
   *truncated = *truncated || rotation_truncated;
   *frontier_cap_hit = *frontier_cap_hit || rotation_frontier_cap_hit;
+
+  // Deferred chain invalidations are applied by the cache readers,
+  // pollWatchedTargets() and drainPendingChainEvents().
 }
 
 // Incremental resumption across passes.
@@ -455,6 +471,7 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
          "GetObjectsWithTags/FollowReferences are JVMTI Heap-category calls "
          "and must not be made from GarbageCollectionStart/Finish");
 
+  jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
   ReferenceChainPassContext ctx;
   ctx.tracker = this;
   ctx.frontier = _frontier;
@@ -463,6 +480,8 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
   ctx.edges_admitted = 0;
   ctx.truncated = false;
   ctx.frontier_cap_hit = false;
+  ctx.resolved_chain_tags = resolved_chain_tags;
+  ctx.resolved_chain_tag_count = snapshotResolvedChainTags(resolved_chain_tags);
 
   // ARRAY-HOLDER BATCHING: expand a whole batch of boundary objects with ONE
   // FollowReferences(initial_object=holder_array) call per BFS level, instead of one
@@ -855,6 +874,7 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
     return;
   }
 
+  jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
   ReferenceChainPassContext ctx;
   ctx.tracker = this;
   ctx.frontier = _frontier;
@@ -863,6 +883,8 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   ctx.edges_admitted = 0;
   ctx.truncated = false;
   ctx.frontier_cap_hit = false;
+  ctx.resolved_chain_tags = resolved_chain_tags;
+  ctx.resolved_chain_tag_count = snapshotResolvedChainTags(resolved_chain_tags);
   // Empty (not null) batch_tags forces heapReferenceCallback() to stop at exactly one hop past each
   // class - see this method's own header comment for why a deeper descent here would reintroduce
   // the whole-graph FollowReferences cost the array-holder batching design otherwise avoids.
@@ -1214,8 +1236,6 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
 
   return err == JVMTI_ERROR_NONE;
 }
-
-// Pause-time-SLO feedback loop (see this method's declaration in
 
 void ReferenceChainTracker::updatePacing(u64 pass_wall_ns) {
   // Truncating to whole milliseconds matches every other PidController usage in this codebase
