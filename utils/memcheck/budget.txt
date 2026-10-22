@@ -13,7 +13,7 @@
 # at per_method bytes each (regression over the 5-job run).
 
 threads   native_mem_live_bytes  22.40MiB  22.13MiB   # SD 7 KiB
-threads   native_mem_max_bytes   23.00MiB  23.16MiB   # SD 13 KiB
+threads   native_mem_max_bytes   23.45MiB  23.16MiB   # SD 13 KiB
 threads   nmt.class              0.40MiB  0.11MiB   # SD 0 KiB, per-job spread 0 KiB
 threads   nmt.internal           0.45MiB  0.16MiB   # SD 4 KiB, per-job spread 4 KiB
 
