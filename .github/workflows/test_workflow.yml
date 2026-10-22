@@ -139,7 +139,8 @@ jobs:
           # GDB watchdog for debug config: dumps all native threads if the JVM hangs
           # inside JVMTI (e.g. the IBM SDK 8 slow-suite deadlock) before the 180-min
           # job timeout fires, so a thread dump lands in the test-reports artifact.
-          # prepare_reports.sh copies build/logs/gdb-watchdog.log on failure.
+          # prepare_reports.sh copies build/logs/gdb-watchdog.log, and the test
+          # reports are uploaded on failure or, if the dump exists, on timeout.
           if [[ "${{ matrix.config }}" == "debug" ]]; then
             mkdir -p build/logs
             (
@@ -147,7 +148,12 @@ jobs:
               echo "::warning::GDB watchdog triggered after 20 minutes"
               for pid in $(pgrep -f 'java.*ddprof-test'); do
                 echo "=== Thread dump for PID $pid ===" >> build/logs/gdb-watchdog.log
-                gdb -batch -ex 'thread apply all bt full' -p "$pid" >> build/logs/gdb-watchdog.log 2>&1 || true
+                # Java-level stacks and lock owners: HotSpot prints them to stdout,
+                # J9 writes a javacore file that prepare_reports.sh collects.
+                kill -QUIT "$pid" 2>/dev/null || true
+                # sudo: Ubuntu's yama ptrace_scope=1 only lets a process attach to its
+                # own descendants, and the JVM is not one of the watchdog's.
+                sudo gdb -batch -ex 'thread apply all bt full' -p "$pid" >> build/logs/gdb-watchdog.log 2>&1 || true
               done
             ) &
             GDB_WATCHDOG_PID=$!
@@ -233,9 +239,11 @@ jobs:
         with:
           name: (unwinding-reports) unwinding-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: unwinding-reports
+      # A hang that runs into the job timeout ends the job as cancelled, not
+      # failed; upload then too if the gdb watchdog left a thread dump.
       - name: Upload test reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        if: failure() || (cancelled() && hashFiles('build/logs/gdb-watchdog.log') != '')
         with:
           name: (test-reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: test-reports
@@ -521,7 +529,12 @@ jobs:
               echo "::warning::GDB watchdog triggered after 25 minutes"
               for pid in $(pgrep -f 'java.*ddprof-test'); do
                 echo "=== Thread dump for PID $pid ===" >> build/logs/gdb-watchdog.log
-                gdb -batch -ex 'thread apply all bt full' -p "$pid" >> build/logs/gdb-watchdog.log 2>&1 || true
+                # Java-level stacks and lock owners: HotSpot prints them to stdout,
+                # J9 writes a javacore file that prepare_reports.sh collects.
+                kill -QUIT "$pid" 2>/dev/null || true
+                # sudo: Ubuntu's yama ptrace_scope=1 only lets a process attach to its
+                # own descendants, and the JVM is not one of the watchdog's.
+                sudo gdb -batch -ex 'thread apply all bt full' -p "$pid" >> build/logs/gdb-watchdog.log 2>&1 || true
               done
             ) &
             GDB_WATCHDOG_PID=$!
@@ -607,9 +620,11 @@ jobs:
         with:
           name: (unwinding-reports) unwinding-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: unwinding-reports
+      # A hang that runs into the job timeout ends the job as cancelled, not
+      # failed; upload then too if the gdb watchdog left a thread dump.
       - name: Upload test reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        if: failure() || (cancelled() && hashFiles('build/logs/gdb-watchdog.log') != '')
         with:
           name: (test-reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: test-reports

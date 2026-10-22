@@ -64,13 +64,52 @@ TEST(KlassTraceIdTest, IgnoresJfrTagBits) {
     EXPECT_EQ(9 * 8, k.find());
 }
 
-TEST(KlassTraceIdTest, ToleratesIdsTakenByOtherThreadsAndAnyOrder) {
+// Other threads may create classes between two probes, taking IDs from the
+// same counter: some steps are larger than one.
+TEST(KlassTraceIdTest, ToleratesIdsTakenByOtherThreads) {
     FakeKlasses k;
-    const uint64_t ids[N] = {5000, 5007, 5003, 5040, 5001, 5002};
+    const uint64_t ids[N] = {5000, 5001, 5009, 5010, 5040, 5041};
     for (int i = 0; i < N; i++) {
         k.words[i][9] = ids[i] << 16;
     }
     EXPECT_EQ(9 * 8, k.find());
+}
+
+// The probes are passed in creation order, so their IDs must increase.
+TEST(KlassTraceIdTest, RejectsIdsOutOfCreationOrder) {
+    FakeKlasses k;
+    const uint64_t ids[N] = {5000, 5001, 5003, 5002, 5004, 5005};
+    for (int i = 0; i < N; i++) {
+        k.words[i][9] = ids[i] << 16;
+    }
+    EXPECT_EQ(-1, k.find());
+}
+
+// Values that increase within the window but hardly ever by exactly one are
+// not a counter's.
+TEST(KlassTraceIdTest, RejectsIdsThatRarelyStepByOne) {
+    FakeKlasses k;
+    k.setTraceIds(9, 5000, 10);
+    EXPECT_EQ(-1, k.find());
+    const uint64_t ids[N] = {5000, 5001, 5009, 5017, 5025, 5026};  // two of five steps are +1
+    for (int i = 0; i < N; i++) {
+        k.words[i][9] = ids[i] << 16;
+    }
+    EXPECT_EQ(-1, k.find());
+}
+
+// What aarch64 17u held in fresh probes, from a CI log: at offset 24 pointers
+// whose upper bits were distinct and within the window, next to the real
+// trace IDs at offset 168. Both used to qualify, so calibration refused.
+TEST(KlassTraceIdTest, RejectsPointersThatLookLikeCloseIds) {
+    FakeKlasses k;
+    const uint64_t at24[N] = {0x0000f5e11aef6610ULL, 0x0000f5e11afb1720ULL, 0x0000f5e11ad7ba20ULL,
+                              0x0000f5e11b11a5a0ULL, 0x0000f5e11b13b540ULL, 0x0000f5e11ae369f0ULL};
+    for (int i = 0; i < N; i++) {
+        k.words[i][3] = at24[i];
+    }
+    k.setTraceIds(21, 0x4173);
+    EXPECT_EQ(168, k.find());
 }
 
 TEST(KlassTraceIdTest, RejectsIdsTooFarApart) {

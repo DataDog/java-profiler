@@ -28,8 +28,8 @@
  * calibrate() makes the JVM create a few array klasses back to back, of a
  * class it defines in a new class loader so that they cannot have existed
  * before, and accepts the one 8-byte-aligned offset within sizeof(Klass) at
- * which all of them hold distinct IDs no further apart than consecutive
- * creation allows.
+ * which their IDs increase in creation order, mostly by one, no further
+ * apart than consecutive creation allows.
  * Builds without JFR, or a layout where no single offset qualifies, leave the
  * offset unknown, and fjmethodid=lazy does not run.
  */
@@ -40,8 +40,11 @@ public:
   // Array dimensions created by one calibration attempt: one probe klass per
   // dimension.
   static const int PROBE_COUNT = 6;
-  // Attempts each calibrate() call makes, each with a new class loader.
-  static const int MAX_ATTEMPTS = 4;
+  // Attempts each calibrate() call makes, each with a new class loader. The
+  // first attempt in a JVM regularly sees ID steps of 2 to 4 (observed on
+  // 17u, 21u and 25), which plausibleIds() rejects; later attempts step by
+  // one unless other threads create classes meanwhile.
+  static const int MAX_ATTEMPTS = 6;
   // How many trace IDs other threads may consume while the probes are
   // created, i.e. how far apart beyond PROBE_COUNT - 1 the probes' IDs may be.
   static const uint64_t ID_SLACK = 64;
@@ -49,8 +52,8 @@ public:
   /**
    * Returns the single 8-byte-aligned offset in [8, klass_size) at which the
    * `count` klasses all hold plausible, freshly assigned trace IDs, or -1 if
-   * there is none or more than one. The klasses must be readable for
-   * klass_size bytes.
+   * there is none or more than one. The klasses must be in the order they
+   * were created and readable for klass_size bytes.
    */
   static int findOffset(const void* const* klasses, int count, size_t klass_size);
 
