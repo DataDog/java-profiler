@@ -326,31 +326,48 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
 
     @Test
     void preExistingThreadObjectWaitUsesNativeMonitorCallbacks() throws Exception {
-        assertPreExistingMonitorCallback("profiler-preexisting-monitor-wait");
+        assertPreExistingMonitorCallback("profiler-preexisting-monitor-wait", "WAITING");
     }
 
     @Test
     void preExistingThreadContentionUsesNativeMonitorCallbacks() throws Exception {
-        assertPreExistingMonitorCallback("profiler-preexisting-monitor-contention");
+        assertPreExistingMonitorCallback("profiler-preexisting-monitor-contention", "CONTENDED");
     }
 
     /** Verifies that a pre-JNI-load worker emits a TaskBlock through its first monitor callback. */
-    private void assertPreExistingMonitorCallback(String target) throws Exception {
-        AtomicReference<String> resultLine = new AtomicReference<>();
-        LaunchResult result = launch(target, Collections.emptyList(), "", line -> {
-            if (line.startsWith("[preexisting-monitor-events]")) {
-                resultLine.set(line);
-                return LineConsumerResult.STOP;
-            }
-            return LineConsumerResult.CONTINUE;
-        }, null);
+    private void assertPreExistingMonitorCallback(String target, String expectedState) throws Exception {
+        Path recording = Files.createTempFile("preexisting-monitor-callback-", ".jfr");
+        try {
+            AtomicReference<String> resultLine = new AtomicReference<>();
+            LaunchResult result = launch(target, Collections.emptyList(),
+                    recording.toAbsolutePath().toString(), line -> {
+                if (line.startsWith("[preexisting-monitor] ")) {
+                    resultLine.set(line);
+                    return LineConsumerResult.STOP;
+                }
+                return LineConsumerResult.CONTINUE;
+            }, null);
 
-        assertTrue(result.inTime);
-        assertEquals(0, result.exitCode);
-        assertNotNull(resultLine.get(), "Pre-existing monitor callback did not report a result");
-        long emitted = Long.parseLong(resultLine.get().substring(
-                "[preexisting-monitor-events] ".length()));
-        assertTrue(emitted > 0, "Pre-existing thread emitted no native monitor TaskBlock event");
+            assertTrue(result.inTime);
+            assertEquals(0, result.exitCode);
+            assertNotNull(resultLine.get(), "Pre-existing monitor callback did not report its identity");
+            String[] identity = resultLine.get().substring("[preexisting-monitor] ".length()).split(" ");
+            assertEquals(2, identity.length);
+            long threadId = Long.parseLong(identity[0]);
+            long blocker = Long.parseLong(identity[1]);
+            boolean found = false;
+            for (JfrEvent event : JfrEvents.load(recording, "datadog.TaskBlock")) {
+                if (event.getLong("blocker", Long.MIN_VALUE) == blocker) {
+                    assertEquals(Long.valueOf(threadId), event.getThreadJavaId("eventThread"));
+                    assertEquals("preexisting-monitor-callback", event.getThreadName("eventThread"));
+                    assertEquals(expectedState, event.getString("observedBlockingState"));
+                    found = true;
+                }
+            }
+            assertTrue(found, "No TaskBlock matched the pre-existing worker's monitor");
+        } finally {
+            Files.deleteIfExists(recording);
+        }
     }
 
     @Test

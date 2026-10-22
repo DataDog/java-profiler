@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -255,6 +256,7 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     }
   }
 
+  /** Verifies virtual-thread suppression while preserving platform-thread IDs and names. */
   @Test
   public void virtualMonitorCallbacksDoNotEmitCarrierTaskBlocks() throws Exception {
     Method startVirtualThread;
@@ -296,11 +298,24 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     }
     assertCompleted(contender, failure);
 
+    Object platformWaitMonitor = new Object();
+    AtomicReference<Throwable> platformFailure = new AtomicReference<>();
+    Thread platformWaiter = new Thread(() -> {
+      try {
+        synchronized (platformWaitMonitor) {
+          platformWaitMonitor.wait(100);
+        }
+      } catch (Throwable t) {
+        platformFailure.set(t);
+      }
+    }, "taskblock-control-object-wait");
+    platformWaiter.start();
+    assertCompleted(platformWaiter, platformFailure);
+
     // Positive control: the same contention shape on a platform thread must be produced,
     // so this test fails when carrier suppression breaks *and* when production breaks.
     Object platformMonitor = new Object();
     CountDownLatch platformAttempting = new CountDownLatch(1);
-    AtomicReference<Throwable> platformFailure = new AtomicReference<>();
     Thread platformContender;
     synchronized (platformMonitor) {
       platformContender = new Thread(() -> {
@@ -321,10 +336,12 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     stopProfiler();
 
     JfrEvents events = verifyEvents("datadog.TaskBlock");
-    assertTrue(TaskBlockAssertions.containsBlocker(events, identityHash(platformMonitor)),
-        "platform control was not produced");
-    assertFalse(TaskBlockAssertions.containsBlocker(events, identityHash(waitMonitor)));
-    assertFalse(TaskBlockAssertions.containsBlocker(events, identityHash(contentionMonitor)));
+    assertRecordedThread(events, platformWaitMonitor, platformWaiter);
+    assertRecordedThread(events, platformMonitor, platformContender);
+    assertFalse(TaskBlockAssertions.containsBlocker(events, identityHash(waitMonitor)),
+        "virtual-thread wait was recorded as a carrier TaskBlock");
+    assertFalse(TaskBlockAssertions.containsBlocker(events, identityHash(contentionMonitor)),
+        "virtual-thread contention was recorded as a carrier TaskBlock");
   }
 
   @Override
@@ -347,6 +364,20 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     TaskBlockAssertions.assertContainsStackTrace(events);
     TaskBlockAssertions.assertContainsJavaType(events, "MonitorTaskBlockTest");
     TaskBlockAssertions.assertNoCorrelationId(events);
+  }
+
+  /** Verifies every event for the monitor uses the blocking platform thread's identity. */
+  private static void assertRecordedThread(JfrEvents events, Object monitor, Thread thread) {
+    long blocker = identityHash(monitor);
+    boolean found = false;
+    for (JfrEvent event : events) {
+      if (event.getLong("blocker", Long.MIN_VALUE) == blocker) {
+        assertEquals(Long.valueOf(thread.getId()), event.getThreadJavaId("eventThread"));
+        assertEquals(thread.getName(), event.getThreadName("eventThread"));
+        found = true;
+      }
+    }
+    assertTrue(found, "platform control was not produced for " + thread.getName());
   }
 
   private static void assertCompleted(Thread thread, AtomicReference<Throwable> failure)

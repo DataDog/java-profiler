@@ -72,8 +72,8 @@ import java.util.concurrent.atomic.LongAdder;
  *     <li>profiler-java-delegation-reuse:&lt;delegated&gt; - verifies compatible Java singleton ownership reuse</li>
  *     <li>profiler-java-delegation-conflict:&lt;initial&gt;:&lt;requested&gt; - verifies conflicting Java singleton ownership requests</li>
  *     <li>profiler-java-delegation-legacy-reuse:&lt;initial&gt; - verifies the legacy no-preference overloads reuse the existing singleton</li>
- *     <li>profiler-preexisting-monitor-wait - exercises Object.wait on a thread created before profiler initialization</li>
- *     <li>profiler-preexisting-monitor-contention - exercises monitor contention on a thread created before profiler initialization</li>
+ *     <li>profiler-preexisting-monitor-wait &lt;recording path&gt; - records Object.wait on a thread created before profiler initialization</li>
+ *     <li>profiler-preexisting-monitor-contention &lt;recording path&gt; - records monitor contention on a thread created before profiler initialization</li>
  * </ul>
  */
 public class ExternalLauncher {
@@ -178,15 +178,15 @@ public class ExternalLauncher {
     }
 
     /** Runs one native monitor callback lifecycle on a platform thread created before JNI load. */
-    private static void runPreExistingMonitorCallback(boolean contention) throws Exception {
+    private static void runPreExistingMonitorCallback(boolean contention, Path recording)
+            throws Exception {
         ExecutorService executor = Executors.newSingleThreadExecutor(task -> {
             Thread thread = new Thread(task, "preexisting-monitor-callback");
             thread.setDaemon(true);
             return thread;
         });
-        executor.submit(Thread::currentThread).get(5, TimeUnit.SECONDS);
+        Thread worker = executor.submit(Thread::currentThread).get(5, TimeUnit.SECONDS);
 
-        Path recording = Files.createTempFile("preexisting-monitor-callback", ".jfr");
         JavaProfiler profiler = null;
         boolean started = false;
         try {
@@ -194,7 +194,6 @@ public class ExternalLauncher {
             profiler.execute("start,wall=1ms,filter=,wallprecheck=true,jfr,file="
                     + recording.toAbsolutePath());
             started = true;
-            long before = profiler.getDebugCounters().getOrDefault("task_block_emitted", 0L);
             Object monitor = new Object();
 
             if (contention) {
@@ -222,15 +221,16 @@ public class ExternalLauncher {
                 }).get(5, TimeUnit.SECONDS);
             }
 
-            long emitted = profiler.getDebugCounters().getOrDefault("task_block_emitted", 0L) - before;
-            System.out.println("[preexisting-monitor-events] " + emitted);
+            profiler.stop();
+            started = false;
+            System.out.println("[preexisting-monitor] " + worker.getId() + " "
+                    + Integer.toUnsignedLong(System.identityHashCode(monitor)));
         } finally {
             if (started) {
                 profiler.stop();
             }
             executor.shutdownNow();
             executor.awaitTermination(5, TimeUnit.SECONDS);
-            Files.deleteIfExists(recording);
         }
     }
 
@@ -329,9 +329,9 @@ public class ExternalLauncher {
                 System.out.println("[agent-compatible] "
                         + profiler.isMonitorWaitEventsDelegated());
             } else if (args[0].equals("profiler-preexisting-monitor-wait")) {
-                runPreExistingMonitorCallback(false);
+                runPreExistingMonitorCallback(false, Paths.get(args[1]));
             } else if (args[0].equals("profiler-preexisting-monitor-contention")) {
-                runPreExistingMonitorCallback(true);
+                runPreExistingMonitorCallback(true, Paths.get(args[1]));
             } else if (args[0].equals("profiler")) {
                 JavaProfiler instance = JavaProfiler.getInstance();
                 if (args.length == 2) {
