@@ -32,7 +32,10 @@ All under `utils/memcheck/`:
 | `phase0.sh` | Interleaved repetitions of all scenarios × arms; failures are logged, not fatal. |
 | `phase0-container.sh` | Host wrapper: builds the release lib from a clean clone of the committed HEAD inside the test image, then runs `phase0.sh`. |
 | `ci-phase0.sh` | The same run directly on a CI runner (no container, no core pinning): records the runner's shape in `runner.txt`, builds the release lib from the checkout, runs `phase0.sh`. |
-| `.gitlab/memcheck/.gitlab-ci.yml` | GitLab jobs: `memcheck-phase0:x64` (one-off noise measurement) and `memcheck:x64` (the per-PR check), both via `ci-phase0.sh` (below). |
+| `.gitlab/memcheck/.gitlab-ci.yml` | GitLab jobs: `memcheck-phase0:x64` (one-off noise measurement); the per-PR check `memcheck:x64` (runs, via `ci-phase0.sh`), `memcheck:report` (evaluator), `memcheck:comment` (PR comment), `memcheck:unit-tests`. |
+| `src/Evaluate.java` | The budget check: `budget.txt` + run records → `memcheck-report.md`, exit 0 within budget / 1 over / 2 incomplete. Format in its javadoc. |
+| `budget.txt` | The budget (first version set 2026-10-22 from the 5-job run and the first PR-job run). |
+| `test/evaluate_test.sh` | Tests for `Evaluate.java` (15 cases); run by `memcheck:unit-tests`. |
 | `analyze_phase0.py` | Host-side: `phase0-report.md` + `phase0-stats.csv` (mean/SD/CV/range per scenario × arm × metric, noise class, NMT delta vs no-profiler). |
 | `results/2026-10-08-aarch64-docker-mac/` | First results (below). The CSV keeps only the `native_mem_*`, NMT and RSS rows. |
 | `results/2026-10-08-x64-aws-m5d4xlarge/` | amd64 Linux results (below), same filtering. |
@@ -408,10 +411,22 @@ NMT `Code` moved by up to −28 MiB, and the profiler's `Code` delta in
      2 noprof reps per scenario, ~15 min each, artifacts
      `build/memcheck-pr-<scenarios>/`. `phase0.sh` gained `ARMS` and now
      exits non-zero if any run failed.
-   - **Next**: the evaluator (budget file + records → pass/fail + markdown),
-     an initial `budget.txt` from a calibration run, the PR comment via
-     `.gitlab/scripts/upsert-github-pr-comment.sh`, then drop
-     `allow_failure`. Whether a failing GitLab job can block a GitHub merge
-     depends on branch protection (not checked).
+   - **First PR-job run** (`45aea50a7`): both jobs complete, ~11–13 min from
+     build start to the last record; NMT `Class`/`Internal` overhead within
+     21 KiB of the 5-job run, counters within 0.04 MiB, and `classesM`
+     corrected with the 5-job run's cost per method within 18 KiB (raw
+     +184 KiB, since sampling reached 463 more methods).
+   - **Done**: `Evaluate.java` (Java, single-file launch in the el8 image),
+     `budget.txt` (limits = measured + `max(256 KiB, 4·SD)`, rounded up to
+     0.05 MiB; `classesM` counters corrected to 6,300 methods), and the jobs
+     `memcheck:report` → `memcheck:comment` (posts via
+     `.gitlab/scripts/upsert-github-pr-comment.sh`, comment id `memcheck`)
+     and `memcheck:unit-tests`. The budget passes on the PR-job run and on
+     each of the 5 jobs of run 3.
+   - **Next**: confirm on a pipeline (the comment needs an open PR for the
+     branch), then drop `allow_failure` on `memcheck:x64`/`memcheck:report`.
+     Possibly a CODEOWNERS entry for `budget.txt` (today `*` is owned by
+     `@DataDog/profiling-java`). Whether a failing GitLab job can block a
+     GitHub merge depends on branch protection (not checked).
 
 Open decision: how much of the `memory-usage-sweep-handoff` tooling to merge.

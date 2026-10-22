@@ -33,18 +33,12 @@ memcheck-phase0:x64:
       - build/memcheck-*/
     expire_in: 30 days
 
-# Memory overhead check for every PR (PROF-16186). Each scenario runs with
-# the profiler and NMT (whose records also carry the profiler's own counters)
-# and without the profiler, in the same job, so the NMT overhead is taken as
-# profiled minus no-profiler on the same pod at the same time. The scenarios
-# are split over two jobs to keep the wall time near 15 minutes. Report-only
-# until the budget check lands.
-memcheck:x64:
-  stage: benchmarks
+# Never-conditions shared by the per-PR memcheck jobs; mirrors
+# .benchmarks-skip-rules. CANCELLED (no open PR) comes from prepare:start's
+# dotenv, which rules cannot see, so the jobs need prepare:start and the
+# default before_script ends them early in that case.
+.memcheck-pr-skip:
   rules:
-    # Mirrors .benchmarks-skip-rules; CANCELLED (no open PR) comes from
-    # prepare:start's dotenv, which rules cannot see, so the default
-    # before_script ends the job early in that case.
     - if: '$CANCELLED == "true"'
       when: never
     - !reference [.skip-on-release, rules]
@@ -54,6 +48,28 @@ memcheck:x64:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: never
+
+memcheck:unit-tests:
+  stage: prepare
+  rules:
+    - !reference [.memcheck-pr-skip, rules]
+    - when: on_success
+  needs: []
+  tags: ["arch:amd64"]
+  image: ${BUILD_IMAGE_X64_GLIBC}
+  timeout: 10m
+  script:
+    - bash utils/memcheck/test/evaluate_test.sh
+
+# Memory overhead check for every PR (PROF-16186). Each scenario runs with
+# the profiler and NMT (whose records also carry the profiler's own counters)
+# and without the profiler, in the same job, so the NMT overhead is taken as
+# profiled minus no-profiler on the same pod at the same time. The scenarios
+# are split over two jobs to keep the wall time near 15 minutes.
+memcheck:x64:
+  stage: benchmarks
+  rules:
+    - !reference [.memcheck-pr-skip, rules]
     - when: on_success
   needs:
     - job: prepare:start
@@ -61,6 +77,8 @@ memcheck:x64:
   tags: ["arch:amd64"]
   image: ${BUILD_IMAGE_X64_GLIBC}
   timeout: 1h
+  # Until the check has been confirmed on real PRs; memcheck:report still
+  # reports missing records as incomplete.
   allow_failure: true
   parallel:
     matrix:
@@ -77,3 +95,49 @@ memcheck:x64:
     paths:
       - build/memcheck-pr-*/
     expire_in: 30 days
+
+# Checks the memcheck:x64 records against utils/memcheck/budget.txt and writes
+# build/memcheck-report.md. Runs even when a memcheck:x64 job failed, so that
+# the report says which records are missing. allow_failure until the check
+# has been confirmed on real PRs.
+memcheck:report:
+  stage: post-benchmarks
+  rules:
+    - !reference [.memcheck-pr-skip, rules]
+    - when: always
+  needs:
+    - job: prepare:start
+      artifacts: true
+    - job: memcheck:x64
+      artifacts: true
+  tags: ["arch:amd64"]
+  image: ${BUILD_IMAGE_X64_GLIBC}
+  timeout: 10m
+  allow_failure: true
+  script:
+    - java utils/memcheck/src/Evaluate.java utils/memcheck/budget.txt build/memcheck-report.md build/memcheck-pr-*
+  artifacts:
+    when: always
+    paths:
+      - build/memcheck-report.md
+    expire_in: 30 days
+
+memcheck:comment:
+  stage: notify
+  rules:
+    - !reference [.memcheck-pr-skip, rules]
+    - when: always
+  needs:
+    - job: prepare:start
+      artifacts: true
+    - job: memcheck:report
+      artifacts: true
+  tags: ["arch:arm64"]
+  image: ${DD_OCTO_STS_IMAGE}
+  id_tokens:
+    DDOCTOSTS_ID_TOKEN:
+      aud: dd-octo-sts
+  timeout: 5m
+  allow_failure: true
+  script:
+    - .gitlab/scripts/upsert-github-pr-comment.sh memcheck "${CI_COMMIT_BRANCH:-$CI_COMMIT_REF_NAME}" build/memcheck-report.md
