@@ -17,6 +17,7 @@
 #define _FRAME_H
 
 #include <cassert>
+#include <cstdint>
 #include "vmEntry.h"
 
 enum FrameTypeId {
@@ -35,10 +36,21 @@ enum FrameTypeId {
 // Packs frame type and BCI into a single int field stored in CallTrace frames.
 //
 // Bit layout of an encoded value (ENCODED_MASK set):
-//   bit 30       RAW_POINTER_MASK  — value is a raw native PC (HotSpot only)
+//   bit 30       RAW_POINTER_MASK  — method field is a raw Method* (HotSpot only)
+//   bits 29–24   raw tag, bits 9–4 — only with RAW_POINTER_MASK, see below
 //   bits 23–21   frame type        — FrameTypeId (0–7)
 //   bit 20       ENCODED_MASK      — set to distinguish encoded values from raw ASGCT BCIs
+//   bits 19–16   raw tag, bits 3–0 — only with RAW_POINTER_MASK, see below
 //   bits 15–0    BCI               — bytecode index (0–65534; never 65535, see BCI_MASK)
+//
+// A raw Method* frame sampled in fjmethodid=lazy mode also carries a
+// RAW_TAG_BITS-wide tag identifying the load of the class it was sampled from
+// (see HotspotSupport::TRACE_ID_TAG). Its low 10 bits sit in the otherwise
+// unused BCI bits above; its high 16 bits sit in the top 16 bits of the
+// Method* pointer, which user-space addresses below 2^48 leave clear. The tag
+// makes frames sampled from different loads of a class at the same
+// Klass*/Method* addresses differ, and lets resolution reject frames whose
+// class's memory has since been taken over by another.
 //
 // When ENCODED_MASK is not set the field is a raw, unencoded BCI from ASGCT (non-VM stack
 // walking modes). Raw values may be negative: HotSpot uses -1 as a sentinel for method-entry
@@ -53,7 +65,15 @@ class FrameType {
   static constexpr int TYPE_SHIFT = 21;
   static constexpr int ENCODED_MASK = 1 << 20;  // distinguishes encoded values from raw ASGCT BCIs
   static constexpr int RAW_POINTER_MASK = 1 << 30;
+  static constexpr int RAW_TAG_LOW_SHIFT = 16;   // tag bits 3–0 -> bits 19–16
+  static constexpr int RAW_TAG_MID_SHIFT = 24;   // tag bits 9–4 -> bits 29–24
+  static constexpr int RAW_TAG_BCI_BITS = 10;
+  static constexpr int POINTER_TAG_SHIFT = 48;   // tag bits 25–10 -> pointer bits 63–48
+  static constexpr uintptr_t POINTER_ADDRESS_MASK = ((uintptr_t)1 << POINTER_TAG_SHIFT) - 1;
 public:
+  static constexpr int RAW_TAG_BITS = 26;
+  static constexpr uint32_t RAW_TAG_MASK = (1u << RAW_TAG_BITS) - 1;
+
   // Produces an encoded int from a frame type and BCI. Negative BCIs (HotSpot -1 sentinels
   // for method-entry/sync-entry) are mapped to 0 rather than wrapping to 0xffff.
   static inline int encode(int type, int bci, bool rawPointer = false) {
@@ -61,6 +81,38 @@ public:
     assert(type >= FRAME_INTERPRETED && type <= FRAME_TYPE_MAX);
     int bci_bits = (bci < 0) ? 0 : (bci & BCI_MASK);
     return ENCODED_MASK | (type << TYPE_SHIFT) | bci_bits | (rawPointer ? RAW_POINTER_MASK : 0);
+  }
+
+  // Encodes a raw Method* frame carrying `tag` (see the layout above). The
+  // matching method field is tagPointer(method, tag).
+  static inline int encodeRaw(int type, int bci, uint32_t tag) {
+    return encode(type, bci, true) | (int)((tag & 0xf) << RAW_TAG_LOW_SHIFT) |
+           (int)(((tag >> 4) & 0x3f) << RAW_TAG_MID_SHIFT);
+  }
+
+  // True if `ptr` leaves the pointer tag bits clear, i.e. tagPointer() is reversible.
+  static inline bool canTagPointer(const void* ptr) {
+    return ((uintptr_t)ptr & ~POINTER_ADDRESS_MASK) == 0;
+  }
+
+  // Every caller has checked canTagPointer(ptr) first: HotspotSupport::
+  // fillJavaFrame() refuses raw frames whose Method* fails it.
+  static inline const void* tagPointer(const void* ptr, uint32_t tag) {
+    assert(canTagPointer(ptr));
+    uintptr_t high = (uintptr_t)((tag & RAW_TAG_MASK) >> RAW_TAG_BCI_BITS);
+    return (const void*)((uintptr_t)ptr | (high << POINTER_TAG_SHIFT));
+  }
+
+  static inline const void* untagPointer(const void* ptr) {
+    return (const void*)((uintptr_t)ptr & POINTER_ADDRESS_MASK);
+  }
+
+  // Reassembles the tag of a raw Method* frame from its encoded BCI and method field.
+  static inline uint32_t rawTag(int bci, const void* ptr) {
+    uint32_t low = ((uint32_t)bci >> RAW_TAG_LOW_SHIFT) & 0xf;
+    uint32_t mid = ((uint32_t)bci >> RAW_TAG_MID_SHIFT) & 0x3f;
+    uint32_t high = (uint32_t)((uintptr_t)ptr >> POINTER_TAG_SHIFT);
+    return (low | (mid << 4) | (high << RAW_TAG_BCI_BITS)) & RAW_TAG_MASK;
   }
 
   // Extracts the BCI from either an encoded value or a raw ASGCT BCI.

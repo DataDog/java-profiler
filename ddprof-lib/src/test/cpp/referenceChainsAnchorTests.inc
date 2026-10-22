@@ -79,10 +79,9 @@ TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolder
     tracker->stop();
 }
 
-// Round-14 tiered selection: a container-shaped anchor (its own class implements Collection/Map -
-// the LEAK_BUFFER wrapper shape) admitted at a LATE index position must leap the queue of ~28k
-// other-tier anchors (the round-13 hotdog measurement: admission-order selection put the leak
-// holder at position ~12-21k against ~4k walk coverage per search - deterministically unreachable).
+// Tiered selection: a container-shaped anchor (its own class implements Collection/Map) admitted
+// at a LATE index position must leap the queue of ~28k other-tier anchors - admission-order
+// selection put the leak holder at position ~12-21k against ~4k walk coverage per search.
 TEST_F(ReferenceChainsBfsTest, ContainerAnchorLeapsQueueAcrossLargeIndex) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -110,7 +109,7 @@ TEST_F(ReferenceChainsBfsTest, ContainerAnchorLeapsQueueAcrossLargeIndex) {
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, leak_anchor, 0, 0, FrontierEntryState::FRONTIER,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD));
-    frontier->setLeakTag(leak_anchor, 777);
+    frontier->setLeakTag(leak_anchor, 777, /*leak_tag_incarnation=*/0);
     ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
         leak_anchor, 599999, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
     ReferenceChainsTestAccessor::primeClassShapeForTest(
@@ -137,10 +136,9 @@ TEST_F(ReferenceChainsBfsTest, ContainerAnchorLeapsQueueAcrossLargeIndex) {
     tracker->stop();
 }
 
-// Round-15 fresh-admission priority: the hotdog wrapper is admitted LATE in a search (its holder
-// class sits at sweep index 24627 of 33270, so admission lands at the anchor-index TAIL) - behind
-// the whole fair container backlog measured at 1633 entries against 44-75-pass search lifetimes
-// (the fair container cursor would reach it at pass ~102+, after the search is dead).
+// Fresh-admission priority: a container admitted LATE in a search lands at the anchor-index TAIL,
+// behind the whole fair container backlog (measured at 1633 entries against 44-75-pass search
+// lifetimes - the fair cursor would reach it at pass ~102+, after the search is dead).
 TEST_F(ReferenceChainsBfsTest, FreshContainerWalkedBeforeFairBacklog) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -233,7 +231,7 @@ TEST_F(ReferenceChainsBfsTest, FreshContainerWalkedBeforeFairBacklog) {
     tracker->stop();
 }
 
-// Round-14 tier fairness: the other tier (everything not leak-tagged, not container-shaped) still
+// Tier fairness: the other tier (everything not leak-tagged, not container-shaped) still
 // reaches full coverage across wraps - a 40-anchor tier at a 16 budget covers all 40 in exactly 3
 // calls with no duplicates within a call.
 TEST_F(ReferenceChainsBfsTest, AnchorOtherTierFairCoverageAcrossWraps) {
@@ -278,9 +276,9 @@ TEST_F(ReferenceChainsBfsTest, AnchorOtherTierFairCoverageAcrossWraps) {
     tracker->stop();
 }
 
-// Round-13/14 restart hygiene: discovered-instance tags are FRONTIER tags; restartSearch() resets
-// the frontier table and _next_tag=1, so any surviving discovered slot either fails
-// reconstructChain (observed on-pod: 'buildChainEvent failed ...
+// Restart hygiene: discovered-instance tags are FRONTIER tags; restartSearch() resets the frontier
+// table and _next_tag=1, so a surviving discovered slot would fail reconstructChain() or resolve
+// to whatever new entry reuses its tag.
 TEST_F(ReferenceChainsBfsTest, RestartSearchClearsDiscoveredInstanceTags) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -313,9 +311,9 @@ TEST_F(ReferenceChainsBfsTest, RestartSearchClearsDiscoveredInstanceTags) {
     tracker->stop();
 }
 
-// Round-19 (pod 289f8 — three JVMs of "canary search, 0/1 candidates found" while leak-tagged
-// instances WERE intercepted and chains re-emitted): the marker->leak-tag design migration never
-// updated the found criterion.
+// A chain whose target carries a leak tag must mark its canary candidate found - otherwise the
+// search reports "0/1 candidates found" while leak-tagged instances ARE intercepted and chains
+// re-emitted.
 TEST_F(ReferenceChainsBfsTest, LeakTagChainMarksCanaryFound) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -332,7 +330,8 @@ TEST_F(ReferenceChainsBfsTest, LeakTagChainMarksCanaryFound) {
     // (suppressChainEvent: depth==0, or depth==1 at a transient root) keeps both chains.
     ASSERT_TRUE(frontier->insert(4242, 0, 7, 1, FrontierEntryState::FRONTIER,
                                  8, /*class_tag=*/0, -1, /*kind=*/0));
-    frontier->setLeakTag(4242, 1073742079);
+    frontier->setLeakTag(4242, 1073742079,
+                         LivenessTracker::instance()->leakTagIncarnation(1073742079));
     ReferenceChainsTestAccessor::recordDiscoveredInstanceForTest(7, 4242, true);
     ASSERT_EQ(4242, ReferenceChainsTestAccessor::candidateDiscoveredTagForTest(0, 0));
     ASSERT_TRUE(frontier->insert(5353, 0, 9, 1, FrontierEntryState::FRONTIER,
@@ -353,7 +352,7 @@ TEST_F(ReferenceChainsBfsTest, LeakTagChainMarksCanaryFound) {
     tracker->stop();
 }
 
-// B' push site 1 - DEMOTION TIME (find-anchor-holder-eviction / _static_anchor_fifo): when
+// At-risk FIFO (_static_anchor_fifo) push site 1 - DEMOTION TIME: when
 // improveChain() replaces a root-attached durable (STATIC_FIELD/ JNI_GLOBAL) entry with a deeper
 // chain-attached path, the entry is leaving the anchor tier's eligible population at exactly that
 // moment - the push must fire right there.
@@ -407,7 +406,7 @@ TEST_F(ReferenceChainsBfsTest, DemotionPushFiresWhenImproveChainEvictsRootAttach
     tracker->stop();
 }
 
-// B' push site 2 - SWEEP TIME: the static sweep's class->field edge onto an already-admitted
+// At-risk FIFO push site 2 - SWEEP TIME: the static sweep's class->field edge onto an already-admitted
 // CHAIN-ATTACHED entry (the admission-order eviction shape: born as a non-root child, never
 // root-attached at all) must feed the FIFO.
 TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder) {
@@ -449,10 +448,8 @@ TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder
     bool truncated = true;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
 
-    // The rotation phase of the same pass drained the pushed tag into the anchor walk, and the walk
-    // admitted the holder's child - the push itself left no residue in the FIFO (drained empty) and
-    // never re-attributed the holder's entry (re-rooting is the documented refusal that motivated
-    // the FIFO in the first place).
+    // The same pass's rotation phase drained the pushed tag into the anchor walk, which admitted
+    // the holder's child; the FIFO is left empty.
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
     jlong childTag = tags_ever_assigned[holderChildNode];
     ASSERT_GT(childTag, 0) << "the FIFO-drained anchor walk never admitted "
@@ -461,8 +458,7 @@ TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder
     ASSERT_TRUE(frontier->lookup(childTag, &childEntry));
     EXPECT_EQ(105, childEntry.parent_tag);
     EXPECT_EQ(2u, childEntry.depth);
-    // The holder's entry is untouched by the push - the B' feed records the at-risk shape, it never
-    // re-attributes the entry.
+    // The push records the at-risk shape; it never re-attributes the holder's entry.
     FrontierEntry entry{};
     ASSERT_TRUE(frontier->lookup(105, &entry));
     EXPECT_EQ(104, entry.parent_tag);
@@ -471,7 +467,7 @@ TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder
     tracker->stop();
 }
 
-// B' mechanics: a chain-attached holder drained from the at-risk FIFO is descend-walked and
+// At-risk FIFO mechanics: a chain-attached holder drained from the at-risk FIFO is descend-walked and
 // intercepts a leak chunk 3 hops below it - the repair for the population the root-attached
 // collector demonstrably cannot select (the negative control below).
 TEST_F(ReferenceChainsBfsTest, AtRiskAnchorFifoDrainAndWalkIntercept) {
@@ -514,13 +510,12 @@ TEST_F(ReferenceChainsBfsTest, AtRiskAnchorFifoDrainAndWalkIntercept) {
         JVMTI_HEAP_REFERENCE_STACK_LOCAL));
 
     // Negative control: the root-attached collector selects NOTHING from a table holding only a
-    // chain-attached holder and a transient root - the pre-B' behavior that stranded the
-    // dual-reachable population.
+    // chain-attached holder and a transient root.
     std::vector<jlong> selected =
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
     ASSERT_TRUE(selected.empty());
 
-    // B': push + drain + walk reaches what the collector cannot.
+    // Push + drain + walk reaches what the collector cannot.
     ReferenceChainsTestAccessor::pushStaticAnchorFifoForTest(105, 28366);
     std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> drained;
     // 16 = ReferenceChainTracker::STATIC_ANCHOR_FIFO_DRAIN (private), the same per-pass drain cap
@@ -557,7 +552,7 @@ TEST_F(ReferenceChainsBfsTest, AtRiskAnchorFifoDrainAndWalkIntercept) {
     tracker->stop();
 }
 
-// B' requeue mechanics: a truncated anchor walk reports exactly the RESOLVED-but-unwalked tags, and
+// At-risk FIFO requeue mechanics: a truncated anchor walk reports exactly the RESOLVED-but-unwalked tags, and
 // requeueStaticAnchorFifoFront() restores them to the FIFO front in order with a consistent
 // membership set - so an at-risk holder that lost its budget turn keeps it for the next pass
 // instead of waiting for the next sweep lap.
@@ -641,7 +636,7 @@ TEST_F(ReferenceChainsBfsTest, TruncatedAnchorWalkRequeuesUnwalkedFifoTags) {
     tracker->stop();
 }
 
-// a this-field self-edge is REAL in the heap - every java.util.Collections$Synchronized* holder
+// A this-field self-edge is REAL in the heap - every java.util.Collections$Synchronized* holder
 // carries mutex == this - so walking such a holder's own subtree (rotation anchor walk or BFS
 // descent) re-reports the holder as its own child through that field.
 TEST_F(ReferenceChainsBfsTest,
@@ -695,9 +690,8 @@ TEST_F(ReferenceChainsBfsTest,
     tracker->stop();
 }
 
-// the B' at-risk FIFO sat cap-pinned at 1024 because three classes flooded it (klass 1: 1396
-// pushes, klass 215: 1063, klass 1733: 988+), so the LEAK_BUFFER wrapper's pushes (klass 28366)
-// were dropped at the cap check and the lane designed to repair exactly its demotion never carried
+// Per-class quota: without it the at-risk FIFO sat cap-pinned at 1024 because three classes
+// flooded it, so a leak holder's pushes were dropped at the cap check and the lane never carried
 // it.
 TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
     Arguments args;
@@ -722,8 +716,7 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
     EXPECT_FALSE(ReferenceChainsTestAccessor::staticAnchorFifoContainsForTest(
         1000 + (int)quota));
 
-    // The wrapper's push (a different class) lands despite the flood - exactly the push the pod
-    // dropped.
+    // A different class's push lands despite the flood.
     ReferenceChainsTestAccessor::pushStaticAnchorFifoForTest(2000, 28366);
     EXPECT_EQ(quota + 1,
               ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
@@ -802,9 +795,7 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
     EXPECT_FALSE(
         ReferenceChainsTestAccessor::staticAnchorFifoContainsForTest(20000));
 
-    // Leave the FIFO drained: this test is the one that saturates it, and the reset() seam above
-    // now clears it for the next test regardless - but a drained ending also keeps this test
-    // order-independent even if that seam ever regresses again.
+    // Leave the saturated FIFO drained so later tests do not depend on the reset() seam alone.
     std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> final_drain;
     ASSERT_EQ(1024,
               ReferenceChainsTestAccessor::drainStaticAnchorFifoForTest(

@@ -234,12 +234,17 @@ protected:
 };
 
 // Path agreed with the companion Java parser test in ddprof-test, which
-// reads the same file back via JMC's
-// JfrLoaderToolkit. Both sides resolve it via the OS temp dir so the
-// producer (this gtest) and the consumer (the Java test, run afterwards by
-// the same operator/CI job on the same machine) agree without either side
-// needing to know the other module's build directory layout.
+// reads the same file back via JMC's JfrLoaderToolkit. The build passes the
+// same DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR to both sides (ddprof-lib and
+// ddprof-test build.gradle.kts) and deletes the file before this gtest runs;
+// the OS temp dir is only a fallback for running the binary by hand.
+// The file is consume-once: ProducesValidStandaloneJfrWithChainEvent unlinks it before
+// writing and the Java test deletes it after reading.
 static std::string chainRoundtripJfrPath() {
+    const char *configured = getenv("DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR");
+    if (configured != nullptr && *configured != 0) {
+        return configured;
+    }
     const char *tmp = getenv("TMPDIR");
     std::string dir = (tmp != nullptr && *tmp != 0) ? tmp : "/tmp";
     if (dir.back() != '/') {
@@ -277,6 +282,10 @@ static u32 decodeVar32(const char *data, int *off) {
 }
 
 TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent) {
+    // Drop any fixture left by an earlier (possibly different-revision) run before any ASSERT
+    // below can bail out, so a failed run never leaves a stale file for the Java parser test
+    // (ReferenceChainJfrParserTest) to validate. ENOENT is expected and ignored.
+    unlink(chainRoundtripJfrPath().c_str());
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     // Skip OS/CPU info, JVM info, system properties and native library
@@ -318,12 +327,18 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     // serializes into the T_CLASS checkpoint - this is the exact API
     // Profiler::lookupClass() already-existing tests use (e.g.
     // referenceChains_ut.cpp's ReconstructsChainForSyntheticGraph).
+    // The constants feed the lookup below; the companion Java parser test
+    // (ReferenceChainJfrParserTest) hardcodes the same values, so a change to
+    // the seeding must update both sides - a deliberate two-module diff.
+    static constexpr const char *kLeafClass = "com/test/ChainLeaf";
+    static constexpr const char *kMiddleClass = "com/test/ChainMiddle";
+    static constexpr const char *kRootClass = "com/test/ChainRoot";
     int leafKlass = Profiler::instance()->lookupClass(
-        "com/test/ChainLeaf", strlen("com/test/ChainLeaf"));
+        kLeafClass, strlen(kLeafClass));
     int middleKlass = Profiler::instance()->lookupClass(
-        "com/test/ChainMiddle", strlen("com/test/ChainMiddle"));
+        kMiddleClass, strlen(kMiddleClass));
     int rootKlass = Profiler::instance()->lookupClass(
-        "com/test/ChainRoot", strlen("com/test/ChainRoot"));
+        kRootClass, strlen(kRootClass));
     ASSERT_NE(-1, leafKlass);
     ASSERT_NE(-1, middleKlass);
     ASSERT_NE(-1, rootKlass);
@@ -345,6 +360,8 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     // pins the JFR encoding, so the event is built directly).
     ReferenceChainEvent event;
     event._target_tag = 3;
+    // Non-zero so the Java parser test can pin the serialized field.
+    event._leak_tag_incarnation = 5;
     event._depth = 2;
     event._root_kind = 21; // JVMTI_HEAP_REFERENCE_JNI_GLOBAL - exercises the
                            // rootKind field end to end (the engine's admission
@@ -382,6 +399,10 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
         // the chunk header's size/cpool-offset fields, and closes fd - the
         // same finalization every real recording chunk goes through.
     }
+
+    // No .expected sidecar: the Java parser test hardcodes the seeded values
+    // (chain names, edges labels, targetTag=3, depth=2), so writing a sidecar
+    // nothing reads would only leave a stale file in the temp/build dir.
 
     FILE *f = fopen(path.c_str(), "rb");
     ASSERT_NE(nullptr, f) << "expected " << path << " to have been written";
@@ -481,6 +502,7 @@ TEST_F(ReferenceChainJfrRoundtripTest, TruncatesOversizeChainAndKeepsEmittedLabe
     off += sizeOfVar64((u64)T_REFERENCE_CHAIN); // type id
     off += sizeOfVar64(event._start_time);
     off += sizeOfVar64(event._target_tag);
+    off += sizeOfVar64((u64)event._leak_tag_incarnation);
     off += sizeOfVar64(event._depth); // depth, small by construction
     // rootKind putUtf8: 1 encoding-tag byte + var32 length + payload.
     const char *root_kind_name = "jni_global"; // rootKindName(21)
@@ -511,4 +533,5 @@ TEST_F(ReferenceChainJfrRoundtripTest, TruncatesOversizeChainAndKeepsEmittedLabe
 TEST_F(ReferenceChainJfrRoundtripTest, DefaultLivenessEventHasZeroLeakTag) {
     ObjectLivenessEvent event;
     EXPECT_EQ(0, event.leak_tag);
+    EXPECT_EQ(0u, event.leak_tag_incarnation);
 }

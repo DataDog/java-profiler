@@ -140,7 +140,7 @@ Also invoked interactively from `release.sh` when preparing a patch release.
 
 ### `run-containers-tests.sh`
 
-Runs tests in containers across various OS/libc/JDK combinations, mirroring the CI matrix locally. Defaults to Podman; use `--container=docker` to use Docker.
+Runs tests in containers across various OS/libc/JDK combinations, mirroring the CI matrix locally. Defaults to Podman; on macOS use Docker via colima (`--container=docker`) — podman's credential-helper lookup for the Datadog registries (ddtool) fails outside the CI network and aborts container commands.
 
 **Usage:**
 ```bash
@@ -167,7 +167,7 @@ Examples:
 # Run a single C++ gtest binary in ASan mode
 ./utils/run-containers-tests.sh --config=asan --gtest-task=elfparser_ut
 
-# Use Docker instead of the default Podman runtime
+# Use Docker via colima (recommended on macOS)
 ./utils/run-containers-tests.sh --container=docker --libc=glibc --jdk=21
 
 # Preview selected JDKs across every supported libc/architecture pair

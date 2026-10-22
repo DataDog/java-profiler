@@ -304,8 +304,13 @@ Error Arguments::parse(const char *args) {
       if (value != nullptr) {
         if (strcmp(value, "false") == 0) {
           _force_jmethodID = false;
+          _lazy_jmethodID = false;
         } else if (strcmp(value, "true") == 0) {
           _force_jmethodID = true;
+          _lazy_jmethodID = false;
+        } else if (strcmp(value, "lazy") == 0) {
+          _force_jmethodID = false;
+          _lazy_jmethodID = true;
         } else {
           msg = "Invalid jmethodID creation value";
         }
