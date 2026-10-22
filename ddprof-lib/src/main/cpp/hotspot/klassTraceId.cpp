@@ -22,29 +22,32 @@ static inline uint64_t idAt(const void* klass, size_t offset) {
   return raw >> TRACE_ID_SHIFT;
 }
 
-// The probes were created back to back by one thread, so their IDs are
-// distinct and lie within a narrow window: PROBE_COUNT consecutive values
-// plus whatever other threads took meanwhile. Pointers to neighbouring
-// metadata fail this (they are hundreds of bytes apart, so `>> 16` mostly
-// collapses them to one value); so do small integers (equal across probes)
-// and compressed-klass bits in a mark word (far more than ID_SLACK apart).
+// JFR assigns trace IDs from one global counter as each klass is created,
+// and the probes were created back to back by one thread, in the order given.
+// So their IDs strictly increase, mostly by exactly one, and span at most
+// PROBE_COUNT - 1 plus whatever other threads took meanwhile (ID_SLACK).
+// Small integers fail this (equal across probes), and so do the
+// compressed-klass bits of a mark word (far more than ID_SLACK apart).
+// Pointers shifted right by 16 can be distinct and close together (seen for
+// a Klass field at offset 24 on aarch64 17u), but neither follow creation
+// order nor step by exactly one: requiring both keeps them out.
 static bool plausibleIds(const void* const* klasses, int count, size_t offset) {
-  uint64_t min = UINT64_MAX;
-  uint64_t max = 0;
-  for (int i = 0; i < count; i++) {
+  uint64_t first = idAt(klasses[0], offset);
+  uint64_t prev = first;
+  int unit_steps = 0;
+  if (first == 0) {
+    return false;
+  }
+  for (int i = 1; i < count; i++) {
     uint64_t id = idAt(klasses[i], offset);
-    if (id == 0) {
+    if (id <= prev) {
       return false;
     }
-    for (int j = 0; j < i; j++) {
-      if (idAt(klasses[j], offset) == id) {
-        return false;
-      }
-    }
-    min = id < min ? id : min;
-    max = id > max ? id : max;
+    unit_steps += id - prev == 1 ? 1 : 0;
+    prev = id;
   }
-  return max - min <= (uint64_t)(count - 1) + KlassTraceId::ID_SLACK;
+  // At least half of the steps between consecutive probes must be +1.
+  return prev - first <= (uint64_t)(count - 1) + KlassTraceId::ID_SLACK && 2 * unit_steps >= count - 1;
 }
 
 int KlassTraceId::findOffset(const void* const* klasses, int count, size_t klass_size) {
