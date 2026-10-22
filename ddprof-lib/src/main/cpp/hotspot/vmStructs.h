@@ -1054,8 +1054,10 @@ DECLARE(VMNMethod)
     // to 16 bytes. enterSpecial's frame size includes its saved FP and return PC.
     uintptr_t continuationEntryFP(uintptr_t sp, int stack_args) {
         int frame_size = frameSize();
+        // A reference occupies one of the JVM's 255 parameter slots but a full
+        // machine word on the stack; allow that limit plus alignment padding.
         if (frame_size < 4 || frame_size > 256 || (frame_size & 1) != 0 ||
-                stack_args < 0 || stack_args > 128 || (sp & 15) != 0) {
+                stack_args < 0 || stack_args > 256 || (sp & 15) != 0) {
             return 0;
         }
         uintptr_t words = ((stack_args + 1) & ~1) + frame_size - 2;

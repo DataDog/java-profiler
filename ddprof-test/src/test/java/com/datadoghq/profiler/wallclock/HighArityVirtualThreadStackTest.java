@@ -1,0 +1,187 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.datadoghq.profiler.wallclock;
+
+import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
+import com.datadoghq.profiler.JfrFrame;
+import com.datadoghq.profiler.JfrStackTrace;
+import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.junit.CStack;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.locks.LockSupport;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Label;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/** Checks carrier recovery for compiled methods near the JVM's parameter-slot limit. */
+public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfilerTest {
+    private static final String GENERATED = "com/datadoghq/profiler/generated/HighArityContinuation";
+    private static final int REFERENCES = 254;
+    private static final int DEPTH = 64;
+    private static volatile boolean parking;
+    private static volatile StackTraceElement[] logicalStack;
+    /** Keeps the generated recursive return values live. */
+    public static volatile int sink;
+
+    /** Selects the VM walker with carrier recovery enabled. */
+    public HighArityVirtualThreadStackTest(@CStack String cstack) {
+        super(cstack);
+    }
+
+    @Override
+    protected boolean isPlatformSupported() {
+        return Platform.isJavaVersionAtLeast(21) && !Platform.isJ9() && !Platform.isZing()
+                && !(isInCI() && Platform.isMusl() && !Platform.isAarch64());
+    }
+
+    @Override
+    protected String getProfilerCommand() {
+        return "wall=1ms,walltpt=64,filter=,jstackdepth=512";
+    }
+
+    /** Requires compiled, partially thawed samples to recover the carrier without pointer errors. */
+    @TestTemplate
+    @ValueSource(strings = {"vmx"})
+    public void retainsCarrierWithMoreThan128StackArgumentWords() throws Exception {
+        waitForProfilerReady(2_000);
+        Runnable workload = new Loader().workload();
+        parking = false;
+        logicalStack = null;
+        // The generated recursive method has no back edge, so it cannot be an OSR entry.
+        for (int i = 0; i < 2_000; i++) workload.run();
+        parking = true;
+        FutureTask<Void> task = new FutureTask<>(() -> {
+            long deadline = System.nanoTime() + 3_000_000_000L;
+            while (System.nanoTime() < deadline) workload.run();
+            return null;
+        });
+        Thread worker = (Thread) Thread.class.getMethod("startVirtualThread", Runnable.class).invoke(null, task);
+        try {
+            worker.join(10_000);
+            assertFalse(worker.isAlive(), "The high-arity workload did not finish");
+            task.get();
+        } finally {
+            parking = false;
+            worker.interrupt();
+            stopProfiler();
+        }
+        assertTrue(logicalStack != null, "The high-arity workload did not capture its logical stack");
+        int recursion = 0;
+        for (StackTraceElement frame : logicalStack) {
+            if (GENERATED.replace('/', '.').equals(frame.getClassName()) && "recursive".equals(frame.getMethodName())) recursion++;
+        }
+        assertEquals(DEPTH + 1, recursion, "The JVM must retain the recursive callers");
+        assertTrue(profiler.getDebugCounters().getOrDefault("walkvm_cont_barrier_hit", 0L) > 0,
+                "The workload must exercise a continuation return barrier");
+        int[] counts = reduceEvents("datadog.MethodSample", () -> new int[5], (count, sample) -> {
+            JfrStackTrace trace = sample.getStackTrace();
+            boolean compiled = false;
+            boolean outer = false;
+            int carriers = 0;
+            int errors = 0;
+            boolean stoppedBeforeBoundary = false;
+            for (JfrFrame frame : trace.frames()) {
+                if (GENERATED.replace('/', '.').equals(frame.className())) {
+                    compiled |= "recursive".equals(frame.methodName())
+                            && ("JIT compiled".equals(frame.typeDescription()) || "C1 compiled".equals(frame.typeDescription()));
+                    outer |= "run".equals(frame.methodName());
+                }
+                if ("java.util.concurrent.ForkJoinWorkerThread".equals(frame.className()) && "run".equals(frame.methodName())) carriers++;
+                if (frame.methodName() != null && frame.methodName().startsWith("break_cont_")) errors++;
+                else if (frame.methodName() != null && frame.methodName().startsWith("break_")) stoppedBeforeBoundary = true;
+            }
+            if (compiled && !outer) {
+                if (stoppedBeforeBoundary && errors == 0 && carriers == 0) {
+                    count[4]++;
+                    return;
+                }
+                count[0]++;
+                count[1] += errors;
+                if (carriers != 1) count[2]++;
+                if (!trace.isTruncated()) count[3]++;
+            }
+        });
+        System.out.println("High-arity compiled partial samples=" + counts[0] + " continuationErrors=" + counts[1]
+                + " stopsBeforeBoundary=" + counts[4]);
+        assertTrue(counts[0] > 0, "No compiled high-arity sample left callers frozen");
+        assertEquals(0, counts[1], "High-arity carrier recovery rejected valid argument metadata");
+        assertEquals(0, counts[2], "High-arity samples must retain exactly one carrier");
+        assertEquals(0, counts[3], "Skipped frozen callers must remain marked truncated");
+    }
+
+    /** Called from generated code after remounting; warm-up calls return without parking. */
+    public static int parkAndSpin() {
+        if (!parking) return 1;
+        LockSupport.parkNanos(500_000L);
+        if (logicalStack == null) logicalStack = Thread.currentThread().getStackTrace();
+        long deadline = System.nanoTime() + 2_000_000L;
+        int value = 1;
+        while (System.nanoTime() < deadline) value = value * 1664525 + 1013904223;
+        return value;
+    }
+
+    /** Generates a legal 255-slot static signature: one int and 254 references. */
+    private static final class Loader extends ClassLoader {
+        private Loader() {
+            super(HighArityVirtualThreadStackTest.class.getClassLoader());
+        }
+
+        /** Defines high-arity recursion without a source signature containing hundreds of parameters. */
+        private Runnable workload() throws Exception {
+            StringBuilder descriptor = new StringBuilder("(I");
+            for (int i = 0; i < REFERENCES; i++) descriptor.append("Ljava/lang/Object;");
+            descriptor.append(")I");
+            String signature = descriptor.toString();
+            String owner = HighArityVirtualThreadStackTest.class.getName().replace('.', '/');
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+            cw.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, GENERATED, null, "java/lang/Object", new String[]{"java/lang/Runnable"});
+            MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+            mv.visitCode();
+            mv.visitVarInsn(Opcodes.ALOAD, 0);
+            mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+            mv.visitInsn(Opcodes.RETURN);
+            mv.visitMaxs(0, 0);
+            mv.visitEnd();
+            mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "run", "()V", null, null);
+            mv.visitCode();
+            mv.visitIntInsn(Opcodes.SIPUSH, DEPTH);
+            for (int i = 0; i < REFERENCES; i++) mv.visitVarInsn(Opcodes.ALOAD, 0);
+            mv.visitMethodInsn(Opcodes.INVOKESTATIC, GENERATED, "recursive", signature, false);
+            mv.visitFieldInsn(Opcodes.PUTSTATIC, owner, "sink", "I");
+            mv.visitInsn(Opcodes.RETURN);
+            mv.visitMaxs(0, 0);
+            mv.visitEnd();
+            mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "recursive", signature, null, null);
+            mv.visitCode();
+            Label leaf = new Label();
+            mv.visitVarInsn(Opcodes.ILOAD, 0);
+            mv.visitJumpInsn(Opcodes.IFEQ, leaf);
+            mv.visitVarInsn(Opcodes.ILOAD, 0);
+            mv.visitInsn(Opcodes.ICONST_1);
+            mv.visitInsn(Opcodes.ISUB);
+            for (int i = 1; i <= REFERENCES; i++) mv.visitVarInsn(Opcodes.ALOAD, i);
+            mv.visitMethodInsn(Opcodes.INVOKESTATIC, GENERATED, "recursive", signature, false);
+            mv.visitVarInsn(Opcodes.ALOAD, REFERENCES);
+            mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "identityHashCode", "(Ljava/lang/Object;)I", false);
+            mv.visitInsn(Opcodes.IXOR);
+            mv.visitInsn(Opcodes.IRETURN);
+            mv.visitLabel(leaf);
+            mv.visitMethodInsn(Opcodes.INVOKESTATIC, owner, "parkAndSpin", "()I", false);
+            mv.visitInsn(Opcodes.IRETURN);
+            mv.visitMaxs(0, 0);
+            mv.visitEnd();
+            cw.visitEnd();
+            byte[] bytes = cw.toByteArray();
+            return (Runnable) defineClass(GENERATED.replace('/', '.'), bytes, 0, bytes.length).getDeclaredConstructor().newInstance();
+        }
+    }
+}

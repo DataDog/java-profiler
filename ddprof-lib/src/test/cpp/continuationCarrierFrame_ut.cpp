@@ -36,7 +36,7 @@ class ContinuationCarrierFrameTest : public ::testing::Test {
 protected:
     VMStructsTestAccessor _layout;
     int _frame_size = 10;
-    alignas(16) uintptr_t _stack[64] = {};
+    alignas(16) uintptr_t _stack[512] = {};
 
     VMNMethod* entryMethod() { return VMNMethod::cast_raw(&_frame_size); }
 };
@@ -63,7 +63,7 @@ TEST_F(ContinuationCarrierFrameTest, AccountsForStackArgumentsAndAlignment) {
 }
 
 TEST_F(ContinuationCarrierFrameTest, ConvertsExportedArgumentSlotsToWords) {
-    for (unsigned short slots : {0, 1, 2, 3, 17}) {
+    for (unsigned short slots : {0, 1, 2, 3, 17, 258, 498, 512}) {
         VMConstMethod* method = VMConstMethod::cast_raw(&slots);
         EXPECT_EQ((slots + 1) / 2, method->stackArgWords());
     }
@@ -71,8 +71,20 @@ TEST_F(ContinuationCarrierFrameTest, ConvertsExportedArgumentSlotsToWords) {
     EXPECT_EQ(-1, VMConstMethod::cast_raw(_stack)->stackArgWords());
 }
 
+TEST_F(ContinuationCarrierFrameTest, RecoversCarrierSlotsAbove128ArgumentWords) {
+    struct Layout { int arguments; int entry_slot; };
+    for (Layout layout : {Layout{129, 138}, Layout{249, 258}, Layout{256, 264}}) {
+        _stack[layout.entry_slot] = (uintptr_t)&_stack[400];
+        _stack[layout.entry_slot + 1] = (uintptr_t)&_stack[410];
+        uintptr_t entry_fp = entryMethod()->continuationEntryFP((uintptr_t)_stack, layout.arguments);
+        ASSERT_EQ((uintptr_t)&_stack[layout.entry_slot], entry_fp);
+        EXPECT_EQ((uintptr_t)&_stack[400], *(uintptr_t*)entry_fp);
+        EXPECT_EQ((uintptr_t)&_stack[410], ((uintptr_t*)entry_fp)[1]);
+    }
+}
+
 TEST_F(ContinuationCarrierFrameTest, RejectsUnknownOrInvalidArgumentCounts) {
-    for (int args : {-1, 129, INT_MAX}) {
+    for (int args : {-1, 257, INT_MAX}) {
         EXPECT_EQ(0u, entryMethod()->continuationEntryFP((uintptr_t)_stack, args));
     }
 }
@@ -87,6 +99,7 @@ TEST_F(ContinuationCarrierFrameTest, RejectsInvalidEntryFrameSizes) {
 TEST_F(ContinuationCarrierFrameTest, RejectsMisalignmentAndAddressOverflow) {
     EXPECT_EQ(0u, entryMethod()->continuationEntryFP((uintptr_t)_stack + sizeof(uintptr_t), 0));
     EXPECT_EQ(0u, entryMethod()->continuationEntryFP(UINTPTR_MAX & ~(uintptr_t)15, 0));
+    EXPECT_EQ(0u, entryMethod()->continuationEntryFP(UINTPTR_MAX & ~(uintptr_t)15, 256));
 }
 
 TEST_F(ContinuationCarrierFrameTest, ObservesEntryWrapperGeneratedAfterInitialization) {
