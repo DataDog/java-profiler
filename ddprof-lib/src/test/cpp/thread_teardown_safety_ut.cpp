@@ -352,9 +352,14 @@ static void *t07_body(void *) {
     pthread_testcancel();
     usleep(100);
   }
+  // The only runtime exit from the loop is cancellation: pthread_testcancel() (or the
+  // cancelled usleep()) calls pthread_exit(PTHREAD_CANCELED), which runs the registered
+  // cleanup handler and terminates the thread, so nothing after the loop is ever reached.
+  // pthread_cleanup_pop is still lexically required to pair with pthread_cleanup_push
+  // (both expand to an open/close of a do/while(0) block on musl); execute=0 because it
+  // is not a normal cleanup site — the handler already ran during cancellation.
   pthread_cleanup_pop(0);
-  ProfiledThread::release();
-  return nullptr;
+  __builtin_unreachable();
 }
 
 #endif  // __GLIBC__

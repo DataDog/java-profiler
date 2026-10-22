@@ -253,3 +253,35 @@ TEST_F(ArgumentsTest, BooleanOptionRejectsTypoSharingFirstLetterWithValidValue) 
         EXPECT_TRUE(error);
     }
 }
+
+// fjmethodid takes true/false/lazy; lazy implies no preloading, and a later
+// true/false in the same string must clear the lazy flag again.
+TEST_F(ArgumentsTest, FjmethodidAcceptsLazy) {
+    {
+        Arguments args;
+        EXPECT_TRUE(args._force_jmethodID);
+        EXPECT_FALSE(args._lazy_jmethodID);
+    }
+    {
+        Arguments args;
+        EXPECT_FALSE(args.parse("fjmethodid=lazy"));
+        EXPECT_FALSE(args._force_jmethodID);
+        EXPECT_TRUE(args._lazy_jmethodID);
+    }
+    {
+        Arguments args;
+        EXPECT_FALSE(args.parse("fjmethodid=lazy,fjmethodid=false"));
+        EXPECT_FALSE(args._force_jmethodID);
+        EXPECT_FALSE(args._lazy_jmethodID);
+    }
+    {
+        Arguments args;
+        EXPECT_FALSE(args.parse("fjmethodid=lazy,fjmethodid=true"));
+        EXPECT_TRUE(args._force_jmethodID);
+        EXPECT_FALSE(args._lazy_jmethodID);
+    }
+    {
+        Arguments args;
+        EXPECT_TRUE(args.parse("fjmethodid=lazyx"));
+    }
+}

@@ -45,6 +45,21 @@ public final class JfrFrame {
         return method != null ? symbolString(method.get("descriptor")) : null;
     }
 
+    /** The frame's line number, or -1 if unavailable. */
+    public int lineNumber() {
+        return intField("lineNumber");
+    }
+
+    /** The frame's bytecode index, or -1 if unavailable. */
+    public int bytecodeIndex() {
+        return intField("bytecodeIndex");
+    }
+
+    private int intField(String name) {
+        Object v = value.get(name);
+        return v instanceof Number ? ((Number) v).intValue() : -1;
+    }
+
     /**
      * The frame's {@code jdk.types.FrameType} description (e.g. {@code "Native (remote)"}), or
      * {@code null} if the frame type has no entry in the constant pool.

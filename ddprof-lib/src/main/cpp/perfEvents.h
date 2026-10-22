@@ -1,5 +1,6 @@
 /*
  * Copyright 2017 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,6 +62,10 @@ public:
   static void resetBuffer(int tid);
 
   static const char *getEventName(int event_id);
+
+  // qsort() comparator for thread ids, used by start() to order the thread
+  // list before matching it against tids. Public so tests can check it.
+  static int compareTids(const void *a, const void *b);
 
   inline void enableEvents(bool enabled) {
     __atomic_store_n(&_enabled, enabled, __ATOMIC_RELEASE);
