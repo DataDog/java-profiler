@@ -81,4 +81,8 @@ TEST_P(UnwindFailureEncodingTest, PreservesEventBoundariesAndDiagnosticFields) {
 
 INSTANTIATE_TEST_SUITE_P(NameLengths, UnwindFailureEncodingTest,
                         ::testing::Values(32, 110, 127, 230, 255, 512));
+#else
+TEST(UnwindFailureEncodingTest, RequiresDebugInstrumentation) {
+    GTEST_SKIP() << "Unwind-failure diagnostics require DEBUG instrumentation";
+}
 #endif
