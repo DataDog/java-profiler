@@ -47,7 +47,7 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
     /** Missing logical callers must be marked truncated in both VM walking modes. */
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx"})
-    public void marksSkippedFrozenCallersTruncated(@CStack String cstack) throws Exception {
+    public void marksSkippedFrozenCallersTruncated() throws Exception {
         runWorkload(true, true);
         assertTrue(profiler.getDebugCounters().getOrDefault("walkvm_cont_barrier_hit", 0L) > 0,
                 "The workload must encounter a continuation return barrier");
@@ -66,7 +66,7 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
     /** The same parked workload on a platform thread keeps its application callers on the stack. */
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx"})
-    public void keepsPlatformCallersComplete(@CStack String cstack) throws Exception {
+    public void keepsPlatformCallersComplete() throws Exception {
         runWorkload(false, true);
         assertCompleteCallers();
     }
@@ -74,7 +74,7 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
     /** Ending at a fully thawed continuation is a complete logical stack in the ordinary VM mode. */
     @TestTemplate
     @ValueSource(strings = {"vm"})
-    public void keepsFullyThawedContinuationComplete(@CStack String cstack) throws Exception {
+    public void keepsFullyThawedContinuationComplete() throws Exception {
         runWorkload(true, false);
         assertCompleteCallers();
     }
