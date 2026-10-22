@@ -16,7 +16,7 @@
 # records the pod's shape (CPU count and quota, CPU model, memory limit).
 #
 # Usage: ci-phase0.sh [OUT]   (default OUT: build/memcheck)
-#   CPUS (4), REPS, NOPROF_REPS, SCENARIOS, STEADY_MS, DUMP_AFTER_MS, SAMPLE_DELAY_S
+#   CPUS (4), ARMS, REPS, NOPROF_REPS, SCENARIOS, STEADY_MS, DUMP_AFTER_MS, SAMPLE_DELAY_S
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

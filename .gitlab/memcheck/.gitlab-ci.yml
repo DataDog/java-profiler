@@ -32,3 +32,48 @@ memcheck-phase0:x64:
     paths:
       - build/memcheck-*/
     expire_in: 30 days
+
+# Memory overhead check for every PR (PROF-16186). Each scenario runs with
+# the profiler and NMT (whose records also carry the profiler's own counters)
+# and without the profiler, in the same job, so the NMT overhead is taken as
+# profiled minus no-profiler on the same pod at the same time. The scenarios
+# are split over two jobs to keep the wall time near 15 minutes. Report-only
+# until the budget check lands.
+memcheck:x64:
+  stage: benchmarks
+  rules:
+    # Mirrors .benchmarks-skip-rules; CANCELLED (no open PR) comes from
+    # prepare:start's dotenv, which rules cannot see, so the default
+    # before_script ends the job early in that case.
+    - if: '$CANCELLED == "true"'
+      when: never
+    - !reference [.skip-on-release, rules]
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - when: on_success
+  needs:
+    - job: prepare:start
+      artifacts: true
+  tags: ["arch:amd64"]
+  image: ${BUILD_IMAGE_X64_GLIBC}
+  timeout: 1h
+  allow_failure: true
+  parallel:
+    matrix:
+      - SCENARIOS: ["threads allocs mixed", "traces classesM"]
+  variables:
+    CPUS: "4"
+    ARMS: "nmt"
+    REPS: "3"
+    NOPROF_REPS: "2"
+  script:
+    - utils/memcheck/ci-phase0.sh "build/memcheck-pr-$(echo "$SCENARIOS" | tr ' ' '-')"
+  artifacts:
+    when: always
+    paths:
+      - build/memcheck-pr-*/
+    expire_in: 30 days

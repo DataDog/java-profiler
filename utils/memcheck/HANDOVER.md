@@ -32,7 +32,7 @@ All under `utils/memcheck/`:
 | `phase0.sh` | Interleaved repetitions of all scenarios × arms; failures are logged, not fatal. |
 | `phase0-container.sh` | Host wrapper: builds the release lib from a clean clone of the committed HEAD inside the test image, then runs `phase0.sh`. |
 | `ci-phase0.sh` | The same run directly on a CI runner (no container, no core pinning): records the runner's shape in `runner.txt`, builds the release lib from the checkout, runs `phase0.sh`. |
-| `.gitlab/memcheck/.gitlab-ci.yml` | GitLab job `memcheck-phase0:x64` that runs `ci-phase0.sh` (below). |
+| `.gitlab/memcheck/.gitlab-ci.yml` | GitLab jobs: `memcheck-phase0:x64` (one-off noise measurement) and `memcheck:x64` (the per-PR check), both via `ci-phase0.sh` (below). |
 | `analyze_phase0.py` | Host-side: `phase0-report.md` + `phase0-stats.csv` (mean/SD/CV/range per scenario × arm × metric, noise class, NMT delta vs no-profiler). |
 | `results/2026-10-08-aarch64-docker-mac/` | First results (below). The CSV keeps only the `native_mem_*`, NMT and RSS rows. |
 | `results/2026-10-08-x64-aws-m5d4xlarge/` | amd64 Linux results (below), same filtering. |
@@ -385,11 +385,33 @@ NMT `Code` moved by up to −28 MiB, and the profiler's `Code` delta in
      earlier runs, with other JVM settings), and per-job slope estimates
      scatter (331–488 B, 6 runs per job), so the gate has to take the slope
      from the pooled baseline runs, not from a single job.
-7. **Phase 1 (next): a report-only sticky PR comment** from the nmt arm,
-   baseline from `main` artifacts: raw-bytes deltas for `threads`, `traces`,
-   `allocs`, `mixed`; coverage-corrected deltas for `classesM`; NMT
-   `Class`/`Internal` deltas; `Tracing` tripwire; `Code`/`GC`/RSS reported
-   only.
+7. **Phase 1: the PR check** (design agreed 2026-10-22).
+   - **Reference**: the no-profiler runs in the same job, not `main`. NMT
+     overhead = profiled − noprof on the same pod at the same time; in run 3
+     that per-job delta spread ≤ 3 KiB for `Class` and ≤ 15 KiB for
+     `Internal` across the 5 jobs, but up to 5.6 MiB for `Code`, 5.7 MiB for
+     NMT total and 23 MiB for RSS (report only). The profiler counters need
+     no reference (no-profiler is zero) and are checked as absolute values;
+     `classesM` coverage-corrected.
+   - **Budget**: a committed plain-text file (planned
+     `utils/memcheck/budget.txt`, under CODEOWNERS), one line per limit:
+     `scenario metric limit measured [key=value...]`, units B/KiB/MiB, `#`
+     comments. `measured` is the value when the limit was last set (for a
+     "Δ since budget was set" line); the `classesM` correction's cost per
+     method and reference method count are options on its lines. Over
+     budget fails the check; raising a limit is a reviewed change to the
+     file. Limits = measured + at least `max(256 KiB, 4·SD)`.
+   - **Done**: job `memcheck:x64` runs on every PR pipeline (rules mirror
+     `.benchmarks-skip-rules`; `needs: prepare:start` so a branch without a
+     PR skips), `allow_failure: true` for now. Two parallel jobs
+     (`threads allocs mixed`, `traces classesM`), `ARMS=nmt`, 3 profiled +
+     2 noprof reps per scenario, ~15 min each, artifacts
+     `build/memcheck-pr-<scenarios>/`. `phase0.sh` gained `ARMS` and now
+     exits non-zero if any run failed.
+   - **Next**: the evaluator (budget file + records → pass/fail + markdown),
+     an initial `budget.txt` from a calibration run, the PR comment via
+     `.gitlab/scripts/upsert-github-pr-comment.sh`, then drop
+     `allow_failure`. Whether a failing GitLab job can block a GitHub merge
+     depends on branch protection (not checked).
 
-Open decisions: gate reference (delta vs merge-base, committed budget file,
-or both); how much of the `memory-usage-sweep-handoff` tooling to merge.
+Open decision: how much of the `memory-usage-sweep-handoff` tooling to merge.
