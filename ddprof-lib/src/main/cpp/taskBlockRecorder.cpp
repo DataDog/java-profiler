@@ -120,6 +120,21 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
       blocker, unblocking_span_id, snapshot.active_state, true);
 }
 
+#ifdef UNIT_TEST
+static u64 g_monitor_ticks_for_test = 0;
+
+void setMonitorTaskBlockTicksForTest(u64 ticks) {
+  g_monitor_ticks_for_test = ticks;
+}
+#endif
+
+static inline u64 monitorTicks() {
+#ifdef UNIT_TEST
+  if (g_monitor_ticks_for_test != 0) return g_monitor_ticks_for_test;
+#endif
+  return TSC::ticks();
+}
+
 static u64 monitorBlockerHash(jvmtiEnv *jvmti, jobject object) {
   if (object == NULL) return 0;
   jint hash = 0;
@@ -151,7 +166,7 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
   ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
   if (!tf->unfilteredWallTrackingActive() || slot_id < 0) return;
   current->refreshBlockState(tf->slotForId(slot_id)->recordingEpoch());
-  if (!current->monitorEnter(TSC::ticks(), context, /*blocker=*/0, state)) {
+  if (!current->monitorEnter(monitorTicks(), context, /*blocker=*/0, state)) {
     u64 token = current->monitorBlockToken();
     bool current_owner = false;
     if (token != 0) {
@@ -171,7 +186,7 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
       return;
     }
     current->clearMonitorBlock();
-    if (!current->monitorEnter(TSC::ticks(), context, /*blocker=*/0, state)) {
+    if (!current->monitorEnter(monitorTicks(), context, /*blocker=*/0, state)) {
       return;
     }
   }
@@ -212,7 +227,7 @@ static void monitorBlockExit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
   // an identity hash also prevents the object from being biased again.
   // These conditions mirror taskBlockPassesBasicEligibility, and the same
   // end_ticks is handed down so there is no boundary drift.
-  u64 end_ticks = TSC::ticks();
+  u64 end_ticks = monitorTicks();
   if (profiler->taskBlockEnabled() && profiler->nativeMonitorTaskBlockEnabled() &&
       context.spanId == 0 && exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
     blocker = monitorBlockerHash(jvmti, object);

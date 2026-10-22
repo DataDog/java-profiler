@@ -15,6 +15,11 @@
 void initializeTaskBlockDurationThreshold();
 bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks);
 
+#ifdef UNIT_TEST
+// Overrides monitor callback timestamps; zero restores the real clock.
+void setMonitorTaskBlockTicksForTest(u64 ticks);
+#endif
+
 // Starts a producer-owned run after flushing the preceding unowned wall tail.
 // Called on the slot's owning thread, so pausing fallback accumulation also
 // prevents a profiling signal from adding weight between the flush and admission.

@@ -67,7 +67,8 @@ public:
     static constexpr LoadState FullyLoaded()   { return JVMSupport::Fully_loaded; }
 };
 
-class JvmSupportThreadClassificationTest : public ::testing::Test {
+// Run the JNI classification contract with VM::isHotspot() both false and true.
+class JvmSupportThreadClassificationTest : public ::testing::TestWithParam<bool> {
 protected:
     using JniFunction = void (JNICALL*)();
 
@@ -96,7 +97,7 @@ protected:
 
     void SetUp() override {
         _orig_hotspot = VMTestAccessor::getHotspot();
-        VMTestAccessor::setHotspot(true);
+        VMTestAccessor::setHotspot(GetParam());
         jni_version = 0x00150000;
         virtual_thread = JNI_FALSE;
         is_virtual_thread_calls = 0;
@@ -114,32 +115,35 @@ protected:
     }
 };
 
-TEST_F(JvmSupportThreadClassificationTest, NullInputsFailClosed) {
+INSTANTIATE_TEST_SUITE_P(JvmImplementations, JvmSupportThreadClassificationTest,
+                        ::testing::Bool());
+
+TEST_P(JvmSupportThreadClassificationTest, NullInputsFailClosed) {
     EXPECT_FALSE(JVMSupport::isPlatformThread(nullptr, thread));
     EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, nullptr));
 }
 
-TEST_F(JvmSupportThreadClassificationTest, InvalidJniVersionFailsClosed) {
+TEST_P(JvmSupportThreadClassificationTest, InvalidJniVersionFailsClosed) {
     jni_version = 0;
     EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
     EXPECT_EQ(0, is_virtual_thread_calls);
 }
 
-TEST_F(JvmSupportThreadClassificationTest, PreJni19ThreadIsPlatform) {
+TEST_P(JvmSupportThreadClassificationTest, PreJni19ThreadIsPlatform) {
     jni_version = 0x000a0000;
     function_table[IS_VIRTUAL_THREAD_INDEX] = nullptr;
     EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
     EXPECT_EQ(0, is_virtual_thread_calls);
 }
 
-TEST_F(JvmSupportThreadClassificationTest, Jni19PlatformThreadIsAccepted) {
+TEST_P(JvmSupportThreadClassificationTest, Jni19PlatformThreadIsAccepted) {
     jni_version = 0x00130000;
     EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
     EXPECT_EQ(1, is_virtual_thread_calls);
     EXPECT_EQ(thread, last_thread);
 }
 
-TEST_F(JvmSupportThreadClassificationTest, Jni19VirtualThreadIsRejected) {
+TEST_P(JvmSupportThreadClassificationTest, Jni19VirtualThreadIsRejected) {
     jni_version = 0x00130000;
     virtual_thread = JNI_TRUE;
     EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
@@ -147,21 +151,21 @@ TEST_F(JvmSupportThreadClassificationTest, Jni19VirtualThreadIsRejected) {
     EXPECT_EQ(thread, last_thread);
 }
 
-TEST_F(JvmSupportThreadClassificationTest, MissingJni19FunctionFailsClosed) {
+TEST_P(JvmSupportThreadClassificationTest, MissingJni19FunctionFailsClosed) {
     jni_version = 0x00130000;
     function_table[IS_VIRTUAL_THREAD_INDEX] = nullptr;
     EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
     EXPECT_EQ(0, is_virtual_thread_calls);
 }
 
-TEST_F(JvmSupportThreadClassificationTest, Jni20PlatformThreadIsAccepted) {
+TEST_P(JvmSupportThreadClassificationTest, Jni20PlatformThreadIsAccepted) {
     jni_version = 0x00140000;
     EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
     EXPECT_EQ(1, is_virtual_thread_calls);
     EXPECT_EQ(thread, last_thread);
 }
 
-TEST_F(JvmSupportThreadClassificationTest, Jni20VirtualThreadIsRejected) {
+TEST_P(JvmSupportThreadClassificationTest, Jni20VirtualThreadIsRejected) {
     jni_version = 0x00140000;
     virtual_thread = JNI_TRUE;
     EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
@@ -169,87 +173,29 @@ TEST_F(JvmSupportThreadClassificationTest, Jni20VirtualThreadIsRejected) {
     EXPECT_EQ(thread, last_thread);
 }
 
-TEST_F(JvmSupportThreadClassificationTest, MissingJni20FunctionFailsClosed) {
+TEST_P(JvmSupportThreadClassificationTest, MissingJni20FunctionFailsClosed) {
     jni_version = 0x00140000;
     function_table[IS_VIRTUAL_THREAD_INDEX] = nullptr;
     EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
     EXPECT_EQ(0, is_virtual_thread_calls);
 }
 
-TEST_F(JvmSupportThreadClassificationTest, Jni21PlatformThreadIsAccepted) {
+TEST_P(JvmSupportThreadClassificationTest, Jni21PlatformThreadIsAccepted) {
     EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
     EXPECT_EQ(1, is_virtual_thread_calls);
     EXPECT_EQ(thread, last_thread);
 }
 
-TEST_F(JvmSupportThreadClassificationTest, Jni21VirtualThreadIsRejected) {
+TEST_P(JvmSupportThreadClassificationTest, Jni21VirtualThreadIsRejected) {
     virtual_thread = JNI_TRUE;
     EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
     EXPECT_EQ(1, is_virtual_thread_calls);
     EXPECT_EQ(thread, last_thread);
 }
 
-TEST_F(JvmSupportThreadClassificationTest, MissingJni21FunctionFailsClosed) {
+TEST_P(JvmSupportThreadClassificationTest, MissingJni21FunctionFailsClosed) {
     function_table[IS_VIRTUAL_THREAD_INDEX] = nullptr;
     EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
-    EXPECT_EQ(0, is_virtual_thread_calls);
-}
-
-// ---------------------------------------------------------------------------
-// JvmSupportNonHotspotTest — verifies isPlatformThread() short-circuits to
-// true on non-HotSpot JVMs at JNI>=19 without ever indexing the HotSpot-only
-// IsVirtualThread vtable slot (which may not even be a valid function
-// pointer there).
-// ---------------------------------------------------------------------------
-class JvmSupportNonHotspotTest : public ::testing::Test {
-protected:
-    using JniFunction = void (JNICALL*)();
-
-    static constexpr int GET_VERSION_INDEX = 4;
-    static constexpr int IS_VIRTUAL_THREAD_INDEX = 234;
-    static constexpr int FUNCTION_TABLE_SIZE = IS_VIRTUAL_THREAD_INDEX + 1;
-
-    inline static jint jni_version;
-    inline static int is_virtual_thread_calls;
-
-    JniFunction function_table[FUNCTION_TABLE_SIZE]{};
-    JNIEnv jni{};
-    _jobject thread_object;
-    jthread thread = &thread_object;
-    bool _orig_hotspot = false;
-
-    static jint JNICALL getVersion(JNIEnv*) { return jni_version; }
-    static jboolean JNICALL isVirtualThread(JNIEnv*, jobject) {
-        is_virtual_thread_calls++;
-        return JNI_TRUE;
-    }
-
-    void SetUp() override {
-        _orig_hotspot = VMTestAccessor::getHotspot();
-        VMTestAccessor::setHotspot(false);
-        jni_version = 0x00150000;
-        is_virtual_thread_calls = 0;
-        function_table[GET_VERSION_INDEX] =
-            reinterpret_cast<JniFunction>(&getVersion);
-        function_table[IS_VIRTUAL_THREAD_INDEX] =
-            reinterpret_cast<JniFunction>(&isVirtualThread);
-        jni.functions =
-            reinterpret_cast<const JNINativeInterface_*>(function_table);
-    }
-
-    void TearDown() override {
-        VMTestAccessor::setHotspot(_orig_hotspot);
-    }
-};
-
-TEST_F(JvmSupportNonHotspotTest, Jni21ThreadIsAcceptedWithoutIndexingVtable) {
-    EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
-    EXPECT_EQ(0, is_virtual_thread_calls);
-}
-
-TEST_F(JvmSupportNonHotspotTest, PreJni19ThreadIsStillAccepted) {
-    jni_version = 0x000a0000;
-    EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
     EXPECT_EQ(0, is_virtual_thread_calls);
 }
 

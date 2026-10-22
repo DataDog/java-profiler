@@ -192,6 +192,105 @@ TEST_F(TaskBlockProducersTest, InflightMonitorExitCleansUpAfterAdmissionCloses) 
     EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
 }
 
+class MonitorTaskBlockHashTest : public TaskBlockProducersTest,
+                                 public ::testing::WithParamInterface<bool> {
+protected:
+    inline static int hash_calls;
+    inline static jobject hashed_object;
+    inline static int record_calls;
+    inline static TaskBlockEvent recorded_event;
+    static constexpr jint MONITOR_HASH = -12345;
+    _jobject monitor;
+
+    void SetUp() override {
+        TaskBlockProducersTest::SetUp();
+        Counters::reset();
+        initializeTaskBlockDurationThreshold();
+        hash_calls = 0;
+        hashed_object = nullptr;
+        record_calls = 0;
+        recorded_event = {};
+        jvmti_functions.GetObjectHashCode = [](jvmtiEnv*, jobject object, jint* hash) -> jvmtiError {
+            hash_calls++;
+            hashed_object = object;
+            *hash = MONITOR_HASH;
+            return JVMTI_ERROR_NONE;
+        };
+        Profiler::setTaskBlockRecordOverrideForTest(
+            [](int, jthread, int, TaskBlockEvent* event) {
+                record_calls++;
+                recorded_event = *event;
+                return Profiler::TaskBlockRecordResult::RECORDED;
+            });
+    }
+
+    void TearDown() override {
+        setMonitorTaskBlockTicksForTest(0);
+        TaskBlockProducersTest::TearDown();
+        Counters::reset();
+    }
+
+    void enterMonitor() {
+        if (GetParam()) {
+            MonitorWait(&jvmti, &jni, testThread(), &monitor, 100);
+        } else {
+            MonitorContendedEnter(&jvmti, &jni, testThread(), &monitor);
+        }
+    }
+
+    void exitMonitor() {
+        if (GetParam()) {
+            MonitorWaited(&jvmti, &jni, testThread(), &monitor, JNI_FALSE);
+        } else {
+            MonitorContendedEntered(&jvmti, &jni, testThread(), &monitor);
+        }
+    }
+};
+
+INSTANTIATE_TEST_SUITE_P(MonitorCallbacks, MonitorTaskBlockHashTest, ::testing::Bool());
+
+TEST_P(MonitorTaskBlockHashTest, ShortBlockSkipsHashAndNextEligibleBlockHashesOnce) {
+    u64 min_ticks = TSC::frequency() / 1000;
+    ASSERT_GT(min_ticks, 1u);
+    u64 start_ticks = 100;
+    setMonitorTaskBlockTicksForTest(start_ticks);
+    enterMonitor();
+    ASSERT_NE(0u, current->monitorBlockToken());
+    EXPECT_EQ(0, hash_calls) << "Entry must not resolve the monitor hash";
+
+    setMonitorTaskBlockTicksForTest(start_ticks + min_ticks - 1);
+    exitMonitor();
+    EXPECT_EQ(0, hash_calls) << "A below-threshold exit must not resolve the monitor hash";
+    EXPECT_EQ(0, record_calls);
+    EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
+    EXPECT_EQ(0u, current->monitorBlockToken());
+    EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
+
+    start_ticks += min_ticks + 100;
+    setMonitorTaskBlockTicksForTest(start_ticks);
+    enterMonitor();
+    ASSERT_NE(0u, current->monitorBlockToken());
+    EXPECT_EQ(0, hash_calls);
+
+    setMonitorTaskBlockTicksForTest(start_ticks + min_ticks);
+    exitMonitor();
+    EXPECT_EQ(1, hash_calls);
+    EXPECT_EQ(&monitor, hashed_object);
+    EXPECT_EQ(1, record_calls);
+    EXPECT_EQ(static_cast<u64>(static_cast<uint32_t>(MONITOR_HASH)), recorded_event._blocker);
+    EXPECT_EQ(start_ticks, recorded_event._start);
+    EXPECT_EQ(start_ticks + min_ticks, recorded_event._end);
+    EXPECT_EQ(GetParam() ? OSThreadState::OBJECT_WAIT : OSThreadState::MONITOR_WAIT,
+              recorded_event._observedBlockingState);
+    EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
+    EXPECT_EQ(0u, current->monitorBlockToken());
+    EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
+
+    exitMonitor();
+    EXPECT_EQ(1, hash_calls);
+    EXPECT_EQ(1, record_calls);
+}
+
 TEST_F(TaskBlockProducersTest, ParkLifecycleDoesNotRequireRegistryAdmission) {
     ProfilerTestAccessor::setProducerState(profiler, false);
     registry->deactivateRecording();
