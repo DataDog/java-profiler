@@ -62,6 +62,9 @@ public class FrozenDeoptimizationTest {
                 "-cp", System.getProperty("java.class.path"), getClass().getName(), options[0],
                 LibraryLoader.resolveLibraryPath(System.getProperty("java.io.tmpdir")).toString(),
                 recording.toString(), options[1]));
+        if (Platform.isGraal()) {
+            command.add(1, "-XX:-UseJVMCICompiler");
+        }
         Process child = new ProcessBuilder(command).redirectErrorStream(true)
                 .redirectOutput(output.toFile()).start();
         boolean passed = false;
