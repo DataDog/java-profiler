@@ -390,6 +390,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     // Last ContinuationEntry crossed; advanced via parent() for nested continuations.
     VMContinuationEntry* cont_entry = nullptr;
+    int continuation_stack_args = -1;
+    VMNMethod* continuation_entry_nm = VMStructs::enterSpecialNMethod();
 
     // Saved anchor data — preserved across anchor consumption so inline
     // recovery can redirect even after the anchor pointer has been set to NULL.
@@ -459,18 +461,21 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             }
             entry_fp = cont_entry->entryFP();
         } else {
-            // ContinuationEntry absent from vmStructs (JDK 21-26).
-            // Derive the enterSpecial frame FP from the current fp:
-            //   all frames thawed (pc == cont_entry_return_pc): fp IS the
-            //     enterSpecial frame FP.
-            //   frozen frames remain (pc == cont_returnBarrier): the saved
-            //     caller FP at *fp leads to the enterSpecial frame on the
-            //     carrier stack.
-            // Nested continuation tracking is unavailable without type_size().
-            entry_fp = all_frames_thawed ? fp : (uintptr_t)SafeAccess::load((void**)fp);
+            VMNMethod* entry_nm = continuation_entry_nm;
+            bool known_boundary = VMStructs::isContReturnBarrier(walk_pc.raw())
+                    || VMStructs::isContEntryReturnPc(walk_pc.raw())
+                    || (entry_nm != nullptr && CodeHeap::findNMethod(walk_pc.raw()) == entry_nm);
+            if (entry_nm != nullptr && known_boundary) {
+                // Fast thaw does not repair FP links. Recover the entry from SP,
+                // stack-argument padding and enterSpecial's generated frame size.
+                entry_fp = entry_nm->continuationEntryFP(sp, all_frames_thawed ? 0 : continuation_stack_args);
+            } else {
+                entry_fp = all_frames_thawed ? fp : 0;
+            }
         }
 
-        if (!StackWalkValidation::isValidFP(entry_fp)) {
+        if (!StackWalkValidation::isValidFP(entry_fp) || entry_fp < sp ||
+                entry_fp >= bottom || bottom - entry_fp <= (FRAME_PC_SLOT + 1) * sizeof(void*)) {
             fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
             return false;
         }
@@ -481,7 +486,14 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         uintptr_t carrier_fp = *carrier_fp_addr;
         const void* carrier_pc = ((const void**)carrier_fp_addr)[FRAME_PC_SLOT];
         uintptr_t carrier_sp = entry_fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
-        if (!StackWalkValidation::isValidFP(carrier_fp) ||
+        // Compiled carrier code can use FP as a general-purpose register.
+        // Its sender is recovered from nmethod frame metadata instead.
+        bool valid_carrier_fp = StackWalkValidation::isValidFP(carrier_fp);
+        if (!valid_carrier_fp) {
+            VMNMethod* carrier_nm = CodeHeap::findNMethod(carrier_pc);
+            valid_carrier_fp = carrier_nm != nullptr && carrier_nm->isNMethod();
+        }
+        if (!valid_carrier_fp ||
             StackWalkValidation::inDeadZone(carrier_pc) ||
             !StackWalkValidation::isValidSP(carrier_sp, sp, bottom)) {
             fillFrame(frames[depth++], BCI_ERROR, "break_cont_carrier_sp");
@@ -621,6 +633,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
                         walk_pc.setReturnAddress(stripPointer(((void**)fp)[FRAME_PC_SLOT]));
                         fp = *(uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
+                        continuation_stack_args = 0;
                         continue;
                     }
                 }
@@ -652,7 +665,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 // continuation entry stub on JDK 27+. It has no JavaCallWrapper, so
                 // isEntryFrame() will not fire for it. Detect it by identity
                 // and navigate to the carrier thread via ContinuationEntry.
-                if (!CONT_UNWIND_DISABLED && nm == VMStructs::enterSpecialNMethod()) {
+                if (!CONT_UNWIND_DISABLED && nm == continuation_entry_nm) {
                     Counters::increment(WALKVM_ENTER_SPECIAL_HIT);
                     if (walkThroughContinuation(true)) continue;
                     break;
@@ -712,6 +725,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         break;
                     }
                     sp = (uintptr_t)INJECT_FAULT_ADDRESS_UNLIKELY(sp);
+                    if (features.carrier_frames && VMContinuationEntry::type_size() == 0) {
+                        VMConstMethod* const_method = method->constMethod_or_null();
+                        continuation_stack_args = const_method != nullptr ? const_method->stackArgWords() : -1;
+                        // nmethod sets its stack-argument count to zero for OSR entries.
+                        if (continuation_stack_args > 0 && nm->isOsr()) continuation_stack_args = 0;
+                    }
                     fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
                     // Saved return address of the caller frame.
                     walk_pc.setReturnAddress(((const void**)sp)[-FRAME_PC_SLOT]);

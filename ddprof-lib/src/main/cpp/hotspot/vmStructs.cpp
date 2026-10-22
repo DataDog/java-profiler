@@ -420,7 +420,10 @@ void VMStructs::resolveOffsets() {
     }
     if (_cont_entry_return_pc == nullptr && VM::hotspot_version() >= 21) {
         const void** sym = (const void**)_libjvm->findSymbol("_ZN17ContinuationEntry10_return_pcE");
-        if (sym != nullptr) _cont_entry_return_pc = *sym;
+        if (sym != nullptr) {
+            _cont_entry_return_pc_addr = sym;
+            _cont_entry_return_pc = *sym;
+        }
     }
 
     // Since JDK 23, _metadata_offset is relative to _data_offset. See metadata()
@@ -472,11 +475,6 @@ void VMStructs::resolveOffsets() {
         _interpreter_nm = CodeHeap::findNMethod(_interpreter_start);
     }
     if (_enter_special_nm == NULL && _cont_entry_return_pc != NULL) {
-        // On JDK 27+, enterSpecial is a proper nmethod; findNMethod succeeds.
-        // On JDK 21-26, it is a RuntimeBlob; findNMethod returns NULL and
-        // _enter_special_nm stays NULL.  The cont_entry_return_pc boundary is
-        // then detected via isContEntryReturnPc() in the walk loop rather than
-        // nmethod identity.
         _enter_special_nm = CodeHeap::findNMethod(_cont_entry_return_pc);
     }
 }
