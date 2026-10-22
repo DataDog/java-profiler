@@ -52,44 +52,7 @@
 constexpr size_t KNUTH_MULTIPLICATIVE_CONSTANT = 0x9e3779b97f4a7c15ULL;
 
 #ifdef DEBUG
-    #include <cerrno>
-    #include <cstdarg>
-    #include <unistd.h>
-
-    // Writes one "[TEST::INFO] ..." line to file descriptor 1. Callable from
-    // signal handlers: it formats into a stack buffer and emits the line with
-    // write(2), so unlike stdio it takes no stdout lock (a handler that
-    // interrupts its own thread inside fprintf/fflush would wait on that lock
-    // forever). glibc's vsnprintf() does not lock either. One write() of a line
-    // of at most PIPE_BUF bytes is atomic on a pipe, which is what the tests
-    // reading these lines from child processes rely on. Longer lines are cut.
-    __attribute__((format(printf, 1, 2)))
-    static inline void testLog(const char* fmt, ...) {
-      int saved_errno = errno;
-      char buf[1024];
-      va_list args;
-      va_start(args, fmt);
-      int len = vsnprintf(buf, sizeof(buf) - 1, fmt, args);
-      va_end(args);
-      if (len >= 0) {
-        if ((size_t)len > sizeof(buf) - 2) {
-          len = (int)sizeof(buf) - 2;
-        }
-        buf[len++] = '\n';
-        for (const char* p = buf; len > 0;) {
-          ssize_t written = write(STDOUT_FILENO, p, (size_t)len);
-          if (written < 0 && errno == EINTR) {
-            continue;
-          }
-          if (written <= 0) {
-            break;
-          }
-          p += written;
-          len -= (int)written;
-        }
-      }
-      errno = saved_errno;
-    }
+    #include "testLog.h"
 
     #define DEBUG_ONLY(s) s
     #define TEST_LOG(fmt, ...) testLog("[TEST::INFO] " fmt, ##__VA_ARGS__)
