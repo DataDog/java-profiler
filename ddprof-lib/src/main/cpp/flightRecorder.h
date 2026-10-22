@@ -279,6 +279,10 @@ private:
   // the encoded count can never diverge from what actually gets serialized.
   static size_t countSerializableChildren(
       const std::vector<const Element *> &children, int depth);
+#ifdef DEBUG
+  static void writeUnwindFailureEvent(Buffer *buf, u64 ticks, const char *kind,
+                                     const char *name, u64 count);
+#endif
 
   RecordingBuffer _buf[CONCURRENCY_LEVEL];
   // we have several tables to avoid lock contention

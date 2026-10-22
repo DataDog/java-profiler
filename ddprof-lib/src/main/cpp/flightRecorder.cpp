@@ -2309,19 +2309,29 @@ void Recording::writeCounters(Buffer *buf) {
   }
 }
 
+#ifdef DEBUG
+void Recording::writeUnwindFailureEvent(Buffer *buf, u64 ticks, const char *kind,
+                                       const char *name, u64 count) {
+  // A 255-byte name plus the other fields needs a multi-byte event size.
+  int start = buf->skip(MAX_VAR32_LENGTH);
+  buf->putVar64(T_UNWIND_FAILURE);
+  buf->putVar64(ticks);
+  buf->putUtf8(kind);
+  buf->putUtf8(name);
+  buf->putVar64(count);
+  buf->putVar32(start, buf->offset() - start);
+}
+#endif
+
 void Recording::writeUnwindFailures(Buffer *buf) {
 #ifdef DEBUG
   static UnwindFailures failures;
   UnwindStats::collectAndReset(failures);
 
   failures.forEach([&](UnwindFailureKind kind, const char *name, u64 count) {
-    int start = buf->skip(1);
-    buf->putVar64(T_UNWIND_FAILURE);
-    buf->putVar64(_start_ticks);
-    buf->putUtf8((kind & UNWIND_FAILURE_STUB) ? "stub" : "other");
-    buf->putUtf8(name);
-    buf->putVar64(count);
-    writeEventSizePrefix(buf, start);
+    writeUnwindFailureEvent(buf, _start_ticks,
+                            (kind & UNWIND_FAILURE_STUB) ? "stub" : "other",
+                            name, count);
     flushIfNeeded(buf);
   });
 #endif // DEBUG
