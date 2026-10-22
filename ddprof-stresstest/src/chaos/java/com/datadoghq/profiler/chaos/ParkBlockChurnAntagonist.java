@@ -9,10 +9,7 @@
  */
 package com.datadoghq.profiler.chaos;
 
-import com.datadoghq.profiler.JavaProfiler;
 import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -47,7 +44,7 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
     private final AtomicLong parkCalls = new AtomicLong();
     private final AtomicReference<Throwable> failure = new AtomicReference<>();
     private final Object monitor = new Object();
-    private JavaProfiler profiler;
+    private MethodHandle getDebugCounters;
     private MethodHandle blockEnter;
     private MethodHandle blockExit;
     private MethodHandle parkEnter;
@@ -74,15 +71,16 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
     @Override
     public void start() {
         try {
-            profiler = JavaProfiler.getInstance();
-            blockEnter = bindHook("blockEnter", int.class);
-            blockExit = bindHook("blockExit", long.class);
-            parkEnter = bindHook("parkEnter");
-            parkExit = bindHook("parkExit", long.class, long.class);
+            Object profiler = ProfilerAccess.getInstance();
+            blockEnter = ProfilerAccess.bind(profiler, "blockEnter", int.class);
+            blockExit = ProfilerAccess.bind(profiler, "blockExit", long.class, long.class, long.class);
+            parkEnter = ProfilerAccess.bind(profiler, "parkEnter");
+            parkExit = ProfilerAccess.bind(profiler, "parkExit", long.class, long.class);
+            getDebugCounters = ProfilerAccess.bind(profiler, "getDebugCounters");
         } catch (Exception e) {
             throw new IllegalStateException("Cannot bind profiler owned-block hooks", e);
         }
-        countersBefore = profiler.getDebugCounters();
+        countersBefore = debugCounters();
         running = true;
         driver = new Thread(() -> {
             try {
@@ -110,7 +108,7 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
         if (failure.get() != null) throw new IllegalStateException("Owned-block worker failed", failure.get());
         System.out.println("[chaos] park-block-churn completed=" + totalBlocks.get()
                 + " armed_sleeps=" + armedSleepingRuns.get() + " park_calls=" + parkCalls.get()
-                + " suppressed=" + counterDelta("wc_signals_suppressed_sampled_run"));
+                + " suppressed=" + counterDelta("wc_signals_suppressed_owned_block"));
     }
 
     /** Requires native hooks, unfiltered timer lookups, and timer-side suppression to run. */
@@ -120,7 +118,7 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
         }
         for (String counter : new String[] {
                 "wc_precheck_registry_lookups", "wc_precheck_candidates_rejected",
-                "wc_signals_suppressed_sampled_run"}) {
+                "wc_signals_suppressed_owned_block"}) {
             long delta = counterDelta(counter);
             if (delta <= 0) {
                 throw new IllegalStateException("No precheck coverage for " + counter
@@ -129,16 +127,19 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
         }
     }
 
-    /** Resolves hooks on JavaProfiler's runtime class, including the injected agent's loader. */
-    private MethodHandle bindHook(String name, Class<?>... parameterTypes) throws ReflectiveOperationException {
-        Method method = JavaProfiler.class.getDeclaredMethod(name, parameterTypes);
-        method.setAccessible(true);
-        return MethodHandles.lookup().unreflect(method).bindTo(profiler);
+    /** Reads counters from the same profiler instance as the owned-block hooks. */
+    @SuppressWarnings("unchecked")
+    private Map<String, Long> debugCounters() {
+        try {
+            return (Map<String, Long>) getDebugCounters.invokeExact();
+        } catch (Throwable t) {
+            throw new IllegalStateException("Cannot read profiler counters", t);
+        }
     }
 
     private long counterDelta(String name) {
         long before = countersBefore.getOrDefault(name, -1L);
-        long after = profiler.getDebugCounters().getOrDefault(name, -1L);
+        long after = debugCounters().getOrDefault(name, -1L);
         return before < 0 || after < 0 ? -1 : after - before;
     }
 
@@ -190,12 +191,12 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
                     sleepOwned(blockMillis);
                     break;
                 case 1:
-                    parkEnter.invokeExact();
+                    boolean ownsPark = (boolean) parkEnter.invokeExact();
                     parkCalls.incrementAndGet();
                     try {
                         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(blockMillis));
                     } finally {
-                        parkExit.invokeExact(0L, 0L);
+                        if (ownsPark) parkExit.invokeExact(0L, 0L);
                     }
                     break;
                 case 2:
@@ -228,7 +229,7 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
         try {
             Thread.sleep(millis);
         } finally {
-            blockExit.invokeExact(token);
+            blockExit.invokeExact(token, 0L, 0L);
         }
     }
 }

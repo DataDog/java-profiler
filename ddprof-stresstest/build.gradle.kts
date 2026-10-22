@@ -86,8 +86,8 @@ dependencies {
   // dd-trace-api: annotations only at compile time. The patched dd-java-agent
   // provides the (relocated) runtime classes and intercepts @Trace.
   "chaosCompileOnly"(libs.dd.trace.api)
-  // ddprof-lib public API: compile-only; the patched dd-java-agent provides the
-  // classes at runtime for antagonists that call JavaProfiler directly.
+  // ddprof-lib public API: compile-only. At runtime ProfilerAccess binds calls
+  // through the patched agent's isolated loader instead of the application loader.
   "chaosCompileOnly"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
   "chaosTestImplementation"(libs.bundles.testing)
   "chaosTestImplementation"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
@@ -113,6 +113,13 @@ tasks.register<Test>("testOwnedBlockPrecheck") {
   testClassesDirs = sourceSets["chaosTest"].output.classesDirs
   classpath = sourceSets["chaosTest"].runtimeClasspath
   setExecutable(PlatformUtils.testJavaExecutable())
+  dependsOn("chaosJar")
+  systemProperty("chaos.harness.jar", layout.buildDirectory.file("libs/chaos.jar").get().asFile.absolutePath)
+  providers.gradleProperty("chaosAgentJar").orNull?.let {
+    val agentJar = file(it)
+    systemProperty("chaos.agent.jar", agentJar.absolutePath)
+    inputs.file(agentJar).withPropertyName("chaosAgentJar")
+  }
   useJUnitPlatform()
 }
 
