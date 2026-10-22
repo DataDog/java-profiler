@@ -5,12 +5,27 @@
 
 package com.datadoghq.profiler;
 
+import com.datadoghq.profiler.referencechains.LeakTagCorrelationScenario;
+import com.datadoghq.profiler.referencechains.LeakingCacheScenario;
+import com.datadoghq.profiler.referencechains.StaticFieldGrowingCollectionScenario;
+import com.datadoghq.profiler.referencechains.ThreadLocalLeakScenario;
+
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Method;
+import java.math.BigInteger;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Random;
+import java.util.TreeMap;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * External launcher for the profiler under test.
@@ -26,10 +41,44 @@ import java.util.concurrent.atomic.LongAdder;
  *     <li>profiler-sequence [';'-delimited steps] - runs a sequence of start/stop calls in this
  *     process; each step is either the literal {@code STOP} (calls {@link JavaProfiler#stop()})
  *     or a comma delimited profiler command list (calls {@link JavaProfiler#execute(String)})</li>
+ *     <li>lazy-trace-id &lt;comma delimited profiler command list, required&gt; - starts the profiler, spins
+ *     in {@code com.datadoghq.profiler.generated.LazyTraceIdProbe} (defined by its own class loader, so it
+ *     has no jmethodIDs until the profiler resolves its frames) and stops the profiler</li>
  *     <li>entry-frames &lt;comma delimited profiler command list, required&gt; - starts the profiler, then burns
  *     CPU concurrently on the main thread, on a plain {@code new Thread(Runnable)} and on a
  *     two-level {@link Thread} subclass, and stops the profiler again. The resulting recording
  *     holds samples rooted at each of the three thread entry points; see {@code EntryFrameTest}</li>
+ *     <li>leak-cache "&lt;start command&gt;|||&lt;scratch dump path&gt;" - starts the profiler with
+ *     the given start command, then runs {@link LeakingCacheScenario} in this process and exits
+ *     directly once it prints its one result line (no readiness/stdin-signal handshake, unlike
+ *     the modes above). Used by {@code ExternalProcessReferenceChainTest} to prove the
+ *     reference-chains mechanism against a genuinely separate JVM - a separate process is
+ *     load-bearing there because the one-shot root-seeded BFS walk is a process-wide,
+ *     once-ever resource.</li>
+ *     <li>leak-static-field "&lt;start command&gt;|||&lt;scratch dump path&gt;" - same packing and
+ *     lifecycle as {@code leak-cache} above, but runs {@link StaticFieldGrowingCollectionScenario}:
+ *     a {@code static final List<byte[]>} field appended to (never reassigned) after its owning
+ *     class has already been swept once by {@code admitStaticFieldRoots()} - mirroring the real
+ *     leak generator found in the {@code prof-analyzer-hotdog-jb} pod.</li>
+ *     <li>leak-correlation "&lt;start command&gt;|||&lt;scratch dump path&gt;" - same packing and
+ *     lifecycle as {@code leak-cache} above, but runs {@link LeakTagCorrelationScenario}: a
+ *     static-collection leak coexisting with ephemeral stack-local noise and a large live filler
+ *     graph, asserting the emitted chain's targetTag is a leak-tag-pool tag matching a
+ *     HeapLiveObject's leakTag.</li>
+ *     <li>threadlocal-leak / threadlocal-leak-late "&lt;start command&gt;|||&lt;scratch dump path&gt;" -
+ *     same packing and lifecycle as {@code leak-cache} above, but runs
+ *     {@link ThreadLocalLeakScenario}: a growing {@code byte[]} collection held only through the
+ *     leaking thread's {@code ThreadLocal} map; the {@code -late} variant starts the leak thread
+ *     only after the recording began (see that scenario's own comment).</li>
+ *     <li>lazy-calibration-preexisting-arrays &lt;comma delimited profiler command list, required&gt; -
+ *     creates {@code Void} arrays of dimensions 1 to the {@code ddprof_test.calibration_dims} system
+ *     property (default 0), each with a hundred class definitions in between, then starts the
+ *     profiler, prints the {@code klass_trace_id_offset} counter and stops it; see
+ *     {@code LazyTraceIdCalibrationTest}</li>
+ *     <li>line-numbers &lt;';'-delimited profiler command lists, required&gt; - for each command list in
+ *     turn, starts the profiler, runs the same JDK-heavy workload, prints the
+ *     {@code method_resolve_lazy_resolved} counter and stops the profiler; see
+ *     {@code LazyLineNumberConsistencyTest}</li>
  * </ul>
  */
 public class ExternalLauncher {
@@ -119,6 +168,55 @@ public class ExternalLauncher {
         entryFrameSink = acc;
     }
 
+    /**
+     * Splits a scenario mode's single {@code "<start command>|||<scratch dump path>"} argument
+     * (packed so launch()'s (target, commands) contract needs no extra argument).
+     */
+    private static String[] unpackScenarioArgs(String mode, String[] args) {
+        String packed = args.length == 2 ? args[1] : "";
+        int sep = packed.indexOf("|||");
+        if (sep < 0) {
+            throw new IllegalArgumentException(
+                mode + " requires \"<start command>|||<scratch dump path>\", got: " + packed);
+        }
+        return new String[] {packed.substring(0, sep), packed.substring(sep + "|||".length())};
+    }
+
+    /** How long the {@code line-numbers} workload runs under each command list. */
+    private static final long LINE_NUMBER_WORKLOAD_MILLIS = 1500;
+
+    private static volatile long lineNumberSink;
+
+    /**
+     * Spends its time in many different JDK methods (regular expressions, formatting, maps,
+     * sorting, big-integer arithmetic), so that their frames, and the lines of their bytecode
+     * indices, show up in the recording.
+     */
+    private static void runLineNumberWorkload() {
+        Pattern pattern = Pattern.compile("([a-z]+)-(\\d+)");
+        Random rnd = new Random(42);
+        long acc = 0;
+        long deadline = System.currentTimeMillis() + LINE_NUMBER_WORKLOAD_MILLIS;
+        while (System.currentTimeMillis() < deadline) {
+            Map<String, Integer> counts = new HashMap<>();
+            TreeMap<Integer, String> sorted = new TreeMap<>();
+            List<String> words = new ArrayList<>();
+            for (int i = 0; i < 200; i++) {
+                String word = String.format("%s-%d", Long.toString(rnd.nextInt(1 << 20), 36), i);
+                Matcher m = pattern.matcher(word);
+                if (m.matches()) {
+                    counts.merge(m.group(1), m.group(2).length(), Integer::sum);
+                }
+                sorted.put(word.hashCode(), word);
+                words.add(word.toUpperCase());
+            }
+            Collections.sort(words);
+            BigInteger big = BigInteger.valueOf(rnd.nextLong()).pow(8).mod(BigInteger.valueOf(1_000_000_007L));
+            acc += counts.size() + sorted.firstKey() + words.get(0).length() + big.intValue();
+        }
+        lineNumberSink = acc;
+    }
+
     public static void main(String[] args) throws Exception {
         Thread worker = null;
         try {
@@ -157,6 +255,48 @@ public class ExternalLauncher {
                             instance.execute(step);
                         }
                     }
+                }
+            } else if (args[0].equals("lazy-trace-id")) {
+                if (args.length < 2 || args[1].isEmpty()) {
+                    throw new IllegalArgumentException("lazy-trace-id requires a profiler command list");
+                }
+                JavaProfiler instance = JavaProfiler.getInstance();
+                instance.execute(args[1]);
+                Class<?> probe = SpinClasses.define("com/datadoghq/profiler/generated/LazyTraceIdProbe");
+                probe.getMethod("spin", long.class).invoke(null, 2_000_000_000L);
+                // Stopping dumps the recording, which resolves the probe's raw frames.
+                instance.stop();
+            } else if (args[0].equals("lazy-calibration-preexisting-arrays")) {
+                if (args.length < 2 || args[1].isEmpty()) {
+                    throw new IllegalArgumentException("lazy-calibration-preexisting-arrays requires a profiler command list");
+                }
+                int dims = Integer.getInteger("ddprof_test.calibration_dims", 0);
+                Class<?> arrayClass = Void.class;
+                for (int dim = 1; dim <= dims; dim++) {
+                    for (int i = 0; i < 100; i++) {
+                        SpinClasses.define("com/datadoghq/profiler/generated/CalibrationGap" + dim + "_" + i);
+                    }
+                    arrayClass = java.lang.reflect.Array.newInstance(arrayClass, 0).getClass();
+                }
+                JavaProfiler instance = JavaProfiler.getInstance();
+                instance.execute(args[1]);
+                System.out.println("[calibration] klass_trace_id_offset="
+                        + instance.getDebugCounters().get("klass_trace_id_offset")
+                        + " arrays=" + arrayClass.getName());
+                instance.stop();
+            } else if (args[0].equals("line-numbers")) {
+                if (args.length < 2 || args[1].isEmpty()) {
+                    throw new IllegalArgumentException("line-numbers requires profiler command lists");
+                }
+                JavaProfiler instance = JavaProfiler.getInstance();
+                for (String commands : args[1].split(";")) {
+                    instance.execute(commands);
+                    runLineNumberWorkload();
+                    // Counters are reset on start, so read them while this session's are current;
+                    // the dump on stop() resolves the raw frames, so stop first.
+                    instance.stop();
+                    System.out.println("[line-numbers] method_resolve_lazy_resolved="
+                            + instance.getDebugCounters().get("method_resolve_lazy_resolved"));
                 }
             } else if (args[0].equals("entry-frames")) {
                 // Unlike the modes above, this one is only meaningful with a running profiler:
@@ -201,6 +341,61 @@ public class ExternalLauncher {
                         worker.start();
                     }
                 }
+            } else if (args[0].equals("leak-cache")) {
+                // "<start command>|||<scratch dump path>" packed into one args[1] string rather
+                // than extending launch()'s generic (target, commands) contract with a 3rd
+                // argument every other mode would have to ignore.
+                String[] packed = unpackScenarioArgs("leak-cache", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
+                JavaProfiler instance = JavaProfiler.getInstance();
+                // The scenario itself calls execute(commands) - it needs to seed its cache fixture
+                // *before* starting the profiler.
+                LeakingCacheScenario.run(instance, commands, Paths.get(scratchPath));
+                System.out.flush();
+                // Exits here rather than falling through to the shared "[ready]" + stdin-signal
+                // handshake: this mode runs to completion in one shot and has already printed its
+                // result line.
+                System.exit(0);
+            } else if (args[0].equals("leak-static-field")) {
+                // Same packing as leak-cache (unpackScenarioArgs()).
+                String[] packed = unpackScenarioArgs("leak-static-field", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
+                JavaProfiler instance = JavaProfiler.getInstance();
+                StaticFieldGrowingCollectionScenario.run(instance, commands, Paths.get(scratchPath));
+                System.out.flush();
+                System.exit(0);
+            } else if (args[0].equals("leak-correlation")) {
+                // Same packing as leak-cache (unpackScenarioArgs()).
+                String[] packed = unpackScenarioArgs("leak-correlation", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
+                JavaProfiler instance = JavaProfiler.getInstance();
+                LeakTagCorrelationScenario.run(instance, commands, Paths.get(scratchPath));
+                System.out.flush();
+                System.exit(0);
+            } else if (args[0].equals("threadlocal-leak")) {
+                // Same packing as leak-cache (unpackScenarioArgs()).
+                String[] packed = unpackScenarioArgs("threadlocal-leak", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
+                JavaProfiler instance = JavaProfiler.getInstance();
+                ThreadLocalLeakScenario.run(instance, commands, Paths.get(scratchPath));
+                System.out.flush();
+                System.exit(0);
+            } else if (args[0].equals("threadlocal-leak-late")) {
+                // Same packing as threadlocal-leak (unpackScenarioArgs()), but the leak thread is
+                // started only AFTER the recording began - the regression shape for
+                // Profiler::onThreadStart's registerThreadObject() wiring
+                // (ThreadLocalLeakScenario.run()'s lateThread comment).
+                String[] packed = unpackScenarioArgs("threadlocal-leak-late", args);
+                String commands = packed[0];
+                String scratchPath = packed[1];
+                JavaProfiler instance = JavaProfiler.getInstance();
+                ThreadLocalLeakScenario.run(instance, commands, Paths.get(scratchPath), true);
+                System.out.flush();
+                System.exit(0);
             }
         } finally {
             System.out.println("[ready]");

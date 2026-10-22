@@ -14,6 +14,7 @@
 #include "event.h"
 #include "spinLock.h"
 #include "xorshift.h"
+#include <assert.h>
 #include <atomic>
 #include <jvmti.h>
 #include <pthread.h>
@@ -571,13 +572,38 @@ private:
   // holder excludes the exclusive one, but only this dedicated lock makes the
   // pool safe for any future second shared-lock mutator. Lock order: _table_lock
   // (any mode) is always acquired BEFORE _leak_tag_pool_lock, never the
-  // reverse; no path acquires _table_lock while holding the pool lock.
+  // reverse; no path acquires _table_lock while holding the pool lock. It also
+  // serializes every write of _leak_tag_incarnation (reads of the stamp take no
+  // lock - see leakTagIncarnation()).
   mutable SpinLock _leak_tag_pool_lock;
   int _leak_tag_free_list[LEAK_TAG_POOL_SIZE];
   int _leak_tag_free_count;
   // Per-tag ownership: set by acquireLeakTag(), cleared by releaseLeakTag(),
   // so a repeated release of a tag that was not re-acquired is ignored.
   bool _leak_tag_in_use[LEAK_TAG_POOL_SIZE];
+  // Per-slot ownership-period stamp. A leak tag is recycled once its object
+  // dies, so the tag alone does not identify one object: (tag, stamp) does.
+  // The stamp changes on every ownership transition of the slot - acquire
+  // (free -> in use), a real release (in use -> free), and every slot whose
+  // in-use bit flips in start()'s rebuild or in leakTagPoolResetForTest() -
+  // and never on a no-op (rejected or out-of-range release, unchanged slot).
+  // Written only under _leak_tag_pool_lock (atomic release stores), read
+  // lock-free with acquire semantics so heap callbacks and reference-chain
+  // code never take the pool lock. The u32 wraps after 2^32 transitions of one
+  // slot; a false "same owner" needs exactly that many transitions between a
+  // stamp's capture and its check, which is accepted as negligible.
+  u32 _leak_tag_incarnation[LEAK_TAG_POOL_SIZE];
+
+  // Advances slot `idx`'s ownership-period stamp. Caller holds
+  // _leak_tag_pool_lock. The read is atomic as well: heap callbacks and
+  // reference-chain code read the same slot lock-free (leakTagIncarnation()),
+  // and a plain read racing those loads is UB under the C++ memory model even
+  // though the store itself is a release store.
+  void bumpLeakTagIncarnationLocked(int idx) {
+    __atomic_store_n(&_leak_tag_incarnation[idx],
+                     __atomic_load_n(&_leak_tag_incarnation[idx], __ATOMIC_RELAXED) + 1,
+                     __ATOMIC_RELEASE);
+  }
 
   jlong acquireLeakTag();
   void releaseLeakTag(jlong tag);
@@ -631,10 +657,8 @@ private:
   // --- Per-klass population tracking (cleanup_table()'s epoch-advance pass only) ---
 
   // Resolves the StringDictionary id for `ref`'s class (GetObjectClass +
-  // GetClassSignature + Profiler::lookupClass(), also used by flush_table())
-  // - this is the "genuinely new
-  // cost on an existing pass" the design doc flags, previously paid only at
-  // JFR-flush time. Returns 0 (StringDictionary's own "no entry" sentinel)
+  // GetClassSignature + Profiler::lookupClass(), also used by flush_table()).
+  // Returns 0 (StringDictionary's own "no entry" sentinel)
   // if the name could not be resolved or interned.
   u32 resolveKlassId(JNIEnv *env, jobject ref);
 
@@ -760,8 +784,7 @@ private:
 
   // The sustained-trend gate (this class's own header comment above,
   // "Sustained-trend gate") - both-required growth-magnitude and floor-rise
-  // tests, design doc's original "mean of thirds" choice since replaced by
-  // full-window least-squares regression (see ringWindowStats,
+  // tests, computed by full-window least-squares regression (see ringWindowStats,
   // livenessTracker.cpp - cheap, allocation-free, one pass over the
   // ring, no sorting or extra storage). A single scan
   // (ringWindowStats(), livenessTracker.cpp) both derives the pass/fail
@@ -771,8 +794,7 @@ private:
   // false (leaving entry.cached_slope untouched) if entry.ring_fill is below
   // KLASS_POPULATION_MIN_FILL_FOR_TREND - not enough history yet to trust a
   // trend; callers must check ring_fill themselves before trusting
-  // cached_slope, exactly as they checked this method's own return value
-  // before cached_slope existed.
+  // cached_slope.
   //
   // Called from recordKlassPopulationSampleLocked() every time a new sample
   // is pushed (both the production path,
@@ -834,7 +856,26 @@ public:
         _gc_generations(false),
         _klass_population_size(0), _klass_count_scratch_size(0),
         _last_class_map_generation(0),
-        _leak_tag_free_count(LEAK_TAG_POOL_SIZE) {}
+        _leak_tag_free_count(LEAK_TAG_POOL_SIZE),
+        // Value-initialized alongside the stamps: start() rebuilds the pool by
+        // comparing every _leak_tag_in_use[i] against the table's owners, so a
+        // non-statically constructed tracker must read all-false there. (The
+        // singleton is static-storage and zero-initialized regardless.)
+        _leak_tag_in_use(), // value-initialized: every slot starts free
+        _leak_tag_incarnation() {} // value-initialized: every stamp starts at 0
+
+  // Ownership-period stamp of leak tag `tag` (see _leak_tag_incarnation), or 0
+  // when `tag` is outside the pool range. Lock-free (one acquire load): safe
+  // from heap callbacks and while holding reference-chain locks. A cached
+  // reference chain whose captured stamp equals this value was built for the
+  // tag's current owner.
+  u32 leakTagIncarnation(jlong tag) const {
+    if (tag < LEAK_TAG_BASE || tag >= LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE) {
+      return 0;
+    }
+    return __atomic_load_n(&_leak_tag_incarnation[tag - LEAK_TAG_BASE],
+                           __ATOMIC_ACQUIRE);
+  }
 
   // Reset recording-scoped gates at every accepted profiler start. Persistent tracking and
   // population state intentionally survives recording boundaries.
@@ -1075,8 +1116,13 @@ public:
   // tagLeakInstances() itself needs a live JVM (SetTag/NewLocalRef) and stays
   // out of gtest's reach.
   void leakTagPoolResetForTest() {
+    ExclusiveLockGuard guard(&_leak_tag_pool_lock);
     for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
       _leak_tag_free_list[i] = i;
+      if (_leak_tag_in_use[i]) {
+        // Freeing an owned slot is an ownership transition.
+        bumpLeakTagIncarnationLocked(i);
+      }
       _leak_tag_in_use[i] = false;
     }
     _leak_tag_free_count = LEAK_TAG_POOL_SIZE;
@@ -1371,9 +1417,8 @@ public:
         removeKlassPopulationEntryLocked(syn_slot);
       }
     }
-    // Find-or-create the entry under real_id (previously a silent no-op
-    // when absent - but with aliasing, set-representative-first is the
-    // load-bearing order: scenarios must establish the alias BEFORE any
+    // Find-or-create the entry under real_id: with aliasing,
+    // set-representative-first is the load-bearing order: scenarios must establish the alias BEFORE any
     // seeding, and with no entry yet there is nothing to store the
     // representative into. Creating via a count-0, epoch-0 ring sample
     // reuses recordKlassPopulationSampleLocked()'s own creation branch
@@ -1457,8 +1502,18 @@ public:
   }
   // Lets a test that seeds _klass_population directly (no cleanup_table()
   // sweep) mark it as belonging to the given class-map generation.
+  // Adopting a new generation here bypasses cleanup_table()'s class-map-reset
+  // branch, so it must do that branch's tracking-table half itself: every
+  // cached_klass_id was resolved against the old StringDictionary namespace
+  // and could alias an unrelated class in the new one. (_klass_population is
+  // the caller's job - see klassPopulationResetForTest().)
   void classMapGenerationSetForTest(u64 generation) {
     _table_lock.lock();
+    if (generation != _last_class_map_generation && _table != NULL) {
+      for (u32 i = 0; i < (u32)_table_size; i++) {
+        _table[i].cached_klass_id = 0;
+      }
+    }
     _last_class_map_generation = generation;
     _table_lock.unlock();
   }
@@ -1516,6 +1571,34 @@ public:
     recordHeapFloorSampleUnchecked(used, timestamp_ns, container_used);
   }
   bool heapFloorRisingForTest() const { return heapFloorRising(); }
+  // Ring-only companion to the heapFloorRecordForTest() seam: clears
+  // _heap_floor_ring/_heap_floor_time_ring/_container_mem_ring via their
+  // shared head/fill - all three become empty once fill is 0 (see
+  // ringWindowStats()'s min-fill gate in heapFloorRising()). Seeding via
+  // heapFloorRecordForTest() leaves "used" values behind that the next
+  // test in the same JVM would otherwise inherit into its secondsToOOM()
+  // projection. storeRelease() matches recordHeapFloorSampleUnchecked()'s
+  // own publication of these indices. The two index stores are not atomic
+  // as a pair - a concurrent reader could observe a torn old-fill/new-head
+  // window, and no store ordering closes that (seeing the first store's new
+  // value while the second is still old is possible either way) - so the
+  // documented precondition, heap-floor recording disabled, is what
+  // excludes every reader (onGC() skips recordHeapFloorSample() and no
+  // selectLeakCandidates() scan runs mid-test). Enforce it in DEBUG builds
+  // (where the flag exists): a caller that resets while recording is
+  // enabled fails the assert instead of racing a live reader. Non-DEBUG
+  // builds compile the reset bare - the flag does not exist there and the
+  // JNI entry that reaches this seam is compiled out.
+  void heapFloorResetForTest() {
+#ifdef DEBUG
+    if (!_heap_floor_recording_disabled_for_test.load(std::memory_order_acquire)) {
+      assert(!"heapFloorResetForTest() called while heap-floor recording is enabled");
+      return;
+    }
+#endif
+    storeRelease(_heap_floor_ring_head, (u8)0);
+    storeRelease(_heap_floor_ring_fill, (u8)0);
+  }
   // Bypasses initialize_table()'s JNI-dependent HeapUsage::getMaxHeap() call
   // (out of gtest's reach, same reason setGcGenerationsForTest() exists) so
   // secondsToOOM() can be exercised directly against a fake max heap size.

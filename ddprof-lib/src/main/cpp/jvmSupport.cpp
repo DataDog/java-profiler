@@ -8,6 +8,7 @@
 #include "asyncSampleMutex.h"
 #include "common.h"
 #include "frames.h"
+#include "log.h"
 #include "os.h"
 #include "profiler.h"
 #include "threadLocalData.inline.h"
@@ -72,15 +73,30 @@ void JVMSupport::setLoadState(JMethodIDLoadStats state) {
 void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
     JMethodIDLoadStats current_state = getLoadState();
 
-    bool load_all = true;
-    if (VM::isHotspot()) {
-        if (!HotspotSupport::shouldPreloadJmethodIDs(args)) {
-            HotspotSupport::initClassloaderInfo(jni);
-            load_all = false;
+    JMethodIDLoadStats state = Fully_loaded;
+    // The stack walker mode as Profiler::start() resolved it from args.
+    CStack cstack = Profiler::instance()->cstackMode();
+    if (VM::isHotspot() && !HotspotSupport::shouldPreloadJmethodIDs(args, cstack)) {
+        if (!args._lazy_jmethodID) {
+            state = Partial_loaded;
+        } else if (!HotspotSupport::canResolveLazily()) {
+            Log::warn("fjmethodid=lazy: this JVM does not expose the class and method structures it needs; "
+                      "preloading jmethodIDs as with fjmethodid=false");
+            state = Partial_loaded;
+        } else if (HotspotSupport::initLazyResolution(jni)) {
+            state = Lazy_loaded;
+        } else {
+            // initLazyResolution() has logged why.
+            state = Partial_loaded;
         }
+        if (state == Partial_loaded) {
+            HotspotSupport::initClassloaderInfo(jni);
+        }
+    } else if (args._lazy_jmethodID) {
+        Log::warn(VM::isHotspot() ? "fjmethodid=lazy needs cstack=vm; preloading all jmethodIDs"
+                                  : "fjmethodid=lazy is only supported on HotSpot; preloading all jmethodIDs");
     }
 
-    JMethodIDLoadStats state = load_all ? Fully_loaded : Partial_loaded;
     if (state == current_state) {
         return;
     }
@@ -136,6 +152,9 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
 
 void JVMSupport::loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni) {
     assert(getLoadState() != No_loaded && "Should not call before profiler execution");
+    if (getLoadState() == Lazy_loaded) {
+        return;  // nothing to preload; each dump pins the classes it needs
+    }
 
     jint class_count = 0;
     jclass *classes = nullptr;
@@ -160,10 +179,50 @@ bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
         return false;
     }
 
+    if (state == Lazy_loaded) {
+        return HotspotSupport::registerClass(jvmti, jni, klass);
+    }
     if (VM::isHotspot()) {
         return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, state == Fully_loaded /* load all */);
     } else {
         return loadMethodIDsImpl(jvmti, jni, klass);
+    }
+}
+
+bool JVMSupport::enterRedefinitionCall() {
+    return VM::isHotspot() && HotspotSupport::enterRedefinitionCall();
+}
+
+void JVMSupport::exitRedefinitionCall(bool token) {
+    if (VM::isHotspot()) {
+        HotspotSupport::exitRedefinitionCall(token);
+    }
+}
+
+void JVMSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+    if (VM::isHotspot()) {
+        HotspotSupport::beforeClassRedefinition(jvmti, jni, klass);
+    }
+}
+
+void JVMSupport::afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded) {
+    if (VM::isHotspot()) {
+        HotspotSupport::afterClassRedefinition(jvmti, jni, klass, succeeded);
+    }
+    if (succeeded && getLoadState() != Lazy_loaded) {
+        loadMethodIDsIfNeeded(jvmti, jni, klass);
+    }
+}
+
+void JVMSupport::beginDump(JNIEnv *jni, const jclass *classes, int count) {
+    if (VM::isHotspot()) {
+        HotspotSupport::beginDump(jni, classes, count);
+    }
+}
+
+void JVMSupport::endDump() {
+    if (VM::isHotspot()) {
+        HotspotSupport::endDump();
     }
 }
 

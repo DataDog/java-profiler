@@ -1,0 +1,589 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package com.datadoghq.profiler.referencechains;
+
+import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.ReferenceChainTestHooks;
+import org.openjdk.jmc.common.IMCType;
+import org.openjdk.jmc.common.item.IItem;
+import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.item.IItemIterable;
+import org.openjdk.jmc.common.item.IMemberAccessor;
+import org.openjdk.jmc.common.item.IType;
+import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
+
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * The "leak-tag correlation" use case, run inside a genuinely separate child JVM by
+ * {@code ExternalLauncher}'s {@code leak-correlation} mode: a growing static-field
+ * collection leak, coexisting with (a) concurrent, ephemeral, stack-local allocations of
+ * another class and (b) a large live object graph, must end up reported as a
+ * {@code datadog.ReferenceChain} event whose {@code targetTag} is a leak-tag-pool tag,
+ * matching a {@code datadog.HeapLiveObject} event's {@code leakTag} for the same object -
+ * the chain-to-live-heap-sample correlation the whole leak-tag pool exists to provide.
+ *
+ * <p>Each ingredient exists to reproduce, in miniature, a condition that only showed
+ * against real large deployments before this scenario existed (all observed live on a
+ * production-like pod, each escaping every earlier local test):
+ * <ul>
+ *   <li><b>Scale</b> ({@link #FILLER}): ~100k live filler objects grow the JVMTI tag map
+ *   enough that {@code GetObjectsWithTags} has a real per-call cost floor, the BFS
+ *   frontier/backlog has real depth, and per-pass deadlines actually bind - the regime
+ *   where batch-size control, fair-share queue drain, and rotation starvation bugs live.
+ *   Built (like the leak itself) BEFORE the profiler starts, per
+ *   {@code LeakingCacheScenario}'s own comment: the one-shot root-seeded walk fires ~1s
+ *   after start and must never catch the fixture half-built.</li>
+ *   <li><b>Noise</b> ({@link NoisePayload} on the noise thread): short-lived allocations
+ *   held only by a live thread's stack frame during that same one-shot walk - admitted
+ *   as {@code stack_local}-rooted depth-1 frontier entries, exactly the transient-root
+ *   noise shape the discovered-chain gate exists to suppress. The scenario asserts no
+ *   such chain is ever emitted; a regression in the gate emits one and fails this
+ *   scenario with {@link #TRANSIENT_CHAIN_MARKER}.</li>
+ *   <li><b>Correlation</b> (the actual acceptance signal): a leaked {@code byte[]}
+ *   chunk's chain must carry a {@code targetTag} in the leak-tag pool's range -
+ *   mirrored here from {@code LEAK_TAG_BASE}/{@code LEAK_TAG_POOL_SIZE}
+ *   (referenceChains.h) - and at least one {@code datadog.HeapLiveObject} event for a
+ *   {@code byte[]} must carry the same value in {@code leakTag}.</li>
+ * </ul>
+ *
+ * <p>Same separate-process rationale as {@code LeakingCacheScenario}'s own class comment
+ * (the one-shot root-seeded walk is a per-process resource), and same seed-before-start
+ * and debug-seam patterns as {@code StaticFieldGrowingCollectionScenario}.
+ */
+public final class LeakTagCorrelationScenario {
+  private LeakTagCorrelationScenario() {}
+
+  /**
+   * The leak: a static collection appended to for the process's whole life - the canonical
+   * unmaintained-singleton retention shape, deliberately a GROWING ArrayList: an ArrayList's
+   * backing {@code elementData} array is REPLACED on growth, and an EXPANDED frontier node's
+   * children set is frozen at expansion time, so discovering contents added after a resize is
+   * the hard production case this scenario must prove works - the live holder's re-walk has to
+   * admit each new backing array, and only then can its new chunks be admitted and leak-tag
+   * intercepted. (An earlier fixed-array version sidestepped that requirement and still failed,
+   * which is what exposed the rotation starvation this fixture now encodes.)
+   */
+  static final List<byte[]> LEAK_SINK = new ArrayList<>();
+
+  /**
+   * Scale ingredient: a static tree of plain objects, unreachable from anywhere but this
+   * field - exists only to give the frontier/backlog and the JVMTI tag map real depth.
+   */
+  static final Object[][] FILLER = new Object[1500][];
+
+  // Arbitrary, scenario-chosen klass ids - see LeakingCacheScenario.CACHED_PAYLOAD_TEST_KLASS_ID's
+  // own comment; distinct from the other scenarios' ids (987301/987302) since all may run in the
+  // same suite, each in its own separate child JVM.
+  private static final int LEAK_KLASS_ID = 987303;
+  private static final int NOISE_KLASS_ID = 987304;
+
+  // See LeakingCacheScenario.SEED_EPOCHS_FOR_HYSTERESIS's own comment for the full derivation.
+  private static final int SEED_EPOCHS_FOR_HYSTERESIS = 15;
+
+  private static final int SEED_CHUNKS = 10;
+
+  /**
+   * Per-round trend-maintenance epoch counter (debug builds only), same pattern as
+   * StaticFieldGrowingCollectionScenario: a one-shot seeded ramp ages out of LivenessTracker's
+   * hysteresis once enough real fold samples interleave (observed live: the byte[] candidate
+   * dropped right after the first leak-tag interceptions), so each round pushes one fresh rising
+   * epoch to keep the candidates alive.
+   */
+  private static int hysteresisEpoch = 0;
+
+  private static void addChunk() {
+    LEAK_SINK.add(new byte[CHUNK_BYTES]);
+  }
+
+  // Mirrored from referenceChains.h (LEAK_TAG_BASE/LEAK_TAG_POOL_SIZE): the pool range a
+  // correlated chain's targetTag must fall into, and the range a matching HeapLiveObject's
+  // leakTag must fall into. This is the contract under test, asserted against runtime
+  // event values - not constants compared to constants.
+  private static final long LEAK_TAG_BASE = 0x40000000L;
+  private static final long LEAK_TAG_POOL_SIZE = 256;
+
+  /**
+   * Transient handoff channel for the noise representative - deliberately a local of {@code run()}
+   * (captured by the noise thread's lambda), NOT a static field: any static field holding a
+   * {@link NoisePayload} would make that instance genuinely, durably static-retained, and the
+   * profiler would be RIGHT to emit a static-rooted chain for it - the scenario's very first run
+   * correctly reported {@code NoisePayload@depth0:static_field}. After the handoff the only
+   * JVM-heap reference to the representative is the noise thread's live frame, exactly the
+   * transient-rooted retention this class exercises.
+   */
+  private static final class NoiseHandoff {
+    volatile NoisePayload representative;
+    // The noise thread's own profiler tid, published alongside the payload so the seeding below
+    // can qualify exactly that thread (the per-(klass, tid) gate matches the tid that actually
+    // allocated the noise instances).
+    volatile int tid;
+
+    void publish(NoisePayload payload, int tid) {
+      // tid FIRST (volatile ordering): a caller that sees `representative` set is then also
+      // guaranteed to see the tid published with it.
+      this.tid = tid;
+      representative = payload;
+    }
+
+    NoisePayload take() {
+      NoisePayload payload = representative;
+      representative = null; // drop this path's only reference - retention stays transient
+      return payload;
+    }
+  }
+
+  /** Printed to stdout, followed by the correlated targetTag, on full success. */
+  public static final String FOUND_MARKER = "[correlation-found] ";
+
+  /** Printed to stdout if no leaked byte[] chain was ever observed. */
+  public static final String NOT_FOUND_MARKER = "[correlation-not-found]";
+
+  /**
+   * Printed to stdout (with the offending tag) if a leaked byte[] chain was emitted but its
+   * targetTag never landed in the leak-tag pool's range - the chain-to-live-heap
+   * correlation's first half failing.
+   */
+  public static final String TAG_OUT_OF_POOL_MARKER = "[correlation-tag-out-of-pool] ";
+
+  /**
+   * Printed to stdout (with the targetTag) if a correlated byte[] chain was emitted but
+   * no datadog.HeapLiveObject event for a byte[] ever carried the same leakTag - the
+   * correlation's second half failing (tagging and live-heap recording disagreeing on
+   * which instances are the tracked leak candidates).
+   */
+  public static final String NO_LIVE_OBJECT_MARKER = "[correlation-no-live-object] ";
+
+  /**
+   * Printed to stdout (with a summary of every violation) if any ReferenceChain event was
+   * emitted whose root kind is a transient root (stack/jni local) at depth <= 1 - the
+   * discovered-chain gate's exact suppression contract (depth==0 always, depth==1 when
+   * transient-rooted); anything matching it reaching the output is a gate regression.
+   */
+  public static final String TRANSIENT_CHAIN_MARKER = "[correlation-transient-chain-emitted] ";
+
+  /**
+   * Printed to stdout (with a summary of the offending chains) if the deliberately ephemeral
+   * {@link NoisePayload} - held only by the noise thread's stack frame - ever got a chain
+   * emitted, whether via the transient gate or any other path: nothing about it is durably
+   * retained, so it must never be reported as a leak.
+   */
+  public static final String NOISE_CHAIN_MARKER = "[correlation-noise-chain-emitted] ";
+
+  /**
+   * One dump's scan outcome - payload fields per one dump; the violation lists are accumulated
+   * across every scan by keepBest(), regardless of which scan's payload is kept.
+   */
+  static final class ScanResult {
+    ReferenceChainAssertions.ChainMatch payloadChain;
+    boolean payloadChainInPool;
+    // ReferenceChain.leakTagIncarnation of payloadChain; -1 when the field is absent.
+    long payloadChainIncarnation = -1;
+    int liveObjectMatchesForChainTag;
+    final List<String> transientViolations = new ArrayList<>();
+    final List<String> noiseChains = new ArrayList<>();
+  }
+
+  public static void run(JavaProfiler profiler, String startCommand, Path scratchDumpPath)
+      throws Exception {
+    // Build the whole fixture before the profiler starts - see the class comment and
+    // LeakingCacheScenario's own seed-before-start rationale.
+    for (int i = 0; i < SEED_CHUNKS; i++) {
+      addChunk();
+    }
+    for (int row = 0; row < FILLER.length; row++) {
+      Object[] column = new Object[64];
+      for (int col = 0; col < column.length; col++) {
+        column[col] = new FillerNode();
+      }
+      FILLER[row] = column;
+    }
+    NoiseHandoff handoff = new NoiseHandoff();
+    Thread noiseThread = new Thread(() -> {
+      // Held ONLY by this live frame across the process's whole life, so the one-shot
+      // root-seeded walk (a few seconds away) admits them as stack_local-rooted entries.
+      NoisePayload[] held = new NoisePayload[64];
+      for (int i = 0; i < held.length; i++) {
+        held[i] = new NoisePayload();
+      }
+      // The tid must be captured on THIS thread: the per-(klass, tid) seeding below
+      // qualifies the allocating thread, and the noise instances are all allocated here.
+      handoff.publish(held[0], ReferenceChainTestHooks.getTid());
+      long slot = 0;
+      while (true) {
+        try {
+          Thread.sleep(50);
+        } catch (InterruptedException e) {
+          return;
+        }
+        // Churn one slot at a time: the population stays live-but-ephemeral (constant live
+        // count, nothing durably retained beyond the frame) while still allocating.
+        // held[0] is reserved: it is the published noise representative, and after
+        // handoff.take() this frame is its only strong reference (the tracker holds just a
+        // weak ref) - churning it would let the representative be collected.
+        held[1 + (int) (slot++ % (held.length - 1))] = new NoisePayload();
+      }
+    }, "leak-correlation-noise");
+    noiseThread.setDaemon(true);
+    noiseThread.start();
+
+    if (startCommand != null && !startCommand.isEmpty()) {
+      profiler.execute(startCommand);
+    }
+
+    boolean debugBuild = ReferenceChainAssertions.isDebugInstrumentedBuild();
+    // Declared at method scope: the per-round and final-attempt maintenance
+    // seeding below (in their own debugBuild blocks) reuse these tids.
+    int leakTid = 0;
+    int noiseTid = 0;
+    if (debugBuild) {
+      // Representatives FIRST, seeds second: since the leak-tag pool redesign, candidate
+      // matching, leak-tag assignment, and discovered-instance recording are all keyed on the
+      // REAL klass id - setting the representative registers the synthetic->real alias, so the
+      // seeds below land in the real entry (seeding first would leave them under the synthetic
+      // id, where they authorize nothing but hasLeakSignal's candidate-count check).
+      // The leak representative is durably reachable via LEAK_SINK; the noise representative
+      // only via the noise thread's frame - exactly what makes one a valid leak candidate and
+      // the other a gate test.
+      ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
+          LEAK_KLASS_ID, LEAK_SINK.get(0));
+      // The noise thread publishes asynchronously; wait (bounded) rather than racing take()
+      // into a null representative / tid 0.
+      for (int i = 0; i < 200 && handoff.representative == null; i++) {
+        Thread.sleep(25);
+      }
+      NoisePayload noiseRepresentative = handoff.take();
+      noiseTid = handoff.tid;
+      if (noiseRepresentative == null || noiseTid == 0) {
+        throw new IllegalStateException("noise thread never published its representative/tid"
+            + " within 5s (representative=" + (noiseRepresentative == null ? "null" : "present")
+            + ", tid=" + noiseTid + ")");
+      }
+      ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
+          NOISE_KLASS_ID, noiseRepresentative);
+      noiseRepresentative = null; // keep retention transient: drop this frame's reference
+      // Per-(klass, tid) seeds must name the REAL allocating tids (this thread for the leak
+      // chunks, the noise thread for the noise payloads) or no tracked instance would ever match
+      // the tagging scope. Same epoch-aligned ramp shape as the klass seeds (scaled to fit the
+      // per-tid u8 ring); the synthetic flag keeps these ramps immune to the real fold's
+      // absent-tid decay between rounds.
+      leakTid = ReferenceChainTestHooks.getTid();
+      for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
+        ReferenceChainTestHooks.seedKlassPopulationSample0(LEAK_KLASS_ID, epoch * 10, epoch);
+        ReferenceChainTestHooks.seedKlassPopulationSample0(NOISE_KLASS_ID, epoch * 10, epoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(NOISE_KLASS_ID, noiseTid, epoch * 3, epoch);
+      }
+      // Continue the ramp past the seeded range: each maintenance round below
+      // pre-increments, so the first round pushes epoch SEED_EPOCHS_FOR_HYSTERESIS + 1
+      // (same as StaticFieldGrowingCollectionScenario).
+      hysteresisEpoch = SEED_EPOCHS_FOR_HYSTERESIS;
+      // Wait for the BFS thread to fully complete its first pass (static sweep AND frontier
+      // expansion) before any growth round - same load-bearing wait and rationale as
+      // StaticFieldGrowingCollectionScenario: the late chunks added afterward must be
+      // discovered via rotation re-walks, not by a first pass that has not even run yet.
+      int initialPasses = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
+      for (int i = 0; i < 300; i++) {
+        if (ReferenceChainTestHooks.referenceChainPassesRunForTest0() != initialPasses) {
+          break;
+        }
+        Thread.sleep(100);
+      }
+      ReferenceChainTestHooks.pollReferenceChainTargets0();
+    } else {
+      // No debug seams outside debug builds - give the real allocation sampler and the
+      // pass loop time to notice the seeded population on their own.
+      Thread.sleep(5000);
+    }
+
+    // Each dump re-emits every resolved chain (snapshot-and-keep), so a later dump's scan is
+    // usually a superset state - the latest scan is preferred, except keepBest() never lets a
+    // later, worse payload chain displace an earlier in-pool/correlated one; gate violations of
+    // every scanned dump are accumulated into the kept result.
+    ScanResult best = null;
+    int totalRounds = 25;
+    // Slow growth per round is deliberate: each chunk clears the allocation sampler's floor on
+    // its own (see CHUNK_BYTES), so every allocation is sampled, tracked, and taggable - the
+    // per-round population growth is only the trend signal, not a sampling-volume requirement.
+    for (int round = 1; round <= totalRounds; round++) {
+      addChunk();
+      if (debugBuild) {
+        hysteresisEpoch++;
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
+            LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
+            NOISE_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(
+            LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(
+            NOISE_KLASS_ID, noiseTid, hysteresisEpoch * 3, hysteresisEpoch);
+      }
+      System.gc();
+      profiler.dump(scratchDumpPath);
+      // Scan only every 3rd round: each scan's JMC parse allocates megabytes on this same JVM,
+      // and that churn races the leak chunks for space in LivenessTracker's tracking table (the
+      // age-priority tagging then selects old JVM-machinery survivors instead of the young
+      // chunks - observed live as tagged=5 stable but zero interceptions). Less scan churn gives
+      // the chunks time to accumulate surviving ages and win the tagging priority. Rounds are
+      // still dumped every time so the final dump always holds the freshest chains.
+      if (round % 3 == 0) {
+        best = keepBest(best, scan(scratchDumpPath));
+        if (best != null && best.payloadChainInPool
+            && best.liveObjectMatchesForChainTag > 0) {
+          break; // full correlation achieved - no need to grow further
+        }
+      }
+      Thread.sleep(300);
+    }
+
+    for (int attempt = 0; attempt < 5; attempt++) {
+      if (best != null && best.payloadChainInPool && best.liveObjectMatchesForChainTag > 0) {
+        break;
+      }
+      if (debugBuild) {
+        hysteresisEpoch++;
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
+            LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
+            NOISE_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(
+            LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(
+            NOISE_KLASS_ID, noiseTid, hysteresisEpoch * 3, hysteresisEpoch);
+      }
+      Thread.sleep(1000);
+      System.gc();
+      profiler.dump(scratchDumpPath);
+      best = keepBest(best, scan(scratchDumpPath));
+    }
+
+    System.out.println(resultLine(best));
+  }
+
+  /**
+   * The one result line run() prints for the kept scan. Gate violations outrank every payload
+   * outcome, including "no payload chain found": the tight-window caller accepts NOT_FOUND, so a
+   * violation reported only behind a found payload would be masked there.
+   */
+  static String resultLine(ScanResult best) {
+    if (best == null) {
+      return NOT_FOUND_MARKER;
+    }
+    if (!best.transientViolations.isEmpty()) {
+      return TRANSIENT_CHAIN_MARKER + best.transientViolations;
+    }
+    if (!best.noiseChains.isEmpty()) {
+      return NOISE_CHAIN_MARKER + best.noiseChains;
+    }
+    if (best.payloadChain == null) {
+      return NOT_FOUND_MARKER;
+    }
+    if (!best.payloadChainInPool) {
+      return TAG_OUT_OF_POOL_MARKER + best.payloadChain.targetTag;
+    }
+    if (best.liveObjectMatchesForChainTag == 0) {
+      return NO_LIVE_OBJECT_MARKER + best.payloadChain.targetTag;
+    }
+    return FOUND_MARKER + best.payloadChain.targetTag;
+  }
+
+  /**
+   * Monotonic in payload quality (same rule as ThreadLocalLeakScenario.keepBest(), and the
+   * same in-pool preference scan() applies within a single dump): a later scan replaces
+   * {@code best} only when its payload chain is at least as good - no chain &lt; out-of-pool
+   * chain &lt; in-pool chain &lt; in-pool chain with a matching live object; at equal quality
+   * the newer scan wins. The losing scan's gate violations are always merged into the winner
+   * (both directions), so a transient/noise chain seen in any dump is never hidden by a
+   * better-quality scan from another dump.
+   */
+  static ScanResult keepBest(ScanResult best, ScanResult scan) {
+    if (scan == null) {
+      return best;
+    }
+    if (best == null) {
+      return scan;
+    }
+    ScanResult winner = quality(scan) >= quality(best) ? scan : best;
+    ScanResult loser = winner == scan ? best : scan;
+    mergeViolations(winner.transientViolations, loser.transientViolations);
+    mergeViolations(winner.noiseChains, loser.noiseChains);
+    return winner;
+  }
+
+  /** 0: no chain, 1: out-of-pool chain, 2: in-pool chain, 3: in-pool and correlated. */
+  private static int quality(ScanResult r) {
+    if (r == null || r.payloadChain == null) {
+      return 0;
+    }
+    if (!r.payloadChainInPool) {
+      return 1;
+    }
+    return r.liveObjectMatchesForChainTag > 0 ? 3 : 2;
+  }
+
+  private static void mergeViolations(List<String> into, List<String> from) {
+    for (String v : from) {
+      if (!into.contains(v)) {
+        into.add(v);
+      }
+    }
+  }
+
+  /**
+   * Scans one dump: the first leaked {@code byte[]} chain (if any), whether its targetTag is
+   * in the leak-tag pool, how many {@code datadog.HeapLiveObject} events for a
+   * leaked {@code byte[]} carry that same tag in {@code leakTag}, plus the two gate
+   * regressions (transient-rooted depth<=1 chains, any {@link NoisePayload} chain).
+   */
+  private static ScanResult scan(Path scratchDumpPath) throws Exception {
+    if (!Files.exists(scratchDumpPath)) {
+      return null;
+    }
+    IItemCollection events;
+    try (InputStream in = Files.newInputStream(scratchDumpPath)) {
+      events = JfrLoaderToolkit.loadEvents(in);
+    }
+    ScanResult result = new ScanResult();
+
+    IItemCollection chains = events.apply(
+        org.openjdk.jmc.common.item.ItemFilters.type("datadog.ReferenceChain"));
+    for (IItemIterable iterable : chains) {
+      IType<IItem> type = iterable.getType();
+      IMemberAccessor<?, IItem> chainAccessor = ReferenceChainAssertions.findAccessor(type, "chain");
+      IMemberAccessor<?, IItem> targetTagAccessor =
+          ReferenceChainAssertions.findAccessor(type, "targetTag");
+      IMemberAccessor<?, IItem> depthAccessor = ReferenceChainAssertions.findAccessor(type, "depth");
+      IMemberAccessor<?, IItem> rootKindAccessor =
+          ReferenceChainAssertions.findAccessor(type, "rootKind");
+      IMemberAccessor<?, IItem> incarnationAccessor =
+          ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
+      for (IItem item : iterable) {
+        Object chainValue = chainAccessor.getMember(item);
+        if (!(chainValue instanceof Object[])) {
+          continue;
+        }
+        Object[] rawChain = (Object[]) chainValue;
+        String leaf = rawChain.length > 0 && rawChain[0] instanceof IMCType
+            ? ((IMCType) rawChain[0]).getFullName() : "<empty>";
+        long targetTag = targetTagAccessor != null
+            ? ReferenceChainAssertions.numberValue(targetTagAccessor.getMember(item)) : -1;
+        int depth = depthAccessor != null
+            ? (int) ReferenceChainAssertions.numberValue(depthAccessor.getMember(item)) : -1;
+        Object rootKind = rootKindAccessor != null ? rootKindAccessor.getMember(item) : null;
+        String rootKindName = rootKind != null ? rootKind.toString() : "<none>";
+        if (rootKindName.startsWith("first_observed_via:") && depth <= 1) {
+          result.transientViolations.add(leaf + "@depth" + depth + ":" + rootKindName);
+        }
+        if (NoisePayload.class.getName().equals(leaf)) {
+          result.noiseChains.add(leaf + "@depth" + depth + ":" + rootKindName);
+        }
+        if ("byte[]".equals(leaf)) {
+          boolean inPool =
+              targetTag >= LEAK_TAG_BASE && targetTag < LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE;
+          // Multiple byte[] chains exist in a single dump: every discovered instance of the
+          // candidate class gets one, and only the tracked-and-tagged instances carry a
+          // pool-range targetTag. Prefer the first in-pool (correlated) chain over any
+          // out-of-pool one seen earlier.
+          if ((inPool && !result.payloadChainInPool) || result.payloadChain == null) {
+            List<IMCType> chain = new ArrayList<>(rawChain.length);
+            for (Object element : rawChain) {
+              chain.add((IMCType) element);
+            }
+            result.payloadChain = new ReferenceChainAssertions.ChainMatch(
+                chain, targetTag, depth);
+            result.payloadChainInPool = inPool;
+            // The (tag, incarnation) pair is the chain's identity. Fail loud on a
+            // missing or -1 stamp: tag-only matching is ambiguous across recycled tags.
+            if (incarnationAccessor == null) {
+              throw new IllegalStateException(
+                  "datadog.ReferenceChain events have no leakTagIncarnation accessor");
+            }
+            long chainIncarnation =
+                ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item));
+            if (chainIncarnation == -1) {
+              throw new IllegalStateException(
+                  "chain leakTagIncarnation is not a numeric value; "
+                      + "tag-only correlation is ambiguous across recycled tags");
+            }
+            result.payloadChainIncarnation = chainIncarnation;
+          }
+        }
+      }
+    }
+
+    if (result.payloadChainInPool) {
+      IItemCollection liveObjects = events.apply(
+          org.openjdk.jmc.common.item.ItemFilters.type("datadog.HeapLiveObject"));
+      for (IItemIterable iterable : liveObjects) {
+        IType<IItem> type = iterable.getType();
+        IMemberAccessor<?, IItem> leakTagAccessor =
+            ReferenceChainAssertions.findAccessor(type, "leakTag");
+        IMemberAccessor<?, IItem> objectClassAccessor =
+            ReferenceChainAssertions.findAccessor(type, "objectClass");
+        IMemberAccessor<?, IItem> incarnationAccessor =
+            ReferenceChainAssertions.findAccessor(type, "leakTagIncarnation");
+        // Fail loud when either identity accessor is missing; a silent fallback
+        // would degrade to tag-only matching.
+        if (incarnationAccessor == null) {
+          throw new IllegalStateException(
+              "datadog.HeapLiveObject events have no leakTagIncarnation accessor");
+        }
+        if (leakTagAccessor == null) {
+          throw new IllegalStateException(
+              "datadog.HeapLiveObject events have no leakTag accessor");
+        }
+        for (IItem item : iterable) {
+          long leakTag =
+              ReferenceChainAssertions.numberValue(leakTagAccessor.getMember(item));
+          long incarnation =
+              ReferenceChainAssertions.numberValue(incarnationAccessor.getMember(item));
+          // Leak tags are recycled: match on (tag, incarnation), never tag alone.
+          if (incarnation == -1
+              || leakTag != result.payloadChain.targetTag
+              || incarnation != result.payloadChainIncarnation) {
+            continue;
+          }
+          Object objectClass = objectClassAccessor != null
+              ? objectClassAccessor.getMember(item) : null;
+          if (objectClass instanceof IMCType
+              && "byte[]".equals(((IMCType) objectClass).getFullName())) {
+            result.liveObjectMatchesForChainTag++;
+          }
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Chunk size that clears ObjectSampler's real 256KiB sampling floor on its own - same
+   * rationale as StaticFieldGrowingCollectionScenario.CHUNK_BYTES. Load-bearing here:
+   * every chunk allocation must be allocation-sampled so it becomes a live-heap tracked
+   * instance (the only instances LivenessTracker's leak-tag pool tags, and the only ones
+   * that get datadog.HeapLiveObject events to correlate against). A small leaked object
+   * only gets sampled probabilistically, which made the correlation dependent on
+   * sampling luck - observed live as pass-standalone/fail-in-suite before this.
+   */
+  private static final int CHUNK_BYTES = 1_000_000;
+
+  /**
+   * The noise object: deliberately ephemeral - held only by the noise thread's live
+   * frame, never by any field, so nothing about it is durably retained.
+   */
+  static final class NoisePayload {
+    long p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15;
+    long p16, p17, p18, p19, p20, p21, p22, p23, p24, p25, p26, p27, p28, p29, p30, p31;
+  }
+
+  /** Scale-only object: no references, just weight - one frontier entry each. */
+  static final class FillerNode {
+    long p0, p1, p2, p3, p4, p5, p6, p7;
+  }
+}

@@ -178,7 +178,7 @@ TEST_F(ContinuationMetadataTest, EntryFpUsesAlignedSizeWithoutPadding) {
 
 TEST_F(ContinuationMetadataTest, EntryFpSkipsPaddingIn56ByteLayout) {
     // OpenJDK ContinuationEntry::size() rounds sizeof to 2*wordSize; entry_fp()
-    // adds that size on x86 and aarch64. The installed JDK 27 exports sizeof=56.
+    // adds that size on x86 and aarch64.
     // https://github.com/openjdk/jdk/blob/jdk-25-ga/src/hotspot/share/runtime/continuationEntry.hpp
     // https://github.com/openjdk/jdk/blob/jdk-25-ga/src/hotspot/cpu/aarch64/continuationEntry_aarch64.inline.hpp
     alignas(16) std::array<uintptr_t, 12> stack{};

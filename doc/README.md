@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Java Profiler Documentation
 
 ## Directory Structure
@@ -17,10 +19,11 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 
 ### Architecture
 - [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer architecture for call traces
+- [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
+- [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
 - [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, and rotation protocols
 - [TLSContext](architecture/TLSContext.md) - Thread-local context for distributed tracing
-- [TLSPriming](architecture/TLSPriming.md) - Signal-safe TLS initialization
 
 ### Build System
 - [BuildSystemGuide](build/BuildSystemGuide.md) - Comprehensive build system documentation
@@ -35,6 +38,11 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [RemoteSymbolicationFrameTypes](reference/RemoteSymbolicationFrameTypes.md) - Frame type design for symbolication
 - [SamplerPerfCounters](reference/SamplerPerfCounters.md) - Opt-in per-sampler timing counters and the stop-time report
 - [TestFlakinessAnalysis](reference/TestFlakinessAnalysis.md) - Test flakiness investigation results
+
+### Design
+
+- [ReferenceChainsCollectionSummary](ReferenceChainsCollectionSummary.md) - Short reference-chain overview and limits
+- [ReferenceChainsDesign](ReferenceChainsDesign.md) - Reference-chain design decision and trade-offs
 
 ### Work State (temp/)
 Session logs and analysis reports for ongoing work. Not considered permanent documentation.
