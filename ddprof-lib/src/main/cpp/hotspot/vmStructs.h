@@ -202,6 +202,12 @@ typedef void* address;
         field_with_version(_nmethod_entry_address, offset, 8, 22, MATCH_SYMBOLS("_verified_entry_point"))           \
         field(_nmethod_state_offset, offset, MATCH_SYMBOLS("_state"))                                               \
         field(_nmethod_level_offset, offset, MATCH_SYMBOLS("_comp_level"))                                          \
+        field_with_version(_nmethod_orig_pc_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_orig_pc_offset"))      \
+        field_with_version(_nmethod_deopt_handler_address, offset, 21, 22, MATCH_SYMBOLS("_deopt_handler_begin"))   \
+        field_with_version(_nmethod_deopt_mh_handler_address, offset, 21, 22, MATCH_SYMBOLS("_deopt_mh_handler_begin")) \
+        field_with_version(_nmethod_deopt_handler_offset, offset, 23, 25, MATCH_SYMBOLS("_deopt_handler_offset"))     \
+        field_with_version(_nmethod_deopt_mh_handler_offset, offset, 23, 25, MATCH_SYMBOLS("_deopt_mh_handler_offset")) \
+        field_with_version(_nmethod_deopt_handler_entry_offset, offset, 26, MAX_VERSION, MATCH_SYMBOLS("_deopt_handler_entry_offset")) \
         field_with_version(_nmethod_metadata_offset, offset, MIN_VERSION, 24, MATCH_SYMBOLS("_metadata_offset"))    \
         field_with_version(_nmethod_immutable_offset, offset, 23, MAX_VERSION, MATCH_SYMBOLS("_immutable_data"))    \
         field(_scopes_pcs_offset, offset, MATCH_SYMBOLS("_scopes_pcs_offset"))                                      \
@@ -1172,6 +1178,10 @@ DECLARE(VMNMethod)
     }
 
     int findScopeOffset(const void* pc);
+
+    // A deoptimized frozen frame stores its original PC relative to unextended SP.
+    // Returns nullptr if the saved slot or PC cannot be validated within this frame/nmethod.
+    const void* originalPC(const void* pc, uintptr_t unextended_sp, uintptr_t low, uintptr_t frame_end);
 DECLARE_END
 
 class CodeHeap : VMStructs {

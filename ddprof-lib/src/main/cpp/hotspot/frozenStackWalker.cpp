@@ -51,11 +51,16 @@ bool relativePointer(uintptr_t base, intptr_t words, uintptr_t low, uintptr_t hi
     return true;
 }
 
-bool appendCompiled(VMNMethod* nm, const void* pc, ASGCT_CallFrame* frames,
+bool appendCompiled(VMNMethod* nm, const void* pc, uintptr_t unextended_sp, uintptr_t low,
+                    uintptr_t frame_end, ASGCT_CallFrame* frames,
                     volatile int& depth, int max_depth, bool details) {
+    const void* original_pc = nm->originalPC(pc, unextended_sp, low, frame_end);
+    if (original_pc == nullptr || (original_pc != pc && CodeHeap::findNMethod(original_pc) != nm)) return false;
     int level = nm->level();
     FrameTypeId type = details && level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
-    int scope_offset = nm->findScopeOffset(pc);
+    int scope_offset = nm->findScopeOffset(original_pc);
+    // A deoptimized Java frame needs a decoded scope to account for its inline callers.
+    if (original_pc != pc && scope_offset <= 0) return false;
     if (scope_offset > 0) {
         ScopeDesc scope(nm);
         do {
@@ -207,7 +212,8 @@ bool FrozenStackWalker::append(VMThread* thread, const void* sampled_pc, unsigne
                 // compiled caller's unextended SP (StackChunkFrameStream::next).
                 uintptr_t next_sp = unextended_sp + (uintptr_t)frame_size * sizeof(uintptr_t);
                 if (next_sp <= sp || next_sp > high) return false;
-                if (!appendCompiled(nm, pc, frames, depth, max_depth, details)) return false;
+                if (!appendCompiled(nm, pc, unextended_sp, low, next_sp,
+                                    frames, depth, max_depth, details)) return false;
                 compiled_frames++;
                 sp = next_sp >= end - 2 * sizeof(uintptr_t) ? end : next_sp;
                 unextended_sp = sp;

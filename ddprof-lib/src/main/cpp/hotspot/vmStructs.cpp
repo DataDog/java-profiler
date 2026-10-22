@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include "arch.h"
 #include "hotspot/vmStructs.inline.h"
 #include "hotspot/frozenStackWalker.h"
 #include "vmEntry.h"
@@ -792,6 +793,33 @@ VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
         return NULL;
     }
     return nm;
+}
+
+const void* VMNMethod::originalPC(const void* pc, uintptr_t unextended_sp, uintptr_t low, uintptr_t frame_end) {
+    if (_nmethod_orig_pc_offset < 0) return nullptr;
+    const void* deopt;
+    const void* deopt_mh;
+    if (_nmethod_deopt_handler_entry_offset >= 0) {
+        deopt = deopt_mh = at(*(int*)at(_nmethod_deopt_handler_entry_offset));
+    } else if (_nmethod_deopt_handler_offset >= 0 && _nmethod_deopt_mh_handler_offset >= 0) {
+        deopt = at(*(int*)at(_nmethod_deopt_handler_offset));
+        deopt_mh = at(*(int*)at(_nmethod_deopt_mh_handler_offset));
+    } else if (_nmethod_deopt_handler_address >= 0 && _nmethod_deopt_mh_handler_address >= 0) {
+        deopt = *(const void**)at(_nmethod_deopt_handler_address);
+        deopt_mh = *(const void**)at(_nmethod_deopt_mh_handler_address);
+    } else {
+        return nullptr;
+    }
+    if (pc != deopt && pc != deopt_mh) return pc;
+
+    // Mirrors StackChunkFrameStream::orig_pc(), including its use of unextended_sp().
+    int offset = *(int*)at(_nmethod_orig_pc_offset);
+    if (offset < 0 || offset % sizeof(uintptr_t) != 0 || unextended_sp < low
+            || unextended_sp > frame_end || frame_end - unextended_sp < sizeof(uintptr_t)
+            || (uintptr_t)offset > frame_end - unextended_sp - sizeof(uintptr_t)) return nullptr;
+    const void* original = stripPointer(*(const void**)(unextended_sp + offset));
+    return original >= code() && contains(original) && original != deopt && original != deopt_mh
+            ? original : nullptr;
 }
 
 int VMNMethod::findScopeOffset(const void* pc) {
