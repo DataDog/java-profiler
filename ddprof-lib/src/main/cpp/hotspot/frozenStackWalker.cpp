@@ -132,7 +132,7 @@ bool FrozenStackWalker::append(VMThread* thread, const void* sampled_pc, unsigne
                               ASGCT_CallFrame* frames, volatile int& depth, int max_depth,
                               bool details) {
     if (!layout.supported || thread == nullptr || thread->state() != _thread_in_Java
-            || continuation_depth >= 64 || depth >= max_depth) return false;
+            || continuation_depth != 0 || depth >= max_depth) return false;
 
     // Freeze/thaw runs without a Java-to-VM transition. During doYield or its
     // runtime calls, copied frames can still be on the carrier as well as in a
@@ -143,13 +143,12 @@ bool FrozenStackWalker::append(VMThread* thread, const void* sampled_pc, unsigne
 
     uintptr_t carrier = thread->carrierThreadOop();
     if (carrier == 0) return false;
-    // Continuation.run publishes the innermost mounted continuation in the
-    // carrier Thread.cont, including when the current Java thread is virtual.
+    // Continuation.run publishes a child in Thread.cont before enterSpecial,
+    // and restores the parent after it returns. In those Java intervals the
+    // native boundary belongs to the parent. Without matching native-entry
+    // identity, recover only a single, outermost continuation.
     uintptr_t continuation = readOop(carrier, layout.carrier_cont);
-    for (unsigned int i = 0; i < continuation_depth && continuation != 0; i++) {
-        continuation = readOop(continuation, layout.cont_parent);
-    }
-    if (continuation == 0) return false;
+    if (continuation == 0 || readOop(continuation, layout.cont_parent) != 0) return false;
     uintptr_t chunk = readOop(continuation, layout.cont_tail);
     if (chunk == 0) return false;
     int interpreted_frames = 0;
