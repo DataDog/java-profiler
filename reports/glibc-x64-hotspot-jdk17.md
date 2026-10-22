@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk17
 
 ## glibc-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-10-22 12:40:49 EDT
+**Date:** 2026-10-22 13:06:40 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 456 |
-| Sample Rate | 7.60/sec |
-| Health Score | 475% |
+| CPU Samples | 480 |
+| Sample Rate | 8.00/sec |
+| Health Score | 500% |
 | Threads | 8 |
-| Allocations | 346 |
+| Allocations | 367 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 492 |
-| Sample Rate | 8.20/sec |
-| Health Score | 512% |
-| Threads | 9 |
-| Allocations | 506 |
+| CPU Samples | 588 |
+| Sample Rate | 9.80/sec |
+| Health Score | 612% |
+| Threads | 10 |
+| Allocations | 435 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 30-32 cores)</summary>
 
 ```
-1792686832 32
-1792686837 32
-1792686842 32
-1792686847 32
-1792686852 32
-1792686857 32
-1792686862 32
-1792686867 32
-1792686872 32
-1792686877 32
-1792686882 32
-1792686887 32
-1792686892 30
-1792686897 30
-1792686902 30
-1792686907 30
-1792686912 30
-1792686917 30
-1792686922 30
-1792686927 30
+1792688444 32
+1792688449 32
+1792688454 32
+1792688459 32
+1792688464 32
+1792688469 32
+1792688474 32
+1792688479 32
+1792688484 32
+1792688489 32
+1792688494 32
+1792688499 32
+1792688504 32
+1792688509 32
+1792688514 32
+1792688519 30
+1792688524 30
+1792688529 30
+1792688534 30
+1792688539 30
 ```
 </details>
 
