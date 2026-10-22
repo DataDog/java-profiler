@@ -118,7 +118,10 @@ Skip extraction: `./gradlew buildRelease -Pskip-debug-extraction=true`
 ### Container-based Testing (Recommended for ASan/Non-Local Environments)
 
 For ASan testing, cross-architecture testing (aarch64), musl libc, or reproducing CI
-environment issues. Defaults to Podman; use `--container=docker` for Docker.
+environment issues. On macOS, run Docker through colima (`brew install colima docker &&
+colima start`, then `--container=docker`): podman aborts every container command because its
+credential-helper lookup for the Datadog registries (ddtool) cannot reach vault outside the
+CI network. Linux CI may keep using podman; the script still defaults to it.
 
 ```bash
 ./utils/run-containers-tests.sh --arch=aarch64 --config=asan --libc=glibc --jdk=21
