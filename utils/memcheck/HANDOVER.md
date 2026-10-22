@@ -39,6 +39,7 @@ All under `utils/memcheck/`:
 | `results/2026-10-09-x64-aws-m5d4xlarge-cpus{2,8}/` | CPU-count sensitivity on the same box, 3 reps (below). |
 | `results/2026-10-21-gitlab-amd64-shared/` | First GitLab CI run, 5 jobs, unpinned (below). `runner.txt` per job, internal host details stripped. |
 | `results/2026-10-21-gitlab-amd64-shared-pinned/` | Second GitLab CI run, pinned with `taskset` (below; the pinning was dropped afterwards). |
+| `results/2026-10-22-gitlab-amd64-shared-g1-apc4/` | Third GitLab CI run, `-XX:+UseG1GC -XX:ActiveProcessorCount=4` (below). The configuration to build the gate on. |
 | `results/2026-10-21-x64-aws-m5d4xlarge-warmup-cpus{2,4}/` | Verification of the warm-up: `classesM` on 2 CPUs (6 reps), `classesM`/`traces`/`allocs` on 4 CPUs (3 reps). |
 
 Scenarios (each run is a fresh JVM, `-Xms512m -Xmx512m -XX:+AlwaysPreTouch`,
@@ -366,10 +367,29 @@ NMT `Code` moved by up to −28 MiB, and the profiler's `Code` delta in
    `line_number_tables` the residual SD is 38–46 KiB. **Decision (option A):
    gate `classesM` on cost per method seen** (or the residual after
    correcting for coverage), not on raw bytes. The other scenarios keep the
-   raw-bytes threshold. Next: one more 5-job run with the forced flags, then
-   build the gate on that.
-7. Phase 1: a report-only sticky PR comment from the nmt arm, baseline from
-   `main` artifacts.
+   raw-bytes threshold.
+
+   **Third run (`34948dde4`, 5 jobs, 175 runs, 0 failures), with
+   `-XX:+UseG1GC -XX:ActiveProcessorCount=4`: good enough to gate on.**
+   `results/2026-10-22-gitlab-amd64-shared-g1-apc4/`. Pods had 43–76 CPUs.
+   - NMT `GC` 51.7–53.3 MiB in all 100 nmt/noprof runs; no Serial GC.
+   - Between jobs: no gated metric moved beyond `max(256 KiB, 4·SD)`;
+     largest ratio 0.18 (0.37 and 0.48 in the earlier runs).
+   - Within-job SD (max over jobs): counters ≤ 62 KiB everywhere except
+     `classesM` total max (111 KiB) and `calltrace` max (71 KiB); NMT
+     `Class` ≤ 1 KiB, `Internal` ≤ 19 KiB, `GC` ≤ 73 KiB. `Code` still up
+     to 2.3 MiB in `traces` (report only).
+   - `classesM` corrected for coverage (pooled regression on
+     `line_number_tables`): residual SD 5–32 KiB, job means within 19 KiB.
+     The cost per method seen was 446 B for total max here (~550 B in the
+     earlier runs, with other JVM settings), and per-job slope estimates
+     scatter (331–488 B, 6 runs per job), so the gate has to take the slope
+     from the pooled baseline runs, not from a single job.
+7. **Phase 1 (next): a report-only sticky PR comment** from the nmt arm,
+   baseline from `main` artifacts: raw-bytes deltas for `threads`, `traces`,
+   `allocs`, `mixed`; coverage-corrected deltas for `classesM`; NMT
+   `Class`/`Internal` deltas; `Tracing` tripwire; `Code`/`GC`/RSS reported
+   only.
 
 Open decisions: gate reference (delta vs merge-base, committed budget file,
 or both); how much of the `memory-usage-sweep-handoff` tooling to merge.
