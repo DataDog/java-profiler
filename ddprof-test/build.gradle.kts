@@ -83,6 +83,19 @@ tasks.withType<Test>().configureEach {
   }
 }
 
+// Pass JaCoCo agent info to Test tasks (glibc/macOS) so AbstractProcessProfilerTest can
+// forward coverage to child JVMs. The JaCoCo extension already attaches the agent; we just
+// need to tell the test code where to find it for child processes.
+tasks.withType<Test>().named { it in coverageTaskNames }.configureEach {
+  dependsOn(extractJacocoAgent)
+  val agentJar = extractJacocoAgent.map { it.destinationDir.resolve("jacocoagent.jar") }
+  doFirst {
+    childJacocoDir.get().asFile.mkdirs()
+    environment("JACOCO_AGENT_JAR", agentJar.get().absolutePath)
+    environment("JACOCO_CHILD_DIR", childJacocoDir.get().asFile.absolutePath)
+  }
+}
+
 // On musl the profiler-test plugin creates the test tasks as Exec tasks (running its own
 // ProfilerTestRunner), which the jacoco plugin doesn't instrument -- attach the agent
 // by hand so they write the same build/jacoco/<task>.exec file a Test task would.
@@ -94,6 +107,10 @@ val extractJacocoAgent = tasks.register<Sync>("extractJacocoAgent") {
   into(layout.buildDirectory.dir("tmp/jacocoAgent"))
 }
 
+// Directory where child JVMs spawned by AbstractProcessProfilerTest.launch() write their
+// JaCoCo execution data. Each child uses a unique file name to avoid overwrites.
+val childJacocoDir = layout.buildDirectory.dir("jacoco/children")
+
 tasks.withType<Exec>().named { it in coverageTaskNames }.configureEach {
   dependsOn(extractJacocoAgent)
   val agentJar = extractJacocoAgent.map { it.destinationDir.resolve("jacocoagent.jar") }
@@ -102,6 +119,12 @@ tasks.withType<Exec>().named { it in coverageTaskNames }.configureEach {
   ProfilerTestPlugin.additionalJvmArgs(this).add(
     provider { "-javaagent:${agentJar.get().absolutePath}=destfile=${execFile.get().asFile.absolutePath},append=false" },
   )
+  // Pass the agent jar path to AbstractProcessProfilerTest so it can forward coverage to child JVMs.
+  doFirst {
+    childJacocoDir.get().asFile.mkdirs()
+    (this as Exec).environment("JACOCO_AGENT_JAR", agentJar.get().absolutePath)
+    (this as Exec).environment("JACOCO_CHILD_DIR", childJacocoDir.get().asFile.absolutePath)
+  }
 }
 
 // Every test JVM that loads the coverage library writes .gcda counts next to the
@@ -112,6 +135,8 @@ tasks.withType<Exec>().named { it in coverageTaskNames }.configureEach {
 val libCoverageObjDir = project(":ddprof-lib").layout.buildDirectory.dir("obj/main/coverage")
 val cleanLibCoverageData = tasks.register<Delete>("cleanLibCoverageData") {
   delete(fileTree(libCoverageObjDir) { include("**/*.gcda") })
+  // Also clear child JVM JaCoCo data from the previous run.
+  delete(fileTree(childJacocoDir) { include("*.exec") })
   // Fail on missing coverage tools before wiping the previous run's counts.
   if (enableCoverage) {
     dependsOn(":ddprof-lib:checkCoverageTools")
@@ -143,11 +168,12 @@ tasks.named<JacocoReport>("jacocoTestReport") {
   description = "Java half of :ddprof-lib:coverageReport (run that instead; requires -PenableCoverage)"
 
   dependsOn(tasks.named { it in coverageTaskNames })
-  // The .exec file each coverage task writes (Test tasks via the jacoco plugin, the musl Exec
-  // tasks via the agent attached above). Only the existing ones: a task that ran no tests
-  // writes none.
+  // The .exec files from: (1) the main test tasks (Test via jacoco plugin, musl Exec via agent
+  // attached above), and (2) child JVMs spawned by AbstractProcessProfilerTest.launch().
+  // Only existing files: a task that ran no tests writes none.
   executionData.setFrom(
     files(coverageTaskNames.map { layout.buildDirectory.file("jacoco/$it.exec") }).filter { it.exists() },
+    fileTree(childJacocoDir) { include("*.exec") },
   )
 
   // The tests here exercise ddprof-lib's classes (the profiler itself), not this

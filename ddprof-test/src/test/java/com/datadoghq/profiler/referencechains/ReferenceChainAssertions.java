@@ -48,8 +48,7 @@ public final class ReferenceChainAssertions {
    * Child JVMs see the same answer because the launchers forward {@code -Dddprof_test.config}.
    */
   public static boolean isDebugInstrumentedBuild() {
-    String config = System.getProperty("ddprof_test.config");
-    return NativeBuildConfig.isDebug() || (config != null && config.endsWith("san"));
+    return NativeBuildConfig.isDebugInstrumented();
   }
 
   /**

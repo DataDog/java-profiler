@@ -28,4 +28,14 @@ public final class NativeBuildConfig {
         String config = name();
         return "debug".equals(config) || "coverage".equals(config);
     }
+
+    /**
+     * Whether the library is built with {@code -DDEBUG}, which compiles in debug-only code paths
+     * like {@code javaApi.cpp}'s test seams and {@code datadog.UnwindFailure} recording. This
+     * includes {@link #isDebug()} builds (debug, coverage) plus sanitizer builds (asan, tsan).
+     */
+    public static boolean isDebugInstrumented() {
+        String config = name();
+        return isDebug() || (config != null && config.endsWith("san"));
+    }
 }

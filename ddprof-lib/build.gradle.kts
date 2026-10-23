@@ -211,7 +211,9 @@ if (project.hasProperty("enableCoverage")) {
   // g++-<N> prints the GCC banner instead.
   fun isAppleClang(compilerPath: String): Boolean = try {
     val process = ProcessBuilder(compilerPath, "--version").redirectErrorStream(true).start()
-    process.inputStream.bufferedReader().readText().also { process.waitFor() }.contains("Apple clang")
+    val output = process.inputStream.bufferedReader().use { it.readText() }
+    process.waitFor()
+    output.contains("Apple clang")
   } catch (e: java.io.IOException) {
     false
   }
@@ -257,7 +259,7 @@ if (project.hasProperty("enableCoverage")) {
       // Runs cmd and returns (exit code, combined output), or null if it cannot be started.
       fun run(cmd: List<String>): Pair<Int, String>? = try {
         val process = ProcessBuilder(cmd).directory(probeDir).redirectErrorStream(true).start()
-        val output = process.inputStream.bufferedReader().readText()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
         process.waitFor() to output.trim()
       } catch (e: java.io.IOException) {
         null
@@ -425,7 +427,7 @@ if (project.hasProperty("enableCoverage")) {
         .directory(project.projectDir)
         .redirectErrorStream(true)
         .start()
-      val output = process.inputStream.bufferedReader().readText()
+      val output = process.inputStream.bufferedReader().use { it.readText() }
       val exitCode = process.waitFor()
       println(output)
       if (exitCode != 0) {
