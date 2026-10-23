@@ -17,6 +17,16 @@ pluginManagement {
         if (gradlePluginProxy && gradlePluginProxy != mavenRepositoryProxy) {
             maven { url = uri(gradlePluginProxy) }
         }
+        if (gitlabCi && (mavenRepositoryProxy || gradlePluginProxy)) {
+            // The generic Depot mirror rejects HEAD requests used for Gradle cache revalidation.
+            exclusiveContent {
+                forRepository { gradlePluginPortal() }
+                filter {
+                    includeGroup('org.gradle.kotlin.kotlin-dsl')
+                    includeGroup('org.gradle.kotlin')
+                }
+            }
+        }
         if (!gitlabCi || (!mavenRepositoryProxy && !gradlePluginProxy)) {
             gradlePluginPortal()
             mavenCentral()
