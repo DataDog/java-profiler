@@ -63,6 +63,24 @@ object PlatformUtils {
     }
 
     /**
+     * Google Test install locations probed by the gtest plugin (and by the coverage
+     * preflight check, since a missing gtest silently drops the gtest half of coverage).
+     */
+    val gtestLocations: List<String>
+        get() = when (currentPlatform) {
+            Platform.MACOS -> listOf(
+                "/opt/homebrew/opt/googletest",
+                "/usr/local/opt/googletest"
+            )
+            Platform.LINUX -> listOf(
+                "/usr/include/gtest",
+                "/usr/local/include/gtest"
+            )
+        }
+
+    fun isGtestAvailable(): Boolean = gtestLocations.any { File(it).exists() }
+
+    /**
      * Check if a compiler is available and functional
      */
     fun isCompilerAvailable(compiler: String): Boolean {
