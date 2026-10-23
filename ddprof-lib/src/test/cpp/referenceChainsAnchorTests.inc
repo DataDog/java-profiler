@@ -467,6 +467,121 @@ TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder
     tracker->stop();
 }
 
+TEST_F(ReferenceChainsBfsTest, StaticFieldCollectionRemainsIndexedAfterFirstLook) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    int parent = addNode();
+    int holder = addNode();
+    int table = addNode();
+    int payload = addNode();
+    node_tags[parent] = tracker->nextTag();
+    node_tags[holder] = tracker->nextTag();
+    FrontierTable *frontier = tracker->frontierTable();
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, node_tags[parent], 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    // The holder was first discovered through another object, before the
+    // one-time static-field sweep reaches it. It has never been a root.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, node_tags[holder], node_tags[parent], 1,
+        FrontierEntryState::EXPANDED, 0));
+    ReferenceChainPassContext ctx{};
+    ctx.tracker = tracker;
+    ctx.frontier = frontier;
+    ctx.hop_cap = 64;
+    ctx.budget = 1000;
+    const jlong holder_class_tag = -101;
+    jlong owner_class_tag = -102;
+    for (int repeat = 0; repeat < 2; repeat++) {
+        ReferenceChainsTestAccessor::reportHeapReferenceForTest(
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD, holder_class_tag,
+            &node_tags[holder], &owner_class_tag, &ctx);
+    }
+    EXPECT_TRUE(ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4).empty());
+    std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> drained;
+    ASSERT_EQ(1, ReferenceChainsTestAccessor::drainStaticAnchorFifoForTest(16, drained));
+    int edges = 0;
+    ReferenceChainsTestAccessor::walkStaticAnchorFifoForTest(
+        &mock_jvmti, &mock_jni, {drained[0].tag}, 1000, &edges, nullptr);
+    ASSERT_EQ(0u, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
+
+    // Classification is outside heap callbacks. Neither an unknown shape nor
+    // a known non-collection may enter the persistent container tier.
+    ReferenceChainsTestAccessor::primeClassShapeForTest(holder_class_tag, false);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4).empty());
+    ReferenceChainsTestAccessor::primeClassShapeForTest(holder_class_tag, true);
+    auto selected = ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
+    ASSERT_EQ(std::vector<jlong>{node_tags[holder]}, selected);
+    ReferenceChainsTestAccessor::walkStaticFieldAnchorsForTest(
+        &mock_jvmti, &mock_jni, selected, 1000, &edges);
+
+    // Mutate after both the FIFO and fresh-lane first looks. No static-field
+    // edge is delivered again, so discovery requires a persistent revisit.
+    const jlong leak_tag = ReferenceChainsTestAccessor::leakTagBase();
+    node_tags[payload] = leak_tag;
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, holder, table, -1},
+        {JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT, table, payload, -1},
+    };
+    selected = ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
+    ASSERT_EQ(std::vector<jlong>{node_tags[holder]}, selected);
+    ReferenceChainsTestAccessor::walkStaticFieldAnchorsForTest(
+        &mock_jvmti, &mock_jni, selected, 1000, &edges);
+    ASSERT_GT(tags_ever_assigned[payload], 0);
+    EXPECT_NE(leak_tag, node_tags[payload]);
+    EXPECT_EQ(leak_tag, ReferenceChainsTestAccessor::frontierLeakTag(node_tags[payload]));
+    FrontierEntry holder_entry{};
+    ASSERT_TRUE(frontier->lookup(node_tags[holder], &holder_entry));
+    EXPECT_EQ(node_tags[parent], holder_entry.parent_tag);
+    EXPECT_EQ(1u, holder_entry.depth);
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, GlobalRootsIndexNewAndPreviouslyDiscoveredCollections) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    int parent = addNode();
+    int new_holder = addNode();
+    int old_holder = addNode();
+    node_tags[parent] = tracker->nextTag();
+    node_tags[old_holder] = tracker->nextTag();
+    FrontierTable *frontier = tracker->frontierTable();
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, node_tags[parent], 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, node_tags[old_holder], node_tags[parent], 1,
+        FrontierEntryState::EXPANDED, 0));
+    const jlong class_tag = -101;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(class_tag, true);
+    ReferenceChainPassContext ctx{};
+    ctx.tracker = tracker;
+    ctx.frontier = frontier;
+    ctx.hop_cap = 64;
+    ctx.budget = 1000;
+    for (int repeat = 0; repeat < 2; repeat++) {
+        for (int holder : {new_holder, old_holder}) {
+            ReferenceChainsTestAccessor::reportHeapRootForTest(
+                JVMTI_HEAP_ROOT_JNI_GLOBAL, class_tag, &node_tags[holder], &ctx);
+        }
+    }
+    auto selected = ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
+    ASSERT_EQ(2u, selected.size());
+    EXPECT_NE(selected.end(), std::find(selected.begin(), selected.end(), node_tags[new_holder]));
+    EXPECT_NE(selected.end(), std::find(selected.begin(), selected.end(), node_tags[old_holder]));
+    // Both the new root and the chain-attached collection must remain indexed
+    // after their fresh-lane turn, without changing the old holder's parent.
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4).size());
+    FrontierEntry old_entry{};
+    ASSERT_TRUE(frontier->lookup(node_tags[old_holder], &old_entry));
+    EXPECT_EQ(node_tags[parent], old_entry.parent_tag);
+    tracker->stop();
+}
+
 // At-risk FIFO mechanics: a chain-attached holder drained from the at-risk FIFO is descend-walked and
 // intercepts a leak chunk 3 hops below it - the repair for the population the root-attached
 // collector demonstrably cannot select (the negative control below).
