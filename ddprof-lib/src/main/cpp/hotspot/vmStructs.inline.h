@@ -21,6 +21,13 @@ inline bool crashProtectionActive() {
     return false;
 }
 
+inline VMNMethod* VMStructs::enterSpecialNMethod() {
+    if (_enter_special_nm != nullptr) return _enter_special_nm;
+    // The native wrapper can be generated after profiler initialization.
+    const void* pc = contEntryReturnPc();
+    return pc != nullptr ? CodeHeap::findNMethod(pc) : nullptr;
+}
+
 template <typename T>
 inline T* cast_to(const void* ptr) {
     assert(VM::isHotspot()); // This should only be used in HotSpot-specific code

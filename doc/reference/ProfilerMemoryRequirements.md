@@ -1,25 +1,41 @@
 # Profiler Memory Requirements and Limitations
 
-**Last Updated:** 2026-01-13
-
 ## Overview
 
 The Datadog Java Profiler has inherent memory requirements due to its architecture combining signal-safe stack sampling, JFR event recording, and constant pool management. This document describes all major memory consumers, their costs, limitations, and when the profiler may not be appropriate for certain workloads.
 
+The sizes below are estimates. The profiler's own native allocations are measured at
+runtime: `NativeMem` (`ddprof-lib/src/main/cpp/nativeMem.h`) keeps live, average and peak
+bytes for each category (`calltrace`, `dictionary`, `line_tables`, `thread_local`,
+`jfr_buffers`, `method_map`, ...), and every chunk carries them as
+`datadog.ProfilerCounter` events named `native_mem_live_bytes.<category>`,
+`native_mem_avg_bytes.<category>`, `native_mem_max_bytes.<category>` and
+`native_mem_chunk_overhead_bytes.<category>`. jmethodIDs are allocated by the JVM and are
+not part of these figures.
+
 ## Memory Requirements
 
-### 1. jmethodID Preallocation (Required for AGCT)
+### 1. jmethodID Preallocation
 
 **What it is:**
-- Every Java method needs a jmethodID allocated before the profiler can identify it in stack traces
-- AGCT operates in signal handlers where lock acquisition is forbidden
-- Therefore, jmethodIDs must be preallocated when classes are loaded (ClassPrepare callback)
+- AsyncGetCallTrace (AGCT) reports frames as jmethodIDs and runs in a signal handler,
+  where it cannot allocate them. The profiler therefore creates them ahead of time by
+  calling `GetClassMethods()` for loaded classes (at start, for all loaded classes, and
+  from the ClassPrepare callback for new ones).
+- How many classes are preloaded depends on `fjmethodid` and the stack walker
+  (`JVMSupport::initExecution()`):
 
-**Memory cost:**
+| Setting | Preloaded |
+|---------|-----------|
+| `fjmethodid=true` (default), or any non-HotSpot JVM, or `cstack` other than `vm` | All classes |
+| `fjmethodid=false` with `cstack=vm` on HotSpot | Only classes that can be unloaded (not from the system class loader, or hidden/lambda classes); the others are reported as raw `Method*` frames |
+| `fjmethodid=lazy` with `cstack=vm` on HotSpot | None; frames are resolved from `Method*` at dump time (falls back to `false` if the needed VM structures are missing) |
+
+**Memory cost (full preload):**
 ```
 Memory = (Number of Classes) × (Average Methods per Class) × (JVM Method Structure Size)
 
-Typical overhead:
+Typical overhead (UNVERIFIABLE: JVM-internal sizes and class/method counts are not derivable from this repository):
 - Normal application: 10K-100K classes × 15 methods × 68 bytes = 10-150 MB
 - High class churn: 1M+ classes × 15 methods × 68 bytes = 1GB+
 ```
@@ -33,9 +49,9 @@ Typical overhead:
 **Key constraint:**
 - Memory persists until class is unloaded (cannot be freed while class exists)
 - Classes with long-lived ClassLoaders never free this memory
-- **This is NOT a bug** - it's fundamental to AGCT architecture
+- **This is NOT a bug** - it follows from AGCT needing jmethodIDs in the signal handler
 
-### 2. Line Number Tables (Optimized)
+### 2. Line Number Tables
 
 **What it is:**
 - Maps bytecode index (BCI) to source line numbers for stack traces
@@ -45,114 +61,114 @@ Typical overhead:
 ```
 Memory = (Number of Sampled Methods) × (Average Entries per Method) × (Entry Size)
 
-Typical overhead:
+Typical overhead (method/entry counts UNVERIFIABLE estimates):
 - Sampled methods: 1K-10K (subset of all methods)
 - Entries per method: 5-20 line number mappings
-- Entry size: 8 bytes (jvmtiLineNumberEntry)
-- Total: 40 KB - 1.6 MB (negligible)
+- Entry size: 16 bytes (sizeof(jvmtiLineNumberEntry): jlocation 8 + jint 4 + padding on LP64)
+- Total: 80 KB - 3.2 MB (negligible)
 ```
 
 **Lifecycle:**
-- Allocated during JFR flush when method first appears in samples
-- Stored in SharedLineNumberTable with shared_ptr reference counting
-- Tracked via LINE_NUMBER_TABLES counter (incremented on allocation, decremented on deallocation)
-- Deallocated when MethodInfo is destroyed (profiler stop/restart or age-based cleanup)
+- Allocated during JFR serialization when a method first appears in samples
+  (`Lookup::fillJavaMethodInfo()`)
+- Held by `SharedLineNumberTable` through a `shared_ptr` in `MethodInfo`
+- Tracked by the `LINE_NUMBER_TABLES` counter and the `line_tables` native-memory category
+- Freed when the `MethodInfo` is removed (method-map cleanup, see section 8) or the
+  recording is destroyed; JVMTI-returned tables go back through `jvmti->Deallocate()`,
+  tables decoded from VM metadata through `free()`
 
 ### 3. CallTraceStorage and Hash Tables
 
 **What it is:**
-- Triple-buffered hash tables storing unique stack traces with lock-free rotation
-- Active storage: Accepts new traces from profiling events
-- Standby storage: Background storage for JFR serialization
-- Scratch storage: Spare table for rotation
+- Three `CallTraceHashTable` instances (active, standby, scratch) storing unique stack
+  traces; see [CallTraceStorage](../architecture/CallTraceStorage.md)
+- Each table's hash arrays and trace records are bump-allocated from its own
+  `LinearAllocator` (8 MB chunks)
 
 **Memory cost:**
 ```
 Per hash table:
-- Initial capacity: 65,536 entries
-- Entry size: 16 bytes (8-byte key + 8-byte CallTraceSample)
+- Initial capacity: 65,536 slots
+- Slot size: 16 bytes (8-byte key + 8-byte CallTraceSample pointer)
 - Initial table: ~1 MB
-- Auto-expands at 75% capacity (doubles to 128K, 256K, etc.)
-- LinearAllocator chunks: 8 MB per chunk
+- Expands at 75% load by chaining a table of double capacity (128K, 256K slots);
+  expansion stops once the next table would not fit in one 8 MB chunk
+- Trace records: variable, depend on stack depth and diversity
 
-Typical overhead:
-- 3 hash tables × 1-4 MB = 3-12 MB (depends on active traces)
-- Chunk allocations: 8-32 MB (depends on stack depth and diversity)
+Typical overhead (UNVERIFIABLE estimate; depends on workload):
+- 3 hash tables × 1-7 MB of slot arrays
+- Trace records: 8-32 MB (depends on stack depth and diversity)
 - Total: 11-44 MB for typical applications
 ```
 
+`NM_CALLTRACE` counts the bytes actually bump-allocated, not the reserved chunk capacity.
+
 **Growth patterns:**
-- Bounded by unique stack trace count (converges after warmup)
+- Bounded by unique stack trace count per cycle; tables are reset at every
+  `processTraces()` rotation, keeping only traces a liveness checker preserves
 - Applications with stable code paths: 10K-100K unique traces
 - Applications with dynamic dispatch: 100K-1M unique traces
 
 **Lifecycle:**
-- Allocated at profiler start
-- Grows during warmup as new traces are discovered
-- Converges to stable size once all code paths are sampled
-- Cleared and reset during profiler stop/restart
+- Allocated with the `Profiler` singleton
+- Rotated and partly reset on every JFR chunk
+- Cleared on profiler restart
 
 ### 4. RefCountSlot Arrays (Thread-Local Reference Counting)
 
 **What it is:**
-- Cache-aligned slots for lock-free memory reclamation of hash tables
+- Cache-aligned slots used by [`RefCountGuard`](../architecture/RefCountGuard.md) for
+  lock-free reclamation of call-trace tables and string-dictionary buffers
 - Each slot occupies one cache line (64 bytes) to eliminate false sharing
 
 **Memory cost:**
 ```
-Fixed allocation:
-- MAX_THREADS = 8192 slots
-- Slot size: 64 bytes (cache line aligned)
-- Total: 512 KB (fixed, independent of actual thread count)
+Fixed allocation (static arrays):
+- MAX_THREADS = 8192 slots × 64 bytes = 512 KB (refcount_slots)
+- 8192 × 4 bytes = 32 KB (slot_owners)
 ```
 
 **Lifecycle:**
-- Allocated once at profiler initialization
-- Never grows or shrinks
-- Reused throughout profiler lifetime
+- Static storage; never grows or shrinks
 
-### 5. Dictionary Instances (String Deduplication)
+### 5. String Dictionaries (Constant-Pool Deduplication)
 
 **What it is:**
-- Four Dictionary instances for JFR constant pools:
-  - _class_map: Class name strings
-  - _string_label_map: Label strings
-  - _context_value_map: Tracer context attribute values
-  - _packages (in Lookup): Package name strings
-- Multi-level hash table with 128 rows × 3 cells per level
+- Three `StringDictionary` instances in `Profiler`: `_class_map` (class names),
+  `_string_label_map` (labels such as endpoints) and `_context_value_map` (tracer
+  context attribute values); see [StringDictionary](../architecture/StringDictionary.md)
+- Each is triple-buffered. Each buffer has a 128-row × 3-cell root `SBTable` (~6 KB),
+  heap-allocated overflow tables, and a `StringArena` of 512 KB chunks for the key strings
+- Two plain `Dictionary` instances (`_packages`, `_symbols`) live in the per-dump `Lookup`
+  and are freed after each dump
 
 **Memory cost:**
 ```
-Per dictionary:
-- Initial table: sizeof(DictTable) = ~3 KB
-- Key storage: Variable-length strings (malloc'd)
-- Additional levels: 3 KB per level (rare, only on collision)
+Fixed per StringDictionary:
+- 3 buffers × (~6 KB root table + one 512 KB arena chunk) ≈ 1.5 MB
+- 3 dictionaries ≈ 4.6 MB
 
-Typical overhead:
-- 4 dictionaries × 3 KB = 12 KB (initial tables)
-- String storage: 100 KB - 2 MB (depends on unique strings)
-- Context values: Variable (depends on tracer integration)
-- Total: 112 KB - 8 MB for typical applications
+Growth:
+- Further 512 KB arena chunks and overflow tables as unique strings accumulate
+- Bounded by callers' limits (e.g. the class-name cap in profiler.h)
 ```
 
 **Growth patterns:**
-- Grows with unique class/method names encountered
 - Class names: Bounded by loaded class count
 - String labels: Bounded by profiling event labels
 - Context values: Bounded by unique span/trace attribute values
-- Package names: Typically small (< 1000 unique packages)
 
 **Lifecycle:**
-- Allocated at profiler start
-- Grows during warmup
-- Converges once all classes/methods/contexts are sampled
-- Cleared during profiler stop/restart
+- Allocated with the `Profiler` singleton
+- Buffers rotate with each dump; a rotated-out buffer is cleared (keeping its root
+  table and first arena chunk)
+- `clearAll()` on a fresh profiler start resets all buffers
 
 ### 6. Recording Buffers (JFR Event Storage)
 
 **What it is:**
-- Thread-local buffers for JFR event serialization
-- CONCURRENCY_LEVEL = 16 buffers to minimize lock contention
+- Per-stripe buffers for JFR event serialization in `Recording`
+- `CONCURRENCY_LEVEL` = 16 buffers to minimize lock contention
 
 **Memory cost:**
 ```
@@ -164,16 +180,16 @@ Total allocation:
 ```
 
 **Lifecycle:**
-- Allocated at profiler start
+- Part of the `Recording` object, created at recording start
 - Fixed size, no growth
-- Flushed periodically to JFR file
-- Deallocated at profiler stop
+- Flushed to the JFR file when they fill and at chunk end
+- Freed when the recording is destroyed
 
 ### 7. ThreadIdTable Arrays
 
 **What it is:**
 - Hash tables tracking active thread IDs for JFR thread metadata
-- Two dimensions: CONCURRENCY_LEVEL (16) × 2 (double-buffering)
+- `ThreadIdTable _thread_ids[CONCURRENCY_LEVEL][2]` in `Recording` (double-buffered)
 
 **Memory cost:**
 ```
@@ -187,101 +203,95 @@ Total allocation:
 ```
 
 **Lifecycle:**
-- Allocated at profiler start
+- Part of the `Recording` object
 - Cleared during buffer rotation
 - Fixed size, no growth
 
 ### 8. MethodMap (MethodInfo Storage)
 
 **What it is:**
-- std::map<jmethodID, MethodInfo> storing metadata for sampled methods
+- `MethodMap` is a `std::map<unsigned long, MethodInfo>`; the key is a jmethodID, a raw
+  `Method*` plus frame tag, a native symbol address, packed remote-frame data, or a
+  vtable-receiver class id (see the key-encoding comment above `MethodMap`)
 - Only methods that appear in stack traces are stored (lazy allocation)
 - Implements age-based cleanup to prevent unbounded growth in continuous profiling
 
 **Memory cost:**
 ```
-Per MethodInfo:
-- MethodInfo struct: ~56 bytes
-- shared_ptr<SharedLineNumberTable>: 16 bytes
-- std::map overhead: ~32 bytes per entry
-- Total per method: ~104 bytes
+Per entry (approximate):
+- MethodInfo: ~56 bytes (including the shared_ptr to its line number table)
+- std::map node overhead: ~32-48 bytes
+- Total per method: ~100 bytes
 
-Typical overhead:
+Typical overhead (sampled-method count is an UNVERIFIABLE estimate):
 - Sampled methods: 1K-10K
-- Total: 104 KB - 1 MB
+- Total: 100 KB - 1 MB
 ```
 
 **Growth patterns:**
 - Grows with sampled method diversity during warmup
 - Converges once all hot methods are encountered
-- Bounded by unique methods in active code paths
-- **With cleanup enabled (default):** Methods unused for 3+ chunks are automatically removed
+- **With cleanup enabled (default):** Methods unused for 3 consecutive chunks are removed
 - **Without cleanup:** Would grow unboundedly in applications with high method churn
 
 **Lifecycle:**
-- Allocated during JFR flush when methods are first sampled
-- Age counter incremented for unreferenced methods at each chunk boundary
-- Methods with age >= 3 chunks are removed during switchChunk()
-- Line number tables deallocated via shared_ptr when MethodInfo is destroyed
+- Entries are added during JFR serialization when methods are first sampled
+- `writeStackTraces()` marks the methods it writes as referenced
+- `Recording::cleanupUnreferencedMethods()` runs in `finishChunk()` on the
+  `switchChunk()` path: it increments the age of unreferenced methods and removes those
+  with age >= 3 (`AGE_THRESHOLD`)
+- Line number tables are freed with their `MethodInfo` (via `shared_ptr`)
 - Cleanup can be disabled with `mcleanup=false` (not recommended; default is `mcleanup=true`)
 
-**Cleanup behavior:**
-- Triggered during switchChunk() (typically every 10-60 seconds)
-- Mark phase: Reset all _referenced flags before serialization
-- Reference phase: Mark methods in active stack traces during writeStackTraces()
-- Sweep phase: Increment age for unreferenced methods, remove if age >= 3
-- Conservative strategy: Methods must be unused for 3 consecutive chunks before removal
-
-### 9. Thread-Local Context Storage (Tracer Integration)
+### 9. Per-Thread Context Storage (Tracer Integration)
 
 **What it is:**
-- thread_local Context structures for APM tracer integration
-- Each thread has a cache-line aligned Context containing span IDs and tags
-- Pointer stored in ProfiledThread for signal-safe access
+- Each `ProfiledThread` embeds the OTEP thread-context record and the profiler's sidecar
+  fields; see [TLSContext](../architecture/TLSContext.md)
 
 **Memory cost:**
 ```
-Per thread Context:
-- spanId: 8 bytes
-- rootSpanId: 8 bytes
-- checksum: 8 bytes
-- tags array: 10 × 4 bytes = 40 bytes
-- Cache line alignment padding: ~0-8 bytes
-- Total per thread: 64 bytes (cache-line aligned)
+Per thread (inside ProfiledThread):
+- OtelThreadContextRecord: 640 bytes (header + attribute data)
+- Tag encodings: 10 × 4 bytes = 40 bytes (DD_TAGS_CAPACITY = 10)
+- Local root span ID: 8 bytes
+- Total: ~688 bytes per thread, plus the rest of ProfiledThread
 
 Typical overhead:
-- 100-500 threads: 6.4 KB - 32 KB
-- 1000+ threads: 64 KB+
+- 100-500 threads: ~70-350 KB
+- 1000+ threads: ~700 KB+
 ```
 
 **Growth patterns:**
-- Grows with thread count (one Context per thread)
-- Bounded by application thread count
-- Context values stored in _context_value_map Dictionary (see section 5)
+- One record per thread with a `ProfiledThread`
+- Context values are deduplicated in `_context_value_map` (section 5)
 
 **Lifecycle:**
-- Allocated lazily on first TLS access per thread
-- Persists throughout thread lifetime
-- Deallocated when thread terminates
+- Lives as long as the thread's `ProfiledThread`
+- Counted in the `thread_local` native-memory category
 
 ### Summary: Total Memory Overhead
+
+The totals are rough estimates (UNVERIFIABLE from code: they depend on workload and JVM
+internals); use the `native_mem_*` counters for actual values. Only the rows marked
+"(fixed)" follow directly from code constants.
 
 **Typical Java Application (10K-100K classes, stable code paths):**
 ```
 Component                          Memory Overhead
 ─────────────────────────────────────────────────────
 jmethodID preallocation            10-150 MB (JVM internal, NMT Internal category)
-Line number tables                 40 KB - 1.6 MB
+Line number tables                 80 KB - 3.2 MB
 CallTraceStorage hash tables       11-44 MB
-RefCountSlot arrays                512 KB (fixed)
-Dictionary instances (4x)          112 KB - 8 MB
+RefCountGuard slot arrays          544 KB (fixed)
+String dictionaries (3x)           ~4.6 MB - 10 MB
 Recording buffers                  1.1 MB (fixed)
 ThreadIdTable arrays               32 KB (fixed)
-MethodMap                          104 KB - 1 MB
-Thread-local Contexts              6-64 KB (depends on thread count)
+MethodMap                          100 KB - 1 MB
+Per-thread context                 70-700 KB (depends on thread count)
 ─────────────────────────────────────────────────────
-TOTAL (excluding jmethodID):       ~14-56 MB
-TOTAL (including jmethodID):       24-206 MB
+TOTAL (excluding jmethodID):       ~18-60 MB
+TOTAL (including jmethodID):       ~28-210 MB
 ```
 
 **High Class Churn Application (1M+ classes):**
@@ -291,24 +301,23 @@ Component                          Memory Overhead
 jmethodID preallocation            1+ GB (grows with class count)
 Line number tables                 1-10 MB
 CallTraceStorage hash tables       50-200 MB (more unique traces)
-RefCountSlot arrays                512 KB (fixed)
-Dictionary instances (4x)          10-50 MB (more unique strings/contexts)
+RefCountGuard slot arrays          544 KB (fixed)
+String dictionaries (3x)           10-50 MB (more unique strings/contexts)
 Recording buffers                  1.1 MB (fixed)
 ThreadIdTable arrays               32 KB (fixed)
 MethodMap                          1-10 MB
-Thread-local Contexts              64-256 KB (high thread count)
+Per-thread context                 0.7-3 MB (high thread count)
 ─────────────────────────────────────────────────────
-TOTAL (excluding jmethodID):       ~63-273 MB
+TOTAL (excluding jmethodID):       ~65-275 MB
 TOTAL (including jmethodID):       1+ GB (dominated by jmethodID)
 ```
 
 **Key observations:**
-- For normal applications: Total overhead is 24-206 MB (acceptable)
-- For high class churn: jmethodID dominates memory usage (1+ GB)
+- For normal applications: Total overhead is roughly 28-210 MB
+- For high class churn: jmethodID dominates memory usage (1+ GB) unless
+  `fjmethodid=lazy` (or `false`) with `cstack=vm` avoids most of the preloading
 - Most non-jmethodID memory converges after warmup
-- Only jmethodID and CallTraceStorage can grow unbounded (jmethodID requires class unloading)
-- MethodMap now bounded by age-based cleanup (enabled by default)
-- Tracer context overhead is negligible (< 256 KB even with 1000+ threads)
+- MethodMap is bounded by age-based cleanup (enabled by default)
 
 ## Limitations and Restrictions
 
@@ -341,7 +350,9 @@ TOTAL (including jmethodID):       1+ GB (dominated by jmethodID)
 If NMT Internal category grows beyond acceptable limits:
 1. Diagnose class explosion (see diagnosis section below)
 2. Fix application-level class leak or caching issue
-3. If unfixable: Disable profiler in production
+3. On HotSpot, try fjmethodid=lazy (or fjmethodid=false) with cstack=vm,
+   which skips most or all jmethodID preloading
+4. If unfixable: Disable profiler in production
    - Profile only in staging with shorter runs
    - Use alternative observability (JFR events, metrics, tracing)
 ```
@@ -350,13 +361,17 @@ If NMT Internal category grows beyond acceptable limits:
 
 **Limitation:**
 - Cannot selectively preallocate jmethodIDs for specific methods
-- ClassPrepare callback must allocate for ALL methods in the class
+- When a class is preloaded, `GetClassMethods()` allocates for ALL methods in the class
 - Cannot free jmethodIDs while profiling (required for signal-safe operation)
 
 **Why:**
 - AGCT can encounter any method in any stack trace unpredictably
 - Signal handler cannot call JVM to allocate jmethodIDs on-demand (not signal-safe)
 - Selective allocation would cause profiler failures (missing method information)
+
+The per-class choice is only available with `cstack=vm` on HotSpot, where the VM stack
+walker can record raw `Method*` frames instead of jmethodIDs (see section 1 of Memory
+Requirements).
 
 ### 3. Memory Persists Until Class Unload
 
@@ -369,10 +384,10 @@ If NMT Internal category grows beyond acceptable limits:
 - Long-lived applications with stable classes: Acceptable (one-time cost)
 - Applications with high class churn: Unbounded growth
 
-**No workaround exists:**
-- This is fundamental to JVM's jmethodID architecture
-- All profiling approaches (AGCT, VM stack walker, etc.) require jmethodIDs
-- jmethodIDs are the only reliable way to identify methods
+**Workaround:**
+- AGCT (`cstack` other than `vm`) and non-HotSpot JVMs always need preloaded jmethodIDs
+- On HotSpot with `cstack=vm`, `fjmethodid=false` preloads only classes that can be
+  unloaded, and `fjmethodid=lazy` preloads none
 
 ## When to Use the Profiler
 
@@ -382,17 +397,17 @@ If NMT Internal category grows beyond acceptable limits:
 - Typical web services, microservices
 - Batch processing jobs
 - Applications with well-defined class sets
-- Expected memory overhead: 24-206 MB total
+- Expected memory overhead: ~28-210 MB total
   - jmethodID: 10-150 MB
-  - Profiler data structures: 14-56 MB
-  - Tracer context: < 64 KB (negligible)
+  - Profiler data structures: ~18-60 MB
+  - Per-thread context: < 1 MB
 
 **Moderate class churn:**
 - Applications loading 100K-1M classes total
 - Expected memory overhead: 100 MB - 1 GB total
   - jmethodID: Dominant component (70-90% of total)
-  - Profiler data structures: 63-273 MB
-  - Tracer context: < 256 KB (negligible)
+  - Profiler data structures: 65-275 MB
+  - Per-thread context: < 3 MB
 - Monitor NMT Internal category to ensure convergence
 
 ### ⚠️ Caution Required
@@ -529,7 +544,10 @@ watch -n 10 'jcmd <pid> VM.native_memory summary | grep Internal'
 RSS measurements are unreliable for tracking profiler memory usage:
 - GraalVM JVMCI: Can show negative RSS growth due to aggressive GC shrinking heap
 - Zing JDK: Large divergence between NMT and RSS measurements (3.6% vs 82.5%)
-- Recommendation: **Use NMT Internal category only** for accurate profiler memory tracking
+- Recommendation: **Use NMT Internal category** to track JVM-side cost (jmethodIDs,
+  JVMTI-allocated buffers), and the profiler's `native_mem_*` counters for its own
+  structures: those are allocated with libc `malloc`/`calloc` or raw `mmap`
+  (`OS::safeAlloc()` in `linearAllocator.cpp`), which NMT does not track
 
 ```bash
 # Enable NMT in production (minimal overhead)
@@ -552,7 +570,8 @@ jcmd <pid> VM.native_memory summary.diff
 - Use `jcmd <pid> VM.native_memory detail` to see allocation sites
 - GetClassMethods: jmethodID allocations (should converge)
 - GetLineNumberTable: Line number tables (should converge)
-- Other malloc: Profiler data structures (CallTraceStorage, Dictionary, etc.)
+- Profiler data structures (CallTraceStorage, StringDictionary, etc.) are not visible
+  to NMT (libc `malloc`/raw `mmap`); the `native_mem_*` counters break these down by category
 
 ### Class Count Metrics
 
@@ -574,6 +593,8 @@ jcmd <pid> GC.class_histogram | head -1
 - Signal-safe stack walking (operates in SIGPROF handler)
 - Cannot acquire locks or call most JVM functions
 - Must have all jmethodIDs allocated before profiling
+- The VM stack walker (`cstack=vm`) on HotSpot can avoid this; see section 1 of Memory
+  Requirements
 
 **Detailed explanation:**
 - [jmethodIDs in Profiling: A Tale of Nightmares](https://mostlynerdless.de/blog/2023/07/17/jmethodids-in-profiling-a-tale-of-nightmares/)
@@ -594,61 +615,58 @@ jcmd <pid> GC.class_histogram | head -1
 
 ### Code Locations
 
+Paths are relative to `ddprof-lib/src/main/cpp/`.
+
 **1. jmethodID preallocation:**
-- `ddprof-lib/src/main/cpp/vmEntry.cpp:497-531` - `VM::loadMethodIDs()`
-- Called from ClassPrepare callback for every loaded class
-- Must call `GetClassMethods()` to trigger JVM internal allocation
+- `jvmSupport.cpp` - `JVMSupport::initExecution()` picks the preload mode;
+  `loadAllMethodIDsIfNeeded()` / `loadMethodIDsIfNeeded()` run at start and from the
+  ClassPrepare callback; `loadMethodIDsImpl()` calls `GetClassMethods()`
+- `hotspot/hotspotSupport.{h,cpp}` - `shouldPreloadJmethodIDs()`,
+  `loadMethodIDsIfNeededImpl()` (partial mode), lazy resolution
+- `arguments.cpp` - `fjmethodid=true|false|lazy` parsing
 
 **2. Line number table management:**
-- `ddprof-lib/src/main/cpp/flightRecorder.cpp:46-63` - `SharedLineNumberTable` destructor
-- `ddprof-lib/src/main/cpp/flightRecorder.cpp:287-295` - Lazy allocation in `fillJavaMethodInfo()`
-- `ddprof-lib/src/main/cpp/counters.h` - LINE_NUMBER_TABLES counter for tracking live tables
-- Properly deallocates via `jvmti->Deallocate()` (fixed in commit 8ffdb30e)
-- Counter tracking added in commit 257d982d for observable line number table lifecycle
+- `flightRecorder.h` / `flightRecorder.cpp` - `SharedLineNumberTable` and its destructor
+- `flightRecorder.cpp` - `Lookup::fillJavaMethodInfo()` allocates tables lazily
+- `counters.h` - `LINE_NUMBER_TABLES` counter
 
 **3. CallTraceStorage:**
-- `ddprof-lib/src/main/cpp/callTraceStorage.h` - Triple-buffered hash table management
-- `ddprof-lib/src/main/cpp/callTraceHashTable.h` - Hash table structure and operations
-- `INITIAL_CAPACITY = 65536` entries, expands at 75% capacity
-- `CALL_TRACE_CHUNK = 8 MB` per LinearAllocator chunk
+- `callTraceStorage.{h,cpp}` - triple-buffered table management
+- `callTraceHashTable.{h,cpp}` - hash table; `INITIAL_CAPACITY = 65536`, `LOAD_RATIO = 0.75`,
+  `CALL_TRACE_CHUNK = 8 MB`
 
-**4. RefCountSlot arrays:**
-- `ddprof-lib/src/main/cpp/callTraceStorage.h:43-53` - RefCountSlot structure (64 bytes)
-- `MAX_THREADS = 8192` slots, cache-line aligned to eliminate false sharing
-- Used for lock-free memory reclamation of hash tables
+**4. RefCountGuard slot arrays:**
+- `refCountGuard.h` - `RefCountSlot` (64 bytes), `MAX_THREADS = 8192`
 
-**5. Dictionary instances:**
-- `ddprof-lib/src/main/cpp/dictionary.h` - Multi-level hash table for string deduplication
-- `ROWS = 128`, `CELLS = 3` per row
-- Four instances: _class_map, _string_label_map, _context_value_map, _packages
+**5. String dictionaries:**
+- `stringDictionary.h` - `StringDictionary`, `SBTable`, `StringArena` (`CHUNK_SIZE = 512 KB`)
+- `profiler.h` - `_class_map`, `_string_label_map`, `_context_value_map`
+- `dictionary.h` - `Dictionary` (`ROWS = 128`, `CELLS = 3`), used for `Lookup::_packages`
+  and `Lookup::_symbols`
 
 **6. Recording buffers:**
-- `ddprof-lib/src/main/cpp/buffers.h` - RecordingBuffer implementation
-- `RECORDING_BUFFER_SIZE = 65536` bytes + `RECORDING_BUFFER_OVERFLOW = 8192` guard
-- `CONCURRENCY_LEVEL = 16` buffers for thread-local event storage
+- `buffers.h` - `RECORDING_BUFFER_SIZE = 65536`, `RECORDING_BUFFER_OVERFLOW = 8192`
+- `flightRecorder.h` - `RecordingBuffer _buf[CONCURRENCY_LEVEL]`, `CONCURRENCY_LEVEL = 16`
 
 **7. ThreadIdTable:**
-- `ddprof-lib/src/main/cpp/threadIdTable.h` - Thread ID tracking for JFR metadata
-- `TABLE_SIZE = 256` entries per table
-- 16 concurrency levels × 2 tables (double-buffering) = 32 tables total
+- `threadIdTable.h` - `TABLE_SIZE = 256`
+- `flightRecorder.h` - `ThreadIdTable _thread_ids[CONCURRENCY_LEVEL][2]`
 
 **8. MethodMap:**
-- `ddprof-lib/src/main/cpp/flightRecorder.h:107-110` - MethodMap (std::map<jmethodID, MethodInfo>)
-- `ddprof-lib/src/main/cpp/flightRecorder.h:68-105` - MethodInfo structure (_referenced, _age fields)
-- `ddprof-lib/src/main/cpp/flightRecorder.cpp:601-658` - cleanupUnreferencedMethods() implementation
-- `ddprof-lib/src/main/cpp/flightRecorder.cpp:517-563` - switchChunk() calls cleanup after finishChunk()
-- `ddprof-lib/src/main/cpp/flightRecorder.cpp:1196-1242` - writeStackTraces() marks referenced methods
-- `ddprof-lib/src/main/cpp/arguments.h:191` - _enable_method_cleanup flag (default: true)
-- `ddprof-lib/src/main/cpp/arguments.cpp` - mcleanup=true/false parsing
-- Stores metadata for sampled methods with lazy allocation
-- Age-based cleanup removes methods unused for 3+ consecutive chunks
-- Cleanup logs LINE_NUMBER_TABLES counter value via TEST_LOG for observability
+- `flightRecorder.h` - `MethodMap`, `MethodInfo` (`_referenced`, `_age`)
+- `flightRecorder.cpp` - `Recording::cleanupUnreferencedMethods()`, called from
+  `finishChunk()` when `switchChunk()` requests cleanup; `writeStackTraces()` marks
+  referenced methods
+- `arguments.h` / `arguments.cpp` - `_enable_method_cleanup` (default `true`), `mcleanup`
 
-**9. Thread-local Context storage:**
-- `ddprof-lib/src/main/cpp/context.h:32-40` - Context structure (cache-line aligned, 64 bytes)
-- `ddprof-lib/src/main/cpp/context.h:57` - thread_local context_tls_v1 declaration
-- `DD_TAGS_CAPACITY = 10` tags per context
-- Context values stored in _context_value_map Dictionary (profiler.h:122)
+**9. Per-thread context storage:**
+- `threadLocalData.h` - `_otel_ctx_record`, `_otel_tag_encodings`, `_otel_local_root_span_id`
+- `otel_context.h` - `OtelThreadContextRecord` (`OTEL_MAX_RECORD_SIZE = 640`)
+- `context.h` - `DD_TAGS_CAPACITY = 10`
+
+**Native-memory accounting:**
+- `nativeMem.h` - categories and live/avg/max tracking
+- `flightRecorder.cpp` - `Recording::writeNativeMem()` emits the per-category counters
 
 ### Known Issues Fixed
 
@@ -665,7 +683,7 @@ jcmd <pid> GC.class_histogram | head -1
 - Root cause: Recording objects live for entire app lifetime, never freed methods
 - Fix: Age-based cleanup removes methods unused for 3+ consecutive chunks
 - Implementation: Mark-and-sweep during switchChunk(), enabled by default
-- Test: `GetLineNumberTableLeakTest.testMethodMapCleanupDuringContinuousProfile()` validates bounded growth
+- Test: `GetLineNumberTableLeakTest.testCleanupEffectivenessComparison()` compares growth with and without cleanup
 - Feature flag: `mcleanup=true` (default: enabled), `mcleanup=false` to disable
 
 **Test validation approach:**

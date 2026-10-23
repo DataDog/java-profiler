@@ -13,8 +13,18 @@ the version from the most recent reachable `v_X.Y.Z` tag.
 |---|---|---|
 | `main` | `v_X.Y.Z` | `X.(Y+1).0-SNAPSHOT` |
 | `release/X.Y._` | `v_X.Y.Z` | `X.Y.(Z+1)-SNAPSHOT` |
-| Feature branch | (same as base) | snapshot + `-<branch>-SNAPSHOT` |
-| Tag commit | `v_X.Y.Z` | `X.Y.Z` (release, no snapshot) |
+| Feature branch | (same as base) | `X.(Y+1).0-SNAPSHOT`, or `X.(Y+1).0-<branch>-SNAPSHOT` with `--branch-suffix <branch>` (`/` → `_`) |
+| CI tag build (`CI_COMMIT_TAG` or GHA `GITHUB_REF_TYPE=tag` = `v_X.Y.Z`) | - | `X.Y.Z` (release, no snapshot) |
+
+The branch suffix is only applied when the caller passes `--branch-suffix`. GitLab's
+`get_version()` (`.gitlab/scripts/includes.sh`) does that for non-`main`, non-`release/*`
+branches and hands the result to Gradle as `-Pddprof_version`. A plain local
+`./gradlew` build calls `compute-version.sh` with no arguments, so a feature branch gets the
+same version as `main`.
+
+The tag short-circuit relies on those CI environment variables. A local checkout of a tag
+commit without them is treated like any other commit and gets the next snapshot version.
+Minor and patch components roll over at 99 (e.g. `1.99.x` on `main` → `2.0.0-SNAPSHOT`).
 
 On `release/X.Y._` branches, only tags matching `v_X.Y.*` are considered, so
 a merged mainline tag (e.g. `v_1.49.0`) can't produce a wrong-series version
@@ -28,7 +38,7 @@ and BSD sort).
 `build.gradle.kts` computes the version at configuration time via
 `providers.exec`, calling `utils/compute-version.sh`. Priority:
 
-1. `-Pddprof_version` (always set by GitLab CI publish builds)
+1. `-Pddprof_version` (set by GitLab CI jobs via `get_version()`)
 2. `compute-version.sh` (local builds, GHA CI with full history)
 3. `0.0.0-SNAPSHOT` fallback with visible warning (CodeQL autobuild, shallow
    clones without tags — never used for publishing)

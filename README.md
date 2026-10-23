@@ -357,7 +357,8 @@ ddprof-lib/build/
 ```
 
 ### Build Options
-- **Skip debug extraction**: `./gradlew buildRelease -Pskip-debug-extraction=true`
+- **Debug symbol extraction**: runs unconditionally inside `linkRelease` (extract to
+  `debug/`, then strip). There is no skip property.
 - **Debug extraction requires**: `objcopy` (Linux) or `dsymutil` (macOS)
   - Ubuntu/Debian: `sudo apt-get install binutils`
   - Alpine: `apk add binutils`
