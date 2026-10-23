@@ -182,6 +182,18 @@ Examples:
 
 Single-value commands run one container test configuration immediately. When any dimension expands to multiple cells, the script prints a compact status table first; interactive terminals ask for confirmation, while non-interactive runs require `--run` to execute. Matrix execution prints the status table again after all cells finish and writes summaries to `build/reports/container-matrix/summary.md` and `build/reports/container-matrix/summary.json`. Matrix gtest runs require a short `--gtest-task` name so the task follows each cell's configuration. Cells not run because of `--fail-fast` are reported as cancelled separately from unsupported cells that are skipped.
 
+### `check-signal-reachability.py`
+
+Static async-signal-safety check. Builds a call graph from the relocations of the debug object files (`objdump -dr`) and reports every function reachable from a signal handler or malloc hook that calls an unsafe symbol (heap allocation, locks, stdio, dynamic-loader calls, dynamic TLS, logging). The entry points, unsafe symbols and known findings are data lists at the top of the script. ELF objects only (Linux x64/aarch64); needs GNU `objdump` and `c++filt`.
+
+**Usage:**
+```bash
+./utils/check-signal-reachability.py --obj-dir ddprof-lib/build/obj/main/debug [--allowlist <file>]
+./utils/check-signal-reachability.py --self-test   # planted violations in utils/tests/signal-reachability-fixture.cpp
+```
+
+Exit codes: `0` no findings outside the allowlist (or self-test passed), `1` new findings (one `<object>:<caller> -> <unsafe symbol> (via <path>)` line each), `2` usage/environment error. `--allowlist` replaces the built-in known findings; one entry per line: `<caller>[|<caller>...] -> <unsafe symbol>  # <JIRA-KEY>`.
+
 ### `patch-dd-java-agent.sh`
 
 Patches a `dd-java-agent.jar` with a locally-built ddprof library for quick local testing without a full dd-trace-java rebuild.
