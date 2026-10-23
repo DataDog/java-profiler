@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-10-22 19:41:08 EDT
+**Date:** 2026-10-23 01:06:18 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 32 |
-| CPU Cores (end) | 32 |
+| CPU Cores (start) | 96 |
+| CPU Cores (end) | 56 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 207 |
-| Sample Rate | 3.45/sec |
-| Health Score | 216% |
-| Threads | 8 |
+| CPU Samples | 164 |
+| Sample Rate | 2.73/sec |
+| Health Score | 171% |
+| Threads | 6 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
+<summary>CPU Timeline (3 unique values: 56-96 cores)</summary>
 
 ```
-1792712220 32
-1792712225 32
-1792712230 32
-1792712235 32
-1792712240 32
-1792712245 32
-1792712250 32
-1792712255 32
-1792712260 32
-1792712265 32
-1792712270 32
-1792712275 32
-1792712280 32
-1792712285 32
-1792712290 32
-1792712295 32
-1792712300 32
-1792712305 32
-1792712310 32
-1792712315 32
+1792731594 96
+1792731599 96
+1792731604 96
+1792731609 96
+1792731614 96
+1792731619 96
+1792731624 96
+1792731629 96
+1792731634 76
+1792731639 76
+1792731644 56
+1792731649 56
+1792731654 56
+1792731659 56
+1792731664 56
+1792731669 56
+1792731674 56
+1792731679 56
+1792731684 56
+1792731689 56
 ```
 </details>
 
