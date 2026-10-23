@@ -799,6 +799,22 @@ public:
                                    t->_priority_expand.end());
     }
 
+    // Report a root without running a whole pass, so its scheduling effect can
+    // be checked independently of the ordinary rotation collectors.
+    static jvmtiIterationControl reportHeapRootForTest(
+        jvmtiHeapRootKind kind, jlong class_tag, jlong *tag, void *context) {
+        return ReferenceChainTracker::heapRootCallback(kind, class_tag, 0, tag,
+                                                       context);
+    }
+
+    // Deliver an observed edge through the production heap callback.
+    static jint reportHeapReferenceForTest(jvmtiHeapReferenceKind kind,
+                                          jlong class_tag, jlong *tag,
+                                          jlong *referrer_tag, void *context) {
+        return ReferenceChainTracker::heapReferenceCallback(
+            kind, nullptr, class_tag, 0, 0, tag, referrer_tag, -1, context);
+    }
+
     // Simulates a tag left in _priority_expand by a prior pass's truncated expandFrontier()
     // batch without a full expandFrontier()/JVMTI round-trip.
     static void pushPriorityExpand(jlong tag) {

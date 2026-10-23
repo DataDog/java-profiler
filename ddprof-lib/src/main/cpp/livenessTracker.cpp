@@ -882,15 +882,30 @@ void LivenessTracker::insertThreadGen(KlassCountScratch &scratch,
       return;
     }
   }
+  int idx;
   if (scratch.thread_count < KlassCountScratch::MAX_THREADS_PER_KLASS) {
-    int idx = scratch.thread_count++;
-    scratch.threads[idx].tid = tid;
-    scratch.threads[idx].ages[0] = age;
-    scratch.threads[idx].age_count = 1;
-    scratch.threads[idx].count = 1; // this object is the tid's first this epoch
+    idx = scratch.thread_count++;
+  } else {
+    // Keeping only the first tids hides later, larger one-shot cohorts behind
+    // early small allocations. Replace the smallest observed retained set;
+    // ties prefer keeping the tid with more distinct surviving ages.
+    idx = 0;
+    for (int i = 1; i < scratch.thread_count; i++) {
+      const auto &candidate = scratch.threads[i];
+      const auto &victim = scratch.threads[idx];
+      if (candidate.count < victim.count ||
+          (candidate.count == victim.count && candidate.age_count < victim.age_count)) {
+        idx = i;
+      }
+    }
   }
-  // else: thread table full — additional threads are not tracked, but
-  // the oldest[] array still captures instances from all threads.
+  // Count only objects observed since this tid entered the scratch. Inherit
+  // neither the evicted tid's count nor its ages: both feed qualification.
+  // Reappearing tids can be undercounted at capacity, never overcounted.
+  scratch.threads[idx].tid = tid;
+  scratch.threads[idx].ages[0] = age;
+  scratch.threads[idx].age_count = 1;
+  scratch.threads[idx].count = 1;
 }
 
 void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age,
@@ -999,6 +1014,9 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(
     _klass_population[slot].ring_head = 0;
     _klass_population[slot].ring_fill = 0;
     _klass_population[slot].consecutive_positive = 0;
+#ifdef DEBUG
+    _klass_population[slot].test_seeded_history = false;
+#endif
     _klass_population[slot].cached_slope = 0.0;
     // A reused (evicted) slot's previous class's per-tid trends must not
     // leak onto the new one, same as the fields above.
@@ -1011,6 +1029,16 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(
   }
 
   KlassPopulationEntry &entry = _klass_population[slot];
+#ifdef DEBUG
+  if (entry.test_seeded_history) {
+    // Real GC folds must not replace a JNI test fixture's seeded ramp with
+    // the sampled cohort's generation count. Keep its LRU epoch current.
+    entry.last_updated_epoch = epoch;
+    *out_slot = slot;
+    *out_created = created;
+    return evicted_ref;
+  }
+#endif
   entry.count_ring[entry.ring_head] = count;
   entry.ring_head = (u8)((entry.ring_head + 1) % KLASS_POPULATION_RING_SIZE);
   if (entry.ring_fill < KLASS_POPULATION_RING_SIZE) {
