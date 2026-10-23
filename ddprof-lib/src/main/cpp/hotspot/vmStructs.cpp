@@ -182,7 +182,7 @@ void VMStructs::init_offsets_and_addresses() {
             continue;                                                   \
         }
 
-#define END_TYPE() continue; }
+#define END_TYPE() }
         DECLARE_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
         DECLARE_V27_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
 #undef MATCH_TYPE_NAMES
