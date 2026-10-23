@@ -18,11 +18,6 @@
 RefCountSlot RefCountGuard::refcount_slots[RefCountGuard::MAX_THREADS];
 int RefCountGuard::slot_owners[RefCountGuard::MAX_THREADS];
 
-// One-time warning latch: emit at most one Log::warn per process when
-// reentrant nesting exceeds NESTED_DEPTH and the scanner can no longer see
-// every nested resource on the slot.
-static std::atomic<bool> s_nested_overflow_warned{false};
-
 int RefCountGuard::getThreadRefCountSlot() {
     ProfiledThread* thrd = ProfiledThread::current();
     int tid = thrd != nullptr ? thrd->tid() : OS::threadId();
@@ -88,12 +83,12 @@ RefCountGuard::RefCountGuard(void* resource) : _active(true), _is_reentrant(fals
             __atomic_store_n(&refcount_slots[_my_slot].nested[idx], resource, __ATOMIC_SEQ_CST);
         } else {
             // Reentrant nesting deeper than NESTED_DEPTH; this guard's resource
-            // is invisible to the scanner.  Latch a single warning per process.
-            bool expected = false;
-            if (s_nested_overflow_warned.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
-                Log::warn("RefCountGuard reentrancy depth %u exceeds NESTED_DEPTH=%d; scanner may miss nested resources",
-                          static_cast<unsigned>(prev_count) + 1, NESTED_DEPTH);
-            }
+            // is invisible to the scanner.  Counted, not logged: the guard
+            // constructor runs in signal handlers, where stdio is not
+            // async-signal-safe (PROF-16314).  The counter shows up in the
+            // stop-time report; the overflow stays latched per guard by the
+            // count itself, so the counter only advances on real overflows.
+            Counters::increment(REFCOUNT_NESTED_OVERFLOW, 1);
         }
     } else {
         // Non-reentrant (count was 0): store pointer first so the scanner skips

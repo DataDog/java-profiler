@@ -133,7 +133,6 @@ BARRIERS = [
 ALLOWLIST = [
     (("JitCodeCache::findRuntimeStub", "JitCodeCache::findRuntimeStubInfo"),
      "SpinLock::lockShared", "PROF-16313"),
-    (("RefCountGuard::RefCountGuard",), "Log::warn", "PROF-16314"),
 ]
 
 SELF_TEST_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
