@@ -85,9 +85,10 @@ RefCountGuard::RefCountGuard(void* resource) : _active(true), _is_reentrant(fals
             // Reentrant nesting deeper than NESTED_DEPTH; this guard's resource
             // is invisible to the scanner.  Counted, not logged: the guard
             // constructor runs in signal handlers, where stdio is not
-            // async-signal-safe (PROF-16314).  The counter shows up in the
-            // stop-time report; the overflow stays latched per guard by the
-            // count itself, so the counter only advances on real overflows.
+            // async-signal-safe (PROF-16314).  The counter is written to
+            // each JFR chunk as a datadog.ProfilerCounter event and exposed via
+            // JavaProfiler.getDebugCounters(); it advances once per overflowing
+            // guard.
             Counters::increment(REFCOUNT_NESTED_OVERFLOW, 1);
         }
     } else {

@@ -89,7 +89,7 @@ def scope_in_effect(code, pos):
             else:
                 depth -= 1
                 if depth == 0:
-                    end = i
+                    end = i + 1
     if depth == 0:
         visible.append((0, end))
     for a, b in visible:

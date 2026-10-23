@@ -421,7 +421,8 @@ def self_test():
         if cc.returncode != 0:
             raise EnvError("fixture compile failed:\n" + cc.stderr)
         allowlist = [((c,), s, "SELFTEST-1") for c, s in allowed]
-        new, found = check(tmp, allowlist)
+        new, _ = check(tmp, allowlist)
+        _, found = find_violations(*build_graph([obj]))
     got = {(c, s) for _, c, s, _ in found}
     reported = {(c, s) for c, s in got if (c, s) not in allowed}
     errors = (["MISSED %s -> %s" % e for e in sorted(expected - reported)] +

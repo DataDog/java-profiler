@@ -183,32 +183,39 @@ afterEvaluate {
   }
 }
 
+val debugObjDir: File = layout.buildDirectory.dir("obj/main/debug").get().asFile
+val signalReachabilityScript: File = rootProject.file("utils/check-signal-reachability.py")
+
+// The reachability checker reads ELF objects only (Linux); Mach-O objects are skipped.
+fun hasElfObjects(dir: File): Boolean {
+  val obj = dir.listFiles { f -> f.name.endsWith(".o") }?.firstOrNull() ?: return false
+  val magic = ByteArray(4)
+  return obj.inputStream().use { it.read(magic) } == 4 &&
+    magic.contentEquals(byteArrayOf(0x7f, 'E'.code.toByte(), 'L'.code.toByte(), 'F'.code.toByte()))
+}
+
 // Static async-signal-safety reachability check over the debug objects; see
-// utils/check-signal-reachability.py. Opt-in (not wired into check/build): run
-// `./gradlew :ddprof-lib:checkSignalReachability`. The checker reads ELF objects
-// only, so the task is skipped when the debug objects are absent or not ELF.
+// utils/check-signal-reachability.py. Not wired into check/build: run
+// `./gradlew :ddprof-lib:checkSignalReachability` (fails fast), or via
+// qualityChecks. The checker reads ELF objects only, so the task is skipped
+// when the debug objects are absent or not ELF.
 tasks.register<Exec>("checkSignalReachability") {
   group = "verification"
   description = "Checks that no async-signal-unsafe function is reachable from the signal handlers and malloc hooks"
   // Compile task exists for every active configuration; named lookup fails loudly on rename.
   dependsOn(tasks.named("compileDebug"))
 
-  val objDir = layout.buildDirectory.dir("obj/main/debug").get().asFile
-  val script = rootProject.file("utils/check-signal-reachability.py")
-  commandLine("python3", script.absolutePath, "--obj-dir", objDir.absolutePath)
+  commandLine("python3", signalReachabilityScript.absolutePath, "--obj-dir", debugObjDir.absolutePath)
 
-  onlyIf("debug objects are ELF") {
-    val obj = objDir.listFiles { f -> f.name.endsWith(".o") }?.firstOrNull()
-    val magic = ByteArray(4)
-    obj != null &&
-      obj.inputStream().use { it.read(magic) } == 4 &&
-      magic.contentEquals(byteArrayOf(0x7f, 'E'.code.toByte(), 'L'.code.toByte(), 'F'.code.toByte()))
-  }
+  onlyIf("debug objects are ELF") { hasElfObjects(debugObjDir) }
 }
 
-// Source-level quality checks (utils/check-*.py), each also runnable on its own.
-// Opt-in: `./gradlew :ddprof-lib:qualityChecks`. Runs every check, then fails
-// if any of them failed.
+// Quality checks: the signal-reachability check (ELF hosts only) and its
+// fixture self-test (Linux only), plus the source-level utils/check-*.py
+// scripts, each also runnable on its own. Not wired into check/build; CI runs
+// `./gradlew :ddprof-lib:qualityChecks` in the quality-checks job of
+// .github/workflows/ci.yml. Runs every check, collects every failure, and
+// fails once at the end.
 interface QualityCheckServices {
   @get:Inject val exec: ExecOperations
 }
@@ -216,7 +223,9 @@ interface QualityCheckServices {
 tasks.register("qualityChecks") {
   group = "verification"
   description = "Runs the signal-reachability check and the source-level quality checks in utils/"
-  dependsOn("checkSignalReachability")
+  // Depends on the debug objects, not on checkSignalReachability: that Exec
+  // task fails fast, which would stop the remaining checks from running.
+  dependsOn(tasks.named("compileDebug"))
 
   val exec = objects.newInstance<QualityCheckServices>().exec
   val root = rootProject.projectDir
@@ -237,9 +246,17 @@ tasks.register("qualityChecks") {
     val onLinux = System.getProperty("os.name").lowercase().contains("linux")
     if (onLinux) {
       exec.exec {
-        commandLine("python3", File(root, "utils/check-signal-reachability.py").absolutePath, "--self-test")
+        commandLine("python3", signalReachabilityScript.absolutePath, "--self-test")
         isIgnoreExitValue = true
       }.exitValue.takeIf { it != 0 }?.let { failed += "self-test (check-signal-reachability.py --self-test)" }
+    }
+    if (hasElfObjects(debugObjDir)) {
+      exec.exec {
+        commandLine("python3", signalReachabilityScript.absolutePath, "--obj-dir", debugObjDir.absolutePath)
+        isIgnoreExitValue = true
+      }.exitValue.takeIf { it != 0 }?.let { failed += "check-signal-reachability.py" }
+    } else {
+      logger.lifecycle("qualityChecks: check-signal-reachability.py skipped (debug objects are not ELF)")
     }
     failed += scripts.filter { script ->
       exec.exec {

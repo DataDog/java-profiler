@@ -15,8 +15,9 @@
 """Check that shared native code reaches JVM implementations only through the boundary.
 
 Shared files under ddprof-lib/src/main/cpp must not #include "hotspot/...",
-"j9/..." or "zing/..." headers. Allowed: the implementation directories
-themselves, the boundary files, and the known exceptions listed below.
+"j9/..." or "zing/..." headers (quoted or angle-bracket form). Allowed: the
+implementation directories themselves, the boundary files, and the known
+exceptions listed below.
 
 Exit codes: 0 clean, 1 violations or stale exceptions, 2 environment error.
 """
@@ -49,7 +50,7 @@ KNOWN_EXCEPTIONS = {
     "threadState.inline.h": {"hotspot/vmStructs.h"},
 }
 
-_INCLUDE = re.compile(r'^\s*#\s*include\s+"((?:hotspot|j9|zing)/[^"]+)"')
+_INCLUDE = re.compile(r'^\s*#\s*include\s+(?:"((?:hotspot|j9|zing)/[^"]+)"|<((?:hotspot|j9|zing)/[^>]+)>)')
 
 
 def tracked_files(root, path):
@@ -81,7 +82,7 @@ def main(argv):
                 m = _INCLUDE.match(line)
                 if not m:
                     continue
-                header = m.group(1)
+                header = m.group(1) or m.group(2)
                 if header in KNOWN_EXCEPTIONS.get(rel, ()):
                     seen.add((rel, header))
                 else:

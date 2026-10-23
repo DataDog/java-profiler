@@ -201,7 +201,7 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 
 | Script | Checks |
 |---|---|
-| `check-jvm-boundary-includes.py` | Shared code in `ddprof-lib/src/main/cpp` does not `#include "hotspot/"`, `"j9/"` or `"zing/"` headers, except the boundary files and the known exceptions (mirrors `doc/architecture/JvmSupportLayer.md#known-boundary-exceptions`). |
+| `check-jvm-boundary-includes.py` | Shared code in `ddprof-lib/src/main/cpp` does not `#include "hotspot/"`, `"j9/"` or `"zing/"` headers (quoted or angle-bracket form), except the boundary files and the known exceptions (mirrors `doc/architecture/JvmSupportLayer.md#known-boundary-exceptions`). |
 | `check-doc-index.py` | Every `doc/**/*.md` is linked from `doc/README.md` and has a PascalCase file name. |
 | `check-sigsetjmp-shape.py` | Every `sigsetjmp()` has a `JmpCtxScope` in effect, `savemask` 1, and a landing pad that starts with `SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();` then `<scope>.restore();` (the `guards.h` pattern). The glibc cancellation buffer in `libraryPatcher_linux.cpp` is the one exception. |
 | `check-tracked-artifacts.py` | No tracked path under `docs/sphinx/` or `.sphinx/`, and no `*.scratch*` path. |
@@ -209,7 +209,7 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 **Usage:**
 ```bash
 ./utils/check-doc-index.py                 # any one check
-./gradlew :ddprof-lib:qualityChecks        # opt-in; checkSignalReachability plus all four
+./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all four; run by CI (ci.yml quality-checks job)
 ```
 
 ### `patch-dd-java-agent.sh`
