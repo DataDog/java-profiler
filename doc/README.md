@@ -7,8 +7,9 @@
 | Directory | Purpose |
 |-----------|---------|
 | `architecture/` | Profiler internal architecture and design documents |
-| `build/` | Build system documentation (Gradle, native compilation) |
+| `building/` | Build system documentation (Gradle, native compilation) |
 | `reference/` | Reference documentation for profiler features |
+| `performance/` | Benchmark and performance reports |
 
 ## Naming Convention
 
