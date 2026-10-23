@@ -205,6 +205,40 @@ tasks.register<Exec>("checkSignalReachability") {
   }
 }
 
+// Source-level quality checks (utils/check-*.py), each also runnable on its own.
+// Opt-in: `./gradlew :ddprof-lib:qualityChecks`. Runs every check, then fails
+// if any of them failed.
+interface QualityCheckServices {
+  @get:Inject val exec: ExecOperations
+}
+
+tasks.register("qualityChecks") {
+  group = "verification"
+  description = "Runs the signal-reachability check and the source-level quality checks in utils/"
+  dependsOn("checkSignalReachability")
+
+  val exec = objects.newInstance<QualityCheckServices>().exec
+  val root = rootProject.projectDir
+  val scripts = listOf(
+    "check-jvm-boundary-includes.py",
+    "check-doc-index.py",
+    "check-sigsetjmp-shape.py",
+    "check-tracked-artifacts.py",
+  ).map { File(root, "utils/$it") }
+
+  doLast {
+    val failed = scripts.filter { script ->
+      exec.exec {
+        commandLine("python3", script.absolutePath, "--root", root.absolutePath)
+        isIgnoreExitValue = true
+      }.exitValue != 0
+    }
+    if (failed.isNotEmpty()) {
+      throw GradleException("quality checks failed: ${failed.joinToString { it.name }}")
+    }
+  }
+}
+
 // Add runBenchmarks task
 tasks.register("runBenchmarks") {
   dependsOn(":ddprof-lib:benchmarks:runBenchmark")
