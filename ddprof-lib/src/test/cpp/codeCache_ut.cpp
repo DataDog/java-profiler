@@ -6,6 +6,8 @@
 #include <gtest/gtest.h>
 #include "codeCache.h"
 
+#include <stdio.h>
+
 // memoryUsage() must reflect the actual per-symbol name length, not a fixed
 // per-symbol constant: adding one symbol grows the reported usage by exactly
 // the allocation size of its name string.
@@ -98,4 +100,43 @@ TEST(CodeCacheTest, ArrayMemoryUsageSumsLibraries) {
     // CodeCacheArray does not own the entries.
     delete a;
     delete b;
+}
+
+// The two-phase add used under JitCodeCache's stubs lock: prepareAdd() hands
+// over a grown array only when the cache is full, commitAdd() returns the
+// replaced array exactly then, and the result matches add()'s documented
+// accounting (blob array at the grown capacity plus each name allocation).
+TEST(CodeCacheTest, TwoPhaseAddGrowsOnlyWhenFull) {
+    CodeCache cc("lib");
+    long long names = 0;
+    char name[32];
+    const int ADDS = INITIAL_CODE_CACHE_CAPACITY + 1;
+    for (int i = 0; i < ADDS; i++) {
+        snprintf(name, sizeof(name), "sym_%d", i);
+        CodeCache::PreparedAdd prepared;
+        cc.prepareAdd(name, prepared);
+        bool full = i == INITIAL_CODE_CACHE_CAPACITY;
+        EXPECT_EQ(full, prepared.grown != nullptr) << i;
+        CodeBlob *retired = cc.commitAdd(reinterpret_cast<const void *>(0x1000 + i * 16),
+                                         16, prepared);
+        EXPECT_EQ(full, retired != nullptr) << i;
+        delete[] retired;
+        names += (long long)NativeFunc::allocSize(name);
+    }
+    EXPECT_EQ((long long)INITIAL_CODE_CACHE_CAPACITY * 2 * sizeof(CodeBlob)
+                  + (long long)NativeFunc::allocSize("lib") + names,
+              cc.memoryUsage());
+    for (int i = 0; i < ADDS; i++) {
+        snprintf(name, sizeof(name), "sym_%d", i);
+        EXPECT_EQ(reinterpret_cast<const void *>(0x1000 + i * 16), cc.findSymbol(name)) << i;
+    }
+}
+
+// prepareAdd() keeps add()'s replacement of non-printable name characters.
+TEST(CodeCacheTest, TwoPhaseAddReplacesNonPrintableName) {
+    CodeCache cc("lib");
+    CodeCache::PreparedAdd prepared;
+    cc.prepareAdd("a\x01" "b", prepared);
+    delete[] cc.commitAdd(reinterpret_cast<const void *>(0x1000), 16, prepared);
+    EXPECT_EQ(reinterpret_cast<const void *>(0x1000), cc.findSymbol("a?b"));
 }

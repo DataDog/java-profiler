@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "counters.h"
 #include "hotspot/vmStructs.h"
 #include "threadLocalData.h"
 #ifdef __aarch64__
@@ -15,6 +16,7 @@
 #endif
 
 SpinLock JitCodeCache::_stubs_lock;
+Mutex JitCodeCache::_stubs_write_lock;
 CodeCache JitCodeCache::_runtime_stubs("[stubs]");
 std::atomic<const void *> JitCodeCache::_call_stub_begin = { nullptr };
 std::atomic<const void *> JitCodeCache::_call_stub_end = { nullptr };
@@ -24,11 +26,12 @@ std::atomic<const void *> JitCodeCache::_call_stub_end = { nullptr };
 // signal-handler lookup is a binary search. Inserts happen under the
 // exclusive _stubs_lock and each entry's info pointer is fixed at
 // registration time, so a reader holding the shared lock sees a stable
-// snapshot: the same lock serializes the growing realloc with the scan, and
-// the full-barrier CAS in SpinLock publishes the new contents. Info objects
-// are malloc'ed once at DynamicCodeGenerated time and never freed -- a signal
-// handler may still be reading one -- matching the lifetime of the stub name
-// strings.
+// snapshot. A full array is replaced by a larger copy, allocated and filled
+// before the exclusive lock and swapped in under it; the old array is freed
+// only after the unlock, when no reader can still hold it. The full-barrier
+// CAS in SpinLock publishes the new contents. Published info objects are
+// never freed -- a signal handler may still be reading one -- matching the
+// lifetime of the stub name strings.
 StubUnwindEntry* JitCodeCache::_stub_unwind = nullptr;
 int JitCodeCache::_stub_unwind_count = 0;
 int JitCodeCache::_stub_unwind_capacity = 0;
@@ -60,10 +63,13 @@ void JNICALL JitCodeCache::CompiledMethodLoad(jvmtiEnv *jvmti, jmethodID method,
 void JNICALL JitCodeCache::DynamicCodeGenerated(jvmtiEnv *jvmti, const char *name,
                                   const void *address, jint length) {
   ProfiledThread::initCurrentThreadSignalSafe();
+  // Registrations can arrive concurrently from several threads. The writer
+  // mutex orders them, so the state read while preparing below stays valid
+  // until the commit. Signal handlers never take it.
+  MutexLocker writer(_stubs_write_lock);
 #ifdef __aarch64__
   // Analyze before taking the lock: the classifier decodes every instruction
-  // and allocates, which must not happen while sampling threads spin on the
-  // shared lock. Publication is ordered by the exclusive lock below -- a
+  // and allocates. Publication is ordered by the exclusive lock below -- a
   // reader that finds the stub always finds its info.
   StubUnwindInfo* stub_info = nullptr;
   if (shouldAnalyzeStub(name)) {
@@ -76,14 +82,17 @@ void JNICALL JitCodeCache::DynamicCodeGenerated(jvmtiEnv *jvmti, const char *nam
                             : WALKVM_STUB_INFO_UNCLASSIFIED);
   }
 #endif
-  _stubs_lock.lock();
-  _runtime_stubs.add(address, length, name, true);
+  // Every heap allocation and free happens outside the exclusive lock. A
+  // thread that holds the allocator lock can be interrupted by a profiling
+  // signal whose handler looks up a stub; if this thread then blocked in the
+  // allocator while holding _stubs_lock, that lookup could never succeed.
+  CodeCache::PreparedAdd prepared;
+  _runtime_stubs.prepareAdd(name, prepared);
 #ifdef __aarch64__
   // A re-registration of the same range (never observed for HotSpot runtime
   // stubs, but DynamicCodeGenerated makes no promises) keeps the previously
   // registered info: the old object cannot be freed because a signal handler
   // may still hold a pointer to it.
-  bool duplicate = false;
   int lo = 0, hi = _stub_unwind_count;
   while (lo < hi) {
     int mid = (lo + hi) / 2;
@@ -93,38 +102,59 @@ void JNICALL JitCodeCache::DynamicCodeGenerated(jvmtiEnv *jvmti, const char *nam
       hi = mid;
     }
   }
-  if (lo < _stub_unwind_count && _stub_unwind[lo]._start == address) {
-    duplicate = true;
-  }
-  if (!duplicate && _stub_unwind_count == _stub_unwind_capacity) {
-    int new_capacity = _stub_unwind_capacity == 0 ? 64 : _stub_unwind_capacity * 2;
-    StubUnwindEntry* grown =
-        (StubUnwindEntry*)realloc(_stub_unwind, new_capacity * sizeof(StubUnwindEntry));
-    if (grown != nullptr) {
-      _stub_unwind = grown;
-      _stub_unwind_capacity = new_capacity;
+  bool insert = !(lo < _stub_unwind_count && _stub_unwind[lo]._start == address);
+  StubUnwindEntry* grown_unwind = nullptr;
+  int grown_capacity = 0;
+  if (insert && _stub_unwind_count == _stub_unwind_capacity) {
+    grown_capacity = _stub_unwind_capacity == 0 ? 64 : _stub_unwind_capacity * 2;
+    grown_unwind = (StubUnwindEntry*)malloc(grown_capacity * sizeof(StubUnwindEntry));
+    if (grown_unwind != nullptr) {
+      // _stub_unwind is null with zero count on the first growth; memcpy
+      // requires a valid source even for zero bytes.
+      if (_stub_unwind_count > 0) {
+        memcpy(grown_unwind, _stub_unwind, _stub_unwind_count * sizeof(StubUnwindEntry));
+      }
+    } else {
+      // Capacity could not be grown: this stub (and every later one) loses
+      // precomputed unwinding silently unless the outcome is counted.
+      Counters::increment(WALKVM_STUB_INFO_REGISTRATION_FAILED);
+      insert = false;
     }
   }
-  if (!duplicate && _stub_unwind_count < _stub_unwind_capacity) {
+  if (!insert) {
+    // Either a duplicate (the registered info stays) or a failed growth. The
+    // info was never published, so no reader can hold it.
+    free(stub_info);
+    stub_info = nullptr;
+  }
+  StubUnwindEntry* retired_unwind = nullptr;
+#endif
+
+  _stubs_lock.lock();
+  CodeBlob* retired_blobs = _runtime_stubs.commitAdd(address, length, prepared, true);
+#ifdef __aarch64__
+  if (grown_unwind != nullptr) {
+    retired_unwind = _stub_unwind;
+    _stub_unwind = grown_unwind;
+    _stub_unwind_capacity = grown_capacity;
+  }
+  if (insert) {
     // Sorted insert: shift the tail right to keep the lookup binary-searchable.
     memmove(&_stub_unwind[lo + 1], &_stub_unwind[lo],
             (_stub_unwind_count - lo) * sizeof(StubUnwindEntry));
     _stub_unwind[lo]._start = address;
     _stub_unwind[lo]._info = stub_info;
     _stub_unwind_count++;
-  } else {
-    if (duplicate) {
-      // The freshly analyzed info is redundant; the registered one stays.
-      free(stub_info);
-    } else {
-      // Capacity could not be grown: this stub (and every later one) loses
-      // precomputed unwinding silently unless the outcome is counted.
-      Counters::increment(WALKVM_STUB_INFO_REGISTRATION_FAILED);
-    }
-    stub_info = nullptr;
   }
 #endif
   _stubs_lock.unlock();
+
+  // Readers take the shared lock for every access, so after the unlock no
+  // reader can still use the replaced arrays.
+  delete[] retired_blobs;
+#ifdef __aarch64__
+  free(retired_unwind);
+#endif
 
   if (name[0] == 'I' && strcmp(name, "Interpreter") == 0) {
     CodeHeap::setInterpreterStart(address);
@@ -138,22 +168,39 @@ void JNICALL JitCodeCache::DynamicCodeGenerated(jvmtiEnv *jvmti, const char *nam
   CodeHeap::updateBounds(address, (const char *)address + length);
 }
 
-CodeBlob* JitCodeCache::findRuntimeStub(const void *address) {
-  CodeBlob *stub = nullptr;
-  _stubs_lock.lockShared();
+bool JitCodeCache::findRuntimeStub(const void *address, const void **start,
+                                   const char **name) {
+  // Bounded: the caller is a signal handler, and the exclusive holder may be
+  // the interrupted thread itself.
+  if (!_stubs_lock.tryLockShared(SpinLock::DEFAULT_SHARED_SPIN_BUDGET)) {
+    Counters::increment(STUB_LOOKUP_LOCK_UNAVAILABLE);
+    return false;
+  }
+  bool found = false;
   if (_runtime_stubs.contains(address)) {
-    stub = _runtime_stubs.findBlobByAddress(address);
+    CodeBlob *blob = _runtime_stubs.findBlobByAddress(address);
+    if (blob != nullptr) {
+      // Copy out under the lock: a registration may replace the blob array
+      // as soon as the lock is released.
+      *start = blob->_start;
+      *name = blob->_name;
+      found = true;
+    }
   }
   _stubs_lock.unlockShared();
-  return stub;
+  return found;
 }
 
 #ifdef __aarch64__
 bool JitCodeCache::findRuntimeStubInfo(const void* address, const void** start,
                                        const char** name, const StubUnwindInfo** info) {
-  bool found = false;
   *info = nullptr;
-  _stubs_lock.lockShared();
+  // Bounded for the same reason as findRuntimeStub().
+  if (!_stubs_lock.tryLockShared(SpinLock::DEFAULT_SHARED_SPIN_BUDGET)) {
+    Counters::increment(STUB_LOOKUP_LOCK_UNAVAILABLE);
+    return false;
+  }
+  bool found = false;
   if (_runtime_stubs.contains(address)) {
     CodeBlob* blob = _runtime_stubs.findBlobByAddress(address);
     if (blob != nullptr) {

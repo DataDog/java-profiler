@@ -9,6 +9,7 @@
 #include <atomic>
 
 #include "codeCache.h"
+#include "mutex.h"
 #include "spinLock.h"
 
 #include "hotspot/vmStructs.h"
@@ -19,10 +20,11 @@
 // hotspot/stubUnwindInfo.h).
 struct StubUnwindInfo;
 
-// Registry entry: one per registered runtime stub, appended under the exclusive
-// _stubs_lock, never removed or reordered (CodeCache never removes blobs
-// either). _info is fixed at registration time and the pointed-to object is
-// never freed, so readers see a stable snapshot under the shared lock.
+// Registry entry: one per registered runtime stub, inserted in start-address
+// order under the exclusive _stubs_lock and never removed (CodeCache never
+// removes blobs either). _info is fixed at registration time and the
+// pointed-to object is never freed, so readers see a stable snapshot under the
+// shared lock. The array holding the entries is replaced when it grows.
 struct StubUnwindEntry {
     const void* _start;
     const StubUnwindInfo* _info;
@@ -32,7 +34,13 @@ struct StubUnwindEntry {
 // The class tracks JIT-compiled code and ranges
 class JitCodeCache {
 private:
+    friend class JitCodeCacheTestAccessor;
+
+    // Readers (signal handlers) take it shared with a bounded spin; writers
+    // take it exclusively only to publish what they prepared outside it.
     static SpinLock _stubs_lock;
+    // Orders DynamicCodeGenerated() writers; never taken in a signal handler.
+    static Mutex _stubs_write_lock;
     static CodeCache _runtime_stubs;
     static std::atomic<const void *> _call_stub_begin;
     static std::atomic<const void *> _call_stub_end;
@@ -58,24 +66,31 @@ public:
             address < stub_end;    
     }
     
-    static CodeBlob* findRuntimeStub(const void *address);
+    // Finds the runtime stub containing address and copies its start and name
+    // out under the shared _stubs_lock (the names are never freed). Returns
+    // false when address is not inside any stub, or without searching when
+    // the lock is held exclusively or the shared spin budget runs out (counted
+    // as STUB_LOOKUP_LOCK_UNAVAILABLE). Safe to call from a signal handler.
+    static bool findRuntimeStub(const void *address, const void **start,
+                                const char **name);
 
 #ifdef __aarch64__
     // Finds the runtime stub containing address and returns a consistent view
     // of its start/name plus the precomputed StubUnwindInfo (NULL when the stub
     // was not classified -- including excluded names such as call_stub -- or
     // when address is not inside any stub; returns false in that case).
-    // Takes _stubs_lock shared exactly like findRuntimeStub(), which the
-    // calling signal-handler paths already do, so no new lock acquisitions are
-    // introduced. Copies everything out before releasing the lock; the info
-    // objects themselves are never freed (same lifetime as the stub names).
+    // Takes _stubs_lock shared with the same bounded spin as
+    // findRuntimeStub() and also returns false when the lock is unavailable.
+    // Copies everything out before releasing the lock; the info objects
+    // themselves are never freed (same lifetime as the stub names).
     static bool findRuntimeStubInfo(const void* address, const void** start,
                                     const char** name, const StubUnwindInfo** info);
 #endif
 
     // Heap usage of the runtime-stubs code cache, via CodeCache::memoryUsage().
     // Read under the shared stubs lock because DynamicCodeGenerated() mutates
-    // _runtime_stubs (add()/expand()) concurrently.
+    // _runtime_stubs (commitAdd()) concurrently. Not for signal handlers: it
+    // waits without bound.
     static long long runtimeStubsMemoryUsage();
     static bool isJitCode(const void* pc) {
         return CodeHeap::contains(pc);

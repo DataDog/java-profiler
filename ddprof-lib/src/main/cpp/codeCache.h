@@ -181,7 +181,7 @@ private:
   CodeBlob *_blobs;
 
   // Running total of memoryUsage()'s formula, updated incrementally by the
-  // same pre-publication mutators (constructor, add(), expand(),
+  // same pre-publication mutators (constructor, add()/commitAdd(),
   // setDwarfTable()) instead of recomputed by iterating _blobs. Safe because
   // every contributing field is fixed before publication (see _published
   // below) -- there is no point after construction-and-population where this
@@ -204,17 +204,17 @@ private:
 
   // Set once the cache is registered into a CodeCacheArray (see markPublished()).
   // After that, memoryUsage() may be read lock-free from another thread (dump),
-  // so the mutators that touch the fields it reads (add()/expand()/
-  // setDwarfTable()) must not run — asserted in debug. Standalone caches that
+  // so the mutators that touch the fields it reads (add()/prepareAdd()/
+  // commitAdd()/setDwarfTable()) must not run — asserted in debug. Standalone caches that
   // are never registered (e.g. JitCodeCache::_runtime_stubs, which is instead
-  // guarded by its own JitCodeCache::_stubs_lock) stay unpublished, so the
+  // guarded by its own JitCodeCache::_stubs_lock, with writers serialized by
+  // JitCodeCache::_stubs_write_lock) stay unpublished, so the
   // asserts never fire for them. Atomic with release/acquire so the flag is
   // observably true on any thread that reaches a published cache — the store is
   // sequenced before CodeCacheArray::add()'s RELEASE publish of the pointer, and
   // the assert loads it with acquire — without a formal data race.
   std::atomic<bool> _published;
 
-  void expand();
   void makeImportsPatchable();
   void saveImport(ImportId id, void** entry);
   void copyFrom(const CodeCache& other);
@@ -282,12 +282,34 @@ public:
   void setImageFingerprint(u64 fingerprint) { _image_fingerprint = fingerprint; }
 
   // Mark this cache as published into a CodeCacheArray. Call before the array
-  // makes the pointer visible to readers; afterwards add()/expand()/
-  // setDwarfTable() must not be called (see _published).
+  // makes the pointer visible to readers; afterwards add()/prepareAdd()/
+  // commitAdd()/setDwarfTable() must not be called (see _published).
   void markPublished() { _published.store(true, std::memory_order_release); }
 
   void add(const void *start, int length, const char *name,
            bool update_bounds = false);
+
+  // Heap allocations that prepareAdd() makes for exactly one later commitAdd().
+  struct PreparedAdd {
+    char *name;               // owned NativeFunc name copy, non-printables replaced
+    long long name_size;      // NativeFunc::allocSize() of the name
+    long long name_overhead;  // NativeFunc::nameOverhead() of the copy
+    CodeBlob *grown;          // filled copy of _blobs at twice the capacity, or
+                              // nullptr when the current array has a free slot
+    int capacity;             // _capacity that this preparation is valid for
+  };
+
+  // Two-phase add() for a cache whose readers run in signal handlers under a
+  // SpinLock (JitCodeCache::_runtime_stubs): prepareAdd() makes every heap
+  // allocation and can run outside the lock; commitAdd() only stores and
+  // copies pointers, so it is safe under the exclusive lock. commitAdd()
+  // returns the replaced blob array (or nullptr), which the caller must
+  // delete[] after it releases the lock. Every prepareAdd() must be followed by
+  // exactly one commitAdd(), with no other mutation of this cache in between;
+  // the caller serializes the pair against other writers.
+  void prepareAdd(const char *name, PreparedAdd &prepared) const;
+  CodeBlob *commitAdd(const void *start, int length,
+                      const PreparedAdd &prepared, bool update_bounds = false);
   void updateBounds(const void *start, const void *end);
   void sort();
 
@@ -407,7 +429,7 @@ public:
     // so it stays consistent with the logical bytes above.
     NativeMem::recordOverhead(NM_NATIVE_SYMBOLS, lib->nameOverhead());
     // Mark published before the RELEASE store makes the pointer visible, so any
-    // later add()/expand()/setDwarfTable() on this cache trips the assert (its
+    // later add()/prepareAdd()/commitAdd()/setDwarfTable() on this cache trips the assert (its
     // _blobs would then be read lock-free by memoryUsage() at dump time).
     lib->markPublished();
     // Store pointer before publishing count. The RELEASE here pairs with

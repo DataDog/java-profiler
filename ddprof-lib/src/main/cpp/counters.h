@@ -136,6 +136,11 @@
   X(WALKVM_STUB_INFO_HIT, "walkvm_stub_info_hit")                            \
   X(WALKVM_STUB_INFO_FALLBACK, "walkvm_stub_info_fallback")                  \
   X(WALKVM_STUB_INFO_REGISTRATION_FAILED, "walkvm_stub_info_registration_failed") \
+  /* Runtime-stub lookups (JitCodeCache::findRuntimeStub/findRuntimeStubInfo)  \
+   * that returned "not found" without searching because the shared stubs      \
+   * lock was held exclusively by a registration or the shared spin budget     \
+   * ran out; the stack walk continued with its stub-not-found fallback. */   \
+  X(STUB_LOOKUP_LOCK_UNAVAILABLE, "stub_lookup_lock_unavailable")            \
   X(WALKVM_FP_CHAIN_ATTEMPT, "walkvm_fp_chain_attempt")                      \
   X(WALKVM_FP_CHAIN_REACHED_CODEHEAP, "walkvm_fp_chain_reached_codeheap")    \
   X(WALKVM_ANCHOR_NOT_IN_JAVA,  "walkvm_anchor_not_in_java")                   \
