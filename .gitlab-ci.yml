@@ -11,6 +11,9 @@ variables:
   RUN_RELIABILITY:
     value: "false"
     description: "Run reliability and chaos tests. Set automatically when the test:reliability label is on the PR."
+  RUN_MEMCHECK_PHASE0:
+    value: "false"
+    description: "Run the one-off memcheck Phase 0 noise measurement (PROF-16186). Web-started pipelines only."
   MAVEN_REPOSITORY_PROXY: "https://depot-read-api-java.us1.ddbuild.io/magicmirror/magicmirror/@current/"
 
 default:
@@ -247,3 +250,4 @@ include:
   - local: .gitlab/dd-trace-integration/.gitlab-ci.yml
   - local: .gitlab/sanitizer-tests/.gitlab-ci.yml
   - local: .gitlab/fuzzing/.gitlab-ci.yml
+  - local: .gitlab/memcheck/.gitlab-ci.yml

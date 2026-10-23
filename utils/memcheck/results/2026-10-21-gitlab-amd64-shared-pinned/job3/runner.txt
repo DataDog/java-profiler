@@ -1,0 +1,33 @@
+ci_job: node 3/5
+ci_runner: gitlab-runner-amd64-shared
+kernel: 6.8.0-1067-aws
+nproc: 28
+cpu.max: max 100000
+cpu_model:  Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz
+mem_total: 389948960 kB
+memory.max: 6442450944
+pid_max: 4194304
+perf_event_paranoid: 2
+Operating System Metrics:
+    Provider: cgroupv2
+    Effective CPU Count: 28
+    CPU Period: 100000us
+    CPU Quota: -1
+    CPU Shares: -1
+    List of Processors, 28 total: 
+    0 35 36 37 38 39 40 41 42 43 44 45 46 47 72 83 84 85 86 87 88 89 90 91 92 93 94 95 
+    List of Effective Processors, 28 total: 
+    0 35 36 37 38 39 40 41 42 43 44 45 46 47 72 83 84 85 86 87 88 89 90 91 92 93 94 95 
+    List of Memory Nodes: N/A
+    List of Available Memory Nodes, 2 total: 
+    0 1 
+    Memory Limit: 6.00G
+    Memory Soft Limit: 0.00K
+    Memory & Swap Limit: 6.00G
+    Maximum Processes Limit: 456834
+
+openjdk version "21.0.3" 2024-04-16 LTS
+OpenJDK Runtime Environment Temurin-21.0.3+9 (build 21.0.3+9-LTS)
+OpenJDK 64-Bit Server VM Temurin-21.0.3+9 (build 21.0.3+9-LTS, mixed mode, sharing)
+pinned_cpus: 0,35,36,37
+pinned_nproc: 4
