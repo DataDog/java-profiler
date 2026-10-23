@@ -26,13 +26,7 @@ pipelines and the included `build-logic` build. The `mavenRepositoryProxy` Gradl
 property takes precedence. GitLab plugin resolution additionally reads
 `GRADLE_PLUGIN_PROXY` (or `gradlePluginProxy`). GitLab configures Depot's Java API
 for dependencies and its generic Plugin Portal mirror for plugin-only artifacts.
-The Kotlin DSL marker (`org.gradle.kotlin.kotlin-dsl`) and implementation
-(`org.gradle.kotlin`) groups are resolved exclusively from the official Gradle
-Plugin Portal in GitLab. The generic Depot mirror returns HTTP 405 for HEAD
-requests, which Gradle uses when revalidating cached artifacts. The exception is
-restricted to those two groups; other plugins and project dependencies retain
-their Depot repositories. Broad public fallbacks are omitted in GitLab when the
-applicable proxies are configured.
+Public fallbacks are omitted in GitLab when the applicable proxies are configured.
 Depot may redirect cache misses upstream while populating its cache.
 
 Run the launcher regression tests with:
@@ -46,8 +40,6 @@ and `DEPOT_EXPECTED_PLUGIN_URL` to the expected proxy URLs and run the build
 wrapper with `help -I .gitlab/scripts/tests/depot-repositories.init.gradle`.
 Set `GITLAB_CI=true` for the Depot checks and exercise both
 `MAVEN_REPOSITORY_PROXY` and `-PmavenRepositoryProxy` to check property precedence.
-Repeat the GitLab check with `--refresh-dependencies` after populating the cache
-to exercise HTTP HEAD revalidation as well as initial dependency downloads.
 Use `DEPOT_EXPECTED_MODE=public` outside GitLab to check the unchanged public
 repositories, or `DEPOT_EXPECTED_MODE=custom-proxy` with an explicit
 `-PmavenRepositoryProxy` to check that custom mirrors retain public fallbacks.
