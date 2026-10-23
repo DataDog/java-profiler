@@ -1,4 +1,5 @@
 #!/bin/bash
+# Copyright 2026, Datadog, Inc.
 
 # validate-jfr-conformance.sh - Conformance-based JFR validation
 #
@@ -310,15 +311,11 @@ unset JAVA_VERSION  # Prevent jbang from picking up test JDK version
 
 log_info "Using Java 25 for jbang (required by jfr-shell)"
 
-# jbang resolves jafar-shell from Maven Central, which CI runners can't reach directly.
-# Route it through the same internal Maven proxy Gradle uses (MAVEN_REPOSITORY_PROXY).
-JBANG_REPOS_OPT=""
-if [ -n "${MAVEN_REPOSITORY_PROXY:-}" ]; then
-  JBANG_REPOS_OPT="--repos=\"central=${MAVEN_REPOSITORY_PROXY}\""
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JFR_SHELL="${SCRIPT_DIR}/jfr-shell.sh"
 
 EVENT_METADATA=""
-if ! EVENT_METADATA=$(eval "jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio metadata \"${JFR_FILE}\"" 2>/dev/null); then
+if ! EVENT_METADATA=$("${JFR_SHELL}" metadata "${JFR_FILE}" 2>/dev/null); then
   log_warn "Could not run 'jfr-shell metadata' on ${JFR_FILE}; assuming all event types are present"
   EVENT_METADATA=""
 fi
@@ -351,7 +348,6 @@ log_info "  datadog.Endpoint: ${HAS_DD_ENDPOINT}"
 log_info ""
 
 # Prepare validation command
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VALIDATION_SCRIPT="${SCRIPT_DIR}/validate-jfr.jfrs"
 
 if [ ! -f "${VALIDATION_SCRIPT}" ]; then
@@ -376,7 +372,7 @@ if [ -f /tmp/skip-jfr-validation ]; then
 fi
 
 # Pass calculated thresholds directly (single source of truth - no duplicate logic in jfrs)
-VALIDATION_CMD="jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio script \"${VALIDATION_SCRIPT}\" \"${JFR_FILE}\" \"${PROFILE}\" \"${MIN_EXECUTION_SAMPLES}\" \"${MIN_ALLOCATION_SAMPLES}\" \"${MIN_THREAD_COUNT}\" \"${EXPECTED_CPU_EVENT}\" \"${EXPECTED_ALLOC_EVENT}\" \"${CHECK_ENDPOINT}\" \"${UNEXPECTED_JDK_EXEC}\" \"${UNEXPECTED_JDK_ALLOC}\" \"${UNEXPECTED_DD_EXEC}\" \"${UNEXPECTED_DD_ALLOC}\" \"${UNEXPECTED_ENDPOINT}\" \"${HAS_JDK_EXEC}\" \"${HAS_DD_EXEC}\" \"${HAS_JDK_ALLOC}\" \"${HAS_DD_ALLOC}\" \"${HAS_JDK_THREAD_ALLOC}\" \"${HAS_DD_ENDPOINT}\""
+VALIDATION_CMD=("${JFR_SHELL}" script "${VALIDATION_SCRIPT}" "${JFR_FILE}" "${PROFILE}" "${MIN_EXECUTION_SAMPLES}" "${MIN_ALLOCATION_SAMPLES}" "${MIN_THREAD_COUNT}" "${EXPECTED_CPU_EVENT}" "${EXPECTED_ALLOC_EVENT}" "${CHECK_ENDPOINT}" "${UNEXPECTED_JDK_EXEC}" "${UNEXPECTED_JDK_ALLOC}" "${UNEXPECTED_DD_EXEC}" "${UNEXPECTED_DD_ALLOC}" "${UNEXPECTED_ENDPOINT}" "${HAS_JDK_EXEC}" "${HAS_DD_EXEC}" "${HAS_JDK_ALLOC}" "${HAS_DD_ALLOC}" "${HAS_JDK_THREAD_ALLOC}" "${HAS_DD_ENDPOINT}")
 
 if [ -n "${OUTPUT_FILE}" ]; then
   # Set up trap to write failure marker if script is killed/crashes
@@ -393,7 +389,7 @@ if [ -n "${OUTPUT_FILE}" ]; then
   } > "${OUTPUT_FILE}"
 
   # Run validation and append output
-  eval "${VALIDATION_CMD}" >> "${OUTPUT_FILE}" 2>&1
+  "${VALIDATION_CMD[@]}" >> "${OUTPUT_FILE}" 2>&1
   JBANG_EXIT=$?
 
   # Always write completion marker based on exit code
@@ -437,7 +433,7 @@ if [ -n "${OUTPUT_FILE}" ]; then
   # Show summary from output
   tail -20 "${OUTPUT_FILE}"
 else
-  VALIDATION_OUTPUT=$(eval "${VALIDATION_CMD}" 2>&1)
+  VALIDATION_OUTPUT=$("${VALIDATION_CMD[@]}" 2>&1)
   JBANG_EXIT=$?
 
   # Print output

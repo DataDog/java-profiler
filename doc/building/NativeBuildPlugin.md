@@ -29,7 +29,8 @@ build-logic/
         │   └── ConfigurationPresets.kt   # Standard build configurations
         ├── gtest/
         │   ├── GtestPlugin.kt            # Google Test integration plugin
-        │   └── GtestExtension.kt         # DSL extension for gtest config
+        │   ├── GtestExtension.kt         # DSL extension for gtest config
+        │   └── GtestTaskBuilder.kt       # Per-test compile/link/run tasks
         ├── model/
         │   ├── Architecture.kt           # x64, arm64 enum
         │   ├── Platform.kt               # linux, macos enum
@@ -81,9 +82,9 @@ After project evaluation, the plugin:
 
 2. **Detects Compiler**: Runs the compiler detection algorithm (see below)
 
-3. **Creates Standard Configurations**: If no configurations are explicitly defined, creates release, debug, asan, tsan, and fuzzer configurations
+3. **Creates Standard Configurations**: If no configurations are explicitly defined, `ConfigurationPresets.setupStandardConfigurations()` creates release, debug, asan, tsan, and fuzzer configurations
 
-4. **Filters Active Configurations**: Only configurations matching the current platform/architecture are processed
+4. **Filters Active Configurations**: Only configurations whose `active` flag is set and that match the current platform/architecture are processed
 
 5. **Generates Tasks**: For each active configuration, creates:
    - `compile{Config}` - Compiles C++ sources
@@ -144,8 +145,8 @@ The compiler detection algorithm prioritizes explicit overrides, then auto-detec
 |---------|--------------------------------------|--------------|-------|------------|
 | release | Always                               | `-O3`        | `-g`  | None       |
 | debug   | Always                               | `-O0`        | `-g`  | None       |
-| asan    | `libasan` found + not musl           | None         | `-g`  | ASan, UBSan, LSan |
-| tsan    | `libtsan` found + not musl           | None         | `-g`  | TSan       |
+| asan    | ASan runtime found (`libclang_rt.asan-<arch>` for clang, else `libasan`) + not musl | None | `-g` | ASan, UBSan, LSan |
+| tsan    | TSan runtime found (`libclang_rt.tsan-<arch>` for clang, else `libtsan`) + not musl | None | `-g` | TSan       |
 | fuzzer  | clang++ with libFuzzer + not musl    | None         | `-g`  | ASan, UBSan |
 
 ### Configuration Model
@@ -159,6 +160,7 @@ abstract class BuildConfiguration {
     val compilerArgs: ListProperty<String>  // Compiler flags
     val linkerArgs: ListProperty<String>    // Linker flags
     val testEnvironment: MapProperty<String, String>  // Test env vars
+    val testJvmArgs: ListProperty<String>   // Extra JVM args for Java tests
     val active: Property<Boolean>           // Whether to build
 }
 ```
@@ -176,11 +178,18 @@ abstract class BuildConfiguration {
 -D_XOPEN_SOURCE -D_DARWIN_C_SOURCE
 ```
 
-**Release Linker Flags (Linux):**
+**Common Linux Linker Flags:**
+```
+-ldl -Wl,-z,defs --verbose -lpthread -lm -lrt -Wl,--build-id
+```
+
+**Release Linker Flags (Linux, in addition):**
 ```
 -Wl,-z,nodelete -static-libstdc++ -static-libgcc
 -Wl,--exclude-libs,ALL -Wl,--gc-sections
 ```
+
+Debug also adds `-Wl,-z,nodelete` (see the comment in `configureDebug()`).
 
 ## Task Architecture
 
@@ -282,26 +291,23 @@ tasks.register("link", NativeLinkTask::class) {
 compile{Config}
        │
        ▼
-  link{Config}
+  link{Config}   (release: also extracts debug info and strips, in the same task)
        │
-       ├──────────────────┐
-       │                  │
-       ▼                  ▼
-extractDebugLib    stripLib{Config}
-  (release only)    (release only)
-       │                  │
-       └────────┬─────────┘
-                │
-                ▼
-        assemble{Config}
-                │
-                ▼
-           assembleAll
+       ▼
+assemble{Config}
+       │
+       ▼
+  assembleAll
 ```
+
+Debug-symbol extraction and stripping are not separate tasks: `NativeLinkTask` runs them after
+linking when `extractDebugSymbols` / `stripSymbols` are set, which `NativeBuildPlugin` does only
+for the `release` configuration.
 
 ## Debug Symbol Extraction
 
-Release builds automatically extract debug symbols for optimal deployment:
+Release builds automatically extract debug symbols for optimal deployment
+(`NativeLinkTask.extractDebugInfo()` / `stripLibrary()`). There is no property to disable this.
 
 ### Linux Workflow
 ```bash
@@ -317,6 +323,7 @@ strip -S library.dylib
 ```
 
 ### Size Reduction
+Approximate figures (they drift as the code grows):
 - Original with debug: ~6.1 MB
 - Stripped library: ~1.2 MB (80% reduction)
 - Debug symbols: ~6.1 MB (separate file)
@@ -369,7 +376,8 @@ gtest {
 ```
 
 For each test file, GtestPlugin creates:
-- `compileGtest{Config}_{TestName}` - Compile sources with test
+- `compileGtest{Config}_{TestName}` - Compile the test file (main sources are compiled once per
+  config by `compileGtestLibrary{Config}`)
 - `linkGtest{Config}_{TestName}` - Link test executable
 - `gtest{Config}_{TestName}` - Execute the test
 
@@ -406,9 +414,8 @@ Build output layout:
 ```
 ddprof-lib/build/
 ├── lib/main/{config}/{os}/{arch}/
-│   ├── libjavaProfiler.{so|dylib}     # Full library
-│   ├── stripped/ → production binary
-│   └── debug/ → debug symbols
+│   ├── libjavaProfiler.{so|dylib}     # Linked library (stripped in place for release)
+│   └── debug/ → debug symbols (release only; .debug file or .dSYM bundle)
 └── native/{config}/META-INF/native-libs/
     └── {os}-{arch}/ → final packaged libraries
 ```
@@ -419,11 +426,12 @@ with separate debug symbol packages for production debugging support.
 ## Future Considerations
 
 1. **Windows Support**: Add MSVC/MinGW compiler support if needed
-2. **Fuzzer Compiler Detection**: Currently hardcodes clang++
+2. **Fuzzer Compiler Detection**: `findFuzzerCompiler()` only special-cases Homebrew LLVM on macOS and otherwise reuses the normal compiler detection
 3. **Per-Configuration Compiler**: Allow different compilers per configuration
 4. **Incremental Compilation**: Track source dependencies for partial rebuilds
 
 ## Related Documentation
 
 - `build-logic/README.md` - Native build and GtestPlugin usage documentation
-- `CLAUDE.md` - Build commands reference
+- [GradleTasks](GradleTasks.md) - Build commands reference
+- [BuildSystemGuide](BuildSystemGuide.md) - Maintaining and extending the convention plugins
