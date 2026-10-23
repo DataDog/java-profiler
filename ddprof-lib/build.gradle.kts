@@ -183,6 +183,28 @@ afterEvaluate {
   }
 }
 
+// Static async-signal-safety reachability check over the debug objects; see
+// utils/check-signal-reachability.py. Opt-in (not wired into check/build): run
+// `./gradlew :ddprof-lib:checkSignalReachability`. The checker reads ELF objects
+// only, so the task is skipped when the debug objects are absent or not ELF.
+tasks.register<Exec>("checkSignalReachability") {
+  group = "verification"
+  description = "Checks that no async-signal-unsafe function is reachable from the signal handlers and malloc hooks"
+  dependsOn(tasks.matching { it.name == "compileDebug" })
+
+  val objDir = layout.buildDirectory.dir("obj/main/debug").get().asFile
+  val script = rootProject.file("utils/check-signal-reachability.py")
+  commandLine("python3", script.absolutePath, "--obj-dir", objDir.absolutePath)
+
+  onlyIf("debug objects are ELF") {
+    val obj = objDir.listFiles { f -> f.name.endsWith(".o") }?.firstOrNull()
+    val magic = ByteArray(4)
+    obj != null &&
+      obj.inputStream().use { it.read(magic) } == 4 &&
+      magic.contentEquals(byteArrayOf(0x7f, 'E'.code.toByte(), 'L'.code.toByte(), 'F'.code.toByte()))
+  }
+}
+
 // Add runBenchmarks task
 tasks.register("runBenchmarks") {
   dependsOn(":ddprof-lib:benchmarks:runBenchmark")

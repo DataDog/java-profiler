@@ -190,6 +190,7 @@ Static async-signal-safety check. Builds a call graph from the relocations of th
 ```bash
 ./utils/check-signal-reachability.py --obj-dir ddprof-lib/build/obj/main/debug [--allowlist <file>]
 ./utils/check-signal-reachability.py --self-test   # planted violations in utils/tests/signal-reachability-fixture.cpp
+./gradlew :ddprof-lib:checkSignalReachability      # opt-in; SKIPPED when the debug objects are not ELF
 ```
 
 Exit codes: `0` no findings outside the allowlist (or self-test passed), `1` new findings (one `<object>:<caller> -> <unsafe symbol> (via <path>)` line each), `2` usage/environment error. `--allowlist` replaces the built-in known findings; one entry per line: `<caller>[|<caller>...] -> <unsafe symbol>  # <JIRA-KEY>`.
