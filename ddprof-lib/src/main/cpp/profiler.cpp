@@ -1486,6 +1486,13 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
 
+  if (args._nativemem >= 0 || args._nativemem_output_set) {
+    error = malloc_tracer.check(args);
+    if (error) {
+      return error;
+    }
+  }
+
   _omit_stacktraces = args._lightweight;
   _remote_symbolication = args._remote_symbolication;
   _libs->setRemoteSymbolication(_remote_symbolication);
@@ -1975,7 +1982,7 @@ Error Profiler::check(Arguments &args) {
     _alloc_engine = selectAllocEngine(args);
     error = _alloc_engine->check(args);
   }
-  if (!error && args._nativemem >= 0) {
+  if (!error && (args._nativemem >= 0 || args._nativemem_output_set)) {
     error = malloc_tracer.check(args);
   }
   if (!error && args._nativesocket) {

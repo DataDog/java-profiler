@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Native Memory Allocation Profiling
 
 ## Overview
@@ -6,15 +8,28 @@ The native memory profiler tracks heap allocations made through the C standard
 library (`malloc`, `calloc`, `realloc`, `posix_memalign`, `aligned_alloc`). It
 instruments these functions at the GOT (Global Offset Table) level so that every
 intercepted call is accounted for without modifying application source code or
-requiring a custom allocator. The `free` function is also hooked (to forward calls
-correctly through the GOT) but free events are not recorded.
+requiring a custom allocator. Free events are not intercepted or recorded.
 
-Sampled allocation events carry a full Java + native stack trace and are emitted as
-`datadog.NativeMemoryAllocation` JFR events.
+By default, sampled allocation events carry a full Java + native stack trace and
+are emitted as `datadog.NativeMemoryAllocation` JFR events. Linux x86-64 and
+AArch64 builds also expose sampled allocations through the semaphored
+`ddheap:alloc(address, size, weighted_bytes)` USDT probe for an external eBPF
+profiler.
 
 The feature is activated by passing `nativemem=<interval>` to the profiler, where
 `<interval>` is the byte-sampling interval (e.g. `nativemem=524288` samples roughly
 one event per 512 KiB allocated). Passing `nativemem=0` records every allocation.
+`nativememoutput=jfr|usdt|both` selects the destination; `both` is the default.
+Pass `jfr` to disable USDT output or `usdt` to disable JFR output. The output
+option does not activate profiling by itself. On non-Linux platforms the implicit
+default emits JFR only. Explicit `usdt` emits a warning and disables native-memory
+profiling, while explicit `both` emits a warning and continues with JFR only.
+
+USDT output is allocation-only. It deliberately does not add a free probe or
+retain live-heap state. `weighted_bytes` is the allocation size divided by its
+sampling probability and is capped at `INT64_MAX` for the current consumer's
+signed profile values. USDT-only mode continues the sampler while no consumer is
+attached, but skips both the JFR stack walk and probe payload calculation.
 
 ---
 
@@ -22,10 +37,10 @@ one event per 512 KiB allocated). Passing `nativemem=0` records every allocation
 
 ```
   Application code
-        │  malloc() / calloc() / realloc() / free() / …
+        │  malloc() / calloc() / realloc() / …
         ▼
   ┌─────────────┐  GOT patch   ┌──────────────────────────┐
-  │  libc / musl│ ◄────────── │  malloc_hook / free_hook  │  mallocTracer.cpp
+  │  libc / musl│ ◄────────── │  malloc_hook / calloc_hook│  mallocTracer.cpp
   └─────────────┘             │  calloc_hook / …          │
                               └────────────┬─────────────┘
                                            │ recordMalloc
@@ -56,7 +71,7 @@ restart) and works for libraries loaded at any time.
 `codeCache.h` defines an `ImportId` enum with one entry per hooked symbol:
 
 ```
-im_malloc, im_calloc, im_realloc, im_free, im_posix_memalign, im_aligned_alloc
+im_malloc, im_calloc, im_realloc, im_posix_memalign, im_aligned_alloc
 ```
 
 `CodeCache::patchImport(ImportId, void*)` walks the library's PLT/GOT and overwrites
@@ -71,7 +86,6 @@ Each hook calls the saved original function first, then records the event:
 | `malloc_hook(size)` | `_orig_malloc(size)` | `recordMalloc(ret, size)` if `ret != NULL && size != 0` |
 | `calloc_hook(num, size)` | `_orig_calloc(num, size)` | `recordMalloc(ret, total)` if `ret != NULL && num != 0 && size != 0` (total = num×size, clamped to `SIZE_MAX` on overflow) |
 | `realloc_hook(addr, size)` | `_orig_realloc(addr, size)` | `recordMalloc(ret, size)` if `ret != NULL && size > 0` |
-| `free_hook(addr)` | `_orig_free(addr)` | — (forwards only) |
 | `posix_memalign_hook(…)` | `_orig_posix_memalign(…)` | `recordMalloc(*memptr, size)` if `ret == 0 && memptr != NULL && *memptr != NULL && size != 0` |
 | `aligned_alloc_hook(align, size)` | `_orig_aligned_alloc(align, size)` | `recordMalloc(ret, size)` if `ret != NULL && size != 0` |
 

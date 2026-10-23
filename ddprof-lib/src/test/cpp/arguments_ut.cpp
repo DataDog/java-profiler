@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 #include <string>
 #include "arguments.h"
+#include "mallocTracer.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
 static constexpr char ARGUMENTS_TEST_NAME[] = "ArgumentsTest";
@@ -27,6 +28,91 @@ protected:
     void SetUp() override {}
     void TearDown() override {}
 };
+
+TEST_F(ArgumentsTest, NativeMemoryOutputDefaultsForThePlatformAndIsNotExplicit) {
+    Arguments args;
+    EXPECT_EQ(args._nativemem_output, DEFAULT_NATIVE_MEMORY_OUTPUT);
+    EXPECT_FALSE(args._nativemem_output_set);
+
+    ASSERT_FALSE(args.parse("nativemem=512"));
+    EXPECT_EQ(args._nativemem_output, DEFAULT_NATIVE_MEMORY_OUTPUT);
+    EXPECT_FALSE(args._nativemem_output_set);
+
+    MallocTracer tracer;
+    EXPECT_FALSE(tracer.check(args));
+}
+
+TEST_F(ArgumentsTest, NativeMemoryOutputParsesAllValuesCaseInsensitively) {
+    Arguments jfr;
+    ASSERT_FALSE(jfr.parse("nativemem=512,nativememoutput=JFR"));
+    EXPECT_EQ(jfr._nativemem_output, NATIVE_MEMORY_JFR);
+    EXPECT_TRUE(jfr._nativemem_output_set);
+
+    Arguments usdt;
+    ASSERT_FALSE(usdt.parse("nativememoutput=UsDt,nativemem=512"));
+    EXPECT_EQ(usdt._nativemem_output, NATIVE_MEMORY_USDT);
+    EXPECT_TRUE(usdt._nativemem_output_set);
+
+    Arguments both;
+    ASSERT_FALSE(both.parse("nativemem=512,nativememoutput=BoTh"));
+    EXPECT_EQ(both._nativemem_output, NATIVE_MEMORY_BOTH);
+    EXPECT_TRUE(both._nativemem_output_set);
+}
+
+TEST_F(ArgumentsTest, NativeMemoryOutputRejectsMissingEmptyAndUnknownValues) {
+    Arguments missing;
+    EXPECT_TRUE(missing.parse("nativememoutput"));
+
+    Arguments empty;
+    EXPECT_TRUE(empty.parse("nativememoutput="));
+
+    Arguments unknown;
+    EXPECT_TRUE(unknown.parse("nativememoutput=jfr-and-usdt"));
+}
+
+TEST_F(ArgumentsTest, NativeMemoryOutputRequiresNativeMemoryRegardlessOfOrder) {
+    MallocTracer tracer;
+
+    Arguments output_only;
+    ASSERT_FALSE(output_only.parse("nativememoutput=jfr"));
+    EXPECT_TRUE(tracer.check(output_only));
+
+    Arguments output_first;
+    ASSERT_FALSE(output_first.parse("nativememoutput=usdt,nativemem=512"));
+#if defined(__linux__)
+    EXPECT_FALSE(tracer.check(output_first));
+    EXPECT_EQ(output_first._nativemem_output, NATIVE_MEMORY_USDT);
+#else
+    testing::internal::CaptureStderr();
+    EXPECT_FALSE(tracer.check(output_first));
+    std::string usdt_warning = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(output_first._nativemem_output, NATIVE_MEMORY_NOOP);
+    EXPECT_NE(std::string::npos, usdt_warning.find(
+        "nativememoutput=usdt is supported only on Linux; "
+        "native memory profiling will be disabled"));
+#endif
+
+    Arguments memory_first;
+    ASSERT_FALSE(memory_first.parse("nativemem=512,nativememoutput=both"));
+#if defined(__linux__)
+    EXPECT_FALSE(tracer.check(memory_first));
+    EXPECT_EQ(memory_first._nativemem_output, NATIVE_MEMORY_BOTH);
+#else
+    testing::internal::CaptureStderr();
+    EXPECT_FALSE(tracer.check(memory_first));
+    std::string both_warning = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(memory_first._nativemem_output, NATIVE_MEMORY_JFR);
+    EXPECT_NE(std::string::npos, both_warning.find(
+        "USDT output is supported only on Linux; continuing with JFR only"));
+#endif
+}
+
+TEST_F(ArgumentsTest, ExplicitJfrRemainsSupportedOnEveryPlatform) {
+    MallocTracer tracer;
+    Arguments args;
+    ASSERT_FALSE(args.parse("nativemem=512,nativememoutput=jfr"));
+    EXPECT_FALSE(tracer.check(args));
+}
 
 // hops/budget/framecap are ceiling-clamped (MAX_REFERENCE_CHAINS_HOP_CAP/
 // _BUDGET/_FRONTIER_CAP, arguments.h) as well as floored at 1 - an operator

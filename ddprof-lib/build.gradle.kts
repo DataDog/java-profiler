@@ -17,6 +17,7 @@
 import com.datadoghq.native.model.Platform
 import com.datadoghq.native.util.PlatformUtils
 import org.gradle.api.publish.maven.tasks.AbstractPublishToMaven
+import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.VerificationTask
 
 plugins {
@@ -171,6 +172,27 @@ afterEvaluate {
       archiveBaseName.set(libraryName)
       archiveClassifier.set(if (name == "release") "" else name)
       archiveVersion.set(componentVersion)
+    }
+
+    if (name == "release") {
+      tasks.register("verifyNativeAllocationUsdtRelease", Exec::class) {
+        group = "verification"
+        description = "Verify the packaged Linux release USDT allocation probe"
+        dependsOn(assembleJarTask)
+
+        val verifier = rootProject.layout.projectDirectory.file("utils/verify-native-allocation-usdt.sh")
+        val releaseJar = assembleJarTask.flatMap { it.archiveFile }
+        inputs.file(verifier)
+        inputs.file(releaseJar)
+
+        onlyIf {
+          PlatformUtils.currentPlatform == Platform.LINUX &&
+            !PlatformUtils.isNativeSkipped(project)
+        }
+        doFirst {
+          commandLine("bash", verifier.asFile.absolutePath, releaseJar.get().asFile.absolutePath)
+        }
+      }
     }
 
     // Create consumable configuration for inter-project dependencies

@@ -430,6 +430,20 @@ Error Arguments::parse(const char *args) {
         msg = "nativemem must be >= 0";
       }
 
+      CASE("nativememoutput")
+      _nativemem_output_set = true;
+      if (value == NULL || *value == '\0') {
+        msg = "nativememoutput requires jfr, usdt, or both";
+      } else if (strcasecmp(value, "jfr") == 0) {
+        _nativemem_output = NATIVE_MEMORY_JFR;
+      } else if (strcasecmp(value, "usdt") == 0) {
+        _nativemem_output = NATIVE_MEMORY_USDT;
+      } else if (strcasecmp(value, "both") == 0) {
+        _nativemem_output = NATIVE_MEMORY_BOTH;
+      } else {
+        msg = "Invalid nativememoutput value";
+      }
+
       CASE("natsock")
       if (value != NULL) {
         _nativesocket_interval = parseUnits(value, NANOS);
