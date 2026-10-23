@@ -225,6 +225,9 @@ public abstract class AbstractProfilerTest {
 
     jfrDump = Files.createTempFile(rootDir, testInfo.getTestMethod().map(m -> m.getDeclaringClass().getSimpleName() + "_" + m.getName()).orElse("unknown") + (testConfig.isEmpty() ? "" : "-" + testConfig.replace('/', '_')), ".jfr");
     profiler = JavaProfiler.getInstance();
+    // Hygiene: start every test with no trace context on the test thread,
+    // independent of how the previous test ended.
+    profiler.clearTraceContext();
     beforeProfilerStart();
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
     cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);
@@ -322,7 +325,6 @@ public abstract class AbstractProfilerTest {
   public final void stopProfiler() {
     if (!stopped) {
       profiler.stop();
-      profiler.clearTraceContext();
       stopped = true;
       checkConfig();
     }

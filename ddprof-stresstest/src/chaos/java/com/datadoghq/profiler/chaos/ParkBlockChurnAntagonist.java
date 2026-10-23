@@ -17,6 +17,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -37,6 +39,9 @@ import java.util.concurrent.locks.LockSupport;
  */
 public final class ParkBlockChurnAntagonist implements Antagonist {
 
+    /** A worker still alive after this long is reported as stalled rather than abandoned. */
+    private static final long STALL_TIMEOUT_MILLIS = 30_000L;
+
     private final int concurrentThreads;
     private final int blockMillis;
 
@@ -53,6 +58,8 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
     private MethodHandle parkEnter;
     private MethodHandle parkExit;
     private Map<String, Long> countersBefore;
+    /** Single scheduler for mid-block interrupts; the driver is its sole submitter. */
+    private ScheduledExecutorService interruptor;
 
     /** Creates the default batch of short-lived blocking workers. */
     public ParkBlockChurnAntagonist() {
@@ -83,6 +90,11 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
             throw new IllegalStateException("Cannot bind profiler owned-block hooks", e);
         }
         countersBefore = profiler.getDebugCounters();
+        interruptor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "chaos-park-block-churn-interruptor");
+            t.setDaemon(true);
+            return t;
+        });
         running = true;
         driver = new Thread(() -> {
             try {
@@ -90,6 +102,8 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
             } catch (Throwable t) {
                 failure.compareAndSet(null, t);
                 running = false;
+            } finally {
+                interruptor.shutdownNow();
             }
         }, "chaos-park-block-churn");
         driver.setDaemon(true);
@@ -156,31 +170,47 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
                     interruptShortly(t);
                 }
             }
-            for (Thread t : batch) {
-                try {
-                    t.join(1_000L);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
+            if (!awaitBatch(batch)) {
+                return;
             }
             round++;
         }
     }
 
-    /** Wakes {@code t} mid-block so its exit hook races against interruption. */
-    private void interruptShortly(Thread t) {
-        Thread interruptor = new Thread(() -> {
+    /**
+     * Joins every worker of {@code batch} before the next batch is spawned, so at most one batch
+     * is alive at any time. A worker still alive after {@link #STALL_TIMEOUT_MILLIS} is recorded
+     * as a failure and stops the workload instead of being stacked under new batches.
+     *
+     * @return true when the whole batch exited; false when the loop must stop
+     */
+    private boolean awaitBatch(List<Thread> batch) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(STALL_TIMEOUT_MILLIS);
+        for (Thread t : batch) {
             try {
-                Thread.sleep(1L);
+                while (t.isAlive()) {
+                    t.join(1_000L);
+                    if (!running) {
+                        return false;
+                    }
+                    if (t.isAlive() && System.nanoTime() - deadline > 0) {
+                        failure.compareAndSet(null, new IllegalStateException(
+                                "park/block worker stalled: " + t.getName() + " state=" + t.getState()));
+                        running = false;
+                        return false;
+                    }
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return;
+                return false;
             }
-            t.interrupt();
-        });
-        interruptor.setDaemon(true);
-        interruptor.start();
+        }
+        return true;
+    }
+
+    /** Wakes {@code t} mid-block so its exit hook races against interruption. */
+    private void interruptShortly(Thread t) {
+        interruptor.schedule(t::interrupt, 1L, TimeUnit.MILLISECONDS);
     }
 
     private void block(int mode) {
