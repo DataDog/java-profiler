@@ -443,26 +443,12 @@ object ConfigurationPresets {
         version: String,
         active: Boolean
     ) {
-        config.platform.set(platform)
-        config.architecture.set(architecture)
+        // Built on configureDebug so coverage measures the same binary testDebug runs
+        // (including -z,nodelete on Linux), only with the instrumentation added.
+        configureDebug(config, platform, architecture, version)
         config.active.set(active)
-
-        when (platform) {
-            Platform.LINUX -> {
-                config.compilerArgs.set(
-                    listOf("-O0", "-g", "-DDEBUG", "--coverage", "-fprofile-update=atomic") + commonLinuxCompilerArgs(version)
-                )
-                // -z,nodelete: same as configureDebug -- testCoverage loads this library
-                // into the same JVMs, so it is exposed to the same unmap-while-executing
-                // SIGSEGV on the DestroyJavaVM path.
-                config.linkerArgs.set(commonLinuxLinkerArgs() + listOf("-Wl,-z,nodelete", "--coverage"))
-            }
-            Platform.MACOS -> {
-                config.compilerArgs.set(
-                    commonMacosCompilerArgs(version) + listOf("-O0", "-g", "-DDEBUG", "--coverage", "-fprofile-update=atomic")
-                )
-                config.linkerArgs.set(listOf("--coverage"))
-            }
-        }
+        config.publishable.set(false)
+        config.compilerArgs.addAll("--coverage", "-fprofile-update=atomic")
+        config.linkerArgs.add("--coverage")
     }
 }

@@ -1080,12 +1080,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 # - openssh-client for git clone over SSH
 # - python3-pip + gcovr for :ddprof-lib:coverageReport (-PenableCoverage); the
 #   distro's gcovr 5.0 predates flags the report task passes, so use PyPI's
+# - llvm for the unversioned llvm-cov that coverageReport pairs with the
+#   unversioned clang++ (the clang package doesn't pull it in)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl wget gnupg bash make g++ clang git jq cmake \
         libgtest-dev libgmock-dev tar binutils libc6-dbg \
         ca-certificates linux-libc-dev \
-        libasan6 libtsan0 ${CLANG_RT_PKG} openssh-client build-essential gdb python3-pip && \
+        libasan6 libtsan0 ${CLANG_RT_PKG} openssh-client build-essential gdb python3-pip llvm && \
     rm -rf /var/lib/apt/lists/* && \
     pip3 install --no-cache-dir gcovr
 ${CLANG17_BLOCK}

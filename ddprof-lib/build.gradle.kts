@@ -129,15 +129,15 @@ val copyExternalLibs by tasks.registering(Copy::class) {
 
 // Create JAR tasks for each build configuration using nativeBuild extension utilities
 // Uses afterEvaluate to discover configurations dynamically from NativeBuildExtension.
-// `coverage` is only packaged with -PenableCoverage: nativeBuild.buildConfigurations.names
-// lists every registered config regardless of its `active` flag (the same quirk already
-// lets inactive asan/tsan show up here on platforms where they're unsupported). With the
-// flag, its jar and consumable configuration are what ddprof-test's testCoverage loads;
-// it is still never published (see the publishing block below).
+// Every publishable config is packaged, even an inactive one (inactive asan/tsan on
+// platforms where they're unsupported still get a jar). An unpublishable config (e.g.
+// `coverage`) is packaged only while active: its jar and consumable configuration are
+// what ddprof-test's testCoverage loads, and it is never published (see the publishing
+// block below).
 afterEvaluate {
-  val packagedConfigNames = nativeBuild.buildConfigurations.names.filter {
-    it != "coverage" || project.hasProperty("enableCoverage")
-  }
+  val packagedConfigNames = nativeBuild.buildConfigurations
+    .filter { it.publishable.get() || it.active.get() }
+    .map { it.name }
   packagedConfigNames.forEach { name ->
     val capitalizedName = name.replaceFirstChar { it.uppercase() }
 
@@ -206,6 +206,16 @@ afterEvaluate {
 if (project.hasProperty("enableCoverage")) {
   val gtestObjDir = layout.buildDirectory.dir("obj/gtest/coverage")
 
+  // Whether the compiler is Apple's clang. On macOS that includes /usr/bin/g++, a clang
+  // shim, so it is decided from the `--version` banner, not from the name; a Homebrew
+  // g++-<N> prints the GCC banner instead.
+  fun isAppleClang(compilerPath: String): Boolean = try {
+    val process = ProcessBuilder(compilerPath, "--version").redirectErrorStream(true).start()
+    process.inputStream.bufferedReader().readText().also { process.waitFor() }.contains("Apple clang")
+  } catch (e: java.io.IOException) {
+    false
+  }
+
   // The gcov tool must come from the same toolchain that wrote the .gcno files,
   // so derive it from the compiler (e.g. /usr/bin/g++-13 -> /usr/bin/gcov-13,
   // clang++-17 -> llvm-cov-17 gcov) instead of whatever `gcov` is on PATH.
@@ -213,7 +223,7 @@ if (project.hasProperty("enableCoverage")) {
     val compiler = File(compilerPath)
     fun siblingOf(tool: String) = compiler.parentFile?.resolve(tool)?.path ?: tool
     return when {
-      PlatformUtils.currentPlatform == Platform.MACOS -> listOf("xcrun", "llvm-cov", "gcov")
+      PlatformUtils.currentPlatform == Platform.MACOS && isAppleClang(compilerPath) -> listOf("xcrun", "llvm-cov", "gcov")
       compiler.name.contains("clang") -> listOf(siblingOf(compiler.name.replace(Regex("clang(\\+\\+)?"), "llvm-cov")), "gcov")
       else -> listOf(siblingOf(compiler.name.replace(Regex("[gc]\\+\\+"), "gcov")))
     }
@@ -225,7 +235,8 @@ if (project.hasProperty("enableCoverage")) {
 
   // Fails fast -- before ~30 minutes of instrumented builds and test runs -- when a tool
   // the coverage run needs is missing, reporting every problem at once with how to fix it.
-  // Every coverage task depends on it (below, and :ddprof-test's coverage test tasks).
+  // Every coverage task depends on it (below, and :ddprof-test's coverage test tasks and
+  // cleanLibCoverageData).
   val checkCoverageTools = tasks.register("checkCoverageTools") {
     group = "verification"
     description = "Checks that the tools needed for the coverage build and report are installed"
@@ -356,12 +367,12 @@ if (project.hasProperty("enableCoverage")) {
       }
     }
   }
-  tasks.matching { it.name != "checkCoverageTools" && it.name.contains("Coverage") }.configureEach {
+  tasks.named { it != "checkCoverageTools" && it.contains("Coverage") }.configureEach {
     dependsOn(checkCoverageTools)
   }
   // Not a coverage task by name, but gtestCoverage needs it and it fails without make --
   // let the check report that instead.
-  tasks.matching { it.name == "buildNativeLibs" }.configureEach {
+  tasks.named { it == "buildNativeLibs" }.configureEach {
     mustRunAfter(checkCoverageTools)
   }
 
@@ -372,7 +383,7 @@ if (project.hasProperty("enableCoverage")) {
   val cleanGtestCoverageData = tasks.register<Delete>("cleanGtestCoverageData") {
     delete(fileTree(gtestObjDir) { include("**/*.gcda") })
   }
-  tasks.matching { it.name.startsWith("gtestCoverage_") }.configureEach {
+  tasks.named { it.startsWith("gtestCoverage_") }.configureEach {
     dependsOn(cleanGtestCoverageData)
   }
 
@@ -480,10 +491,10 @@ publishing {
       groupId = "com.datadoghq"
       artifactId = "ddprof"
 
-      // Add artifacts from each build configuration (coverage excluded -- see the
+      // Add artifacts from each publishable build configuration (see the
       // packagedConfigNames comment above)
       afterEvaluate {
-        nativeBuild.buildConfigurations.names.filterNot { it == "coverage" }.forEach { name ->
+        nativeBuild.buildConfigurations.filter { it.publishable.get() }.map { it.name }.forEach { name ->
           val capitalizedName = name.replaceFirstChar { it.uppercase() }
           artifact(tasks.named("assemble${capitalizedName}Jar"))
         }

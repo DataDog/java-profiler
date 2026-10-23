@@ -33,6 +33,7 @@ jacoco {
 // and stack-sampling data those tests assert on -- and asan/tsan already carry sanitizer
 // instrumentation.
 val coverageTaskNames: Set<String> = setOf("testCoverage", "testSlowCoverage")
+val enableCoverage = project.hasProperty("enableCoverage")
 val requestingCoverageReport = gradle.startParameter.taskNames.any { it.contains("coverageReport") }
 
 // When a coverage report is requested, a handful of known-flaky native-thread/CPU tests
@@ -93,7 +94,7 @@ val extractJacocoAgent = tasks.register<Sync>("extractJacocoAgent") {
   into(layout.buildDirectory.dir("tmp/jacocoAgent"))
 }
 
-tasks.withType<Exec>().matching { it.name in coverageTaskNames }.configureEach {
+tasks.withType<Exec>().named { it in coverageTaskNames }.configureEach {
   dependsOn(extractJacocoAgent)
   val agentJar = extractJacocoAgent.map { it.destinationDir.resolve("jacocoagent.jar") }
   val execFile = layout.buildDirectory.file("jacoco/$name.exec")
@@ -111,20 +112,26 @@ tasks.withType<Exec>().matching { it.name in coverageTaskNames }.configureEach {
 val libCoverageObjDir = project(":ddprof-lib").layout.buildDirectory.dir("obj/main/coverage")
 val cleanLibCoverageData = tasks.register<Delete>("cleanLibCoverageData") {
   delete(fileTree(libCoverageObjDir) { include("**/*.gcda") })
+  // Fail on missing coverage tools before wiping the previous run's counts.
+  if (enableCoverage) {
+    dependsOn(":ddprof-lib:checkCoverageTools")
+  }
 }
 
-tasks.matching { it.name in coverageTaskNames }.configureEach {
-  dependsOn(cleanLibCoverageData)
-  // The failed tests' results are cached like a pass would be, so a rerun must not be
-  // UP-TO-DATE and silently skip the deferred failure (or the cleared .gcda counts).
+tasks.named { it in coverageTaskNames }.configureEach {
+  dependsOn(cleanLibCoverageData, ":ddprof-lib:checkCoverageTools")
+  // cleanLibCoverageData always clears the .gcda counts, so the tests must always rerun to
+  // write them again -- never UP-TO-DATE (which the musl Exec tasks would otherwise be: they
+  // declare the JaCoCo .exec file as an output but no inputs). The same applies to a deferred
+  // failure, whose results are cached like a pass would be.
+  outputs.upToDateWhen { false }
   if (requestingCoverageReport) {
     deferFailuresToCoverageReport()
-    outputs.upToDateWhen { false }
   }
 }
 
 // Runs after coverageReport's own gcovr doLast, so both reports are written first.
-project(":ddprof-lib").tasks.matching { it.name == "coverageReport" }.configureEach {
+project(":ddprof-lib").tasks.named { it == "coverageReport" }.configureEach {
   doLast { failOnDeferredTestFailures(coverageTaskNames) }
 }
 
@@ -135,12 +142,12 @@ tasks.named<JacocoReport>("jacocoTestReport") {
   group = "verification"
   description = "Java half of :ddprof-lib:coverageReport (run that instead; requires -PenableCoverage)"
 
-  val coverageTasks = tasks.matching { it.name in coverageTaskNames }
-  dependsOn(coverageTasks)
+  dependsOn(tasks.named { it in coverageTaskNames })
+  // The .exec file each coverage task writes (Test tasks via the jacoco plugin, the musl Exec
+  // tasks via the agent attached above). Only the existing ones: a task that ran no tests
+  // writes none.
   executionData.setFrom(
-    coverageTasks.map { task ->
-      fileTree(task.project.layout.buildDirectory) { include("jacoco/${task.name}.exec") }
-    },
+    files(coverageTaskNames.map { layout.buildDirectory.file("jacoco/$it.exec") }).filter { it.exists() },
   )
 
   // The tests here exercise ddprof-lib's classes (the profiler itself), not this
