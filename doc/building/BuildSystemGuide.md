@@ -33,7 +33,10 @@ build-logic/conventions/src/main/kotlin/com/datadoghq/
 │   ├── model/
 │   │   ├── BuildConfiguration.kt    # Config model (platform, arch, flags)
 │   │   ├── Platform.kt              # LINUX, MACOS enum
-│   │   └── Architecture.kt          # X64, ARM64, etc.
+│   │   ├── Architecture.kt          # X64, ARM64, etc.
+│   │   ├── SourceSet.kt             # Per-source-set includes/excludes/flags
+│   │   ├── ErrorHandlingMode.kt     # Compile error handling (fail-fast / collect)
+│   │   └── LogLevel.kt              # Task logging verbosity
 │   ├── tasks/
 │   │   ├── NativeCompileTask.kt     # C++ compilation task
 │   │   ├── NativeLinkTask.kt        # Shared library linking
@@ -44,6 +47,9 @@ build-logic/conventions/src/main/kotlin/com/datadoghq/
 │   │   ├── GtestPlugin.kt           # Google Test task generation
 │   │   ├── GtestExtension.kt        # DSL: gtest { ... }
 │   │   └── GtestTaskBuilder.kt      # Per-test task creation
+│   ├── scanbuild/
+│   │   ├── ScanBuildPlugin.kt       # scanBuild task (Linux only)
+│   │   └── ScanBuildExtension.kt    # DSL: scanBuild { ... }
 │   └── fuzz/
 │       └── FuzzTargetsPlugin.kt     # Fuzz testing support
 ├── profiler/
@@ -58,13 +64,19 @@ build-logic/conventions/src/main/kotlin/com/datadoghq/
 
 Build configurations (release, debug, asan, tsan, fuzzer) are defined in `ConfigurationPresets.kt`:
 
-1. **Registration**: Configs are registered in `NativeBuildExtension.buildConfigurations`
-2. **Activation**: Each config checks if it's available on current platform
+1. **Registration**: `ConfigurationPresets.setupStandardConfigurations()` registers the configs in
+   the project's `nativeBuild` extension (`NativeBuildExtension.buildConfigurations`). Both
+   `RootProjectPlugin` and `NativeBuildPlugin` call it from their own `afterEvaluate`.
+2. **Activation**: Each config sets `active` based on what the host supports
+   (`BuildConfiguration.isActiveFor()` also requires matching platform/arch):
    - release/debug: Always active
-   - asan: Active if `libasan.so` found via `gcc -print-file-name=libasan.so`
-   - tsan: Active if `libtsan.so` found
-   - fuzzer: Active if clang supports `-fsanitize=fuzzer`
-3. **Discovery**: Subprojects query active configs via `nativeBuild.buildConfigurations.names`
+   - asan: `PlatformUtils.hasAsan(compiler)` — not musl, and `locateLibasan()` finds a runtime
+     (`libclang_rt.asan-<arch>` for clang, otherwise `libasan`)
+   - tsan: `PlatformUtils.hasTsan(compiler)` — same pattern with the TSan runtime
+   - fuzzer: `PlatformUtils.hasFuzzer()` — not musl, and clang supports `-fsanitize=fuzzer`
+3. **Discovery**: `NativeBuildPlugin` creates tasks for
+   `extension.getActiveConfigurations(currentPlatform, currentArch)` and logs
+   `Active configurations: ...`
 
 ### Configuration Flow Diagram
 
@@ -79,7 +91,7 @@ Build configurations (release, debug, asan, tsan, fuzzer) are defined in `Config
 │                     build.gradle.kts (root)                     │
 │  plugins { id("com.datadoghq.native-root") }                    │
 │  ↓                                                              │
-│  RootProjectPlugin creates nativeBuild extension                │
+│  RootProjectPlugin creates root nativeBuild extension           │
 │  ↓                                                              │
 │  afterEvaluate: ConfigurationPresets.setupStandardConfigurations│
 │  → Registers: release, debug, asan, tsan, fuzzer                │
@@ -91,7 +103,8 @@ Build configurations (release, debug, asan, tsan, fuzzer) are defined in `Config
 │                  ddprof-lib/build.gradle.kts                    │
 │  plugins { id("com.datadoghq.native-build") }                   │
 │  ↓                                                              │
-│  afterEvaluate: queries nativeBuild.buildConfigurations.names   │
+│  afterEvaluate: setupStandardConfigurations on its own extension│
+│  → getActiveConfigurations(currentPlatform, currentArch)        │
 │  → Creates tasks: compileRelease, linkRelease, assembleRelease  │
 │  → Creates tasks: compileDebug, linkDebug, assembleDebug        │
 │  → (only for active configs on current platform)                │
@@ -378,12 +391,16 @@ All configurable properties (see `gradle.properties.template` for full documenta
 
 | Property | Default | Description |
 |----------|---------|-------------|
-| `skip-tests` | false | Skip Java test execution |
+| `skip-tests` | false | Skip Java test execution (also gates gtest/fuzz) |
 | `skip-native` | false | Skip C++ compilation |
 | `skip-gtest` | false | Skip Google Test execution |
 | `skip-fuzz` | false | Skip fuzz testing |
+| `fuzz-duration` | 60 | Seconds per fuzz target |
+| `tests` | - | Test filter for `test{Config}` tasks |
+| `enableFaultInjection` | false | Add `-D__FAULT_INJECTION__` to release/debug |
+| `enableSamplerPerf` | false | Add `-D__SAMPLER_PERF__` to release/debug |
 | `native.forceCompiler` | auto | Force specific C++ compiler path |
-| `ddprof_version` | from build.gradle.kts | Override project version |
+| `ddprof_version` | computed from git tags | Override project version (see [Versioning](Versioning.md)) |
 | `with-libs` | - | Path to pre-built native libraries |
 | `keepJFRs` | false | Keep JFR recordings after tests |
 | `validatorArgs` | - | Arguments for UnwindingValidator |
@@ -461,6 +478,7 @@ gradle.projectsEvaluated {
 
 ## See Also
 
-- [GRADLE-TASKS.md](GRADLE-TASKS.md) - Task reference and workflows
-- [build-logic/README.md](../build-logic/README.md) - Plugin implementation details
-- [gradle.properties.template](../gradle.properties.template) - All configurable properties
+- [GradleTasks](GradleTasks.md) - Task reference and workflows
+- [NativeBuildPlugin](NativeBuildPlugin.md) - Native compile/link task DSL
+- [build-logic/README.md](../../build-logic/README.md) - Plugin implementation details
+- [gradle.properties.template](../../gradle.properties.template) - All configurable properties

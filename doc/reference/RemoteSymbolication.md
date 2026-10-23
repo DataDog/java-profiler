@@ -13,7 +13,7 @@ The enhancement allows the Java profiler to store raw build-id and PC offset inf
 
 ## Implementation Summary
 
-### 1. **Build-ID Extraction** (`symbols_linux_dd.h/cpp`)
+### 1. **Build-ID Extraction** (`symbols_linux.h/cpp`)
 
 - **SymbolsLinux**: Utility class to extract GNU build-id from ELF files
 - Supports both file-based and memory-based extraction
@@ -31,10 +31,10 @@ Added fields to store build-id information:
 ### 3. **Packed Remote Frame Data** (`profiler.h`)
 
 - **RemoteFramePacker**: Utility struct for packing/unpacking remote symbolication data
-  - Packs into 64-bit jmethodID: `pc_offset (44 bits) | mark (3 bits) | lib_index (17 bits)`
+  - Packs into 64-bit jmethodID: `pc_offset` (bits 0-43) | `mark` (bits 44-46) | `lib_index` (bits 47-61)
   - PC offset: 44 bits = 16 TB address range
   - Mark: 3 bits = 0-7 values (JVM internal frame markers)
-  - Library index: 17 bits = 131K libraries max
+  - Library index: 15 bits = 32K libraries max
 - **RemoteFrameInfo**: Structure for JFR serialization (vmEntry.h):
   - `build_id`: Library build-id string
   - `pc_offset`: PC offset within library — see the addressing contract below
@@ -60,7 +60,7 @@ The packed field carries no version bit, so this section and the comment on
 `StackWalker` in `stackWalker.h` are the contract.
 - **BCI_NATIVE_FRAME_REMOTE**: Frame encoding (-19) indicates packed remote data
 
-### 4. **Enhanced Frame Collection** (`profiler.cpp`, `stackWalker.h`)
+### 4. **Enhanced Frame Collection** (`profiler.cpp`, `hotspot/hotspotSupport.cpp`)
 
 Modified frame collection to support dual modes:
 - **Traditional mode**: Stores resolved symbol names (existing behavior)
@@ -84,7 +84,7 @@ Modified frame collection to support dual modes:
 
 **Stack Walker Integration**:
 - **walkFP/walkDwarf**: Return raw PCs → `convertNativeTrace()` → `populateRemoteFrame()`
-- **walkVM/walkVMX**: Directly call `resolveNativeFrameForWalkVM(pc, pc_is_return_address, lock_index)` during stack walk. `pc_is_return_address` says whether the walker took this pc out of a return-address slot; both the symbol/library lookups and the emitted `pc_offset` are then derived from the attribution address, per the contract above.
+- **walkVM/walkVMX** (`HotspotSupport::walkVM()` in `hotspot/hotspotSupport.cpp`): Directly call `resolveNativeFrameForWalkVM(pc, pc_is_return_address, lock_index)` during stack walk. `pc_is_return_address` says whether the walker took this pc out of a return-address slot; both the symbol/library lookups and the emitted `pc_offset` are then derived from the attribution address, per the contract above.
 
 ### 5. **JFR Serialization** (`flightRecorder.cpp/h`)
 
@@ -93,9 +93,10 @@ Modified frame collection to support dual modes:
   - Looks up library by index via Libraries::getLibraryByIndex()
   - Creates temporary RemoteFrameInfo with build_id and pc_offset
 - **fillRemoteFrameInfo()**: Serializes remote frame data to JFR format
-  - Stores `<build-id>.<remote>` in class name field (e.g., `deadbeef1234567890abcdef.<remote>`)
-  - Stores PC offset in signature field (e.g., `(0x1234)`)
+  - Stores the build-id as the class name and `<remote>` as the method name
+  - Stores the PC offset in the signature field (e.g., `0x1234`)
   - Uses modifier flag 0x100 (ACC_NATIVE, same as regular native frames)
+  - See "JFR Output Format" below
 - **Thread Safety**: Called during JFR serialization with lockAll() held
   - Library array is stable (no concurrent dlopen_hook modifications)
   - No additional locking needed
@@ -104,12 +105,12 @@ Modified frame collection to support dual modes:
 
 - **remotesym[=BOOL]**: New profiler argument
 - Default: disabled
-- Can be enabled with `remotesym=true` or `remotesym=y`
+- Enabled with bare `remotesym`, or `remotesym=` one of `y`/`yes`/`t`/`true`/`1`
 
 ### 7. **Libraries Integration** (`libraries.h/cpp`, `libraries_linux.cpp`)
 
 - **updateBuildIds()**: Extracts build-ids for all loaded libraries
-  - Called during profiler startup when remote symbolication is enabled
+  - Called from `Profiler::start()` and from `Libraries::refresh()` (run by `Profiler::dlopen_hook()` after `dlopen` — deferred to the refresher thread when the hook fires in a signal context — and on stop/dump) when remote symbolication is enabled
   - Uses O(1) cache lookup via `_build_id_processed` set
   - Mirrors `_parsed_inodes` pattern from symbols_linux.cpp
   - Linux-only implementation using ELF parsing
@@ -118,20 +119,15 @@ Modified frame collection to support dual modes:
   - Returns nullptr if index out of bounds
   - Used during JFR serialization to unpack remote frames
 
-### 8. **Upstream Stack Walker Integration** (`gradle/patching.gradle`)
+### 8. **Stack Walker Integration**
 
-Patches async-profiler's `stackWalker.h` and `stackWalker.cpp` to integrate remote symbolication:
+The stack walkers are in-tree (`stackWalker.h`/`stackWalker.cpp`,
+`hotspot/hotspotSupport.cpp`); there is no upstream patching step.
 
-**Header Patches (stackWalker.h)**:
-- Adds `lock_index` parameter to all three `walkVM` signatures (private implementation, public with features, public with anchor)
-- Enables per-strip RemoteFrameInfo pool access during stack walking
-
-**Implementation Patches (stackWalker.cpp)**:
-- Updates all `walkVM` signatures to accept and propagate `lock_index`
-- **Critical patch at line 454**: Replaces `profiler->findNativeMethod(pc)` with `profiler->resolveNativeFrameForWalkVM(pc, pc_is_return_address, lock_index)`
-- Adds dynamic BCI selection (BCI_NATIVE_FRAME vs BCI_NATIVE_FRAME_REMOTE)
-- Adds `fillFrame()` overload for void* method_id to support both symbol names and RemoteFrameInfo pointers
-- Handles marked C++ interpreter frames (terminates scan if detected)
+- `walkVM` takes a `lock_index` so it can resolve native frames for the current stripe
+- `HotspotSupport::walkVM()` calls `profiler->resolveNativeFrameForWalkVM(pc, pc_is_return_address, lock_index)` for native pcs
+- The returned resolution selects `BCI_NATIVE_FRAME` (symbol name) or `BCI_NATIVE_FRAME_REMOTE` (packed data)
+- Marked JVM-internal frames terminate the native part of the walk
 
 ## Usage
 
@@ -152,7 +148,7 @@ java -agentpath:<path_to>/libjavaProfiler.so=start,event=cpu,interval=1000000,re
 When remote symbolication is enabled, native frames in the JFR output contain:
 
 - **Class Name**: Build-ID hex string (e.g., `deadbeef1234567890abcdef`)
-  - Stored via `_classes->lookup(rfi->build_id)`
+  - Stored via `_classes->lookupDuringDump(rfi->build_id, ...)`
   - Deduplicated in JFR constant pool
 - **Method Name**: `<remote>`
   - Constant string indicating remote symbolication needed
@@ -164,7 +160,7 @@ When remote symbolication is enabled, native frames in the JFR output contain:
 - **Modifier**: `0x100` (ACC_NATIVE)
   - Same as regular native frames for consistency
 - **Frame Type**: `FRAME_NATIVE_REMOTE` (7)
-  - Distinguishes from regular native frames (FRAME_NATIVE = 6)
+  - Distinguishes from regular native frames (`FRAME_NATIVE` = 3)
   - Allows parsers to identify frames needing remote symbolication
 
 ## Backward Compatibility
@@ -202,7 +198,7 @@ When remote symbolication is enabled, native frames in the JFR output contain:
 ## Platform Support
 
 - **Linux**: Full support with ELF build-id extraction
-- **macOS/Windows**: Framework in place, needs platform-specific implementation
+- **macOS**: `Libraries::updateBuildIds()` is a no-op (`libraries_macos.cpp`), so no library has a build-id and frames fall back to local symbolication
 
 ## Observability and Metrics
 
@@ -247,8 +243,7 @@ These metrics appear in profiler statistics and can be used to monitor:
 2. **Caching**: Cache build-ids across profiler sessions
 3. **Compression**: Compress build-ids in JFR output
 4. **Validation**: Add runtime validation of build-id consistency
-5. **Dynamic Pool Sizing**: Adjust RemoteFrameInfo pool size based on workload
-6. **Native Frame Modifier Optimization**: Change native frame modifiers from `0x100` to `0x0`
+5. **Native Frame Modifier Optimization**: Change native frame modifiers from `0x100` to `0x0`
    - Current: All native frames use `0x100` (ACC_NATIVE) = 2-byte varint encoding
    - Proposed: Use `0x0` (no modifiers) = 1-byte varint encoding
    - Benefit: **Save 1 byte per native frame** across all JFR recordings
@@ -259,34 +254,32 @@ These metrics appear in profiler statistics and can be used to monitor:
 
 ```
 ddprof-lib/src/main/cpp/
-├── symbols_linux_dd.h           # Build-ID extraction interface (Linux-specific)
-├── symbols_linux_dd.cpp         # Build-ID extraction with bounds/alignment checks
-├── vmEntry.h                    # Enhanced with RemoteFrameInfo and BCI constants
-├── codeCache.h                  # Enhanced with build-id fields (cleaned up operator[])
-├── codeCache.cpp                # Build-id storage implementation
-├── profiler.h                   # Added resolveNativeFrame/ForWalkVM, RemoteFrameInfo pool
-├── profiler.cpp                 # Remote symbolication logic and pool allocation
-├── stackWalker.h                # Enhanced with lock_index and truncated parameters
-├── stackWalker.cpp              # Remote symbolication and truncation detection logic
-├── flightRecorder.h             # Added fillRemoteFrameInfo declaration
-├── flightRecorder.cpp           # Remote frame JFR serialization
-├── arguments.h                  # Added _remote_symbolication field
-├── arguments.cpp                # Remote symbolication argument parsing
-├── libraries.h                  # Added updateBuildIds method
-└── libraries.cpp                # Build-id extraction for loaded libraries
+├── symbols_linux.h / .cpp       # SymbolsLinux::extractBuildId() / extractBuildIdFromMemory()
+├── vmEntry.h                    # RemoteFrameInfo and BCI_NATIVE_FRAME_REMOTE
+├── frame.h                      # FRAME_NATIVE_REMOTE frame type
+├── codeCache.h / .cpp           # Build-id and load-bias fields on CodeCache
+├── profiler.h                   # RemoteFramePacker, resolveNativeFrameForWalkVM()
+├── profiler.cpp                 # populateRemoteFrame(), convertNativeTrace(), resolveNativeFrameForWalkVM()
+├── hotspot/hotspotSupport.cpp   # walkVM calls resolveNativeFrameForWalkVM()
+├── stackWalker.h                # pc_offset addressing contract
+├── flightRecorder.h / .cpp      # Lookup::fillRemoteFrameInfo() and unpacking in resolveMethod()
+├── arguments.h / .cpp           # _remote_symbolication, remotesym parsing
+├── libraries.h / .cpp           # updateBuildIds() call site, getLibraryByIndex()
+├── libraries_linux.cpp          # updateBuildIds() (Linux)
+└── libraries_macos.cpp          # updateBuildIds() no-op stub
 
 ddprof-lib/src/test/cpp/
 ├── remotesymbolication_ut.cpp   # Unit tests for remote symbolication
 └── remoteargs_ut.cpp            # Unit tests for argument parsing
 
-ddprof-test/src/test/java/
+ddprof-test/src/test/java/com/datadoghq/profiler/cpu/
 └── RemoteSymbolicationTest.java # Integration tests for all cstack modes
 ```
 
 ## Implementation Notes
 
 ### Thread Safety
-- **Build-ID extraction**: Protected by `_build_id_lock` mutex in `updateBuildIds()`
+- **Build-ID extraction**: Protected by the `_build_id_lock` mutex in `updateBuildIds()` (`libraries_linux.cpp`)
 - **Build-ID cache**: `_build_id_processed` set provides O(1) duplicate detection
 - **JFR serialization**: Called with `lockAll()` held, library array is stable
   - No concurrent dlopen_hook modifications possible

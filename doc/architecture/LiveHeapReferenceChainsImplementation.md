@@ -26,11 +26,13 @@ Related documents:
 |---|---|
 | `parent_tag` | Identifies the entry that admitted this object. Zero means that the entry is root-attached. |
 | `referrer_klass` | Identifies the object's class in the profiler class dictionary. |
-| `referrer_class_tag` | Identifies the referrer class with a stable class tag. |
+| `referrer_class_tag` | Class tag of the referrer when the referrer is a class object (a root-attached static-field admission, where there is no parent entry). Zero otherwise. |
+| `referrer_field_index` | Field index of the admitting edge (-1 when the edge is not a field or static-field edge). Used to label each hop in the emitted chain. |
+| `edge_kind` | JVMTI reference kind of the admitting edge for an interior hop (`parent_tag != 0`). |
 | `depth` | Records the number of edges from the root. |
 | `state` | Records `FRONTIER`, `EXPANDED`, `EDGE`, or `ABANDONED`. |
 | `root_kind` | Records the JVMTI root or edge kind for a root-attached entry. |
-| `class_tag` | Provides class identity across class-dictionary regeneration. |
+| `class_tag` | The entry's own object class tag. It provides class identity across class-dictionary regeneration. |
 | `leak_tag` and incarnation | Correlate the entry with the current owner of a sampled leak tag. |
 
 ## Search lifecycle
@@ -143,14 +145,23 @@ Rotation improves coverage but remains bounded and best effort.
 
 ## Search termination
 
-The implementation evaluates terminal conditions after each pass. A search can:
+The implementation evaluates terminal conditions after each pass, in this priority order
+(`runPass()`, `referenceChainTraversal.cpp`). A search can:
 
-- Complete when the pass has no pending truncated work and no class remains under watch.
-- Complete when all current candidates have valid chains.
-- Abandon with `FRONTIER_CAP` when the frontier cannot admit another entry.
-- Abandon with `TTL` when the configured search lifetime expires.
-- Abandon with `TTL` when the frontier makes no progress for 30 passes and the urgent latch is not active.
-- Abandon with `CANARY_STUCK` when both frontier progress and candidate progress remain stalled for their limits.
+1. Abandon with `FRONTIER_CAP` when the frontier cannot admit another entry.
+2. Complete when the pass has no pending truncated work and no class remains under watch.
+3. Abandon with `TTL` when the configured search lifetime expires.
+4. Abandon with `TTL` when the frontier makes no progress for 30 passes and the urgent latch is not active.
+5. Complete when all current candidates have been found.
+6. Abandon with `CANARY_STUCK` when both frontier progress and candidate progress remain stalled for their limits.
+
+The no-progress `TTL` check runs before the `CANARY_STUCK` check, and `CANARY_STUCK` also
+requires 30 passes without frontier progress. `CANARY_STUCK` can therefore fire only while
+the urgent latch is active.
+
+`ReferenceChainTracker::stop()` forces a running search into a terminal state with the internal
+reason `RECORDING_END`, so the next recording starts a fresh search. No abandonment event is
+emitted for this reason.
 
 The base candidate-stall limit is 30 passes. Consecutive `CANARY_STUCK` restarts can double this limit, up to eight doublings. Other terminal outcomes reset that escalation.
 
@@ -177,7 +188,9 @@ use this deadline. See [Reference-chain scheduling and cost control](ReferenceCh
 `autoTuneDefaults()` changes only options that the user did not set.
 
 - The edge budget scales with the square root of the maximum heap size.
-- The first-pass budget defaults to 10 times the resulting edge budget, up to its cap.
+- The first-pass budget defaults to 10 times the resulting edge budget, up to its cap. If the
+  maximum heap size is unknown, auto-tuning is skipped, and an unset first-pass budget becomes
+  `min(50 × budget, 200000)` instead.
 - The TTL scales with heap size, up to 30 minutes.
 - The frontier cap scales with the edge-budget ratio.
 - The code caps the pause target at 50 milliseconds.
@@ -209,7 +222,10 @@ The parser clamps values to implementation limits. Consult `arguments.h` for cur
 
 `buildChainEvent()` reconstructs a chain by following `parent_tag` values in the frontier table. Static-field-rooted chains can add the declaring class as the root-side type.
 
-`cacheResolvedChain()` stores resolved chains per source object, not per class. The cache holds at most 128 entries. When it is full, the code drops a new entry and increases the drop counter.
+`cacheResolvedChain()` stores resolved chains per source frontier tag, not per class. The cache
+holds at most 128 entries. It rejects a chain whose leak-tag owner has already died. When the
+cache is full, it first evicts entries cached by an earlier search. If that frees no slot, it
+drops the new chain and increments `REFERENCE_CHAIN_EVENTS_DROPPED`.
 
 `drainPendingChainEvents()` is a snapshot operation despite its name. It copies valid cached chains and keeps them for later dumps. Before emission, it checks the leak-tag incarnation and removes entries whose tag now belongs to another object.
 

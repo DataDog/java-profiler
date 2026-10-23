@@ -2,13 +2,17 @@
 
 `RefCountGuard` is a generic, lock-free, RAII reference-counting primitive used
 to safely reclaim heap-allocated resources that may be accessed concurrently
-from signal handlers.  Used by `StringDictionary` (buffer rotation) and
-`CallTraceHashTable` (table rotation).
+from signal handlers.  Used by `StringDictionary` (buffer rotation and reset) and
+`CallTraceStorage` (`put()` guards the active `CallTraceHashTable`; the table swap
+in `processTraces()`, `CallTraceHashTable::clearTableOnly()` and
+`~CallTraceStorage()` drain it).
 
 The protocol has three layers:
 1. **Slot acquisition** — find a per-thread slot via prime-probing hash.
 2. **Activation** — publish the protected pointer; increment the reference count.
-3. **Drain** — `waitForRefCountToClear(p)` blocks until no slot references `p`.
+3. **Drain** — `waitForRefCountToClear(p)` blocks until no slot references `p`
+   (~500 ms cap). `tryWaitForRefCountsToClear(targets, n)` drains several targets at
+   once, and `isReferenced(targets, n)` is a single non-waiting scan.
 
 Reentrant signal delivery is handled by giving each nested guard its own entry
 in a fixed-size `nested[NESTED_DEPTH]` array on the slot, while `active_ptr`
@@ -58,8 +62,9 @@ sequenceDiagram
     Note right of Scanner: "Scanner sees count > 0 and active_ptr == resource"
 ```
 
-`active_ptr` is stored **before** `count++` so the scanner never sees a stale
-pointer for a live slot.
+`active_ptr` is stored **before** `count++`.  The scanner checks `active_ptr` even
+when `count == 0`, so a guard in this activation window (pointer stored, count not
+yet incremented) is already waited for.
 
 ### Slot exhaustion
 
@@ -91,7 +96,7 @@ sequenceDiagram
     Inner->>Slot: "prev_count := count.fetch_add(1, release)"
     Note right of Inner: "prev_count is the reentrancy depth this guard occupies"
     alt "prev_count - 1 fits in NESTED_DEPTH"
-        Inner->>Slot: "store nested[prev_count - 1] := resource (release)"
+        Inner->>Slot: "store nested[prev_count - 1] := resource (seq_cst)"
     else "depth exceeds NESTED_DEPTH"
         Inner->>Slot: "Log warn once per process; this resource invisible to scanner"
     end
@@ -144,8 +149,9 @@ sequenceDiagram
 
 Destruction — non-reentrant (root) case: the order is inverted —
 `count--` first, then `active_ptr := nullptr`, then `slot_owners[slot] := 0`.
-Scanner skips a slot whose `count == 0`, so a null `active_ptr` during the
-deactivation window is never observed by a live drain.
+For a slot whose `count == 0` the scanner still compares `active_ptr` (but not
+`nested[]`), so a drain may wait through the short deactivation window; it never
+misses a live root guard.
 
 ---
 
@@ -189,7 +195,7 @@ its whole protected lifetime removes that class of torn scan.
 ```mermaid
 flowchart TD
     start[start] --> spin{"spun &lt; SPIN_ITERATIONS?"}
-    spin -->|"yes"| scan["for i in 0..MAX_THREADS: if count[i] &gt; 0 and slot references p, mark not-clear"]
+    spin -->|"yes"| scan["SEQ_CST fence; for i in 0..MAX_THREADS: count == 0 ? check active_ptr : check active_ptr and nested[]"]
     scan --> chk{"any slot references p?"}
     chk -->|"no"| done[return]
     chk -->|"yes"| pause["spinPause; spun++"]
@@ -210,7 +216,9 @@ of how many nested guards start or end while the slot is read.
 `waitForRefCountToClear(p)` returns `true` when drained and `false` on timeout;
 on `false` the caller must not free `p`.  Debug builds abort on timeout instead,
 except gtest builds (`UNIT_TEST`), which exercise the release behavior.  `tryWaitForRefCountsToClear(targets, n)`
-is the same drain over several targets, without the counter and log line.
+is the same drain over several targets, without the counter, log line or debug
+abort; the caller decides how to react.  `isReferenced(targets, n)` is one scan of
+that drain, with no waiting.
 
 ---
 
@@ -221,7 +229,7 @@ is the same drain over several targets, without the counter and log line.
 | "Scanner never sees a stale `active_ptr` for a live slot" | `active_ptr` stored before `count++` and cleared after `count--` (root); never written by reentrant guards |
 | "A protected resource never moves" | Root resource only in `active_ptr`, nested resources only in their own `nested[]` entry, from construction to destruction |
 | "Every resource on a reentrant chain is visible to the scanner up to NESTED_DEPTH" | `nested[prev_count-1]` write in ctor; conditional clear in dtor |
-| "No deadlock between drain and signal handler" | All scans are bounded; timeout is observable via counter, log and DEBUG abort, and reported to the caller |
+| "No deadlock between drain and signal handler" | All scans are bounded (100 spins, then up to 5000 × 100 µs sleeps); a timeout is reported to the caller, and `waitForRefCountToClear()` also counts, logs and (DEBUG, non-gtest) aborts |
 | "Slot can be reclaimed after drain returns" | `slot_owners[i] = 0` is written only by the non-reentrant teardown path — destructor or move-assignment overwriting an active guard — and only after `count` has been decremented to 0 |
 | "Nesting beyond NESTED_DEPTH is observable" | One-time `Log::warn` latched via `s_nested_overflow_warned` |
 
@@ -232,4 +240,4 @@ is the same drain over several targets, without the counter and log line.
 - `ddprof-lib/src/main/cpp/refCountGuard.h` — class declaration, `RefCountSlot` layout, `NESTED_DEPTH`.
 - `ddprof-lib/src/main/cpp/refCountGuard.cpp` — implementation, drain loop, overflow warning.
 - `ddprof-lib/src/main/cpp/stringDictionary.h` — primary user; see [StringDictionary](StringDictionary.md).
-- `ddprof-lib/src/main/cpp/callTraceHashTable.h` — secondary user.
+- `ddprof-lib/src/main/cpp/callTraceStorage.cpp`, `callTraceHashTable.cpp` — secondary user; see [CallTraceStorage](CallTraceStorage.md).

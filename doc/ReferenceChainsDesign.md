@@ -72,6 +72,7 @@ The frontier table stores the information needed to reconstruct a chain:
 - The referrer class.
 - The reference depth.
 - The root kind.
+- The field index and reference kind of the admitting edge, used to label each hop.
 - The candidate leak tag, when available.
 
 The implementation places fixed caps on the frontier and on chain depth.
