@@ -491,13 +491,14 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
             *tag_ptr, ctx->resolved_chain_tags,
             ctx->resolved_chain_tag_count);
       } else if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
-        // The upgrade refused (maybeUpgradeRootAttachedRootKind returns false for parent_tag != 0
-        // by design), so this STATIC_FIELD edge just proved an at-risk static attachment the anchor
-        // tier's parent_tag == 0 filter can never see: a holder already admitted as a non-root
-        // child (find-anchor-holder-eviction).
+        // The sweep reached a holder first admitted through another object.
+        // Keep its static attachment indexed: confirmed collections must remain
+        // eligible after the FIFO's one-time descend walk has been consumed.
         FrontierEntry entry{};
         if (ctx->frontier->lookup(*tag_ptr, &entry) &&
             entry.parent_tag != 0) {
+          ctx->tracker->addToStaticAnchorIndex(
+              *tag_ptr, class_tag, (u8)reference_kind);
           ctx->tracker->pushAtRiskStaticAnchor(
               *tag_ptr, ctx->tracker->classTags()->resolve(class_tag));
         }
