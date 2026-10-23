@@ -455,7 +455,7 @@ private:
   std::unordered_map<u32, u32> _static_anchor_fifo_klass_counts;
   static constexpr u32 STATIC_ANCHOR_ATRISK_PER_KLASS_CAP = 64;
 
-  // Index of durable roots and observed local holders. Known collections remain
+  // Index of holders observed at durable root edges or local roots. Known collections remain
   // eligible after reparenting, so replacing their storage is still observed.
   // Non-collection local holders are excluded after classification.
   // collectStaticFieldAnchorsForRotation() iterates these anchors rather than

@@ -107,6 +107,9 @@ typedef struct KlassPopulationEntry {
   // without this counter it gets reported as a leak candidate almost as
   // often as a real leak does.
   u8 consecutive_positive;
+  // Explicit JNI test seeds own their class trend, as synthetic TidTrend
+  // histories do. Ordinary allocation-derived histories leave this false.
+  bool synthetic;
   // Slope (regression value at the ring's newest sample minus the value at
   // its oldest sample - see ringWindowStats, livenessTracker.cpp) as of the
   // last push, computed and cached by hasQualifyingGrowth() alongside
@@ -698,7 +701,8 @@ private:
                                            int *out_slot, bool *out_created,
                                            jweak *out_evicted = nullptr,
                                            int *out_evicted_count = nullptr,
-                                           int max_evicted = 0);
+                                           int max_evicted = 0,
+                                           bool synthetic_sample = false);
 
   // Drains _klass_count_scratch into _klass_population for the epoch that
   // just finished, minting a fresh representative jweak (from each entry's
@@ -1260,18 +1264,23 @@ public:
     _klass_population_size--;
   }
 
+  // Only explicit JNI fixture seeds set synthetic_sample: real GC folds
+  // preserve their ramp. The default keeps ordinary algorithm-test histories
+  // subject to production updates and decay.
   jweak klassPopulationRecordForTest(u32 klass_id, u32 count, u64 epoch,
                                       int *out_slot, bool *out_created,
                                       jweak *out_evicted = nullptr,
                                       int *out_evicted_count = nullptr,
-                                      int max_evicted = 0) {
+                                      int max_evicted = 0,
+                                      bool synthetic_sample = false) {
     _table_lock.lock();
     klass_id = resolveTestKlassAliasLocked(klass_id);
     jweak evicted = recordKlassPopulationSampleLocked(klass_id, count, epoch,
                                                         out_slot, out_created,
                                                         out_evicted,
                                                         out_evicted_count,
-                                                        max_evicted);
+                                                        max_evicted,
+                                                        synthetic_sample);
     _table_lock.unlock();
     return evicted;
   }

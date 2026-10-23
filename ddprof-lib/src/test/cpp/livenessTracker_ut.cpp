@@ -1093,6 +1093,19 @@ TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountEmptyTableReturnsZer
 // Reaches the private state onGC()'s container-usage gate depends on.
 class LivenessTrackerTestAccessor {
 public:
+    // Fold one surviving cohort through the same path as a real GC, excluding
+    // representative resolution because these tests have no live JVM.
+    static void foldClassCohort(LivenessTracker *t, u32 klass_id, jint tid,
+                                u64 epoch) {
+        t->_table_lock.lock();
+        t->_klass_count_scratch_size = 0;
+        for (int i = 0; i < 12; i++) {
+            t->accumulateKlassCount(klass_id, epoch, nullptr, tid);
+        }
+        t->foldKlassCountsLocked(nullptr, epoch, false);
+        t->_table_lock.unlock();
+    }
+
     // Exercise the production per-thread accumulator and fold without synthetic
     // tid histories. Each pair describes a one-cohort allocating thread.
     static void recordThreadCohorts(
@@ -1200,6 +1213,40 @@ public:
         return true;
     }
 };
+
+TEST_F(SelectLeakCandidatesTest, SyntheticClassHistorySurvivesRealGcFolds) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(
+            1, epoch * 10, epoch, &slot, &created, nullptr, nullptr, 0,
+            /*synthetic_sample=*/true);
+        tracker->tidTrendRecordForTest(1, 7, epoch * 3, epoch);
+    }
+    KlassCandidate out[5];
+    ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    for (int epoch = 21; epoch <= 30; epoch++) {
+        LivenessTrackerTestAccessor::foldClassCohort(tracker, 1, 7, epoch);
+    }
+    EXPECT_EQ(1, tracker->selectLeakCandidates(out, 5));
+}
+
+TEST_F(SelectLeakCandidatesTest, OrdinaryClassHistoryStillDecaysAfterGrowthStops) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(1, epoch * 10, epoch, &slot, &created);
+        tracker->tidTrendRecordForTest(1, 7, epoch * 3, epoch);
+    }
+    KlassCandidate out[5];
+    ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    for (int epoch = 21; epoch <= 30; epoch++) {
+        LivenessTrackerTestAccessor::foldClassCohort(tracker, 1, 7, epoch);
+    }
+    EXPECT_EQ(0, tracker->selectLeakCandidates(out, 5));
+}
 
 TEST_F(SelectLeakCandidatesTest, LateAllocatingThreadCanQualifyAfterScratchFills) {
     LivenessTracker *tracker = LivenessTracker::instance();

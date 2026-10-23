@@ -135,6 +135,12 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   default:
     break;
   }
+  // Record durable roots even when the holder already had a frontier entry:
+  // neither first admission nor a retained chain path may skip the index.
+  if (*tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
+    ctx->tracker->addToStaticAnchorIndex(*tag_ptr, class_tag,
+                                         translated_root_kind);
+  }
   // Remember local holders before expansion can reparent them into a deeper
   // chain. Known collections still need bounded descend walks after that change
   // to observe replacement backing storage. Classification runs outside this

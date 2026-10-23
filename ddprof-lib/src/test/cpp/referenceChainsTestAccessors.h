@@ -807,6 +807,14 @@ public:
                                                        context);
     }
 
+    // Deliver an observed edge through the production heap callback.
+    static jint reportHeapReferenceForTest(jvmtiHeapReferenceKind kind,
+                                          jlong class_tag, jlong *tag,
+                                          jlong *referrer_tag, void *context) {
+        return ReferenceChainTracker::heapReferenceCallback(
+            kind, nullptr, class_tag, 0, 0, tag, referrer_tag, -1, context);
+    }
+
     // Simulates a tag left in _priority_expand by a prior pass's truncated expandFrontier()
     // batch without a full expandFrontier()/JVMTI round-trip.
     static void pushPriorityExpand(jlong tag) {
