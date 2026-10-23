@@ -1922,6 +1922,17 @@ void Recording::writeThreads(Buffer *buf) {
   }
 }
 
+void Recording::writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
+                                     const MethodInfo *root) {
+  buf->putVar64(trace->trace_id);
+  if (root != nullptr) {
+    bool truncated = trace->truncated ||
+                     (root->_type < FRAME_NATIVE && !root->_is_entry);
+    buf->put8(truncated);
+  }
+  buf->putVar64(trace->num_frames);
+}
+
 int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
   // Reset all referenced flags before processing
   for (MethodMap::iterator it = _method_map.begin(); it != _method_map.end(); ++it) {
@@ -1942,18 +1953,12 @@ int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
     buf->putVar64(traces.size());
     for (auto it = traces.begin(); it != traces.end(); ++it) {
       CallTrace *trace = *it;
-      buf->putVar64(trace->trace_id);
+      MethodInfo *root = nullptr;
       if (trace->num_frames > 0) {
-        MethodInfo *mi =
-            lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
-        mi->_referenced = true;  // Mark method as referenced
-        if (mi->_type < FRAME_NATIVE) {
-          buf->put8(mi->_is_entry ? 0 : 1);
-        } else {
-          buf->put8(trace->truncated);
-        }
+        root = lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
+        root->_referenced = true;
       }
-      buf->putVar64(trace->num_frames);
+      writeStackTraceHeader(buf, trace, root);
       for (int i = 0; i < trace->num_frames; i++) {
         MethodInfo *mi = lookup->resolveMethod(trace->frames[i]);
         mi->_referenced = true;  // Mark method as referenced

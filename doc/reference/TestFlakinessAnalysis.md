@@ -8,6 +8,27 @@ This document analyzes potential sources of flakiness in two profiler tests:
 
 Both tests are parameterized across 4 stack walking modes: `vm`, `vmx`, `fp`, `dwarf`.
 
+> **Status — historical analysis.** The "Flakiness Sources" sections below describe
+> the test code as it was when the analysis was written; their code excerpts and
+> `File.java:N` line references point at that version, not the current files. State
+> of the current code (`ddprof-test/src/test/java/com/datadoghq/profiler/`):
+>
+> - `jfr/JfrDumpTest.java:64-88` — `method1()`/`method2()`/`method3()` are each a fixed
+>   1,000,000-iteration `++value` loop. The `/tmp` listing and the 20 ms time-based
+>   break (CpuDumpSmokeTest sources 1-3) no longer exist.
+> - `wallclock/BaseContextWallClockTest.java:54-57` — `after()` throws
+>   `IllegalStateException` if the executor does not terminate within 30 s.
+> - `wallclock/BaseContextWallClockTest.java:228` — `monitor.wait(150)`.
+> - `wallclock/BaseContextWallClockTest.java:270-285` — `sleep()` exits on interrupt and
+>   loops on spurious wakeups until the full duration has elapsed.
+> - `wallclock/BaseContextWallClockTest.java:126-133` — samples of `method1Impl` blocked
+>   in `Object.wait` are excluded from `method1Weight`; the "~55 % for method1Impl"
+>   comment quoted in ContextWallClockTest source 1 is gone.
+> - `wallclock/BaseContextWallClockTest.java:168-177` — error margin is 0.2 (0.4 on
+>   aarch64 BellSoft), raised to 0.3 for all four `cstack` modes.
+> - Retry counts are unchanged: `CpuDumpSmokeTest.java:20` `@RetryTest(3)`,
+>   `ContextWallClockTest.java:32` `@RetryTest(5)`.
+
 ---
 
 ## CpuDumpSmokeTest Flakiness Sources
@@ -662,7 +683,9 @@ After implementing all fixes:
 
 ### Changes Made
 
-1. **JfrDumpTest.java (method3):**
+1. **JfrDumpTest.java (method3):** *(superseded: `method3()` no longer lists `/tmp`;
+   it is now the same fixed `++value` loop as `method1()`/`method2()`,
+   `JfrDumpTest.java:84-88`)*
    - Added null check for `File.list()` to prevent `NullPointerException`
    - Replaced time-based 20ms timeout loop with fixed 200 iterations
    - Added defensive null/empty string checks
@@ -675,7 +698,9 @@ After implementing all fixes:
 
 3. **BaseContextWallClockTest.java (sleep):**
    - Fixed interrupt handling to exit immediately on interrupt
-   - Changed from `do-while` to `while` loop with explicit breaks
+   - Changed from `do-while` to `while` loop with explicit breaks (the current code,
+     `BaseContextWallClockTest.java:270-285`, no longer breaks after a successful
+     `Thread.sleep()`; it loops until the target time to absorb spurious wakeups)
    - Eliminates continuous `InterruptedException` re-throw cycles
    - Result: Proper Java interrupt semantics
 
@@ -704,8 +729,8 @@ After implementing all fixes:
 ### Expected Impact
 
 Based on the fixes implemented:
-- **CpuDumpSmokeTest:** Expected reduction from @RetryTest(3) to @RetryTest(1)
-- **ContextWallClockTest:** Expected reduction from @RetryTest(5) to @RetryTest(3)
+- **CpuDumpSmokeTest:** Expected reduction from @RetryTest(3) to @RetryTest(1) (not applied; still `@RetryTest(3)`)
+- **ContextWallClockTest:** Expected reduction from @RetryTest(5) to @RetryTest(3) (not applied; still `@RetryTest(5)`)
 - **Overall flakiness reduction:** 60-70% estimated
 
 ### Recommendations for Further Improvement

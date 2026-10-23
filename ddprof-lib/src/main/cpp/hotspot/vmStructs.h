@@ -867,7 +867,9 @@ DECLARE(VMContinuationEntry)
     //   https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/continuationEntry.cpp
     uintptr_t entryFP() const {
         assert(type_size() > 0); // must not be called before ContinuationEntry is resolved
-        return (uintptr_t)this + type_size();
+        constexpr uintptr_t alignment = 2 * sizeof(uintptr_t);
+        const uintptr_t size = (type_size() + alignment - 1) & ~(alignment - 1);
+        return (uintptr_t)this + size;
     }
 
     // Returns the enclosing ContinuationEntry when continuations are nested

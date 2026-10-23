@@ -37,6 +37,7 @@
 
 class VMSymbol;  // hotspot/vmStructs.h
 class ProfiledThread;
+struct CallTrace;
 
 const u64 MAX_JLONG = 0x7fffffffffffffffULL;
 const u64 MIN_JLONG = 0x8000000000000000ULL;
@@ -283,6 +284,11 @@ private:
   static void writeUnwindFailureEvent(Buffer *buf, u64 ticks, const char *kind,
                                      const char *name, u64 count);
 #endif
+
+  // Encodes the stack-pool record header. A Java entry root can establish
+  // completeness only when the walker has not already reported missing frames.
+  static void writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
+                                   const MethodInfo *root);
 
   RecordingBuffer _buf[CONCURRENCY_LEVEL];
   // we have several tables to avoid lock contention

@@ -105,10 +105,10 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
         assertCompleteCallers();
     }
 
-    /** Fully thawed virtual threads retain complete callers with and without carrier walking. */
+    /** A never-parked virtual thread retains its callers in both VM walking modes. */
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx"})
-    public void keepsFullyThawedContinuationComplete() throws Exception {
+    public void keepsNeverParkedVirtualThreadComplete() throws Exception {
         runWorkload(true, false);
         assertCompleteCallers();
     }
