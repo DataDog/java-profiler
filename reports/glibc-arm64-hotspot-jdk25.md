@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk25
 
 ## glibc-arm64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-10-23 10:04:35 EDT
+**Date:** 2026-10-23 10:30:03 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 85 |
-| Sample Rate | 1.42/sec |
-| Health Score | 89% |
-| Threads | 8 |
-| Allocations | 51 |
+| CPU Samples | 210 |
+| Sample Rate | 3.50/sec |
+| Health Score | 219% |
+| Threads | 10 |
+| Allocations | 122 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 27 |
-| Sample Rate | 0.45/sec |
-| Health Score | 28% |
-| Threads | 11 |
-| Allocations | 16 |
+| CPU Samples | 81 |
+| Sample Rate | 1.35/sec |
+| Health Score | 84% |
+| Threads | 12 |
+| Allocations | 44 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 35-35 cores)</summary>
 
 ```
-1792764076 35
-1792764081 35
-1792764086 35
-1792764091 35
-1792764096 35
-1792764101 35
-1792764106 35
-1792764111 35
-1792764116 35
-1792764121 35
-1792764126 35
-1792764131 35
-1792764136 35
-1792764141 35
-1792764146 35
-1792764151 35
-1792764156 35
-1792764161 35
-1792764166 35
-1792764171 35
+1792765577 35
+1792765582 35
+1792765587 35
+1792765592 35
+1792765597 35
+1792765602 35
+1792765607 35
+1792765612 35
+1792765617 35
+1792765622 35
+1792765627 35
+1792765632 35
+1792765637 35
+1792765642 35
+1792765647 35
+1792765652 35
+1792765657 35
+1792765662 35
+1792765667 35
+1792765672 35
 ```
 </details>
 
