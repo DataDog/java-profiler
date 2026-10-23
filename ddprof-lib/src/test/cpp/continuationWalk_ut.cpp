@@ -72,7 +72,8 @@ class ContinuationWalkTest : public ::testing::Test, protected VMStructs {
 protected:
     static constexpr int MAX_DEPTH = 8;
     struct ThreadLayout { void* entry; } thread{};
-    uintptr_t stack[32]{};
+    alignas(16) uintptr_t stack[32]{};
+    int entry_frame_size = 8;
     ASGCT_CallFrame frames[MAX_DEPTH + 1]{};
 
     static void SetUpTestSuite() {
@@ -98,6 +99,8 @@ protected:
         old_barrier = _cont_return_barrier;
         old_return_pc = _cont_entry_return_pc;
         old_entry_offset = _cont_entry_offset;
+        old_frame_size_offset = _frame_size_offset;
+        old_entry_nm = _enter_special_nm;
         old_entry_size = TYPE_SIZE_NAME(VMContinuationEntry);
         old_thread_size = TYPE_SIZE_NAME(VMThread);
         ASSERT_EQ(0, pthread_key_create(&owned_key, nullptr));
@@ -111,6 +114,8 @@ protected:
         thread.entry = &stack[6];
         JVMThreadTestAccessor::install(owned_key, (jfieldID)1);
         _cont_entry_offset = offsetof(ThreadLayout, entry);
+        _frame_size_offset = 0;
+        _enter_special_nm = VMNMethod::cast_raw(&entry_frame_size);
         TYPE_SIZE_NAME(VMThread) = sizeof(ThreadLayout);
         TYPE_SIZE_NAME(VMContinuationEntry) = 0;
         _code_heap_low = CODE_BASE + 0x200;
@@ -125,6 +130,8 @@ protected:
         _cont_return_barrier = old_barrier;
         _cont_entry_return_pc = old_return_pc;
         _cont_entry_offset = old_entry_offset;
+        _frame_size_offset = old_frame_size_offset;
+        _enter_special_nm = old_entry_nm;
         TYPE_SIZE_NAME(VMContinuationEntry) = old_entry_size;
         TYPE_SIZE_NAME(VMThread) = old_thread_size;
         JVMThreadTestAccessor::install(old_key, old_tid);
@@ -136,10 +143,11 @@ protected:
     int walk(bool carrier_frames, bool* truncated, bool frozen = false,
              bool valid_carrier = true, int max_depth = MAX_DEPTH) {
         // First native frame recovers a boundary PC plus the bottom VT FP.
-        stack[0] = (uintptr_t)&stack[8];
+        // A frozen crossing must not depend on the saved FP being a pointer.
+        stack[0] = frozen ? 1 : (uintptr_t)&stack[8];
         stack[1] = (uintptr_t)BOUNDARY_PC;
         int entry_fp = frozen ? 12 : 8;
-        if (frozen) stack[8] = (uintptr_t)&stack[12];
+        entry_frame_size = frozen ? 12 : 8;
         stack[entry_fp] = valid_carrier ? (uintptr_t)&stack[24] : 0;
         stack[entry_fp + FRAME_PC_SLOT] = (uintptr_t)CARRIER_PC;
         int carrier_sp = entry_fp + FRAME_PC_SLOT + 1;
@@ -174,6 +182,8 @@ protected:
     jfieldID old_tid;
     const void *old_low, *old_high, *old_barrier, *old_return_pc;
     int old_entry_offset;
+    int old_frame_size_offset;
+    VMNMethod* old_entry_nm;
     uint64_t old_entry_size;
     uint64_t old_thread_size;
 };
@@ -210,8 +220,31 @@ TEST_F(ContinuationWalkTest, VerifiedThawedCrossingRetainsCarrierWithoutTruncati
 
 TEST_F(ContinuationWalkTest, VerifiedFrozenCrossingRetainsCarrierAndTruncates) {
     _cont_return_barrier = BOUNDARY_PC;
+    // This fixture decodes no Java frames, so it cannot supply stack arguments
+    // for SP-based recovery. Use the exported entry layout for this crossing;
+    // the Java partial-thaw regressions exercise recovery without that layout.
+    TYPE_SIZE_NAME(VMContinuationEntry) = 6 * sizeof(uintptr_t);
     bool truncated = false;
     assertCarrier(walk(true, &truncated, true));
+    EXPECT_TRUE(truncated);
+}
+
+TEST_F(ContinuationWalkTest, FrozenBoundaryWithoutJavaFrameMetadataRejectsSpRecovery) {
+    _cont_return_barrier = BOUNDARY_PC;
+    bool truncated = false;
+    ASSERT_EQ(2, walk(true, &truncated, true));
+    EXPECT_EQ(BCI_ERROR, frames[1].bci);
+    EXPECT_STREQ("break_cont_entry_fp", (const char*)frames[1].method_id);
+    EXPECT_TRUE(truncated);
+}
+
+TEST_F(ContinuationWalkTest, FrozenBoundaryWithoutEntryMetadataRejectsFpFallback) {
+    _cont_return_barrier = BOUNDARY_PC;
+    _enter_special_nm = nullptr;
+    bool truncated = false;
+    ASSERT_EQ(2, walk(true, &truncated, true));
+    EXPECT_EQ(BCI_ERROR, frames[1].bci);
+    EXPECT_STREQ("break_cont_entry_fp", (const char*)frames[1].method_id);
     EXPECT_TRUE(truncated);
 }
 

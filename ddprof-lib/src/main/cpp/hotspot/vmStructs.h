@@ -202,6 +202,7 @@ typedef void* address;
         field_with_version(_nmethod_entry_address, offset, 8, 22, MATCH_SYMBOLS("_verified_entry_point"))           \
         field(_nmethod_state_offset, offset, MATCH_SYMBOLS("_state"))                                               \
         field(_nmethod_level_offset, offset, MATCH_SYMBOLS("_comp_level"))                                          \
+        field_with_version(_nmethod_entry_bci_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_entry_bci"))           \
         field_with_version(_nmethod_metadata_offset, offset, MIN_VERSION, 24, MATCH_SYMBOLS("_metadata_offset"))    \
         field_with_version(_nmethod_immutable_offset, offset, 23, MAX_VERSION, MATCH_SYMBOLS("_immutable_data"))    \
         field(_scopes_pcs_offset, offset, MATCH_SYMBOLS("_scopes_pcs_offset"))                                      \
@@ -219,6 +220,7 @@ typedef void* address;
         field(_constmethod_sig_index_offset, offset, MATCH_SYMBOLS("_signature_index"))                             \
         field(_constmethod_flags_offset, offset, MATCH_SYMBOLS("_flags", "_flags._flags"))                          \
         field(_constmethod_code_size_offset, offset, MATCH_SYMBOLS("_code_size"))                                   \
+        field_with_version(_constmethod_stack_arg_slots_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_num_stack_arg_slots")) \
     type_end()                                                                                                      \
     type_begin(VMConstantPool, MATCH_SYMBOLS("ConstantPool"))                                                       \
         field(_pool_holder_offset, offset, MATCH_SYMBOLS("_pool_holder"))                                           \
@@ -525,13 +527,17 @@ class VMStructs {
     // True when the bottom VT frame's return PC is cont_entry_return_pc, meaning all
     // VT frames are thawed (CPU-bound VT that never yielded).
     // Available on JDK 21+ via vmStructs or symbol fallback.
-    static bool isContEntryReturnPc(const void* pc) {
-        return _cont_entry_return_pc != nullptr && pc == _cont_entry_return_pc;
+    static const void* contEntryReturnPc() {
+        return _cont_entry_return_pc_addr != nullptr
+                ? __atomic_load_n((const void**)_cont_entry_return_pc_addr, __ATOMIC_ACQUIRE) : _cont_entry_return_pc;
     }
 
-    static VMNMethod* enterSpecialNMethod() {
-        return _enter_special_nm;
+    static bool isContEntryReturnPc(const void* pc) {
+        const void* return_pc = contEntryReturnPc();
+        return return_pc != nullptr && pc == return_pc;
     }
+
+    static VMNMethod* enterSpecialNMethod();
 
     // Datadog-specific extensions
     static bool isSafeToWalk(uintptr_t pc);
@@ -983,6 +989,12 @@ DECLARE(VMConstantPool)
 DECLARE_END
 
 DECLARE(VMConstMethod)
+    // ConstMethod stores 4-byte VMReg slots; compiled frames round to whole machine words.
+    int stackArgWords() const {
+        if (_constmethod_stack_arg_slots_offset < 0) return -1;
+        unsigned short slots = *(const unsigned short*)at(_constmethod_stack_arg_slots_offset);
+        return (slots + 1) / 2;
+    }
     inline VMConstantPool* constants_or_null() const;
     inline VMSymbol* name() const;
     inline VMSymbol* signature() const;
@@ -1035,6 +1047,26 @@ static inline bool startsWith(const char* s, const char (&pattern)[N]) {
 }
 
 DECLARE(VMNMethod)
+    bool isOsr() const {
+        assert(_nmethod_entry_bci_offset >= 0);
+        return *(const int*)at(_nmethod_entry_bci_offset) != -1;
+    }
+
+    // ContinuationEntry::bottom_sender_sp() subtracts stack arguments and aligns down
+    // to 16 bytes. enterSpecial's frame size includes its saved FP and return PC.
+    uintptr_t continuationEntryFP(uintptr_t sp, int stack_args) {
+        int frame_size = frameSize();
+        // A reference occupies one of the JVM's 255 parameter slots but a full
+        // machine word on the stack; allow that limit plus alignment padding.
+        if (frame_size < 4 || frame_size > 256 || (frame_size & 1) != 0 ||
+                stack_args < 0 || stack_args > 256 || (sp & 15) != 0) {
+            return 0;
+        }
+        uintptr_t words = ((stack_args + 1) & ~1) + frame_size - 2;
+        if (sp > UINTPTR_MAX - words * sizeof(uintptr_t)) return 0;
+        return sp + words * sizeof(uintptr_t);
+    }
+
     int size() {
         assert(_blob_size_offset >= 0);
         return *(int*) at(_blob_size_offset);
