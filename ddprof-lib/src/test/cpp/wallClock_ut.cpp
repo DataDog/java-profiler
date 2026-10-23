@@ -8,7 +8,9 @@
 #include <chrono>
 #include <csignal>
 #include <thread>
+#include <vector>
 #include "arguments.h"
+#include "counters.h"
 #include "wallClock.h"
 
 // profiler.cpp's Profiler::start() falls back to ThreadFilter::deactivateRecording()
@@ -77,7 +79,9 @@ class WallClockAccountingTest : public ::testing::Test {
 protected:
     void SetUp() override {
         baseline = NativeMem::live(NM_WALLCLOCK);
-        ASSERT_GT(baseline, 0);  // The profiler's tracker remains resident.
+        // The profiler's tracker storage is allocated lazily on first
+        // registration, so the baseline may be 0; tests assert deltas against it.
+        ASSERT_GE(baseline, 0);
         previous_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
         first.enableEvents(true);
     }
@@ -133,6 +137,175 @@ TEST_F(WallClockAccountingTest, IndependentTimersBalanceGrowthAndShrink) {
     EXPECT_EQ(baseline, NativeMem::live(NM_WALLCLOCK));
     second.stop();
     EXPECT_EQ(baseline, NativeMem::live(NM_WALLCLOCK));
+}
+
+// Drives the real lazy-backfill timer loop (precheck + lazyBackfill) over a
+// synthetic candidate pool, so the visit budget and the backfill of
+// precheck-rejected candidates are exercised end to end through
+// timerLoopCommon() rather than only through the selector in isolation.
+class LazyBackfillWallClock : public BaseWallClock {
+public:
+    static constexpr int kPoolSize = 200;
+    static constexpr int kReservoir = 16;
+    static constexpr size_t kVisitBudget =
+        static_cast<size_t>(kReservoir) * PRECHECK_VISIT_BUDGET_MULTIPLIER;
+
+    struct Pass {
+        int visited = 0;
+        int sent = 0;
+        int rejected = 0;
+    };
+
+    explicit LazyBackfillWallClock(bool (*accept)(int tid)) : _accept(accept) {}
+    const char* name() override { return "Lazy backfill test timer"; }
+
+    bool awaitPasses(int passes) const {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (completed_passes.load(std::memory_order_acquire) < passes) {
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+            std::this_thread::yield();
+        }
+        return true;
+    }
+
+    // Written only by the timer thread; read after stop() has joined it.
+    std::vector<Pass> passes;
+    bool visited_tid[kPoolSize + 1] = {};
+    std::atomic<int> completed_passes{0};
+
+private:
+    void timerLoop() override {
+        Pass current;
+        auto collect = [](std::vector<ThreadEntry>& entries) {
+            for (int tid = 1; tid <= kPoolSize; ++tid) {
+                entries.push_back(ThreadEntry{tid, nullptr, -1, 0, 0});
+            }
+        };
+        auto sample = [&](ThreadEntry entry, int&, int&, int&, int& lookups, bool) {
+            current.visited++;
+            lookups++;
+            visited_tid[entry.tid] = true;
+            if (!_accept(entry.tid)) {
+                current.rejected++;
+                return WallClockCandidateOutcome::PRECHECK_REJECTED;
+            }
+            current.sent++;
+            return WallClockCandidateOutcome::SIGNAL_SENT;
+        };
+        auto clean = [&] {
+            passes.push_back(current);
+            current = Pass();
+            completed_passes.store(static_cast<int>(passes.size()), std::memory_order_release);
+        };
+        timerLoopCommon<ThreadEntry>(collect, sample, clean, kReservoir, 1000000,
+                                     /*precheck=*/true, /*lazyBackfill=*/true);
+    }
+
+    bool (*_accept)(int tid);
+};
+
+class WallClockLazyBackfillTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        previous_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
+        enabler.enableEvents(true);
+        args._wall = 1000000;
+    }
+
+    void TearDown() override {
+        enabler.enableEvents(false);
+        std::signal(WAKEUP_SIGNAL, previous_handler);
+    }
+
+    struct Totals {
+        long long visited = 0;
+        long long rejected = 0;
+        long long budget_exhausted = 0;
+    };
+
+    static Totals totals(const LazyBackfillWallClock& clock) {
+        Totals t;
+        for (const auto& pass : clock.passes) {
+            t.visited += pass.visited;
+            t.rejected += pass.rejected;
+            if (pass.sent < LazyBackfillWallClock::kReservoir &&
+                static_cast<size_t>(pass.visited) == LazyBackfillWallClock::kVisitBudget) {
+                t.budget_exhausted++;
+            }
+        }
+        return t;
+    }
+
+    Arguments args;
+    AccountingWallClock enabler;  // only used to toggle the shared _enabled flag
+    using SignalHandler = void (*)(int);
+    SignalHandler previous_handler = SIG_DFL;
+};
+
+// 25% of the pool is precheck-rejected: rejections are backfilled without
+// consuming reservoir slots, so every pass still sends a full reservoir, and
+// the walk stays within the visit budget.
+TEST_F(WallClockLazyBackfillTest, RejectedCandidatesAreBackfilledWithoutConsumingSlots) {
+    constexpr int kPasses = 300;
+    LazyBackfillWallClock clock(+[](int tid) { return tid % 4 != 0; });
+#ifdef COUNTERS
+    long long rejected_before = Counters::getCounter(WC_PRECHECK_CANDIDATES_REJECTED);
+    long long lookups_before = Counters::getCounter(WC_PRECHECK_REGISTRY_LOOKUPS);
+    long long exhausted_before = Counters::getCounter(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED);
+#endif
+    bool started = !clock.start(args);
+    bool completed = started && clock.awaitPasses(kPasses);
+    clock.stop();  // joins the timer thread before any assertion reads its state
+    ASSERT_TRUE(started);
+    ASSERT_TRUE(completed);
+
+    for (size_t i = 0; i < clock.passes.size(); ++i) {
+        const auto& pass = clock.passes[i];
+        EXPECT_EQ(LazyBackfillWallClock::kReservoir, pass.sent) << "pass " << i;
+        EXPECT_LE(static_cast<size_t>(pass.visited), LazyBackfillWallClock::kVisitBudget)
+            << "pass " << i;
+        EXPECT_EQ(pass.visited, pass.sent + pass.rejected) << "pass " << i;
+    }
+    for (int tid = 1; tid <= LazyBackfillWallClock::kPoolSize; ++tid) {
+        if (tid % 4 != 0) {
+            EXPECT_TRUE(clock.visited_tid[tid]) << "accepted tid " << tid << " never visited";
+        }
+    }
+#ifdef COUNTERS
+    Totals t = totals(clock);
+    EXPECT_EQ(rejected_before + t.rejected,
+              Counters::getCounter(WC_PRECHECK_CANDIDATES_REJECTED));
+    EXPECT_EQ(lookups_before + t.visited, Counters::getCounter(WC_PRECHECK_REGISTRY_LOOKUPS));
+    EXPECT_EQ(exhausted_before, Counters::getCounter(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED));
+#endif
+}
+
+// Only 8 of 200 candidates are accepted, so the reservoir can never fill and
+// every pass stops at the visit budget; the randomized prefix still reaches
+// the whole pool over time.
+TEST_F(WallClockLazyBackfillTest, VisitBudgetBindsWhenPoolCannotFillReservoir) {
+    constexpr int kPasses = 100;
+    LazyBackfillWallClock clock(+[](int tid) { return tid % 25 == 0; });
+#ifdef COUNTERS
+    long long exhausted_before = Counters::getCounter(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED);
+#endif
+    bool started = !clock.start(args);
+    bool completed = started && clock.awaitPasses(kPasses);
+    clock.stop();
+    ASSERT_TRUE(started);
+    ASSERT_TRUE(completed);
+
+    for (size_t i = 0; i < clock.passes.size(); ++i) {
+        EXPECT_EQ(static_cast<int>(LazyBackfillWallClock::kVisitBudget),
+                  clock.passes[i].visited) << "pass " << i;
+    }
+    for (int tid = 1; tid <= LazyBackfillWallClock::kPoolSize; ++tid) {
+        EXPECT_TRUE(clock.visited_tid[tid]) << "tid " << tid << " never visited";
+    }
+#ifdef COUNTERS
+    EXPECT_EQ(exhausted_before + static_cast<long long>(clock.passes.size()),
+              Counters::getCounter(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED));
+#endif
 }
 
 static volatile sig_atomic_t sampling_signal_received = 0;

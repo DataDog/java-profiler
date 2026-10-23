@@ -762,6 +762,19 @@ public final class JavaProfiler {
      */
     static native int referenceChainPassesRunForTest0();
 
+    // ---- Wall-clock test seams ----------------------------------------------------------------
+    // Test seams (DEBUG native builds only; release: no-op/false). Reached only via a test-source
+    // bridge class in ddprof-test; non-public so they stay off the shipped API surface.
+
+    /** Test seam: forces the next wall-clock engine start() call to fail. No-op in release. */
+    static native void setForceWallStartFailureForTest0(boolean force);
+
+    /** Test seam: whether the forced wall-engine start-failure toggle is armed. False in release. */
+    static native boolean isForceWallStartFailureArmedForTest0();
+
+    /** Test seam: whether the thread registry currently admits registrations. False in release. */
+    static native boolean isThreadRegistryActiveForTest0();
+
     // ---- Test-only reads of the current thread's OTEP record ----------------------------------
     // Each resolves the current carrier's record directly (like the write primitives above) with
     // no cached buffer and no per-thread Java object; introspection/test use only.

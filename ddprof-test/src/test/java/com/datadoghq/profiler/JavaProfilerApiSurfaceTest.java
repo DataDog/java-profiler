@@ -55,6 +55,27 @@ public class JavaProfilerApiSurfaceTest {
                 "every listed reference-chain test seam must still exist on JavaProfiler");
     }
 
+    // Wall-clock test seams: reachable from tests only through the test-source bridge
+    // JavaProfilerTestSupport, never from application code.
+    private static final Set<String> WALL_CLOCK_TEST_SEAMS = new HashSet<>(Arrays.asList(
+            "setForceWallStartFailureForTest0", "isForceWallStartFailureArmedForTest0",
+            "isThreadRegistryActiveForTest0"));
+
+    @Test
+    public void wallClockTestSeamsAreNotPublicApi() {
+        Set<String> found = new HashSet<>();
+        for (Method m : JavaProfiler.class.getDeclaredMethods()) {
+            if (WALL_CLOCK_TEST_SEAMS.contains(m.getName())) {
+                found.add(m.getName());
+                assertFalse(Modifier.isPublic(m.getModifiers()),
+                        m.getName() + " is a wall-clock test seam and must stay non-public; "
+                                + "tests reach it via JavaProfilerTestSupport");
+            }
+        }
+        assertEquals(WALL_CLOCK_TEST_SEAMS, found,
+                "every listed wall-clock test seam must still exist on JavaProfiler");
+    }
+
     private static void assertNotPublic(Method method) {
         assertFalse(Modifier.isPublic(method.getModifiers()),
                 method.getName() + " must remain non-public until PR2 wires TaskBlock instrumentation");

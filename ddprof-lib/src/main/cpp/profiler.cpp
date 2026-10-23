@@ -1454,6 +1454,9 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (error) {
     return error;
   }
+  // A previous mixed-success or failed start must not leave a stale mask that a
+  // later stop() would act on; success publishes `activated` below.
+  _activated_mask = 0;
 
   // Sanity checks run at most once per process, across start and stop cycles.
   // Profiler::start() sets sanity_checked to true before it checks
@@ -1603,10 +1606,12 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_filter.clearActive();
   }
 
-  // Set up the sampled thread's TLS in both modes. Context filtering also
-  // pre-registers the caller; unfiltered tracking waits for its first hook.
-  // Retained unfiltered slots remain ineligible until their owner refreshes
-  // against the new recording epoch in ensureCurrentThreadFilterSlot().
+  // Set up the sampled thread's TLS in both modes. Only context-filtered
+  // recordings (enabled()) eagerly register the calling thread. In
+  // unfiltered-wall-precheck mode the caller binds lazily through
+  // ensureCurrentThreadFilterSlot() on its first hook, like every other thread.
+  // Retained unfiltered slots stay ineligible until their owner refreshes
+  // against the new recording epoch.
   if (_thread_filter.registryActive()) {
     ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);
