@@ -74,7 +74,8 @@ public class VirtualThreadCarrierChaosTest extends CStackAwareAbstractProfilerTe
         StackCounts counts = reduceEvents(eventType, StackCounts::new, StackCounts::accept);
         System.out.println(eventType + " carrier=" + carrierFrames + " " + counts);
         assertEquals(0, counts.continuationErrors, "Continuation recovery errors: " + counts);
-        assertEquals(0, counts.invalidAncestry, "Missing, duplicated or misplaced carrier frames: " + counts);
+        assertEquals(0, counts.invalidAncestry, "Missing, duplicated or misplaced carrier frames: " + counts
+                + (counts.firstInvalidAncestry == null ? "" : "\nFirst invalid stack: " + counts.firstInvalidAncestry));
         assertEquals(0, counts.falseComplete, "Missing outer callers reported complete: " + counts);
         for (int layout = 0; layout < 2; layout++) {
             assertTrue(counts.eligible[layout] >= 10,
@@ -88,6 +89,7 @@ public class VirtualThreadCarrierChaosTest extends CStackAwareAbstractProfilerTe
         private final long[] otherStops = new long[2];
         private long continuationErrors;
         private long invalidAncestry;
+        private String firstInvalidAncestry;
         private long falseComplete;
 
         private void accept(JfrEvent event) {
@@ -132,7 +134,13 @@ public class VirtualThreadCarrierChaosTest extends CStackAwareAbstractProfilerTe
             eligible[layout]++;
             if (register && stack || (carrierFrames
                     ? carriers != 1 || roots != 0 || carrierIndex <= lastApplicationIndex
-                    : carriers != 0 || roots != 1)) invalidAncestry++;
+                    : carriers != 0 || roots != 1)) {
+                invalidAncestry++;
+                if (firstInvalidAncestry == null) {
+                    firstInvalidAncestry = "register=" + register + " stack=" + stack + " carriers=" + carriers
+                            + " roots=" + roots + " truncated=" + trace.isTruncated() + "\n" + event.getStackTraceString();
+                }
+            }
             if (!outer && !trace.isTruncated()) falseComplete++;
         }
 

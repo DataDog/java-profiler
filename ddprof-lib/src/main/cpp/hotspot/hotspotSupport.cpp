@@ -442,6 +442,10 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     //
     // Returns true to continue the walk, false to break.
     auto walkThroughContinuation = [&](ContBoundary kind) -> bool {
+        // Neither inline recovery nor the post-loop fallback may replay the
+        // Java anchor after this continuation boundary has been reached.
+        anchor = NULL;
+        saved_anchor_sp = 0;
         if (!contBoundaryProvesComplete(kind)) {
             bool was_truncated = truncated != nullptr && *truncated;
             // A recovered fault can bypass append's return and the rest of this
