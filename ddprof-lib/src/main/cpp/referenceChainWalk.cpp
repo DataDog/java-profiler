@@ -446,9 +446,9 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       // This new path is deeper - replace the shallow root-attached entry with the deeper
       // chain-attached entry.
       u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
-      // Pre-read the CURRENT shape: if improveChain() below succeeds, this root-attached durable
-      // entry is about to be replaced with a deeper chain-attached one - i.e. it is leaving the
-      // population collectStaticFieldAnchorsForRotation() can select, at exactly this moment.
+      // Pre-read the CURRENT shape: improveChain() can remove this entry's
+      // durable-root eligibility. A known collection remains in the container
+      // tier; other holders need the FIFO's first look below.
       FrontierEntry pre_improve_entry{};
       bool was_root_attached_durable =
           ctx->frontier->lookup(*tag_ptr, &pre_improve_entry) &&
@@ -465,8 +465,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
             ctx->resolved_chain_tag_count,
             ReferenceChainTracker::ChainInvalidationKind::REBUILD);
         if (was_root_attached_durable) {
-          // Demotion push: the replaced entry's static/JNI-global attribution was its only
-          // anchor-tier eligibility, and it is gone now.
+          // Ensure a first look even when class-shape reconciliation has not
+          // yet classified this reparented holder as a collection.
           ctx->tracker->pushAtRiskStaticAnchor(
               *tag_ptr, ctx->tracker->classTags()->resolve(class_tag));
         }
