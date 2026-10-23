@@ -11,6 +11,7 @@
 #include "faultInjection.h"
 #include "frames.h"
 #include "guards.h"
+#include "hotspot/contBoundary.h"
 #include "hotspot/hotspotSupport.h"
 #include "hotspot/jitCodeCache.h"
 #include "hotspot/klassTraceId.h"
@@ -424,18 +425,23 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     // (_parent not triggered by standard single-level VTs today, but required
     // once any runtime layers continuations on top of VTs).
     //
-    // all_frames_thawed: true when the bottom VT frame's return PC is
-    //         cont_entry_return_pc (all VT frames are thawed — CPU-bound VT),
-    //         false when it is cont_returnBarrier (frozen frames remain in the
-    //         StackChunk — VT parked and just remounted).
-    //         Needed to derive entry_fp on JDK 21-26 where ContinuationEntry
-    //         type size is absent from vmStructs and contEntry() returns nullptr.
+    // kind: how the caller classified the boundary (see hotspot/contBoundary.h).
+    //   Completeness: unless kind proves completeness (verified Thawed), older
+    //     Java callers may remain frozen in a heap StackChunk and be skipped by
+    //     this walker, so the sample is marked truncated. That covers Frozen
+    //     (return barrier) and Unverified (speculative unknown-nmethod crossing).
+    //   Layout: on JDK 21-26, where ContinuationEntry type size is absent from
+    //     vmStructs and contEntry() returns nullptr, entry_fp is fp for
+    //     Thawed/Unverified and *fp for Frozen. For Unverified this is a
+    //     best-effort thawed guess; if it is wrong, the fp/sp validation below
+    //     emits BCI_ERROR.
     //
     // Returns true to continue the walk, false to break.
-    auto walkThroughContinuation = [&](bool all_frames_thawed) -> bool {
-        // A return barrier leaves older Java callers in heap chunks, which this
-        // walker skips even when carrier walking succeeds.
-        if (!all_frames_thawed && truncated != nullptr) {
+    auto walkThroughContinuation = [&](ContBoundary kind) -> bool {
+        // Unless the boundary is verified fully thawed, older Java callers may
+        // remain in heap StackChunks, which this walker skips even when carrier
+        // walking succeeds.
+        if (!contBoundaryProvesComplete(kind) && truncated != nullptr) {
             *truncated = true;
         }
         if (depth >= actual_max_depth) return false;
@@ -461,13 +467,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         } else {
             // ContinuationEntry absent from vmStructs (JDK 21-26).
             // Derive the enterSpecial frame FP from the current fp:
-            //   all frames thawed (pc == cont_entry_return_pc): fp IS the
-            //     enterSpecial frame FP.
-            //   frozen frames remain (pc == cont_returnBarrier): the saved
-            //     caller FP at *fp leads to the enterSpecial frame on the
-            //     carrier stack.
+            //   thawed or unverified (pc == cont_entry_return_pc, or a
+            //     speculative crossing): fp is taken as the enterSpecial
+            //     frame FP.
+            //   frozen (pc == cont_returnBarrier): the saved caller FP at *fp
+            //     leads to the enterSpecial frame on the carrier stack.
             // Nested continuation tracking is unavailable without type_size().
-            entry_fp = all_frames_thawed ? fp : (uintptr_t)SafeAccess::load((void**)fp);
+            entry_fp = contBoundaryEntryFpIsCurrentFp(kind) ? fp : (uintptr_t)SafeAccess::load((void**)fp);
         }
 
         if (!StackWalkValidation::isValidFP(entry_fp)) {
@@ -524,21 +530,21 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 break;
             }
             have_prev_native_pc = false; // we are in JVM code, no previous 'native' PC
-            // Both continuation boundary PCs are JVM stubs whose findNMethod()
-            // returns NULL; detect them by exact-PC match before the nmethod
-            // dispatch below.
+            // Detect both continuation boundary PCs by exact-PC match before the
+            // nmethod dispatch below (findNMethod would otherwise classify them
+            // as ordinary stub/nmethod blobs).
             // cont_returnBarrier: bottom thawed frame returns here when frozen
             //   frames remain in the StackChunk (blocking/remounted VT).
             // cont_entry_return_pc: bottom thawed frame returns here when the
             //   continuation is fully thawed (CPU-bound VT, never yielded).
             if (!CONT_UNWIND_DISABLED && VMStructs::isContReturnBarrier(walk_pc.raw())) {
                 Counters::increment(WALKVM_CONT_BARRIER_HIT);
-                if (walkThroughContinuation(false)) continue;
+                if (walkThroughContinuation(CONT_BOUNDARY_AT_RETURN_BARRIER)) continue;
                 break;
             }
             if (!CONT_UNWIND_DISABLED && VMStructs::isContEntryReturnPc(walk_pc.raw())) {
                 Counters::increment(WALKVM_ENTER_SPECIAL_HIT);
-                if (walkThroughContinuation(true)) continue;
+                if (walkThroughContinuation(CONT_BOUNDARY_AT_ENTRY_RETURN_PC)) continue;
                 break;
             }
             VMNMethod* nm = CodeHeap::findNMethod(walk_pc.raw());
@@ -546,18 +552,26 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 // On JDK 21+ builds, the continuation entry PC may be absent
                 // from vmStructs OR resolved but pointing to the wrong address
                 // (some distributions expose the symbol at the wrong address, so
-                // the exact-PC check above never fires).  Attempt a fully-thawed
-                // continuation walk whenever we see an unknown nmethod after
-                // collecting Java frames.  walkThroughContinuation validates the
-                // fp chain and emits BCI_ERROR cleanly on mismatch, so false
-                // positives are safe.
+                // the exact-PC check above never fires).  Attempt a continuation
+                // walk whenever we see an unknown nmethod after collecting Java
+                // frames.  The crossing is UNVERIFIED: nothing here proves
+                // whether frozen frames remain in the StackChunk.  The walk uses
+                // the thawed layout guess (entry_fp = fp); the lambda's fp/sp
+                // validation emits BCI_ERROR on mismatch.  The sample is always
+                // marked truncated, because only a verified fully-thawed
+                // boundary proves completeness (a possible false positive is
+                // preferred over silently dropping frozen callers).
+                // Known limitation: for a frozen continuation reached here on
+                // JDK 21-26 the layout guess may be off by one frame.
                 if (!CONT_UNWIND_DISABLED
                         && features.carrier_frames
                         && VM::hotspot_version() >= 21
                         && depth > 0
                         && vm_thread != NULL && vm_thread->isCarryingVirtualThread()) {
                     Counters::increment(WALKVM_CONT_SPECULATIVE_HIT);
-                    if (walkThroughContinuation(true)) continue;
+                    static_assert(!contBoundaryProvesComplete(CONT_BOUNDARY_AT_SPECULATIVE_UNKNOWN_NM),
+                                  "speculative continuation crossing must mark the sample truncated");
+                    if (walkThroughContinuation(CONT_BOUNDARY_AT_SPECULATIVE_UNKNOWN_NM)) continue;
                     break;
                 }
                 if (anchor == NULL) {
@@ -654,7 +668,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 // and navigate to the carrier thread via ContinuationEntry.
                 if (!CONT_UNWIND_DISABLED && nm == VMStructs::enterSpecialNMethod()) {
                     Counters::increment(WALKVM_ENTER_SPECIAL_HIT);
-                    if (walkThroughContinuation(true)) continue;
+                    if (walkThroughContinuation(CONT_BOUNDARY_AT_ENTER_SPECIAL_NM)) continue;
                     break;
                 }
                 // Check if deoptimization is in progress before walking compiled frames
