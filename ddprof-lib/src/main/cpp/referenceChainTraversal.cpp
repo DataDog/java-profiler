@@ -135,6 +135,18 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   default:
     break;
   }
+  // Remember local holders before expansion can reparent them into a deeper
+  // chain. Known collections still need bounded descend walks after that change
+  // to observe replacement backing storage. Classification runs outside this
+  // callback; unknown types are indexed but do not qualify for a walk yet.
+  if (isTransientRootKind(translated_root_kind) && class_tag != 0 &&
+      *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
+    auto shape = ctx->tracker->_class_shape_cache.find(class_tag);
+    if (shape == ctx->tracker->_class_shape_cache.end() ||
+        shape->second == (u8)AnchorClassShape::CONTAINER) {
+      ctx->tracker->indexAnchorForRotation(*tag_ptr, class_tag);
+    }
+  }
   return JVMTI_ITERATION_CONTINUE;
 }
 
@@ -363,7 +375,12 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   std::vector<AtRiskAnchor> static_anchor_fifo_drained;
   drainStaticAnchorFifo(STATIC_ANCHOR_FIFO_DRAIN, static_anchor_fifo_drained);
   for (const AtRiskAnchor &at_risk : static_anchor_fifo_drained) {
-    static_anchor_tags.push_back(at_risk.tag);
+    // A reparented collection can also have been selected by the persistent
+    // container tier. The combined selection is bounded by 48 + 16 entries.
+    if (std::find(static_anchor_tags.begin(), static_anchor_tags.end(),
+                  at_risk.tag) == static_anchor_tags.end()) {
+      static_anchor_tags.push_back(at_risk.tag);
+    }
   }
   if (rotation_tags.empty() && leak_accumulation_tags.empty() &&
       stale_expanded_tags.empty() && static_anchor_tags.empty()) {
@@ -1044,6 +1061,11 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   if (manual_first_pass) {
     _search_started = true;
     store(_search_start_ns, OS::nanotime());
+    // Register the candidates that triggered this search before walking. The
+    // first pass can drain the frontier; without a watched klass it would then
+    // complete and release its tags before the loop's post-pass poll can
+    // reconstruct any chain or schedule candidate-scoped walks.
+    pollWatchedTargets(jvmti, jni);
   }
 
   // Root/stack-ref enumeration alone never discovers a root's transitive children
