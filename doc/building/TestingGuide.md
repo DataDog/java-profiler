@@ -11,23 +11,33 @@ they require:
 
 | Tier | System | When | Sanitizers | Purpose |
 |------|--------|------|-----------|---------|
-| **C++ unit tests** | GitLab | Every branch push | ASan + TSan | Data races and memory errors in native internals |
-| **Java functional tests** | GitHub Actions | Nightly | ASan | Correctness + memory errors in JVMTI paths |
-| **dd-trace integration** | GitLab | Every branch push | None | Compatibility with the tracer agent |
-| **Chaos / reliability** | GitLab | Nightly scheduled | None | Long-duration stability and probabilistic crash detection |
+| **C++ unit tests** | GitLab | Every branch push | ASan + TSan (+ optimised release build) | Data races and memory errors in native internals |
+| **Java functional tests** | GitHub Actions | Every PR/push (debug); nightly (ASan, slow tests) | ASan (nightly or `test:asan` label) | Correctness + memory errors in JVMTI paths |
+| **dd-trace integration** | GitLab | Every branch push (not `release/*`) | None | Compatibility with the tracer agent |
+| **Chaos / reliability** | GitLab | Scheduled pipelines; PRs with `test:reliability` label | None | Long-duration stability and probabilistic crash detection |
 
 ---
 
 ## Tier 1 — C++ Unit Tests (Every Branch Push)
 
-**Pipeline:** `.gitlab/sanitizer-tests/.gitlab-ci.yml`, `build` stage
+**Pipeline:** `.gitlab/sanitizer-tests/.gitlab-ci.yml`, `sanitizer` stage
 
-**Jobs:** `gtest-asan-amd64`, `gtest-tsan-amd64`, `gtest-asan-arm64`, `gtest-tsan-arm64`
+**Jobs:** `gtest-asan-amd64`, `gtest-tsan-amd64`, `gtest-asan-arm64`, `gtest-tsan-arm64`,
+`gtest-release-amd64`, `gtest-release-arm64`
 
-**Gradle tasks:** `:ddprof-lib:gtestAsan`, `:ddprof-lib:gtestTsan`
+**Gradle tasks:** `:ddprof-lib:buildGtestAsan`, `:ddprof-lib:buildGtestTsan`,
+`:ddprof-lib:buildGtestRelease` (compile + link only). The CI job then runs each
+binary under `ddprof-lib/build/bin/gtest/<config>_<test>/` directly from the shell,
+because the Gradle daemon swallows child-process output when fd 1/2 are not a terminal.
 
 **Runs on:** amd64 and aarch64, using the standard `BUILD_IMAGE_X64` / `BUILD_IMAGE_ARM64`
-images, on every branch push (same trigger as the dd-trace integration tests)
+images, on every branch push. Skipped for GitLab merge-request pipelines and for
+JDK-integration triggers (`JDK_VERSION`/`DEBUG_LEVEL`/`HASH`/`DOWNSTREAM` set).
+
+The `release` jobs are not sanitizers: they are the only jobs that compile the gtests
+with optimisation, so they catch defects that only appear once the optimiser runs
+(e.g. a fixture frame folded away by a tail call). Both sanitizer presets build
+without `-O` and with `-fno-optimize-sibling-calls`.
 
 The C++ gtest suite in `ddprof-lib/src/test/cpp/` exercises profiler internals
 directly, without a JVM. This makes both ASan and TSan effective:
@@ -41,8 +51,10 @@ directly, without a JVM. This makes both ASan and TSan effective:
 TSan is only viable at this tier. The JVM binary contains intentional unsynchronized
 patterns (lock-free GC internals, biased locking) that produce too many false
 positives in the Java functional tier. `gradle/sanitizers/tsan.supp` captures
-suppressions from earlier attempts; it exists for the benefit of any future JVM-level
-TSan runs, but is not applied here since these tests never load a JVM.
+suppressions from earlier attempts. The CI jobs run the gtest binaries directly with no
+`TSAN_OPTIONS`, so it is not applied there. Running `:ddprof-lib:gtestTsan` through Gradle
+does pass the tsan config's `TSAN_OPTIONS` (including `suppressions=gradle/sanitizers/tsan.supp`)
+to the binaries.
 
 **Why GitLab and not GitHub Actions:** TSan requires `vm.mmap_rnd_bits ≤ 28` and its
 re-exec fallback (`personality(ADDR_NO_RANDOMIZE)`) to handle ASLR conflicts. GitHub
@@ -54,26 +66,27 @@ settings tuned for benchmark workloads.
 
 | File | Covers |
 |------|--------|
-| `dictionary_concurrent_ut.cpp` | Concurrent read/write/clear of `Dictionary` — the `std::_Rb_tree_increment` race path |
+| `dictionary_ut.cpp` / `stringDictionary_ut.cpp` | `Dictionary` / `StringDictionary` lookup, bounded insert, collect and clear |
 | `thread_teardown_safety_ut.cpp` | Signal delivery during `ProfiledThread` TLS clear and delete |
 | `profiler_null_calltrace_buffer_ut.cpp` | Null calltrace buffer guard in the JVMTI sample path (PROF-14679) |
 | `stress_callTraceStorage.cpp` | `CallTraceStorage` under concurrent write pressure |
 | `test_callTraceStorage.cpp` | `CallTraceStorage` buffer swap correctness |
 | `sigaction_interception_ut.cpp` | `sigaction` interception correctness and re-entrancy |
 | `signalOrigin_ut.cpp` | Signal origin detection and classification |
-| `spinlock_bounded_ut.cpp` | `SpinLock` / `BoundedOptionalSharedLockGuard` under contention |
+| `spinLock_ut.cpp` | `SpinLock` / `OptionalSharedLockGuard` spin budget and contention |
 
 **Local run:**
 ```bash
-# Individual sanitizer configs
+# Individual sanitizer configs (Linux only; asan/tsan are inactive on macOS
+# and on musl, so these tasks do not exist there)
 ./gradlew :ddprof-lib:gtestAsan
 ./gradlew :ddprof-lib:gtestTsan
 
-# All configs (debug, release, asan, tsan)
+# All active configs on this host
 ./gradlew :ddprof-lib:gtest
 
-# Specific test
-./gradlew :ddprof-lib:gtestAsan_dictionary_concurrent_ut
+# Specific test: gtest<Config>_<file name without .cpp>
+./gradlew :ddprof-lib:gtestAsan_dictionary_ut
 ```
 
 Prerequisites on Ubuntu:
@@ -89,16 +102,22 @@ job log.
 
 ---
 
-## Tier 2 — Java Functional Tests (Nightly)
+## Tier 2 — Java Functional Tests (GitHub Actions)
 
-**Workflow:** `.github/workflows/nightly.yml` → `test_workflow.yml`
+**Workflows:** `.github/workflows/ci.yml` (PRs and pushes) and
+`.github/workflows/nightly.yml`, both calling the reusable `test_workflow.yml`
 
-**Gradle task:** `:ddprof-test:testAsan -Pskip-gtest`
+**Gradle task:** `:ddprof-test:test<Config>` (or `:ddprof-test:testSlow<Config>` for
+slow tests), with `-Pskip-gtest` in the nightly runs
 
 **Runs on:** amd64 and aarch64 × glibc and musl ×
-HotSpot / OpenJ9 / GraalVM / IBM / Liberica across JDK 8–25
+HotSpot / OpenJ9 / GraalVM / IBM / Liberica across JDK 8–25. The exact JDK matrix
+per platform lives in `test_workflow.yml`; musl jobs drop `asan`/`tsan` configs.
 
-**Triggers:** nightly at 03:00 UTC; also `workflow_dispatch` for manual runs
+**Triggers:**
+- `ci.yml`: every PR and push runs the `debug` config; PR labels add more (below).
+- `nightly.yml`: 03:00 UTC (and `workflow_dispatch`) runs `asan`, slow `debug`, slow
+  `asan`, and a 120 s fuzz run (`:ddprof-lib:fuzz:fuzz -Pfuzz-duration=120`).
 
 The Java functional tests run the profiler as a JVMTI agent attached to a real JVM
 and assert correctness: allocation profiling reports the right classes, CPU samples
@@ -112,8 +131,8 @@ class load/unload sequences — that cannot be fully replicated in C++ unit test
 
 TSan is not run against the Java functional tests (see Tier 1 rationale above).
 
-C++ gtests are skipped (`-Pskip-gtest`) because they already run on every PR in
-Tier 1.
+C++ gtests are skipped in the nightly (`-Pskip-gtest`) because they already run on
+every branch push in Tier 1.
 
 **Test configurations triggered by PR labels** (optional, in addition to the always-on
 debug build):
@@ -123,14 +142,16 @@ debug build):
 | `test:release` | Run Java functional tests with release library |
 | `test:asan` | Run Java functional tests with ASan library on the PR |
 | `test:tsan` | Run Java functional tests with TSan library on the PR (expect JVM false positives) |
+| `test:fuzz` | Run the libFuzzer targets on the PR (GitHub Actions `fuzz` job) |
+| `test:reliability` | Run the Tier 4 reliability + chaos matrix as a GitLab child pipeline |
 
 **Local run:**
 ```bash
 # Match the nightly configuration
 ./gradlew :ddprof-test:testAsan -Pskip-gtest
 
-# Run against a specific JDK and libc via Docker (matches CI exactly)
-./utils/run-docker-tests.sh --config=asan --jdk=21 --libc=glibc
+# Run against a specific JDK and libc in a container (close to CI)
+./utils/run-containers-tests.sh --config=asan --jdk=21 --libc=glibc
 
 # Run a single test
 ./gradlew :ddprof-test:testAsan -Ptests=AllocationProfilerTest -Pskip-gtest
@@ -147,9 +168,9 @@ as artifacts.
 
 **Runs on:** amd64 and aarch64 × glibc and musl × HotSpot + OpenJ9, JDK 8–25
 
-**Triggers:** every branch push; skipped when `CI_PIPELINE_SOURCE` is
-`merge_request_event` (GitLab merge-request pipeline) or when JDK integration
-variables are set (`JDK_VERSION`, `DEBUG_LEVEL`, `HASH`, `DOWNSTREAM`)
+**Triggers:** every branch push; skipped on `release/*` branches, when
+`CI_PIPELINE_SOURCE` is `merge_request_event` (GitLab merge-request pipeline), or when
+JDK integration variables are set (`JDK_VERSION`, `DEBUG_LEVEL`, `HASH`, `DOWNSTREAM`)
 
 This tier patches the latest `dd-java-agent.jar` snapshot with the locally built
 `ddprof.jar` and runs integration tests against the combined agent. The patch
@@ -168,18 +189,21 @@ specific dd-java-agent snapshot version rather than auto-detecting the latest.
 
 ---
 
-## Tier 4 — Chaos and Reliability (GitLab, Nightly Scheduled)
+## Tier 4 — Chaos and Reliability (GitLab)
 
-**Pipeline:** `.gitlab/reliability/.gitlab-ci.yml`
+**Pipelines:** `.gitlab/reliability/.gitlab-ci.yml` (scheduled pipelines only) and
+`.gitlab/reliability/pr-child.gitlab-ci.yml` (child pipeline generated for PRs carrying
+the `test:reliability` label; same matrix, `RUNTIME=120`)
 
-**Runs on:** amd64 and aarch64, nightly via GitLab pipeline schedule
+**Runs on:** amd64 and aarch64
 
 This tier runs long-duration workloads designed to provoke probabilistic crashes and
 stability regressions that bounded-time unit tests cannot reliably trigger.
 
 ### Reliability variants (`jit` and `memory`)
 
-Runs `renaissance.jar akka-uct` repeatedly under the profiler for up to 6 hours.
+Runs `renaissance.jar akka-uct` under the profiler for `RUNTIME` seconds (default
+3600 in the scheduled pipeline, overridable by a schedule variable; job timeout 6 h).
 Tests `profiler` and `profiler+tracer` configurations against `gmalloc`, `jemalloc`,
 and `tcmalloc` allocators. Detects crashes that require sustained JIT compilation
 churn and GC pressure to manifest.
@@ -189,17 +213,28 @@ runs `memory_trend_check.py` to detect upward memory trends.
 
 ### Chaos variant
 
-Patches the latest `dd-java-agent.jar` with the locally built `ddprof.jar` (same
-patch mechanism as Tier 3) and runs the `ddprof-stresstest` chaos harness under
-continuous antagonist load:
+`.gitlab/reliability/chaos_check.sh` is a thin CI wrapper around
+`utils/run-chaos-harness.sh`, which patches a `dd-java-agent.jar` with the ddprof jar
+under test and runs the `ddprof-stresstest` chaos harness (`src/chaos`) under
+continuous antagonist load. Matrix: `profiler` / `profiler+tracer` × `gmalloc` /
+`jemalloc` / `tcmalloc` × `CHAOS_JDK` (`21.0.3-tem`, `25.0.3-tem`).
+
+Antagonists are implemented in `ddprof-stresstest/src/chaos/java/com/datadoghq/profiler/chaos/`
+and selected by name in `Main.create()`. The default set is defined in
+`utils/run-chaos-harness.sh` (`DEFAULT_ANTAGONISTS`); `trace-context` is only included
+for `profiler+tracer` because `@Trace` is a no-op without the tracer. Examples:
 
 | Antagonist | What it stresses |
 |-----------|-----------------|
-| `thread-churn` | 64 short-lived threads racing signal delivery, `RefCountGuard` slot allocation |
+| `thread-churn` | Batches of short-lived threads (64 by default) racing signal delivery, stack walking and `RefCountGuard` slot allocation/release |
 | `classloader-churn` | Rapid class definition and GC, `StringDictionary` insert/collect/clear races |
 | `alloc-storm` | Continuous allocation pressure against the allocation profiler |
 | `vthread-churn` | Virtual thread mount/unmount lifecycle against wall-clock profiling |
-| `trace-context` | Trace context propagation under concurrent profiling (requires `profiler+tracer`) |
+| `trace-context` | Trace context propagation under concurrent profiling (`profiler+tracer` only) |
+
+See `Main.create()` for the complete list (`bounded-pool`, `context-hop`,
+`consumer-group`, `hidden-class-churn`, `direct-memory`, `weakref-wave`, `dump-storm`,
+`reapply-context-value`, `reference-chain-leak`, ...).
 
 Failure criterion: a non-zero exit code (JVM crash), captured as an `hs_err.log`
 artifact. Crashes are also reported to Slack.
@@ -229,7 +264,7 @@ versions.
 | Probabilistic crash under sustained load | Tier 4 — chaos / reliability |
 | JDK-version-specific crash | Tier 4 — JDK integration |
 
-**Tier 1** provides the fastest feedback (every PR, minutes). TSan without a JVM is
+**Tier 1** provides the fastest feedback (every branch push, minutes). TSan without a JVM is
 definitive for the class of race that has caused the most production crashes: signal
 handlers accessing shared data structures concurrently with writers on other threads.
 
@@ -271,33 +306,45 @@ catching races with per-second probability too low for any bounded CI window.
 ./gradlew :ddprof-test:testAsan -Pskip-gtest
 ```
 
-### Using Docker to match CI exactly
+### Using containers to approximate CI
+
+`utils/run-containers-tests.sh` defaults to Podman. On macOS use Docker through colima
+(`--container=docker`): podman's credential-helper lookup for the Datadog registries
+(ddtool) fails outside the CI network and aborts container commands. Run `./utils/run-containers-tests.sh --help` for the full flag list
+(`--tests`, `--gtest`, `--gtest-task`, `--mount`, `--rebuild`, `--matrix`, ...).
 
 ```bash
 # Matches the nightly configuration
-./utils/run-docker-tests.sh --config=asan --jdk=21 --libc=glibc
+./utils/run-containers-tests.sh --config=asan --jdk=21 --libc=glibc
 
 # Debug build against a specific JDK
-./utils/run-docker-tests.sh --config=debug --jdk=17-j9 --libc=glibc
+./utils/run-containers-tests.sh --config=debug --jdk=17-j9 --libc=glibc
 
 # Musl build
-./utils/run-docker-tests.sh --config=debug --jdk=21-librca --libc=musl
+./utils/run-containers-tests.sh --config=debug --jdk=21 --libc=musl
 
-# With C++ gtests enabled (disabled by default in run-docker-tests.sh)
-./utils/run-docker-tests.sh --config=asan --jdk=21 --libc=glibc --gtest
+# Cross-architecture
+./utils/run-containers-tests.sh --arch=aarch64 --config=asan --libc=glibc --jdk=21
+
+# With C++ gtests enabled (disabled by default)
+./utils/run-containers-tests.sh --config=asan --jdk=21 --libc=glibc --gtest
+
+# Drop into a shell inside the container (SYS_PTRACE enabled for gdb)
+./utils/run-containers-tests.sh --shell
 ```
 
 ### Running the chaos harness locally
 
 ```bash
-# Build the chaos jar (auto-detected by chaos_check.sh when present)
-./gradlew :ddprof-stresstest:chaosJar
+# Build the ddprof jar under test
+./gradlew :ddprof-lib:jar
 
-# Run the chaos check (uses the local build artifact; downloads dd-java-agent.jar)
-.gitlab/reliability/chaos_check.sh 300 profiler+tracer gmalloc
+# Run the harness: <runtime-seconds> [config] [allocator] [antagonists]
+# (builds :ddprof-stresstest:chaosJar if missing; downloads dd-java-agent.jar)
+./utils/run-chaos-harness.sh 300 profiler+tracer gmalloc
 ```
 
-`chaos_check.sh` looks for `ddprof-lib/build/libs/ddprof-*.jar` first and only
-falls back to downloading from Maven snapshots if not found (requiring
-`CURRENT_VERSION` to be set in that case). Build the jar locally to skip the
-Maven download.
+`run-chaos-harness.sh` uses `ddprof-lib/build/libs/ddprof-*.jar` when present and only
+falls back to downloading from Maven snapshots when it is absent (which requires
+`CURRENT_VERSION`). `CHAOS_JDK` selects/downloads a specific JDK; otherwise the `java`
+on `PATH` is used. See the script header for the remaining env vars.

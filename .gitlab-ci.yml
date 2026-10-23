@@ -1,3 +1,5 @@
+# Copyright 2026, Datadog, Inc.
+
 image: alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
 
 variables:
@@ -11,7 +13,9 @@ variables:
   RUN_RELIABILITY:
     value: "false"
     description: "Run reliability and chaos tests. Set automatically when the test:reliability label is on the PR."
+  # Shared build scripts activate strict repository routing only when GITLAB_CI=true.
   MAVEN_REPOSITORY_PROXY: "https://depot-read-api-java.us1.ddbuild.io/magicmirror/magicmirror/@current/"
+  GRADLE_PLUGIN_PROXY: "https://depot-read-api-bzl.us1.ddbuild.io/plugins.gradle.org/m2/"
 
 default:
   tags: ["arch:amd64"]
@@ -143,6 +147,7 @@ shell-unit-tests:
     - bash .gitlab/scripts/tests/includes_test.sh
     - bash .gitlab/scripts/tests/test_check_stack_top.sh
     - bash .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh
+    - python3 -m unittest discover -s test-validation/tests -v
 
 # Shared version detection used by benchmarks and reliability pipelines
 get-versions:

@@ -1,14 +1,25 @@
+// Copyright 2026, Datadog, Inc.
+
 plugins {
     `kotlin-dsl`
 }
 
 repositories {
-    val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy").orNull
+    val gitlabCi = providers.environmentVariable("GITLAB_CI").orNull == "true"
+    val mavenRepositoryProxy = if (gitlabCi) {
+        providers.gradleProperty("mavenRepositoryProxy")
+            .orElse(providers.environmentVariable("MAVEN_REPOSITORY_PROXY"))
+            .orNull?.takeIf { it.isNotBlank() }
+    } else {
+        providers.gradleProperty("mavenRepositoryProxy").orNull
+    }
     if (mavenRepositoryProxy != null) {
         maven { url = uri(mavenRepositoryProxy) }
     }
-    gradlePluginPortal()
-    mavenCentral()
+    if (!gitlabCi || mavenRepositoryProxy == null) {
+        gradlePluginPortal()
+        mavenCentral()
+    }
 }
 
 dependencies {
