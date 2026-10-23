@@ -140,3 +140,67 @@ gtest-tsan-arm64:
             exit $rc
           fi
         done
+
+# Manual diagnostics for the depot mirror routing introduced in #866.
+#
+# The strict GITLAB_CI routing leaves the two depot mirrors as the only
+# plugin/dependency sources, so any fetch failure from a runner pool surfaces
+# as an unexplained "Plugin ... was not found" build failure. This job reports,
+# per runner pool: proxy env, reachability of both depot read APIs and their
+# S3 redirect targets (direct and through the CI egress proxy), and reruns the
+# build-logic plugin resolution with the CI-shared Gradle cache and with a
+# fresh one (a poisoned cached miss reproduces the failure even after the
+# mirror heals).
+#
+# Deliberately no `set -e`: every probe must run even if an earlier one fails.
+# `./gradlew help` is enough to reproduce the failure — the kotlin-dsl plugin
+# resolution happens while configuring build-logic, before any build task.
+.depot-mirror-diag:
+  stage: sanitizer
+  extends: .cache-config
+  needs: []
+  timeout: 15m
+  variables:
+    GRADLE_USER_HOME: .gradle
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - when: manual
+      allow_failure: true
+  script:
+    - set -u
+    - |
+      MARKER="https://depot-read-api-bzl.us1.ddbuild.io/plugins.gradle.org/m2/org/gradle/kotlin/kotlin-dsl/org.gradle.kotlin.kotlin-dsl.gradle.plugin/6.7.6/org.gradle.kotlin.kotlin-dsl.gradle.plugin-6.7.6.pom"
+      CENTRAL="https://depot-read-api-java.us1.ddbuild.io/magicmirror/magicmirror/@current/org/jetbrains/kotlin/kotlin-stdlib/2.4.10/kotlin-stdlib-2.4.10.pom"
+      PROXY="http://127.0.0.1:15002"
+      echo "== proxy-related env =="
+      env | grep -i proxy || echo "(none)"
+      command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl; } || echo "curl unavailable, skipping HTTP probes"
+      if command -v curl >/dev/null; then
+        echo "== depot read APIs, direct egress =="
+        curl -sS  -o /dev/null -w "bzl marker (no-follow)        %{http_code}\n" "$MARKER" || true
+        curl -sSL -o /dev/null -w "bzl marker (followed)         %{http_code} -> %{url_effective}\n" "$MARKER" || true
+        curl -sSL -o /dev/null -w "magicmirror stdlib (followed) %{http_code}\n" "$CENTRAL" || true
+        echo "== depot read APIs, via CI egress proxy $PROXY =="
+        curl -sS  -x "$PROXY" -o /dev/null -w "bzl marker via proxy (no-follow) %{http_code}\n" "$MARKER" || true
+        curl -sSL -x "$PROXY" -o /dev/null -w "bzl marker via proxy (followed)  %{http_code}\n" "$MARKER" || true
+      fi
+    - echo "== Gradle with CI-shared GRADLE_USER_HOME=$GRADLE_USER_HOME =="
+    - ./gradlew help --no-daemon --info --stacktrace > diag-gradle-cached.log 2>&1; echo "exit=$?"; tail -80 diag-gradle-cached.log
+    - echo "== Gradle with fresh GRADLE_USER_HOME (no cached metadata) =="
+    - ./gradlew help --no-daemon --info --stacktrace -g /tmp/gradle-fresh > diag-gradle-fresh.log 2>&1; echo "exit=$?"; tail -80 diag-gradle-fresh.log
+  artifacts:
+    when: always
+    paths:
+      - diag-gradle-*.log
+    expire_in: 3 days
+
+depot-mirror-diag-amd64:
+  extends: .depot-mirror-diag
+  tags: [ "arch:amd64" ]
+  image: $BUILD_IMAGE_X64
+
+depot-mirror-diag-arm64:
+  extends: .depot-mirror-diag
+  tags: [ "arch:arm64" ]
+  image: $BUILD_IMAGE_ARM64
