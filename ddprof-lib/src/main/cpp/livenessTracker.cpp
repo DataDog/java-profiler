@@ -882,15 +882,30 @@ void LivenessTracker::insertThreadGen(KlassCountScratch &scratch,
       return;
     }
   }
+  int idx;
   if (scratch.thread_count < KlassCountScratch::MAX_THREADS_PER_KLASS) {
-    int idx = scratch.thread_count++;
-    scratch.threads[idx].tid = tid;
-    scratch.threads[idx].ages[0] = age;
-    scratch.threads[idx].age_count = 1;
-    scratch.threads[idx].count = 1; // this object is the tid's first this epoch
+    idx = scratch.thread_count++;
+  } else {
+    // Keeping only the first tids hides later, larger one-shot cohorts behind
+    // early small allocations. Replace the smallest observed retained set;
+    // ties prefer keeping the tid with more distinct surviving ages.
+    idx = 0;
+    for (int i = 1; i < scratch.thread_count; i++) {
+      const auto &candidate = scratch.threads[i];
+      const auto &victim = scratch.threads[idx];
+      if (candidate.count < victim.count ||
+          (candidate.count == victim.count && candidate.age_count < victim.age_count)) {
+        idx = i;
+      }
+    }
   }
-  // else: thread table full — additional threads are not tracked, but
-  // the oldest[] array still captures instances from all threads.
+  // Count only objects observed since this tid entered the scratch. Inherit
+  // neither the evicted tid's count nor its ages: both feed qualification.
+  // Reappearing tids can be undercounted at capacity, never overcounted.
+  scratch.threads[idx].tid = tid;
+  scratch.threads[idx].ages[0] = age;
+  scratch.threads[idx].age_count = 1;
+  scratch.threads[idx].count = 1;
 }
 
 void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age,

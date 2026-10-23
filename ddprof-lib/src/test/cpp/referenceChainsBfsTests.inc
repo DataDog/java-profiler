@@ -5,6 +5,7 @@
 
 #include "referenceChainsTestAccessors.h"
 #include "referenceChainsMockHeap.h"
+#include "referenceChainInternal.h"
 #include "tsc.h"
 
 
@@ -279,6 +280,105 @@ TEST_F(ReferenceChainsBfsTest, DiscoversObjectRetainedOnlyByStaticField) {
     EXPECT_FALSE(event._hops[0].edge_label.empty());
     EXPECT_FALSE(event._hops[1].edge_label.empty());
 
+    tracker->stop();
+}
+
+// A qualifying population must be watched before the first walk can decide the
+// search is complete. Polling only afterwards loses the frontier and tags.
+TEST_F(ReferenceChainsBfsTest, FirstPassWatchesQualifiedLeakBeforeCompleting) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    LivenessTracker *liveness = LivenessTracker::instance();
+    liveness->klassPopulationResetForTest();
+    liveness->setGcGenerationsForTest(true);
+    liveness->classMapGenerationSetForTest(
+        Profiler::instance()->classMap()->generation());
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        int slot;
+        bool created;
+        liveness->klassPopulationRecordForTest(1, epoch, epoch, &slot, &created);
+        liveness->tidTrendRecordForTest(1, 4242, epoch, epoch);
+    }
+    // Production mints this from the sampled class; the gtest population seam
+    // has no live JVM from which to resolve it.
+    liveness->klassPopulationSetStableClassTagForTest(1, -41);
+    int root = addNode();
+    script = {{JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, root, -1}};
+
+    // Do not explicitly poll: this is the ordering exercised by the production
+    // first pass, including a walk that drains its entire ordinary queue.
+    EXPECT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni));
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+    EXPECT_EQ(1, ReferenceChainsTestAccessor::candidateCountForTest());
+    EXPECT_NE(0, node_tags[root]);
+
+    liveness->klassPopulationResetForTest();
+    liveness->setGcGenerationsForTest(false);
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, RootContainerRemainsWalkableAfterReparentingAndMutation) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    int holder = addNode();
+    int parent = addNode();
+    int table = addNode();
+    int payload = addNode();
+    node_tags[holder] = tracker->nextTag();
+    node_tags[parent] = tracker->nextTag();
+    const jlong container_class_tag = -101;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(-102, false);
+    for (int node : {holder, parent}) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            tracker->frontierTable(), node_tags[node], 0, 0,
+            FrontierEntryState::EXPANDED, JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    }
+    ReferenceChainPassContext ctx{};
+    ctx.tracker = tracker;
+    ctx.frontier = tracker->frontierTable();
+    ctx.hop_cap = 64;
+    ctx.budget = 1000;
+    for (int repeat = 0; repeat < 2; repeat++) {
+        ReferenceChainsTestAccessor::reportHeapRootForTest(
+            JVMTI_HEAP_ROOT_STACK_LOCAL, container_class_tag,
+            &node_tags[holder], &ctx);
+        ReferenceChainsTestAccessor::reportHeapRootForTest(
+            JVMTI_HEAP_ROOT_STACK_LOCAL, -102, &node_tags[parent], &ctx);
+    }
+    // Classification runs outside the heap callback. Unknown transient roots
+    // must not get a descend walk before being confirmed as containers.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4).empty());
+    ReferenceChainsTestAccessor::primeClassShapeForTest(container_class_tag, true);
+    // A deeper retaining path replaces the initial local-root attribution.
+    // The container still needs repeated walks when its backing storage changes.
+    ASSERT_TRUE(tracker->frontierTable()->improveChain(
+        node_tags[holder], node_tags[parent], 0, 1, 0));
+    ReferenceChainsTestAccessor::clearPriorityExpand();
+    auto selected = ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
+    EXPECT_EQ(std::vector<jlong>{node_tags[holder]}, selected);
+    int edges = 0;
+    ReferenceChainsTestAccessor::walkStaticFieldAnchorsForTest(
+        &mock_jvmti, &mock_jni, selected, 1000, &edges);
+
+    // Mutate AFTER that first walk. No second root callback re-admits the
+    // holder, and the fresh-anchor lane has already consumed its first look.
+    const jlong leak_tag = ReferenceChainsTestAccessor::leakTagBase();
+    node_tags[payload] = leak_tag;
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, holder, table, -1},
+        {JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT, table, payload, -1},
+    };
+    selected = ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
+    EXPECT_EQ(std::vector<jlong>{node_tags[holder]}, selected);
+    ReferenceChainsTestAccessor::walkStaticFieldAnchorsForTest(
+        &mock_jvmti, &mock_jni, selected, 1000, &edges);
+    EXPECT_GT(tags_ever_assigned[table], 0);
+    EXPECT_GT(tags_ever_assigned[payload], 0);
+    EXPECT_NE(leak_tag, node_tags[payload]);
     tracker->stop();
 }
 
