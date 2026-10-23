@@ -71,10 +71,10 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
         assertCompleteCallers();
     }
 
-    /** Ending at a fully thawed continuation is a complete logical stack in the ordinary VM mode. */
+    /** A never-parked virtual thread retains its callers without freezing or thawing them. */
     @TestTemplate
     @ValueSource(strings = {"vm"})
-    public void keepsFullyThawedContinuationComplete() throws Exception {
+    public void keepsNeverParkedVirtualThreadComplete() throws Exception {
         runWorkload(true, false);
         assertCompleteCallers();
     }
