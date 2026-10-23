@@ -1,6 +1,48 @@
 # JFR Validation
 
+<!-- Copyright 2026, Datadog, Inc. -->
+
 This directory contains JFR (Java Flight Recorder) validation scripts for profiler integration tests.
+
+## Dependency resolution
+
+The Depot routing changes are enabled only when GitLab sets `GITLAB_CI=true`.
+Local builds, GitHub Actions, and other CI systems keep the existing public
+repositories and the `jfr-shell@btraceio` catalog launcher. Existing explicit
+`mavenRepositoryProxy` Gradle properties still add a custom repository alongside
+public fallbacks outside GitLab. Proxy environment variables do not change the
+Gradle repository configuration outside GitLab.
+
+In GitLab CI, `./test-validation/jfr-shell.sh` pins a Java 25-compatible release
+and resolves its matching backend through JBang, avoiding both the remote
+catalog's public repository and the backend's separate Maven downloader.
+`MAVEN_REPOSITORY_PROXY` selects the Depot repository, and transitive dependency
+repositories are ignored. Pre-warming and conformance validation use the same
+launcher. Outside GitLab the wrapper forwards to the original catalog, retaining
+its optional `MAVEN_REPOSITORY_PROXY` override and adding no backend or version pin.
+
+Gradle reads `MAVEN_REPOSITORY_PROXY` directly in GitLab, including in child
+pipelines and the included `build-logic` build. The `mavenRepositoryProxy` Gradle
+property takes precedence. GitLab plugin resolution additionally reads
+`GRADLE_PLUGIN_PROXY` (or `gradlePluginProxy`). GitLab configures Depot's Java API
+for dependencies and its generic Plugin Portal mirror for plugin-only artifacts.
+Public fallbacks are omitted in GitLab when the applicable proxies are configured.
+Depot may redirect cache misses upstream while populating its cache.
+
+Run the launcher regression tests with:
+
+```bash
+python3 -m unittest discover -s test-validation/tests -v
+```
+
+To check all four effective Gradle repository lists, set `DEPOT_EXPECTED_URL`
+and `DEPOT_EXPECTED_PLUGIN_URL` to the expected proxy URLs and run the build
+wrapper with `help -I .gitlab/scripts/tests/depot-repositories.init.gradle`.
+Set `GITLAB_CI=true` for the Depot checks and exercise both
+`MAVEN_REPOSITORY_PROXY` and `-PmavenRepositoryProxy` to check property precedence.
+Use `DEPOT_EXPECTED_MODE=public` outside GitLab to check the unchanged public
+repositories, or `DEPOT_EXPECTED_MODE=custom-proxy` with an explicit
+`-PmavenRepositoryProxy` to check that custom mirrors retain public fallbacks.
 
 ## Overview
 
