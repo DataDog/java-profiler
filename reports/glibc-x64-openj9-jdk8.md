@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-10-23 09:29:28 EDT
+**Date:** 2026-10-23 09:42:12 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 91 |
-| CPU Cores (end) | 89 |
+| CPU Cores (start) | 63 |
+| CPU Cores (end) | 66 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 360 |
-| Sample Rate | 6.00/sec |
-| Health Score | 375% |
-| Threads | 9 |
+| CPU Samples | 223 |
+| Sample Rate | 3.72/sec |
+| Health Score | 233% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 89-91 cores)</summary>
+<summary>CPU Timeline (4 unique values: 63-68 cores)</summary>
 
 ```
-1792761952 91
-1792761957 91
-1792761962 91
-1792761967 91
-1792761972 91
-1792761977 91
-1792761982 91
-1792761987 91
-1792761992 91
-1792761997 91
-1792762002 91
-1792762007 89
-1792762012 89
-1792762017 89
-1792762022 89
-1792762027 89
-1792762032 89
-1792762037 89
-1792762042 89
-1792762047 89
+1792762560 63
+1792762565 65
+1792762570 65
+1792762575 65
+1792762580 65
+1792762585 65
+1792762590 65
+1792762595 65
+1792762600 65
+1792762605 65
+1792762610 65
+1792762615 65
+1792762620 65
+1792762625 65
+1792762630 65
+1792762635 68
+1792762640 68
+1792762645 68
+1792762650 66
+1792762655 66
 ```
 </details>
 
