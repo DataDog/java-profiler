@@ -148,11 +148,11 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
     // fair pick vector here and is skipped at consumption time via fresh_kept_tags).
     for (size_t i = 0; i < idx_size; i++) {
       jlong tag = _static_anchor_index[i];
+      jlong own_class_tag = i < _static_anchor_own_class_tags.size()
+                               ? _static_anchor_own_class_tags[i] : 0;
       FrontierEntry entry{};
       if (!frontier->lookupLocked(tag, &entry) ||
-          entry.parent_tag != 0 ||
-          (entry.root_kind != (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD &&
-           entry.root_kind != (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) ||
+          !isSelectableAnchor(entry, own_class_tag) ||
           (entry.state != FrontierEntryState::FRONTIER &&
            entry.state != FrontierEntryState::EXPANDED) ||
           isQueuedForRotation(tag)) {
@@ -201,15 +201,15 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
         }
         pos = (size_t)(it - _static_anchor_index.begin());
       }
+      jlong own_class_tag = pos < _static_anchor_own_class_tags.size()
+                               ? _static_anchor_own_class_tags[pos] : 0;
       FrontierEntry entry{};
       if (!frontier->lookupLocked(tag, &entry) ||
-          entry.parent_tag != 0 ||
-          (entry.root_kind != (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD &&
-           entry.root_kind != (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) ||
+          !isSelectableAnchor(entry, own_class_tag) ||
           (entry.state != FrontierEntryState::FRONTIER &&
            entry.state != FrontierEntryState::EXPANDED) ||
           isQueuedForRotation(tag) || entry.leak_tag != 0) {
-        continue; // dead/demoted/queued/leak-tier: first look spent, not
+        continue; // dead/ineligible/queued/leak-tier: first look spent, not
                   // fresh-kept (the leak tier selects it via the scan if it is leak-tagged)
       }
       bool keep = false; // container or not-yet-classified rides the
@@ -333,6 +333,23 @@ void ReferenceChainTracker::addToStaticAnchorIndex(jlong tag,
       root_kind != (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
     return;
   }
+  indexAnchorForRotation(tag, own_class_tag);
+}
+
+bool ReferenceChainTracker::isSelectableAnchor(const FrontierEntry &entry,
+                                               jlong own_class_tag) const {
+  if (entry.parent_tag == 0 &&
+      (entry.root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
+       entry.root_kind == (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL)) {
+    return true;
+  }
+  auto shape = _class_shape_cache.find(own_class_tag);
+  return shape != _class_shape_cache.end() &&
+         shape->second == (u8)AnchorClassShape::CONTAINER;
+}
+
+void ReferenceChainTracker::indexAnchorForRotation(jlong tag,
+                                                   jlong own_class_tag) {
   // Dedup: a push at first admission and another at upgrade would double-add.
   if (!_static_anchor_index_tags.insert(tag).second) {
     return;
