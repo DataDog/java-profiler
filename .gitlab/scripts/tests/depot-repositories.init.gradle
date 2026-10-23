@@ -9,7 +9,7 @@ def pluginExpected = System.getenv('DEPOT_EXPECTED_PLUGIN_URL') ?: expected
 def central = 'https://repo.maven.apache.org/maven2/'
 def portal = 'https://plugins.gradle.org/m2/'
 def pluginUrls = mode == 'public' ? [portal, central] :
-    mode == 'custom-proxy' ? [expected, portal, central] : [expected, pluginExpected]
+    mode == 'custom-proxy' ? [expected, portal, central] : [expected, pluginExpected, portal]
 def dependencyUrls = mode == 'public' ? [central, portal] :
     mode == 'custom-proxy' ? [expected, central, portal] : [expected]
 def conventionUrls = mode == 'public' ? [portal, central] :
