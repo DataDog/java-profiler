@@ -27,7 +27,7 @@ import subprocess
 import sys
 
 INDEX = "doc/README.md"
-_LINK = re.compile(r"\]\(([^)\s]+)")
+_LINK = re.compile(r"\]\((<?[^)\s>]+>?)\)")
 _PASCAL = re.compile(r"^[A-Z][A-Za-z0-9]*\.md$")
 
 
@@ -48,16 +48,22 @@ def main(argv):
 
     linked = set()
     for target in _LINK.findall(index):
-        target = target.split("#", 1)[0]
+        target = target.strip("<>").split("#", 1)[0]
         if target and "://" not in target:
             linked.add(posixpath.normpath(posixpath.join("doc", target)))
 
     errors = []
-    for doc in sorted(set(docs) - {INDEX}):
+    tracked = set(docs)
+    for doc in sorted(tracked - {INDEX}):
         if doc not in linked:
             errors.append("%s: not linked from %s" % (doc, INDEX))
         if not _PASCAL.match(posixpath.basename(doc)):
             errors.append("%s: file name is not PascalCase (e.g. BuildSystemGuide.md)" % doc)
+    # Reverse direction: every relative index link must resolve to a tracked
+    # file, so renames that leave a dangling link fail here too.
+    for target in sorted(linked):
+        if target.startswith("doc/") and target not in tracked:
+            errors.append("%s: %s links to a file that is not tracked" % (INDEX, target))
     for e in errors:
         print(e)
     print("doc index: %s" % ("%d problem(s)" % len(errors) if errors else "OK (%d docs)" % (len(docs) - 1)))

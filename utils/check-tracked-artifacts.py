@@ -30,7 +30,7 @@ import sys
 def reason(path):
     parts = path.split("/")
     for i, part in enumerate(parts):
-        if part == "docs" and i + 1 < len(parts) - 1 and parts[i + 1] == "sphinx":
+        if part == "docs" and i + 1 < len(parts) and parts[i + 1] == "sphinx":
             return "docs/sphinx/ holds review-session artifacts"
         if part == ".sphinx" and i < len(parts) - 1:
             return ".sphinx/ holds review-session state"

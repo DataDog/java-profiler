@@ -190,7 +190,8 @@ afterEvaluate {
 tasks.register<Exec>("checkSignalReachability") {
   group = "verification"
   description = "Checks that no async-signal-unsafe function is reachable from the signal handlers and malloc hooks"
-  dependsOn(tasks.matching { it.name == "compileDebug" })
+  // Compile task exists for every active configuration; named lookup fails loudly on rename.
+  dependsOn(tasks.named("compileDebug"))
 
   val objDir = layout.buildDirectory.dir("obj/main/debug").get().asFile
   val script = rootProject.file("utils/check-signal-reachability.py")
@@ -227,14 +228,27 @@ tasks.register("qualityChecks") {
   ).map { File(root, "utils/$it") }
 
   doLast {
-    val failed = scripts.filter { script ->
+    val failed = mutableListOf<String>()
+    // Compile-and-assert the planted-violation fixture first: it pins the
+    // checker's most fragile assumptions (section symbols, ctor aliases, TLS,
+    // std-library attribution) and catches toolchain/objdump drift. The
+    // checker is ELF-only, so the self-test runs on Linux hosts only (macOS
+    // produces Mach-O fixture objects by design).
+    val onLinux = System.getProperty("os.name").lowercase().contains("linux")
+    if (onLinux) {
+      exec.exec {
+        commandLine("python3", File(root, "utils/check-signal-reachability.py").absolutePath, "--self-test")
+        isIgnoreExitValue = true
+      }.exitValue.takeIf { it != 0 }?.let { failed += "self-test (check-signal-reachability.py --self-test)" }
+    }
+    failed += scripts.filter { script ->
       exec.exec {
         commandLine("python3", script.absolutePath, "--root", root.absolutePath)
         isIgnoreExitValue = true
       }.exitValue != 0
-    }
+    }.map { it.name }
     if (failed.isNotEmpty()) {
-      throw GradleException("quality checks failed: ${failed.joinToString { it.name }}")
+      throw GradleException("quality checks failed: ${failed.joinToString { it }}")
     }
   }
 }

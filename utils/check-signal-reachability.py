@@ -33,6 +33,7 @@ Exit codes:
 """
 
 import argparse
+import shlex
 import bisect
 import collections
 import os
@@ -87,7 +88,13 @@ UNSAFE_SINKS = [
     r"__tls_get_addr",
     # heap
     r"malloc", r"calloc", r"realloc", r"free", r"aligned_alloc", r"posix_memalign", r"strdup",
+    r"__libc_malloc", r"__libc_calloc", r"__libc_free", r"__libc_realloc",
     r"_Znwm", r"_Znam", r"_ZnwmRKSt9nothrow_t", r"_ZnamRKSt9nothrow_t",
+    # over-aligned operator new/delete (C++17 -faligned-new)
+    r"_ZnwmSt11align_val_t", r"_ZnamSt11align_val_t",
+    r"_ZnwmSt11align_val_tRKSt9nothrow_t", r"_ZnamSt11align_val_tRKSt9nothrow_t",
+    r"_ZdlPvSt11align_val_t", r"_ZdaPvSt11align_val_t",
+    r"_ZdlPvmSt11align_val_t", r"_ZdaPvmSt11align_val_t",
     r"_ZdlPv", r"_ZdaPv", r"_ZdlPvm", r"_ZdaPvm",
     # locks and one-time initialization
     r"pthread_mutex_lock", r"__cxa_guard_acquire", r"__cxa_atexit",
@@ -106,6 +113,10 @@ UNSAFE_SINKS = [
 # Functions whose callees are not followed. The singleton accessors guard a
 # function-local static; the guard is initialized at startup, before any
 # handler or hook is installed.
+# BARRIERS note: stopping at these singletons assumes their first (lazy) call
+# happens before any handler or hook is installed. The walk cannot verify that
+# ordering from relocations, so a first-call-in-signal-context would pass
+# unseen -- keep the singletons initialized during profiler startup.
 BARRIERS = [
     r"_ZN8Counters8instanceEv",
     r"_ZN9Libraries8instanceEv",
@@ -354,7 +365,7 @@ _ALLOW_LINE = re.compile(r"^(?P<callers>.+?)\s+->\s+(?P<sink>.+?)\s+#\s*(?P<key>
 
 def load_allowlist(path):
     entries = []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for n, line in enumerate(f, 1):
             if not line.strip() or line.lstrip().startswith("#"):
                 continue
@@ -382,15 +393,12 @@ def check(obj_dir, allowlist):
         else:
             used.add(hit)
             print("allowlisted [%s]: %s:%s -> %s" % (allowlist[hit][2], obj, caller, sink))
-    for i, (callers, sink, key) in enumerate(allowlist):
-        if i not in used:
-            print("note: allowlist entry [%s] %s -> %s no longer matches; remove it"
-                  % (key, "|".join(callers), sink), file=sys.stderr)
+    stale = [(callers, sink, key) for i, (callers, sink, key) in enumerate(allowlist) if i not in used]
     print("%d objects, %d roots, %d findings (%d allowlisted, %d new)"
           % (len(objs), len(roots), len(found), len(found) - len(new), len(new)))
     for line in new:
         print(line)
-    return new, found
+    return new, stale
 
 
 def self_test():
@@ -404,11 +412,12 @@ def self_test():
     expected, allowed, forbidden = (expectations(t) for t in ("EXPECT", "EXPECT-ALLOWLISTED", "EXPECT-NOT"))
     if not expected or not allowed or not forbidden:
         raise EnvError("fixture %s lacks EXPECT / EXPECT-ALLOWLISTED / EXPECT-NOT lines" % SELF_TEST_FIXTURE)
-    cxx = os.environ.get("CXX", "c++")
+    # CXX may be a command with arguments ("ccache g++"); split it the way a shell would.
+    cxx = shlex.split(os.environ.get("CXX", "c++"))
     with tempfile.TemporaryDirectory() as tmp:
         obj = os.path.join(tmp, "fixture.o")
         # Same codegen-relevant flags as the debug configuration.
-        cc = _run([cxx, "-O0", "-g", "-fPIC", "-fvisibility=hidden", "-ffunction-sections",
+        cc = _run(cxx + ["-O0", "-g", "-fPIC", "-fvisibility=hidden", "-ffunction-sections",
                    "-fdata-sections", "-std=c++17", "-c", SELF_TEST_FIXTURE, "-o", obj])
         if cc.returncode != 0:
             raise EnvError("fixture compile failed:\n" + cc.stderr)
@@ -445,9 +454,17 @@ def main(argv):
             print("error: --obj-dir is required", file=sys.stderr)
             return 2
         allowlist = load_allowlist(args.allowlist) if args.allowlist else ALLOWLIST
-        new, _ = check(args.obj_dir, allowlist)
+        new, stale = check(args.obj_dir, allowlist)
+        if stale:
+            # An allowlist entry suppresses findings by name; one that no longer
+            # matches can silently mask a reappeared violation, so it fails the
+            # run like the sibling checkers do.
+            for callers, sink, key in stale:
+                print("error: stale allowlist entry [%s] %s -> %s; remove it"
+                      % (key, "|".join(callers), sink), file=sys.stderr)
+            return 1
         return 1 if new else 0
-    except (EnvError, OSError) as e:
+    except (EnvError, OSError, ValueError) as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
 
