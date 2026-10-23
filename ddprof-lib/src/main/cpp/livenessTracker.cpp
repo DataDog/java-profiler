@@ -965,8 +965,7 @@ void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age,
 
 jweak LivenessTracker::recordKlassPopulationSampleLocked(
     u32 klass_id, u32 count, u64 epoch, int *out_slot, bool *out_created,
-    jweak *out_evicted, int *out_evicted_count, int max_evicted,
-    bool synthetic_sample) {
+    jweak *out_evicted, int *out_evicted_count, int max_evicted) {
   // Linear scan is fine: MAX_KLASS_POPULATION_ENTRIES is small enough that a
   // full scan is cheap, the same shape NativeSocketSampler's fd LRU
   // (NativeSocketSampler's fd cache) and this class's own cleanup_table()
@@ -1015,7 +1014,9 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(
     _klass_population[slot].ring_head = 0;
     _klass_population[slot].ring_fill = 0;
     _klass_population[slot].consecutive_positive = 0;
-    _klass_population[slot].synthetic = false;
+#ifdef DEBUG
+    _klass_population[slot].test_seeded_history = false;
+#endif
     _klass_population[slot].cached_slope = 0.0;
     // A reused (evicted) slot's previous class's per-tid trends must not
     // leak onto the new one, same as the fields above.
@@ -1028,7 +1029,8 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(
   }
 
   KlassPopulationEntry &entry = _klass_population[slot];
-  if (entry.synthetic && !synthetic_sample) {
+#ifdef DEBUG
+  if (entry.test_seeded_history) {
     // Real GC folds must not replace a JNI test fixture's seeded ramp with
     // the sampled cohort's generation count. Keep its LRU epoch current.
     entry.last_updated_epoch = epoch;
@@ -1036,7 +1038,7 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(
     *out_created = created;
     return evicted_ref;
   }
-  entry.synthetic = entry.synthetic || synthetic_sample;
+#endif
   entry.count_ring[entry.ring_head] = count;
   entry.ring_head = (u8)((entry.ring_head + 1) % KLASS_POPULATION_RING_SIZE);
   if (entry.ring_fill < KLASS_POPULATION_RING_SIZE) {

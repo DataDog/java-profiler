@@ -1214,14 +1214,11 @@ public:
     }
 };
 
-TEST_F(SelectLeakCandidatesTest, SyntheticClassHistorySurvivesRealGcFolds) {
+#ifdef DEBUG
+TEST_F(SelectLeakCandidatesTest, SeededClassHistorySurvivesRealGcFolds) {
     LivenessTracker *tracker = LivenessTracker::instance();
     for (int epoch = 1; epoch <= 20; epoch++) {
-        int slot;
-        bool created;
-        tracker->klassPopulationRecordForTest(
-            1, epoch * 10, epoch, &slot, &created, nullptr, nullptr, 0,
-            /*synthetic_sample=*/true);
+        tracker->seedKlassPopulationSampleForTest(1, epoch * 10, epoch);
         tracker->tidTrendRecordForTest(1, 7, epoch * 3, epoch);
     }
     KlassCandidate out[5];
@@ -1230,7 +1227,32 @@ TEST_F(SelectLeakCandidatesTest, SyntheticClassHistorySurvivesRealGcFolds) {
         LivenessTrackerTestAccessor::foldClassCohort(tracker, 1, 7, epoch);
     }
     EXPECT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    // A fold containing only another class must also preserve the seed when
+    // the zero-sample pass visits classes absent from the GC scratch table.
+    LivenessTrackerTestAccessor::foldClassCohort(tracker, 2, 8, 31);
+    EXPECT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    KlassPopulationEntry entry;
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(1, &entry));
+    EXPECT_EQ(31u, entry.last_updated_epoch);
 }
+
+TEST_F(SelectLeakCandidatesTest, SeededClassHistoryAcceptsExplicitUpdatesAfterGc) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        tracker->seedKlassPopulationSampleForTest(1, epoch * 10, epoch);
+        tracker->tidTrendRecordForTest(1, 7, epoch * 3, epoch);
+    }
+    KlassCandidate out[5];
+    ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    LivenessTrackerTestAccessor::foldClassCohort(tracker, 1, 7, 21);
+    // Protection excludes GC updates, but must not freeze subsequent explicit
+    // fixture input or bypass the normal qualification calculation.
+    for (int epoch = 22; epoch <= 51; epoch++) {
+        tracker->seedKlassPopulationSampleForTest(1, 0, epoch);
+    }
+    EXPECT_EQ(0, tracker->selectLeakCandidates(out, 5));
+}
+#endif
 
 TEST_F(SelectLeakCandidatesTest, OrdinaryClassHistoryStillDecaysAfterGrowthStops) {
     LivenessTracker *tracker = LivenessTracker::instance();
