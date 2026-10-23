@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <array>
+#include <cassert>
 #include <cstdint>
 
 #include "arch.h"
@@ -41,19 +42,17 @@ enum class BlockRunOwner : int {
 // tests can pair a tracker with any ThreadFilter instance.
 class WallClockBlockTracker {
 public:
-    // Reports/retracts the ~128 KiB eager _slots allocation to NativeMem
-    // (NM_WALLCLOCK) -- unlike ThreadFilter's own chunk storage, this array
-    // is not lazily allocated, so every process that constructs a
-    // WallClockBlockTracker (currently: Profiler, unconditionally) pays for
-    // it whether or not wall precheck is ever used, and that cost should be
-    // visible in memory accounting.
+    // BlockState storage (~128 KiB) is allocated lazily by ensureAllocated(),
+    // which ThreadFilter::registerThread() calls under _registry_lock on the
+    // first registration. It is recorded under NM_WALLCLOCK only once
+    // allocated and retracted by the destructor, so processes that never
+    // register a thread pay nothing.
     WallClockBlockTracker();
     ~WallClockBlockTracker();
 
     // One cache line per slot, mirroring ThreadFilter::Slot's own
-    // false-sharing avoidance. BlockState instances are process-lifetime
-    // (owned by WallClockBlockTracker's inline array), so a captured
-    // BlockState* is always dereferenceable.
+    // false-sharing avoidance. Storage, once published, is never freed before
+    // ~WallClockBlockTracker (R-B2), so a captured BlockState* stays valid.
     struct alignas(DEFAULT_CACHE_LINE_SIZE) BlockState {
         static constexpr u64 kUnownedBlockedFallbackRatio = 10;
 
@@ -139,16 +138,36 @@ public:
             unowned_blocked_state.store(state, std::memory_order_relaxed);
             unowned_blocked_call_trace_id.store(call_trace_id, std::memory_order_release);
         }
+        // Unowned-blocked bookkeeping (pending weight, call_trace_id, state,
+        // decision_count) is cleared ONLY by (R-B1):
+        //  (a) a successful flushUnownedBlockedTail();
+        //  (b) consumeUnownedBlockedWeight() at a recorded sample (weight only);
+        //  (c) registry-lifecycle resetSlot()/resetAll() (registerThread,
+        //      refreshSlotForRecording, unregisterThreadLocked,
+        //      retireThreadByTid, drainRetiredLocked, clearActive,
+        //      resetSlotRunState).
+        // The thread's own events - a failed flush, owned-run entry or
+        // generation-checked exit, context-window entry - must not clear it.
+        // Validate, then consume: an incomplete tail reports what was read
+        // through the out-params and consumes nothing. Accepted residual: the
+        // sampling cadence now carries across runs, so up to kRatio-1 units may
+        // be attributed to an earlier run's stack/state.
         inline bool flushUnownedBlockedTail(u64& call_trace_id, u64& weight,
                                             OSThreadState& state) {
+            // Acquire pairs with the release store in recordUnownedBlockedSample().
+            call_trace_id = unowned_blocked_call_trace_id.load(std::memory_order_acquire);
+            weight = unowned_blocked_pending_weight.load(std::memory_order_relaxed);
+            state = unowned_blocked_state.load(std::memory_order_relaxed);
+            if (call_trace_id == 0 || weight == 0 || state == OSThreadState::UNKNOWN) {
+                return false;
+            }
             call_trace_id = unowned_blocked_call_trace_id.exchange(0, std::memory_order_acq_rel);
             weight = unowned_blocked_pending_weight.exchange(0, std::memory_order_relaxed);
             state = unowned_blocked_state.exchange(OSThreadState::UNKNOWN, std::memory_order_relaxed);
             unowned_blocked_decision_count.store(0, std::memory_order_relaxed);
-            if (call_trace_id == 0 || weight == 0 || state == OSThreadState::UNKNOWN) {
-                return false;
-            }
-            return true;
+            // A concurrent lifecycle reset may have intervened between the
+            // loads and the exchanges.
+            return call_trace_id != 0 && weight != 0 && state != OSThreadState::UNKNOWN;
         }
         // identity_slot supplies the context-window state, which lives on
         // ThreadFilter::Slot. See ThreadFilter::Slot::rawContextWindowState().
@@ -172,8 +191,20 @@ public:
                 return false;
             }
             u32 generation = block_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+            // Relaxed is enough: this payload is published by the trailing
+            // active_block_state release store, and only the owner writes it.
+            // shouldSuppressOwnedBlock() and prepareWallPrecheck() acquire
+            // activeBlockState() before activeBlockRemainedOutsideContextWindow().
+            // An older state is UNKNOWN, because resetSlot() and
+            // clearActiveBlockRun() store state UNKNOWN before owner NONE. A
+            // racing context transition leaves a stale epoch that can only fail
+            // the equality check: a missed suppression, never a wrongful one.
             active_block_context_epoch.store(context_state >> 1, std::memory_order_relaxed);
-            resetUnownedBlockedSampling();
+            // The unowned-blocked tail is deliberately preserved (R-B1). Owned
+            // runs in a precheck-suppression state never read or write the
+            // unowned fields, because prepareWallPrecheck() takes the owned
+            // path; an owned run in a non-suppression state falls through to
+            // the unowned path, which is the same thread's weight.
             last_sampled_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
             sampled_this_run.store(false, std::memory_order_relaxed);
             active_block_state.store(state, std::memory_order_release);
@@ -194,7 +225,9 @@ public:
         // thread: it only needs to drop a block run whose exit was missed
         // (e.g. an exception path with no finally), not disturb the
         // amortized weight tracking, which spans context-window
-        // entries/exits by design.
+        // entries/exits by design. It is also the generation-checked
+        // exitBlockedRun()'s reset, so an owned run's exit preserves an earlier
+        // unowned tail (R-B1). Keep the order: state UNKNOWN before owner NONE.
         inline void clearActiveBlockRun(OSThreadState state) {
             active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
@@ -219,32 +252,45 @@ public:
     static_assert(std::atomic<u64>::is_always_lock_free,
                   "BlockState u64 fields must be lock-free for signal-handler safety");
 
-    // Returns nullptr if slot_id is out of range. Storage is a single eager
-    // allocation sized to ThreadFilter::kMaxThreads (unlike ThreadFilter's own
-    // lazily-chunked storage), so lookup is a direct array index.
+    // NOT signal-safe. Called by ThreadFilter::registerThread() under
+    // _registry_lock. Returns false only on allocation failure (the tracker
+    // stays inert and the allocation is retried on the next registration).
+    bool ensureAllocated();
+
+    // Returns nullptr if slot_id is out of range or storage is not yet
+    // allocated (see ensureAllocated()).
     inline BlockState* slotForId(ThreadFilter::SlotID slot_id) const {
         if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return nullptr;
-        return const_cast<BlockState*>(&_slots[slot_id]);
+        SlotStorage* storage = _storage.load(std::memory_order_acquire);
+        return storage != nullptr ? &storage->slots[slot_id] : nullptr;
     }
+
+    static constexpr ThreadFilter::SlotID kInvalidSlotId = -1;
 
     // Block-run tokens returned by enterBlockedRun() pack the generation in the
     // upper 32 bits and slot_id + 1 in the lower 32 bits, so 0 means "no run".
+    // A valid slot_id (>= 0) is never encoded to a zero low word.
     static inline u64 encodeBlockRunToken(ThreadFilter::SlotID slot_id, u32 generation) {
         return (static_cast<u64>(generation) << 32) | static_cast<u32>(slot_id + 1);
     }
+    // PRECONDITION (decoders): token != 0 ("no run"). A token whose low word is
+    // 0 decodes to kInvalidSlotId (slotForId() returns nullptr for it).
     static inline ThreadFilter::SlotID tokenSlotId(u64 token) {
-        return static_cast<ThreadFilter::SlotID>(static_cast<u32>(token) - 1);
+        assert(token != 0);
+        u32 low = static_cast<u32>(token);
+        return low == 0 ? kInvalidSlotId : static_cast<ThreadFilter::SlotID>(low - 1);
     }
     static inline u32 tokenGeneration(u64 token) {
+        assert(token != 0);
         return static_cast<u32>(token >> 32);
     }
 
     u64 enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
                         OSThreadState state, BlockRunOwner owner = BlockRunOwner::JAVA);
-    // Unconditional cleanup, used only by tests and the fuzzer (registry
-    // reset/unregister paths use resetSlot()). Normal block lifecycles must
-    // use the generation-checked overload so they cannot clear another owner.
-    void exitBlockedRun(ThreadFilter::SlotID slot_id);
+    // Generation-checked exit: block lifecycles use it so they cannot clear
+    // another owner's run. Clears only the owned-run fields; the
+    // unowned-blocked tail is preserved (R-B1). Callers that need an
+    // unconditional clear use resetSlot(slot_id, OSThreadState::RUNNABLE).
     bool exitBlockedRun(ThreadFilter::SlotID slot_id, u32 generation);
     // Clears stale suppression state so a new/reused slot cannot inherit a
     // predecessor's active block or once-per-run sampled marker. Called by
@@ -278,7 +324,12 @@ public:
 #endif
 
 private:
-    std::array<BlockState, ThreadFilter::kMaxThreads> _slots;
+    struct SlotStorage {
+        std::array<BlockState, ThreadFilter::kMaxThreads> slots;
+    };
+    // Published once by ensureAllocated(); never freed before the destructor
+    // (R-B2). Signal paths only load it, never allocate.
+    std::atomic<SlotStorage*> _storage{nullptr};
 
 #ifdef UNIT_TEST
     BlockAdmissionHook _block_admission_hook = nullptr;
