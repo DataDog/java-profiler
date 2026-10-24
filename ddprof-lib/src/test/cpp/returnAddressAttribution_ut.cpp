@@ -1206,6 +1206,7 @@ asm(
 "prof_ra_pcoff_seed:\n"
     ".cfi_startproc\n"
     ".cfi_def_cfa sp, 16\n"
+    ".cfi_offset 30, 0\n"
     "nop\nnop\n"
     ".cfi_endproc\n"
     ".size prof_ra_pcoff_seed, .-prof_ra_pcoff_seed\n"
@@ -1348,24 +1349,10 @@ TEST_F(ReturnAddressAttributionTest, Test5b_DwPcOffsetAppliesOffsetToRawPc) {
 // ===========================================================================
 // Test 6 -- Link-register recovery sets the flag (coverage row 7).
 //
-// Reachability, so nobody reads a green run here as coverage:
-//  - x86_64: structurally unreachable. EMPTY_FRAME_SIZE > 0 makes the
-//    guard "EMPTY_FRAME_SIZE > 0 || pc_off != DW_LINK_REGISTER" always true,
-//    so the arm never executes.
-//  - aarch64: reachable only with a frame table that actually carries
-//    pc_off == DW_LINK_REGISTER. DwarfParser never emits it -- it starts
-//    pc_off at -EMPTY_FRAME_SIZE and no DW_CFA_ handler assigns that value --
-//    so no .eh_frame fixture, including the one below, can reach the arm.
-//    The only producer in the tree is SFrameParser (sframe.cpp, gated by
-//    SFrameParser.PerFRE_RA_Untracked in sframe_ut.cpp), which needs a
-//    .sframe section in the scanned ELF image; the gtest binary is not built
-//    with one, and CodeCache::setDwarfTable() cannot be used to inject one
-//    because it asserts the cache is unpublished.
-//
-// The fixture is kept so that it starts gating on its own if a .sframe-
-// enabled build ever appears, and so the precondition check documents which
-// row shape the arm needs. It deliberately does not increment
-// g_gating_assertions_reached on the skip path.
+// AArch64 leaf .eh_frame rows keep the return address in LR until it is
+// spilled. This fixture reaches that rule through the real ELF parser and
+// walker; the stack slot must not replace the live LR.
+// x86_64 returns through a stack slot and skips this architecture-specific case.
 // ===========================================================================
 
 #if defined(__aarch64__)
@@ -1401,13 +1388,8 @@ TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
         GTEST_SKIP() << "prof_ra_lr_fn not visible to findLibraryByAddress in this build";
     }
     FrameDesc row = lib->findFrameDesc((const void*)&prof_ra_lr_fn);
-    if (row.pc_off != DW_LINK_REGISTER || (row.fp_off & DW_PC_OFFSET)) {
-        GTEST_SKIP() << "expected: .eh_frame cannot express pc_off == DW_LINK_REGISTER, so this "
-                      << "fixture's row parsed as (pc_off=" << row.pc_off << ", fp_off="
-                      << row.fp_off << ") and the link-register arm is not reached. The arm is "
-                      << "covered by inspection only; its producer is gated by "
-                      << "SFrameParser.PerFRE_RA_Untracked. See this test's banner comment.";
-    }
+    ASSERT_EQ(DW_LINK_REGISTER, row.pc_off);
+    ASSERT_EQ(0, row.fp_off & DW_PC_OFFSET);
     // Adjacency is not a precondition here: unlike Tests 1/3/4/5, the link
     // register below is set directly rather than derived from a real
     // call-site return address, so the fixture works wherever the assembler
@@ -1437,6 +1419,85 @@ TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
     ++g_gating_assertions_reached;
 #endif  // __aarch64__
 }
+
+#if defined(__aarch64__)
+
+asm(
+    ".text\n"
+    ".globl prof_ra_restored_lr_fn\n"
+    ".type prof_ra_restored_lr_fn,%function\n"
+"prof_ra_restored_lr_fn:\n"
+    ".cfi_startproc\n"
+    "stp x29, x30, [sp, #-32]!\n"
+    ".cfi_def_cfa_offset 32\n"
+    ".cfi_offset 29, -32\n"
+    ".cfi_offset 30, -24\n"
+    "ldp x29, x30, [sp], #32\n"
+    ".cfi_restore 29\n"
+    ".cfi_restore 30\n"
+    ".cfi_def_cfa_offset 0\n"
+    ".globl prof_ra_restored_lr_pc\n"
+"prof_ra_restored_lr_pc:\n"
+    "nop\n"
+    "ret\n"
+    ".cfi_endproc\n"
+    ".size prof_ra_restored_lr_fn, .-prof_ra_restored_lr_fn\n"
+);
+
+extern "C" void prof_ra_restored_lr_pc(void);
+
+TEST_F(ReturnAddressAttributionTest, RestoredLinkRegisterIgnoresStaleStackSlot) {
+    static uintptr_t scratch[64];
+    ucontext_t uc = makeFabricatedContext((const void*)&prof_ra_restored_lr_pc, scratch, 64);
+    uc.uc_mcontext.regs[30] = (unsigned long)&prof_ra_lr_next;
+    // A signal can overwrite the callee's old LR slot after SP is restored.
+    // Populate it with a plausible code address to expose a phantom caller.
+    ((uintptr_t*)uc.uc_mcontext.sp)[-3] = (uintptr_t)&prof_ra_lr_fn + 1;
+    StackContext ctx{};
+    bool truncated = false;
+    const void* chain[9];
+    int depth = StackWalker::walkDwarf(&uc, chain, 8, &ctx, &truncated);
+    ASSERT_GE(depth, 2);
+    EXPECT_EQ((const void*)&prof_ra_restored_lr_pc, chain[0]);
+    EXPECT_EQ((const char*)&prof_ra_lr_next - 1, chain[1]);
+}
+
+asm(
+    ".text\n"
+    ".globl prof_ra_sigreturn_without_signal_cfi\n"
+    ".type prof_ra_sigreturn_without_signal_cfi,%function\n"
+"prof_ra_sigreturn_without_signal_cfi:\n"
+    ".cfi_startproc\n"
+    ".cfi_def_cfa x29, 0\n"
+    ".cfi_offset 29, 0\n"
+    ".cfi_offset 30, 8\n"
+    "mov x8, #139\n"
+    "svc #0\n"
+    ".cfi_endproc\n"
+    ".size prof_ra_sigreturn_without_signal_cfi, .-prof_ra_sigreturn_without_signal_cfi\n"
+);
+
+extern "C" void prof_ra_sigreturn_without_signal_cfi(void);
+
+TEST_F(ReturnAddressAttributionTest, UnsupportedSigreturnDoesNotFollowInterruptedFp) {
+    static uintptr_t scratch[64];
+    ucontext_t uc = makeFabricatedContext((const void*)&prof_ra_sigreturn_without_signal_cfi, scratch, 64);
+    // Model the FP-based fallback with a plausible but unrelated saved PC.
+    ((uintptr_t*)uc.uc_mcontext.regs[29])[0] = uc.uc_mcontext.regs[29] + 16;
+    ((uintptr_t*)uc.uc_mcontext.regs[29])[1] = (uintptr_t)&prof_ra_lr_next;
+    StackContext ctx{};
+    bool truncated = false;
+    const void* chain[9];
+    EXPECT_EQ(1, StackWalker::walkDwarf(&uc, chain, 8, &ctx, &truncated));
+    EXPECT_TRUE(truncated);
+    // A sample may also land on the syscall instruction itself.
+    uc.uc_mcontext.pc += sizeof(instruction_t);
+    truncated = false;
+    EXPECT_EQ(1, StackWalker::walkDwarf(&uc, chain, 8, &ctx, &truncated));
+    EXPECT_TRUE(truncated);
+}
+
+#endif // __aarch64__
 
 // ===========================================================================
 // Test 8 -- A signal-frame row suppresses the attribution adjustment
@@ -1472,7 +1533,9 @@ asm(
     ".cfi_startproc\n"
     ".cfi_signal_frame\n"
     ".cfi_def_cfa sp, 16\n"
-    "nop\nnop\n"
+    ".cfi_offset 30, 0\n"
+    "mov x8, #139\n"
+    "svc #0\n"
     ".cfi_endproc\n"
     ".size prof_ra_sig_seed, .-prof_ra_sig_seed\n"
 );

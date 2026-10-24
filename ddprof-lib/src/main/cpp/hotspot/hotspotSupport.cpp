@@ -1031,7 +1031,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         have_prev_native_pc = true;
 
         if (!advanceDwarfFrame(walk_pc, sp, fp, bottom, depth, frame,
-                               profiler)) {
+                               profiler, truncated)) {
             break;
         }
     }
