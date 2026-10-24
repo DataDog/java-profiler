@@ -133,24 +133,27 @@ void JNICALL JitCodeCache::DynamicCodeGenerated(jvmtiEnv *jvmti, const char *nam
   StubUnwindEntry* retired_unwind = nullptr;
 #endif
 
-  _stubs_lock.lock();
-  CodeBlob* retired_blobs = _runtime_stubs.commitAdd(address, length, prepared, true);
+  CodeBlob* retired_blobs;
+  {
+    // The scope ends before the frees below: nothing in it allocates or frees.
+    ExclusiveLockGuard publish(&_stubs_lock);
+    retired_blobs = _runtime_stubs.commitAdd(address, length, prepared, true);
 #ifdef __aarch64__
-  if (grown_unwind != nullptr) {
-    retired_unwind = _stub_unwind;
-    _stub_unwind = grown_unwind;
-    _stub_unwind_capacity = grown_capacity;
-  }
-  if (insert) {
-    // Sorted insert: shift the tail right to keep the lookup binary-searchable.
-    memmove(&_stub_unwind[lo + 1], &_stub_unwind[lo],
-            (_stub_unwind_count - lo) * sizeof(StubUnwindEntry));
-    _stub_unwind[lo]._start = address;
-    _stub_unwind[lo]._info = stub_info;
-    _stub_unwind_count++;
-  }
+    if (grown_unwind != nullptr) {
+      retired_unwind = _stub_unwind;
+      _stub_unwind = grown_unwind;
+      _stub_unwind_capacity = grown_capacity;
+    }
+    if (insert) {
+      // Sorted insert: shift the tail right to keep the lookup binary-searchable.
+      memmove(&_stub_unwind[lo + 1], &_stub_unwind[lo],
+              (_stub_unwind_count - lo) * sizeof(StubUnwindEntry));
+      _stub_unwind[lo]._start = address;
+      _stub_unwind[lo]._info = stub_info;
+      _stub_unwind_count++;
+    }
 #endif
-  _stubs_lock.unlock();
+  }
 
   // Readers take the shared lock for every access, so after the unlock no
   // reader can still use the replaced arrays.
@@ -176,23 +179,23 @@ bool JitCodeCache::findRuntimeStub(const void *address, const void **start,
   // Fails only while a writer holds the lock: the caller is a signal handler,
   // and the writer may be the interrupted thread itself. Competing readers do
   // not make it fail, because each failed CAS means another reader got in.
-  if (!_stubs_lock.tryLockShared()) {
+  OptionalSharedLockGuard guard(&_stubs_lock, SpinLock::NO_SPIN_BUDGET);
+  if (!guard.ownsLock()) {
     Counters::increment(STUB_LOOKUP_LOCK_UNAVAILABLE);
     return false;
   }
-  bool found = false;
-  if (_runtime_stubs.contains(address)) {
-    CodeBlob *blob = _runtime_stubs.findBlobByAddress(address);
-    if (blob != nullptr) {
-      // Copy out under the lock: a registration may replace the blob array
-      // as soon as the lock is released.
-      *start = blob->_start;
-      *name = blob->_name;
-      found = true;
-    }
+  if (!_runtime_stubs.contains(address)) {
+    return false;
   }
-  _stubs_lock.unlockShared();
-  return found;
+  CodeBlob *blob = _runtime_stubs.findBlobByAddress(address);
+  if (blob == nullptr) {
+    return false;
+  }
+  // Copy out under the lock: a registration may replace the blob array as
+  // soon as the lock is released.
+  *start = blob->_start;
+  *name = blob->_name;
+  return true;
 }
 
 #ifdef __aarch64__
@@ -200,7 +203,8 @@ bool JitCodeCache::findRuntimeStubInfo(const void* address, const void** start,
                                        const char** name, const StubUnwindInfo** info) {
   *info = nullptr;
   // Same lock acquisition as findRuntimeStub().
-  if (!_stubs_lock.tryLockShared()) {
+  OptionalSharedLockGuard guard(&_stubs_lock, SpinLock::NO_SPIN_BUDGET);
+  if (!guard.ownsLock()) {
     Counters::increment(STUB_LOOKUP_LOCK_UNAVAILABLE);
     return false;
   }
@@ -227,14 +231,11 @@ bool JitCodeCache::findRuntimeStubInfo(const void* address, const void** start,
       }
     }
   }
-  _stubs_lock.unlockShared();
   return found;
 }
 #endif
 
 long long JitCodeCache::runtimeStubsMemoryUsage() {
-  _stubs_lock.lockShared();
-  long long usage = _runtime_stubs.memoryUsage();
-  _stubs_lock.unlockShared();
-  return usage;
+  SharedLockGuard guard(&_stubs_lock);
+  return _runtime_stubs.memoryUsage();
 }
