@@ -457,12 +457,13 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       if (ctx->frontier->improveChain(*tag_ptr, parent_tag, referrer_klass,
                                        depth, 0, edge_field_index,
                                        (u8)reference_kind)) {
-        // Chain was improved — invalidate any cached chain for this tag so pollWatchedTargets
-        // rebuilds it with the deeper path.
+        // Chain was improved — queue a REBUILD so pollWatchedTargets replaces any cached chain for
+        // this tag with the deeper path (never erased: the source is still live).
         // Deferred: we're inside the FollowReferences pause (see deferResolvedChainInvalidation()).
         ctx->tracker->deferResolvedChainInvalidation(
             *tag_ptr, ctx->resolved_chain_tags,
-            ctx->resolved_chain_tag_count);
+            ctx->resolved_chain_tag_count,
+            ReferenceChainTracker::ChainInvalidationKind::REBUILD);
         if (was_root_attached_durable) {
           // Demotion push: the replaced entry's static/JNI-global attribution was its only
           // anchor-tier eligibility, and it is gone now.
@@ -477,7 +478,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         // durable root.
         ctx->tracker->deferResolvedChainInvalidation(
             *tag_ptr, ctx->resolved_chain_tags,
-            ctx->resolved_chain_tag_count);
+            ctx->resolved_chain_tag_count,
+            ReferenceChainTracker::ChainInvalidationKind::REBUILD);
       }
     } else {
       // Already-admitted entry reached via a NEW root-like edge (parent_tag == 0): the static-field
@@ -489,7 +491,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                                                           (u8)reference_kind)) {
         ctx->tracker->deferResolvedChainInvalidation(
             *tag_ptr, ctx->resolved_chain_tags,
-            ctx->resolved_chain_tag_count);
+            ctx->resolved_chain_tag_count,
+            ReferenceChainTracker::ChainInvalidationKind::REBUILD);
       } else if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
         // The upgrade refused (maybeUpgradeRootAttachedRootKind returns false for parent_tag != 0
         // by design), so this STATIC_FIELD edge just proved an at-risk static attachment the anchor
