@@ -129,7 +129,8 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
             ctx->frontier, *tag_ptr, translated_root_kind)) {
       ctx->tracker->deferResolvedChainInvalidation(
           *tag_ptr, ctx->resolved_chain_tags,
-          ctx->resolved_chain_tag_count);
+          ctx->resolved_chain_tag_count,
+          ReferenceChainTracker::ChainInvalidationKind::REBUILD);
     }
     break;
   default:
