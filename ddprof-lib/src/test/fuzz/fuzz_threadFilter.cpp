@@ -35,7 +35,7 @@
  *   I2. lookupByTid(tid) retains every live owner's identity. activeSlotForId()
  *       is non-null exactly when its owner has registered in the current epoch.
  *   I3. Restart makes old block state ineligible for suppression; registering
- *       a retained owner clears its block state and sampled-this-run marker.
+ *       a retained owner clears its block state and sampled block generation.
  *   I4. A generation-checked exitBlockedRun() called with a generation other
  *       than the block run's current one must return false and must not
  *       change that slot's active-block-state (a stale/forged token must
@@ -111,7 +111,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
           auto* block = g_tracker->slotForId(slot_id);
           if (block->activeBlockState() != OSThreadState::UNKNOWN ||
               block->activeBlockOwner() != BlockRunOwner::NONE ||
-              block->sampledThisRun()) {
+              block->sampledBlockGeneration() != 0) {
             // Newly registered or refreshed owners start with clean payload (I3).
             __builtin_trap();
           }
@@ -142,7 +142,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         u64 token = g_tracker->enterBlockedRun(g_filter, it->second, state);
         if (token != 0) {
           g_last_token[it->second] = token;
-          g_tracker->slotForId(it->second)->markSampledThisRun(state);
+          g_tracker->slotForId(it->second)->markBlockGenerationSampled(
+              WallClockBlockTracker::tokenGeneration(token));
         }
       }
     } else if (op < 0xB0) {
@@ -151,9 +152,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         auto tok_it = g_last_token.find(it->second);
         if (tok_it != g_last_token.end()) {
           uint8_t corruption_byte = nextByte();
-          u32 correct_generation = WallClockBlockTracker::tokenGeneration(tok_it->second);
+          u64 correct_generation = WallClockBlockTracker::tokenGeneration(tok_it->second);
           bool corrupt = (corruption_byte & 0x1) != 0;
-          u32 generation = corrupt
+          u64 generation = corrupt
               ? correct_generation + 1 + (corruption_byte >> 1)
               : correct_generation;
 
@@ -193,7 +194,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         auto* identity = g_filter->slotForId(kv.second);
         ThreadEntry stale{kv.first, identity, kv.second, identity->lifecycleGeneration(),
                           identity->recordingEpoch()};
-        if (g_tracker->shouldSuppressOwnedBlock(g_filter, stale)) {
+        if (g_tracker->isOwnedBlockSuppressionCandidate(g_filter, stale)) {
           // Retained payload from the previous epoch cannot suppress a sample (I3).
           __builtin_trap();
         }

@@ -28,14 +28,14 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   private static final int OSTHREAD_STATE_SLEEPING = 7;
   private static final long SLEEP_MILLIS = 300;
   private static final String PRE_EXISTING_THREAD_NAME = "unfiltered-precheck-existing";
-  private static final String SUPPRESSED_RUN_COUNTER = "wc_signals_suppressed_sampled_run";
-  private static final String UNOWNED_SUPPRESSED_COUNTER = "wc_unowned_blocked_suppressed";
+  private static final String SUPPRESSED_OWNED_BLOCK_COUNTER =
+      "wc_signals_suppressed_owned_block";
 
   private ExecutorService preExistingWorker;
   private Thread preExistingThread;
 
   /**
-   * Verifies that an untraced thread's owned sleeping run is sampled once and then suppressed.
+   * Verifies that an untraced thread's owned sleeping run is suppressed.
    *
    * @throws Exception if the worker cannot complete
    */
@@ -88,31 +88,35 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   }
 
   /**
-   * Verifies that a thread which already owns a registry slot still receives ordinary per-signal
-   * sampling outside an explicitly owned block.
+   * Verifies that an unowned sleep after an owned block preserves sampling weight. The fallback
+   * combines suppressed observations into weighted events, so event count is not coverage.
    *
    * @throws Exception if the worker cannot complete
    */
   @RetryingTest(3)
-  public void unownedSleepAfterOwnedBlockUsesNormalSampling() throws Exception {
-    long unownedSuppressedBefore = unownedSuppressedSignals();
+  public void unownedSleepAfterOwnedBlockPreservesSampleWeight() throws Exception {
     assertTrue(
         runPreExistingUnownedSleepingWorker() != 0,
         "Expected the setup block to register the worker");
-    long unownedSuppressedAfter = unownedSuppressedSignals();
 
     stopProfiler();
 
-    long sampleCount = samplesForThread(PRE_EXISTING_THREAD_NAME);
-    assertTrue(
-        sampleCount >= 10,
-        "Expected normal MethodSample volume for an unowned sleep, got: " + sampleCount);
-    if (unownedSuppressedBefore >= 0) {
-      assertEquals(
-          unownedSuppressedBefore,
-          unownedSuppressedAfter,
-          "Unfiltered mode must not use observation-only unowned suppression");
+    long sampleCount = 0;
+    long totalWeight = 0;
+    for (JfrEvent event : verifyEvents("datadog.MethodSample", false)) {
+      if (PRE_EXISTING_THREAD_NAME.equals(event.getThreadName("eventThread"))) {
+        sampleCount++;
+        totalWeight += event.getLong(WEIGHT, 0);
+      }
     }
+    assertTrue(
+        totalWeight >= 10,
+        "Expected at least 10 represented observations for the unowned sleep, count="
+            + sampleCount + ", weight=" + totalWeight);
+    assertTrue(
+        totalWeight > sampleCount,
+        "Expected suppressed observations to be represented by weight, count="
+            + sampleCount + ", weight=" + totalWeight);
   }
 
   /**
@@ -156,6 +160,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
    */
   @RetryingTest(3)
   public void postStartSleepingThreadLazilyRegistersOwnedBlock() throws Exception {
+    long suppressedBefore = suppressedSignals();
     String threadName = "unfiltered-precheck-post-start";
     long registrationsBefore =
         profiler.getDebugCounters().getOrDefault("thread_registry_hook_reregistration", -1L);
@@ -171,6 +176,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
 
     stopProfiler();
     assertSuppressedSamples(threadName);
+    assertOwnedBlockSuppressionObserved(suppressedBefore);
   }
 
   @Override
@@ -291,19 +297,18 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   }
 
   private long suppressedSignals() {
-    return profiler.getDebugCounters().getOrDefault(SUPPRESSED_RUN_COUNTER, -1L);
-  }
-
-  private long unownedSuppressedSignals() {
-    return profiler.getDebugCounters().getOrDefault(UNOWNED_SUPPRESSED_COUNTER, -1L);
+    return profiler.getDebugCounters().getOrDefault(SUPPRESSED_OWNED_BLOCK_COUNTER, -1L);
   }
 
   private void assertSuppressedSamples(String threadName) {
     long sampleCount = samplesForThread(threadName);
-    assertTrue(sampleCount > 0, "Expected the owned block run to be sampled once");
+    assertTrue(
+        sampleCount >= 1,
+        "Expected the owned block's first MethodSample to be retained");
     assertTrue(
         sampleCount < 10,
-        "Expected nearly no samples from owned block thread, got: " + sampleCount);
+        "Expected samples after the first owned-block sample to be suppressed, got: "
+            + sampleCount);
   }
 
   private long samplesForThread(String threadName) {
