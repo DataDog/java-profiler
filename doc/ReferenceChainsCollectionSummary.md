@@ -44,7 +44,7 @@ Each pass can perform these operations:
 4. Expand a batch of frontier entries.
 5. Revisit selected entries whose references can change after their first expansion.
 
-The walk records parent tags, class identifiers, depth, root kind, and leak-tag data in the frontier table. These records let the tracker reconstruct a chain after the walk reaches a candidate instance.
+The walk records parent tags, class identifiers, depth, root kind, admitting-edge identity (field index and reference kind), and leak-tag data in the frontier table. These records let the tracker reconstruct a chain after the walk reaches a candidate instance.
 
 The walk is best effort. The heap can change between passes. A recorded chain is therefore historical evidence from several observations, not a single consistent heap snapshot.
 
@@ -101,7 +101,7 @@ A search can stop with one of these abandonment reasons:
 
 - `FRONTIER_CAP`: the frontier table cannot admit more entries.
 - `TTL`: the configured lifetime expired, or the ordinary frontier made no progress for 30 passes.
-- `CANARY_STUCK`: candidate discovery and frontier growth both remained stalled for the configured checks.
+- `CANARY_STUCK`: candidate discovery and frontier growth both remained stalled for the configured checks. The ordinary no-progress `TTL` check runs first, so this reason appears only while the OOM-urgent latch is active.
 
 The tracker reports abandonment through `datadog.ReferenceChainAbandoned`. It releases search-owned tags before a restart. A restart also requires a current leak signal and sufficient safepoint-cost budget.
 
