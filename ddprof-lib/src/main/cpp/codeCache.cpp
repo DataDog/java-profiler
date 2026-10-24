@@ -198,6 +198,8 @@ void CodeCache::prepareAdd(const char *name, PreparedAdd &prepared) const {
   // (e.g. _runtime_stubs) are exempt — they are never published.
   assert(!_published.load(std::memory_order_acquire) &&
          "add() on a published CodeCache races memoryUsage()");
+  // A reused PreparedAdd would leak the allocations it still owns.
+  assert(prepared.name == nullptr && prepared.grown == nullptr);
   char *name_copy = NativeFunc::create(name, _lib_index);
   prepared.name = name_copy;
   prepared.name_size = (long long)NativeFunc::allocSize(name);
@@ -219,7 +221,7 @@ void CodeCache::prepareAdd(const char *name, PreparedAdd &prepared) const {
 }
 
 CodeBlob *CodeCache::commitAdd(const void *start, int length,
-                               const PreparedAdd &prepared,
+                               PreparedAdd &prepared,
                                bool update_bounds) {
   assert(!_published.load(std::memory_order_acquire) &&
          "add() on a published CodeCache races memoryUsage()");
@@ -243,6 +245,10 @@ CodeBlob *CodeCache::commitAdd(const void *start, int length,
   _blobs[_count]._end = end;
   _blobs[_count]._name = prepared.name;
   _count++;
+  // The cache owns both allocations now; the PreparedAdd destructor must not
+  // free them.
+  prepared.name = nullptr;
+  prepared.grown = nullptr;
 
   if (update_bounds) {
     updateBounds(start, end);
