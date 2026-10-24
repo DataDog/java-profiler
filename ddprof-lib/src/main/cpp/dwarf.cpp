@@ -435,12 +435,12 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
   u32 cfa_reg = DW_REG_SP;
   int cfa_off = EMPTY_FRAME_SIZE;
   int fp_off = DW_SAME_FP;
-  int pc_off = -EMPTY_FRAME_SIZE;
+  int pc_off = INITIAL_PC_OFFSET;
 
   u32 rem_cfa_reg = DW_REG_SP;
   int rem_cfa_off = EMPTY_FRAME_SIZE;
   int rem_fp_off = DW_SAME_FP;
-  int rem_pc_off = -EMPTY_FRAME_SIZE;
+  int rem_pc_off = INITIAL_PC_OFFSET;
 
   while (_ptr < end) {
     u8 op = get8();
@@ -476,8 +476,18 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
         }
         break;
       case DW_CFA_restore_extended:
+      case DW_CFA_same_value: {
+        u32 reg = getLeb();
+        if (reg == DW_REG_FP) {
+          fp_off = DW_SAME_FP;
+        } else if (EMPTY_FRAME_SIZE == 0 && reg == DW_REG_PC) {
+          // AArch64's epilogue restores LR before returning. Its old stack
+          // slot is below the live SP and can be overwritten by a signal.
+          pc_off = INITIAL_PC_OFFSET;
+        }
+        break;
+      }
       case DW_CFA_undefined:
-      case DW_CFA_same_value:
         if (getLeb() == DW_REG_FP) {
           fp_off = DW_SAME_FP;
         }
@@ -587,6 +597,8 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
     case DW_CFA_restore:
       if ((op & 0x3f) == DW_REG_FP) {
         fp_off = DW_SAME_FP;
+      } else if (EMPTY_FRAME_SIZE == 0 && (op & 0x3f) == DW_REG_PC) {
+        pc_off = INITIAL_PC_OFFSET;
       }
       break;
     }

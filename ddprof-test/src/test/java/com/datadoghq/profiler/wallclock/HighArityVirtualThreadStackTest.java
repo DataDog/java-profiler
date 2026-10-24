@@ -86,10 +86,12 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
             JfrStackTrace trace = sample.getStackTrace();
             boolean compiled = false;
             boolean outer = false;
+            boolean virtualThread = false;
             int carriers = 0;
             int errors = 0;
             boolean stoppedBeforeBoundary = false;
             for (JfrFrame frame : trace.frames()) {
+                virtualThread |= "java.lang.VirtualThread".equals(frame.className());
                 if (GENERATED.replace('/', '.').equals(frame.className())) {
                     compiled |= "recursive".equals(frame.methodName())
                             && ("JIT compiled".equals(frame.typeDescription()) || "C1 compiled".equals(frame.typeDescription()));
@@ -99,7 +101,8 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
                 if (frame.methodName() != null && frame.methodName().startsWith("break_cont_")) errors++;
                 else if (frame.methodName() != null && frame.methodName().startsWith("break_")) stoppedBeforeBoundary = true;
             }
-            if (compiled && !outer) {
+            // Fully recovered virtual stacks include run(); platform-thread warm-up does too.
+            if (compiled && (!outer || virtualThread)) {
                 if (stoppedBeforeBoundary && errors == 0 && carriers == 0) {
                     count[4]++;
                     return;
@@ -107,12 +110,12 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
                 count[0]++;
                 count[1] += errors;
                 if (carriers != 1) count[2]++;
-                if (!trace.isTruncated()) count[3]++;
+                if (!outer && !trace.isTruncated()) count[3]++;
             }
         });
-        System.out.println("High-arity compiled partial samples=" + counts[0] + " continuationErrors=" + counts[1]
+        System.out.println("High-arity compiled boundary samples=" + counts[0] + " continuationErrors=" + counts[1]
                 + " stopsBeforeBoundary=" + counts[4]);
-        assertTrue(counts[0] > 0, "No compiled high-arity sample left callers frozen");
+        assertTrue(counts[0] > 0, "No compiled high-arity sample reached a continuation boundary");
         assertEquals(0, counts[1], "High-arity carrier recovery rejected valid argument metadata");
         assertEquals(0, counts[2], "High-arity samples must retain exactly one carrier");
         assertEquals(0, counts[3], "Skipped frozen callers must remain marked truncated");

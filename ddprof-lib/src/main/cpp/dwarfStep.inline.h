@@ -15,6 +15,10 @@
 #include "stackFrame.h"
 #include "stackWalker.inline.h"
 
+#if defined(__linux__) && defined(__aarch64__)
+#include <sys/syscall.h>
+#endif
+
 // One step of the DWARF unwind, shared by StackWalker::walkDwarf and
 // HotspotSupport::walkVM. The two had drifted into separate copies; 61959b06f
 // and the commit that added this reconciled the last of the differences so
@@ -44,7 +48,7 @@
 __attribute__((always_inline))
 inline bool advanceDwarfFrame(WalkPc& walk_pc, uintptr_t& sp, uintptr_t& fp,
                               uintptr_t bottom, int depth,
-                              const StackFrame& frame, Profiler* profiler) {
+                              const StackFrame& frame, Profiler* profiler, bool* truncated) {
     using StackWalkValidation::inDeadZone;
     using StackWalkValidation::aligned;
     using StackWalkValidation::MAX_FRAME_SIZE;
@@ -59,6 +63,21 @@ inline bool advanceDwarfFrame(WalkPc& walk_pc, uintptr_t& sp, uintptr_t& fp,
     uintptr_t prev_sp = sp;
     CodeCache* cc = profiler->findLibraryByAddress(attribution_pc);
     FrameDesc f = cc != NULL ? cc->findFrameDesc(attribution_pc) : FrameDesc::fallback_default_frame();
+
+#if defined(__linux__) && defined(__aarch64__)
+    // Without signal-frame CFI, rt_sigreturn's FP chain leads into the
+    // interrupted context without restoring its saved PC, fabricating callers.
+    if (!f.isSignalFrame()) {
+        const instruction_t* ip = (const instruction_t*)walk_pc.raw();
+        instruction_t insn = SafeAccess::load32((int32_t*)ip);
+        const instruction_t sigreturn = 0x52800008 | (SYS_rt_sigreturn << 5); // mov w8/x8, #rt_sigreturn
+        if (((insn & 0x7fffffff) == sigreturn && SafeAccess::load32((int32_t*)(ip + 1)) == (int32_t)0xd4000001)
+                || (insn == 0xd4000001 && (SafeAccess::load32((int32_t*)(ip - 1)) & 0x7fffffff) == sigreturn)) {
+            if (truncated != nullptr) *truncated = true;
+            return false;
+        }
+    }
+#endif
 
     u8 cfa_reg = (u8)f.cfa;
     int cfa_off = f.cfa >> 8;

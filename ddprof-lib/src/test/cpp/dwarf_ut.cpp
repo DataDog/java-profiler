@@ -805,4 +805,55 @@ TEST(DwarfEhFrame, FdeAfterValidCieProducesRows) {
     delete dwarf;
 }
 
+#ifdef __aarch64__
+
+TEST(DwarfEhFrame, ArmLeafReturnAddressComesFromLinkRegister) {
+    std::vector<uint8_t> buf;
+    appendCie(buf);
+    appendFde(buf, 0, 64);
+    appendTerminator(buf);
+    DwarfParser* dwarf = parseBuf(buf);
+    ASSERT_EQ(2, dwarf->count());
+    EXPECT_EQ(DW_LINK_REGISTER, dwarf->table()[0].pc_off);
+    free(dwarf->table());
+    delete dwarf;
+}
+
+// Model os::javaTimeNanos: stp fp/lr,[sp,#-32]! saves LR at CFA-24;
+// ldp fp/lr,[sp],#32 restores the live registers before the final return.
+static void checkRestoredArmLinkRegister(uint8_t restore_op) {
+    std::vector<uint8_t> buf;
+    appendCie(buf);
+    size_t fde_start = buf.size();
+    appendFde(buf, 0, 64);
+    std::vector<uint8_t> instructions = {0x41, 0x0e, 32, 0x9d, 4, 0x9e, 3, 0x42, restore_op};
+    if (restore_op != 0xde) instructions.push_back(30);
+    instructions.insert(instructions.end(), {0xdd, 0x0e, 0});
+    buf.insert(buf.end(), instructions.begin(), instructions.end());
+    uint32_t length = 13 + instructions.size();
+    std::memcpy(buf.data() + fde_start, &length, sizeof(length));
+    appendTerminator(buf);
+    DwarfParser* dwarf = parseBuf(buf);
+    ASSERT_EQ(4, dwarf->count());
+    EXPECT_EQ(-24, dwarf->table()[1].pc_off);
+    EXPECT_EQ(DW_LINK_REGISTER, dwarf->table()[2].pc_off);
+    EXPECT_EQ(DW_SAME_FP, dwarf->table()[2].fp_off);
+    free(dwarf->table());
+    delete dwarf;
+}
+
+TEST(DwarfEhFrame, ArmRestoreReturnsToLiveLinkRegister) {
+    checkRestoredArmLinkRegister(0xde); // DW_CFA_restore r30
+}
+
+TEST(DwarfEhFrame, ArmExtendedRestoreReturnsToLiveLinkRegister) {
+    checkRestoredArmLinkRegister(0x06); // DW_CFA_restore_extended r30
+}
+
+TEST(DwarfEhFrame, ArmSameValueUsesLiveLinkRegister) {
+    checkRestoredArmLinkRegister(0x08); // DW_CFA_same_value r30
+}
+
+#endif // __aarch64__
+
 #endif  // DWARF_SUPPORTED
