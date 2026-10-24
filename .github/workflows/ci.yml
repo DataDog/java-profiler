@@ -156,7 +156,7 @@ jobs:
         run: |
           ./gradlew spotlessCheck --no-daemon --parallel --build-cache --no-watch-fs
 
-  quality-checks:
+  source-invariant-checks:
     runs-on: ubuntu-22.04
     needs: check-for-pr
     if: needs.check-for-pr.outputs.skip != 'true'
@@ -192,7 +192,7 @@ jobs:
           restore-keys: |
             gradle-caches-${{ runner.os }}-
 
-      - name: Quality checks
+      - name: Source invariant checks
         run: |
           # Signal-reachability check (ELF debug objects + fixture self-test) and the utils/check-*.py source checks
           ./gradlew :ddprof-lib:qualityChecks --no-daemon --build-cache --no-watch-fs
