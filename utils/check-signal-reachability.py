@@ -130,10 +130,7 @@ BARRIERS = [
 # line in the same shape:
 #   <caller>[|<caller>...] -> <unsafe symbol>  # <JIRA-KEY> [note]
 # ---------------------------------------------------------------------------
-ALLOWLIST = [
-    (("JitCodeCache::findRuntimeStub", "JitCodeCache::findRuntimeStubInfo"),
-     "SpinLock::lockShared", "PROF-16313"),
-]
+ALLOWLIST = []
 
 SELF_TEST_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "tests", "signal-reachability-fixture.cpp")
