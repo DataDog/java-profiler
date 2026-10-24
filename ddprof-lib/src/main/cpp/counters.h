@@ -42,6 +42,7 @@
   X(DICTIONARY_ENDPOINTS_ARENA_WASTE_BYTES, "dictionary_endpoints_arena_waste_bytes") \
   X(DICTIONARY_CONTEXT_ARENA_WASTE_BYTES, "dictionary_context_arena_waste_bytes")     \
   X(DICTIONARY_DRAIN_TIMEOUTS, "dictionary_drain_timeouts")                    \
+  X(REFCOUNT_NESTED_OVERFLOW, "refcount_nested_overflow")                      \
   X(DICTIONARY_ID_CONFLICTS, "dictionary_id_conflicts")                        \
   X(CLASS_MAP_AT_CAPACITY, "class_map_at_capacity_drops")                      \
   X(CONTEXT_STORAGE_BYTES, "context_storage_bytes")                            \
