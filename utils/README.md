@@ -209,7 +209,7 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 **Usage:**
 ```bash
 ./utils/check-doc-index.py                 # any one check
-./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all four; run by CI (ci.yml quality-checks job)
+./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all four; run by CI (ci.yml source-invariant-checks job)
 ```
 
 ### `patch-dd-java-agent.sh`

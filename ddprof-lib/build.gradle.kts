@@ -213,7 +213,7 @@ tasks.register<Exec>("checkSignalReachability") {
 // Quality checks: the signal-reachability check (ELF hosts only) and its
 // fixture self-test (Linux only), plus the source-level utils/check-*.py
 // scripts, each also runnable on its own. Not wired into check/build; CI runs
-// `./gradlew :ddprof-lib:qualityChecks` in the quality-checks job of
+// `./gradlew :ddprof-lib:qualityChecks` in the source-invariant-checks job of
 // .github/workflows/ci.yml. Runs every check, collects every failure, and
 // fails once at the end.
 interface QualityCheckServices {
