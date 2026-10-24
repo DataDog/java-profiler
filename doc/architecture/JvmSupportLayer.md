@@ -235,7 +235,7 @@ checked on a Zing JVM. Zing is also currently disabled in the CI JDK matrix
 
 ## Known boundary exceptions
 
-In these shared files, outside the abstraction files, `grep '#include "(hotspot|j9|zing)/'`
+In these shared files, outside the abstraction files, `grep -E '#include ["<](hotspot|j9|zing)/'`
 finds direct includes of implementation headers:
 
 | File | Includes |
