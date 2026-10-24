@@ -240,10 +240,14 @@ public:
         return std::vector<jlong>(tags, tags + count);
     }
 
+    // Defaults to EVICT (noise-eviction semantics); pass rebuild=true for the improveChain/
+    // reparent/root-kind-upgrade REBUILD kind.
     static void deferResolvedChainInvalidation(
-        jlong tag, const std::vector<jlong> &snapshot) {
+        jlong tag, const std::vector<jlong> &snapshot, bool rebuild = false) {
         ReferenceChainTracker::instance()->deferResolvedChainInvalidation(
-            tag, snapshot.data(), (int)snapshot.size());
+            tag, snapshot.data(), (int)snapshot.size(),
+            rebuild ? ReferenceChainTracker::ChainInvalidationKind::REBUILD
+                    : ReferenceChainTracker::ChainInvalidationKind::EVICT);
     }
 
     static size_t pendingChainInvalidationCount() {

@@ -586,10 +586,13 @@ private:
   std::unordered_map<jlong, CachedChain> _resolved_chains;
   SpinLock _resolved_chains_lock;
 
-  // Chain evictions deferred by heap callbacks. Only tags present in the immutable pre-traversal
-  // resolved-cache snapshot are eligible, so distinct pending tags are bounded exactly by the
-  // cache cap. Both buffers are reserved up front: drains swap the active producer buffer into the
-  // scratch buffer under the pending lock, then erase cache entries after releasing that lock.
+  // Chain invalidations deferred by heap callbacks. Only tags present in the immutable
+  // pre-traversal resolved-cache snapshot are eligible, so distinct pending tags are bounded
+  // exactly by the cache cap. Both buffers are reserved up front: drains move entries into the
+  // scratch buffer under the pending lock, then touch cache entries after releasing that lock.
+  // The ChainInvalidationKind is stored in-band (see encodePendingChainInvalidation()): EVICT
+  // entries hold the source tag, REBUILD entries its bitwise complement. Every read and write of
+  // both buffers happens under _pending_chain_invalidations_lock (full-barrier acquire/release).
   static constexpr int MAX_PENDING_CHAIN_INVALIDATIONS = MAX_RESOLVED_CHAINS;
   std::vector<jlong> _pending_chain_invalidations;
   std::vector<jlong> _draining_chain_invalidations;
@@ -1010,15 +1013,45 @@ private:
   // Copies the current cache keys into fixed caller-owned storage before a synchronous traversal.
   int snapshotResolvedChainTags(jlong *out);
 
-  // Queues an eviction from a heap callback only when the tag was cached in the immutable
+  // What a deferred invalidation does to the cached chain.
+  // EVICT: the source was rejected (noise eviction) - the cached chain is erased, at dump time or
+  // on the next poll, whichever drains first.
+  // REBUILD: the source is still live and its frontier entry intact, only its path changed
+  // (improveChain()/reparentToDurableRoot()/root-kind upgrade). Never erased at dump time: only
+  // the BFS-thread poll applies it, rebuilding the chain from the frontier and keeping the old one
+  // if the rebuild fails (restartSearch()'s keep-across-restart contract). EVICT wins over
+  // REBUILD for the same pending tag.
+  enum class ChainInvalidationKind : u8 { EVICT, REBUILD };
+
+  // In-band kind encoding for the pending buffers. Cache keys are frontier tags (>= 0), so the
+  // complement of a REBUILD tag is always negative and never collides with an EVICT entry.
+  static jlong encodePendingChainInvalidation(jlong source_tag,
+                                              ChainInvalidationKind kind) {
+    return kind == ChainInvalidationKind::REBUILD ? ~source_tag : source_tag;
+  }
+  static bool isPendingChainRebuild(jlong encoded) { return encoded < 0; }
+  static jlong pendingChainInvalidationTag(jlong encoded) {
+    return encoded < 0 ? ~encoded : encoded;
+  }
+
+  // Queues an invalidation from a heap callback only when the tag was cached in the immutable
   // pre-traversal snapshot. This never takes _resolved_chains_lock or allocates.
   void deferResolvedChainInvalidation(jlong source_tag,
                                       const jlong *resolved_chain_tags,
-                                      int resolved_chain_tag_count);
+                                      int resolved_chain_tag_count,
+                                      ChainInvalidationKind kind);
 
-  // Applies queued exact-tag evictions. Called by the engine thread and by dump threads, which may
-  // overlap a traversal; the resolved-cache/pending locks provide synchronization.
+  // Dump-path drain: applies only the queued EVICT invalidations and leaves REBUILD entries
+  // pending for the BFS thread (see ChainInvalidationKind). May overlap a traversal; the
+  // resolved-cache/pending locks provide synchronization.
   void drainPendingChainInvalidations();
+
+  // BFS-thread drain (pollWatchedTargets()): applies EVICT entries like the dump path and rebuilds
+  // each REBUILD entry's current-generation cached chain from the frontier via buildChainEvent(),
+  // overwriting it on success and keeping it on failure. Independent of candidate/discovered
+  // slots, so it still works after runPass()'s terminal branch zeroed them.
+  void applyPendingChainInvalidations(jvmtiEnv *jvmti, JNIEnv *jni,
+                                      u64 current_search_ns);
 
   // Clears both pending buffers at cache/tag-generation boundaries without releasing capacity.
   void clearPendingChainInvalidations();
