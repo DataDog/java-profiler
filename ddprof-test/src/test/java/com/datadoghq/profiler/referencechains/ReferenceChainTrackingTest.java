@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -349,7 +350,9 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       ReferenceChainAssertions.JfrChainMatch match = null;
       boolean seededTestKlassTrend = false;
       int totalRounds = 16;
+      int roundsRun = 0;
       for (int round = 1; round <= totalRounds && match == null; round++) {
+        roundsRun = round;
         int newInstances = Math.min(round, 10) * 600;
         List<Object> newLinks = new ArrayList<>(newInstances);
         currentBatch = newLinks; // published before the request - see the allocator's loop
@@ -438,7 +441,8 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       assertNotNull(match,
           "Never observed a datadog.ReferenceChain event whose chain[0] is " + ChainLink.class
               + " after " + gcRootHolder.size() + " retained ChainLink instances across up to "
-              + totalRounds + " population-growth rounds plus a grace period");
+              + totalRounds + " population-growth rounds plus a grace period"
+              + (match == null ? referenceChainDiagnostics(gcRootHolder.get(0), roundsRun) : ""));
       // chain[0] is the *target* object's own class, not its holder's: reconstructChain() appends
       // each visited FrontierEntry's referrer_klass leaf-to-root, and referrer_klass is populated
       // from the *discovered object's own* GetClassSignature at insertion time. The target here is
@@ -503,15 +507,27 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     Files.deleteIfExists(scratchDumpPath);
     Thread allocator = null;
     try {
-      // Same round-growth/retry shape as shouldReconstructReferrerChainToGcRoot() - see that
-      // method's own comment for why the loop self-adjusts rather than committing to a fixed
-      // round count, why per-round scale is sized against ObjectSampler's real 256KiB sampling
-      // floor rather than this test's own "memory=64" request, why totalRounds is capped at
-      // 16 rather than a larger margin above the 10-round minimum (shared-fork heap headroom),
-      // and why per-round growth itself is clamped to round 10 (Math.min(round, 10) below).
+      // Same retry shape as shouldReconstructReferrerChainToGcRoot() - see that method's own
+      // comment for why the loop self-adjusts rather than committing to a fixed round count, why
+      // per-round scale is sized against ObjectSampler's real 256KiB sampling floor rather than
+      // this test's own "memory=64" request, and why totalRounds is capped at 16 rather than a
+      // larger margin above the 10-round minimum (shared-fork heap headroom).
+      //
+      // Growth schedule, unlike the gc-root test: the round*600 growth completes at round
+      // growthRounds (10) - the population trend is already eligible by then. Rounds 11-16 are
+      // quiet poll/maintenance rounds adding only quietTopUpEntries each: enough to keep
+      // CachedPayload's population ring advancing (a stalled ring lets the candidate lapse out of
+      // selectLeakCandidates()), small enough that the BFS gets those rounds plus the grace
+      // period to drain its frontier backlog and reach a leak-tagged CachedPayload inside the
+      // HashMap's Node[] - a map that kept growing through all 16 rounds kept that backlog ahead
+      // of the walk until the retry budget ran out. Static bound: 10*11/2*600 + 6*600 + 1 seed
+      // = 36,601 entries, within the previous all-growth schedule's 69,001.
       ReferenceChainAssertions.JfrChainMatch match = null;
       boolean seededTestKlassTrend = false;
       int totalRounds = 16;
+      int growthRounds = 10;
+      int quietTopUpEntries = 600;
+      int roundsRun = 0;
 
       // Pre-generate every key up front rather than concatenating a fresh String on every put().
       // The key String (plus its backing byte[]) is the same kind of same-instant,
@@ -521,7 +537,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // the sampler has nothing else in flight to compete with once round 1 begins.
       int maxEntries = 0;
       for (int round = 1; round <= totalRounds; round++) {
-        maxEntries += Math.min(round, 10) * 600;
+        maxEntries += round <= growthRounds ? Math.min(round, 10) * 600 : quietTopUpEntries;
       }
       String[] keys = new String[maxEntries];
       for (int i = 0; i < keys.length; i++) {
@@ -560,11 +576,13 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       awaitAllocatorTid(allocator, allocatorTid, allocatorFailure);
 
       for (int round = 1; round <= totalRounds && match == null; round++) {
+        roundsRun = round;
         // Same *600 growth rate as the gc-root test (not *300, this method's previous value):
         // CachedPayload and ChainLink are near-identical in size, so halving the growth rate here
         // bought no headroom and just let CachedPayload's population ring stall short of
-        // KLASS_POPULATION_MIN_FILL_FOR_TREND within the same totalRounds budget.
-        int newEntries = Math.min(round, 10) * 600;
+        // KLASS_POPULATION_MIN_FILL_FOR_TREND within the growth rounds. Past growthRounds only the
+        // quiet top-up - see the schedule comment above.
+        int newEntries = round <= growthRounds ? Math.min(round, 10) * 600 : quietTopUpEntries;
         if (!allocRequests.offer(newEntries)) {
           throw new IllegalStateException("allocRequests queue rejected entry count " + newEntries);
         }
@@ -624,7 +642,8 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       assertNotNull(match,
           "Never observed a datadog.ReferenceChain event whose chain[0] is " + CachedPayload.class
               + " after " + cache.size() + " cached entries across up to " + totalRounds
-              + " population-growth rounds plus a grace period");
+              + " rounds plus a grace period"
+              + (match == null ? referenceChainDiagnostics(cache.get(keys[0]), roundsRun) : ""));
       assertEquals(CachedPayload.class.getName(), match.chain.get(0));
       assertTrue(match.targetTag > 0, "targetTag should be a valid, non-zero JVMTI tag");
       assertTrue(match.depth >= 0, "depth should be a non-negative hop count");
@@ -788,6 +807,28 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       }
       Thread.sleep(1);
     }
+  }
+
+  /**
+   * Failure-only diagnostics for a success-path test's {@code assertNotNull(match, ...)} message:
+   * call it only once the round and grace loops have ended without a match, so a passing run does
+   * no extra work. In a debug-instrumented build it reports the current leak candidates
+   * ({@code selectLeakCandidateKlassIds0()}), the representative's frontier state
+   * ({@code getReferenceChainFrontierStateForTest0()}, -1 = not in the frontier) and resolved
+   * target tag ({@code getReferenceChainResolvedTargetTagForTest0()}), and how many rounds ran.
+   * In a release build the seams do not exist, so it returns {@code ""}.
+   */
+  private static String referenceChainDiagnostics(Object representative, int roundsRun) {
+    if (!ReferenceChainAssertions.isDebugInstrumentedBuild()) {
+      return "";
+    }
+    return " [diagnostics: candidates="
+        + Arrays.toString(ReferenceChainTestHooks.selectLeakCandidateKlassIds0())
+        + " repFrontierState="
+        + ReferenceChainTestHooks.getReferenceChainFrontierStateForTest0(representative)
+        + " repResolvedTargetTag="
+        + ReferenceChainTestHooks.getReferenceChainResolvedTargetTagForTest0(representative)
+        + " roundsRun=" + roundsRun + "]";
   }
 
   /** Bounded wait for one allocator round; same fail-fast policy as awaitAllocatorTid(). */
