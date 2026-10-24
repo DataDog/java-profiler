@@ -225,6 +225,7 @@ public abstract class AbstractProfilerTest {
 
     jfrDump = Files.createTempFile(rootDir, testInfo.getTestMethod().map(m -> m.getDeclaringClass().getSimpleName() + "_" + m.getName()).orElse("unknown") + (testConfig.isEmpty() ? "" : "-" + testConfig.replace('/', '_')), ".jfr");
     profiler = JavaProfiler.getInstance();
+    beforeProfilerStart();
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
     cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);
     wallInterval = parseInterval(command, "wall");
@@ -258,6 +259,17 @@ public abstract class AbstractProfilerTest {
   }
 
   protected void before() throws Exception {
+  }
+
+  /**
+   * Runs after the profiler instance is available but before the recording starts.
+   *
+   * <p>Tests may override this hook when their setup must predate profiler thread-event
+   * registration.
+   *
+   * @throws Exception if setup fails
+   */
+  protected void beforeProfilerStart() throws Exception {
   }
 
   protected void after() throws Exception {
@@ -310,6 +322,7 @@ public abstract class AbstractProfilerTest {
   public final void stopProfiler() {
     if (!stopped) {
       profiler.stop();
+      profiler.clearTraceContext();
       stopped = true;
       checkConfig();
     }
