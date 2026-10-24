@@ -23,14 +23,23 @@ ARG BASE_IMAGE=oraclelinux:7
 FROM ${BASE_IMAGE} as base
 WORKDIR /root
 
+RUN yum -y update ca-certificates \
+ && ln -sf /usr/lib64/pkcs11/p11-kit-trust.so /usr/lib64/nss/libnssckbi.so
 # python3 (3.6.8 on this base repo -- no newer python3/SCL repo exists for
 # Oracle Linux 7) runs the quarantine classifier (.github/scripts/
 # run_tests_with_retry.sh, quarantine.py, flake_report.py) that
 # functional-tests.sh wraps its test run in.
 RUN yum -y install git make zip unzip which wget curl jq gcc-c++ python3 \
  && yum -y clean all
+# OL7 has no fixed ca-certificates package. Preserve every other p11-kit
+# object and its purpose restrictions while removing the compromised roots.
+RUN python3 -c 'from pathlib import Path; p=Path("/usr/share/pki/ca-trust-source/ca-bundle.trust.p11-kit"); mark=b"[p11-kit-object-v1]"; parts=p.read_bytes().split(mark); bad=(b"emSign ECC Root CA - G3", b"AAA Certificate Services"); drop=lambda part: any(name in part for name in bad); assert all(any(name in part for part in parts[1:]) for name in bad); p.write_bytes(parts[0] + b"".join(mark + part for part in parts[1:] if not drop(part)))' \
+ && update-ca-trust extract
 
 RUN curl -s "https://get.sdkman.io" | bash && \
     bash -c "source /root/.sdkman/bin/sdkman-init.sh && sdk install java 21.0.3-tem"
+RUN /root/.sdkman/candidates/java/current/bin/keytool -list -v -cacerts -storepass changeit \
+    | awk -F ': ' '/^Alias name:/{alias=$2} /Owner:.*(emSign ECC Root CA - G3|AAA Certificate Services)/{print alias}' \
+    | while IFS= read -r alias; do /root/.sdkman/candidates/java/current/bin/keytool -delete -cacerts -storepass changeit -alias "$alias"; done
 ENV JAVA_HOME=/root/.sdkman/candidates/java/current
 ENV PATH="/root/.sdkman/candidates/java/current/bin:${PATH}"
