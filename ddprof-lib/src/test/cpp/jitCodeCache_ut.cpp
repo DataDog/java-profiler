@@ -72,9 +72,9 @@ bool finishesWithin(std::chrono::milliseconds timeout, Body body, Release releas
 
 }  // namespace
 
-// Regression for the stub-lock deadlock: a signal-handler lookup must not wait
-// for a registration that holds _stubs_lock exclusively. Before the fix the
-// lookup spun in lockShared() until the lock was released.
+// A signal-handler lookup must not wait for a registration that holds
+// _stubs_lock exclusively: the lookup returns "not found" at once, counts the
+// miss, and finds the stub again after the unlock.
 TEST(JitCodeCacheTest, FindRuntimeStubDoesNotWaitForExclusiveHolder) {
     const void* code = codeAt(0);
     registerStub(code, 64, "jcc_test_busy");

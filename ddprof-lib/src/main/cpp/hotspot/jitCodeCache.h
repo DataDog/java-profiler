@@ -36,8 +36,9 @@ class JitCodeCache {
 private:
     friend class JitCodeCacheTestAccessor;
 
-    // Readers (signal handlers) take it shared with a bounded spin; writers
-    // take it exclusively only to publish what they prepared outside it.
+    // Readers (signal handlers) take it shared and give up while a writer
+    // holds it; writers take it exclusively only to publish what they
+    // prepared outside it.
     static SpinLock _stubs_lock;
     // Orders DynamicCodeGenerated() writers; never taken in a signal handler.
     static Mutex _stubs_write_lock;
@@ -68,9 +69,12 @@ public:
     
     // Finds the runtime stub containing address and copies its start and name
     // out under the shared _stubs_lock (the names are never freed). Returns
-    // false when address is not inside any stub, or without searching when
-    // the lock is held exclusively or the shared spin budget runs out (counted
-    // as STUB_LOOKUP_LOCK_UNAVAILABLE). Safe to call from a signal handler.
+    // false when address is not inside any stub, or without searching while a
+    // registration holds the lock exclusively (counted as
+    // STUB_LOOKUP_LOCK_UNAVAILABLE). Safe to call from a signal handler. On a
+    // false result the stack walk unwinds the frame without the stub start
+    // and, on aarch64, with the legacy heuristics instead of the precomputed
+    // StubUnwindInfo.
     static bool findRuntimeStub(const void *address, const void **start,
                                 const char **name);
 
@@ -79,8 +83,8 @@ public:
     // of its start/name plus the precomputed StubUnwindInfo (NULL when the stub
     // was not classified -- including excluded names such as call_stub -- or
     // when address is not inside any stub; returns false in that case).
-    // Takes _stubs_lock shared with the same bounded spin as
-    // findRuntimeStub() and also returns false when the lock is unavailable.
+    // Takes _stubs_lock shared like findRuntimeStub() and also returns false
+    // while a registration holds the lock exclusively.
     // Copies everything out before releasing the lock; the info objects
     // themselves are never freed (same lifetime as the stub names).
     static bool findRuntimeStubInfo(const void* address, const void** start,

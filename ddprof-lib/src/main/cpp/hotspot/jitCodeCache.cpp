@@ -63,14 +63,11 @@ void JNICALL JitCodeCache::CompiledMethodLoad(jvmtiEnv *jvmti, jmethodID method,
 void JNICALL JitCodeCache::DynamicCodeGenerated(jvmtiEnv *jvmti, const char *name,
                                   const void *address, jint length) {
   ProfiledThread::initCurrentThreadSignalSafe();
-  // Registrations can arrive concurrently from several threads. The writer
-  // mutex orders them, so the state read while preparing below stays valid
-  // until the commit. Signal handlers never take it.
-  MutexLocker writer(_stubs_write_lock);
 #ifdef __aarch64__
-  // Analyze before taking the lock: the classifier decodes every instruction
-  // and allocates. Publication is ordered by the exclusive lock below -- a
-  // reader that finds the stub always finds its info.
+  // Analyze before taking either lock: the classifier decodes every
+  // instruction and allocates, but reads only the stub code. Publication is
+  // ordered by the exclusive lock below -- a reader that finds the stub always
+  // finds its info.
   StubUnwindInfo* stub_info = nullptr;
   if (shouldAnalyzeStub(name)) {
     // Only the adapters blob is known to pack several entry points behind
@@ -82,10 +79,16 @@ void JNICALL JitCodeCache::DynamicCodeGenerated(jvmtiEnv *jvmti, const char *nam
                             : WALKVM_STUB_INFO_UNCLASSIFIED);
   }
 #endif
-  // Every heap allocation and free happens outside the exclusive lock. A
-  // thread that holds the allocator lock can be interrupted by a profiling
-  // signal whose handler looks up a stub; if this thread then blocked in the
-  // allocator while holding _stubs_lock, that lookup could never succeed.
+  // Registrations can arrive concurrently from several threads. The writer
+  // mutex orders them, so the state read while preparing below stays valid
+  // until the commit. Signal handlers never take it.
+  MutexLocker writer(_stubs_write_lock);
+  // Every heap allocation and free happens outside the exclusive lock. The
+  // bounded readers already prevent a deadlock: while the lock is held
+  // exclusively, a stub lookup returns false and the stack walk uses its
+  // fallback unwind. Keeping the allocator out of the exclusive section keeps
+  // that window short: the registering thread cannot block in the allocator
+  // while it holds _stubs_lock.
   CodeCache::PreparedAdd prepared;
   _runtime_stubs.prepareAdd(name, prepared);
 #ifdef __aarch64__
@@ -170,9 +173,10 @@ void JNICALL JitCodeCache::DynamicCodeGenerated(jvmtiEnv *jvmti, const char *nam
 
 bool JitCodeCache::findRuntimeStub(const void *address, const void **start,
                                    const char **name) {
-  // Bounded: the caller is a signal handler, and the exclusive holder may be
-  // the interrupted thread itself.
-  if (!_stubs_lock.tryLockShared(SpinLock::DEFAULT_SHARED_SPIN_BUDGET)) {
+  // Fails only while a writer holds the lock: the caller is a signal handler,
+  // and the writer may be the interrupted thread itself. Competing readers do
+  // not make it fail, because each failed CAS means another reader got in.
+  if (!_stubs_lock.tryLockShared()) {
     Counters::increment(STUB_LOOKUP_LOCK_UNAVAILABLE);
     return false;
   }
@@ -195,8 +199,8 @@ bool JitCodeCache::findRuntimeStub(const void *address, const void **start,
 bool JitCodeCache::findRuntimeStubInfo(const void* address, const void** start,
                                        const char** name, const StubUnwindInfo** info) {
   *info = nullptr;
-  // Bounded for the same reason as findRuntimeStub().
-  if (!_stubs_lock.tryLockShared(SpinLock::DEFAULT_SHARED_SPIN_BUDGET)) {
+  // Same lock acquisition as findRuntimeStub().
+  if (!_stubs_lock.tryLockShared()) {
     Counters::increment(STUB_LOOKUP_LOCK_UNAVAILABLE);
     return false;
   }
