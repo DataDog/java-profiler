@@ -56,7 +56,9 @@ public:
 
 namespace {
 
-const char* const CODE_BASE = (const char*)0x5a6c00000000ULL;
+// The DWARF walker inspects instructions at these synthetic PCs.
+alignas(16) const char SYNTHETIC_CODE[0x1000] = {};
+const char* const CODE_BASE = SYNTHETIC_CODE;
 const char* const LEAF_PC = CODE_BASE + 0x108;
 const char* const BOUNDARY_PC = CODE_BASE + 0x208;
 const char* const CARRIER_PC = CODE_BASE + 0x308;
