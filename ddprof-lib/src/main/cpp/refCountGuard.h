@@ -34,8 +34,10 @@
  * it no matter how many nested guards start or end during the scan.  (When a
  * nested guard moved the outer resource out of active_ptr and back, a scan
  * could read each location while the resource was in the other one.)
- * nested is sized to NESTED_DEPTH; deeper nesting emits a one-time warning and
- * that guard's resource is invisible to the scanner (rare: it requires
+ * nested is sized to NESTED_DEPTH; deeper nesting increments the
+ * REFCOUNT_NESTED_OVERFLOW counter (async-signal-safe; the guard constructor
+ * runs in signal handlers, so it must not log) and that guard's resource is
+ * invisible to the scanner (rare: it requires
  * NESTED_DEPTH+1 nested signal deliveries on the same thread).  The unrecorded
  * guard is the innermost one, the handler running at that moment; recording
  * it by overwriting an entry would move a protected resource again.
