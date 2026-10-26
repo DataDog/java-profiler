@@ -26,13 +26,6 @@ public class JavaProfilerApiSurfaceTest {
         assertNotPublic(JavaProfiler.class.getDeclaredMethod("blockExit", long.class));
     }
 
-    @Test
-    public void nativeMemRefreshSeamIsNotPublicApi() throws Exception {
-        Method m = JavaProfiler.class.getDeclaredMethod("refreshNativeMemCounters0");
-        assertFalse(Modifier.isPublic(m.getModifiers()),
-                "refreshNativeMemCounters0 is a test seam; tests reach it via NativeMemTestHooks");
-    }
-
     // State-mutating hooks into the process-wide profiler singleton: reachable from tests only
     // through the test-source bridge ReferenceChainTestHooks, never from application code.
     private static final Set<String> REFERENCE_CHAIN_TEST_SEAMS = new HashSet<>(Arrays.asList(

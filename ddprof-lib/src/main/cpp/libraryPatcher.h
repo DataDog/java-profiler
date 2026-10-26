@@ -37,7 +37,7 @@ typedef void (*LiveLibraryVisitor)(CodeCache* lib, int tag);
 
 class LibraryPatcher {
   friend class LibraryPatcherTestAccessor;
-  // Restores its GOT slots on stop() with a LiveLibraryWalk.
+  // Patches and restores its malloc hooks with LiveLibraryWalks.
   friend class MallocHooker;
 
 private:
@@ -73,8 +73,7 @@ private:
   // libraryPatcher_linux.cpp). All of LibraryPatcher's work under _lock runs
   // in a walk, and every write it makes through a saved GOT slot comes from
   // a visit: patched libraries are not pinned and can be dlclose()d.
-  // (MallocHooker patches without a walk, pinning each library with
-  // UnloadProtection while writing to it, and restores in a walk.)
+  // MallocHooker also patches and restores its malloc hooks in walks.
   class LiveLibraryWalk {
   public:
     LiveLibraryWalk(LiveLibraryCollector collect, void* ctx, LiveLibraryVisitor visit);

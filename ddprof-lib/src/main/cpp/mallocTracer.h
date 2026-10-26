@@ -27,6 +27,8 @@ struct MallocPatchEntry {
 // and are unpatched on stop() to minimize overhead when not profiling.
 class MallocHooker {
   private:
+    // Guards the patching bookkeeping below off Linux. On Linux patching and
+    // restoring run in LibraryPatcher walks, whose lock guards it instead.
     static Mutex _patch_lock;
     static int _patched_libs;
     static bool _initialized;
@@ -36,15 +38,12 @@ class MallocHooker {
     static const int MAX_MALLOC_ENTRIES = 5 * NUM_IMPORT_TYPES * MAX_NATIVE_LIBS;
     static MallocPatchEntry _entries[MAX_MALLOC_ENTRIES];
     static int _entry_count;
-    // Slots being restored by unpatchLibraries(), taken from _entries under
-    // _patch_lock and restored after releasing it. Only touched on stop().
-    static MallocPatchEntry _restore_entries[MAX_MALLOC_ENTRIES];
-    static int _restore_count;
 
     static void detectNestedMalloc();
     static void patchImport(CodeCache* cc, ImportId id, void* hook_fn, void* orig_fn);
     static void patchSlot(CodeCache* cc, void** location, void* hook_fn, void* orig_fn);
-    static void restoreSlots();
+    static void patchLibrary(CodeCache* cc);
+    static void dropRestoredEntries();
 
   public:
     // Returns true if symbols were successfully resolved.

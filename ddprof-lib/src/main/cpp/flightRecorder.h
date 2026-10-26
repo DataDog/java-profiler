@@ -437,9 +437,7 @@ public:
   // Process-wide malloc arena state (glibc mallinfo2). Flush path only --
   // takes every arena lock, so not async-signal-safe. No-op off glibc 2.33+,
   // and also when glibcMallocActive() reports a replacement allocator.
-  // Static (touches no recording state) so the refreshNativeMemCounters0 test
-  // seam can sample it outside a recording.
-  static void updateMallocArenaStats();
+  void updateMallocArenaStats();
   void writeNativeMem(Buffer *buf);
 
   void writeUnwindFailures(Buffer *buf);

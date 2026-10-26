@@ -7,7 +7,6 @@ package com.datadoghq.profiler.lifecycle;
 
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.JfrEvents;
-import com.datadoghq.profiler.NativeMemTestHooks;
 import com.datadoghq.profiler.Platform;
 
 import org.junit.jupiter.api.Assumptions;
@@ -63,14 +62,12 @@ public class ProfilerLifecycleTest {
         JavaProfiler profiler = JavaProfiler.getInstance();
         assertNotNull(profiler, "Profiler instance must not be null after init");
         System.out.println("[Lifecycle] Step 1: getInstance() - profiler initialized");
-        printNativeMemCounters(profiler, "after init");
 
         // Step 2: First start() via execute()
         Path jfr1 = Files.createTempFile(recordings, "lifecycle_session1_", ".jfr");
         try {
             profiler.execute("start,wall=1ms,cpu=10ms,jfr,file=" + jfr1.toAbsolutePath());
             System.out.println("[Lifecycle] Step 2: First start() - profiler running");
-            printNativeMemCounters(profiler, "after first start");
 
             // Generate some CPU work to produce samples
             generateCpuWork();
@@ -95,7 +92,6 @@ public class ProfilerLifecycleTest {
         try {
             profiler.execute("start,wall=1ms,cpu=10ms,jfr,file=" + jfr2.toAbsolutePath());
             System.out.println("[Lifecycle] Step 4: Second start() - profiler restarted");
-            printNativeMemCounters(profiler, "after second start");
 
             // Generate more CPU work
             generateCpuWork();
@@ -141,7 +137,6 @@ public class ProfilerLifecycleTest {
             try {
                 // Start
                 profiler.execute("start,cpu=10ms,jfr,file=" + jfr.toAbsolutePath());
-                printNativeMemCounters(profiler, "cycle " + cycle + " after start");
 
                 // Generate work
                 generateCpuWork();
@@ -209,7 +204,6 @@ public class ProfilerLifecycleTest {
                 Path jfr = Files.createTempFile(recordings, "concurrent_cycle" + cycle + "_", ".jfr");
                 try {
                     profiler.execute("start,wall=1ms,cpu=10ms,jfr,file=" + jfr.toAbsolutePath());
-                    printNativeMemCounters(profiler, "concurrent cycle " + cycle + " after start");
 
                     // Let profiler run while workers are active
                     Thread.sleep(100);
@@ -253,7 +247,6 @@ public class ProfilerLifecycleTest {
 
             // Start profiler
             profiler.execute("start,cpu=10ms,jfr,file=" + jfr.toAbsolutePath());
-            printNativeMemCounters(profiler, "status test after start");
             String statusRunning = profiler.getStatus();
             assertTrue(statusRunning.contains("Running          : true"),
                     "Status should show running=true after start");
@@ -272,14 +265,12 @@ public class ProfilerLifecycleTest {
 
     /**
      * Prints the native memory counters ({@code native_mem_*}, {@code malloc_*} and the
-     * per-subsystem {@code *_bytes} gauges). The native_mem_* / malloc_* mirrors are
-     * normally only refreshed on the JFR flush path, and start() zeroes all counters, so
-     * they are refreshed explicitly first to give real values after init() and start().
-     * native_mem_avg_bytes is not advanced by the refresh and still reflects the last
-     * flush. Debug counters are only available in builds with COUNTERS enabled.
+     * per-subsystem {@code *_bytes} gauges). Only called after stop(): start() zeroes all
+     * counters and the native_mem_* / malloc_* / codecache_* mirrors are refreshed only
+     * when a JFR chunk is finalized, so values read before stop() are zero or stale.
+     * Debug counters are only available in builds with COUNTERS enabled.
      */
     private static void printNativeMemCounters(JavaProfiler profiler, String transition) {
-        NativeMemTestHooks.refreshNativeMemCounters();
         Map<String, Long> memCounters = new TreeMap<>();
         for (Map.Entry<String, Long> e : profiler.getDebugCounters().entrySet()) {
             if (e.getKey().endsWith("_bytes")) {
