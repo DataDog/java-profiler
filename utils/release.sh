@@ -698,13 +698,46 @@ if gh workflow run release-validated.yml \
         print_info "Watching workflow run ${RUN_ID}..."
         echo "  ${REPO_URL}/actions/runs/${RUN_ID}"
         echo ""
-        if gh run watch "$RUN_ID" --exit-status; then
-            WORKFLOW_CONCLUSION="success"
+        WORKFLOW_CONCLUSION="unknown"
+        for WATCH_ATTEMPT in 1 2 3; do
+            if gh run watch "$RUN_ID" --repo "$REPO" --exit-status; then
+                WORKFLOW_CONCLUSION="success"
+                break
+            fi
+
+            # A failed watch can mean an API connection error. Check the run
+            # itself before deciding that the remote workflow failed.
+            print_warning "Workflow monitoring stopped; checking GitHub for the run's status..."
+            if REMOTE_CONCLUSION=$(gh run view "$RUN_ID" --repo "$REPO" \
+                --json status,conclusion \
+                --jq 'if .status == "completed" then (.conclusion // "unknown") else "unknown" end'); then
+                case "$REMOTE_CONCLUSION" in
+                    success)
+                        WORKFLOW_CONCLUSION="success"
+                        break
+                        ;;
+                    failure|cancelled|timed_out|action_required|startup_failure|stale|neutral|skipped)
+                        WORKFLOW_CONCLUSION="failure"
+                        print_info "GitHub reports workflow conclusion: $REMOTE_CONCLUSION"
+                        break
+                        ;;
+                esac
+            fi
+
+            if [ "$WATCH_ATTEMPT" -lt 3 ]; then
+                print_warning "Reconnecting to the same workflow run ($((WATCH_ATTEMPT + 1))/3)..."
+                sleep 2
+            fi
+        done
+
+        if [ "$WORKFLOW_CONCLUSION" = "success" ]; then
             print_success "✓ Workflow completed successfully!"
-        else
-            WORKFLOW_CONCLUSION="failure"
+        elif [ "$WORKFLOW_CONCLUSION" = "failure" ]; then
             print_error "✗ Workflow failed!"
-            echo "  View logs: gh run view $RUN_ID --log-failed"
+            echo "  View logs: gh run view $RUN_ID --repo $REPO --log-failed"
+        else
+            print_warning "Monitoring could not confirm the workflow result. The remote run may still be running."
+            echo "  Inspect the existing run: ${REPO_URL}/actions/runs/${RUN_ID}"
         fi
     else
         WORKFLOW_CONCLUSION="unknown"
@@ -717,7 +750,7 @@ if gh workflow run release-validated.yml \
         print_info "Next Steps:"
         echo "  1. Verify Maven:  https://repo1.maven.org/maven2/com/datadoghq/ddprof/"
         echo "  2. Check release: ${REPO_URL}/releases"
-    else
+    elif [ "${WORKFLOW_CONCLUSION:-unknown}" = "success" ]; then
         print_info "This was a dry-run. Review the output and run again with --no-dry-run"
     fi
 else
@@ -767,14 +800,13 @@ if [ "$WORKFLOW_SUCCESS" = true ]; then
     elif [ "${WORKFLOW_CONCLUSION:-}" = "failure" ]; then
         print_error "Status: WORKFLOW FAILED"
         echo "  View logs: gh run view $RUN_ID --log-failed"
-    elif [ "$DRY_RUN" == "true" ]; then
-        print_success "Status: DRY-RUN COMPLETED"
-        echo ""
-        echo "  → No actual changes were made."
-        echo "  → To perform the release, run: $0 $RELEASE_TYPE --no-dry-run --commit $SHORT_SHA"
     else
         print_warning "Status: WORKFLOW STATUS UNKNOWN"
-        echo "  Check manually: gh run list --workflow=release-validated.yml --limit 1"
+        if [ -n "$RUN_ID" ]; then
+            echo "  Check the existing run: gh run view $RUN_ID --repo $REPO --json status,conclusion,url"
+        else
+            echo "  Check manually: gh run list --repo $REPO --workflow=release-validated.yml"
+        fi
     fi
 else
     print_error "Status: FAILED TO TRIGGER WORKFLOW"

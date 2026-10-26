@@ -63,12 +63,19 @@ can be cancelled at any time with `q` or Ctrl-C.
 
 A dry run never creates a tag, pushes a branch, or triggers GitLab.
 
+If workflow monitoring loses its API connection, the script checks the run's
+status and reconnects to the same run, making up to three monitoring attempts
+in total. If it cannot confirm the result, it reports `WORKFLOW STATUS UNKNOWN`
+and exits nonzero.
+Check the existing run before starting another release.
+
 ### Testing release automation
 
 `.github/scripts/tests/test_release_automation.sh` is a single hermetic shell
-test. It validates release tag/branch creation, version computation, and
-trivial-PR authorization using temporary local git fixtures. It does not
-load credentials or invoke `gh`, so it cannot publish, tag, push, or merge
+test. It validates release tag/branch creation, version computation,
+trivial-PR authorization, and recovery from workflow monitoring errors using
+temporary local Git repositories and a GitHub CLI fixture. It does not load
+credentials or contact GitHub, so it cannot publish, tag, push, or merge
 anything remotely.
 
 ```bash

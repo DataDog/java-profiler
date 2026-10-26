@@ -337,4 +337,100 @@ if git --git-dir="$REMOTE" show-ref --verify --quiet "refs/tags/v_1.49.0" 2>/dev
 fi
 pass
 
+# --- Release CLI monitoring tests (GitHub CLI fixture, no network) ------------
+
+REMOTE=$(setup_remote)
+WORK=$(setup_work "$REMOTE" main)
+CLI_SHA=$(git -C "$WORK" rev-parse HEAD)
+CLI_BIN="$TEMP_DIR/cli-bin"
+CLI_STATE="$TEMP_DIR/cli-state"
+mkdir "$CLI_BIN" "$CLI_STATE"
+cat > "$CLI_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$CLI_STATE/calls"
+case "$1 $2" in
+  'auth status') echo 'Logged in to github.com account release-test' ;;
+  'repo view')
+    case "$4" in
+      nameWithOwner) echo 'DataDog/java-profiler' ;;
+      url) echo 'https://github.com/DataDog/java-profiler' ;;
+      viewerPermission) echo WRITE ;;
+      *) exit 97 ;;
+    esac
+    ;;
+  'api user') echo release-test ;;
+  'api repos/DataDog/java-profiler/actions/runs?event=workflow_dispatch&per_page=50')
+    printf '%s\n' "$CLI_RUN_ID"
+    ;;
+  'workflow run') exit "$CLI_DISPATCH_EXIT" ;;
+  'run watch')
+    count=0
+    [ ! -f "$CLI_STATE/watches" ] || count=$(cat "$CLI_STATE/watches")
+    printf '%s\n' "$((count + 1))" > "$CLI_STATE/watches"
+    if [ "$count" -eq 0 ]; then
+      exit "$CLI_WATCH_EXIT"
+    fi
+    exit "$CLI_NEXT_WATCH_EXIT"
+    ;;
+  'run view')
+    [ "$CLI_QUERY_EXIT" -eq 0 ] || exit "$CLI_QUERY_EXIT"
+    printf '%s\n' "$CLI_REMOTE_JSON" | jq -r "${@: -1}"
+    ;;
+  *) echo "Unexpected fixture command: $*" >&2; exit 97 ;;
+esac
+EOF
+printf '#!/usr/bin/env bash\nexit 0\n' > "$CLI_BIN/sleep"
+chmod +x "$CLI_BIN/gh" "$CLI_BIN/sleep"
+
+expect_monitor() {
+  local name=$1 expected_exit=$2 expected_status=$3 watches=$4 views=$5
+  shift 5
+  local actual_exit=0
+  rm -f "$CLI_STATE/watches"
+  : > "$CLI_STATE/calls"
+  CLI_OUTPUT=$(
+    cd "$WORK"
+    env PATH="$CLI_BIN:$PATH" CLI_STATE="$CLI_STATE" \
+      CLI_RUN_ID=4242 CLI_DISPATCH_EXIT=0 CLI_WATCH_EXIT=0 CLI_NEXT_WATCH_EXIT=1 \
+      CLI_QUERY_EXIT=0 CLI_REMOTE_JSON='{"status":"completed","conclusion":"success"}' \
+      "$@" bash "$ROOT/utils/release.sh" minor --branch main --commit "$CLI_SHA" 2>&1
+  ) || actual_exit=$?
+  [ "$actual_exit" -eq "$expected_exit" ] ||
+    fail "$name: expected exit $expected_exit, got $actual_exit"
+  [[ "$CLI_OUTPUT" == *"Status: $expected_status"* ]] ||
+    fail "$name: expected summary '$expected_status'"
+  [ "$(awk '/^workflow run / { n++ } END { print n+0 }' "$CLI_STATE/calls")" -eq 1 ] ||
+    fail "$name: workflow must be dispatched exactly once"
+  [ "$(awk '/^run watch / { n++ } END { print n+0 }' "$CLI_STATE/calls")" -eq "$watches" ] ||
+    fail "$name: unexpected watch count"
+  [ "$(awk '/^run view / { n++ } END { print n+0 }' "$CLI_STATE/calls")" -eq "$views" ] ||
+    fail "$name: unexpected status query count"
+  pass
+}
+
+expect_monitor 'watch succeeds' 0 'WORKFLOW SUCCEEDED' 1 0
+expect_monitor 'connection lost after success' 0 'WORKFLOW SUCCEEDED' 1 1 CLI_WATCH_EXIT=1
+expect_monitor 'confirmed workflow failure' 1 'WORKFLOW FAILED' 1 1 \
+  CLI_WATCH_EXIT=1 CLI_REMOTE_JSON='{"status":"completed","conclusion":"failure"}'
+expect_monitor 'confirmed cancellation' 1 'WORKFLOW FAILED' 1 1 \
+  CLI_WATCH_EXIT=1 CLI_REMOTE_JSON='{"status":"completed","conclusion":"cancelled"}'
+expect_monitor 'confirmed timeout' 1 'WORKFLOW FAILED' 1 1 \
+  CLI_WATCH_EXIT=1 CLI_REMOTE_JSON='{"status":"completed","conclusion":"timed_out"}'
+expect_monitor 'monitor reconnects to active run' 0 'WORKFLOW SUCCEEDED' 2 1 \
+  CLI_WATCH_EXIT=1 CLI_NEXT_WATCH_EXIT=0 \
+  CLI_REMOTE_JSON='{"status":"in_progress","conclusion":null}'
+expect_monitor 'monitor cannot reconnect to active run' 1 'WORKFLOW STATUS UNKNOWN' 3 3 \
+  CLI_WATCH_EXIT=1 CLI_REMOTE_JSON='{"status":"in_progress","conclusion":null}'
+expect_monitor 'GitHub status unavailable' 1 'WORKFLOW STATUS UNKNOWN' 3 3 \
+  CLI_WATCH_EXIT=1 CLI_QUERY_EXIT=1
+[[ "$CLI_OUTPUT" != *'Status: WORKFLOW FAILED'* ]] ||
+  fail 'unavailable GitHub status was reported as workflow failure'
+expect_monitor 'completed run has no conclusion' 1 'WORKFLOW STATUS UNKNOWN' 3 3 \
+  CLI_WATCH_EXIT=1 CLI_REMOTE_JSON='{"status":"completed","conclusion":null}'
+expect_monitor 'run discovery exhausted' 1 'WORKFLOW STATUS UNKNOWN' 0 0 CLI_RUN_ID=
+[[ "$CLI_OUTPUT" != *'Status: DRY-RUN COMPLETED'* ]] ||
+  fail 'unknown dry-run status was reported as completed'
+expect_monitor 'dispatch fails' 1 'FAILED TO TRIGGER WORKFLOW' 0 0 CLI_DISPATCH_EXIT=1
+
 echo "PASS: $TESTS hermetic release-automation test groups"
