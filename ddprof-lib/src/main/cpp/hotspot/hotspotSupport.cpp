@@ -780,9 +780,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     }
                 }
 
-                // One shared-lock acquisition returns the stub view plus the
-                // precomputed aarch64 unwind info (null on x64): the signal
-                // handler still takes _stubs_lock exactly once.
+                // At most one bounded shared-lock attempt returns the stub view
+                // plus the precomputed aarch64 unwind info (null on x64). When
+                // the lookup fails, the nmethod's own start and name are used.
                 const void* start;
                 const char* name;
                 const StubUnwindInfo* stub_info = nullptr;
@@ -792,9 +792,10 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     name = nm->name();
                 }
 #else
-                CodeBlob* stub = JitCodeCache::findRuntimeStub(walk_pc.raw());
-                start = stub != NULL ? stub->_start : nm->code();
-                name = stub != NULL ? stub->_name : nm->name();
+                if (!JitCodeCache::findRuntimeStub(walk_pc.raw(), &start, &name)) {
+                    start = nm->code();
+                    name = nm->name();
+                }
 #endif
 
                 if (details) {
@@ -1189,10 +1190,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
 #ifdef __aarch64__
     if (JitCodeCache::findRuntimeStubInfo((const void *)frame.pc(), &stub_start, &stub_name, &stub_info)) {
 #else
-    CodeBlob *stub = JitCodeCache::findRuntimeStub((const void *)frame.pc());
-    if (stub != NULL) {
-      stub_start = stub->_start;
-      stub_name = stub->_name;
+    if (JitCodeCache::findRuntimeStub((const void *)frame.pc(), &stub_start, &stub_name)) {
 #endif
       if (cstack != CSTACK_NO) {
         max_depth -= makeFrame(trace.frames++, BCI_NATIVE_FRAME, stub_name);

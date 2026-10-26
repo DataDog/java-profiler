@@ -182,6 +182,36 @@ Examples:
 
 Single-value commands run one container test configuration immediately. When any dimension expands to multiple cells, the script prints a compact status table first; interactive terminals ask for confirmation, while non-interactive runs require `--run` to execute. Matrix execution prints the status table again after all cells finish and writes summaries to `build/reports/container-matrix/summary.md` and `build/reports/container-matrix/summary.json`. Matrix gtest runs require a short `--gtest-task` name so the task follows each cell's configuration. Cells not run because of `--fail-fast` are reported as cancelled separately from unsupported cells that are skipped.
 
+### `check-signal-reachability.py`
+
+Static async-signal-safety check. Builds a call graph from the relocations of the debug object files (`objdump -dr`) and reports every function reachable from a signal handler or malloc hook that calls an unsafe symbol (heap allocation, locks, stdio, dynamic-loader calls, dynamic TLS, logging). The entry points, unsafe symbols and known findings are data lists at the top of the script. ELF objects only (Linux x64/aarch64); needs GNU `objdump` and `c++filt`.
+
+**Usage:**
+```bash
+./utils/check-signal-reachability.py --obj-dir ddprof-lib/build/obj/main/debug [--allowlist <file>]
+./utils/check-signal-reachability.py --self-test   # planted violations in utils/tests/signal-reachability-fixture.cpp
+./gradlew :ddprof-lib:checkSignalReachability      # opt-in; SKIPPED when the debug objects are not ELF
+```
+
+Exit codes: `0` no findings outside the allowlist (or self-test passed), `1` new findings (one `<object>:<caller> -> <unsafe symbol> (via <path>)` line each), `2` usage/environment error. `--allowlist` replaces the built-in known findings; one entry per line: `<caller>[|<caller>...] -> <unsafe symbol>  # <JIRA-KEY>`.
+
+### Source quality checks
+
+Standalone, stdlib-only checks over the git-tracked files. Each prints one `<path>[:<line>]: <problem>` line per violation and exits `0` clean, `1` violations, `2` environment error; `--root` selects the checkout (default: the one containing the script).
+
+| Script | Checks |
+|---|---|
+| `check-jvm-boundary-includes.py` | Shared code in `ddprof-lib/src/main/cpp` does not `#include "hotspot/"`, `"j9/"` or `"zing/"` headers (quoted or angle-bracket form), except the boundary files and the known exceptions (mirrors `doc/architecture/JvmSupportLayer.md#known-boundary-exceptions`). |
+| `check-doc-index.py` | Every `doc/**/*.md` is linked from `doc/README.md` and has a PascalCase file name. |
+| `check-sigsetjmp-shape.py` | Every `sigsetjmp()` has a `JmpCtxScope` in effect, `savemask` 1, and a landing pad that starts with `SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();` then `<scope>.restore();` (the `guards.h` pattern). The glibc cancellation buffer in `libraryPatcher_linux.cpp` is the one exception. |
+| `check-tracked-artifacts.py` | No tracked path under `docs/sphinx/` or `.sphinx/`, and no `*.scratch*` path. |
+
+**Usage:**
+```bash
+./utils/check-doc-index.py                 # any one check
+./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all four; run by CI (ci.yml source-invariant-checks job)
+```
+
 ### `patch-dd-java-agent.sh`
 
 Patches a `dd-java-agent.jar` with a locally-built ddprof library for quick local testing without a full dd-trace-java rebuild.
