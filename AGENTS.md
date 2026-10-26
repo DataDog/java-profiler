@@ -343,6 +343,14 @@ exception list.
   helpers unless reused or genuinely hard to follow; "why" comments must reference concrete
   mechanisms (e.g. "ASAN's allocator lock is reentrant"), never speculative claims about
   HotSpot/glibc/ASAN internals — if unsure, describe the observable symptom.
+- **RAII for every acquire/release pair** (C/C++). A lock, a heap allocation, or a flag
+  that must be restored is released by a guard or owner destructor, not by a manual call
+  at each exit. Reuse `SharedLockGuard`, `ExclusiveLockGuard`, `OptionalSharedLockGuard`,
+  `MutexLocker`, `CriticalSection` before you add a type. A new owner type is non-copyable
+  and hands over ownership explicitly (the receiver sets the owner's pointer to `nullptr`).
+  A manual pair needs a comment that says why a guard scope cannot express it. In code that
+  shares a lock with signal handlers, end an owner that frees memory outside the exclusive
+  critical section, because its destructor frees at scope end.
 - Always challenge proposals with deep analysis when you have hard evidence.
 
 ## Work Tracking

@@ -98,7 +98,7 @@ sequenceDiagram
     alt "prev_count - 1 fits in NESTED_DEPTH"
         Inner->>Slot: "store nested[prev_count - 1] := resource (seq_cst)"
     else "depth exceeds NESTED_DEPTH"
-        Inner->>Slot: "Log warn once per process; this resource invisible to scanner"
+        Inner->>Slot: "increment REFCOUNT_NESTED_OVERFLOW counter; this resource invisible to scanner"
     end
 ```
 
@@ -107,14 +107,24 @@ resource.  After construction the slot contains:
 - `count == prev_count + 1`
 - `active_ptr == ` the root guard's resource
 - `nested[0..min(prev_count, NESTED_DEPTH)-1]` holding the nested guards'
-  resources; a guard nested deeper than that is not recorded and triggers the
-  one-time overflow warning latched by `s_nested_overflow_warned`.  That
-  unrecorded guard is the innermost one - the handler running at that moment -
+  resources; a guard nested deeper than that is not recorded and increments
+  the `REFCOUNT_NESTED_OVERFLOW` counter (`refcount_nested_overflow`) once per
+  overflowing guard.  It is a counter rather than a log line because the
+  constructor runs in signal handlers, where logging is not
+  async-signal-safe.  That unrecorded guard is the innermost one - the handler
+  running at that moment -
   whereas the earlier displacing protocol lost track of a suspended outer one.
   Either way a drain can then free a resource the thread uses once it
   continues, and it takes `NESTED_DEPTH + 1` nested signal deliveries on one
   thread.  Recording the innermost guard by overwriting an entry would move a
   protected resource again, which is what this protocol avoids.
+
+The overflow counter is written with the other profiler counters as a
+`datadog.ProfilerCounter` event in every JFR chunk
+(`Recording::writeCounters()`), and is readable from Java through
+`JavaProfiler.getDebugCounters()` under `refcount_nested_overflow`.
+`Profiler::resetRecordingState()` zeroes it (`Counters::reset()`), so it counts
+overflows per recording.
 
 The `nested[]` store is `SEQ_CST`.  The caller re-checks its resource right
 after constructing the guard (`CallTraceStorage::put()` reloads
@@ -231,13 +241,14 @@ that drain, with no waiting.
 | "Every resource on a reentrant chain is visible to the scanner up to NESTED_DEPTH" | `nested[prev_count-1]` write in ctor; conditional clear in dtor |
 | "No deadlock between drain and signal handler" | All scans are bounded (100 spins, then up to 5000 × 100 µs sleeps); a timeout is reported to the caller, and `waitForRefCountToClear()` also counts, logs and (DEBUG, non-gtest) aborts |
 | "Slot can be reclaimed after drain returns" | `slot_owners[i] = 0` is written only by the non-reentrant teardown path — destructor or move-assignment overwriting an active guard — and only after `count` has been decremented to 0 |
-| "Nesting beyond NESTED_DEPTH is observable" | One-time `Log::warn` latched via `s_nested_overflow_warned` |
+| "Nesting beyond NESTED_DEPTH is observable" | `REFCOUNT_NESTED_OVERFLOW` counter incremented by each overflowing guard; reported as a `datadog.ProfilerCounter` JFR event and via `JavaProfiler.getDebugCounters()` |
 
 ---
 
 ## Files
 
 - `ddprof-lib/src/main/cpp/refCountGuard.h` — class declaration, `RefCountSlot` layout, `NESTED_DEPTH`.
-- `ddprof-lib/src/main/cpp/refCountGuard.cpp` — implementation, drain loop, overflow warning.
+- `ddprof-lib/src/main/cpp/refCountGuard.cpp` — implementation, drain loop, nested-overflow counter.
+- `ddprof-lib/src/main/cpp/counters.h` — `REFCOUNT_NESTED_OVERFLOW` counter definition.
 - `ddprof-lib/src/main/cpp/stringDictionary.h` — primary user; see [StringDictionary](StringDictionary.md).
 - `ddprof-lib/src/main/cpp/callTraceStorage.cpp`, `callTraceHashTable.cpp` — secondary user; see [CallTraceStorage](CallTraceStorage.md).
