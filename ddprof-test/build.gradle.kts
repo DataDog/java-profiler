@@ -34,7 +34,6 @@ jacoco {
 // instrumentation.
 val coverageTaskNames: Set<String> = setOf("testCoverage", "testSlowCoverage")
 val enableCoverage = project.hasProperty("enableCoverage")
-val requestingCoverageReport = gradle.startParameter.taskNames.any { it.contains("coverageReport") }
 
 // When a coverage report is requested, a handful of known-flaky native-thread/CPU tests
 // (already @RetryingTest-annotated; see NativeThreadTest, DynamicNativeThread,
@@ -150,8 +149,14 @@ tasks.named { it in coverageTaskNames }.configureEach {
   // declare the JaCoCo .exec file as an output but no inputs). The same applies to a deferred
   // failure, whose results are cached like a pass would be.
   outputs.upToDateWhen { false }
-  if (requestingCoverageReport) {
-    deferFailuresToCoverageReport()
+}
+
+// Decided from the resolved task graph, not the CLI task names, so abbreviations
+// (`covRep`) and runs that pull the report in as a dependency defer failures too.
+gradle.taskGraph.whenReady {
+  if (hasTask(":ddprof-lib:coverageReport")) {
+    allTasks.filter { it.project == project && it.name in coverageTaskNames }
+      .forEach { it.deferFailuresToCoverageReport() }
   }
 }
 

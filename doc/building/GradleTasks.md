@@ -15,13 +15,14 @@ This document describes the custom Gradle tasks available in the java-profiler p
 
 ### Native Library Compilation
 
-Tasks are generated for each active build configuration (release, debug, asan, tsan, fuzzer;
-see `ConfigurationPresets.kt`). Configuration availability depends on platform and compiler
-capabilities (the build logs `Active configurations: ...` during configuration):
+Tasks are generated for each active build configuration (release, debug, asan, tsan, fuzzer,
+coverage; see `ConfigurationPresets.kt`). Configuration availability depends on platform and
+compiler capabilities (the build logs `Active configurations: ...` during configuration):
 - **release/debug**: Always available
 - **asan**: Available when the ASan runtime is found for the selected compiler (not on musl)
 - **tsan**: Available when the TSan runtime is found for the selected compiler (not on musl)
 - **fuzzer**: Available when clang with libFuzzer support is detected (not on musl)
+- **coverage**: Only with `-PenableCoverage` (see [Coverage Tasks](#coverage-tasks))
 
 In practice the sanitizer configs are active on Linux glibc CI images and usually inactive on
 macOS with Apple clang, so tasks such as `gtestAsan` / `testAsan` simply do not exist there.
@@ -162,6 +163,29 @@ Requires clang with `-fsanitize=fuzzer` (on macOS, Homebrew LLVM). Without it th
 with a warning; `listFuzzTargets` still works.
 Crashes are written to `ddprof-lib/fuzz/build/fuzz-crashes/`.
 
+## Coverage Tasks
+
+Exist only with `-PenableCoverage`. Prerequisites (gcovr 8.3+, gtest, make on Linux),
+the debug-only scope of the C++ report, and container setup are in
+[CodeCoverage](CodeCoverage.md).
+
+```
+:ddprof-lib:coverageReport          # C++ (gcovr) + Java (JaCoCo) reports; runs everything below
+:ddprof-lib:checkCoverageTools      # Preflight: compiler, gcov, gtest, make; gcovr if the report is requested
+:ddprof-lib:gtestCoverage           # gtests against the coverage config
+:ddprof-test:testCoverage           # Java tests against the instrumented library, with JaCoCo
+:ddprof-test:testSlowCoverage       # Same, for tests tagged `slow`
+:ddprof-test:jacocoTestReport       # Java half of coverageReport
+```
+
+**Example:**
+```bash
+./gradlew :ddprof-lib:coverageReport -PenableCoverage
+```
+
+Reports are written to `ddprof-lib/build/reports/coverage/{cpp,java}/`. Java test
+failures are deferred until both reports are written; `coverageReport` then fails.
+
 ## Task Dependency Graph
 
 ```
@@ -242,5 +266,6 @@ See `gradle.properties.template` for all available properties:
 | `native.forceCompiler` | Force specific C++ compiler (`clang++`, `g++`, or a path) |
 | `enableFaultInjection` | Compile release/debug with `-D__FAULT_INJECTION__` |
 | `enableSamplerPerf` | Compile release/debug with `-D__SAMPLER_PERF__` (see `doc/reference/SamplerPerfCounters.md`) |
+| `enableCoverage` | Activate the `coverage` configuration and the coverage tasks (see [CodeCoverage](CodeCoverage.md)) |
 | `ddprof_version` | Override project version |
 | `CI` | Enable CI-specific behavior |
