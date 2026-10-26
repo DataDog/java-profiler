@@ -51,9 +51,15 @@ int CTimer::_max_timers = 0;
 int *CTimer::_timers = NULL;
 CStack CTimer::_cstack;
 bool CTimer::_enabled = false;
+bool CTimer::_registration_open = false;
 int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
+  // The pthread_create hook is persistent and keeps calling in between
+  // recordings, when this engine must not arm timers.
+  if (!__atomic_load_n(&_registration_open, __ATOMIC_ACQUIRE)) {
+    return -1;
+  }
   if (tid >= _max_timers) {
     Log::warn("tid[%d] > pid_max[%d]. Restart profiler after changing pid_max",
               tid, _max_timers);
@@ -115,6 +121,15 @@ int CTimer::registerThread(int tid) {
     }
     return -1;
   }
+  // stop() may have closed registration and swept _timers between the check
+  // above and publishing this timer. The CAS that published it is a full
+  // barrier, and stop() fences after closing, so either its sweep sees the
+  // timer or this load sees the window closed; delete the timer if it is
+  // still ours.
+  if (!__atomic_load_n(&_registration_open, __ATOMIC_SEQ_CST)) {
+    unregisterThread(tid);
+    return -1;
+  }
   return 0;
 }
 
@@ -165,6 +180,10 @@ Error CTimer::start(Arguments &args) {
 
   OS::installSignalHandler(_signal, signalHandler);
 
+  // Open before listing threads, so a thread created meanwhile registers
+  // itself; a thread listed too just loses the race for its slot.
+  __atomic_store_n(&_registration_open, true, __ATOMIC_SEQ_CST);
+
   // Register all existing threads. Individual failures are benign — a thread
   // may exit between listThreads() and registerThread(), and new threads
   // will register themselves on creation. check() already validated that the
@@ -179,6 +198,9 @@ Error CTimer::start(Arguments &args) {
 }
 
 void CTimer::stop() {
+  // Close before sweeping; see the matching check in registerThread().
+  __atomic_store_n(&_registration_open, false, __ATOMIC_SEQ_CST);
+  __atomic_thread_fence(__ATOMIC_SEQ_CST);
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);
   }

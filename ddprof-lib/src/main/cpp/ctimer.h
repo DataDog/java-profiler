@@ -33,6 +33,10 @@ protected:
   // Accessed from signal handlers (including CTimerJvmti subclass), so must
   // be async-signal-safe. Mutated via enableEvents().
   static bool _enabled;
+  // Whether registerThread() may arm timers: open from start() until stop().
+  // Unlike _enabled, it also covers the window between start() and
+  // enableEvents(true), when threads must already be registered.
+  static bool _registration_open;
 
   static long _interval;
   static CStack _cstack;

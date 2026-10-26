@@ -51,7 +51,6 @@ bool VM::_zing = false;
 bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
 bool VM::_is_adaptive_gc_boundary_flag_set = false;
-bool VM::_attached = false;
 
 jvmtiExtensionFunction VM::_request_stack_trace = nullptr;
 jvmtiExtensionFunction VM::_init_request_stack_trace = nullptr;
@@ -459,8 +458,6 @@ void JNICALL ForwardedGarbageCollectionFinish(jvmtiEnv *jvmti_env) {
 
 bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   TEST_LOG("VM::initProfilerBridge");
-  _attached = attach;  // Track attach mode for later use
-
   if (!initShared(vm)) {
     return false;
   }
@@ -572,7 +569,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   functions->RedefineClasses = RedefineClassesHook;
   functions->RetransformClasses = RetransformClassesHook;
 
-  // GenerateEvents calls for attach mode are now in
+  // Code generated before the persistent events are enabled is replayed by
   // Profiler::enablePersistentJvmtiEvents() (called on first start).
   if (!attach) {
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, NULL);

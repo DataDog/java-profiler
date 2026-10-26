@@ -8,17 +8,17 @@
 #define _MALLOCTRACER_H
 
 #include <stdint.h>
+#include "codeCache.h"
 #include "engine.h"
 #include "event.h"
 #include "mutex.h"
 #include "pidController.h"
 
-class CodeCache;
-
 // Tracks a patched GOT slot for malloc hooks, enabling safe restoration.
 struct MallocPatchEntry {
   CodeCache* _lib;      // Library containing the patched slot
   void** _location;     // Address of the GOT slot
+  void* _hook;          // Hook written to the slot
   void* _orig;          // Original function pointer before patching
 };
 
@@ -31,13 +31,20 @@ class MallocHooker {
     static int _patched_libs;
     static bool _initialized;
 
-    // Up to 5 imports per library: malloc, calloc, realloc, posix_memalign, aligned_alloc
-    static const int MAX_MALLOC_ENTRIES = 5 * 512;  // 5 imports * MAX_NATIVE_LIBS
+    // Up to 5 imports per library (malloc, calloc, realloc, posix_memalign,
+    // aligned_alloc), each with up to NUM_IMPORT_TYPES relocation slots
+    static const int MAX_MALLOC_ENTRIES = 5 * NUM_IMPORT_TYPES * MAX_NATIVE_LIBS;
     static MallocPatchEntry _entries[MAX_MALLOC_ENTRIES];
     static int _entry_count;
+    // Slots being restored by unpatchLibraries(), taken from _entries under
+    // _patch_lock and restored after releasing it. Only touched on stop().
+    static MallocPatchEntry _restore_entries[MAX_MALLOC_ENTRIES];
+    static int _restore_count;
 
     static void detectNestedMalloc();
+    static void patchImport(CodeCache* cc, ImportId id, void* hook_fn, void* orig_fn);
     static void patchSlot(CodeCache* cc, void** location, void* hook_fn, void* orig_fn);
+    static void restoreSlots();
 
   public:
     // Returns true if symbols were successfully resolved.
