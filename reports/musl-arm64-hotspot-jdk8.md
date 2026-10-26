@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk8
 
 ## musl-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-10-26 06:58:46 EDT
+**Date:** 2026-10-26 07:41:00 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 111 |
-| Sample Rate | 1.85/sec |
-| Health Score | 116% |
-| Threads | 8 |
+| CPU Samples | 107 |
+| Sample Rate | 1.78/sec |
+| Health Score | 111% |
+| Threads | 10 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 107 |
-| Sample Rate | 1.78/sec |
-| Health Score | 111% |
-| Threads | 13 |
+| CPU Samples | 134 |
+| Sample Rate | 2.23/sec |
+| Health Score | 139% |
+| Threads | 12 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1793011806 48
-1793011811 48
-1793011816 48
-1793011821 48
-1793011826 48
-1793011831 48
-1793011836 48
-1793011841 48
-1793011846 48
-1793011851 48
-1793011856 48
-1793011861 48
-1793011866 48
-1793011871 48
-1793011876 48
-1793011881 48
-1793011886 48
-1793011891 48
-1793011896 48
-1793011901 48
+1793014528 48
+1793014533 48
+1793014538 48
+1793014543 48
+1793014548 48
+1793014553 48
+1793014558 48
+1793014563 48
+1793014568 48
+1793014573 48
+1793014578 48
+1793014583 48
+1793014588 48
+1793014593 48
+1793014598 48
+1793014603 48
+1793014608 48
+1793014613 48
+1793014618 48
+1793014623 48
 ```
 </details>
 
