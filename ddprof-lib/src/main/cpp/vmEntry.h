@@ -148,6 +148,7 @@ private:
   static bool _can_sample_objects;
   static bool _can_intercept_binding;
   static bool _is_adaptive_gc_boundary_flag_set;
+  static bool _attached;  // True if loaded via attach (JNI), false if via Agent_OnLoad
   static CodeCache *_libjvm;
 
   // HotSpot JFR async stack-trace extension (optional, JDK 27+).
@@ -223,6 +224,9 @@ public:
   static bool isUseAdaptiveGCBoundarySet() {
     return _is_adaptive_gc_boundary_flag_set;
   }
+
+  // True if the profiler was loaded via JNI attach, false if via Agent_OnLoad
+  static bool isAttached() { return _attached; }
 
   static Arguments& arguments();
 

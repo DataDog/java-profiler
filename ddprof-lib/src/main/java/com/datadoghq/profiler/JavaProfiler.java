@@ -482,6 +482,13 @@ public final class JavaProfiler {
 
     private static native String[] describeDebugCounters0();
 
+    /**
+     * Test seam: copies the current native-memory totals, native-symbol table sizes and glibc
+     * malloc arena state into the debug counters, which are otherwise only refreshed on the JFR flush path. Read-only
+     * with respect to profiler state; works whether or not the profiler is running.
+     */
+    static native void refreshNativeMemCounters0();
+
     private static native void recordSettingEvent0(String name, String value, String unit);
 
     private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);

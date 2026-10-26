@@ -13,19 +13,37 @@
 #include "mutex.h"
 #include "pidController.h"
 
+class CodeCache;
+
+// Tracks a patched GOT slot for malloc hooks, enabling safe restoration.
+struct MallocPatchEntry {
+  CodeCache* _lib;      // Library containing the patched slot
+  void** _location;     // Address of the GOT slot
+  void* _orig;          // Original function pointer before patching
+};
+
 // Manages GOT-patching for malloc interception across all loaded native libraries.
+// Unlike pthread_create hooks (persistent), malloc hooks are recording-specific
+// and are unpatched on stop() to minimize overhead when not profiling.
 class MallocHooker {
   private:
     static Mutex _patch_lock;
     static int _patched_libs;
     static bool _initialized;
 
+    // Up to 5 imports per library: malloc, calloc, realloc, posix_memalign, aligned_alloc
+    static const int MAX_MALLOC_ENTRIES = 5 * 512;  // 5 imports * MAX_NATIVE_LIBS
+    static MallocPatchEntry _entries[MAX_MALLOC_ENTRIES];
+    static int _entry_count;
+
     static void detectNestedMalloc();
+    static void patchSlot(CodeCache* cc, void** location, void* hook_fn, void* orig_fn);
 
   public:
     // Returns true if symbols were successfully resolved.
     static bool initialize();
     static void patchLibraries();
+    static void unpatchLibraries();
     static void installHooks();
 };
 

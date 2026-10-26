@@ -182,10 +182,11 @@ int LibraryPatcher::visit_loaded_object(struct dl_phdr_info* info, size_t size, 
   return 0;
 }
 
-void LibraryPatcher::initialize() {
+void LibraryPatcher::initialize_persistent() {
   if (!_initialized.load(std::memory_order_acquire)) {
     _size = 0;
     // Release so the reset above is visible to any thread that sees the flag.
+    // Once set, pthread_create patches are persistent across stop/start cycles.
     _initialized.store(true, std::memory_order_release);
   }
 }
@@ -635,19 +636,13 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
 }
 
 void LibraryPatcher::unpatch_libraries() {
-  TEST_LOG("Restore libraries");
-  // Entries of unloaded libraries are dropped without being written.
-  LiveLibraryWalk walk(
-      [](void*) {
-        for (int index = 0; index < _size; index++) {
-          add_live_candidate(_patched_entries[index]._lib, index);
-        }
-      },
-      nullptr,
-      [](CodeCache* lib, int index) {
-        __atomic_store_n(_patched_entries[index]._location, _patched_entries[index]._func, __ATOMIC_RELAXED);
-      });
-  _size = 0;
+  // Persistent patches (pthread_create, sigaction) are never unpatched.
+  // They survive stop/start cycles and remain installed for the lifetime
+  // of the process.
+  //
+  // Only socket patches are recording-specific and get unpatched on stop().
+  TEST_LOG("Unpatch libraries: only socket hooks");
+  unpatch_socket_functions();
 }
 
 void LibraryPatcher::patch_pthread_create() {

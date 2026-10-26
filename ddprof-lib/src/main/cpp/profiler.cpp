@@ -1438,6 +1438,12 @@ Error Profiler::init() {
       _state.store(ERROR, std::memory_order_release);
       return Error("Profiler encountered fatal error");
     }
+
+    // Initialize persistent library patches (pthread_create).
+    // These patches survive stop/start cycles and are never unpatched.
+    // Must be done after JVMSupport::initialize() as the pthread_create hook
+    // calls Profiler::registerThread() which needs ProfiledThread TLS to exist.
+    LibraryPatcher::initialize_persistent();
   }
   // Unlike checkState(), init() does not reject a RUNNING/TERMINATED
   // profiler: it is idempotent per-thread setup for the Java API
@@ -1634,9 +1640,15 @@ Error Profiler::start(Arguments &args, bool reset) {
   // above: initExecution() picks the jmethodID mode from cstackMode().
   JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
 
-  // Must precede the first updateSymbols(): it is what allows LibraryPatcher to
-  // start patching, and the hooks it installs assume a running profiler.
-  LibraryPatcher::initialize();
+  // Enable persistent JVMTI events on first start - these track JVM metadata
+  // (classes, JIT compilations, native bindings) needed for accurate profiling.
+  // Once enabled, they stay enabled across stop/start cycles.
+  if (!_jvmti_events_enabled) {
+    enablePersistentJvmtiEvents();
+  }
+
+  // LibraryPatcher::initialize_persistent() is called from init(), so
+  // pthread_create patching is already enabled by the time we reach here.
 
   // Kernel symbols are useful only for perf_events without --all-user
   _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
@@ -2112,6 +2124,37 @@ void Profiler::switchThreadEvents(jvmtiEventMode mode) {
     jvmti->SetEventNotificationMode(mode, JVMTI_EVENT_THREAD_END, NULL);
     _thread_events_state = mode;
   }
+}
+
+void Profiler::enablePersistentJvmtiEvents() {
+  // Enable persistent JVMTI events for JVM metadata tracking.
+  // These are enabled once on first start() and never disabled, surviving
+  // stop/start cycles for the lifetime of the process.
+  jvmtiEnv *jvmti = VM::jvmti();
+
+  // CLASS_LOAD/CLASS_PREPARE: Required for jmethodID preloading.
+  // AsyncGetCallTrace needs pre-allocated jmethodIDs (see JVMSupport::loadMethodIDsIfNeeded).
+  jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_LOAD, NULL);
+  jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_PREPARE, NULL);
+
+  // DYNAMIC_CODE_GENERATED: Tracks JIT-generated code (stubs, adapters).
+  jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL);
+
+  // NATIVE_METHOD_BIND: Tracks JNI native method bindings for VMStructs.
+  jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, NULL);
+
+  // COMPILED_METHOD_LOAD: Tracks JIT-compiled methods (when CodeHeap is not available).
+  if (VM::hotspot_version() == 0 || !CodeHeap::available()) {
+    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL);
+  }
+
+  // For attach mode, generate events for already-loaded/compiled code.
+  if (VM::isAttached()) {
+    jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
+    jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
+  }
+
+  _jvmti_events_enabled = true;
 }
 
 Error Profiler::runInternal(Arguments &args, std::ostream &out) {

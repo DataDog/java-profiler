@@ -24,10 +24,12 @@
 #include "counters.h"
 #include "common.h"
 #include "engine.h"
+#include "flightRecorder.h"
 #include "hotspot/vmStructs.inline.h"
 #include "incbin.h"
 #include "jvmSupport.h"
 #include "jvmThread.h"
+#include "nativeMem.h"
 #include "os.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
@@ -283,6 +285,21 @@ Java_com_datadoghq_profiler_JavaProfiler_getDebugCounters0(JNIEnv *env,
                                   (jlong)Counters::size());
 #else
   return env->NewDirectByteBuffer(nullptr, 0);
+#endif // COUNTERS
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_refreshNativeMemCounters0(
+    JNIEnv *env, jclass unused) {
+#ifdef COUNTERS
+  // Same mirroring as Recording::capturePostFlushNativeMem(): read-only, and
+  // deliberately not NativeMem::sample(), which would advance the moving-average
+  // window. NATIVE_MEM_AVG_BYTES therefore reflects the last flush-path sample.
+  Counters::set(NATIVE_MEM_LIVE_BYTES, NativeMem::liveTotal());
+  Counters::set(NATIVE_MEM_AVG_BYTES, NativeMem::avgTotal());
+  Counters::set(NATIVE_MEM_MAX_BYTES, NativeMem::maxTotal());
+  Recording::updateMallocArenaStats();
+  Profiler::instance()->updateNativeLibMemStats();
 #endif // COUNTERS
 }
 
