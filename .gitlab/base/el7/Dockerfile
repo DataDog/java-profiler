@@ -1,3 +1,5 @@
+# Copyright 2026, Datadog, Inc.
+
 # Runtime-only image for exercising the shipped x64 binary on its actual
 # glibc floor (2.17). Oracle Linux 7 is the best-maintained EL7 derivative —
 # live CDN, current package levels, no ELS subscription needed — see PR #790.

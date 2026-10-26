@@ -1,3 +1,5 @@
+# Copyright 2026, Datadog, Inc.
+
 # CI always passes BASE_IMAGE explicitly (OPENJDK_BASE_IMAGE /
 # OPENJDK_BASE_IMAGE_ARM64), both of which are this same digest: the shipped
 # binaries are built elsewhere (.gitlab/base/el8/Dockerfile), so neither arch

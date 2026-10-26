@@ -1,3 +1,5 @@
+# Copyright 2026, Datadog, Inc.
+
 # Build image for the shipped glibc binaries, both architectures.
 #
 # AlmaLinux 8 (glibc 2.28) with gcc-toolset-14. Release builds link

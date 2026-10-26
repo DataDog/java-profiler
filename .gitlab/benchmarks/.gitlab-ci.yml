@@ -65,7 +65,7 @@ generate-benchmarks-child-pipeline:
         echo "Branch is below another PR in its stack — benchmarks skipped"
         cat > generated-benchmarks.yml << 'NOOP'
       skip-benchmarks:
-        image: alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+        image: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:newest
         tags: ["arch:amd64"]
         script:
           - echo "Branch is not the top of its PR stack — skipping benchmarks"
