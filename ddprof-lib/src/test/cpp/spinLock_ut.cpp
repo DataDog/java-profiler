@@ -19,6 +19,7 @@
 #include "../../main/cpp/gtest_crash_handler.h"
 #include <atomic>
 #include <thread>
+#include <vector>
 
 static constexpr char SPINLOCK_TEST_NAME[] = "SpinLockTest";
 
@@ -113,4 +114,52 @@ TEST_F(SpinLockTest, TryLockShared_ExclusiveHeld_ReturnsFalse) {
 TEST_F(SpinLockTest, TryLockShared_Free_ReturnsTrue) {
     EXPECT_TRUE(lock.tryLockShared());
     lock.unlockShared();
+}
+
+// NO_SPIN_BUDGET: an exclusive holder still makes the guard fail at once.
+TEST_F(SpinLockTest, OptionalGuard_NoSpinBudget_ExclusiveHeld_NotOwned) {
+    lock.lock();
+    {
+        OptionalSharedLockGuard g(&lock, SpinLock::NO_SPIN_BUDGET);
+        EXPECT_FALSE(g.ownsLock());
+    }
+    lock.unlock();
+}
+
+// NO_SPIN_BUDGET: on a free lock the guard acquires and releases on destruction.
+TEST_F(SpinLockTest, OptionalGuard_NoSpinBudget_Free_OwnedAndReleased) {
+    {
+        OptionalSharedLockGuard g(&lock, SpinLock::NO_SPIN_BUDGET);
+        EXPECT_TRUE(g.ownsLock());
+        EXPECT_FALSE(lock.tryLock());
+    }
+    EXPECT_TRUE(lock.tryLock());
+    lock.unlock();
+}
+
+// NO_SPIN_BUDGET: reader contention alone never makes the guard fail. Readers
+// on other threads race the CAS continuously; every acquisition must succeed.
+TEST_F(SpinLockTest, OptionalGuard_NoSpinBudget_ReaderContention_AlwaysOwned) {
+    std::atomic<bool> stop{false};
+    std::vector<std::thread> contenders;
+    for (int t = 0; t < 4; t++) {
+        contenders.emplace_back([&] {
+            while (!stop.load(std::memory_order_relaxed)) {
+                lock.lockShared();
+                lock.unlockShared();
+            }
+        });
+    }
+    int failures = 0;
+    for (int i = 0; i < 100000; ++i) {
+        OptionalSharedLockGuard g(&lock, SpinLock::NO_SPIN_BUDGET);
+        if (!g.ownsLock()) {
+            failures++;
+        }
+    }
+    stop.store(true, std::memory_order_relaxed);
+    for (auto& t : contenders) {
+        t.join();
+    }
+    EXPECT_EQ(0, failures);
 }
