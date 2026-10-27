@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk21
 
 ## glibc-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-10-27 19:06:20 EDT
+**Date:** 2026-10-27 19:15:09 EDT
 
 ### Configuration
 | Setting | Value |
@@ -19,7 +19,7 @@ title: glibc-x64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | CPU Cores (start) | 96 |
-| CPU Cores (end) | 96 |
+| CPU Cores (end) | 87 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 461 |
-| Sample Rate | 7.68/sec |
-| Health Score | 480% |
+| CPU Samples | 477 |
+| Sample Rate | 7.95/sec |
+| Health Score | 497% |
 | Threads | 9 |
-| Allocations | 385 |
+| Allocations | 345 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 582 |
-| Sample Rate | 9.70/sec |
-| Health Score | 606% |
+| CPU Samples | 579 |
+| Sample Rate | 9.65/sec |
+| Health Score | 603% |
 | Threads | 10 |
-| Allocations | 500 |
+| Allocations | 479 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
+<summary>CPU Timeline (2 unique values: 87-96 cores)</summary>
 
 ```
-1793142121 96
-1793142126 96
-1793142131 96
-1793142136 96
-1793142141 96
-1793142146 96
-1793142151 96
-1793142156 96
-1793142161 96
-1793142166 96
-1793142171 96
-1793142176 96
-1793142181 96
-1793142186 96
-1793142191 96
-1793142196 96
-1793142201 96
-1793142206 96
-1793142211 96
-1793142216 96
+1793142533 96
+1793142538 96
+1793142543 96
+1793142548 96
+1793142553 96
+1793142558 96
+1793142563 96
+1793142568 96
+1793142573 96
+1793142578 96
+1793142583 96
+1793142588 96
+1793142593 96
+1793142598 96
+1793142603 96
+1793142608 96
+1793142613 96
+1793142618 87
+1793142623 87
+1793142628 87
 ```
 </details>
 
