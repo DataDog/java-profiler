@@ -434,7 +434,16 @@ public final class JavaProfiler {
      * Begins an explicitly instrumented {@link Thread#sleep(long) sleeping} interval on the current
      * platform thread. The resulting {@code TaskBlock} event is classified as {@code SLEEPING}.
      * The returned token is bound to the current thread and must be passed to {@link
-     * #endTaskBlock(long, long, long)}.
+     * #endTaskBlock(long, long, long)}. Call {@code endTaskBlock} in a {@code finally} block so
+     * that the interval is closed on every exit path, including exceptions.
+     *
+     * <p>A thread has at most one active interval. If an interval is still open when this method
+     * is called again on the same thread (a nested call, or a previous interval whose {@code
+     * endTaskBlock} was never reached), the open interval is discarded without an event and this
+     * call proceeds as if no interval were open. A later {@code endTaskBlock} with the discarded
+     * token returns {@code false}. The open interval is kept only when this call returns {@code 0}
+     * because TaskBlock recording is inactive, the current thread is virtual, or the profiler
+     * cannot track the current thread.
      *
      * @return an opaque token, or {@code 0} when the interval could not be armed or the current
      *         thread is virtual; any non-zero value, including a negative value, is valid

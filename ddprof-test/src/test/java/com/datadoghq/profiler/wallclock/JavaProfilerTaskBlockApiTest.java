@@ -23,6 +23,7 @@ import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -65,14 +66,44 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   public void invalidAndNestedTokensDoNotLoseCurrentOwner() throws Exception {
     AtomicBoolean recorded = new AtomicBoolean();
     runWorker(() -> {
+      long first = profiler.beginTaskBlock();
+      assertTrue(first != 0);
       long token = profiler.beginTaskBlock();
-      assertTrue(token != 0);
-      assertEquals(0L, profiler.beginTaskBlock());
+      assertTrue(token != 0, "a nested begin must supersede the open interval");
+      assertNotEquals(first, token);
+      assertFalse(profiler.endTaskBlock(first, BLOCKER, UNBLOCKING_SPAN_ID),
+          "the superseded token must no longer close an interval");
       assertFalse(profiler.endTaskBlock(token + 1, BLOCKER, UNBLOCKING_SPAN_ID));
       Thread.sleep(200L);
       recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
     });
     assertTrue(recorded.get());
+  }
+
+  @Test
+  public void abandonedIntervalDoesNotDisableTaskBlockForThread() throws Exception {
+    AtomicLong abandoned = new AtomicLong();
+    AtomicBoolean recorded = new AtomicBoolean();
+    AtomicBoolean abandonedEnd = new AtomicBoolean(true);
+    runWorker(() -> {
+      try {
+        abandoned.set(profiler.beginTaskBlock());
+        throw new IllegalStateException("exit without endTaskBlock");
+      } catch (IllegalStateException expected) {
+        // Simulates a caller that skips endTaskBlock on an exception path.
+      }
+      long token = profiler.beginTaskBlock();
+      assertTrue(token != 0, "an abandoned interval must not disable TaskBlock for the thread");
+      Thread.sleep(200L);
+      recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+      abandonedEnd.set(profiler.endTaskBlock(abandoned.get(), BLOCKER, UNBLOCKING_SPAN_ID));
+    });
+    assertTrue(abandoned.get() != 0);
+    assertTrue(recorded.get());
+    assertFalse(abandonedEnd.get());
+
+    stopProfiler();
+    assertTrue(getRecordedCounterValue("task_block_recovered_abandoned") > 0);
   }
 
   @Test

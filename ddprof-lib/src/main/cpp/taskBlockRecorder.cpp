@@ -24,6 +24,21 @@ bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks) {
   return end_ticks > start_ticks && end_ticks - start_ticks >= min_ticks;
 }
 
+bool recoverAbandonedTaskBlock(ProfiledThread* current,
+                               WallClockBlockTracker* tracker,
+                               ThreadFilter::SlotID current_slot) {
+  u64 abandoned = current->abandonTaskBlock();
+  if (abandoned == 0) return false;
+  Counters::increment(TASK_BLOCK_RECOVERED_ABANDONED);
+  ThreadFilter::SlotID slot_id = -1;
+  u64 generation = 0;
+  if (WallClockBlockTracker::decodeBlockRunToken(abandoned, slot_id, generation) &&
+      slot_id == current_slot) {
+    tracker->exitBlockedRun(slot_id, generation);
+  }
+  return true;
+}
+
 bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
                            WallClockBlockTracker* tracker, jthread thread,
                            int start_depth, u64 block_token, u64 blocker,

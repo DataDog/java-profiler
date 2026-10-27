@@ -99,6 +99,104 @@ TEST_F(TaskBlockRecorderTest, RotationRejectsNewActivity) {
   profiler->leaveTaskBlockActivity();
 }
 
+class AbandonedTaskBlockTest : public TaskBlockRecorderTest {
+protected:
+  static constexpr int kTid = 22201;
+  ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  ThreadFilter::SlotID slot_id = -1;
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current{
+      nullptr, ProfiledThread::deleteForTest};
+
+  void SetUp() override {
+    TaskBlockRecorderTest::SetUp();
+    filter.setBlockTracker(&tracker);
+    filter.init("", true);
+    slot_id = filter.registerThread(kTid);
+    ASSERT_GE(slot_id, 0);
+    current.reset(ProfiledThread::forTid(kTid));
+    current->setFilterSlotId(slot_id);
+  }
+
+  // Arms a TASK_BLOCK run and its TLS interval, as beginTaskBlock0 does.
+  u64 beginTaskBlock() {
+    u64 token = tracker.enterBlockedRun(
+        &filter, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+    Context context{};
+    if (token == 0 || !current->taskBlockEnter(token, TSC::ticks(), context)) {
+      return 0;
+    }
+    return token;
+  }
+
+  BlockRunOwner owner() {
+    return tracker.slotForId(slot_id)->activeBlockOwner();
+  }
+};
+
+TEST_F(AbandonedTaskBlockTest, AbandonedIntervalIsClearedAndItsRunClosed) {
+  u64 abandoned = beginTaskBlock();
+  ASSERT_NE(0ULL, abandoned);
+  ASSERT_EQ(0ULL, beginTaskBlock())
+      << "precondition: a pending interval blocks the next begin";
+
+  EXPECT_TRUE(recoverAbandonedTaskBlock(current.get(), &tracker, slot_id));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECOVERED_ABANDONED));
+  EXPECT_EQ(BlockRunOwner::NONE, owner())
+      << "the abandoned TASK_BLOCK run must stop suppressing wall-clock signals";
+  u64 ignored_ticks = 0;
+  Context ignored_context{};
+  EXPECT_FALSE(current->taskBlockExit(abandoned, ignored_ticks, ignored_context))
+      << "the abandoned token must no longer close an interval";
+
+  u64 next = beginTaskBlock();
+  EXPECT_NE(0ULL, next) << "recovery must let the thread arm a new interval";
+  EXPECT_NE(abandoned, next);
+  EXPECT_EQ(BlockRunOwner::TASK_BLOCK, owner());
+}
+
+TEST_F(AbandonedTaskBlockTest, NothingPendingIsNotCounted) {
+  EXPECT_FALSE(recoverAbandonedTaskBlock(current.get(), &tracker, slot_id));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_RECOVERED_ABANDONED));
+}
+
+TEST_F(AbandonedTaskBlockTest, NewerRunOnSlotIsNotClosed) {
+  u64 abandoned = beginTaskBlock();
+  ASSERT_NE(0ULL, abandoned);
+  // A registry reset clears the run but not the TLS token; a later run on
+  // the same slot then gets a newer generation.
+  tracker.resetSlot(slot_id);
+  u64 newer = tracker.enterBlockedRun(
+      &filter, slot_id, OSThreadState::SLEEPING, BlockRunOwner::JAVA);
+  ASSERT_NE(0ULL, newer);
+
+  EXPECT_TRUE(recoverAbandonedTaskBlock(current.get(), &tracker, slot_id));
+  EXPECT_EQ(BlockRunOwner::JAVA, owner())
+      << "the generation check must leave a newer run untouched";
+  EXPECT_TRUE(tracker.exitBlockedRun(
+      slot_id, WallClockBlockTracker::tokenGeneration(newer)));
+}
+
+TEST_F(AbandonedTaskBlockTest, RunOnAnotherSlotIsNotClosed) {
+  u64 abandoned = beginTaskBlock();
+  ASSERT_NE(0ULL, abandoned);
+  ThreadFilter::SlotID other_slot = filter.registerThread(kTid + 1);
+  ASSERT_GE(other_slot, 0);
+  ASSERT_NE(slot_id, other_slot);
+
+  // The thread now resolves to other_slot, so slot_id may belong to another
+  // thread and must not be touched.
+  EXPECT_TRUE(recoverAbandonedTaskBlock(current.get(), &tracker, other_slot));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECOVERED_ABANDONED));
+  EXPECT_EQ(BlockRunOwner::TASK_BLOCK, owner());
+  u64 ignored_ticks = 0;
+  Context ignored_context{};
+  EXPECT_FALSE(current->taskBlockExit(abandoned, ignored_ticks, ignored_context))
+      << "the TLS interval is cleared even when its run is not closed";
+  EXPECT_TRUE(tracker.exitBlockedRun(
+      slot_id, WallClockBlockTracker::tokenGeneration(abandoned)));
+}
+
 TEST_F(TaskBlockRecorderTest, RotationWaitsForInflightActivity) {
   Profiler* profiler = Profiler::instance();
   ASSERT_TRUE(profiler->tryEnterTaskBlockActivity());

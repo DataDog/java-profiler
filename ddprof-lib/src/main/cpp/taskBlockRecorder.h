@@ -15,6 +15,18 @@
 void initializeTaskBlockDurationThreshold();
 bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks);
 
+// Recovers a TASK_BLOCK interval whose endTaskBlock0 was never reached (for
+// example, an exception thrown without a finally block). Clears the pending
+// TLS token and closes its block run with the generation-checked
+// exitBlockedRun(), which is a no-op if the slot has since started another
+// run. The run is closed only when the token's slot is current_slot: a
+// different slot means a registry reset already cleared the run and the slot
+// may now belong to another thread. Counts TASK_BLOCK_RECOVERED_ABANDONED.
+// Returns true when an abandoned interval was found.
+bool recoverAbandonedTaskBlock(ProfiledThread* current,
+                               WallClockBlockTracker* tracker,
+                               ThreadFilter::SlotID current_slot);
+
 bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
                            WallClockBlockTracker* tracker, jthread thread,
                            int start_depth, u64 block_token, u64 blocker,

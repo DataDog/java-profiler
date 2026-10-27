@@ -568,12 +568,20 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
   ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
   if (slot_id < 0) return 0;
 
+  WallClockBlockTracker *tracker = profiler->blockTracker();
+  // A pending token here means the previous interval never reached
+  // endTaskBlock0 (or this begin is nested). Supersede it: otherwise
+  // taskBlockEnter() fails for the rest of the thread's life, and the
+  // TASK_BLOCK run, which clearActiveBlockRun() does not clear, keeps this
+  // thread's wall-clock signals suppressed while it stays outside a context
+  // window.
+  recoverAbandonedTaskBlock(current, tracker, slot_id);
+
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
     Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return 0;
   }
-  WallClockBlockTracker *tracker = profiler->blockTracker();
   u64 token = tracker->enterBlockedRun(
       tf, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
   if (!current->taskBlockEnter(token, TSC::ticks(), context)) {

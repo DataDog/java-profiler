@@ -436,6 +436,16 @@ public:
     return true;
   }
 
+  // Drops the pending TASK_BLOCK interval and returns its token, or 0 when
+  // none is pending. Lets beginTaskBlock0 recover an interval whose
+  // endTaskBlock0 was never reached; without this, taskBlockEnter() keeps
+  // failing for the rest of the thread's life.
+  inline u64 abandonTaskBlock() {
+    u64 token = _task_block_token;
+    _task_block_token = 0;
+    return token;
+  }
+
   inline bool taskBlockExit(u64 token, u64& start_ticks, Context& context) {
     if (token == 0 || _task_block_token != token) return false;
     start_ticks = _task_block_start_ticks;
