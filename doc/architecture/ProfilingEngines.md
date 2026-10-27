@@ -460,8 +460,8 @@ In summary:
 
 `nativeMem.{h,cpp}` is **not** a profiling engine and does not observe
 application allocations. It tracks the profiler's **own** native memory in 14
-categories (`NM_CALLTRACE`, `NM_DICTIONARY`, ..., `NM_PERF`, `NM_LIVENESS`,
-`NM_WALLCLOCK`, `NM_CTIMER`, `NM_MISC`; `nativeMem.h`).
+categories, defined in `nativeMem.h`: `NM_CALLTRACE`, `NM_DICTIONARY`, ...,
+`NM_PERF`, `NM_LIVENESS`, `NM_WALLCLOCK`, `NM_CTIMER`, `NM_MISC`.
 
 - `record(cat, delta)` is a relaxed atomic add plus a lock-free CAS on the
   per-category peak. It is async-signal-safe, which matters because the
