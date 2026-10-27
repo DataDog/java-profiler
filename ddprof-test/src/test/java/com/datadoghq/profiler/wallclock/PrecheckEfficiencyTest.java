@@ -295,9 +295,7 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
     protected String getProfilerCommand() {
         // The workload deliberately has no tracing context, and owned-block
         // suppression only applies to the unfiltered wall-clock scope, so
-        // keep unfiltered wall-clock sampling enabled explicitly plus each
-        // worker thread explicitly registering itself via
-        // registerCurrentThreadForWallClockProfiling().
+        // keep unfiltered wall-clock sampling enabled explicitly.
         return "wall=1ms,filter=";
     }
 }
