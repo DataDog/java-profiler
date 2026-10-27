@@ -146,7 +146,22 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
     int words = nm->frameSize();
     instruction_t* ip = (instruction_t*)pc;
     instruction_t* entry = (instruction_t*)nm->entry();
-    if (words < 4 || words > 256 || (words & 1) != 0 || ip < entry) return -1;
+    if (words < 4 || words > 256 || (words & 1) != 0) return -1;
+    if (ip < entry) {
+        // The interpreter-only adapter has its own frame setup before the
+        // verified compiled entry. Keep the search within that earlier code.
+        instruction_t* code = (instruction_t*)nm->code();
+        instruction_t* end = entry < code + 256 ? entry : code + 256;
+        instruction_t* save = code;
+        for (; save + 7 < end; save++) {
+            if (save[0] == 0x55 && save[1] == 0x48 &&
+                ((save[2] == 0x8b && save[3] == 0xec) || (save[2] == 0x89 && save[3] == 0xe5)) &&
+                save[4] == 0x48 && save[6] == 0xec &&
+                (save[5] == 0x83 || (save[5] == 0x81 && save + 10 < end))) break;
+        }
+        if (save + 7 >= end || ip < save) return -1;
+        entry = save;
+    }
 
     if (!nm->isFrameCompleteAt(pc)) {
         // MacroAssembler::enter followed by continuation_enter_setup's sub SP.

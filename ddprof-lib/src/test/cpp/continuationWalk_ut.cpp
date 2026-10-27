@@ -197,7 +197,8 @@ protected:
         Native, CompiledNonPointerFp, NativeNonPointerFp, BlobNonPointerFp,
         InvalidPc, MisalignedSp, OutOfBoundsSp, InvalidFrameSize, ReturnPc, UnsupportedPrologue, ExportedParentEntry, PointerAuthentication,
         ExceptionMove, ExceptionBranch, AuthenticatedExceptionMove, AuthenticatedExceptionBranch,
-        ExceptionMoveWithoutBranch, ExceptionBranchWithoutMove
+        ExceptionMoveWithoutBranch, ExceptionBranchWithoutMove, InterpretedEntry, UnsupportedInterpretedEntry,
+        LeafSpillBeforeSave, LeafSpillMove, LeafSpillCall, LeafSpillRestore, LeafSpillAfterRestore, LeafSpillUnknownSequence
     };
 
     // Generated prologue/setup and normal cleanup excerpts, captured from
@@ -206,7 +207,8 @@ protected:
     // cpu/{aarch64,x86}/sharedRuntime_*.cpp. The body between them is omitted.
     // Metadata and registers are synthetic; the production walker decodes them.
     void assertCarrierFromEntry(EntryPhase phase, EntryCase test_case = EntryCase::Native) {
-        alignas(16) uintptr_t stack[32]{};
+        alignas(16) uintptr_t stack_storage[34]{};
+        uintptr_t* stack = stack_storage + 2; // room for call_VM_leaf_base's temporary spill
         struct ConstMethod { void* constants = nullptr; unsigned short idnum = 0; unsigned short slots = 0; } const_method;
         struct Method { ConstMethod* const_method; } method{&const_method};
         struct NMethod {
@@ -303,8 +305,24 @@ protected:
             blob.nm.code[tail] = test_case == EntryCase::ExceptionBranchWithoutMove ? 0xd503201f : 0xaa1e03e3;
             blob.nm.code[tail + 1] = test_case == EntryCase::ExceptionMoveWithoutBranch ? 0xd61f0040 : 0xd61f0020;
         }
+        bool leaf_spill = test_case >= EntryCase::LeafSpillBeforeSave && test_case <= EntryCase::LeafSpillUnknownSequence;
+        if (leaf_spill) {
+            // call_VM_leaf_base: save scratch/method, load resolver, call, restore.
+            const uint32_t leaf[] = {0xa9bf33e8, 0xd2824688, 0xf2aacf08, 0xf2c24688,
+                                     0xd63f0100, 0xa8c133e8, 0xd503201f};
+            memcpy(blob.nm.code + 7, leaf, sizeof(leaf));
+            if (test_case == EntryCase::LeafSpillUnknownSequence) blob.nm.code[11] = 0xd503201f;
+        }
 #endif
         if (test_case == EntryCase::UnsupportedPrologue) blob.nm.code[0] = 0;
+        if (test_case == EntryCase::InterpretedEntry || test_case == EntryCase::UnsupportedInterpretedEntry) {
+            // The interpreted entry precedes the verified compiled entry. Its
+            // frame is established before the compiled frame-complete offset.
+            memcpy(blob.nm.code + 24, instructions, 12);
+            blob.nm.entry = blob.nm.code + 24;
+            blob.nm.frame_complete += 24 * sizeof(uint32_t);
+            if (test_case == EntryCase::UnsupportedInterpretedEntry) blob.nm.code[0] = 0;
+        }
         struct Heap { const void* low; const void* high; unsigned char* map; };
         unsigned char map[] = {0, 0};
         Heap heap{heap_memory, heap_memory + sizeof(heap_memory), map};
@@ -348,6 +366,13 @@ protected:
         if (exception_exit && prefix != 0) sampled_pc = (const char*)sampled_pc + sizeof(uint32_t); // after autiaz
         if (test_case == EntryCase::ExceptionBranch || test_case == EntryCase::AuthenticatedExceptionBranch ||
                 test_case == EntryCase::ExceptionBranchWithoutMove) sampled_pc = (const char*)sampled_pc + sizeof(uint32_t);
+        if (leaf_spill) {
+            int instruction = test_case == EntryCase::LeafSpillBeforeSave ? 0 :
+                    test_case == EntryCase::LeafSpillMove || test_case == EntryCase::LeafSpillUnknownSequence ? 1 :
+                    test_case == EntryCase::LeafSpillCall ? 4 :
+                    test_case == EntryCase::LeafSpillRestore ? 5 : 6;
+            sampled_pc = blob.nm.code + 7 + instruction;
+        }
 #endif
         ScopedValue<const void*> return_pc(_cont_entry_return_pc,
                 test_case == EntryCase::ReturnPc ? sampled_pc : _cont_entry_return_pc);
@@ -367,6 +392,9 @@ protected:
         stack[13] = (uintptr_t)THREAD_ENTRY_PC;
         int sp_slot = phase == EntryPhase::Complete || phase == EntryPhase::BeforeSpRestore ||
                 phase == EntryPhase::AfterAllocation ? 0 : 8;
+#ifdef __aarch64__
+        if (leaf_spill && test_case != EntryCase::LeafSpillBeforeSave && test_case != EntryCase::LeafSpillAfterRestore) sp_slot = -2;
+#endif
         uintptr_t sampled_fp = (uintptr_t)&stack[8];
         if (phase == EntryPhase::AfterSave) sampled_fp = saved_fp;
         if (phase == EntryPhase::BeforeSave || phase == EntryPhase::AfterRestore) {
@@ -408,10 +436,12 @@ protected:
                 test_case == EntryCase::InvalidPc || test_case == EntryCase::MisalignedSp ||
                 test_case == EntryCase::OutOfBoundsSp || test_case == EntryCase::InvalidFrameSize ||
                 test_case == EntryCase::UnsupportedPrologue || test_case == EntryCase::ExceptionMoveWithoutBranch ||
-                test_case == EntryCase::ExceptionBranchWithoutMove) {
+                test_case == EntryCase::ExceptionBranchWithoutMove || test_case == EntryCase::UnsupportedInterpretedEntry ||
+                test_case == EntryCase::LeafSpillUnknownSequence) {
             ASSERT_EQ(BCI_ERROR, frames[0].bci);
             EXPECT_STREQ(test_case == EntryCase::MisalignedSp || test_case == EntryCase::OutOfBoundsSp ||
-                         test_case == EntryCase::InvalidFrameSize || test_case == EntryCase::UnsupportedPrologue ? "break_cont_entry_fp" : "break_cont_carrier_sp",
+                         test_case == EntryCase::InvalidFrameSize || test_case == EntryCase::UnsupportedPrologue ||
+                         test_case == EntryCase::UnsupportedInterpretedEntry ? "break_cont_entry_fp" : "break_cont_carrier_sp",
                          (const char*)frames[0].method_id);
             EXPECT_TRUE(truncated);
         } else if (test_case == EntryCase::CompiledNonPointerFp) {
@@ -827,6 +857,17 @@ TEST_F(ContinuationWalkTest, EntryNMethodRejectsUnsupportedPrologue) {
     assertCarrierFromEntry(EntryPhase::BeforeAllocation, EntryCase::UnsupportedPrologue);
 }
 
+TEST_F(ContinuationWalkTest, InterpretedEntryRetainsCarrierBeforeCompiledEntry) {
+    for (EntryPhase phase : {EntryPhase::BeforeSave, EntryPhase::AfterSave,
+            EntryPhase::BeforeAllocation, EntryPhase::AfterAllocation, EntryPhase::Complete}) {
+        assertCarrierFromEntry(phase, EntryCase::InterpretedEntry);
+    }
+}
+
+TEST_F(ContinuationWalkTest, InterpretedEntryRejectsUnsupportedPrologue) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::UnsupportedInterpretedEntry);
+}
+
 TEST_F(ContinuationWalkTest, SampledEntryDoesNotFollowExportedParentDuringTransitions) {
     for (EntryPhase phase : {EntryPhase::BeforeSave, EntryPhase::AfterSave, EntryPhase::BeforeAllocation,
                             EntryPhase::AfterAllocation, EntryPhase::Complete, EntryPhase::BeforeSpRestore,
@@ -836,6 +877,17 @@ TEST_F(ContinuationWalkTest, SampledEntryDoesNotFollowExportedParentDuringTransi
 }
 
 #ifdef __aarch64__
+TEST_F(ContinuationWalkTest, EntryVmLeafSpillRetainsCarrier) {
+    for (EntryCase test_case : {EntryCase::LeafSpillBeforeSave, EntryCase::LeafSpillMove,
+            EntryCase::LeafSpillCall, EntryCase::LeafSpillRestore, EntryCase::LeafSpillAfterRestore}) {
+        assertCarrierFromEntry(EntryPhase::Complete, test_case);
+    }
+}
+
+TEST_F(ContinuationWalkTest, EntryVmLeafSpillRequiresRecognizedSequence) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::LeafSpillUnknownSequence);
+}
+
 TEST_F(ContinuationWalkTest, ExceptionExitAfterRestoringRegistersRetainsCarrier) {
     for (EntryCase test_case : {EntryCase::ExceptionMove, EntryCase::ExceptionBranch}) {
         assertCarrierFromEntry(EntryPhase::AfterRestore, test_case);

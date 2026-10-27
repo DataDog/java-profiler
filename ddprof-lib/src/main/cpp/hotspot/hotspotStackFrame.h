@@ -119,11 +119,13 @@ public:
     bool unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
     bool unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
 
-    // For a directly sampled compiled enterSpecial, returns the number of stack
+    // For a directly sampled enterSpecial, returns the number of stack
     // words up to the carrier SP. Two or more words include saved FP/PC; before
     // saving and after restoring them, FP is still in the sampled register and
     // PC is in LR (aarch64, zero words) or at SP (x64, one word). Returns -1 for
-    // unsupported prologues or invalid frame metadata. Never use a return PC:
+    // unsupported prologues or invalid frame metadata. Interpreter-only entry
+    // setup is located before the verified compiled entry; arm64 VM-leaf spills
+    // add two temporary words. Never use a return PC:
     // its instruction has not executed with the sampled register values.
     int continuationEntryFrameWords(VMNMethod* nm, const void* pc);
 

@@ -182,7 +182,21 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
     int words = nm->frameSize();
     instruction_t* ip = (instruction_t*)pc;
     instruction_t* entry = (instruction_t*)nm->entry();
-    if (words < 4 || words > 256 || (words & 1) != 0 || ip < entry) return -1;
+    if (words < 4 || words > 256 || (words & 1) != 0) return -1;
+    if (ip < entry) {
+        // The interpreter-only adapter precedes the verified compiled entry.
+        // Locate its own enter/setup sequence; the compiled frame-complete
+        // offset does not describe this earlier entry.
+        instruction_t* code = (instruction_t*)nm->code();
+        instruction_t* end = entry < code + 64 ? entry : code + 64;
+        instruction_t* save = code;
+        for (; save + 2 < end; save++) {
+            if (save[0] == 0xa9bf7bfd && save[1] == 0x910003fd &&
+                save[2] == (0xd10003ffU | ((words - 2) * sizeof(uintptr_t) << 10))) break;
+        }
+        if (save + 2 >= end || ip < save) return -1;
+        entry = save;
+    }
 
     if (!nm->isFrameCompleteAt(pc)) {
         // MacroAssembler::enter may protect LR before saving FP/LR. Keep the
@@ -214,6 +228,17 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
     // after leave() has restored SP and FP/LR, including LR authentication.
     if ((*ip == 0xaa1e03e3 && nm->contains(ip + 1) && ip[1] == 0xd61f0020) ||
         (*ip == 0xd61f0020 && ip > entry && ip[-1] == 0xaa1e03e3)) return 0;
+    // call_VM_leaf_base spills x8/x12 while resolving the exception handler:
+    // stp; movz/movk/movk x8, target; blr x8; ldp. Until ldp executes,
+    // the complete entry frame sits two words above the sampled SP.
+    for (int distance = 1; distance <= 5 && ip - entry >= distance; distance++) {
+        instruction_t* spill = ip - distance;
+        if (spill[0] == 0xa9bf33e8 && nm->contains(spill + 5) &&
+            (spill[1] & 0xffe0001fU) == 0xd2800008 &&
+            (spill[2] & 0xffe0001fU) == 0xf2a00008 &&
+            (spill[3] & 0xffe0001fU) == 0xf2c00008 &&
+            spill[4] == 0xd63f0100 && spill[5] == 0xa8c133e8) return words + 2;
+    }
     return words;
 }
 

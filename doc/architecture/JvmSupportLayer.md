@@ -163,7 +163,7 @@ walker, with raw `Method*` frames, and with lazy jmethodID resolution.
 | `klassRegistry.{h,cpp}` | Redefinition marks keyed by `Klass*` for `fjmethodid=lazy` (`HotspotSupport::_klass_registry`, `hotspotSupport.h:161`) |
 | `klassTraceId.{h,cpp}` | Finds `Klass::_trace_id` by probing, so a stale raw frame can be told apart from a class that reused the same `Klass*` |
 
-Directly sampled compiled `enterSpecial` frames use
+Directly sampled `enterSpecial` frames use
 `HotspotStackFrame::continuationEntryFrameWords()` to locate the carrier SP.
 The helper distinguishes the prologue's register save and storage allocation,
 the complete frame, and the normal epilogue's storage deallocation and register
@@ -173,11 +173,22 @@ or return-PC stack slot (x64). Unknown prologues fail rather than applying the
 complete-frame size. Pointer-authentication instructions are recognized on
 arm64, and recovered PCs have PAC bits stripped.
 
+Interpreter-only execution uses a separate entry before the verified compiled
+entry on both architectures. The decoder locates that entry's recognized frame
+setup with a bounded scan before the compiled entry. Its prologue and established
+frame then use their own setup rather than the later compiled frame-complete
+offset. Unknown setup sequences fail conservatively.
+
 On arm64 the exception epilogue finishes with `mov x3, lr; br x1` after
 `leave()` has restored SP and FP/LR. A sample at either instruction uses the
 restored FP and LR, including when `leave()` authenticates LR. The decoder
 requires both instructions and bounds the forward read to the same code blob.
 An isolated move or branch does not select this recovery path.
+
+During arm64 exception-handler resolution, `call_VM_leaf_base()` temporarily
+spills `x8` and `x12`. The decoder recognizes the bounded spill, target-load,
+call and restore sequence and adds two words while the spill is live. The
+ordinary entry-frame size applies before the spill and after its restoration.
 
 This path applies only to the exact sampled PC. Recovered return addresses keep
 the existing continuation-entry metadata and stack-argument recovery. During
