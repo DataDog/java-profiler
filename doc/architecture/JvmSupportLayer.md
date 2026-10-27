@@ -108,6 +108,7 @@ If either step fails, profiling is disabled.
 | `enterRedefinitionCall` / `exitRedefinitionCall` / `beforeClassRedefinition` / `afterClassRedefinition` | forwarded to `HotspotSupport` | no-op, except that `afterClassRedefinition` reloads the class's jmethodIDs after a successful redefinition |
 | `beginDump` / `endDump` | forwarded to `HotspotSupport` | no-op |
 | `resolve(method, bci, result)` (inline) | `HotspotSupport::resolve` (raw `Method*` frames) | `assert(false)` and returns `false`. Raw frames come only from HotSpot `walkVM` |
+| `maxHeapBytes()` | `Runtime.maxMemory()` through JNI, resolved once in `initExecution()`. `-1` until resolved | same |
 | `isHidden(modifiers)` (inline) | shared modifier-mask test | shared |
 
 `jvmSupport.inline.h` includes `hotspot/hotspotSupport.h` directly

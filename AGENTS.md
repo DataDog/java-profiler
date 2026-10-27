@@ -177,6 +177,7 @@ walkers, `CallTraceStorage::put`, the JFR record paths and `CodeCache` lookups. 
 code can interrupt any thread at any instruction: inside the allocator, the dynamic
 loader, the JVM at a safepoint, or our own code on the same thread. Socket hooks
 (`send/recv/write/read` interceptors) are the deliberate exception: they run on the
+| glibc malloc arena warning (lock-free arena walk, per-chunk rule, `MallocArenaWarning`/`MallocArenaStats` events, `arenawarn`) | [doc/architecture/MallocArenaWarning.md](doc/architecture/MallocArenaWarning.md) |
 calling thread, not in signal context (`nativeSocketSampler.h`), so allocation,
 locking, logging and `initCurrentThreadSignalSafe()` are legal there. In
 signal-reachable code, never:
