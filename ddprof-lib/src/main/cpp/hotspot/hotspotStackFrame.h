@@ -129,6 +129,12 @@ public:
     // its instruction has not executed with the sampled register values.
     int continuationEntryFrameWords(VMNMethod* nm, const void* pc);
 
+#ifdef __aarch64__
+    // Temporary SP adjustment from the entry's VM-leaf call. Reads code only,
+    // so it also applies to return PCs recovered while unwinding native frames.
+    static int continuationEntrySpillWords(VMNMethod* nm, const void* pc);
+#endif
+
     // Decodes only the return-barrier prefix that loads JavaThread::_cont_entry
     // into SP. Called during initialization on a bounded copy of the code.
     // Returns -1 for unknown instructions; the caller must validate the offset

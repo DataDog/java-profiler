@@ -228,18 +228,30 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
     // after leave() has restored SP and FP/LR, including LR authentication.
     if ((*ip == 0xaa1e03e3 && nm->contains(ip + 1) && ip[1] == 0xd61f0020) ||
         (*ip == 0xd61f0020 && ip > entry && ip[-1] == 0xaa1e03e3)) return 0;
+    return words + continuationEntrySpillWords(nm, pc);
+}
+
+int HotspotStackFrame::continuationEntrySpillWords(VMNMethod* nm, const void* pc) {
+    instruction_t* ip = (instruction_t*)pc;
+    instruction_t* entry = (instruction_t*)nm->entry();
     // call_VM_leaf_base spills x8/x12 while resolving the exception handler:
-    // stp; movz/movk/movk x8, target; blr x8; ldp. Until ldp executes,
+    // stp; load x8, target; blr x8; ldp. mov_immediate64 uses a logical
+    // immediate or one to four wide moves. Until ldp executes,
     // the complete entry frame sits two words above the sampled SP.
-    for (int distance = 1; distance <= 5 && ip - entry >= distance; distance++) {
+    for (int distance = 1; distance <= 6 && ip - entry >= distance; distance++) {
         instruction_t* spill = ip - distance;
-        if (spill[0] == 0xa9bf33e8 && nm->contains(spill + 5) &&
-            (spill[1] & 0xffe0001fU) == 0xd2800008 &&
-            (spill[2] & 0xffe0001fU) == 0xf2a00008 &&
-            (spill[3] & 0xffe0001fU) == 0xf2c00008 &&
-            spill[4] == 0xd63f0100 && spill[5] == 0xa8c133e8) return words + 2;
+        if (spill[0] != 0xa9bf33e8) continue;
+        instruction_t* call = spill + 1;
+        for (int loads = 0; loads < 4 && nm->contains(call); loads++, call++) {
+            uint32_t move = *call & 0xff80001fU;
+            bool valid = loads == 0 ? move == 0xd2800008 || move == 0x92800008 ||
+                    (*call & 0xff8003ffU) == 0xb20003e8 : move == 0xf2800008;
+            if (!valid) break;
+        }
+        if (call > spill + 1 && nm->contains(call + 1) &&
+            *call == 0xd63f0100 && call[1] == 0xa8c133e8 && ip <= call + 1) return 2;
     }
-    return words;
+    return 0;
 }
 
 NOSANALIGSANITIZE bool HotspotStackFrame::unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {

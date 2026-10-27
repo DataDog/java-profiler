@@ -512,7 +512,14 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 } else if (entry_nm != nullptr && known_boundary) {
                     // Fast thaw does not repair FP links. Recover the entry from SP,
                     // stack-argument padding and enterSpecial's generated frame size.
-                    entry_fp = entry_nm->continuationEntryFP(sp, kind == ContBoundary::Frozen ? continuation_stack_args : 0);
+                    uintptr_t spill_bytes = 0;
+#ifdef __aarch64__
+                    if (kind != ContBoundary::Frozen && CodeHeap::findNMethod(walk_pc.raw()) == entry_nm) {
+                        spill_bytes = HotspotStackFrame::continuationEntrySpillWords(entry_nm, walk_pc.raw()) * sizeof(uintptr_t);
+                    }
+#endif
+                    entry_fp = sp > UINTPTR_MAX - spill_bytes ? 0 :
+                            entry_nm->continuationEntryFP(sp + spill_bytes, kind == ContBoundary::Frozen ? continuation_stack_args : 0);
                 } else {
                     entry_fp = contBoundaryEntryFpIsCurrentFp(kind) ? fp : 0;
                 }

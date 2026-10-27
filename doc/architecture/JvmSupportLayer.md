@@ -189,6 +189,9 @@ During arm64 exception-handler resolution, `call_VM_leaf_base()` temporarily
 spills `x8` and `x12`. The decoder recognizes the bounded spill, target-load,
 call and restore sequence and adds two words while the spill is live. The
 ordinary entry-frame size applies before the spill and after its restoration.
+This adjustment reads code only and also applies when native unwinding recovers
+a return PC into the spilled entry. It does not use sampled register values at
+that recovered PC.
 
 This path applies only to the exact sampled PC. Recovered return addresses keep
 the existing continuation-entry metadata and stack-argument recovery. During

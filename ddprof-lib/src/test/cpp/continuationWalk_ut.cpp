@@ -198,7 +198,8 @@ protected:
         InvalidPc, MisalignedSp, OutOfBoundsSp, InvalidFrameSize, ReturnPc, UnsupportedPrologue, ExportedParentEntry, PointerAuthentication,
         ExceptionMove, ExceptionBranch, AuthenticatedExceptionMove, AuthenticatedExceptionBranch,
         ExceptionMoveWithoutBranch, ExceptionBranchWithoutMove, InterpretedEntry, UnsupportedInterpretedEntry,
-        LeafSpillBeforeSave, LeafSpillMove, LeafSpillCall, LeafSpillRestore, LeafSpillAfterRestore, LeafSpillUnknownSequence
+        LeafSpillBeforeSave, LeafSpillMove, LeafSpillCall, LeafSpillRestore, LeafSpillAfterRestore,
+        LeafSpillOneMove, LeafSpillMovn, LeafSpillLogicalImmediate, LeafSpillFourMoves, LeafSpillNativePrefix, LeafSpillUnknownSequence
     };
 
     // Generated prologue/setup and normal cleanup excerpts, captured from
@@ -207,8 +208,8 @@ protected:
     // cpu/{aarch64,x86}/sharedRuntime_*.cpp. The body between them is omitted.
     // Metadata and registers are synthetic; the production walker decodes them.
     void assertCarrierFromEntry(EntryPhase phase, EntryCase test_case = EntryCase::Native) {
-        alignas(16) uintptr_t stack_storage[34]{};
-        uintptr_t* stack = stack_storage + 2; // room for call_VM_leaf_base's temporary spill
+        alignas(16) uintptr_t stack_storage[36]{};
+        uintptr_t* stack = stack_storage + 4; // room for a native frame and the temporary VM-leaf spill
         struct ConstMethod { void* constants = nullptr; unsigned short idnum = 0; unsigned short slots = 0; } const_method;
         struct Method { ConstMethod* const_method; } method{&const_method};
         struct NMethod {
@@ -311,6 +312,19 @@ protected:
             const uint32_t leaf[] = {0xa9bf33e8, 0xd2824688, 0xf2aacf08, 0xf2c24688,
                                      0xd63f0100, 0xa8c133e8, 0xd503201f};
             memcpy(blob.nm.code + 7, leaf, sizeof(leaf));
+            if (test_case == EntryCase::LeafSpillOneMove || test_case == EntryCase::LeafSpillMovn ||
+                    test_case == EntryCase::LeafSpillLogicalImmediate) {
+                blob.nm.code[8] = test_case == EntryCase::LeafSpillMovn ? 0x92824688 :
+                        test_case == EntryCase::LeafSpillLogicalImmediate ? 0xb2401fe8 : 0xd2824688;
+                blob.nm.code[9] = 0xd63f0100;
+                blob.nm.code[10] = 0xa8c133e8;
+                blob.nm.code[11] = 0xd503201f;
+            } else if (test_case == EntryCase::LeafSpillFourMoves) {
+                blob.nm.code[11] = 0xf2e24688;
+                blob.nm.code[12] = 0xd63f0100;
+                blob.nm.code[13] = 0xa8c133e8;
+                blob.nm.code[14] = 0xd503201f;
+            }
             if (test_case == EntryCase::LeafSpillUnknownSequence) blob.nm.code[11] = 0xd503201f;
         }
 #endif
@@ -370,7 +384,8 @@ protected:
             int instruction = test_case == EntryCase::LeafSpillBeforeSave ? 0 :
                     test_case == EntryCase::LeafSpillMove || test_case == EntryCase::LeafSpillUnknownSequence ? 1 :
                     test_case == EntryCase::LeafSpillCall ? 4 :
-                    test_case == EntryCase::LeafSpillRestore ? 5 : 6;
+                    test_case == EntryCase::LeafSpillRestore || test_case == EntryCase::LeafSpillNativePrefix ? 5 : 6;
+            if (test_case >= EntryCase::LeafSpillOneMove && test_case <= EntryCase::LeafSpillFourMoves) instruction = 1;
             sampled_pc = blob.nm.code + 7 + instruction;
         }
 #endif
@@ -427,10 +442,21 @@ protected:
         if (test_case == EntryCase::MisalignedSp) frame.sp() += 8;
         if (test_case == EntryCase::OutOfBoundsSp) frame.sp() = (UINTPTR_MAX / 2) & ~(uintptr_t)15;
         frame.fp() = sampled_fp;
+        if (test_case == EntryCase::LeafSpillNativePrefix) {
+            stack[-4] = sampled_fp;
+            stack[-3] = (uintptr_t)sampled_pc;
+            frame.pc() = (uintptr_t)LEAF_PC;
+            frame.sp() = (uintptr_t)(stack - 4);
+        }
         StackWalkFeatures features{};
         features.carrier_frames = true;
         bool truncated = false;
         int depth = HotspotSupportTestAccessor::walk(&context, frames, features, MAX_DEPTH, &truncated);
+        if (test_case == EntryCase::LeafSpillNativePrefix) {
+            assertCarrier(depth);
+            EXPECT_FALSE(truncated);
+            return;
+        }
         ASSERT_EQ(1, depth);
         if (test_case == EntryCase::NativeNonPointerFp || test_case == EntryCase::BlobNonPointerFp ||
                 test_case == EntryCase::InvalidPc || test_case == EntryCase::MisalignedSp ||
@@ -886,6 +912,17 @@ TEST_F(ContinuationWalkTest, EntryVmLeafSpillRetainsCarrier) {
 
 TEST_F(ContinuationWalkTest, EntryVmLeafSpillRequiresRecognizedSequence) {
     assertCarrierFromEntry(EntryPhase::Complete, EntryCase::LeafSpillUnknownSequence);
+}
+
+TEST_F(ContinuationWalkTest, EntryVmLeafSpillAcceptsGeneratedConstantLoads) {
+    for (EntryCase test_case : {EntryCase::LeafSpillOneMove, EntryCase::LeafSpillMovn,
+            EntryCase::LeafSpillLogicalImmediate, EntryCase::LeafSpillFourMoves}) {
+        assertCarrierFromEntry(EntryPhase::Complete, test_case);
+    }
+}
+
+TEST_F(ContinuationWalkTest, EntryVmLeafSpillWithNativePrefixRetainsCarrier) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::LeafSpillNativePrefix);
 }
 
 TEST_F(ContinuationWalkTest, ExceptionExitAfterRestoringRegistersRetainsCarrier) {
