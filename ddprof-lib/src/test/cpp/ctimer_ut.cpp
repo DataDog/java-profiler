@@ -19,6 +19,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <pthread.h>
 #include <thread>
 
 // The failure-path tests force calloc to fail with a negative count, which
@@ -299,6 +300,55 @@ TEST(ProfilerEnginesGateTest, CloseThreadRegistrationWaitsForHookCalls) {
   EXPECT_TRUE(closed.load());
   EXPECT_TRUE(entered);
   EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+}
+
+// Thread body for the cancellation test: makes a hook call with asynchronous
+// cancellation enabled, then reaches a cancellation point. A plain C-style
+// thread is used so that no C++ frame with cleanups sits above the call when
+// the cancellation unwinds it.
+static std::atomic<bool> survived_cancellation{false};
+static void *registerWithAsyncCancel(void *) {
+  pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, nullptr);
+  Profiler::registerThread(OS::threadId());
+  pthread_testcancel();
+  survived_cancellation.store(true);
+  return nullptr;
+}
+
+// A cancellation requested during a hook call stays pending until the call has
+// left every destructor-bearing scope. Current glibc acts on a pending
+// asynchronous request as soon as cancellation is re-enabled, so re-enabling it
+// from a destructor would unwind out of an implicitly noexcept function and
+// terminate the process. Older glibc (2.35) keeps it pending until the next
+// cancellation point instead. Either way the process must survive, the thread
+// must not run past that cancellation point, and the in-flight count must be
+// back at zero. The join value is not checked: a forced unwind that crosses
+// differently versioned libgcc copies (see run_with_cleanup() in
+// libraryPatcher_linux.cpp) does not always report PTHREAD_CANCELED.
+TEST(ProfilerEnginesGateTest, CancellationDuringHookCallActsAfterTheCall) {
+#if defined(TSAN_ENABLED)
+  GTEST_SKIP() << "TSan does not support asynchronous thread cancellation";
+#endif
+  Profiler *profiler = Profiler::instance();
+  BlockingEngine cpu;
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
+  profiler->openThreadRegistration();
+
+  survived_cancellation.store(false);
+  pthread_t thread;
+  ASSERT_EQ(0, pthread_create(&thread, nullptr, registerWithAsyncCancel,
+                              nullptr));
+  bool entered = waitFor([&] { return cpu.entered.load(); });
+  // Cancellation is disabled inside the hook call, so this stays pending.
+  EXPECT_EQ(0, pthread_cancel(thread));
+  cpu.released.store(true);
+  EXPECT_EQ(0, pthread_join(thread, nullptr));
+  ProfilerTestAccessor::closeThreadRegistration(profiler);
+
+  EXPECT_TRUE(entered);
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+  EXPECT_FALSE(survived_cancellation.load());
 }
 
 // Unregistration is skipped, without touching the engines, while start() may

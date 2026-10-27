@@ -114,6 +114,10 @@ private:
   void closeThreadRegistration();
   // Waits until no hook call is inside an engine.
   void waitForHookCalls();
+  // Gate checks and engine calls behind registerThread()/unregisterThread(),
+  // run with thread cancellation disabled.
+  static int registerThreadInEngines(int tid);
+  static void unregisterThreadInEngines(int tid);
   // class unload hook
   Trap _class_unload_hook_trap;
   typedef void (*NotifyClassUnloadedFunc)(void *);
