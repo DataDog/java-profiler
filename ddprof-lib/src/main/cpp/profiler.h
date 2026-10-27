@@ -546,6 +546,12 @@ public:
       int tid, jthread thread, int start_depth, TaskBlockEvent *event);
   static void setTaskBlockRecordOverrideForTest(
       TaskBlockRecordOverride override);
+  // Called by recordUnownedBlockedTail() with the event it is about to write,
+  // so tests can inspect the emitted fields without an active recording.
+  using UnownedTailRecordObserver = void (*)(
+      int tid, u64 call_trace_id, const ExecutionEvent *event);
+  static void setUnownedTailRecordObserverForTest(
+      UnownedTailRecordObserver observer);
 #endif
   bool tryEnterTaskBlockActivity();
   void leaveTaskBlockActivity();

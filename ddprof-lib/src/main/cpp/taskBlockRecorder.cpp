@@ -10,18 +10,61 @@
 static const u64 kMinTaskBlockNanos = 1000000;
 static std::atomic<u64> g_min_task_block_ticks{0};
 
+#ifdef UNIT_TEST
+static std::atomic<TaskBlockFrequencySource> g_test_frequency_source{nullptr};
+
+void resetTaskBlockDurationThresholdForTest() {
+  g_min_task_block_ticks.store(0, std::memory_order_release);
+}
+
+void setTaskBlockFrequencySourceForTest(TaskBlockFrequencySource source) {
+  g_test_frequency_source.store(source, std::memory_order_release);
+}
+#endif
+
+static u64 taskBlockTscFrequency() {
+#ifdef UNIT_TEST
+  TaskBlockFrequencySource source =
+      g_test_frequency_source.load(std::memory_order_acquire);
+  if (source != nullptr) return source();
+#endif
+  return TSC::frequency();
+}
+
 static u64 computeMinTaskBlockTicks() {
-  return (TSC::frequency() * kMinTaskBlockNanos) / NANOTIME_FREQ;
+  return (taskBlockTscFrequency() * kMinTaskBlockNanos) / NANOTIME_FREQ;
 }
 
 void initializeTaskBlockDurationThreshold() {
   g_min_task_block_ticks.store(computeMinTaskBlockTicks(), std::memory_order_release);
 }
 
-bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks) {
+TaskBlockDurationCheck checkTaskBlockDuration(u64 start_ticks, u64 end_ticks) {
   u64 min_ticks = g_min_task_block_ticks.load(std::memory_order_acquire);
   if (min_ticks == 0) min_ticks = computeMinTaskBlockTicks();
-  return end_ticks > start_ticks && end_ticks - start_ticks >= min_ticks;
+  // The threshold is 0 when TSC::frequency() is below 1 kHz, for example 0
+  // when uncalibrated. Comparing against 0 would accept every block, so
+  // reject instead. A separate result lets the caller count this as
+  // TASK_BLOCK_THRESHOLD_INVALID, not as TASK_BLOCK_SKIPPED_TOO_SHORT.
+  if (min_ticks == 0) return TaskBlockDurationCheck::THRESHOLD_INVALID;
+  return end_ticks > start_ticks && end_ticks - start_ticks >= min_ticks
+             ? TaskBlockDurationCheck::ELIGIBLE
+             : TaskBlockDurationCheck::TOO_SHORT;
+}
+
+bool recoverAbandonedTaskBlock(ProfiledThread* current,
+                               WallClockBlockTracker* tracker,
+                               ThreadFilter::SlotID current_slot) {
+  u64 abandoned = current->abandonTaskBlock();
+  if (abandoned == 0) return false;
+  Counters::increment(TASK_BLOCK_RECOVERED_ABANDONED);
+  ThreadFilter::SlotID slot_id = -1;
+  u64 generation = 0;
+  if (WallClockBlockTracker::decodeBlockRunToken(abandoned, slot_id, generation) &&
+      slot_id == current_slot) {
+    tracker->exitBlockedRun(slot_id, generation);
+  }
+  return true;
 }
 
 bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,

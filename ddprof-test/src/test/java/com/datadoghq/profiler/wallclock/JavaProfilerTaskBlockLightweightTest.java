@@ -62,6 +62,9 @@ public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
     TaskBlockAssertions.assertNoCorrelationId(events);
     TaskBlockAssertions.assertContains(events, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
     TaskBlockAssertions.assertContainsObservedState(events, "SLEEPING");
+    // The interval spans at least the 10 ms sleep before release; the upper
+    // bound covers the 5 s waits and rejects a start/end mix-up in encoding.
+    TaskBlockAssertions.assertContainsDuration(events, 10L, 15_000L);
     assertTrue(getRecordedCounterValue("wc_signals_suppressed_owned_block")
         > suppressedBefore);
     assertEquals(1L, getRecordedCounterValue("task_block_emitted"));
@@ -76,6 +79,11 @@ public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
       Thread.sleep(10L);
     }
     throw new AssertionError("Counter did not increase: " + name);
+  }
+
+  @Override
+  protected boolean isPlatformSupported() {
+    return TaskBlockAssertions.platformThreadClassificationSupported();
   }
 
   @Override

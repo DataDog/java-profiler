@@ -9,7 +9,10 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.JfrFrame;
+import com.datadoghq.profiler.Platform;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -23,8 +26,65 @@ final class TaskBlockAssertions {
   private static final String SUPPRESSED_SAMPLE_COUNT = "suppressedSampleCount";
   private static final String OBSERVED_BLOCKING_STATE = "observedBlockingState";
   private static final String CORRELATION_ID = "correlationId";
+  private static final String DURATION = "duration";
 
   private TaskBlockAssertions() {}
+
+  /**
+   * Value of {@code OSThreadState::SLEEPING} in
+   * {@code ddprof-lib/src/main/cpp/threadState.h}. Keep in sync with that enum: the native
+   * {@code blockEnter0} decodes this int via {@code decodeJavaBlockState}, so a renumbered enum
+   * would silently arm a different OS thread state here.
+   */
+  static final int OSTHREAD_STATE_SLEEPING = 7;
+
+  /**
+   * {@code java.vm.name} substrings that the native {@code VM::init()} (vmEntry.cpp) uses to set
+   * {@code VM::isHotspot()}. Keep this list in sync with that check.
+   */
+  private static final String[] HOTSPOT_VM_NAME_MARKERS = {
+    "OpenJDK", "HotSpot", "GraalVM", "Dynamic Code Evolution"
+  };
+
+  /**
+   * Returns whether the native layer can classify the current thread as a platform thread on this
+   * JVM. At JDK 19+, {@code JVMSupport::isPlatformThread()} fails closed when {@code
+   * !VM::isHotspot()}, so {@code beginTaskBlock()} always returns {@code 0} there.
+   *
+   * <p>This predicate must not report support on a JVM that the native check rejects. It therefore
+   * applies the same {@code java.vm.name} test as {@code VM::isHotspot()} instead of listing known
+   * non-HotSpot JVMs: J9, Zing, and any unrecognized VM name are reported as unsupported.
+   */
+  static boolean platformThreadClassificationSupported() {
+    return !Platform.isJavaVersionAtLeast(19)
+        || isHotspotVmName(System.getProperty("java.vm.name"));
+  }
+
+  private static boolean isHotspotVmName(String vmName) {
+    if (vmName == null) return false;
+    for (String marker : HOTSPOT_VM_NAME_MARKERS) {
+      if (vmName.contains(marker)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Asserts that at least one event has a {@code duration} within {@code [minMillis, maxMillis]}.
+   * The JFR parser normalizes the {@code @Timespan(TICKS)} duration to nanoseconds.
+   */
+  static void assertContainsDuration(JfrEvents events, long minMillis, long maxMillis) {
+    List<Long> durations = new ArrayList<>();
+    for (JfrEvent item : events) {
+      Long millis = item.getNanosAsMillis(DURATION);
+      if (millis == null) continue;
+      if (millis >= minMillis && millis <= maxMillis) {
+        return;
+      }
+      durations.add(millis);
+    }
+    throw new AssertionError("Expected TaskBlock duration in [" + minMillis + ", " + maxMillis
+        + "] ms, got " + durations);
+  }
 
   static void assertContains(JfrEvents events, long rootSpanId, long spanId,
       long blocker, long unblockingSpanId) {

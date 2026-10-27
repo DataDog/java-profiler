@@ -248,6 +248,8 @@ bool VM::initShared(JavaVM* vm) {
   bool is_zero_vm = false;
   char *prop;
   if (_jvmti->GetSystemProperty("java.vm.name", &prop) == 0) {
+    // TaskBlockAssertions.platformThreadClassificationSupported() (ddprof-test)
+    // mirrors this name test; keep its marker list in sync.
     _hotspot = strstr(prop, "OpenJDK") != NULL ||
                strstr(prop, "HotSpot") != NULL ||
                strstr(prop, "GraalVM") != NULL ||

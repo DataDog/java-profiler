@@ -28,15 +28,20 @@ Profiler::TaskBlockRecordResult recordTaskBlockForTest(
   return g_record_result.load(std::memory_order_acquire);
 }
 
+bool isEligibleDuration(u64 start_ticks, u64 end_ticks) {
+  return checkTaskBlockDuration(start_ticks, end_ticks) ==
+         TaskBlockDurationCheck::ELIGIBLE;
+}
+
 u64 minEligibleEndTicks(u64 start_ticks) {
   u64 low = start_ticks + 1;
   u64 high = low;
-  while (!exceedsMinTaskBlockDuration(start_ticks, high)) {
+  while (!isEligibleDuration(start_ticks, high)) {
     high = start_ticks + ((high - start_ticks) * 2);
   }
   while (low < high) {
     u64 mid = low + ((high - low) / 2);
-    if (exceedsMinTaskBlockDuration(start_ticks, mid)) {
+    if (isEligibleDuration(start_ticks, mid)) {
       high = mid;
     } else {
       low = mid + 1;
@@ -58,9 +63,13 @@ protected:
 
   void TearDown() override {
     Profiler::setTaskBlockRecordOverrideForTest(nullptr);
+    setTaskBlockFrequencySourceForTest(nullptr);
+    initializeTaskBlockDurationThreshold();
     Counters::reset();
   }
 };
+
+u64 uncalibratedFrequency() { return 0; }
 
 } // namespace
 
@@ -83,6 +92,37 @@ TEST_F(TaskBlockRecorderTest, DurationThresholdIncludesExactBoundary) {
   EXPECT_FALSE(taskBlockPassesBasicEligibility(
       start_ticks, passing_end - 1, context));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_THRESHOLD_INVALID));
+}
+
+TEST_F(TaskBlockRecorderTest, UninitializedThresholdIsRecomputedFromTscFrequency) {
+  resetTaskBlockDurationThresholdForTest();
+  u64 expected_ticks = (TSC::frequency() * 1000000ULL) / NANOTIME_FREQ;
+  ASSERT_GT(expected_ticks, 0ULL);
+  u64 start_ticks = TSC::ticks();
+
+  EXPECT_TRUE(isEligibleDuration(start_ticks, start_ticks + expected_ticks));
+  EXPECT_FALSE(isEligibleDuration(start_ticks, start_ticks + expected_ticks - 1))
+      << "the lazy fallback must enforce the 1 ms threshold, not accept every block";
+}
+
+TEST_F(TaskBlockRecorderTest, UncalibratedTscFailsClosed) {
+  setTaskBlockFrequencySourceForTest(uncalibratedFrequency);
+  initializeTaskBlockDurationThreshold();
+  Context context{};
+  u64 start_ticks = TSC::ticks();
+
+  EXPECT_FALSE(isEligibleDuration(start_ticks, start_ticks + 1));
+  EXPECT_FALSE(isEligibleDuration(start_ticks, start_ticks + NANOTIME_FREQ))
+      << "an uncalibrated TSC must reject blocks of any length";
+  EXPECT_EQ(TaskBlockDurationCheck::THRESHOLD_INVALID,
+            checkTaskBlockDuration(start_ticks, start_ticks + NANOTIME_FREQ));
+  EXPECT_FALSE(taskBlockPassesBasicEligibility(
+      start_ticks, start_ticks + NANOTIME_FREQ, context));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_THRESHOLD_INVALID))
+      << "an uncalibrated TSC must be visible as a disabled threshold";
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT))
+      << "each rejection must be counted under exactly one counter";
 }
 
 TEST_F(TaskBlockRecorderTest, RotationRejectsNewActivity) {
@@ -97,6 +137,135 @@ TEST_F(TaskBlockRecorderTest, RotationRejectsNewActivity) {
   profiler->endTaskBlockRotationForTest();
   ASSERT_TRUE(profiler->tryEnterTaskBlockActivity());
   profiler->leaveTaskBlockActivity();
+}
+
+class AbandonedTaskBlockTest : public TaskBlockRecorderTest {
+protected:
+  static constexpr int kTid = 22201;
+  ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  ThreadFilter::SlotID slot_id = -1;
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current{
+      nullptr, ProfiledThread::deleteForTest};
+
+  void SetUp() override {
+    TaskBlockRecorderTest::SetUp();
+    filter.setBlockTracker(&tracker);
+    filter.init("", true);
+    slot_id = filter.registerThread(kTid);
+    ASSERT_GE(slot_id, 0);
+    current.reset(ProfiledThread::forTid(kTid));
+    current->setFilterSlotId(slot_id);
+  }
+
+  // Arms a TASK_BLOCK run and its TLS interval, as beginTaskBlock0 does.
+  u64 beginTaskBlock() {
+    u64 token = tracker.enterBlockedRun(
+        &filter, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+    Context context{};
+    if (token == 0 || !current->taskBlockEnter(token, TSC::ticks(), context)) {
+      return 0;
+    }
+    return token;
+  }
+
+  BlockRunOwner owner() {
+    return tracker.slotForId(slot_id)->activeBlockOwner();
+  }
+};
+
+TEST_F(AbandonedTaskBlockTest, AbandonedIntervalIsClearedAndItsRunClosed) {
+  u64 abandoned = beginTaskBlock();
+  ASSERT_NE(0ULL, abandoned);
+  ASSERT_EQ(0ULL, beginTaskBlock())
+      << "precondition: a pending interval blocks the next begin";
+
+  EXPECT_TRUE(recoverAbandonedTaskBlock(current.get(), &tracker, slot_id));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECOVERED_ABANDONED));
+  EXPECT_EQ(BlockRunOwner::NONE, owner())
+      << "the abandoned TASK_BLOCK run must stop suppressing wall-clock signals";
+  u64 ignored_ticks = 0;
+  Context ignored_context{};
+  EXPECT_FALSE(current->taskBlockExit(abandoned, ignored_ticks, ignored_context))
+      << "the abandoned token must no longer close an interval";
+
+  u64 next = beginTaskBlock();
+  EXPECT_NE(0ULL, next) << "recovery must let the thread arm a new interval";
+  EXPECT_NE(abandoned, next);
+  EXPECT_EQ(BlockRunOwner::TASK_BLOCK, owner());
+}
+
+TEST_F(AbandonedTaskBlockTest, NothingPendingIsNotCounted) {
+  EXPECT_FALSE(recoverAbandonedTaskBlock(current.get(), &tracker, slot_id));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_RECOVERED_ABANDONED));
+}
+
+TEST_F(AbandonedTaskBlockTest, NonDecodableTokenIsDroppedWithoutClosingARun) {
+  // decodeBlockRunToken() rejects a non-zero token whose generation is 0.
+  // Its slot bits must be non-zero for the token itself to be non-zero, so
+  // use a non-zero slot that holds a live TASK_BLOCK run.
+  ThreadFilter::SlotID other_slot = filter.registerThread(kTid + 1);
+  ASSERT_GE(other_slot, 0);
+  ThreadFilter::SlotID target = slot_id != 0 ? slot_id : other_slot;
+  u64 live = tracker.enterBlockedRun(
+      &filter, target, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+  ASSERT_NE(0ULL, live);
+  u64 corrupt = WallClockBlockTracker::encodeBlockRunToken(target, 0);
+  ASSERT_NE(0ULL, corrupt);
+  ThreadFilter::SlotID ignored_slot = -1;
+  u64 ignored_generation = 0;
+  ASSERT_FALSE(WallClockBlockTracker::decodeBlockRunToken(
+      corrupt, ignored_slot, ignored_generation));
+  Context context{};
+  ASSERT_TRUE(current->taskBlockEnter(corrupt, TSC::ticks(), context));
+
+  EXPECT_TRUE(recoverAbandonedTaskBlock(current.get(), &tracker, target));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECOVERED_ABANDONED));
+  EXPECT_EQ(BlockRunOwner::TASK_BLOCK, tracker.slotForId(target)->activeBlockOwner())
+      << "a non-decodable token must not close any run";
+  u64 ignored_ticks = 0;
+  Context ignored_context{};
+  EXPECT_FALSE(current->taskBlockExit(corrupt, ignored_ticks, ignored_context))
+      << "the non-decodable token must be dropped from TLS";
+  EXPECT_TRUE(tracker.exitBlockedRun(
+      target, WallClockBlockTracker::tokenGeneration(live)));
+}
+
+TEST_F(AbandonedTaskBlockTest, NewerRunOnSlotIsNotClosed) {
+  u64 abandoned = beginTaskBlock();
+  ASSERT_NE(0ULL, abandoned);
+  // A registry reset clears the run but not the TLS token; a later run on
+  // the same slot then gets a newer generation.
+  tracker.resetSlot(slot_id);
+  u64 newer = tracker.enterBlockedRun(
+      &filter, slot_id, OSThreadState::SLEEPING, BlockRunOwner::JAVA);
+  ASSERT_NE(0ULL, newer);
+
+  EXPECT_TRUE(recoverAbandonedTaskBlock(current.get(), &tracker, slot_id));
+  EXPECT_EQ(BlockRunOwner::JAVA, owner())
+      << "the generation check must leave a newer run untouched";
+  EXPECT_TRUE(tracker.exitBlockedRun(
+      slot_id, WallClockBlockTracker::tokenGeneration(newer)));
+}
+
+TEST_F(AbandonedTaskBlockTest, RunOnAnotherSlotIsNotClosed) {
+  u64 abandoned = beginTaskBlock();
+  ASSERT_NE(0ULL, abandoned);
+  ThreadFilter::SlotID other_slot = filter.registerThread(kTid + 1);
+  ASSERT_GE(other_slot, 0);
+  ASSERT_NE(slot_id, other_slot);
+
+  // The thread now resolves to other_slot, so slot_id may belong to another
+  // thread and must not be touched.
+  EXPECT_TRUE(recoverAbandonedTaskBlock(current.get(), &tracker, other_slot));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECOVERED_ABANDONED));
+  EXPECT_EQ(BlockRunOwner::TASK_BLOCK, owner());
+  u64 ignored_ticks = 0;
+  Context ignored_context{};
+  EXPECT_FALSE(current->taskBlockExit(abandoned, ignored_ticks, ignored_context))
+      << "the TLS interval is cleared even when its run is not closed";
+  EXPECT_TRUE(tracker.exitBlockedRun(
+      slot_id, WallClockBlockTracker::tokenGeneration(abandoned)));
 }
 
 TEST_F(TaskBlockRecorderTest, RotationWaitsForInflightActivity) {

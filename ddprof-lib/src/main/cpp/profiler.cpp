@@ -193,6 +193,14 @@ void Profiler::setTaskBlockRecordOverrideForTest(
     TaskBlockRecordOverride override) {
   g_test_task_block_record_override.store(override, std::memory_order_release);
 }
+
+static std::atomic<Profiler::UnownedTailRecordObserver>
+    g_test_unowned_tail_record_observer{nullptr};
+
+void Profiler::setUnownedTailRecordObserverForTest(
+    UnownedTailRecordObserver observer) {
+  g_test_unowned_tail_record_observer.store(observer, std::memory_order_release);
+}
 #endif
 
 void Profiler::unregisterThread(int tid) {
@@ -701,6 +709,11 @@ void Profiler::recordUnownedBlockedTail(
     event._thread_state = state;
     event._execution_mode = ExecutionMode::UNKNOWN;
     event._weight = weight;
+#ifdef UNIT_TEST
+    UnownedTailRecordObserver observer =
+        g_test_unowned_tail_record_observer.load(std::memory_order_acquire);
+    if (observer != nullptr) observer(tid, call_trace_id, &event);
+#endif
     _jfr.recordEvent(lock_index, tid, call_trace_id, BCI_WALL, &event);
   }
   slot->discardUnownedBlockedTail();

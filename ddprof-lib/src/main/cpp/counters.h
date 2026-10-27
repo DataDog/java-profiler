@@ -101,11 +101,14 @@
   X(TASK_BLOCK_SKIPPED_TRACE_CONTEXT, "task_block_skipped_trace_context")     \
   X(TASK_BLOCK_SKIPPED_CONTEXT_WINDOW, "task_block_skipped_context_window")   \
   X(TASK_BLOCK_SKIPPED_TOO_SHORT, "task_block_skipped_too_short")             \
+  X(TASK_BLOCK_THRESHOLD_INVALID, "task_block_threshold_invalid")             \
   X(TASK_BLOCK_STACK_CAPTURE_FAILED, "task_block_stack_capture_failed")      \
   X(TASK_BLOCK_RECORD_FAILED, "task_block_record_failed")                     \
   X(TASK_BLOCK_DROPPED_ROTATION, "task_block_dropped_rotation")               \
   X(TASK_BLOCK_SKIPPED_THREAD_MISMATCH, "task_block_skipped_thread_mismatch") \
   X(TASK_BLOCK_ROTATION_TIMEOUT, "task_block_rotation_timeout")               \
+  X(TASK_BLOCK_RECOVERED_ABANDONED, "task_block_recovered_abandoned")         \
+  X(BLOCK_ENTER_SKIPPED_TRACE_CONTEXT, "block_enter_skipped_trace_context")   \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
   X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")             \
