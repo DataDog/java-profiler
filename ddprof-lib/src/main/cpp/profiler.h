@@ -89,14 +89,31 @@ private:
 
   Mutex _state_lock;
   std::atomic<State> _state;
-  // Set by openThreadRegistration() and cleared by closeThreadRegistration(). registerThread()/unregisterThread() are reached
-  // from the pthread hook without _state_lock, so they check this flag to
-  // stay off the engines while start() sizes their per-thread structures (for
-  // example CTimer::resizeTimers()) and while stop() tears them down.
+  // Registration gate, set by openThreadRegistration() and cleared by
+  // closeThreadRegistration(). registerThread() is reached from the pthread
+  // hook without _state_lock, so it checks this flag to stay off the engines
+  // while start() sizes their per-thread structures (for example
+  // CTimer::resizeTimers()) and once stop() has torn them down.
   std::atomic<bool> _engines_ready;
-  // Hook calls that are past their _engines_ready check and may still be
-  // inside an engine. closeThreadRegistration() waits for this to reach zero.
-  std::atomic<int> _hook_calls_inflight;
+  // Unregistration gate. Cleared by ThreadTablesFreeze for the part of start()
+  // that may replace the engines' per-thread tables, and set again once they
+  // are sized. Unlike _engines_ready it stays set while the profiler is idle:
+  // PerfEvents keeps its per-thread fds across stop(), and only
+  // unregisterThread() closes the fd of a thread that exits after stop().
+  std::atomic<bool> _thread_tables_stable;
+  // Hook calls that are past either gate and may still be inside an engine.
+  // Closing a gate waits for this to reach zero. Kept off _state's cache line:
+  // the hook writes it on every native thread start and exit, while
+  // isRunning() reads _state on every intercepted socket call.
+  alignas(DEFAULT_CACHE_LINE_SIZE) std::atomic<int> _hook_calls_inflight;
+  // Clears _thread_tables_stable (waiting for in-flight hook calls) for its
+  // lifetime; see profiler.cpp.
+  class ThreadTablesFreeze;
+  // Closes the gate opened by openThreadRegistration() and waits for hook
+  // calls already past it to leave the engines.
+  void closeThreadRegistration();
+  // Waits until no hook call is inside an engine.
+  void waitForHookCalls();
   // class unload hook
   Trap _class_unload_hook_trap;
   typedef void (*NotifyClassUnloadedFunc)(void *);
@@ -258,7 +275,8 @@ private:
 public:
   Profiler()
       : _state_lock(), _state(State::NEW), _engines_ready(false),
-        _hook_calls_inflight(0), _class_unload_hook_trap(2),
+        _thread_tables_stable(true), _hook_calls_inflight(0),
+        _class_unload_hook_trap(2),
         _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
         _string_label_map(2), _context_value_map(3), _thread_filter(),
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
@@ -385,11 +403,13 @@ public:
   void switchThreadEvents(jvmtiEventMode mode);
   /**
    * Lets the native-thread hook's registerThread()/unregisterThread() reach
-   * the engines. A CPU engine with per-thread structures calls this from its
-   * start() once those structures are sized and before it lists the existing
-   * threads, so no thread that starts or exits during start() is missed.
-   * start() also calls it after a successful CPU engine start, for engines
-   * that do not call it themselves. Idempotent.
+   * the engines. A CPU engine with a per-thread table (CTimer, PerfEvents)
+   * calls this from its start() once the table is sized and before it lists
+   * the existing threads: a thread that starts after the list is taken is
+   * then registered by the hook, and one that exits after start() registered
+   * it is unregistered by the hook. Concurrent registration of one tid by the
+   * hook and by start() is resolved by the engine's per-slot CAS. Engines
+   * without registerThread() never need the gate. Idempotent.
    */
   void openThreadRegistration();
 
@@ -523,10 +543,6 @@ public:
   static void busHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void setupSignalHandlers();
   static void checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext);
-
-  // Closes the gate opened by openThreadRegistration() and waits for hook
-  // calls already past it to leave the engines.
-  void closeThreadRegistration();
 
   static int registerThread(int tid);
   static void unregisterThread(int tid);

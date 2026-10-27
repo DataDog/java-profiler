@@ -14,7 +14,10 @@
 #include "os.h"
 #include "profiler.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
+#include <thread>
 
 // The failure-path tests force calloc to fail with a negative count, which
 // makes count * size overflow. The CI sanitizer jobs run gtest binaries
@@ -37,6 +40,12 @@ public:
   }
   static void closeThreadRegistration(Profiler *p) {
     p->closeThreadRegistration();
+  }
+  static bool threadTablesStable(Profiler *p) {
+    return p->_thread_tables_stable.load(std::memory_order_acquire);
+  }
+  static void addHookCalls(Profiler *p, int delta) {
+    p->_hook_calls_inflight.fetch_add(delta, std::memory_order_seq_cst);
   }
 };
 
@@ -68,6 +77,9 @@ public:
   }
 };
 
+// Size of a timer table with n slots, as recorded under NM_CTIMER.
+static long long bytes(int n) { return (long long)((size_t)n * sizeof(int)); }
+
 class CTimerNativeMemTest : public ::testing::Test {
 protected:
   int _saved_max;
@@ -95,14 +107,14 @@ protected:
 TEST_F(CTimerNativeMemTest, TimerTableIsAccounted) {
   CTimerTestAccessor::resizeTimers(1024);
   ASSERT_NE(nullptr, CTimerTestAccessor::timers());
-  EXPECT_EQ((long long)(1024 * sizeof(int)), NativeMem::live(NM_CTIMER));
+  EXPECT_EQ(bytes(1024), NativeMem::live(NM_CTIMER));
 
   CTimerTestAccessor::resizeTimers(4096);
   ASSERT_NE(nullptr, CTimerTestAccessor::timers());
-  EXPECT_EQ((long long)(4096 * sizeof(int)), NativeMem::live(NM_CTIMER));
+  EXPECT_EQ(bytes(4096), NativeMem::live(NM_CTIMER));
 
   CTimerTestAccessor::resizeTimers(512);
-  EXPECT_EQ((long long)(512 * sizeof(int)), NativeMem::live(NM_CTIMER));
+  EXPECT_EQ(bytes(512), NativeMem::live(NM_CTIMER));
 }
 
 // Restarting with an unchanged pid_max keeps the table and the gauge as-is.
@@ -116,7 +128,7 @@ TEST_F(CTimerNativeMemTest, SameSizeDoesNotReaccount) {
   ASSERT_TRUE(CTimerTestAccessor::resizeTimers(2048));
   EXPECT_EQ(table, CTimerTestAccessor::timers());
   EXPECT_EQ(0x5a5a5a5a, CTimerTestAccessor::timers()[2047]);
-  EXPECT_EQ((long long)(2048 * sizeof(int)), NativeMem::live(NM_CTIMER));
+  EXPECT_EQ(bytes(2048), NativeMem::live(NM_CTIMER));
 }
 
 // A failed allocation leaves an empty table rather than a NULL table with a
@@ -134,7 +146,7 @@ TEST_F(CTimerNativeMemTest, FailedAllocationLeavesEmptyTable) {
   ASSERT_TRUE(CTimerTestAccessor::resizeTimers(1024));
   EXPECT_NE(nullptr, CTimerTestAccessor::timers());
   EXPECT_EQ(1024, CTimerTestAccessor::maxTimers());
-  EXPECT_EQ((long long)(1024 * sizeof(int)), NativeMem::live(NM_CTIMER));
+  EXPECT_EQ(bytes(1024), NativeMem::live(NM_CTIMER));
 }
 
 // start() opens the native-thread registration gate once the table is sized,
@@ -180,10 +192,37 @@ TEST_F(CTimerNativeMemTest, StartFailsWhenTableAllocationFails) {
 // started, so its engine pointers are null and any engine call would crash.
 // The call must also leave the in-flight count at zero, or stop() would wait
 // on it forever.
+//
+// Unregistration has its own gate, which stays open while the profiler is
+// idle: PerfEvents keeps per-thread fds across stop(), and only
+// unregisterThread() closes the fd of a thread that exits after stop().
 TEST(ProfilerEnginesGateTest, RegisterThreadSkipsEnginesUntilReady) {
   Profiler *profiler = Profiler::instance();
   ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
   EXPECT_EQ(0, Profiler::registerThread(OS::threadId()));
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+}
+
+// stop() relies on closeThreadRegistration() not returning while a hook call
+// that passed the gate may still be inside an engine.
+TEST(ProfilerEnginesGateTest, CloseThreadRegistrationWaitsForHookCalls) {
+  Profiler *profiler = Profiler::instance();
+  profiler->openThreadRegistration();
+  ProfilerTestAccessor::addHookCalls(profiler, 1);
+
+  std::atomic<bool> closed{false};
+  std::thread closer([&] {
+    ProfilerTestAccessor::closeThreadRegistration(profiler);
+    closed.store(true);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_FALSE(closed.load());
+  EXPECT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+
+  ProfilerTestAccessor::addHookCalls(profiler, -1);
+  closer.join();
+  EXPECT_TRUE(closed.load());
   EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
 }
 

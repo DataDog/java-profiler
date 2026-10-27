@@ -166,11 +166,11 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 // Marks a native-thread hook call as in flight for the duration of a
-// Profiler::registerThread()/unregisterThread() call, so stop() can wait for
-// calls that passed the _engines_ready check before it stops the engines.
-// The increment and the flag load in the caller are seq_cst, pairing with the
-// seq_cst flag store and counter load in stop(): either the hook sees the flag
-// cleared, or stop() sees the call in flight and waits for it.
+// Profiler::registerThread()/unregisterThread() call, so a gate can be closed
+// and the calls that already passed it waited for. The increment and the gate
+// load in the caller are seq_cst, pairing with the seq_cst gate store and
+// counter load on the closing side: either the hook sees the gate closed, or
+// the closer sees the call in flight and waits for it.
 class HookCallScope {
 public:
   explicit HookCallScope(std::atomic<int> &inflight) : _inflight(inflight) {
@@ -184,13 +184,40 @@ private:
   std::atomic<int> &_inflight;
 };
 
+// Keeps Profiler::unregisterThread() off the engines while start() selects
+// the CPU engine and lets it replace its per-thread table. Exits skipped in
+// this window leave nothing behind: CTimer::stop() deleted every timer, and
+// PerfEvents::start() closes the fd of every tid missing from its fresh
+// thread list. The gate is set again by openThreadRegistration() once the
+// table is sized, and at the latest when start() returns.
+class Profiler::ThreadTablesFreeze {
+public:
+  explicit ThreadTablesFreeze(Profiler *profiler) : _profiler(profiler) {
+    _profiler->_thread_tables_stable.store(false, std::memory_order_seq_cst);
+    _profiler->waitForHookCalls();
+  }
+  ~ThreadTablesFreeze() {
+    _profiler->_thread_tables_stable.store(true, std::memory_order_seq_cst);
+  }
+  ThreadTablesFreeze(const ThreadTablesFreeze &) = delete;
+  ThreadTablesFreeze &operator=(const ThreadTablesFreeze &) = delete;
+
+private:
+  Profiler *_profiler;
+};
+
 void Profiler::openThreadRegistration() {
+  _thread_tables_stable.store(true, std::memory_order_seq_cst);
   _engines_ready.store(true, std::memory_order_seq_cst);
 }
 
 void Profiler::closeThreadRegistration() {
-  // Hook calls only do a few syscalls per engine, so the wait is short.
   _engines_ready.store(false, std::memory_order_seq_cst);
+  waitForHookCalls();
+}
+
+void Profiler::waitForHookCalls() {
+  // Hook calls only do a few syscalls per engine, so the wait is short.
   while (_hook_calls_inflight.load(std::memory_order_seq_cst) != 0) {
     sched_yield();
   }
@@ -229,10 +256,10 @@ void Profiler::unregisterThread(int tid) {
     return;
 #endif
   HookCallScope scope(_instance->_hook_calls_inflight);
-  // Outside the open gate the CPU engine either has not registered any thread
-  // yet (it opens the gate before listing threads) or stop() is about to
-  // unregister all of them, so skipping here does not leave a timer behind.
-  if (!_instance->_engines_ready.load(std::memory_order_seq_cst)) {
+  // Gated only while start() may replace the per-thread tables, not on
+  // _engines_ready: a thread started during a recording can exit after stop(),
+  // and PerfEvents keeps its fd open until this call closes it.
+  if (!_instance->_thread_tables_stable.load(std::memory_order_seq_cst)) {
     return;
   }
   _instance->_cpu_engine->unregisterThread(tid);
@@ -1649,6 +1676,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 
+  ThreadTablesFreeze tables_freeze(this);
   _cpu_engine = selectCpuEngine(args);
   _wall_engine = selectWallEngine(args);
   _cstack = args._cstack;
@@ -1732,10 +1760,6 @@ Error Profiler::start(Arguments &args, bool reset) {
       error = Error::OK; // recoverable
     } else {
       activated |= EM_CPU;
-      // CTimer and PerfEvents already opened the gate inside start(); this
-      // covers CPU engines that do not. The wall engines do not implement
-      // registerThread(), so they do not need to have started yet.
-      openThreadRegistration();
     }
   }
   if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine) {

@@ -132,23 +132,18 @@ void CTimer::unregisterThread(int tid) {
   }
 }
 
-// Sizes the tid-indexed timer table and accounts it under NM_CTIMER. Runs from
-// start() before it calls Profiler::openThreadRegistration(), so the pthread
-// hook's Profiler::registerThread()/unregisterThread() cannot touch the table
-// while it is freed and replaced, and JVMTI thread events are not enabled yet. On
-// allocation failure the table is left empty (_max_timers == 0), so the tid
-// bound checks reject every tid instead of indexing a NULL table, and the next
-// start() retries.
+// Sizes the tid-indexed timer table and accounts it under NM_CTIMER. Runs before
+// start() opens thread registration, so no hook call can be inside the table
+// while it is replaced. On allocation failure the table is left empty
+// (_max_timers == 0), so the tid bound checks reject every tid instead of
+// indexing a NULL table, and the next start() retries. _timers is NULL exactly
+// when _max_timers is 0, so the old size is always _max_timers ints.
 bool CTimer::resizeTimers(int max_timers) {
   if (max_timers == _max_timers) {
     return true;
   }
-  long long old_bytes =
-      (_timers != NULL) ? (long long)((size_t)_max_timers * sizeof(int)) : 0;
   free(_timers);
-  if (old_bytes > 0) {
-    NativeMem::record(NM_CTIMER, -old_bytes);
-  }
+  NativeMem::record(NM_CTIMER, -(long long)((size_t)_max_timers * sizeof(int)));
   _timers = (int *)calloc(max_timers, sizeof(int));
   if (_timers == NULL) {
     _max_timers = 0;
@@ -194,10 +189,8 @@ Error CTimer::startWithTableSize(Arguments &args, int max_timers) {
 
   OS::installSignalHandler(_signal, signalHandler);
 
-  // The table is sized, so let the native-thread hook register and unregister
-  // threads from here on. Opening the gate before listing threads means a
-  // thread that starts after the list is taken is registered by the hook, and
-  // one that exits after being registered below is unregistered by it.
+  // The table is sized: open the hook gate before listing threads (see
+  // Profiler::openThreadRegistration()).
   Profiler::instance()->openThreadRegistration();
 
   // Register all existing threads. Individual failures are benign — a thread

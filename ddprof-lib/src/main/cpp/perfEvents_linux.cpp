@@ -980,9 +980,8 @@ Error PerfEvents::start(Arguments &args) {
   __atomic_store_n(_pthread_entry, (void *)pthread_setspecific_hook,
                    __ATOMIC_RELEASE);
 
-  // _events is sized, so let the native-thread hook register and unregister
-  // threads from here on; opening the gate before listing threads means no
-  // thread that starts or exits during the loop below is missed.
+  // _events is sized: open the hook gate before listing threads (see
+  // Profiler::openThreadRegistration()).
   Profiler::instance()->openThreadRegistration();
 
   // Create perf_events for all existing threads
