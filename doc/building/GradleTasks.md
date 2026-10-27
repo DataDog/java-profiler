@@ -184,7 +184,8 @@ the debug-only scope of the C++ report, and container setup are in
 ```
 
 Reports are written to `ddprof-lib/build/reports/coverage/{cpp,java}/`. Java test
-failures are deferred until both reports are written; `coverageReport` then fails.
+failures are deferred until both reports are written; the `coverageReport` finalizer
+`:ddprof-test:checkCoverageTestFailures` then fails.
 
 ## Task Dependency Graph
 

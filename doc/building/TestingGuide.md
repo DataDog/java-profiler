@@ -322,8 +322,9 @@ The C++ report covers only the `-O0 -DDEBUG` build. Prerequisites and limits are
 (`--container=docker`): podman's credential-helper lookup for the Datadog registries
 (ddtool) fails outside the CI network and aborts container commands. Run `./utils/run-containers-tests.sh --help` for the full flag list
 (`--tests`, `--gtest`, `--gtest-task`, `--mount`, `--rebuild`, `--matrix`, ...).
-Cached base images are reused until `--rebuild-base` (or `--rebuild`) is passed. Use it
-after the base image's package list changes, e.g. to pick up gcovr for coverage runs.
+Cached images are reused until `--rebuild-base` (or `--rebuild`) is passed. Use it
+after the base image's package list changes, e.g. to pick up gcovr for coverage runs:
+it rebuilds the base image and the JDK image built on it.
 
 ```bash
 # Matches the nightly configuration

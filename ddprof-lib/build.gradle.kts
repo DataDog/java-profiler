@@ -206,29 +206,45 @@ afterEvaluate {
 if (project.hasProperty("enableCoverage")) {
   val gtestObjDir = layout.buildDirectory.dir("obj/gtest/coverage")
 
-  // Whether the compiler is Apple's clang. On macOS that includes /usr/bin/g++, a clang
-  // shim, so it is decided from the `--version` banner, not from the name; a Homebrew
-  // g++-<N> prints the GCC banner instead.
-  fun isAppleClang(compilerPath: String): Boolean = try {
+  // The compiler's `--version` output, or "" if it cannot be run.
+  fun compilerBanner(compilerPath: String): String = try {
     val process = ProcessBuilder(compilerPath, "--version").redirectErrorStream(true).start()
     val output = process.inputStream.bufferedReader().use { it.readText() }
     process.waitFor()
-    output.contains("Apple clang")
+    output
   } catch (e: java.io.IOException) {
-    false
+    ""
   }
 
-  // The gcov tool must come from the same toolchain that wrote the .gcno files,
-  // so derive it from the compiler (e.g. /usr/bin/g++-13 -> /usr/bin/gcov-13,
+  // The gcov tool must come from the same toolchain that wrote the .gcno files: GCC's
+  // gcov cannot read clang's .gcno format. Whether the compiler is clang is decided from
+  // its `--version` banner, never from its name -- /usr/bin/c++ may be clang through
+  // update-alternatives, and macOS's /usr/bin/g++ is an Apple clang shim. The tool is
+  // then derived from the compiler's path (e.g. /usr/bin/g++-13 -> /usr/bin/gcov-13,
   // clang++-17 -> llvm-cov-17 gcov) instead of whatever `gcov` is on PATH.
   fun gcovCommand(compilerPath: String): List<String> {
-    val compiler = File(compilerPath)
-    fun siblingOf(tool: String) = compiler.parentFile?.resolve(tool)?.path ?: tool
-    return when {
-      PlatformUtils.currentPlatform == Platform.MACOS && isAppleClang(compilerPath) -> listOf("xcrun", "llvm-cov", "gcov")
-      compiler.name.contains("clang") -> listOf(siblingOf(compiler.name.replace(Regex("clang(\\+\\+)?"), "llvm-cov")), "gcov")
-      else -> listOf(siblingOf(compiler.name.replace(Regex("[gc]\\+\\+"), "gcov")))
+    val banner = compilerBanner(compilerPath)
+    if (banner.contains("Apple clang")) {
+      return listOf("xcrun", "llvm-cov", "gcov")
     }
+    val compiler = File(compilerPath)
+    fun siblingOf(file: File, tool: String) = file.parentFile?.resolve(tool)?.path ?: tool
+    if (!banner.contains("clang version")) {
+      return listOf(siblingOf(compiler, compiler.name.replace(Regex("[gc]\\+\\+"), "gcov")))
+    }
+    val clangNamePattern = Regex("clang(\\+\\+)?")
+    if (clangNamePattern.containsMatchIn(compiler.name)) {
+      return listOf(siblingOf(compiler, compiler.name.replace(clangNamePattern, "llvm-cov")), "gcov")
+    }
+    // A clang under another name (c++ via update-alternatives) symlinks to the real clang
+    // binary (e.g. /usr/lib/llvm-17/bin/clang); that directory holds the matching
+    // llvm-cov when the llvm-<N> package is installed. Otherwise, and for wrappers that
+    // do not resolve to clang (ccache), fall back to llvm-cov on PATH.
+    val llvmCov = compiler.takeIf { it.isAbsolute && it.exists() }?.canonicalFile
+      ?.takeIf { clangNamePattern.containsMatchIn(it.name) }
+      ?.let { File(siblingOf(it, it.name.replace(clangNamePattern, "llvm-cov"))) }
+      ?.takeIf { it.canExecute() }?.path ?: "llvm-cov"
+    return listOf(llvmCov, "gcov")
   }
 
   // gcovr flags coverageReport depends on (see its command line below); 8.3 is the
@@ -393,6 +409,9 @@ if (project.hasProperty("enableCoverage")) {
     group = "verification"
     description = "Generates the Java (JaCoCo) and C++ (gcovr) coverage reports from gtestCoverage and :ddprof-test:testCoverage/testSlowCoverage (requires gcovr 8.3+; see checkCoverageTools)"
     dependsOn("gtestCoverage", ":ddprof-test:testCoverage", ":ddprof-test:testSlowCoverage", ":ddprof-test:jacocoTestReport")
+    // The Java test tasks defer their failures while this report runs; the finalizer
+    // fails the build on them once both reports are written.
+    finalizedBy(":ddprof-test:checkCoverageTestFailures")
 
     val reportDir = layout.buildDirectory.dir("reports/coverage/cpp")
     val libObjDir = layout.buildDirectory.dir("obj/main/coverage")

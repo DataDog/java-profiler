@@ -23,6 +23,10 @@ public final class NativeBuildConfig {
      * {@code debug}, or {@code coverage} (the debug build with gcov instrumentation added).
      * Debug-only code paths (e.g. {@code datadog.UnwindFailure} recording) are compiled in, and
      * unwinding is several times slower than in the release build.
+     *
+     * <p>Not a gate for timing- or sample-distribution-sensitive assertions: the coverage build
+     * adds atomic gcov counter updates on every edge, signal handlers included. Key those on
+     * {@code "debug".equals(name())} instead.
      */
     public static boolean isDebug() {
         String config = name();

@@ -12,8 +12,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Function;
 
@@ -26,9 +26,6 @@ public abstract class AbstractProcessProfilerTest {
     // descendant that inherited the pipes from keeping launch() from returning.
     private static final long READER_JOIN_TIMEOUT_MS = 10_000;
 
-    // Counter for generating unique JaCoCo execution data file names for child JVMs.
-    private static final AtomicLong CHILD_COUNTER = new AtomicLong();
-
     /**
      * JaCoCo agent jar path, set by the coverage test tasks via JACOCO_AGENT_JAR environment
      * variable. When non-null, child JVMs are instrumented for coverage.
@@ -39,6 +36,13 @@ public abstract class AbstractProcessProfilerTest {
      * Directory where child JVM JaCoCo execution data is written, set via JACOCO_CHILD_DIR.
      */
     private static final String JACOCO_CHILD_DIR = System.getenv("JACOCO_CHILD_DIR");
+
+    /**
+     * JaCoCo {@code includes} pattern list (':'-separated) restricting child JVM instrumentation
+     * to ddprof-lib's classes, set via JACOCO_INCLUDES. When null, the agent instruments every
+     * class it loads.
+     */
+    private static final String JACOCO_INCLUDES = System.getenv("JACOCO_INCLUDES");
 
     public static final class LaunchResult {
         public final boolean inTime;
@@ -92,13 +96,17 @@ public abstract class AbstractProcessProfilerTest {
 
         List<String> args = new ArrayList<>();
         args.add(javaHome + "/bin/java");
-        // Forward JaCoCo agent to child JVM for coverage collection if configured.
-        if (JACOCO_AGENT_JAR != null && JACOCO_CHILD_DIR != null) {
-            long childId = CHILD_COUNTER.incrementAndGet();
-            String execFile = JACOCO_CHILD_DIR + "/child-" + childId + "-" + System.currentTimeMillis() + ".exec";
-            args.add("-javaagent:" + JACOCO_AGENT_JAR + "=destfile=" + execFile + ",append=false");
-        }
         args.addAll(jvmArgs);
+        // Forward JaCoCo agent to child JVM for coverage collection if configured. It goes after
+        // the test's own JVM args because the JVM loads agents in command-line order: a test's
+        // -agentpath keeps running its Agent_OnLoad first, as it does without coverage.
+        if (JACOCO_AGENT_JAR != null && JACOCO_CHILD_DIR != null) {
+            // The name must be unique across every test JVM of the run (each forked test JVM
+            // starts with fresh static state), so a per-JVM counter is not enough.
+            String execFile = JACOCO_CHILD_DIR + "/child-" + UUID.randomUUID() + ".exec";
+            String includes = JACOCO_INCLUDES != null ? ",includes=" + JACOCO_INCLUDES : "";
+            args.add("-javaagent:" + JACOCO_AGENT_JAR + "=destfile=" + execFile + ",append=false" + includes);
+        }
         args.add("-cp");
         args.add(System.getProperty("java.class.path"));
         args.add(ExternalLauncher.class.getName());

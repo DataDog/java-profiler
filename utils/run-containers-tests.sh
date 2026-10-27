@@ -20,7 +20,7 @@
 #   --shell                  (drop to shell instead of running tests; enables SYS_PTRACE for gdb)
 #   --mount                  (mount local repo instead of cloning - faster but may have stale artifacts)
 #   --rebuild                (force rebuild of container images)
-#   --rebuild-base           (force rebuild of base image only)
+#   --rebuild-base           (force rebuild of the base image, and of the JDK image built on it)
 #   --matrix                 (preview a full matrix; unset dimensions expand to all)
 #   --run                    (execute an inferred matrix without prompting)
 #   --fail-fast              (stop matrix execution on first failure)
@@ -1115,7 +1115,9 @@ fi
 
 # ========== Build JDK Image (if needed) ==========
 IMAGE_EXISTS=false
-if [[ "$REBUILD" == "false" ]]; then
+# A JDK image cached on top of an older base image would hide the rebuilt base's packages
+# (e.g. gcovr), so it is reused only when the base image was reused too.
+if [[ "$REBUILD" == "false" && "$BASE_IMAGE_EXISTS" == "true" ]]; then
     if "$CONTAINER_RUNTIME" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         IMAGE_EXISTS=true
         echo ">>> Using cached image: $IMAGE_NAME"
