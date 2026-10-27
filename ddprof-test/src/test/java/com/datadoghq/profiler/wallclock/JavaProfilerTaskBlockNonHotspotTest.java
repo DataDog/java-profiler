@@ -17,8 +17,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * trusted (non-HotSpot JVMs on JDK 19+).
  */
 public class JavaProfilerTaskBlockNonHotspotTest extends AbstractProfilerTest {
-  private static final int OSTHREAD_STATE_SLEEPING = 7;
-
   /** A platform thread must not arm an interval when classification is not trusted. */
   @Test
   public void platformThreadCannotArmTaskBlock() {
@@ -26,7 +24,7 @@ public class JavaProfilerTaskBlockNonHotspotTest extends AbstractProfilerTest {
     // empty filter, it arms a run only when unfiltered wall tracking is active (which also enables
     // TaskBlock recording) and this thread has a registry slot. A non-zero token therefore shows
     // that beginTaskBlock() can return 0 below only because classification is not trusted.
-    long control = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
+    long control = ProfilerOwnedBlockHooks.blockEnter(profiler, TaskBlockAssertions.OSTHREAD_STATE_SLEEPING);
     Assumptions.assumeTrue(control != 0,
         "the wall engine on this JVM does not enable TaskBlock tracking for this thread");
     ProfilerOwnedBlockHooks.blockExit(profiler, control);

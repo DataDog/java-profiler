@@ -38,7 +38,6 @@ import org.junitpioneer.jupiter.RetryingTest;
  * counters, so it also catches silent over-/under-suppression regressions.
  */
 public class ConcurrentOwnedBlockChurnTest extends AbstractProfilerTest {
-  private static final int OSTHREAD_STATE_SLEEPING = 7;
   private static final long BLOCK_MILLIS = 250;
   private static final int WORKERS_PER_ROUND = 24;
   private static final int ROUNDS = 8;
@@ -166,7 +165,7 @@ public class ConcurrentOwnedBlockChurnTest extends AbstractProfilerTest {
 
   /** Holds one owned interval; only stacks containing this method count as coverage. */
   private void runOwnedBlock() throws InterruptedException {
-    long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
+    long token = ProfilerOwnedBlockHooks.blockEnter(profiler, TaskBlockAssertions.OSTHREAD_STATE_SLEEPING);
     assertNotEquals(0L, token, "Worker failed to arm its block: " + Thread.currentThread().getName());
     armedRuns.incrementAndGet();
     try {

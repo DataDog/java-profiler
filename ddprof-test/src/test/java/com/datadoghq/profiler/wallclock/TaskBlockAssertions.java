@@ -31,6 +31,14 @@ final class TaskBlockAssertions {
   private TaskBlockAssertions() {}
 
   /**
+   * Value of {@code OSThreadState::SLEEPING} in
+   * {@code ddprof-lib/src/main/cpp/threadState.h}. Keep in sync with that enum: the native
+   * {@code blockEnter0} decodes this int via {@code decodeJavaBlockState}, so a renumbered enum
+   * would silently arm a different OS thread state here.
+   */
+  static final int OSTHREAD_STATE_SLEEPING = 7;
+
+  /**
    * {@code java.vm.name} substrings that the native {@code VM::init()} (vmEntry.cpp) uses to set
    * {@code VM::isHotspot()}. Keep this list in sync with that check.
    */
