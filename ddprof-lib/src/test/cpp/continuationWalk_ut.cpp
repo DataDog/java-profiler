@@ -229,7 +229,14 @@ protected:
         struct Blob { uintptr_t used = 1; NMethod nm; };
         static_assert(offsetof(Blob, nm) == sizeof(uintptr_t), "CodeHeap header precedes the blob");
         static_assert(sizeof(Blob) <= 512, "Each blob occupies one CodeHeap segment");
-        alignas(16) unsigned char heap_memory[1024]{};
+        bool barrier_interior = test_case == EntryCase::BarrierInterior || test_case == EntryCase::BarrierInteriorRoot ||
+                test_case == EntryCase::BarrierInteriorNativePrefix;
+        alignas(16) unsigned char local_heap_memory[1024]{};
+        // Runtime-stub registrations are never removed. Keep each registered
+        // range alive and distinct so later cases cannot overlap a stale entry.
+        alignas(16) static unsigned char barrier_heap_memory[3][1024]{};
+        unsigned char* heap_memory = barrier_interior
+                ? barrier_heap_memory[(int)test_case - (int)EntryCase::BarrierInterior] : local_heap_memory;
         Blob& blob = *new (heap_memory) Blob;
         Blob& carrier = *new (heap_memory + 512) Blob;
 #ifdef __aarch64__
@@ -275,8 +282,6 @@ protected:
         const int offsets[] = {0, 1, 4, 27, 68, 72, 73, 8};
 #endif
         memcpy(blob.nm.code, instructions, sizeof(instructions));
-        bool barrier_interior = test_case == EntryCase::BarrierInterior || test_case == EntryCase::BarrierInteriorRoot ||
-                test_case == EntryCase::BarrierInteriorNativePrefix;
         if (barrier_interior) {
             auto prefix = barrierInstructions();
             memcpy(blob.nm.code, prefix.data(), prefix.size());
@@ -349,7 +354,7 @@ protected:
         }
         struct Heap { const void* low; const void* high; unsigned char* map; };
         unsigned char map[] = {0, 0};
-        Heap heap{heap_memory, heap_memory + sizeof(heap_memory), map};
+        Heap heap{heap_memory, heap_memory + sizeof(local_heap_memory), map};
         ScopedValue<int> memory(_code_heap_memory_offset, 0);
         ScopedValue<int> segmap(_code_heap_segmap_offset, offsetof(Heap, map));
         ScopedValue<int> low(_vs_low_offset, offsetof(Heap, low));
