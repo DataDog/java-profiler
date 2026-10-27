@@ -200,6 +200,37 @@ TEST_F(AbandonedTaskBlockTest, NothingPendingIsNotCounted) {
   EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_RECOVERED_ABANDONED));
 }
 
+TEST_F(AbandonedTaskBlockTest, NonDecodableTokenIsDroppedWithoutClosingARun) {
+  // decodeBlockRunToken() rejects a non-zero token whose generation is 0.
+  // Its slot bits must be non-zero for the token itself to be non-zero, so
+  // use a non-zero slot that holds a live TASK_BLOCK run.
+  ThreadFilter::SlotID other_slot = filter.registerThread(kTid + 1);
+  ASSERT_GE(other_slot, 0);
+  ThreadFilter::SlotID target = slot_id != 0 ? slot_id : other_slot;
+  u64 live = tracker.enterBlockedRun(
+      &filter, target, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+  ASSERT_NE(0ULL, live);
+  u64 corrupt = WallClockBlockTracker::encodeBlockRunToken(target, 0);
+  ASSERT_NE(0ULL, corrupt);
+  ThreadFilter::SlotID ignored_slot = -1;
+  u64 ignored_generation = 0;
+  ASSERT_FALSE(WallClockBlockTracker::decodeBlockRunToken(
+      corrupt, ignored_slot, ignored_generation));
+  Context context{};
+  ASSERT_TRUE(current->taskBlockEnter(corrupt, TSC::ticks(), context));
+
+  EXPECT_TRUE(recoverAbandonedTaskBlock(current.get(), &tracker, target));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECOVERED_ABANDONED));
+  EXPECT_EQ(BlockRunOwner::TASK_BLOCK, tracker.slotForId(target)->activeBlockOwner())
+      << "a non-decodable token must not close any run";
+  u64 ignored_ticks = 0;
+  Context ignored_context{};
+  EXPECT_FALSE(current->taskBlockExit(corrupt, ignored_ticks, ignored_context))
+      << "the non-decodable token must be dropped from TLS";
+  EXPECT_TRUE(tracker.exitBlockedRun(
+      target, WallClockBlockTracker::tokenGeneration(live)));
+}
+
 TEST_F(AbandonedTaskBlockTest, NewerRunOnSlotIsNotClosed) {
   u64 abandoned = beginTaskBlock();
   ASSERT_NE(0ULL, abandoned);
