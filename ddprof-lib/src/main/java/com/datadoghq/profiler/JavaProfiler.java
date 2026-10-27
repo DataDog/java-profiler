@@ -442,11 +442,15 @@ public final class JavaProfiler {
      * endTaskBlock} was never reached), the open interval is discarded without an event and this
      * call proceeds as if no interval were open. A later {@code endTaskBlock} with the discarded
      * token returns {@code false}. The open interval is kept only when this call returns {@code 0}
-     * because TaskBlock recording is inactive, the current thread is virtual, or the profiler
-     * cannot track the current thread.
+     * because TaskBlock recording is inactive, the current thread is not classified as a platform
+     * thread, or the profiler cannot track the current thread.
+     *
+     * <p>On non-HotSpot JVMs running JDK 19 or later, no thread is classified as a platform
+     * thread, so this method always returns {@code 0} there.
      *
      * @return an opaque token, or {@code 0} when the interval could not be armed or the current
-     *         thread is virtual; any non-zero value, including a negative value, is valid
+     *         thread is not classified as a platform thread; any non-zero value, including a
+     *         negative value, is valid
      */
     public long beginTaskBlock() {
         return beginTaskBlock0(Thread.currentThread());

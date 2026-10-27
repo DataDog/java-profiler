@@ -9,6 +9,7 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.JfrFrame;
+import com.datadoghq.profiler.Platform;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -25,6 +26,15 @@ final class TaskBlockAssertions {
   private static final String CORRELATION_ID = "correlationId";
 
   private TaskBlockAssertions() {}
+
+  /**
+   * Returns whether the native layer can classify the current thread as a platform thread on this
+   * JVM. On non-HotSpot JVMs at JDK 19+ the classification fails closed, so {@code
+   * beginTaskBlock()} always returns {@code 0} there.
+   */
+  static boolean platformThreadClassificationSupported() {
+    return !Platform.isJavaVersionAtLeast(19) || !(Platform.isJ9() || Platform.isZing());
+  }
 
   static void assertContains(JfrEvents events, long rootSpanId, long spanId,
       long blocker, long unblockingSpanId) {

@@ -196,10 +196,10 @@ TEST_F(JvmSupportThreadClassificationTest, MissingJni21FunctionFailsClosed) {
 }
 
 // ---------------------------------------------------------------------------
-// JvmSupportNonHotspotTest — verifies isPlatformThread() short-circuits to
-// true on non-HotSpot JVMs at JNI>=19 without ever indexing the HotSpot-only
-// IsVirtualThread vtable slot (which may not even be a valid function
-// pointer there).
+// JvmSupportNonHotspotTest — verifies isPlatformThread() fails closed
+// (returns false) on non-HotSpot JVMs at JNI>=19 without ever indexing the
+// IsVirtualThread table slot, whose hardcoded offset is only trusted on
+// HotSpot (it may not even be a valid function pointer there).
 // ---------------------------------------------------------------------------
 class JvmSupportNonHotspotTest : public ::testing::Test {
 protected:
@@ -242,8 +242,14 @@ protected:
     }
 };
 
-TEST_F(JvmSupportNonHotspotTest, Jni21ThreadIsAcceptedWithoutIndexingVtable) {
-    EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
+TEST_F(JvmSupportNonHotspotTest, Jni21ThreadIsRejectedWithoutIndexingVtable) {
+    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(0, is_virtual_thread_calls);
+}
+
+TEST_F(JvmSupportNonHotspotTest, Jni19ThreadIsRejectedWithoutIndexingVtable) {
+    jni_version = 0x00130000;
+    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
     EXPECT_EQ(0, is_virtual_thread_calls);
 }
 

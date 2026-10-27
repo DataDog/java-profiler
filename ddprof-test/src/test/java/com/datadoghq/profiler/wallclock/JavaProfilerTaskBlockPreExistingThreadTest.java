@@ -70,6 +70,11 @@ public class JavaProfilerTaskBlockPreExistingThreadTest extends AbstractProfiler
   }
 
   @Override
+  protected boolean isPlatformSupported() {
+    return TaskBlockAssertions.platformThreadClassificationSupported();
+  }
+
+  @Override
   protected String getProfilerCommand() {
     return "wall=1ms,filter=,wallprecheck=true";
   }

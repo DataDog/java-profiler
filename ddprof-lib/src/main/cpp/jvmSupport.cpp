@@ -40,7 +40,12 @@ bool JVMSupport::isPlatformThread(JNIEnv* jni, jthread thread) {
     jint jni_version = jni->GetVersion();
     if (jni_version <= 0) return false;
     if (jni_version < JNI_VERSION_19_VALUE) return true;
-    if (!VM::isHotspot()) return true;
+    // IS_VIRTUAL_THREAD_INDEX is a hardcoded JNI function-table offset that
+    // is only trusted on HotSpot. On any other VM reporting JNI >= 19 the
+    // thread may be virtual and the table entry is not read, so fail closed:
+    // every thread is reported as non-platform, which keeps the task-block
+    // hooks disabled there until that VM's table layout is verified.
+    if (!VM::isHotspot()) return false;
 
     const JniFunction* functions =
         reinterpret_cast<const JniFunction*>(jni->functions);
