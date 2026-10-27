@@ -58,9 +58,13 @@ protected:
 
   void TearDown() override {
     Profiler::setTaskBlockRecordOverrideForTest(nullptr);
+    setTaskBlockFrequencySourceForTest(nullptr);
+    initializeTaskBlockDurationThreshold();
     Counters::reset();
   }
 };
+
+u64 uncalibratedFrequency() { return 0; }
 
 } // namespace
 
@@ -82,6 +86,31 @@ TEST_F(TaskBlockRecorderTest, DurationThresholdIncludesExactBoundary) {
       start_ticks, passing_end, context));
   EXPECT_FALSE(taskBlockPassesBasicEligibility(
       start_ticks, passing_end - 1, context));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
+}
+
+TEST_F(TaskBlockRecorderTest, UninitializedThresholdIsRecomputedFromTscFrequency) {
+  resetTaskBlockDurationThresholdForTest();
+  u64 expected_ticks = (TSC::frequency() * 1000000ULL) / NANOTIME_FREQ;
+  ASSERT_GT(expected_ticks, 0ULL);
+  u64 start_ticks = TSC::ticks();
+
+  EXPECT_TRUE(exceedsMinTaskBlockDuration(start_ticks, start_ticks + expected_ticks));
+  EXPECT_FALSE(exceedsMinTaskBlockDuration(start_ticks, start_ticks + expected_ticks - 1))
+      << "the lazy fallback must enforce the 1 ms threshold, not accept every block";
+}
+
+TEST_F(TaskBlockRecorderTest, UncalibratedTscFailsClosed) {
+  setTaskBlockFrequencySourceForTest(uncalibratedFrequency);
+  initializeTaskBlockDurationThreshold();
+  Context context{};
+  u64 start_ticks = TSC::ticks();
+
+  EXPECT_FALSE(exceedsMinTaskBlockDuration(start_ticks, start_ticks + 1));
+  EXPECT_FALSE(exceedsMinTaskBlockDuration(start_ticks, start_ticks + NANOTIME_FREQ))
+      << "an uncalibrated TSC must reject blocks of any length";
+  EXPECT_FALSE(taskBlockPassesBasicEligibility(
+      start_ticks, start_ticks + NANOTIME_FREQ, context));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
 }
 

@@ -13,7 +13,20 @@
 #include "tsc.h"
 
 void initializeTaskBlockDurationThreshold();
+// Fails closed (returns false) when the 1 ms threshold computes to 0 ticks
+// (TSC::frequency() below 1 kHz, e.g. 0), so sub-millisecond blocks cannot
+// pass the filter.
 bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks);
+
+#ifdef UNIT_TEST
+// Clears the cached threshold so the next exceedsMinTaskBlockDuration() call
+// takes its lazy recompute path.
+void resetTaskBlockDurationThresholdForTest();
+// Replaces TSC::frequency() as the threshold's frequency source; nullptr
+// restores TSC::frequency().
+using TaskBlockFrequencySource = u64 (*)();
+void setTaskBlockFrequencySourceForTest(TaskBlockFrequencySource source);
+#endif
 
 // Recovers a TASK_BLOCK interval whose endTaskBlock0 was never reached (for
 // example, an exception thrown without a finally block). Clears the pending
