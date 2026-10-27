@@ -150,6 +150,7 @@ before working on a subsystem.
 | JFR integration (FlightRecorder, metadata, constant pools, buffers) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, signal scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
 | Native memory profiling (malloc/free interception, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
+| glibc malloc arena warning (lock-free arena walk, per-chunk rule, `MallocArenaWarning`/`MallocArenaStats` events, `arenawarn`) | [doc/architecture/MallocArenaWarning.md](doc/architecture/MallocArenaWarning.md) |
 | Startup sanity checks | [doc/architecture/SanityChecks.md](doc/architecture/SanityChecks.md) |
 | SIGSEGV-safe library patching | [doc/architecture/SigsegvPatching.md](doc/architecture/SigsegvPatching.md) |
 | Event type system | [doc/reference/EventTypeSystem.md](doc/reference/EventTypeSystem.md) |
@@ -177,7 +178,6 @@ walkers, `CallTraceStorage::put`, the JFR record paths and `CodeCache` lookups. 
 code can interrupt any thread at any instruction: inside the allocator, the dynamic
 loader, the JVM at a safepoint, or our own code on the same thread. Socket hooks
 (`send/recv/write/read` interceptors) are the deliberate exception: they run on the
-| glibc malloc arena warning (lock-free arena walk, per-chunk rule, `MallocArenaWarning`/`MallocArenaStats` events, `arenawarn`) | [doc/architecture/MallocArenaWarning.md](doc/architecture/MallocArenaWarning.md) |
 calling thread, not in signal context (`nativeSocketSampler.h`), so allocation,
 locking, logging and `initCurrentThreadSignalSafe()` are legal there. In
 signal-reachable code, never:
