@@ -219,6 +219,13 @@ alignment and carrier admission checks apply before proceeding. Walks with a
 known argument count retain SP-based recovery. Missing or invalid metadata
 still rejects the walk, and frozen boundaries remain marked truncated.
 
+Native thaw calls return inside the barrier stub, where SP has already changed.
+The runtime-stub lookup identifies these PCs by matching the registered stub's
+start to the known return-barrier entry. They use the current thread's entry
+metadata, independently of any earlier Java frame's stack-argument count.
+Both stopping at the synthetic root and continuing onto the carrier retain the
+frozen-boundary truncation flag. Missing entry metadata still rejects recovery.
+
 Caveats:
 
 - **Architecture-specific unwinding.** `unwindAtomicStub` always returns

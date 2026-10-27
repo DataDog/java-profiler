@@ -16,6 +16,7 @@
 #include "flightRecorder.h"
 #include "hotspot/hotspotSupport.h"
 #include "hotspot/hotspotStackFrame.h"
+#include "hotspot/jitCodeCache.h"
 #include "hotspot/vmStructs.h"
 #include "jvmThread.h"
 #include "libraries.h"
@@ -199,7 +200,8 @@ protected:
         ExceptionMove, ExceptionBranch, AuthenticatedExceptionMove, AuthenticatedExceptionBranch,
         ExceptionMoveWithoutBranch, ExceptionBranchWithoutMove, InterpretedEntry, UnsupportedInterpretedEntry,
         LeafSpillBeforeSave, LeafSpillMove, LeafSpillCall, LeafSpillRestore, LeafSpillAfterRestore,
-        LeafSpillOneMove, LeafSpillMovn, LeafSpillLogicalImmediate, LeafSpillFourMoves, LeafSpillNativePrefix, LeafSpillUnknownSequence
+        LeafSpillOneMove, LeafSpillMovn, LeafSpillLogicalImmediate, LeafSpillFourMoves, LeafSpillNativePrefix, LeafSpillUnknownSequence,
+        BarrierInterior, BarrierInteriorRoot, BarrierInteriorNativePrefix
     };
 
     // Generated prologue/setup and normal cleanup excerpts, captured from
@@ -273,6 +275,13 @@ protected:
         const int offsets[] = {0, 1, 4, 27, 68, 72, 73, 8};
 #endif
         memcpy(blob.nm.code, instructions, sizeof(instructions));
+        bool barrier_interior = test_case == EntryCase::BarrierInterior || test_case == EntryCase::BarrierInteriorRoot ||
+                test_case == EntryCase::BarrierInteriorNativePrefix;
+        if (barrier_interior) {
+            auto prefix = barrierInstructions();
+            memcpy(blob.nm.code, prefix.data(), prefix.size());
+            blob.nm.name = "StubRoutines";
+        }
         blob.nm.frame_complete = offsets[(int)EntryPhase::Complete];
         blob.nm.code_begin = blob.nm.entry = blob.nm.code;
         carrier.nm.name = test_case == EntryCase::BlobNonPointerFp ? "RuntimeBlob" : "nmethod";
@@ -280,6 +289,7 @@ protected:
         carrier.nm.frame_complete = 0;
         carrier.nm.code_begin = carrier.nm.entry = carrier.nm.code;
         carrier.nm.method = &method;
+        if (barrier_interior) carrier.nm.frame_size = 10;
 #ifdef __aarch64__
         carrier.nm.code[0] = 0xd503201f; // nop, not an epilogue
 #else
@@ -374,7 +384,13 @@ protected:
         ScopedValue<char*> heap2(_code_heap[2], nullptr);
         ScopedValue<const void*> heap_low(_code_heap_low, heap.low);
         ScopedValue<const void*> heap_high(_code_heap_high, heap.high);
-        ScopedValue<VMNMethod*> entry_nm(_enter_special_nm, reinterpret_cast<VMNMethod*>(&blob.nm));
+        ScopedValue<VMNMethod*> entry_nm(_enter_special_nm, reinterpret_cast<VMNMethod*>(barrier_interior ? &carrier.nm : &blob.nm));
+        ScopedValue<const void*> return_barrier(_cont_return_barrier, barrier_interior ? blob.nm.code : _cont_return_barrier);
+        ScopedValue<int> inferred_entry_offset(_cont_entry_thread_offset, barrier_interior ? 0 : _cont_entry_thread_offset);
+        if (barrier_interior) {
+            thread.entry = stack;
+            JitCodeCache::DynamicCodeGenerated(nullptr, "cont return barrier", blob.nm.code, sizeof(blob.nm.code));
+        }
         const void* sampled_pc = (const char*)blob.nm.code + offsets[(int)phase] + prefix;
 #ifdef __aarch64__
         if (exception_exit && prefix != 0) sampled_pc = (const char*)sampled_pc + sizeof(uint32_t); // after autiaz
@@ -442,16 +458,26 @@ protected:
         if (test_case == EntryCase::MisalignedSp) frame.sp() += 8;
         if (test_case == EntryCase::OutOfBoundsSp) frame.sp() = (UINTPTR_MAX / 2) & ~(uintptr_t)15;
         frame.fp() = sampled_fp;
-        if (test_case == EntryCase::LeafSpillNativePrefix) {
+        if (test_case == EntryCase::LeafSpillNativePrefix || test_case == EntryCase::BarrierInteriorNativePrefix) {
             stack[-4] = sampled_fp;
             stack[-3] = (uintptr_t)sampled_pc;
             frame.pc() = (uintptr_t)LEAF_PC;
             frame.sp() = (uintptr_t)(stack - 4);
         }
         StackWalkFeatures features{};
-        features.carrier_frames = true;
+        features.carrier_frames = test_case != EntryCase::BarrierInteriorRoot;
         bool truncated = false;
         int depth = HotspotSupportTestAccessor::walk(&context, frames, features, MAX_DEPTH, &truncated);
+        if (barrier_interior) {
+            if (test_case == EntryCase::BarrierInteriorNativePrefix) assertCarrier(depth);
+            else {
+                ASSERT_EQ(1, depth);
+                ASSERT_EQ(BCI_NATIVE_FRAME, frames[0].bci);
+                EXPECT_STREQ(features.carrier_frames ? "continuation_carrier" : "JVM Continuation", (const char*)frames[0].method_id);
+            }
+            EXPECT_TRUE(truncated);
+            return;
+        }
         if (test_case == EntryCase::LeafSpillNativePrefix) {
             assertCarrier(depth);
             EXPECT_FALSE(truncated);
@@ -892,6 +918,12 @@ TEST_F(ContinuationWalkTest, InterpretedEntryRetainsCarrierBeforeCompiledEntry) 
 
 TEST_F(ContinuationWalkTest, InterpretedEntryRejectsUnsupportedPrologue) {
     assertCarrierFromEntry(EntryPhase::Complete, EntryCase::UnsupportedInterpretedEntry);
+}
+
+TEST_F(ContinuationWalkTest, ReturnBarrierInteriorRetainsContinuationAncestry) {
+    for (EntryCase test_case : {EntryCase::BarrierInterior, EntryCase::BarrierInteriorRoot, EntryCase::BarrierInteriorNativePrefix}) {
+        assertCarrierFromEntry(EntryPhase::Complete, test_case);
+    }
 }
 
 TEST_F(ContinuationWalkTest, SampledEntryDoesNotFollowExportedParentDuringTransitions) {

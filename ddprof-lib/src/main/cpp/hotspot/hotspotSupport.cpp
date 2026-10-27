@@ -439,7 +439,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     //     that fast thaw does not repair.
     //
     // Returns true to continue the walk, false to break.
-    auto walkThroughContinuation = [&](ContBoundary kind) -> bool {
+    // Interior return-barrier PCs use the thread's entry: thaw has changed SP.
+    auto walkThroughContinuation = [&](ContBoundary kind, bool use_thread_entry = false) -> bool {
         // Unless the boundary is verified fully thawed, older Java callers may
         // remain in heap StackChunks, which this walker skips even when carrier
         // walking succeeds.
@@ -503,11 +504,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         || VMStructs::isContEntryReturnPc(walk_pc.raw())
                         || (entry_nm != nullptr && CodeHeap::findNMethod(walk_pc.raw()) == entry_nm);
                 int entry_offset = VMStructs::contEntryThreadOffset();
-                if (entry_nm != nullptr && kind == ContBoundary::Frozen && continuation_stack_args < 0 && entry_offset >= 0) {
+                if (entry_nm != nullptr && kind == ContBoundary::Frozen &&
+                        (continuation_stack_args < 0 || use_thread_entry)) {
                     // A sample at the barrier (also through a signal trampoline)
                     // has no Java frame supplying stack arguments. Read the entry
                     // that the JVM's validated barrier prefix itself loads.
-                    uintptr_t entry_sp = (uintptr_t)SafeAccess::loadPtr((void**)((char*)vm_thread + entry_offset), nullptr);
+                    uintptr_t entry_sp = entry_offset < 0 ? 0 :
+                            (uintptr_t)SafeAccess::loadPtr((void**)((char*)vm_thread + entry_offset), nullptr);
                     entry_fp = entry_sp >= sp && entry_sp < bottom ? entry_nm->continuationEntryFP(entry_sp, 0) : 0;
                 } else if (entry_nm != nullptr && known_boundary) {
                     // Fast thaw does not repair FP links. Recover the entry from SP,
@@ -864,6 +867,15 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     name = nm->name();
                 }
 #endif
+
+                // A native thaw call returns inside the barrier, after SP has
+                // changed. Its registered start still identifies the boundary;
+                // recover from JavaThread's entry rather than the interior SP.
+                if (!CONT_UNWIND_DISABLED && VMStructs::isContReturnBarrier(start)) {
+                    Counters::increment(WALKVM_CONT_BARRIER_HIT);
+                    if (walkThroughContinuation(CONT_BOUNDARY_AT_RETURN_BARRIER, true)) continue;
+                    break;
+                }
 
                 if (details) {
                     fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
