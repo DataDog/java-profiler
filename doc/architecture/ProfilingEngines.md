@@ -459,9 +459,9 @@ In summary:
 ## Profiler Self-Accounting (`NativeMem`, `nativeMem.{h,cpp}`)
 
 `nativeMem.{h,cpp}` is **not** a profiling engine and does not observe
-application allocations. It tracks the profiler's **own** native memory in 13
+application allocations. It tracks the profiler's **own** native memory in 14
 categories (`NM_CALLTRACE`, `NM_DICTIONARY`, ..., `NM_PERF`, `NM_LIVENESS`,
-`NM_WALLCLOCK`, `NM_MISC`; `nativeMem.h`).
+`NM_WALLCLOCK`, `NM_CTIMER`, `NM_MISC`; `nativeMem.h`).
 
 - `record(cat, delta)` is a relaxed atomic add plus a lock-free CAS on the
   per-category peak. It is async-signal-safe, which matters because the
@@ -476,7 +476,8 @@ categories (`NM_CALLTRACE`, `NM_DICTIONARY`, ..., `NM_PERF`, `NM_LIVENESS`,
   exported as the `NATIVE_MEM_LIVE_BYTES`, `NATIVE_MEM_AVG_BYTES`, and
   `NATIVE_MEM_MAX_BYTES` counters (`flightRecorder.cpp:2201-2203`).
 
-The engines above feed it: `PerfEvents` reports `NM_PERF`,
+The engines above feed it: `PerfEvents` reports `NM_PERF`, `CTimer` reports
+its tid-indexed timer table (`pid_max × sizeof(int)`) as `NM_CTIMER`,
 `timerLoopCommon()` reports `NM_WALLCLOCK`, and `LivenessTracker` reports
 `NM_LIVENESS`.
 

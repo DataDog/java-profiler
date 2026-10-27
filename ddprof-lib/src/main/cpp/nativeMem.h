@@ -38,6 +38,7 @@
   X(METHOD_MAP, "method_map")                                                  \
   X(LIVENESS, "liveness")                                                      \
   X(WALLCLOCK, "wallclock")                                                    \
+  X(CTIMER, "ctimer")                                                          \
   X(MISC, "misc")
 
 #define X_NM_ENUM(a, b) NM_##a,

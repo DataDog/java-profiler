@@ -24,6 +24,7 @@
 #include "debugSupport.h"
 #include "libraries.h"
 #include "log.h"
+#include "nativeMem.h"
 #include "profiler.h"
 #include "samplerPerf.h"
 #include "signalCookie.h"
@@ -131,6 +132,30 @@ void CTimer::unregisterThread(int tid) {
   }
 }
 
+// Sizes the tid-indexed timer table and accounts it under NM_CTIMER. On
+// allocation failure the table is left empty (_max_timers == 0), so the
+// tid bound checks in registerThread()/unregisterThread()/stop() reject every
+// tid instead of indexing a NULL table, and the next start() retries.
+bool CTimer::resizeTimers(int max_timers) {
+  if (max_timers == _max_timers) {
+    return true;
+  }
+  long long old_bytes =
+      (_timers != NULL) ? (long long)((size_t)_max_timers * sizeof(int)) : 0;
+  free(_timers);
+  if (old_bytes > 0) {
+    NativeMem::record(NM_CTIMER, -old_bytes);
+  }
+  _timers = (int *)calloc(max_timers, sizeof(int));
+  if (_timers == NULL) {
+    _max_timers = 0;
+    return false;
+  }
+  _max_timers = max_timers;
+  NativeMem::record(NM_CTIMER, (long long)((size_t)max_timers * sizeof(int)));
+  return true;
+}
+
 Error CTimer::check(Arguments &args) {
   timer_t timer;
   if (timer_create(CLOCK_THREAD_CPUTIME_ID, NULL, &timer) < 0) {
@@ -150,11 +175,8 @@ Error CTimer::start(Arguments &args) {
   _cstack = args._cstack;
   _signal = SIGPROF;
 
-  int max_timers = OS::getMaxThreadId();
-  if (max_timers != _max_timers) {
-    free(_timers);
-    _timers = (int *)calloc(max_timers, sizeof(int));
-    _max_timers = max_timers;
+  if (!resizeTimers(OS::getMaxThreadId())) {
+    return Error("Failed to allocate CPU timer table");
   }
 
   // Prime the origin-check cache from this non-signal context before any
