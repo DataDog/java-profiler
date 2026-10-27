@@ -53,6 +53,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <pthread.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdint.h>
@@ -171,17 +172,29 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 // load in the caller are seq_cst, pairing with the seq_cst gate store and
 // counter load on the closing side: either the hook sees the gate closed, or
 // the closer sees the call in flight and waits for it.
+//
+// Thread cancellation is disabled for the scope's lifetime: the engine calls
+// reach cancellation points (close() in PerfEvents::unregisterThread(), stdio
+// in Log::warn()). Acting on a cancellation there would unwind through this
+// destructor, which aborts with the statically linked libgcc (see
+// run_with_cleanup() in libraryPatcher_linux.cpp), or skip it on musl and
+// leave the count raised, so the next stop() would wait forever.
 class HookCallScope {
 public:
   explicit HookCallScope(std::atomic<int> &inflight) : _inflight(inflight) {
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &_cancel_state);
     _inflight.fetch_add(1, std::memory_order_seq_cst);
   }
-  ~HookCallScope() { _inflight.fetch_sub(1, std::memory_order_release); }
+  ~HookCallScope() {
+    _inflight.fetch_sub(1, std::memory_order_release);
+    pthread_setcancelstate(_cancel_state, nullptr);
+  }
   HookCallScope(const HookCallScope &) = delete;
   HookCallScope &operator=(const HookCallScope &) = delete;
 
 private:
   std::atomic<int> &_inflight;
+  int _cancel_state;
 };
 
 // Keeps Profiler::unregisterThread() off the engines while start() selects
@@ -245,16 +258,6 @@ void Profiler::resetUnregisterObservableForTest() {
 #endif
 
 void Profiler::unregisterThread(int tid) {
-#ifdef UNIT_TEST
-    // In gtest, _cpu_engine/_wall_engine are null (profiler not started).
-    // Record the tid so integration tests can verify the call happened without
-    // crashing on the null engine dereference.  This bypasses the real engine
-    // unregister path entirely, so that path is covered only by JVM-level tests,
-    // not by these gtests.  UNIT_TEST is defined solely for the gtest binaries
-    // (see GtestTaskBuilder); the shipped library never compiles this branch.
-    g_test_last_unregistered_tid.store(tid, std::memory_order_relaxed);
-    return;
-#endif
   HookCallScope scope(_instance->_hook_calls_inflight);
   // Gated only while start() may replace the per-thread tables, not on
   // _engines_ready: a thread started during a recording can exit after stop(),
@@ -262,6 +265,16 @@ void Profiler::unregisterThread(int tid) {
   if (!_instance->_thread_tables_stable.load(std::memory_order_seq_cst)) {
     return;
   }
+#ifdef UNIT_TEST
+    // In gtest, _cpu_engine/_wall_engine are null (profiler not started).
+    // Record the tid so integration tests can verify the call passed the gate
+    // without crashing on the null engine dereference.  This bypasses the real
+    // engine unregister path, so that path is covered only by JVM-level tests,
+    // not by these gtests.  UNIT_TEST is defined solely for the gtest binaries
+    // (see GtestTaskBuilder); the shipped library never compiles this branch.
+    g_test_last_unregistered_tid.store(tid, std::memory_order_relaxed);
+    return;
+#endif
   _instance->_cpu_engine->unregisterThread(tid);
   _instance->_wall_engine->unregisterThread(tid);
 }
@@ -1905,9 +1918,12 @@ Error Profiler::stop() {
     return Error("signal handlers did not drain; teardown skipped, retry stop()");
   }
 
-  // Close the hook gate and wait for hook calls already past it, so no thread
-  // arms a timer after CTimer::stop() has unregistered them all, and none is
-  // still inside the timer table when the next start() resizes it.
+  // Close the hook gate and wait for hook calls already past it, so no
+  // pthread-hook call arms a timer after CTimer::stop() has unregistered them
+  // all, and none is still inside the timer table when the next start()
+  // resizes it. JVMTI ThreadStart reaches the engine directly and is disabled
+  // only after the engines stop, so a Java thread starting in that window can
+  // still arm a timer that nothing deletes.
   closeThreadRegistration();
 
   if (_event_mask & EM_ALLOC)

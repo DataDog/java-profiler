@@ -1157,7 +1157,16 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
 }
 
 void PerfEvents::resetBuffer(int tid) {
-  PerfEvent *event = &_events[tid];
+  // Runs from the SIGPROF handler on every exit, including signals from fds
+  // left armed by an earlier recording. start() can leave the table NULL
+  // (_max_events == -1) after a failed allocation, so check the table and the
+  // bound before indexing it.
+  PerfEvent *events = __atomic_load_n(&_events, __ATOMIC_ACQUIRE);
+  if (events == NULL || tid < 0 ||
+      tid >= __atomic_load_n(&_max_events, __ATOMIC_ACQUIRE)) {
+    return;
+  }
+  PerfEvent *event = &events[tid];
   if (!event->tryLock()) {
     return; // the event is being destroyed
   }

@@ -46,16 +46,45 @@ public:
   static bool threadTablesStable(Profiler *p) {
     return p->_thread_tables_stable.load(std::memory_order_acquire);
   }
-  // Installs the given engines and returns the previous ones through the
-  // out-parameters, so a test can put them back.
-  static void swapEngines(Profiler *p, Engine *cpu, Engine *wall,
-                          Engine **prev_cpu, Engine **prev_wall) {
-    *prev_cpu = p->_cpu_engine;
-    *prev_wall = p->_wall_engine;
-    p->_cpu_engine = cpu;
-    p->_wall_engine = wall;
+  static void setThreadTablesStable(Profiler *p, bool stable) {
+    p->_thread_tables_stable.store(stable, std::memory_order_seq_cst);
   }
+
+  // Installs the given engines for its lifetime and puts the previous ones
+  // back on destruction, including when a test assertion returns early.
+  class EngineSwap {
+  public:
+    EngineSwap(Profiler *p, Engine *cpu, Engine *wall)
+        : _p(p), _cpu(p->_cpu_engine), _wall(p->_wall_engine) {
+      p->_cpu_engine = cpu;
+      p->_wall_engine = wall;
+    }
+    ~EngineSwap() {
+      _p->_cpu_engine = _cpu;
+      _p->_wall_engine = _wall;
+    }
+    EngineSwap(const EngineSwap &) = delete;
+    EngineSwap &operator=(const EngineSwap &) = delete;
+
+  private:
+    Profiler *_p;
+    Engine *_cpu;
+    Engine *_wall;
+  };
 };
+
+// Polls cond until it holds or a 5 s deadline passes, so a gate regression
+// fails the test instead of hanging the gtest binary.
+template <typename Cond> static bool waitFor(Cond cond) {
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!cond()) {
+    if (std::chrono::steady_clock::now() > deadline) {
+      return false;
+    }
+    std::this_thread::yield();
+  }
+  return true;
+}
 
 // Exposes CTimer's tid-indexed timer table without starting the engine, which
 // would install a SIGPROF handler and arm a timer for every live thread.
@@ -181,6 +210,9 @@ TEST_F(CTimerNativeMemTest, StartOpensThreadRegistration) {
   Error error = CTimerTestAccessor::startWithTableSize(engine, args,
                                                        OS::getMaxThreadId());
   bool opened = ProfilerTestAccessor::enginesReady(profiler);
+  // Ignore SIGPROF before stopping, so a signal an armed timer already
+  // generated is discarded instead of hitting a restored SIG_DFL.
+  signal(SIGPROF, SIG_IGN);
   engine.stop();
   ProfilerTestAccessor::closeThreadRegistration(profiler);
   sigaction(SIGPROF, &saved_sigprof, nullptr);
@@ -235,9 +267,7 @@ public:
 
   int registerThread(int tid) override {
     entered.store(true);
-    while (!released.load()) {
-      std::this_thread::yield();
-    }
+    waitFor([this] { return released.load(); });
     return 0;
   }
 };
@@ -249,15 +279,11 @@ TEST(ProfilerEnginesGateTest, CloseThreadRegistrationWaitsForHookCalls) {
   Profiler *profiler = Profiler::instance();
   BlockingEngine cpu;
   Engine wall;
-  Engine *prev_cpu, *prev_wall;
-  ProfilerTestAccessor::swapEngines(profiler, &cpu, &wall, &prev_cpu,
-                                    &prev_wall);
+  ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
   profiler->openThreadRegistration();
 
   std::thread hook([] { Profiler::registerThread(OS::threadId()); });
-  while (!cpu.entered.load()) {
-    std::this_thread::yield();
-  }
+  bool entered = waitFor([&] { return cpu.entered.load(); });
   std::atomic<bool> closed{false};
   std::thread closer([&] {
     ProfilerTestAccessor::closeThreadRegistration(profiler);
@@ -271,10 +297,28 @@ TEST(ProfilerEnginesGateTest, CloseThreadRegistrationWaitsForHookCalls) {
   hook.join();
   closer.join();
   EXPECT_TRUE(closed.load());
+  EXPECT_TRUE(entered);
   EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
-  Engine *ignored_cpu, *ignored_wall;
-  ProfilerTestAccessor::swapEngines(profiler, prev_cpu, prev_wall,
-                                    &ignored_cpu, &ignored_wall);
+}
+
+// Unregistration is skipped, without touching the engines, while start() may
+// replace their per-thread tables, and goes through once the tables are
+// stable. In this binary the call records the tid instead of calling the
+// (null) engines, so the recorded tid shows whether it passed the gate.
+TEST(ProfilerEnginesGateTest, UnregisterThreadSkipsEnginesWhileTablesFrozen) {
+  Profiler *profiler = Profiler::instance();
+  int tid = OS::threadId();
+
+  ProfilerTestAccessor::setThreadTablesStable(profiler, false);
+  Profiler::resetUnregisterObservableForTest();
+  Profiler::unregisterThread(tid);
+  EXPECT_EQ(-1, Profiler::lastUnregisteredTidForTest());
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+
+  ProfilerTestAccessor::setThreadTablesStable(profiler, true);
+  Profiler::unregisterThread(tid);
+  EXPECT_EQ(tid, Profiler::lastUnregisteredTidForTest());
+  Profiler::resetUnregisterObservableForTest();
 }
 
 #endif // __linux__

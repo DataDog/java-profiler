@@ -136,10 +136,12 @@ void CTimer::unregisterThread(int tid) {
 // start() opens thread registration, so no pthread-hook call can be inside the
 // table while it is replaced. The JVMTI ThreadStart/ThreadEnd callbacks reach
 // the engine directly, but Profiler enables them only after the engines have
-// started and disables them only after the engines have stopped. On allocation failure the table is left empty
-// (_max_timers == 0), so the tid bound checks reject every tid instead of
-// indexing a NULL table, and the next start() retries. _timers is NULL exactly
-// when _max_timers is 0, so the old size is always _max_timers ints.
+// started and disables them only after the engines have stopped.
+//
+// On allocation failure the table is left empty (_max_timers == 0), so the tid
+// bound checks reject every tid instead of indexing a NULL table, and the next
+// start() retries. The table currently held always has _max_timers slots, so
+// that is the size released from NM_CTIMER.
 bool CTimer::resizeTimers(int max_timers) {
   if (max_timers == _max_timers) {
     return true;

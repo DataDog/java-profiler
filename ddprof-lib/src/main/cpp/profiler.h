@@ -405,11 +405,13 @@ public:
    * Lets the native-thread hook's registerThread()/unregisterThread() reach
    * the engines. A CPU engine with a per-thread table (CTimer, PerfEvents)
    * calls this from its start() once the table is sized and before it lists
-   * the existing threads: a thread that starts after the list is taken is
-   * then registered by the hook, and one that exits after start() registered
-   * it is unregistered by the hook. Concurrent registration of one tid by the
-   * hook and by start() is resolved by the engine's per-slot CAS. Engines
-   * without registerThread() never need the gate. Idempotent.
+   * the existing threads, so the hook handles a thread that starts or exits
+   * while start() registers the existing ones. For CTimer this misses no
+   * thread: the per-slot CAS resolves the hook and start() registering one
+   * tid. PerfEvents::start() still closes the fd of every tid missing from
+   * its thread list, including one the hook registered after the list was
+   * taken, so such a thread is not sampled. Engines without registerThread()
+   * never need the gate. Idempotent.
    */
   void openThreadRegistration();
 
