@@ -174,6 +174,31 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   }
 
   @Test
+  public void traceContextRejectionKeepsOpenInterval() throws Exception {
+    AtomicLong nested = new AtomicLong(-1L);
+    AtomicBoolean recorded = new AtomicBoolean();
+    runWorker(() -> {
+      long token = profiler.beginTaskBlock();
+      assertTrue(token != 0);
+      profiler.setTraceContext(0x5200L, 0x5201L, 0L, 0x5201L, -1, null, -1, null);
+      try {
+        nested.set(profiler.beginTaskBlock());
+      } finally {
+        profiler.clearTraceContext();
+      }
+      Thread.sleep(200L);
+      recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+    });
+    assertEquals(0L, nested.get());
+    assertTrue(recorded.get(),
+        "a begin rejected for an active trace context must keep the open interval");
+
+    stopProfiler();
+    assertTrue(getRecordedCounterValue("task_block_skipped_trace_context") > 0);
+    assertEquals(0L, getRecordedCounterValue("task_block_recovered_abandoned"));
+  }
+
+  @Test
   public void mismatchedThreadIsRejectedAtBeginAndEnd() throws Exception {
     AtomicLong beginToken = new AtomicLong(-1L);
     AtomicBoolean endResult = new AtomicBoolean(true);
