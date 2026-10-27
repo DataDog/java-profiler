@@ -86,6 +86,9 @@ TEST(WallTailRecordingTest, InactiveRecordingDiscardsTailAndReleasesWriterStripe
   Profiler* profiler = Profiler::instance();
   WallClockBlockTracker::BlockState slot;
   slot.recordUnownedBlockedSample(42, OSThreadState::SLEEPING);
+  // The published trace and state reach the observer call site, so with no
+  // observer installed this test also covers its null check.
+  Profiler::setUnownedTailRecordObserverForTest(nullptr);
 
   profiler->recordUnownedBlockedTail(1234, &slot, 9);
   EXPECT_EQ(0ULL, slot.unowned_blocked_call_trace_id.load(std::memory_order_acquire));
