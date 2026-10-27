@@ -184,10 +184,22 @@ private:
   std::atomic<int> &_inflight;
 };
 
+void Profiler::openThreadRegistration() {
+  _engines_ready.store(true, std::memory_order_seq_cst);
+}
+
+void Profiler::closeThreadRegistration() {
+  // Hook calls only do a few syscalls per engine, so the wait is short.
+  _engines_ready.store(false, std::memory_order_seq_cst);
+  while (_hook_calls_inflight.load(std::memory_order_seq_cst) != 0) {
+    sched_yield();
+  }
+}
+
 int Profiler::registerThread(int tid) {
   HookCallScope scope(_instance->_hook_calls_inflight);
-  // Threads created while the engines are not started are picked up by the
-  // CPU engine's own start(), which registers every existing thread.
+  // Threads created before the gate opens are picked up by the CPU engine's
+  // start(), which opens the gate before it lists the existing threads.
   if (!_instance->_engines_ready.load(std::memory_order_seq_cst)) {
     return 0;
   }
@@ -217,9 +229,9 @@ void Profiler::unregisterThread(int tid) {
     return;
 #endif
   HookCallScope scope(_instance->_hook_calls_inflight);
-  // Outside the ready window the CPU engine either has not registered any
-  // thread yet or is about to unregister all of them in stop(), so skipping
-  // here does not leave a timer behind.
+  // Outside the open gate the CPU engine either has not registered any thread
+  // yet (it opens the gate before listing threads) or stop() is about to
+  // unregister all of them, so skipping here does not leave a timer behind.
   if (!_instance->_engines_ready.load(std::memory_order_seq_cst)) {
     return;
   }
@@ -1714,16 +1726,16 @@ Error Profiler::start(Arguments &args, bool reset) {
   if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
     error = _cpu_engine->start(args);
     if (error) {
+      // The engine may have opened the gate before failing.
+      closeThreadRegistration();
       Log::warn("%s", error.message());
       error = Error::OK; // recoverable
     } else {
       activated |= EM_CPU;
-      // Open the hook gate as soon as the CPU engine has sized its per-thread
-      // structures and registered the existing threads, so native threads
-      // that start or exit from here on are registered or unregistered.
-      // The wall engines do not implement registerThread(), so they do not
-      // need to have started yet.
-      _engines_ready.store(true, std::memory_order_seq_cst);
+      // CTimer and PerfEvents already opened the gate inside start(); this
+      // covers CPU engines that do not. The wall engines do not implement
+      // registerThread(), so they do not need to have started yet.
+      openThreadRegistration();
     }
   }
   if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine) {
@@ -1871,12 +1883,8 @@ Error Profiler::stop() {
 
   // Close the hook gate and wait for hook calls already past it, so no thread
   // arms a timer after CTimer::stop() has unregistered them all, and none is
-  // still inside the timer table when the next start() resizes it. Hook calls
-  // only do a few syscalls per engine, so the wait is short.
-  _engines_ready.store(false, std::memory_order_seq_cst);
-  while (_hook_calls_inflight.load(std::memory_order_seq_cst) != 0) {
-    sched_yield();
-  }
+  // still inside the timer table when the next start() resizes it.
+  closeThreadRegistration();
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();

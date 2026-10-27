@@ -133,9 +133,9 @@ void CTimer::unregisterThread(int tid) {
 }
 
 // Sizes the tid-indexed timer table and accounts it under NM_CTIMER. Runs from
-// start() before the profiler sets its engines-ready flag, so the pthread hook's
-// Profiler::registerThread()/unregisterThread() cannot touch the table while it
-// is freed and replaced, and JVMTI thread events are not enabled yet. On
+// start() before it calls Profiler::openThreadRegistration(), so the pthread
+// hook's Profiler::registerThread()/unregisterThread() cannot touch the table
+// while it is freed and replaced, and JVMTI thread events are not enabled yet. On
 // allocation failure the table is left empty (_max_timers == 0), so the tid
 // bound checks reject every tid instead of indexing a NULL table, and the next
 // start() retries.
@@ -193,6 +193,12 @@ Error CTimer::startWithTableSize(Arguments &args, int max_timers) {
   OS::primeSignalOriginCheck();
 
   OS::installSignalHandler(_signal, signalHandler);
+
+  // The table is sized, so let the native-thread hook register and unregister
+  // threads from here on. Opening the gate before listing threads means a
+  // thread that starts after the list is taken is registered by the hook, and
+  // one that exits after being registered below is unregistered by it.
+  Profiler::instance()->openThreadRegistration();
 
   // Register all existing threads. Individual failures are benign — a thread
   // may exit between listThreads() and registerThread(), and new threads

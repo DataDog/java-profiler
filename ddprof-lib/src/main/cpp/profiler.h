@@ -89,15 +89,13 @@ private:
 
   Mutex _state_lock;
   std::atomic<State> _state;
-  // True from the moment the CPU engine has started until stop() begins
-  // tearing the engines down. registerThread()/unregisterThread() are reached
+  // Set by openThreadRegistration() and cleared by closeThreadRegistration(). registerThread()/unregisterThread() are reached
   // from the pthread hook without _state_lock, so they check this flag to
   // stay off the engines while start() sizes their per-thread structures (for
   // example CTimer::resizeTimers()) and while stop() tears them down.
   std::atomic<bool> _engines_ready;
   // Hook calls that are past their _engines_ready check and may still be
-  // inside an engine. stop() waits for this to reach zero after clearing
-  // _engines_ready, before any engine stops.
+  // inside an engine. closeThreadRegistration() waits for this to reach zero.
   std::atomic<int> _hook_calls_inflight;
   // class unload hook
   Trap _class_unload_hook_trap;
@@ -385,6 +383,15 @@ public:
   Error checkState();
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);
+  /**
+   * Lets the native-thread hook's registerThread()/unregisterThread() reach
+   * the engines. A CPU engine with per-thread structures calls this from its
+   * start() once those structures are sized and before it lists the existing
+   * threads, so no thread that starts or exits during start() is missed.
+   * start() also calls it after a successful CPU engine start, for engines
+   * that do not call it themselves. Idempotent.
+   */
+  void openThreadRegistration();
 
   /**
    * Remote symbolication packed data layout (BCI_NATIVE_FRAME_REMOTE):
@@ -516,6 +523,10 @@ public:
   static void busHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void setupSignalHandlers();
   static void checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext);
+
+  // Closes the gate opened by openThreadRegistration() and waits for hook
+  // calls already past it to leave the engines.
+  void closeThreadRegistration();
 
   static int registerThread(int tid);
   static void unregisterThread(int tid);

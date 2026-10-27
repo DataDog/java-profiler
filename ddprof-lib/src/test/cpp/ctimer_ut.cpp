@@ -27,6 +27,19 @@
 #define SKIP_IF_CALLOC_OVERFLOW_ABORTS()
 #endif
 
+class ProfilerTestAccessor {
+public:
+  static bool enginesReady(Profiler *p) {
+    return p->_engines_ready.load(std::memory_order_acquire);
+  }
+  static int hookCallsInflight(Profiler *p) {
+    return p->_hook_calls_inflight.load(std::memory_order_acquire);
+  }
+  static void closeThreadRegistration(Profiler *p) {
+    p->closeThreadRegistration();
+  }
+};
+
 // Exposes CTimer's tid-indexed timer table without starting the engine, which
 // would install a SIGPROF handler and arm a timer for every live thread.
 class CTimerTestAccessor {
@@ -124,6 +137,26 @@ TEST_F(CTimerNativeMemTest, FailedAllocationLeavesEmptyTable) {
   EXPECT_EQ((long long)(1024 * sizeof(int)), NativeMem::live(NM_CTIMER));
 }
 
+// start() opens the native-thread registration gate once the table is sized,
+// so a thread that starts or exits while start() registers the existing
+// threads is handled by the pthread hook instead of being missed. The engine
+// is stopped and the gate closed again before the fixture restores the table.
+TEST_F(CTimerNativeMemTest, StartOpensThreadRegistration) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  CTimer engine;
+  Arguments args;
+
+  Error error = CTimerTestAccessor::startWithTableSize(engine, args,
+                                                       OS::getMaxThreadId());
+  bool opened = ProfilerTestAccessor::enginesReady(profiler);
+  engine.stop();
+  ProfilerTestAccessor::closeThreadRegistration(profiler);
+
+  EXPECT_FALSE((bool)error);
+  EXPECT_TRUE(opened);
+}
+
 // start() fails when the timer table cannot be allocated, and returns before
 // it installs the SIGPROF handler or arms a timer for any thread.
 TEST_F(CTimerNativeMemTest, StartFailsWhenTableAllocationFails) {
@@ -133,21 +166,12 @@ TEST_F(CTimerNativeMemTest, StartFailsWhenTableAllocationFails) {
 
   Error error = CTimerTestAccessor::startWithTableSize(engine, args, -1);
   EXPECT_TRUE((bool)error);
+  EXPECT_FALSE(ProfilerTestAccessor::enginesReady(Profiler::instance()));
   EXPECT_STREQ("Failed to allocate CPU timer table", error.message());
   EXPECT_EQ(nullptr, CTimerTestAccessor::timers());
   EXPECT_EQ(0, CTimerTestAccessor::maxTimers());
   EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
 }
-
-class ProfilerTestAccessor {
-public:
-  static bool enginesReady(Profiler *p) {
-    return p->_engines_ready.load(std::memory_order_acquire);
-  }
-  static int hookCallsInflight(Profiler *p) {
-    return p->_hook_calls_inflight.load(std::memory_order_acquire);
-  }
-};
 
 // Profiler::registerThread() is reached from the pthread hook without
 // _state_lock. Until start() has sized the engines' per-thread structures
