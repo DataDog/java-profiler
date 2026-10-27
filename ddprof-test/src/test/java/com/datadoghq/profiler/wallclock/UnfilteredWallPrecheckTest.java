@@ -21,6 +21,7 @@ import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Test;
 import org.junitpioneer.jupiter.RetryingTest;
 
 /** Verifies owned-block prechecks when legacy {@code filter=} samples every thread. */
@@ -177,6 +178,33 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
     stopProfiler();
     assertSuppressedSamples(threadName);
     assertOwnedBlockSuppressionObserved(suppressedBefore);
+  }
+
+  /**
+   * Verifies that a traced thread does not arm an owned block run and that the skip is counted.
+   *
+   * @throws Exception if the worker cannot complete
+   */
+  @Test
+  public void tracedBlockEnterIsSkippedAndCounted() throws Exception {
+    FutureTask<Long> traced =
+        new FutureTask<>(
+            () -> {
+              profiler.setTraceContext(0x5200L, 0x5201L, 0L, 0x5201L, -1, null, -1, null);
+              try {
+                return ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
+              } finally {
+                profiler.clearTraceContext();
+              }
+            });
+    Thread worker = new Thread(traced, "unfiltered-precheck-traced");
+    worker.start();
+    assertEquals(0L, traced.get().longValue(), "A traced thread must not arm an owned block run");
+
+    stopProfiler();
+    assertTrue(
+        getRecordedCounterValue("block_enter_skipped_trace_context") > 0,
+        "The trace-context skip in blockEnter must be counted");
   }
 
   @Override

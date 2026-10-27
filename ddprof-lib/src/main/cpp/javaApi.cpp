@@ -508,6 +508,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   u64 span_id = 0, root_span_id = 0;
   ContextApi::get(span_id, root_span_id);
   if (span_id != 0) {
+    Counters::increment(BLOCK_ENTER_SKIPPED_TRACE_CONTEXT);
     return 0;
   }
   Profiler *profiler = Profiler::instance();

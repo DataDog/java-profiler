@@ -107,6 +107,7 @@
   X(TASK_BLOCK_SKIPPED_THREAD_MISMATCH, "task_block_skipped_thread_mismatch") \
   X(TASK_BLOCK_ROTATION_TIMEOUT, "task_block_rotation_timeout")               \
   X(TASK_BLOCK_RECOVERED_ABANDONED, "task_block_recovered_abandoned")         \
+  X(BLOCK_ENTER_SKIPPED_TRACE_CONTEXT, "block_enter_skipped_trace_context")   \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
   X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")             \
