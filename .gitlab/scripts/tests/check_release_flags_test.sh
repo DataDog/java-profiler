@@ -101,6 +101,21 @@ run_nm_unreadable() {
     "${CHECKER}" "${WORK}/libjavaProfiler.so" > "${WORK}/out" 2>&1
 }
 
+run_strings_unreadable() {
+  FAKE_STRINGS_FAIL=1 FAKE_NM="${WORK}/nm-clean" \
+    NM="${WORK}/nm" STRINGS="${WORK}/strings" \
+    "${CHECKER}" "${WORK}/libjavaProfiler.so" > "${WORK}/out" 2>&1
+}
+
+# Points NM / STRINGS at nonexistent paths, so the checker's command -v
+# availability guards fire before any tool is invoked.
+run_missing_tool() {
+  local nm="$1" strings="$2"
+  FAKE_NM="${WORK}/nm-clean" FAKE_STRINGS="${WORK}/strings-clean" \
+    NM="${WORK}/${nm}" STRINGS="${WORK}/${strings}" \
+    "${CHECKER}" "${WORK}/libjavaProfiler.so" > "${WORK}/out" 2>&1
+}
+
 assert_exit_code() {
   local desc="$1" expected="$2"; shift 2
   local actual=0
@@ -187,6 +202,22 @@ assert_output_contains "the empty-symtab error explains itself" \
 assert_fail "an nm that cannot read the file is rejected" \
   run_nm_unreadable
 assert_output_contains "the unreadable-artifact error names the cause" "failed on"
+
+assert_fail "a strings that cannot read the file is rejected" \
+  run_strings_unreadable
+assert_output_contains "the unreadable-strings error names the cause" "failed on"
+
+# --- tool availability guards ---
+
+# Deleting either command -v guard must flip these tests: with working stubs
+# everywhere else, only a nonexistent tool path can reach the die branch.
+assert_fail "a nonexistent NM path is rejected" \
+  run_missing_tool nm-does-not-exist strings
+assert_output_contains "the missing-NM error names the tool" "not found"
+
+assert_fail "a nonexistent STRINGS path is rejected" \
+  run_missing_tool nm strings-does-not-exist
+assert_output_contains "the missing-STRINGS error names the tool" "not found"
 
 # --- argument handling ---
 
