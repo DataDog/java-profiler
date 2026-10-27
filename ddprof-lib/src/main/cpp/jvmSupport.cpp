@@ -8,6 +8,7 @@
 #include "asyncSampleMutex.h"
 #include "common.h"
 #include "frames.h"
+#include "jniHelper.h"
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
@@ -22,6 +23,7 @@
 
 volatile JVMSupport::JMethodIDLoadStats JVMSupport::jmethodID_load_state = JVMSupport::No_loaded;
 Mutex JVMSupport::_initialization_lock;
+volatile jlong JVMSupport::_max_heap_bytes = -1;
 
 
 // This method must be called after JVM has been properly initialized, e.g. after JVMTI::VMinit()
@@ -70,7 +72,45 @@ void JVMSupport::setLoadState(JMethodIDLoadStats state) {
     __atomic_store(&jmethodID_load_state, &state, __ATOMIC_RELEASE);
 }
 
+jlong JVMSupport::maxHeapBytes() {
+    return __atomic_load_n(&_max_heap_bytes, __ATOMIC_ACQUIRE);
+}
+
+void JVMSupport::resolveMaxHeapBytes(JNIEnv* jni) {
+    if (jni == nullptr || maxHeapBytes() >= 0) {
+        return;
+    }
+
+    jclass runtime_class = jni->FindClass("java/lang/Runtime");
+    if (runtime_class == nullptr) {
+        jniExceptionCheck(jni);
+        return;
+    }
+    jmethodID get_runtime = jni->GetStaticMethodID(runtime_class, "getRuntime", "()Ljava/lang/Runtime;");
+    jmethodID max_memory = jni->GetMethodID(runtime_class, "maxMemory", "()J");
+    if (get_runtime == nullptr || max_memory == nullptr || jniExceptionCheck(jni)) {
+        jniExceptionCheck(jni);
+        jni->DeleteLocalRef(runtime_class);
+        return;
+    }
+    jobject runtime = jni->CallStaticObjectMethod(runtime_class, get_runtime);
+    // Check and clear unconditionally: a throwing call leaves a null result.
+    if (!jniExceptionCheck(jni) && runtime != nullptr) {
+        jlong value = jni->CallLongMethod(runtime, max_memory);
+        if (!jniExceptionCheck(jni) && value >= 0) {
+            __atomic_store_n(&_max_heap_bytes, value, __ATOMIC_RELEASE);
+        }
+    }
+    if (runtime != nullptr) {
+        jni->DeleteLocalRef(runtime);
+    }
+    jni->DeleteLocalRef(runtime_class);
+}
+
 void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
+    // Before the early return below, so that a start after an unsuccessful resolution retries it.
+    resolveMaxHeapBytes(jni);
+
     JMethodIDLoadStats current_state = getLoadState();
 
     JMethodIDLoadStats state = Fully_loaded;
