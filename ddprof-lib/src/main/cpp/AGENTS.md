@@ -17,6 +17,7 @@ before working on a subsystem.
 | JFR integration (FlightRecorder, metadata, constant pools, buffers) | [doc/architecture/JfrIntegration.md](/doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](/doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](/doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](/doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](/doc/ReferenceChainsCollectionSummary.md) |
 | Native memory profiling (malloc interception installed per recording and restored on stop, sampling) | [doc/architecture/NativeMemoryProfiling.md](/doc/architecture/NativeMemoryProfiling.md) |
+| glibc malloc arena warning (lock-free arena walk, per-chunk rule, `MallocArenaWarning`/`MallocArenaStats` events, `arenawarn`) | [doc/architecture/MallocArenaWarning.md](/doc/architecture/MallocArenaWarning.md) |
 | Startup sanity checks | [doc/architecture/SanityChecks.md](/doc/architecture/SanityChecks.md) |
 | SIGSEGV-safe library patching | [doc/architecture/SigsegvPatching.md](/doc/architecture/SigsegvPatching.md) |
 | Event type system | [doc/reference/EventTypeSystem.md](/doc/reference/EventTypeSystem.md) |
