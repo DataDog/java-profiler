@@ -89,6 +89,12 @@ private:
 
   Mutex _state_lock;
   std::atomic<State> _state;
+  // True while the CPU/wall engines are started and their per-thread
+  // structures are stable. registerThread()/unregisterThread() are reached
+  // from the pthread hook without _state_lock, so they check this flag to
+  // stay off the engines while start() sizes those structures (for example
+  // CTimer::resizeTimers()) and while stop() tears them down.
+  std::atomic<bool> _engines_ready;
   // class unload hook
   Trap _class_unload_hook_trap;
   typedef void (*NotifyClassUnloadedFunc)(void *);
@@ -249,7 +255,8 @@ private:
 
 public:
   Profiler()
-      : _state_lock(), _state(State::NEW), _class_unload_hook_trap(2),
+      : _state_lock(), _state(State::NEW), _engines_ready(false),
+        _class_unload_hook_trap(2),
         _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
         _string_label_map(2), _context_value_map(3), _thread_filter(),
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),

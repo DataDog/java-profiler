@@ -165,6 +165,11 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 int Profiler::registerThread(int tid) {
+  // Threads created while the engines are not started are picked up by the
+  // engines' own start(), which registers every existing thread.
+  if (!_instance->_engines_ready.load(std::memory_order_acquire)) {
+    return 0;
+  }
   return _instance->_cpu_engine->registerThread(tid) |
          _instance->_wall_engine->registerThread(tid);
 }
@@ -190,6 +195,11 @@ void Profiler::unregisterThread(int tid) {
     g_test_last_unregistered_tid.store(tid, std::memory_order_relaxed);
     return;
 #endif
+  // Engine stop() unregisters every remaining thread, so skipping here while
+  // the engines are not started does not leak a per-thread timer.
+  if (!_instance->_engines_ready.load(std::memory_order_acquire)) {
+    return;
+  }
   _instance->_cpu_engine->unregisterThread(tid);
   _instance->_wall_engine->unregisterThread(tid);
 }
@@ -1761,6 +1771,10 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   if (activated) {
+    // Release pairs with the acquire in registerThread()/unregisterThread():
+    // a hook that sees true also sees the per-thread structures the engine
+    // start() calls above have finished sizing.
+    _engines_ready.store(true, std::memory_order_release);
     switchThreadEvents(JVMTI_ENABLE);
 
     if (_reference_chains_active) {
@@ -1829,6 +1843,10 @@ Error Profiler::stop() {
     // store, and no other engine stop has run yet.
     return Error("signal handlers did not drain; teardown skipped, retry stop()");
   }
+
+  // Keep the pthread hook off the engines before any engine stop() runs, so
+  // no thread arms a timer after CTimer::stop() has unregistered them all.
+  _engines_ready.store(false, std::memory_order_release);
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();

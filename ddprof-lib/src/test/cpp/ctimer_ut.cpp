@@ -11,6 +11,8 @@
 #include "common.h"
 #include "ctimer.h"
 #include "nativeMem.h"
+#include "os.h"
+#include "profiler.h"
 
 #include <cstdlib>
 
@@ -135,6 +137,24 @@ TEST_F(CTimerNativeMemTest, StartFailsWhenTableAllocationFails) {
   EXPECT_EQ(nullptr, CTimerTestAccessor::timers());
   EXPECT_EQ(0, CTimerTestAccessor::maxTimers());
   EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
+}
+
+class ProfilerTestAccessor {
+public:
+  static bool enginesReady(Profiler *p) {
+    return p->_engines_ready.load(std::memory_order_acquire);
+  }
+};
+
+// Profiler::registerThread() is reached from the pthread hook without
+// _state_lock. Until start() has sized the engines' per-thread structures
+// (CTimer::resizeTimers()) and set the engines-ready flag, it must return
+// without touching the engines. In this binary the profiler is never
+// started, so its engine pointers are null and any engine call would crash.
+TEST(ProfilerEnginesGateTest, RegisterThreadSkipsEnginesUntilReady) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  EXPECT_EQ(0, Profiler::registerThread(OS::threadId()));
 }
 
 #endif // __linux__

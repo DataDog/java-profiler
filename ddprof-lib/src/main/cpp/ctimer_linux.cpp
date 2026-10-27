@@ -132,10 +132,13 @@ void CTimer::unregisterThread(int tid) {
   }
 }
 
-// Sizes the tid-indexed timer table and accounts it under NM_CTIMER. On
-// allocation failure the table is left empty (_max_timers == 0), so the
-// tid bound checks in registerThread()/unregisterThread()/stop() reject every
-// tid instead of indexing a NULL table, and the next start() retries.
+// Sizes the tid-indexed timer table and accounts it under NM_CTIMER. Runs from
+// start() before the profiler sets its engines-ready flag, so the pthread hook's
+// Profiler::registerThread()/unregisterThread() cannot touch the table while it
+// is freed and replaced, and JVMTI thread events are not enabled yet. On
+// allocation failure the table is left empty (_max_timers == 0), so the tid
+// bound checks reject every tid instead of indexing a NULL table, and the next
+// start() retries.
 bool CTimer::resizeTimers(int max_timers) {
   if (max_timers == _max_timers) {
     return true;
