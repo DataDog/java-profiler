@@ -193,6 +193,22 @@ as artifacts.
 
 ---
 
+### Virtual-thread remount correctness
+
+`ddprof-test` consumes the `chaosElements` outgoing configuration from
+`ddprof-stresstest`. Its artifact is the existing `chaosJar`, so the correctness
+test and standalone harness run the same `VirtualThreadRemountAntagonist`.
+The ordinary debug integration suite runs `VirtualThreadCarrierChaosTest` for
+six seconds per `vm`/`vmx` mode on supported HotSpot JDK 21+ runtimes.
+
+CPU and wall samples must exercise both argument layouts and partial thaw.
+Continuation errors, invalid ancestry and falsely complete Java stacks fail
+unconditionally. The shared `ContinuationStackChecks` validator also requires
+99% successful classified walks; native gaps and ambiguous carrier-only failures
+consume that budget. Its unit tests cover the classifier and acceptance checks.
+See [the chaos harness guide](../../ddprof-stresstest/src/chaos/README.md#virtual-thread-carrier-recovery)
+for the complete classification rules, diagnostics and longer-run controls.
+
 ## Tier 3 — dd-trace Integration Tests (GitLab, Every Push)
 
 **Pipeline:** `.gitlab/dd-trace-integration/.gitlab-ci.yml`
