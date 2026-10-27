@@ -45,6 +45,9 @@ protected:
   static int *_timers;
 
   static bool resizeTimers(int max_timers);
+  // start() with the timer table size passed in rather than read from
+  // pid_max, so a test can drive the allocation-failure path.
+  Error startWithTableSize(Arguments &args, int max_timers);
   int registerThread(int tid);
   void unregisterThread(int tid);
 

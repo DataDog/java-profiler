@@ -7,10 +7,23 @@
 
 #ifdef __linux__
 
+#include "arguments.h"
+#include "common.h"
 #include "ctimer.h"
 #include "nativeMem.h"
 
 #include <cstdlib>
+
+// The failure-path tests force calloc to fail with a negative count, which
+// makes count * size overflow. The CI sanitizer jobs run gtest binaries
+// without *SAN_OPTIONS, so allocator_may_return_null defaults to 0 and the
+// sanitizer reports that overflow as a fatal error instead of returning NULL.
+#if defined(ASAN_ENABLED) || defined(TSAN_ENABLED)
+#define SKIP_IF_CALLOC_OVERFLOW_ABORTS()                                       \
+  GTEST_SKIP() << "sanitizer allocators abort on calloc overflow"
+#else
+#define SKIP_IF_CALLOC_OVERFLOW_ABORTS()
+#endif
 
 // Exposes CTimer's tid-indexed timer table without starting the engine, which
 // would install a SIGPROF handler and arm a timer for every live thread.
@@ -19,6 +32,10 @@ public:
   static bool resizeTimers(int max_timers) { return CTimer::resizeTimers(max_timers); }
   static int maxTimers() { return CTimer::_max_timers; }
   static int *timers() { return CTimer::_timers; }
+  static Error startWithTableSize(CTimer &engine, Arguments &args,
+                                  int max_timers) {
+    return engine.startWithTableSize(args, max_timers);
+  }
 
   // Hands the current table to the caller without freeing it, so a test can
   // run against an empty table and later reinstate the original one.
@@ -74,20 +91,24 @@ TEST_F(CTimerNativeMemTest, TimerTableIsAccounted) {
 }
 
 // Restarting with an unchanged pid_max keeps the table and the gauge as-is.
+// The sentinel shows the table was not reallocated: a free + calloc of the
+// same size can return the same block, but calloc zeroes it.
 TEST_F(CTimerNativeMemTest, SameSizeDoesNotReaccount) {
-  CTimerTestAccessor::resizeTimers(2048);
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(2048));
   int *table = CTimerTestAccessor::timers();
+  table[2047] = 0x5a5a5a5a;
 
-  CTimerTestAccessor::resizeTimers(2048);
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(2048));
   EXPECT_EQ(table, CTimerTestAccessor::timers());
+  EXPECT_EQ(0x5a5a5a5a, CTimerTestAccessor::timers()[2047]);
   EXPECT_EQ((long long)(2048 * sizeof(int)), NativeMem::live(NM_CTIMER));
 }
 
 // A failed allocation leaves an empty table rather than a NULL table with a
 // non-zero bound, releases the old table's bytes from the gauge, and a later
-// resize to a valid size succeeds. A negative count makes calloc's
-// count * size overflow, so the allocation fails deterministically.
+// resize to a valid size succeeds.
 TEST_F(CTimerNativeMemTest, FailedAllocationLeavesEmptyTable) {
+  SKIP_IF_CALLOC_OVERFLOW_ABORTS();
   ASSERT_TRUE(CTimerTestAccessor::resizeTimers(1024));
 
   EXPECT_FALSE(CTimerTestAccessor::resizeTimers(-1));
@@ -99,6 +120,21 @@ TEST_F(CTimerNativeMemTest, FailedAllocationLeavesEmptyTable) {
   EXPECT_NE(nullptr, CTimerTestAccessor::timers());
   EXPECT_EQ(1024, CTimerTestAccessor::maxTimers());
   EXPECT_EQ((long long)(1024 * sizeof(int)), NativeMem::live(NM_CTIMER));
+}
+
+// start() fails when the timer table cannot be allocated, and returns before
+// it installs the SIGPROF handler or arms a timer for any thread.
+TEST_F(CTimerNativeMemTest, StartFailsWhenTableAllocationFails) {
+  SKIP_IF_CALLOC_OVERFLOW_ABORTS();
+  CTimer engine;
+  Arguments args;
+
+  Error error = CTimerTestAccessor::startWithTableSize(engine, args, -1);
+  EXPECT_TRUE((bool)error);
+  EXPECT_STREQ("Failed to allocate CPU timer table", error.message());
+  EXPECT_EQ(nullptr, CTimerTestAccessor::timers());
+  EXPECT_EQ(0, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
 }
 
 #endif // __linux__

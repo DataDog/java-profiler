@@ -167,6 +167,10 @@ Error CTimer::check(Arguments &args) {
 }
 
 Error CTimer::start(Arguments &args) {
+  return startWithTableSize(args, OS::getMaxThreadId());
+}
+
+Error CTimer::startWithTableSize(Arguments &args, int max_timers) {
   if (args._interval < 0) {
     return Error("interval must be positive");
   }
@@ -175,7 +179,7 @@ Error CTimer::start(Arguments &args) {
   _cstack = args._cstack;
   _signal = SIGPROF;
 
-  if (!resizeTimers(OS::getMaxThreadId())) {
+  if (!resizeTimers(max_timers)) {
     return Error("Failed to allocate CPU timer table");
   }
 
