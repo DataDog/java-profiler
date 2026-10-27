@@ -54,7 +54,6 @@ dependencies {
   "testCommon"(libs.bundles.profiler.runtime)
   "testCommon"(libs.jafar.parser)
   "testCommon"(libs.asm)
-  "testCommon"(project(mapOf("path" to ":ddprof-stresstest", "configuration" to "chaosElements")))
 
   // Main/application dependencies
   "mainCommon"(libs.slf4j.simple)

@@ -87,7 +87,7 @@ dependencies {
   "chaosCompileOnly"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
 }
 
-val chaosJar = tasks.register<Jar>("chaosJar") {
+tasks.register<Jar>("chaosJar") {
   group = "build"
   description = "Fat jar of the chaos reliability harness"
   archiveFileName.set("chaos.jar")
@@ -99,13 +99,6 @@ val chaosJar = tasks.register<Jar>("chaosJar") {
   manifest {
     attributes("Main-Class" to "com.datadoghq.profiler.chaos.Main")
   }
-}
-
-// Reuse the same chaos workloads in the profiler's JFR correctness tests.
-configurations.create("chaosElements") {
-  isCanBeConsumed = true
-  isCanBeResolved = false
-  outgoing.artifact(chaosJar)
 }
 
 // --- reference-chains repro app ---------------------------------------------
