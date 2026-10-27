@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 #include <cstdlib>
+#include <map>
 #include <memory>
 #ifdef __GLIBC__
 #include <climits>
@@ -203,6 +204,95 @@ TEST_F(MallocFootprintTest, CountingAllocatorTracksOverheadSeparately) {
     EXPECT_EQ(live, NativeMem::live(NM_METHOD_MAP));
     EXPECT_EQ(overhead, NativeMem::overhead(NM_METHOD_MAP));
   }
+}
+
+struct MapAllocationTotals {
+  long long live = 0;
+  long long overhead = 0;
+  size_t allocations = 0;
+  size_t frees = 0;
+};
+
+// Observe the actual node pointers and sizes after std::map rebinds its
+// allocator. Delegate allocation and accounting to the production allocator;
+// the expected totals use the allocator API, never NativeMem's gauges.
+template <typename T>
+struct ObservedCountingAllocator : CountingAllocator<T, NM_METHOD_MAP> {
+  using value_type = T;
+  MapAllocationTotals *totals;
+
+  explicit ObservedCountingAllocator(MapAllocationTotals &totals) : totals(&totals) {}
+
+  template <typename U>
+  ObservedCountingAllocator(const ObservedCountingAllocator<U> &other)
+      : CountingAllocator<T, NM_METHOD_MAP>(
+            static_cast<const CountingAllocator<U, NM_METHOD_MAP> &>(other)),
+        totals(other.totals) {}
+
+  T *allocate(size_t n) {
+    T *p = CountingAllocator<T, NM_METHOD_MAP>::allocate(n);
+    const size_t requested = n * sizeof(T);
+    totals->live += requested;
+    totals->overhead += expectedFootprint(p, requested) - requested;
+    totals->allocations++;
+    return p;
+  }
+
+  void deallocate(T *p, size_t n) noexcept {
+    const size_t requested = n * sizeof(T);
+    const size_t overhead = expectedFootprint(p, requested) - requested;
+    CountingAllocator<T, NM_METHOD_MAP>::deallocate(p, n);
+    totals->live -= requested;
+    totals->overhead -= overhead;
+    totals->frees++;
+  }
+
+  template <typename U>
+  struct rebind {
+    using ReboundAllocator = typename CountingAllocator<T, NM_METHOD_MAP>::template rebind<U>::other;
+    using other = ObservedCountingAllocator<typename ReboundAllocator::value_type>;
+  };
+
+  template <typename U>
+  bool operator==(const ObservedCountingAllocator<U> &other) const noexcept {
+    return totals == other.totals;
+  }
+
+  template <typename U>
+  bool operator!=(const ObservedCountingAllocator<U> &other) const noexcept {
+    return !(*this == other);
+  }
+};
+
+TEST_F(MallocFootprintTest, MapNodesTrackOverheadAcrossRebindingAndDestruction) {
+  MapAllocationTotals totals;
+  using Allocator = ObservedCountingAllocator<std::pair<const long, long>>;
+  using Map = std::map<long, long, std::less<long>, Allocator>;
+  {
+    Map m{std::less<long>(), Allocator(totals)};
+    for (long i = 0; i < 2000; i++) {
+      m[i * 7919] = i;
+      EXPECT_EQ(totals.live, NativeMem::live(NM_METHOD_MAP));
+      EXPECT_EQ(totals.overhead, NativeMem::overhead(NM_METHOD_MAP));
+    }
+    EXPECT_EQ(2000u, m.size());
+    EXPECT_GE(totals.allocations, m.size());
+    EXPECT_GT(totals.live, 0);
+    // Check partial releases before letting the destructor free the remaining
+    // nodes. Zero observed overhead is valid when the allocator exposes none.
+    for (long i = 0; i < 2000; i += 2) {
+      EXPECT_EQ(1u, m.erase(i * 7919));
+      EXPECT_EQ(totals.live, NativeMem::live(NM_METHOD_MAP));
+      EXPECT_EQ(totals.overhead, NativeMem::overhead(NM_METHOD_MAP));
+    }
+    EXPECT_EQ(1000u, m.size());
+    EXPECT_GT(totals.frees, 0u);
+  }
+  EXPECT_EQ(totals.allocations, totals.frees);
+  EXPECT_EQ(0, totals.live);
+  EXPECT_EQ(0, totals.overhead);
+  EXPECT_EQ(0, NativeMem::live(NM_METHOD_MAP));
+  EXPECT_EQ(0, NativeMem::overhead(NM_METHOD_MAP));
 }
 
 struct RecordedAllocationDeleter {
