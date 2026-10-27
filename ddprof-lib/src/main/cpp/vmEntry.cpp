@@ -535,24 +535,18 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
+  // VM_DEATH: Always needed for cleanup
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
-  _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_LOAD, NULL);
-  _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_PREPARE,
-                                   NULL);
-  _jvmti->SetEventNotificationMode(JVMTI_ENABLE,
-                                   JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL);
-  _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND,
-                                   NULL);
 
-  if (hotspot_version() == 0 || !CodeHeap::available()) {
-    TEST_LOG("CompiledMethodLoad workaround: hotspot_version=%d CodeHeap::available=%d",
-             hotspot_version(), CodeHeap::available());
-    // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible
-    _jvmti->SetEventNotificationMode(JVMTI_ENABLE,
-                                     JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL);
-  } else {
-    // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
-    // otherwise we set the flag manually
+  // Persistent JVMTI events (CLASS_LOAD, CLASS_PREPARE, DYNAMIC_CODE_GENERATED,
+  // NATIVE_METHOD_BIND, COMPILED_METHOD_LOAD) are enabled on first start() via
+  // Profiler::enablePersistentJvmtiEvents(). This allows stop/start cycles to
+  // keep these events enabled for the lifetime of the process.
+
+  // DebugNonSafepoints: Set early when CompiledMethodLoad won't be used
+  // (COMPILED_METHOD_LOAD auto-enables it, so we only need manual setup when
+  // we won't use CompiledMethodLoad events).
+  if (hotspot_version() != 0 && CodeHeap::available()) {
     VMFlag* f = VMFlag::find("DebugNonSafepoints", {VMFlag::Type::Bool});
     TEST_LOG("DebugNonSafepoints flag %s", f != NULL ? "found" : "not found");
     if (f != NULL && f->isDefault()) {
@@ -575,11 +569,9 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   functions->RedefineClasses = RedefineClassesHook;
   functions->RetransformClasses = RetransformClassesHook;
 
-
-  if (attach) {
-    _jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
-    _jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
-  } else {
+  // Code generated before the persistent events are enabled is replayed by
+  // Profiler::enablePersistentJvmtiEvents() (called on first start).
+  if (!attach) {
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, NULL);
   }
 

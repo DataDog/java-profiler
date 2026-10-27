@@ -37,14 +37,16 @@ typedef void (*LiveLibraryVisitor)(CodeCache* lib, int tag);
 
 class LibraryPatcher {
   friend class LibraryPatcherTestAccessor;
+  // Patches and restores its malloc hooks with LiveLibraryWalks.
+  friend class MallocHooker;
 
 private:
   static SpinLock    _lock;
-  // Set by initialize(), which Profiler::start() calls just before the first
-  // library scan. Patching must not begin any earlier: pthread_create_hook()
-  // routes newly created threads through Profiler::registerThread(), which
-  // dereferences state that only exists once the profiler is running. Read from
-  // the Libraries refresher thread, hence atomic with release/acquire.
+  // Set by initialize_persistent(), which Profiler::init() calls during
+  // one-time initialization. Enables pthread_create patching. Read from the
+  // Libraries refresher thread, hence atomic with release/acquire.
+  // Unlike socket patches, pthread_create patches are persistent across
+  // stop/start cycles - they are never unpatched once installed.
   static std::atomic<bool> _initialized;
   static PatchEntry  _patched_entries[MAX_NATIVE_LIBS];
   static int         _size;
@@ -71,8 +73,7 @@ private:
   // libraryPatcher_linux.cpp). All of LibraryPatcher's work under _lock runs
   // in a walk, and every write it makes through a saved GOT slot comes from
   // a visit: patched libraries are not pinned and can be dlclose()d.
-  // (MallocHooker patches without a walk: it pins each library with
-  // UnloadProtection while writing to it, and never restores.)
+  // MallocHooker also patches and restores its malloc hooks in walks.
   class LiveLibraryWalk {
   public:
     LiveLibraryWalk(LiveLibraryCollector collect, void* ctx, LiveLibraryVisitor visit);
@@ -104,7 +105,9 @@ public:
   // which calls install_socket_hooks() to patch them if _socket_active is true.
   // Low-probability race: stop() is called only on JVM exit; atomic<bool> is zero-cost insurance.
   static std::atomic<bool> _socket_active;
-  static void initialize();
+  // Initialize persistent patches (pthread_create). Called once from Profiler::init().
+  // These patches survive stop/start cycles and are never unpatched.
+  static void initialize_persistent();
   static void patch_libraries();
   static void unpatch_libraries();
   static void patch_sigaction();
@@ -123,7 +126,7 @@ public:
 
 class LibraryPatcher {
 public:
-  static void initialize() { }
+  static void initialize_persistent() { }
   static void patch_libraries() { }
   static void unpatch_libraries() { }
   static void patch_sigaction() { }

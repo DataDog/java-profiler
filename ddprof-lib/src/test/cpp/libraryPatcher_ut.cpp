@@ -148,10 +148,9 @@ TEST_F(LibraryPatcherPatching, LeavesItsOwnPthreadCreateSlotUntouched) {
 // stopped working: an identical cache that is not ours does get its slot
 // redirected to the hook.
 //
-// Unpatching writes only to libraries it can verify are still loaded. This
-// cache has no image base and backs no loaded object, so its entry is dropped
-// without a write. Restoring a loaded library is covered
-// by libraryPatcherUnload_ut.
+// pthread_create patches are persistent (never unpatched), so after calling
+// unpatch_libraries() the slot stays hooked and the entry count remains.
+// This is by design: pthread_create patches survive stop/start cycles.
 TEST_F(LibraryPatcherPatching, StillPatchesForeignPthreadCreateSlot) {
   void* const original = (void*)&fake_original_pthread_create;
   void* slot = original;
@@ -169,8 +168,9 @@ TEST_F(LibraryPatcherPatching, StillPatchesForeignPthreadCreateSlot) {
 
   LibraryPatcher::unpatch_libraries();
 
+  // pthread_create patches are persistent - slot stays hooked and count unchanged
   EXPECT_EQ(hooked, slot);
-  EXPECT_EQ(0, LibraryPatcherTestAccessor::patchedCount());
+  EXPECT_EQ(before + 1, LibraryPatcherTestAccessor::patchedCount());
 }
 
 #endif // __linux__

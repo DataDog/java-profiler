@@ -165,8 +165,14 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 int Profiler::registerThread(int tid) {
-  return _instance->_cpu_engine->registerThread(tid) |
-         _instance->_wall_engine->registerThread(tid);
+  // The persistent pthread_create hook can run before the first start(), when
+  // no engine has been selected yet.
+  Engine *cpu = __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE);
+  Engine *wall = __atomic_load_n(&_instance->_wall_engine, __ATOMIC_ACQUIRE);
+  if (cpu == NULL || wall == NULL) {
+    return -1;
+  }
+  return cpu->registerThread(tid) | wall->registerThread(tid);
 }
 #ifdef UNIT_TEST
 static std::atomic<int> g_test_last_unregistered_tid{-1};
@@ -1438,6 +1444,12 @@ Error Profiler::init() {
       _state.store(ERROR, std::memory_order_release);
       return Error("Profiler encountered fatal error");
     }
+
+    // Initialize persistent library patches (pthread_create).
+    // These patches survive stop/start cycles and are never unpatched.
+    // Must be done after JVMSupport::initialize() as the pthread_create hook
+    // calls Profiler::registerThread() which needs ProfiledThread TLS to exist.
+    LibraryPatcher::initialize_persistent();
   }
   // Unlike checkState(), init() does not reject a RUNNING/TERMINATED
   // profiler: it is idempotent per-thread setup for the Java API
@@ -1604,8 +1616,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 
-  _cpu_engine = selectCpuEngine(args);
-  _wall_engine = selectWallEngine(args);
+  // Release: read without _state_lock by registerThread().
+  __atomic_store_n(&_cpu_engine, selectCpuEngine(args), __ATOMIC_RELEASE);
+  __atomic_store_n(&_wall_engine, selectWallEngine(args), __ATOMIC_RELEASE);
   _cstack = args._cstack;
   _force_jmethodID = args._force_jmethodID;
   if (_cstack == CSTACK_DEFAULT) {
@@ -1634,9 +1647,18 @@ Error Profiler::start(Arguments &args, bool reset) {
   // above: initExecution() picks the jmethodID mode from cstackMode().
   JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
 
-  // Must precede the first updateSymbols(): it is what allows LibraryPatcher to
-  // start patching, and the hooks it installs assume a running profiler.
-  LibraryPatcher::initialize();
+  // Enable persistent JVMTI events on first start - these track JVM metadata
+  // (classes, JIT compilations, native bindings) needed for accurate profiling.
+  // Once enabled, they stay enabled across stop/start cycles.
+  if (!_jvmti_events_enabled) {
+    enablePersistentJvmtiEvents();
+  }
+
+  // Also called from init() for the Java API path, but an -agentpath session
+  // starts through VMInit -> run() and never calls init(). Idempotent, and must
+  // precede the first updateSymbols() so that scan installs the persistent
+  // pthread_create/sigaction patches.
+  LibraryPatcher::initialize_persistent();
 
   // Kernel symbols are useful only for perf_events without --all-user
   _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
@@ -1964,11 +1986,11 @@ Error Profiler::check(Arguments &args) {
   error = checkJvmCapabilities();
 
   if (!error && (args._event != NULL || args._cpu >= 0)) {
-    _cpu_engine = selectCpuEngine(args);
+    __atomic_store_n(&_cpu_engine, selectCpuEngine(args), __ATOMIC_RELEASE);
     error = _cpu_engine->check(args);
   }
   if (!error && args._wall >= 0) {
-    _wall_engine = selectWallEngine(args);
+    __atomic_store_n(&_wall_engine, selectWallEngine(args), __ATOMIC_RELEASE);
     error = _wall_engine->check(args);
   }
   if (!error && args._memory >= 0) {
@@ -2112,6 +2134,38 @@ void Profiler::switchThreadEvents(jvmtiEventMode mode) {
     jvmti->SetEventNotificationMode(mode, JVMTI_EVENT_THREAD_END, NULL);
     _thread_events_state = mode;
   }
+}
+
+void Profiler::enablePersistentJvmtiEvents() {
+  // Enable persistent JVMTI events for JVM metadata tracking.
+  // These are enabled once on first start() and never disabled, surviving
+  // stop/start cycles for the lifetime of the process.
+  jvmtiEnv *jvmti = VM::jvmti();
+
+  // CLASS_LOAD/CLASS_PREPARE: Required for jmethodID preloading.
+  // AsyncGetCallTrace needs pre-allocated jmethodIDs (see JVMSupport::loadMethodIDsIfNeeded).
+  jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_LOAD, NULL);
+  jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_PREPARE, NULL);
+
+  // DYNAMIC_CODE_GENERATED: Tracks JIT-generated code (stubs, adapters).
+  jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL);
+
+  // NATIVE_METHOD_BIND: Tracks JNI native method bindings for VMStructs.
+  jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, NULL);
+
+  // COMPILED_METHOD_LOAD: Tracks JIT-compiled methods (when CodeHeap is not available).
+  if (VM::hotspot_version() == 0 || !CodeHeap::available()) {
+    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL);
+  }
+
+  // Replay code generated before the events were enabled. Needed in every
+  // loading mode, not just attach: an -agentpath session also enables them
+  // only here, after HotSpot has generated its bootstrap runtime stubs
+  // (call_stub bounds and stub unwind info come from these events).
+  jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
+  jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
+
+  _jvmti_events_enabled = true;
 }
 
 Error Profiler::runInternal(Arguments &args, std::ostream &out) {

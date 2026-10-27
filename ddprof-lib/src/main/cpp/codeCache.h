@@ -349,6 +349,9 @@ public:
 
   void addImport(void **entry, const char *name);
   void **findImport(ImportId id);
+  // A symbol can have a second relocation slot (e.g. both a JUMP_SLOT and a
+  // GLOB_DAT); patching must cover both, as patchImport() does.
+  void **findImport(ImportId id, ImportType type);
   // Like findImport(), but never makes the GOT writable, so it does not touch
   // the library's memory. For bookkeeping only; patch through findImport().
   void **peekImport(ImportId id) const { return _imports[id][PRIMARY]; }
