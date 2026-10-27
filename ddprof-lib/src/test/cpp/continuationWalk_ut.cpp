@@ -195,7 +195,9 @@ protected:
     };
     enum class EntryCase {
         Native, CompiledNonPointerFp, NativeNonPointerFp, BlobNonPointerFp,
-        InvalidPc, MisalignedSp, OutOfBoundsSp, InvalidFrameSize, ReturnPc, UnsupportedPrologue, ExportedParentEntry, PointerAuthentication
+        InvalidPc, MisalignedSp, OutOfBoundsSp, InvalidFrameSize, ReturnPc, UnsupportedPrologue, ExportedParentEntry, PointerAuthentication,
+        ExceptionMove, ExceptionBranch, AuthenticatedExceptionMove, AuthenticatedExceptionBranch,
+        ExceptionMoveWithoutBranch, ExceptionBranchWithoutMove
     };
 
     // Generated prologue/setup and normal cleanup excerpts, captured from
@@ -282,13 +284,24 @@ protected:
 #endif
         int prefix = 0;
 #ifdef __aarch64__
-        if (test_case == EntryCase::PointerAuthentication) {
+        bool exception_exit = test_case == EntryCase::ExceptionMove || test_case == EntryCase::ExceptionBranch ||
+                test_case == EntryCase::AuthenticatedExceptionMove || test_case == EntryCase::AuthenticatedExceptionBranch ||
+                test_case == EntryCase::ExceptionMoveWithoutBranch || test_case == EntryCase::ExceptionBranchWithoutMove;
+        if (test_case == EntryCase::PointerAuthentication || test_case == EntryCase::AuthenticatedExceptionMove ||
+                test_case == EntryCase::AuthenticatedExceptionBranch) {
             memmove(blob.nm.code + 1, blob.nm.code, sizeof(instructions));
             blob.nm.code[0] = 0xd503231f; // paciaz before saving FP/LR
             blob.nm.code[18] = 0xd503239f; // autiaz after restoring FP/LR
             blob.nm.code[19] = 0xd65f03c0;
             prefix = 4;
             blob.nm.frame_complete += prefix;
+        }
+        if (exception_exit) {
+            // gen_continuation_enter's exception exit follows leave() with
+            // mov x3, lr; br x1 instead of the normal ret instruction.
+            int tail = prefix == 0 ? 17 : 19;
+            blob.nm.code[tail] = test_case == EntryCase::ExceptionBranchWithoutMove ? 0xd503201f : 0xaa1e03e3;
+            blob.nm.code[tail + 1] = test_case == EntryCase::ExceptionMoveWithoutBranch ? 0xd61f0040 : 0xd61f0020;
         }
 #endif
         if (test_case == EntryCase::UnsupportedPrologue) blob.nm.code[0] = 0;
@@ -331,6 +344,11 @@ protected:
         ScopedValue<const void*> heap_high(_code_heap_high, heap.high);
         ScopedValue<VMNMethod*> entry_nm(_enter_special_nm, reinterpret_cast<VMNMethod*>(&blob.nm));
         const void* sampled_pc = (const char*)blob.nm.code + offsets[(int)phase] + prefix;
+#ifdef __aarch64__
+        if (exception_exit && prefix != 0) sampled_pc = (const char*)sampled_pc + sizeof(uint32_t); // after autiaz
+        if (test_case == EntryCase::ExceptionBranch || test_case == EntryCase::AuthenticatedExceptionBranch ||
+                test_case == EntryCase::ExceptionBranchWithoutMove) sampled_pc = (const char*)sampled_pc + sizeof(uint32_t);
+#endif
         ScopedValue<const void*> return_pc(_cont_entry_return_pc,
                 test_case == EntryCase::ReturnPc ? sampled_pc : _cont_entry_return_pc);
         VMTestAccessor::install(true, exported_parent ? 27 : 21);
@@ -389,7 +407,8 @@ protected:
         if (test_case == EntryCase::NativeNonPointerFp || test_case == EntryCase::BlobNonPointerFp ||
                 test_case == EntryCase::InvalidPc || test_case == EntryCase::MisalignedSp ||
                 test_case == EntryCase::OutOfBoundsSp || test_case == EntryCase::InvalidFrameSize ||
-                test_case == EntryCase::UnsupportedPrologue) {
+                test_case == EntryCase::UnsupportedPrologue || test_case == EntryCase::ExceptionMoveWithoutBranch ||
+                test_case == EntryCase::ExceptionBranchWithoutMove) {
             ASSERT_EQ(BCI_ERROR, frames[0].bci);
             EXPECT_STREQ(test_case == EntryCase::MisalignedSp || test_case == EntryCase::OutOfBoundsSp ||
                          test_case == EntryCase::InvalidFrameSize || test_case == EntryCase::UnsupportedPrologue ? "break_cont_entry_fp" : "break_cont_carrier_sp",
@@ -817,6 +836,24 @@ TEST_F(ContinuationWalkTest, SampledEntryDoesNotFollowExportedParentDuringTransi
 }
 
 #ifdef __aarch64__
+TEST_F(ContinuationWalkTest, ExceptionExitAfterRestoringRegistersRetainsCarrier) {
+    for (EntryCase test_case : {EntryCase::ExceptionMove, EntryCase::ExceptionBranch}) {
+        assertCarrierFromEntry(EntryPhase::AfterRestore, test_case);
+    }
+}
+
+TEST_F(ContinuationWalkTest, AuthenticatedExceptionExitAfterRestoringRegistersRetainsCarrier) {
+    for (EntryCase test_case : {EntryCase::AuthenticatedExceptionMove, EntryCase::AuthenticatedExceptionBranch}) {
+        assertCarrierFromEntry(EntryPhase::AfterRestore, test_case);
+    }
+}
+
+TEST_F(ContinuationWalkTest, ExceptionExitRequiresBothGeneratedInstructions) {
+    for (EntryCase test_case : {EntryCase::ExceptionMoveWithoutBranch, EntryCase::ExceptionBranchWithoutMove}) {
+        assertCarrierFromEntry(EntryPhase::AfterRestore, test_case);
+    }
+}
+
 TEST_F(ContinuationWalkTest, SampledEntryWithPointerAuthenticationRetainsCarrier) {
     for (EntryPhase phase : {EntryPhase::BeforeSave, EntryPhase::AfterSave, EntryPhase::BeforeAllocation,
                             EntryPhase::AfterAllocation, EntryPhase::Complete, EntryPhase::BeforeSpRestore,

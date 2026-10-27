@@ -210,6 +210,10 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
         *ip == 0xd65f0bff || *ip == 0xd65f0fff || // retaa, retab
         (*ip == 0xf94003df && ip > entry &&
          (ip[-1] == 0xd503239f || ip[-1] == 0xd50323bf))) return 0;
+    // gen_continuation_enter's exception exit executes mov x3, lr; br x1
+    // after leave() has restored SP and FP/LR, including LR authentication.
+    if ((*ip == 0xaa1e03e3 && nm->contains(ip + 1) && ip[1] == 0xd61f0020) ||
+        (*ip == 0xd61f0020 && ip > entry && ip[-1] == 0xaa1e03e3)) return 0;
     return words;
 }
 

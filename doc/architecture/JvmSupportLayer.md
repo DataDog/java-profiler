@@ -173,6 +173,12 @@ or return-PC stack slot (x64). Unknown prologues fail rather than applying the
 complete-frame size. Pointer-authentication instructions are recognized on
 arm64, and recovered PCs have PAC bits stripped.
 
+On arm64 the exception epilogue finishes with `mov x3, lr; br x1` after
+`leave()` has restored SP and FP/LR. A sample at either instruction uses the
+restored FP and LR, including when `leave()` authenticates LR. The decoder
+requires both instructions and bounds the forward read to the same code blob.
+An isolated move or branch does not select this recovery path.
+
 This path applies only to the exact sampled PC. Recovered return addresses keep
 the existing continuation-entry metadata and stack-argument recovery. During
 entry publication and removal, `JavaThread::_cont_entry` can name the enclosing
