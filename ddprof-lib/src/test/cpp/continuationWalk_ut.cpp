@@ -4,8 +4,10 @@
  */
 
 #include <gtest/gtest.h>
+#include <array>
 #include <cstddef>
 #include <cstring>
+#include <new>
 #include <ucontext.h>
 #include "callTraceHashTable.h"
 #include "codeCache.h"
@@ -13,6 +15,7 @@
 #include "dwarf.h"
 #include "flightRecorder.h"
 #include "hotspot/hotspotSupport.h"
+#include "hotspot/hotspotStackFrame.h"
 #include "hotspot/vmStructs.h"
 #include "jvmThread.h"
 #include "libraries.h"
@@ -64,6 +67,17 @@ const char* const THREAD_ENTRY_PC = CODE_BASE + 0x408;
 
 bool isThreadEntry(const char* name) { return strcmp(name, "continuation_thread_entry") == 0; }
 
+template<typename T> class ScopedValue {
+    T& _slot;
+    T _previous;
+
+public:
+    ScopedValue(T& slot, T value) : _slot(slot), _previous(slot) { _slot = value; }
+    ~ScopedValue() { _slot = _previous; }
+    ScopedValue(const ScopedValue&) = delete;
+    ScopedValue& operator=(const ScopedValue&) = delete;
+};
+
 // The code heap contains the boundary PC, but none of its heaps owns an nmethod
 // there. Native frames before/after it use an explicit SP-based unwind row.
 // This drives the real nm == NULL branch and successful carrier recovery without
@@ -72,7 +86,6 @@ class ContinuationWalkTest : public ::testing::Test, protected VMStructs {
 protected:
     static constexpr int MAX_DEPTH = 8;
     struct ThreadLayout { void* entry; } thread{};
-    alignas(16) uintptr_t stack[32]{};
     int entry_frame_size = 8;
     ASGCT_CallFrame frames[MAX_DEPTH + 1]{};
 
@@ -97,12 +110,15 @@ protected:
         old_low = _code_heap_low;
         old_high = _code_heap_high;
         old_barrier = _cont_return_barrier;
+        old_entry_thread_offset = _cont_entry_thread_offset;
+        _cont_entry_thread_offset = -1;
         old_return_pc = _cont_entry_return_pc;
         old_entry_offset = _cont_entry_offset;
         old_frame_size_offset = _frame_size_offset;
         old_entry_nm = _enter_special_nm;
         old_entry_size = TYPE_SIZE_NAME(VMContinuationEntry);
         old_thread_size = TYPE_SIZE_NAME(VMThread);
+        old_java_thread_size = TYPE_SIZE_NAME(VMJavaThread);
         ASSERT_EQ(0, pthread_key_create(&owned_key, nullptr));
         ASSERT_EQ(0, pthread_setspecific(owned_key, &thread));
         VMTestAccessor::install(true, 27);
@@ -111,12 +127,13 @@ protected:
         // No Java frames need decoding: only the thread's exported entry field
         // is read. Suppress vtable/anchor introspection on this synthetic thread.
         ProfiledThread::current()->setJavaThread(false);
-        thread.entry = &stack[6];
+        thread.entry = nullptr;
         JVMThreadTestAccessor::install(owned_key, (jfieldID)1);
         _cont_entry_offset = offsetof(ThreadLayout, entry);
         _frame_size_offset = 0;
         _enter_special_nm = VMNMethod::cast_raw(&entry_frame_size);
         TYPE_SIZE_NAME(VMThread) = sizeof(ThreadLayout);
+        TYPE_SIZE_NAME(VMJavaThread) = sizeof(ThreadLayout);
         TYPE_SIZE_NAME(VMContinuationEntry) = 0;
         _code_heap_low = CODE_BASE + 0x200;
         _code_heap_high = CODE_BASE + 0x220;
@@ -128,12 +145,14 @@ protected:
         _code_heap_low = old_low;
         _code_heap_high = old_high;
         _cont_return_barrier = old_barrier;
+        _cont_entry_thread_offset = old_entry_thread_offset;
         _cont_entry_return_pc = old_return_pc;
         _cont_entry_offset = old_entry_offset;
         _frame_size_offset = old_frame_size_offset;
         _enter_special_nm = old_entry_nm;
         TYPE_SIZE_NAME(VMContinuationEntry) = old_entry_size;
         TYPE_SIZE_NAME(VMThread) = old_thread_size;
+        TYPE_SIZE_NAME(VMJavaThread) = old_java_thread_size;
         JVMThreadTestAccessor::install(old_key, old_tid);
         if (owned_key != INVALID_KEY) pthread_key_delete(owned_key);
         VMTestAccessor::install(old_hotspot, old_version);
@@ -142,6 +161,10 @@ protected:
 
     int walk(bool carrier_frames, bool* truncated, bool frozen = false,
              bool valid_carrier = true, int max_depth = MAX_DEPTH) {
+        // walkVM bounds SP relative to its own stack frame, so a heap-allocated
+        // fixture member cannot represent the sampled thread's stack reliably.
+        alignas(16) uintptr_t stack[32]{};
+        thread.entry = &stack[6];
         // First native frame recovers a boundary PC plus the bottom VT FP.
         // A frozen crossing must not depend on the saved FP being a pointer.
         stack[0] = frozen ? 1 : (uintptr_t)&stack[8];
@@ -167,6 +190,223 @@ protected:
         return HotspotSupportTestAccessor::walk(&context, frames, features, max_depth, truncated);
     }
 
+    enum class EntryPhase {
+        BeforeSave, AfterSave, BeforeAllocation, Complete, BeforeSpRestore, AfterDeallocation, AfterRestore, AfterAllocation
+    };
+    enum class EntryCase {
+        Native, CompiledNonPointerFp, NativeNonPointerFp, BlobNonPointerFp,
+        InvalidPc, MisalignedSp, OutOfBoundsSp, InvalidFrameSize, ReturnPc, UnsupportedPrologue, ExportedParentEntry, PointerAuthentication
+    };
+
+    // Generated prologue/setup and normal cleanup excerpts, captured from
+    // Temurin 25.0.2 macOS aarch64 and 21.0.12.1 Linux x64 (PAC disabled).
+    // These follow gen_continuation_enter/setup/cleanup in HotSpot's
+    // cpu/{aarch64,x86}/sharedRuntime_*.cpp. The body between them is omitted.
+    // Metadata and registers are synthetic; the production walker decodes them.
+    void assertCarrierFromEntry(EntryPhase phase, EntryCase test_case = EntryCase::Native) {
+        alignas(16) uintptr_t stack[32]{};
+        struct ConstMethod { void* constants = nullptr; unsigned short idnum = 0; unsigned short slots = 0; } const_method;
+        struct Method { ConstMethod* const_method; } method{&const_method};
+        struct NMethod {
+            const char* name = "native nmethod";
+            int frame_size = 10;
+            int size = sizeof(NMethod);
+            short frame_complete;
+            const void* code_begin;
+            const void* entry;
+            Method* method;
+            signed char level = 4;
+            int scopes[2] = {offsetof(NMethod, code), offsetof(NMethod, code)};
+            uint32_t code[32]{};
+        };
+        struct Blob { uintptr_t used = 1; NMethod nm; };
+        static_assert(offsetof(Blob, nm) == sizeof(uintptr_t), "CodeHeap header precedes the blob");
+        static_assert(sizeof(Blob) <= 512, "Each blob occupies one CodeHeap segment");
+        alignas(16) unsigned char heap_memory[1024]{};
+        Blob& blob = *new (heap_memory) Blob;
+        Blob& carrier = *new (heap_memory + 512) Blob;
+#ifdef __aarch64__
+        const uint32_t instructions[] = {
+            0xa9bf7bfd,  // stp x29, x30, [sp, #-16]!
+            0x910003fd,  // mov x29, sp
+            0xd10103ff,  // sub sp, sp, #64
+            0xf942d388,  // ldr x8, [x28, #1440]
+            0xf90007e8,  // str x8, [sp, #8]
+            0x910003e8,  // mov x8, sp
+            0xf902d388,  // str x8, [x28, #1440]
+            0xf9000be1,  // str x1, [sp, #16]: frame complete
+            // Normal cleanup, following the omitted wrapper body.
+            0xf94017e8, 0xf902d788, // restore parent fastpath
+            0xf9401be8, 0xf902df88, // restore parent held-monitor count
+            0xf94007e9, 0xf902d389, // restore parent ContinuationEntry
+            0x910103fd,  // add x29, sp, #64
+            0x910003bf,  // mov sp, x29
+            0xa8c17bfd,  // ldp x29, x30, [sp], #16
+            0xd65f03c0,  // ret
+        };
+        const int offsets[] = {0, 4, 8, 28, 60, 64, 68, 12};
+#else
+        const unsigned char instructions[] = {
+            0x55,                    // push rbp
+            0x48, 0x8b, 0xec,        // mov rbp, rsp
+            0x48, 0x83, 0xec, 0x40,  // sub rsp, 64
+            0x49, 0x8b, 0x87, 0x38, 0x05, 0x00, 0x00, // load parent ContinuationEntry
+            0x48, 0x89, 0x44, 0x24, 0x08,             // save parent
+            0x49, 0x89, 0xa7, 0x38, 0x05, 0x00, 0x00, // publish entry
+            0x48, 0x89, 0x74, 0x24, 0x10,             // frame complete
+            // Normal cleanup, following the omitted wrapper body.
+            0x48, 0x8b, 0x5c, 0x24, 0x28,
+            0x49, 0x89, 0x9f, 0x40, 0x05, 0x00, 0x00, // restore parent fastpath
+            0x48, 0x8b, 0x5c, 0x24, 0x30,
+            0x49, 0x89, 0x9f, 0x50, 0x05, 0x00, 0x00, // restore parent monitor count
+            0x48, 0x8b, 0x5c, 0x24, 0x08,
+            0x49, 0x89, 0x9f, 0x38, 0x05, 0x00, 0x00, // restore parent entry
+            0x48, 0x83, 0xc4, 0x40,  // add rsp, 64
+            0x5d,                    // pop rbp
+            0xc3,                    // ret
+        };
+        const int offsets[] = {0, 1, 4, 27, 68, 72, 73, 8};
+#endif
+        memcpy(blob.nm.code, instructions, sizeof(instructions));
+        blob.nm.frame_complete = offsets[(int)EntryPhase::Complete];
+        blob.nm.code_begin = blob.nm.entry = blob.nm.code;
+        carrier.nm.name = test_case == EntryCase::BlobNonPointerFp ? "RuntimeBlob" : "nmethod";
+        carrier.nm.frame_size = 4;
+        carrier.nm.frame_complete = 0;
+        carrier.nm.code_begin = carrier.nm.entry = carrier.nm.code;
+        carrier.nm.method = &method;
+#ifdef __aarch64__
+        carrier.nm.code[0] = 0xd503201f; // nop, not an epilogue
+#else
+        carrier.nm.code[0] = 0x90909090;
+#endif
+        int prefix = 0;
+#ifdef __aarch64__
+        if (test_case == EntryCase::PointerAuthentication) {
+            memmove(blob.nm.code + 1, blob.nm.code, sizeof(instructions));
+            blob.nm.code[0] = 0xd503231f; // paciaz before saving FP/LR
+            blob.nm.code[18] = 0xd503239f; // autiaz after restoring FP/LR
+            blob.nm.code[19] = 0xd65f03c0;
+            prefix = 4;
+            blob.nm.frame_complete += prefix;
+        }
+#endif
+        if (test_case == EntryCase::UnsupportedPrologue) blob.nm.code[0] = 0;
+        struct Heap { const void* low; const void* high; unsigned char* map; };
+        unsigned char map[] = {0, 0};
+        Heap heap{heap_memory, heap_memory + sizeof(heap_memory), map};
+        ScopedValue<int> memory(_code_heap_memory_offset, 0);
+        ScopedValue<int> segmap(_code_heap_segmap_offset, offsetof(Heap, map));
+        ScopedValue<int> low(_vs_low_offset, offsetof(Heap, low));
+        ScopedValue<int> high(_vs_high_offset, offsetof(Heap, high));
+        ScopedValue<int> shift(_code_heap_segment_shift, 9);
+        ScopedValue<int> used(_heap_block_used_offset, 0);
+        ScopedValue<int> name(_nmethod_name_offset, offsetof(NMethod, name));
+        ScopedValue<int> frame_size(_frame_size_offset, offsetof(NMethod, frame_size));
+        ScopedValue<int> size(_blob_size_offset, offsetof(NMethod, size));
+        ScopedValue<int> frame_complete(_frame_complete_offset, offsetof(NMethod, frame_complete));
+        ScopedValue<int> code_offset(_code_offset, -1);
+        ScopedValue<int> code_address(_code_address, offsetof(NMethod, code_begin));
+        ScopedValue<int> entry_offset(_nmethod_entry_offset, -1);
+        ScopedValue<int> entry_address(_nmethod_entry_address, offsetof(NMethod, entry));
+        ScopedValue<int> method_offset(_nmethod_method_offset, offsetof(NMethod, method));
+        ScopedValue<int> level(_nmethod_level_offset, offsetof(NMethod, level));
+        ScopedValue<int> scopes(_scopes_pcs_offset, offsetof(NMethod, scopes));
+        ScopedValue<int> immutable(_nmethod_immutable_offset, -1);
+        ScopedValue<int> constmethod(_method_constmethod_offset, offsetof(Method, const_method));
+        ScopedValue<int> constants(_constmethod_constants_offset, offsetof(ConstMethod, constants));
+        ScopedValue<int> idnum(_constmethod_idnum_offset, offsetof(ConstMethod, idnum));
+        ScopedValue<int> slots(_constmethod_stack_arg_slots_offset, offsetof(ConstMethod, slots));
+        bool exported_parent = test_case == EntryCase::ExportedParentEntry;
+        ScopedValue<int> cont_entry_offset(_cont_entry_offset, exported_parent ? offsetof(ThreadLayout, entry) : -1);
+        ScopedValue<uint64_t> entry_size(TYPE_SIZE_NAME(VMContinuationEntry), exported_parent ? 64 : 0);
+        if (exported_parent) thread.entry = &stack[16]; // enclosing entry before publication/after removal
+        ScopedValue<uint64_t> type_size(TYPE_SIZE_NAME(VMNMethod), sizeof(NMethod));
+        ScopedValue<uint64_t> method_size(TYPE_SIZE_NAME(VMMethod), sizeof(Method));
+        ScopedValue<uint64_t> constmethod_size(TYPE_SIZE_NAME(VMConstMethod), sizeof(ConstMethod));
+        ScopedValue<char*> heap0(_code_heap[0], reinterpret_cast<char*>(&heap));
+        ScopedValue<char*> heap1(_code_heap[1], nullptr);
+        ScopedValue<char*> heap2(_code_heap[2], nullptr);
+        ScopedValue<const void*> heap_low(_code_heap_low, heap.low);
+        ScopedValue<const void*> heap_high(_code_heap_high, heap.high);
+        ScopedValue<VMNMethod*> entry_nm(_enter_special_nm, reinterpret_cast<VMNMethod*>(&blob.nm));
+        const void* sampled_pc = (const char*)blob.nm.code + offsets[(int)phase] + prefix;
+        ScopedValue<const void*> return_pc(_cont_entry_return_pc,
+                test_case == EntryCase::ReturnPc ? sampled_pc : _cont_entry_return_pc);
+        VMTestAccessor::install(true, exported_parent ? 27 : 21);
+
+        bool nonpointer_fp = test_case == EntryCase::CompiledNonPointerFp ||
+                test_case == EntryCase::NativeNonPointerFp || test_case == EntryCase::BlobNonPointerFp;
+        uintptr_t saved_fp = nonpointer_fp ? 1 : (uintptr_t)&stack[24];
+        uintptr_t carrier_pc = test_case == EntryCase::CompiledNonPointerFp || test_case == EntryCase::BlobNonPointerFp
+                ? (uintptr_t)carrier.nm.code : (uintptr_t)CARRIER_PC;
+        if (test_case == EntryCase::InvalidPc) carrier_pc = 1;
+        stack[8] = saved_fp;
+        stack[9] = carrier_pc;
+        stack[10] = (uintptr_t)&stack[26];
+        stack[11] = (uintptr_t)THREAD_ENTRY_PC;
+        stack[12] = (uintptr_t)&stack[26];
+        stack[13] = (uintptr_t)THREAD_ENTRY_PC;
+        int sp_slot = phase == EntryPhase::Complete || phase == EntryPhase::BeforeSpRestore ||
+                phase == EntryPhase::AfterAllocation ? 0 : 8;
+        uintptr_t sampled_fp = (uintptr_t)&stack[8];
+        if (phase == EntryPhase::AfterSave) sampled_fp = saved_fp;
+        if (phase == EntryPhase::BeforeSave || phase == EntryPhase::AfterRestore) {
+            sampled_fp = saved_fp;
+            stack[8] = 0; // Below sampled SP; may be overwritten by signal delivery.
+#ifdef __aarch64__
+            sp_slot = 10;
+            stack[9] = 0;
+#else
+            sp_slot = 9; // Return address remains on stack until ret.
+#endif
+        }
+        if (test_case == EntryCase::ReturnPc) sampled_fp = 1;
+        if (test_case == EntryCase::InvalidFrameSize) blob.nm.frame_size = 2;
+        ucontext_t context{};
+#ifdef __APPLE__
+        _STRUCT_MCONTEXT64 machine_context{};
+        context.uc_mcontext = &machine_context;
+#endif
+#ifdef __aarch64__
+#ifdef __APPLE__
+        machine_context.__ss.__lr = carrier_pc;
+#else
+        context.uc_mcontext.regs[30] = carrier_pc;
+#endif
+#endif
+        StackFrame frame(&context);
+        frame.pc() = (uintptr_t)sampled_pc;
+        frame.sp() = (uintptr_t)&stack[sp_slot];
+        if (test_case == EntryCase::MisalignedSp) frame.sp() += 8;
+        if (test_case == EntryCase::OutOfBoundsSp) frame.sp() = (UINTPTR_MAX / 2) & ~(uintptr_t)15;
+        frame.fp() = sampled_fp;
+        StackWalkFeatures features{};
+        features.carrier_frames = true;
+        bool truncated = false;
+        int depth = HotspotSupportTestAccessor::walk(&context, frames, features, MAX_DEPTH, &truncated);
+        ASSERT_EQ(1, depth);
+        if (test_case == EntryCase::NativeNonPointerFp || test_case == EntryCase::BlobNonPointerFp ||
+                test_case == EntryCase::InvalidPc || test_case == EntryCase::MisalignedSp ||
+                test_case == EntryCase::OutOfBoundsSp || test_case == EntryCase::InvalidFrameSize ||
+                test_case == EntryCase::UnsupportedPrologue) {
+            ASSERT_EQ(BCI_ERROR, frames[0].bci);
+            EXPECT_STREQ(test_case == EntryCase::MisalignedSp || test_case == EntryCase::OutOfBoundsSp ||
+                         test_case == EntryCase::InvalidFrameSize || test_case == EntryCase::UnsupportedPrologue ? "break_cont_entry_fp" : "break_cont_carrier_sp",
+                         (const char*)frames[0].method_id);
+            EXPECT_TRUE(truncated);
+        } else if (test_case == EntryCase::CompiledNonPointerFp) {
+            EXPECT_EQ(FrameType::encode(FRAME_JIT_COMPILED, 0), frames[0].bci);
+            EXPECT_EQ(JMETHODID_NOT_WALKABLE, frames[0].method_id);
+            EXPECT_FALSE(truncated);
+        } else {
+            ASSERT_EQ(BCI_NATIVE_FRAME, frames[0].bci)
+                    << (frames[0].bci == BCI_ERROR ? (const char*)frames[0].method_id : "unexpected frame type");
+            EXPECT_STREQ("continuation_carrier", (const char*)frames[0].method_id);
+            EXPECT_FALSE(truncated);
+        }
+    }
+
     void assertCarrier(int depth) {
         ASSERT_EQ(2, depth);
         EXPECT_EQ(BCI_NATIVE_FRAME, frames[0].bci);
@@ -175,17 +415,129 @@ protected:
         EXPECT_STREQ("continuation_carrier", (const char*)frames[1].method_id);
     }
 
+    static std::array<unsigned char, 8> barrierInstructions() {
+#ifdef __aarch64__
+        return {0x88, 0x03, 0x40, 0xf9, 0x1f, 0x01, 0x00, 0x91}; // ldr x8, [x28]; mov sp, x8
+#else
+        return {0x49, 0x8b, 0xa7, 0, 0, 0, 0, 0x90}; // mov rsp, [r15 + 0]
+#endif
+    }
+
+    int discoverBarrierOffset(const unsigned char* code, size_t size, uint64_t thread_size) {
+        ScopedValue<const void*> barrier(_cont_return_barrier, code);
+        ScopedValue<const void*> low(_code_heap_low, code);
+        ScopedValue<const void*> high(_code_heap_high, code == nullptr ? nullptr : code + size);
+        ScopedValue<uint64_t> thread_type(TYPE_SIZE_NAME(VMJavaThread), thread_size);
+        initContEntryThreadOffset();
+        return VMStructs::contEntryThreadOffset();
+    }
+
+    // At the first return-barrier instruction there is no preceding Java frame
+    // from which walkVM can obtain stack arguments. HotSpot's barrier loads the
+    // ContinuationEntry from JavaThread before resetting SP (JDK 21 and 25).
+    // Three stack arguments occupy four aligned words below that entry.
+    enum class BarrierEntryCase {
+        Valid, NullEntry, MisalignedEntry, EntryBelowSp, EntryAboveStack, InvalidFrameSize,
+        UnreliableSampledFp, BadCarrierPc, BadCarrierFp, UnrecognizedBarrier
+    };
+
+    void assertCarrierFromSampledReturnBarrier(int stack_args, bool exported_entry,
+                                              bool carrier_frames = true, bool native_prefix = false,
+                                              BarrierEntryCase test_case = BarrierEntryCase::Valid) {
+        ASSERT_TRUE(stack_args == 0 || stack_args == 3);
+        alignas(16) uintptr_t stack[32]{};
+        alignas(16) auto barrier_code = barrierInstructions();
+        if (test_case == BarrierEntryCase::UnrecognizedBarrier) barrier_code[0] = 0;
+        static_assert(offsetof(ThreadLayout, entry) == 0, "Barrier load names the thread's entry field");
+        ScopedValue<const void*> barrier(_cont_return_barrier, barrier_code.data());
+        ScopedValue<const void*> low(_code_heap_low, barrier_code.data());
+        ScopedValue<const void*> high(_code_heap_high, barrier_code.data() + barrier_code.size());
+        ScopedValue<char*> heap0(_code_heap[0], nullptr);
+        ScopedValue<char*> heap1(_code_heap[1], nullptr);
+        ScopedValue<char*> heap2(_code_heap[2], nullptr);
+        ScopedValue<int> entry_offset(_cont_entry_offset, exported_entry ? offsetof(ThreadLayout, entry) : -1);
+        ScopedValue<uint64_t> entry_size(TYPE_SIZE_NAME(VMContinuationEntry), exported_entry ? 64 : 0);
+        VMTestAccessor::install(true, exported_entry ? 27 : 21);
+        initContEntryThreadOffset();
+        ASSERT_EQ(test_case == BarrierEntryCase::UnrecognizedBarrier ? -1 : 0, VMStructs::contEntryThreadOffset());
+        entry_frame_size = 10; // 64-byte ContinuationEntry and saved FP/PC
+        int barrier_sp_slot = native_prefix ? 2 : 0;
+        int entry_slot = barrier_sp_slot + (stack_args == 0 ? 0 : 4);
+        thread.entry = &stack[entry_slot];
+        if (stack_args != 0) {
+            stack[barrier_sp_slot] = 7;
+            stack[barrier_sp_slot + 1] = 8;
+            stack[barrier_sp_slot + 2] = 9;
+        }
+        // The empty ContinuationEntryPD occupies the first word; flags and
+        // argsize are the two 32-bit fields in word four on these HotSpot builds.
+        stack[entry_slot + 4] = ((uint64_t)stack_args << 32) | 1;
+        stack[entry_slot + 8] = (uintptr_t)&stack[24];
+        stack[entry_slot + 9] = (uintptr_t)CARRIER_PC;
+        stack[entry_slot + 10] = (uintptr_t)&stack[26];
+        stack[entry_slot + 11] = (uintptr_t)THREAD_ENTRY_PC;
+        if (test_case == BarrierEntryCase::NullEntry) thread.entry = nullptr;
+        if (test_case == BarrierEntryCase::MisalignedEntry) thread.entry = &stack[entry_slot + 1];
+        if (test_case == BarrierEntryCase::EntryBelowSp) thread.entry = (void*)((uintptr_t)stack - 16);
+        if (test_case == BarrierEntryCase::EntryAboveStack) thread.entry = (void*)(UINTPTR_MAX & ~(uintptr_t)15);
+        if (test_case == BarrierEntryCase::InvalidFrameSize) entry_frame_size = 258;
+        if (test_case == BarrierEntryCase::BadCarrierPc) stack[entry_slot + 9] = 1;
+        if (test_case == BarrierEntryCase::BadCarrierFp) stack[entry_slot + 8] = 1;
+        if (native_prefix) {
+            stack[0] = (uintptr_t)&stack[entry_slot + 8];
+            stack[1] = (uintptr_t)barrier_code.data();
+        }
+
+        ucontext_t context{};
+#ifdef __APPLE__
+        _STRUCT_MCONTEXT64 machine_context{};
+        context.uc_mcontext = &machine_context;
+#endif
+#ifdef __aarch64__
+#ifdef __APPLE__
+        machine_context.__ss.__lr = (uintptr_t)barrier_code.data();
+#else
+        context.uc_mcontext.regs[30] = (uintptr_t)barrier_code.data();
+#endif
+#endif
+        StackFrame frame(&context);
+        frame.pc() = native_prefix ? (uintptr_t)LEAF_PC : (uintptr_t)barrier_code.data();
+        frame.sp() = (uintptr_t)stack;
+        frame.fp() = (uintptr_t)&stack[entry_slot + 8];
+        if (test_case == BarrierEntryCase::UnreliableSampledFp) frame.fp() = 1;
+        StackWalkFeatures features{};
+        features.carrier_frames = carrier_frames;
+        bool truncated = false;
+        int depth = HotspotSupportTestAccessor::walk(&context, frames, features, MAX_DEPTH, &truncated);
+        int carrier_index = native_prefix ? 1 : 0;
+        ASSERT_EQ(carrier_index + 1, depth);
+        if (native_prefix) EXPECT_STREQ("continuation_sampled_leaf", (const char*)frames[0].method_id);
+        if (test_case != BarrierEntryCase::Valid && test_case != BarrierEntryCase::UnreliableSampledFp) {
+            ASSERT_EQ(BCI_ERROR, frames[carrier_index].bci);
+            EXPECT_STREQ(test_case == BarrierEntryCase::BadCarrierPc || test_case == BarrierEntryCase::BadCarrierFp
+                    ? "break_cont_carrier_sp" : "break_cont_entry_fp", (const char*)frames[carrier_index].method_id);
+            EXPECT_TRUE(truncated);
+            return;
+        }
+        ASSERT_EQ(BCI_NATIVE_FRAME, frames[carrier_index].bci)
+                << (frames[carrier_index].bci == BCI_ERROR ? (const char*)frames[carrier_index].method_id : "unexpected frame type");
+        EXPECT_STREQ(carrier_frames ? "continuation_carrier" : "JVM Continuation", (const char*)frames[carrier_index].method_id);
+        EXPECT_TRUE(truncated);
+    }
+
     bool old_hotspot;
     int old_version;
     pthread_key_t old_key;
     pthread_key_t owned_key = INVALID_KEY;
     jfieldID old_tid;
     const void *old_low, *old_high, *old_barrier, *old_return_pc;
+    int old_entry_thread_offset;
     int old_entry_offset;
     int old_frame_size_offset;
     VMNMethod* old_entry_nm;
     uint64_t old_entry_size;
     uint64_t old_thread_size;
+    uint64_t old_java_thread_size;
 };
 
 TEST_F(ContinuationWalkTest, SpeculativeCrossingRetainsCarrierAndSerializesTruncation) {
@@ -248,6 +600,112 @@ TEST_F(ContinuationWalkTest, FrozenBoundaryWithoutEntryMetadataRejectsFpFallback
     EXPECT_TRUE(truncated);
 }
 
+TEST_F(ContinuationWalkTest, SampledReturnBarrierWithoutStackArgumentsRetainsCarrier) {
+    assertCarrierFromSampledReturnBarrier(0, false);
+}
+
+TEST_F(ContinuationWalkTest, SampledReturnBarrierWithStackArgumentsRetainsCarrier) {
+    assertCarrierFromSampledReturnBarrier(3, false);
+}
+
+TEST_F(ContinuationWalkTest, NativeFrameLeadingToReturnBarrierWithoutJavaMetadataRetainsCarrier) {
+    for (int stack_args : {0, 3}) assertCarrierFromSampledReturnBarrier(stack_args, false, true, true);
+}
+
+TEST_F(ContinuationWalkTest, SampledReturnBarrierWithExportedEntryRetainsCarrier) {
+    for (bool native_prefix : {false, true}) {
+        for (int stack_args : {0, 3}) assertCarrierFromSampledReturnBarrier(stack_args, true, true, native_prefix);
+    }
+}
+
+TEST_F(ContinuationWalkTest, SampledReturnBarrierWithoutCarrierFramesKeepsTruncatedRoot) {
+    for (bool native_prefix : {false, true}) {
+        for (int stack_args : {0, 3}) assertCarrierFromSampledReturnBarrier(stack_args, false, false, native_prefix);
+    }
+}
+
+TEST_F(ContinuationWalkTest, ReturnBarrierDecoderAcceptsGeneratedThreadLoad) {
+#ifdef __aarch64__
+    const unsigned char jdk21[] = {0x88, 0x9b, 0x42, 0xf9, 0x1f, 0x01, 0x00, 0x91};
+    const unsigned char jdk25[] = {0x88, 0xd3, 0x42, 0xf9, 0x1f, 0x01, 0x00, 0x91};
+    EXPECT_EQ(1328, HotspotStackFrame::continuationEntryThreadOffset(jdk21, sizeof(jdk21)));
+    EXPECT_EQ(1440, HotspotStackFrame::continuationEntryThreadOffset(jdk25, sizeof(jdk25)));
+#else
+    const unsigned char wide[] = {0x49, 0x8b, 0xa7, 0x30, 0x05, 0, 0};
+    const unsigned char short_disp[] = {0x49, 0x8b, 0x67, 0x70};
+    const unsigned char no_disp[] = {0x49, 0x8b, 0x27};
+    EXPECT_EQ(1328, HotspotStackFrame::continuationEntryThreadOffset(wide, sizeof(wide)));
+    EXPECT_EQ(112, HotspotStackFrame::continuationEntryThreadOffset(short_disp, sizeof(short_disp)));
+    EXPECT_EQ(0, HotspotStackFrame::continuationEntryThreadOffset(no_disp, sizeof(no_disp)));
+#endif
+}
+
+TEST_F(ContinuationWalkTest, ReturnBarrierDecoderRejectsTruncatedOrUnknownInstructions) {
+    auto code = barrierInstructions();
+    EXPECT_EQ(-1, HotspotStackFrame::continuationEntryThreadOffset(nullptr, code.size()));
+#ifdef __aarch64__
+    constexpr size_t prefix_size = 8;
+#else
+    constexpr size_t prefix_size = 7;
+#endif
+    for (size_t size = 0; size < prefix_size; size++) {
+        EXPECT_EQ(-1, HotspotStackFrame::continuationEntryThreadOffset(code.data(), size));
+    }
+#ifdef __aarch64__
+    code[0] ^= 1; // wrong destination register
+    EXPECT_EQ(-1, HotspotStackFrame::continuationEntryThreadOffset(code.data(), code.size()));
+    code = barrierInstructions();
+    code[1] ^= 1; // wrong JavaThread register
+    EXPECT_EQ(-1, HotspotStackFrame::continuationEntryThreadOffset(code.data(), code.size()));
+    code = barrierInstructions();
+    code[4] ^= 1; // not mov sp, x8
+#else
+    code[0] = 0x48; // rdi rather than the r15 JavaThread base
+    EXPECT_EQ(-1, HotspotStackFrame::continuationEntryThreadOffset(code.data(), code.size()));
+    code = barrierInstructions();
+    code[2] = 0xaf; // rbp rather than rsp
+    EXPECT_EQ(-1, HotspotStackFrame::continuationEntryThreadOffset(code.data(), code.size()));
+    code = barrierInstructions();
+    code[6] = 0xff; // negative disp32
+#endif
+    EXPECT_EQ(-1, HotspotStackFrame::continuationEntryThreadOffset(code.data(), code.size()));
+}
+
+TEST_F(ContinuationWalkTest, ReturnBarrierDiscoveryRejectsMissingOrOutOfRangeMetadata) {
+    auto code = barrierInstructions();
+    EXPECT_EQ(0, discoverBarrierOffset(code.data(), code.size(), sizeof(ThreadLayout)));
+    EXPECT_EQ(-1, discoverBarrierOffset(nullptr, 0, sizeof(ThreadLayout)));
+    EXPECT_EQ(-1, discoverBarrierOffset(code.data(), code.size() - 1, sizeof(ThreadLayout)));
+    EXPECT_EQ(-1, discoverBarrierOffset(code.data(), code.size(), sizeof(void*) - 1));
+#ifdef __aarch64__
+    code[1] = 7; // eight-byte offset
+#else
+    code[3] = 8;
+#endif
+    EXPECT_EQ(8, discoverBarrierOffset(code.data(), code.size(), 2 * sizeof(void*)));
+    EXPECT_EQ(-1, discoverBarrierOffset(code.data(), code.size(), sizeof(ThreadLayout)));
+    code[0] = 0;
+    EXPECT_EQ(-1, discoverBarrierOffset(code.data(), code.size(), 2 * sizeof(void*)));
+    VMTestAccessor::install(true, 20);
+    code = barrierInstructions();
+    EXPECT_EQ(-1, discoverBarrierOffset(code.data(), code.size(), sizeof(ThreadLayout)));
+}
+
+TEST_F(ContinuationWalkTest, SampledReturnBarrierRejectsInvalidEntryAndCarrierMetadata) {
+    for (BarrierEntryCase test_case : {
+            BarrierEntryCase::NullEntry, BarrierEntryCase::MisalignedEntry, BarrierEntryCase::EntryBelowSp,
+            BarrierEntryCase::EntryAboveStack, BarrierEntryCase::InvalidFrameSize,
+            BarrierEntryCase::BadCarrierPc, BarrierEntryCase::BadCarrierFp, BarrierEntryCase::UnrecognizedBarrier}) {
+        for (int stack_args : {0, 3}) assertCarrierFromSampledReturnBarrier(stack_args, false, true, false, test_case);
+    }
+}
+
+TEST_F(ContinuationWalkTest, SampledReturnBarrierDoesNotRequireSampledFp) {
+    for (int stack_args : {0, 3}) {
+        assertCarrierFromSampledReturnBarrier(stack_args, false, true, false, BarrierEntryCase::UnreliableSampledFp);
+    }
+}
+
 TEST_F(ContinuationWalkTest, ExportedEntryLayoutRetainsCarrierAndTruncates) {
     TYPE_SIZE_NAME(VMContinuationEntry) = 2 * sizeof(uintptr_t);
     bool truncated = false;
@@ -281,5 +739,91 @@ TEST_F(ContinuationWalkTest, SpeculativeCarrierFailureIsTruncated) {
 TEST_F(ContinuationWalkTest, SpeculativeCrossingAcceptsNullTruncationPointer) {
     assertCarrier(walk(true, nullptr));
 }
+
+TEST_F(ContinuationWalkTest, EntryNMethodWithCompleteFrameRetainsCarrier) {
+    assertCarrierFromEntry(EntryPhase::Complete);
+}
+
+TEST_F(ContinuationWalkTest, EntryNMethodBeforeStackAllocationRetainsCarrier) {
+    assertCarrierFromEntry(EntryPhase::BeforeAllocation);
+}
+
+TEST_F(ContinuationWalkTest, EntryNMethodAfterStackDeallocationRetainsCarrier) {
+    assertCarrierFromEntry(EntryPhase::AfterDeallocation);
+}
+
+TEST_F(ContinuationWalkTest, EntryNMethodBeforeSavingRegistersRetainsCarrier) {
+    assertCarrierFromEntry(EntryPhase::BeforeSave);
+}
+
+TEST_F(ContinuationWalkTest, EntryNMethodAfterSavingBeforeSettingFpRetainsCarrier) {
+    assertCarrierFromEntry(EntryPhase::AfterSave);
+}
+
+TEST_F(ContinuationWalkTest, EntryNMethodBeforeRestoringSpRetainsCarrier) {
+    assertCarrierFromEntry(EntryPhase::BeforeSpRestore);
+}
+
+TEST_F(ContinuationWalkTest, EntryNMethodAfterRestoringRegistersRetainsCarrier) {
+    assertCarrierFromEntry(EntryPhase::AfterRestore);
+}
+
+TEST_F(ContinuationWalkTest, VerifiedReturnPcDoesNotRequireSampledFp) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::ReturnPc);
+}
+
+TEST_F(ContinuationWalkTest, CompiledCarrierAcceptsNonPointerSavedFp) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::CompiledNonPointerFp);
+}
+
+TEST_F(ContinuationWalkTest, NativeCarrierRejectsNonPointerSavedFp) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::NativeNonPointerFp);
+}
+
+TEST_F(ContinuationWalkTest, NonNMethodCarrierRejectsNonPointerSavedFp) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::BlobNonPointerFp);
+}
+
+TEST_F(ContinuationWalkTest, EntryNMethodRejectsInvalidCarrierPc) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::InvalidPc);
+}
+
+TEST_F(ContinuationWalkTest, EntryNMethodRejectsMisalignedSp) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::MisalignedSp);
+}
+
+TEST_F(ContinuationWalkTest, EntryNMethodRejectsOutOfBoundsSp) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::OutOfBoundsSp);
+}
+
+TEST_F(ContinuationWalkTest, EntryNMethodRejectsInvalidFrameSize) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::InvalidFrameSize);
+}
+
+TEST_F(ContinuationWalkTest, EntryNMethodAfterAllocationBeforePublicationRetainsCarrier) {
+    assertCarrierFromEntry(EntryPhase::AfterAllocation);
+}
+
+TEST_F(ContinuationWalkTest, EntryNMethodRejectsUnsupportedPrologue) {
+    assertCarrierFromEntry(EntryPhase::BeforeAllocation, EntryCase::UnsupportedPrologue);
+}
+
+TEST_F(ContinuationWalkTest, SampledEntryDoesNotFollowExportedParentDuringTransitions) {
+    for (EntryPhase phase : {EntryPhase::BeforeSave, EntryPhase::AfterSave, EntryPhase::BeforeAllocation,
+                            EntryPhase::AfterAllocation, EntryPhase::Complete, EntryPhase::BeforeSpRestore,
+                            EntryPhase::AfterDeallocation, EntryPhase::AfterRestore}) {
+        assertCarrierFromEntry(phase, EntryCase::ExportedParentEntry);
+    }
+}
+
+#ifdef __aarch64__
+TEST_F(ContinuationWalkTest, SampledEntryWithPointerAuthenticationRetainsCarrier) {
+    for (EntryPhase phase : {EntryPhase::BeforeSave, EntryPhase::AfterSave, EntryPhase::BeforeAllocation,
+                            EntryPhase::AfterAllocation, EntryPhase::Complete, EntryPhase::BeforeSpRestore,
+                            EntryPhase::AfterDeallocation, EntryPhase::AfterRestore}) {
+        assertCarrierFromEntry(phase, EntryCase::PointerAuthentication);
+    }
+}
+#endif
 
 } // namespace

@@ -9,11 +9,13 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include "hotspot/vmStructs.inline.h"
+#include "hotspot/hotspotStackFrame.h"
 #include "vmEntry.h"
 #include "jniHelper.h"
 #include "jvmHeap.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
+#include "signalSafety.h"
 #include "spinLock.h"
 #include "threadLocalData.inline.h"
 #include "threadState.h"
@@ -37,6 +39,7 @@ int VMStructs::_interpreter_frame_bcp_offset = 0;
 unsigned char VMStructs::_unsigned5_base = 0;
 const void* VMStructs::_call_stub_return = nullptr;
 const void* VMStructs::_cont_return_barrier   = nullptr;
+int VMStructs::_cont_entry_thread_offset = -1;
 const void* VMStructs::_cont_entry_return_pc  = nullptr;
 VMNMethod*  VMStructs::_enter_special_nm       = nullptr;
 const void* VMStructs::_interpreter_start = nullptr;
@@ -477,6 +480,26 @@ void VMStructs::resolveOffsets() {
     if (_enter_special_nm == NULL && _cont_entry_return_pc != NULL) {
         _enter_special_nm = CodeHeap::findNMethod(_cont_entry_return_pc);
     }
+    initContEntryThreadOffset();
+}
+
+void VMStructs::initContEntryThreadOffset() {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
+    int offset = -1;
+    unsigned char code[8];
+    uintptr_t barrier = (uintptr_t)_cont_return_barrier;
+    uint64_t thread_size = TYPE_SIZE_NAME(VMJavaThread);
+    if (VM::hotspot_version() >= 21 && barrier != 0 && CodeHeap::contains((const void*)barrier) &&
+        (uintptr_t)_code_heap_high - barrier >= sizeof(code) &&
+        SafeAccess::safeCopy(code, (const void*)barrier, sizeof(code))) {
+        int decoded = HotspotStackFrame::continuationEntryThreadOffset(code, sizeof(code));
+        if (decoded >= 0 && (decoded & (sizeof(uintptr_t) - 1)) == 0 &&
+            thread_size >= sizeof(uintptr_t) && (uint64_t)decoded <= thread_size - sizeof(uintptr_t)) {
+            offset = decoded;
+        }
+    }
+    // VM::ready can run again while an existing profiler instance is active.
+    __atomic_store_n(&_cont_entry_thread_offset, offset, __ATOMIC_RELEASE);
 }
 
 void VMStructs::initJvmFunctions() {

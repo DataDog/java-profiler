@@ -169,6 +169,50 @@ static inline bool isPollReturn(instruction_t* ip) {
     return true;
 }
 
+int HotspotStackFrame::continuationEntryThreadOffset(const unsigned char* code, size_t size) {
+    if (code == nullptr || size < 8) return -1;
+    uint32_t load = code[0] | (uint32_t(code[1]) << 8) | (uint32_t(code[2]) << 16) | (uint32_t(code[3]) << 24);
+    uint32_t move = code[4] | (uint32_t(code[5]) << 8) | (uint32_t(code[6]) << 16) | (uint32_t(code[7]) << 24);
+    // ldr x8, [x28, #offset]; mov sp, x8
+    if ((load & 0xffc003ffU) != 0xf9400388U || move != 0x9100011fU) return -1;
+    return ((load >> 10) & 0xfffU) * sizeof(uintptr_t);
+}
+
+int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc) {
+    int words = nm->frameSize();
+    instruction_t* ip = (instruction_t*)pc;
+    instruction_t* entry = (instruction_t*)nm->entry();
+    if (words < 4 || words > 256 || (words & 1) != 0 || ip < entry) return -1;
+
+    if (!nm->isFrameCompleteAt(pc)) {
+        // MacroAssembler::enter may protect LR before saving FP/LR. Keep the
+        // scan bounded, and require the generated save/mov/sub sequence.
+        instruction_t* save = entry;
+        for (int i = 0; i < 4; i++) {
+            if (*save == 0xd503201f || *save == 0xd503245f || // nop, bti c
+                *save == 0xd503231f || *save == 0xd503233f || // paciaz, paciasp
+                *save == 0xf94003df) {                      // ldr xzr, [lr] (debug PAC check)
+                save++;
+            } else {
+                break;
+            }
+        }
+        if (save[0] != 0xa9bf7bfd || save[1] != 0x910003fd ||
+            save[2] != (0xd10003ffU | ((words - 2) * sizeof(uintptr_t) << 10))) return -1;
+        if (ip <= save) return 0;         // before stp FP/LR
+        if (ip <= save + 2) return 2;     // after stp, before sub SP
+        return words;                    // storage allocated, entry not yet published
+    }
+
+    if (*ip == 0xa8c17bfd) return 2;       // ldp FP/LR, [sp], #16: SP already restored
+    if (*ip == 0xd65f03c0 ||              // ret
+        *ip == 0xd503239f || *ip == 0xd50323bf || // autiaz, autiasp
+        *ip == 0xd65f0bff || *ip == 0xd65f0fff || // retaa, retab
+        (*ip == 0xf94003df && ip > entry &&
+         (ip[-1] == 0xd503239f || ip[-1] == 0xd50323bf))) return 0;
+    return words;
+}
+
 NOSANALIGSANITIZE bool HotspotStackFrame::unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     // C1/C2 methods:
     //   {stack_bang}

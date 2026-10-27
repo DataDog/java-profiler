@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 <!-- CLAUDE BOOTSTRAP INSTRUCTIONS
 If you are Claude and reading this file, check if CLAUDE.md exists in the same directory.
 If CLAUDE.md does not exist or only contains the redirect + Compact Instructions below, that
@@ -65,7 +67,7 @@ and `:ddprof-lib:benchmarks`), `ddprof-test` (Java integration tests), `ddprof-t
 (tracing-context tests), `ddprof-test-native`, `ddprof-stresstest` (JMH + chaos),
 `malloc-shim` (Linux allocation interceptor).
 
-**Supported JVMs:** HotSpot, J9, Zing — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
+**Supported JVMs:** HotSpot, J9, Zing; HotSpot continuation recovery uses sampled instruction phases and validated return-barrier metadata — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
 **Platforms:** Linux x64/arm64 (primary), macOS arm64/x64; musl libc handled automatically.
 
 ## Operating Rules for Agent Sessions

@@ -119,6 +119,20 @@ public:
     bool unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
     bool unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
 
+    // For a directly sampled compiled enterSpecial, returns the number of stack
+    // words up to the carrier SP. Two or more words include saved FP/PC; before
+    // saving and after restoring them, FP is still in the sampled register and
+    // PC is in LR (aarch64, zero words) or at SP (x64, one word). Returns -1 for
+    // unsupported prologues or invalid frame metadata. Never use a return PC:
+    // its instruction has not executed with the sampled register values.
+    int continuationEntryFrameWords(VMNMethod* nm, const void* pc);
+
+    // Decodes only the return-barrier prefix that loads JavaThread::_cont_entry
+    // into SP. Called during initialization on a bounded copy of the code.
+    // Returns -1 for unknown instructions; the caller must validate the offset
+    // against the exported JavaThread size before publishing it to walkers.
+    static int continuationEntryThreadOffset(const unsigned char* code, size_t size);
+
     static bool unwindAtomicStub(const StackFrame& frame, const void*& pc);
 
 private:

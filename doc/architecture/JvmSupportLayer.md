@@ -156,23 +156,59 @@ walker, with raw `Method*` frames, and with lazy jmethodID resolution.
 | File | Role |
 |---|---|
 | `hotspotSupport.{h,cpp}` | `HotspotSupport`: `walkJavaStack`/`walkVM`, ASGCT with fault recovery (`withUcontextFaultRecovery`), jmethodID preload policy, `fjmethodid=lazy` (`registerClass`, `resolve`, redefinition tracking, dump-time class pinning). `JVMSupport` is a friend (`hotspotSupport.h:131`), and the walker internals are private |
-| `hotspotStackFrame.h`, `hotspotStackFrame_{x64,aarch64}.cpp` | `HotspotStackFrame`: unwinds through compiled frames, stubs, prologues, and epilogues, and saves and restores the `JavaFrameAnchor` on fault recovery |
+| `hotspotStackFrame.h`, `hotspotStackFrame_{x64,aarch64}.cpp` | `HotspotStackFrame`: unwinds through compiled frames, stubs, prologues, epilogues and sampled continuation-entry phases, and saves and restores the `JavaFrameAnchor` on fault recovery |
 | `vmStructs.{h,inline.h,cpp}` | Reads `gHotSpotVMStructs` offsets, and defines `VMThread`, `VMMethod`, `VMFlag`, `CodeHeap`, and related types |
 | `jitCodeCache.{h,cpp}` | JIT and runtime-stub address ranges from `CompiledMethodLoad`/`DynamicCodeGenerated`, used by `isJitCode` and `runtimeStubsMemoryUsage` |
 | `stubUnwindInfo.{h,cpp}` | Per-PC unwind phases for HotSpot runtime stubs (aarch64 only). They are computed in the `DynamicCodeGenerated` callback, and the walker reads them without locks |
 | `klassRegistry.{h,cpp}` | Redefinition marks keyed by `Klass*` for `fjmethodid=lazy` (`HotspotSupport::_klass_registry`, `hotspotSupport.h:161`) |
 | `klassTraceId.{h,cpp}` | Finds `Klass::_trace_id` by probing, so a stale raw frame can be told apart from a class that reused the same `Klass*` |
 
+Directly sampled compiled `enterSpecial` frames use
+`HotspotStackFrame::continuationEntryFrameWords()` to locate the carrier SP.
+The helper distinguishes the prologue's register save and storage allocation,
+the complete frame, and the normal epilogue's storage deallocation and register
+restore. The walker checks bounds and alignment before reading saved FP/PC;
+before the save and after the restore it uses the sampled FP and LR (aarch64)
+or return-PC stack slot (x64). Unknown prologues fail rather than applying the
+complete-frame size. Pointer-authentication instructions are recognized on
+arm64, and recovered PCs have PAC bits stripped.
+
+This path applies only to the exact sampled PC. Recovered return addresses keep
+the existing continuation-entry metadata and stack-argument recovery. During
+entry publication and removal, `JavaThread::_cont_entry` can name the enclosing
+entry; a sampled entry only advances the nested-entry cursor when the published
+entry matches its own saved-register slots. The carrier validation and
+continuation truncation policy are shared by both recovery paths.
+
+On HotSpot JDK 21+, initialization recognizes the return-barrier prefix that
+loads `JavaThread::_cont_entry` into SP: `ldr x8, [x28, #offset]; mov sp, x8`
+on arm64, or `mov rsp, [r15 + offset]` on x64. It copies a bounded eight bytes,
+checks the instruction shape and the field's alignment and bounds within the
+exported `JavaThread` size, then publishes the inferred offset with release
+semantics. Bounds use `JavaThread` independently of the smaller `Thread` base
+type used by `VMThread` casts. Walkers acquire-load the offset. Unknown prefixes leave the capability
+unavailable. This inferred offset stays separate from the JDK 27 exported
+fields and does not change anchor redirection or nested-entry handling.
+
+A sample at the return barrier, including one reached through a native signal
+trampoline, may have no decoded Java frame providing its stack-argument count.
+When exported entry metadata is unavailable, that verified frozen boundary can
+use the inferred offset to read the current entry pointer. The `enterSpecial`
+nmethod's validated frame size locates its saved FP/PC pair; stack range,
+alignment and carrier admission checks apply before proceeding. Walks with a
+known argument count retain SP-based recovery. Missing or invalid metadata
+still rejects the walk, and frozen boundaries remain marked truncated.
+
 Caveats:
 
 - **Architecture-specific unwinding.** `unwindAtomicStub` always returns
-  `false` on x86_64 (`hotspot/hotspotStackFrame_x64.cpp:179-181`). On aarch64 it
+  `false` on x86_64 (`hotspot/hotspotStackFrame_x64.cpp:213-215`). On aarch64 it
   unwinds through generated `Stub*` code when the link register points into
-  libjvm (`hotspot/hotspotStackFrame_aarch64.cpp:335-343`). The unwind helpers
+  libjvm (`hotspot/hotspotStackFrame_aarch64.cpp:370-379`). The unwind helpers
   return the raw return address on every architecture. When the result is
   written back into the ucontext for an ASGCT retry,
   `stepIntoCallForAsgct()` subtracts one only on x86_64
-  (`hotspot/hotspotStackFrame.h:125-131`).
+  (`hotspot/hotspotStackFrame.h:133-139`).
 - **Stub unwind tables.** `StubUnwindInfo` exists only on aarch64. On x64,
   `unwindStub()` ignores the `info` argument (`hotspot/hotspotStackFrame.h`,
   comment on `unwindStub`).

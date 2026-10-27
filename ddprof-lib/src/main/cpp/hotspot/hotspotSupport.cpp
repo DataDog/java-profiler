@@ -452,46 +452,85 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             return false;
         }
 
-        uintptr_t entry_fp;
-
-        if (VMContinuationEntry::type_size() > 0) {
-            // ContinuationEntry is known via vmStructs (JDK 27+, added by
-            // JDK-8378985).  Walk the linked list of entries for nested-
-            // continuation support and derive the enterSpecial frame FP from
-            // the struct layout (entry + type_size).
-            cont_entry = (cont_entry != nullptr) ? cont_entry->parent() : vm_thread->contEntry();
-            if (cont_entry == nullptr) {
-                Counters::increment(WALKVM_CONT_ENTRY_NULL);
-                fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_null");
+        uintptr_t carrier_fp, carrier_sp;
+        const void* carrier_pc;
+        bool valid_carrier_sp;
+        bool sampled_entry = depth == 0 && !walk_pc.isReturnAddress() && continuation_entry_nm != nullptr
+                && CodeHeap::findNMethod(walk_pc.raw()) == continuation_entry_nm;
+        if (sampled_entry) {
+            // Publication/removal of JavaThread::_cont_entry happens inside
+            // enterSpecial. At these PCs it can describe the parent, and SP
+            // need not include the complete ContinuationEntry allocation.
+            int words = frame.continuationEntryFrameWords(continuation_entry_nm, walk_pc.raw());
+            if (words < 0 || !StackWalkValidation::isValidFP(sp) ||
+                sp > UINTPTR_MAX - words * sizeof(uintptr_t)) {
+                fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
                 return false;
             }
-            entry_fp = cont_entry->entryFP();
-        } else {
-            VMNMethod* entry_nm = continuation_entry_nm;
-            bool known_boundary = VMStructs::isContReturnBarrier(walk_pc.raw())
-                    || VMStructs::isContEntryReturnPc(walk_pc.raw())
-                    || (entry_nm != nullptr && CodeHeap::findNMethod(walk_pc.raw()) == entry_nm);
-            if (entry_nm != nullptr && known_boundary) {
-                // Fast thaw does not repair FP links. Recover the entry from SP,
-                // stack-argument padding and enterSpecial's generated frame size.
-                entry_fp = entry_nm->continuationEntryFP(sp, kind == ContBoundary::Frozen ? continuation_stack_args : 0);
-            } else {
-                entry_fp = contBoundaryEntryFpIsCurrentFp(kind) ? fp : 0;
+            carrier_sp = sp + words * sizeof(uintptr_t);
+            if ((carrier_sp & 15) != 0 || carrier_sp >= bottom) {
+                fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
+                return false;
             }
-        }
+            valid_carrier_sp = true; // zero words is valid before saving/after restoring FP/LR
+            if (words >= 2) {
+                uintptr_t* saved = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(carrier_sp - 2 * sizeof(uintptr_t));
+                carrier_fp = saved[0];
+                carrier_pc = (const void*)saved[1];
+                if (VMContinuationEntry::type_size() > 0) {
+                    VMContinuationEntry* published = vm_thread->contEntry();
+                    if (published != nullptr && published->entryFP() == (uintptr_t)saved) cont_entry = published;
+                }
+            } else {
+                carrier_fp = fp;
+                carrier_pc = words == 0 ? (const void*)frame.link()
+                        : *(const void**)INJECT_FAULT_ADDRESS_UNLIKELY(sp);
+            }
+        } else {
+            uintptr_t entry_fp;
+            if (VMContinuationEntry::type_size() > 0) {
+                // Exported entries (JDK 27+) form a chain for nested continuations.
+                cont_entry = (cont_entry != nullptr) ? cont_entry->parent() : vm_thread->contEntry();
+                if (cont_entry == nullptr) {
+                    Counters::increment(WALKVM_CONT_ENTRY_NULL);
+                    fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_null");
+                    return false;
+                }
+                entry_fp = cont_entry->entryFP();
+            } else {
+                VMNMethod* entry_nm = continuation_entry_nm;
+                bool known_boundary = VMStructs::isContReturnBarrier(walk_pc.raw())
+                        || VMStructs::isContEntryReturnPc(walk_pc.raw())
+                        || (entry_nm != nullptr && CodeHeap::findNMethod(walk_pc.raw()) == entry_nm);
+                int entry_offset = VMStructs::contEntryThreadOffset();
+                if (entry_nm != nullptr && kind == ContBoundary::Frozen && continuation_stack_args < 0 && entry_offset >= 0) {
+                    // A sample at the barrier (also through a signal trampoline)
+                    // has no Java frame supplying stack arguments. Read the entry
+                    // that the JVM's validated barrier prefix itself loads.
+                    uintptr_t entry_sp = (uintptr_t)SafeAccess::loadPtr((void**)((char*)vm_thread + entry_offset), nullptr);
+                    entry_fp = entry_sp >= sp && entry_sp < bottom ? entry_nm->continuationEntryFP(entry_sp, 0) : 0;
+                } else if (entry_nm != nullptr && known_boundary) {
+                    // Fast thaw does not repair FP links. Recover the entry from SP,
+                    // stack-argument padding and enterSpecial's generated frame size.
+                    entry_fp = entry_nm->continuationEntryFP(sp, kind == ContBoundary::Frozen ? continuation_stack_args : 0);
+                } else {
+                    entry_fp = contBoundaryEntryFpIsCurrentFp(kind) ? fp : 0;
+                }
+            }
 
-        if (!StackWalkValidation::isValidFP(entry_fp) || entry_fp < sp ||
+            if (!StackWalkValidation::isValidFP(entry_fp) || entry_fp < sp ||
                 entry_fp >= bottom || bottom - entry_fp <= (FRAME_PC_SLOT + 1) * sizeof(void*)) {
-            fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
-            return false;
+                fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
+                return false;
+            }
+            // Range-check before dereferencing; crash protection handles stale memory.
+            uintptr_t* saved = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(entry_fp);
+            carrier_fp = saved[0];
+            carrier_pc = ((const void**)saved)[FRAME_PC_SLOT];
+            carrier_sp = entry_fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
+            valid_carrier_sp = StackWalkValidation::isValidSP(carrier_sp, sp, bottom);
         }
-        // entry_fp has been range-checked by isValidFP above; any remaining
-        // SIGSEGV from a stale/concurrently-freed pointer is caught by the
-        // sigsetjmp crash protection in walkVM (checkFault -> siglongjmp).
-        uintptr_t* carrier_fp_addr = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(entry_fp);
-        uintptr_t carrier_fp = *carrier_fp_addr;
-        const void* carrier_pc = ((const void**)carrier_fp_addr)[FRAME_PC_SLOT];
-        uintptr_t carrier_sp = entry_fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
+        carrier_pc = stripPointer(carrier_pc);
         // Compiled carrier code can use FP as a general-purpose register.
         // Its sender is recovered from nmethod frame metadata instead.
         bool valid_carrier_fp = StackWalkValidation::isValidFP(carrier_fp);
@@ -501,7 +540,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         }
         if (!valid_carrier_fp ||
             StackWalkValidation::inDeadZone(carrier_pc) ||
-            !StackWalkValidation::isValidSP(carrier_sp, sp, bottom)) {
+            !valid_carrier_sp) {
             fillFrame(frames[depth++], BCI_ERROR, "break_cont_carrier_sp");
             return false;
         }
