@@ -10,12 +10,14 @@
 #include "arguments.h"
 #include "common.h"
 #include "ctimer.h"
+#include "engine.h"
 #include "nativeMem.h"
 #include "os.h"
 #include "profiler.h"
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <thread>
 
@@ -44,8 +46,14 @@ public:
   static bool threadTablesStable(Profiler *p) {
     return p->_thread_tables_stable.load(std::memory_order_acquire);
   }
-  static void addHookCalls(Profiler *p, int delta) {
-    p->_hook_calls_inflight.fetch_add(delta, std::memory_order_seq_cst);
+  // Installs the given engines and returns the previous ones through the
+  // out-parameters, so a test can put them back.
+  static void swapEngines(Profiler *p, Engine *cpu, Engine *wall,
+                          Engine **prev_cpu, Engine **prev_wall) {
+    *prev_cpu = p->_cpu_engine;
+    *prev_wall = p->_wall_engine;
+    p->_cpu_engine = cpu;
+    p->_wall_engine = wall;
   }
 };
 
@@ -76,6 +84,14 @@ public:
     CTimer::_max_timers = max_timers;
   }
 };
+
+// Returns the current SIGPROF handler address (sa_handler and sa_sigaction
+// share storage), to check whether a call installed a handler.
+static void *sigprofHandler() {
+  struct sigaction sa;
+  sigaction(SIGPROF, nullptr, &sa);
+  return (void *)sa.sa_sigaction;
+}
 
 // Size of a timer table with n slots, as recorded under NM_CTIMER.
 static long long bytes(int n) { return (long long)((size_t)n * sizeof(int)); }
@@ -152,10 +168,13 @@ TEST_F(CTimerNativeMemTest, FailedAllocationLeavesEmptyTable) {
 // start() opens the native-thread registration gate once the table is sized,
 // so a thread that starts or exits while start() registers the existing
 // threads is handled by the pthread hook instead of being missed. The engine
-// is stopped and the gate closed again before the fixture restores the table.
+// is stopped, the gate closed and the SIGPROF disposition restored before the
+// fixture restores the table, so later tests see the process as it was.
 TEST_F(CTimerNativeMemTest, StartOpensThreadRegistration) {
   Profiler *profiler = Profiler::instance();
   ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  struct sigaction saved_sigprof;
+  sigaction(SIGPROF, nullptr, &saved_sigprof);
   CTimer engine;
   Arguments args;
 
@@ -164,6 +183,7 @@ TEST_F(CTimerNativeMemTest, StartOpensThreadRegistration) {
   bool opened = ProfilerTestAccessor::enginesReady(profiler);
   engine.stop();
   ProfilerTestAccessor::closeThreadRegistration(profiler);
+  sigaction(SIGPROF, &saved_sigprof, nullptr);
 
   EXPECT_FALSE((bool)error);
   EXPECT_TRUE(opened);
@@ -175,9 +195,11 @@ TEST_F(CTimerNativeMemTest, StartFailsWhenTableAllocationFails) {
   SKIP_IF_CALLOC_OVERFLOW_ABORTS();
   CTimer engine;
   Arguments args;
+  void *handler_before = sigprofHandler();
 
   Error error = CTimerTestAccessor::startWithTableSize(engine, args, -1);
   EXPECT_TRUE((bool)error);
+  EXPECT_EQ(handler_before, sigprofHandler());
   EXPECT_FALSE(ProfilerTestAccessor::enginesReady(Profiler::instance()));
   EXPECT_STREQ("Failed to allocate CPU timer table", error.message());
   EXPECT_EQ(nullptr, CTimerTestAccessor::timers());
@@ -199,18 +221,43 @@ TEST_F(CTimerNativeMemTest, StartFailsWhenTableAllocationFails) {
 TEST(ProfilerEnginesGateTest, RegisterThreadSkipsEnginesUntilReady) {
   Profiler *profiler = Profiler::instance();
   ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
-  EXPECT_EQ(0, Profiler::registerThread(OS::threadId()));
+  EXPECT_EQ(-1, Profiler::registerThread(OS::threadId()));
   EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
   EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
 }
 
+// A CPU engine whose registerThread() blocks until released, to hold a real
+// Profiler::registerThread() call inside the engine.
+class BlockingEngine : public Engine {
+public:
+  std::atomic<bool> entered{false};
+  std::atomic<bool> released{false};
+
+  int registerThread(int tid) override {
+    entered.store(true);
+    while (!released.load()) {
+      std::this_thread::yield();
+    }
+    return 0;
+  }
+};
+
 // stop() relies on closeThreadRegistration() not returning while a hook call
-// that passed the gate may still be inside an engine.
+// that passed the gate is still inside an engine; otherwise CTimer::stop() or
+// the next resizeTimers() could run under it.
 TEST(ProfilerEnginesGateTest, CloseThreadRegistrationWaitsForHookCalls) {
   Profiler *profiler = Profiler::instance();
+  BlockingEngine cpu;
+  Engine wall;
+  Engine *prev_cpu, *prev_wall;
+  ProfilerTestAccessor::swapEngines(profiler, &cpu, &wall, &prev_cpu,
+                                    &prev_wall);
   profiler->openThreadRegistration();
-  ProfilerTestAccessor::addHookCalls(profiler, 1);
 
+  std::thread hook([] { Profiler::registerThread(OS::threadId()); });
+  while (!cpu.entered.load()) {
+    std::this_thread::yield();
+  }
   std::atomic<bool> closed{false};
   std::thread closer([&] {
     ProfilerTestAccessor::closeThreadRegistration(profiler);
@@ -220,10 +267,14 @@ TEST(ProfilerEnginesGateTest, CloseThreadRegistrationWaitsForHookCalls) {
   EXPECT_FALSE(closed.load());
   EXPECT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
 
-  ProfilerTestAccessor::addHookCalls(profiler, -1);
+  cpu.released.store(true);
+  hook.join();
   closer.join();
   EXPECT_TRUE(closed.load());
   EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+  Engine *ignored_cpu, *ignored_wall;
+  ProfilerTestAccessor::swapEngines(profiler, prev_cpu, prev_wall,
+                                    &ignored_cpu, &ignored_wall);
 }
 
 #endif // __linux__

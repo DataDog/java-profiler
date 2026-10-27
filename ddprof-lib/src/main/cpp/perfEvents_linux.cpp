@@ -967,11 +967,16 @@ Error PerfEvents::start(Arguments &args) {
       NativeMem::record(NM_PERF, -old_bytes);
     }
     _events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
-    _max_events = max_events;
-    if (_events != NULL) {
-      NativeMem::record(NM_PERF,
-                        (long long)((size_t)max_events * sizeof(PerfEvent)));
+    if (_events == NULL) {
+      // Back to the not-started state (_max_events == -1): registerThread()
+      // and the tid bound check in unregisterThread() then never index the
+      // NULL table, and the next start() retries the allocation.
+      _max_events = -1;
+      return Error("Failed to allocate perf event table");
     }
+    _max_events = max_events;
+    NativeMem::record(NM_PERF,
+                      (long long)((size_t)max_events * sizeof(PerfEvent)));
   }
 
   OS::installSignalHandler(SIGPROF, signalHandler);

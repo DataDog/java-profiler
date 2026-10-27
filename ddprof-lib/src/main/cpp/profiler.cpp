@@ -228,7 +228,7 @@ int Profiler::registerThread(int tid) {
   // Threads created before the gate opens are picked up by the CPU engine's
   // start(), which opens the gate before it lists the existing threads.
   if (!_instance->_engines_ready.load(std::memory_order_seq_cst)) {
-    return 0;
+    return -1; // not registered, as Engine::registerThread() reports it
   }
   return _instance->_cpu_engine->registerThread(tid) |
          _instance->_wall_engine->registerThread(tid);

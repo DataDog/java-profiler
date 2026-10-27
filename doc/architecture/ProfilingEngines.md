@@ -66,7 +66,9 @@ directly. `LivenessTracker` and `NativeMem` are not `Engine`s.
 
 ```
 Profiler::start()                              profiler.cpp:1525
-  ThreadTablesFreeze (until return)            unregisterThread() gate closed
+  ThreadTablesFreeze                           unregisterThread() gate closed until
+                                               the CPU engine sizes its table, at the
+                                               latest until return
   selectCpuEngine / selectWallEngine
   _jfr.start()
   SamplerPerf::primeClock()                    before any handler can fire
@@ -134,7 +136,7 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      and this call closes the fd of a thread that exits after `stop()`.
 3. **`PerfEvents` only**: a `pthread_setspecific` GOT hook on the JVM library
    (`perfEvents_linux.cpp:176`), installed in `PerfEvents::start()`
-   (`perfEvents_linux.cpp:980`).
+   (`perfEvents_linux.cpp:985`).
 
 Each engine's `start()` also registers every thread that already exists.
 
@@ -210,19 +212,19 @@ resolved through `Arguments::cpuSamplerInterval()`.
   with `SIGEV_THREAD_ID` targeting `tid`, carrying
   `sival_ptr = SignalCookie::cpu()` (`ctimer_linux.cpp:73-84`). It is armed
   periodic with `timer_settime`.
-- **Signal**: `SIGPROF` (`ctimer_linux.cpp:178`).
+- **Signal**: `SIGPROF` (`ctimer_linux.cpp:180`).
 - **Origin check**: the handler accepts only `si_code == SI_TIMER` carrying
   the CPU cookie. Anything else is forwarded with `OS::forwardForeignSignal()`
-  (`ctimer_linux.cpp:289-293`).
+  (`ctimer_linux.cpp:291-295`).
 - **Per-thread table**: `_timers[tid]` holds `timer_id + 1` (0 means empty),
   sized from `OS::getMaxThreadId()`. Registration and unregistration claim
   slots with CAS, so concurrent register/unregister of one tid deletes the
   timer exactly once (`ctimer_linux.cpp:94-132`). A tid at or above
   `_max_timers` logs a warning and is not profiled.
-- **`stop()`** unregisters every slot (`ctimer_linux.cpp:209-215`).
+- **`stop()`** unregisters every slot (`ctimer_linux.cpp:211-217`).
 - **`CTimerJvmti`**: runs `CTimer::start()` and then replaces the `SIGPROF`
   handler with one that calls `recordSampleDelegated(ucontext, ...)`
-  (`ctimer_linux.cpp:224-280`). It has no ASGCT fallback.
+  (`ctimer_linux.cpp:226-282`). It has no ASGCT fallback.
 
 ### `PerfEvents` (`perfEvents_linux.cpp`, Linux only)
 
@@ -243,7 +245,7 @@ resolved through `Arguments::cpuSamplerInterval()`.
 - **Thread hook**: `start()` patches the JVM library's `pthread_setspecific`
   import so that HotSpot setting or clearing its thread TLS key registers or
   unregisters the thread (`perfEvents_linux.cpp:171-204`).
-- **`stop()` is a no-op** (`perfEvents_linux.cpp:1051`): fds stay open across
+- **`stop()` is a no-op** (`perfEvents_linux.cpp:1056`): fds stay open across
   stop/start, and `registerThread()` skips threads that already have an fd.
   After stop, the cleared `_enabled` flag keeps handlers from recording.
 - **Memory**: the `_events` array and any 2-page mmap ring pages are accounted
