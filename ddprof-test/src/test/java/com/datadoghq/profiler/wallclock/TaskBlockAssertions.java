@@ -31,12 +31,33 @@ final class TaskBlockAssertions {
   private TaskBlockAssertions() {}
 
   /**
+   * {@code java.vm.name} substrings that the native {@code VM::init()} (vmEntry.cpp) uses to set
+   * {@code VM::isHotspot()}. Keep this list in sync with that check.
+   */
+  private static final String[] HOTSPOT_VM_NAME_MARKERS = {
+    "OpenJDK", "HotSpot", "GraalVM", "Dynamic Code Evolution"
+  };
+
+  /**
    * Returns whether the native layer can classify the current thread as a platform thread on this
-   * JVM. On non-HotSpot JVMs at JDK 19+ the classification fails closed, so {@code
-   * beginTaskBlock()} always returns {@code 0} there.
+   * JVM. At JDK 19+, {@code JVMSupport::isPlatformThread()} fails closed when {@code
+   * !VM::isHotspot()}, so {@code beginTaskBlock()} always returns {@code 0} there.
+   *
+   * <p>This predicate must not report support on a JVM that the native check rejects. It therefore
+   * applies the same {@code java.vm.name} test as {@code VM::isHotspot()} instead of listing known
+   * non-HotSpot JVMs: J9, Zing, and any unrecognized VM name are reported as unsupported.
    */
   static boolean platformThreadClassificationSupported() {
-    return !Platform.isJavaVersionAtLeast(19) || !(Platform.isJ9() || Platform.isZing());
+    return !Platform.isJavaVersionAtLeast(19)
+        || isHotspotVmName(System.getProperty("java.vm.name"));
+  }
+
+  private static boolean isHotspotVmName(String vmName) {
+    if (vmName == null) return false;
+    for (String marker : HOTSPOT_VM_NAME_MARKERS) {
+      if (vmName.contains(marker)) return true;
+    }
+    return false;
   }
 
   /**
