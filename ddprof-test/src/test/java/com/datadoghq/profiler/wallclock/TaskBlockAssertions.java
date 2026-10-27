@@ -10,7 +10,9 @@ import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.JfrFrame;
 import com.datadoghq.profiler.Platform;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -24,6 +26,7 @@ final class TaskBlockAssertions {
   private static final String SUPPRESSED_SAMPLE_COUNT = "suppressedSampleCount";
   private static final String OBSERVED_BLOCKING_STATE = "observedBlockingState";
   private static final String CORRELATION_ID = "correlationId";
+  private static final String DURATION = "duration";
 
   private TaskBlockAssertions() {}
 
@@ -34,6 +37,24 @@ final class TaskBlockAssertions {
    */
   static boolean platformThreadClassificationSupported() {
     return !Platform.isJavaVersionAtLeast(19) || !(Platform.isJ9() || Platform.isZing());
+  }
+
+  /**
+   * Asserts that at least one event has a {@code duration} within {@code [minMillis, maxMillis]}.
+   * The JFR parser normalizes the {@code @Timespan(TICKS)} duration to nanoseconds.
+   */
+  static void assertContainsDuration(JfrEvents events, long minMillis, long maxMillis) {
+    List<Long> durations = new ArrayList<>();
+    for (JfrEvent item : events) {
+      Long millis = item.getNanosAsMillis(DURATION);
+      if (millis == null) continue;
+      if (millis >= minMillis && millis <= maxMillis) {
+        return;
+      }
+      durations.add(millis);
+    }
+    throw new AssertionError("Expected TaskBlock duration in [" + minMillis + ", " + maxMillis
+        + "] ms, got " + durations);
   }
 
   static void assertContains(JfrEvents events, long rootSpanId, long spanId,

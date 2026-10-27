@@ -44,6 +44,9 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     TaskBlockAssertions.assertNoCorrelationId(events);
     TaskBlockAssertions.assertContains(events, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
     TaskBlockAssertions.assertContainsObservedState(events, "SLEEPING");
+    // The worker sleeps 200 ms inside the interval; the lower bound leaves
+    // room for timer jitter and the upper bound rejects a start/end mix-up.
+    TaskBlockAssertions.assertContainsDuration(events, 150L, 5_000L);
   }
 
   @ParameterizedTest
