@@ -129,6 +129,10 @@ Two-JDK pattern: `JAVA_HOME` (build, JDK 17+, Gradle runs on 21 LTS) runs Gradle
 `JAVA_TEST_HOME` runs tests against the target JDK; target bytecode is Java 8 via
 `--release 8`.
 
+The `ddprof-stresstest:chaosElements` outgoing configuration shares the chaos JAR
+with `ddprof-test` stack-correctness tests. See
+[TestingGuide.md](doc/building/TestingGuide.md#virtual-thread-remount-correctness).
+
 Details and troubleshooting:
 [build-logic/README.md](build-logic/README.md),
 [doc/building/NativeBuildPlugin.md](doc/building/NativeBuildPlugin.md) (task DSL, debug-symbol
