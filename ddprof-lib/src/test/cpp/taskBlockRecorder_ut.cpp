@@ -28,15 +28,20 @@ Profiler::TaskBlockRecordResult recordTaskBlockForTest(
   return g_record_result.load(std::memory_order_acquire);
 }
 
+bool isEligibleDuration(u64 start_ticks, u64 end_ticks) {
+  return checkTaskBlockDuration(start_ticks, end_ticks) ==
+         TaskBlockDurationCheck::ELIGIBLE;
+}
+
 u64 minEligibleEndTicks(u64 start_ticks) {
   u64 low = start_ticks + 1;
   u64 high = low;
-  while (!exceedsMinTaskBlockDuration(start_ticks, high)) {
+  while (!isEligibleDuration(start_ticks, high)) {
     high = start_ticks + ((high - start_ticks) * 2);
   }
   while (low < high) {
     u64 mid = low + ((high - low) / 2);
-    if (exceedsMinTaskBlockDuration(start_ticks, mid)) {
+    if (isEligibleDuration(start_ticks, mid)) {
       high = mid;
     } else {
       low = mid + 1;
@@ -87,6 +92,7 @@ TEST_F(TaskBlockRecorderTest, DurationThresholdIncludesExactBoundary) {
   EXPECT_FALSE(taskBlockPassesBasicEligibility(
       start_ticks, passing_end - 1, context));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_THRESHOLD_INVALID));
 }
 
 TEST_F(TaskBlockRecorderTest, UninitializedThresholdIsRecomputedFromTscFrequency) {
@@ -95,8 +101,8 @@ TEST_F(TaskBlockRecorderTest, UninitializedThresholdIsRecomputedFromTscFrequency
   ASSERT_GT(expected_ticks, 0ULL);
   u64 start_ticks = TSC::ticks();
 
-  EXPECT_TRUE(exceedsMinTaskBlockDuration(start_ticks, start_ticks + expected_ticks));
-  EXPECT_FALSE(exceedsMinTaskBlockDuration(start_ticks, start_ticks + expected_ticks - 1))
+  EXPECT_TRUE(isEligibleDuration(start_ticks, start_ticks + expected_ticks));
+  EXPECT_FALSE(isEligibleDuration(start_ticks, start_ticks + expected_ticks - 1))
       << "the lazy fallback must enforce the 1 ms threshold, not accept every block";
 }
 
@@ -106,12 +112,17 @@ TEST_F(TaskBlockRecorderTest, UncalibratedTscFailsClosed) {
   Context context{};
   u64 start_ticks = TSC::ticks();
 
-  EXPECT_FALSE(exceedsMinTaskBlockDuration(start_ticks, start_ticks + 1));
-  EXPECT_FALSE(exceedsMinTaskBlockDuration(start_ticks, start_ticks + NANOTIME_FREQ))
+  EXPECT_FALSE(isEligibleDuration(start_ticks, start_ticks + 1));
+  EXPECT_FALSE(isEligibleDuration(start_ticks, start_ticks + NANOTIME_FREQ))
       << "an uncalibrated TSC must reject blocks of any length";
+  EXPECT_EQ(TaskBlockDurationCheck::THRESHOLD_INVALID,
+            checkTaskBlockDuration(start_ticks, start_ticks + NANOTIME_FREQ));
   EXPECT_FALSE(taskBlockPassesBasicEligibility(
       start_ticks, start_ticks + NANOTIME_FREQ, context));
-  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_THRESHOLD_INVALID))
+      << "an uncalibrated TSC must be visible as a disabled threshold";
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT))
+      << "each rejection must be counted under exactly one counter";
 }
 
 TEST_F(TaskBlockRecorderTest, RotationRejectsNewActivity) {

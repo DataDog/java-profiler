@@ -39,15 +39,17 @@ void initializeTaskBlockDurationThreshold() {
   g_min_task_block_ticks.store(computeMinTaskBlockTicks(), std::memory_order_release);
 }
 
-bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks) {
+TaskBlockDurationCheck checkTaskBlockDuration(u64 start_ticks, u64 end_ticks) {
   u64 min_ticks = g_min_task_block_ticks.load(std::memory_order_acquire);
   if (min_ticks == 0) min_ticks = computeMinTaskBlockTicks();
   // The threshold is 0 when TSC::frequency() is below 1 kHz, for example 0
   // when uncalibrated. Comparing against 0 would accept every block, so
-  // reject instead; the caller counts the rejection as
-  // TASK_BLOCK_SKIPPED_TOO_SHORT.
-  if (min_ticks == 0) return false;
-  return end_ticks > start_ticks && end_ticks - start_ticks >= min_ticks;
+  // reject instead. A separate result lets the caller count this as
+  // TASK_BLOCK_THRESHOLD_INVALID, not as TASK_BLOCK_SKIPPED_TOO_SHORT.
+  if (min_ticks == 0) return TaskBlockDurationCheck::THRESHOLD_INVALID;
+  return end_ticks > start_ticks && end_ticks - start_ticks >= min_ticks
+             ? TaskBlockDurationCheck::ELIGIBLE
+             : TaskBlockDurationCheck::TOO_SHORT;
 }
 
 bool recoverAbandonedTaskBlock(ProfiledThread* current,

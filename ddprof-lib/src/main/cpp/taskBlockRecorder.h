@@ -13,13 +13,23 @@
 #include "tsc.h"
 
 void initializeTaskBlockDurationThreshold();
-// Fails closed (returns false) when the 1 ms threshold computes to 0 ticks
-// (TSC::frequency() below 1 kHz, e.g. 0), so sub-millisecond blocks cannot
+
+enum class TaskBlockDurationCheck {
+  ELIGIBLE,
+  TOO_SHORT,
+  // The 1 ms threshold computes to 0 ticks (TSC::frequency() below 1 kHz,
+  // e.g. 0), so no block can be checked against it.
+  THRESHOLD_INVALID,
+};
+
+// Compares the block duration with the 1 ms threshold. Does not count the
+// result; taskBlockPassesBasicEligibility() does. Fails closed with
+// THRESHOLD_INVALID when the threshold is 0, so sub-millisecond blocks cannot
 // pass the filter.
-bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks);
+TaskBlockDurationCheck checkTaskBlockDuration(u64 start_ticks, u64 end_ticks);
 
 #ifdef UNIT_TEST
-// Clears the cached threshold so the next exceedsMinTaskBlockDuration() call
+// Clears the cached threshold so the next checkTaskBlockDuration() call
 // takes its lazy recompute path.
 void resetTaskBlockDurationThresholdForTest();
 // Replaces TSC::frequency() as the threshold's frequency source; nullptr
@@ -84,11 +94,17 @@ static inline bool taskBlockPassesBasicEligibility(u64 start_ticks, u64 end_tick
     Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return false;
   }
-  if (!exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
-    Counters::increment(TASK_BLOCK_SKIPPED_TOO_SHORT);
-    return false;
+  switch (checkTaskBlockDuration(start_ticks, end_ticks)) {
+    case TaskBlockDurationCheck::ELIGIBLE:
+      return true;
+    case TaskBlockDurationCheck::THRESHOLD_INVALID:
+      Counters::increment(TASK_BLOCK_THRESHOLD_INVALID);
+      return false;
+    case TaskBlockDurationCheck::TOO_SHORT:
+      break;
   }
-  return true;
+  Counters::increment(TASK_BLOCK_SKIPPED_TOO_SHORT);
+  return false;
 }
 
 static inline bool recordTaskBlockIfEligible(
