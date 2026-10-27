@@ -66,6 +66,8 @@ public:
     static constexpr LoadState PartialLoaded() { return JVMSupport::Partial_loaded; }
     static constexpr LoadState FullyLoaded()   { return JVMSupport::Fully_loaded; }
     static constexpr LoadState LazyLoaded()    { return JVMSupport::Lazy_loaded; }
+    static void resetMaxHeapBytes() { __atomic_store_n(&JVMSupport::_max_heap_bytes, (jlong)-1, __ATOMIC_RELEASE); }
+    static void resolveMaxHeapBytes(JNIEnv* jni) { JVMSupport::resolveMaxHeapBytes(jni); }
 };
 
 // ---------------------------------------------------------------------------
@@ -232,6 +234,9 @@ static jclass JNICALL mock_FindClass_returns_null(JNIEnv*, const char*) {
     return nullptr;
 }
 static void JNICALL mock_ExceptionClear_noop(JNIEnv*) {}
+// initExecution() resolves the max heap first; with FindClass returning null
+// that path asks for pending exceptions (none here).
+static jboolean JNICALL mock_ExceptionCheck_false(JNIEnv*) { return JNI_FALSE; }
 
 static jvmtiError JNICALL mock_GetLoadedClasses_empty(jvmtiEnv*, jint* class_count_ptr, jclass** classes_ptr) {
     *class_count_ptr = 0;
@@ -275,6 +280,7 @@ protected:
         jni_tbl = JNINativeInterface_{};
         jni_tbl.FindClass = &mock_FindClass_returns_null;
         jni_tbl.ExceptionClear = &mock_ExceptionClear_noop;
+        jni_tbl.ExceptionCheck = &mock_ExceptionCheck_false;
         mock_jni.functions = &jni_tbl;
     }
 
@@ -350,4 +356,75 @@ TEST_F(JVMSupportRestartTest, DefaultCstackResolvedToDwarfPreloadsEverything) {
 
         EXPECT_EQ(JVMSupportTestAccessor::FullyLoaded(), JVMSupportTestAccessor::getLoadState()) << lazy;
     }
+}
+
+// ---------------------------------------------------------------------------
+// JVMSupport::maxHeapBytes() is a cache filled by resolveMaxHeapBytes(); it
+// reports -1 until a resolution succeeds. The real value is checked by the
+// Java integration tests, where a live JVM answers Runtime.maxMemory().
+// ---------------------------------------------------------------------------
+TEST(JvmSupportMaxHeapTest, UnresolvedIsMinusOne) {
+    JVMSupportTestAccessor::resetMaxHeapBytes();
+    EXPECT_EQ(-1, JVMSupport::maxHeapBytes());
+}
+
+TEST(JvmSupportMaxHeapTest, ResolveWithNullJniKeepsMinusOne) {
+    JVMSupportTestAccessor::resetMaxHeapBytes();
+    JVMSupportTestAccessor::resolveMaxHeapBytes(nullptr);
+    EXPECT_EQ(-1, JVMSupport::maxHeapBytes());
+}
+
+// A throwing Runtime.getRuntime() returns null and leaves an exception
+// pending; resolveMaxHeapBytes() must still clear it and keep -1.
+static bool g_call_threw = false;
+static int g_exception_clears = 0;
+static char g_fake_class_tag;
+static char g_fake_method_tag;
+static jclass JNICALL mock_FindClass_fake(JNIEnv*, const char*) {
+    return reinterpret_cast<jclass>(&g_fake_class_tag);
+}
+static jmethodID JNICALL mock_GetMethodID_fake(JNIEnv*, jclass, const char*, const char*) {
+    return reinterpret_cast<jmethodID>(&g_fake_method_tag);
+}
+static jmethodID JNICALL mock_GetStaticMethodID_fake(JNIEnv*, jclass, const char*, const char*) {
+    return reinterpret_cast<jmethodID>(&g_fake_method_tag);
+}
+static jobject JNICALL mock_CallStaticObjectMethodV_throws(JNIEnv*, jclass, jmethodID, va_list) {
+    g_call_threw = true;
+    return nullptr;
+}
+static jobject JNICALL mock_CallStaticObjectMethod_throws(JNIEnv*, jclass, jmethodID, ...) {
+    g_call_threw = true;
+    return nullptr;
+}
+static jboolean JNICALL mock_ExceptionCheck_after_call(JNIEnv*) {
+    return g_call_threw ? JNI_TRUE : JNI_FALSE;
+}
+static void JNICALL mock_ExceptionClear_counting(JNIEnv*) {
+    g_exception_clears++;
+    g_call_threw = false;
+}
+static void JNICALL mock_DeleteLocalRef_noop(JNIEnv*, jobject) {}
+
+TEST(JvmSupportMaxHeapTest, ThrowingGetRuntimeClearsExceptionAndKeepsMinusOne) {
+    JVMSupportTestAccessor::resetMaxHeapBytes();
+    g_call_threw = false;
+    g_exception_clears = 0;
+
+    JNINativeInterface_ tbl{};
+    tbl.FindClass = &mock_FindClass_fake;
+    tbl.GetStaticMethodID = &mock_GetStaticMethodID_fake;
+    tbl.GetMethodID = &mock_GetMethodID_fake;
+    tbl.CallStaticObjectMethod = &mock_CallStaticObjectMethod_throws;
+    tbl.CallStaticObjectMethodV = &mock_CallStaticObjectMethodV_throws;
+    tbl.ExceptionCheck = &mock_ExceptionCheck_after_call;
+    tbl.ExceptionClear = &mock_ExceptionClear_counting;
+    tbl.DeleteLocalRef = &mock_DeleteLocalRef_noop;
+    JNIEnv_ env{};
+    env.functions = &tbl;
+
+    JVMSupportTestAccessor::resolveMaxHeapBytes(reinterpret_cast<JNIEnv*>(&env));
+
+    EXPECT_EQ(-1, JVMSupport::maxHeapBytes());
+    EXPECT_GE(g_exception_clears, 1);
 }

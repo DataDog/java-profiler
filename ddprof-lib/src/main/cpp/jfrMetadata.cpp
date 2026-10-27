@@ -237,6 +237,56 @@ void JfrMetadata::initialize(
               << field("ttl", T_LONG, "Search TTL", F_DURATION_MILLIS)
               << field("elapsed", T_LONG, "Elapsed Time", F_DURATION_MILLIS))
 
+          << (type("datadog.MallocArenaWarning", T_MALLOC_ARENA_WARNING,
+                   "glibc Malloc Arena Warning")
+              << category("Datadog", "Profiling")
+              << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+              << field("state", T_STRING, "Warning State")
+              << field("arenaCount", T_INT, "Arena Count")
+              << field("arenaLimit", T_INT, "Arena Limit")
+              << field("arenaLimitSource", T_STRING, "Arena Limit Source")
+              << field("onlineCpus", T_INT, "Online CPUs")
+              << field("cpuQuotaMilli", T_INT, "CPU Quota (milli-CPUs)")
+              << field("memoryLimit", T_LONG, "Memory Limit", F_BYTES)
+              << field("memoryLimitSource", T_STRING, "Memory Limit Source")
+              << field("maxHeap", T_LONG, "Max Heap", F_BYTES)
+              << field("nativeHeadroom", T_LONG, "Native Headroom", F_BYTES)
+              << field("headroomSource", T_STRING, "Headroom Source")
+              << field("heapExceedsLimit", T_BOOLEAN,
+                       "Max Heap Reaches Memory Limit")
+              << field("freeHeldBytes", T_LONG, "Free Memory Held by glibc",
+                       F_BYTES)
+              << field("nonMainArenaBytes", T_LONG,
+                       "Committed Memory of Non-Main Arenas", F_BYTES)
+              << field("conditionMeasure", T_STRING, "Compared Measure")
+              << field("thresholdPercent", T_INT, "Threshold (Percent)")
+              << field("threadPrivateArenas", T_INT, "Thread-Private Arenas")
+              << field("largestArenaBytes", T_LONG, "Largest Arena Size",
+                       F_BYTES)
+              << field("largestArenaMaxBytes", T_LONG,
+                       "Largest Arena Peak Size", F_BYTES)
+              << field("recommendedArenaMax", T_INT,
+                       "Recommended MALLOC_ARENA_MAX")
+              << field("glibcVersion", T_STRING, "glibc Version")
+              << field("layout", T_STRING, "malloc_state Layout")
+              << field("walkStatus", T_STRING, "Arena Walk Status"))
+
+          << (type("datadog.MallocArenaStats", T_MALLOC_ARENA_STATS,
+                   "glibc Malloc Arena Statistics")
+              << category("Datadog", "Profiling")
+              << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+              << field("arenaCount", T_INT, "Arena Count")
+              << field("nonMainArenaBytes", T_LONG,
+                       "Committed Memory of Non-Main Arenas", F_BYTES)
+              << field("freeHeldBytes", T_LONG, "Free Memory Held by glibc",
+                       F_BYTES)
+              << field("largestArenaBytes", T_LONG, "Largest Arena Size",
+                       F_BYTES)
+              << field("cpuQuotaMilli", T_INT, "CPU Quota (milli-CPUs)")
+              << field("memoryLimit", T_LONG, "Memory Limit", F_BYTES)
+              << field("maxHeap", T_LONG, "Max Heap", F_BYTES)
+              << field("walkStatus", T_STRING, "Arena Walk Status"))
+
           << (type("datadog.Endpoint", T_ENDPOINT, "Endpoint")
               << category("Datadog")
               << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)

@@ -22,7 +22,36 @@
 class RecordingTestAccessor {
 public:
   static bool glibcMallocActive() { return Recording::glibcMallocActive(); }
+  static ArenaWalkStatus gateStatus(bool fault_recovery, bool glibc_active,
+                                    bool hugetlb) {
+    return Recording::gateStatus(fault_recovery, glibc_active, hugetlb);
+  }
 };
+
+// The walk may run only when all three gates pass, and the first failing gate
+// decides the reported status.
+TEST(MallocArenaGate, AllGatesPassAllowsWalk) {
+  EXPECT_EQ(ARENA_WALK_OK, RecordingTestAccessor::gateStatus(true, true, false));
+}
+
+TEST(MallocArenaGate, MissingFaultRecoveryWinsOverEverything) {
+  EXPECT_EQ(ARENA_WALK_UNSUPPORTED_JVM,
+            RecordingTestAccessor::gateStatus(false, true, false));
+  EXPECT_EQ(ARENA_WALK_UNSUPPORTED_JVM,
+            RecordingTestAccessor::gateStatus(false, false, true));
+}
+
+TEST(MallocArenaGate, ReplacedAllocatorWinsOverHugetlb) {
+  EXPECT_EQ(ARENA_WALK_REPLACED_ALLOCATOR,
+            RecordingTestAccessor::gateStatus(true, false, false));
+  EXPECT_EQ(ARENA_WALK_REPLACED_ALLOCATOR,
+            RecordingTestAccessor::gateStatus(true, false, true));
+}
+
+TEST(MallocArenaGate, HugetlbReportedLast) {
+  EXPECT_EQ(ARENA_WALK_HUGETLB_TUNABLE,
+            RecordingTestAccessor::gateStatus(true, true, true));
+}
 
 // Regression test for a review finding on the arena counters: LD_PRELOAD'ing
 // tcmalloc or jemalloc replaces malloc()/free() process-wide while leaving

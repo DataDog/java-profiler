@@ -430,6 +430,20 @@ Error Arguments::parse(const char *args) {
         msg = "nativemem must be >= 0";
       }
 
+      CASE("arenawarn")
+      if (value == NULL) {
+        msg = "arenawarn requires a percent";
+      } else {
+        char *end;
+        errno = 0;
+        long percent = strtol(value, &end, 10);
+        if (errno != 0 || end == value || *end != 0 || percent < 0 || percent > 100) {
+          msg = "arenawarn must be a number in 0..100";
+        } else {
+          _arena_warn_percent = (int)percent;
+        }
+      }
+
       CASE("natsock")
       if (value != NULL) {
         _nativesocket_interval = parseUnits(value, NANOS);

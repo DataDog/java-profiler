@@ -38,6 +38,15 @@ class JVMSupport {
     static Mutex _initialization_lock;
     static volatile JMethodIDLoadStats jmethodID_load_state;
 
+    // Runtime.maxMemory() in bytes; -1 until resolveMaxHeapBytes() succeeds.
+    // Written with release, read with acquire.
+    static volatile jlong _max_heap_bytes;
+
+    // Resolve Runtime.getRuntime().maxMemory() through JNI and cache it. Does
+    // nothing if the value is already cached or `jni` is null; on a JNI failure
+    // the cache stays -1 so that a later call retries.
+    static void resolveMaxHeapBytes(JNIEnv* jni);
+
     // Call JVM AsyncGetCallTrace implementation
     static inline void jvmAsyncGetCallTrace(ASGCT_CallTrace *frames, int max_depth, void* ucontext);
 
@@ -57,6 +66,10 @@ public:
 
     // Initializing JVM support
     static void initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni);
+
+    // Maximum heap size of the JVM, cached by initExecution(). Makes no JNI
+    // calls. Returns -1 if it has not been resolved.
+    static jlong maxHeapBytes();
 
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc);

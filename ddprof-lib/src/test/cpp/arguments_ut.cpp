@@ -285,3 +285,46 @@ TEST_F(ArgumentsTest, FjmethodidAcceptsLazy) {
         EXPECT_TRUE(args.parse("fjmethodid=lazyx"));
     }
 }
+
+TEST_F(ArgumentsTest, ArenaWarnDefaultsTo25) {
+    Arguments args;
+    EXPECT_EQ(args._arena_warn_percent, DEFAULT_ARENA_WARN_PERCENT);
+    EXPECT_EQ(args._arena_warn_percent, 25);
+    EXPECT_FALSE(args.parse("start"));
+    EXPECT_EQ(args._arena_warn_percent, 25);
+}
+
+TEST_F(ArgumentsTest, ArenaWarnAcceptsPercentInRange) {
+    {
+        Arguments args;
+        EXPECT_FALSE(args.parse("arenawarn=0"));
+        EXPECT_EQ(args._arena_warn_percent, 0);
+    }
+    {
+        Arguments args;
+        EXPECT_FALSE(args.parse("arenawarn=40"));
+        EXPECT_EQ(args._arena_warn_percent, 40);
+    }
+    {
+        Arguments args;
+        EXPECT_FALSE(args.parse("arenawarn=100"));
+        EXPECT_EQ(args._arena_warn_percent, 100);
+    }
+}
+
+TEST_F(ArgumentsTest, ArenaWarnRejectsInvalidValues) {
+    const char* invalid[] = {"arenawarn=101", "arenawarn=-1", "arenawarn=abc",
+                             "arenawarn=10x", "arenawarn=", "arenawarn"};
+    for (const char* spec : invalid) {
+        Arguments args;
+        EXPECT_TRUE(args.parse(spec)) << spec;
+    }
+}
+
+TEST_F(ArgumentsTest, ArenaWarnSurvivesSave) {
+    Arguments args;
+    EXPECT_FALSE(args.parse("arenawarn=40"));
+    Arguments saved;
+    args.save(saved);
+    EXPECT_EQ(saved._arena_warn_percent, 40);
+}

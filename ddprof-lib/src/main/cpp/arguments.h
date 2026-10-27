@@ -30,6 +30,7 @@ const long DEFAULT_WALL_INTERVAL = 50 * 1000 * 1000; // 50 ms
 const long DEFAULT_ALLOC_INTERVAL = 524287;          // 512 KiB
 const int DEFAULT_WALL_THREADS_PER_TICK = 16;
 const int DEFAULT_JSTACKDEPTH = 2048;
+const int DEFAULT_ARENA_WARN_PERCENT = 25;
 
 // Every constant below is a provisional default pending empirical tuning -
 // none are backed by a benchmark run against this codebase; replacing them
@@ -254,6 +255,8 @@ public:
   u8 _reference_chains_tuned_mask;
   // Explicit opt-in for the legacy whole-graph JVMTI FollowReferences walk.
   long _nativemem;
+  // arenawarn=<percent>: threshold for the malloc arena warning; 0 disables the warning.
+  int _arena_warn_percent;
   int  _jstackdepth;
   int _safe_mode;
   StackWalkFeatures _features;
@@ -306,6 +309,7 @@ public:
         _reference_chains_first_pass_budget(DEFAULT_REFERENCE_CHAINS_FIRST_PASS_BUDGET),
         _reference_chains_tuned_mask(0),
         _nativemem(-1),
+        _arena_warn_percent(DEFAULT_ARENA_WARN_PERCENT),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
         _features{1, 1, 1, 1, 1, 1},
