@@ -165,14 +165,39 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 int Profiler::registerThread(int tid) {
-  // The persistent pthread_create hook can run before the first start(), when
-  // no engine has been selected yet.
-  Engine *cpu = __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE);
-  Engine *wall = __atomic_load_n(&_instance->_wall_engine, __ATOMIC_ACQUIRE);
+  // The persistent pthread_create hook calls in for every new thread, also
+  // before the first start() (no engine selected yet) and between recordings,
+  // when no engine may start sampling the thread: PerfEvents keeps whatever it
+  // registers armed, since its stop() deliberately does not unregister.
+  Profiler *p = _instance;
+  if (!__atomic_load_n(&p->_thread_registration_open, __ATOMIC_ACQUIRE)) {
+    return -1;
+  }
+  Engine *cpu = __atomic_load_n(&p->_cpu_engine, __ATOMIC_ACQUIRE);
+  Engine *wall = __atomic_load_n(&p->_wall_engine, __ATOMIC_ACQUIRE);
   if (cpu == NULL || wall == NULL) {
     return -1;
   }
-  return cpu->registerThread(tid) | wall->registerThread(tid);
+  int result = cpu->registerThread(tid) | wall->registerThread(tid);
+  // stop() may have closed registration after the check above. It fences
+  // after closing, so either this load sees the window closed or stop()'s
+  // engine teardown sees the registration; undo it in the former case.
+  if (!__atomic_load_n(&p->_thread_registration_open, __ATOMIC_SEQ_CST)) {
+    cpu->unregisterThread(tid);
+    wall->unregisterThread(tid);
+    return -1;
+  }
+  return result;
+}
+
+void Profiler::openThreadRegistration() {
+  __atomic_store_n(&_thread_registration_open, true, __ATOMIC_SEQ_CST);
+}
+
+void Profiler::closeThreadRegistration() {
+  __atomic_store_n(&_thread_registration_open, false, __ATOMIC_SEQ_CST);
+  // Pairs with the re-check in registerThread().
+  __atomic_thread_fence(__ATOMIC_SEQ_CST);
 }
 #ifdef UNIT_TEST
 static std::atomic<int> g_test_last_unregistered_tid{-1};
@@ -196,8 +221,17 @@ void Profiler::unregisterThread(int tid) {
     g_test_last_unregistered_tid.store(tid, std::memory_order_relaxed);
     return;
 #endif
-  _instance->_cpu_engine->unregisterThread(tid);
-  _instance->_wall_engine->unregisterThread(tid);
+  // Not gated like registerThread(): a thread registered during a recording
+  // must still be unregistered when it exits after stop(). But the hook can
+  // also run before the first start(), when no engine has been selected yet.
+  Engine *cpu = __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE);
+  Engine *wall = __atomic_load_n(&_instance->_wall_engine, __ATOMIC_ACQUIRE);
+  if (cpu != NULL) {
+    cpu->unregisterThread(tid);
+  }
+  if (wall != NULL) {
+    wall->unregisterThread(tid);
+  }
 }
 
 const char *Profiler::asgctError(int code) {
@@ -1643,16 +1677,21 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   args._cstack = _cstack;
-  // Prepare JVMSupport for execution. Must follow the _cstack resolution
-  // above: initExecution() picks the jmethodID mode from cstackMode().
-  JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
 
   // Enable persistent JVMTI events on first start - these track JVM metadata
-  // (classes, JIT compilations, native bindings) needed for accurate profiling.
-  // Once enabled, they stay enabled across stop/start cycles.
+  // (classes, JIT compilations) needed for accurate profiling. Once enabled,
+  // they stay enabled across stop/start cycles. Must precede initExecution():
+  // its jmethodID preload snapshots the loaded classes, and CLASS_PREPARE has
+  // to be on by then so a class prepared after the snapshot is not missed.
+  // ClassPrepare events that arrive before initExecution() sets the load
+  // state are ignored; the snapshot covers those classes.
   if (!_jvmti_events_enabled) {
     enablePersistentJvmtiEvents();
   }
+
+  // Prepare JVMSupport for execution. Must follow the _cstack resolution
+  // above: initExecution() picks the jmethodID mode from cstackMode().
+  JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
 
   // Also called from init() for the Java API path, but an -agentpath session
   // starts through VMInit -> run() and never calls init(). Idempotent, and must
@@ -1698,6 +1737,10 @@ Error Profiler::start(Arguments &args, bool reset) {
   // thread, means it is already initialized by the time any SIGPROF/SIGALRM
   // can fire.
   SamplerPerf::primeClock();
+
+  // Before the engines start, so that a thread created while they register
+  // the existing ones registers itself.
+  openThreadRegistration();
 
   int activated = 0;
   if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
@@ -1818,6 +1861,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error::OK;
   }
   // no engine was activated; perform cleanup
+  closeThreadRegistration();
   disableEngines();
   switchLibraryTrap(false);
   _libs->stopRefresher();
@@ -1841,6 +1885,7 @@ Error Profiler::stop() {
   // waits for handlers that already passed the check to leave their JFR write
   // path. Only once those are gone is it safe to run the rest of the teardown
   // (engine stops, JFR teardown) without risking use-after-free.
+  closeThreadRegistration();
   disableEngines();
 
   if (!SignalInflight::drain()) {
@@ -1894,14 +1939,15 @@ Error Profiler::stop() {
     // now instead of leaking until (and across) the next recording.
     ReferenceChainTracker::instance()->releaseAllThreadObjects(VM::jni());
   }
-  if (_event_mask & EM_NATIVEMEM)
-    malloc_tracer.stop();
-  // Stop the refresher BEFORE socket unpatch: the refresher calls
+  // Stop the refresher BEFORE malloc and socket unpatch: the refresher calls
   // install_socket_hooks() which re-reads _socket_active before acquiring the
   // patch lock.  If the refresher runs concurrently with unpatch_socket_functions()
   // it can see _socket_active=true, wait for the lock, then re-patch PLT slots
   // that unpatch just restored.  Stopping the refresher here closes that window.
   _libs->stopRefresher();
+  // The refresher also re-installs malloc hooks (MallocTracer::installHooks()).
+  if (_event_mask & EM_NATIVEMEM)
+    malloc_tracer.stop();
   if (_event_mask & EM_NATIVESOCKET)
     NativeSocketSampler::instance()->stop();
   if (_event_mask & EM_WALL)
@@ -2146,15 +2192,18 @@ void Profiler::enablePersistentJvmtiEvents() {
   // AsyncGetCallTrace needs pre-allocated jmethodIDs (see JVMSupport::loadMethodIDsIfNeeded).
   jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_LOAD, NULL);
   jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_PREPARE, NULL);
+  TEST_LOG("Persistent JVMTI events: CLASS_PREPARE enabled");
 
   // DYNAMIC_CODE_GENERATED: Tracks JIT-generated code (stubs, adapters).
   jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL);
 
-  // NATIVE_METHOD_BIND: Tracks JNI native method bindings for VMStructs.
-  jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, NULL);
+  // NATIVE_METHOD_BIND is not here: bindings cannot be replayed, so it is
+  // enabled at agent load (VM::initProfilerBridge()).
 
-  // COMPILED_METHOD_LOAD: Tracks JIT-compiled methods (when CodeHeap is not available).
-  if (VM::hotspot_version() == 0 || !CodeHeap::available()) {
+  // COMPILED_METHOD_LOAD: Tracks JIT-compiled methods (when CodeHeap is not
+  // available; JDK-8173361 workaround otherwise).
+  bool compiled_method_load = VM::hotspot_version() == 0 || !CodeHeap::available();
+  if (compiled_method_load) {
     jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL);
   }
 
@@ -2163,7 +2212,9 @@ void Profiler::enablePersistentJvmtiEvents() {
   // only here, after HotSpot has generated its bootstrap runtime stubs
   // (call_stub bounds and stub unwind info come from these events).
   jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
-  jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
+  if (compiled_method_load) {
+    jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
+  }
 
   _jvmti_events_enabled = true;
 }

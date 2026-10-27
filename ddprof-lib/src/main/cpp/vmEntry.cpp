@@ -495,6 +495,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   _can_intercept_binding =
       potential_capabilities.can_generate_native_method_bind_events &&
       HeapUsage::needsNativeBindingInterception();
+  TEST_LOG("NativeMethodBind interception %s", _can_intercept_binding ? "enabled" : "disabled");
 
   jvmtiCapabilities capabilities = {0};
   capabilities.can_generate_all_class_hook_events = 1;
@@ -538,10 +539,16 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // VM_DEATH: Always needed for cleanup
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
 
-  // Persistent JVMTI events (CLASS_LOAD, CLASS_PREPARE, DYNAMIC_CODE_GENERATED,
-  // NATIVE_METHOD_BIND, COMPILED_METHOD_LOAD) are enabled on first start() via
-  // Profiler::enablePersistentJvmtiEvents(). This allows stop/start cycles to
-  // keep these events enabled for the lifetime of the process.
+  // NATIVE_METHOD_BIND: must be on from agent load. A native binds once, and
+  // binding events cannot be replayed with GenerateEvents(), so a binding made
+  // before the first start() (VMInit's HeapUsage::initJMXUsage() binds
+  // getMemoryUsage0) would otherwise never reach VMStructs::NativeMethodBind.
+  _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, NULL);
+
+  // The other persistent JVMTI events (CLASS_LOAD, CLASS_PREPARE,
+  // DYNAMIC_CODE_GENERATED, COMPILED_METHOD_LOAD) are enabled on first start()
+  // via Profiler::enablePersistentJvmtiEvents(), which replays the code
+  // generated before then.
 
   // DebugNonSafepoints: Set early when CompiledMethodLoad won't be used
   // (COMPILED_METHOD_LOAD auto-enables it, so we only need manual setup when

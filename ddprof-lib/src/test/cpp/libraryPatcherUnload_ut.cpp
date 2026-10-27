@@ -305,16 +305,10 @@ TEST_P(LibraryPatcherUnloadTest, RepatchDoesNotWriteIntoReusedMapping) {
 // saved slots are valid for the identical layout, but the test DSO has full
 // RELRO, so the new mapping's GOT is read-only again. Re-installing the hooks
 // on the next start must make it writable rather than trust the old state.
-//
-// Note: This test doesn't apply to pthread_create patches because they are
-// now persistent (never unpatched). When the library is reloaded after an
-// unload, the patches won't be re-applied since the system thinks they're
-// already in place. This is expected behavior for persistent patches.
+// For the persistent pthread_create patch the unpatch is a no-op, so this also
+// checks that its stale entry does not stop the reloaded GOT being re-hooked.
 TEST_P(LibraryPatcherUnloadTest, RepatchAfterReloadAtSameBase) {
   const PatchKind& kind = *GetParam();
-  if (&kind == &PTHREAD_CREATE) {
-    GTEST_SKIP() << "pthread_create patches are persistent and don't support unpatch/repatch";
-  }
   runInChild([&]() {
     LoadedLib lib = loadLib(kind);
     void* base = loadBaseOf(lib.handle);

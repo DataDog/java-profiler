@@ -581,8 +581,9 @@ static int pthread_create_hook(pthread_t* thread,
 }
 
 void LibraryPatcher::patch_libraries() {
-   // Profiler::start() has not run yet, so the hook would have nowhere to
-   // register new threads. Also the case in Gtest, which never initializes.
+   // Set by initialize_persistent() from Profiler::init() or start(). Not set
+   // in Gtest, which never initializes. The hook may run before the first
+   // start(); Profiler::registerThread() tolerates that.
    if (!_initialized.load(std::memory_order_acquire)) {
      return;
    }
@@ -616,10 +617,6 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
     return;
   }
 
-  if (has_entry_for(_patched_entries, _size, lib)) { // Already patched
-    return;
-  }
-  TEST_LOG("Patching: %s", lib->name());
   void* func = (void*)pthread_create_hook;
 
 #ifdef __aarch64__
@@ -628,11 +625,32 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
     func = (void*)pthread_create_hook_spec;
   }
 #endif
-  _patched_entries[_size]._lib = lib;
-  _patched_entries[_size]._location = pthread_create_location;
-  _patched_entries[_size]._func = (void*)__atomic_load_n(pthread_create_location, __ATOMIC_RELAXED);
+  void* current = __atomic_load_n(pthread_create_location, __ATOMIC_RELAXED);
+  if (current == func) { // Already patched
+    return;
+  }
+
+  // Patches are persistent, so an entry outlives its library: a library that
+  // was dlclose()d and loaded again at the same base keeps its CodeCache (the
+  // reload is not re-parsed) and its entry, but the new mapping's GOT holds the
+  // real pthread_create again. The walk verified it is the same image, so its
+  // saved slot is valid: re-hook it and refresh the saved original.
+  PatchEntry* entry = nullptr;
+  for (int index = 0; index < _size; index++) {
+    if (_patched_entries[index]._lib == lib) {
+      entry = &_patched_entries[index];
+      break;
+    }
+  }
+  if (entry == nullptr) {
+    if (_size >= MAX_NATIVE_LIBS) return;
+    entry = &_patched_entries[_size++];
+    entry->_lib = lib;
+    entry->_location = pthread_create_location;
+  }
+  TEST_LOG("Patching: %s", lib->name());
+  entry->_func = current;
   __atomic_store_n(pthread_create_location, func, __ATOMIC_RELAXED);
-  _size++;
 }
 
 void LibraryPatcher::unpatch_libraries() {
@@ -654,9 +672,10 @@ void LibraryPatcher::patch_pthread_create() {
           CodeCache* lib = native_libs.at(index);
           // Filter out everything patch_library_unlocked() would decline, so that
           // libraries never patched are not re-checked for liveness on every pass.
+          // Already patched libraries stay candidates: one reloaded at the same
+          // base needs its new GOT re-hooked (see patch_library_unlocked()).
           if (lib != nullptr && lib->peekImport(im_pthread_create) != nullptr
-              && !excluded_from_pthread_create_patch(lib)
-              && !has_entry_for(_patched_entries, _size, lib)) {
+              && !excluded_from_pthread_create_patch(lib)) {
             add_live_candidate(lib, 0);
           }
         }

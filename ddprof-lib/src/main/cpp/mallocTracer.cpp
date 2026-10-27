@@ -269,42 +269,33 @@ void MallocHooker::patchSlot(CodeCache* cc, void** location, void* hook_fn, void
     void* current = __atomic_load_n(location, __ATOMIC_ACQUIRE);
     if (current == hook_fn) return;  // Already patched
 
-    // Ensure GOT pages are writable (handles full RELRO binaries)
-    cc->makeImportsWritable();
-
-    // Record the entry before patching
-    if (_entry_count < MAX_MALLOC_ENTRIES) {
-        _entries[_entry_count]._lib = cc;
-        _entries[_entry_count]._location = location;
-        _entries[_entry_count]._hook = hook_fn;
-        _entries[_entry_count]._orig = current;
-        _entry_count++;
+    // A slot that cannot be recorded is left alone rather than hooked for good:
+    // every hook must be restorable on stop().
+    if (_entry_count >= MAX_MALLOC_ENTRIES) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            Log::warn("Malloc hook table full; some allocations will not be profiled");
+        }
+        return;
     }
+    _entries[_entry_count]._lib = cc;
+    _entries[_entry_count]._location = location;
+    _entries[_entry_count]._hook = hook_fn;
+    _entries[_entry_count]._orig = current;
+    _entry_count++;
 
-    // Write the hook function pointer directly to the GOT slot
+    // Write the hook function pointer directly to the GOT slot. The caller has
+    // made the library's imports writable.
     __atomic_store_n(location, hook_fn, __ATOMIC_RELEASE);
 }
 
-// Restores one slot and clears the entry for dropRestoredEntries().
-static inline void restore_slot(MallocPatchEntry& entry) {
+static inline void restore_slot(const MallocPatchEntry& entry) {
     // Only undo our own write: leave the slot alone if something else has
     // re-patched it since.
     void* expected = entry._hook;
     __atomic_compare_exchange_n(entry._location, &expected, entry._orig, false,
                                 __ATOMIC_RELEASE, __ATOMIC_RELAXED);
-    entry._location = nullptr;
-}
-
-// Drops the entries restore_slot() has cleared, keeping those of libraries
-// the restore could not reach so that a later stop() can still restore them.
-void MallocHooker::dropRestoredEntries() {
-    int kept = 0;
-    for (int i = 0; i < _entry_count; i++) {
-        if (_entries[i]._location != nullptr) {
-            _entries[kept++] = _entries[i];
-        }
-    }
-    _entry_count = kept;
 }
 
 // Groups each library's entries into a single run, so that a library is
@@ -337,6 +328,10 @@ void MallocHooker::patchLibraries() {
 
     LibraryPatcher::LiveLibraryWalk walk(
         [](void*) {
+            // A refresher that saw running() before stop() may get here after
+            // stop()'s restore walk, which this walk serializes with: do not
+            // re-hook then.
+            if (!MallocTracer::running()) return;
             const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
             int native_lib_count = native_libs.count();
             TEST_LOG("MallocHooker::patchLibraries: _patched_libs=%d native_lib_count=%d _orig_malloc=%p",
@@ -372,8 +367,11 @@ void MallocHooker::unpatchLibraries() {
                 restore_slot(_entries[i]);
             }
         });
-    // Still under the walk's lock.
-    dropRestoredEntries();
+    // Still under the walk's lock. Entries of a library the walk did not visit
+    // are dropped too: it is unloaded, or no longer verifiably the image they
+    // were saved from, so they can never be written through again. Keeping
+    // them would only fill the table over start/stop cycles.
+    _entry_count = 0;
     // Every library is patched again, identity-checked, on the next start().
     _patched_libs = 0;
 }
@@ -386,6 +384,8 @@ void MallocHooker::patchLibraries() {
     if (_orig_malloc == NULL) return;
 
     MutexLocker ml(_patch_lock);
+    // See the Linux version.
+    if (!MallocTracer::running()) return;
 
     const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
     int native_lib_count = native_libs.count();
@@ -397,6 +397,9 @@ void MallocHooker::patchLibraries() {
             TEST_LOG("MallocHooker::patchLibraries: skipping (invalid handle) %s", cc->name());
             continue;
         }
+        // A reload at the same address keeps this CodeCache, so its GOT may be
+        // read-only again. (On Linux the walk does this.)
+        cc->makeImportsWritable();
         patchLibrary(cc);
     }
 }
@@ -421,7 +424,7 @@ void MallocHooker::unpatchLibraries() {
         }
         i = run_end;
     }
-    dropRestoredEntries();
+    _entry_count = 0;
     _patched_libs = 0;
 }
 #endif

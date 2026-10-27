@@ -118,6 +118,10 @@ private:
   Engine *_cpu_engine;
   Engine *_wall_engine = NULL;
   Engine *_alloc_engine;
+  // Whether registerThread() may register new threads with the engines: open
+  // from just before the engines start until stop(). The pthread_create hook
+  // is persistent and keeps calling in between recordings.
+  bool _thread_registration_open = false;
   int _event_mask;
 
   time_t _start_time;
@@ -151,8 +155,7 @@ private:
 
   volatile jvmtiEventMode _thread_events_state;
   // Tracks whether persistent JVMTI events (CLASS_LOAD, CLASS_PREPARE,
-  // DYNAMIC_CODE_GENERATED, NATIVE_METHOD_BIND, COMPILED_METHOD_LOAD) have
-  // been enabled. These are enabled once on first start() and never disabled,
+  // DYNAMIC_CODE_GENERATED, COMPILED_METHOD_LOAD) have been enabled. These are enabled once on first start() and never disabled,
   // surviving stop/start cycles for the lifetime of the process.
   bool _jvmti_events_enabled;
 
@@ -381,9 +384,11 @@ public:
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);
   // Enable persistent JVMTI events that track JVM metadata (CLASS_LOAD,
-  // CLASS_PREPARE, DYNAMIC_CODE_GENERATED, NATIVE_METHOD_BIND,
-  // COMPILED_METHOD_LOAD). Called once on first start(), never disabled.
+  // CLASS_PREPARE, DYNAMIC_CODE_GENERATED, COMPILED_METHOD_LOAD). Called once
+  // on first start(), never disabled.
   void enablePersistentJvmtiEvents();
+  void openThreadRegistration();
+  void closeThreadRegistration();
 
   /**
    * Remote symbolication packed data layout (BCI_NATIVE_FRAME_REMOTE):

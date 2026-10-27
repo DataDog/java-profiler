@@ -43,7 +43,6 @@ class MallocHooker {
     static void patchImport(CodeCache* cc, ImportId id, void* hook_fn, void* orig_fn);
     static void patchSlot(CodeCache* cc, void** location, void* hook_fn, void* orig_fn);
     static void patchLibrary(CodeCache* cc);
-    static void dropRestoredEntries();
 
   public:
     // Returns true if symbols were successfully resolved.
