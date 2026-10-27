@@ -53,6 +53,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -164,10 +165,30 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   LivenessTracker::instance()->releaseThreadLocalState();
 }
 
+// Marks a native-thread hook call as in flight for the duration of a
+// Profiler::registerThread()/unregisterThread() call, so stop() can wait for
+// calls that passed the _engines_ready check before it stops the engines.
+// The increment and the flag load in the caller are seq_cst, pairing with the
+// seq_cst flag store and counter load in stop(): either the hook sees the flag
+// cleared, or stop() sees the call in flight and waits for it.
+class HookCallScope {
+public:
+  explicit HookCallScope(std::atomic<int> &inflight) : _inflight(inflight) {
+    _inflight.fetch_add(1, std::memory_order_seq_cst);
+  }
+  ~HookCallScope() { _inflight.fetch_sub(1, std::memory_order_release); }
+  HookCallScope(const HookCallScope &) = delete;
+  HookCallScope &operator=(const HookCallScope &) = delete;
+
+private:
+  std::atomic<int> &_inflight;
+};
+
 int Profiler::registerThread(int tid) {
+  HookCallScope scope(_instance->_hook_calls_inflight);
   // Threads created while the engines are not started are picked up by the
-  // engines' own start(), which registers every existing thread.
-  if (!_instance->_engines_ready.load(std::memory_order_acquire)) {
+  // CPU engine's own start(), which registers every existing thread.
+  if (!_instance->_engines_ready.load(std::memory_order_seq_cst)) {
     return 0;
   }
   return _instance->_cpu_engine->registerThread(tid) |
@@ -195,9 +216,11 @@ void Profiler::unregisterThread(int tid) {
     g_test_last_unregistered_tid.store(tid, std::memory_order_relaxed);
     return;
 #endif
-  // Engine stop() unregisters every remaining thread, so skipping here while
-  // the engines are not started does not leak a per-thread timer.
-  if (!_instance->_engines_ready.load(std::memory_order_acquire)) {
+  HookCallScope scope(_instance->_hook_calls_inflight);
+  // Outside the ready window the CPU engine either has not registered any
+  // thread yet or is about to unregister all of them in stop(), so skipping
+  // here does not leave a timer behind.
+  if (!_instance->_engines_ready.load(std::memory_order_seq_cst)) {
     return;
   }
   _instance->_cpu_engine->unregisterThread(tid);
@@ -1695,6 +1718,12 @@ Error Profiler::start(Arguments &args, bool reset) {
       error = Error::OK; // recoverable
     } else {
       activated |= EM_CPU;
+      // Open the hook gate as soon as the CPU engine has sized its per-thread
+      // structures and registered the existing threads, so native threads
+      // that start or exit from here on are registered or unregistered.
+      // The wall engines do not implement registerThread(), so they do not
+      // need to have started yet.
+      _engines_ready.store(true, std::memory_order_seq_cst);
     }
   }
   if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine) {
@@ -1771,10 +1800,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   if (activated) {
-    // Release pairs with the acquire in registerThread()/unregisterThread():
-    // a hook that sees true also sees the per-thread structures the engine
-    // start() calls above have finished sizing.
-    _engines_ready.store(true, std::memory_order_release);
     switchThreadEvents(JVMTI_ENABLE);
 
     if (_reference_chains_active) {
@@ -1844,9 +1869,14 @@ Error Profiler::stop() {
     return Error("signal handlers did not drain; teardown skipped, retry stop()");
   }
 
-  // Keep the pthread hook off the engines before any engine stop() runs, so
-  // no thread arms a timer after CTimer::stop() has unregistered them all.
-  _engines_ready.store(false, std::memory_order_release);
+  // Close the hook gate and wait for hook calls already past it, so no thread
+  // arms a timer after CTimer::stop() has unregistered them all, and none is
+  // still inside the timer table when the next start() resizes it. Hook calls
+  // only do a few syscalls per engine, so the wait is short.
+  _engines_ready.store(false, std::memory_order_seq_cst);
+  while (_hook_calls_inflight.load(std::memory_order_seq_cst) != 0) {
+    sched_yield();
+  }
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();

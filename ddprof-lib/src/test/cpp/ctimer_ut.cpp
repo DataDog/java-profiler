@@ -144,6 +144,9 @@ public:
   static bool enginesReady(Profiler *p) {
     return p->_engines_ready.load(std::memory_order_acquire);
   }
+  static int hookCallsInflight(Profiler *p) {
+    return p->_hook_calls_inflight.load(std::memory_order_acquire);
+  }
 };
 
 // Profiler::registerThread() is reached from the pthread hook without
@@ -151,10 +154,13 @@ public:
 // (CTimer::resizeTimers()) and set the engines-ready flag, it must return
 // without touching the engines. In this binary the profiler is never
 // started, so its engine pointers are null and any engine call would crash.
+// The call must also leave the in-flight count at zero, or stop() would wait
+// on it forever.
 TEST(ProfilerEnginesGateTest, RegisterThreadSkipsEnginesUntilReady) {
   Profiler *profiler = Profiler::instance();
   ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
   EXPECT_EQ(0, Profiler::registerThread(OS::threadId()));
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
 }
 
 #endif // __linux__
