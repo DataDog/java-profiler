@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk25
 
 ## glibc-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-10-27 14:34:08 EDT
+**Date:** 2026-10-27 14:35:35 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 86 |
-| Sample Rate | 1.43/sec |
-| Health Score | 89% |
-| Threads | 10 |
+| CPU Samples | 76 |
+| Sample Rate | 1.27/sec |
+| Health Score | 79% |
+| Threads | 11 |
 | Allocations | 66 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 82 |
-| Sample Rate | 1.37/sec |
-| Health Score | 86% |
-| Threads | 14 |
-| Allocations | 51 |
+| CPU Samples | 106 |
+| Sample Rate | 1.77/sec |
+| Health Score | 111% |
+| Threads | 8 |
+| Allocations | 71 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 30-30 cores)</summary>
 
 ```
-1793125660 30
-1793125665 30
-1793125670 30
-1793125675 30
-1793125680 30
-1793125685 30
-1793125690 30
-1793125695 30
-1793125700 30
-1793125705 30
-1793125710 30
-1793125715 30
-1793125720 30
-1793125725 30
-1793125730 30
-1793125735 30
-1793125740 30
-1793125745 30
-1793125750 30
-1793125755 30
+1793125849 30
+1793125854 30
+1793125859 30
+1793125864 30
+1793125869 30
+1793125874 30
+1793125879 30
+1793125884 30
+1793125889 30
+1793125894 30
+1793125899 30
+1793125904 30
+1793125909 30
+1793125914 30
+1793125919 30
+1793125924 30
+1793125929 30
+1793125934 30
+1793125939 30
+1793125944 30
 ```
 </details>
 
