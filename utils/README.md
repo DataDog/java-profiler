@@ -134,6 +134,12 @@ Also invoked interactively from `release.sh` when preparing a patch release.
 ./utils/prepare-patch.sh --no-dry-run --branch release/1.9._
 ```
 
+Test candidate discovery with local Git repositories and a GitHub CLI fixture:
+
+```bash
+bash utils/tests/test_prepare_patch.sh
+```
+
 ---
 
 ## Testing

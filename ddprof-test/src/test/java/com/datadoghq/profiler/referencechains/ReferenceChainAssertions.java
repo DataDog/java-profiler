@@ -7,6 +7,7 @@ package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
+import com.datadoghq.profiler.NativeBuildConfig;
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IAccessorKey;
 import org.openjdk.jmc.common.item.IItem;
@@ -43,12 +44,11 @@ public final class ReferenceChainAssertions {
 
   /**
    * True on every native build that compiles javaApi.cpp's {@code #ifdef DEBUG} test seams: debug,
-   * asan and tsan (all add -DDEBUG, ConfigurationPresets.kt). Release builds get no-op seam stubs.
+   * coverage, asan and tsan (all add -DDEBUG, ConfigurationPresets.kt). Release builds get no-op seam stubs.
    * Child JVMs see the same answer because the launchers forward {@code -Dddprof_test.config}.
    */
   public static boolean isDebugInstrumentedBuild() {
-    String config = System.getProperty("ddprof_test.config");
-    return config != null && ("debug".equals(config) || config.endsWith("san"));
+    return NativeBuildConfig.isDebugInstrumented();
   }
 
   /**
