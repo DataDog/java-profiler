@@ -25,7 +25,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, wall-clock, allocation, native-memory and liveness engines
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
-- [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM abstraction (HotSpot, J9, Zing), continuation recovery, and native DWARF/link-register rules and Linux signal-frame recovery
+- [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM abstraction (HotSpot, J9, Zing), continuation recovery, arm64 temporary argument areas, native DWARF/link-register rules and Linux signal-restorer recovery/fallback
 - [SanityChecks](architecture/SanityChecks.md) - Startup sanity checks
 - [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching
 - [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, and rotation protocols
@@ -35,7 +35,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [BuildSystemGuide](building/BuildSystemGuide.md) - Comprehensive build system documentation
 - [GradleTasks](building/GradleTasks.md) - Available Gradle tasks reference
 - [JdkUpgrades](building/JdkUpgrades.md) - Two-JDK pattern and JDK upgrade touchpoints
-- [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin
+- [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin and Google Test archive dependency ordering
 - [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, shared virtual-thread chaos coverage, and local workflows
 - [Versioning](building/Versioning.md) - Version computation from git tags
 

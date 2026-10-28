@@ -12,9 +12,22 @@
 #include <signal.h>
 
 #if defined(__linux__) && defined(__aarch64__)
+class VMTestAccessor {
+    bool _old_hotspot = VM::_hotspot;
+    bool _old_openj9 = VM::_openj9;
+
+public:
+    VMTestAccessor(bool hotspot, bool openj9) { VM::_hotspot = hotspot; VM::_openj9 = openj9; }
+    ~VMTestAccessor() { VM::_hotspot = _old_hotspot; VM::_openj9 = _old_openj9; }
+    VMTestAccessor(const VMTestAccessor&) = delete;
+    VMTestAccessor& operator=(const VMTestAccessor&) = delete;
+};
+
 namespace {
 alignas(16) uint32_t trampoline_code[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
 alignas(16) uint32_t ordinary_code[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
+alignas(16) uint32_t other_syscall_code[] = {0xd503201f, 0xd2801588, 0xd4000001, 0xd503201f}; // getpid
+alignas(16) uint32_t unregistered_restorer[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
 alignas(16) uint32_t leaf_code[] = {0xd503201f, 0xd65f03c0};
 const void* const caller_pc = (const void*)0x5a5f00000108ULL;
 
@@ -26,16 +39,21 @@ void registerLibraries() {
                                   (const char*)(ordinary_code + 4));
         static CodeCache leaf("native-clock-leaf", -1, (const char*)leaf_code,
                               (const char*)(leaf_code + 2));
+        static CodeCache other_syscall("other-syscall", -1, (const char*)other_syscall_code,
+                                       (const char*)(other_syscall_code + 4));
         static const FrameDesc leaf_row{0, DW_REG_SP, DW_SAME_FP, DW_LINK_REGISTER};
         leaf.setDwarfTable(nullptr, 0, leaf_row);
+        other_syscall.setDwarfTable(nullptr, 0, leaf_row);
         bool ok = Libraries::instance()->addLibraryForTest(&vdso);
         ok = Libraries::instance()->addLibraryForTest(&ordinary) && ok;
+        ok = Libraries::instance()->addLibraryForTest(&other_syscall) && ok;
         return Libraries::instance()->addLibraryForTest(&leaf) && ok;
     }();
     ASSERT_TRUE(registered);
 }
 
 class SignalFrameTest : public ::testing::Test {
+    VMTestAccessor _vm_kind{true, false};
 protected:
     static constexpr size_t context_size = sizeof(siginfo_t) + sizeof(ucontext_t);
     using SignalStack = std::array<unsigned char, context_size + 256>;
@@ -53,8 +71,8 @@ protected:
     }
 
     static bool step(WalkPc& pc, uintptr_t& sp, uintptr_t& fp, uintptr_t bottom,
-                     int depth, StackFrame& frame) {
-        return advanceDwarfFrame(pc, sp, fp, bottom, depth, frame, Profiler::instance());
+                     int depth, StackFrame& frame, bool* truncated = nullptr) {
+        return advanceDwarfFrame(pc, sp, fp, bottom, depth, frame, Profiler::instance(), truncated);
     }
 };
 
@@ -70,7 +88,9 @@ TEST_F(SignalFrameTest, RestoresExactPcAndRegistersThenUsesInterruptedLr) {
         pc.setReturnAddress(trampoline_code + instruction);
         uintptr_t sp = (uintptr_t)stack.data(), fp = 0;
         uintptr_t bottom = (uintptr_t)(stack.data() + stack.size());
-        ASSERT_TRUE(step(pc, sp, fp, bottom, 2, frame));
+        bool truncated = false;
+        ASSERT_TRUE(step(pc, sp, fp, bottom, 2, frame, &truncated));
+        EXPECT_FALSE(truncated);
         EXPECT_EQ((const void*)leaf_code, pc.raw());
         EXPECT_FALSE(pc.isReturnAddress());
         EXPECT_EQ(saved->uc_mcontext.sp, sp);
@@ -94,7 +114,9 @@ TEST_F(SignalFrameTest, RejectsIncompleteOrMisalignedSignalFrame) {
         pc.setReturnAddress(trampoline_code + 1);
         uintptr_t sp = (uintptr_t)stack.data() + invalid, fp = 0;
         uintptr_t bottom = invalid == 0 ? sp + sizeof(siginfo_t) : (uintptr_t)(stack.data() + stack.size());
-        EXPECT_FALSE(step(pc, sp, fp, bottom, 2, frame));
+        bool truncated = false;
+        EXPECT_FALSE(step(pc, sp, fp, bottom, 2, frame, &truncated));
+        EXPECT_TRUE(truncated);
         EXPECT_EQ((const void*)(trampoline_code + 1), pc.raw());
     }
 }
@@ -151,8 +173,81 @@ TEST_F(SignalFrameTest, DoesNotTreatOrdinarySyscallCodeAsSignalTrampoline) {
     WalkPc pc;
     pc.setReturnAddress(ordinary_code + 1);
     uintptr_t sp = (uintptr_t)stack.data(), fp = 0;
-    EXPECT_FALSE(step(pc, sp, fp, (uintptr_t)(stack.data() + stack.size()), 2, frame));
+    bool truncated = false;
+    EXPECT_FALSE(step(pc, sp, fp, (uintptr_t)(stack.data() + stack.size()), 2, frame, &truncated));
+    EXPECT_TRUE(truncated);
     EXPECT_TRUE(frame.isInterruptedPC(ordinary_code + 1));
+}
+
+TEST_F(SignalFrameTest, SuccessfulRecoveryPreservesPriorTruncation) {
+    alignas(16) SignalStack stack{};
+    savedContext(stack);
+    ucontext_t sampled{};
+    sampled.uc_mcontext.pc = (uintptr_t)(trampoline_code + 1);
+    StackFrame frame(&sampled);
+    WalkPc pc;
+    pc.setReturnAddress(trampoline_code + 1);
+    uintptr_t sp = (uintptr_t)stack.data(), fp = 0;
+    bool truncated = true;
+    EXPECT_TRUE(step(pc, sp, fp, (uintptr_t)(stack.data() + stack.size()), 2, frame, &truncated));
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ((const void*)leaf_code, pc.raw());
+}
+
+TEST_F(SignalFrameTest, OtherSyscallsRetainNormalCfiWithoutTruncation) {
+    alignas(16) SignalStack stack{};
+    ucontext_t sampled{};
+    sampled.uc_mcontext.pc = (uintptr_t)(other_syscall_code + 1);
+    sampled.uc_mcontext.regs[30] = (uintptr_t)caller_pc;
+    StackFrame frame(&sampled);
+    WalkPc pc;
+    pc.setExactAddress(other_syscall_code + 1);
+    uintptr_t sp = (uintptr_t)stack.data(), fp = 0;
+    bool truncated = false;
+    EXPECT_TRUE(step(pc, sp, fp, (uintptr_t)(stack.data() + stack.size()), 1, frame, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(caller_pc, pc.raw());
+    EXPECT_TRUE(frame.isInterruptedPC(other_syscall_code + 1));
+}
+
+TEST_F(SignalFrameTest, UnregisteredRestorersStopWithTruncationOnRecoveringVms) {
+    for (bool hotspot : {true, false}) {
+        VMTestAccessor vm_kind(hotspot, !hotspot);
+        for (int instruction : {1, 2}) {
+            alignas(16) uintptr_t stack[32]{};
+            uintptr_t sp = (uintptr_t)stack, fp = (uintptr_t)(stack + 4);
+            stack[4] = fp + 16;
+            stack[5] = (uintptr_t)caller_pc;
+            ucontext_t sampled{};
+            sampled.uc_mcontext.pc = (uintptr_t)(unregistered_restorer + instruction);
+            StackFrame frame(&sampled);
+            WalkPc pc;
+            pc.setExactAddress(unregistered_restorer + instruction);
+            ASSERT_EQ(nullptr, Profiler::instance()->findLibraryByAddress(pc.attribution()));
+            bool truncated = false;
+            EXPECT_FALSE(step(pc, sp, fp, (uintptr_t)(stack + 32), 2, frame, &truncated));
+            EXPECT_TRUE(truncated);
+            EXPECT_EQ(unregistered_restorer + instruction, pc.raw());
+        }
+    }
+}
+
+TEST_F(SignalFrameTest, NonRecoveringVmsDoNotProbeUnmappedCode) {
+    VMTestAccessor vm_kind(false, false);
+    alignas(16) uintptr_t stack[32]{};
+    uintptr_t sp = (uintptr_t)stack, fp = (uintptr_t)(stack + 4);
+    stack[4] = fp + 16;
+    stack[5] = (uintptr_t)caller_pc;
+    ucontext_t sampled{};
+    sampled.uc_mcontext.pc = 0x5a5f00000908ULL; // deliberately has no readable backing
+    StackFrame frame(&sampled);
+    WalkPc pc;
+    pc.setExactAddress((const void*)sampled.uc_mcontext.pc);
+    ASSERT_EQ(nullptr, Profiler::instance()->findLibraryByAddress(pc.attribution()));
+    bool truncated = false;
+    EXPECT_TRUE(step(pc, sp, fp, (uintptr_t)(stack + 32), 2, frame, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(caller_pc, pc.raw());
 }
 } // namespace
 #else

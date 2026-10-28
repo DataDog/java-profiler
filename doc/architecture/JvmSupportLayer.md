@@ -173,6 +173,17 @@ slot applies only while its CFI offset rule is active. On x64 the initial
 return address remains at CFA-8. The sampled LR is used only for a leaf frame;
 recovered PCs retain the normal return-address attribution and PAC stripping.
 
+For arm64 compiled callers, `StackFrame::adjustSP()` also accounts for temporary
+16-byte argument or register-save areas outside the nmethod's fixed frame.
+C1 subtype checks and VM-leaf calls are recognized at their pending stack pop,
+with a matching push before the call. A bounded scan allows far-call address
+setup between the push and call; it stops at the method entry and rejects
+unrelated instructions and fixed FP/LR saves. Continuation-entry spills use
+their separate entry-phase decoder before ordinary compiled-frame dispatch.
+C1 object-arraycopy has a second live save area around its subtype-check call.
+Matching pair pops on both paths of the following result branch establish the
+additional 16 bytes; the branch-target probe is bounded to 1,024 bytes.
+
 Linux arm64's vDSO `__kernel_rt_sigreturn` omits DWARF metadata. The shared
 native step recognizes its exact syscall instruction pair only in `[vdso]`,
 bounds-checks the `siginfo_t`/`ucontext_t` signal-frame layout, and restores the
@@ -183,6 +194,17 @@ and vtable phases after that prefix. Invalid instructions, stack bounds or
 restored register values reject recovery. The sampled and saved ucontexts
 remain unchanged. Restoration requires a forward, aligned SP within the walk's existing stack
 bound; transitions outside that bound are rejected.
+Recognized restorers whose saved context is invalid remain marked truncated.
+Linux also permits custom restorers through `SA_RESTORER`
+(`arch/arm64/kernel/signal.c`, `setup_return`). An exact `mov w8/x8, #139;
+svc #0` sequence outside the vDSO stops with truncation when signal CFI is
+absent, preventing the interrupted FP chain from fabricating callers. A row
+explicitly marked as a signal frame follows its CFI instead. Other syscall
+numbers do not activate this fallback.
+Custom-restorer instruction probes, including anonymous mappings without a
+`CodeCache`, run only on HotSpot/OpenJ9, where the profiler installs safefetch
+recovery handlers. Other VMs retain their CFI/FP fallback without probing
+untrusted instruction addresses outside the known vDSO.
 
 Directly sampled `enterSpecial` frames use
 `HotspotStackFrame::continuationEntryFrameWords()` to locate the carrier SP.

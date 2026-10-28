@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Native Build Plugin Architecture
 
 This document describes the architecture of the Kotlin-based native build plugin (`com.datadoghq.native-build`) used for C++ compilation in the Datadog Java Profiler project.
@@ -359,6 +361,10 @@ The `build-logic` directory contains all native build plugins:
 | `PlatformUtils` | - | Platform detection and compiler location |
 
 ## GtestPlugin Integration
+
+Static Google Test and Google Mock archives are linked with their entry-point
+archives first: `gtest_main`, `gmock_main`, `gmock`, then `gtest`. This order also
+links architecture-gated test sources that register no cases on the build host.
 
 The `GtestPlugin` consumes configurations from `NativeBuildPlugin`:
 
