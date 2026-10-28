@@ -43,6 +43,46 @@ TEST(StackFrameArgumentsTest, VmLeafCallDiscardsTemporaryRegisters) {
     EXPECT_EQ(0x1010u, sp);
 }
 
+TEST(StackFrameArgumentsTest, C1ArraycopyDiscardsArgumentsAndSavedArrays) {
+    for (instruction_t branch : {0xb5000060u, 0x35000060u}) { // cbnz x0/w0, code + 7
+        instruction_t code[] = {0xa9bf07e0, 0xa9bf07e0, 0x94000000, 0xa8c107e0,
+                                branch, 0xa8c107e0, 0x14000002, 0xa8c107e0, 0xd503201f};
+        StackFrame frame(nullptr);
+        uintptr_t sp = 0x1000;
+        frame.adjustSP(code, code + 3, sp);
+        EXPECT_EQ(0x1020u, sp);
+    }
+}
+
+TEST(StackFrameArgumentsTest, ArraycopyRequiresTheOuterPopOnBothBranchPaths) {
+    instruction_t code[] = {0xa9bf07e0, 0xa9bf07e0, 0x94000000, 0xa8c107e0,
+                            0xb5000060, 0xa8c107e0, 0x14000002, 0xd503201f, 0xd503201f};
+    StackFrame frame(nullptr);
+    uintptr_t sp = 0x1000;
+    frame.adjustSP(code, code + 3, sp);
+    EXPECT_EQ(0x1010u, sp);
+}
+
+TEST(StackFrameArgumentsTest, ArraycopyRequiresTheBranchToUseThePoppedResult) {
+    instruction_t code[] = {0xa9bf07e0, 0xa9bf07e0, 0x94000000, 0xa8c107e0,
+                            0xb5000061, 0xa8c107e0, 0x14000002, 0xa8c107e0, 0xd503201f};
+    StackFrame frame(nullptr);
+    uintptr_t sp = 0x1000;
+    frame.adjustSP(code, code + 3, sp);
+    EXPECT_EQ(0x1010u, sp);
+}
+
+TEST(StackFrameArgumentsTest, ArraycopyDoesNotProbeBackwardOrDistantBranchTargets) {
+    for (instruction_t branch : {0xb5ffffe0u, 0xb5002020u}) { // -4 and +1028 bytes
+        instruction_t code[] = {0xa9bf07e0, 0xa9bf07e0, 0x94000000, 0xa8c107e0,
+                                branch, 0xa8c107e0, 0x14000002, 0xa8c107e0, 0xd503201f};
+        StackFrame frame(nullptr);
+        uintptr_t sp = 0x1000;
+        frame.adjustSP(code, code + 3, sp);
+        EXPECT_EQ(0x1010u, sp);
+    }
+}
+
 TEST(StackFrameArgumentsTest, DoesNotAdjustAfterThePop) {
     instruction_t code[] = {0xa9bf07e0, 0x94000000, 0xf84107e0, 0xd503201f};
     StackFrame frame(nullptr);
@@ -72,6 +112,14 @@ TEST(StackFrameArgumentsTest, DoesNotSearchBeforeTheMethodEntry) {
     StackFrame frame(nullptr);
     uintptr_t sp = 0x1000;
     frame.adjustSP(code + 1, code + 2, sp);
+    EXPECT_EQ(0x1000u, sp);
+}
+
+TEST(StackFrameArgumentsTest, CallAtMethodStartDoesNotReadBeforeEntry) {
+    instruction_t code[] = {0xd63f0100, 0xf84107e0};
+    StackFrame frame(nullptr);
+    uintptr_t sp = 0x1000;
+    frame.adjustSP(code, code + 1, sp);
     EXPECT_EQ(0x1000u, sp);
 }
 

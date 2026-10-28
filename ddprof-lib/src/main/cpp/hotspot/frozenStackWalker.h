@@ -12,7 +12,10 @@
 // allocation, heap mutation, or JVM calls are permitted during the walk.
 class FrozenStackWalker : private VMStructs {
 public:
+    // Called under VM::ready's lock. A successful layout is immutable thereafter.
     static void init();
+    // Acquires the published layout without allocation or synchronization waits.
+    static bool available();
     static bool append(VMThread* thread, const void* sampled_pc, unsigned int continuation_depth,
                        ASGCT_CallFrame* frames, volatile int& depth, int max_depth,
                        bool details);

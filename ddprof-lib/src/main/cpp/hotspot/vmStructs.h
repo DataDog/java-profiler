@@ -135,6 +135,7 @@ T* cast_or_null(const void* ptr) {
     f(VMConstMethod,          MATCH_SYMBOLS("ConstMethod"))       \
     f(VMFlag,                 MATCH_SYMBOLS("JVMFlag", "Flag"))   \
     f(VMJavaFrameAnchor,      MATCH_SYMBOLS("JavaFrameAnchor"))   \
+    f(VMJavaThread,           MATCH_SYMBOLS("JavaThread"))        \
     f(VMKlass,                MATCH_SYMBOLS("Klass"))             \
     f(VMMethod,               MATCH_SYMBOLS("Method"))            \
     f(VMNMethod,              MATCH_SYMBOLS("nmethod"))           \
@@ -386,6 +387,7 @@ class VMStructs {
     static unsigned char _unsigned5_base;
     static const void* _call_stub_return;
     static const void* _cont_return_barrier;
+    static int _cont_entry_thread_offset;
     static const void* _cont_entry_return_pc;
     static VMNMethod*  _enter_special_nm;
     static const void* _interpreter_start;
@@ -462,6 +464,7 @@ class VMStructs {
 #endif
 
     static void resolveOffsets();
+    static void initContEntryThreadOffset();
     static void patchSafeFetch();
     static void initJvmFunctions();
     static void initTLS(void* vm_thread);
@@ -552,6 +555,12 @@ class VMStructs {
     }
 
     static VMNMethod* enterSpecialNMethod();
+
+    // Inferred from a recognized return-barrier prefix, independently of the
+    // JDK 27 exported fields. Does not enable anchor or nested-entry handling.
+    static int contEntryThreadOffset() {
+        return __atomic_load_n(&_cont_entry_thread_offset, __ATOMIC_ACQUIRE);
+    }
 
     // Datadog-specific extensions
     static bool isSafeToWalk(uintptr_t pc);

@@ -86,7 +86,7 @@ enum {
 };
 
 FrameDesc FrameDesc::empty_frame = {0, DW_REG_SP | EMPTY_FRAME_SIZE << 8,
-                                    DW_SAME_FP, -EMPTY_FRAME_SIZE};
+                                    DW_SAME_FP, INITIAL_PC_OFFSET};
 FrameDesc FrameDesc::default_frame = {0, DW_REG_FP | LINKED_FRAME_SIZE << 8,
                                       -LINKED_FRAME_SIZE,
                                       -LINKED_FRAME_SIZE + DW_STACK_SLOT};
@@ -219,48 +219,10 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
     u32 cie_id = get32();
 
     if (cie_id == 0) {
-      // CIE: update code and data alignment factors.
-      // Layout after cie_id: [1-byte version][augmentation string \0][code_align LEB][data_align SLEB]
-      //   [return_address_register][augmentation data (if 'z')]...
-      // return_address_register and everything after data_align are not consumed; _ptr = record_end
-      // at the bottom of the loop skips them.
-      //
-      // `cie` below is overwritten by every CIE encountered.  The DWARF spec allows
-      // multiple CIEs with different augmentation strings in a single .eh_frame section, so
-      // strictly speaking each FDE should resolve its own CIE via the backward cie_id offset.
-      // We intentionally skip that: macOS binaries compiled by clang typically emit a single CIE
-      // per module, and this parser is only called for macOS __eh_frame sections.  Multi-CIE
-      // binaries are not produced by the toolchains we target here.  The state is local to this
-      // function so that this single-CIE policy stays independent of parseFde()'s per-FDE one.
-      cie = defaultCieInfo();  // every field assigned fresh per CIE, never latched
-      if (_ptr >= record_end) {
-        _ptr = record_end;
-        continue;
-      }
-      _ptr++;  // skip version
-      if (_ptr >= record_end) {
-        _ptr = record_end;
-        continue;
-      }
-      cie.has_z_augmentation = (*_ptr == 'z');
-      while (_ptr < record_end) {
-        char c = *_ptr++;
-        if (c == 0) break;
-        if (c == 'S') cie.is_signal_frame = true;
-      }
-      if (_ptr >= record_end) {
-        _ptr = record_end;
-        continue;
-      }
-      cie.code_align = getLeb(record_end);
-      cie.data_align = getSLeb(record_end);
-      // Same terms as parseCie(): a zero factor is either a malformed value or
-      // a record that ended before the field.
-      cie.valid = cie.code_align != 0 && cie.data_align != 0;
-      if (!cie.valid) {
-        cie.code_align = sizeof(instruction_t);
-        cie.data_align = -(int)sizeof(void *);
-      }
+      // The linear macOS path keeps its sequential-CIE policy. Header and
+      // initial-rule decoding are shared with the indexed ELF path.
+      _ptr = record_start;
+      cie = parseCie();
     } else {
       // FDE: parse frame description for the covered PC range. Without a
       // readable CIE ahead of it -- none seen yet, or the last one rejected --
@@ -358,6 +320,17 @@ DwarfParser::CieInfo DwarfParser::parseCie() {
     return cie;
   }
 
+  // Consume the return-address column and optional augmentation block to
+  // locate the CIE's initial rules. Register columns remain architecture-based.
+  if (_ptr >= cie_end) return cie;
+  if (version == 1) get8(); else getLeb(cie_end);
+  if (cie.has_z_augmentation) {
+    if (_ptr >= cie_end) return cie;
+    u32 augmentation_size = getLeb(cie_end);
+    if (augmentation_size > (size_t)(cie_end - _ptr)) return cie;
+    _ptr += augmentation_size;
+  }
+  parseInstructions(0, cie_end, cie, &cie.initial_pc_offset);
   _ptr = cie_end;
   cie.valid = true;
   return cie;
@@ -421,13 +394,14 @@ void DwarfParser::parseFde() {
             recordFlags(cie));
 }
 
-void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie) {
+void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie, int* initial_pc_offset) {
   // `end` is derived from an untrusted record length; never let it run past
   // the section. Reads inside the loop are clamped by the get*/skip* helpers,
   // but clamping here keeps the loop bound honest and _ptr in range.
   if (end > _section_end) {
     end = _section_end;
   }
+  ReadWindowScope read_window(_section_end, end);
   const u32 code_align = cie.code_align;
   const int data_align = cie.data_align;
   const u32 record_flags = recordFlags(cie);
@@ -435,12 +409,12 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
   u32 cfa_reg = DW_REG_SP;
   int cfa_off = EMPTY_FRAME_SIZE;
   int fp_off = DW_SAME_FP;
-  int pc_off = INITIAL_PC_OFFSET;
+  int pc_off = cie.initial_pc_offset;
 
   u32 rem_cfa_reg = DW_REG_SP;
   int rem_cfa_off = EMPTY_FRAME_SIZE;
   int rem_fp_off = DW_SAME_FP;
-  int rem_pc_off = INITIAL_PC_OFFSET;
+  int rem_pc_off = cie.initial_pc_offset;
 
   while (_ptr < end) {
     u8 op = get8();
@@ -448,19 +422,20 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
     case 0:
       switch (op) {
       case DW_CFA_nop:
+        break;
       case DW_CFA_set_loc:
         _ptr = end;
         break;
       case DW_CFA_advance_loc1:
-        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
+        if (initial_pc_offset == nullptr) addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
         loc += get8() * code_align;
         break;
       case DW_CFA_advance_loc2:
-        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
+        if (initial_pc_offset == nullptr) addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
         loc += get16() * code_align;
         break;
       case DW_CFA_advance_loc4:
-        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
+        if (initial_pc_offset == nullptr) addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
         loc += get32() * code_align;
         break;
       case DW_CFA_offset_extended:
@@ -476,22 +451,19 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
         }
         break;
       case DW_CFA_restore_extended:
+      case DW_CFA_undefined:
       case DW_CFA_same_value: {
         u32 reg = getLeb();
         if (reg == DW_REG_FP) {
           fp_off = DW_SAME_FP;
-        } else if (EMPTY_FRAME_SIZE == 0 && reg == DW_REG_PC) {
-          // AArch64's epilogue restores LR before returning. Its old stack
-          // slot is below the live SP and can be overwritten by a signal.
-          pc_off = INITIAL_PC_OFFSET;
+        } else if (reg == DW_REG_PC && (op == DW_CFA_restore_extended ||
+                   (EMPTY_FRAME_SIZE == 0 && op == DW_CFA_same_value))) {
+          // Restore uses the CIE's rule, which can be a non-default slot.
+          // same_value leaves the return address in LR on link-register CPUs.
+          pc_off = op == DW_CFA_restore_extended ? cie.initial_pc_offset : DW_LINK_REGISTER;
         }
         break;
       }
-      case DW_CFA_undefined:
-        if (getLeb() == DW_REG_FP) {
-          fp_off = DW_SAME_FP;
-        }
-        break;
       case DW_CFA_register:
         skipLeb();
         skipLeb();
@@ -579,7 +551,7 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
       }
       break;
     case DW_CFA_advance_loc:
-      addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
+      if (initial_pc_offset == nullptr) addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
       loc += (op & 0x3f) * code_align;
       break;
     case DW_CFA_offset:
@@ -597,14 +569,18 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
     case DW_CFA_restore:
       if ((op & 0x3f) == DW_REG_FP) {
         fp_off = DW_SAME_FP;
-      } else if (EMPTY_FRAME_SIZE == 0 && (op & 0x3f) == DW_REG_PC) {
-        pc_off = INITIAL_PC_OFFSET;
+      } else if ((op & 0x3f) == DW_REG_PC) {
+        pc_off = cie.initial_pc_offset;
       }
       break;
     }
   }
 
-  addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
+  if (initial_pc_offset != nullptr) {
+    *initial_pc_offset = pc_off;
+  } else {
+    addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
+  }
 }
 
 // Parse a limited subset of DWARF expressions, which is used in

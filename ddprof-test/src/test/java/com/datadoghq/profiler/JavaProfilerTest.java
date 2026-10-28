@@ -26,8 +26,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 public class JavaProfilerTest extends AbstractProcessProfilerTest {
     @Test
     void sanityInitailizationTest() throws Exception {
-        String config = System.getProperty("ddprof_test.config");
-        assumeTrue("debug".equals(config));
+        assumeTrue(NativeBuildConfig.isDebug());
 
         AtomicInteger initFlag = new AtomicInteger(0);
         boolean val = launch("profiler", Collections.emptyList(), "", l -> {
@@ -45,8 +44,7 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
 
     @Test
     void testJ9DefaultSanity() throws Exception {
-        String config = System.getProperty("ddprof_test.config");
-        assumeTrue("debug".equals(config));
+        assumeTrue(NativeBuildConfig.isDebug());
         assumeFalse(Platform.isMac()); // crashy on mac
         assumeTrue(Platform.isJ9());
 
@@ -84,8 +82,7 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
 
     @Test
     void testJ9ForceJvmtiSanity() throws Exception {
-        String config = System.getProperty("ddprof_test.config");
-        assumeTrue("debug".equals(config));
+        assumeTrue(NativeBuildConfig.isDebug());
         assumeFalse(Platform.isMac()); // crashy on mac
         assumeTrue(Platform.isJ9());
 
@@ -137,8 +134,7 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
     @Test
     void vmStackwalkerCrashRecoveryTest() throws Exception {
         assumeFalse(Platform.isJ9() || Platform.isZing()); // J9 and Zing do not support vmstructs
-        String config = System.getProperty("ddprof_test.config");
-        assumeTrue("debug".equals(config));
+        assumeTrue(NativeBuildConfig.isDebug());
 
         Path jfr = Files.createTempFile("work", ".jfr");
         jfr.toFile().deleteOnExit();

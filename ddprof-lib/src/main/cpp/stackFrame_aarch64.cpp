@@ -75,7 +75,7 @@ void StackFrame::ret() {
 
 NOSANALIGSANITIZE void StackFrame::adjustSP(const void* entry, const void* pc, uintptr_t& sp) {
     instruction_t* ip = (instruction_t*)pc;
-    if (ip > entry && (ip[-1] == 0xa9bf27ff || (ip[-1] == 0xd63f0100 && ip[-2] == 0xa9bf27ff))) {
+    if (ip > entry && (ip[-1] == 0xa9bf27ff || (ip - (const instruction_t*)entry >= 2 && ip[-1] == 0xd63f0100 && ip[-2] == 0xa9bf27ff))) {
         // When calling a leaf native from Java, JVM puts a dummy frame link onto the stack,
         // thus breaking the invariant: sender_sp == current_sp + frame_size.
         // Since JDK 21, there are more instructions between `blr` and `add`,
@@ -104,7 +104,20 @@ NOSANALIGSANITIZE void StackFrame::adjustSP(const void* entry, const void* pc, u
         instruction_t insn = ip[-back];
         if ((insn & 0xffff83e0) == 0xa9bf03e0) { // stp ..., [sp, #-16]!
             // FP/LR saves are part of the fixed frame, not outgoing arguments.
-            if ((insn & 31) < 29 && ((insn >> 10) & 31) < 29) sp += 16;
+            if ((insn & 31) >= 29 || ((insn >> 10) & 31) >= 29) return;
+            sp += 16;
+            // C1 object-arraycopy saves its arrays before passing subtype-check
+            // arguments. Both CBNZ paths pop the same outer pair after the
+            // immediate argument pop, so another 16 bytes are still live.
+            if (pops_pair && ((insn ^ ip[0]) & 0x7c1f) == 0) {
+                instruction_t branch = SafeAccess::safeFetch32((int*)(ip + 1), 0);
+                int offset = (int32_t)(branch << 8) >> 11;
+                if ((branch & 0x7f00001f) == (0x35000000 | (ip[0] & 31)) && offset >= 4 && offset <= 1024 &&
+                    SafeAccess::safeFetch32((int*)(ip + 2), 0) == (int32_t)ip[0] &&
+                    SafeAccess::safeFetch32((int*)((uintptr_t)(ip + 1) + offset), 0) == (int32_t)ip[0]) {
+                    sp += 16;
+                }
+            }
             return;
         }
         bool address_setup = (insn & 0xff80001f) == (0xd2800000 | call_reg) // movz

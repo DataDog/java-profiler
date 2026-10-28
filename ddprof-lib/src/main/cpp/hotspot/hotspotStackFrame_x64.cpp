@@ -133,6 +133,83 @@ bool HotspotStackFrame::unwindCompiled(VMNMethod* nm, uintptr_t& pc, uintptr_t& 
     return false;
 }
 
+int HotspotStackFrame::continuationEntryThreadOffset(const unsigned char* code, size_t size) {
+    if (code == nullptr || size < 3 || code[0] != 0x49 || code[1] != 0x8b) return -1;
+    // mov rsp, [r15 + offset], with no displacement, disp8 or disp32.
+    if (code[2] == 0x27) return 0;
+    if (code[2] == 0x67 && size >= 4) return code[3] < 0x80 ? code[3] : -1;
+    if (code[2] != 0xa7 || size < 7 || code[6] >= 0x80) return -1;
+    return code[3] | (code[4] << 8) | (code[5] << 16) | (code[6] << 24);
+}
+
+int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc) {
+    int words = nm->frameSize();
+    instruction_t* ip = (instruction_t*)pc;
+    instruction_t* entry = (instruction_t*)nm->entry();
+    instruction_t* code = (instruction_t*)nm->code();
+    if (words < 4 || words > 256 || (words & 1) != 0) return -1;
+    if (!nm->contains(pc) || !nm->contains(entry) || entry < code || ip < code) return -1;
+    if (ip < entry) {
+        // The interpreter-only adapter has its own frame setup before the
+        // verified compiled entry. Keep the search within that earlier code.
+        instruction_t* end = entry < code + 256 ? entry : code + 256;
+        instruction_t* save = code;
+        for (; save + 7 < end; save++) {
+            if (save[0] == 0x55 && save[1] == 0x48 &&
+                ((save[2] == 0x8b && save[3] == 0xec) || (save[2] == 0x89 && save[3] == 0xe5)) &&
+                save[4] == 0x48 && save[6] == 0xec &&
+                (save[5] == 0x83 || (save[5] == 0x81 && save + 10 < end))) break;
+        }
+        if (save + 7 >= end || ip < save) return -1;
+        entry = save;
+    }
+
+    if (!nm->isFrameCompleteAt(pc)) {
+        // MacroAssembler::enter followed by continuation_enter_setup's sub SP.
+        if (entry[0] != 0x55 || entry[1] != 0x48 ||
+            !((entry[2] == 0x8b && entry[3] == 0xec) ||
+              (entry[2] == 0x89 && entry[3] == 0xe5)) ||
+            entry[4] != 0x48 || entry[6] != 0xec) return -1;
+        unsigned int storage;
+        int allocated;
+        if (entry[5] == 0x83) {
+            storage = entry[7];
+            allocated = 8;
+        } else if (entry[5] == 0x81) {
+            storage = entry[7] | (entry[8] << 8) | (entry[9] << 16) | ((unsigned int)entry[10] << 24);
+            allocated = 11;
+        } else {
+            return -1;
+        }
+        if (storage != (words - 2) * sizeof(uintptr_t)) return -1;
+        if (ip == entry) return 1;       // before push FP; return PC is at SP
+        if (ip == entry + 1 || ip == entry + 4) return 2;
+        return ip >= entry + allocated ? words : -1;
+    }
+
+    // gen_continuation_enter emits its exception section after the normal
+    // add rsp; pop rbp; ret. That section restores FP, spills the exception
+    // around a resolver call, then moves the return PC into RDX. Its register
+    // sources cannot be represented by this saved-FP/stack-PC layout helper.
+    // Reject it instead of applying the complete frame size to its changing SP.
+    size_t completed = ip - entry;
+    if (completed > 1024) return -1;
+    unsigned int storage = (words - 2) * sizeof(uintptr_t);
+    for (size_t offset = 7; offset + 6 <= completed; offset++) {
+        instruction_t* scan = entry + offset;
+        // Cleanup first restores JavaThread::_cont_entry from RBX. Include
+        // that store so an add/pop/ret byte pattern inside movabs is ignored.
+        if (scan[-7] != 0x49 || scan[-6] != 0x89 || scan[-5] != 0x9f || scan[0] != 0x48 || scan[2] != 0xc4) continue;
+        if (storage < 128 && scan[1] == 0x83 && scan[3] == storage && scan[4] == 0x5d && scan[5] == 0xc3) return -1;
+        if (offset + 9 <= completed && scan[1] == 0x81 && scan[3] == (storage & 0xff) &&
+                scan[4] == (storage >> 8) && scan[5] == 0 && scan[6] == 0 && scan[7] == 0x5d && scan[8] == 0xc3) return -1;
+    }
+
+    if (*ip == 0x5d) return 2;           // pop FP: storage already deallocated
+    if (*ip == 0xc3) return 1;           // ret: FP already restored
+    return words;
+}
+
 bool HotspotStackFrame::unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     //  0:   mov    %eax,-0x14000(%rsp)
     //  7:   push   %rbp

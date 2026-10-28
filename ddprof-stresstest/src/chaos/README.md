@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Chaos harness
 
 Long-running antagonist workload driving the reliability CI cell. Runs as a
@@ -28,11 +30,27 @@ fourth argument, including alongside other antagonists.
 
 `VirtualThreadCarrierChaosTest` profiles this same workload with native CPU and
 wall sampling in both `cstack=vmx` and `cstack=vm`. It requires return-barrier
-hits, progress in both argument layouts, and enough eligible samples from each
-engine. It checks carrier presence, uniqueness and ordering, and requires
-missing outer callers to remain marked truncated. Samples that stop before a
-continuation boundary are counted separately; continuation-pointer errors fail
-the check. Profile events are streamed rather than retained for the whole run.
+hits, progress in both argument layouts, and at least ten samples with missing
+outer callers from each engine and argument layout. It checks carrier presence,
+uniqueness and ordering, and requires missing outer callers to remain marked
+truncated. Each engine must reach a continuation boundary in at least 99% of
+classified workload walks, both per argument layout and overall. Generic walk
+errors on carrier OS threads discovered from either engine count toward the
+overall failure budget even when no workload frame was decoded. Generic failures
+with carrier ancestry still count as failures. Continuation-pointer errors,
+invalid ancestry and false completeness fail unconditionally. Completeness checks
+apply to workload samples missing a continuation boundary or outer caller. A native
+gap alongside complete workload ancestry still consumes the generic failure budget
+but does not itself imply missing Java ancestors. A skipped native gap on a known
+carrier is excluded from the continuation budget only when its Java frames form
+an ordered `Unsafe.park` → optional `LockSupport.park*` → `ForkJoinPool.awaitWork`
+→ `ForkJoinPool.runWorker` → `ForkJoinWorkerThread.run` idle chain, with no other
+Java frames, continuation roots or other walk errors. These gaps remain visible
+in the separate `idleNativeGaps` counter and do not increase successful-walk
+counts. Ambiguous carrier samples remain in the failure budget. Error markers
+do not bypass carrier uniqueness or ordering checks. Errors on unrelated
+threads do not enter the generic failure budget. Profile events are streamed
+rather than retained for the whole run.
 
 The ordinary `testDebug` suite runs six seconds per mode on supported HotSpot
 JDK 21+ runtimes. For a longer run, select the build and test JDKs with
@@ -46,9 +64,13 @@ DDPROF_VTHREAD_STRESS_SECONDS=120 JAVA_TOOL_OPTIONS=-XX:-PreserveFramePointer \
 
 Repeat with `JAVA_TOOL_OPTIONS=-XX:+PreserveFramePointer` as a control.
 The duration accepts 2–3600 seconds. Test XML and retained JFR recordings include
-both the CPU and wall-clock checks; inspect the logged eligible-sample and
-pre-boundary-stop counts when comparing runs. Passing process survival in the
-agent chaos harness alone does not establish stack correctness.
+both the CPU and wall-clock checks, even if one engine fails. Diagnostics include
+per-layout coverage, the distribution of failure reasons and the first failing
+sample's event type, thread name, OS ID, truncation flag and up to 16 frames.
+`ContinuationStackChecksTest` exercises the acceptance checks with controlled
+resolved JFR samples, including excessive generic failures and malformed carrier
+ancestry. Passing process survival in the agent chaos harness alone does not
+establish stack correctness.
 
 ## Deferred
 

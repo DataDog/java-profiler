@@ -1,3 +1,7 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
+<!-- Copyright 2026, Datadog, Inc. -->
+
 <!-- CLAUDE BOOTSTRAP INSTRUCTIONS
 If you are Claude and reading this file, check if CLAUDE.md exists in the same directory.
 If CLAUDE.md does not exist or only contains the redirect + Compact Instructions below, that
@@ -65,8 +69,10 @@ and `:ddprof-lib:benchmarks`), `ddprof-test` (Java integration tests), `ddprof-t
 (tracing-context tests), `ddprof-test-native`, `ddprof-stresstest` (JMH + chaos),
 `malloc-shim` (Linux allocation interceptor).
 
-**Supported JVMs:** HotSpot, J9, Zing — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
+**Supported JVMs:** HotSpot, J9, Zing; HotSpot continuation recovery uses sampled instruction phases (compiled/interpreted entries and arm64 exception exits), validated metadata for return-barrier entries and interiors, and retires consumed Java anchors — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
 **Platforms:** Linux x64/arm64 (primary), macOS arm64/x64; musl libc handled automatically.
+Frozen virtual-thread caller recovery uses bounded, read-only heap chunk traversal
+on supported HotSpot layouts and collectors; see [doc/architecture/FrozenStackWalker.md](doc/architecture/FrozenStackWalker.md).
 
 ## Operating Rules for Agent Sessions
 
@@ -84,7 +90,9 @@ and `:ddprof-lib:benchmarks`), `ddprof-test` (Java integration tests), `ddprof-t
 ## Build & Test Quick Reference
 
 Configurations: `release`, `debug`, plus `asan`/`tsan`/`fuzzer` when the sanitizer runtime
-is found for the selected compiler (inactive on macOS and musl).
+is found for the selected compiler (inactive on macOS and musl), plus opt-in `coverage`
+with `-PenableCoverage` (`:ddprof-lib:coverageReport`; the C++ report covers only the
+`-O0 -DDEBUG` build — see [doc/building/CodeCoverage.md](doc/building/CodeCoverage.md)).
 
 ```bash
 ./.claude/commands/build-and-summarize buildRelease      # release library + JAR
@@ -123,9 +131,15 @@ debug symbols via `buildDebug`, memory errors via ASan, suppressions in
 Custom Kotlin-based native build plugin (`build-logic/`) instead of Gradle's
 `cpp-library`/`cpp-application` plugins; it invokes `clang++`/`g++` directly. Build
 configurations are discovered dynamically from `ConfigurationPresets.kt`, never hardcoded.
+Google Test entry-point archives precede their dependencies so architecture-gated
+test files also link on hosts where they register no cases.
 Two-JDK pattern: `JAVA_HOME` (build, JDK 17+, Gradle runs on 21 LTS) runs Gradle;
 `JAVA_TEST_HOME` runs tests against the target JDK; target bytecode is Java 8 via
 `--release 8`.
+
+The `ddprof-stresstest:chaosElements` outgoing configuration shares the chaos JAR
+with `ddprof-test` stack-correctness tests. See
+[TestingGuide.md](doc/building/TestingGuide.md#virtual-thread-remount-correctness).
 
 Details and troubleshooting:
 [build-logic/README.md](build-logic/README.md),
@@ -142,10 +156,12 @@ before working on a subsystem.
 
 | Subsystem | Details |
 |---|---|
+| Frozen virtual-thread callers (bounded HotSpot heap chunk traversal, inline scopes and deoptimization) | [doc/architecture/FrozenStackWalker.md](doc/architecture/FrozenStackWalker.md) |
 | Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
 | String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
 | TLS context (thread-local tracing context, distributed tracing) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
+| Native stack unwinding (DWARF CFA rules, arm64 temporary argument areas and LR/PLT, validated Linux signal-frame recovery) | [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md) |
 | Profiling engines (CPU, wall-clock, allocation, native memory, liveness) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, signal scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
@@ -300,6 +316,10 @@ search. Do not resolve symbols or line tables eagerly in hot paths.
 pointer-not-yet-stored. Never permanently advance an iteration cursor past NULL gaps; stop
 at the first NULL or track the last contiguous non-NULL entry so missing entries are
 retried.
+
+**Stack completeness.** A successful carrier crossing does not establish a complete
+virtual-thread stack. Preserve walker-reported truncation through JFR serialization;
+see [JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md#continuation-completeness).
 
 **JVM abstraction.** Shared code must not refer to JVM-implementation-specific code directly,
 only through the abstraction files: `jvmSupport.{h,inline.h,cpp}`, `jvmThread.{h,cpp}`,

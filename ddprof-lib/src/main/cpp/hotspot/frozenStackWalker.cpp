@@ -84,8 +84,14 @@ bool appendCompiled(VMNMethod* nm, const void* pc, uintptr_t unextended_sp, uint
 
 } // namespace
 
+bool FrozenStackWalker::available() {
+    return __atomic_load_n(&layout.supported, __ATOMIC_ACQUIRE);
+}
+
 void FrozenStackWalker::init() {
-    layout.supported = false;
+    // VM::ready serializes initialization. Once readers can use this layout,
+    // later agent/API initialization must not rewrite its oop width or offsets.
+    if (available()) return;
     if (_libjvm == nullptr || VM::java_version() < 21 || VM::java_version() > 27) return;
 #if !defined(__x86_64__) && !defined(__aarch64__)
     return;
@@ -120,9 +126,10 @@ void FrozenStackWalker::init() {
         layout.oop_shift = *(int*)_narrow_oop_shift_addr;
         if (layout.oop_shift < 0 || layout.oop_shift > 16) return;
     }
-    layout.supported = layout.carrier_cont > 0 && layout.cont_parent > 0 && layout.cont_tail > 0
+    bool supported = layout.carrier_cont > 0 && layout.cont_parent > 0 && layout.cont_tail > 0
             && layout.parent > 0 && layout.size > 0 && layout.sp > 0 && layout.stack > 0
             && layout.stack % sizeof(uintptr_t) == 0 && (layout.bottom > 0 || layout.argsize > 0);
+    __atomic_store_n(&layout.supported, supported, __ATOMIC_RELEASE);
     TEST_LOG("Frozen stack layout: supported=%d carrier=%d tail=%d parent=%d size=%d sp=%d bottom=%d argsize=%d stack=%d oop_shift=%d",
              layout.supported, layout.carrier_cont, layout.cont_tail, layout.parent, layout.size, layout.sp,
              layout.bottom, layout.argsize, layout.stack, layout.oop_shift);
@@ -131,7 +138,7 @@ void FrozenStackWalker::init() {
 bool FrozenStackWalker::append(VMThread* thread, const void* sampled_pc, unsigned int continuation_depth,
                               ASGCT_CallFrame* frames, volatile int& depth, int max_depth,
                               bool details) {
-    if (!layout.supported || thread == nullptr || thread->state() != _thread_in_Java
+    if (!available() || thread == nullptr || thread->state() != _thread_in_Java
             || continuation_depth != 0 || depth >= max_depth) return false;
 
     // Freeze/thaw runs without a Java-to-VM transition. During doYield or its

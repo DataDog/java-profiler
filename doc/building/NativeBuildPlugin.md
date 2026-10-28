@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Native Build Plugin Architecture
 
 This document describes the architecture of the Kotlin-based native build plugin (`com.datadoghq.native-build`) used for C++ compilation in the Datadog Java Profiler project.
@@ -82,7 +84,7 @@ After project evaluation, the plugin:
 
 2. **Detects Compiler**: Runs the compiler detection algorithm (see below)
 
-3. **Creates Standard Configurations**: If no configurations are explicitly defined, `ConfigurationPresets.setupStandardConfigurations()` creates release, debug, asan, tsan, and fuzzer configurations
+3. **Creates Standard Configurations**: If no configurations are explicitly defined, `ConfigurationPresets.setupStandardConfigurations()` creates release, debug, asan, tsan, fuzzer, and coverage configurations
 
 4. **Filters Active Configurations**: Only configurations whose `active` flag is set and that match the current platform/architecture are processed
 
@@ -148,6 +150,10 @@ The compiler detection algorithm prioritizes explicit overrides, then auto-detec
 | asan    | ASan runtime found (`libclang_rt.asan-<arch>` for clang, else `libasan`) + not musl | None | `-g` | ASan, UBSan, LSan |
 | tsan    | TSan runtime found (`libclang_rt.tsan-<arch>` for clang, else `libtsan`) + not musl | None | `-g` | TSan       |
 | fuzzer  | clang++ with libFuzzer + not musl    | None         | `-g`  | ASan, UBSan |
+| coverage | `-PenableCoverage`                  | `-O0` (debug + `--coverage -fprofile-update=atomic`) | `-g` | None |
+
+`coverage` is not publishable (`publishable = false`): its JAR is built only while the
+configuration is active and is never published. See [CodeCoverage](CodeCoverage.md).
 
 ### Configuration Model
 
@@ -162,6 +168,7 @@ abstract class BuildConfiguration {
     val testEnvironment: MapProperty<String, String>  // Test env vars
     val testJvmArgs: ListProperty<String>   // Extra JVM args for Java tests
     val active: Property<Boolean>           // Whether to build
+    val publishable: Property<Boolean>      // Whether the JAR is published (default true)
 }
 ```
 
@@ -359,6 +366,10 @@ The `build-logic` directory contains all native build plugins:
 | `PlatformUtils` | - | Platform detection and compiler location |
 
 ## GtestPlugin Integration
+
+Static Google Test and Google Mock archives are linked with their entry-point
+archives first: `gtest_main`, `gmock_main`, `gmock`, then `gtest`. This order also
+links architecture-gated test sources that register no cases on the build host.
 
 The `GtestPlugin` consumes configurations from `NativeBuildPlugin`:
 

@@ -225,6 +225,16 @@ TEST(ReturnAddressAttributionCharacterizationTest, MarkVisibleAtAdjustedBoundary
 #include "stackWalker.inline.h"
 #include "threadLocalData.inline.h"
 
+class VMTestAccessor {
+    bool _old_hotspot = VM::_hotspot;
+
+public:
+    VMTestAccessor() { VM::_hotspot = true; }
+    ~VMTestAccessor() { VM::_hotspot = _old_hotspot; }
+    VMTestAccessor(const VMTestAccessor&) = delete;
+    VMTestAccessor& operator=(const VMTestAccessor&) = delete;
+};
+
 [[maybe_unused]] static long long* _return_addr_attr_ut_counters_init = Counters::getCounters();
 
 // Each gating test below (Test1/3/4/5/6) has toolchain-dependent preconditions
@@ -1206,7 +1216,8 @@ asm(
 "prof_ra_pcoff_seed:\n"
     ".cfi_startproc\n"
     ".cfi_def_cfa sp, 16\n"
-    ".cfi_offset 30, 0\n"
+    // This fabricated frame stores its caller PC in memory, not in LR.
+    ".cfi_offset 30, -8\n"
     "nop\nnop\n"
     ".cfi_endproc\n"
     ".size prof_ra_pcoff_seed, .-prof_ra_pcoff_seed\n"
@@ -1349,10 +1360,9 @@ TEST_F(ReturnAddressAttributionTest, Test5b_DwPcOffsetAppliesOffsetToRawPc) {
 // ===========================================================================
 // Test 6 -- Link-register recovery sets the flag (coverage row 7).
 //
-// AArch64 leaf .eh_frame rows keep the return address in LR until it is
-// spilled. This fixture reaches that rule through the real ELF parser and
-// walker; the stack slot must not replace the live LR.
-// x86_64 returns through a stack slot and skips this architecture-specific case.
+// On aarch64 the FDE's initial return-address rule is LR. The parsed row
+// must preserve that rule so the real DWARF walker can recover and attribute
+// the sampled link register. x86_64 has a stack return-address slot instead.
 // ===========================================================================
 
 #if defined(__aarch64__)
@@ -1480,6 +1490,7 @@ asm(
 extern "C" void prof_ra_sigreturn_without_signal_cfi(void);
 
 TEST_F(ReturnAddressAttributionTest, UnsupportedSigreturnDoesNotFollowInterruptedFp) {
+    VMTestAccessor recovering_vm;
     static uintptr_t scratch[64];
     ucontext_t uc = makeFabricatedContext((const void*)&prof_ra_sigreturn_without_signal_cfi, scratch, 64);
     // Model the FP-based fallback with a plausible but unrelated saved PC.
@@ -1533,7 +1544,8 @@ asm(
     ".cfi_startproc\n"
     ".cfi_signal_frame\n"
     ".cfi_def_cfa sp, 16\n"
-    ".cfi_offset 30, 0\n"
+    // Signal CFI takes precedence over conservative syscall recognition.
+    ".cfi_offset 30, -8\n"
     "mov x8, #139\n"
     "svc #0\n"
     ".cfi_endproc\n"
@@ -1601,10 +1613,10 @@ TEST_F(ReturnAddressAttributionTest, Test8_SignalFrameRowKeepsExactAddress) {
 // none of the gating tests reached its assertions, surfacing that
 // degradation instead of letting it pass silently. Declared last so it runs
 // after all of them under gtest's default (registration-order) test order.
-// Test6 is excluded by construction -- see its banner comment.
+// Test6 also gates the link-register path on aarch64.
 TEST(ReturnAddressAttributionGatingCoverageTest, AtLeastOneGatingAssertionRan) {
     EXPECT_GT(g_gating_assertions_reached, 0)
-        << "every gating test in this file (Test1/2c/3/4/5/5b/8) skipped its precondition "
+        << "every gating test in this file (Test1/2c/3/4/5/5b/6/8) skipped its precondition "
         << "check on this toolchain -- the attribution fix has zero effective "
         << "regression coverage in this build; see each test's GTEST_SKIP reason "
         << "in the test log above for which precondition failed";

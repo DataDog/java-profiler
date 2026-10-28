@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Testing Guide
 
 This document describes the complete test strategy for the java-profiler project:
@@ -162,6 +164,22 @@ as artifacts.
 
 ---
 
+### Virtual-thread remount correctness
+
+`ddprof-test` consumes the `chaosElements` outgoing configuration from
+`ddprof-stresstest`. Its artifact is the existing `chaosJar`, so the correctness
+test and standalone harness run the same `VirtualThreadRemountAntagonist`.
+The ordinary debug integration suite runs `VirtualThreadCarrierChaosTest` for
+six seconds per `vm`/`vmx` mode on supported HotSpot JDK 21+ runtimes.
+
+CPU and wall samples must exercise both argument layouts and partial thaw.
+Continuation errors, invalid ancestry and falsely complete Java stacks fail
+unconditionally. The shared `ContinuationStackChecks` validator also requires
+99% successful classified walks; native gaps and ambiguous carrier-only failures
+consume that budget. Its unit tests cover the classifier and acceptance checks.
+See [the chaos harness guide](../../ddprof-stresstest/src/chaos/README.md#virtual-thread-carrier-recovery)
+for the complete classification rules, diagnostics and longer-run controls.
+
 ## Tier 3 — dd-trace Integration Tests (GitLab, Every Push)
 
 **Pipeline:** `.gitlab/dd-trace-integration/.gitlab-ci.yml`
@@ -306,12 +324,25 @@ catching races with per-second probability too low for any bounded CI window.
 ./gradlew :ddprof-test:testAsan -Pskip-gtest
 ```
 
+### Coverage
+
+```bash
+# C++ (gcovr) + Java (JaCoCo) reports; needs gcovr 8.3+, gtest, make (Linux)
+./gradlew :ddprof-lib:coverageReport -PenableCoverage
+```
+
+The C++ report covers only the `-O0 -DDEBUG` build. Prerequisites and limits are in
+[CodeCoverage](CodeCoverage.md).
+
 ### Using containers to approximate CI
 
 `utils/run-containers-tests.sh` defaults to Podman. On macOS use Docker through colima
 (`--container=docker`): podman's credential-helper lookup for the Datadog registries
 (ddtool) fails outside the CI network and aborts container commands. Run `./utils/run-containers-tests.sh --help` for the full flag list
 (`--tests`, `--gtest`, `--gtest-task`, `--mount`, `--rebuild`, `--matrix`, ...).
+Cached images are reused until `--rebuild-base` (or `--rebuild`) is passed. Use it
+after the base image's package list changes, e.g. to pick up gcovr for coverage runs:
+it rebuilds the base image and the JDK image built on it.
 
 ```bash
 # Matches the nightly configuration

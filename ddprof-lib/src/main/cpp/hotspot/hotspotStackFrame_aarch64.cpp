@@ -169,6 +169,91 @@ static inline bool isPollReturn(instruction_t* ip) {
     return true;
 }
 
+int HotspotStackFrame::continuationEntryThreadOffset(const unsigned char* code, size_t size) {
+    if (code == nullptr || size < 8) return -1;
+    uint32_t load = code[0] | (uint32_t(code[1]) << 8) | (uint32_t(code[2]) << 16) | (uint32_t(code[3]) << 24);
+    uint32_t move = code[4] | (uint32_t(code[5]) << 8) | (uint32_t(code[6]) << 16) | (uint32_t(code[7]) << 24);
+    // ldr x8, [x28, #offset]; mov sp, x8
+    if ((load & 0xffc003ffU) != 0xf9400388U || move != 0x9100011fU) return -1;
+    return ((load >> 10) & 0xfffU) * sizeof(uintptr_t);
+}
+
+int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc) {
+    int words = nm->frameSize();
+    instruction_t* ip = (instruction_t*)pc;
+    instruction_t* entry = (instruction_t*)nm->entry();
+    if (words < 4 || words > 256 || (words & 1) != 0) return -1;
+    if (ip < entry) {
+        // The interpreter-only adapter precedes the verified compiled entry.
+        // Locate its own enter/setup sequence; the compiled frame-complete
+        // offset does not describe this earlier entry.
+        instruction_t* code = (instruction_t*)nm->code();
+        instruction_t* end = entry < code + 64 ? entry : code + 64;
+        instruction_t* save = code;
+        for (; save + 2 < end; save++) {
+            if (save[0] == 0xa9bf7bfd && save[1] == 0x910003fd &&
+                save[2] == (0xd10003ffU | ((words - 2) * sizeof(uintptr_t) << 10))) break;
+        }
+        if (save + 2 >= end || ip < save) return -1;
+        entry = save;
+    }
+
+    if (!nm->isFrameCompleteAt(pc)) {
+        // MacroAssembler::enter may protect LR before saving FP/LR. Keep the
+        // scan bounded, and require the generated save/mov/sub sequence.
+        instruction_t* save = entry;
+        for (int i = 0; i < 4; i++) {
+            if (*save == 0xd503201f || *save == 0xd503245f || // nop, bti c
+                *save == 0xd503231f || *save == 0xd503233f || // paciaz, paciasp
+                *save == 0xf94003df) {                      // ldr xzr, [lr] (debug PAC check)
+                save++;
+            } else {
+                break;
+            }
+        }
+        if (save[0] != 0xa9bf7bfd || save[1] != 0x910003fd ||
+            save[2] != (0xd10003ffU | ((words - 2) * sizeof(uintptr_t) << 10))) return -1;
+        if (ip <= save) return 0;         // before stp FP/LR
+        if (ip <= save + 2) return 2;     // after stp, before sub SP
+        return words;                    // storage allocated, entry not yet published
+    }
+
+    if (*ip == 0xa8c17bfd) return 2;       // ldp FP/LR, [sp], #16: SP already restored
+    if (*ip == 0xd65f03c0 ||              // ret
+        *ip == 0xd503239f || *ip == 0xd50323bf || // autiaz, autiasp
+        *ip == 0xd65f0bff || *ip == 0xd65f0fff || // retaa, retab
+        (*ip == 0xf94003df && ip > entry &&
+         (ip[-1] == 0xd503239f || ip[-1] == 0xd50323bf))) return 0;
+    // gen_continuation_enter's exception exit executes mov x3, lr; br x1
+    // after leave() has restored SP and FP/LR, including LR authentication.
+    if ((*ip == 0xaa1e03e3 && nm->contains(ip + 1) && ip[1] == 0xd61f0020) ||
+        (*ip == 0xd61f0020 && ip > entry && ip[-1] == 0xaa1e03e3)) return 0;
+    return words + continuationEntrySpillWords(nm, pc);
+}
+
+int HotspotStackFrame::continuationEntrySpillWords(VMNMethod* nm, const void* pc) {
+    instruction_t* ip = (instruction_t*)pc;
+    instruction_t* entry = (instruction_t*)nm->entry();
+    // call_VM_leaf_base spills x8/x12 while resolving the exception handler:
+    // stp; load x8, target; blr x8; ldp. mov_immediate64 uses a logical
+    // immediate or one to four wide moves. Until ldp executes,
+    // the complete entry frame sits two words above the sampled SP.
+    for (int distance = 1; distance <= 6 && ip - entry >= distance; distance++) {
+        instruction_t* spill = ip - distance;
+        if (spill[0] != 0xa9bf33e8) continue;
+        instruction_t* call = spill + 1;
+        for (int loads = 0; loads < 4 && nm->contains(call); loads++, call++) {
+            uint32_t move = *call & 0xff80001fU;
+            bool valid = loads == 0 ? move == 0xd2800008 || move == 0x92800008 ||
+                    (*call & 0xff8003ffU) == 0xb20003e8 : move == 0xf2800008;
+            if (!valid) break;
+        }
+        if (call > spill + 1 && nm->contains(call + 1) &&
+            *call == 0xd63f0100 && call[1] == 0xa8c133e8 && ip <= call + 1) return 2;
+    }
+    return 0;
+}
+
 NOSANALIGSANITIZE bool HotspotStackFrame::unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     // C1/C2 methods:
     //   {stack_bang}
