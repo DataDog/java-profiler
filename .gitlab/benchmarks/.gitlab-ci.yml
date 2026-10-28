@@ -1,3 +1,5 @@
+# Copyright 2026, Datadog, Inc.
+
 variables:
   DD_OCTO_STS_IMAGE: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
 
@@ -27,6 +29,11 @@ variables:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    # Merge-queue branches have no open PR, so prepare.sh cancels the pipeline
+    # and deploy-artifact publishes nothing to benchmark; the BP run would
+    # only delay the queue (run-benchmarks uses strategy: depend).
+    - if: '$CI_COMMIT_BRANCH =~ /^mq-working-branch-/'
       when: never
 
 # Decide whether benchmarks run for this branch and generate the child
