@@ -14,6 +14,7 @@ before working on a subsystem.
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](/doc/architecture/RefCountGuard.md) |
 | TLS context (thread-local tracing context, distributed tracing) | [doc/architecture/TLSContext.md](/doc/architecture/TLSContext.md) |
 | JVM support (HotSpot, J9, Zing) | [doc/architecture/JvmSupportLayer.md](/doc/architecture/JvmSupportLayer.md) |
+| Native stack unwinding (DWARF CFA rules, arm64 LR/PLT and validated Linux signal-frame recovery) | [doc/architecture/JvmSupportLayer.md](/doc/architecture/JvmSupportLayer.md) |
 | Profiling engines (CPU, wall-clock, allocation, native memory, liveness; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](/doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers) | [doc/architecture/JfrIntegration.md](/doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](/doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](/doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](/doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](/doc/ReferenceChainsCollectionSummary.md) |
