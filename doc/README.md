@@ -39,7 +39,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [GradleTasks](building/GradleTasks.md) - Available Gradle tasks reference
 - [JdkUpgrades](building/JdkUpgrades.md) - Two-JDK pattern and JDK upgrade touchpoints
 - [MemoryOverheadCheck](building/MemoryOverheadCheck.md) - Per-PR native-memory budget check on GitLab and how to recalibrate it
-- [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin
+- [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin and Google Test archive dependency ordering
 - [ReleaseTrain](building/ReleaseTrain.md) - Automated release train: nightly certification, Friday minor release, dd-trace-java bump
 - [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, integration runtime applicability and JVM identity checks, shared virtual-thread chaos coverage, local workflows and pre-setup CStack exclusions
 - [Versioning](building/Versioning.md) - Version computation from git tags

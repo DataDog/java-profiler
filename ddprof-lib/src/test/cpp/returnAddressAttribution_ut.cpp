@@ -225,6 +225,16 @@ TEST(ReturnAddressAttributionCharacterizationTest, MarkVisibleAtAdjustedBoundary
 #include "stackWalker.inline.h"
 #include "threadLocalData.inline.h"
 
+class VMTestAccessor {
+    bool _old_hotspot = VM::_hotspot;
+
+public:
+    VMTestAccessor() { VM::_hotspot = true; }
+    ~VMTestAccessor() { VM::_hotspot = _old_hotspot; }
+    VMTestAccessor(const VMTestAccessor&) = delete;
+    VMTestAccessor& operator=(const VMTestAccessor&) = delete;
+};
+
 [[maybe_unused]] static long long* _return_addr_attr_ut_counters_init = Counters::getCounters();
 
 // Each gating test below (Test1/3/4/5/6) has toolchain-dependent preconditions
@@ -1420,6 +1430,86 @@ TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
 #endif  // __aarch64__
 }
 
+#if defined(__aarch64__)
+
+asm(
+    ".text\n"
+    ".globl prof_ra_restored_lr_fn\n"
+    ".type prof_ra_restored_lr_fn,%function\n"
+"prof_ra_restored_lr_fn:\n"
+    ".cfi_startproc\n"
+    "stp x29, x30, [sp, #-32]!\n"
+    ".cfi_def_cfa_offset 32\n"
+    ".cfi_offset 29, -32\n"
+    ".cfi_offset 30, -24\n"
+    "ldp x29, x30, [sp], #32\n"
+    ".cfi_restore 29\n"
+    ".cfi_restore 30\n"
+    ".cfi_def_cfa_offset 0\n"
+    ".globl prof_ra_restored_lr_pc\n"
+"prof_ra_restored_lr_pc:\n"
+    "nop\n"
+    "ret\n"
+    ".cfi_endproc\n"
+    ".size prof_ra_restored_lr_fn, .-prof_ra_restored_lr_fn\n"
+);
+
+extern "C" void prof_ra_restored_lr_pc(void);
+
+TEST_F(ReturnAddressAttributionTest, RestoredLinkRegisterIgnoresStaleStackSlot) {
+    static uintptr_t scratch[64];
+    ucontext_t uc = makeFabricatedContext((const void*)&prof_ra_restored_lr_pc, scratch, 64);
+    uc.uc_mcontext.regs[30] = (unsigned long)&prof_ra_lr_next;
+    // A signal can overwrite the callee's old LR slot after SP is restored.
+    // Populate it with a plausible code address to expose a phantom caller.
+    ((uintptr_t*)uc.uc_mcontext.sp)[-3] = (uintptr_t)&prof_ra_lr_fn + 1;
+    StackContext ctx{};
+    bool truncated = false;
+    const void* chain[9];
+    int depth = StackWalker::walkDwarf(&uc, chain, 8, &ctx, &truncated);
+    ASSERT_GE(depth, 2);
+    EXPECT_EQ((const void*)&prof_ra_restored_lr_pc, chain[0]);
+    EXPECT_EQ((const char*)&prof_ra_lr_next - 1, chain[1]);
+}
+
+asm(
+    ".text\n"
+    ".globl prof_ra_sigreturn_without_signal_cfi\n"
+    ".type prof_ra_sigreturn_without_signal_cfi,%function\n"
+"prof_ra_sigreturn_without_signal_cfi:\n"
+    ".cfi_startproc\n"
+    ".cfi_def_cfa x29, 0\n"
+    ".cfi_offset 29, 0\n"
+    ".cfi_offset 30, 8\n"
+    "mov x8, #139\n"
+    "svc #0\n"
+    ".cfi_endproc\n"
+    ".size prof_ra_sigreturn_without_signal_cfi, .-prof_ra_sigreturn_without_signal_cfi\n"
+);
+
+extern "C" void prof_ra_sigreturn_without_signal_cfi(void);
+
+TEST_F(ReturnAddressAttributionTest, UnsupportedSigreturnDoesNotFollowInterruptedFp) {
+    VMTestAccessor recovering_vm;
+    static uintptr_t scratch[64];
+    ucontext_t uc = makeFabricatedContext((const void*)&prof_ra_sigreturn_without_signal_cfi, scratch, 64);
+    // Model the FP-based fallback with a plausible but unrelated saved PC.
+    ((uintptr_t*)uc.uc_mcontext.regs[29])[0] = uc.uc_mcontext.regs[29] + 16;
+    ((uintptr_t*)uc.uc_mcontext.regs[29])[1] = (uintptr_t)&prof_ra_lr_next;
+    StackContext ctx{};
+    bool truncated = false;
+    const void* chain[9];
+    EXPECT_EQ(1, StackWalker::walkDwarf(&uc, chain, 8, &ctx, &truncated));
+    EXPECT_TRUE(truncated);
+    // A sample may also land on the syscall instruction itself.
+    uc.uc_mcontext.pc += sizeof(instruction_t);
+    truncated = false;
+    EXPECT_EQ(1, StackWalker::walkDwarf(&uc, chain, 8, &ctx, &truncated));
+    EXPECT_TRUE(truncated);
+}
+
+#endif // __aarch64__
+
 // ===========================================================================
 // Test 8 -- A signal-frame row suppresses the attribution adjustment
 // (DWARF CIE augmentation 'S', emitted by .cfi_signal_frame).
@@ -1454,9 +1544,10 @@ asm(
     ".cfi_startproc\n"
     ".cfi_signal_frame\n"
     ".cfi_def_cfa sp, 16\n"
-    // This fabricated frame stores its caller PC in memory, not in LR.
+    // Signal CFI takes precedence over conservative syscall recognition.
     ".cfi_offset 30, -8\n"
-    "nop\nnop\n"
+    "mov x8, #139\n"
+    "svc #0\n"
     ".cfi_endproc\n"
     ".size prof_ra_sig_seed, .-prof_ra_sig_seed\n"
 );

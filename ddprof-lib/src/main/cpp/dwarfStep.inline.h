@@ -27,6 +27,8 @@
 // A recognized Linux arm64 signal trampoline also replaces the frame view
 // with the interrupted ucontext, preserving its LR and exact PC. Neither
 // ucontext is modified.
+// Recognized restorers without usable context/CFI stop with *truncated set,
+// when that optional result pointer is available.
 // On a false return sp/fp/walk_pc may already have been partly updated; both
 // callers stop the walk, so no caller observes that.
 //
@@ -48,7 +50,7 @@
 __attribute__((always_inline))
 inline bool advanceDwarfFrame(WalkPc& walk_pc, uintptr_t& sp, uintptr_t& fp,
                               uintptr_t bottom, int depth,
-                              StackFrame& frame, Profiler* profiler) {
+                              StackFrame& frame, Profiler* profiler, bool* truncated = nullptr) {
     using StackWalkValidation::inDeadZone;
     using StackWalkValidation::aligned;
     using StackWalkValidation::MAX_FRAME_SIZE;
@@ -62,16 +64,26 @@ inline bool advanceDwarfFrame(WalkPc& walk_pc, uintptr_t& sp, uintptr_t& fp,
     const void* attribution_pc = walk_pc.attribution();
     uintptr_t prev_sp = sp;
     CodeCache* cc = profiler->findLibraryByAddress(attribution_pc);
+    FrameDesc f = cc != NULL ? cc->findFrameDesc(attribution_pc) : FrameDesc::fallback_default_frame();
 #if defined(__linux__) && defined(__aarch64__)
     // Linux omits CFI for __kernel_rt_sigreturn. Its SP points to rt_sigframe:
     // siginfo_t followed by ucontext_t (arch/arm64/kernel/signal.c).
     // Match the vDSO's exact mov x8, #139; svc #0 sequence before reading it.
-    if (cc != nullptr && strcmp(cc->name(), "[vdso]") == 0) {
+    bool vdso = cc != nullptr && strcmp(cc->name(), "[vdso]") == 0;
+    // Unknown code can be unmapped. Only HotSpot/OpenJ9 install our safefetch
+    // recovery handlers; other VMs retain their ordinary CFI/FP fallback.
+    if (!f.isSignalFrame() && (vdso || VM::isHotspot() || VM::isOpenJ9())) {
         auto* ip = (uint32_t*)walk_pc.raw();
         uint32_t instruction = SafeAccess::safeFetch32((int*)ip, 0);
-        bool trampoline = instruction == 0xd2801168U && SafeAccess::safeFetch32((int*)(ip + 1), 0) == 0xd4000001U;
-        trampoline |= instruction == 0xd4000001U && SafeAccess::safeFetch32((int*)(ip - 1), 0) == 0xd2801168U;
+        bool trampoline = (instruction & 0x7fffffffU) == 0x52801168U && SafeAccess::safeFetch32((int*)(ip + 1), 0) == 0xd4000001U;
+        trampoline |= instruction == 0xd4000001U && (SafeAccess::safeFetch32((int*)(ip - 1), 0) & 0x7fffffffU) == 0x52801168U;
         if (trampoline) {
+            bool was_truncated = truncated != nullptr && *truncated;
+            if (truncated != nullptr) *truncated = true;
+            // SA_RESTORER also permits user trampolines. Without signal CFI,
+            // their FP chain cannot establish the interrupted PC. Recover only
+            // the known vDSO layout; leave other restorers truthfully truncated.
+            if (!vdso) return false;
             constexpr size_t required = sizeof(siginfo_t) + offsetof(ucontext_t, uc_mcontext.pc) + sizeof(uint64_t);
             if ((sp & 15) != 0 || sp >= bottom || bottom - sp < required) return false;
             auto* context = (ucontext_t*)(sp + sizeof(siginfo_t));
@@ -84,11 +96,11 @@ inline bool advanceDwarfFrame(WalkPc& walk_pc, uintptr_t& sp, uintptr_t& fp,
             fp = interrupted_fp;
             walk_pc.setExactAddress(interrupted_pc);
             frame = StackFrame(context);
+            if (truncated != nullptr) *truncated = was_truncated;
             return true;
         }
     }
 #endif
-    FrameDesc f = cc != NULL ? cc->findFrameDesc(attribution_pc) : FrameDesc::fallback_default_frame();
 
     u8 cfa_reg = (u8)f.cfa;
     int cfa_off = f.cfa >> 8;
