@@ -123,10 +123,11 @@ public:
     // words up to the carrier SP. Two or more words include saved FP/PC; before
     // saving and after restoring them, FP is still in the sampled register and
     // PC is in LR (aarch64, zero words) or at SP (x64, one word). Returns -1 for
-    // unsupported prologues or invalid frame metadata. Interpreter-only entry
+    // unsupported code sections or invalid frame metadata. Interpreter-only entry
     // setup is located before the verified compiled entry; arm64 VM-leaf spills
-    // add two temporary words. Never use a return PC:
+    // add two temporary words. Never infer a sampled layout from a return PC:
     // its instruction has not executed with the sampled register values.
+    // A negative result may conservatively reject an unsupported code section.
     int continuationEntryFrameWords(VMNMethod* nm, const void* pc);
 
 #ifdef __aarch64__

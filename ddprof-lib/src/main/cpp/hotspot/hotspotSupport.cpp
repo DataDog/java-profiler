@@ -493,7 +493,34 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             }
         } else {
             uintptr_t entry_fp;
-            if (VMContinuationEntry::type_size() > 0) {
+            VMContinuationEntry* recovered_entry = nullptr;
+            VMNMethod* entry_nm = continuation_entry_nm;
+            uintptr_t spill_bytes = 0;
+#ifdef __x86_64__
+            if (entry_nm != nullptr && CodeHeap::findNMethod(walk_pc.raw()) == entry_nm &&
+                    frame.continuationEntryFrameWords(entry_nm, walk_pc.raw()) < 0) {
+                // Only classify unsupported code here; a native return PC does
+                // not describe the sampled registers. Exception cleanup may
+                // already have unlinked the entry advertised by the thread.
+                fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
+                return false;
+            }
+#endif
+#ifdef __aarch64__
+            if (kind != ContBoundary::Frozen && entry_nm != nullptr && CodeHeap::findNMethod(walk_pc.raw()) == entry_nm) {
+                spill_bytes = HotspotStackFrame::continuationEntrySpillWords(entry_nm, walk_pc.raw()) * sizeof(uintptr_t);
+            }
+#endif
+            if (spill_bytes != 0) {
+                // Exception cleanup unlinks the entry before resolving its
+                // handler. The recognized spill still lies below its live frame.
+                entry_fp = sp > UINTPTR_MAX - spill_bytes ? 0 : entry_nm->continuationEntryFP(sp + spill_bytes, 0);
+                if (VMContinuationEntry::type_size() > 0 && entry_fp != 0) {
+                    VMContinuationEntry* entry = (VMContinuationEntry*)(sp + spill_bytes);
+                    if (entry->entryFP() != entry_fp) entry_fp = 0;
+                    else recovered_entry = entry;
+                }
+            } else if (VMContinuationEntry::type_size() > 0) {
                 // Exported entries (JDK 27+) form a chain for nested continuations.
                 cont_entry = (cont_entry != nullptr) ? cont_entry->parent() : vm_thread->contEntry();
                 if (cont_entry == nullptr) {
@@ -503,7 +530,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 }
                 entry_fp = cont_entry->entryFP();
             } else {
-                VMNMethod* entry_nm = continuation_entry_nm;
                 bool known_boundary = VMStructs::isContReturnBarrier(walk_pc.raw())
                         || VMStructs::isContEntryReturnPc(walk_pc.raw())
                         || (entry_nm != nullptr && CodeHeap::findNMethod(walk_pc.raw()) == entry_nm);
@@ -519,14 +545,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 } else if (entry_nm != nullptr && known_boundary) {
                     // Fast thaw does not repair FP links. Recover the entry from SP,
                     // stack-argument padding and enterSpecial's generated frame size.
-                    uintptr_t spill_bytes = 0;
-#ifdef __aarch64__
-                    if (kind != ContBoundary::Frozen && CodeHeap::findNMethod(walk_pc.raw()) == entry_nm) {
-                        spill_bytes = HotspotStackFrame::continuationEntrySpillWords(entry_nm, walk_pc.raw()) * sizeof(uintptr_t);
-                    }
-#endif
-                    entry_fp = sp > UINTPTR_MAX - spill_bytes ? 0 :
-                            entry_nm->continuationEntryFP(sp + spill_bytes, kind == ContBoundary::Frozen ? continuation_stack_args : 0);
+                    entry_fp = entry_nm->continuationEntryFP(sp, kind == ContBoundary::Frozen ? continuation_stack_args : 0);
                 } else {
                     entry_fp = contBoundaryEntryFpIsCurrentFp(kind) ? fp : 0;
                 }
@@ -537,6 +556,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
                 return false;
             }
+            // The next nested crossing must advance from the recovered entry,
+            // even if an earlier crossing left the cursor at its child.
+            if (recovered_entry != nullptr) cont_entry = recovered_entry;
             // Range-check before dereferencing; crash protection handles stale memory.
             uintptr_t* saved = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(entry_fp);
             carrier_fp = saved[0];
