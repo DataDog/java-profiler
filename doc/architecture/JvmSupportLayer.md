@@ -185,6 +185,16 @@ C1 object-arraycopy has a second live save area around its subtype-check call.
 Matching pair pops on both paths of the following result branch establish the
 additional 16 bytes; the branch-target probe is bounded to 1,024 bytes.
 
+Interrupted arm64 JNI wrappers use their generated register-save phases rather
+than the complete frame size. Before the local-storage subtraction, only the
+saved FP/LR pair is popped. The bounded normal tail decoder requires
+`mov sp, fp; ldp fp, lr, [sp], #16`, optional LR authentication, the thread's
+pending-exception load, its conditional branch and `ret`. At the pending `ldp`
+it restores the two live stack words; later phases use the interrupted LR and
+never read the saved pair below the restored SP. The epilogue repair applies to
+exact interrupted PCs, while recovered return addresses keep the normal
+compiled-frame path.
+
 Linux arm64's vDSO `__kernel_rt_sigreturn` omits DWARF metadata. The shared
 native step recognizes its exact syscall instruction pair only in `[vdso]`,
 bounds-checks the `siginfo_t`/`ucontext_t` signal-frame layout, and restores the
