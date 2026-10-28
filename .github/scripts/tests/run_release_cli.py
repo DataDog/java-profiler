@@ -54,6 +54,7 @@ def main():
         try:
             os.killpg(child_pid, signal.SIGKILL)
         except ProcessLookupError:
+            # The child may have exited and its process group disappeared before cleanup.
             pass
         os.waitpid(child_pid, 0)
         raise
