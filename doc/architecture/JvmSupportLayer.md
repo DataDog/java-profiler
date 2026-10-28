@@ -173,6 +173,11 @@ or return-PC stack slot (x64). Unknown prologues fail rather than applying the
 complete-frame size. Pointer-authentication instructions are recognized on
 arm64, and recovered PCs have PAC bits stripped.
 
+On x64, the generated exception section after the validated normal cleanup is
+unsupported. Its FP and return-PC sources change around handler resolution. Both
+direct samples and native resolver return PCs stop with an error and truncation
+instead of applying a complete-frame layout or following an unlinked entry.
+
 Interpreter-only execution uses a separate entry before the verified compiled
 entry on both architectures. The decoder locates that entry's recognized frame
 setup with a bounded scan before the compiled entry. Its prologue and established
@@ -218,6 +223,11 @@ nmethod's validated frame size locates its saved FP/PC pair; stack range,
 alignment and carrier admission checks apply before proceeding. Walks with a
 known argument count retain SP-based recovery. Missing or invalid metadata
 still rejects the walk, and frozen boundaries remain marked truncated.
+
+Recognized arm64 VM-leaf spills also recover an entry that exception cleanup has
+already unlinked from the thread. Exported layouts must agree with the entry FP
+derived from the nmethod size. The nested-entry cursor records that physical entry
+so the next crossing follows its parent once.
 
 Native thaw calls return inside the barrier stub, where SP has already changed.
 The runtime-stub lookup identifies these PCs by matching the registered stub's
