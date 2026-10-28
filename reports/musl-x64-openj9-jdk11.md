@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk11
 
 ## musl-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-10-28 07:50:23 EDT
+**Date:** 2026-10-28 09:32:48 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 496 |
-| Sample Rate | 8.27/sec |
-| Health Score | 517% |
+| CPU Samples | 625 |
+| Sample Rate | 10.42/sec |
+| Health Score | 651% |
 | Threads | 8 |
-| Allocations | 357 |
+| Allocations | 379 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 687 |
-| Sample Rate | 11.45/sec |
-| Health Score | 716% |
-| Threads | 9 |
-| Allocations | 528 |
+| CPU Samples | 773 |
+| Sample Rate | 12.88/sec |
+| Health Score | 805% |
+| Threads | 10 |
+| Allocations | 495 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 27-27 cores)</summary>
 
 ```
-1793187750 27
-1793187755 27
-1793187760 27
-1793187765 27
-1793187770 27
-1793187775 27
-1793187780 27
-1793187785 27
-1793187790 27
-1793187795 27
-1793187800 27
-1793187805 27
-1793187810 27
-1793187815 27
-1793187820 27
-1793187825 27
-1793187830 27
-1793187835 27
-1793187840 27
-1793187845 27
+1793194049 27
+1793194054 27
+1793194059 27
+1793194064 27
+1793194069 27
+1793194074 27
+1793194079 27
+1793194084 27
+1793194089 27
+1793194094 27
+1793194099 27
+1793194104 27
+1793194109 27
+1793194114 27
+1793194119 27
+1793194124 27
+1793194129 27
+1793194134 27
+1793194139 27
+1793194144 27
 ```
 </details>
 
