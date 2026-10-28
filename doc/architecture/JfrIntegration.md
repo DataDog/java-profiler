@@ -63,9 +63,9 @@ event silently.
 not by thread:
 
 1. `Profiler::getLockIndex(tid)` hashes the thread ID to a stripe
-   (`profiler.cpp:229-234`).
+   (`profiler.cpp:331-336`).
 2. The caller `tryLock()`s that stripe, then up to two others; if all three are
-   taken the sample is dropped (`profiler.cpp:679-682`).
+   taken the sample is dropped (`profiler.cpp:781-784`).
 3. With the stripe lock held it calls `FlightRecorder::recordEvent(lock_index, ...)`,
    which writes into `_buf[lock_index]` (`flightRecorder.cpp:2866-2907`).
 
@@ -138,7 +138,7 @@ events write the context snapshot taken when the allocation was tracked
 - `wallClockEpoch()`, `recordTraceRoot()`, `recordQueueTime()`,
   `recordDatadogSetting()`, `recordHeapUsage()` and the reference-chain writers
   use `_buf[lock_index]`; their `Profiler` callers take the stripe lock first
-  (`profiler.cpp:788-894`, `1854-1866`).
+  (`profiler.cpp:890-996`, `1854-1866`).
 - `recordLog()` builds the event in an `alloca` buffer and writes it to the
   file at once, without a stripe lock (`flightRecorder.cpp:2945-2966`).
 - `cpuMonitorCycle()` writes `jdk.CPULoad` into `_cpu_monitor_buf`, which
@@ -195,12 +195,12 @@ properties and native libraries can be turned off with `NO_SYSTEM_INFO`,
 
 ### How `Profiler` drives it
 
-`Profiler::dump()` (`profiler.cpp:2024-2096`) first emits pending
+`Profiler::dump()` (`profiler.cpp:2136-2208`) first emits pending
 reference-chain events under a stripe lock, refreshes libraries and thread
 names, then runs `_jfr.dump()` inside `rotateDictsAndRun()`. `Profiler::stop()`
-runs `_jfr.stop()` the same way (`profiler.cpp:1946`).
+runs `_jfr.stop()` the same way (`profiler.cpp:2058`).
 
-`rotateDictsAndRun()` (`profiler.h:216-239`):
+`rotateDictsAndRun()` (`profiler.h:245-268`):
 
 1. Blocks profiling signals on the dumping thread (`SignalBlocker`).
 2. Rotates `_class_map`, `_string_label_map` and `_context_value_map`, so each
@@ -257,7 +257,7 @@ static string table filled by `getId()` (`jfrMetadata.h:114-122`);
 
 `Profiler::start()` calls `JfrMetadata::reset()` then `initialize()` with
 `args._context_attributes`, truncated to `DD_TAGS_CAPACITY`, before
-`_jfr.start()` (`profiler.cpp:1657-1665`). `reset()` deletes the tree and
+`_jfr.start()` (`profiler.cpp:1760-1768`). `reset()` deletes the tree and
 re-registers `"root"` as string 0 so the root element's name stays valid
 (`jfrMetadata.cpp:43-60`). Both require `Profiler::_state_lock` and must not run
 while engines are active (`jfrMetadata.h:276-284`).
@@ -373,7 +373,7 @@ turns this off; it is on by default (`flightRecorder.cpp:1244-1291`,
 `writeStackTraces()` (`flightRecorder.cpp:1925-1979`) is the only consumer of
 stored traces. It calls `Profiler::processCallTraces()`, which hands the lambda
 to `CallTraceStorage::processTraces()`, or an empty set when stack traces are
-omitted (`profiler.h:346-354`). Rotation, liveness preservation and the reserved
+omitted (`profiler.h:377-385`). Rotation, liveness preservation and the reserved
 trace IDs are covered in [CallTraceStorage](CallTraceStorage.md). The callback
 runs inside `processTraces()`, so the `CallTrace` pointers stay valid while it
 runs.

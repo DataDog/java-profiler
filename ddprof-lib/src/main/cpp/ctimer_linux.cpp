@@ -133,10 +133,9 @@ void CTimer::unregisterThread(int tid) {
 }
 
 // Sizes the tid-indexed timer table and accounts it under NM_CTIMER. Runs before
-// start() opens thread registration, so no pthread-hook call can be inside the
-// table while it is replaced. The JVMTI ThreadStart/ThreadEnd callbacks reach
-// the engine directly, but Profiler enables them only after the engines have
-// started and disables them only after the engines have stopped.
+// start() opens thread registration, so no thread-hook call (pthread hook or
+// JVMTI ThreadStart/ThreadEnd, which share the gate) can be inside the table
+// while it is replaced.
 //
 // On allocation failure the table is left empty (_max_timers == 0), so the tid
 // bound checks reject every tid instead of indexing a NULL table, and the next

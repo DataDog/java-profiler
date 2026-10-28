@@ -87,8 +87,10 @@ template <typename Cond> static bool waitFor(Cond cond) {
   return true;
 }
 
-// Exposes CTimer's tid-indexed timer table without starting the engine, which
-// would install a SIGPROF handler and arm a timer for every live thread.
+// Exposes CTimer's tid-indexed timer table. The table accessors work without
+// starting the engine; startWithTableSize() does start it (installs the
+// SIGPROF handler and arms a timer for every live thread), and only
+// StartOpensThreadRegistration uses it on a real table.
 class CTimerTestAccessor {
 public:
   static bool resizeTimers(int max_timers) { return CTimer::resizeTimers(max_timers); }
@@ -265,8 +267,14 @@ class BlockingEngine : public Engine {
 public:
   std::atomic<bool> entered{false};
   std::atomic<bool> released{false};
+  // Thread cancellation state seen inside the call (PTHREAD_CANCEL_*), or -1.
+  std::atomic<int> cancel_state_inside{-1};
 
   int registerThread(int tid) override {
+    int state;
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &state);
+    pthread_setcancelstate(state, nullptr);
+    cancel_state_inside.store(state);
     entered.store(true);
     waitFor([this] { return released.load(); });
     return 0;
@@ -290,9 +298,12 @@ TEST(ProfilerEnginesGateTest, CloseThreadRegistrationWaitsForHookCalls) {
     ProfilerTestAccessor::closeThreadRegistration(profiler);
     closed.store(true);
   });
+  // Wait until the closer has cleared the gate, so it is in the wait loop.
+  bool gate_closed =
+      waitFor([&] { return !ProfilerTestAccessor::enginesReady(profiler); });
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_TRUE(gate_closed);
   EXPECT_FALSE(closed.load());
-  EXPECT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
 
   cpu.released.store(true);
   hook.join();
@@ -347,6 +358,10 @@ TEST(ProfilerEnginesGateTest, CancellationDuringHookCallActsAfterTheCall) {
   ProfilerTestAccessor::closeThreadRegistration(profiler);
 
   EXPECT_TRUE(entered);
+  // The hook call ran with cancellation disabled; without that, the request
+  // could act at a cancellation point inside the engine and unwind through
+  // ~HookCallScope().
+  EXPECT_EQ(PTHREAD_CANCEL_DISABLE, cpu.cancel_state_inside.load());
   EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
   EXPECT_FALSE(survived_cancellation.load());
 }

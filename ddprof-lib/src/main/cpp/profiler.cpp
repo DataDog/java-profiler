@@ -110,8 +110,9 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     }
   }
 
-  _cpu_engine->registerThread(tid);
-  _wall_engine->registerThread(tid);
+  // Through the same gate and in-flight count as the pthread hook: disabling
+  // the JVMTI event in stop() does not wait for callbacks already running.
+  registerThread(tid);
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
@@ -142,8 +143,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     // partially-torn-down thread (PROF-14674).
     {
       blockProfilingForExit();
-      _cpu_engine->unregisterThread(tid);
-      _wall_engine->unregisterThread(tid);
+      unregisterThread(tid);
       LivenessTracker::instance()->releaseThreadLocalState();
       ProfiledThread::release();
     }
@@ -161,8 +161,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   if (_reference_chains_active) {
     ReferenceChainTracker::instance()->unregisterThreadObject(jni, tid);
   }
-  _cpu_engine->unregisterThread(tid);
-  _wall_engine->unregisterThread(tid);
+  unregisterThread(tid);
   LivenessTracker::instance()->releaseThreadLocalState();
 }
 
@@ -186,11 +185,13 @@ private:
 };
 
 // Keeps Profiler::unregisterThread() off the engines while start() selects
-// the CPU engine and lets it replace its per-thread table. Exits skipped in
-// this window leave nothing behind: CTimer::stop() deleted every timer, and
-// PerfEvents::start() closes the fd of every tid missing from its fresh
-// thread list. The gate is set again by openThreadRegistration() once the
-// table is sized, and at the latest when start() returns.
+// the CPU engine and lets it replace its per-thread table. The gate is set
+// again by openThreadRegistration() once the table is sized, and at the latest
+// when start() returns. An exit skipped in this window is cleaned up only if
+// the thread is gone when the engine lists threads: CTimer::stop() deleted
+// every timer, and PerfEvents::start() closes the fd of every listed-missing
+// tid. A thread that is still listed while it exits is registered by start()
+// and its slot stays occupied after it dies (PROF-16359).
 class Profiler::ThreadTablesFreeze {
 public:
   explicit ThreadTablesFreeze(Profiler *profiler) : _profiler(profiler) {
@@ -1934,12 +1935,11 @@ Error Profiler::stop() {
     return Error("signal handlers did not drain; teardown skipped, retry stop()");
   }
 
-  // Close the hook gate and wait for hook calls already past it, so no
-  // pthread-hook call arms a timer after CTimer::stop() has unregistered them
-  // all, and none is still inside the timer table when the next start()
-  // resizes it. JVMTI ThreadStart reaches the engine directly and is disabled
-  // only after the engines stop, so a Java thread starting in that window can
-  // still arm a timer that nothing deletes.
+  // Close the registration gate and wait for calls already past it, so no
+  // thread arms a timer after CTimer::stop() has unregistered them all, and
+  // none is still inside the timer table when the next start() resizes it.
+  // This covers the JVMTI ThreadStart/ThreadEnd callbacks too: they go through
+  // the same gate, and their events are disabled only after the engines stop.
   closeThreadRegistration();
 
   if (_event_mask & EM_ALLOC)

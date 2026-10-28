@@ -55,9 +55,9 @@ separate singleton (`ObjectSampler::instance()`,
 
 | Slot | Chosen by | Notes |
 |------|-----------|-------|
-| `_cpu_engine` | `selectCpuEngine()` (`profiler.cpp:1354`) | Receives `registerThread`/`unregisterThread` and `enableEvents` |
-| `_wall_engine` | `selectWallEngine()` (`profiler.cpp:1401`) | Same as above |
-| `_alloc_engine` | `selectAllocEngine()` (`profiler.cpp:1436`) | `ObjectSampler` if `VM::canSampleObjects()`, else `noop_engine` |
+| `_cpu_engine` | `selectCpuEngine()` (`profiler.cpp:1371`) | Receives `registerThread`/`unregisterThread` and `enableEvents` |
+| `_wall_engine` | `selectWallEngine()` (`profiler.cpp:1418`) | Same as above |
+| `_alloc_engine` | `selectAllocEngine()` (`profiler.cpp:1453`) | `ObjectSampler` if `VM::canSampleObjects()`, else `noop_engine` |
 
 `MallocTracer` has no slot. `Profiler::start()`/`stop()` call `malloc_tracer`
 directly. `LivenessTracker` and `NativeMem` are not `Engine`s.
@@ -65,7 +65,7 @@ directly. `LivenessTracker` and `NativeMem` are not `Engine`s.
 ## Lifecycle
 
 ```
-Profiler::start()                              profiler.cpp:1538
+Profiler::start()                              profiler.cpp:1555
   ThreadTablesFreeze                           unregisterThread() gate closed until
                                                the CPU engine sizes its table, at the
                                                latest until return
@@ -87,30 +87,29 @@ Profiler::start()                              profiler.cpp:1538
 
 - The wall engine is enabled before its thread starts because
   `timerLoopCommon()` checks `_enabled` once on entry and returns if it is
-  false (`wallClock.h:50`, `profiler.cpp:1778-1784`).
-- The CPU engine is enabled last (`profiler.cpp:1879`). CPU handlers check
+  false (`wallClock.h:50`, `profiler.cpp:1795-1801`).
+- The CPU engine is enabled last (`profiler.cpp:1896`). CPU handlers check
   `_enabled` on every signal, so nothing is lost by enabling late.
 - A failing CPU, wall, or alloc `start()` is logged and the remaining modes
   still start. Start fails only if no mode activated.
 
-`Profiler::stop()` (`profiler.cpp:1899`) runs in reverse:
+`Profiler::stop()` (`profiler.cpp:1916`) runs in reverse:
 
 1. `disableEngines()` calls `enableEvents(false)` on the CPU and wall engines
-   only (`profiler.cpp:1089`).
+   only (`profiler.cpp:1106`).
 2. `SignalInflight::drain()` waits until every handler that already passed its
    `_enabled` check has left. If the drain times out, `stop()` returns an error
-   and tears nothing down (`profiler.cpp:1912`).
+   and tears nothing down (`profiler.cpp:1929`).
 3. `closeThreadRegistration()` clears `_engines_ready` and waits until no hook
    call that passed the check is still inside an engine.
-   No pthread-hook call can then arm a timer after `CTimer::stop()`, or still
-   be using the timer table when the next `start()` resizes it. JVMTI
-   `ThreadStart` is disabled only after the engines stop, so a Java thread
-   starting in that window can still arm a timer that nothing deletes.
+   No thread-hook call (pthread hook or JVMTI callback) can then arm a timer
+   after `CTimer::stop()`, or still be using the timer table when the next
+   `start()` resizes it.
 4. Then, in order: `_alloc_engine->stop()`, reference-chain teardown,
    `malloc_tracer.stop()`, the socket sampler, `_wall_engine->stop()`,
    `_cpu_engine->stop()`.
 
-`Profiler::check()` (`profiler.cpp:2053`) runs the same selection and calls
+`Profiler::check()` (`profiler.cpp:2069`) runs the same selection and calls
 each engine's `check()` without starting anything.
 
 ### Thread registration
@@ -118,8 +117,8 @@ each engine's `check()` without starting anything.
 Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
 
 1. **JVMTI** `ThreadStart`/`ThreadEnd` reach `Profiler::onThreadStart()`/
-   `onThreadEnd()`, which call `_cpu_engine->registerThread(tid)` and
-   `_wall_engine->registerThread(tid)` (`profiler.cpp:111-112`, `143-144`).
+   `onThreadEnd()`, which call `Profiler::registerThread()`/
+   `unregisterThread()`, so they share the gates described in item 2.
    When the thread's `ProfiledThread` still exists at thread end,
    unregistration runs with profiling signals blocked
    (`blockProfilingForExit()`).
@@ -133,14 +132,15 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      `PerfEvents::start()` set via `Profiler::openThreadRegistration()` once
      their table is sized and before they list threads. `stop()` clears it.
      `PerfEvents::start()` still closes the fd of every tid missing from its
-     thread list, including one the hook registered after the list was taken.
+     thread list, including one the hook registered after the list was taken
+     (PROF-16359).
    - `unregisterThread()` needs `_thread_tables_stable`, which is cleared only
      while `start()` may replace the table (`ThreadTablesFreeze`). It stays
      set while idle, because `PerfEvents::stop()` keeps per-thread fds open
      and this call closes the fd of a thread that exits after `stop()`.
 3. **`PerfEvents` only**: a `pthread_setspecific` GOT hook on the JVM library
    (`perfEvents_linux.cpp:176`), installed in `PerfEvents::start()`
-   (`perfEvents_linux.cpp:985`).
+   (`perfEvents_linux.cpp:987`).
 
 Each engine's `start()` also registers every thread that already exists.
 
@@ -164,7 +164,7 @@ Profiler::recordSample[Delegated]()
 `SIGNAL_HANDLER_GUARD_OR_DROP` is defined at `guards.h:115`. Inside
 `recordSample()`, the handler tries to take one of `CONCURRENCY_LEVEL` (16)
 striped spin locks with `tryLock()`, three attempts at most. If all three fail,
-the sample is dropped and counted as `ticks_skipped` (`profiler.cpp:765-776`).
+the sample is dropped and counted as `ticks_skipped` (`profiler.cpp:782-793`).
 No handler blocks.
 
 The `*Jvmti` variants call `recordSampleDelegated()` instead, which asks
@@ -175,7 +175,7 @@ HotSpot's JFR `RequestStackTrace` JVMTI extension to walk the stack
 
 ### Selection
 
-`selectCpuEngine()` (`profiler.cpp:1354-1399`):
+`selectCpuEngine()` (`profiler.cpp:1371-1416`):
 
 ```
 cpu not requested and event is NULL/"noop"  -> noop_engine
@@ -216,19 +216,19 @@ resolved through `Arguments::cpuSamplerInterval()`.
   with `SIGEV_THREAD_ID` targeting `tid`, carrying
   `sival_ptr = SignalCookie::cpu()` (`ctimer_linux.cpp:73-84`). It is armed
   periodic with `timer_settime`.
-- **Signal**: `SIGPROF` (`ctimer_linux.cpp:182`).
+- **Signal**: `SIGPROF` (`ctimer_linux.cpp:181`).
 - **Origin check**: the handler accepts only `si_code == SI_TIMER` carrying
   the CPU cookie. Anything else is forwarded with `OS::forwardForeignSignal()`
-  (`ctimer_linux.cpp:293-297`).
+  (`ctimer_linux.cpp:292-296`).
 - **Per-thread table**: `_timers[tid]` holds `timer_id + 1` (0 means empty),
   sized from `OS::getMaxThreadId()`. Registration and unregistration claim
   slots with CAS, so concurrent register/unregister of one tid deletes the
   timer exactly once (`ctimer_linux.cpp:94-132`). A tid at or above
   `_max_timers` logs a warning and is not profiled.
-- **`stop()`** unregisters every slot (`ctimer_linux.cpp:213-219`).
+- **`stop()`** unregisters every slot (`ctimer_linux.cpp:212-218`).
 - **`CTimerJvmti`**: runs `CTimer::start()` and then replaces the `SIGPROF`
   handler with one that calls `recordSampleDelegated(ucontext, ...)`
-  (`ctimer_linux.cpp:228-284`). It has no ASGCT fallback.
+  (`ctimer_linux.cpp:227-283`). It has no ASGCT fallback.
 
 ### `PerfEvents` (`perfEvents_linux.cpp`, Linux only)
 
@@ -249,13 +249,13 @@ resolved through `Arguments::cpuSamplerInterval()`.
 - **Thread hook**: `start()` patches the JVM library's `pthread_setspecific`
   import so that HotSpot setting or clearing its thread TLS key registers or
   unregisters the thread (`perfEvents_linux.cpp:171-204`).
-- **`stop()` is a no-op** (`perfEvents_linux.cpp:1056`): fds stay open across
+- **`stop()` is a no-op** (`perfEvents_linux.cpp:1058`): fds stay open across
   stop/start, and `registerThread()` skips threads that already have an fd.
   After stop, the cleared `_enabled` flag keeps handlers from recording.
 - **Memory**: the `_events` array and any 2-page mmap ring pages are accounted
   under `NM_PERF`.
 - `CSTACK_LBR` and kernel stacks (`walkKernel`) are available only with this
-  engine (`profiler.cpp:1708`, `1728`).
+  engine (`profiler.cpp:1725`, `1745`).
 
 ### `ITimer` / `ITimerJvmti` (`itimer.cpp`, all platforms)
 
@@ -290,7 +290,7 @@ dedicated profiler pthread picks threads and signals each one directly.
 
 ### Selection
 
-`selectWallEngine()` (`profiler.cpp:1401-1434`): on OpenJ9, either
+`selectWallEngine()` (`profiler.cpp:1418-1451`): on OpenJ9, either
 `J9WallClock` (JVMTI polling) or `WallClockASGCT`. On HotSpot with
 `jvmtistacks` and `VM::canRequestStackTrace()`, `WallClockJvmti`. Otherwise,
 `WallClockASGCT`; a requested `JVMTI` sampler that is not available falls back
@@ -361,7 +361,7 @@ running.
 
 The source tree has no TLAB-specific engine class. Heap allocation sampling is
 JVMTI `SampledObjectAlloc`. `BCI_ALLOC_OUTSIDE_TLAB` exists in `vmEntry.h:27`
-and is handled in `profiler.cpp:413` and `hotspot/hotspotSupport.cpp:123`, but no
+and is handled in `profiler.cpp:430` and `hotspot/hotspotSupport.cpp:123`, but no
 engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
 
 - **Capability**: `VM::canSampleObjects()` requires
@@ -430,7 +430,7 @@ chains are described in
   survivors. `cleanup_table()` runs from `flush()`, `stop()`, the overflow path
   in `track()`, and `maybeForceCleanup()` (called from the reference-chain
   thread).
-- **Output**: `Profiler::dump()` calls `flush()` (`profiler.cpp:2131`). The
+- **Output**: `Profiler::dump()` calls `flush()` (`profiler.cpp:2147`). The
   flush runs a cleanup and then, under the exclusive lock, emits one
   `BCI_LIVENESS` deferred sample per surviving entry through
   `recordDeferredSample()` (`livenessTracker.cpp:1962`). When heap-usage

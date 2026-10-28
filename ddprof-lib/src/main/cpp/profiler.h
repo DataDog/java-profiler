@@ -414,8 +414,8 @@ public:
    * thread: the per-slot CAS resolves the hook and start() registering one
    * tid. PerfEvents::start() still closes the fd of every tid missing from
    * its thread list, including one the hook registered after the list was
-   * taken, so such a thread is not sampled. Engines without registerThread()
-   * never need the gate. Idempotent.
+   * taken, so such a thread is not sampled (PROF-16359). Engines without
+   * registerThread() never need the gate. Idempotent.
    */
   void openThreadRegistration();
 

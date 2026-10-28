@@ -968,9 +968,11 @@ Error PerfEvents::start(Arguments &args) {
     }
     _events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
     if (_events == NULL) {
-      // Back to the not-started state (_max_events == -1): registerThread()
-      // and the tid bound check in unregisterThread() then never index the
-      // NULL table, and the next start() retries the allocation.
+      // _max_events == -1 makes registerThread() treat the engine as not
+      // started, and the tid bound checks in unregisterThread() and
+      // resetBuffer() reject every tid, so nothing indexes the NULL table; the
+      // next start() retries the allocation. Fds left open by an earlier
+      // recording are not closed here (PROF-16359).
       _max_events = -1;
       return Error("Failed to allocate perf event table");
     }
