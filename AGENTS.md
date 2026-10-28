@@ -84,7 +84,9 @@ and `:ddprof-lib:benchmarks`), `ddprof-test` (Java integration tests), `ddprof-t
 ## Build & Test Quick Reference
 
 Configurations: `release`, `debug`, plus `asan`/`tsan`/`fuzzer` when the sanitizer runtime
-is found for the selected compiler (inactive on macOS and musl).
+is found for the selected compiler (inactive on macOS and musl), plus opt-in `coverage`
+with `-PenableCoverage` (`:ddprof-lib:coverageReport`; the C++ report covers only the
+`-O0 -DDEBUG` build — see [doc/building/CodeCoverage.md](doc/building/CodeCoverage.md)).
 
 ```bash
 ./.claude/commands/build-and-summarize buildRelease      # release library + JAR
@@ -343,6 +345,14 @@ exception list.
   helpers unless reused or genuinely hard to follow; "why" comments must reference concrete
   mechanisms (e.g. "ASAN's allocator lock is reentrant"), never speculative claims about
   HotSpot/glibc/ASAN internals — if unsure, describe the observable symptom.
+- **RAII for every acquire/release pair** (C/C++). A lock, a heap allocation, or a flag
+  that must be restored is released by a guard or owner destructor, not by a manual call
+  at each exit. Reuse `SharedLockGuard`, `ExclusiveLockGuard`, `OptionalSharedLockGuard`,
+  `MutexLocker`, `CriticalSection` before you add a type. A new owner type is non-copyable
+  and hands over ownership explicitly (the receiver sets the owner's pointer to `nullptr`).
+  A manual pair needs a comment that says why a guard scope cannot express it. In code that
+  shares a lock with signal handlers, end an owner that frees memory outside the exclusive
+  critical section, because its destructor frees at scope end.
 - Always challenge proposals with deep analysis when you have hard evidence.
 
 ## Work Tracking

@@ -1,5 +1,6 @@
 /*
  * Copyright 2017 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -57,6 +58,10 @@ public:
   // Bounds the number of CAS-retry iterations under reader contention;
   // does NOT bound wall-clock latency (CAS stall time is hardware-dependent).
   static constexpr int DEFAULT_SHARED_SPIN_BUDGET = 256;
+  // Passed as max_spins to OptionalSharedLockGuard: fail only while an
+  // exclusive lock is held, and keep retrying under reader contention
+  // (tryLockShared() without a budget).
+  static constexpr int NO_SPIN_BUDGET = -1;
 
   bool tryLockShared() {
     // Spins while no exclusive lock is held and the CAS to acquire a shared
@@ -123,15 +128,19 @@ public:
 
 // Acquires a shared lock with a bounded CAS-retry budget. Returns without
 // acquiring (ownsLock() == false) when an exclusive lock is observed or
-// the spin budget is exhausted under reader contention. Safe to use in
-// signal-handler paths.
+// the spin budget is exhausted under reader contention. With
+// SpinLock::NO_SPIN_BUDGET it fails only when an exclusive lock is observed.
+// Safe to use in signal-handler paths.
 class OptionalSharedLockGuard {
   SpinLock* _lock;
 public:
   explicit OptionalSharedLockGuard(
       SpinLock* lock, int max_spins = SpinLock::DEFAULT_SHARED_SPIN_BUDGET)
       : _lock(lock) {
-    if (!_lock->tryLockShared(max_spins)) {
+    bool acquired = max_spins == SpinLock::NO_SPIN_BUDGET
+                        ? _lock->tryLockShared()
+                        : _lock->tryLockShared(max_spins);
+    if (!acquired) {
       _lock = nullptr;
     }
   }
