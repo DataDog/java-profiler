@@ -185,6 +185,20 @@ Caveats:
 - **`cstack=vm` needs `VMStructs`.** If `VMStructs::hasStackStructs()` is false,
   `cstack=vm` is downgraded to DWARF or `no` (`profiler.cpp:1625-1629`).
 
+#### Continuation completeness
+
+HotSpot can leave older virtual-thread callers frozen in heap `StackChunk` objects
+after a partial thaw. `walkVM` classifies continuation boundaries with `ContBoundary`:
+a verified thawed boundary proves no callers remain frozen; return barriers and
+unverified crossings mark the trace truncated. This walker does not recover heap
+callers, so reaching a carrier does not clear that flag.
+
+`Recording::writeStackTraceHeader` preserves the walker flag even when the final
+Java frame is an entry method such as `Thread.run`. A verified thawed crossing also
+preserves truncation established earlier in the walk. The blocking virtual-thread
+wall-clock regression checks truthful truncation when carrier ancestry is missing;
+carrier recovery itself remains a separate correctness requirement.
+
 ### `j9/`
 
 | File | Role |
