@@ -365,33 +365,53 @@ case "$1 $2" in
     ;;
   'workflow run') exit "$CLI_DISPATCH_EXIT" ;;
   'run watch')
+    [ "$3" = 4242 ] && [ "$4 $5" = '--repo DataDog/java-profiler' ] || exit 97
     count=0
     [ ! -f "$CLI_STATE/watches" ] || count=$(cat "$CLI_STATE/watches")
     printf '%s\n' "$((count + 1))" > "$CLI_STATE/watches"
+    if { [ "$count" -eq 0 ] && [ "${CLI_WATCH_HANG:-0}" -eq 1 ]; } ||
+       { [ "$count" -gt 0 ] && [ "${CLI_NEXT_WATCH_HANG:-0}" -eq 1 ]; }; then
+      echo "$$" > "$CLI_STATE/watch-pid"
+      exec /bin/sleep 30
+    fi
     if [ "$count" -eq 0 ]; then
+      /bin/sleep "${CLI_WATCH_DELAY:-0}"
       exit "$CLI_WATCH_EXIT"
     fi
     exit "$CLI_NEXT_WATCH_EXIT"
     ;;
   'run view')
+    [ "$3" = 4242 ] && [ "$4 $5" = '--repo DataDog/java-profiler' ] || exit 97
+    if [ "${CLI_QUERY_HANG:-0}" -eq 1 ]; then
+      echo "$$" > "$CLI_STATE/query-pid"
+      exec /bin/sleep 30
+    fi
     [ "$CLI_QUERY_EXIT" -eq 0 ] || exit "$CLI_QUERY_EXIT"
     printf '%s\n' "$CLI_REMOTE_JSON" | jq -r "${@: -1}"
     ;;
   *) echo "Unexpected fixture command: $*" >&2; exit 97 ;;
 esac
 EOF
-printf '#!/usr/bin/env bash\nexit 0\n' > "$CLI_BIN/sleep"
+cat > "$CLI_BIN/sleep" <<'EOF'
+#!/usr/bin/env bash
+# Keep deadline polling asynchronous while skipping discovery/reconnect delays.
+if [ "$1" = 1 ]; then
+  exec /bin/sleep 0.02
+fi
+exit 0
+EOF
 chmod +x "$CLI_BIN/gh" "$CLI_BIN/sleep"
 
 expect_monitor() {
   local name=$1 expected_exit=$2 expected_status=$3 watches=$4 views=$5
   shift 5
   local actual_exit=0
-  rm -f "$CLI_STATE/watches"
+  rm -f "$CLI_STATE/watches" "$CLI_STATE/"*-pid
   : > "$CLI_STATE/calls"
   CLI_OUTPUT=$(
     cd "$WORK"
     env PATH="$CLI_BIN:$PATH" CLI_STATE="$CLI_STATE" \
+      RELEASE_MONITOR_TIMEOUT_SECONDS=3600 \
       CLI_RUN_ID=4242 CLI_DISPATCH_EXIT=0 CLI_WATCH_EXIT=0 CLI_NEXT_WATCH_EXIT=1 \
       CLI_QUERY_EXIT=0 CLI_REMOTE_JSON='{"status":"completed","conclusion":"success"}' \
       "$@" bash "$ROOT/utils/release.sh" minor --branch main --commit "$CLI_SHA" 2>&1
@@ -406,17 +426,39 @@ expect_monitor() {
     fail "$name: unexpected watch count"
   [ "$(awk '/^run view / { n++ } END { print n+0 }' "$CLI_STATE/calls")" -eq "$views" ] ||
     fail "$name: unexpected status query count"
+  for pid_file in "$CLI_STATE/"*-pid; do
+    [ -f "$pid_file" ] || continue
+    if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+      fail "$name: timed-out CLI process is still running"
+    fi
+  done
   pass
 }
 
 expect_monitor 'watch succeeds' 0 'WORKFLOW SUCCEEDED' 1 0
 expect_monitor 'connection lost after success' 0 'WORKFLOW SUCCEEDED' 1 1 CLI_WATCH_EXIT=1
-expect_monitor 'confirmed workflow failure' 1 'WORKFLOW FAILED' 1 1 \
-  CLI_WATCH_EXIT=1 CLI_REMOTE_JSON='{"status":"completed","conclusion":"failure"}'
-expect_monitor 'confirmed cancellation' 1 'WORKFLOW FAILED' 1 1 \
-  CLI_WATCH_EXIT=1 CLI_REMOTE_JSON='{"status":"completed","conclusion":"cancelled"}'
-expect_monitor 'confirmed timeout' 1 'WORKFLOW FAILED' 1 1 \
-  CLI_WATCH_EXIT=1 CLI_REMOTE_JSON='{"status":"completed","conclusion":"timed_out"}'
+for conclusion in failure startup_failure cancelled timed_out action_required stale neutral skipped; do
+  expected_status='WORKFLOW COMPLETED'
+  expected_message="Workflow completed with conclusion: $conclusion"
+  case "$conclusion" in
+    failure|startup_failure)
+      expected_status='WORKFLOW FAILED'
+      expected_message="Workflow failed! (conclusion: $conclusion)"
+      ;;
+  esac
+  expect_monitor "confirmed $conclusion" 1 "$expected_status" 1 1 \
+    CLI_WATCH_EXIT=1 CLI_REMOTE_JSON="{\"status\":\"completed\",\"conclusion\":\"$conclusion\"}"
+  [[ "$CLI_OUTPUT" == *"$expected_message"* ]] ||
+    fail "immediate result lost GitHub conclusion $conclusion"
+  [[ "$CLI_OUTPUT" == *"Workflow conclusion: $conclusion"* ]] ||
+    fail "terminal summary lost GitHub conclusion $conclusion"
+  [[ "$CLI_OUTPUT" != *'Status: WORKFLOW STATUS UNKNOWN'* ]] ||
+    fail "known conclusion $conclusion was reported as unknown"
+  if [ "$expected_status" = 'WORKFLOW COMPLETED' ]; then
+    [[ "$CLI_OUTPUT" != *'Status: WORKFLOW FAILED'* ]] ||
+      fail "conclusion $conclusion was incorrectly reported as failure"
+  fi
+done
 expect_monitor 'monitor reconnects to active run' 0 'WORKFLOW SUCCEEDED' 2 1 \
   CLI_WATCH_EXIT=1 CLI_NEXT_WATCH_EXIT=0 \
   CLI_REMOTE_JSON='{"status":"in_progress","conclusion":null}'
@@ -428,9 +470,52 @@ expect_monitor 'GitHub status unavailable' 1 'WORKFLOW STATUS UNKNOWN' 3 3 \
   fail 'unavailable GitHub status was reported as workflow failure'
 expect_monitor 'completed run has no conclusion' 1 'WORKFLOW STATUS UNKNOWN' 3 3 \
   CLI_WATCH_EXIT=1 CLI_REMOTE_JSON='{"status":"completed","conclusion":null}'
+expect_monitor 'completed run has an unrecognized conclusion' 1 'WORKFLOW STATUS UNKNOWN' 3 3 \
+  CLI_WATCH_EXIT=1 CLI_REMOTE_JSON='{"status":"completed","conclusion":"future_value"}'
 expect_monitor 'run discovery exhausted' 1 'WORKFLOW STATUS UNKNOWN' 0 0 CLI_RUN_ID=
 [[ "$CLI_OUTPUT" != *'Status: DRY-RUN COMPLETED'* ]] ||
   fail 'unknown dry-run status was reported as completed'
 expect_monitor 'dispatch fails' 1 'FAILED TO TRIGGER WORKFLOW' 0 0 CLI_DISPATCH_EXIT=1
+
+expect_monitor 'watch deadline expires' 1 'WORKFLOW STATUS UNKNOWN' 1 1 \
+  RELEASE_MONITOR_TIMEOUT_SECONDS=1 CLI_WATCH_HANG=1 \
+  CLI_REMOTE_JSON='{"status":"in_progress","conclusion":null}'
+[[ "$CLI_OUTPUT" == *'Monitoring timed out after 1 seconds'* ]] ||
+  fail 'watch deadline did not report a monitoring timeout'
+[[ "$CLI_OUTPUT" != *'Status: WORKFLOW FAILED'* ]] ||
+  fail 'local deadline was reported as remote workflow failure'
+
+expect_monitor 'final status confirms success after watch deadline' 0 'WORKFLOW SUCCEEDED' 1 1 \
+  RELEASE_MONITOR_TIMEOUT_SECONDS=1 CLI_WATCH_HANG=1
+
+expect_monitor 'status query deadline expires' 1 'WORKFLOW STATUS UNKNOWN' 1 1 \
+  RELEASE_MONITOR_TIMEOUT_SECONDS=1 CLI_WATCH_EXIT=1 CLI_QUERY_HANG=1
+
+expect_monitor 'final status query is also bounded' 1 'WORKFLOW STATUS UNKNOWN' 1 1 \
+  RELEASE_MONITOR_TIMEOUT_SECONDS=1 CLI_WATCH_HANG=1 CLI_QUERY_HANG=1
+
+monitor_started=$SECONDS
+expect_monitor 'reconnections share the original deadline' 1 'WORKFLOW STATUS UNKNOWN' 2 2 \
+  RELEASE_MONITOR_TIMEOUT_SECONDS=5 CLI_WATCH_EXIT=1 CLI_WATCH_DELAY=3 \
+  CLI_NEXT_WATCH_HANG=1 CLI_REMOTE_JSON='{"status":"in_progress","conclusion":null}'
+[ "$((SECONDS - monitor_started))" -lt 7 ] ||
+  fail 'reconnecting reset the monitoring deadline'
+
+for invalid_timeout in 0 -1 01 invalid 2147483648 999999999999999999999; do
+  : > "$CLI_STATE/calls"
+  if CLI_OUTPUT=$(
+    cd "$WORK"
+    env PATH="$CLI_BIN:$PATH" CLI_STATE="$CLI_STATE" \
+      RELEASE_MONITOR_TIMEOUT_SECONDS="$invalid_timeout" \
+      bash "$ROOT/utils/release.sh" minor --branch main --commit "$CLI_SHA" 2>&1
+  ); then
+    fail "invalid monitoring timeout '$invalid_timeout' was accepted"
+  fi
+  [[ "$CLI_OUTPUT" == *'RELEASE_MONITOR_TIMEOUT_SECONDS must be a positive integer'* ]] ||
+    fail "invalid monitoring timeout '$invalid_timeout' did not report a validation error"
+  [ "$(awk '/^workflow run / { n++ } END { print n+0 }' "$CLI_STATE/calls")" -eq 0 ] ||
+    fail 'invalid monitoring timeout dispatched a workflow'
+done
+pass
 
 echo "PASS: $TESTS hermetic release-automation test groups"

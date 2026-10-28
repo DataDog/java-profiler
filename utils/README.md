@@ -65,9 +65,15 @@ A dry run never creates a tag, pushes a branch, or triggers GitLab.
 
 If workflow monitoring loses its API connection, the script checks the run's
 status and reconnects to the same run, making up to three monitoring attempts
-in total. If it cannot confirm the result, it reports `WORKFLOW STATUS UNKNOWN`
-and exits nonzero.
+in total. All attempts share a one-hour monitoring deadline. After that deadline,
+the script allows up to ten seconds for a final status query. If it cannot confirm
+the result, it reports `WORKFLOW STATUS UNKNOWN` and exits nonzero. The remote
+workflow keeps running when local monitoring stops.
+`RELEASE_MONITOR_TIMEOUT_SECONDS` overrides the default 3600-second deadline.
 Check the existing run before starting another release.
+Recognized completed outcomes retain GitHub's exact conclusion in the output.
+Only a confirmed `success` exits zero; other recognized conclusions exit nonzero.
+Only `failure` and `startup_failure` are labelled as workflow failures.
 
 ### Testing release automation
 
