@@ -151,10 +151,13 @@ private:
   static CodeCache *_libjvm;
 
   // HotSpot JFR async stack-trace extension (optional, JDK 27+).
-  // _request_stack_trace is atomic (RELEASE/ACQUIRE) because canRequestStackTrace()
-  // is called from signal handlers; _init_request_stack_trace is plain because it
-  // is only ever read by initializeRequestStackTrace(), called once from the same
-  // init thread before any signal handlers are installed.
+  // Both fields are atomic (RELEASE store / ACQUIRE load). Publication order
+  // is load-bearing: _init_request_stack_trace is stored first and
+  // _request_stack_trace only after InitializeRequestStackTrace succeeded, so
+  // canRequestStackTrace() (called from signal handlers) observing a non-null
+  // _request_stack_trace is guaranteed to also observe the initialized
+  // _init_request_stack_trace, and true means the extension is ready to use,
+  // not merely present.
   static jvmtiExtensionFunction _request_stack_trace;
   static jvmtiExtensionFunction _init_request_stack_trace;
 
