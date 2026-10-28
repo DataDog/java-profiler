@@ -414,12 +414,15 @@ expect_monitor() {
       RELEASE_MONITOR_TIMEOUT_SECONDS=3600 \
       CLI_RUN_ID=4242 CLI_DISPATCH_EXIT=0 CLI_WATCH_EXIT=0 CLI_NEXT_WATCH_EXIT=1 \
       CLI_QUERY_EXIT=0 CLI_REMOTE_JSON='{"status":"completed","conclusion":"success"}' \
-      "$@" bash "$ROOT/utils/release.sh" minor --branch main --commit "$CLI_SHA" 2>&1
+      "$@" python3 "$ROOT/.github/scripts/tests/run_release_cli.py" \
+      "$ROOT/utils/release.sh" minor --branch main --commit "$CLI_SHA" 2>&1
   ) || actual_exit=$?
   [ "$actual_exit" -eq "$expected_exit" ] ||
     fail "$name: expected exit $expected_exit, got $actual_exit"
-  [[ "$CLI_OUTPUT" == *"Status: $expected_status"* ]] ||
-    fail "$name: expected summary '$expected_status'"
+  if [ -n "$expected_status" ]; then
+    [[ "$CLI_OUTPUT" == *"Status: $expected_status"* ]] ||
+      fail "$name: expected summary '$expected_status'"
+  fi
   [ "$(awk '/^workflow run / { n++ } END { print n+0 }' "$CLI_STATE/calls")" -eq 1 ] ||
     fail "$name: workflow must be dispatched exactly once"
   [ "$(awk '/^run watch / { n++ } END { print n+0 }' "$CLI_STATE/calls")" -eq "$watches" ] ||
@@ -484,6 +487,8 @@ expect_monitor 'watch deadline expires' 1 'WORKFLOW STATUS UNKNOWN' 1 1 \
   fail 'watch deadline did not report a monitoring timeout'
 [[ "$CLI_OUTPUT" != *'Status: WORKFLOW FAILED'* ]] ||
   fail 'local deadline was reported as remote workflow failure'
+[[ "$CLI_OUTPUT" != *'Continue monitoring the same workflow run'* ]] ||
+  fail 'unattended monitoring prompted for input'
 
 expect_monitor 'final status confirms success after watch deadline' 0 'WORKFLOW SUCCEEDED' 1 1 \
   RELEASE_MONITOR_TIMEOUT_SECONDS=1 CLI_WATCH_HANG=1
@@ -500,6 +505,39 @@ expect_monitor 'reconnections share the original deadline' 1 'WORKFLOW STATUS UN
   CLI_NEXT_WATCH_HANG=1 CLI_REMOTE_JSON='{"status":"in_progress","conclusion":null}'
 [ "$((SECONDS - monitor_started))" -lt 7 ] ||
   fail 'reconnecting reset the monitoring deadline'
+
+for reply in n '' $'\004'; do
+  expect_monitor 'decline monitoring extension, default, or EOF' 1 'WORKFLOW STATUS UNKNOWN' 1 1 \
+    RELEASE_MONITOR_TIMEOUT_SECONDS=1 CLI_WATCH_HANG=1 CLI_PTY_REPLIES="$reply" \
+    CLI_REMOTE_JSON='{"status":"in_progress","conclusion":null}'
+  [[ "$CLI_OUTPUT" == *'Continue monitoring the same workflow run'* ]] ||
+    fail 'interactive timeout did not ask whether to continue'
+  [[ "$CLI_OUTPUT" != *'Status: WORKFLOW FAILED'* ]] ||
+    fail 'stopping local monitoring was reported as a remote failure'
+done
+
+expect_monitor 'continue watching after timeout' 0 'WORKFLOW SUCCEEDED' 2 1 \
+  RELEASE_MONITOR_TIMEOUT_SECONDS=1 CLI_WATCH_HANG=1 CLI_NEXT_WATCH_EXIT=0 \
+  CLI_PTY_REPLIES=y CLI_REMOTE_JSON='{"status":"in_progress","conclusion":null}'
+[[ "$CLI_OUTPUT" == *'Continuing to monitor the same workflow run'* ]] ||
+  fail 'accepted monitoring extension did not resume watching'
+
+expect_monitor 'renewed monitoring window prompts again' 1 'WORKFLOW STATUS UNKNOWN' 2 2 \
+  RELEASE_MONITOR_TIMEOUT_SECONDS=1 CLI_WATCH_HANG=1 CLI_NEXT_WATCH_HANG=1 \
+  CLI_PTY_REPLIES=$'y\nn' CLI_REMOTE_JSON='{"status":"in_progress","conclusion":null}'
+[ "$(printf '%s\n' "$CLI_OUTPUT" | awk '/Continue monitoring the same workflow run/ { n++ } END { print n+0 }')" -eq 2 ] ||
+  fail 'renewed monitoring window did not ask again at its deadline'
+
+expect_monitor 'confirmed result does not prompt for extension' 0 'WORKFLOW SUCCEEDED' 1 1 \
+  RELEASE_MONITOR_TIMEOUT_SECONDS=1 CLI_WATCH_HANG=1 CLI_PTY_REPLIES=n
+[[ "$CLI_OUTPUT" != *'Continue monitoring the same workflow run'* ]] ||
+  fail 'confirmed workflow completion prompted for an extension'
+
+expect_monitor 'interrupt at timeout prompt' 130 '' 1 1 \
+  RELEASE_MONITOR_TIMEOUT_SECONDS=1 CLI_WATCH_HANG=1 CLI_PTY_REPLIES=$'\003' \
+  CLI_REMOTE_JSON='{"status":"in_progress","conclusion":null}'
+[[ "$CLI_OUTPUT" == *'Interrupted'* ]] ||
+  fail 'interrupt at timeout prompt was not handled'
 
 for invalid_timeout in 0 -1 01 invalid 2147483648 999999999999999999999; do
   : > "$CLI_STATE/calls"

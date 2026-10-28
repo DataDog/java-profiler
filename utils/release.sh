@@ -743,7 +743,8 @@ if gh workflow run release-validated.yml \
         echo ""
         WORKFLOW_CONCLUSION="unknown"
         MONITOR_DEADLINE=$((SECONDS + MONITOR_TIMEOUT_SECONDS))
-        for WATCH_ATTEMPT in 1 2 3; do
+        WATCH_ATTEMPT=1
+        while [ "$WATCH_ATTEMPT" -le 3 ]; do
             if run_before_deadline "$MONITOR_DEADLINE" \
                 gh run watch "$RUN_ID" --repo "$REPO" --exit-status; then
                 WORKFLOW_CONCLUSION="success"
@@ -773,6 +774,14 @@ if gh workflow run release-validated.yml \
 
             if [ "$SECONDS" -ge "$MONITOR_DEADLINE" ]; then
                 print_warning "Monitoring timed out after ${MONITOR_TIMEOUT_SECONDS} seconds. The remote workflow has not been cancelled."
+                if [ -t 0 ] &&
+                   read -r -p "Continue monitoring the same workflow run for another ${MONITOR_TIMEOUT_SECONDS} seconds? [y/N]: " REPLY </dev/tty &&
+                   [[ "$REPLY" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
+                    print_info "Continuing to monitor the same workflow run for another ${MONITOR_TIMEOUT_SECONDS} seconds."
+                    MONITOR_DEADLINE=$((SECONDS + MONITOR_TIMEOUT_SECONDS))
+                    WATCH_ATTEMPT=1
+                    continue
+                fi
                 break
             fi
 
@@ -780,6 +789,7 @@ if gh workflow run release-validated.yml \
                 print_warning "Reconnecting to the same workflow run ($((WATCH_ATTEMPT + 1))/3)..."
                 sleep 2
             fi
+            WATCH_ATTEMPT=$((WATCH_ATTEMPT + 1))
         done
 
         if [ "$WORKFLOW_CONCLUSION" = "success" ]; then
