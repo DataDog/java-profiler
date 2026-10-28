@@ -1206,6 +1206,8 @@ asm(
 "prof_ra_pcoff_seed:\n"
     ".cfi_startproc\n"
     ".cfi_def_cfa sp, 16\n"
+    // This fabricated frame stores its caller PC in memory, not in LR.
+    ".cfi_offset 30, -8\n"
     "nop\nnop\n"
     ".cfi_endproc\n"
     ".size prof_ra_pcoff_seed, .-prof_ra_pcoff_seed\n"
@@ -1348,24 +1350,9 @@ TEST_F(ReturnAddressAttributionTest, Test5b_DwPcOffsetAppliesOffsetToRawPc) {
 // ===========================================================================
 // Test 6 -- Link-register recovery sets the flag (coverage row 7).
 //
-// Reachability, so nobody reads a green run here as coverage:
-//  - x86_64: structurally unreachable. EMPTY_FRAME_SIZE > 0 makes the
-//    guard "EMPTY_FRAME_SIZE > 0 || pc_off != DW_LINK_REGISTER" always true,
-//    so the arm never executes.
-//  - aarch64: reachable only with a frame table that actually carries
-//    pc_off == DW_LINK_REGISTER. DwarfParser never emits it -- it starts
-//    pc_off at -EMPTY_FRAME_SIZE and no DW_CFA_ handler assigns that value --
-//    so no .eh_frame fixture, including the one below, can reach the arm.
-//    The only producer in the tree is SFrameParser (sframe.cpp, gated by
-//    SFrameParser.PerFRE_RA_Untracked in sframe_ut.cpp), which needs a
-//    .sframe section in the scanned ELF image; the gtest binary is not built
-//    with one, and CodeCache::setDwarfTable() cannot be used to inject one
-//    because it asserts the cache is unpublished.
-//
-// The fixture is kept so that it starts gating on its own if a .sframe-
-// enabled build ever appears, and so the precondition check documents which
-// row shape the arm needs. It deliberately does not increment
-// g_gating_assertions_reached on the skip path.
+// On aarch64 the FDE's initial return-address rule is LR. The parsed row
+// must preserve that rule so the real DWARF walker can recover and attribute
+// the sampled link register. x86_64 has a stack return-address slot instead.
 // ===========================================================================
 
 #if defined(__aarch64__)
@@ -1401,13 +1388,8 @@ TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
         GTEST_SKIP() << "prof_ra_lr_fn not visible to findLibraryByAddress in this build";
     }
     FrameDesc row = lib->findFrameDesc((const void*)&prof_ra_lr_fn);
-    if (row.pc_off != DW_LINK_REGISTER || (row.fp_off & DW_PC_OFFSET)) {
-        GTEST_SKIP() << "expected: .eh_frame cannot express pc_off == DW_LINK_REGISTER, so this "
-                      << "fixture's row parsed as (pc_off=" << row.pc_off << ", fp_off="
-                      << row.fp_off << ") and the link-register arm is not reached. The arm is "
-                      << "covered by inspection only; its producer is gated by "
-                      << "SFrameParser.PerFRE_RA_Untracked. See this test's banner comment.";
-    }
+    ASSERT_EQ(DW_LINK_REGISTER, row.pc_off);
+    ASSERT_EQ(0, row.fp_off & DW_PC_OFFSET);
     // Adjacency is not a precondition here: unlike Tests 1/3/4/5, the link
     // register below is set directly rather than derived from a real
     // call-site return address, so the fixture works wherever the assembler
@@ -1472,6 +1454,8 @@ asm(
     ".cfi_startproc\n"
     ".cfi_signal_frame\n"
     ".cfi_def_cfa sp, 16\n"
+    // This fabricated frame stores its caller PC in memory, not in LR.
+    ".cfi_offset 30, -8\n"
     "nop\nnop\n"
     ".cfi_endproc\n"
     ".size prof_ra_sig_seed, .-prof_ra_sig_seed\n"
@@ -1538,10 +1522,10 @@ TEST_F(ReturnAddressAttributionTest, Test8_SignalFrameRowKeepsExactAddress) {
 // none of the gating tests reached its assertions, surfacing that
 // degradation instead of letting it pass silently. Declared last so it runs
 // after all of them under gtest's default (registration-order) test order.
-// Test6 is excluded by construction -- see its banner comment.
+// Test6 also gates the link-register path on aarch64.
 TEST(ReturnAddressAttributionGatingCoverageTest, AtLeastOneGatingAssertionRan) {
     EXPECT_GT(g_gating_assertions_reached, 0)
-        << "every gating test in this file (Test1/2c/3/4/5/5b/8) skipped its precondition "
+        << "every gating test in this file (Test1/2c/3/4/5/5b/6/8) skipped its precondition "
         << "check on this toolchain -- the attribution fix has zero effective "
         << "regression coverage in this build; see each test's GTEST_SKIP reason "
         << "in the test log above for which precondition failed";

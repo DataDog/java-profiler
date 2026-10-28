@@ -163,6 +163,27 @@ walker, with raw `Method*` frames, and with lazy jmethodID resolution.
 | `klassRegistry.{h,cpp}` | Redefinition marks keyed by `Klass*` for `fjmethodid=lazy` (`HotspotSupport::_klass_registry`, `hotspotSupport.h:161`) |
 | `klassTraceId.{h,cpp}` | Finds `Klass::_trace_id` by probing, so a stale raw frame can be told apart from a class that reused the same `Klass*` |
 
+Native DWARF steps are shared by `StackWalker::walkDwarf` and the VM walker
+through `dwarfStep.inline.h`. On arm64, an FDE's initial return-address source
+is LR, and PLT leaf descriptors use the same rule. Compact and extended
+`DW_CFA_restore` for the return address restore the CIE-defined source,
+including a non-default stack offset;
+`DW_CFA_same_value` also keeps the return address in LR. A saved return-address
+slot applies only while its CFI offset rule is active. On x64 the initial
+return address remains at CFA-8. The sampled LR is used only for a leaf frame;
+recovered PCs retain the normal return-address attribution and PAC stripping.
+
+Linux arm64's vDSO `__kernel_rt_sigreturn` omits DWARF metadata. The shared
+native step recognizes its exact syscall instruction pair only in `[vdso]`,
+bounds-checks the `siginfo_t`/`ucontext_t` signal-frame layout, and restores the
+interrupted PC, SP, FP and register-context view. The interrupted PC is exact;
+its LR can seed the next leaf even after native handler frames were recorded.
+The VM walker also recognizes interrupted Java entry, interpreter, epilogue
+and vtable phases after that prefix. Invalid instructions, stack bounds or
+restored register values reject recovery. The sampled and saved ucontexts
+remain unchanged. Restoration requires a forward, aligned SP within the walk's existing stack
+bound; transitions outside that bound are rejected.
+
 Directly sampled `enterSpecial` frames use
 `HotspotStackFrame::continuationEntryFrameWords()` to locate the carrier SP.
 The helper distinguishes the prologue's register save and storage allocation,
