@@ -55,12 +55,15 @@ static bool allocatorExposesOverhead() {
 // buildNativeLibs builds this standalone executable without profiler global
 // constructors or sanitizer allocators. Its first header probe sees the layout
 // it prepares, independently of the cached estimate in this gtest process.
-static void runHeaderProbe(const char *layout) {
+static void runHeaderProbe(const char *layout, int expected_exit_code = 0) {
   char executable[PATH_MAX];
   const ssize_t len = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
   ASSERT_GT(len, 0);
+  ASSERT_LT(len, (ssize_t)sizeof(executable) - 1) << "Executable path may be truncated";
   executable[len] = '\0';
-  *strrchr(executable, '/') = '\0';
+  char *slash = strrchr(executable, '/');
+  ASSERT_NE(nullptr, slash) << "Executable path has no directory separator";
+  *slash = '\0';
   char helper[PATH_MAX];
   ASSERT_LT(snprintf(helper, sizeof(helper),
       "%s/../../../test/resources/native-libs/malloc-footprint-probe/malloc-footprint-probe",
@@ -71,7 +74,7 @@ static void runHeaderProbe(const char *layout) {
         unsetenv("LD_PRELOAD") != 0) _exit(126);
     execl(helper, helper, layout, (char *)nullptr);
     _exit(127);
-  }, ::testing::ExitedWithCode(0), "");
+  }, ::testing::ExitedWithCode(expected_exit_code), "");
 }
 
 TEST(MallocFootprintProbeDeathTest, ContiguousBlocksDiscoverNonzeroHeader) {
@@ -80,6 +83,12 @@ TEST(MallocFootprintProbeDeathTest, ContiguousBlocksDiscoverNonzeroHeader) {
 
 TEST(MallocFootprintProbeDeathTest, FragmentedBlocksRetainRoundingWithZeroHeader) {
   runHeaderProbe("fragmented");
+}
+
+TEST(MallocFootprintProbeDeathTest, UnknownLayoutsAreRejected) {
+  for (const char *layout : {"", "contiguos", "fragment", "unknown"}) {
+    runHeaderProbe(layout, 1);
+  }
 }
 #endif
 

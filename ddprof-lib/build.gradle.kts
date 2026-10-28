@@ -72,6 +72,18 @@ gtest {
   failFast.set(true)
 }
 
+// The isolated probe includes headers outside the native-libs resource tree.
+// Track them explicitly so header-only edits cannot leave an old probe executable.
+val mallocFootprintChecks = layout.projectDirectory.file("src/test/cpp/mallocFootprintChecks.h")
+tasks.matching { it.name == "buildNativeLibs" }.configureEach {
+  inputs.files("src/main/cpp/mallocFootprint.h", mallocFootprintChecks)
+}
+tasks.matching {
+  it.name.startsWith("compileGtest") && it.name.endsWith("_mallocFootprint_ut")
+}.configureEach {
+  inputs.file(mallocFootprintChecks)
+}
+
 // referenceChainJfrRoundtrip_ut writes a .jfr that :ddprof-test's ReferenceChainJfrParserTest
 // reads back. Both sides get the path from this env var (set here and in ddprof-test's
 // build.gradle.kts). The path is scoped per build configuration (derived from the gtest task

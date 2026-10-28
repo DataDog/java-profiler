@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include "mallocFootprint.h"
 #include "mallocFootprintChecks.h"
@@ -21,7 +22,11 @@ using Allocation = std::unique_ptr<void, FreeAllocation>;
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   if (argc != 2) return 1;
-  const bool fragmented = argv[1][0] == 'f';
+  const bool fragmented = strcmp(argv[1], "fragmented") == 0;
+  if (!fragmented && strcmp(argv[1], "contiguous") != 0) {
+    fprintf(stderr, "Unknown allocator layout: %s\n", argv[1]);
+    return 1;
+  }
   // Disable fastbins as well: adjacent freed chunks must coalesce, while the
   // live spacers below keep the fragmented holes separate.
   if (mallopt(M_MXFAST, 0) == 0) return 2;
