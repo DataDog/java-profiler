@@ -158,6 +158,7 @@ walker, with raw `Method*` frames, and with lazy jmethodID resolution.
 | `hotspotSupport.{h,cpp}` | `HotspotSupport`: `walkJavaStack`/`walkVM`, ASGCT with fault recovery (`withUcontextFaultRecovery`), jmethodID preload policy, `fjmethodid=lazy` (`registerClass`, `resolve`, redefinition tracking, dump-time class pinning). `JVMSupport` is a friend (`hotspotSupport.h:131`), and the walker internals are private |
 | `hotspotStackFrame.h`, `hotspotStackFrame_{x64,aarch64}.cpp` | `HotspotStackFrame`: unwinds through compiled frames, stubs, prologues, epilogues and sampled continuation-entry phases, and saves and restores the `JavaFrameAnchor` on fault recovery |
 | `vmStructs.{h,inline.h,cpp}` | Reads `gHotSpotVMStructs` offsets, and defines `VMThread`, `VMMethod`, `VMFlag`, `CodeHeap`, and related types |
+| `frozenStackWalker.{h,cpp}` | `FrozenStackWalker`: restores frozen Java callers from supported HotSpot heap stack chunks at verified continuation return barriers; see [FrozenStackWalker](FrozenStackWalker.md) |
 | `jitCodeCache.{h,cpp}` | JIT and runtime-stub address ranges from `CompiledMethodLoad`/`DynamicCodeGenerated`, used by `isJitCode` and `runtimeStubsMemoryUsage` |
 | `stubUnwindInfo.{h,cpp}` | Per-PC unwind phases for HotSpot runtime stubs (aarch64 only). They are computed in the `DynamicCodeGenerated` callback, and the walker reads them without locks |
 | `klassRegistry.{h,cpp}` | Redefinition marks keyed by `Klass*` for `fjmethodid=lazy` (`HotspotSupport::_klass_registry`, `hotspotSupport.h:161`) |
@@ -286,8 +287,12 @@ Native thaw calls return inside the barrier stub, where SP has already changed.
 The runtime-stub lookup identifies these PCs by matching the registered stub's
 start to the known return-barrier entry. They use the current thread's entry
 metadata, independently of any earlier Java frame's stack-argument count.
-Both stopping at the synthetic root and continuing onto the carrier retain the
-frozen-boundary truncation flag. Missing entry metadata still rejects recovery.
+At a verified frozen boundary, the walker first attempts to restore heap-resident
+Java callers with `FrozenStackWalker`. A complete recovery removes only the
+truncation introduced by that boundary; an earlier truncation remains set.
+Unsupported states, layouts and collectors retain the truncation fallback.
+Missing carrier-entry metadata still rejects carrier recovery independently of
+whether the frozen Java callers were restored.
 
 Every continuation crossing retires both the live Java frame anchor and its saved
 recovery SP. The post-loop anchor fallback must not append frames from the consumed
@@ -320,9 +325,12 @@ Caveats:
 
 HotSpot can leave older virtual-thread callers frozen in heap `StackChunk` objects
 after a partial thaw. `walkVM` classifies continuation boundaries with `ContBoundary`:
-a verified thawed boundary proves no callers remain frozen; return barriers and
-unverified crossings mark the trace truncated. This walker does not recover heap
-callers, so reaching a carrier does not clear that flag.
+a verified thawed boundary proves no callers remain frozen. A verified return
+barrier first marks the trace truncated, then attempts bounded heap-caller
+recovery where the sampled state, collector and layout permit it. Complete heap
+recovery removes only this boundary's new truncation; unavailable or incomplete
+recovery and unverified crossings retain it. Reaching a carrier alone does not
+establish completeness.
 
 `Recording::writeStackTraceHeader` preserves the walker flag even when the final
 Java frame is an entry method such as `Thread.run`. A verified thawed crossing also

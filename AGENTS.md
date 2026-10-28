@@ -71,6 +71,8 @@ and `:ddprof-lib:benchmarks`), `ddprof-test` (Java integration tests), `ddprof-t
 
 **Supported JVMs:** HotSpot, J9, Zing; HotSpot continuation recovery uses sampled instruction phases (compiled/interpreted entries and arm64 exception exits), validated metadata for return-barrier entries and interiors, and retires consumed Java anchors — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
 **Platforms:** Linux x64/arm64 (primary), macOS arm64/x64; musl libc handled automatically.
+Frozen virtual-thread caller recovery uses bounded, read-only heap chunk traversal
+on supported HotSpot layouts and collectors; see [doc/architecture/FrozenStackWalker.md](doc/architecture/FrozenStackWalker.md).
 
 ## Operating Rules for Agent Sessions
 
@@ -154,6 +156,7 @@ before working on a subsystem.
 
 | Subsystem | Details |
 |---|---|
+| Frozen virtual-thread callers (bounded HotSpot heap chunk traversal, inline scopes and deoptimization) | [doc/architecture/FrozenStackWalker.md](doc/architecture/FrozenStackWalker.md) |
 | Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
 | String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
