@@ -441,6 +441,10 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     // Returns true to continue the walk, false to break.
     // Interior return-barrier PCs use the thread's entry: thaw has changed SP.
     auto walkThroughContinuation = [&](ContBoundary kind, bool use_thread_entry = false) -> bool {
+        // Crossing the continuation consumes its Java anchor. Replaying that
+        // anchor would append frames from below the boundary a second time.
+        anchor = NULL;
+        saved_anchor_sp = 0;
         // Unless the boundary is verified fully thawed, older Java callers may
         // remain in heap StackChunks, which this walker skips even when carrier
         // walking succeeds.

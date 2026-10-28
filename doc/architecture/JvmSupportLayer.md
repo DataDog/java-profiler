@@ -226,6 +226,11 @@ metadata, independently of any earlier Java frame's stack-argument count.
 Both stopping at the synthetic root and continuing onto the carrier retain the
 frozen-boundary truncation flag. Missing entry metadata still rejects recovery.
 
+Every continuation crossing retires both the live Java frame anchor and its saved
+recovery SP. The post-loop anchor fallback must not append frames from the consumed
+continuation again, whether the walk stops at the synthetic root or continues onto
+the carrier.
+
 Caveats:
 
 - **Architecture-specific unwinding.** `unwindAtomicStub` always returns

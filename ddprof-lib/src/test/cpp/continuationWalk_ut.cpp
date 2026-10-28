@@ -86,7 +86,8 @@ public:
 class ContinuationWalkTest : public ::testing::Test, protected VMStructs {
 protected:
     static constexpr int MAX_DEPTH = 8;
-    struct ThreadLayout { void* entry; } thread{};
+    struct AnchorLayout { uintptr_t sp; uintptr_t fp; const void* pc; };
+    struct ThreadLayout { void* entry; AnchorLayout anchor; void* vframe; } thread{};
     int entry_frame_size = 8;
     ASGCT_CallFrame frames[MAX_DEPTH + 1]{};
 
@@ -117,6 +118,12 @@ protected:
         old_entry_offset = _cont_entry_offset;
         old_frame_size_offset = _frame_size_offset;
         old_entry_nm = _enter_special_nm;
+        old_anchor_offset = _thread_anchor_offset;
+        old_anchor_sp = _anchor_sp_offset;
+        old_anchor_fp = _anchor_fp_offset;
+        old_anchor_pc = _anchor_pc_offset;
+        old_vframe_offset = _thread_vframe_offset;
+        old_anchor_size = TYPE_SIZE_NAME(VMJavaFrameAnchor);
         old_entry_size = TYPE_SIZE_NAME(VMContinuationEntry);
         old_thread_size = TYPE_SIZE_NAME(VMThread);
         old_java_thread_size = TYPE_SIZE_NAME(VMJavaThread);
@@ -133,6 +140,12 @@ protected:
         _cont_entry_offset = offsetof(ThreadLayout, entry);
         _frame_size_offset = 0;
         _enter_special_nm = VMNMethod::cast_raw(&entry_frame_size);
+        _thread_anchor_offset = offsetof(ThreadLayout, anchor);
+        _anchor_sp_offset = offsetof(AnchorLayout, sp);
+        _anchor_fp_offset = offsetof(AnchorLayout, fp);
+        _anchor_pc_offset = offsetof(AnchorLayout, pc);
+        _thread_vframe_offset = offsetof(ThreadLayout, vframe);
+        TYPE_SIZE_NAME(VMJavaFrameAnchor) = sizeof(AnchorLayout);
         TYPE_SIZE_NAME(VMThread) = sizeof(ThreadLayout);
         TYPE_SIZE_NAME(VMJavaThread) = sizeof(ThreadLayout);
         TYPE_SIZE_NAME(VMContinuationEntry) = 0;
@@ -151,6 +164,12 @@ protected:
         _cont_entry_offset = old_entry_offset;
         _frame_size_offset = old_frame_size_offset;
         _enter_special_nm = old_entry_nm;
+        _thread_anchor_offset = old_anchor_offset;
+        _anchor_sp_offset = old_anchor_sp;
+        _anchor_fp_offset = old_anchor_fp;
+        _anchor_pc_offset = old_anchor_pc;
+        _thread_vframe_offset = old_vframe_offset;
+        TYPE_SIZE_NAME(VMJavaFrameAnchor) = old_anchor_size;
         TYPE_SIZE_NAME(VMContinuationEntry) = old_entry_size;
         TYPE_SIZE_NAME(VMThread) = old_thread_size;
         TYPE_SIZE_NAME(VMJavaThread) = old_java_thread_size;
@@ -161,11 +180,13 @@ protected:
     }
 
     int walk(bool carrier_frames, bool* truncated, bool frozen = false,
-             bool valid_carrier = true, int max_depth = MAX_DEPTH) {
+             bool valid_carrier = true, int max_depth = MAX_DEPTH, bool with_anchor = false) {
         // walkVM bounds SP relative to its own stack frame, so a heap-allocated
         // fixture member cannot represent the sampled thread's stack reliably.
         alignas(16) uintptr_t stack[32]{};
         thread.entry = &stack[6];
+        thread.anchor = {(uintptr_t)&stack[2], 0, LEAF_PC};
+        if (with_anchor) ProfiledThread::current()->setJavaThread(true);
         // First native frame recovers a boundary PC plus the bottom VT FP.
         // A frozen crossing must not depend on the saved FP being a pointer.
         stack[0] = frozen ? 1 : (uintptr_t)&stack[8];
@@ -183,7 +204,7 @@ protected:
         context.uc_mcontext = &machine_context;
 #endif
         StackFrame frame(&context);
-        frame.pc() = (uintptr_t)LEAF_PC;
+        frame.pc() = (uintptr_t)(with_anchor ? BOUNDARY_PC : LEAF_PC);
         frame.sp() = (uintptr_t)stack;
         frame.fp() = (uintptr_t)&stack[8];
         StackWalkFeatures features{};
@@ -640,6 +661,8 @@ protected:
     int old_entry_thread_offset;
     int old_entry_offset;
     int old_frame_size_offset;
+    int old_anchor_offset, old_anchor_sp, old_anchor_fp, old_anchor_pc, old_vframe_offset;
+    uint64_t old_anchor_size;
     VMNMethod* old_entry_nm;
     uint64_t old_entry_size;
     uint64_t old_thread_size;
@@ -789,7 +812,7 @@ TEST_F(ContinuationWalkTest, ReturnBarrierDiscoveryRejectsMissingOrOutOfRangeMet
     code[3] = 8;
 #endif
     EXPECT_EQ(8, discoverBarrierOffset(code.data(), code.size(), 2 * sizeof(void*)));
-    EXPECT_EQ(-1, discoverBarrierOffset(code.data(), code.size(), sizeof(ThreadLayout)));
+    EXPECT_EQ(-1, discoverBarrierOffset(code.data(), code.size(), sizeof(void*)));
     code[0] = 0;
     EXPECT_EQ(-1, discoverBarrierOffset(code.data(), code.size(), 2 * sizeof(void*)));
     VMTestAccessor::install(true, 20);
@@ -825,6 +848,40 @@ TEST_F(ContinuationWalkTest, FrozenBoundaryWithoutCarrierFramesTruncates) {
     ASSERT_EQ(2, walk(false, &truncated, true));
     EXPECT_STREQ("JVM Continuation", (const char*)frames[1].method_id);
     EXPECT_TRUE(truncated);
+}
+
+TEST_F(ContinuationWalkTest, FrozenRootDoesNotReplayJavaAnchor) {
+    _cont_return_barrier = BOUNDARY_PC;
+    auto before = Counters::getCounter(WALKVM_ANCHOR_FALLBACK);
+    bool truncated = false;
+    EXPECT_EQ(1, walk(false, &truncated, true, true, MAX_DEPTH, true));
+    EXPECT_STREQ("JVM Continuation", (const char*)frames[0].method_id);
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(before, Counters::getCounter(WALKVM_ANCHOR_FALLBACK));
+}
+
+TEST_F(ContinuationWalkTest, ThawedRootDoesNotReplayJavaAnchor) {
+    _cont_entry_return_pc = BOUNDARY_PC;
+    auto before = Counters::getCounter(WALKVM_ANCHOR_FALLBACK);
+    bool truncated = false;
+    EXPECT_EQ(1, walk(false, &truncated, false, true, MAX_DEPTH, true));
+    EXPECT_STREQ("JVM Continuation", (const char*)frames[0].method_id);
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(before, Counters::getCounter(WALKVM_ANCHOR_FALLBACK));
+}
+
+TEST_F(ContinuationWalkTest, CarrierWalkDoesNotReplayJavaAnchor) {
+    for (bool frozen : {false, true}) {
+        _cont_return_barrier = frozen ? BOUNDARY_PC : nullptr;
+        _cont_entry_return_pc = frozen ? nullptr : BOUNDARY_PC;
+        TYPE_SIZE_NAME(VMContinuationEntry) = (frozen ? 6 : 2) * sizeof(uintptr_t);
+        auto before = Counters::getCounter(WALKVM_ANCHOR_FALLBACK);
+        bool truncated = false;
+        EXPECT_EQ(1, walk(true, &truncated, frozen, true, MAX_DEPTH, true));
+        EXPECT_STREQ("continuation_carrier", (const char*)frames[0].method_id);
+        EXPECT_EQ(frozen, truncated);
+        EXPECT_EQ(before, Counters::getCounter(WALKVM_ANCHOR_FALLBACK));
+    }
 }
 
 TEST_F(ContinuationWalkTest, VerifiedThawedBoundaryPreservesExistingTruncation) {
