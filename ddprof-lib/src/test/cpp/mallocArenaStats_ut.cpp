@@ -305,6 +305,11 @@ TEST(MallocArenaStats, MmappedChunkIsReportedInHblkhdOnly) {
   if (big == nullptr) {
     GTEST_SKIP() << "could not allocate the mmapped test block";
   }
+  // Touch the chunk through a volatile pointer: an untouched malloc/free pair
+  // whose result never escapes is eliminated by the optimizer in release
+  // builds (-O2), so the allocation never happens and hblkhd never moves.
+  // The volatile write makes the allocation observable.
+  *(volatile char *)big = 1;
   bool held_ok = sentinelSnapshot(&held);
   free(big);  // before any ASSERT, so no exit path leaks the mapping
   ASSERT_TRUE(held_ok);
