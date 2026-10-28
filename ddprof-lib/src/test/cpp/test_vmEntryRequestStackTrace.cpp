@@ -98,6 +98,14 @@ struct MockJvmti {
   }
 };
 
+// Deallocate calls made by probeJFRRequestStackTrace() for the table built by
+// installBothExtensions(): per entry params[0].name, params, errors, id,
+// short_description; plus the ext_functions array itself.
+constexpr int kBothExtensionsDeallocs = 2 * 5 + 1;
+// Same for NullParamsWithNonZeroCountDoesNotCrash: params is null, so per
+// entry only params, errors, id, short_description; plus the array.
+constexpr int kNullParamsDeallocs = 2 * 4 + 1;
+
 class VmEntryRequestStackTraceTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -137,7 +145,11 @@ protected:
   void installBothExtensions() {
     installMockJvmti();
     for (const char *id : {REQUEST_ID, INIT_ID}) {
-      auto *params = (jvmtiParamInfo *)malloc(sizeof(jvmtiParamInfo));
+      // Two zeroed slots but param_count == 1: slot 1 (name == nullptr) is a
+      // sentinel that only an off-by-one loop bound (j <= param_count) would
+      // hand to Deallocate, turning that mutation into a deterministic
+      // Deallocate-count change instead of heap UB.
+      auto *params = (jvmtiParamInfo *)calloc(2, sizeof(jvmtiParamInfo));
       params[0].name = strdup("mock.param");
       g_ext_functions.push_back(
           makeEntry(id, id == REQUEST_ID ? mockRequestStackTrace
@@ -163,7 +175,7 @@ TEST_F(VmEntryRequestStackTraceTest, PublishedAfterSuccessfulInit) {
             mockInitializeRequestStackTrace);
   EXPECT_TRUE(VM::canRequestStackTrace());
   EXPECT_EQ(g_init_calls, 1);
-  EXPECT_GT(g_dealloc_calls, 0);
+  EXPECT_EQ(g_dealloc_calls, kBothExtensionsDeallocs);
 }
 
 TEST_F(VmEntryRequestStackTraceTest, NotPublishedWhenJvmtistacksDisabled) {
@@ -177,6 +189,8 @@ TEST_F(VmEntryRequestStackTraceTest, NotPublishedWhenJvmtistacksDisabled) {
   EXPECT_FALSE(VM::canRequestStackTrace());
   // Initialization must never run when jvmtistacks was not requested.
   EXPECT_EQ(g_init_calls, 0);
+  // The extension table is still fully released.
+  EXPECT_EQ(g_dealloc_calls, kBothExtensionsDeallocs);
 }
 
 TEST_F(VmEntryRequestStackTraceTest, NotPublishedWhenInitFails) {
@@ -194,6 +208,8 @@ TEST_F(VmEntryRequestStackTraceTest, NotPublishedWhenInitFails) {
             mockInitializeRequestStackTrace);
   EXPECT_FALSE(VM::canRequestStackTrace());
   EXPECT_EQ(Counters::getCounter(JVMTI_STACKS_INIT_FAILED), failed_before + 1);
+  EXPECT_EQ(g_init_calls, 1);
+  EXPECT_EQ(g_dealloc_calls, kBothExtensionsDeallocs);
 }
 
 TEST_F(VmEntryRequestStackTraceTest, NotPublishedWhenRequestExtensionMissing) {
@@ -254,6 +270,26 @@ TEST_F(VmEntryRequestStackTraceTest, NullParamsWithNonZeroCountDoesNotCrash) {
 
   EXPECT_EQ(VMTestAccessor::getRequestStackTrace(), mockRequestStackTrace);
   EXPECT_TRUE(VM::canRequestStackTrace());
+  EXPECT_EQ(g_dealloc_calls, kNullParamsDeallocs);
+}
+
+// initializeRequestStackTrace() must bail out when the init extension was
+// never stored, without invoking anything, touching the init counters, or
+// publishing the request function.
+TEST_F(VmEntryRequestStackTraceTest, InitializeReturnsFalseWhenInitFunctionUnset) {
+  installMockJvmti();
+  // SetUp() leaves _init_request_stack_trace and _request_stack_trace null.
+  ASSERT_EQ(VMTestAccessor::getInitRequestStackTrace(), nullptr);
+  long long ok_before = Counters::getCounter(JVMTI_STACKS_INIT_OK);
+  long long failed_before = Counters::getCounter(JVMTI_STACKS_INIT_FAILED);
+
+  EXPECT_FALSE(VM::initializeRequestStackTrace());
+
+  EXPECT_EQ(g_init_calls, 0);
+  EXPECT_EQ(Counters::getCounter(JVMTI_STACKS_INIT_OK), ok_before);
+  EXPECT_EQ(Counters::getCounter(JVMTI_STACKS_INIT_FAILED), failed_before);
+  EXPECT_EQ(VMTestAccessor::getRequestStackTrace(), nullptr);
+  EXPECT_FALSE(VM::canRequestStackTrace());
 }
 
 } // namespace

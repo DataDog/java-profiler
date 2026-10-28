@@ -436,9 +436,12 @@ void VM::probeJFRRequestStackTrace() {
       Counters::increment(JVMTI_STACKS_INIT_FAILED);
     } else {
       // _init_request_stack_trace must be visible before _request_stack_trace
-      // is published: the RELEASE store below pairs with the ACQUIRE load in
-      // canRequestStackTrace(), so any reader that observes the request
-      // function also observes the initialized init function.
+      // is published. The synchronizing edge is the RELEASE store of
+      // _request_stack_trace below, which pairs with the ACQUIRE loads in
+      // canRequestStackTrace()/requestStackTrace(). The _init_request_stack_trace
+      // store precedes it in program order, so any reader that observes a
+      // non-null _request_stack_trace also observes the initialized
+      // _init_request_stack_trace.
       __atomic_store_n(&_init_request_stack_trace, init_fn, __ATOMIC_RELEASE);
       if (initializeRequestStackTrace()) {
         __atomic_store_n(&_request_stack_trace, request_fn, __ATOMIC_RELEASE);
@@ -461,7 +464,8 @@ bool VM::initializeRequestStackTrace() {
     return true;
   }
   Log::warn("InitializeRequestStackTrace failed: %d", rc);
-  __atomic_store_n(&_request_stack_trace, (jvmtiExtensionFunction)nullptr, __ATOMIC_RELEASE);
+  // No rollback needed: _request_stack_trace is published by the caller only
+  // after initialization succeeds, so it is still null here.
   Counters::increment(JVMTI_STACKS_INIT_FAILED);
   return false;
 }
