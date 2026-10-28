@@ -62,7 +62,7 @@ build-logic/conventions/src/main/kotlin/com/datadoghq/
 
 ## How Build Configurations Work
 
-Build configurations (release, debug, asan, tsan, fuzzer) are defined in `ConfigurationPresets.kt`:
+Build configurations (release, debug, asan, tsan, fuzzer, coverage) are defined in `ConfigurationPresets.kt`:
 
 1. **Registration**: `ConfigurationPresets.setupStandardConfigurations()` registers the configs in
    the project's `nativeBuild` extension (`NativeBuildExtension.buildConfigurations`). Both
@@ -74,6 +74,7 @@ Build configurations (release, debug, asan, tsan, fuzzer) are defined in `Config
      (`libclang_rt.asan-<arch>` for clang, otherwise `libasan`)
    - tsan: `PlatformUtils.hasTsan(compiler)` — same pattern with the TSan runtime
    - fuzzer: `PlatformUtils.hasFuzzer()` — not musl, and clang supports `-fsanitize=fuzzer`
+   - coverage: only with `-PenableCoverage` (see [CodeCoverage](CodeCoverage.md))
 3. **Discovery**: `NativeBuildPlugin` creates tasks for
    `extension.getActiveConfigurations(currentPlatform, currentArch)` and logs
    `Active configurations: ...`
@@ -94,7 +95,7 @@ Build configurations (release, debug, asan, tsan, fuzzer) are defined in `Config
 │  RootProjectPlugin creates root nativeBuild extension           │
 │  ↓                                                              │
 │  afterEvaluate: ConfigurationPresets.setupStandardConfigurations│
-│  → Registers: release, debug, asan, tsan, fuzzer                │
+│  → Registers: release, debug, asan, tsan, fuzzer, coverage      │
 │  → Checks availability via PlatformUtils                        │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -113,60 +114,48 @@ Build configurations (release, debug, asan, tsan, fuzzer) are defined in `Config
 
 ## Adding a New Build Configuration
 
-To add a new configuration (e.g., "coverage"):
+The `coverage` configuration is a worked example of an opt-in configuration. It reuses
+an existing preset and only adds flags:
 
 ### Step 1: Add to ConfigurationPresets.kt
 
 ```kotlin
 // In setupStandardConfigurations()
+val enableCoverage = project.hasProperty("enableCoverage")
 extension.buildConfigurations.apply {
     // ... existing configs ...
     register("coverage") {
-        configureCoverage(this, currentPlatform, currentArch, version, rootDir)
+        configureCoverage(this, currentPlatform, currentArch, version, enableCoverage)
     }
 }
 
-// Add configuration function
 fun configureCoverage(
     config: BuildConfiguration,
     platform: Platform,
     architecture: Architecture,
     version: String,
-    rootDir: File
+    active: Boolean
 ) {
-    config.platform.set(platform)
-    config.architecture.set(architecture)
-    config.active.set(PlatformUtils.hasGcov())  // Add detection in PlatformUtils
-
-    when (platform) {
-        Platform.LINUX -> {
-            config.compilerArgs.set(
-                listOf("-O0", "-g", "--coverage", "-fprofile-arcs", "-ftest-coverage") +
-                commonLinuxCompilerArgs(version)
-            )
-            config.linkerArgs.set(commonLinuxLinkerArgs() + listOf("--coverage"))
-        }
-        Platform.MACOS -> {
-            config.compilerArgs.set(
-                listOf("-O0", "-g", "--coverage") + commonMacosCompilerArgs(version)
-            )
-            config.linkerArgs.set(listOf("--coverage"))
-        }
-    }
+    configureDebug(config, platform, architecture, version)
+    config.active.set(active)          // Inactive configs get no tasks at all
+    config.publishable.set(false)      // JAR built only while active, never published
+    config.compilerArgs.addAll("--coverage", "-fprofile-update=atomic")
+    config.linkerArgs.add("--coverage")
 }
 ```
 
-### Step 2: Add Detection to PlatformUtils.kt (if needed)
+Gate `active` on a detection helper in `PlatformUtils` when the configuration needs a
+toolchain feature (see `configureAsan` / `configureFuzzer`), or on a project property
+when it must stay out of default builds (as `coverage` does).
 
-```kotlin
-fun hasGcov(): Boolean {
-    return isCompilerAvailable("gcov")
-}
-```
+### Step 2: Build Script Wiring (only if needed)
 
-### Step 3: No Changes Needed in Build Scripts
-
-Configurations are discovered dynamically - all subprojects automatically pick up the new config.
+Configurations are discovered dynamically: compile/link/assemble, `gtest{Config}` and
+`test{Config}` tasks are created for every active configuration without build-script
+changes. Extra tasks that consume a configuration's output go in the build scripts —
+for `coverage`, `coverageReport` and its preflight check in `ddprof-lib/build.gradle.kts`
+and the JaCoCo wiring in `ddprof-test/build.gradle.kts` (see
+[CodeCoverage](CodeCoverage.md)).
 
 ## Modifying Compiler/Linker Flags
 
