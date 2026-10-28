@@ -82,6 +82,7 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
         assertEquals(DEPTH + 1, recursion, "The JVM must retain the recursive callers");
         assertTrue(profiler.getDebugCounters().getOrDefault("walkvm_cont_barrier_hit", 0L) > 0,
                 "The workload must exercise a continuation return barrier");
+        String[] firstInvalidCarrierStack = {null};
         int[] counts = reduceEvents("datadog.MethodSample", () -> new int[5], (count, sample) -> {
             JfrStackTrace trace = sample.getStackTrace();
             boolean compiled = false;
@@ -106,7 +107,10 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
                 }
                 count[0]++;
                 count[1] += errors;
-                if (carriers != 1) count[2]++;
+                if (carriers != 1) {
+                    count[2]++;
+                    if (firstInvalidCarrierStack[0] == null) firstInvalidCarrierStack[0] = sample.getStackTraceString();
+                }
                 if (!trace.isTruncated()) count[3]++;
             }
         });
@@ -114,7 +118,7 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
                 + " stopsBeforeBoundary=" + counts[4]);
         assertTrue(counts[0] > 0, "No compiled high-arity sample left callers frozen");
         assertEquals(0, counts[1], "High-arity carrier recovery rejected valid argument metadata");
-        assertEquals(0, counts[2], "High-arity samples must retain exactly one carrier");
+        assertEquals(0, counts[2], "High-arity samples must retain exactly one carrier\n" + firstInvalidCarrierStack[0]);
         assertEquals(0, counts[3], "Skipped frozen callers must remain marked truncated");
     }
 
