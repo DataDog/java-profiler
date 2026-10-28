@@ -25,7 +25,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, wall-clock, allocation, native-memory and liveness engines
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
-- [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM abstraction, continuation completeness and carrier recovery, native DWARF and arm64 stack/signal-restorer unwinding
+- [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM abstraction, continuation completeness and carrier recovery, native DWARF and arm64 JNI wrapper phases and stack/signal-restorer unwinding
 - [SanityChecks](architecture/SanityChecks.md) - Startup sanity checks
 - [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching
 - [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, and rotation protocols
