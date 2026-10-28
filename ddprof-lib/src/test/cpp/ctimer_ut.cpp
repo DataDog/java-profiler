@@ -72,6 +72,22 @@ public:
     Engine *_cpu;
     Engine *_wall;
   };
+
+  // Opens the registration gate for its lifetime and closes it on
+  // destruction, including when a test assertion returns early. Declare it
+  // after EngineSwap, so the gate closes before the engines are put back.
+  class RegistrationGate {
+  public:
+    explicit RegistrationGate(Profiler *p) : _p(p) {
+      p->openThreadRegistration();
+    }
+    ~RegistrationGate() { _p->closeThreadRegistration(); }
+    RegistrationGate(const RegistrationGate &) = delete;
+    RegistrationGate &operator=(const RegistrationGate &) = delete;
+
+  private:
+    Profiler *_p;
+  };
 };
 
 // Polls cond until it holds or a 5 s deadline passes, so a gate regression
@@ -289,7 +305,7 @@ TEST(ProfilerEnginesGateTest, CloseThreadRegistrationWaitsForHookCalls) {
   BlockingEngine cpu;
   Engine wall;
   ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
-  profiler->openThreadRegistration();
+  ProfilerTestAccessor::RegistrationGate gate(profiler);
 
   std::thread hook([] { Profiler::registerThread(OS::threadId()); });
   bool entered = waitFor([&] { return cpu.entered.load(); });
@@ -344,7 +360,7 @@ TEST(ProfilerEnginesGateTest, CancellationDuringHookCallActsAfterTheCall) {
   BlockingEngine cpu;
   Engine wall;
   ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
-  profiler->openThreadRegistration();
+  ProfilerTestAccessor::RegistrationGate gate(profiler);
 
   survived_cancellation.store(false);
   pthread_t thread;
@@ -355,7 +371,6 @@ TEST(ProfilerEnginesGateTest, CancellationDuringHookCallActsAfterTheCall) {
   EXPECT_EQ(0, pthread_cancel(thread));
   cpu.released.store(true);
   EXPECT_EQ(0, pthread_join(thread, nullptr));
-  ProfilerTestAccessor::closeThreadRegistration(profiler);
 
   EXPECT_TRUE(entered);
   // The hook call ran with cancellation disabled; without that, the request

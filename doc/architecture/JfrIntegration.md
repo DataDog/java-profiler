@@ -138,7 +138,7 @@ events write the context snapshot taken when the allocation was tracked
 - `wallClockEpoch()`, `recordTraceRoot()`, `recordQueueTime()`,
   `recordDatadogSetting()`, `recordHeapUsage()` and the reference-chain writers
   use `_buf[lock_index]`; their `Profiler` callers take the stripe lock first
-  (`profiler.cpp:890-996`, `1854-1866`).
+  (`profiler.cpp:890-996`, `1966-1978`).
 - `recordLog()` builds the event in an `alloca` buffer and writes it to the
   file at once, without a stripe lock (`flightRecorder.cpp:2945-2966`).
 - `cpuMonitorCycle()` writes `jdk.CPULoad` into `_cpu_monitor_buf`, which

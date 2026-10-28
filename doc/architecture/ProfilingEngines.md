@@ -140,7 +140,7 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      and this call closes the fd of a thread that exits after `stop()`.
 3. **`PerfEvents` only**: a `pthread_setspecific` GOT hook on the JVM library
    (`perfEvents_linux.cpp:176`), installed in `PerfEvents::start()`
-   (`perfEvents_linux.cpp:987`).
+   (`perfEvents_linux.cpp:988`).
 
 Each engine's `start()` also registers every thread that already exists.
 
@@ -249,7 +249,7 @@ resolved through `Arguments::cpuSamplerInterval()`.
 - **Thread hook**: `start()` patches the JVM library's `pthread_setspecific`
   import so that HotSpot setting or clearing its thread TLS key registers or
   unregisters the thread (`perfEvents_linux.cpp:171-204`).
-- **`stop()` is a no-op** (`perfEvents_linux.cpp:1058`): fds stay open across
+- **`stop()` is a no-op** (`perfEvents_linux.cpp:1059`): fds stay open across
   stop/start, and `registerThread()` skips threads that already have an fd.
   After stop, the cleared `_enabled` flag keeps handlers from recording.
 - **Memory**: the `_events` array and any 2-page mmap ring pages are accounted

@@ -30,6 +30,8 @@ class PerfEventType;
 class StackContext;
 
 class PerfEvents : public Engine {
+  friend class PerfEventsTestAccessor;
+
 private:
   static bool _enabled;
   static int _max_events;
@@ -44,6 +46,9 @@ private:
   static u64 readCounter(siginfo_t *siginfo, void *ucontext);
   // cppcheck-suppress unusedPrivateFunction
   static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
+  // Slot of tid in _events, or NULL when the table is NULL or tid is out of
+  // range. For readers in signal context (walkKernel(), resetBuffer()).
+  static PerfEvent *eventFor(int tid);
 
 public:
   Error check(Arguments &args);

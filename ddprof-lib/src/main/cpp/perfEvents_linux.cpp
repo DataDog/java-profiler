@@ -969,10 +969,11 @@ Error PerfEvents::start(Arguments &args) {
     _events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
     if (_events == NULL) {
       // _max_events == -1 makes registerThread() treat the engine as not
-      // started, and the tid bound checks in unregisterThread() and
-      // resetBuffer() reject every tid, so nothing indexes the NULL table; the
-      // next start() retries the allocation. Fds left open by an earlier
-      // recording are not closed here (PROF-16359).
+      // started; the tid bound check in unregisterThread() and eventFor(),
+      // used by the signal-path readers walkKernel() and resetBuffer(), reject
+      // every tid, so nothing indexes the NULL table. The next start() retries
+      // the allocation. Fds left open by an earlier recording are not closed
+      // here (PROF-16359).
       _max_events = -1;
       return Error("Failed to allocate perf event table");
     }
@@ -1070,9 +1071,9 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
     return 0;
   }
 
-  PerfEvent *event = &_events[tid];
-  if (!event->tryLock()) {
-    return 0; // the event is being destroyed
+  PerfEvent *event = eventFor(tid);
+  if (event == NULL || !event->tryLock()) {
+    return 0; // no table, or the event is being destroyed
   }
 
   int depth = 0;
@@ -1158,19 +1159,24 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
   return depth;
 }
 
-void PerfEvents::resetBuffer(int tid) {
-  // Runs from the SIGPROF handler on every exit, including signals from fds
-  // left armed by an earlier recording. start() can leave the table NULL
-  // (_max_events == -1) after a failed allocation, so check the table and the
-  // bound before indexing it.
+// walkKernel() and resetBuffer() run from the SIGPROF handler, including for
+// signals from fds left armed by an earlier recording. start() can leave the
+// table NULL (_max_events == -1) after a failed allocation, so they reach the
+// table only through this check. It does not make a table that start() frees
+// and replaces safe to read (PROF-16359).
+PerfEvent *PerfEvents::eventFor(int tid) {
   PerfEvent *events = __atomic_load_n(&_events, __ATOMIC_ACQUIRE);
   if (events == NULL || tid < 0 ||
       tid >= __atomic_load_n(&_max_events, __ATOMIC_ACQUIRE)) {
-    return;
+    return NULL;
   }
-  PerfEvent *event = &events[tid];
-  if (!event->tryLock()) {
-    return; // the event is being destroyed
+  return &events[tid];
+}
+
+void PerfEvents::resetBuffer(int tid) {
+  PerfEvent *event = eventFor(tid);
+  if (event == NULL || !event->tryLock()) {
+    return; // no table, or the event is being destroyed
   }
 
   struct perf_event_mmap_page *page = event->_page;
