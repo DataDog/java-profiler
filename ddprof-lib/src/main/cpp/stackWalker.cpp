@@ -194,7 +194,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         callchain[depth++] = attribution_pc;
 
         if (!advanceDwarfFrame(walk_pc, sp, fp, bottom, depth, frame,
-                               profiler)) {
+                               profiler, truncated)) {
             break;
         }
     }
