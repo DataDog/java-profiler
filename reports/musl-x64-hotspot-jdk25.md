@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk25
 
 ## musl-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-10-28 07:14:08 EDT
+**Date:** 2026-10-28 07:17:16 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 38 |
-| CPU Cores (end) | 35 |
+| CPU Cores (start) | 17 |
+| CPU Cores (end) | 17 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 448 |
-| Sample Rate | 7.47/sec |
-| Health Score | 467% |
-| Threads | 9 |
-| Allocations | 403 |
+| CPU Samples | 451 |
+| Sample Rate | 7.52/sec |
+| Health Score | 470% |
+| Threads | 8 |
+| Allocations | 394 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 621 |
-| Sample Rate | 10.35/sec |
-| Health Score | 647% |
-| Threads | 11 |
-| Allocations | 514 |
+| CPU Samples | 633 |
+| Sample Rate | 10.55/sec |
+| Health Score | 659% |
+| Threads | 9 |
+| Allocations | 477 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 35-38 cores)</summary>
+<summary>CPU Timeline (1 unique values: 17-17 cores)</summary>
 
 ```
-1793185485 38
-1793185490 35
-1793185495 35
-1793185500 35
-1793185505 35
-1793185510 35
-1793185515 35
-1793185520 35
-1793185525 35
-1793185530 35
-1793185535 35
-1793185540 35
-1793185545 35
-1793185550 35
-1793185555 35
-1793185560 35
-1793185565 35
-1793185570 35
-1793185575 35
-1793185580 35
+1793185628 17
+1793185633 17
+1793185638 17
+1793185643 17
+1793185648 17
+1793185653 17
+1793185658 17
+1793185663 17
+1793185668 17
+1793185673 17
+1793185678 17
+1793185683 17
+1793185688 17
+1793185693 17
+1793185698 17
+1793185703 17
+1793185708 17
+1793185713 17
+1793185718 17
+1793185723 17
 ```
 </details>
 
