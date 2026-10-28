@@ -60,7 +60,9 @@ public:
 
 namespace {
 
-const char* const CODE_BASE = (const char*)0x5a6c00000000ULL;
+// The native walker inspects instructions at these synthetic PCs.
+alignas(16) const char SYNTHETIC_CODE[0x1000] = {};
+const char* const CODE_BASE = SYNTHETIC_CODE;
 const char* const LEAF_PC = CODE_BASE + 0x108;
 const char* const BOUNDARY_PC = CODE_BASE + 0x208;
 const char* const CARRIER_PC = CODE_BASE + 0x308;
@@ -225,7 +227,8 @@ protected:
         LeafSpillNativePrefixExportedNull, LeafSpillNativePrefixExportedParent, LeafSpillNativePrefixExportedTrackedChild,
         LeafSpillNativePrefixExportedInvalidSize, LeafSpillUnknownSequence,
         BarrierInterior, BarrierInteriorRoot, BarrierInteriorNativePrefix,
-        X64ExceptionNativePrefixExportedNull, X64ExceptionNativePrefixExportedParent
+        X64ExceptionNativePrefixExportedNull, X64ExceptionNativePrefixExportedParent,
+        NativeWrapper, NativeWrapperBranch, NativeWrapperReturn, NativeWrapperReturnPc
     };
 
     // Generated prologue/setup and normal cleanup excerpts, captured from
@@ -234,14 +237,16 @@ protected:
     // cpu/{aarch64,x86}/sharedRuntime_*.cpp. The body between them is omitted.
     // Metadata and registers are synthetic; the production walker decodes them.
     void assertCarrierFromEntry(EntryPhase phase, EntryCase test_case = EntryCase::Native) {
+        bool native_wrapper = test_case == EntryCase::NativeWrapper || test_case == EntryCase::NativeWrapperBranch ||
+                test_case == EntryCase::NativeWrapperReturn || test_case == EntryCase::NativeWrapperReturnPc;
         bool x64_exception_prefix = test_case == EntryCase::X64ExceptionNativePrefixExportedNull ||
                 test_case == EntryCase::X64ExceptionNativePrefixExportedParent;
         bool tracked_child = test_case == EntryCase::LeafSpillNativePrefixExportedTrackedChild;
         bool invalid_exported_size = test_case == EntryCase::LeafSpillNativePrefixExportedInvalidSize;
         bool leaf_native_prefix = test_case == EntryCase::LeafSpillNativePrefix ||
                 test_case == EntryCase::LeafSpillNativePrefixExportedNull || test_case == EntryCase::LeafSpillNativePrefixExportedParent || tracked_child || invalid_exported_size;
-        alignas(16) uintptr_t stack_storage[52]{};
-        uintptr_t* stack = stack_storage + 4; // room for a native frame and the temporary VM-leaf spill
+        alignas(16) uintptr_t stack_storage[56]{};
+        uintptr_t* stack = stack_storage + 8; // room for a native frame and the temporary VM-leaf spill
         struct ConstMethod { void* constants = nullptr; unsigned short idnum = 0; unsigned short slots = 0; } const_method;
         struct Method { ConstMethod* const_method; } method{&const_method};
         struct NMethod {
@@ -384,6 +389,18 @@ protected:
             if (test_case == EntryCase::LeafSpillUnknownSequence) blob.nm.code[11] = 0xd503201f;
         }
 #endif
+        #ifdef __aarch64__
+        if (native_wrapper) {
+            // Temurin 21 JNI wrapper: 96-byte frame, leave(), exception check, ret.
+            blob.nm.frame_size = 12;
+            blob.nm.method = &method;
+            blob.nm.code[2] = 0xd10143ff; // sub sp, sp, #80
+            blob.nm.code[14] = 0xd503201f; // JNI leave() uses the established FP.
+            blob.nm.code[17] = 0xf9400788; // ldr x8, [x28, #8]
+            blob.nm.code[18] = 0xb5000048; // cbnz x8, forward_exception
+            blob.nm.code[19] = 0xd65f03c0;
+        }
+#endif
         if (test_case == EntryCase::UnsupportedPrologue) blob.nm.code[0] = 0;
         if (test_case == EntryCase::InterpretedEntry || test_case == EntryCase::UnsupportedInterpretedEntry) {
             // The interpreted entry precedes the verified compiled entry. Its
@@ -433,7 +450,7 @@ protected:
         ScopedValue<char*> heap2(_code_heap[2], nullptr);
         ScopedValue<const void*> heap_low(_code_heap_low, heap.low);
         ScopedValue<const void*> heap_high(_code_heap_high, heap.high);
-        ScopedValue<VMNMethod*> entry_nm(_enter_special_nm, reinterpret_cast<VMNMethod*>(barrier_interior ? &carrier.nm : &blob.nm));
+        ScopedValue<VMNMethod*> entry_nm(_enter_special_nm, native_wrapper ? nullptr : reinterpret_cast<VMNMethod*>(barrier_interior ? &carrier.nm : &blob.nm));
         ScopedValue<const void*> return_barrier(_cont_return_barrier, barrier_interior ? blob.nm.code : _cont_return_barrier);
         ScopedValue<int> inferred_entry_offset(_cont_entry_thread_offset, barrier_interior ? 0 : _cont_entry_thread_offset);
         if (barrier_interior) {
@@ -445,6 +462,8 @@ protected:
         if (x64_exception_prefix) sampled_pc = (const char*)blob.nm.code + 98; // resolver return PC
 #endif
 #ifdef __aarch64__
+        if (test_case == EntryCase::NativeWrapperBranch) sampled_pc = blob.nm.code + 18;
+        if (test_case == EntryCase::NativeWrapperReturn) sampled_pc = blob.nm.code + 19;
         if (exception_exit && prefix != 0) sampled_pc = (const char*)sampled_pc + sizeof(uint32_t); // after autiaz
         if (test_case == EntryCase::ExceptionBranch || test_case == EntryCase::AuthenticatedExceptionBranch ||
                 test_case == EntryCase::ExceptionBranchWithoutMove) sampled_pc = (const char*)sampled_pc + sizeof(uint32_t);
@@ -486,9 +505,11 @@ protected:
 #ifdef __aarch64__
         if (leaf_spill && test_case != EntryCase::LeafSpillBeforeSave && test_case != EntryCase::LeafSpillAfterRestore) sp_slot = -2;
 #endif
+        if (native_wrapper && (phase == EntryPhase::Complete || phase == EntryPhase::BeforeSpRestore ||
+                test_case == EntryCase::NativeWrapperReturnPc)) sp_slot = -2;
         uintptr_t sampled_fp = (uintptr_t)&stack[8];
         if (phase == EntryPhase::AfterSave) sampled_fp = saved_fp;
-        if (phase == EntryPhase::BeforeSave || phase == EntryPhase::AfterRestore) {
+        if ((phase == EntryPhase::BeforeSave || phase == EntryPhase::AfterRestore) && test_case != EntryCase::NativeWrapperReturnPc) {
             sampled_fp = saved_fp;
             stack[8] = 0; // Below sampled SP; may be overwritten by signal delivery.
 #ifdef __aarch64__
@@ -557,10 +578,36 @@ protected:
             frame.sp() = (uintptr_t)stack;
             frame.fp() = (uintptr_t)&stack[8];
         }
+        if (test_case == EntryCase::NativeWrapperReturnPc) {
+            // A recovered return PC is not an interrupted epilogue. Its full
+            // frame is still present; the sampled LR belongs to the native leaf.
+            stack[-4] = sampled_fp;
+            stack[-3] = (uintptr_t)sampled_pc;
+            frame.pc() = (uintptr_t)LEAF_PC;
+            frame.sp() = (uintptr_t)(stack - 4);
+#ifdef __aarch64__
+#ifdef __APPLE__
+            machine_context.__ss.__lr = 1;
+#else
+            context.uc_mcontext.regs[30] = 1;
+#endif
+#endif
+        }
         StackWalkFeatures features{};
         features.carrier_frames = test_case != EntryCase::BarrierInteriorRoot;
         bool truncated = false;
         int depth = HotspotSupportTestAccessor::walk(&context, frames, features, MAX_DEPTH, &truncated);
+        if (native_wrapper) {
+            int prefix_depth = test_case == EntryCase::NativeWrapperReturnPc ? 1 : 0;
+            ASSERT_EQ(2 + prefix_depth, depth);
+            if (prefix_depth != 0) EXPECT_STREQ("continuation_sampled_leaf", (const char*)frames[0].method_id);
+            EXPECT_EQ(FrameType::encode(FRAME_JIT_COMPILED, 0), frames[prefix_depth].bci);
+            EXPECT_EQ(JMETHODID_NOT_WALKABLE, frames[prefix_depth].method_id);
+            EXPECT_EQ(BCI_NATIVE_FRAME, frames[1 + prefix_depth].bci);
+            EXPECT_STREQ("continuation_carrier", (const char*)frames[1 + prefix_depth].method_id);
+            EXPECT_FALSE(truncated);
+            return;
+        }
         if (barrier_interior) {
             if (test_case == EntryCase::BarrierInteriorNativePrefix) assertCarrier(depth);
             else {
@@ -1144,6 +1191,18 @@ TEST_F(ContinuationWalkTest, SampledEntryWithPointerAuthenticationRetainsCarrier
         assertCarrierFromEntry(phase, EntryCase::PointerAuthentication);
     }
 }
+TEST_F(ContinuationWalkTest, NativeWrapperPhasesRetainCaller) {
+    for (EntryPhase phase : {EntryPhase::BeforeSave, EntryPhase::AfterSave, EntryPhase::BeforeAllocation,
+                            EntryPhase::Complete, EntryPhase::BeforeSpRestore, EntryPhase::AfterDeallocation,
+                            EntryPhase::AfterRestore}) {
+        SCOPED_TRACE((int)phase);
+        assertCarrierFromEntry(phase, EntryCase::NativeWrapper);
+    }
+    assertCarrierFromEntry(EntryPhase::AfterRestore, EntryCase::NativeWrapperBranch);
+    assertCarrierFromEntry(EntryPhase::AfterRestore, EntryCase::NativeWrapperReturn);
+    assertCarrierFromEntry(EntryPhase::AfterRestore, EntryCase::NativeWrapperReturnPc);
+}
+
 #endif
 
 } // namespace

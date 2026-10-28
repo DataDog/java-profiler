@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -23,6 +24,12 @@ class StackFrame {
   public:
     explicit StackFrame(void* ucontext) {
         _ucontext = (ucontext_t*)ucontext;
+    }
+
+    // True only for the interrupted instruction in the current register context.
+    // Signal-frame recovery can replace this view without modifying either context.
+    bool isInterruptedPC(const void* address) {
+        return _ucontext != nullptr && pc() == (uintptr_t)address;
     }
 
     void restore(uintptr_t saved_pc, uintptr_t saved_sp, uintptr_t saved_fp) {
