@@ -88,7 +88,8 @@ public:
 class ContinuationWalkTest : public ::testing::Test, protected VMStructs {
 protected:
     static constexpr int MAX_DEPTH = 8;
-    struct ThreadLayout { void* entry; } thread{};
+    struct AnchorLayout { uintptr_t sp; uintptr_t fp; const void* pc; };
+    struct ThreadLayout { void* entry; AnchorLayout anchor; void* vframe; } thread{};
     int entry_frame_size = 8;
     ASGCT_CallFrame frames[MAX_DEPTH + 1]{};
 
@@ -119,6 +120,12 @@ protected:
         old_entry_offset = _cont_entry_offset;
         old_frame_size_offset = _frame_size_offset;
         old_entry_nm = _enter_special_nm;
+        old_anchor_offset = _thread_anchor_offset;
+        old_anchor_sp = _anchor_sp_offset;
+        old_anchor_fp = _anchor_fp_offset;
+        old_anchor_pc = _anchor_pc_offset;
+        old_vframe_offset = _thread_vframe_offset;
+        old_anchor_size = TYPE_SIZE_NAME(VMJavaFrameAnchor);
         old_entry_size = TYPE_SIZE_NAME(VMContinuationEntry);
         old_thread_size = TYPE_SIZE_NAME(VMThread);
         old_java_thread_size = TYPE_SIZE_NAME(VMJavaThread);
@@ -135,6 +142,12 @@ protected:
         _cont_entry_offset = offsetof(ThreadLayout, entry);
         _frame_size_offset = 0;
         _enter_special_nm = VMNMethod::cast_raw(&entry_frame_size);
+        _thread_anchor_offset = offsetof(ThreadLayout, anchor);
+        _anchor_sp_offset = offsetof(AnchorLayout, sp);
+        _anchor_fp_offset = offsetof(AnchorLayout, fp);
+        _anchor_pc_offset = offsetof(AnchorLayout, pc);
+        _thread_vframe_offset = offsetof(ThreadLayout, vframe);
+        TYPE_SIZE_NAME(VMJavaFrameAnchor) = sizeof(AnchorLayout);
         TYPE_SIZE_NAME(VMThread) = sizeof(ThreadLayout);
         TYPE_SIZE_NAME(VMJavaThread) = sizeof(ThreadLayout);
         TYPE_SIZE_NAME(VMContinuationEntry) = 0;
@@ -153,6 +166,12 @@ protected:
         _cont_entry_offset = old_entry_offset;
         _frame_size_offset = old_frame_size_offset;
         _enter_special_nm = old_entry_nm;
+        _thread_anchor_offset = old_anchor_offset;
+        _anchor_sp_offset = old_anchor_sp;
+        _anchor_fp_offset = old_anchor_fp;
+        _anchor_pc_offset = old_anchor_pc;
+        _thread_vframe_offset = old_vframe_offset;
+        TYPE_SIZE_NAME(VMJavaFrameAnchor) = old_anchor_size;
         TYPE_SIZE_NAME(VMContinuationEntry) = old_entry_size;
         TYPE_SIZE_NAME(VMThread) = old_thread_size;
         TYPE_SIZE_NAME(VMJavaThread) = old_java_thread_size;
@@ -163,11 +182,13 @@ protected:
     }
 
     int walk(bool carrier_frames, bool* truncated, bool frozen = false,
-             bool valid_carrier = true, int max_depth = MAX_DEPTH) {
+             bool valid_carrier = true, int max_depth = MAX_DEPTH, bool with_anchor = false) {
         // walkVM bounds SP relative to its own stack frame, so a heap-allocated
         // fixture member cannot represent the sampled thread's stack reliably.
         alignas(16) uintptr_t stack[32]{};
         thread.entry = &stack[6];
+        thread.anchor = {(uintptr_t)&stack[2], 0, LEAF_PC};
+        if (with_anchor) ProfiledThread::current()->setJavaThread(true);
         // First native frame recovers a boundary PC plus the bottom VT FP.
         // A frozen crossing must not depend on the saved FP being a pointer.
         stack[0] = frozen ? 1 : (uintptr_t)&stack[8];
@@ -185,7 +206,7 @@ protected:
         context.uc_mcontext = &machine_context;
 #endif
         StackFrame frame(&context);
-        frame.pc() = (uintptr_t)LEAF_PC;
+        frame.pc() = (uintptr_t)(with_anchor ? BOUNDARY_PC : LEAF_PC);
         frame.sp() = (uintptr_t)stack;
         frame.fp() = (uintptr_t)&stack[8];
         StackWalkFeatures features{};
@@ -202,8 +223,11 @@ protected:
         ExceptionMove, ExceptionBranch, AuthenticatedExceptionMove, AuthenticatedExceptionBranch,
         ExceptionMoveWithoutBranch, ExceptionBranchWithoutMove, InterpretedEntry, UnsupportedInterpretedEntry,
         LeafSpillBeforeSave, LeafSpillMove, LeafSpillCall, LeafSpillRestore, LeafSpillAfterRestore,
-        LeafSpillOneMove, LeafSpillMovn, LeafSpillLogicalImmediate, LeafSpillFourMoves, LeafSpillNativePrefix, LeafSpillUnknownSequence,
-        BarrierInterior, BarrierInteriorRoot, BarrierInteriorNativePrefix
+        LeafSpillOneMove, LeafSpillMovn, LeafSpillLogicalImmediate, LeafSpillFourMoves, LeafSpillNativePrefix,
+        LeafSpillNativePrefixExportedNull, LeafSpillNativePrefixExportedParent, LeafSpillNativePrefixExportedTrackedChild,
+        LeafSpillNativePrefixExportedInvalidSize, LeafSpillUnknownSequence,
+        BarrierInterior, BarrierInteriorRoot, BarrierInteriorNativePrefix,
+        X64ExceptionNativePrefixExportedNull, X64ExceptionNativePrefixExportedParent
     };
 
     // Generated prologue/setup and normal cleanup excerpts, captured from
@@ -212,7 +236,13 @@ protected:
     // cpu/{aarch64,x86}/sharedRuntime_*.cpp. The body between them is omitted.
     // Metadata and registers are synthetic; the production walker decodes them.
     void assertCarrierFromEntry(EntryPhase phase, EntryCase test_case = EntryCase::Native) {
-        alignas(16) uintptr_t stack_storage[36]{};
+        bool x64_exception_prefix = test_case == EntryCase::X64ExceptionNativePrefixExportedNull ||
+                test_case == EntryCase::X64ExceptionNativePrefixExportedParent;
+        bool tracked_child = test_case == EntryCase::LeafSpillNativePrefixExportedTrackedChild;
+        bool invalid_exported_size = test_case == EntryCase::LeafSpillNativePrefixExportedInvalidSize;
+        bool leaf_native_prefix = test_case == EntryCase::LeafSpillNativePrefix ||
+                test_case == EntryCase::LeafSpillNativePrefixExportedNull || test_case == EntryCase::LeafSpillNativePrefixExportedParent || tracked_child || invalid_exported_size;
+        alignas(16) uintptr_t stack_storage[52]{};
         uintptr_t* stack = stack_storage + 4; // room for a native frame and the temporary VM-leaf spill
         struct ConstMethod { void* constants = nullptr; unsigned short idnum = 0; unsigned short slots = 0; } const_method;
         struct Method { ConstMethod* const_method; } method{&const_method};
@@ -284,6 +314,17 @@ protected:
         const int offsets[] = {0, 1, 4, 27, 68, 72, 73, 8};
 #endif
         memcpy(blob.nm.code, instructions, sizeof(instructions));
+#ifdef __x86_64__
+        if (x64_exception_prefix) {
+            const unsigned char exception[] = {
+                0x48, 0x83, 0xc4, 0x40, 0x5d, // cleanup and pop rbp
+                0x49, 0x8b, 0xff, 0x48, 0x8b, 0x34, 0x24, // resolver arguments
+                0x50, 0xe8, 0, 0, 0, 0, // push exception and call resolver
+                0x48, 0x8b, 0xd8, 0x58, 0x5a, 0xff, 0xe3 // restore exception/PC, jump
+            };
+            memcpy((char*)blob.nm.code + 80, exception, sizeof(exception));
+        }
+#endif
         if (barrier_interior) {
             auto prefix = barrierInstructions();
             memcpy(blob.nm.code, prefix.data(), prefix.size());
@@ -379,10 +420,13 @@ protected:
         ScopedValue<int> constants(_constmethod_constants_offset, offsetof(ConstMethod, constants));
         ScopedValue<int> idnum(_constmethod_idnum_offset, offsetof(ConstMethod, idnum));
         ScopedValue<int> slots(_constmethod_stack_arg_slots_offset, offsetof(ConstMethod, slots));
-        bool exported_parent = test_case == EntryCase::ExportedParentEntry;
-        ScopedValue<int> cont_entry_offset(_cont_entry_offset, exported_parent ? offsetof(ThreadLayout, entry) : -1);
-        ScopedValue<uint64_t> entry_size(TYPE_SIZE_NAME(VMContinuationEntry), exported_parent ? 64 : 0);
-        if (exported_parent) thread.entry = &stack[16]; // enclosing entry before publication/after removal
+        bool exported_parent = test_case == EntryCase::ExportedParentEntry || test_case == EntryCase::LeafSpillNativePrefixExportedParent ||
+                test_case == EntryCase::X64ExceptionNativePrefixExportedParent;
+        bool exported_entry = exported_parent || test_case == EntryCase::LeafSpillNativePrefixExportedNull || tracked_child || invalid_exported_size || x64_exception_prefix;
+        ScopedValue<int> cont_entry_offset(_cont_entry_offset, exported_entry ? offsetof(ThreadLayout, entry) : -1);
+        ScopedValue<int> parent_offset(_cont_entry_parent_offset, 0);
+        ScopedValue<uint64_t> entry_size(TYPE_SIZE_NAME(VMContinuationEntry), exported_entry ? (invalid_exported_size ? 80 : 64) : 0);
+        if (exported_entry) thread.entry = exported_parent ? &stack[16] : nullptr;
         ScopedValue<uint64_t> type_size(TYPE_SIZE_NAME(VMNMethod), sizeof(NMethod));
         ScopedValue<uint64_t> method_size(TYPE_SIZE_NAME(VMMethod), sizeof(Method));
         ScopedValue<uint64_t> constmethod_size(TYPE_SIZE_NAME(VMConstMethod), sizeof(ConstMethod));
@@ -399,6 +443,9 @@ protected:
             JitCodeCache::DynamicCodeGenerated(nullptr, "cont return barrier", blob.nm.code, sizeof(blob.nm.code));
         }
         const void* sampled_pc = (const char*)blob.nm.code + offsets[(int)phase] + prefix;
+#ifdef __x86_64__
+        if (x64_exception_prefix) sampled_pc = (const char*)blob.nm.code + 98; // resolver return PC
+#endif
 #ifdef __aarch64__
         if (exception_exit && prefix != 0) sampled_pc = (const char*)sampled_pc + sizeof(uint32_t); // after autiaz
         if (test_case == EntryCase::ExceptionBranch || test_case == EntryCase::AuthenticatedExceptionBranch ||
@@ -407,14 +454,14 @@ protected:
             int instruction = test_case == EntryCase::LeafSpillBeforeSave ? 0 :
                     test_case == EntryCase::LeafSpillMove || test_case == EntryCase::LeafSpillUnknownSequence ? 1 :
                     test_case == EntryCase::LeafSpillCall ? 4 :
-                    test_case == EntryCase::LeafSpillRestore || test_case == EntryCase::LeafSpillNativePrefix ? 5 : 6;
+                    test_case == EntryCase::LeafSpillRestore || leaf_native_prefix ? 5 : 6;
             if (test_case >= EntryCase::LeafSpillOneMove && test_case <= EntryCase::LeafSpillFourMoves) instruction = 1;
             sampled_pc = blob.nm.code + 7 + instruction;
         }
 #endif
         ScopedValue<const void*> return_pc(_cont_entry_return_pc,
-                test_case == EntryCase::ReturnPc ? sampled_pc : _cont_entry_return_pc);
-        VMTestAccessor::install(true, exported_parent ? 27 : 21);
+                test_case == EntryCase::ReturnPc ? sampled_pc : tracked_child ? blob.nm.code + 31 : _cont_entry_return_pc);
+        VMTestAccessor::install(true, exported_entry ? 27 : 21);
 
         bool nonpointer_fp = test_case == EntryCase::CompiledNonPointerFp ||
                 test_case == EntryCase::NativeNonPointerFp || test_case == EntryCase::BlobNonPointerFp;
@@ -428,6 +475,14 @@ protected:
         stack[11] = (uintptr_t)THREAD_ENTRY_PC;
         stack[12] = (uintptr_t)&stack[26];
         stack[13] = (uintptr_t)THREAD_ENTRY_PC;
+        if (test_case == EntryCase::X64ExceptionNativePrefixExportedParent) {
+            // The published parent is independently walkable. Following it
+            // would fabricate ancestry for the already unlinked child.
+            stack[24] = (uintptr_t)&stack[40];
+            stack[25] = (uintptr_t)CARRIER_PC;
+            stack[26] = (uintptr_t)&stack[42];
+            stack[27] = (uintptr_t)THREAD_ENTRY_PC;
+        }
         int sp_slot = phase == EntryPhase::Complete || phase == EntryPhase::BeforeSpRestore ||
                 phase == EntryPhase::AfterAllocation ? 0 : 8;
 #ifdef __aarch64__
@@ -465,11 +520,44 @@ protected:
         if (test_case == EntryCase::MisalignedSp) frame.sp() += 8;
         if (test_case == EntryCase::OutOfBoundsSp) frame.sp() = (UINTPTR_MAX / 2) & ~(uintptr_t)15;
         frame.fp() = sampled_fp;
-        if (test_case == EntryCase::LeafSpillNativePrefix || test_case == EntryCase::BarrierInteriorNativePrefix) {
+#ifdef __x86_64__
+        if (x64_exception_prefix) {
+            // Cleanup popped the entry's RBP, then pushed the exception at
+            // stack[8]. The native callee saves that restored caller RBP and
+            // the resolver return PC below it; unwinding restores SP=stack+8.
+            stack[6] = saved_fp;
+            stack[7] = (uintptr_t)sampled_pc;
+            stack[8] = 1; // exception oop, not a saved frame pointer
+            frame.pc() = (uintptr_t)LEAF_PC;
+            frame.sp() = (uintptr_t)&stack[6];
+            frame.fp() = (uintptr_t)&stack[6];
+        } else
+#endif
+        if (leaf_native_prefix || x64_exception_prefix || test_case == EntryCase::BarrierInteriorNativePrefix) {
             stack[-4] = sampled_fp;
             stack[-3] = (uintptr_t)sampled_pc;
             frame.pc() = (uintptr_t)LEAF_PC;
             frame.sp() = (uintptr_t)(stack - 4);
+        }
+        if (tracked_child) {
+            // Cross a child first, recover its parent's unlinked resolver frame,
+            // then reach the grandparent boundary. Replaying the parent fails.
+            thread.entry = stack;
+            stack[0] = (uintptr_t)&stack[14];
+            stack[8] = (uintptr_t)&stack[40];
+            stack[9] = (uintptr_t)LEAF_PC;
+            stack[10] = (uintptr_t)&stack[40];
+            stack[11] = (uintptr_t)sampled_pc;
+            stack[14] = (uintptr_t)&stack[26];
+            stack[22] = (uintptr_t)&stack[40];
+            stack[23] = (uintptr_t)_cont_entry_return_pc;
+            stack[34] = (uintptr_t)&stack[40];
+            stack[35] = (uintptr_t)CARRIER_PC;
+            stack[36] = (uintptr_t)&stack[40];
+            stack[37] = (uintptr_t)THREAD_ENTRY_PC;
+            frame.pc() = (uintptr_t)_cont_entry_return_pc;
+            frame.sp() = (uintptr_t)stack;
+            frame.fp() = (uintptr_t)&stack[8];
         }
         StackWalkFeatures features{};
         features.carrier_frames = test_case != EntryCase::BarrierInteriorRoot;
@@ -485,7 +573,14 @@ protected:
             EXPECT_TRUE(truncated);
             return;
         }
-        if (test_case == EntryCase::LeafSpillNativePrefix) {
+        if (invalid_exported_size || x64_exception_prefix) {
+            ASSERT_EQ(2, depth);
+            ASSERT_EQ(BCI_ERROR, frames[1].bci);
+            EXPECT_STREQ("break_cont_entry_fp", (const char*)frames[1].method_id);
+            EXPECT_TRUE(truncated);
+            return;
+        }
+        if (leaf_native_prefix) {
             assertCarrier(depth);
             EXPECT_FALSE(truncated);
             return;
@@ -642,6 +737,8 @@ protected:
     int old_entry_thread_offset;
     int old_entry_offset;
     int old_frame_size_offset;
+    int old_anchor_offset, old_anchor_sp, old_anchor_fp, old_anchor_pc, old_vframe_offset;
+    uint64_t old_anchor_size;
     VMNMethod* old_entry_nm;
     uint64_t old_entry_size;
     uint64_t old_thread_size;
@@ -791,7 +888,7 @@ TEST_F(ContinuationWalkTest, ReturnBarrierDiscoveryRejectsMissingOrOutOfRangeMet
     code[3] = 8;
 #endif
     EXPECT_EQ(8, discoverBarrierOffset(code.data(), code.size(), 2 * sizeof(void*)));
-    EXPECT_EQ(-1, discoverBarrierOffset(code.data(), code.size(), sizeof(ThreadLayout)));
+    EXPECT_EQ(-1, discoverBarrierOffset(code.data(), code.size(), sizeof(void*)));
     code[0] = 0;
     EXPECT_EQ(-1, discoverBarrierOffset(code.data(), code.size(), 2 * sizeof(void*)));
     VMTestAccessor::install(true, 20);
@@ -827,6 +924,40 @@ TEST_F(ContinuationWalkTest, FrozenBoundaryWithoutCarrierFramesTruncates) {
     ASSERT_EQ(2, walk(false, &truncated, true));
     EXPECT_STREQ("JVM Continuation", (const char*)frames[1].method_id);
     EXPECT_TRUE(truncated);
+}
+
+TEST_F(ContinuationWalkTest, FrozenRootDoesNotReplayJavaAnchor) {
+    _cont_return_barrier = BOUNDARY_PC;
+    auto before = Counters::getCounter(WALKVM_ANCHOR_FALLBACK);
+    bool truncated = false;
+    EXPECT_EQ(1, walk(false, &truncated, true, true, MAX_DEPTH, true));
+    EXPECT_STREQ("JVM Continuation", (const char*)frames[0].method_id);
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(before, Counters::getCounter(WALKVM_ANCHOR_FALLBACK));
+}
+
+TEST_F(ContinuationWalkTest, ThawedRootDoesNotReplayJavaAnchor) {
+    _cont_entry_return_pc = BOUNDARY_PC;
+    auto before = Counters::getCounter(WALKVM_ANCHOR_FALLBACK);
+    bool truncated = false;
+    EXPECT_EQ(1, walk(false, &truncated, false, true, MAX_DEPTH, true));
+    EXPECT_STREQ("JVM Continuation", (const char*)frames[0].method_id);
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(before, Counters::getCounter(WALKVM_ANCHOR_FALLBACK));
+}
+
+TEST_F(ContinuationWalkTest, CarrierWalkDoesNotReplayJavaAnchor) {
+    for (bool frozen : {false, true}) {
+        _cont_return_barrier = frozen ? BOUNDARY_PC : nullptr;
+        _cont_entry_return_pc = frozen ? nullptr : BOUNDARY_PC;
+        TYPE_SIZE_NAME(VMContinuationEntry) = (frozen ? 6 : 2) * sizeof(uintptr_t);
+        auto before = Counters::getCounter(WALKVM_ANCHOR_FALLBACK);
+        bool truncated = false;
+        EXPECT_EQ(1, walk(true, &truncated, frozen, true, MAX_DEPTH, true));
+        EXPECT_STREQ("continuation_carrier", (const char*)frames[0].method_id);
+        EXPECT_EQ(frozen, truncated);
+        EXPECT_EQ(before, Counters::getCounter(WALKVM_ANCHOR_FALLBACK));
+    }
 }
 
 TEST_F(ContinuationWalkTest, VerifiedThawedBoundaryPreservesExistingTruncation) {
@@ -927,6 +1058,16 @@ TEST_F(ContinuationWalkTest, InterpretedEntryRejectsUnsupportedPrologue) {
     assertCarrierFromEntry(EntryPhase::Complete, EntryCase::UnsupportedInterpretedEntry);
 }
 
+#ifdef __x86_64__
+TEST_F(ContinuationWalkTest, ExceptionResolverReturnPcRejectsUnlinkedExportedEntry) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionNativePrefixExportedNull);
+}
+
+TEST_F(ContinuationWalkTest, ExceptionResolverReturnPcDoesNotReplayExportedParent) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionNativePrefixExportedParent);
+}
+#endif
+
 TEST_F(ContinuationWalkTest, ReturnBarrierInteriorRetainsContinuationAncestry) {
     for (EntryCase test_case : {EntryCase::BarrierInterior, EntryCase::BarrierInteriorRoot, EntryCase::BarrierInteriorNativePrefix}) {
         assertCarrierFromEntry(EntryPhase::Complete, test_case);
@@ -962,6 +1103,22 @@ TEST_F(ContinuationWalkTest, EntryVmLeafSpillAcceptsGeneratedConstantLoads) {
 
 TEST_F(ContinuationWalkTest, EntryVmLeafSpillWithNativePrefixRetainsCarrier) {
     assertCarrierFromEntry(EntryPhase::Complete, EntryCase::LeafSpillNativePrefix);
+}
+
+TEST_F(ContinuationWalkTest, EntryVmLeafSpillWithNativePrefixIgnoresUnlinkedExportedEntry) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::LeafSpillNativePrefixExportedNull);
+}
+
+TEST_F(ContinuationWalkTest, EntryVmLeafSpillWithNativePrefixIgnoresExportedParent) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::LeafSpillNativePrefixExportedParent);
+}
+
+TEST_F(ContinuationWalkTest, EntryVmLeafSpillWithExportedMetadataAdvancesTrackedChildToParent) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::LeafSpillNativePrefixExportedTrackedChild);
+}
+
+TEST_F(ContinuationWalkTest, EntryVmLeafSpillRejectsInconsistentExportedFrameSize) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::LeafSpillNativePrefixExportedInvalidSize);
 }
 
 TEST_F(ContinuationWalkTest, ExceptionExitAfterRestoringRegistersRetainsCarrier) {

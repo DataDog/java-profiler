@@ -216,6 +216,11 @@ or return-PC stack slot (x64). Unknown prologues fail rather than applying the
 complete-frame size. Pointer-authentication instructions are recognized on
 arm64, and recovered PCs have PAC bits stripped.
 
+On x64, the generated exception section after the validated normal cleanup is
+unsupported. Its FP and return-PC sources change around handler resolution. Both
+direct samples and native resolver return PCs stop with an error and truncation
+instead of applying a complete-frame layout or following an unlinked entry.
+
 Interpreter-only execution uses a separate entry before the verified compiled
 entry on both architectures. The decoder locates that entry's recognized frame
 setup with a bounded scan before the compiled entry. Its prologue and established
@@ -262,12 +267,22 @@ alignment and carrier admission checks apply before proceeding. Walks with a
 known argument count retain SP-based recovery. Missing or invalid metadata
 still rejects the walk, and frozen boundaries remain marked truncated.
 
+Recognized arm64 VM-leaf spills also recover an entry that exception cleanup has
+already unlinked from the thread. Exported layouts must agree with the entry FP
+derived from the nmethod size. The nested-entry cursor records that physical entry
+so the next crossing follows its parent once.
+
 Native thaw calls return inside the barrier stub, where SP has already changed.
 The runtime-stub lookup identifies these PCs by matching the registered stub's
 start to the known return-barrier entry. They use the current thread's entry
 metadata, independently of any earlier Java frame's stack-argument count.
 Both stopping at the synthetic root and continuing onto the carrier retain the
 frozen-boundary truncation flag. Missing entry metadata still rejects recovery.
+
+Every continuation crossing retires both the live Java frame anchor and its saved
+recovery SP. The post-loop anchor fallback must not append frames from the consumed
+continuation again, whether the walk stops at the synthetic root or continues onto
+the carrier.
 
 Caveats:
 
@@ -290,6 +305,20 @@ Caveats:
   `initExecution()` falls back to `Partial_loaded` (`jvmSupport.cpp:86-91`).
 - **`cstack=vm` needs `VMStructs`.** If `VMStructs::hasStackStructs()` is false,
   `cstack=vm` is downgraded to DWARF or `no` (`profiler.cpp:1625-1629`).
+
+#### Continuation completeness
+
+HotSpot can leave older virtual-thread callers frozen in heap `StackChunk` objects
+after a partial thaw. `walkVM` classifies continuation boundaries with `ContBoundary`:
+a verified thawed boundary proves no callers remain frozen; return barriers and
+unverified crossings mark the trace truncated. This walker does not recover heap
+callers, so reaching a carrier does not clear that flag.
+
+`Recording::writeStackTraceHeader` preserves the walker flag even when the final
+Java frame is an entry method such as `Thread.run`. A verified thawed crossing also
+preserves truncation established earlier in the walk. The blocking virtual-thread
+wall-clock regression requires carrier ancestry. `FrozenVirtualThreadStackTest`
+separately compares logical callers and verifies truthful completeness reporting.
 
 ### `j9/`
 

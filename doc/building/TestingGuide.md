@@ -324,12 +324,25 @@ catching races with per-second probability too low for any bounded CI window.
 ./gradlew :ddprof-test:testAsan -Pskip-gtest
 ```
 
+### Coverage
+
+```bash
+# C++ (gcovr) + Java (JaCoCo) reports; needs gcovr 8.3+, gtest, make (Linux)
+./gradlew :ddprof-lib:coverageReport -PenableCoverage
+```
+
+The C++ report covers only the `-O0 -DDEBUG` build. Prerequisites and limits are in
+[CodeCoverage](CodeCoverage.md).
+
 ### Using containers to approximate CI
 
 `utils/run-containers-tests.sh` defaults to Podman. On macOS use Docker through colima
 (`--container=docker`): podman's credential-helper lookup for the Datadog registries
 (ddtool) fails outside the CI network and aborts container commands. Run `./utils/run-containers-tests.sh --help` for the full flag list
 (`--tests`, `--gtest`, `--gtest-task`, `--mount`, `--rebuild`, `--matrix`, ...).
+Cached images are reused until `--rebuild-base` (or `--rebuild`) is passed. Use it
+after the base image's package list changes, e.g. to pick up gcovr for coverage runs:
+it rebuilds the base image and the JDK image built on it.
 
 ```bash
 # Matches the nightly configuration

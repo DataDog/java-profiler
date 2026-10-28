@@ -390,11 +390,12 @@ per frame:  method key   varint (MethodInfo::_key)
             frame type   byte
 ```
 
-- **Truncated flag:** when the outermost frame (`frames[num_frames - 1]`) is a
-  Java frame, the trace is reported truncated unless that frame is an entry
-  point (`Thread.run()` or an override in a `Thread` subclass, or
-  `main(String[])`); for native outermost frames it is `CallTrace::truncated`
-  (`flightRecorder.cpp:1946-1955`, `366-388`).
+- **Truncated flag:** `Recording::writeStackTraceHeader()` preserves
+  `CallTrace::truncated` for every root type. A Java outermost frame
+  (`frames[num_frames - 1]`) also marks the trace truncated unless it is an
+  entry point (`Thread.run()` or an override in a `Thread` subclass, or
+  `main(String[])`). An entry root cannot clear truncation established by the
+  walker; native roots use the walker flag unchanged.
 - **Java frames:** the frame type and BCI are decoded from the packed `bci`
   field (`FrameType::decode()` / `FrameType::bci()`), and the line number comes
   from the method's line-number table (`flightRecorder.cpp:1962-1967`,

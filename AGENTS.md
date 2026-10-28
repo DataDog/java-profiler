@@ -69,7 +69,7 @@ and `:ddprof-lib:benchmarks`), `ddprof-test` (Java integration tests), `ddprof-t
 (tracing-context tests), `ddprof-test-native`, `ddprof-stresstest` (JMH + chaos),
 `malloc-shim` (Linux allocation interceptor).
 
-**Supported JVMs:** HotSpot, J9, Zing; HotSpot continuation recovery uses sampled instruction phases (compiled/interpreted entries and arm64 exception exits) and validated metadata for return-barrier entries and interiors — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
+**Supported JVMs:** HotSpot, J9, Zing; HotSpot continuation recovery uses sampled instruction phases (compiled/interpreted entries and arm64 exception exits), validated metadata for return-barrier entries and interiors, and retires consumed Java anchors — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
 **Platforms:** Linux x64/arm64 (primary), macOS arm64/x64; musl libc handled automatically.
 
 ## Operating Rules for Agent Sessions
@@ -88,7 +88,9 @@ and `:ddprof-lib:benchmarks`), `ddprof-test` (Java integration tests), `ddprof-t
 ## Build & Test Quick Reference
 
 Configurations: `release`, `debug`, plus `asan`/`tsan`/`fuzzer` when the sanitizer runtime
-is found for the selected compiler (inactive on macOS and musl).
+is found for the selected compiler (inactive on macOS and musl), plus opt-in `coverage`
+with `-PenableCoverage` (`:ddprof-lib:coverageReport`; the C++ report covers only the
+`-O0 -DDEBUG` build — see [doc/building/CodeCoverage.md](doc/building/CodeCoverage.md)).
 
 ```bash
 ./.claude/commands/build-and-summarize buildRelease      # release library + JAR
@@ -311,6 +313,10 @@ search. Do not resolve symbols or line tables eagerly in hot paths.
 pointer-not-yet-stored. Never permanently advance an iteration cursor past NULL gaps; stop
 at the first NULL or track the last contiguous non-NULL entry so missing entries are
 retried.
+
+**Stack completeness.** A successful carrier crossing does not establish a complete
+virtual-thread stack. Preserve walker-reported truncation through JFR serialization;
+see [JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md#continuation-completeness).
 
 **JVM abstraction.** Shared code must not refer to JVM-implementation-specific code directly,
 only through the abstraction files: `jvmSupport.{h,inline.h,cpp}`, `jvmThread.{h,cpp}`,
