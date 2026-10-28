@@ -142,6 +142,22 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
    (`perfEvents_linux.cpp:176`), installed in `PerfEvents::start()`
    (`perfEvents_linux.cpp:988`).
 
+Every `Profiler::registerThread()`/`unregisterThread()` call counts itself in
+flight (`HookCallScope`) for as long as it may be inside an engine. Closing a gate
+(`closeThreadRegistration()` in `stop()`, `ThreadTablesFreeze` in `start()`) waits
+for that count to reach zero, so no call is inside an engine while it is torn down
+or its table is replaced. The gate flags and the counter use `seq_cst` on both
+sides: either a call sees the gate closed, or the closer sees the call and waits.
+
+Thread cancellation is disabled for the length of each call, because the engine
+calls reach cancellation points (`close()`, `Log::warn()`). Acting on a
+cancellation there would unwind through `~HookCallScope()`, which aborts with the
+statically linked libgcc, or, on musl, skip it and leave the count raised. The
+state is restored by a plain call made after every destructor-bearing scope of the
+call, not by a guard. Current glibc acts on a pending asynchronous cancellation as
+soon as it is re-enabled, and unwinding out of an implicitly `noexcept` destructor
+terminates the process.
+
 Each engine's `start()` also registers every thread that already exists.
 
 ## Common Signal-Handler Contract

@@ -146,7 +146,7 @@ before working on a subsystem.
 | String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
 | TLS context (thread-local tracing context, distributed tracing) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
-| Profiling engines (CPU, wall-clock, allocation, native memory, liveness) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
+| Profiling engines (CPU, wall-clock, allocation, native memory, liveness; thread-registration gates) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, signal scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
 | Native memory profiling (malloc/free interception, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
@@ -271,6 +271,25 @@ Otherwise a signal can sample a half-torn-down thread, or re-acquire a
 `ProfiledThread` that is never freed. The block is never undone: calling it on a
 thread that keeps running silently stops profiling that thread — use `SignalBlocker`
 for a temporary window.
+
+**Thread registration.** The `pthread_create` hook and the JVMTI `ThreadStart`/
+`ThreadEnd` callbacks run without `_state_lock` and can overlap `Profiler::start()`/
+`stop()`, while engines size, replace or tear down their per-thread tables (`CTimer`'s
+`_timers`, `PerfEvents`' `_events`). So:
+- reach the engines only through `Profiler::registerThread()`/`unregisterThread()`,
+  never `_cpu_engine->registerThread()` directly. These calls check a gate
+  (`_engines_ready` / `_thread_tables_stable`), count themselves in flight
+  (`HookCallScope`), and run with thread cancellation disabled;
+- an engine with a per-thread table sizes it first, then calls
+  `Profiler::openThreadRegistration()`, then lists the existing threads. Free or
+  replace a table only while its gate is closed: closing a gate
+  (`closeThreadRegistration()`, `ThreadTablesFreeze`) waits until no call is inside an
+  engine;
+- restore the cancellation state outside every destructor-bearing scope, never from a
+  destructor: current glibc acts on a pending asynchronous cancellation as soon as it
+  is re-enabled, and unwinding out of an implicitly `noexcept` destructor terminates.
+
+Details: [ProfilingEngines.md](doc/architecture/ProfilingEngines.md#thread-registration).
 
 **JVMTI callbacks.** Callbacks run on whichever JVM thread triggers the event —
 including compiler, VM and GC threads that never went through our `pthread_create`
