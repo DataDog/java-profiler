@@ -434,9 +434,11 @@ public:
   // updateMallocArenaStats() for why this matters. Exposed for
   // RecordingTestAccessor.
   static bool glibcMallocActive();
-  // Process-wide malloc arena state (glibc mallinfo2). Flush path only --
-  // takes every arena lock, so not async-signal-safe. No-op off glibc 2.33+,
-  // and also when glibcMallocActive() reports a replacement allocator.
+  // Process-wide malloc arena state (glibc mallinfo2, resolved at runtime --
+  // see mallocInfo.h). Flush path only -- takes every arena lock, so not
+  // async-signal-safe. No-op when the runtime allocator does not provide
+  // mallinfo2() (glibc < 2.33, musl, macOS), and also when
+  // glibcMallocActive() reports a replacement allocator.
   void updateMallocArenaStats();
   void writeNativeMem(Buffer *buf);
 
