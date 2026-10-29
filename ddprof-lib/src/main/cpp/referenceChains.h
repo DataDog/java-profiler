@@ -344,6 +344,19 @@ private:
   // below for how it is read.
   volatile u8 _abandon_reason;
 
+  // CONSTRAINT (urgent-admission growth gate): the heap-floor projection is a
+  // least-squares regression over a 30-sample window, so a single spike sample
+  // keeps the projection inside the ramp band for ~6-7 recovery GCs AFTER the
+  // heap has physically stopped growing - band residence alone does not
+  // establish growth. updateUrgentAdmission() therefore snapshots the newest
+  // heap-floor sample's used bytes when a non-emergency ramp episode begins
+  // and admits the 100% tracking boost only while a newer sample has grown
+  // past that snapshot; a recovered spike never does. Written and read only
+  // from threadLoop() on the BFS thread - no atomics. 0 = no baseline for the
+  // current episode (a used value of 0 cannot be a real sample: onGC() only
+  // records used > 0).
+  u64 _admission_growth_baseline;
+
   // Wall-clock timestamp (OS::nanotime()) of the search's first pass - baseline for the TTL cutoff
   // above.
   volatile u64 _search_start_ns;
@@ -739,6 +752,7 @@ private:
         _tags_released(true), _urgent_latched(false),
         _urgent_release_ticks(0),
         _urgency_budget_boosted(false), _configured_budget(0),
+        _admission_growth_baseline(0),
         _search_state(SearchState::RUNNING),
         _abandon_reason(SearchAbandonReason::NONE), _search_start_ns(0),
         _last_pass_gc_finish_epoch(0), _last_pass_ns(0),
@@ -774,6 +788,14 @@ private:
   // Latched, hysteretic view of LivenessTracker::secondsToOOM() crossing OOM_URGENT_THRESHOLD_S -
   // see _urgent_latched for the latch/release rules and why the raw comparison flaps.
   bool isUrgent() const;
+
+  // Computes the 100% tracking-admission decision for one threadLoop()
+  // iteration and maintains _admission_growth_baseline. Raw `urgent` still
+  // drives the budget/cadence ramp; admission alone is additionally gated on
+  // heap growth evidence outside the emergency band - see
+  // _admission_growth_baseline's comment for why band residence is not
+  // sufficient, and OOM_URGENT_THRESHOLD_S for the emergency split.
+  bool updateUrgentAdmission(double seconds_to_oom, bool urgent);
 
   // Search restart gate: true once _safepoint_pain_budget has
   // drained back to zero (canStartNow()) *and* hasLeakSignal() above reports at least one leak
@@ -1152,6 +1174,9 @@ public:
   void resetUrgencyForTest() {
     _urgent_latched = false;
     _urgent_release_ticks = 0;
+    // updateUrgentAdmission()'s episode baseline - a stale one across tests
+    // would make an episode's "first observation" branch unreachable.
+    _admission_growth_baseline = 0;
   }
   // Applied vs configured CPU pain-budget refill rate: shouldRunPass() raises
   // the applied rate CANARY_PAIN_BUDGET_REFILL_MULTIPLIER-fold only while a

@@ -114,14 +114,14 @@ neither source provides a valid estimate, or that the projection is still in its
 
 Two ranges have different purposes:
 
-- At less than 30 minutes, the OOM ramp increases the pause target, shortens the cadence, increases the edge-budget ceiling, and admits all liveness samples.
-- At less than 5 minutes, `isUrgent()` latches an urgent episode. The latch does not start searches; it sharpens the ramp's response while a candidate-driven search runs.
+- At less than 30 minutes, the OOM ramp increases the pause target, shortens the cadence, and increases the edge-budget ceiling. The 100% liveness-sampling admission follows the same band, but outside the emergency band it additionally requires fresh growth evidence: the newest heap-floor sample must exceed the value observed when the ramp episode began. The projection is a smoothed regression over a 30-sample window, so a single spike sample keeps the projection inside the band for several recovery GCs after the heap has physically stopped growing. Growth evidence is what keeps the admission boost off for such a recovered spike. Inside the emergency band (less than 5 minutes), admission is immediate.
+- At less than 5 minutes, `isUrgent()` latches an urgent episode. The latch does not start searches, and the ramp calculation does not consult it. Its only consumer is the no-progress abandonment of a running search, which it suppresses while the latch is held.
 
 Both ranges apply only after the burn-in period.
 
 For `OOM_PROJECTION_BURN_IN_NS` (5 minutes) after the leak signal first activates in the process, `secondsToOOM()` returns -1, so neither the 30-minute ramp nor the urgent latch fires. A burn-in is needed because warmup growth projects an imminent OOM just as a real leak does. The burn-in depends on how long the leak signal has been active, not on the time span of the heap-floor samples. The sampler records one sample per GC, so near OOM back-to-back GCs compress the sample history to a few seconds. Once the burn-in has passed, that compressed history no longer blocks the latch.
 
-The urgent latch clears after five consecutive checks at 10 minutes or more, or after five consecutive checks with no valid rising-trend estimate. This hysteresis prevents the ramp's sharpened response from flapping when the estimate moves around the threshold.
+The urgent latch clears after five consecutive checks at 10 minutes or more, or after five consecutive checks with no valid rising-trend estimate. This hysteresis keeps the urgent episode itself from flapping when the estimate moves around the threshold; the admission boost, which releases on the raw band comparison, does not follow this hysteresis.
 
 The ramp and the latch use different thresholds. Entering the ramp does not by itself latch urgency.
 

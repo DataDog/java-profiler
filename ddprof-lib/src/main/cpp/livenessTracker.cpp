@@ -1477,6 +1477,21 @@ void LivenessTracker::recordTidTrendSamplesLocked(
   }
 }
 
+u64 LivenessTracker::newestHeapFloorSample() const {
+  // Matches recordHeapFloorSampleUnchecked()'s storeRelease() on both index
+  // fields - loadAcquire() here is what makes the payload read below visible.
+  u8 fill = loadAcquire(_heap_floor_ring_fill);
+  u8 head = loadAcquire(_heap_floor_ring_head);
+  if (fill == 0) {
+    return 0;
+  }
+  // head points one past the newest slot (recordHeapFloorSampleUnchecked()
+  // stores then advances) - step back one, wrapping over the ring size.
+  u8 newest = (u8)((head + KLASS_POPULATION_RING_SIZE - 1) %
+                   KLASS_POPULATION_RING_SIZE);
+  return load(_heap_floor_ring[newest]);
+}
+
 void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns, u64 container_used) {
   TEST_LOG("LivenessTracker::recordHeapFloorSample called used=%llu disabled=%d",
            (unsigned long long)used,

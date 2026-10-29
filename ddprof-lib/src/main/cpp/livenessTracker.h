@@ -862,6 +862,14 @@ public:
   // and secondsToOOM(). See _max_heap_bytes's own comment above.
   jlong maxHeapBytes() const { return _max_heap_bytes; }
 
+  // Reads the used-bytes value of the newest _heap_floor_ring sample (0 when
+  // the ring is empty). Matches recordHeapFloorSampleUnchecked()'s SPSC
+  // publish order - loadAcquire() on the index fields is what makes the
+  // payload store visible. Consumed by ReferenceChainTracker's urgent-admission
+  // gate as the freshest physical growth evidence; it must observe the same
+  // samples the projection does, hence the same acquire pairing.
+  u64 newestHeapFloorSample() const;
+
   constexpr static int MAX_LEAK_CANDIDATES = 5;
   // Delete copy constructor and assignment operator to prevent copies
   LivenessTracker(const LivenessTracker&) = delete;
@@ -943,8 +951,11 @@ public:
   void noteSelectedCandidates(const KlassCandidate *candidates, int count);
 
   // Urgency raise toggle - see admitForTracking()'s comment above. Set every
-  // threadLoop() iteration with that iteration's urgency computation, so the
-  // boost tracks the ramp exactly (both engaging and releasing).
+  // threadLoop() iteration with that iteration's urgency computation, except
+  // that outside the emergency band (< OOM_URGENT_THRESHOLD_S) the boost
+  // additionally requires fresh heap growth evidence - see
+  // ReferenceChainTracker::updateUrgentAdmission() for why the raw ramp
+  // comparison alone is not safe to admit on.
   void setUrgentTracking(bool urgent);
 
   void flush(std::set<int> &tracked_thread_ids);

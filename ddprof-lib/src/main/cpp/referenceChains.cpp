@@ -573,12 +573,16 @@ void ReferenceChainTracker::threadLoop() {
     DEBUG_ONLY(rcDebugLevelRefresh());
 
     // Hand this iteration's ramp state to shouldRunPass() before it decides - the canary-backoff
-    // gate is bypassed while the OOM urgency ramp is active (see _oom_ramp_active's own comment) -
-    // and raise LivenessTracker's tracking admission to 100% for the same ramp (see
-    // setUrgentTracking()'s own comment, livenessTracker.h): same state, same iteration, so the
-    // boost tracks the ramp exactly, engaging and releasing together.
+    // gate is bypassed while the OOM urgency ramp is active (see _oom_ramp_active's own comment).
+    // The 100% tracking admission (setUrgentTracking(), livenessTracker.h) follows the same ramp
+    // state, but outside the emergency band it is additionally gated on fresh heap growth evidence
+    // (updateUrgentAdmission()/the _admission_growth_baseline constraint): the smoothed projection
+    // can stay inside the band for many GCs after the heap has physically stopped growing, and
+    // boosting admission on a recovered spike only buys table churn. The budget/cadence ramp above
+    // stays keyed on the raw band comparison - without a running search (the candidate gate) those
+    // effects cost nothing, while mis-admission during a transient does.
     _oom_ramp_active = urgent;
-    LivenessTracker::instance()->setUrgentTracking(urgent);
+    LivenessTracker::instance()->setUrgentTracking(updateUrgentAdmission(seconds_to_oom, urgent));
 
     // shouldRunPass()'s restart branch (restartSearch()) clears _pending_expand/_priority_expand
     // the same way a pass does - take _engine_lock around the call so that mutation is serialized
@@ -808,6 +812,37 @@ bool ReferenceChainTracker::isUrgent() const {
   return false;
 }
 
+bool ReferenceChainTracker::updateUrgentAdmission(double seconds_to_oom, bool urgent) {
+  if (!urgent) {
+    // Left set after an episode so the next episode re-snapshots against that
+    // episode's own entry state instead of inheriting a stale baseline.
+    _admission_growth_baseline = 0;
+    return false;
+  }
+  // Emergency band: the projection says minutes at most - capture what the
+  // last chapter can before the process dies, without waiting for growth
+  // evidence. OOM_URGENT_THRESHOLD_S is isUrgent()'s own latch threshold, so
+  // the emergency band and the hysteretic urgent episode cover the same range.
+  if (seconds_to_oom < OOM_URGENT_THRESHOLD_S) {
+    return true;
+  }
+  u64 newest_used = LivenessTracker::instance()->newestHeapFloorSample();
+  if (newest_used == 0) {
+    // No sample to reason about (the ring cannot be empty while a projection
+    // exists - secondsToOOM() requires MIN_FILL samples - so this is purely
+    // defensive). Hold admission rather than admit on nothing.
+    return false;
+  }
+  if (_admission_growth_baseline == 0) {
+    // First observation of the episode: establish the entry baseline. Admit
+    // only once a newer sample has grown past it - one GC away for a real
+    // leak, never for a heap that has stopped growing.
+    _admission_growth_baseline = newest_used;
+    return false;
+  }
+  return newest_used > _admission_growth_baseline;
+}
+
 bool ReferenceChainTracker::hasLeakSignal() {
   if (!LivenessTracker::instance()->leakSignalEnabled()) {
     // No population-trend signal can be constructed - generations tracking
@@ -823,9 +858,11 @@ bool ReferenceChainTracker::hasLeakSignal() {
   }
   double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();
   // isUrgent() is called unconditionally, not short-circuited behind any
-  // branch: it maintains the latch/release state (see _urgent_latched), which
-  // still drives the urgency ramp and the no-progress-abandonment suppression
-  // once a search runs.
+  // branch: it maintains the latch/release state (see _urgent_latched), whose
+  // only consumer is the no-progress-abandonment suppression once a search
+  // runs (runPass()'s terminal gate). The OOM ramp's budget/cadence/admission
+  // effects in threadLoop() follow the raw band comparison instead - they do
+  // not wait for this latch.
   bool urgent = isUrgent();
   KlassCandidate probe[1];
   int n = LivenessTracker::instance()->selectLeakCandidates(probe, 1);
