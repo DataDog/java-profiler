@@ -19,6 +19,7 @@
 #ifdef __linux__
 
 #include "arguments.h"
+#include "common.h"
 #include "nativeMem.h"
 #include "perfEvents.h"
 
