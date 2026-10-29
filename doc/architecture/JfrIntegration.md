@@ -100,9 +100,9 @@ an atomic add to `_bytes_written` and a reset (`flightRecorder.cpp:1360-1366`).
 There is no background writer: the thread that fills a buffer past the
 threshold, which can be a signal handler, writes it out.
 
-Fixed-size events call `flushIfNeeded()` after writing. Events whose size
-depends on input reserve room first by flushing against a reduced limit, for
-example `RECORDING_BUFFER_LIMIT - length` for settings
+Fixed-size events call `flushIfNeeded()` after writing. Larger variable-size
+events reserve room first by flushing against a reduced limit, for example
+`RECORDING_BUFFER_LIMIT - length` for settings
 (`flightRecorder.cpp:1584`) or the worst-case chain size for
 `datadog.ReferenceChain` (`flightRecorder.cpp:2558-2600`, `flightRecorder.h:48-81`).
 
@@ -115,12 +115,21 @@ in the order the metadata declares them. Integers are LEB128
 - **Sample events** (`recordExecutionSample()`, `recordAllocation()`, ...)
   reserve a 1-byte size with `skip(1)` and patch it with
   `writeEventSizePrefix()`, which asserts the event is shorter than
-  `MAX_JFR_EVENT_SIZE` (256) (`flightRecorder.cpp:2355-2376`,
-  `flightRecorder.h:43`).
+  `MAX_JFR_EVENT_SIZE` (256) (`flightRecorder.cpp:2370-2374`,
+  `flightRecorder.h:44`).
 - **Variable-size events** (settings, native libraries, OS/JVM info,
-  `profiler.Log`, the metadata and constant-pool events) reserve 5 bytes and
-  patch them with the fixed-width form `putVar32(offset, v)`, which always
-  writes 5 LEB128 bytes (`buffers.h:182-189`, `flightRecorder.cpp:1582-1597`).
+  `profiler.Log`, debug unwind failures, the metadata and constant-pool events)
+  reserve 5 bytes and patch them with the fixed-width form
+  `putVar32(offset, v)`, which always writes 5 LEB128 bytes
+  (`buffers.h:182-189`, `flightRecorder.cpp:1582-1597`).
+
+`datadog.UnwindFailure` events are emitted only in `DEBUG` builds.
+`Recording::writeUnwindFailureEvent()` reserves `MAX_VAR32_LENGTH` (5) bytes
+for the size prefix, followed by the event type ID, start ticks, kind, name
+and count. The size includes the prefix itself. `UnwindFailures` truncates
+stored names to `MAX_NAME_LENGTH - 1` (255) bytes, so an event can require a
+multi-byte size. `writeUnwindFailures()` calls `flushIfNeeded()` after each
+bounded event (`flightRecorder.cpp:2317-2343`, `unwindStats.h:76-85`).
 
 Stack-sampled events refer to their stack by the 64-bit trace ID returned by
 `CallTraceStorage::put()`, to their thread by the OS TID, and to thread state
@@ -128,9 +137,9 @@ and execution mode by small enum IDs. All of these are constant-pool
 references, resolved when the chunk is finished (see
 [Constant Pools](#constant-pools)). Most sample events end with the tracing
 context: span ID, local-root span ID, and one varint per configured context
-attribute (`writeCurrentContext()`, `flightRecorder.cpp:2339-2353`). Liveness
+attribute (`writeCurrentContext()`, `flightRecorder.cpp:2354-2368`). Liveness
 events write the context snapshot taken when the allocation was tracked
-(`writeContextSnapshot()`, `flightRecorder.cpp:2330-2337`,
+(`writeContextSnapshot()`, `flightRecorder.cpp:2345-2352`,
 `livenessTracker.cpp:2411`).
 
 ### Writers outside `recordEvent()`
