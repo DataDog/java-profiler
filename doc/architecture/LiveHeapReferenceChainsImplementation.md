@@ -200,14 +200,17 @@ These values are tuning inputs. They do not state guaranteed overhead.
 
 ## Configuration
 
-Reference-chain collection requires the allocation engine and generation tracking. Enable them in
-the same command:
+Reference-chain collection requires the allocation engine and a leak-signal source. The signal
+source is generations tracking OR liveheap tracking (the two drive the same liveness mechanisms;
+liveheap additionally preserves stack traces for its samples). With neither, the leak-signal gate
+can never pass and the collector stays idle. Enable one of them in the same command:
 
 ```text
 generations=true,referencechains=true:hops=N:budget=N:ttl=N:framecap=N:pausetarget=N:painbudget=N:firstpassbudget=N
 ```
 
-- `generations=true` activates the allocation engine and supplies leak candidates.
+- `generations=true` activates the allocation engine and supplies leak candidates. Liveheap
+  tracking (`memory=<interval>b:l|L`) is an equivalent signal source.
 - `hops` limits chain depth.
 - `budget` supplies the base edge-admission budget.
 - `ttl` sets search lifetime in milliseconds. A value at or below zero disables this time check.

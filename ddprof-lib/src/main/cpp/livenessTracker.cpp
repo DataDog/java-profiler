@@ -162,9 +162,10 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
                                     bool account_epoch) {
   u64 current = load(_last_gc_epoch);
   u64 target_gc_epoch = load(_gc_epoch);
-  TEST_LOG_SUMMARY("LivenessTracker::cleanup_table forced=%d gc_generations=%d current_epoch=%llu "
+  TEST_LOG_SUMMARY("LivenessTracker::cleanup_table forced=%d leak_signal=%d gc_generations=%d current_epoch=%llu "
            "target_epoch=%llu table_size=%d",
-           forced, _gc_generations.load(std::memory_order_relaxed), (unsigned long long)current,
+           forced, _leak_signal_enabled.load(std::memory_order_relaxed),
+           _gc_generations.load(std::memory_order_relaxed), (unsigned long long)current,
            (unsigned long long)target_gc_epoch, _table_size);
 
   // is_epoch_owner is true iff this call is the one that moves _last_gc_epoch
@@ -275,12 +276,14 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
           }
         }
 
-        if (_gc_generations.load(std::memory_order_relaxed) && is_epoch_owner) {
+        if (_leak_signal_enabled.load(std::memory_order_relaxed) && is_epoch_owner) {
           // Per-klass population tracking (design doc's Open Question 3) -
-          // gated on _gc_generations so this new cost is paid only when the
-          // caller actually asked for generation/survival-shaped data
-          // (Arguments::_gc_generations), not for every liveness-tracking
-          // session. Gated on is_epoch_owner (not !forced) so a forced
+          // gated on the effective leak-signal availability: generations
+          // tracking and liveheap tracking drive the same mechanisms, so the
+          // cost is paid whenever either option is on. With both off there is
+          // no consumer for the data (the reference-chain collector stays
+          // idle, hasLeakSignal() -> false), and paying it would be pure
+          // overhead. Gated on is_epoch_owner (not !forced) so a forced
           // (table-overflow) sweep still contributes one population sample
           // per genuinely new GC epoch instead of silently dropping it.
           // Reuse an already-resolved id first so the per-sweep budget is
@@ -359,7 +362,7 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
                1.0f * (end - start) / 1000 / 1000,
                1.0f * (end - start) / 1000 / sz);
   }
-  if (_gc_generations.load(std::memory_order_relaxed) && is_epoch_owner) {
+  if (_leak_signal_enabled.load(std::memory_order_relaxed) && is_epoch_owner) {
     // Outside the `sz > 0` block: a sweep that finds the table already empty
     // still owns this epoch. foldKlassCountsLocked() records zero population
     // samples for klasses whose every tracked instance died (they never
@@ -1571,9 +1574,20 @@ double LivenessTracker::secondsToOOM() const {
   jlong max_heap = _max_heap_bytes;
   jlong container_limit = _container_memory_limit;
 #endif
-  if (!_gc_generations.load(std::memory_order_relaxed) || max_heap <= 0) {
-    TEST_LOG("LivenessTracker::secondsToOOM -> -1 (gc_generations=%d max_heap=%lld)",
-             (int)_gc_generations.load(std::memory_order_relaxed), (long long)max_heap);
+  if (!_leak_signal_enabled.load(std::memory_order_relaxed) || max_heap <= 0) {
+    TEST_LOG("LivenessTracker::secondsToOOM -> -1 (leak_signal=%d max_heap=%lld)",
+             (int)_leak_signal_enabled.load(std::memory_order_relaxed), (long long)max_heap);
+    return -1;
+  }
+  // Age-based burn-in (see OOM_PROJECTION_BURN_IN_NS): no projection until the
+  // leak signal has been active for the full burn-in, independent of how much
+  // wall-clock time the heap-floor ring happens to span. The subtraction is
+  // modular; production stamps are always <= now.
+  u64 activated_ns = _leak_signal_activated_ns.load(std::memory_order_acquire);
+  u64 since_ns = OS::nanotime() - activated_ns;
+  if (activated_ns == 0 || since_ns < OOM_PROJECTION_BURN_IN_NS) {
+    TEST_LOG("LivenessTracker::secondsToOOM -> -1 (BURN_IN activated_ns=%llu since_ns=%llu)",
+             (unsigned long long)activated_ns, (unsigned long long)since_ns);
     return -1;
   }
 
@@ -1936,7 +1950,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
       int class_id = 0;
       if (_table[i].cached_klass_id != 0 && class_map_generation_matches) {
         // Already resolved by cleanup_table()'s survivor loop this epoch
-        // (resolveKlassId(), only when _gc_generations is enabled) - reuse
+        // (resolveKlassId(), only when leak-signal tracking is enabled) - reuse
         // it instead of repeating the resolution JNI round-trip for the same
         // object.
         class_id = _table[i].cached_klass_id;
@@ -2021,6 +2035,7 @@ Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
 void LivenessTracker::resetSession() {
   _enabled = false;
   _gc_generations.store(false, std::memory_order_relaxed);
+  _leak_signal_enabled.store(false, std::memory_order_relaxed);
 }
 
 Error LivenessTracker::start(Arguments &args) {
@@ -2095,13 +2110,19 @@ void LivenessTracker::stop() {
 Error LivenessTracker::initialize(Arguments &args) {
   _enabled = args._gc_generations || args._record_liveness;
 
-  // Gates per-klass population tracking (see the _gc_generations member's
-  // own comment in livenessTracker.h). Updated unconditionally alongside
-  // _record_heap_usage below, ahead of the _initialized guard, for the same
-  // reason: each profiler start should observe the flag it was actually
-  // started with, even though the tracking table itself persists across
-  // recordings.
+  // Gates per-klass population tracking (see the _gc_generations and
+  // _leak_signal_enabled members' own comments in livenessTracker.h). Updated
+  // unconditionally alongside _record_heap_usage below, ahead of the
+  // _initialized guard, for the same reason: each profiler start should
+  // observe the flag it was actually started with, even though the tracking
+  // table itself persists across recordings.
   _gc_generations.store(args._gc_generations, std::memory_order_relaxed);
+  // Either generations tracking or liveheap tracking is a sufficient source
+  // for the population-trend signal (they drive the same mechanisms here;
+  // liveheap additionally preserves stack traces for its samples) - see
+  // _leak_signal_enabled's own comment (livenessTracker.h).
+  _leak_signal_enabled.store(args._gc_generations || args._record_liveness,
+                             std::memory_order_relaxed);
 
   if (!_enabled) {
     return Error::OK;
@@ -2120,6 +2141,13 @@ Error LivenessTracker::initialize(Arguments &args) {
   // recording's unrelated allocations at 100 percent.
   __atomic_store_n(&_watched_tid_count, 0, __ATOMIC_RELEASE);
   __atomic_store_n(&_urgent_tracking, false, __ATOMIC_RELEASE);
+
+  // First activation stamps the burn-in clock (see _leak_signal_activated_ns).
+  // Only reached with _enabled == true, i.e. generations || liveness, so the
+  // leak signal is on. CAS from 0: later starts never re-stamp it.
+  u64 never_activated = 0;
+  _leak_signal_activated_ns.compare_exchange_strong(
+      never_activated, OS::nanotime(), std::memory_order_release, std::memory_order_relaxed);
 
   if (_initialized) {
     // if the tracker was previously initialized return the stored result for
@@ -2479,7 +2507,7 @@ retry:
 }
 
 void LivenessTracker::maybeForceCleanup(u64 now_ns) {
-  if (!_enabled || !_gc_generations.load(std::memory_order_relaxed)) {
+  if (!_enabled || !_leak_signal_enabled.load(std::memory_order_relaxed)) {
     return;
   }
   constexpr u64 FORCE_CLEANUP_INTERVAL_NS = 30ULL * 1000 * 1000 * 1000;
@@ -2535,10 +2563,11 @@ void LivenessTracker::onGC() {
     store(_used_after_last_gc, HeapUsage::get(false)._used);
   }
 
-  if (_gc_generations.load(std::memory_order_relaxed)) {
+  if (_leak_signal_enabled.load(std::memory_order_relaxed)) {
     // Feeds heapFloorRising()'s corroboration check (selectLeakCandidates())
-    // - gated on _gc_generations, same as the per-klass population table
-    // itself, since this ring exists purely to support that feature.
+    // - gated on the effective leak-signal availability, same as the
+    // per-klass population table itself, since this ring exists purely to
+    // support that feature.
     // recordHeapFloorSample() itself checks _heap_floor_recording_disabled_for_test
     // (debug-only) so a test can seed the ring exclusively.
     size_t used = resolvePostGcHeapUsage(nullptr);

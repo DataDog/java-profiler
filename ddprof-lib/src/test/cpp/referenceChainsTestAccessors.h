@@ -170,9 +170,6 @@ public:
     static int urgentReleaseTicksForTest() {
         return ReferenceChainTracker::instance()->urgentReleaseTicksForTest();
     }
-    static bool urgentSearchSpentForTest() {
-        return ReferenceChainTracker::instance()->urgentSearchSpentForTest();
-    }
     static void resetUrgencyForTest() {
         ReferenceChainTracker::instance()->resetUrgencyForTest();
     }
@@ -361,11 +358,10 @@ public:
 
     // Recording-boundary tests: seed a latched urgency episode (the state the OOM-projection
     // machine leaves behind) without driving LivenessTracker's heap-floor history.
-    static void setUrgencyEpisodeForTest(bool latched, int ticks, bool spent) {
+    static void setUrgencyEpisodeForTest(bool latched, int ticks) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         t->_urgent_latched = latched;
         t->_urgent_release_ticks = ticks;
-        t->_urgent_search_spent = spent;
     }
 
     static u64 searchStartNsForTest() {

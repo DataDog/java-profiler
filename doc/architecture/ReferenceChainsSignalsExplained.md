@@ -18,14 +18,11 @@ The GC callback does not wake the thread. The normal idle loop checks the state 
 
 ## Starting a search
 
-Before the first search, `shouldRunPass()` calls `canAffordNewSearch()`. The gate requires a leak indication when GC-generation tracking is active. The indication is one of these conditions:
+Before the first search, `shouldRunPass()` calls `canAffordNewSearch()`. The gate always requires a leak indication: `selectLeakCandidates()` finds a class with sustained population growth. The safepoint cost budget must also permit the search.
 
-- `selectLeakCandidates()` finds a class with sustained population growth.
-- The time-to-OOM estimate enters the urgent range and the current urgent episode has not started a search.
+Urgency does not authorize a search. A candidate-less search can never emit a chain, and while urgent the 30-pass no-progress abandonment is suppressed, so it would run to the full TTL doing whole-heap BFS. Urgency applies through the ramp once a search is running.
 
-The safepoint cost budget must also permit the search.
-
-If GC-generation tracking is not active, the leak-signal part of this gate does not apply.
+The population-trend signal is constructed by the liveness tracker, which fills the per-klass population table and the heap-floor ring when generations tracking OR liveheap tracking is active (the two options drive the same tracking mechanisms; liveheap additionally preserves stack traces for its samples). When neither is active, no signal can ever be produced: `hasLeakSignal()` returns false, and the collector stays idle - it never runs a pass, restart, or search.
 
 ## Scheduling a running search
 
@@ -113,16 +110,20 @@ threshold is a hard real-time guarantee.
 
 `secondsToOOM()` independently projects exhaustion from confirmed rising JVM heap-floor and
 container-memory trends. It returns the shorter valid estimate. A negative result means that
-neither source provides a valid estimate.
+neither source provides a valid estimate, or that the projection is still in its burn-in period.
 
 Two ranges have different purposes:
 
 - At less than 30 minutes, the OOM ramp increases the pause target, shortens the cadence, increases the edge-budget ceiling, and admits all liveness samples.
-- At less than 5 minutes, `isUrgent()` latches an urgent episode. The episode can authorize one search without waiting for a class to complete normal hysteresis.
+- At less than 5 minutes, `isUrgent()` latches an urgent episode. The latch does not start searches; it sharpens the ramp's response while a candidate-driven search runs.
 
-The urgent latch clears after five consecutive checks at 10 minutes or more, or after five consecutive checks with no valid rising-trend estimate. This hysteresis prevents repeated search restarts when the estimate moves around the threshold.
+Both ranges apply only after the burn-in period.
 
-The ramp and the latch use different thresholds. Entering the ramp does not by itself activate the urgent search entitlement.
+For `OOM_PROJECTION_BURN_IN_NS` (5 minutes) after the leak signal first activates in the process, `secondsToOOM()` returns -1, so neither the 30-minute ramp nor the urgent latch fires. A burn-in is needed because warmup growth projects an imminent OOM just as a real leak does. The burn-in depends on how long the leak signal has been active, not on the time span of the heap-floor samples. The sampler records one sample per GC, so near OOM back-to-back GCs compress the sample history to a few seconds. Once the burn-in has passed, that compressed history no longer blocks the latch.
+
+The urgent latch clears after five consecutive checks at 10 minutes or more, or after five consecutive checks with no valid rising-trend estimate. This hysteresis prevents the ramp's sharpened response from flapping when the estimate moves around the threshold.
+
+The ramp and the latch use different thresholds. Entering the ramp does not by itself latch urgency.
 
 ## Terminal state and restart
 

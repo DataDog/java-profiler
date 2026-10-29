@@ -338,7 +338,6 @@ private:
   // Hysteresis state behind isUrgent().
   mutable bool _urgent_latched;
   mutable int _urgent_release_ticks;
-  mutable bool _urgent_search_spent;
 
   // Set (once) at the same point runPass() moves _search_state to ABANDONED - see
   // SearchAbandonReason's own comment for why this exists and buildAbandonedEvent()/abandonReason()
@@ -738,7 +737,7 @@ private:
         _effective_budget(0), _effective_cadence_ns(PASS_CADENCE_NS),
         _pause_pid(1, 1.0, 1.0, 1.0, 1, 1.0), _search_started(false),
         _tags_released(true), _urgent_latched(false),
-        _urgent_release_ticks(0), _urgent_search_spent(false),
+        _urgent_release_ticks(0),
         _urgency_budget_boosted(false), _configured_budget(0),
         _search_state(SearchState::RUNNING),
         _abandon_reason(SearchAbandonReason::NONE), _search_start_ns(0),
@@ -767,7 +766,9 @@ private:
 
   // Cheap probe (max=1, not the real poll pollWatchedTargets() makes) into LivenessTracker's
   // population-trend table: true if at least one klass shows a positive population slope worth
-  // chasing.
+  // chasing. Always false when no leak-signal source (generations or liveheap tracking) is
+  // active - the population table and heap-floor ring never fill without one, and a search
+  // would run whole-heap BFS passes with zero candidates for zero diagnostic value.
   bool hasLeakSignal();
 
   // Latched, hysteretic view of LivenessTracker::secondsToOOM() crossing OOM_URGENT_THRESHOLD_S -
@@ -1144,15 +1145,13 @@ public:
   void setSearchStartedForTest(bool v) { _search_started = v; }
   // OOM-urgency hysteresis state (isUrgent()'s latch/release machine,
   // referenceChains.cpp): tests drive it via isUrgentForTest() and assert on
-  // the raw latch/tick/entitlement reads.
+  // the raw latch/tick reads.
   bool isUrgentForTest() const { return isUrgent(); }
   bool urgentLatchedForTest() const { return _urgent_latched; }
   int urgentReleaseTicksForTest() const { return _urgent_release_ticks; }
-  bool urgentSearchSpentForTest() const { return _urgent_search_spent; }
   void resetUrgencyForTest() {
     _urgent_latched = false;
     _urgent_release_ticks = 0;
-    _urgent_search_spent = false;
   }
   // Applied vs configured CPU pain-budget refill rate: shouldRunPass() raises
   // the applied rate CANARY_PAIN_BUDGET_REFILL_MULTIPLIER-fold only while a

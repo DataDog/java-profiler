@@ -388,7 +388,7 @@ void ReferenceChainTracker::stop() {
   // - _search_start_ns still holds the previous recording's clock, so the entire stopped gap
   //   would count toward the new recording's TTL and could abandon "its" search on the first
   //   pass with a spurious abandonment event for a search the new recording never started;
-  // - _urgent_latched/_urgent_release_ticks/_urgent_search_spent would carry the previous
+  // - _urgent_latched/_urgent_release_ticks would carry the previous
   //   recording's urgency episode into the new one;
   // - the frontier's referrer_klass slots hold StringDictionary ids from a _class_map that
   //   Profiler::start() is about to wipe (ids restart at 1) - they cannot be remapped, so a
@@ -411,7 +411,6 @@ void ReferenceChainTracker::stop() {
   store(_search_start_ns, (u64)0);
   _urgent_latched = false;
   _urgent_release_ticks = 0;
-  _urgent_search_spent = false;
   // Same per-search candidate/discovered canary state runPass()'s terminal branch and
   // restartSearch() clear - zeroing the counts here closes the stale-chain windows in
   // pollWatchedTargets() (dead-representative canary path, discovered-instances path) for the
@@ -652,9 +651,6 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
     if (!afford) {
       return false;
     }
-    // This episode's one urgency-authorized search (_urgent_search_spent's own comment,
-    // referenceChains.h) is the one about to start.
-    _urgent_search_spent = _urgent_latched;
     TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass -> true (search not started yet)");
     return true; // nothing has run yet - always worth taking the first pass
   }
@@ -677,12 +673,10 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
     _safepoint_pain_budget.spend(_search_pain_ms);
     _search_pain_ms = 0;
     // Restart (this class's own header comment) if the pain budget has drained and there is still
-    // (or again) a leak indication to chase - canAffordNewSearch() is always true when
-    // LivenessTracker's population trends are not in use at all, so this only ever changes behavior
-    // for a search that already ran once.
+    // (or again) a leak indication to chase - canAffordNewSearch() is always false when no
+    // leak-signal source (generations or liveheap tracking) is active at all, so a misconfigured
+    // tracker stays idle instead of searching without a signal.
     if (canAffordNewSearch(now_ns)) {
-      // Same entitlement bookkeeping as the first-search branch above.
-      _urgent_search_spent = _urgent_latched;
       restartSearch();
       TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass -> true (restarting search)");
       return true;
@@ -772,13 +766,18 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
 // threadLoop()'s own iteration and needs the *list* to poll each candidate's tag; this only needs
 // to know whether at least one exists.
 bool ReferenceChainTracker::isUrgent() const {
+  static_assert(LivenessTracker::OOM_PROJECTION_BURN_IN_NS / 1e9 >= OOM_URGENT_THRESHOLD_S,
+                "burn-in must cover the urgent horizon");
+  // Warmup is filtered inside secondsToOOM(): no projection (-1) until
+  // OOM_PROJECTION_BURN_IN_NS after the leak signal first activated. Age-based
+  // on purpose - a guard on the heap-floor ring's time span shrinks with GC
+  // frequency and suppressed the latch in exactly the back-to-back-GC
+  // imminent-OOM case.
   double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();
   if (seconds_to_oom >= 0 && seconds_to_oom < OOM_URGENT_THRESHOLD_S) {
     _urgent_release_ticks = 0;
     if (!_urgent_latched) {
       _urgent_latched = true;
-      // A fresh episode gets a fresh entitlement to one search.
-      _urgent_search_spent = false;
       TEST_LOG_SUMMARY("ReferenceChainTracker::isUrgent latching urgency "
                "(secondsToOOM=%.1f < OOM_URGENT_THRESHOLD_S=%.1f)",
                seconds_to_oom, OOM_URGENT_THRESHOLD_S);
@@ -786,13 +785,12 @@ bool ReferenceChainTracker::isUrgent() const {
     return true;
   }
   if (_urgent_latched) {
-    // Negative means "no rising trend to project from" (secondsToOOM()'s own unknown/NOT_RISING
+    // Negative means "no projection" (secondsToOOM()'s own unknown/NOT_RISING/BURN_IN
     // encoding), which counts toward release just like a comfortably distant projection does.
     if (seconds_to_oom < 0 || seconds_to_oom >= OOM_URGENT_RELEASE_S) {
       if (++_urgent_release_ticks >= URGENT_RELEASE_CONSECUTIVE) {
         _urgent_latched = false;
         _urgent_release_ticks = 0;
-        _urgent_search_spent = false;
         TEST_LOG_SUMMARY("ReferenceChainTracker::isUrgent releasing urgency "
                  "(secondsToOOM=%.1f clear of OOM_URGENT_RELEASE_S=%.1f for "
                  "%d consecutive observations)",
@@ -811,32 +809,39 @@ bool ReferenceChainTracker::isUrgent() const {
 }
 
 bool ReferenceChainTracker::hasLeakSignal() {
-  if (!LivenessTracker::instance()->gcGenerationsEnabled()) {
-    // No population-trend signal to gate on at all - see this method's own header comment for why
-    // that means "always true" here.
-    return true;
+  if (!LivenessTracker::instance()->leakSignalEnabled()) {
+    // No population-trend signal can be constructed - generations tracking
+    // and liveheap tracking are both off, so the per-klass population table
+    // and the heap-floor ring never fill (LivenessTracker gates them on the
+    // same effective flag). Stay idle: without a signal there is nothing to
+    // chase, and running whole-heap searches with zero candidates "just in
+    // case" burns safepoint time and frontier-table memory for zero
+    // diagnostic value (observed: frontier grown to its cap with
+    // reference_chain_candidate_count == 0 in a healthy process when this
+    // branch used to return true).
+    return false;
   }
   double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();
-  // isUrgent() is called unconditionally, not short-circuited behind _urgent_search_spent: it is
-  // what maintains the latch/release counter, so skipping it would freeze the episode state (see
-  // _urgent_latched).
+  // isUrgent() is called unconditionally, not short-circuited behind any
+  // branch: it maintains the latch/release state (see _urgent_latched), which
+  // still drives the urgency ramp and the no-progress-abandonment suppression
+  // once a search runs.
   bool urgent = isUrgent();
-  if (urgent && !_urgent_search_spent) {
-    // Heap-wide floor is rising fast enough that OOM is imminent - don't wait for a specific klass
-    // to clear selectLeakCandidates()'s own per-klass ring-fill/hysteresis gate; see
-    // OOM_URGENT_THRESHOLD_S's own comment (referenceChains.h) for why that gate alone is too slow
-    // here.
-    TEST_LOG_SUMMARY("ReferenceChainTracker::hasLeakSignal -> true (urgent, "
-             "secondsToOOM=%.1f)",
-             seconds_to_oom);
-    return true;
-  }
   KlassCandidate probe[1];
   int n = LivenessTracker::instance()->selectLeakCandidates(probe, 1);
+  // The urgent latch does NOT entitle a candidate-less search. With nothing
+  // tagged the search can never emit a chain, and while urgent the 30-pass
+  // no-progress abandonment is suppressed (runPass()'s terminal gate), so a
+  // candidate-less search would run to the full auto-tuned TTL doing whole-heap
+  // BFS - pure cost. Observed in staging: a fresh process's warmup heap-floor
+  // rise tripped the 5-minute projection and a candidate-less search grew a
+  // 262,144-entry frontier (liveness_urgent_boost_admits=2495) with zero chains
+  // for the whole recording. Urgency still applies through the ramp (cadence,
+  // pause target, budget boost, 100% liveness admission) once a real candidate
+  // justifies the search.
   TEST_LOG_SUMMARY("ReferenceChainTracker::hasLeakSignal -> %s (secondsToOOM=%.1f, "
-           "candidates=%d, urgent=%d, urgentSearchSpent=%d)",
-           n > 0 ? "true" : "false", seconds_to_oom, n, urgent,
-           _urgent_search_spent);
+           "candidates=%d, urgent=%d)",
+           n > 0 ? "true" : "false", seconds_to_oom, n, urgent);
   return n > 0;
 }
 
@@ -952,10 +957,9 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   // _safepoint_pain_budget above.
   _cpu_pain_budget = PainBudget(_pain_budget_refill_rate);
   // Same test-isolation rationale: a latched urgency episode left behind by an earlier test would
-  // otherwise deny this one its own urgency-authorized search (see _urgent_search_spent).
+  // otherwise ramp this one's cadence and pause target from a stale projection.
   _urgent_latched = false;
   _urgent_release_ticks = 0;
-  _urgent_search_spent = false;
 
   if (_frontier != nullptr) {
     // Rebuilds the table at this test's own _configured_frontier_cap, undoing any smaller framecap=
