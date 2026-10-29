@@ -299,6 +299,32 @@ TEST_F(OomUrgencyTest, AdmissionBoostRequiresGrowthPastEntryBaseline) {
     EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1490.0, true));
 }
 
+// Boundary of the growth gate: a newer sample exactly equal to the entry
+// snapshot is not growth evidence (a plateaued heap re-recording the same
+// floor). Only a strictly larger sample admits, so a `>` -> `>=` slip in
+// updateUrgentAdmission() fails here.
+TEST_F(OomUrgencyTest, AdmissionBoostRejectsSampleEqualToEntryBaseline) {
+    ASSERT_NEAR(project(1500.0), 1500.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(1500.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+    ASSERT_EQ(peak, LivenessTracker::instance()->newestHeapFloorSample())
+        << "scenario requires the entry snapshot to be the ramp peak";
+
+    // Entry snapshot = peak.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    // Follow-up sample exactly at the snapshot: equality is not growth.
+    LivenessTracker::instance()->heapFloorRecordForTest(peak, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
+        << "a sample equal to the entry baseline is not growth evidence";
+
+    // Control: one RATE past the snapshot admits, so the negative above is
+    // not trivially satisfied.
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+}
+
 // The regression-smoothing counterexample: a single spike sample keeps the
 // smoothed projection inside the band for several recovery GCs after the heap
 // has physically recovered. The scenario proves both halves: the projection
@@ -449,6 +475,64 @@ TEST_F(ReferenceChainsCanaryRefillTest, RefillRaiseTracksOpenChaseExactly) {
 
     tracker->stop();
     ReferenceChainsTestAccessor::reset();
+}
+
+// stop() ends the urgency episode at a recording boundary, so it must clear
+// updateUrgentAdmission()'s growth baseline along with the latch: the
+// heap-floor ring survives the boundary, and a baseline left over from the
+// previous recording would let the new recording's first urgent observation
+// skip its entry re-snapshot and admit against the old recording's heap level.
+// updateUrgentAdmission() reads only the newest heap-floor sample, so no max
+// heap is set - and must not be before start(): with a max heap > 0, start()'s
+// autoTuneDefaults() calls GetAvailableProcessors, which this stub jvmti lacks.
+TEST_F(ReferenceChainsCanaryRefillTest, StopClearsAdmissionGrowthBaseline) {
+
+    constexpr u64 MiB = 1ULL << 20;
+    LivenessTracker *lt = LivenessTracker::instance();
+    ReferenceChainsTestAccessor::reset(); // also resetUrgencyForTest()
+#ifdef DEBUG
+    lt->setHeapFloorRecordingForTest(false);
+#endif
+    lt->heapFloorResetForTest();
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ASSERT_FALSE(tracker->start(args));
+
+    // Restores the shared singletons even when an ASSERT below returns early.
+    // stop() on an already-stopped tracker is a no-op (it returns unless
+    // enabled()).
+    struct Cleanup {
+        ReferenceChainTracker *tracker;
+        LivenessTracker *lt;
+        ~Cleanup() {
+            tracker->stop();
+            ReferenceChainsTestAccessor::resetUrgencyForTest();
+            lt->heapFloorResetForTest(); // while recording is still disabled
+#ifdef DEBUG
+            lt->setHeapFloorRecordingForTest(true);
+#endif
+            ReferenceChainsTestAccessor::reset();
+        }
+    } cleanup{tracker, lt};
+
+    // Recording 1: the first urgent non-emergency observation snapshots
+    // 500MiB and does not admit.
+    lt->heapFloorRecordForTest(500 * MiB, 1, 0);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    tracker->stop();
+    ASSERT_FALSE(tracker->start(args));
+
+    // Recording 2: the heap is now above the OLD baseline. A fresh episode
+    // must re-snapshot (false); a baseline leaked through stop() would admit
+    // on 600 > 500.
+    lt->heapFloorRecordForTest(600 * MiB, 2, 0);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
+        << "stop() must clear _admission_growth_baseline";
+    // Positive control: growth past the new snapshot admits.
+    lt->heapFloorRecordForTest(700 * MiB, 3, 0);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
 }
 
 TEST_F(ReferenceChainsCanaryRefillTest, BackoffGateHoldsUnlessOomRampActive) {
