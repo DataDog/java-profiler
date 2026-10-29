@@ -144,6 +144,12 @@ public:
                                   int max_timers) {
     return engine.startWithTableSize(args, max_timers);
   }
+  static int registerThread(CTimer &engine, int tid) {
+    return engine.registerThread(tid);
+  }
+  static void unregisterThread(CTimer &engine, int tid) {
+    engine.unregisterThread(tid);
+  }
 
   // Hands the current table to the caller without freeing it, so a test can
   // run against an empty table and later reinstate the original one.
@@ -646,8 +652,8 @@ TEST(CTimerTableTest, NegativeTidIsRejected) {
     CTimer engine;
     // unregisterThread() first: registerThread() may fail earlier, in
     // timer_create, so this is the discriminating call.
-    engine.unregisterThread(-1);
-    EXPECT_EQ(-1, engine.registerThread(-1));
+    CTimerTestAccessor::unregisterThread(engine, -1);
+    EXPECT_EQ(-1, CTimerTestAccessor::registerThread(engine, -1));
     for (int i = 0; i < 16; i++) {
       EXPECT_EQ(0, table[i]) << "slot " << i;
     }
