@@ -1050,10 +1050,13 @@ public:
   // pattern selectLeakCandidates()/getLiveTraceIds() already use.
   jobject resolveCandidateRepresentative(JNIEnv *env, u32 klass_id);
 
-  // Exposes the _gc_generations gate (see that member's own comment) so a
-  // caller outside this class can skip work that only makes sense for the
-  // explicit generations option. Read-only; this accessor never toggles the
-  // flag.
+  // Read-only observation point for the explicit generations option
+  // (_gc_generations; see that member's own comment), so tests and
+  // diagnostics can tell it apart from the effective leakSignalEnabled() gate
+  // (generations OR liveheap). No production code keys on it: since the
+  // reference-chain signal gates moved to leakSignalEnabled(), the
+  // population, heap-floor and search gates all read _leak_signal_enabled.
+  // This accessor never toggles the flag.
   bool gcGenerationsEnabled() const {
     return _gc_generations.load(std::memory_order_relaxed);
   }
@@ -1083,16 +1086,15 @@ public:
   // under-warn right up until an OOM-kill from container memory pressure
   // that had nothing to do with heap occupancy.
   //
-  // Exists because selectLeakCandidates()'s per-klass gate
-  // (KLASS_POPULATION_MIN_FILL_FOR_TREND ring samples plus
-  // LEAK_TREND_HYSTERESIS_BASE/CORROBORATED consecutive qualifying epochs)
-  // can take longer to trust a candidate than a fast leak has left before
-  // OOM - this gives ReferenceChainTracker::hasLeakSignal() an independent,
-  // rate-based signal to start a search immediately instead of waiting on
-  // that gate. Not a claim that growth stays linear, only that a
-  // short-horizon linear extrapolation is a reasonable urgency signal.
+  // The projection feeds the urgency latch (ReferenceChainTracker::isUrgent()),
+  // the urgent admission ramp (ReferenceChainTracker::updateUrgentAdmission())
+  // and threadLoop()'s OOM cadence/budget ramp. It does NOT start a search:
+  // ReferenceChainTracker::hasLeakSignal() still returns true only when
+  // selectLeakCandidates() yields a klass, urgency or not. Not a claim that
+  // growth stays linear, only that a short-horizon linear extrapolation is a
+  // reasonable urgency signal.
   // Returns a negative value if the chosen ring is not filled enough yet
-  // (gcGenerationsEnabled() is off, or too few GC epochs have happened), not
+  // (leakSignalEnabled() is off, or too few GC epochs have happened), not
   // rising, or neither _max_heap_bytes nor _container_memory_limit was ever
   // resolved - callers must treat any non-positive return as "no projection
   // available", not "zero seconds". Returns 0 if the chosen ring's recent
@@ -1701,6 +1703,13 @@ public:
   }
 #endif
 
+#if defined(DEBUG) || defined(UNIT_TEST)
+  // Test-only mutators of the leak-signal gates and the burn-in stamp.
+  // Compiled in for DEBUG builds (they back the DEBUG-only JNI seams in
+  // javaApi.cpp) and for gtest builds (GtestTaskBuilder adds -DUNIT_TEST to
+  // every gtest compile); never in the shipped release library, so no release
+  // consumer can flip the leak-signal gate or backdate the burn-in.
+
   // Sets the two leak-signal gates directly, bypassing initialize() (which
   // requires a live JVM - VM::hotspot_version()/VM::jni(), see that method's
   // own code - out of gtest's reach the same way foldKlassCountsLocked()'s
@@ -1728,6 +1737,13 @@ public:
   void setLeakSignalActivatedNsForTest(u64 ns) {
     _leak_signal_activated_ns.store(ns, std::memory_order_release);
   }
+
+  // Read side of setLeakSignalActivatedNsForTest(): lets a DEBUG seam save the
+  // current stamp before backdating it and restore it afterwards.
+  u64 leakSignalActivatedNsForTest() const {
+    return _leak_signal_activated_ns.load(std::memory_order_acquire);
+  }
+#endif // DEBUG || UNIT_TEST
 
 private:
   void getLiveTraceIds(CallTraceIdSet& out_buffer);

@@ -388,8 +388,10 @@ void ReferenceChainTracker::stop() {
   // - _search_start_ns still holds the previous recording's clock, so the entire stopped gap
   //   would count toward the new recording's TTL and could abandon "its" search on the first
   //   pass with a spurious abandonment event for a search the new recording never started;
-  // - _urgent_latched/_urgent_release_ticks would carry the previous
-  //   recording's urgency episode into the new one;
+  // - _urgent_latched/_urgent_release_ticks/_admission_growth_baseline would carry the previous
+  //   recording's urgency episode into the new one (a stale growth baseline would let the new
+  //   recording's first urgent observation skip updateUrgentAdmission()'s entry re-snapshot and
+  //   admit against the old recording's heap level);
   // - the frontier's referrer_klass slots hold StringDictionary ids from a _class_map that
   //   Profiler::start() is about to wipe (ids restart at 1) - they cannot be remapped, so a
   //   chain built from a surviving entry after the boundary would name whichever class the new
@@ -411,6 +413,8 @@ void ReferenceChainTracker::stop() {
   store(_search_start_ns, (u64)0);
   _urgent_latched = false;
   _urgent_release_ticks = 0;
+  // BFS-thread owned like the two fields above; stopThread() has joined that thread.
+  _admission_growth_baseline = 0;
   // Same per-search candidate/discovered canary state runPass()'s terminal branch and
   // restartSearch() clear - zeroing the counts here closes the stale-chain windows in
   // pollWatchedTargets() (dead-representative canary path, discovered-instances path) for the
@@ -879,6 +883,12 @@ bool ReferenceChainTracker::hasLeakSignal() {
   TEST_LOG_SUMMARY("ReferenceChainTracker::hasLeakSignal -> %s (secondsToOOM=%.1f, "
            "candidates=%d, urgent=%d)",
            n > 0 ? "true" : "false", seconds_to_oom, n, urgent);
+  if (urgent && n == 0) {
+    // Observability for the candidate-only gate (TEST_LOG_SUMMARY above is debug/test-only):
+    // urgency is latched but no klass explains the growth, so no search starts and no chain is
+    // produced. One increment per refused evaluation (see counters.h).
+    Counters::increment(REFERENCE_CHAIN_URGENT_NO_CANDIDATE);
+  }
   return n > 0;
 }
 
@@ -994,9 +1004,11 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   // _safepoint_pain_budget above.
   _cpu_pain_budget = PainBudget(_pain_budget_refill_rate);
   // Same test-isolation rationale: a latched urgency episode left behind by an earlier test would
-  // otherwise ramp this one's cadence and pause target from a stale projection.
+  // otherwise ramp this one's cadence and pause target from a stale projection, and a stale
+  // admission growth baseline would skip this test's first-observation re-snapshot.
   _urgent_latched = false;
   _urgent_release_ticks = 0;
+  _admission_growth_baseline = 0;
 
   if (_frontier != nullptr) {
     // Rebuilds the table at this test's own _configured_frontier_cap, undoing any smaller framecap=

@@ -635,11 +635,15 @@ private:
   // Fallback cadence between passes.
   static constexpr u64 PASS_CADENCE_NS = 1000000000ULL; // 1s
 
-  // Heap-wide time-to-OOM urgency threshold (LivenessTracker::secondsToOOM()) - hasLeakSignal()
-  // below forces a search to start immediately once the projection drops under this, rather than
-  // waiting for a klass to clear selectLeakCandidates()'s own per-klass ring-fill/hysteresis gate
-  // (KLASS_POPULATION_MIN_FILL_FOR_TREND plus LEAK_TREND_HYSTERESIS_BASE/ CORROBORATED epochs,
-  // livenessTracker.h).
+  // Heap-wide time-to-OOM urgency threshold (LivenessTracker::secondsToOOM()). It has two uses:
+  // (a) isUrgent()'s latch threshold (released via OOM_URGENT_RELEASE_S below); the latch is
+  //     consumed by runPass()'s no-progress abandonment branch, which it suppresses while latched;
+  // (b) updateUrgentAdmission()'s emergency band, where tracking admission goes to 100% without
+  //     heap-growth evidence.
+  // It never authorizes starting a search: hasLeakSignal() still requires selectLeakCandidates()
+  // to return at least one klass past its per-klass ring-fill/hysteresis gate
+  // (KLASS_POPULATION_MIN_FILL_FOR_TREND plus LEAK_TREND_HYSTERESIS_BASE/CORROBORATED epochs,
+  // livenessTracker.h), and urgency never stands in for that.
   static constexpr double OOM_URGENT_THRESHOLD_S = 300.0; // 5 minutes
 
   // Release side of OOM_URGENT_THRESHOLD_S's hysteresis (see _urgent_latched).
@@ -1416,10 +1420,10 @@ public:
 
   // Test seam - not part of the production API. Evaluates the real private scheduling gate without
   // executing a BFS pass. This is not read-only: while holding _engine_lock like threadLoop(), the
-  // gate may account a completed search's pain and restart/reset terminal search state. It also
-  // exposes whether LivenessTracker::secondsToOOM()'s urgent-OOM bypass opens the gate even with no
-  // per-klass candidate; runReferenceChainPass0() cannot show that because it calls runPass()
-  // directly and never consults the gate.
+  // gate may account a completed search's pain and restart/reset terminal search state. It lets a
+  // test confirm the gate stays closed with no per-klass candidate, urgency latched or not;
+  // runReferenceChainPass0() cannot show that because it calls runPass() directly and never
+  // consults the gate.
   bool shouldRunPassForTest(u64 now_ns) {
     MutexLocker engine_guard(_engine_lock);
     return shouldRunPass(now_ns);
