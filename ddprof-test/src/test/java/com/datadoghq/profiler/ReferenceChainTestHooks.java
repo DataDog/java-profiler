@@ -117,4 +117,27 @@ public final class ReferenceChainTestHooks {
     public static int referenceChainPassesRunForTest0() {
         return JavaProfiler.referenceChainPassesRunForTest0();
     }
+
+    /**
+     * Backdates the leak-signal burn-in stamp (debug native builds only; see JavaProfiler).
+     * Returns the previous stamp for {@link #setLeakSignalActivatedNsForTest0(long)}.
+     */
+    public static long backdateLeakSignalActivationForTest0() {
+        return JavaProfiler.backdateLeakSignalActivationForTest0();
+    }
+
+    /** Restores a saved leak-signal burn-in stamp (debug native builds only; see JavaProfiler). */
+    public static void setLeakSignalActivatedNsForTest0(long activatedNs) {
+        JavaProfiler.setLeakSignalActivatedNsForTest0(activatedNs);
+    }
+
+    /** The current {@code secondsToOOM()} projection (debug native builds only; see JavaProfiler). */
+    public static double secondsToOOMForTest0() {
+        return JavaProfiler.secondsToOOMForTest0();
+    }
+
+    /** The OOM-urgency latch (debug native builds only; see JavaProfiler). */
+    public static boolean urgentLatchedForTest0() {
+        return JavaProfiler.urgentLatchedForTest0();
+    }
 }

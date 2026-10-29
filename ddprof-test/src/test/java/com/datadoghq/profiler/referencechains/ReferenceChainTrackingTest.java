@@ -112,6 +112,15 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   // for the same cheap-insurance-against-collision reason those two are distinct from each other.
   private static final int ABANDON_TEST_KLASS_ID = 987203;
 
+  // shouldReportAbandonedSearchOnTinyFrontierCap()'s dump pacing. Each dump() rewrites this shared
+  // JVM's whole recording (O(recording size) I/O), so the test caps its dumps, waits for the first
+  // post-reset pass without I/O first, and paces the remaining dumps so the last one still lands
+  // ABANDON_LAST_DUMP_MIN_DELAY_MS after the grace period started.
+  private static final int ABANDON_MAX_DUMPS = 3;
+  private static final long ABANDON_PASS_WAIT_MS = 6_000;
+  private static final long ABANDON_DUMP_RETRY_SPACING_MS = 1_000;
+  private static final long ABANDON_LAST_DUMP_MIN_DELAY_MS = 8_000;
+
   /**
    * The {@code datadog.ReferenceChain} ActiveSetting's {@code id} (flightRecorder.cpp's
    * T_REFERENCE_CHAIN). ActiveSetting events from cpu/wall/memory/nativemem also read
@@ -711,30 +720,30 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
         "The qualifying-candidate seeding below rides the debug-only population seams; in a "
             + "release build the search stays idle without a candidate (the candidate-gate "
             + "contract), so no abandonment event could ever be produced");
-    if (ReferenceChainAssertions.isDebugInstrumentedBuild()) {
-      // See the javadoc above for why the seeding is needed despite no generations=true of this
-      // method's own, and why both a gc() and a throwaway dump() must precede it.
-      System.gc();
-      Path warmupDumpPath = Files.createTempFile("referencechains-abandoned-test-warmup-", ".jfr");
+    // Release builds never get here (the JUnit assumption above skips them): the seeding below
+    // needs the debug-only population seams. See the javadoc above for why the seeding is needed
+    // despite no generations=true of this method's own, and why both a gc() and a throwaway
+    // dump() must precede it.
+    System.gc();
+    Path warmupDumpPath = Files.createTempFile("referencechains-abandoned-test-warmup-", ".jfr");
+    Files.deleteIfExists(warmupDumpPath);
+    try {
+      dump(warmupDumpPath);
+    } finally {
       Files.deleteIfExists(warmupDumpPath);
-      try {
-        dump(warmupDumpPath);
-      } finally {
-        Files.deleteIfExists(warmupDumpPath);
-      }
-      ReferenceChainTestHooks.resetKlassPopulationForTest0();
-      // Gate-only usage: this test drives the search to ABANDONED and asserts on the abandon
-      // marker, no tagged instance needs to match - so the tid is this thread's real one but any
-      // distinct tid would do.
-      int abandonTid = ReferenceChainTestHooks.getTid();
-      for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
-        ReferenceChainTestHooks.seedKlassPopulationSample0(
-            ABANDON_TEST_KLASS_ID, epoch * 10, epoch);
-        ReferenceChainTestHooks.seedTidTrendSample0(
-            ABANDON_TEST_KLASS_ID, abandonTid, epoch * 3, epoch);
-      }
-      ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     }
+    ReferenceChainTestHooks.resetKlassPopulationForTest0();
+    // Gate-only usage: this test drives the search to ABANDONED and asserts on the abandon
+    // marker, no tagged instance needs to match - so the tid is this thread's real one but any
+    // distinct tid would do.
+    int abandonTid = ReferenceChainTestHooks.getTid();
+    for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
+      ReferenceChainTestHooks.seedKlassPopulationSample0(
+          ABANDON_TEST_KLASS_ID, epoch * 10, epoch);
+      ReferenceChainTestHooks.seedTidTrendSample0(
+          ABANDON_TEST_KLASS_ID, abandonTid, epoch * 3, epoch);
+    }
+    ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     List<Object> gcRootHolder = new ArrayList<>();
     gcRootHolder.add(new ChainLink("middle", new ChainLink("leaf")));
 
@@ -746,28 +755,55 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       System.gc();
       Thread.sleep(100);
     }
+    long graceStartNs = System.nanoTime();
     Thread.sleep(1500);
+
+    // Dump-free probe: every dump() rewrites this shared JVM's whole recording, so wait in memory
+    // for the BFS thread's first post-reset pass (the one that hits the framecap/ttl cutoff and
+    // enqueues the abandoned event) before taking the first dump. An accelerator only, never an
+    // assertion: a search restart also zeroes passesRun, so on timeout just fall through to the
+    // dumps.
+    long probeDeadlineNs = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ABANDON_PASS_WAIT_MS);
+    int passesRun = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
+    while (passesRun <= 0 && System.nanoTime() - probeDeadlineNs < 0) {
+      Thread.sleep(100);
+      passesRun = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
+    }
 
     Path dumpPath = Files.createTempFile("referencechains-abandoned-test-", ".jfr");
     Files.deleteIfExists(dumpPath);
     try {
       // Even with the seeding above clearing the gate, the first pass still has to actually reach
       // the frontier cap/ttl cutoff inside whatever wall-clock time this shared JVM's scheduling
-      // grants it - a single fixed-length sleep-then-dump-then-assert previously failed whenever
-      // that one attempt landed a beat early. Retry across a few more dumps before concluding the
-      // search genuinely never abandoned.
+      // grants it. The abandoned event only reaches the recording through a dump(), so each check
+      // needs a fresh dump - and each dump rewrites the whole shared recording. Dumps are
+      // therefore capped at ABANDON_MAX_DUMPS and paced so the last one lands at least
+      // ABANDON_LAST_DUMP_MIN_DELAY_MS after the grace period started; the passesRun probe above
+      // absorbs most of the scheduling slack without any I/O.
+      long lastDumpEarliestNs =
+          graceStartNs + TimeUnit.MILLISECONDS.toNanos(ABANDON_LAST_DUMP_MIN_DELAY_MS);
       JfrEvents abandoned = null;
-      for (int attempt = 0; attempt < 8; attempt++) {
+      int dumpsTaken = 0;
+      for (int attempt = 0; attempt < ABANDON_MAX_DUMPS; attempt++) {
+        if (attempt > 0) {
+          int attemptsLeft = ABANDON_MAX_DUMPS - attempt; // includes the dump about to be taken
+          long remainingMs =
+              TimeUnit.NANOSECONDS.toMillis(lastDumpEarliestNs - System.nanoTime());
+          Thread.sleep(Math.max(ABANDON_DUMP_RETRY_SPACING_MS, remainingMs / attemptsLeft));
+        }
         dump(dumpPath);
+        dumpsTaken++;
         abandoned = verifyEvents(dumpPath, "datadog.ReferenceChainAbandoned", false);
         if (abandoned.hasItems()) {
           break;
         }
-        Thread.sleep(1000);
       }
       assertTrue(abandoned != null && abandoned.hasItems(),
-          "Expected at least one datadog.ReferenceChainAbandoned event after 3 GCs, an initial "
-              + "1500ms grace period, and 8 retries 1s apart");
+          "Expected a datadog.ReferenceChainAbandoned event within " + dumpsTaken + " of at most "
+              + ABANDON_MAX_DUMPS + " dumps (after 3 GCs and a 1500ms grace period; the pass "
+              + "probe waited up to " + ABANDON_PASS_WAIT_MS + "ms, passesRun="
+              + ReferenceChainTestHooks.referenceChainPassesRunForTest0() + "; last dump >= "
+              + ABANDON_LAST_DUMP_MIN_DELAY_MS + "ms after grace start)");
     } finally {
       Files.deleteIfExists(dumpPath);
     }

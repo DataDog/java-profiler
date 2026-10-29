@@ -1195,8 +1195,9 @@ protected:
         VMTestAccessor::setJvmti(orig_jvmti);
         LivenessTracker::instance()->klassPopulationResetForTest();
         LivenessTracker::instance()->setGcGenerationsForTest(false);
-        // Set by UrgentOOMProjectionBypassesCandidateGate; reset here so a failed ASSERT_* there
-        // can't leak a stale max heap into the next test.
+        // Max heap, leak-signal gates and burn-in stamp are set by individual tests (e.g.
+        // UrgentLatchWithoutCandidateDoesNotStartSearch); restored here so a failed ASSERT_* in
+        // one of them can't leak them into the next test.
         LivenessTracker::instance()->setMaxHeapBytesForTest(-1);
         // 0 = "never activated"; the next start() re-stamps it through the CAS from 0.
         LivenessTracker::instance()->setLeakSignalActivatedNsForTest(0);
@@ -1210,8 +1211,8 @@ protected:
         return JVMTI_ERROR_NONE;
     }
 
-    // start() -> autoTuneDefaults() queries this when max heap > 0
-    // (UrgentOOMProjectionBypassesCandidateGate).
+    // start() -> autoTuneDefaults() queries this when max heap > 0 (tests that set a fake max
+    // heap before start(), e.g. UrgentLatchWithoutCandidateDoesNotStartSearch).
     static jvmtiError JNICALL mock_GetAvailableProcessors(jvmtiEnv *,
                                                            jint *nprocs) {
         *nprocs = 1;
@@ -1425,15 +1426,39 @@ TEST_F(SearchRestartTest, UrgentLatchWithoutCandidateDoesNotStartSearch) {
 
     // Urgency latched, but no candidate has cleared the leak-signal probe.
     ASSERT_TRUE(ReferenceChainsTestAccessor::isUrgentForTest());
+#ifdef COUNTERS
+    long long urgent_no_cand = Counters::getCounter(REFERENCE_CHAIN_URGENT_NO_CANDIDATE);
+#endif
     EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(1))
         << "urgent without a candidate must not start a candidate-less search";
     EXPECT_EQ(0, tracker->passesRun());
+#ifdef COUNTERS
+    // The refusal is observable in production diagnostics, not only in the
+    // debug-only TEST_LOG_SUMMARY.
+    EXPECT_EQ(urgent_no_cand + 1, Counters::getCounter(REFERENCE_CHAIN_URGENT_NO_CANDIDATE))
+        << "one refused latched/zero-candidate evaluation counts exactly once";
+    urgent_no_cand = Counters::getCounter(REFERENCE_CHAIN_URGENT_NO_CANDIDATE);
+#endif
+
+    // Disabled leak-signal source: hasLeakSignal() returns before isUrgent()
+    // and the counter, so nothing is counted.
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(1));
+#ifdef COUNTERS
+    EXPECT_EQ(urgent_no_cand, Counters::getCounter(REFERENCE_CHAIN_URGENT_NO_CANDIDATE))
+        << "a disabled leak-signal source must not count";
+#endif
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
 
     // Once a klass clears the probe, the search starts - and urgency applies
     // through the ramp from that point on.
     int fake_object_storage = 0;
     seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)&fake_object_storage);
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2));
+#ifdef COUNTERS
+    EXPECT_EQ(urgent_no_cand, Counters::getCounter(REFERENCE_CHAIN_URGENT_NO_CANDIDATE))
+        << "a gate opened by a real candidate must not count";
+#endif
 
     // 0 = "never activated"; the next start() re-stamps it through the CAS from 0.
     LivenessTracker::instance()->setLeakSignalActivatedNsForTest(0);
