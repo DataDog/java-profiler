@@ -3,17 +3,23 @@
 // OOM-ramp hysteresis (C5): isUrgent()'s latch/release machine and
 // shouldRunPass()'s canary-refill raise, driven deterministically.
 //
-// No threads and no wall-clock dependence: the heap trajectory is faked by
+// No threads: the heap trajectory is faked by
 // seeding LivenessTracker's usage rings with synthetic timestamps
 // (heapFloorRecordForTest() + setMaxHeapBytesForTest() + setGcGenerationsForTest()),
 // and both machines under test take their clock as an argument (isUrgent()
 // reads live state; shouldRunPass(now_ns) takes now_ns). For a perfectly
-// linear usage ramp of R bytes per 1s sample against max heap M, the
-// projection (livenessTracker.cpp's regression form) reduces to
-// secondsToOOM() == (M - last_used) / R, so each scenario seeds the exact
-// urgency reading it wants and re-seeds between observations - the
-// production loop re-reads the projection once per ~1s iteration the same
-// way.
+// linear usage ramp of RATE bytes per SAMPLE_SPACING_S sample against max
+// heap M, the projection (livenessTracker.cpp's regression form) reduces to
+// secondsToOOM() == (M - last_used) * SAMPLE_SPACING_S / RATE, so each
+// scenario seeds the exact urgency reading it wants and re-seeds between
+// observations - the production loop re-reads the projection once per ~1s
+// iteration the same way.
+//
+// The 15s sample spacing is arbitrary, kept for readable arithmetic. Warmup
+// is filtered by secondsToOOM()'s age-based burn-in (OOM_PROJECTION_BURN_IN_NS
+// after the leak signal first activated), not by the time span of the sample
+// ring, so SetUp() backdates the burn-in stamp against the real monotonic
+// clock - the only wall-clock read in these scenarios.
 // ---------------------------------------------------------------------------
 
 #include <algorithm>
@@ -25,13 +31,17 @@ protected:
     static constexpr u64 SEC_NS = 1000000000ULL;
     static constexpr u64 MiB = 1ULL << 20;
     static constexpr u64 MAX_HEAP = 1024 * MiB;
-    // Bytes of heap growth per 1s sample - the projection's slope.
+    // Bytes of heap growth per sample - the projection's slope is
+    // RATE / SAMPLE_SPACING_S per second.
     static constexpr u64 RATE = MiB;
+    // Arbitrary - see the file comment above.
+    static constexpr u64 SAMPLE_SPACING_S = 15;
 
     void SetUp() override {
         ReferenceChainsTestAccessor::resetUrgencyForTest();
         LivenessTracker::instance()->setGcGenerationsForTest(true);
         LivenessTracker::instance()->setMaxHeapBytesForTest((jlong)MAX_HEAP);
+        LivenessTracker::instance()->setLeakSignalActivatedNsForTest(backdatedStamp());
 #ifdef DEBUG
         // No real GC may interleave a sample into the ring while a scenario's
         // synthetic trajectory is mid-description.
@@ -43,6 +53,13 @@ protected:
         ReferenceChainsTestAccessor::resetUrgencyForTest();
         LivenessTracker::instance()->setMaxHeapBytesForTest(-1);
         LivenessTracker::instance()->setGcGenerationsForTest(false);
+        // 0 = "never activated"; the next start() re-stamps it through the CAS from 0.
+        LivenessTracker::instance()->setLeakSignalActivatedNsForTest(0);
+    }
+
+    // A burn-in stamp one second past OOM_PROJECTION_BURN_IN_NS (modular u64).
+    static u64 backdatedStamp() {
+        return OS::nanotime() - LivenessTracker::OOM_PROJECTION_BURN_IN_NS - SEC_NS;
     }
 
     // Overwrites the whole usage ring with a linear ramp whose projection is
@@ -52,13 +69,16 @@ protected:
     // which secondsToOOM() reports as -1 (no rising trend - the
     // recent-half corroboration rejects the flat regression).
     double project(double seconds, bool flat = false) {
-        u64 last_used = MAX_HEAP - (u64)(seconds * (double)RATE);
+        // remaining * SAMPLE_SPACING_S / RATE == seconds  =>
+        // remaining == seconds * RATE / SAMPLE_SPACING_S
+        u64 last_used = MAX_HEAP - (u64)(seconds * (double)RATE /
+                                         (double)SAMPLE_SPACING_S);
         for (int i = 0; i < 30; i++) {
             u64 used = flat ? MAX_HEAP / 2
                              : last_used - RATE * (u64)(29 - i);
             LivenessTracker::instance()->heapFloorRecordForTest(
                 used, _clock_ns, 0);
-            _clock_ns += SEC_NS;
+            _clock_ns += SAMPLE_SPACING_S * SEC_NS;
         }
         return LivenessTracker::instance()->secondsToOOM();
     }
@@ -142,8 +162,7 @@ TEST_F(OomUrgencyTest, UnknownProjectionCountsTowardRelease) {
 }
 
 // After a release, mid-band projections stay unlatched (no residual state),
-// and a fresh sub-threshold crossing re-latches with a fresh search
-// entitlement (_urgent_search_spent reset).
+// and a fresh sub-threshold crossing re-latches cleanly.
 TEST_F(OomUrgencyTest, RelatchAfterReleaseGetsFreshEntitlement) {
     ASSERT_NEAR(project(299.0), 299.0, 1.0);
     ASSERT_TRUE(ReferenceChainsTestAccessor::isUrgentForTest());
@@ -160,12 +179,83 @@ TEST_F(OomUrgencyTest, RelatchAfterReleaseGetsFreshEntitlement) {
     EXPECT_FALSE(ReferenceChainsTestAccessor::isUrgentForTest());
     EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest());
 
-    // Re-cross the threshold: re-latch, and the entitlement to spend one
-    // urgency-authorized search is restored.
+    // Re-cross the threshold: re-latch.
     EXPECT_NEAR(project(299.0), 299.0, 1.0);
     EXPECT_TRUE(ReferenceChainsTestAccessor::isUrgentForTest());
     EXPECT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest());
-    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentSearchSpentForTest());
+}
+
+// During the burn-in (OOM_PROJECTION_BURN_IN_NS after the leak signal first
+// activated) no projection is offered, so urgency never latches: a fresh
+// process's warmup growth curve projects an imminent OOM just as a real leak
+// does (the staging incident: a fresh process latched urgency and ran a
+// candidate-less whole-heap search to the TTL).
+TEST_F(OomUrgencyTest, BurnInDoesNotLatchUrgency) {
+    LivenessTracker::instance()->setLeakSignalActivatedNsForTest(OS::nanotime());
+    // Earlier scenarios advanced the shared seeding clock far past this test's
+    // 0-based timestamps - clear the ring so it holds exactly this test's
+    // 10 samples.
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    constexpr u64 RATE_1S = 100 * MiB; // 100MiB/s - projects ~10s once past burn-in
+    for (int i = 0; i < 10; i++) {
+        LivenessTracker::instance()->heapFloorRecordForTest(
+            MAX_HEAP - 1000 * MiB + (u64)i * RATE_1S, (u64)i * SEC_NS, 0);
+    }
+    EXPECT_LT(LivenessTracker::instance()->secondsToOOM(), 0.0)
+        << "projection must be withheld during burn-in";
+    EXPECT_FALSE(ReferenceChainsTestAccessor::isUrgentForTest());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest());
+
+    // Control: the same seeds are urgent-grade once the burn-in has passed,
+    // so the negative half above is not trivially satisfied.
+    LivenessTracker::instance()->setLeakSignalActivatedNsForTest(backdatedStamp());
+    double seconds = LivenessTracker::instance()->secondsToOOM();
+    ASSERT_GE(seconds, 0.0);
+    ASSERT_LT(seconds, 300.0) << "scenario must project inside the urgent band";
+}
+
+// Regression: near OOM, back-to-back GCs record heap-floor samples less than a
+// second apart, so the whole ring spans only seconds. Past the burn-in such a
+// GC-compressed history must still project and latch urgency on the first
+// sub-threshold reading (the removed span-based guard compared a ~10s
+// earliest-to-recent span against the 300s horizon and never latched here).
+TEST_F(OomUrgencyTest, GcCompressedWindowLatchesAfterBurnIn) {
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    // project()'s linear ramp with the spacing compressed from 15s to 0.5s:
+    // RATE (1MiB) every 0.5s is 2MiB/s; 200MiB of headroom projects to 100s.
+    // project() itself is not used - its shared clock and 15s spacing would
+    // defeat the compression.
+    u64 last_used = MAX_HEAP - 200 * MiB;
+    for (int i = 0; i < 30; i++) {
+        LivenessTracker::instance()->heapFloorRecordForTest(
+            last_used - RATE * (u64)(29 - i), (u64)i * SEC_NS / 2, 0);
+    }
+    double seconds = LivenessTracker::instance()->secondsToOOM();
+    ASSERT_GE(seconds, 0.0);
+    ASSERT_LT(seconds, 300.0) << "scenario must project inside the urgent band";
+    EXPECT_NEAR(seconds, 100.0, 1.0);
+
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isUrgentForTest())
+        << "a GC-compressed ring past the burn-in must latch urgency";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest());
+}
+
+// A burn-in -1 is "no projection" like any other negative reading: it counts
+// toward release, neither holding the latch as urgent nor as mid-band.
+TEST_F(OomUrgencyTest, BurnInProjectionCountsTowardRelease) {
+    ASSERT_NEAR(project(299.0), 299.0, 1.0);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::isUrgentForTest());
+
+    LivenessTracker::instance()->setLeakSignalActivatedNsForTest(OS::nanotime());
+    for (int i = 1; i <= 4; i++) {
+        EXPECT_LT(project(299.0), 0.0);
+        EXPECT_TRUE(ReferenceChainsTestAccessor::isUrgentForTest())
+            << "released after only " << i << " burn-in observations";
+        EXPECT_EQ(i, ReferenceChainsTestAccessor::urgentReleaseTicksForTest());
+    }
+    EXPECT_LT(project(299.0), 0.0);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::isUrgentForTest());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest());
 }
 
 // ---------------------------------------------------------------------------
