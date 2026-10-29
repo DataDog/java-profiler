@@ -22,6 +22,8 @@ Before the first search, `shouldRunPass()` calls `canAffordNewSearch()`. The gat
 
 Urgency does not authorize a search. A candidate-less search can never emit a chain, and while urgent the 30-pass no-progress abandonment is suppressed, so it would run to the full TTL doing whole-heap BFS. Urgency applies through the ramp once a search is running.
 
+The tradeoff of this candidate-only gate: a heap-wide leak spread across many classes, none of which individually clears `selectLeakCandidates()`'s per-klass ring-fill/hysteresis gate, never opens the gate, even in the emergency band (projected OOM under 5 minutes). No chains are produced in that case. Each such refused evaluation increments the `reference_chain_urgent_no_candidate` counter (about once per second while urgency is latched and no candidate exists), so the gap is visible in the diagnostics rather than silent, and it can be told apart from an idle healthy process.
+
 The population-trend signal is constructed by the liveness tracker, which fills the per-klass population table and the heap-floor ring when generations tracking OR liveheap tracking is active (the two options drive the same tracking mechanisms; liveheap additionally preserves stack traces for its samples). When neither is active, no signal can ever be produced: `hasLeakSignal()` returns false, and the collector stays idle - it never runs a pass, restart, or search.
 
 ## Scheduling a running search
