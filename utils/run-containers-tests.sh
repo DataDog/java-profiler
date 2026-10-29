@@ -20,7 +20,7 @@
 #   --shell                  (drop to shell instead of running tests; enables SYS_PTRACE for gdb)
 #   --mount                  (mount local repo instead of cloning - faster but may have stale artifacts)
 #   --rebuild                (force rebuild of container images)
-#   --rebuild-base           (force rebuild of base image only)
+#   --rebuild-base           (force rebuild of the base image, and of the JDK image built on it)
 #   --matrix                 (preview a full matrix; unset dimensions expand to all)
 #   --run                    (execute an inferred matrix without prompting)
 #   --fail-fast              (stop matrix execution on first failure)
@@ -1026,11 +1026,14 @@ FROM alpine:3.21
 # - compiler-rt provides sanitizer runtimes (ASan, TSan) for clang
 # - llvm provides libFuzzer
 # - openssh-client for git clone over SSH
+# - py3-pip + gcovr for :ddprof-lib:coverageReport (-PenableCoverage); Alpine
+#   doesn't package gcovr, so it comes from PyPI
 RUN apk update && \
     apk add --no-cache \
         curl wget bash make g++ clang git jq cmake coreutils \
         gtest-dev gmock tar binutils musl-dbg linux-headers \
-        compiler-rt llvm openssh-client gdb
+        compiler-rt llvm openssh-client gdb py3-pip && \
+    pip install --no-cache-dir --break-system-packages gcovr
 
 # Set up Gradle cache directory
 ENV GRADLE_USER_HOME=/gradle-cache
@@ -1075,13 +1078,18 @@ ENV DEBIAN_FRONTEND=noninteractive
 # - libclang-rt-dev for clang sanitizers and libFuzzer (x64 only)
 # - gnupg for LLVM apt key import
 # - openssh-client for git clone over SSH
+# - python3-pip + gcovr for :ddprof-lib:coverageReport (-PenableCoverage); the
+#   distro's gcovr 5.0 predates flags the report task passes, so use PyPI's
+# - llvm for the unversioned llvm-cov that coverageReport pairs with the
+#   unversioned clang++ (the clang package doesn't pull it in)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl wget gnupg bash make g++ clang git jq cmake \
         libgtest-dev libgmock-dev tar binutils libc6-dbg \
         ca-certificates linux-libc-dev \
-        libasan6 libtsan0 ${CLANG_RT_PKG} openssh-client build-essential gdb && \
-    rm -rf /var/lib/apt/lists/*
+        libasan6 libtsan0 ${CLANG_RT_PKG} openssh-client build-essential gdb python3-pip llvm && \
+    rm -rf /var/lib/apt/lists/* && \
+    pip3 install --no-cache-dir gcovr
 ${CLANG17_BLOCK}
 
 # Set up Gradle cache directory
@@ -1107,7 +1115,9 @@ fi
 
 # ========== Build JDK Image (if needed) ==========
 IMAGE_EXISTS=false
-if [[ "$REBUILD" == "false" ]]; then
+# A JDK image cached on top of an older base image would hide the rebuilt base's packages
+# (e.g. gcovr), so it is reused only when the base image was reused too.
+if [[ "$REBUILD" == "false" && "$BASE_IMAGE_EXISTS" == "true" ]]; then
     if "$CONTAINER_RUNTIME" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         IMAGE_EXISTS=true
         echo ">>> Using cached image: $IMAGE_NAME"
