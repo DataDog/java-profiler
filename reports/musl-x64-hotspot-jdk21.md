@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk21
 
 ## musl-x64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-10-29 16:31:12 EDT
+**Date:** 2026-10-29 17:38:36 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 662 |
-| Sample Rate | 11.03/sec |
-| Health Score | 689% |
+| CPU Samples | 469 |
+| Sample Rate | 7.82/sec |
+| Health Score | 489% |
 | Threads | 9 |
-| Allocations | 356 |
+| Allocations | 366 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 975 |
-| Sample Rate | 16.25/sec |
-| Health Score | 1016% |
-| Threads | 10 |
-| Allocations | 514 |
+| CPU Samples | 878 |
+| Sample Rate | 14.63/sec |
+| Health Score | 914% |
+| Threads | 11 |
+| Allocations | 523 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1793305614 51
-1793305619 51
-1793305624 51
-1793305629 51
-1793305634 51
-1793305639 51
-1793305644 51
-1793305649 51
-1793305654 51
-1793305659 51
-1793305664 51
-1793305669 51
-1793305674 51
-1793305679 51
-1793305684 51
-1793305689 51
-1793305694 51
-1793305699 51
-1793305704 51
-1793305709 51
+1793309647 51
+1793309652 51
+1793309657 51
+1793309662 51
+1793309667 51
+1793309672 51
+1793309677 51
+1793309682 51
+1793309687 51
+1793309692 51
+1793309697 51
+1793309702 51
+1793309707 51
+1793309712 51
+1793309717 51
+1793309722 51
+1793309727 51
+1793309732 51
+1793309737 51
+1793309742 51
 ```
 </details>
 
