@@ -173,6 +173,13 @@ public:
     static void resetUrgencyForTest() {
         ReferenceChainTracker::instance()->resetUrgencyForTest();
     }
+    // Urgent-admission growth gate: updateUrgentAdmission()'s per-iteration
+    // decision (referenceChains.cpp) - the admission half of threadLoop()'s
+    // ramp handling, testable without the BFS thread.
+    static bool updateUrgentAdmissionForTest(double seconds_to_oom, bool urgent) {
+        return ReferenceChainTracker::instance()->updateUrgentAdmission(seconds_to_oom,
+                                                                        urgent);
+    }
     // Applied vs configured CPU pain-budget refill rate (shouldRunPass()'s
     // canary-refill raise).
     static double cpuPainBudgetRefillRateForTest() {

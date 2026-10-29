@@ -259,6 +259,117 @@ TEST_F(OomUrgencyTest, BurnInProjectionCountsTowardRelease) {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Urgent-admission growth gate (updateUrgentAdmission()): inside the OOM ramp
+// band, the 100% tracking boost additionally requires fresh heap growth
+// evidence outside the emergency band (< OOM_URGENT_THRESHOLD_S). The
+// projection is a least-squares regression over a 30-sample window, so a
+// single spike sample keeps it inside the band for several recovery GCs after
+// the heap has physically stopped growing - admitting on band residence alone
+// would buy tracker-table churn for a recovered spike. threadLoop() computes
+// the projection once per iteration and hands it in, so these scenarios pass
+// the projection the same way and drive the ring directly through
+// heapFloorRecordForTest().
+// ---------------------------------------------------------------------------
+
+// A non-emergency in-band projection admits only once the newest heap-floor
+// sample has grown past the episode's entry snapshot - one GC later for a
+// real leak - and stops admitting as soon as a newer sample falls back below
+// it, even while the projection still reads in-band.
+TEST_F(OomUrgencyTest, AdmissionBoostRequiresGrowthPastEntryBaseline) {
+    // Seeds a ramp projecting 1500s: inside the ramp band (1800s), well
+    // outside the emergency band. The ramp's last sample is the peak.
+    ASSERT_NEAR(project(1500.0), 1500.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(1500.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+
+    // First in-band observation establishes the baseline; no growth evidence
+    // relative to it yet, so no boost.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    // One more sample above the snapshot: real growth -> boost.
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1490.0, true));
+
+    // A newer sample back below the entry snapshot: growth evidence gone, the
+    // boost must drop even though the (passed-in) projection still reads deep
+    // inside the band.
+    LivenessTracker::instance()->heapFloorRecordForTest(peak - RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1490.0, true));
+}
+
+// The regression-smoothing counterexample: a single spike sample keeps the
+// smoothed projection inside the band for several recovery GCs after the heap
+// has physically recovered. The scenario proves both halves: the projection
+// genuinely keeps firing (asserted via secondsToOOM()) while the boost stays
+// off for every recovery observation, because no sample grows past the
+// entry snapshot (the spike's peak).
+TEST_F(OomUrgencyTest, RecoveredSpikeStaysUnboostedWhileProjectionLags) {
+    ASSERT_NEAR(project(700.0), 700.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(700.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+
+    // Entry snapshot = the spike's peak.
+    ASSERT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(700.0, true));
+
+    // Recovery: each GC lands one RATE below the previous. The recent-half
+    // corroboration keeps the projection positive through these (the spike
+    // dominates the newest-15 regression until most of the recent half is
+    // recovery samples); the lagging projection must not admit any of them.
+    for (int r = 1; r <= 6; r++) {
+        LivenessTracker::instance()->heapFloorRecordForTest(
+            peak - (u64)r * RATE, _clock_ns, 0);
+        _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+        double seconds = LivenessTracker::instance()->secondsToOOM();
+        ASSERT_GE(seconds, 0.0)
+            << "recovery sample " << r
+            << ": scenario requires the smoothed projection to lag the recovery";
+        ASSERT_LT(seconds, 1800.0)
+            << "recovery sample " << r
+            << ": scenario requires the projection to stay inside the ramp band";
+        EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(seconds, true))
+            << "recovery sample " << r << " must not be admitted on a lagging projection";
+    }
+}
+
+// The emergency band (< OOM_URGENT_THRESHOLD_S) waives the growth-evidence
+// hold: minutes from death means capturing whatever the sampler offers,
+// including the very first observation and a heap whose newest sample is
+// below the entry snapshot.
+TEST_F(OomUrgencyTest, EmergencyBandAdmitsWithoutGrowthEvidence) {
+    ASSERT_NEAR(project(299.0), 299.0, 1.0);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(299.0, true));
+
+    // A declining heap does not flip the boost off inside the band.
+    u64 newest = MAX_HEAP - (u64)(299.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+    LivenessTracker::instance()->heapFloorRecordForTest(newest - RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(299.0, true));
+}
+
+// Leaving the band clears the entry snapshot: the next episode re-snapshots
+// against its own entry state instead of inheriting the previous episode's
+// baseline (which could admit on no growth at all if the heap is now above
+// the old snapshot for unrelated reasons).
+TEST_F(OomUrgencyTest, BandExitResetsGrowthBaseline) {
+    ASSERT_NEAR(project(1500.0), 1500.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(1500.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+    ASSERT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    // An out-of-band observation clears the baseline.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(-1.0, false));
+
+    // New episode: the first observation re-snapshots (no inherited growth),
+    // then one growing sample admits again.
+    ASSERT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + 2 * RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+}
+
 // The canary-refill half: shouldRunPass() raises the CPU pain budget's
 // refill rate CANARY_PAIN_BUDGET_REFILL_MULTIPLIER-fold exactly while a
 // canary chase is open (candidates exist and not all are found), and puts it
