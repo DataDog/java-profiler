@@ -82,24 +82,26 @@ Profiler::start()                              profiler.cpp:1555
   NativeSocketSampler::start()  (EM_NATIVESOCKET)
   if anything activated:
     switchThreadEvents(JVMTI_ENABLE)
-    _cpu_engine->enableEvents(true)            LAST
+    _cpu_engine->enableEvents(true)            LAST, only if EM_CPU activated
 ```
 
 - The wall engine is enabled before its thread starts because
   `timerLoopCommon()` checks `_enabled` once on entry and returns if it is
   false (`wallClock.h:50`, `profiler.cpp:1795-1801`).
-- The CPU engine is enabled last (`profiler.cpp:1896`). CPU handlers check
-  `_enabled` on every signal, so nothing is lost by enabling late.
+- The CPU engine is enabled last (`profiler.cpp:1901`). CPU handlers check
+  `_enabled` on every signal, so nothing is lost by enabling late. It is not
+  enabled when its own `start()` failed, even if another mode activated, so fds
+  or timers left armed by an earlier recording cannot emit CPU samples.
 - A failing CPU, wall, or alloc `start()` is logged and the remaining modes
   still start. Start fails only if no mode activated.
 
-`Profiler::stop()` (`profiler.cpp:1916`) runs in reverse:
+`Profiler::stop()` (`profiler.cpp:1922`) runs in reverse:
 
 1. `disableEngines()` calls `enableEvents(false)` on the CPU and wall engines
    only (`profiler.cpp:1106`).
 2. `SignalInflight::drain()` waits until every handler that already passed its
    `_enabled` check has left. If the drain times out, `stop()` returns an error
-   and tears nothing down (`profiler.cpp:1929`).
+   and tears nothing down (`profiler.cpp:1935`).
 3. `closeThreadRegistration()` clears `_engines_ready` and waits until no hook
    call that passed the check is still inside an engine.
    No thread-hook call (pthread hook or JVMTI callback) can then arm a timer
@@ -109,7 +111,7 @@ Profiler::start()                              profiler.cpp:1555
    `malloc_tracer.stop()`, the socket sampler, `_wall_engine->stop()`,
    `_cpu_engine->stop()`.
 
-`Profiler::check()` (`profiler.cpp:2069`) runs the same selection and calls
+`Profiler::check()` (`profiler.cpp:2075`) runs the same selection and calls
 each engine's `check()` without starting anything.
 
 ### Thread registration
@@ -446,7 +448,7 @@ chains are described in
   survivors. `cleanup_table()` runs from `flush()`, `stop()`, the overflow path
   in `track()`, and `maybeForceCleanup()` (called from the reference-chain
   thread).
-- **Output**: `Profiler::dump()` calls `flush()` (`profiler.cpp:2147`). The
+- **Output**: `Profiler::dump()` calls `flush()` (`profiler.cpp:2153`). The
   flush runs a cleanup and then, under the exclusive lock, emits one
   `BCI_LIVENESS` deferred sample per surviving entry through
   `recordDeferredSample()` (`livenessTracker.cpp:1962`). When heap-usage

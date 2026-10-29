@@ -1893,7 +1893,13 @@ Error Profiler::start(Arguments &args, bool reset) {
     // re-check _enabled on every signal, so enabling here (rather than before
     // start()) does not lose samples.
     // Paired with drainInflight() on the stop side.
-    _cpu_engine->enableEvents(true);
+    // Only when the CPU engine itself started: another mode may have activated
+    // after it failed, and fds or timers left armed by an earlier recording
+    // (PerfEvents keeps its fds across stop()) would otherwise emit CPU samples
+    // into this recording.
+    if (activated & EM_CPU) {
+      _cpu_engine->enableEvents(true);
+    }
 
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);

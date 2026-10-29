@@ -138,7 +138,7 @@ events write the context snapshot taken when the allocation was tracked
 - `wallClockEpoch()`, `recordTraceRoot()`, `recordQueueTime()`,
   `recordDatadogSetting()`, `recordHeapUsage()` and the reference-chain writers
   use `_buf[lock_index]`; their `Profiler` callers take the stripe lock first
-  (`profiler.cpp:890-996`, `1966-1978`).
+  (`profiler.cpp:890-996`, `1972-1984`).
 - `recordLog()` builds the event in an `alloca` buffer and writes it to the
   file at once, without a stripe lock (`flightRecorder.cpp:2945-2966`).
 - `cpuMonitorCycle()` writes `jdk.CPULoad` into `_cpu_monitor_buf`, which
@@ -195,10 +195,10 @@ properties and native libraries can be turned off with `NO_SYSTEM_INFO`,
 
 ### How `Profiler` drives it
 
-`Profiler::dump()` (`profiler.cpp:2136-2208`) first emits pending
+`Profiler::dump()` (`profiler.cpp:2142-2214`) first emits pending
 reference-chain events under a stripe lock, refreshes libraries and thread
 names, then runs `_jfr.dump()` inside `rotateDictsAndRun()`. `Profiler::stop()`
-runs `_jfr.stop()` the same way (`profiler.cpp:2058`).
+runs `_jfr.stop()` the same way (`profiler.cpp:2064`).
 
 `rotateDictsAndRun()` (`profiler.h:245-268`):
 
