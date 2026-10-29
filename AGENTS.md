@@ -415,8 +415,10 @@ exception list.
   second time (e.g. in copy constructors, assignment operators) into one shared helper; use
   `static_cast`/`reinterpret_cast`, not C-style casts; give file-local helpers internal
   linkage (`static`); no commented-out code, redundant `inline` on in-class or constexpr
-  definitions, or redundant access specifiers; add duplicated fast-path variants (e.g.
-  `JavaCritical_*`) only for demonstrably performance-critical methods.
+  definitions, redundant access specifiers, or redundant conditions — a disjunct equivalent
+  to an adjacent check is dead; remove it, or keep it only as a deliberate defensive guard
+  whose comment does not claim it catches a distinct case; add duplicated fast-path variants
+  (e.g. `JavaCritical_*`) only for demonstrably performance-critical methods.
 - Comments: "why" comments must reference concrete mechanisms (e.g. "ASAN's allocator
   lock is reentrant"), never speculative claims about HotSpot/glibc/ASAN/ISA internals — if
   unsure, describe the observable symptom. Describe current behavior, not history; cite no
@@ -430,7 +432,12 @@ exception list.
   each fact once, and omit comments that restate an obvious bounds check. After any
   change, refactor or API rename, re-read the nearby comments against the final diff and
   grep for the old name or behavior (including headers, tests and callers' comments).
-  Proofread comments, javadoc and exception messages.
+  Proofread comments, javadoc and exception messages. Hold user-facing operational
+  messages (error/warning logs, script and CLI output) to the same standard of accuracy:
+  state only what is known to be true, and recommend only next steps that can actually
+  succeed — never advise a retry that cannot clear the condition, never report a pending
+  state (e.g. a run awaiting approval) as failed, and never warn that something may still
+  be running when it is known to be terminal.
 - **RAII for every acquire/release pair** (C/C++). A lock, a heap allocation, or a flag
   that must be restored is released by a guard or owner destructor, not by a manual call
   at each exit. Reuse `SharedLockGuard`, `ExclusiveLockGuard`, `OptionalSharedLockGuard`,
@@ -544,7 +551,12 @@ description-specific:
 - **Explain the WHYs, not the WHATs.** Focus on non-obvious motivation and
   limitations: why this approach was chosen, what alternatives were rejected and
   why, what constraints shaped the design, what the change does NOT fix. Do not
-  reiterate what the code obviously shows.
+  reiterate what the code obviously shows. When a change deliberately alters
+  behavior with user-visible impact (JFR event schema, signal volume, resident
+  memory, suppression scopes) or accepts a recurring per-call or footprint cost,
+  state the decision and the accepted cost explicitly and flag it for reviewer
+  acknowledgment — never leave it implicit in code, a test rename, or a leftover
+  template marker in the description.
 - **Only the final state matters.** Never include ephemeral working knowledge —
   investigation detours, dead-end hypotheses, intermediate states, tool runs,
   session history. If a detail did not survive into the final change, it does not
@@ -574,7 +586,10 @@ description-specific:
   enforced in CI by the `qualityChecks` task; design artifacts under `docs/sphinx/`,
   `.sphinx/`, and similar scratch paths must never be tracked.
 - Documentation reflects the current state — never transient/historical notes, and never
-  claims that aren't true of the code. Verify numbers before writing them down.
+  claims that aren't true of the code. Verify numbers before writing them down. Preserved
+  historical sections of landed design/handover docs ("Suggested next steps", unverified
+  hypotheses, open items) must be rewritten or deleted once the work they instruct is done:
+  a reader must never be pointed at already-finished work.
 - Update this file from repeated failures: when an agent repeats a mistake or needs
   the same undocumented explanation twice, it proposes a concise correction here
   (or to the affected `doc/` page); the responsible team reviews it, and stale
