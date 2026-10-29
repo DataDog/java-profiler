@@ -210,6 +210,147 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
     return words;
 }
 
+// Bounded instruction shapes used only by gen_continuation_enter's VM-leaf
+// resolver. Do not turn these into general native unwind heuristics.
+static int continuationCallSize(const unsigned char* p, const unsigned char* end) {
+    if (end - p >= 5 && p[0] == 0xe8) return 5; // call rel32
+    if (end - p >= 12 && p[0] == 0x48 && p[1] == 0xb8 &&
+            p[10] == 0xff && p[11] == 0xd0) return 12; // movabs rax; call rax
+    return 0;
+}
+
+static int continuationBranchSize(const unsigned char* p, const unsigned char* end,
+                                  bool conditional, const unsigned char*& target) {
+    int size = 0;
+    int32_t displacement;
+    if (end - p >= 2 && p[0] == (conditional ? 0x74 : 0xeb)) {
+        size = 2;
+        displacement = (int8_t)p[1];
+    } else if (conditional && end - p >= 6 && p[0] == 0x0f && p[1] == 0x84) {
+        size = 6;
+        memcpy(&displacement, p + 2, sizeof(displacement));
+    } else if (!conditional && end - p >= 5 && p[0] == 0xe9) {
+        size = 5;
+        memcpy(&displacement, p + 1, sizeof(displacement));
+    }
+    if (size != 0) target = (const unsigned char*)((uintptr_t)p + size + displacement);
+    return size;
+}
+
+bool HotspotStackFrame::continuationEntryExceptionLayout(VMNMethod* nm, const void* pc,
+        bool return_address, ContinuationEntryLayout& layout) {
+    int words = nm->frameSize();
+    const unsigned char* entry = (const unsigned char*)nm->entry();
+    if (words < 4 || words > 256 || (words & 1) != 0 || !nm->contains(entry) || !nm->contains(pc)) return false;
+    size_t available = (uintptr_t)nm + nm->size() - (uintptr_t)entry;
+    if (available > 1024) available = 1024;
+    const unsigned char* end = entry + available;
+    const unsigned char* ip = (const unsigned char*)pc;
+    if (ip < entry || ip >= end) return false;
+
+    // Locate the same validated normal epilogue used by the scalar helper.
+    // The immediately following section is the separate exception cleanup.
+    const unsigned char* normal_add = nullptr;
+    const unsigned char* p = nullptr;
+    int add_size = 0;
+    unsigned int storage = (words - 2) * sizeof(uintptr_t);
+    for (size_t offset = 7; offset < available; offset++) {
+        const unsigned char* scan = entry + offset;
+        if (end - scan < 6 || scan[-7] != 0x49 || scan[-6] != 0x89 || scan[-5] != 0x9f ||
+                scan[0] != 0x48 || scan[2] != 0xc4) continue;
+        if (storage < 128 && scan[1] == 0x83 && scan[3] == storage && scan[4] == 0x5d && scan[5] == 0xc3) add_size = 4;
+        else if (end - scan >= 9 && scan[1] == 0x81 && scan[3] == (storage & 0xff) &&
+                scan[4] == (storage >> 8) && scan[5] == 0 && scan[6] == 0 && scan[7] == 0x5d && scan[8] == 0xc3) add_size = 7;
+        if (add_size != 0) {
+            normal_add = scan;
+            p = scan + add_size + 2;
+            break;
+        }
+    }
+    if (p == nullptr) return false;
+
+    bool found = false;
+    auto phase = [&](const unsigned char* at, int remaining, bool saved_fp, bool call_return = false) {
+        if (ip == at && (!return_address || call_return)) {
+            layout = {remaining, saved_fp};
+            found = true;
+        }
+    };
+    // Product HotSpot cleanup consists only of SP-relative loads and stores
+    // to JavaThread: two pairs now, three on JDKs with held-monitor counts.
+    // Unknown/debug-build instructions are rejected rather than assumed SP-neutral.
+    for (int nops = 0; nops < 8 && p < end && *p == 0x90; nops++, p++) phase(p, words, true);
+    int pairs = 0;
+    const unsigned char* last_store = nullptr;
+    for (; pairs < 3 && end - p >= 12; pairs++) {
+        int load_size = p[0] == 0x48 && p[1] == 0x8b && p[2] == 0x5c && p[3] == 0x24 ? 5 :
+                end - p >= 15 && p[0] == 0x48 && p[1] == 0x8b && p[2] == 0x9c && p[3] == 0x24 ? 8 : 0;
+        if (load_size == 0) break;
+        phase(p, words, true);
+        p += load_size;
+        if (p[0] != 0x49 || p[1] != 0x89 || p[2] != 0x9f) return false;
+        phase(p, words, true);
+        last_store = p;
+        p += 7;
+    }
+    if (pairs < 2 || last_store == nullptr || memcmp(last_store, normal_add - 7, 7) != 0 ||
+            end - p < add_size + 1 || memcmp(p, normal_add, add_size) != 0 || p[add_size] != 0x5d) return false;
+    phase(p, words, true); // before releasing entry storage
+    p += add_size;
+    phase(p++, 2, true);   // before pop rbp
+
+    const unsigned char args[] = {0x49, 0x8b, 0xff, 0x48, 0x8b, 0x34, 0x24, 0x50};
+    if (end - p < (int)sizeof(args) || memcmp(p, args, sizeof(args)) != 0) return false;
+    phase(p, 1, false);
+    phase(p + 3, 1, false);
+    phase(p + 7, 1, false); // before push exception
+    p += sizeof(args);
+    const unsigned char test[] = {0xf7, 0xc4, 0x0f, 0, 0, 0}; // test esp, 15
+    const unsigned char byte_test[] = {0x40, 0xf6, 0xc4, 0x0f}; // optimized test spl, 15; REX is required
+    int test_size = end - p >= (int)sizeof(test) && memcmp(p, test, sizeof(test)) == 0 ? sizeof(test) :
+            end - p >= (int)sizeof(byte_test) && memcmp(p, byte_test, sizeof(byte_test)) == 0 ? sizeof(byte_test) : 0;
+    if (test_size == 0) return false;
+    phase(p, 2, false); // the overwritten FP slot now holds the exception oop
+    p += test_size;
+    const unsigned char* direct_call;
+    int branch_size = continuationBranchSize(p, end, true, direct_call);
+    if (branch_size == 0) return false;
+    phase(p, 2, false);
+    p += branch_size;
+    const unsigned char sub[] = {0x48, 0x83, 0xec, 0x08};
+    if (end - p < 4 || memcmp(p, sub, 4) != 0) return false;
+    phase(p, 2, false);
+    p += 4;
+    int call_size = continuationCallSize(p, end);
+    if (call_size == 0) return false;
+    phase(p, 3, false);
+    if (call_size == 12) phase(p + 10, 3, false); // after loading the far-call address
+    p += call_size;
+    phase(p, 3, false, true); // return from the padding branch's resolver
+    const unsigned char add[] = {0x48, 0x83, 0xc4, 0x08};
+    if (end - p < 4 || memcmp(p, add, 4) != 0) return false;
+    p += 4;
+    const unsigned char* tail;
+    branch_size = continuationBranchSize(p, end, false, tail);
+    if (branch_size == 0) return false;
+    phase(p, 2, false);
+    p += branch_size;
+    if (p != direct_call) return false;
+    call_size = continuationCallSize(p, end);
+    if (call_size == 0) return false;
+    phase(p, 2, false);
+    if (call_size == 12) phase(p + 10, 2, false);
+    p += call_size;
+    if (p != tail) return false;
+    const unsigned char finish[] = {0x48, 0x8b, 0xd8, 0x58, 0x5a, 0xff, 0xe3};
+    if (end - p < (int)sizeof(finish) || memcmp(p, finish, sizeof(finish)) != 0) return false;
+    phase(p, 2, false, true); // return from the aligned resolver
+    phase(p + 3, 2, false);  // before pop exception
+    phase(p + 4, 1, false);  // before pop return PC
+    phase(p + 5, 0, false);  // return PC is now in interrupted RDX
+    return found;
+}
+
 bool HotspotStackFrame::unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     //  0:   mov    %eax,-0x14000(%rsp)
     //  7:   push   %rbp

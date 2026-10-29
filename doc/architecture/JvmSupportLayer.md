@@ -173,10 +173,24 @@ or return-PC stack slot (x64). Unknown prologues fail rather than applying the
 complete-frame size. Pointer-authentication instructions are recognized on
 arm64, and recovered PCs have PAC bits stripped.
 
-On x64, the generated exception section after the validated normal cleanup is
-unsupported. Its FP and return-PC sources change around handler resolution. Both
-direct samples and native resolver return PCs stop with an error and truncation
-instead of applying a complete-frame layout or following an unlinked entry.
+On x64, `continuationEntryExceptionLayout()` decodes the generated exception
+section separately from the scalar normal-frame helper. A bounded scan identifies
+the normal epilogue, then validates the exception cleanup, resolver arguments,
+stack-alignment branches, calls and final `pop rax; pop rdx; jmp rbx` sequence.
+The layout distinguishes saved RBP from restored RBP: after `push rax`, the old
+saved-RBP slot contains an exception object, not a frame pointer. The carrier PC
+is the last live stack word until `pop rdx`; a direct sample at the final jump
+uses interrupted RDX instead. Both near calls and full-address RAX calls are
+recognized, including HotSpot's byte-test optimization for stack alignment.
+
+A native unwind returning to a recognized x64 resolver call uses its reconstructed
+SP and RBP and the still-stacked carrier PC. Only actual call-return instruction
+boundaries qualify; an older PC after `pop rdx` must not borrow interrupted RDX.
+Recovery does not follow `JavaThread::_cont_entry`, which can already name a
+parent, or advance the nested-entry cursor to the retiring spill. Unknown code,
+invalid branch targets, non-instruction PCs and out-of-blob reads fail with
+truthful error/truncation. Carrier SP alignment/bounds and FP/PC admission checks
+remain shared with normal recovery.
 
 Interpreter-only execution uses a separate entry before the verified compiled
 entry on both architectures. The decoder locates that entry's recognized frame
@@ -198,7 +212,8 @@ This adjustment reads code only and also applies when native unwinding recovers
 a return PC into the spilled entry. It does not use sampled register values at
 that recovered PC.
 
-This path applies only to the exact sampled PC. Recovered return addresses keep
+Normal prologue/epilogue phase recovery applies only to the exact sampled PC.
+Apart from recognized VM-leaf resolver layouts, recovered return addresses keep
 the existing continuation-entry metadata and stack-argument recovery. During
 entry publication and removal, `JavaThread::_cont_entry` can name the enclosing
 entry; a sampled entry only advances the nested-entry cursor when the published
