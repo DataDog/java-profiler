@@ -19,11 +19,26 @@
 #ifdef __linux__
 
 #include "arguments.h"
+#include "nativeMem.h"
 #include "perfEvents.h"
 
+#include <cerrno>
 #include <climits>
 #include <cstdlib>
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <unistd.h>
+
+// The failure-path tests force calloc to fail with a negative count, which
+// makes count * size overflow. The CI sanitizer jobs run gtest binaries
+// without *SAN_OPTIONS, so allocator_may_return_null defaults to 0 and the
+// sanitizer reports that overflow as a fatal error instead of returning NULL.
+#if defined(ASAN_ENABLED) || defined(TSAN_ENABLED)
+#define SKIP_IF_CALLOC_OVERFLOW_ABORTS()                                       \
+  GTEST_SKIP() << "sanitizer allocators abort on calloc overflow"
+#else
+#define SKIP_IF_CALLOC_OVERFLOW_ABORTS()
+#endif
 
 static int compare(int a, int b) { return PerfEvents::compareTids(&a, &b); }
 
@@ -81,6 +96,34 @@ public:
     int _max_events;
     Ring _ring;
   };
+
+  static bool resizeEvents(PerfEvents &engine, int max_events) {
+    return engine.resizeEvents(max_events);
+  }
+  static PerfEvent *events() { return PerfEvents::_events; }
+  static int maxEvents() { return PerfEvents::_max_events; }
+  static PerfEvent *eventFor(int tid) { return PerfEvents::eventFor(tid); }
+  static unsigned int gen() { return PerfEvents::_events_gen; }
+  static void setGen(unsigned int gen) { PerfEvents::_events_gen = gen; }
+  static void setSlot(int tid, int fd, void *page) {
+    PerfEvents::setSlotForTest(tid, fd, page);
+  }
+  static int slotFd(int tid) { return PerfEvents::slotFdForTest(tid); }
+
+  // Hands the current table to the caller without freeing it, so a test can
+  // start from an empty table and later reinstate the original one.
+  static void detach() {
+    PerfEvents::_events = nullptr;
+    PerfEvents::_max_events = -1;
+  }
+
+  // Frees the test-owned table and reinstates the detached one, without
+  // touching the gauge (the fixture restores that separately).
+  static void reattach(PerfEvent *events, int max_events) {
+    free(PerfEvents::_events);
+    PerfEvents::_events = events;
+    PerfEvents::_max_events = max_events;
+  }
 };
 
 // After a failed table allocation, start() leaves _events NULL with
@@ -116,6 +159,206 @@ TEST(PerfEventsTableTest, SignalPathReadersRejectOutOfRangeTid) {
     }
   }
   munmap(page, 1 << 16);
+}
+
+// Runs resizeEvents() against an empty table and an NM_PERF gauge starting at
+// zero, and puts the original table, generation and gauge back afterwards.
+class PerfEventsResizeTest : public ::testing::Test {
+protected:
+  PerfEvent *_saved_events;
+  int _saved_max;
+  unsigned int _saved_gen;
+  long long _saved_live;
+  size_t _page_size;
+
+  void SetUp() override {
+    _saved_events = PerfEventsTestAccessor::events();
+    _saved_max = PerfEventsTestAccessor::maxEvents();
+    _saved_gen = PerfEventsTestAccessor::gen();
+    _saved_live = NativeMem::live(NM_PERF);
+    _page_size = (size_t)sysconf(_SC_PAGESIZE);
+    PerfEventsTestAccessor::detach();
+    NativeMem::setLive(NM_PERF, 0);
+  }
+
+  void TearDown() override {
+    PerfEventsTestAccessor::reattach(_saved_events, _saved_max);
+    PerfEventsTestAccessor::setGen(_saved_gen);
+    NativeMem::setLive(NM_PERF, _saved_live);
+  }
+
+  // Puts a pipe read end and a 2-page anonymous mapping into slot tid, and
+  // accounts the ring the way registerThread() does. Returns the write end
+  // through *write_fd.
+  void armSlot(int tid, int *read_fd, int *write_fd, void **page) {
+    int fds[2];
+    ASSERT_EQ(0, pipe(fds));
+    *read_fd = fds[0];
+    *write_fd = fds[1];
+    *page = mmap(nullptr, 2 * _page_size, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    ASSERT_NE(MAP_FAILED, *page);
+    PerfEventsTestAccessor::setSlot(tid, *read_fd, *page);
+    NativeMem::record(NM_PERF, (long long)(2 * _page_size));
+  }
+};
+
+// A failed allocation leaves a NULL table with a -1 bound, not a NULL table
+// with a stale bound, releases the old table's bytes from the gauge, and a
+// later resize recovers.
+TEST_F(PerfEventsResizeTest, FailedAllocationLeavesNoTable) {
+  SKIP_IF_CALLOC_OVERFLOW_ABORTS();
+  PerfEvents engine;
+  ASSERT_TRUE(PerfEventsTestAccessor::resizeEvents(engine, 1024));
+  ASSERT_NE(nullptr, PerfEventsTestAccessor::events());
+  EXPECT_EQ(1024, PerfEventsTestAccessor::maxEvents());
+  long long one = NativeMem::live(NM_PERF);
+  EXPECT_GT(one, 0);
+
+  EXPECT_FALSE(PerfEventsTestAccessor::resizeEvents(engine, -1));
+  EXPECT_EQ(nullptr, PerfEventsTestAccessor::events());
+  EXPECT_EQ(-1, PerfEventsTestAccessor::maxEvents());
+  EXPECT_EQ(0, NativeMem::live(NM_PERF));
+  EXPECT_EQ(nullptr, PerfEventsTestAccessor::eventFor(0));
+  // The failure state reads as "not started" and rejects every tid.
+  EXPECT_EQ(0, engine.registerThread(5));
+  engine.unregisterThread(5);
+
+  ASSERT_TRUE(PerfEventsTestAccessor::resizeEvents(engine, 1024));
+  EXPECT_NE(nullptr, PerfEventsTestAccessor::eventFor(1023));
+  EXPECT_EQ(nullptr, PerfEventsTestAccessor::eventFor(1024));
+  EXPECT_EQ(one, NativeMem::live(NM_PERF));
+}
+
+// Replacing the table closes every fd and unmaps every ring the old table
+// holds: once it is freed nothing could reach them. The fd/address checks
+// run right after the resize, before anything else in the test opens or maps,
+// so the fd number or address cannot have been reused (gtest is
+// single-threaded here).
+TEST_F(PerfEventsResizeTest, ResizeReleasesOldSlots) {
+  PerfEvents engine;
+  ASSERT_TRUE(PerfEventsTestAccessor::resizeEvents(engine, 64));
+  long long base = NativeMem::live(NM_PERF);
+  int fd = -1, write_fd = -1;
+  void *page = nullptr;
+  armSlot(5, &fd, &write_fd, &page);
+  ASSERT_FALSE(HasFatalFailure());
+  ASSERT_EQ(base + (long long)(2 * _page_size), NativeMem::live(NM_PERF));
+
+  ASSERT_TRUE(PerfEventsTestAccessor::resizeEvents(engine, 128));
+  errno = 0;
+  int fcntl_rc = fcntl(fd, F_GETFD);
+  int fcntl_errno = errno;
+  errno = 0;
+  int msync_rc = msync(page, _page_size, MS_ASYNC);
+  int msync_errno = errno;
+
+  EXPECT_EQ(-1, fcntl_rc);
+  EXPECT_EQ(EBADF, fcntl_errno);
+  EXPECT_EQ(-1, msync_rc);
+  EXPECT_EQ(ENOMEM, msync_errno);
+  EXPECT_EQ(2 * base, NativeMem::live(NM_PERF));
+  EXPECT_EQ(0, PerfEventsTestAccessor::slotFd(5));
+  close(write_fd);
+}
+
+// The failure path releases the old table's slots too.
+TEST_F(PerfEventsResizeTest, FailedResizeReleasesOldSlots) {
+  SKIP_IF_CALLOC_OVERFLOW_ABORTS();
+  PerfEvents engine;
+  ASSERT_TRUE(PerfEventsTestAccessor::resizeEvents(engine, 64));
+  int fd = -1, write_fd = -1;
+  void *page = nullptr;
+  armSlot(5, &fd, &write_fd, &page);
+  ASSERT_FALSE(HasFatalFailure());
+
+  EXPECT_FALSE(PerfEventsTestAccessor::resizeEvents(engine, -1));
+  errno = 0;
+  int fcntl_rc = fcntl(fd, F_GETFD);
+  int fcntl_errno = errno;
+  errno = 0;
+  int msync_rc = msync(page, _page_size, MS_ASYNC);
+  int msync_errno = errno;
+
+  EXPECT_EQ(-1, fcntl_rc);
+  EXPECT_EQ(EBADF, fcntl_errno);
+  EXPECT_EQ(-1, msync_rc);
+  EXPECT_EQ(ENOMEM, msync_errno);
+  EXPECT_EQ(0, NativeMem::live(NM_PERF));
+  close(write_fd);
+}
+
+// An unchanged size keeps the table, its fds and the gauge, so fds survive a
+// stop()/start() when pid_max did not change.
+TEST_F(PerfEventsResizeTest, SameSizeKeepsTable) {
+  PerfEvents engine;
+  ASSERT_TRUE(PerfEventsTestAccessor::resizeEvents(engine, 64));
+  int fds[2];
+  ASSERT_EQ(0, pipe(fds));
+  PerfEventsTestAccessor::setSlot(3, fds[0], nullptr);
+  PerfEvent *table = PerfEventsTestAccessor::events();
+  unsigned int gen = PerfEventsTestAccessor::gen();
+  long long live = NativeMem::live(NM_PERF);
+
+  bool resized = PerfEventsTestAccessor::resizeEvents(engine, 64);
+  int fcntl_rc = fcntl(fds[0], F_GETFD);
+
+  EXPECT_TRUE(resized);
+  EXPECT_EQ(table, PerfEventsTestAccessor::events());
+  EXPECT_EQ(gen, PerfEventsTestAccessor::gen());
+  EXPECT_EQ(live, NativeMem::live(NM_PERF));
+  EXPECT_NE(-1, fcntl_rc);
+  PerfEventsTestAccessor::setSlot(3, 0, nullptr);
+  close(fds[0]);
+  close(fds[1]);
+}
+
+// eventFor() rejects the table while the generation is odd (a replacement in
+// progress), and every resize, failed or not, advances the generation by two
+// and leaves it even.
+TEST_F(PerfEventsResizeTest, EventForRejectsOddGenerationAndResizeAdvancesIt) {
+  PerfEvents engine;
+  ASSERT_TRUE(PerfEventsTestAccessor::resizeEvents(engine, 64));
+  unsigned int g = PerfEventsTestAccessor::gen();
+  EXPECT_EQ(0u, g & 1);
+  EXPECT_NE(nullptr, PerfEventsTestAccessor::eventFor(3));
+
+  PerfEventsTestAccessor::setGen(g + 1);
+  EXPECT_EQ(nullptr, PerfEventsTestAccessor::eventFor(3));
+  PerfEventsTestAccessor::setGen(g);
+  EXPECT_NE(nullptr, PerfEventsTestAccessor::eventFor(3));
+
+  ASSERT_TRUE(PerfEventsTestAccessor::resizeEvents(engine, 128));
+  EXPECT_EQ(g + 2, PerfEventsTestAccessor::gen());
+}
+
+TEST_F(PerfEventsResizeTest, FailedResizeAdvancesGenerationToEven) {
+  SKIP_IF_CALLOC_OVERFLOW_ABORTS();
+  PerfEvents engine;
+  ASSERT_TRUE(PerfEventsTestAccessor::resizeEvents(engine, 64));
+  unsigned int g = PerfEventsTestAccessor::gen();
+  EXPECT_FALSE(PerfEventsTestAccessor::resizeEvents(engine, -1));
+  EXPECT_EQ(g + 2, PerfEventsTestAccessor::gen());
+  EXPECT_EQ(0u, PerfEventsTestAccessor::gen() & 1);
+}
+
+// A negative tid must not index before the table. The page before the table
+// is inaccessible, so an access through _events[-1] faults.
+TEST(PerfEventsTableTest, NegativeTidIsRejected) {
+  size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+  char *base = (char *)mmap(nullptr, 3 * page_size, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(MAP_FAILED, (void *)base);
+  ASSERT_EQ(0, mprotect(base, page_size, PROT_NONE));
+  {
+    PerfEventsTestAccessor::TableSwap swap(
+        reinterpret_cast<PerfEvent *>(base + page_size), 4, RING_KERNEL);
+    PerfEvents engine;
+    EXPECT_EQ(-1, engine.registerThread(-1));
+    engine.unregisterThread(-1);
+    EXPECT_EQ(nullptr, PerfEventsTestAccessor::eventFor(-1));
+  }
+  munmap(base, 3 * page_size);
 }
 
 #endif // __linux__

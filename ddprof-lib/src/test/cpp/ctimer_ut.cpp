@@ -20,7 +20,9 @@
 #include <csignal>
 #include <cstdlib>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <thread>
+#include <unistd.h>
 
 // The failure-path tests force calloc to fail with a negative count, which
 // makes count * size overflow. The CI sanitizer jobs run gtest binaries
@@ -41,9 +43,35 @@ public:
   static int hookCallsInflight(Profiler *p) {
     return p->_hook_calls_inflight.load(std::memory_order_acquire);
   }
-  static void closeThreadRegistration(Profiler *p) {
-    p->closeThreadRegistration();
+  static bool closeThreadRegistration(Profiler *p) {
+    return p->closeThreadRegistration();
   }
+  static bool startCpuEngine(Profiler *p, Arguments &args) {
+    return p->startCpuEngine(args);
+  }
+  static void enableCpuEngine(Profiler *p, int activated) {
+    p->enableCpuEngine(activated);
+  }
+  // Runs body(drained) while a real ThreadTablesFreeze is alive.
+  template <typename F> static void withThreadTablesFreeze(Profiler *p, F body) {
+    Profiler::ThreadTablesFreeze freeze(p);
+    body(freeze.drained());
+  }
+
+  // Sets the hook-call wait budget for its lifetime and restores the previous
+  // one on destruction, including when a test assertion returns early.
+  class DrainBudget {
+  public:
+    explicit DrainBudget(long long ns) : _saved(Profiler::_hook_drain_timeout_ns) {
+      Profiler::_hook_drain_timeout_ns = ns;
+    }
+    ~DrainBudget() { Profiler::_hook_drain_timeout_ns = _saved; }
+    DrainBudget(const DrainBudget &) = delete;
+    DrainBudget &operator=(const DrainBudget &) = delete;
+
+  private:
+    long long _saved;
+  };
   static bool threadTablesStable(Profiler *p) {
     return p->_thread_tables_stable.load(std::memory_order_acquire);
   }
@@ -131,6 +159,27 @@ public:
     CTimer::_timers = timers;
     CTimer::_max_timers = max_timers;
   }
+
+  // Installs a caller-owned table for its lifetime and puts the previous one
+  // back on destruction, without freeing either.
+  class TimerTableSwap {
+  public:
+    TimerTableSwap(int *timers, int max_timers)
+        : _timers(CTimer::_timers), _max_timers(CTimer::_max_timers) {
+      CTimer::_timers = timers;
+      CTimer::_max_timers = max_timers;
+    }
+    ~TimerTableSwap() {
+      CTimer::_timers = _timers;
+      CTimer::_max_timers = _max_timers;
+    }
+    TimerTableSwap(const TimerTableSwap &) = delete;
+    TimerTableSwap &operator=(const TimerTableSwap &) = delete;
+
+  private:
+    int *_timers;
+    int _max_timers;
+  };
 };
 
 // Returns the current SIGPROF handler address (sa_handler and sa_sigaction
@@ -307,11 +356,16 @@ TEST(ProfilerEnginesGateTest, CloseThreadRegistrationWaitsForHookCalls) {
   ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
   ProfilerTestAccessor::RegistrationGate gate(profiler);
 
+  // Well above the 50 ms check below and below BlockingEngine's 5 s hold, so a
+  // slow sanitizer host does not turn the wait into a false timeout.
+  ProfilerTestAccessor::DrainBudget budget(4000000000LL);
+
   std::thread hook([] { Profiler::registerThread(OS::threadId()); });
   bool entered = waitFor([&] { return cpu.entered.load(); });
   std::atomic<bool> closed{false};
+  std::atomic<bool> closed_ok{false};
   std::thread closer([&] {
-    ProfilerTestAccessor::closeThreadRegistration(profiler);
+    closed_ok.store(ProfilerTestAccessor::closeThreadRegistration(profiler));
     closed.store(true);
   });
   // Wait until the closer has cleared the gate, so it is in the wait loop.
@@ -325,8 +379,280 @@ TEST(ProfilerEnginesGateTest, CloseThreadRegistrationWaitsForHookCalls) {
   hook.join();
   closer.join();
   EXPECT_TRUE(closed.load());
+  EXPECT_TRUE(closed_ok.load());
   EXPECT_TRUE(entered);
   EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+}
+
+// The wait is bounded: a hook call stuck inside an engine makes
+// closeThreadRegistration() report failure after the budget instead of
+// hanging stop() under _state_lock. The registration gate stays closed, and
+// the unregistration gate is not touched.
+TEST(ProfilerEnginesGateTest, CloseThreadRegistrationTimesOutOnStuckHookCall) {
+  Profiler *profiler = Profiler::instance();
+  BlockingEngine cpu;
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
+  ProfilerTestAccessor::RegistrationGate gate(profiler);
+  ProfilerTestAccessor::DrainBudget budget(200000000LL);
+
+  std::thread hook([] { Profiler::registerThread(OS::threadId()); });
+  bool entered = waitFor([&] { return cpu.entered.load(); });
+  auto begin = std::chrono::steady_clock::now();
+  bool ok = ProfilerTestAccessor::closeThreadRegistration(profiler);
+  long long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - begin)
+                            .count();
+  bool ready = ProfilerTestAccessor::enginesReady(profiler);
+  int inflight = ProfilerTestAccessor::hookCallsInflight(profiler);
+  bool stable = ProfilerTestAccessor::threadTablesStable(profiler);
+
+  cpu.released.store(true);
+  hook.join();
+
+  EXPECT_TRUE(entered);
+  EXPECT_FALSE(ok);
+  EXPECT_FALSE(ready);
+  EXPECT_EQ(1, inflight);
+  EXPECT_TRUE(stable);
+  EXPECT_GE(elapsed_ms, 150);
+  EXPECT_LT(elapsed_ms, 3000);
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+}
+
+// start()'s ThreadTablesFreeze closes both gates before it waits for hook
+// calls already inside an engine, does not return while one is, keeps
+// unregisterThread() off the engines while alive, and on destruction reopens
+// unregistration but not registration (only a CPU engine that started opens
+// that).
+TEST(ProfilerEnginesGateTest, ThreadTablesFreezeClosesGatesAndWaitsForHookCalls) {
+  Profiler *profiler = Profiler::instance();
+  BlockingEngine cpu;
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
+  ProfilerTestAccessor::RegistrationGate gate(profiler);
+  ProfilerTestAccessor::DrainBudget budget(4000000000LL);
+  int tid = OS::threadId();
+
+  std::thread hook([] { Profiler::registerThread(OS::threadId()); });
+  bool entered = waitFor([&] { return cpu.entered.load(); });
+  std::atomic<bool> in_body{false};
+  std::atomic<bool> drained_inside{false};
+  std::atomic<bool> stable_inside{true};
+  std::atomic<bool> ready_inside{true};
+  std::atomic<int> unreg_inside{0};
+  std::thread freezer([&] {
+    ProfilerTestAccessor::withThreadTablesFreeze(profiler, [&](bool drained) {
+      drained_inside.store(drained);
+      stable_inside.store(ProfilerTestAccessor::threadTablesStable(profiler));
+      ready_inside.store(ProfilerTestAccessor::enginesReady(profiler));
+      Profiler::resetUnregisterObservableForTest();
+      Profiler::unregisterThread(tid);
+      unreg_inside.store(Profiler::lastUnregisteredTidForTest());
+      in_body.store(true);
+    });
+  });
+  bool cleared =
+      waitFor([&] { return !ProfilerTestAccessor::threadTablesStable(profiler); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  bool in_body_early = in_body.load();
+
+  cpu.released.store(true);
+  hook.join();
+  freezer.join();
+
+  EXPECT_TRUE(entered);
+  EXPECT_TRUE(cleared);
+  EXPECT_FALSE(in_body_early);
+  EXPECT_TRUE(in_body.load());
+  EXPECT_TRUE(drained_inside.load());
+  EXPECT_FALSE(stable_inside.load());
+  EXPECT_FALSE(ready_inside.load());
+  EXPECT_EQ(-1, unreg_inside.load());
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+  EXPECT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+  Profiler::resetUnregisterObservableForTest();
+}
+
+// A freeze whose wait times out reports it, so start() can fail without
+// replacing any table, and its destructor still reopens unregistration.
+TEST(ProfilerEnginesGateTest, ThreadTablesFreezeReportsUndrainedOnStuckHookCall) {
+  Profiler *profiler = Profiler::instance();
+  BlockingEngine cpu;
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
+  ProfilerTestAccessor::RegistrationGate gate(profiler);
+  ProfilerTestAccessor::DrainBudget budget(200000000LL);
+
+  std::thread hook([] { Profiler::registerThread(OS::threadId()); });
+  bool entered = waitFor([&] { return cpu.entered.load(); });
+  bool body_ran = false;
+  bool drained_inside = true;
+  ProfilerTestAccessor::withThreadTablesFreeze(profiler, [&](bool drained) {
+    body_ran = true;
+    drained_inside = drained;
+  });
+  bool stable_after = ProfilerTestAccessor::threadTablesStable(profiler);
+  bool ready_after = ProfilerTestAccessor::enginesReady(profiler);
+
+  cpu.released.store(true);
+  hook.join();
+
+  EXPECT_TRUE(entered);
+  EXPECT_TRUE(body_ran);
+  EXPECT_FALSE(drained_inside);
+  EXPECT_TRUE(stable_after);
+  EXPECT_FALSE(ready_after);
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+}
+
+// A CPU engine fake: start() optionally opens the registration gate the way
+// CTimer/PerfEvents do, and fails or succeeds. Counts enableEvents(true) and
+// registerThread() calls.
+class FakeCpuEngine : public Engine {
+public:
+  FakeCpuEngine(bool fail, bool open_gate) : _fail(fail), _open_gate(open_gate) {}
+  std::atomic<bool> gate_open_in_start{false};
+  std::atomic<int> enable_true_calls{0};
+  std::atomic<int> register_calls{0};
+
+  Error start(Arguments &args) override {
+    if (_open_gate) {
+      Profiler::instance()->openThreadRegistration();
+      gate_open_in_start.store(
+          ProfilerTestAccessor::enginesReady(Profiler::instance()));
+    }
+    return _fail ? Error("injected CPU engine start failure") : Error::OK;
+  }
+  void enableEvents(bool enabled) override {
+    if (enabled) {
+      enable_true_calls.fetch_add(1);
+    }
+  }
+  int registerThread(int tid) override {
+    register_calls.fetch_add(1);
+    return 0;
+  }
+
+private:
+  bool _fail;
+  bool _open_gate;
+};
+
+// A CPU engine that opened the gate and then failed leaves it closed, so the
+// hook never reaches an engine that did not start.
+TEST(ProfilerEnginesGateTest, FailedCpuEngineStartClosesThreadRegistration) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  FakeCpuEngine cpu(/*fail=*/true, /*open_gate=*/true);
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
+  Arguments args;
+
+  bool started = ProfilerTestAccessor::startCpuEngine(profiler, args);
+  bool ready = ProfilerTestAccessor::enginesReady(profiler);
+  int registered = Profiler::registerThread(OS::threadId());
+  // Restores the closed gate if the call under test regressed.
+  ProfilerTestAccessor::closeThreadRegistration(profiler);
+
+  EXPECT_FALSE(started);
+  EXPECT_TRUE(cpu.gate_open_in_start.load());
+  EXPECT_FALSE(ready);
+  EXPECT_EQ(-1, registered);
+  EXPECT_EQ(0, cpu.register_calls.load());
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+}
+
+// A CPU engine without a per-thread table (ITimer-like) never opens the gate
+// itself; startCpuEngine() opens it once the engine started, so the hook
+// reaches it.
+TEST(ProfilerEnginesGateTest, StartedCpuEngineOpensThreadRegistration) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  FakeCpuEngine cpu(/*fail=*/false, /*open_gate=*/false);
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
+  Arguments args;
+
+  bool started = ProfilerTestAccessor::startCpuEngine(profiler, args);
+  bool ready = ProfilerTestAccessor::enginesReady(profiler);
+  Profiler::registerThread(OS::threadId());
+  int registered = cpu.register_calls.load();
+  bool closed_ok = ProfilerTestAccessor::closeThreadRegistration(profiler);
+
+  EXPECT_TRUE(started);
+  EXPECT_TRUE(ready);
+  EXPECT_EQ(1, registered);
+  EXPECT_TRUE(closed_ok);
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+}
+
+// The CPU engine is enabled only if its own start() succeeded, even when
+// another mode activated.
+TEST(ProfilerEnginesGateTest, CpuEngineEnabledOnlyIfItStarted) {
+  Profiler *profiler = Profiler::instance();
+  FakeCpuEngine cpu(/*fail=*/true, /*open_gate=*/false);
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
+  Arguments args;
+
+  bool started = ProfilerTestAccessor::startCpuEngine(profiler, args);
+  ProfilerTestAccessor::closeThreadRegistration(profiler);
+  int activated = EM_WALL | (started ? EM_CPU : 0);
+  ProfilerTestAccessor::enableCpuEngine(profiler, activated);
+  EXPECT_FALSE(started);
+  EXPECT_EQ(0, cpu.enable_true_calls.load());
+
+  ProfilerTestAccessor::enableCpuEngine(profiler, EM_CPU | EM_WALL);
+  EXPECT_EQ(1, cpu.enable_true_calls.load());
+}
+
+// The idle fast path in registerThread() only short-cuts a closed gate: with
+// the gate open the call still reaches the engine, and the in-flight count is
+// back at zero afterwards either way. The return value is not checked with
+// the gate open: the plain wall engine reports -1, which is OR-ed in.
+TEST(ProfilerEnginesGateTest, RegisterThreadFastPathDoesNotSkipOpenGate) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  FakeCpuEngine cpu(/*fail=*/false, /*open_gate=*/false);
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
+
+  EXPECT_EQ(-1, Profiler::registerThread(OS::threadId()));
+  EXPECT_EQ(0, cpu.register_calls.load());
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+  {
+    ProfilerTestAccessor::RegistrationGate gate(profiler);
+    Profiler::registerThread(OS::threadId());
+    EXPECT_EQ(1, cpu.register_calls.load());
+    EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+  }
+  EXPECT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+}
+
+// A negative tid must not index before CTimer's table. The page before the
+// table is inaccessible, so an access through _timers[-1] faults.
+TEST(CTimerTableTest, NegativeTidIsRejected) {
+  size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+  char *base = (char *)mmap(nullptr, 2 * page_size, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(MAP_FAILED, (void *)base);
+  ASSERT_EQ(0, mprotect(base, page_size, PROT_NONE));
+  int *table = (int *)(base + page_size);
+  {
+    CTimerTestAccessor::TimerTableSwap swap(table, 16);
+    CTimer engine;
+    // unregisterThread() first: registerThread() may fail earlier, in
+    // timer_create, so this is the discriminating call.
+    engine.unregisterThread(-1);
+    EXPECT_EQ(-1, engine.registerThread(-1));
+    for (int i = 0; i < 16; i++) {
+      EXPECT_EQ(0, table[i]) << "slot " << i;
+    }
+  }
+  munmap(base, 2 * page_size);
 }
 
 // Thread body for the cancellation test: makes a hook call with asynchronous

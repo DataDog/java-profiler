@@ -7,11 +7,14 @@ The Datadog Java Profiler has inherent memory requirements due to its architectu
 The sizes below are estimates. The profiler's own native allocations are measured at
 runtime: `NativeMem` (`ddprof-lib/src/main/cpp/nativeMem.h`) keeps live, average and peak
 bytes for each category (`calltrace`, `dictionary`, `line_tables`, `thread_local`,
-`jfr_buffers`, `method_map`, ...), and every chunk carries them as
+`jfr_buffers`, `method_map`, `perf`, `ctimer`, ...), and every chunk carries them as
 `datadog.ProfilerCounter` events named `native_mem_live_bytes.<category>`,
 `native_mem_avg_bytes.<category>`, `native_mem_max_bytes.<category>` and
 `native_mem_chunk_overhead_bytes.<category>`. jmethodIDs are allocated by the JVM and are
-not part of these figures.
+not part of these figures. The category set is not fixed (`ctimer` is the newest), so
+match these counters by prefix rather than by a fixed list. The `ctimer` gauge and the
+table part of the `perf` gauge count reserved, mostly untouched tid-indexed tables
+(`pid_max` slots each), so they overstate RSS and are upper bounds.
 
 ## Memory Requirements
 

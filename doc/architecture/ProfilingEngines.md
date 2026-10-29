@@ -66,15 +66,20 @@ directly. `LivenessTracker` and `NativeMem` are not `Engine`s.
 
 ```
 Profiler::start()                              profiler.cpp:1555
-  ThreadTablesFreeze                           unregisterThread() gate closed until
-                                               the CPU engine sizes its table, at the
-                                               latest until return
+  ThreadTablesFreeze                           both gates closed until the CPU engine
+                                               sizes its table (openThreadRegistration());
+                                               unregistration reopened at the latest on
+                                               return. Waits (bounded, 1 s) for hook
+                                               calls; on timeout start() fails with a
+                                               retryable error before selecting engines
   selectCpuEngine / selectWallEngine
   _jfr.start()
   SamplerPerf::primeClock()                    before any handler can fire
-  _cpu_engine->start()          (EM_CPU)       failure -> warning, continue
-    CTimer/PerfEvents: openThreadRegistration() after sizing, before listing threads
+  Profiler::startCpuEngine()    (EM_CPU)       failure -> warning, continue
+    _cpu_engine->start()
+      CTimer/PerfEvents: openThreadRegistration() after sizing, before listing threads
     on failure: closeThreadRegistration()
+    on success: openThreadRegistration()       no-op for CTimer/PerfEvents
   _wall_engine->enableEvents(true)             BEFORE start(): see below
   _wall_engine->start()         (EM_WALL)
   _alloc_engine = selectAllocEngine(); start() (EM_ALLOC)
@@ -82,13 +87,13 @@ Profiler::start()                              profiler.cpp:1555
   NativeSocketSampler::start()  (EM_NATIVESOCKET)
   if anything activated:
     switchThreadEvents(JVMTI_ENABLE)
-    _cpu_engine->enableEvents(true)            LAST, only if EM_CPU activated
+    Profiler::enableCpuEngine()                LAST, only if EM_CPU activated
 ```
 
 - The wall engine is enabled before its thread starts because
   `timerLoopCommon()` checks `_enabled` once on entry and returns if it is
-  false (`wallClock.h:50`, `profiler.cpp:1795-1801`).
-- The CPU engine is enabled last (`profiler.cpp:1901`). CPU handlers check
+  false (`wallClock.h:50`, the EM_WALL branch of `Profiler::start()`).
+- The CPU engine is enabled last (`Profiler::enableCpuEngine()`). CPU handlers check
   `_enabled` on every signal, so nothing is lost by enabling late. It is not
   enabled when its own `start()` failed, even if another mode activated, so fds
   or timers left armed by an earlier recording cannot emit CPU samples.
@@ -104,9 +109,18 @@ Profiler::start()                              profiler.cpp:1555
    and tears nothing down (`profiler.cpp:1935`).
 3. `closeThreadRegistration()` clears `_engines_ready` and waits until no hook
    call that passed the check is still inside an engine.
-   No thread-hook call (pthread hook or JVMTI callback) can then arm a timer
-   after `CTimer::stop()`, or still be using the timer table when the next
-   `start()` resizes it.
+   No `registerThread()` call (pthread hook or JVMTI `ThreadStart`) can then arm
+   a timer or open an fd after the engines stop, or still be using a table when
+   the next `start()` resizes it. The wait is bounded (1 s). On timeout `stop()`
+   returns an error, tears nothing down and keeps the state `RUNNING`, like
+   step 2; a retried `stop()` runs every step again.
+   Unregistration is not closed here: JVMTI `ThreadEnd` and native thread exits
+   may still reach `unregisterThread()` while the engines stop. `CTimer::stop()`
+   and `CTimer::unregisterThread()` each release a slot with a per-slot CAS and
+   neither frees the table; `PerfEvents::stop()` is a no-op and keeps its fds,
+   which only `unregisterThread()` closes (under the fd CAS and the slot lock);
+   the wall engines and `ITimer` have no `unregisterThread()`. Only `start()`
+   replaces tables, under `ThreadTablesFreeze`.
 4. Then, in order: `_alloc_engine->stop()`, reference-chain teardown,
    `malloc_tracer.stop()`, the socket sampler, `_wall_engine->stop()`,
    `_cpu_engine->stop()`.
@@ -132,10 +146,19 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
    and is installed before the engines start, so both calls are gated:
    - `registerThread()` needs `_engines_ready`, which `CTimer::start()` and
      `PerfEvents::start()` set via `Profiler::openThreadRegistration()` once
-     their table is sized and before they list threads. `stop()` clears it.
-     `PerfEvents::start()` still closes the fd of every tid missing from its
-     thread list, including one the hook registered after the list was taken
-     (PROF-16359).
+     their table is sized and before they list threads, and which
+     `Profiler::startCpuEngine()` sets once any CPU engine (including the
+     table-less `ITimer`, `ITimerJvmti` and J9 engines) has started. It is
+     cleared by `stop()`, by a failed CPU engine start and by
+     `ThreadTablesFreeze`, so the gate is open iff the CPU engine started.
+     Wall-only, noop and failed-CPU recordings leave it closed; no wall engine
+     implements `registerThread()`, and one that ever does must open the gate
+     itself. While the gate is closed, `registerThread()` returns before it
+     touches the in-flight counter.
+   - `PerfEvents::start()`'s stale-fd sweep may close the fd of a tid the hook
+     registered after the thread list was taken; a second listing pass then
+     re-registers every live thread, so such a thread misses only the samples
+     between the two passes (PROF-16359).
    - `unregisterThread()` needs `_thread_tables_stable`, which is cleared only
      while `start()` may replace the table (`ThreadTablesFreeze`). It stays
      set while idle, because `PerfEvents::stop()` keeps per-thread fds open
@@ -147,8 +170,10 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
 Every `Profiler::registerThread()`/`unregisterThread()` call counts itself in
 flight (`HookCallScope`) for as long as it may be inside an engine. Closing a gate
 (`closeThreadRegistration()` in `stop()`, `ThreadTablesFreeze` in `start()`) waits
-for that count to reach zero, so no call is inside an engine while it is torn down
-or its table is replaced. The gate flags and the counter use `seq_cst` on both
+for that count to reach zero, at most 1 s, so no `registerThread()` call is inside
+an engine once `stop()` tears it down, and no call at all while `start()` replaces
+its table. If the wait times out, the caller returns a retryable error and
+neither tears down nor replaces anything. The gate flags and the counter use `seq_cst` on both
 sides: either a call sees the gate closed, or the closer sees the call and waits.
 
 Thread cancellation is disabled for the length of each call, because the engine
@@ -242,7 +267,8 @@ resolved through `Arguments::cpuSamplerInterval()`.
   sized from `OS::getMaxThreadId()`. Registration and unregistration claim
   slots with CAS, so concurrent register/unregister of one tid deletes the
   timer exactly once (`ctimer_linux.cpp:94-132`). A tid at or above
-  `_max_timers` logs a warning and is not profiled.
+  `_max_timers` logs a warning and is not profiled. The table is accounted
+  under `NM_CTIMER` at its full allocated size (see Profiler Self-Accounting).
 - **`stop()`** unregisters every slot (`ctimer_linux.cpp:212-218`).
 - **`CTimerJvmti`**: runs `CTimer::start()` and then replaces the `SIGPROF`
   handler with one that calls `recordSampleDelegated(ucontext, ...)`
@@ -271,7 +297,13 @@ resolved through `Arguments::cpuSamplerInterval()`.
   stop/start, and `registerThread()` skips threads that already have an fd.
   After stop, the cleared `_enabled` flag keeps handlers from recording.
 - **Memory**: the `_events` array and any 2-page mmap ring pages are accounted
-  under `NM_PERF`.
+  under `NM_PERF`. The array is counted at its full allocated size, which is
+  mostly untouched address space (see Profiler Self-Accounting).
+- **Table replacement**: only `resizeEvents()`, called from `start()` when
+  `pid_max` changed or after a failed allocation, replaces `_events`. It closes
+  every fd and unmaps every ring of the old table before freeing it, and
+  brackets the replacement with a seqlock generation so the signal-path
+  readers (`eventFor()`) never pair a table with another table's bound.
 - `CSTACK_LBR` and kernel stacks (`walkKernel`) are available only with this
   engine (`profiler.cpp:1725`, `1745`).
 
@@ -515,10 +547,25 @@ categories, defined in `nativeMem.h`: `NM_CALLTRACE`, `NM_DICTIONARY`, ...,
   exported as the `NATIVE_MEM_LIVE_BYTES`, `NATIVE_MEM_AVG_BYTES`, and
   `NATIVE_MEM_MAX_BYTES` counters (`flightRecorder.cpp:2201-2203`).
 
-The engines above feed it: `PerfEvents` reports `NM_PERF`, `CTimer` reports
-its tid-indexed timer table (`pid_max × sizeof(int)`) as `NM_CTIMER`,
-`timerLoopCommon()` reports `NM_WALLCLOCK`, and `LivenessTracker` reports
-`NM_LIVENESS`.
+The engines above feed it: `PerfEvents` reports its tid-indexed event table
+(up to `pid_max × sizeof(PerfEvent)` bytes, two cache lines per slot; address
+space) and the per-thread ring pages (resident) as `NM_PERF`, `CTimer` reports
+its tid-indexed timer table (up to `pid_max × 4` bytes, `pid_max × sizeof(int)`;
+address space) as `NM_CTIMER`, `timerLoopCommon()` reports `NM_WALLCLOCK`, and
+`LivenessTracker` reports `NM_LIVENESS`.
+
+Unlike the other categories, the two tid-indexed tables are allocated address
+space, not resident memory: each is `calloc`ed at `pid_max` slots, but only the
+pages holding live tids are ever touched. With a `pid_max` of 4194304 the
+`ctimer` gauge reads about 16 MiB and the table part of the `perf` gauge about
+512 MiB, while the resident share is usually far lower. Read both as upper
+bounds. Only `NM_PERF`'s ring pages are resident.
+
+Each category is exported per chunk as
+`native_mem_{live,avg,max,chunk_overhead}_bytes.<category>`, with names taken
+from `DD_NATIVE_MEM_CATEGORY_TABLE`. The set grows when categories are added
+(`ctimer` is the newest), so consumers should match these counters by prefix
+rather than hard-code the category list.
 
 ## Counters by Engine
 

@@ -284,7 +284,11 @@ for a temporary window.
   `Profiler::openThreadRegistration()`, then lists the existing threads. Free or
   replace a table only while its gate is closed: closing a gate
   (`closeThreadRegistration()`, `ThreadTablesFreeze`) waits until no call is inside an
-  engine;
+  engine. The wait is bounded; when it reports failure, tear nothing down, replace no
+  table and return a retryable error. `Profiler::startCpuEngine()` opens the
+  registration gate once any CPU engine started, so the gate is open iff it did;
+- an engine's `stop()` must tolerate a concurrent `unregisterThread()`: `stop()` closes
+  only the registration gate, and unregistration stays open while the engines stop;
 - restore the cancellation state outside every destructor-bearing scope, never from a
   destructor: current glibc acts on a pending asynchronous cancellation as soon as it
   is re-enabled, and unwinding out of an implicitly `noexcept` destructor terminates.

@@ -14,10 +14,19 @@
 // per-category live byte gauges partition the total: sum(category) == total,
 // with no double counting.
 //
-// These gauges track memory that is actually touched (and therefore resident),
-// not address space that has merely been reserved. NM_CALLTRACE in particular
-// counts the bytes LinearAllocator::alloc() has bump-allocated, NOT the
-// capacity of the 8 MiB chunks backing them -- see linearAllocator.cpp.
+// With the exceptions below, these gauges track memory that is actually touched
+// (and therefore resident), not address space that has merely been reserved.
+// NM_CALLTRACE in particular counts the bytes LinearAllocator::alloc() has
+// bump-allocated, NOT the capacity of the 8 MiB chunks backing them -- see
+// linearAllocator.cpp.
+//
+// Exceptions: the tid-indexed tables of CTimer (NM_CTIMER,
+// pid_max * sizeof(int)) and PerfEvents (part of NM_PERF,
+// pid_max * sizeof(PerfEvent), two cache lines per slot) are counted at their
+// full calloc'd size. That memory is mostly untouched address space -- only the
+// pages holding live tids become resident -- so for these two categories the
+// gauge overstates RSS and should be read as an upper bound. NM_PERF's
+// per-thread ring pages (2 pages each) are touched and resident.
 //
 // Consequently NM_CALLTRACE is no longer an "arena reserved" figure with
 // CALLTRACE_STORAGE_BYTES as its used slice: both now count touched bytes, and
@@ -25,6 +34,11 @@
 // not chunk slack. Do not compute arena waste as the difference between them.
 // DICTIONARY_ARENA_WASTE_BYTES remains a genuine nested waste figure for the
 // DICTIONARY arena. None of these nested counters are summed in here.
+//
+// The exported counter names (native_mem_{live,avg,max,chunk_overhead}_bytes.
+// <category>) derive from this table, and the set grows when a category is
+// added (ctimer is the newest), so consumers should match native_mem_*_bytes.
+// counters by prefix rather than hard-code the category list.
 #define DD_NATIVE_MEM_CATEGORY_TABLE(X)                                        \
   X(CALLTRACE, "calltrace")                                                    \
   X(DICTIONARY, "dictionary")                                                  \

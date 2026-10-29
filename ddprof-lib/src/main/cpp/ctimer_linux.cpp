@@ -55,7 +55,7 @@ bool CTimer::_enabled = false;
 int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
-  if (tid >= _max_timers) {
+  if (tid < 0 || tid >= _max_timers) {
     Log::warn("tid[%d] > pid_max[%d]. Restart profiler after changing pid_max",
               tid, _max_timers);
     return -1;
@@ -120,7 +120,7 @@ int CTimer::registerThread(int tid) {
 }
 
 void CTimer::unregisterThread(int tid) {
-  if (tid >= _max_timers) {
+  if (tid < 0 || tid >= _max_timers) {
     return;
   }
   // Atomic acquire to avoid possible leak when unregistering
