@@ -578,6 +578,29 @@ TEST_F(ResolvedChainCacheTest, DeferredInvalidationFiltersDeduplicatesAndDrainsE
               ReferenceChainsTestAccessor::drainingChainInvalidationCount());
 }
 
+// The kind is encoded in-band (EVICT = tag, REBUILD = ~tag), which is unambiguous only for
+// non-negative tags, so a negative source tag is never queued - in every build type. Real snapshots
+// hold only cache keys (>= 0); this hand-built one is the only way to get a negative tag past the
+// was-cached filter.
+TEST_F(ResolvedChainCacheTest, DeferredInvalidationNeverQueuesNegativeTag) {
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(0, makeEvent(10), 0, 0));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(1, makeEvent(11), 1, 0));
+    std::vector<jlong> snapshot{-1, -2};
+
+    // REBUILD of -2 would encode to ~(-2) == 1: an EVICT of cached tag 1.
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(-2, snapshot, true);
+    // EVICT of -1 would encode to -1 == ~0: a REBUILD of cached tag 0.
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(-1, snapshot);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount())
+        << "a negative source tag must never be queued";
+
+    ReferenceChainsTestAccessor::drainPendingChainInvalidations();
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(1))
+        << "negative REBUILD aliased tag 1's EVICT";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(0));
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::resolvedChainCount());
+}
+
 TEST_F(ResolvedChainCacheTest, DeferredInvalidationIsBoundedByCacheAndKeepsCapacity) {
     const int cap = ReferenceChainsTestAccessor::maxResolvedChains();
     for (int i = 0; i < cap; i++) {
@@ -845,6 +868,51 @@ TEST_F(ResolvedChainCacheTest, ResolvedTargetTagSeamLockOrder) {
     EXPECT_TRUE(waitForSeamThread(done, 10000));
     seam.join();
     EXPECT_EQ(77, result.load());
+}
+
+// The REBUILD publish step (replaceResolvedChain()) takes only _resolved_chains_lock: it must
+// complete while _pending_chain_invalidations_lock is held (no inversion of the documented
+// resolved -> pending lock order) and must wait while the cache lock is held.
+TEST_F(ResolvedChainCacheTest, RebuildReplaceTakesOnlyResolvedChainsLock) {
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(1000);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(5, makeEvent(77), 5, 1000));
+
+    // Pending lock held: the replace must not need it.
+    ReferenceChainsTestAccessor::lockPendingChainInvalidationsForTest();
+    std::atomic<bool> done{false};
+    std::atomic<bool> result{false};
+    std::thread first([&] {
+        ReferenceChainEvent event = makeEvent(77);
+        event._depth = 1;
+        result.store(ReferenceChainsTestAccessor::replaceResolvedChain(5, std::move(event), 1000));
+        done.store(true);
+    });
+    const bool completed_under_pending_lock = waitForSeamThread(done, 10000);
+    ReferenceChainsTestAccessor::unlockPendingChainInvalidationsForTest();
+    first.join();
+    EXPECT_TRUE(completed_under_pending_lock)
+        << "replaceResolvedChain() must not take _pending_chain_invalidations_lock";
+    EXPECT_TRUE(result.load());
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainDepth(5));
+
+    // Cache lock held: the replace must wait for it.
+    ReferenceChainsTestAccessor::lockResolvedChainsForTest();
+    done.store(false);
+    result.store(false);
+    std::thread second([&] {
+        ReferenceChainEvent event = makeEvent(77);
+        event._depth = 2;
+        result.store(ReferenceChainsTestAccessor::replaceResolvedChain(5, std::move(event), 1000));
+        done.store(true);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_FALSE(done.load()) << "replaceResolvedChain() must wait on _resolved_chains_lock";
+    ReferenceChainsTestAccessor::unlockResolvedChainsForTest();
+
+    EXPECT_TRUE(waitForSeamThread(done, 10000));
+    second.join();
+    EXPECT_TRUE(result.load());
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::resolvedChainDepth(5));
 }
 
 // Leak-tag identity is (tag, ownership-period stamp): a chain cached during the tag's current

@@ -586,14 +586,29 @@ private:
   std::unordered_map<jlong, CachedChain> _resolved_chains;
   SpinLock _resolved_chains_lock;
 
-  // Chain invalidations deferred by heap callbacks. Only tags present in the immutable
-  // pre-traversal resolved-cache snapshot are eligible, so distinct pending tags are bounded
-  // exactly by the cache cap. Both buffers are reserved up front: drains move entries into the
-  // scratch buffer under the pending lock, then touch cache entries after releasing that lock.
-  // The ChainInvalidationKind is stored in-band (see encodePendingChainInvalidation()): EVICT
-  // entries hold the source tag, REBUILD entries its bitwise complement. Every read and write of
-  // both buffers happens under _pending_chain_invalidations_lock (full-barrier acquire/release).
-  static constexpr int MAX_PENDING_CHAIN_INVALIDATIONS = MAX_RESOLVED_CHAINS;
+  // Chain invalidations deferred by heap callbacks. The ChainInvalidationKind is stored in-band
+  // (see encodePendingChainInvalidation()): EVICT entries hold the source tag, REBUILD entries its
+  // bitwise complement. At most one entry per tag (EVICT wins over REBUILD, duplicates dropped).
+  // Bound: new deferrals are limited to tags in the immutable pre-traversal resolved-cache
+  // snapshot (<= MAX_RESOLVED_CHAINS), and the REBUILD entries applyPendingChainInvalidations()
+  // requeues over its per-poll budget are a subset of the cache at apply time (another
+  // <= MAX_RESOLVED_CHAINS), so distinct pending tags stay <= 2 * MAX_RESOLVED_CHAINS.
+  // Ownership:
+  //  - _pending_chain_invalidations: every access (heap-callback producers, both drains, the apply
+  //    requeue, clearPendingChainInvalidations()) is under _pending_chain_invalidations_lock
+  //    (full-barrier acquire/release).
+  //  - _draining_chain_invalidations (scratch): touched only while _resolved_chains_lock is held,
+  //    which serializes both drainers and clearPendingChainInvalidations(); heap callbacks never
+  //    touch it. Drains fill it while also holding the pending lock (partition in the dump drain,
+  //    swap in the apply drain) and consume it after releasing that lock; it is empty between
+  //    drains.
+  //  - Lock order: _resolved_chains_lock before _pending_chain_invalidations_lock.
+  // Both buffers are reserved to MAX_PENDING_CHAIN_INVALIDATIONS up front, so no deferral, drain
+  // or requeue reallocates.
+  static constexpr int MAX_PENDING_CHAIN_INVALIDATIONS = 2 * MAX_RESOLVED_CHAINS;
+  // Per-poll cap on applyPendingChainInvalidations()' buildChainEvent() heap walks; eligible
+  // REBUILD entries over the cap stay pending for later polls.
+  static constexpr int MAX_CHAIN_REBUILDS_PER_POLL = 8;
   std::vector<jlong> _pending_chain_invalidations;
   std::vector<jlong> _draining_chain_invalidations;
   SpinLock _pending_chain_invalidations_lock;
@@ -1010,6 +1025,14 @@ private:
   // Remove a cached chain so pollWatchedTargets rebuilds it on the next poll.
   void invalidateResolvedChain(jlong source_tag);
 
+  // Rebuild publish step (applyPendingChainInvalidations()): replaces the cached chain for
+  // source_tag with `event` only if an entry exists and was cached under current_search_ns.
+  // Never inserts (a dump may have evicted the entry since the scan: must not resurrect it), never
+  // overwrites an entry another search generation cached under the same numeric tag, and keeps
+  // the entry's source_search_ns. Takes only _resolved_chains_lock. Returns whether it replaced.
+  bool replaceResolvedChain(jlong source_tag, ReferenceChainEvent &&event,
+                            u64 current_search_ns);
+
   // Copies the current cache keys into fixed caller-owned storage before a synchronous traversal.
   int snapshotResolvedChainTags(jlong *out);
 
@@ -1046,10 +1069,12 @@ private:
   // resolved-cache/pending locks provide synchronization.
   void drainPendingChainInvalidations();
 
-  // BFS-thread drain (pollWatchedTargets()): applies EVICT entries like the dump path and rebuilds
-  // each REBUILD entry's current-generation cached chain from the frontier via buildChainEvent(),
-  // overwriting it on success and keeping it on failure. Independent of candidate/discovered
-  // slots, so it still works after runPass()'s terminal branch zeroed them.
+  // BFS-thread drain (pollWatchedTargets()): applies every EVICT entry like the dump path, drops
+  // REBUILD entries whose tag is no longer cached or was cached by another search generation, and
+  // rebuilds at most MAX_CHAIN_REBUILDS_PER_POLL current-generation chains from the frontier via
+  // buildChainEvent() (overwriting on success, keeping the old chain on failure). Eligible REBUILD
+  // entries over that cap are requeued in order for later polls. Independent of
+  // candidate/discovered slots, so it still works after runPass()'s terminal branch zeroed them.
   void applyPendingChainInvalidations(jvmtiEnv *jvmti, JNIEnv *jni,
                                       u64 current_search_ns);
 
