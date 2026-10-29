@@ -130,6 +130,20 @@ public:
     // A negative result may conservatively reject an unsupported code section.
     int continuationEntryFrameWords(VMNMethod* nm, const void* pc);
 
+#ifdef __x86_64__
+    struct ContinuationEntryLayout {
+        int words;      // words from the current SP to the carrier SP
+        bool saved_fp;  // otherwise use the current (possibly unwound) FP
+    };
+
+    // Code-only decoding of the generated exception exit. Unlike the ordinary
+    // entry layout, its exception spill is not a saved FP. The PC is the last
+    // stack word, or (zero words) interrupted RDX. Return-address mode accepts
+    // only resolver call returns, never a phase requiring interrupted registers.
+    static bool continuationEntryExceptionLayout(VMNMethod* nm, const void* pc,
+                                                 bool return_address, ContinuationEntryLayout& layout);
+#endif
+
 #ifdef __aarch64__
     // Temporary SP adjustment from the entry's VM-leaf call. Reads code only,
     // so it also applies to return PCs recovered while unwinding native frames.

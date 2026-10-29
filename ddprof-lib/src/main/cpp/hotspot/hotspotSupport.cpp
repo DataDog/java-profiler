@@ -462,11 +462,30 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         bool valid_carrier_sp;
         bool sampled_entry = depth == 0 && !walk_pc.isReturnAddress() && continuation_entry_nm != nullptr
                 && CodeHeap::findNMethod(walk_pc.raw()) == continuation_entry_nm;
-        if (sampled_entry) {
+        int words = sampled_entry ? frame.continuationEntryFrameWords(continuation_entry_nm, walk_pc.raw()) : -1;
+        bool saved_fp = words >= 2;
+        bool exception_entry = false;
+#ifdef __x86_64__
+        if (continuation_entry_nm != nullptr && CodeHeap::findNMethod(walk_pc.raw()) == continuation_entry_nm) {
+            if (!sampled_entry) words = frame.continuationEntryFrameWords(continuation_entry_nm, walk_pc.raw());
+            if (words < 0) {
+                HotspotStackFrame::ContinuationEntryLayout layout;
+                if (!HotspotStackFrame::continuationEntryExceptionLayout(continuation_entry_nm, walk_pc.raw(), !sampled_entry, layout)) {
+                    fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
+                    return false;
+                }
+                exception_entry = true;
+                words = layout.words;
+                saved_fp = layout.saved_fp;
+            }
+        }
+#endif
+        if (sampled_entry || exception_entry) {
             // Publication/removal of JavaThread::_cont_entry happens inside
             // enterSpecial. At these PCs it can describe the parent, and SP
             // need not include the complete ContinuationEntry allocation.
-            int words = frame.continuationEntryFrameWords(continuation_entry_nm, walk_pc.raw());
+            // Exception resolver returns use reconstructed SP/FP, not sampled
+            // registers; their PC still resides in the last live stack word.
             if (words < 0 || !StackWalkValidation::isValidFP(sp) ||
                 sp > UINTPTR_MAX - words * sizeof(uintptr_t)) {
                 fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
@@ -478,7 +497,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 return false;
             }
             valid_carrier_sp = true; // zero words is valid before saving/after restoring FP/LR
-            if (words >= 2) {
+            if (saved_fp) {
                 uintptr_t* saved = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(carrier_sp - 2 * sizeof(uintptr_t));
                 carrier_fp = saved[0];
                 carrier_pc = (const void*)saved[1];
@@ -488,24 +507,20 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 }
             } else {
                 carrier_fp = fp;
+#ifdef __x86_64__
+                // Zero words occurs only after pop rdx at an interrupted jump.
+                // The decoder never permits that phase for an older return PC.
+                carrier_pc = words == 0 ? (const void*)frame.arg2()
+#else
                 carrier_pc = words == 0 ? (const void*)frame.link()
-                        : *(const void**)INJECT_FAULT_ADDRESS_UNLIKELY(sp);
+#endif
+                        : *(const void**)INJECT_FAULT_ADDRESS_UNLIKELY(carrier_sp - sizeof(uintptr_t));
             }
         } else {
             uintptr_t entry_fp;
             VMContinuationEntry* recovered_entry = nullptr;
             VMNMethod* entry_nm = continuation_entry_nm;
             uintptr_t spill_bytes = 0;
-#ifdef __x86_64__
-            if (entry_nm != nullptr && CodeHeap::findNMethod(walk_pc.raw()) == entry_nm &&
-                    frame.continuationEntryFrameWords(entry_nm, walk_pc.raw()) < 0) {
-                // Only classify unsupported code here; a native return PC does
-                // not describe the sampled registers. Exception cleanup may
-                // already have unlinked the entry advertised by the thread.
-                fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
-                return false;
-            }
-#endif
 #ifdef __aarch64__
             if (kind != ContBoundary::Frozen && entry_nm != nullptr && CodeHeap::findNMethod(walk_pc.raw()) == entry_nm) {
                 spill_bytes = HotspotStackFrame::continuationEntrySpillWords(entry_nm, walk_pc.raw()) * sizeof(uintptr_t);

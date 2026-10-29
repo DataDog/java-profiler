@@ -225,7 +225,12 @@ protected:
         LeafSpillNativePrefixExportedNull, LeafSpillNativePrefixExportedParent, LeafSpillNativePrefixExportedTrackedChild,
         LeafSpillNativePrefixExportedInvalidSize, LeafSpillUnknownSequence,
         BarrierInterior, BarrierInteriorRoot, BarrierInteriorNativePrefix,
-        X64ExceptionNativePrefixExportedNull, X64ExceptionNativePrefixExportedParent
+        X64ExceptionNativePrefixExportedNull, X64ExceptionNativePrefixExportedParent,
+        X64ExceptionSample, X64ExceptionSampleExportedNull, X64ExceptionSampleExportedParent,
+        X64ExceptionNativePrefix, X64ExceptionMalformed, X64ExceptionReturnPcAfterPop,
+        X64ExceptionInvalidCarrierPc, X64ExceptionFarCall, X64ExceptionFarCallNativePrefix,
+        X64ExceptionBadBranch, X64ExceptionTruncatedCode, X64ExceptionInteriorPc, X64ExceptionInteriorReturnPc,
+        X64ExceptionByteTest, X64ExceptionByteTestNativePrefix
     };
 
     // Generated prologue/setup and normal cleanup excerpts, captured from
@@ -233,9 +238,21 @@ protected:
     // These follow gen_continuation_enter/setup/cleanup in HotSpot's
     // cpu/{aarch64,x86}/sharedRuntime_*.cpp. The body between them is omitted.
     // Metadata and registers are synthetic; the production walker decodes them.
-    void assertCarrierFromEntry(EntryPhase phase, EntryCase test_case = EntryCase::Native) {
+    void assertCarrierFromEntry(EntryPhase phase, EntryCase test_case = EntryCase::Native, int exception_offset = 164) {
         bool x64_exception_prefix = test_case == EntryCase::X64ExceptionNativePrefixExportedNull ||
-                test_case == EntryCase::X64ExceptionNativePrefixExportedParent;
+                test_case == EntryCase::X64ExceptionNativePrefixExportedParent ||
+                test_case == EntryCase::X64ExceptionNativePrefix || test_case == EntryCase::X64ExceptionReturnPcAfterPop ||
+                test_case == EntryCase::X64ExceptionFarCallNativePrefix || test_case == EntryCase::X64ExceptionInteriorReturnPc ||
+                test_case == EntryCase::X64ExceptionByteTestNativePrefix;
+        bool x64_byte_test = test_case == EntryCase::X64ExceptionByteTest || test_case == EntryCase::X64ExceptionByteTestNativePrefix;
+        bool x64_far_call = test_case == EntryCase::X64ExceptionFarCall || test_case == EntryCase::X64ExceptionFarCallNativePrefix;
+        int x64_phase = x64_far_call && exception_offset >= 178 ? exception_offset - 14 :
+                x64_far_call && exception_offset >= 166 ? 159 :
+                x64_byte_test && exception_offset >= 133 ? exception_offset + 2 : exception_offset;
+        bool x64_exception = x64_exception_prefix || test_case == EntryCase::X64ExceptionSample ||
+                test_case == EntryCase::X64ExceptionSampleExportedNull || test_case == EntryCase::X64ExceptionSampleExportedParent ||
+                test_case == EntryCase::X64ExceptionMalformed || test_case == EntryCase::X64ExceptionInvalidCarrierPc || x64_far_call || x64_byte_test ||
+                test_case == EntryCase::X64ExceptionBadBranch || test_case == EntryCase::X64ExceptionTruncatedCode || test_case == EntryCase::X64ExceptionInteriorPc;
         bool tracked_child = test_case == EntryCase::LeafSpillNativePrefixExportedTrackedChild;
         bool invalid_exported_size = test_case == EntryCase::LeafSpillNativePrefixExportedInvalidSize;
         bool leaf_native_prefix = test_case == EntryCase::LeafSpillNativePrefix ||
@@ -254,7 +271,7 @@ protected:
             Method* method;
             signed char level = 4;
             int scopes[2] = {offsetof(NMethod, code), offsetof(NMethod, code)};
-            uint32_t code[32]{};
+            uint32_t code[56]{};
         };
         struct Blob { uintptr_t used = 1; NMethod nm; };
         static_assert(offsetof(Blob, nm) == sizeof(uintptr_t), "CodeHeap header precedes the blob");
@@ -313,14 +330,55 @@ protected:
 #endif
         memcpy(blob.nm.code, instructions, sizeof(instructions));
 #ifdef __x86_64__
-        if (x64_exception_prefix) {
+        if (x64_exception) {
+            // OpenJDK 21u gen_continuation_enter + call_VM_leaf_base. Copy
+            // the same cleanup as the normal path (including parent removal),
+            // then retain the actual alignment diamond instead of omitting it.
+            memset((char*)blob.nm.code + 74, 0x90, 6); // omitted code/alignment between excerpts
+            memcpy((char*)blob.nm.code + 80, instructions + 32, 41);
             const unsigned char exception[] = {
-                0x48, 0x83, 0xc4, 0x40, 0x5d, // cleanup and pop rbp
-                0x49, 0x8b, 0xff, 0x48, 0x8b, 0x34, 0x24, // resolver arguments
-                0x50, 0xe8, 0, 0, 0, 0, // push exception and call resolver
-                0x48, 0x8b, 0xd8, 0x58, 0x5a, 0xff, 0xe3 // restore exception/PC, jump
+                0x49, 0x8b, 0xff,                         // 121: mov rdi, r15
+                0x48, 0x8b, 0x34, 0x24,                   // 124: mov rsi, [rsp]
+                0x50,                                     // 128: push rax (exception oop)
+                0xf7, 0xc4, 0x0f, 0, 0, 0,               // 129: test esp, 15
+                0x0f, 0x84, 0x12, 0, 0, 0,               // 135: je 159
+                0x48, 0x83, 0xec, 0x08,                   // 141: sub rsp, 8
+                0xe8, 0, 0, 0, 0,                         // 145: padded resolver call
+                0x48, 0x83, 0xc4, 0x08,                   // 150: add rsp, 8
+                0xe9, 0x05, 0, 0, 0,                     // 154: jmp 164
+                0xe8, 0, 0, 0, 0,                         // 159: aligned resolver call
+                0x48, 0x8b, 0xd8,                         // 164: mov rbx, rax
+                0x58,                                     // 167: pop rax
+                0x5a,                                     // 168: pop rdx (return PC)
+                0xff, 0xe3                                // 169: jmp rbx
             };
-            memcpy((char*)blob.nm.code + 80, exception, sizeof(exception));
+            memcpy((char*)blob.nm.code + 121, exception, sizeof(exception));
+            if (x64_far_call) {
+                // MacroAssembler::call(AddressLiteral) defaults to RAX when
+                // the resolver needs a full 64-bit address; both calls grow by 7.
+                const unsigned char far_calls[] = {
+                    0x0f, 0x84, 0x19, 0, 0, 0,             // 135: je 166
+                    0x48, 0x83, 0xec, 8,                   // 141: sub rsp, 8
+                    0x48, 0xb8, 1, 2, 3, 4, 5, 6, 7, 8,  // 145: movabs rax, resolver
+                    0xff, 0xd0,                           // 155: call rax
+                    0x48, 0x83, 0xc4, 8,                   // 157: add rsp, 8
+                    0xe9, 0x0c, 0, 0, 0,                   // 161: jmp 178
+                    0x48, 0xb8, 1, 2, 3, 4, 5, 6, 7, 8,  // 166: movabs rax, resolver
+                    0xff, 0xd0,                           // 176: call rax
+                    0x48, 0x8b, 0xd8, 0x58, 0x5a, 0xff, 0xe3 // 178: handler/exception/PC/jump
+                };
+                memcpy((char*)blob.nm.code + 135, far_calls, sizeof(far_calls));
+            }
+            if (x64_byte_test) {
+                // Actual Linux amd64 JDK 21.0.12.1 PrintNativeNMethods bytes:
+                // testl(rsp, 15) is optimized to REX + test spl, 15 (four bytes).
+                memmove((char*)blob.nm.code + 133, (char*)blob.nm.code + 135, 36);
+                const unsigned char test[] = {0x40, 0xf6, 0xc4, 0x0f};
+                memcpy((char*)blob.nm.code + 129, test, sizeof(test));
+            }
+            if (test_case == EntryCase::X64ExceptionMalformed) ((char*)blob.nm.code)[169] = 0x90;
+            if (test_case == EntryCase::X64ExceptionBadBranch) ((char*)blob.nm.code)[137] = 0x11;
+            if (test_case == EntryCase::X64ExceptionTruncatedCode) blob.nm.size = offsetof(NMethod, code) + 170;
         }
 #endif
         if (barrier_interior) {
@@ -419,8 +477,9 @@ protected:
         ScopedValue<int> idnum(_constmethod_idnum_offset, offsetof(ConstMethod, idnum));
         ScopedValue<int> slots(_constmethod_stack_arg_slots_offset, offsetof(ConstMethod, slots));
         bool exported_parent = test_case == EntryCase::ExportedParentEntry || test_case == EntryCase::LeafSpillNativePrefixExportedParent ||
-                test_case == EntryCase::X64ExceptionNativePrefixExportedParent;
-        bool exported_entry = exported_parent || test_case == EntryCase::LeafSpillNativePrefixExportedNull || tracked_child || invalid_exported_size || x64_exception_prefix;
+                test_case == EntryCase::X64ExceptionNativePrefixExportedParent || test_case == EntryCase::X64ExceptionSampleExportedParent;
+        bool exported_entry = exported_parent || test_case == EntryCase::LeafSpillNativePrefixExportedNull || tracked_child || invalid_exported_size ||
+                test_case == EntryCase::X64ExceptionNativePrefixExportedNull || test_case == EntryCase::X64ExceptionSampleExportedNull;
         ScopedValue<int> cont_entry_offset(_cont_entry_offset, exported_entry ? offsetof(ThreadLayout, entry) : -1);
         ScopedValue<int> parent_offset(_cont_entry_parent_offset, 0);
         ScopedValue<uint64_t> entry_size(TYPE_SIZE_NAME(VMContinuationEntry), exported_entry ? (invalid_exported_size ? 80 : 64) : 0);
@@ -442,7 +501,7 @@ protected:
         }
         const void* sampled_pc = (const char*)blob.nm.code + offsets[(int)phase] + prefix;
 #ifdef __x86_64__
-        if (x64_exception_prefix) sampled_pc = (const char*)blob.nm.code + 98; // resolver return PC
+        if (x64_exception) sampled_pc = (const char*)blob.nm.code + exception_offset;
 #endif
 #ifdef __aarch64__
         if (exception_exit && prefix != 0) sampled_pc = (const char*)sampled_pc + sizeof(uint32_t); // after autiaz
@@ -473,11 +532,11 @@ protected:
         stack[11] = (uintptr_t)THREAD_ENTRY_PC;
         stack[12] = (uintptr_t)&stack[26];
         stack[13] = (uintptr_t)THREAD_ENTRY_PC;
-        if (test_case == EntryCase::X64ExceptionNativePrefixExportedParent) {
+        if (test_case == EntryCase::X64ExceptionNativePrefixExportedParent || test_case == EntryCase::X64ExceptionSampleExportedParent) {
             // The published parent is independently walkable. Following it
             // would fabricate ancestry for the already unlinked child.
             stack[24] = (uintptr_t)&stack[40];
-            stack[25] = (uintptr_t)CARRIER_PC;
+            stack[25] = (uintptr_t)LEAF_PC; // a different ancestry; cannot satisfy carrier assertion
             stack[26] = (uintptr_t)&stack[42];
             stack[27] = (uintptr_t)THREAD_ENTRY_PC;
         }
@@ -498,6 +557,18 @@ protected:
             sp_slot = 9; // Return address remains on stack until ret.
 #endif
         }
+#ifdef __x86_64__
+        if (x64_exception) {
+            // Literal stack states, independently derived from the instructions:
+            // saved RBP/PC at slots 8/9; carrier SP at slot 10 throughout.
+            sp_slot = x64_phase <= 116 ? 0 : x64_phase == 120 ? 8 :
+                    x64_phase <= 128 ? 9 : x64_phase == 168 ? 9 : x64_phase >= 169 ? 10 : 8;
+            sampled_fp = x64_phase >= 121 ? saved_fp : (uintptr_t)&stack[8];
+            if (x64_phase >= 121) stack[8] = 0; // retired slot below live SP
+            if (x64_phase >= 129 && x64_phase <= 167) stack[8] = 1; // exception, not FP
+            if (x64_phase >= 169) stack[9] = 0; // return PC has left the stack
+        }
+#endif
         if (test_case == EntryCase::ReturnPc) sampled_fp = 1;
         if (test_case == EntryCase::InvalidFrameSize) blob.nm.frame_size = 2;
         ucontext_t context{};
@@ -519,16 +590,26 @@ protected:
         if (test_case == EntryCase::OutOfBoundsSp) frame.sp() = (UINTPTR_MAX / 2) & ~(uintptr_t)15;
         frame.fp() = sampled_fp;
 #ifdef __x86_64__
+        if (x64_exception) {
+            uintptr_t rdx = test_case == EntryCase::X64ExceptionInvalidCarrierPc ? 1 : (uintptr_t)CARRIER_PC;
+            if (x64_exception_prefix && test_case != EntryCase::X64ExceptionReturnPcAfterPop) rdx = (uintptr_t)THREAD_ENTRY_PC;
+#ifdef __APPLE__
+            machine_context.__ss.__rdx = rdx;
+#else
+            context.uc_mcontext.gregs[REG_RDX] = rdx;
+#endif
+        }
         if (x64_exception_prefix) {
-            // Cleanup popped the entry's RBP, then pushed the exception at
-            // stack[8]. The native callee saves that restored caller RBP and
-            // the resolver return PC below it; unwinding restores SP=stack+8.
-            stack[6] = saved_fp;
-            stack[7] = (uintptr_t)sampled_pc;
-            stack[8] = 1; // exception oop, not a saved frame pointer
+            // The real native unwind row reconstructs the older RBP and SP.
+            // Its interrupted RDX deliberately names the wrong frame.
+            stack[sp_slot - 2] = saved_fp;
+            stack[sp_slot - 1] = (uintptr_t)sampled_pc;
             frame.pc() = (uintptr_t)LEAF_PC;
-            frame.sp() = (uintptr_t)&stack[6];
-            frame.fp() = (uintptr_t)&stack[6];
+            frame.sp() = (uintptr_t)&stack[sp_slot - 2];
+            // SP-based DWARF restores saved_fp even when the interrupted
+            // native callee uses RBP as a non-pointer. Borrowing frame.fp()
+            // instead of the reconstructed local FP must fail carrier admission.
+            frame.fp() = 1;
         } else
 #endif
         if (leaf_native_prefix || x64_exception_prefix || test_case == EntryCase::BarrierInteriorNativePrefix) {
@@ -571,7 +652,27 @@ protected:
             EXPECT_TRUE(truncated);
             return;
         }
-        if (invalid_exported_size || x64_exception_prefix) {
+        if (x64_exception) {
+            bool rejected = test_case == EntryCase::X64ExceptionMalformed || test_case == EntryCase::X64ExceptionReturnPcAfterPop ||
+                    test_case == EntryCase::X64ExceptionInvalidCarrierPc || test_case == EntryCase::X64ExceptionBadBranch ||
+                    test_case == EntryCase::X64ExceptionTruncatedCode || test_case == EntryCase::X64ExceptionInteriorPc || test_case == EntryCase::X64ExceptionInteriorReturnPc;
+            if (rejected) {
+                ASSERT_EQ(x64_exception_prefix ? 2 : 1, depth);
+                EXPECT_EQ(BCI_ERROR, frames[depth - 1].bci);
+                EXPECT_TRUE(truncated);
+            } else {
+                if (x64_exception_prefix) assertCarrier(depth);
+                else {
+                    ASSERT_EQ(1, depth);
+                    ASSERT_EQ(BCI_NATIVE_FRAME, frames[0].bci)
+                            << (frames[0].bci == BCI_ERROR ? (const char*)frames[0].method_id : "unexpected frame type");
+                    EXPECT_STREQ("continuation_carrier", (const char*)frames[0].method_id);
+                }
+                EXPECT_FALSE(truncated);
+            }
+            return;
+        }
+        if (invalid_exported_size) {
             ASSERT_EQ(2, depth);
             ASSERT_EQ(BCI_ERROR, frames[1].bci);
             EXPECT_STREQ("break_cont_entry_fp", (const char*)frames[1].method_id);
@@ -1057,12 +1158,98 @@ TEST_F(ContinuationWalkTest, InterpretedEntryRejectsUnsupportedPrologue) {
 }
 
 #ifdef __x86_64__
-TEST_F(ContinuationWalkTest, ExceptionResolverReturnPcRejectsUnlinkedExportedEntry) {
+TEST_F(ContinuationWalkTest, ExceptionResolverReturnPcRecoversUnlinkedExportedEntry) {
     assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionNativePrefixExportedNull);
 }
 
-TEST_F(ContinuationWalkTest, ExceptionResolverReturnPcDoesNotReplayExportedParent) {
+TEST_F(ContinuationWalkTest, ExceptionResolverReturnPcRecoversCarrierInsteadOfExportedParent) {
     assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionNativePrefixExportedParent);
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionCleanupRetainsCarrierAtEveryInstruction) {
+    for (int pc : {80, 85, 92, 97, 104, 109, 116, 120}) {
+        SCOPED_TRACE(pc);
+        assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionSample, pc);
+    }
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionRestoredFpAndExceptionSpillRetainCarrier) {
+    for (int pc : {121, 124, 128, 129, 135, 159, 164, 167, 168}) {
+        SCOPED_TRACE(pc);
+        assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionSample, pc);
+    }
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionFinalJumpUsesReturnPcInRdx) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionSample, 169);
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionSampleDoesNotRequirePublishedEntry) {
+    for (int pc : {80, 109, 116, 120, 121, 129, 164, 168, 169}) {
+        SCOPED_TRACE(pc);
+        assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionSampleExportedNull, pc);
+    }
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionSampleDoesNotFollowPublishedParent) {
+    for (int pc : {116, 120, 121, 129, 164, 168, 169}) {
+        SCOPED_TRACE(pc);
+        assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionSampleExportedParent, pc);
+    }
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionResolverReturnUsesReconstructedFpWithoutMetadata) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionNativePrefix);
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionFarResolverCallRetainsCarrier) {
+    for (int pc : {121, 124, 128, 129, 135, 166, 176, 178, 181, 182, 183}) {
+        SCOPED_TRACE(pc);
+        assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionFarCall, pc);
+    }
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionFarResolverReturnUsesReconstructedFp) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionFarCallNativePrefix, 178);
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionActualJdk21ByteTestRetainsCarrier) {
+    for (int pc : {121, 124, 128, 129, 133, 157, 162, 165, 166, 167}) {
+        SCOPED_TRACE(pc);
+        assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionByteTest, pc);
+    }
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionActualJdk21ResolverReturnRetainsCarrier) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionByteTestNativePrefix, 162);
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionInvalidAlignmentBranchIsRejected) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionBadBranch, 169);
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionTailCannotReadPastCodeBlob) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionTruncatedCode, 169);
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionInteriorInstructionPcIsRejected) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionInteriorPc, 170);
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionResolverReturnMustMatchCallBoundary) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionInteriorReturnPc, 165);
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionMalformedTailRemainsRejected) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionMalformed, 169);
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionOlderReturnPcCannotBorrowSampledRdx) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionReturnPcAfterPop, 169);
+}
+
+TEST_F(ContinuationWalkTest, X64ExceptionFinalJumpRejectsInvalidReturnPc) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionInvalidCarrierPc, 169);
 }
 #endif
 
