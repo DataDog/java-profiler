@@ -24,6 +24,7 @@
 
 #include <cerrno>
 #include <climits>
+#include <cstdint>
 #include <cstdlib>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -198,9 +199,32 @@ protected:
     *page = mmap(nullptr, 2 * _page_size, PROT_READ | PROT_WRITE,
                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     ASSERT_NE(MAP_FAILED, *page);
+    *(uint64_t *)*page = RING_SENTINEL;
     PerfEventsTestAccessor::setSlot(tid, *read_fd, *page);
     NativeMem::record(NM_PERF, (long long)(2 * _page_size));
   }
+
+  // Reports whether the ring armSlot() mapped at page is still mapped. Once
+  // the ring is unmapped, the allocator may map new memory at the same
+  // address: musl's malloc does when resizeEvents() allocates the new table.
+  // So the check reads back the sentinel armSlot() wrote instead of only
+  // probing the address. The read goes through a pipe, which fails with
+  // EFAULT instead of faulting when the page is unmapped or inaccessible.
+  static bool ringMapped(void *page) {
+    int fds[2];
+    if (pipe(fds) != 0) {
+      ADD_FAILURE() << "pipe() failed: " << errno;
+      return true;
+    }
+    uint64_t value = 0;
+    bool readable = write(fds[1], page, sizeof(value)) == sizeof(value) &&
+                    read(fds[0], &value, sizeof(value)) == sizeof(value);
+    close(fds[0]);
+    close(fds[1]);
+    return readable && value == RING_SENTINEL;
+  }
+
+  static constexpr uint64_t RING_SENTINEL = 0x5a5a5a5a5a5a5a5aULL;
 };
 
 // A failed allocation leaves a NULL table with a -1 bound, not a NULL table
@@ -231,10 +255,10 @@ TEST_F(PerfEventsResizeTest, FailedAllocationLeavesNoTable) {
 }
 
 // Replacing the table closes every fd and unmaps every ring the old table
-// holds: once it is freed nothing could reach them. The fd/address checks
-// run right after the resize, before anything else in the test opens or maps,
-// so the fd number or address cannot have been reused (gtest is
-// single-threaded here).
+// holds: once it is freed nothing could reach them. The fd check runs right
+// after the resize, before anything else in the test opens a file, so the fd
+// number cannot have been reused (gtest is single-threaded here). The ring
+// address can be: see ringMapped().
 TEST_F(PerfEventsResizeTest, ResizeReleasesOldSlots) {
   PerfEvents engine;
   ASSERT_TRUE(PerfEventsTestAccessor::resizeEvents(engine, 64));
@@ -249,14 +273,11 @@ TEST_F(PerfEventsResizeTest, ResizeReleasesOldSlots) {
   errno = 0;
   int fcntl_rc = fcntl(fd, F_GETFD);
   int fcntl_errno = errno;
-  errno = 0;
-  int msync_rc = msync(page, _page_size, MS_ASYNC);
-  int msync_errno = errno;
+  bool mapped = ringMapped(page);
 
   EXPECT_EQ(-1, fcntl_rc);
   EXPECT_EQ(EBADF, fcntl_errno);
-  EXPECT_EQ(-1, msync_rc);
-  EXPECT_EQ(ENOMEM, msync_errno);
+  EXPECT_FALSE(mapped);
   EXPECT_EQ(2 * base, NativeMem::live(NM_PERF));
   EXPECT_EQ(0, PerfEventsTestAccessor::slotFd(5));
   close(write_fd);
@@ -276,14 +297,11 @@ TEST_F(PerfEventsResizeTest, FailedResizeReleasesOldSlots) {
   errno = 0;
   int fcntl_rc = fcntl(fd, F_GETFD);
   int fcntl_errno = errno;
-  errno = 0;
-  int msync_rc = msync(page, _page_size, MS_ASYNC);
-  int msync_errno = errno;
+  bool mapped = ringMapped(page);
 
   EXPECT_EQ(-1, fcntl_rc);
   EXPECT_EQ(EBADF, fcntl_errno);
-  EXPECT_EQ(-1, msync_rc);
-  EXPECT_EQ(ENOMEM, msync_errno);
+  EXPECT_FALSE(mapped);
   EXPECT_EQ(0, NativeMem::live(NM_PERF));
   close(write_fd);
 }
