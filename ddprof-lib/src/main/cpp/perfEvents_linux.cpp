@@ -926,9 +926,9 @@ void PerfEvents::endTableUpdate() {
                    __ATOMIC_RELEASE);
 }
 
-// The only writer of _events and _max_events outside tests. start() runs under
-// the Profiler's ThreadTablesFreeze with the registration gate closed, so the
-// hook stays off the table; only the signal-path readers (eventFor()) run
+// The only writer of _events and _max_events outside tests. sizeEventTable()
+// runs it under the Profiler's ThreadTablesFreeze, so the hook stays off the
+// table; only the signal-path readers (eventFor()) run
 // concurrently, and the generation bracket lets them reject a pair read while
 // the table is replaced.
 bool PerfEvents::resizeEvents(int max_events) {
@@ -973,6 +973,24 @@ bool PerfEvents::resizeEvents(int max_events) {
   }
   endTableUpdate();
   return events != NULL;
+}
+
+// A restart with an unchanged pid_max keeps the table and never closes thread
+// unregistration, so an exit during start() still closes its fd. Only an
+// actual replacement freezes the hook calls; if one is still inside the table
+// after the wait budget, start() fails retryably and keeps the old table.
+Error PerfEvents::sizeEventTable(int max_events) {
+  if (max_events == _max_events) {
+    return Error::OK;
+  }
+  Profiler::ThreadTablesFreeze freeze(Profiler::instance());
+  if (!freeze.drained()) {
+    return Error("thread hook calls did not drain; retry start()");
+  }
+  if (!resizeEvents(max_events)) {
+    return Error("Failed to allocate perf event table");
+  }
+  return Error::OK;
 }
 
 #ifdef UNIT_TEST
@@ -1031,8 +1049,9 @@ Error PerfEvents::start(Arguments &args) {
   // mappings. resizeEvents() closes the fds of the old table before freeing
   // it; on allocation failure the table stays empty and the next start()
   // retries.
-  if (!resizeEvents(OS::getMaxThreadId())) {
-    return Error("Failed to allocate perf event table");
+  Error error = sizeEventTable(OS::getMaxThreadId());
+  if (error) {
+    return error;
   }
 
   OS::installSignalHandler(SIGPROF, signalHandler);

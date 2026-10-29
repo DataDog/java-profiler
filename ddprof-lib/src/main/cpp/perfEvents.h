@@ -60,9 +60,12 @@ private:
   // Replaces the tid-indexed table with one of max_events slots, after
   // releasing every fd and ring held by the old table. No-op when the size is
   // unchanged. On allocation failure leaves _events == NULL and
-  // _max_events == -1 and returns false. Called only from start(), with the
-  // Profiler's registration gates closed.
+  // _max_events == -1 and returns false. Called only from sizeEventTable(),
+  // with the Profiler's registration gates closed.
   bool resizeEvents(int max_events);
+  // Sizes the table for start(), replacing it under a
+  // Profiler::ThreadTablesFreeze only when the size changes.
+  Error sizeEventTable(int max_events);
 
 #ifdef UNIT_TEST
   // Stores fd and ring page into slot tid of the current table (test only).

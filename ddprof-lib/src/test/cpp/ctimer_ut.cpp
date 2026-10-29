@@ -72,6 +72,22 @@ public:
   private:
     long long _saved;
   };
+  // Counts a hook call in flight for its lifetime, as if one were stuck inside
+  // an engine, without needing a thread or an engine to hold it.
+  class HookCallHold {
+  public:
+    explicit HookCallHold(Profiler *p) : _p(p) {
+      p->_hook_calls_inflight.fetch_add(1, std::memory_order_seq_cst);
+    }
+    ~HookCallHold() {
+      _p->_hook_calls_inflight.fetch_sub(1, std::memory_order_release);
+    }
+    HookCallHold(const HookCallHold &) = delete;
+    HookCallHold &operator=(const HookCallHold &) = delete;
+
+  private:
+    Profiler *_p;
+  };
   static bool threadTablesStable(Profiler *p) {
     return p->_thread_tables_stable.load(std::memory_order_acquire);
   }
@@ -138,6 +154,9 @@ template <typename Cond> static bool waitFor(Cond cond) {
 class CTimerTestAccessor {
 public:
   static bool resizeTimers(int max_timers) { return CTimer::resizeTimers(max_timers); }
+  static Error sizeTimerTable(int max_timers) {
+    return CTimer::sizeTimerTable(max_timers);
+  }
   static int maxTimers() { return CTimer::_max_timers; }
   static int *timers() { return CTimer::_timers; }
   static Error startWithTableSize(CTimer &engine, Arguments &args,
@@ -313,6 +332,68 @@ TEST_F(CTimerNativeMemTest, StartFailsWhenTableAllocationFails) {
   EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
 }
 
+// A restart with an unchanged pid_max keeps the table without freezing thread
+// unregistration, so a thread that exits during start() still releases its
+// timer. A hook call is held in flight: a freeze would wait for it and time
+// out, so success shows that none ran.
+TEST_F(CTimerNativeMemTest, SameSizeRestartDoesNotFreezeUnregistration) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));
+  int *table = CTimerTestAccessor::timers();
+  ProfilerTestAccessor::DrainBudget budget(100000000LL);
+
+  Error error = Error::OK;
+  {
+    ProfilerTestAccessor::HookCallHold hold(profiler);
+    error = CTimerTestAccessor::sizeTimerTable(64);
+  }
+
+  EXPECT_FALSE((bool)error);
+  EXPECT_EQ(table, CTimerTestAccessor::timers());
+  EXPECT_EQ(64, CTimerTestAccessor::maxTimers());
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+}
+
+// A size change replaces the table only under a freeze. While a hook call is
+// still in flight after the wait budget, start() fails retryably and keeps the
+// old table, and unregistration is open again afterwards.
+TEST_F(CTimerNativeMemTest, ResizeKeepsTableWhenHookCallsDoNotDrain) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));
+  int *table = CTimerTestAccessor::timers();
+  ProfilerTestAccessor::DrainBudget budget(100000000LL);
+
+  Error error = Error::OK;
+  {
+    ProfilerTestAccessor::HookCallHold hold(profiler);
+    error = CTimerTestAccessor::sizeTimerTable(128);
+  }
+
+  EXPECT_TRUE((bool)error);
+  EXPECT_STREQ("thread hook calls did not drain; retry start()",
+               error.message());
+  EXPECT_EQ(table, CTimerTestAccessor::timers());
+  EXPECT_EQ(64, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(bytes(64), NativeMem::live(NM_CTIMER));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+  EXPECT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+}
+
+// With no hook call in flight, a size change replaces the table and reopens
+// unregistration.
+TEST_F(CTimerNativeMemTest, ResizeReplacesTableWhenHookCallsDrain) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));
+
+  Error error = CTimerTestAccessor::sizeTimerTable(128);
+
+  EXPECT_FALSE((bool)error);
+  EXPECT_NE(nullptr, CTimerTestAccessor::timers());
+  EXPECT_EQ(128, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(bytes(128), NativeMem::live(NM_CTIMER));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+}
+
 // Profiler::registerThread() is reached from the pthread hook without
 // _state_lock. Until start() has sized the engines' per-thread structures
 // (CTimer::resizeTimers()) and set the engines-ready flag, it must return
@@ -426,7 +507,8 @@ TEST(ProfilerEnginesGateTest, CloseThreadRegistrationTimesOutOnStuckHookCall) {
   EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
 }
 
-// start()'s ThreadTablesFreeze closes both gates before it waits for hook
+// The ThreadTablesFreeze a CPU engine's start() takes around a table
+// replacement closes both gates before it waits for hook
 // calls already inside an engine, does not return while one is, keeps
 // unregisterThread() off the engines while alive, and on destruction reopens
 // unregistration but not registration (only a CPU engine that started opens

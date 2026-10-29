@@ -132,10 +132,10 @@ void CTimer::unregisterThread(int tid) {
   }
 }
 
-// Sizes the tid-indexed timer table and accounts it under NM_CTIMER. Runs before
-// start() opens thread registration, so no thread-hook call (pthread hook or
-// JVMTI ThreadStart/ThreadEnd, which share the gate) can be inside the table
-// while it is replaced.
+// Sizes the tid-indexed timer table and accounts it under NM_CTIMER. Called
+// from sizeTimerTable() under a Profiler::ThreadTablesFreeze, so no
+// thread-hook call (pthread hook or JVMTI ThreadStart/ThreadEnd) can be inside
+// the table while it is replaced.
 //
 // On allocation failure the table is left empty (_max_timers == 0), so the tid
 // bound checks reject every tid instead of indexing a NULL table, and the next
@@ -155,6 +155,24 @@ bool CTimer::resizeTimers(int max_timers) {
   _max_timers = max_timers;
   NativeMem::record(NM_CTIMER, (long long)((size_t)max_timers * sizeof(int)));
   return true;
+}
+
+// A restart with an unchanged pid_max keeps the table and never closes thread
+// unregistration, so an exit during start() still releases its timer. Only an
+// actual replacement freezes the hook calls; if one is still inside the table
+// after the wait budget, start() fails retryably and keeps the old table.
+Error CTimer::sizeTimerTable(int max_timers) {
+  if (max_timers == _max_timers) {
+    return Error::OK;
+  }
+  Profiler::ThreadTablesFreeze freeze(Profiler::instance());
+  if (!freeze.drained()) {
+    return Error("thread hook calls did not drain; retry start()");
+  }
+  if (!resizeTimers(max_timers)) {
+    return Error("Failed to allocate CPU timer table");
+  }
+  return Error::OK;
 }
 
 Error CTimer::check(Arguments &args) {
@@ -180,8 +198,9 @@ Error CTimer::startWithTableSize(Arguments &args, int max_timers) {
   _cstack = args._cstack;
   _signal = SIGPROF;
 
-  if (!resizeTimers(max_timers)) {
-    return Error("Failed to allocate CPU timer table");
+  Error error = sizeTimerTable(max_timers);
+  if (error) {
+    return error;
   }
 
   // Prime the origin-check cache from this non-signal context before any

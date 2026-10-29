@@ -285,8 +285,9 @@ int Profiler::registerThreadInEngines(int tid) {
   if (!_instance->_engines_ready.load(std::memory_order_seq_cst)) {
     return -1; // not registered, as Engine::registerThread() reports it
   }
-  return _instance->_cpu_engine->registerThread(tid) |
-         _instance->_wall_engine->registerThread(tid);
+  Engine *cpu = __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE);
+  Engine *wall = __atomic_load_n(&_instance->_wall_engine, __ATOMIC_ACQUIRE);
+  return cpu->registerThread(tid) | wall->registerThread(tid);
 }
 #ifdef UNIT_TEST
 static std::atomic<int> g_test_last_unregistered_tid{-1};
@@ -317,8 +318,14 @@ void Profiler::unregisterThreadInEngines(int tid) {
     g_test_last_unregistered_tid.store(tid, std::memory_order_relaxed);
     return;
 #endif
-  _instance->_cpu_engine->unregisterThread(tid);
-  _instance->_wall_engine->unregisterThread(tid);
+  // start() and check() may replace the engines concurrently. Either engine
+  // is safe to call: unregisterThread() only releases the exiting thread's own
+  // slot, bound-checked against the engine's current table, and a table being
+  // replaced is behind the gate above.
+  __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE)
+      ->unregisterThread(tid);
+  __atomic_load_n(&_instance->_wall_engine, __ATOMIC_ACQUIRE)
+      ->unregisterThread(tid);
 }
 
 const char *Profiler::asgctError(int code) {
@@ -1146,8 +1153,8 @@ bool Profiler::startCpuEngine(Arguments &args) {
   Error error = _cpu_engine->start(args);
   if (error) {
     // The engine may have opened the gate before failing. A call that is
-    // still in flight after the wait budget is waited for again by the next
-    // start()'s ThreadTablesFreeze before any table is replaced.
+    // still in flight after the wait budget is waited for again by the
+    // ThreadTablesFreeze in front of the next table replacement.
     (void)closeThreadRegistration();
     Log::warn("%s", error.message());
     return false;
@@ -1764,15 +1771,15 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 
-  ThreadTablesFreeze tables_freeze(this);
-  if (!tables_freeze.drained()) {
-    // Nothing selected or replaced yet; the freeze destructor reopens
-    // unregistration and _engines_ready stays closed. A later start() waits
-    // again. Retryable, like the earlier error returns in this function.
-    return Error("thread hook calls did not drain; retry start()");
-  }
-  _cpu_engine = selectCpuEngine(args);
-  _wall_engine = selectWallEngine(args);
+  // Registration stays closed until the CPU engine started (see
+  // startCpuEngine()), even if an earlier stop() left it open. Unregistration
+  // stays open: a thread exit dropped while the profiler is alive leaves a
+  // stale slot, so only the table replacement inside the CPU engine's start()
+  // closes it (ThreadTablesFreeze). No wait here: nothing below touches a
+  // per-thread table before that freeze waits for the in-flight calls.
+  _engines_ready.store(false, std::memory_order_seq_cst);
+  __atomic_store_n(&_cpu_engine, selectCpuEngine(args), __ATOMIC_RELEASE);
+  __atomic_store_n(&_wall_engine, selectWallEngine(args), __ATOMIC_RELEASE);
   _cstack = args._cstack;
   _force_jmethodID = args._force_jmethodID;
   if (_cstack == CSTACK_DEFAULT) {
@@ -2004,7 +2011,7 @@ Error Profiler::stop() {
   // CTimer::unregisterThread() each release a slot with a per-slot CAS and
   // neither frees the table; PerfEvents::stop() is a no-op and the slot is
   // released under its fd CAS and slot lock; wall engines and ITimer have no
-  // unregisterThread(). Only start() replaces tables, under
+  // unregisterThread(). Only a CPU engine's start() replaces its table, under
   // ThreadTablesFreeze. Unregistration stays open so PerfEvents can close the
   // fd of a thread that exits after stop().
   if (!closeThreadRegistration()) {
@@ -2147,11 +2154,11 @@ Error Profiler::check(Arguments &args) {
   error = checkJvmCapabilities();
 
   if (!error && (args._event != NULL || args._cpu >= 0)) {
-    _cpu_engine = selectCpuEngine(args);
+    __atomic_store_n(&_cpu_engine, selectCpuEngine(args), __ATOMIC_RELEASE);
     error = _cpu_engine->check(args);
   }
   if (!error && args._wall >= 0) {
-    _wall_engine = selectWallEngine(args);
+    __atomic_store_n(&_wall_engine, selectWallEngine(args), __ATOMIC_RELEASE);
     error = _wall_engine->check(args);
   }
   if (!error && args._memory >= 0) {

@@ -289,6 +289,9 @@ for a temporary window.
   registration gate once any CPU engine started, so the gate is open iff it did;
 - an engine's `stop()` must tolerate a concurrent `unregisterThread()`: `stop()` closes
   only the registration gate, and unregistration stays open while the engines stop;
+- close unregistration (`ThreadTablesFreeze`) only around an actual table replacement,
+  never for a whole `start()`: an exit dropped while it is closed leaves a stale slot
+  that a thread reusing the tid cannot claim, and `start()`/`stop()` cycles repeat;
 - restore the cancellation state outside every destructor-bearing scope, never from a
   destructor: current glibc acts on a pending asynchronous cancellation as soon as it
   is re-enabled, and unwinding out of an implicitly `noexcept` destructor terminates.

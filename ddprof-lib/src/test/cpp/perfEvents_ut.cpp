@@ -22,6 +22,7 @@
 #include "common.h"
 #include "nativeMem.h"
 #include "perfEvents.h"
+#include "profiler.h"
 
 #include <cerrno>
 #include <climits>
@@ -43,6 +44,51 @@
 #endif
 
 static int compare(int a, int b) { return PerfEvents::compareTids(&a, &b); }
+
+// The parts of the Profiler's thread-hook gates the table-sizing tests need.
+// This binary defines its own copy of the friend accessor; ctimer_ut.cpp has
+// the full one.
+class ProfilerTestAccessor {
+public:
+  static bool enginesReady(Profiler *p) {
+    return p->_engines_ready.load(std::memory_order_acquire);
+  }
+  static bool threadTablesStable(Profiler *p) {
+    return p->_thread_tables_stable.load(std::memory_order_acquire);
+  }
+
+  // Sets the hook-call wait budget for its lifetime and restores the previous
+  // one on destruction, including when a test assertion returns early.
+  class DrainBudget {
+  public:
+    explicit DrainBudget(long long ns) : _saved(Profiler::_hook_drain_timeout_ns) {
+      Profiler::_hook_drain_timeout_ns = ns;
+    }
+    ~DrainBudget() { Profiler::_hook_drain_timeout_ns = _saved; }
+    DrainBudget(const DrainBudget &) = delete;
+    DrainBudget &operator=(const DrainBudget &) = delete;
+
+  private:
+    long long _saved;
+  };
+
+  // Counts a hook call in flight for its lifetime, as if one were stuck inside
+  // an engine.
+  class HookCallHold {
+  public:
+    explicit HookCallHold(Profiler *p) : _p(p) {
+      p->_hook_calls_inflight.fetch_add(1, std::memory_order_seq_cst);
+    }
+    ~HookCallHold() {
+      _p->_hook_calls_inflight.fetch_sub(1, std::memory_order_release);
+    }
+    HookCallHold(const HookCallHold &) = delete;
+    HookCallHold &operator=(const HookCallHold &) = delete;
+
+  private:
+    Profiler *_p;
+  };
+};
 
 // qsort() requires a negative result when the first argument orders first.
 // A comparator that only returns 0/1 is sorted correctly by glibc's merge
@@ -101,6 +147,9 @@ public:
 
   static bool resizeEvents(PerfEvents &engine, int max_events) {
     return engine.resizeEvents(max_events);
+  }
+  static Error sizeEventTable(PerfEvents &engine, int max_events) {
+    return engine.sizeEventTable(max_events);
   }
   static PerfEvent *events() { return PerfEvents::_events; }
   static int maxEvents() { return PerfEvents::_max_events; }
@@ -359,6 +408,84 @@ TEST_F(PerfEventsResizeTest, FailedResizeAdvancesGenerationToEven) {
   EXPECT_FALSE(PerfEventsTestAccessor::resizeEvents(engine, -1));
   EXPECT_EQ(g + 2, PerfEventsTestAccessor::gen());
   EXPECT_EQ(0u, PerfEventsTestAccessor::gen() & 1);
+}
+
+// A restart with an unchanged pid_max keeps the table and its fds without
+// freezing thread unregistration, so a thread that exits during start() still
+// closes its fd. A hook call is held in flight: a freeze would wait for it and
+// time out, so success shows that none ran.
+TEST_F(PerfEventsResizeTest, SameSizeRestartDoesNotFreezeUnregistration) {
+  Profiler *profiler = Profiler::instance();
+  PerfEvents engine;
+  ASSERT_TRUE(PerfEventsTestAccessor::resizeEvents(engine, 64));
+  PerfEvent *table = PerfEventsTestAccessor::events();
+  unsigned int gen = PerfEventsTestAccessor::gen();
+  ProfilerTestAccessor::DrainBudget budget(100000000LL);
+
+  Error error = Error::OK;
+  {
+    ProfilerTestAccessor::HookCallHold hold(profiler);
+    error = PerfEventsTestAccessor::sizeEventTable(engine, 64);
+  }
+
+  EXPECT_FALSE((bool)error);
+  EXPECT_EQ(table, PerfEventsTestAccessor::events());
+  EXPECT_EQ(gen, PerfEventsTestAccessor::gen());
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+}
+
+// A size change replaces the table only under a freeze. While a hook call is
+// still in flight after the wait budget, start() fails retryably and keeps the
+// old table and its slots, and unregistration is open again afterwards.
+TEST_F(PerfEventsResizeTest, ResizeKeepsTableWhenHookCallsDoNotDrain) {
+  Profiler *profiler = Profiler::instance();
+  PerfEvents engine;
+  ASSERT_TRUE(PerfEventsTestAccessor::resizeEvents(engine, 64));
+  int fd = -1, write_fd = -1;
+  void *page = nullptr;
+  armSlot(5, &fd, &write_fd, &page);
+  ASSERT_FALSE(HasFatalFailure());
+  PerfEvent *table = PerfEventsTestAccessor::events();
+  unsigned int gen = PerfEventsTestAccessor::gen();
+  long long live = NativeMem::live(NM_PERF);
+  ProfilerTestAccessor::DrainBudget budget(100000000LL);
+
+  Error error = Error::OK;
+  {
+    ProfilerTestAccessor::HookCallHold hold(profiler);
+    error = PerfEventsTestAccessor::sizeEventTable(engine, 128);
+  }
+
+  EXPECT_TRUE((bool)error);
+  EXPECT_STREQ("thread hook calls did not drain; retry start()",
+               error.message());
+  EXPECT_EQ(table, PerfEventsTestAccessor::events());
+  EXPECT_EQ(64, PerfEventsTestAccessor::maxEvents());
+  EXPECT_EQ(gen, PerfEventsTestAccessor::gen());
+  EXPECT_EQ(fd, PerfEventsTestAccessor::slotFd(5));
+  EXPECT_TRUE(ringMapped(page));
+  EXPECT_EQ(live, NativeMem::live(NM_PERF));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+  EXPECT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  // The fixture only frees the table: release slot 5's fd and ring here.
+  engine.unregisterThread(5);
+  close(write_fd);
+}
+
+// With no hook call in flight, a size change replaces the table and reopens
+// unregistration.
+TEST_F(PerfEventsResizeTest, ResizeReplacesTableWhenHookCallsDrain) {
+  Profiler *profiler = Profiler::instance();
+  PerfEvents engine;
+  ASSERT_TRUE(PerfEventsTestAccessor::resizeEvents(engine, 64));
+  unsigned int gen = PerfEventsTestAccessor::gen();
+
+  Error error = PerfEventsTestAccessor::sizeEventTable(engine, 128);
+
+  EXPECT_FALSE((bool)error);
+  EXPECT_EQ(128, PerfEventsTestAccessor::maxEvents());
+  EXPECT_EQ(gen + 2, PerfEventsTestAccessor::gen());
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
 }
 
 // A negative tid must not index before the table. The page before the table
