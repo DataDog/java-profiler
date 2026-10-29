@@ -31,6 +31,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * PROF-15341 (+ lifecycle-wiring follow-up): end-to-end coverage for
@@ -47,7 +48,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p><b>Target-selection bridging:</b> {@code pollWatchedTargets()} (referenceChains.cpp), called
  * from {@code threadLoop()} once per scheduling cycle after {@code runPass()}, polls
  * {@code LivenessTracker::selectLeakCandidates()} (positive population-slope ranking over a
- * rolling per-klass survivor-count window, gated on {@code _gc_generations}) and, for each ranked
+ * rolling per-klass survivor-count window, gated on the effective leak signal - generations OR
+ * liveheap tracking) and, for each ranked
  * klass whose representative instance an ordinary {@code runPass()} walk has *already* tagged
  * ({@code getTag() > 0} - a read, never a {@code SetTag} seed), reconstructs and emits its chain
  * via {@code Profiler::writeReferenceChain()}. {@link #shouldReconstructReferrerChainToGcRoot()}
@@ -194,8 +196,11 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     if ("shouldReportAbandonedSearchOnTinyFrontierCap".equals(testName)) {
       // memory=64:l:1.0 is load-bearing: Profiler::start() only starts the ReferenceChainTracker
       // when allocation sampling activated (activated & EM_ALLOC); a bare referencechains=... falls
-      // back to cpu-only and never runs the search. No generations=true: LivenessTracker::initialize()
-      // then clears _gc_generations, so hasLeakSignal() returns true without any population trend.
+      // back to cpu-only and never runs the search. No generations=true: the effective leak signal
+      // still arms from liveheap tracking alone, but hasLeakSignal() requires a per-klass
+      // candidate on top of it - which this test seeds through the debug-only seams (see the
+      // method's own javadoc). Release builds cannot seed a candidate deterministically, so the
+      // method assumes a debug build.
       return "memory=64:l:1.0,referencechains=true:hops=32:budget=500:framecap=1:ttl=100:painbudget=100";
     }
     // shouldExposeReferenceChainsSettingWhenEnabled: a referencechains-only command. Arguments::parse()
@@ -702,6 +707,10 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   @Test
   @Order(3)
   public void shouldReportAbandonedSearchOnTinyFrontierCap() throws Exception {
+    assumeTrue(ReferenceChainAssertions.isDebugInstrumentedBuild(),
+        "The qualifying-candidate seeding below rides the debug-only population seams; in a "
+            + "release build the search stays idle without a candidate (the candidate-gate "
+            + "contract), so no abandonment event could ever be produced");
     if (ReferenceChainAssertions.isDebugInstrumentedBuild()) {
       // See the javadoc above for why the seeding is needed despite no generations=true of this
       // method's own, and why both a gc() and a throwaway dump() must precede it.
