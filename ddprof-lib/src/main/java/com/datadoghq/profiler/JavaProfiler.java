@@ -731,8 +731,9 @@ public final class JavaProfiler {
     /**
      * Test seam (debug native builds only): reports whether the seeded heap-floor ring
      * currently shows a sustained rise ({@code heapFloorRising()}) - the aggregate growth
-     * read {@code hasLeakSignal()}'s gate uses alongside {@code secondsToOOM()}'s urgent
-     * projection. Returns {@code false} both before any seeding and after
+     * read {@code selectLeakCandidates()} uses to pick the required per-klass hysteresis
+     * (corroborated vs base); neither {@code secondsToOOM()} nor {@code hasLeakSignal()} reads
+     * it directly. Returns {@code false} both before any seeding and after
      * {@link #heapFloorResetForTest0()} emptied the ring, which is how tests assert the
      * reset actually cleared the indices.
      */
@@ -741,14 +742,13 @@ public final class JavaProfiler {
     /**
      * Test seam (debug native builds only): reports whether ReferenceChainTracker's search-restart
      * gate ({@code canAffordNewSearch()} -&gt; {@code hasLeakSignal()}) would currently allow a
-     * fresh/terminal search to start - in particular, whether {@code secondsToOOM()}'s urgent-OOM
-     * bypass opens this gate even with zero per-klass leak candidate (confirmable in the same test
-     * via {@link #selectLeakCandidateKlassIds0()}). Unlike {@link #runReferenceChainPass0()}, which
-     * calls {@code runPass()} unconditionally, this evaluates the real gate without executing a
-     * BFS pass - but it is NOT a read-only query: under the native engine lock it may account a
-     * completed search's pain and restart/reset terminal search state, and opening the gate on
-     * the urgent-OOM bypass spends the episode's one-shot urgency entitlement. Do not treat it
-     * as a pure predicate (e.g. inside an assertion) when a scenario's search state matters.
+     * fresh/terminal search to start now. Opening it requires a per-klass leak candidate
+     * (confirmable in the same test via {@link #selectLeakCandidateKlassIds0()}), whether or not
+     * OOM urgency is latched. Unlike {@link #runReferenceChainPass0()}, which calls
+     * {@code runPass()} unconditionally, this evaluates the real gate without executing a BFS
+     * pass - but it is NOT a read-only query: under the native engine lock it may account a
+     * completed search's pain and restart/reset terminal search state. Do not treat it as a pure
+     * predicate (e.g. inside an assertion) when a scenario's search state matters.
      */
     static native boolean shouldRunPassForTest0();
 
@@ -761,6 +761,35 @@ public final class JavaProfiler {
      * than from the same pass racing the object's creation.
      */
     static native int referenceChainPassesRunForTest0();
+
+    /**
+     * Test seam (debug native builds only): backdates LivenessTracker's leak-signal burn-in stamp
+     * one second past {@code OOM_PROJECTION_BURN_IN_NS}, so {@code secondsToOOM()} projects from
+     * seeded heap-floor samples however long this JVM has been profiling. Returns the previous
+     * stamp, which the caller must hand back to {@link #setLeakSignalActivatedNsForTest0(long)}
+     * in a finally block. The release stub returns 0 and changes nothing.
+     */
+    static native long backdateLeakSignalActivationForTest0();
+
+    /**
+     * Test seam (debug native builds only): restores a leak-signal burn-in stamp saved by
+     * {@link #backdateLeakSignalActivationForTest0()} (0 means "never activated").
+     */
+    static native void setLeakSignalActivatedNsForTest0(long activatedNs);
+
+    /**
+     * Test seam (debug native builds only): the current {@code secondsToOOM()} projection. A
+     * negative value means "no projection" (burn-in, insufficient ring fill, not rising, or no
+     * resolved limit). The release stub returns -1.
+     */
+    static native double secondsToOOMForTest0();
+
+    /**
+     * Test seam (debug native builds only): ReferenceChainTracker's OOM-urgency latch
+     * ({@code _urgent_latched}), read under the native engine lock. The release stub returns
+     * {@code false}.
+     */
+    static native boolean urgentLatchedForTest0();
 
     // ---- Test-only reads of the current thread's OTEP record ----------------------------------
     // Each resolves the current carrier's record directly (like the write primitives above) with
