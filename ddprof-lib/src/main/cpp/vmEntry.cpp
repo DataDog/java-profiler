@@ -54,6 +54,7 @@ bool VM::_is_adaptive_gc_boundary_flag_set = false;
 
 jvmtiExtensionFunction VM::_request_stack_trace = nullptr;
 jvmtiExtensionFunction VM::_init_request_stack_trace = nullptr;
+jvmtiExtensionFunction VM::_discovered_request_stack_trace = nullptr;
 
 jvmtiError(JNICALL *VM::_orig_RedefineClasses)(jvmtiEnv *, jint,
                                                const jvmtiClassDefinition *);
@@ -429,31 +430,28 @@ void VM::probeJFRRequestStackTrace() {
     _jvmti->Deallocate((unsigned char *)ext_functions);
   }
 
+  // Discovery is unconditional: per-recording jvmtistacks options are parsed
+  // after this probe ran (the JNI load path calls initProfilerBridge() before
+  // any recording command), so a later start command must be able to enable
+  // the extension via enableRequestStackTrace() from the recorded pointers.
+  __atomic_store_n(&_discovered_request_stack_trace, request_fn, __ATOMIC_RELEASE);
+  __atomic_store_n(&_init_request_stack_trace, init_fn, __ATOMIC_RELEASE);
+
   if (_agent_args._jvmtistacks) {
     if (request_fn == nullptr || init_fn == nullptr) {
       Log::warn("jvmtistacks requested but HotSpot RequestStackTrace extension "
                 "is not available on this JVM");
       Counters::increment(JVMTI_STACKS_INIT_FAILED);
     } else {
-      // _init_request_stack_trace must be visible before _request_stack_trace
-      // is published. The synchronizing edge is the RELEASE store of
-      // _request_stack_trace below, which pairs with the ACQUIRE loads in
-      // canRequestStackTrace()/requestStackTrace(). The _init_request_stack_trace
-      // store precedes it in program order, so any reader that observes a
-      // non-null _request_stack_trace also observes the initialized
-      // _init_request_stack_trace.
-      __atomic_store_n(&_init_request_stack_trace, init_fn, __ATOMIC_RELEASE);
-      if (initializeRequestStackTrace()) {
-        __atomic_store_n(&_request_stack_trace, request_fn, __ATOMIC_RELEASE);
-      }
+      enableRequestStackTrace();
     }
   }
 }
 
 // Must not be called from a signal handler — invokes JVMTI which is not async-signal-safe.
 bool VM::initializeRequestStackTrace() {
-  // The caller (probeJFRRequestStackTrace) verifies the presence of the request
-  // function before publishing it; here only the init function must be set.
+  // The caller verifies the presence of the request function before publishing
+  // it; here only the init function must be set.
   jvmtiExtensionFunction init_fn = __atomic_load_n(&_init_request_stack_trace, __ATOMIC_ACQUIRE);
   if (init_fn == nullptr) {
     return false;
@@ -468,6 +466,33 @@ bool VM::initializeRequestStackTrace() {
   // after initialization succeeds, so it is still null here.
   Counters::increment(JVMTI_STACKS_INIT_FAILED);
   return false;
+}
+
+// Must not be called from a signal handler — invokes JVMTI which is not async-signal-safe.
+bool VM::enableRequestStackTrace() {
+  if (canRequestStackTrace()) {
+    return true;
+  }
+  // The request function was never discovered (or only one of the two
+  // extensions exists): the probe already warned on an explicit jvmtistacks
+  // request, so stay quiet here — a recording command that did not ask for
+  // jvmtistacks must not produce warnings at all.
+  if (__atomic_load_n(&_discovered_request_stack_trace, __ATOMIC_ACQUIRE) == nullptr ||
+      __atomic_load_n(&_init_request_stack_trace, __ATOMIC_ACQUIRE) == nullptr) {
+    return false;
+  }
+  // Publication order as in the probe: _init_request_stack_trace is already
+  // stored; the RELEASE store of _request_stack_trace below pairs with the
+  // ACQUIRE loads in canRequestStackTrace()/requestStackTrace(), so any
+  // reader that observes the request function also observes the initialized
+  // init function.
+  if (!initializeRequestStackTrace()) {
+    return false;
+  }
+  __atomic_store_n(&_request_stack_trace,
+                   __atomic_load_n(&_discovered_request_stack_trace, __ATOMIC_ACQUIRE),
+                   __ATOMIC_RELEASE);
+  return true;
 }
 
 // JVMTI delivers ONE callback per event slot; both trackers need the

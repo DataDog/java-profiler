@@ -112,6 +112,7 @@ protected:
     saved_jvmti = VMTestAccessor::getJvmti();
     saved_request = VMTestAccessor::getRequestStackTrace();
     saved_init = VMTestAccessor::getInitRequestStackTrace();
+    saved_discovered = VMTestAccessor::getDiscoveredRequestStackTrace();
     saved_jvmtistacks = VM::arguments()._jvmtistacks;
 
     g_init_calls = 0;
@@ -123,12 +124,14 @@ protected:
     VMTestAccessor::setJvmti(nullptr);
     VMTestAccessor::setRequestStackTrace(nullptr);
     VMTestAccessor::setInitRequestStackTrace(nullptr);
+    VMTestAccessor::setDiscoveredRequestStackTrace(nullptr);
   }
 
   void TearDown() override {
     VMTestAccessor::setJvmti(saved_jvmti);
     VMTestAccessor::setRequestStackTrace(saved_request);
     VMTestAccessor::setInitRequestStackTrace(saved_init);
+    VMTestAccessor::setDiscoveredRequestStackTrace(saved_discovered);
     VM::arguments()._jvmtistacks = saved_jvmtistacks;
   }
 
@@ -161,6 +164,7 @@ protected:
   jvmtiEnv *saved_jvmti;
   jvmtiExtensionFunction saved_request;
   jvmtiExtensionFunction saved_init;
+  jvmtiExtensionFunction saved_discovered;
   bool saved_jvmtistacks;
 };
 
@@ -185,12 +189,68 @@ TEST_F(VmEntryRequestStackTraceTest, NotPublishedWhenJvmtistacksDisabled) {
   VMTestAccessor::probeJFRRequestStackTrace();
 
   EXPECT_EQ(VMTestAccessor::getRequestStackTrace(), nullptr);
-  EXPECT_EQ(VMTestAccessor::getInitRequestStackTrace(), nullptr);
   EXPECT_FALSE(VM::canRequestStackTrace());
+  // Discovery is unconditional even without jvmtistacks: a later recording
+  // command must be able to enable the extension (see LazyEnable below).
+  EXPECT_EQ(VMTestAccessor::getDiscoveredRequestStackTrace(),
+            mockRequestStackTrace);
+  EXPECT_EQ(VMTestAccessor::getInitRequestStackTrace(),
+            mockInitializeRequestStackTrace);
   // Initialization must never run when jvmtistacks was not requested.
   EXPECT_EQ(g_init_calls, 0);
   // The extension table is still fully released.
   EXPECT_EQ(g_dealloc_calls, kBothExtensionsDeallocs);
+}
+
+// Simulates the JNI load path: the probe runs before any recording options
+// are parsed (jvmtistacks=false), and a later start,jvmtistacks=true command
+// enables the extension from the discovered pointers.
+TEST_F(VmEntryRequestStackTraceTest, LazyEnableAfterJvmtistacksDisabledProbe) {
+  installBothExtensions();
+  VM::arguments()._jvmtistacks = false;
+  VMTestAccessor::probeJFRRequestStackTrace();
+  ASSERT_FALSE(VM::canRequestStackTrace());
+
+  EXPECT_TRUE(VMTestAccessor::enableRequestStackTrace());
+
+  EXPECT_EQ(VMTestAccessor::getRequestStackTrace(), mockRequestStackTrace);
+  EXPECT_TRUE(VM::canRequestStackTrace());
+  EXPECT_EQ(g_init_calls, 1);
+}
+
+// Without jvmtistacks and without the extension, enable must stay quiet: no
+// init attempts, no counter churn (the probe already warned on explicit
+// requests).
+TEST_F(VmEntryRequestStackTraceTest, LazyEnableQuietWhenExtensionAbsent) {
+  installMockJvmti();
+  VM::arguments()._jvmtistacks = false;
+  VMTestAccessor::probeJFRRequestStackTrace();
+  ASSERT_FALSE(VM::canRequestStackTrace());
+  long long ok_before = Counters::getCounter(JVMTI_STACKS_INIT_OK);
+  long long failed_before = Counters::getCounter(JVMTI_STACKS_INIT_FAILED);
+
+  EXPECT_FALSE(VMTestAccessor::enableRequestStackTrace());
+
+  EXPECT_EQ(VMTestAccessor::getRequestStackTrace(), nullptr);
+  EXPECT_FALSE(VM::canRequestStackTrace());
+  EXPECT_EQ(g_init_calls, 0);
+  EXPECT_EQ(Counters::getCounter(JVMTI_STACKS_INIT_OK), ok_before);
+  EXPECT_EQ(Counters::getCounter(JVMTI_STACKS_INIT_FAILED), failed_before);
+}
+
+// enable is idempotent: once published, it neither re-initializes the
+// extension nor republishes.
+TEST_F(VmEntryRequestStackTraceTest, LazyEnableIdempotentAfterPublication) {
+  installBothExtensions();
+  VM::arguments()._jvmtistacks = true;
+  VMTestAccessor::probeJFRRequestStackTrace();
+  ASSERT_TRUE(VM::canRequestStackTrace());
+  ASSERT_EQ(g_init_calls, 1);
+
+  EXPECT_TRUE(VMTestAccessor::enableRequestStackTrace());
+
+  EXPECT_EQ(g_init_calls, 1);
+  EXPECT_EQ(VMTestAccessor::getRequestStackTrace(), mockRequestStackTrace);
 }
 
 TEST_F(VmEntryRequestStackTraceTest, NotPublishedWhenInitFails) {
@@ -221,7 +281,11 @@ TEST_F(VmEntryRequestStackTraceTest, NotPublishedWhenRequestExtensionMissing) {
   VMTestAccessor::probeJFRRequestStackTrace();
 
   EXPECT_EQ(VMTestAccessor::getRequestStackTrace(), nullptr);
-  EXPECT_EQ(VMTestAccessor::getInitRequestStackTrace(), nullptr);
+  // The init function is recorded (discovery is unconditional) even though
+  // the request extension is missing.
+  EXPECT_EQ(VMTestAccessor::getInitRequestStackTrace(),
+            mockInitializeRequestStackTrace);
+  EXPECT_EQ(VMTestAccessor::getDiscoveredRequestStackTrace(), nullptr);
   EXPECT_FALSE(VM::canRequestStackTrace());
   EXPECT_EQ(Counters::getCounter(JVMTI_STACKS_INIT_FAILED), failed_before + 1);
   EXPECT_EQ(g_init_calls, 0);
@@ -237,6 +301,8 @@ TEST_F(VmEntryRequestStackTraceTest, NotPublishedWhenInitExtensionMissing) {
 
   EXPECT_EQ(VMTestAccessor::getRequestStackTrace(), nullptr);
   EXPECT_EQ(VMTestAccessor::getInitRequestStackTrace(), nullptr);
+  EXPECT_EQ(VMTestAccessor::getDiscoveredRequestStackTrace(),
+            mockRequestStackTrace);
   EXPECT_FALSE(VM::canRequestStackTrace());
   EXPECT_EQ(Counters::getCounter(JVMTI_STACKS_INIT_FAILED), failed_before + 1);
   EXPECT_EQ(g_init_calls, 0);
