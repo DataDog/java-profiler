@@ -348,13 +348,14 @@ private:
   // least-squares regression over a 30-sample window, so a single spike sample
   // keeps the projection inside the ramp band for ~6-7 recovery GCs AFTER the
   // heap has physically stopped growing - band residence alone does not
-  // establish growth. updateUrgentAdmission() therefore snapshots the newest
-  // heap-floor sample's used bytes when a non-emergency ramp episode begins
-  // and admits the 100% tracking boost only while a newer sample has grown
-  // past that snapshot; a recovered spike never does. Written and read only
-  // from threadLoop() on the BFS thread - no atomics. 0 = no baseline for the
-  // current episode (a used value of 0 cannot be a real sample: onGC() only
-  // records used > 0).
+  // establish growth. updateUrgentAdmission() therefore admits the 100%
+  // tracking boost only while a newer heap-floor sample grows past the
+  // running baseline: every admitted sample raises it (a plateau loses the
+  // boost, a recovered spike never passes it), and the emergency band seeds
+  // the same baseline at entry so the ramp-band comparison stays continuous.
+  // Written and read only from threadLoop() on the BFS thread - no atomics.
+  // 0 = no baseline for the current episode (a used value of 0 cannot be a
+  // real sample: onGC() only records used > 0).
   u64 _admission_growth_baseline;
 
   // Wall-clock timestamp (OS::nanotime()) of the search's first pass - baseline for the TTL cutoff

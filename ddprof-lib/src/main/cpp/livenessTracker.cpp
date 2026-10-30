@@ -2132,8 +2132,9 @@ Error LivenessTracker::initialize(Arguments &args) {
   // observe the flag it was actually started with, even though the tracking
   // table itself persists across recordings.
   _gc_generations.store(args._gc_generations, std::memory_order_relaxed);
-  // See _leak_signal_enabled's own comment for why either source suffices.
-  _leak_signal_enabled.store(args._gc_generations || args._record_liveness,
+  // See _leak_signal_enabled's comment for the derivation.
+  _leak_signal_enabled.store(args._gc_generations
+                                 || (args._record_liveness && args._reference_chains),
                              std::memory_order_relaxed);
 
   if (!_enabled) {

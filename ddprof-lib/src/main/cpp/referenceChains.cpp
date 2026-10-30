@@ -817,8 +817,8 @@ bool ReferenceChainTracker::isUrgent() const {
 
 bool ReferenceChainTracker::updateUrgentAdmission(double seconds_to_oom, bool urgent) {
   if (!urgent) {
-    // Left set after an episode so the next episode re-snapshots against that
-    // episode's own entry state instead of inheriting a stale baseline.
+    // Cleared when the episode ends so the next episode re-snapshots against
+    // its own entry state instead of inheriting a stale baseline.
     _admission_growth_baseline = 0;
     return false;
   }
@@ -827,6 +827,15 @@ bool ReferenceChainTracker::updateUrgentAdmission(double seconds_to_oom, bool ur
   // evidence. OOM_URGENT_THRESHOLD_S is isUrgent()'s own latch threshold, so
   // the emergency band and the hysteretic urgent episode cover the same range.
   if (seconds_to_oom < OOM_URGENT_THRESHOLD_S) {
+    if (_admission_growth_baseline == 0) {
+      // Seed at emergency-band entry: the burn-in can hide the projection
+      // until it is already short, and without a seed the first ramp-band
+      // sample would re-snapshot and drop the boost mid-growth.
+      u64 newest_used = LivenessTracker::instance()->newestHeapFloorSample();
+      if (newest_used != 0) {
+        _admission_growth_baseline = newest_used;
+      }
+    }
     return true;
   }
   u64 newest_used = LivenessTracker::instance()->newestHeapFloorSample();
@@ -843,7 +852,14 @@ bool ReferenceChainTracker::updateUrgentAdmission(double seconds_to_oom, bool ur
     _admission_growth_baseline = newest_used;
     return false;
   }
-  return newest_used > _admission_growth_baseline;
+  // High-water mark: every admitted sample raises the baseline, so a heap
+  // that plateaus above the entry level loses the boost until growth resumes
+  // past the previous peak - a frozen entry snapshot would keep admitting it.
+  if (newest_used > _admission_growth_baseline) {
+    _admission_growth_baseline = newest_used;
+    return true;
+  }
+  return false;
 }
 
 bool ReferenceChainTracker::hasLeakSignal() {
@@ -854,9 +870,7 @@ bool ReferenceChainTracker::hasLeakSignal() {
     // same effective flag). Stay idle: without a signal there is nothing to
     // chase, and running whole-heap searches with zero candidates "just in
     // case" burns safepoint time and frontier-table memory for zero
-    // diagnostic value (observed: frontier grown to its cap with
-    // reference_chain_candidate_count == 0 in a healthy process when this
-    // branch used to return true).
+    // diagnostic value.
     return false;
   }
   double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();

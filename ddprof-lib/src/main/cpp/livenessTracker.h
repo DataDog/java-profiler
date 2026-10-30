@@ -464,15 +464,11 @@ private:
   // still be reading it from a session that persists across a restart.
   std::atomic<bool> _gc_generations;
 
-  // Effective leak-signal availability: true when the population-trend signal
-  // consumed by ReferenceChainTracker::hasLeakSignal() can be constructed at
-  // all. Generations tracking and liveheap tracking drive the same mechanisms
-  // here (per-klass population table, heap-floor ring, secondsToOOM()
-  // projection) - liveheap additionally preserves stack traces - so either
-  // option suffices; with neither on, hasLeakSignal() -> false and the
-  // reference-chain collector must stay idle instead of searching with zero
-  // candidates. Set from args._gc_generations || args._record_liveness in
-  // initialize(). Same atomicity/reader argument as _gc_generations above.
+  // True when a leak-signal source is active: generations, or liveheap with
+  // referencechains enabled - the collector is the signal's only consumer, so
+  // a plain liveheap session keeps the flag (and its per-epoch klass folding,
+  // heap-floor ring and forced sweeps) off. Derived in initialize(); same
+  // atomicity/reader argument as _gc_generations above.
   std::atomic<bool> _leak_signal_enabled;
 
   // OS::nanotime() of the first initialize() that enabled the leak signal; 0
@@ -1042,11 +1038,14 @@ public:
   // pattern selectLeakCandidates()/getLiveTraceIds() already use.
   jobject resolveCandidateRepresentative(JNIEnv *env, u32 klass_id);
 
-  // Read-only observation point for the explicit generations option (see
-  // _gc_generations's own comment); no production code keys on it.
+  // Test-only observation point for the explicit generations option: no
+  // production code keys on it (the gate is leakSignalEnabled()), so it is
+  // compiled out of the shipped release library.
+#if defined(DEBUG) || defined(UNIT_TEST)
   bool gcGenerationsEnabled() const {
     return _gc_generations.load(std::memory_order_relaxed);
   }
+#endif
 
   // The effective gate ReferenceChainTracker::hasLeakSignal() keys on (see
   // _leak_signal_enabled's own comment).
@@ -1690,23 +1689,17 @@ public:
   // release library defines neither.
 
   // Sets the two leak-signal gates directly, bypassing initialize() (which
-  // requires a live JVM - VM::hotspot_version()/VM::jni(), see that method's
-  // own code - out of gtest's reach the same way foldKlassCountsLocked()'s
-  // representative-minting step is, per this seam block's own comment
-  // above), with the same derivation initialize() applies:
-  // _gc_generations = generations, _leak_signal_enabled = generations ||
-  // liveness. (generations=false, liveness=true) models a liveheap-only
-  // session (memory=N:l), so gates that must key on leakSignalEnabled()
-  // rather than gcGenerationsEnabled() are distinguishable under test.
+  // requires a live JVM, out of gtest's reach - see this seam block's own
+  // comment above), with the same derivation initialize() applies.
+  // (generations=false, liveness=true) represents liveheap + referencechains
+  // - the only production-reachable state where liveness alone arms the signal.
   void setLeakSignalSourcesForTest(bool generations, bool liveness) {
     _gc_generations.store(generations, std::memory_order_relaxed);
     _leak_signal_enabled.store(generations || liveness, std::memory_order_relaxed);
   }
 
-  // Kept for existing callers (javaApi.cpp, the test fixtures) that only need
-  // to exercise leakSignalEnabled()'s gate: sets BOTH flags to v - the
-  // generations option alone is a sufficient signal source, so the effective
-  // flag follows it.
+  // Convenience for callers that only need the generations-only configuration:
+  // sets BOTH flags to v (the generations option alone arms the signal).
   void setGcGenerationsForTest(bool v) { setLeakSignalSourcesForTest(v, /*liveness=*/false); }
 
   // Overrides the burn-in stamp (see _leak_signal_activated_ns). initialize()
