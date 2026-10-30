@@ -523,6 +523,8 @@ void ReferenceChainTracker::threadLoop() {
   while (_running.load(std::memory_order_acquire)) {
     // Fixed ~1s cadence, no early wake on GC (see onGCFinish()'s own comment) - stopThread() still
     // interrupts this via its own pthread_kill so shutdown stays prompt.
+    // The iteration's only projection read - consumed by the ramp below, publishUrgencyState() and
+    // shouldRunPass() (restart gate / isUrgent() latch), so every decision sees one sample.
     double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();
     bool urgent = seconds_to_oom >= 0 && seconds_to_oom < OOM_RAMP_START_S;
     long target_ms = _pause_target_ms;
@@ -586,9 +588,9 @@ void ReferenceChainTracker::threadLoop() {
     // can stay inside the band for many GCs after the heap has physically stopped growing, and
     // boosting admission on a recovered spike only buys table churn. The budget/cadence ramp above
     // stays keyed on the raw band comparison - without a running search (the candidate gate) those
-    // effects cost nothing, while mis-admission during a transient does.
-    _oom_ramp_active = urgent;
-    LivenessTracker::instance()->setUrgentTracking(updateUrgentAdmission(seconds_to_oom, urgent));
+    // effects cost nothing, while mis-admission during a transient does. publishUrgencyState()
+    // performs both hand-offs.
+    publishUrgencyState(seconds_to_oom, urgent);
 
     // shouldRunPass()'s restart branch (restartSearch()) clears _pending_expand/_priority_expand
     // the same way a pass does - take _engine_lock around the call so that mutation is serialized
@@ -597,7 +599,7 @@ void ReferenceChainTracker::threadLoop() {
     bool should_run;
     {
       MutexLocker engine_guard(_engine_lock);
-      should_run = shouldRunPass(now_ns);
+      should_run = shouldRunPass(now_ns, seconds_to_oom);
     }
     // Only sleep when idle (no pass will run). When a canary search is active or a pass is about to
     // run, skip the sleep to run passes back-to-back.
@@ -652,10 +654,14 @@ void ReferenceChainTracker::onGCFinish() {
 }
 
 bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
+  return shouldRunPass(now_ns, LivenessTracker::instance()->secondsToOOM());
+}
+
+bool ReferenceChainTracker::shouldRunPass(u64 now_ns, double seconds_to_oom) {
   if (!_search_started) {
     // Same gate as a restart (canAffordNewSearch() below) - a brand-new tracker must not pay for
     // the first whole-heap walk/tagging pass either when there is no leak candidate to justify it.
-    bool afford = canAffordNewSearch(now_ns);
+    bool afford = canAffordNewSearch(now_ns, seconds_to_oom);
     TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass search_not_started "
              "canAffordNewSearch=%d", (int)afford);
     if (!afford) {
@@ -686,7 +692,7 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
     // (or again) a leak indication to chase - canAffordNewSearch() is always false when no
     // leak-signal source (generations or liveheap tracking) is active at all, so a misconfigured
     // tracker stays idle instead of searching without a signal.
-    if (canAffordNewSearch(now_ns)) {
+    if (canAffordNewSearch(now_ns, seconds_to_oom)) {
       restartSearch();
       TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass -> true (restarting search)");
       return true;
@@ -776,11 +782,15 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
 // threadLoop()'s own iteration and needs the *list* to poll each candidate's tag; this only needs
 // to know whether at least one exists.
 bool ReferenceChainTracker::isUrgent() const {
+  return isUrgent(LivenessTracker::instance()->secondsToOOM());
+}
+
+bool ReferenceChainTracker::isUrgent(double seconds_to_oom) const {
   static_assert(LivenessTracker::OOM_PROJECTION_BURN_IN_NS / 1e9 >= OOM_URGENT_THRESHOLD_S,
                 "burn-in must cover the urgent horizon");
-  // Warmup is filtered inside secondsToOOM(): no projection (-1) until the
-  // burn-in passes (see OOM_PROJECTION_BURN_IN_NS for why it is age-based).
-  double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();
+  // Warmup is filtered inside secondsToOOM(), which produced the caller's projection: no
+  // projection (-1) until the burn-in passes (see OOM_PROJECTION_BURN_IN_NS for why it is
+  // age-based).
   if (seconds_to_oom >= 0 && seconds_to_oom < OOM_URGENT_THRESHOLD_S) {
     _urgent_release_ticks = 0;
     if (!_urgent_latched) {
@@ -862,7 +872,12 @@ bool ReferenceChainTracker::updateUrgentAdmission(double seconds_to_oom, bool ur
   return false;
 }
 
-bool ReferenceChainTracker::hasLeakSignal() {
+void ReferenceChainTracker::publishUrgencyState(double seconds_to_oom, bool urgent) {
+  _oom_ramp_active = urgent;
+  LivenessTracker::instance()->setUrgentTracking(updateUrgentAdmission(seconds_to_oom, urgent));
+}
+
+bool ReferenceChainTracker::hasLeakSignal(double seconds_to_oom) {
   if (!LivenessTracker::instance()->leakSignalEnabled()) {
     // No population-trend signal can be constructed - generations tracking
     // and liveheap tracking are both off, so the per-klass population table
@@ -873,14 +888,16 @@ bool ReferenceChainTracker::hasLeakSignal() {
     // diagnostic value.
     return false;
   }
-  double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();
   // isUrgent() is called unconditionally, not short-circuited behind any
   // branch: it maintains the latch/release state (see _urgent_latched), whose
   // only consumer is the no-progress-abandonment suppression once a search
-  // runs (runPass()'s terminal gate). The OOM ramp's budget/cadence/admission
-  // effects in threadLoop() follow the raw band comparison instead - they do
-  // not wait for this latch.
-  bool urgent = isUrgent();
+  // runs (runPass()'s terminal gate). It evaluates the caller's projection
+  // (threadLoop()'s single per-iteration read), not a fresh secondsToOOM().
+  // The OOM ramp's budget/cadence effects in threadLoop() follow the raw band
+  // comparison, and the 100% tracking admission follows
+  // updateUrgentAdmission()'s growth gate (via publishUrgencyState()) -
+  // neither waits for this latch.
+  bool urgent = isUrgent(seconds_to_oom);
   KlassCandidate probe[1];
   int n = LivenessTracker::instance()->selectLeakCandidates(probe, 1);
   // The urgent latch does NOT entitle a candidate-less search. With nothing
@@ -904,6 +921,10 @@ bool ReferenceChainTracker::hasLeakSignal() {
 }
 
 bool ReferenceChainTracker::canAffordNewSearch(u64 now_ns) {
+  return canAffordNewSearch(now_ns, LivenessTracker::instance()->secondsToOOM());
+}
+
+bool ReferenceChainTracker::canAffordNewSearch(u64 now_ns, double seconds_to_oom) {
   if (!_safepoint_pain_budget.canStartNow(now_ns)) {
     TEST_LOG_SUMMARY("ReferenceChainTracker::canAffordNewSearch blocked by "
              "safepoint_pain_budget balance=%.1fms refill_rate=%.4f",
@@ -911,7 +932,7 @@ bool ReferenceChainTracker::canAffordNewSearch(u64 now_ns) {
              _pain_budget_refill_rate);
     return false; // still cooling down from the last search's own cost
   }
-  return hasLeakSignal();
+  return hasLeakSignal(seconds_to_oom);
 }
 
 // Search restart (this class's own header comment). Called only from shouldRunPass() once

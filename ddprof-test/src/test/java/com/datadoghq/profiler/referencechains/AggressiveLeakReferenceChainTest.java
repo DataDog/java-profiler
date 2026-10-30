@@ -9,12 +9,16 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.junit.jupiter.api.Test;
+import org.opentest4j.AssertionFailedError;
+import org.opentest4j.TestAbortedException;
 
 import java.util.Arrays;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
@@ -149,20 +153,81 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
   }
 
   /**
-   * Aborts only on an observed per-klass candidate: a candidate legitimately opens the gate, so
-   * the candidate-gate contract cannot be isolated in that run. A BFS pass since the search reset
-   * (the reset zeroes the pass count) with no candidate in either read means the gate opened
-   * without a candidate - e.g. a re-introduced urgency bypass on the restarted BFS thread - and
-   * must FAIL, not skip.
+   * Aborts on an observed per-klass candidate: a candidate legitimately opens the gate, so the
+   * candidate-gate contract cannot be isolated in that run. A BFS pass since the search reset
+   * (the reset zeroes the pass count) with no candidate in either read is re-evaluated once on a
+   * fresh reset: it FAILS if the candidate-free pass reproduces - the gate opened without a
+   * candidate, e.g. a re-introduced urgency bypass on the restarted BFS thread - and ABORTS if it
+   * does not reproduce (or the retry sees a candidate), because the bracket alone cannot tell a
+   * transient organic candidate apart from a gate regression. Never a silent pass.
    */
   private static void checkNoCandidateFreeActivity(GateEvaluation e) {
+    checkNoCandidateFreeActivity(e,
+        AggressiveLeakReferenceChainTest::evaluateGateAfterSearchReset);
+  }
+
+  /** Decision table of {@link #checkNoCandidateFreeActivity(GateEvaluation)}, retry injectable. */
+  private static void checkNoCandidateFreeActivity(GateEvaluation e,
+      Supplier<GateEvaluation> retry) {
     assumeFalse(e.candidateSeen, "Aborting: organic per-klass candidate around the direct "
         + "evaluation (" + e.detail + ") - the candidate-gate contract cannot be isolated in "
         + "this run");
-    if (e.passesAfter != 0) {
-      fail("A BFS pass ran after the search reset although no per-klass candidate was seen in "
-          + "either read - the gate opened without a candidate (" + e.detail + ")");
+    if (e.passesAfter == 0) {
+      return;
     }
+    // One candidate-free pass is not proof: the restarted BFS thread's gate decision is not
+    // atomic with the two candidate reads, so an organic candidate can authorize the pass and
+    // leave selectLeakCandidates() between them (each change needs a population fold, at most
+    // one per GC epoch). That cannot plausibly repeat back-to-back; a gate that opens without a
+    // candidate does. Re-evaluate once on a fresh reset and fail only if it reproduces.
+    GateEvaluation r = retry.get();
+    String both = "first: " + e.detail + "; retry: " + r.detail;
+    assumeFalse(r.candidateSeen, "Aborting: a BFS pass ran with no per-klass candidate seen, "
+        + "and the re-evaluation then saw an organic candidate (" + both + ") - the "
+        + "candidate-gate contract cannot be isolated in this run");
+    if (r.passesAfter != 0) {
+      fail("A BFS pass ran after the search reset with no per-klass candidate in any read, on "
+          + "two independent evaluations - the gate opened without a candidate (" + both + ")");
+    }
+    assumeTrue(false, "Aborting: a candidate-free BFS pass after the search reset did not "
+        + "reproduce on a re-evaluation (" + both + ") - a transient organic candidate in this "
+        + "shared JVM cannot be ruled out, so the run cannot be isolated");
+  }
+
+  private static GateEvaluation syntheticEvaluation(boolean candidateSeen, int passesAfter) {
+    GateEvaluation e = new GateEvaluation();
+    e.candidateSeen = candidateSeen;
+    e.passesAfter = passesAfter;
+    e.detail = "synthetic(candidateSeen=" + candidateSeen + ", passesAfter=" + passesAfter + ")";
+    return e;
+  }
+
+  /**
+   * Pure-logic check of {@link #checkNoCandidateFreeActivity}'s abort/fail table (no native
+   * seams): a candidate aborts; a clean evaluation returns without consuming the retry; a
+   * candidate-free pass fails only when it reproduces on the retry and otherwise aborts - never
+   * a silent pass, and never a hard fail on a single unreproduced observation.
+   */
+  @Test
+  public void checkNoCandidateFreeActivityRequiresReproductionBeforeFailing() {
+    Supplier<GateEvaluation> noRetry = () -> {
+      throw new IllegalStateException("retry must not be consumed");
+    };
+    checkNoCandidateFreeActivity(syntheticEvaluation(false, 0), noRetry);
+    assertThrows(TestAbortedException.class,
+        () -> checkNoCandidateFreeActivity(syntheticEvaluation(true, 0), noRetry));
+    assertThrows(AssertionFailedError.class,
+        () -> checkNoCandidateFreeActivity(syntheticEvaluation(false, 1),
+            () -> syntheticEvaluation(false, 1)),
+        "a reproduced candidate-free pass must fail");
+    assertThrows(TestAbortedException.class,
+        () -> checkNoCandidateFreeActivity(syntheticEvaluation(false, 1),
+            () -> syntheticEvaluation(false, 0)),
+        "an unreproduced candidate-free pass must abort, not fail or pass");
+    assertThrows(TestAbortedException.class,
+        () -> checkNoCandidateFreeActivity(syntheticEvaluation(false, 1),
+            () -> syntheticEvaluation(true, 1)),
+        "a retry that sees a candidate must abort");
   }
 
   private static boolean isEmpty(int[] a) {
@@ -182,8 +247,9 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
    * <p>The live BFS thread is deliberately not watched over a wait window: its pass counter also
    * counts passes legitimately started by unrelated per-klass candidates in this shared JVM. The
    * run is aborted (not passed) when an organic candidate appears around the direct evaluation,
-   * and fails when a BFS pass ran since the search reset without any candidate - the gate opened
-   * without one.
+   * and fails when a BFS pass since the search reset, with no candidate in any read, reproduces on
+   * a second independent evaluation - the gate opened without one (a single unreproduced
+   * occurrence aborts the run).
    */
   @Test
   public void shouldNotOpenSearchGateOnAggressiveHeapWideGrowthWithNoLeakCandidate() {

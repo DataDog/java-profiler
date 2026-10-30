@@ -262,6 +262,65 @@ TEST_F(OomUrgencyTest, BurnInProjectionCountsTowardRelease) {
     EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest());
 }
 
+// threadLoop() reads secondsToOOM() once per iteration and passes that value
+// down the restart gate: shouldRunPass(u64, double) -> canAffordNewSearch(u64,
+// double) -> hasLeakSignal(double) -> isUrgent(double). Each overload must
+// latch on the PASSED projection, never re-read the live ring, so every
+// decision of one iteration sees the same sample. Each block seeds a live
+// projection that disagrees with the passed one. Return values of the
+// candidate-dependent gates are not asserted - only the latch they drive.
+TEST_F(OomUrgencyTest, UrgencyDecisionsConsumeThePassedProjection) {
+    // Restores the tracker's search/pain-budget state on every exit path.
+    struct ResetTracker {
+        ~ResetTracker() { ReferenceChainsTestAccessor::reset(); }
+    } reset_tracker;
+
+    // isUrgent(double).
+    ASSERT_LT(project(0.0, /*flat=*/true), 0.0) << "live ring must report no projection";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isUrgentWithProjectionForTest(200.0));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest())
+        << "isUrgent(double) must latch on the passed projection";
+    ReferenceChainsTestAccessor::resetUrgencyForTest();
+    ASSERT_NEAR(project(200.0), 200.0, 1.0);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::isUrgentWithProjectionForTest(-1.0));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest())
+        << "isUrgent(double) must not re-read the live (urgent) projection";
+
+    // hasLeakSignal(double).
+    ReferenceChainsTestAccessor::resetUrgencyForTest();
+    ASSERT_LT(project(0.0, /*flat=*/true), 0.0);
+    ReferenceChainsTestAccessor::hasLeakSignalForTest(200.0);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest())
+        << "hasLeakSignal() must latch on the passed projection, not re-read secondsToOOM()";
+    ReferenceChainsTestAccessor::resetUrgencyForTest();
+    ASSERT_NEAR(project(200.0), 200.0, 1.0);
+    ReferenceChainsTestAccessor::hasLeakSignalForTest(-1.0);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest());
+
+    // canAffordNewSearch(u64, double) and shouldRunPass(u64, double): reset()
+    // leaves a fresh PainBudget (balance 0, canStartNow() true) and the search
+    // not started, so both reach hasLeakSignal().
+    ReferenceChainsTestAccessor::reset();
+    ReferenceChainsTestAccessor::resetUrgencyForTest();
+    ASSERT_LT(project(0.0, /*flat=*/true), 0.0);
+    ReferenceChainsTestAccessor::canAffordNewSearch(OS::nanotime(), 200.0);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest())
+        << "canAffordNewSearch() must forward the passed projection";
+    ReferenceChainsTestAccessor::resetUrgencyForTest();
+    ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime(), 200.0);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest())
+        << "shouldRunPass() must forward the passed projection";
+
+    ReferenceChainsTestAccessor::reset();
+    ReferenceChainsTestAccessor::resetUrgencyForTest();
+    ASSERT_NEAR(project(200.0), 200.0, 1.0);
+    ReferenceChainsTestAccessor::canAffordNewSearch(OS::nanotime(), -1.0);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest());
+    ReferenceChainsTestAccessor::resetUrgencyForTest();
+    ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime(), -1.0);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest());
+}
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Urgent-admission growth gate (updateUrgentAdmission()): inside the OOM ramp
@@ -360,6 +419,62 @@ TEST_F(OomUrgencyTest, RecoveredSpikeStaysUnboostedWhileProjectionLags) {
         EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(seconds, true))
             << "recovery sample " << r << " must not be admitted on a lagging projection";
     }
+}
+
+// threadLoop()'s publish step (publishUrgencyState()) must feed
+// setUrgentTracking() the growth-gated admission decision, not the raw band
+// comparison: on a recovered spike the ramp stays active while the 100%
+// boost stays off. Observed through LivenessTracker's real admission gate:
+// after admissionResetForTest() (ratio 0, no watched tids) only the urgency
+// boost can admit a tid.
+TEST_F(OomUrgencyTest, PublishedBoostFollowsGrowthGateNotRawBand) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    struct Restore {
+        ~Restore() {
+            ReferenceChainsTestAccessor::publishUrgencyStateForTest(-1.0, false);
+            LivenessTracker::instance()->admissionResetForTest();
+            LivenessTracker::instance()->setSubsampleRatioForTest(0.1);
+        }
+    } restore;
+    lt->admissionResetForTest();
+    const jint TID = 1234;
+
+    ASSERT_NEAR(project(700.0), 700.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(700.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+
+    // Entry: ramp active (raw band), boost off (snapshot only).
+    ReferenceChainsTestAccessor::publishUrgencyStateForTest(700.0, true);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::oomRampActiveForTest());
+    EXPECT_FALSE(lt->admitForTrackingForTest(TID)) << "entry observation must not boost";
+
+    // Lagging recovery: ramp stays on, boost stays off.
+    for (int r = 1; r <= 6; r++) {
+        lt->heapFloorRecordForTest(peak - (u64)r * RATE, _clock_ns, 0);
+        _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+        double seconds = lt->secondsToOOM();
+        ASSERT_GE(seconds, 300.0)
+            << "recovery sample " << r << ": must stay out of the emergency band";
+        ASSERT_LT(seconds, 1800.0)
+            << "recovery sample " << r << ": must stay inside the ramp band";
+        ReferenceChainsTestAccessor::publishUrgencyStateForTest(seconds, true);
+        EXPECT_TRUE(ReferenceChainsTestAccessor::oomRampActiveForTest()) << r;
+        EXPECT_FALSE(lt->admitForTrackingForTest(TID))
+            << "recovery sample " << r << ": boost must follow the growth gate, not the raw band";
+    }
+
+    // Non-vacuity control: growth past the peak boosts. An explicit in-band,
+    // non-emergency projection is passed - any value < OOM_URGENT_THRESHOLD_S
+    // (including -1 with urgent=true) would admit through the emergency band
+    // regardless of growth.
+    lt->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    ReferenceChainsTestAccessor::publishUrgencyStateForTest(1490.0, true);
+    EXPECT_TRUE(lt->admitForTrackingForTest(TID)) << "growth past the high-water mark must boost";
+
+    // Episode end: both drop.
+    ReferenceChainsTestAccessor::publishUrgencyStateForTest(-1.0, false);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::oomRampActiveForTest());
+    EXPECT_FALSE(lt->admitForTrackingForTest(TID));
 }
 
 // The emergency band (< OOM_URGENT_THRESHOLD_S) waives the growth-evidence
@@ -542,6 +657,14 @@ TEST_F(ReferenceChainsCanaryRefillTest, RefillRaiseTracksOpenChaseExactly) {
 // updateUrgentAdmission() reads only the newest heap-floor sample, so no max
 // heap is set - and must not be before start(): with a max heap > 0, start()'s
 // autoTuneDefaults() calls GetAvailableProcessors, which this stub jvmti lacks.
+//
+// updateUrgentAdmissionForTest() writes the BFS-thread-only
+// _admission_growth_baseline from the gtest main thread. That is race-free only
+// because start() does not spawn the BFS thread (threadLoop() needs an attached
+// VM - see the end of ReferenceChainTracker::start()), so no threadLoop()
+// calls updateUrgentAdmission() concurrently here. The ASSERTs on
+// bfsThreadRunning() pin that precondition: a future start() that spawns the
+// thread fails here instead of racing.
 TEST_F(ReferenceChainsCanaryRefillTest, StopClearsAdmissionGrowthBaseline) {
 
     constexpr u64 MiB = 1ULL << 20;
@@ -572,6 +695,8 @@ TEST_F(ReferenceChainsCanaryRefillTest, StopClearsAdmissionGrowthBaseline) {
             ReferenceChainsTestAccessor::reset();
         }
     } cleanup{tracker, lt};
+    ASSERT_FALSE(ReferenceChainsTestAccessor::bfsThreadRunning())
+        << "updateUrgentAdmissionForTest() would race threadLoop()";
 
     // Recording 1: the first urgent non-emergency observation snapshots
     // 500MiB and does not admit.
@@ -580,6 +705,8 @@ TEST_F(ReferenceChainsCanaryRefillTest, StopClearsAdmissionGrowthBaseline) {
 
     tracker->stop();
     ASSERT_FALSE(tracker->start(args));
+    ASSERT_FALSE(ReferenceChainsTestAccessor::bfsThreadRunning())
+        << "updateUrgentAdmissionForTest() would race threadLoop()";
 
     // Recording 2: the heap is now above the OLD baseline. A fresh episode
     // must re-snapshot (false); a baseline leaked through stop() would admit
