@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 <!-- CLAUDE BOOTSTRAP INSTRUCTIONS
 If you are Claude and reading this file, check if CLAUDE.md exists in the same directory.
 If CLAUDE.md does not exist or only contains the redirect + Compact Instructions below, that
@@ -126,6 +128,8 @@ debug symbols via `buildDebug`, memory errors via ASan, suppressions in
 Custom Kotlin-based native build plugin (`build-logic/`) instead of Gradle's
 `cpp-library`/`cpp-application` plugins; it invokes `clang++`/`g++` directly. Build
 configurations are discovered dynamically from `ConfigurationPresets.kt`, never hardcoded.
+`buildNativeLibs` passes the resolved C++ compiler to Make as `CXX` and tracks it as an
+input. Helper Makefiles retain their own flags; allocator probes remain unsanitized.
 Two-JDK pattern: `JAVA_HOME` (build, JDK 17+, Gradle runs on 21 LTS) runs Gradle;
 `JAVA_TEST_HOME` runs tests against the target JDK; target bytecode is Java 8 via
 `--release 8`.
