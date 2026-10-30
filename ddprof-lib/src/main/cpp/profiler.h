@@ -150,9 +150,10 @@ private:
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
-  // Replaced by start() and check() while thread unregistration is open, so
-  // the hook paths (registerThreadInEngines(), unregisterThreadInEngines())
-  // load them with acquire and those writers store them with release.
+  // Replaced only by start(), while thread unregistration is open, so the
+  // hook paths (registerThreadInEngines(), unregisterThreadInEngines()) load
+  // them with acquire and start() stores them with release. check() selects
+  // into locals: it may run during a recording.
   Engine *_cpu_engine;
   Engine *_wall_engine = NULL;
   Engine *_alloc_engine;

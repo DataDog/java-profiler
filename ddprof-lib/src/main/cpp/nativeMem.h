@@ -35,10 +35,11 @@
 // DICTIONARY_ARENA_WASTE_BYTES remains a genuine nested waste figure for the
 // DICTIONARY arena. None of these nested counters are summed in here.
 //
-// The exported counter names (native_mem_{live,avg,max,chunk_overhead}_bytes.
-// <category>) derive from this table, and the set grows when a category is
-// added (ctimer is the newest), so consumers should match native_mem_*_bytes.
-// counters by prefix rather than hard-code the category list.
+// The exported per-category counter names (native_mem_{live,avg,max,
+// chunk_overhead,post_flush_live,post_flush_max}_bytes.<category>, written by
+// Recording::writeNativeMem()) derive from this table, and the set grows when
+// a category is added, so consumers should match native_mem_*_bytes. counters
+// by prefix rather than hard-code the category list.
 #define DD_NATIVE_MEM_CATEGORY_TABLE(X)                                        \
   X(CALLTRACE, "calltrace")                                                    \
   X(DICTIONARY, "dictionary")                                                  \

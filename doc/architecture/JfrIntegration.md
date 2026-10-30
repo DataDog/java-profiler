@@ -62,10 +62,10 @@ event silently.
 (`flightRecorder.h:84`, `283`). They are indexed by the profiler's lock stripe,
 not by thread:
 
-1. `Profiler::getLockIndex(tid)` hashes the thread ID to a stripe
-   (`profiler.cpp:331-336`).
+1. `Profiler::getLockIndex(tid)` hashes the thread ID to a stripe.
 2. The caller `tryLock()`s that stripe, then up to two others; if all three are
-   taken the sample is dropped (`profiler.cpp:781-784`).
+   taken the sample is dropped (`Profiler::recordSample()` and the other
+   `record*()` methods).
 3. With the stripe lock held it calls `FlightRecorder::recordEvent(lock_index, ...)`,
    which writes into `_buf[lock_index]` (`flightRecorder.cpp:2866-2907`).
 
@@ -138,7 +138,8 @@ events write the context snapshot taken when the allocation was tracked
 - `wallClockEpoch()`, `recordTraceRoot()`, `recordQueueTime()`,
   `recordDatadogSetting()`, `recordHeapUsage()` and the reference-chain writers
   use `_buf[lock_index]`; their `Profiler` callers take the stripe lock first
-  (`profiler.cpp:890-996`, `1972-1984`).
+  (`Profiler::writeDatadogProfilerSetting()`, `writeHeapUsage()`, and the
+  reference-chain drains in `dump()` and `stop()`).
 - `recordLog()` builds the event in an `alloca` buffer and writes it to the
   file at once, without a stripe lock (`flightRecorder.cpp:2945-2966`).
 - `cpuMonitorCycle()` writes `jdk.CPULoad` into `_cpu_monitor_buf`, which
@@ -195,10 +196,10 @@ properties and native libraries can be turned off with `NO_SYSTEM_INFO`,
 
 ### How `Profiler` drives it
 
-`Profiler::dump()` (`profiler.cpp:2142-2214`) first emits pending
+`Profiler::dump()` first emits pending
 reference-chain events under a stripe lock, refreshes libraries and thread
 names, then runs `_jfr.dump()` inside `rotateDictsAndRun()`. `Profiler::stop()`
-runs `_jfr.stop()` the same way (`profiler.cpp:2064`).
+runs `_jfr.stop()` the same way.
 
 `rotateDictsAndRun()` (`profiler.h:245-268`):
 
@@ -257,7 +258,7 @@ static string table filled by `getId()` (`jfrMetadata.h:114-122`);
 
 `Profiler::start()` calls `JfrMetadata::reset()` then `initialize()` with
 `args._context_attributes`, truncated to `DD_TAGS_CAPACITY`, before
-`_jfr.start()` (`profiler.cpp:1760-1768`). `reset()` deletes the tree and
+`_jfr.start()`. `reset()` deletes the tree and
 re-registers `"root"` as string 0 so the root element's name stays valid
 (`jfrMetadata.cpp:43-60`). Both require `Profiler::_state_lock` and must not run
 while engines are active (`jfrMetadata.h:276-284`).

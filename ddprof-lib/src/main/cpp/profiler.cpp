@@ -248,7 +248,9 @@ bool Profiler::waitForHookCalls() {
 // in Log::warn()); acting on a cancellation there would unwind through
 // ~HookCallScope(), which aborts with the statically linked libgcc (see
 // run_with_cleanup() in libraryPatcher_linux.cpp), or skip it on musl and
-// leave the in-flight count raised, so the next stop() would wait forever.
+// leave the in-flight count raised. Every later closeThreadRegistration() and
+// ThreadTablesFreeze would then time out, so stop() and every start() that
+// replaces a table would fail.
 //
 // This is a manual disable/restore pair rather than a guard on purpose: with
 // asynchronous cancellation, current glibc's pthread_setcancelstate() acts on a
@@ -321,7 +323,7 @@ void Profiler::unregisterThreadInEngines(int tid) {
     g_test_last_unregistered_tid.store(tid, std::memory_order_relaxed);
     return;
 #endif
-  // start() and check() may replace the engines concurrently. Either engine
+  // start() may replace the engines concurrently. Either engine
   // is safe to call: unregisterThread() only releases the exiting thread's own
   // slot, bound-checked against the engine's current table, and a CTimer table
   // being replaced is behind the gate above. PerfEvents replaces its table
@@ -2159,17 +2161,20 @@ Error Profiler::check(Arguments &args) {
 
   error = checkJvmCapabilities();
 
+  // check() may run while a recording is RUNNING (checkState() rejects only
+  // NEW and ERROR), so it selects into locals and leaves the engine slots to
+  // the engines that start() started: the hooks, the signal handlers (the wall
+  // handler casts wallEngine() to its own type) and stop() all use those.
+  Engine *cpu_engine = NULL;
   if (!error && (args._event != NULL || args._cpu >= 0)) {
-    __atomic_store_n(&_cpu_engine, selectCpuEngine(args), __ATOMIC_RELEASE);
-    error = _cpu_engine->check(args);
+    cpu_engine = selectCpuEngine(args);
+    error = cpu_engine->check(args);
   }
   if (!error && args._wall >= 0) {
-    __atomic_store_n(&_wall_engine, selectWallEngine(args), __ATOMIC_RELEASE);
-    error = _wall_engine->check(args);
+    error = selectWallEngine(args)->check(args);
   }
   if (!error && args._memory >= 0) {
-    _alloc_engine = selectAllocEngine(args);
-    error = _alloc_engine->check(args);
+    error = selectAllocEngine(args)->check(args);
   }
   if (!error && args._nativemem >= 0) {
     error = malloc_tracer.check(args);
@@ -2180,7 +2185,7 @@ Error Profiler::check(Arguments &args) {
   if (!error) {
     if (args._cstack == CSTACK_DWARF && !DWARF_SUPPORTED) {
       return Error("DWARF unwinding is not supported on this platform");
-    } else if (args._cstack == CSTACK_LBR && _cpu_engine != &perf_events) {
+    } else if (args._cstack == CSTACK_LBR && cpu_engine != &perf_events) {
       return Error("Branch stack is supported only with PMU events");
     } else if (_cstack >= CSTACK_VM && !(VMStructs::hasStackStructs() && OS::isLinux())) {
       return Error(

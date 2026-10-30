@@ -19,10 +19,20 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <malloc.h>
 #include <pthread.h>
 #include <sys/mman.h>
 #include <thread>
 #include <unistd.h>
+
+// mallinfo2() reports the bytes in use only with glibc's own allocator: it is
+// glibc 2.33+ only, and the sanitizer allocators report zeros. Nested so that
+// __GLIBC_PREREQ is expanded only where it is defined (not on musl).
+#if defined(__GLIBC__) && !defined(ASAN_ENABLED) && !defined(TSAN_ENABLED)
+#if __GLIBC_PREREQ(2, 33)
+#define HAS_GLIBC_MALLINFO2 1
+#endif
+#endif
 
 // The failure-path tests force calloc to fail with a negative count, which
 // makes count * size overflow. The CI sanitizer jobs run gtest binaries
@@ -184,6 +194,21 @@ public:
     CTimer::_timers = timers;
     CTimer::_max_timers = max_timers;
   }
+
+  // Sets CTimer's timer signal for its lifetime and restores the previous one.
+  // It is 0 until a CTimer has started, and timer_create() rejects signal 0.
+  class SignalSwap {
+  public:
+    explicit SignalSwap(int signal) : _signal(CTimer::_signal) {
+      CTimer::_signal = signal;
+    }
+    ~SignalSwap() { CTimer::_signal = _signal; }
+    SignalSwap(const SignalSwap &) = delete;
+    SignalSwap &operator=(const SignalSwap &) = delete;
+
+  private:
+    int _signal;
+  };
 
   // Installs a caller-owned table for its lifetime and puts the previous one
   // back on destruction, without freeing either.
@@ -392,6 +417,31 @@ TEST_F(CTimerNativeMemTest, ResizeReplacesTableWhenHookCallsDrain) {
   EXPECT_EQ(128, CTimerTestAccessor::maxTimers());
   EXPECT_EQ(bytes(128), NativeMem::live(NM_CTIMER));
   EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+}
+
+// A resize frees the old table, which the NM_CTIMER gauge alone cannot show:
+// it is decremented whether or not the old table is freed. glibc's
+// mallinfo2() reports the bytes the allocator has handed out (heap plus mmap
+// chunks), so replacing an N1-slot table with an N2-slot one raises that by
+// about (N2 - N1) slots when the old table is freed, and by N2 slots when it
+// leaks. The sanitizer allocators and musl do not report through mallinfo2().
+TEST_F(CTimerNativeMemTest, ResizeFreesOldTable) {
+#ifndef HAS_GLIBC_MALLINFO2
+  GTEST_SKIP() << "needs glibc mallinfo2() without a sanitizer allocator";
+#else
+  const int old_slots = 1 << 16;
+  const int new_slots = 1 << 17;
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(old_slots));
+  struct mallinfo2 before = mallinfo2();
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(new_slots));
+  struct mallinfo2 after = mallinfo2();
+
+  long long in_use_before = (long long)(before.uordblks + before.hblkhd);
+  long long in_use_after = (long long)(after.uordblks + after.hblkhd);
+  long long grown = in_use_after - in_use_before;
+  // Halfway between the freed (new - old) and leaked (new) outcomes.
+  EXPECT_LT(grown, bytes(new_slots) - bytes(old_slots) / 2);
+#endif
 }
 
 // Profiler::registerThread() is reached from the pthread hook without
@@ -775,6 +825,35 @@ TEST(CTimerTableTest, NegativeTidIsRejected) {
     }
   }
   munmap(base, 2 * page_size);
+}
+
+// A tid equal to the bound must not index one past CTimer's table. The table
+// is sized to the calling thread's own tid, so that tid is one past its end,
+// and the page after the table is inaccessible. The tid is live and the timer
+// signal is valid, so a registerThread() that wrongly passed the bound would
+// get past timer_create() and fault on the CAS into the guard page.
+TEST(CTimerTableTest, TidAtBoundIsRejected) {
+  size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+  int tid = OS::threadId();
+  ASSERT_GT(tid, 0);
+  size_t table_bytes = (size_t)tid * sizeof(int);
+  size_t table_pages = (table_bytes + page_size - 1) / page_size;
+  size_t map_bytes = (table_pages + 1) * page_size;
+  char *base = (char *)mmap(nullptr, map_bytes, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(MAP_FAILED, (void *)base);
+  char *guard = base + table_pages * page_size;
+  ASSERT_EQ(0, mprotect(guard, page_size, PROT_NONE));
+  int *table = (int *)(guard - table_bytes);
+  {
+    CTimerTestAccessor::TimerTableSwap swap(table, tid);
+    CTimerTestAccessor::SignalSwap signal(SIGPROF);
+    CTimer engine;
+    CTimerTestAccessor::unregisterThread(engine, tid);
+    EXPECT_EQ(-1, CTimerTestAccessor::registerThread(engine, tid));
+    EXPECT_EQ(0, table[tid - 1]);
+  }
+  munmap(base, map_bytes);
 }
 
 // Thread body for the cancellation test: makes a hook call with asynchronous
