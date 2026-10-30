@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-10-30 11:47:23 EDT
+**Date:** 2026-10-30 12:40:39 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 168 |
-| Sample Rate | 2.80/sec |
-| Health Score | 175% |
-| Threads | 8 |
+| CPU Samples | 99 |
+| Sample Rate | 1.65/sec |
+| Health Score | 103% |
+| Threads | 9 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 68 |
-| Sample Rate | 1.13/sec |
-| Health Score | 71% |
-| Threads | 9 |
+| CPU Samples | 94 |
+| Sample Rate | 1.57/sec |
+| Health Score | 98% |
+| Threads | 12 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1793374998 51
-1793375003 51
-1793375008 51
-1793375013 51
-1793375018 51
-1793375023 51
-1793375028 51
-1793375033 51
-1793375038 51
-1793375043 51
-1793375048 51
-1793375053 51
-1793375058 51
-1793375063 51
-1793375068 51
-1793375073 51
-1793375078 51
-1793375083 51
-1793375088 51
-1793375093 51
+1793378201 51
+1793378206 51
+1793378211 51
+1793378216 51
+1793378221 51
+1793378226 51
+1793378231 51
+1793378236 51
+1793378241 51
+1793378246 51
+1793378252 51
+1793378257 51
+1793378262 51
+1793378267 51
+1793378272 51
+1793378277 51
+1793378282 51
+1793378287 51
+1793378292 51
+1793378297 51
 ```
 </details>
 
