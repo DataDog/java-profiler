@@ -873,12 +873,10 @@ bool ReferenceChainTracker::hasLeakSignal() {
   // tagged the search can never emit a chain, and while urgent the 30-pass
   // no-progress abandonment is suppressed (runPass()'s terminal gate), so a
   // candidate-less search would run to the full auto-tuned TTL doing whole-heap
-  // BFS - pure cost. Observed in staging: a fresh process's warmup heap-floor
-  // rise tripped the 5-minute projection and a candidate-less search grew a
-  // 262,144-entry frontier (liveness_urgent_boost_admits=2495) with zero chains
-  // for the whole recording. Urgency still applies through the ramp (cadence,
-  // pause target, budget boost, 100% liveness admission) once a real candidate
-  // justifies the search.
+  // BFS - pure cost. A warmup heap-floor rise can trip the 5-minute projection
+  // with no tagged klass, so the refusal is unconditional, not a heuristic.
+  // Urgency still applies through the ramp (cadence, pause target, budget
+  // boost, 100% liveness admission) once a real candidate justifies the search.
   TEST_LOG_SUMMARY("ReferenceChainTracker::hasLeakSignal -> %s (secondsToOOM=%.1f, "
            "candidates=%d, urgent=%d)",
            n > 0 ? "true" : "false", seconds_to_oom, n, urgent);

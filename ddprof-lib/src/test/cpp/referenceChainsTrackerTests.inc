@@ -1398,9 +1398,9 @@ TEST_F(SearchRestartTest, PainBudgetBlocksARestartUntilItDrains) {
 // hasLeakSignal()'s urgent latch does NOT authorize a candidate-less search: with
 // nothing tagged the search can never emit a chain, and while urgent the 30-pass
 // no-progress abandonment is suppressed, so it would run to the full TTL doing
-// whole-heap BFS (observed in staging: a warmup heap-floor rise latched urgency
-// and a candidate-less search grew a 262,144-entry frontier for the whole
-// recording). A search starts only when a klass clears selectLeakCandidates();
+// whole-heap BFS. A warmup heap-floor rise can latch urgency with nothing
+// tagged, so the candidate requirement must be unconditional. A search starts
+// only when a klass clears selectLeakCandidates();
 // urgency then applies through the ramp. The burn-in stamp is backdated so
 // secondsToOOM()'s age-based burn-in does not mask the latch - this test
 // isolates the candidate requirement, not the burn-in.

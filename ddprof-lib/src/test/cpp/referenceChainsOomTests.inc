@@ -186,10 +186,10 @@ TEST_F(OomUrgencyTest, RelatchAfterReleaseGetsFreshEntitlement) {
 }
 
 // During the burn-in (OOM_PROJECTION_BURN_IN_NS after the leak signal first
-// activated) no projection is offered, so urgency never latches: a fresh
-// process's warmup growth curve projects an imminent OOM just as a real leak
-// does (the staging incident: a fresh process latched urgency and ran a
-// candidate-less whole-heap search to the TTL).
+// activated) no projection is offered, so urgency never latches: a warmup
+// growth curve projects an imminent OOM just as a real leak does, and a
+// burn-in-less gate would latch urgency and start a candidate-less
+// whole-heap search that runs to the TTL.
 TEST_F(OomUrgencyTest, BurnInDoesNotLatchUrgency) {
     LivenessTracker::instance()->setLeakSignalActivatedNsForTest(OS::nanotime());
     // Earlier scenarios advanced the shared seeding clock far past this test's

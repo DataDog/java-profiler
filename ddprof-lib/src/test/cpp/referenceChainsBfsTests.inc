@@ -898,10 +898,7 @@ TEST_F(ReferenceChainsBfsTest, CanaryLaneBacksOffWithoutProgressAndResetsOnProgr
 // With no leak-signal source active (neither generations nor liveheap
 // tracking), the collector must stay completely idle: no first pass and no
 // restart, ever. Searching without a signal runs whole-heap BFS passes with
-// zero candidates - the exact waste the leak-signal gate exists to prevent
-// (observed in staging: frontier grown to its cap with
-// reference_chain_candidate_count == 0 in a healthy process, because the
-// no-signal branch used to return true unconditionally).
+// zero candidates - the exact waste the leak-signal gate exists to prevent.
 TEST_F(ReferenceChainsBfsTest, NoSearchWithoutLeakSignalSource) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));

@@ -1238,8 +1238,8 @@ TEST(LivenessTrackerSessionTest, ResetSessionClearsOnlyRecordingGates) {
 // hasLeakSignal() must never authorize a search without a leak-signal source:
 // with neither generations nor liveheap tracking active, the population table
 // and heap-floor ring never fill, and searching would run whole-heap BFS
-// passes with zero candidates (observed in staging as a frontier table grown
-// to its cap with reference_chain_candidate_count == 0 in a healthy process).
+// passes with zero candidates, growing the frontier table to its cap while
+// emitting nothing.
 TEST(LivenessTrackerSessionTest, LeakSignalRequiresGenerationsOrLiveness) {
     LivenessTracker *tracker = LivenessTracker::instance();
 
