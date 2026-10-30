@@ -30,8 +30,6 @@ class PerfEventType;
 class StackContext;
 
 class PerfEvents : public Engine {
-  friend class PerfEventsTestAccessor;
-
 private:
   static bool _enabled;
   static int _max_events;
@@ -46,33 +44,6 @@ private:
   static u64 readCounter(siginfo_t *siginfo, void *ucontext);
   // cppcheck-suppress unusedPrivateFunction
   static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
-  // Slot of tid in _events, or NULL when the table is NULL, being replaced,
-  // or tid is out of range. For readers in signal context (walkKernel(),
-  // resetBuffer()).
-  static PerfEvent *eventFor(int tid);
-
-  // Generation of the (_events, _max_events) pair; odd while resizeEvents()
-  // replaces the table. eventFor() accepts a pair only from one even
-  // generation.
-  static unsigned int _events_gen;
-  static void beginTableUpdate();
-  static void endTableUpdate();
-  // Replaces the tid-indexed table with one of max_events slots, after
-  // releasing every fd and ring held by the old table. No-op when the size is
-  // unchanged. On allocation failure leaves _events == NULL and
-  // _max_events == -1 and returns false. Called only from sizeEventTable(),
-  // with the Profiler's registration gates closed.
-  bool resizeEvents(int max_events);
-  // Sizes the table for start(), replacing it under a
-  // Profiler::ThreadTablesFreeze only when the size changes.
-  Error sizeEventTable(int max_events);
-
-#ifdef UNIT_TEST
-  // Stores fd and ring page into slot tid of the current table (test only).
-  static void setSlotForTest(int tid, int fd, void *page);
-  // Reads back the fd of slot tid of the current table (test only).
-  static int slotFdForTest(int tid);
-#endif
 
 public:
   Error check(Arguments &args);

@@ -73,9 +73,10 @@ Profiler::start()                              profiler.cpp:1555
   SamplerPerf::primeClock()                    before any handler can fire
   Profiler::startCpuEngine()    (EM_CPU)       failure -> warning, continue
     _cpu_engine->start()
-      CTimer/PerfEvents: ThreadTablesFreeze only if the table size changes;
-                         on a wait timeout (1 s) the engine fails retryably
-                         and keeps its table
+      CTimer:            ThreadTablesFreeze only if the table size changes;
+                         on a wait timeout (1 s) it fails retryably and keeps
+                         its table
+      PerfEvents:        replaces its table without the freeze (PROF-16359)
       CTimer/PerfEvents: openThreadRegistration() after sizing, before listing threads
     on failure: closeThreadRegistration()
     on success: openThreadRegistration()       no-op for CTimer/PerfEvents
@@ -117,9 +118,9 @@ Profiler::start()                              profiler.cpp:1555
    may still reach `unregisterThread()` while the engines stop. `CTimer::stop()`
    and `CTimer::unregisterThread()` each release a slot with a per-slot CAS and
    neither frees the table; `PerfEvents::stop()` is a no-op and keeps its fds,
-   which only `unregisterThread()` closes (under the fd CAS and the slot lock);
-   the wall engines and `ITimer` have no `unregisterThread()`. Only a CPU
-   engine's `start()` replaces its table, under `ThreadTablesFreeze`.
+   which only `unregisterThread()` closes; the wall engines and `ITimer` have
+   no `unregisterThread()`. Only a CPU engine's `start()` replaces its table:
+   `CTimer` under `ThreadTablesFreeze`, `PerfEvents` without it (PROF-16359).
 4. Then, in order: `_alloc_engine->stop()`, reference-chain teardown,
    `malloc_tracer.stop()`, the socket sampler, `_wall_engine->stop()`,
    `_cpu_engine->stop()`.
@@ -155,14 +156,14 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      itself. While the gate is closed, `registerThread()` returns before it
      touches the in-flight counter.
    - `PerfEvents::start()`'s stale-fd sweep may close the fd of a tid the hook
-     registered after the thread list was taken; a second listing pass then
-     re-registers every live thread, so such a thread misses only the samples
-     between the two passes (PROF-16359).
+     registered after the thread list was taken, and such a thread is then not
+     sampled for the recording (PROF-16359).
    - `unregisterThread()` needs `_thread_tables_stable`, which is cleared only
-     while `CTimer::sizeTimerTable()` or `PerfEvents::sizeEventTable()`
-     replaces the table (`ThreadTablesFreeze`), that is, when the table size
-     changes: the first start, or `pid_max` changed. A restart that keeps the
-     table never clears it. An exit that arrives while the gate is closed is
+     while `CTimer::sizeTimerTable()` replaces the timer table
+     (`ThreadTablesFreeze`), that is, when the table size changes: the first
+     start, or `pid_max` changed. A restart that keeps the table never clears
+     it. `PerfEvents::start()` replaces its table without clearing it
+     (PROF-16359). An exit that arrives while the gate is closed is
      dropped, and if the thread is still listed when the engine lists
      threads, its slot stays occupied after it dies (PROF-16359). The gate
      stays set while idle, because `PerfEvents::stop()` keeps per-thread fds
@@ -173,7 +174,7 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      previous engine only releases that thread's own slot.
 3. **`PerfEvents` only**: a `pthread_setspecific` GOT hook on the JVM library
    (`perfEvents_linux.cpp:176`), installed in `PerfEvents::start()`
-   (`perfEvents_linux.cpp:988`).
+   (`perfEvents_linux.cpp:980`).
 
 Every `Profiler::registerThread()`/`unregisterThread()` call counts itself in
 flight (`HookCallScope`) for as long as it may be inside an engine. Closing a gate
@@ -302,17 +303,16 @@ resolved through `Arguments::cpuSamplerInterval()`.
 - **Thread hook**: `start()` patches the JVM library's `pthread_setspecific`
   import so that HotSpot setting or clearing its thread TLS key registers or
   unregisters the thread (`perfEvents_linux.cpp:171-204`).
-- **`stop()` is a no-op** (`perfEvents_linux.cpp:1059`): fds stay open across
+- **`stop()` is a no-op** (`perfEvents_linux.cpp:1051`): fds stay open across
   stop/start, and `registerThread()` skips threads that already have an fd.
   After stop, the cleared `_enabled` flag keeps handlers from recording.
 - **Memory**: the `_events` array and any 2-page mmap ring pages are accounted
   under `NM_PERF`. The array is counted at its full allocated size, which is
   mostly untouched address space (see Profiler Self-Accounting).
-- **Table replacement**: only `resizeEvents()`, called from `start()` when
-  `pid_max` changed or after a failed allocation, replaces `_events`. It closes
-  every fd and unmaps every ring of the old table before freeing it, and
-  brackets the replacement with a seqlock generation so the signal-path
-  readers (`eventFor()`) never pair a table with another table's bound.
+- **Table replacement**: `start()` frees and reallocates `_events` when
+  `pid_max` changed. It does not close the old table's fds or rings, and it
+  does not exclude thread unregistration or the signal-path readers
+  (`walkKernel()`, `resetBuffer()`) while it does so (PROF-16359).
 - `CSTACK_LBR` and kernel stacks (`walkKernel`) are available only with this
   engine (`profiler.cpp:1725`, `1745`).
 

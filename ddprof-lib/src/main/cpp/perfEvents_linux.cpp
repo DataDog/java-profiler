@@ -574,7 +574,6 @@ private:
 bool PerfEvents::_enabled = false;
 int PerfEvents::_max_events = -1;
 PerfEvent *PerfEvents::_events = NULL;
-unsigned int PerfEvents::_events_gen = 0;
 PerfEventType *PerfEvents::_event_type = NULL;
 long PerfEvents::_interval;
 Ring PerfEvents::_ring;
@@ -595,7 +594,7 @@ int PerfEvents::registerThread(int tid) {
     // It hasn't been started
     return 0;
   }
-  if (tid < 0 || tid >= _max_events) {
+  if (tid >= _max_events) {
     Log::warn("tid[%d] > pid_max[%d]. Restart profiler after changing pid_max",
               tid, _max_events);
     return -1;
@@ -713,7 +712,7 @@ int PerfEvents::registerThread(int tid) {
 }
 
 void PerfEvents::unregisterThread(int tid) {
-  if (tid < 0 || tid >= _max_events) {
+  if (tid >= _max_events) {
     return;
   }
 
@@ -912,96 +911,6 @@ Error PerfEvents::check(Arguments &args) {
   return Error::OK;
 }
 
-void PerfEvents::beginTableUpdate() {
-  __atomic_store_n(&_events_gen,
-                   __atomic_load_n(&_events_gen, __ATOMIC_RELAXED) + 1,
-                   __ATOMIC_RELAXED);
-  // The odd generation is visible before any of the table stores.
-  __atomic_thread_fence(__ATOMIC_RELEASE);
-}
-
-void PerfEvents::endTableUpdate() {
-  __atomic_store_n(&_events_gen,
-                   __atomic_load_n(&_events_gen, __ATOMIC_RELAXED) + 1,
-                   __ATOMIC_RELEASE);
-}
-
-// The only writer of _events and _max_events outside tests. sizeEventTable()
-// runs it under the Profiler's ThreadTablesFreeze, so the hook stays off the
-// table; only the signal-path readers (eventFor()) run
-// concurrently, and the generation bracket lets them reject a pair read while
-// the table is replaced.
-bool PerfEvents::resizeEvents(int max_events) {
-  if (max_events == _max_events) {
-    // Keeps the fds across stop()/start() when pid_max is unchanged.
-    return true;
-  }
-  // The table is the only record of which fd and ring belong to which tid.
-  // Release them while it still exists, otherwise neither this start() nor a
-  // later one can close them; start()'s sweep then re-registers the live
-  // threads into the new table. unregisterThread() excludes the signal-path
-  // readers with the slot lock, and is a no-op for an empty slot (fd 0 or -1,
-  // no page). The walk touches every slot, but runs only when pid_max changes
-  // or after a failed allocation.
-  if (_events != NULL) {
-    for (int tid = 0; tid < _max_events; tid++) {
-      PerfEvents::unregisterThread(tid);
-    }
-  }
-  PerfEvent *old_events = _events;
-  int old_max = _max_events;
-  beginTableUpdate();
-  __atomic_store_n(&_events, (PerfEvent *)NULL, __ATOMIC_RELAXED);
-  __atomic_store_n(&_max_events, -1, __ATOMIC_RELAXED);
-  free(old_events);
-  // Record the decrement after the free, consistent with the other decrement
-  // sites; the guard keeps an earlier failed allocation from being released.
-  if (old_events != NULL && old_max > 0) {
-    NativeMem::record(NM_PERF,
-                      -(long long)((size_t)old_max * sizeof(PerfEvent)));
-  }
-  // On failure the pair stays NULL / -1: registerThread() treats the engine as
-  // not started, and the tid bound checks in unregisterThread() and eventFor()
-  // reject every tid, so nothing indexes the NULL table. The next start()
-  // retries the allocation.
-  PerfEvent *events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
-  if (events != NULL) {
-    __atomic_store_n(&_events, events, __ATOMIC_RELAXED);
-    __atomic_store_n(&_max_events, max_events, __ATOMIC_RELAXED);
-    NativeMem::record(NM_PERF,
-                      (long long)((size_t)max_events * sizeof(PerfEvent)));
-  }
-  endTableUpdate();
-  return events != NULL;
-}
-
-// A restart with an unchanged pid_max keeps the table and never closes thread
-// unregistration, so an exit during start() still closes its fd. Only an
-// actual replacement freezes the hook calls; if one is still inside the table
-// after the wait budget, start() fails retryably and keeps the old table.
-Error PerfEvents::sizeEventTable(int max_events) {
-  if (max_events == _max_events) {
-    return Error::OK;
-  }
-  Profiler::ThreadTablesFreeze freeze(Profiler::instance());
-  if (!freeze.drained()) {
-    return Error("thread hook calls did not drain; retry start()");
-  }
-  if (!resizeEvents(max_events)) {
-    return Error("Failed to allocate perf event table");
-  }
-  return Error::OK;
-}
-
-#ifdef UNIT_TEST
-void PerfEvents::setSlotForTest(int tid, int fd, void *page) {
-  _events[tid]._fd = fd;
-  _events[tid]._page = (struct perf_event_mmap_page *)page;
-}
-
-int PerfEvents::slotFdForTest(int tid) { return _events[tid]._fd; }
-#endif
-
 Error PerfEvents::start(Arguments &args) {
   _event_type =
       PerfEventType::forName(args._event == NULL ? EVENT_CPU : args._event);
@@ -1045,13 +954,24 @@ Error PerfEvents::start(Arguments &args) {
                    (_ring != RING_USER || _cstack == CSTACK_DEFAULT ||
                     _cstack == CSTACK_LBR);
 
-  // Account the per-thread PerfEvent array under NM_PERF, alongside the ring
-  // mappings. resizeEvents() closes the fds of the old table before freeing
-  // it; on allocation failure the table stays empty and the next start()
-  // retries.
-  Error error = sizeEventTable(OS::getMaxThreadId());
-  if (error) {
-    return error;
+  int max_events = OS::getMaxThreadId();
+  if (max_events != _max_events) {
+    // Account the per-thread PerfEvent array under NM_PERF, alongside the ring
+    // mappings. Guard on non-null so a prior calloc failure isn't mis-accounted.
+    // Record the decrement after the free (consistent with the other decrement
+    // sites); capture the old size first since _max_events is overwritten below.
+    long long old_bytes =
+        (_events != NULL) ? (long long)((size_t)_max_events * sizeof(PerfEvent)) : 0;
+    free(_events);
+    if (old_bytes > 0) {
+      NativeMem::record(NM_PERF, -old_bytes);
+    }
+    _events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
+    _max_events = max_events;
+    if (_events != NULL) {
+      NativeMem::record(NM_PERF,
+                        (long long)((size_t)max_events * sizeof(PerfEvent)));
+    }
   }
 
   OS::installSignalHandler(SIGPROF, signalHandler);
@@ -1108,25 +1028,6 @@ Error PerfEvents::start(Arguments &args) {
 
   free(threads);
 
-  if (err == 0) {
-    // The sweep above closes the fd of every tid missing from the snapshot,
-    // including a thread the hook registered after the snapshot was taken.
-    // Such a thread was already live, so a second listing sees it;
-    // registerThread() skips tids that kept their fd and its 0 -> -1 CAS
-    // resolves races with the hook. Threads started after the sweep are left
-    // to the hook. Best effort: never fails start() (PROF-16359).
-    ThreadList *rearm = OS::listThreads();
-    while (rearm->hasNext()) {
-      int tid = rearm->next();
-      int rc = registerThread(tid);
-      if (rc != 0 && rc != ESRCH && rc != -1) {
-        Log::debug("perfEvents: re-registering TID %d failed: %s", tid,
-                   strerror(rc));
-      }
-    }
-    delete rearm;
-  }
-
   if (err != 0) {
     *_pthread_entry = (void *)pthread_setspecific;
     Profiler::instance()->switchThreadEvents(JVMTI_DISABLE);
@@ -1162,9 +1063,9 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
     return 0;
   }
 
-  PerfEvent *event = eventFor(tid);
-  if (event == NULL || !event->tryLock()) {
-    return 0; // no table, or the event is being destroyed
+  PerfEvent *event = &_events[tid];
+  if (!event->tryLock()) {
+    return 0; // the event is being destroyed
   }
 
   int depth = 0;
@@ -1250,36 +1151,10 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
   return depth;
 }
 
-// walkKernel() and resetBuffer() run from the SIGPROF handler, including for
-// signals from fds left armed by an earlier recording. start() can leave the
-// table NULL (_max_events == -1) after a failed allocation, so they reach the
-// table only through this check. The generation check makes the bound always
-// belong to the table it validates, including while resizeEvents() replaces
-// the table; the reader never spins, it returns NULL instead, so a sample on
-// the start() thread inside that window loses its kernel frames. A slot
-// pointer returned before resizeEvents() frees the table is still unsafe to
-// use afterwards (PROF-16359).
-PerfEvent *PerfEvents::eventFor(int tid) {
-  unsigned int gen = __atomic_load_n(&_events_gen, __ATOMIC_ACQUIRE);
-  if (gen & 1) {
-    return NULL; // the table is being replaced
-  }
-  PerfEvent *events = __atomic_load_n(&_events, __ATOMIC_RELAXED);
-  int max_events = __atomic_load_n(&_max_events, __ATOMIC_RELAXED);
-  __atomic_thread_fence(__ATOMIC_ACQUIRE);
-  if (__atomic_load_n(&_events_gen, __ATOMIC_RELAXED) != gen) {
-    return NULL; // the table changed while it was read
-  }
-  if (events == NULL || tid < 0 || tid >= max_events) {
-    return NULL;
-  }
-  return &events[tid];
-}
-
 void PerfEvents::resetBuffer(int tid) {
-  PerfEvent *event = eventFor(tid);
-  if (event == NULL || !event->tryLock()) {
-    return; // no table, or the event is being destroyed
+  PerfEvent *event = &_events[tid];
+  if (!event->tryLock()) {
+    return; // the event is being destroyed
   }
 
   struct perf_event_mmap_page *page = event->_page;

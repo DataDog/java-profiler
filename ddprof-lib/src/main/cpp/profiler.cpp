@@ -320,8 +320,9 @@ void Profiler::unregisterThreadInEngines(int tid) {
 #endif
   // start() and check() may replace the engines concurrently. Either engine
   // is safe to call: unregisterThread() only releases the exiting thread's own
-  // slot, bound-checked against the engine's current table, and a table being
-  // replaced is behind the gate above.
+  // slot, bound-checked against the engine's current table, and a CTimer table
+  // being replaced is behind the gate above. PerfEvents replaces its table
+  // without the gate (PROF-16359).
   __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE)
       ->unregisterThread(tid);
   __atomic_load_n(&_instance->_wall_engine, __ATOMIC_ACQUIRE)
@@ -2009,11 +2010,12 @@ Error Profiler::stop() {
   // JVMTI ThreadEnd and native thread exits may still reach unregisterThread()
   // while the engines stop. That is safe per engine: CTimer::stop() and
   // CTimer::unregisterThread() each release a slot with a per-slot CAS and
-  // neither frees the table; PerfEvents::stop() is a no-op and the slot is
-  // released under its fd CAS and slot lock; wall engines and ITimer have no
-  // unregisterThread(). Only a CPU engine's start() replaces its table, under
-  // ThreadTablesFreeze. Unregistration stays open so PerfEvents can close the
-  // fd of a thread that exits after stop().
+  // neither frees the table; PerfEvents::stop() is a no-op, so it touches no
+  // slot an unregistration releases; wall engines and ITimer have no
+  // unregisterThread(). Only a CPU engine's start() replaces its table:
+  // CTimer under ThreadTablesFreeze, PerfEvents without it (PROF-16359).
+  // Unregistration stays open so PerfEvents can close the fd of a thread that
+  // exits after stop().
   if (!closeThreadRegistration()) {
     // Same retry contract as the SignalInflight timeout above: state stays
     // RUNNING, no engine stop has run, and a retry re-runs every step.

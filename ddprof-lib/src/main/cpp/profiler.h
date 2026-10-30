@@ -293,10 +293,11 @@ private:
 
 public:
   // Keeps Profiler::registerThread() and unregisterThread() off the engines
-  // while a CPU engine replaces its per-thread table. CTimer and PerfEvents
-  // construct it in start() only when the table size changes (pid_max changed,
-  // or no table yet): a thread exit skipped while it is alive is dropped, so it
-  // must not span a restart that keeps the table. Both gates are set again by
+  // while a CPU engine replaces its per-thread table. CTimer constructs it in
+  // start() only when the table size changes (pid_max changed, or no table
+  // yet): a thread exit skipped while it is alive is dropped, so it must not
+  // span a restart that keeps the table. PerfEvents::start() still replaces its
+  // table without it (PROF-16359). Both gates are set again by
   // openThreadRegistration() once the table is sized; the destructor reopens
   // unregistration at the latest. An exit skipped in this window is cleaned up
   // only if the thread is gone when the engine lists threads; a thread that is
@@ -466,9 +467,9 @@ public:
    * engine that needs registerThread() must open the gate itself. For CTimer
    * this misses no thread: the per-slot CAS resolves the hook and start()
    * registering one tid. PerfEvents::start()'s stale-fd sweep may close the
-   * fd of a tid the hook registered after the thread list was taken; a
-   * second listing pass re-registers it, so such a thread misses only the
-   * samples between the two passes (PROF-16359). Engines without
+   * fd of a tid the hook registered after the thread list was taken, and
+   * such a thread is then not sampled for the recording (PROF-16359).
+   * Engines without
    * registerThread() never need the gate. Idempotent.
    */
   void openThreadRegistration();
