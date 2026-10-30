@@ -31,10 +31,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *
  * <p>This class is a regression guard for the candidate-gate contract: the aggregate urgent-OOM
  * projection alone must NEVER open the gate while the per-klass population table is provably
- * empty. Staging recordings showed the pre-fix behavior - the urgent latch entitled a
- * candidate-less search that cannot exit early and ran whole-heap BFS passes to the auto-tuned
- * TTL with zero chains to show for it. That bypass and its one-shot urgency entitlement were
- * removed.
+ * empty: a candidate-less search cannot exit early and would run whole-heap BFS passes to the
+ * auto-tuned TTL with zero chains to show for it.
  *
  * <p>Reproducing a genuine near-OOM heap in this shared, no-{@code forkEvery} test JVM is
  * impractical (see {@link ReferenceChainTrackingTest}'s own header comment on the JVM this class

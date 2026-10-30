@@ -1,3 +1,7 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 // ---------------------------------------------------------------------------
 // OOM-ramp hysteresis (C5): isUrgent()'s latch/release machine and
@@ -371,6 +375,59 @@ TEST_F(OomUrgencyTest, EmergencyBandAdmitsWithoutGrowthEvidence) {
     LivenessTracker::instance()->heapFloorRecordForTest(newest - RATE, _clock_ns, 0);
     _clock_ns += SAMPLE_SPACING_S * SEC_NS;
     EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(299.0, true));
+}
+
+// The emergency band seeds the growth baseline at entry: the burn-in can hide
+// the projection until it is already short, and without a seed the first
+// ramp-band observation would re-snapshot and drop the boost mid-growth.
+TEST_F(OomUrgencyTest, EmergencyBandEntrySeedsGrowthBaseline) {
+    ASSERT_NEAR(project(299.0), 299.0, 1.0);
+    u64 entry = MAX_HEAP - (u64)(299.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+    ASSERT_EQ(entry, LivenessTracker::instance()->newestHeapFloorSample());
+
+    // Emergency-band entry: admitted, and the baseline is seeded at `entry`.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(299.0, true));
+
+    // The projection rises above the threshold into the ramp band while the
+    // heap keeps growing: one RATE above the seeded baseline admits.
+    LivenessTracker::instance()->heapFloorRecordForTest(entry + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(400.0, true))
+        << "ramp-band observation after emergency entry must compare against the "
+           "seeded baseline, not re-snapshot";
+
+    // Control: with the heap flat (no growth past the seeded baseline), the
+    // same ramp-band projection does not admit.
+    LivenessTracker::instance()->heapFloorRecordForTest(entry, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(400.0, true));
+}
+
+// The growth baseline is a high-water mark: every admitted sample raises it,
+// so a heap that plateaus above the episode's entry level loses the boost -
+// comparing against a frozen entry snapshot would keep admitting a heap that
+// has stopped growing.
+TEST_F(OomUrgencyTest, PlateauAboveEntryBaselineLosesBoost) {
+    ASSERT_NEAR(project(1500.0), 1500.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(1500.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+
+    // Entry snapshot = peak; one RATE of growth admits and raises the bar.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    // The heap settles flat at a level above the entry snapshot but below the
+    // raised bar: no growth, no boost.
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE / 2, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
+        << "a plateau above the entry level is not growth evidence";
+
+    // Growth resuming past the previous peak re-admits.
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + 2 * RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
 }
 
 // Leaving the band clears the entry snapshot: the next episode re-snapshots
