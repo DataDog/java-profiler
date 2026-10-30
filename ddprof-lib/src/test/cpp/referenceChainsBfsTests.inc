@@ -850,6 +850,11 @@ TEST_F(ReferenceChainsBfsTest, CanaryLaneBacksOffWithoutProgressAndResetsOnProgr
     // progress and the multiplier stays at 1 - back-to-back.
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_EQ(1, ReferenceChainsTestAccessor::canaryBackoffMult());
+    // Backdate the previous pass's end past the minimum-spacing gate (shouldRunPass() enforces one
+    // effective cadence between passes on every lane) so the assertions below exercise the canary
+    // lane's own backoff, not the spacing gate.
+    ReferenceChainsTestAccessor::setLastPassNsForTest(
+        OS::nanotime() - ReferenceChainsTestAccessor::baselineCadenceNs() - 1);
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime()))
         << "a fresh chase must be allowed to run back-to-back";
 
@@ -858,16 +863,26 @@ TEST_F(ReferenceChainsBfsTest, CanaryLaneBacksOffWithoutProgressAndResetsOnProgr
     EXPECT_EQ(2, ReferenceChainsTestAccessor::canaryBackoffMult());
     ReferenceChainsTestAccessor::setCanaryBackoffForTest(
         /*mult=*/2, /*ema_ms=*/100, OS::nanotime());
+    ReferenceChainsTestAccessor::setLastPassNsForTest(
+        OS::nanotime() - ReferenceChainsTestAccessor::baselineCadenceNs() - 1);
     EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime()))
         << "a no-progress canary pass must hold off the next one";
     // Beyond the spacing, the chase is allowed again - the backoff paces, it never abandons.
-    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(
-        ReferenceChainsTestAccessor::lastCanaryPassNs() +
-        2ULL * 100ULL * 1000000ULL + 1))
+    u64 resume_ns = ReferenceChainsTestAccessor::lastCanaryPassNs() +
+                    2ULL * 100ULL * 1000000ULL + 1;
+    ReferenceChainsTestAccessor::setLastPassNsForTest(
+        resume_ns - ReferenceChainsTestAccessor::baselineCadenceNs() - 1);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(resume_ns))
         << "elapsed spacing must re-admit the canary pass";
 
-    // The OOM urgency ramp overrides the backoff gate entirely.
+    // The OOM urgency ramp overrides the backoff gate entirely. Mirror the ramp's production
+    // effect on the cadence (threadLoop() drives _effective_cadence_ns down with urgency) so the
+    // minimum-spacing gate opens the way it does under a live ramp.
     ReferenceChainsTestAccessor::setOomRampActive(true);
+    ReferenceChainsTestAccessor::setEffectiveCadenceNs(
+        ReferenceChainsTestAccessor::minEffectiveCadenceNs());
+    ReferenceChainsTestAccessor::setLastPassNsForTest(
+        OS::nanotime() - ReferenceChainsTestAccessor::minEffectiveCadenceNs() - 1);
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime()))
         << "urgency must bypass the canary backoff";
     ReferenceChainsTestAccessor::setOomRampActive(false);
@@ -890,9 +905,175 @@ TEST_F(ReferenceChainsBfsTest, CanaryLaneBacksOffWithoutProgressAndResetsOnProgr
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_EQ(1, ReferenceChainsTestAccessor::canaryBackoffMult())
         << "candidate progress must reset the spacing multiplier to 1";
+    ReferenceChainsTestAccessor::setLastPassNsForTest(
+        OS::nanotime() - ReferenceChainsTestAccessor::baselineCadenceNs() - 1);
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime()));
 
     tracker->stop();
+}
+
+// forceRunningSearchForTest() forces RUNNING for the scheduling tests but must leave
+// _tags_released at its real value: that flag is only consulted once the search is terminal, and
+// a fabricated "true" would hide a still-pending release and let restartSearch() rewind _next_tag
+// over live tags in this process-wide singleton.
+TEST_F(ReferenceChainsBfsTest, ForceRunningSearchLeavesTagsReleasedUntouched) {
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+
+    // Fixture default (_tags_released = true): the seam must not clear it either.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::tagsReleased());
+    tracker->forceRunningSearchForTest();
+    EXPECT_TRUE(ReferenceChainsTestAccessor::tagsReleased());
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+
+    // A RUNNING search with unreleased tags.
+    ReferenceChainsTestAccessor::setInFlightSearchForTest(OS::nanotime());
+    ASSERT_FALSE(ReferenceChainsTestAccessor::tagsReleased());
+    tracker->forceRunningSearchForTest();
+    EXPECT_FALSE(ReferenceChainsTestAccessor::tagsReleased())
+        << "a test seam must never fabricate a completed tag release";
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+    // The next test's fixture reset restores _tags_released / the search state.
+}
+
+// _effective_cadence_ns and _last_pass_ns are written by the spacing seams from a test thread
+// while shouldRunPass() and updatePacing() read (and write) them on another thread without
+// _engine_lock - the shape of the JNI/gtest seam paths. Every such access must be an atomic
+// load()/store(); under the tsan native config a plain access reports a data race and fails the
+// run. Without TSan this is a smoke test (the cadence must stay sane).
+TEST_F(ReferenceChainsBfsTest, PassSpacingSeamsDoNotRaceSchedulingReaders) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args)); // start() spawns no BFS thread
+    tracker->forceRunningSearchForTest();
+    ReferenceChainsTestAccessor::setCandidateCountForTest(0);
+    const u64 saved_cadence = ReferenceChainsTestAccessor::effectiveCadenceNs();
+    const int saved_budget = ReferenceChainsTestAccessor::effectiveBudget();
+
+    const u64 deadline = OS::nanotime() + 200ULL * 1000000ULL;
+    std::atomic<bool> writer_done(false);
+    std::thread writer([&]() {
+        for (u64 i = 0; i < 20000 && OS::nanotime() < deadline; i++) {
+            if ((i & 1) == 0) {
+                tracker->setPassSpacingForTest(i % 3, 1 + i % 5);
+            } else {
+                ReferenceChainsTestAccessor::setLastPassNsForTest(OS::nanotime() - i);
+            }
+        }
+        writer_done.store(true);
+    });
+    for (u64 i = 0; !writer_done.load() || i < 100; i++) {
+        ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime());
+        ReferenceChainsTestAccessor::updatePacing(1000000ULL * (i % 50));
+        if (OS::nanotime() >= deadline && writer_done.load()) {
+            break;
+        }
+    }
+    writer.join();
+
+    EXPECT_GT(ReferenceChainsTestAccessor::effectiveCadenceNs(), 0u);
+
+    ReferenceChainsTestAccessor::setEffectiveCadenceNs(saved_cadence);
+    ReferenceChainsTestAccessor::setEffectiveBudget(saved_budget);
+    ReferenceChainsTestAccessor::resetPacingController();
+    tracker->stop();
+}
+
+// runPassManualWalk() converts the root-enumeration call's measured OS::nanotime() delta to ms and
+// stores it as the next attempt's cost (_last_root_enum_safepoint_ms); rootEnumIntervalFloorNs()
+// extends ROOT_ENUM_MIN_INTERVAL_NS by ROOT_ENUM_INTERVAL_NS_PER_COST_MS per cost-ms, capped at
+// ROOT_ENUM_MAX_INTERVAL_NS. A 150ms enumeration must therefore land the floor in [3s, 30s): an
+// unscaled ns value saturates the cap, a wrong scale or a dropped assignment leaves it at MIN.
+TEST_F(ReferenceChainsBfsTest, RootEnumMeasuredCostExtendsIntervalFloor) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    // The fixture reset does not touch the root-enumeration state: clear any residue.
+    std::pair<u64, u64> saved = ReferenceChainsTestAccessor::setRootEnumRawStateForTest(0, 0);
+    // Vacuity guard: before any attempt the floor sits at the minimum.
+    ASSERT_EQ(ReferenceChainsTestAccessor::rootEnumMinIntervalNs(),
+              tracker->rootEnumIntervalFloorNsForTest());
+
+    int n = addNode();
+    script = {
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, n, -1},
+    };
+
+    const u64 kRootEnumDelayMs = 150;
+    ior_delay_ns = kRootEnumDelayMs * 1000000ULL;
+    bool truncated = true;
+    // First pass of the search: root enumeration runs (the only path that tags n).
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ior_delay_ns = 0;
+    EXPECT_NE(0, tags_ever_assigned[n]) << "root enumeration must have run";
+
+    u64 floor_ns = tracker->rootEnumIntervalFloorNsForTest();
+    // >= 150 x ROOT_ENUM_INTERVAL_NS_PER_COST_MS (3s): the ns->ms conversion reached the floor.
+    EXPECT_GE(floor_ns, kRootEnumDelayMs * ReferenceChainsTestAccessor::rootEnumNsPerCostMs())
+        << "measured root-enum cost must extend the interval floor (ns->ms conversion)";
+    // > ROOT_ENUM_MIN_INTERVAL_NS: a /1e9 scale or a dropped assignment leaves it at MIN.
+    EXPECT_GT(floor_ns, ReferenceChainsTestAccessor::rootEnumMinIntervalNs());
+    // < ROOT_ENUM_MAX_INTERVAL_NS: an unscaled ns cost would saturate the cap.
+    EXPECT_LT(floor_ns, ReferenceChainsTestAccessor::rootEnumMaxIntervalNs())
+        << "a 150ms attempt must not saturate the cap (unscaled ns would)";
+
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(saved.first, saved.second);
+    tracker->stop();
+}
+
+// shouldRunRootEnum()'s interval check is inclusive (now - _last_root_enum_ns >= floor), both at
+// the base floor and at a cost-extended floor; the manual first pass bypasses it.
+TEST_F(ReferenceChainsBfsTest, RootEnumIntervalBoundaryIsInclusive) {
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    const u64 kMin = ReferenceChainsTestAccessor::rootEnumMinIntervalNs();
+    // Far from 0 (the never-ran value) and from wrapping.
+    const u64 kLast = 100 * kMin;
+    std::pair<u64, u64> saved = ReferenceChainsTestAccessor::setRootEnumRawStateForTest(kLast, 0);
+    ASSERT_EQ(kMin, tracker->rootEnumIntervalFloorNsForTest());
+
+    EXPECT_TRUE(tracker->shouldRunRootEnumForTest(kLast + kMin, false))
+        << "the base interval boundary must be inclusive (>=, not >)";
+    EXPECT_FALSE(tracker->shouldRunRootEnumForTest(kLast + kMin - 1, false))
+        << "one ns short of the base interval must still hold enumeration off";
+    EXPECT_TRUE(tracker->shouldRunRootEnumForTest(kLast + kMin - 1, true))
+        << "the search's first pass must bypass the interval";
+
+    const u64 kCostMs = 500;
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(kLast, kCostMs);
+    const u64 kExtended = kCostMs * ReferenceChainsTestAccessor::rootEnumNsPerCostMs();
+    ASSERT_EQ(kExtended, tracker->rootEnumIntervalFloorNsForTest());
+    EXPECT_TRUE(tracker->shouldRunRootEnumForTest(kLast + kExtended, false))
+        << "the cost-extended boundary must be inclusive";
+    EXPECT_FALSE(tracker->shouldRunRootEnumForTest(kLast + kExtended - 1, false))
+        << "one ns short of the cost-extended interval must still hold enumeration off";
+
+    // Mandatory: the fixture reset does not restore these fields.
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(saved.first, saved.second);
+}
+
+// shiftLastPassGcEpochForTest() shifts the last-pass epoch snapshot relative to the live counter,
+// clamping a negative shift larger than the live counter to 0 (the never-ran value) instead of
+// wrapping. The `epoch >= n` -> `epoch > n` mutant is equivalent (at epoch == n both branches
+// yield 0), so no row can kill it.
+TEST_F(ReferenceChainsBfsTest, ShiftLastPassGcEpochClampsAtZero) {
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    const u64 saved = tracker->gcFinishEpoch();
+    struct Row {
+        u64 live;
+        long shift;
+        u64 expected;
+    };
+    const Row rows[] = {
+        {0, -1, 0}, {5, -1, 4}, {5, -5, 0}, {5, -6, 0}, {5, 3, 8},
+    };
+    for (const Row &r : rows) {
+        ReferenceChainsTestAccessor::setGcFinishEpochForTest(r.live);
+        tracker->shiftLastPassGcEpochForTest(r.shift);
+        EXPECT_EQ(r.expected, ReferenceChainsTestAccessor::lastPassGcFinishEpoch())
+            << "live=" << r.live << " shift=" << r.shift;
+    }
+    ReferenceChainsTestAccessor::setGcFinishEpochForTest(saved);
 }
 
 // With no leak-signal source active (neither generations nor liveheap
