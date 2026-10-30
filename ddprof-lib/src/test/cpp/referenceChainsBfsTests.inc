@@ -1135,3 +1135,409 @@ TEST_F(ReferenceChainsBfsTest, ResolveOrDropPrunesDeadFrontierEntries) {
 // harness (design node: design-pod-in-a-jar-harness; meta-whackamole-analysis): the REAL tracker
 // loop (shouldRunPass -> runPass -> pollWatchedTargets, the exact threadLoop body) driven over the
 // scripted mock heap, asserting SYSTEM INVARIANTS instead of unit symptoms.
+
+// PROF-16316: an improveChain() deeper-path invalidation must REPLACE a resolved leak chain, never
+// erase it. Sequence from the late-TL RCA: a leak-correlated chain is cached, a later pass re-reaches
+// its source through a strictly deeper path (improveChain() queues a deferred invalidation), the
+// search then terminates (candidate/discovered slots zeroed, so no poll path can rebuild from
+// them), and the next dump drains the pending invalidations. The source is still live, so the dump
+// must keep re-emitting its chain, and the BFS-thread poll rebuilds it from the intact frontier.
+TEST_F(ReferenceChainsBfsTest, ImprovedPathInvalidationKeepsLeakChainAcrossTerminalReset) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const u64 kSearchNs = 4242;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    const jlong kLeakTag = ReferenceChainsTestAccessor::leakTagBase() + 7;
+    const u32 kStamp = LivenessTracker::instance()->leakTagIncarnation(kLeakTag);
+
+    int parentNode = addNode();
+    int leakNode = addNode();
+    script = {{JVMTI_HEAP_REFERENCE_FIELD, parentNode, leakNode, -1}};
+    node_tags[leakNode] = 105;
+    node_tags[parentNode] = 104;
+    // Leak-correlated source 105, first resolved root-attached (depth 0, static field). Parent 104
+    // is a durable root whose expansion delivers the deeper (depth 1) path to 105.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 105, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    frontier->setLeakTag(105, kLeakTag, kStamp);
+
+    ReferenceChainEvent resolved;
+    ASSERT_TRUE(tracker->buildChainEvent(&mock_jvmti, &mock_jni, 105, &resolved));
+    ASSERT_EQ((u64)kLeakTag, resolved._target_tag);
+    ASSERT_EQ(0u, resolved._depth);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(105, std::move(resolved), 105,
+                                                        kSearchNs));
+
+    // Real improveChain() path: heapReferenceCallback() sees the already-tagged 105 via 104.
+    ReferenceChainsTestAccessor::pushPendingExpandForTest(104);
+    int edges = 0;
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti, &mock_jni, &edges);
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(105, &entry));
+    ASSERT_EQ(104, entry.parent_tag);
+    ASSERT_EQ(1u, entry.depth);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    // Terminal reset (runPass()'s canary early-termination branch).
+    ReferenceChainsTestAccessor::setCandidateCountForTest(0);
+    ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(0);
+
+    // Dump: the still-live leak chain must survive the drain.
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(1u, dump.size()) << "improveChain invalidation erased a live leak chain";
+    EXPECT_EQ((u64)kLeakTag, dump[0]._target_tag);
+    EXPECT_EQ(kStamp, dump[0]._leak_tag_incarnation);
+
+    // BFS-thread poll: rebuilds the chain from the intact frontier with the deeper path.
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    dump.clear();
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(1u, dump.size());
+    EXPECT_EQ((u64)kLeakTag, dump[0]._target_tag);
+    EXPECT_EQ(1u, dump[0]._depth) << "rebuild must pick up the improved (deeper) path";
+
+    tracker->stop();
+}
+
+// PROF-16316 split semantics: the dump path applies only EVICT (noise eviction still erases at
+// dump time, exactly as before), EVICT wins over a REBUILD queued for the same tag, and REBUILD is
+// left for the BFS-thread poll, which keeps the old chain when the frontier cannot rebuild it.
+TEST_F(ReferenceChainsBfsTest, DumpDrainAppliesEvictAndLeavesRebuildToPoll) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    const u64 kSearchNs = 777;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    for (jlong tag = 1; tag <= 3; tag++) {
+        ReferenceChainEvent event;
+        event._target_tag = (u64)tag;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(tag, std::move(event), tag,
+                                                            kSearchNs));
+    }
+    std::vector<jlong> snapshot = ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(1, snapshot);  // noise eviction
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(2, snapshot, true);
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(3, snapshot, true);
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(3, snapshot);  // EVICT wins
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(2, snapshot, true);  // deduped
+    EXPECT_EQ(3u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(1))
+        << "noise-evicted chain must still be erased at dump time";
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(3))
+        << "EVICT queued after REBUILD must erase, not keep, the chain";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(2));
+    ASSERT_EQ(1u, dump.size());
+    EXPECT_EQ(2u, dump[0]._target_tag);
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount())
+        << "REBUILD stays pending for the BFS thread";
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::drainingChainInvalidationCount());
+
+    // No frontier entry for tag 2: the poll's rebuild fails and the old chain is kept.
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(2));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(1));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(3));
+
+    tracker->stop();
+}
+
+// Polls once the way the BFS thread does (gc generations enabled, klass population reset).
+static void pollOnceForTest(ReferenceChainTracker *tracker, jvmtiEnv *jvmti, JNIEnv *jni) {
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    tracker->pollWatchedTargets(jvmti, jni);
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+}
+
+// Caches a plain (non-leak) chain for tag under search_ns.
+static bool cachePlainChainForTest(jlong tag, u32 depth, u64 search_ns) {
+    ReferenceChainEvent event;
+    event._target_tag = (u64)tag;
+    event._depth = depth;
+    return ReferenceChainsTestAccessor::cacheChain(tag, std::move(event), tag, search_ns);
+}
+
+// Per-poll rebuild budget: one poll performs at most MAX_CHAIN_REBUILDS_PER_POLL buildChainEvent()
+// heap walks; eligible REBUILD entries over the budget stay pending for later polls instead of being
+// dropped, and neither the requeue nor the swap reallocates the reserved buffers.
+TEST_F(ReferenceChainsBfsTest, PollAmortizesChainRebuildsAcrossPolls) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    const u64 kSearchNs = 779;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    const int per = ReferenceChainsTestAccessor::maxChainRebuildsPerPoll();
+    ASSERT_GT(per, 0);
+    const int n = 2 * per + 1;
+    for (jlong tag = 1; tag <= n; tag++) {
+        ASSERT_TRUE(cachePlainChainForTest(tag, 0, kSearchNs));
+    }
+    std::vector<jlong> snapshot = ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    for (jlong tag = 1; tag <= n; tag++) {
+        ReferenceChainsTestAccessor::deferResolvedChainInvalidation(tag, snapshot, true);
+    }
+    ASSERT_EQ((size_t)n, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    pollOnceForTest(tracker, &mock_jvmti, &mock_jni);
+    EXPECT_EQ((size_t)(n - per), ReferenceChainsTestAccessor::pendingChainInvalidationCount())
+        << "rebuilds over the per-poll budget must stay pending";
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::drainingChainInvalidationCount());
+
+    pollOnceForTest(tracker, &mock_jvmti, &mock_jni);
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    pollOnceForTest(tracker, &mock_jvmti, &mock_jni);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::drainingChainInvalidationCount());
+
+    // No frontier entries: every rebuild fails and keeps its cached chain.
+    for (jlong tag = 1; tag <= n; tag++) {
+        EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(tag)) << "tag " << tag;
+    }
+    const size_t max_pending = (size_t)ReferenceChainsTestAccessor::maxPendingChainInvalidations();
+    EXPECT_GE(ReferenceChainsTestAccessor::pendingChainInvalidationCapacity(), max_pending);
+    EXPECT_GE(ReferenceChainsTestAccessor::drainingChainInvalidationCapacity(), max_pending);
+
+    tracker->stop();
+}
+
+// The budget counts only eligible REBUILDs: every EVICT is applied in the same poll (even ones queued
+// after the budget is used up), and no-op REBUILDs (other search generation) are dropped, not
+// requeued.
+TEST_F(ReferenceChainsBfsTest, PollAppliesAllEvictsAndDropsNoopRebuildsUnderCap) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    const u64 kSearchNs = 780;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    const int per = ReferenceChainsTestAccessor::maxChainRebuildsPerPoll();
+    const int n = per + 3;
+    for (jlong tag = 1; tag <= n; tag++) {
+        ASSERT_TRUE(cachePlainChainForTest(tag, 0, kSearchNs));
+    }
+    for (jlong tag = 101; tag <= 103; tag++) {
+        ASSERT_TRUE(cachePlainChainForTest(tag, 0, kSearchNs));
+    }
+    ASSERT_TRUE(cachePlainChainForTest(201, 0, kSearchNs + 1));
+    std::vector<jlong> snapshot = ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+
+    for (jlong tag = 1; tag <= n; tag++) {
+        ReferenceChainsTestAccessor::deferResolvedChainInvalidation(tag, snapshot, true);
+    }
+    for (jlong tag = 101; tag <= 103; tag++) {
+        ReferenceChainsTestAccessor::deferResolvedChainInvalidation(tag, snapshot);
+    }
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(201, snapshot, true);
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(4, snapshot, true); // duplicate
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(2, snapshot);       // EVICT wins
+    ASSERT_EQ((size_t)(n + 3 + 1), ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    pollOnceForTest(tracker, &mock_jvmti, &mock_jni);
+    for (jlong tag = 101; tag <= 103; tag++) {
+        EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(tag))
+            << "EVICT past the rebuild budget must still be applied, tag " << tag;
+    }
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(2));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(201))
+        << "a REBUILD must never touch another generation's chain";
+    EXPECT_EQ(kSearchNs + 1, ReferenceChainsTestAccessor::resolvedChainSearchNs(201));
+    // Eligible REBUILDs: 1, 3..n (= per + 2). per rebuilt (and failed), 2 requeued; 201 dropped.
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    for (jlong tag = 1; tag <= n; tag++) {
+        if (tag == 2) {
+            continue;
+        }
+        EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(tag)) << "tag " << tag;
+    }
+
+    tracker->stop();
+}
+
+// Requeued REBUILDs keep the ordinary encoding, so the one-entry-per-tag rule still holds: a later
+// duplicate REBUILD is dropped, a later EVICT replaces the requeued REBUILD, and the dump drain
+// applies that EVICT while leaving the other REBUILD for the poll.
+TEST_F(ReferenceChainsBfsTest, RequeuedRebuildsKeepOneEntryPerTagAndYieldToEvict) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    const u64 kSearchNs = 781;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    const int per = ReferenceChainsTestAccessor::maxChainRebuildsPerPoll();
+    const int n = per + 2;
+    for (jlong tag = 1; tag <= n; tag++) {
+        ASSERT_TRUE(cachePlainChainForTest(tag, 0, kSearchNs));
+    }
+    std::vector<jlong> snapshot = ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    for (jlong tag = 1; tag <= n; tag++) {
+        ReferenceChainsTestAccessor::deferResolvedChainInvalidation(tag, snapshot, true);
+    }
+
+    pollOnceForTest(tracker, &mock_jvmti, &mock_jni);
+    ASSERT_EQ(2u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    const jlong kRequeuedA = per + 1;
+    const jlong kRequeuedB = per + 2;
+
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(kRequeuedA, snapshot, true);
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::pendingChainInvalidationCount())
+        << "duplicate REBUILD of a requeued tag must be dropped";
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(kRequeuedB, snapshot);
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::pendingChainInvalidationCount())
+        << "EVICT must replace the requeued REBUILD in place";
+
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(kRequeuedB));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(kRequeuedA));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount())
+        << "the dump drain leaves the requeued REBUILD for the poll";
+
+    pollOnceForTest(tracker, &mock_jvmti, &mock_jni);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(kRequeuedA));
+
+    tracker->stop();
+}
+
+// The REBUILD publish step replaces only: it never inserts (a dump may have evicted the entry since
+// the rebuild scan), never overwrites a chain cached under another search generation, and never
+// re-stamps source_search_ns.
+TEST_F(ReferenceChainsBfsTest, RebuildReplaceNeverResurrectsOrCrossesGeneration) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    const u64 kCurrentNs = 900;
+    const u64 kStaleNs = 901;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kCurrentNs);
+
+    // (a) Absent tag: no insert.
+    ReferenceChainEvent absent;
+    absent._target_tag = 50;
+    absent._depth = 3;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::replaceResolvedChain(50, std::move(absent),
+                                                                   kCurrentNs));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(50));
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount());
+
+    // (b) Cached under another generation: left untouched.
+    ASSERT_TRUE(cachePlainChainForTest(51, 1, kCurrentNs));
+    ReferenceChainEvent stale;
+    stale._target_tag = 51;
+    stale._depth = 5;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::replaceResolvedChain(51, std::move(stale),
+                                                                   kStaleNs));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainDepth(51));
+    EXPECT_EQ(kCurrentNs, ReferenceChainsTestAccessor::resolvedChainSearchNs(51));
+
+    // (c) Same generation: replaced in place, generation not re-stamped.
+    ReferenceChainEvent fresh;
+    fresh._target_tag = 51;
+    fresh._depth = 5;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::replaceResolvedChain(51, std::move(fresh),
+                                                                  kCurrentNs));
+    EXPECT_EQ(5u, ReferenceChainsTestAccessor::resolvedChainDepth(51));
+    EXPECT_EQ(kCurrentNs, ReferenceChainsTestAccessor::resolvedChainSearchNs(51));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
+
+    // (d) Evicted after caching: the rebuild must not resurrect it.
+    ASSERT_TRUE(cachePlainChainForTest(52, 0, kCurrentNs));
+    std::vector<jlong> snapshot = ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(52, snapshot);
+    ReferenceChainsTestAccessor::drainPendingChainInvalidations();
+    ASSERT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(52));
+    ReferenceChainEvent late;
+    late._target_tag = 52;
+    late._depth = 2;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::replaceResolvedChain(52, std::move(late),
+                                                                   kCurrentNs));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(52));
+
+    tracker->stop();
+}
+
+// Dead-owner guard of the rebuild loop: a REBUILD whose rebuilt chain names a stale ownership period
+// of its leak tag must not replace the current owner's cached chain.
+TEST_F(ReferenceChainsBfsTest, DeadOwnerRebuildKeepsCurrentOwnerChain) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const u64 kSearchNs = 4242;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    const jlong kLeakTag = ReferenceChainsTestAccessor::leakTagBase() + 7;
+    const u32 kStamp = LivenessTracker::instance()->leakTagIncarnation(kLeakTag);
+
+    int parentNode = addNode();
+    int leakNode = addNode();
+    script = {{JVMTI_HEAP_REFERENCE_FIELD, parentNode, leakNode, -1}};
+    node_tags[leakNode] = 105;
+    node_tags[parentNode] = 104;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 105, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    frontier->setLeakTag(105, kLeakTag, kStamp);
+
+    ReferenceChainEvent resolved;
+    ASSERT_TRUE(tracker->buildChainEvent(&mock_jvmti, &mock_jni, 105, &resolved));
+    ASSERT_EQ((u64)kLeakTag, resolved._target_tag);
+    ASSERT_EQ(0u, resolved._depth);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(105, std::move(resolved), 105,
+                                                        kSearchNs));
+
+    // Real improveChain() path queues the REBUILD for 105.
+    ReferenceChainsTestAccessor::pushPendingExpandForTest(104);
+    int edges = 0;
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti, &mock_jni, &edges);
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(105, &entry));
+    ASSERT_EQ(104, entry.parent_tag);
+    ASSERT_EQ(1u, entry.depth);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    ReferenceChainsTestAccessor::setCandidateCountForTest(0);
+    ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(0);
+    // Re-bind the frontier entry to an earlier ownership period of kLeakTag: the rebuild now builds
+    // a dead-owner chain. (kStamp - 1u may wrap; any value other than the current stamp works.)
+    frontier->setLeakTag(105, kLeakTag, kStamp - 1u);
+
+    pollOnceForTest(tracker, &mock_jvmti, &mock_jni);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(1u, dump.size()) << "dead-owner rebuild replaced (and so lost) the live owner's chain";
+    EXPECT_EQ((u64)kLeakTag, dump[0]._target_tag);
+    EXPECT_EQ(kStamp, dump[0]._leak_tag_incarnation);
+    EXPECT_EQ(0u, dump[0]._depth) << "cached chain must be kept, not replaced by the stale rebuild";
+
+    tracker->stop();
+}
