@@ -410,12 +410,9 @@ void ReferenceChainTracker::stop() {
     store(_abandon_reason, (u8)SearchAbandonReason::RECORDING_END);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
   }
-  // The four fields reset below are written in production only by the BFS thread
-  // (isUrgent(), updateUrgentAdmission(), restartSearch()), as plain non-atomic
-  // stores. Resetting them from this control thread is safe only because
-  // stopThread() has already joined that thread: the join both removes the only
-  // concurrent writer and orders these resets after everything the BFS thread
-  // ever wrote.
+  // Written in production only by the BFS thread (isUrgent(),
+  // updateUrgentAdmission(), restartSearch()) as plain stores; safe to reset
+  // from this thread only because stopThread() has joined that thread.
   store(_search_start_ns, (u64)0);
   _urgent_latched = false;
   _urgent_release_ticks = 0;

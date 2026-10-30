@@ -1705,14 +1705,10 @@ public:
 
 #if defined(DEBUG) || defined(UNIT_TEST)
   // Test-only mutators of the leak-signal gates and the burn-in stamp.
-  // Two consumer classes, neither sufficient alone: DEBUG backs the JNI seams
-  // in javaApi.cpp used by ddprof-test against the debug library build (not a
-  // gtest build, so no UNIT_TEST there), and UNIT_TEST keeps the symbols in
-  // the gtest binaries built from non-debug configurations - gtestRelease
-  // compiles with -DNDEBUG and no -DDEBUG (ConfigurationPresets), and its
-  // gtests link against these directly. The shipped release library defines
-  // neither, so no release consumer can flip the leak-signal gate or backdate
-  // the burn-in.
+  // DEBUG backs the JNI seams javaApi.cpp exposes to ddprof-test (debug
+  // library build); UNIT_TEST covers the gtest binaries, whose release
+  // configuration compiles with -DNDEBUG and no -DDEBUG. The shipped
+  // release library defines neither.
 
   // Sets the two leak-signal gates directly, bypassing initialize() (which
   // requires a live JVM - VM::hotspot_version()/VM::jni(), see that method's
