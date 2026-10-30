@@ -171,8 +171,8 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
 
   // Shared wall-clock ceiling for this whole call's static-field sweep, expandFrontier(), and
   // rotation sub-calls below (see _pass_deadline_ns's own comment) - deliberately NOT applied to
-  // root/stack-ref enumeration itself, which is instead cadence-gated by run_root_enum/
-  // ROOT_ENUM_MIN_INTERVAL_NS.
+  // root/stack-ref enumeration itself, which is instead interval-gated by shouldRunRootEnum()
+  // (ROOT_ENUM_MIN_INTERVAL_NS and the adaptive extension).
   _pass_deadline_ns = _effective_pause_target_ms > 0
                           ? OS::nanotime() + (u64)_effective_pause_target_ms * 1000000ULL
                           : 0;
@@ -213,7 +213,8 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     jvmtiError root_err = jvmti->IterateOverReachableObjects(
         heapRootCallback, stackRefCallback, /*object_ref_callback=*/nullptr,
         &ctx);
-    *safepoint_ns += OS::nanotime() - root_enum_start_ns;
+    u64 root_enum_safepoint_ns = OS::nanotime() - root_enum_start_ns;
+    *safepoint_ns += root_enum_safepoint_ns;
 
     // expand_budget is spent independently of root_enum_budget below (see
     // ROOT_ENUM_MIN_INTERVAL_NS's own comment) - ctx.edges_admitted is written straight into
@@ -221,23 +222,28 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     // whatever root enumeration admitted.
     *edges_admitted = ctx.edges_admitted;
     _last_root_enum_ns = OS::nanotime();
+    // Every attempt - completed, truncated, or errored - re-pays the JVM's unconditional
+    // all-thread EA deoptimization (see ROOT_ENUM_MIN_INTERVAL_NS's comment), so the measured
+    // in-safepoint cost extends the next attempt's interval floor regardless of the outcome.
+    _last_root_enum_safepoint_ms = root_enum_safepoint_ns / 1000000;
 
     if (root_err != JVMTI_ERROR_NONE) {
       *truncated = true;
       *frontier_cap_hit = false;
-      _root_enum_truncated_last_time = false;
       return;
     }
     if (ctx.truncated) {
+      // A truncated attempt is retried after the normal adaptive interval (shouldRunRootEnum()),
+      // not on the very next pass: with a first-pass budget too small for the live heap every
+      // attempt truncates, and a next-pass retry would turn every pass into a deopt-all
+      // enumeration (see ROOT_ENUM_MIN_INTERVAL_NS's comment). Root admission is best-effort -
+      // meanwhile this pass ends here (an incomplete enumeration would leave the frontier's root
+      // picture inconsistent with the expansion phases below) and the next pass's expansion
+      // phases proceed on the roots already admitted.
       *truncated = true;
       *frontier_cap_hit = ctx.frontier_cap_hit;
-      // Only a budget-exhausted truncation (not a frontier-cap-hit, which abandons the search
-      // outright) is grounds to retry root enumeration on the very next pass - see
-      // _root_enum_truncated_last_time's own comment.
-      _root_enum_truncated_last_time = !ctx.frontier_cap_hit;
       return;
     }
-    _root_enum_truncated_last_time = false;
   }
 
   int expand_phase_edges_admitted = 0;
@@ -1050,8 +1056,7 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   // (runPassManualWalk()'s own comment) - there is no "first pass walks the whole graph inline"
   // shortcut here, so every pass (first or resumed) takes the same expand-frontier shape.
   u64 now_ns = OS::nanotime();
-  bool run_root_enum = manual_first_pass || _root_enum_truncated_last_time ||
-                       (now_ns - _last_root_enum_ns >= ROOT_ENUM_MIN_INTERVAL_NS);
+  bool run_root_enum = shouldRunRootEnum(now_ns, manual_first_pass);
 
   int frontier_size_before_pass = _frontier != nullptr ? _frontier->size() : 0;
 
@@ -1073,17 +1078,14 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   _last_pass_gc_finish_epoch = gcFinishEpoch();
   store(_last_pass_ns, OS::nanotime());
   if (!run_root_enum) {
-    // A pass that ran root/stack-ref enumeration spends _first_pass_budget, not _effective_budget -
-    // its duration is not a signal about the per-pass cost updatePacing() is trying to regulate
-    // (expandFrontier()'s cheap, per-node expansion calls), so feeding it in here would throttle
-    // _effective_budget down for every one of those unrelated later passes based on a single,
-    // deliberately oversized outlier.
+    // Only non-root-enum passes feed the budget/cadence controller - root-enum passes are
+    // excluded (see the else branch for why).
     updatePacing(safepoint_ns);
   } else {
-    // Excluded from the budget/cadence controller above, but not from the borrow ceiling's
-    // revocation check (see maybeRevokeBorrowForRootEnumPass()'s own comment) - a root-enum pass's
-    // in-safepoint cost is real pause time and must still be able to revoke a borrowed-budget grant
-    // the pacing controller would otherwise keep believing is safe.
+    // A root-enum pass's duration is not a per-pass cost signal for updatePacing(): it spends
+    // _first_pass_budget, not _effective_budget, and feeding the outlier in would throttle every
+    // later expansion pass. The cost is still real pause time, so it can still revoke a
+    // borrowed-budget grant (maybeRevokeBorrowForRootEnumPass()).
     maybeRevokeBorrowForRootEnumPass(safepoint_ns);
   }
   // accumulate this pass's own in-safepoint cost toward the running total restartSearch() will
@@ -1225,7 +1227,7 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
            "candidateFound=%d/%d discoveredCounts=[%d,%d,%d,%d,%d]",
            (int)err, edges_admitted, truncated, frontier_cap_hit, (int)load(_search_state),
            (int)_abandon_reason, _frontier->size(), _effective_budget,
-           (unsigned long long)_effective_cadence_ns,
+           (unsigned long long)load(_effective_cadence_ns),
            _pending_expand.size(), _priority_expand.size(),
            (int)__builtin_popcountll(_candidate_found_bits), _candidate_count,
            _candidate_count > 0 ? _candidate_discovered_count[0] : 0,
@@ -1284,20 +1286,24 @@ void ReferenceChainTracker::updatePacing(u64 pass_wall_ns) {
   int64_t overflow = desired - clamped;
   _effective_budget = (int)clamped;
 
+  // One load() and one store() of _effective_cadence_ns: threadLoop()'s urgency ramp writes it
+  // outside _engine_lock, so the access must be atomic. The read-modify-write as a whole is not
+  // atomic - it races the urgency ramp by design (while urgent the ramp owns the field) - the
+  // load()/store() only removes the mixed plain/atomic data race.
   if (overflow < 0) {
     // Still over the pause-time ceiling even at the minimum budget - widen the fallback interval
     // instead of shrinking the budget further.
     u64 step = (u64)(-overflow) * CADENCE_NS_PER_EDGE_OVERFLOW;
-    _effective_cadence_ns =
-        std::min(_effective_cadence_ns + step, MAX_EFFECTIVE_CADENCE_NS);
+    u64 cur = load(_effective_cadence_ns);
+    store(_effective_cadence_ns, std::min(cur + step, MAX_EFFECTIVE_CADENCE_NS));
   } else if (overflow > 0) {
     // Comfortably under the ceiling even at the maximum (config) budget - relax the fallback
     // interval.
     u64 step = (u64)overflow * CADENCE_NS_PER_EDGE_OVERFLOW;
-    _effective_cadence_ns =
-        step >= _effective_cadence_ns
-            ? MIN_EFFECTIVE_CADENCE_NS
-            : std::max(_effective_cadence_ns - step, MIN_EFFECTIVE_CADENCE_NS);
+    u64 cur = load(_effective_cadence_ns);
+    store(_effective_cadence_ns,
+          step >= cur ? MIN_EFFECTIVE_CADENCE_NS
+                      : std::max(cur - step, MIN_EFFECTIVE_CADENCE_NS));
   }
   // overflow == 0: the budget clamp alone fully absorbed this pass's correction - leave the cadence
   // at its current value.

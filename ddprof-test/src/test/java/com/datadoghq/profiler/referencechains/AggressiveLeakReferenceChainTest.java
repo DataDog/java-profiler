@@ -12,13 +12,13 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.assumeDebugBuild;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * E2E coverage for the search-restart gate the reference-chain collector's pass loop polls
@@ -81,12 +81,6 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
     // Mirrors ReferenceChainTrackingTest's own guard - FollowReferences/tag-based frontier walking
     // assumes a HotSpot-shaped JVMTI heap implementation.
     return !(Platform.isJavaVersion(8) || Platform.isJ9() || Platform.isZing());
-  }
-
-  private static void assumeDebugBuild() {
-    assumeTrue(ReferenceChainAssertions.isDebugInstrumentedBuild(),
-        "heapFloorRecordForTest0/setMaxHeapBytesForTest0/shouldRunPassForTest0 only exist in a "
-            + "-DDEBUG native build (debug/asan/tsan - javaApi.cpp's #ifdef DEBUG guard)");
   }
 
   /**
