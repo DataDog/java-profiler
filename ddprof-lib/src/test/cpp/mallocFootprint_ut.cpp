@@ -18,6 +18,10 @@
 #include "nativeMem.h"
 #include "countingAllocator.h"
 
+#if !defined(DD_HAVE_MALLOC_USABLE_SIZE) && !defined(DD_HAVE_MALLOC_SIZE)
+#error "Malloc footprint tests require an allocator usable-size API"
+#endif
+
 // Allocator overhead is a function of PER-ALLOCATION size, not of total bytes.
 // That is the whole reason a single blanket multiplier cannot be correct across
 // categories: the same total can be one large chunk paying ~0 % or thousands of
@@ -36,8 +40,6 @@ static size_t expectedFootprint(void *p, size_t requested) {
   return malloc_usable_size(p) + MallocFootprint::headerBytes();
 #elif defined(DD_HAVE_MALLOC_SIZE)
   return malloc_size(p) + MallocFootprint::headerBytes();
-#else
-  return requested;
 #endif
 }
 
