@@ -410,10 +410,15 @@ void ReferenceChainTracker::stop() {
     store(_abandon_reason, (u8)SearchAbandonReason::RECORDING_END);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
   }
+  // The four fields reset below are written in production only by the BFS thread
+  // (isUrgent(), updateUrgentAdmission(), restartSearch()), as plain non-atomic
+  // stores. Resetting them from this control thread is safe only because
+  // stopThread() has already joined that thread: the join both removes the only
+  // concurrent writer and orders these resets after everything the BFS thread
+  // ever wrote.
   store(_search_start_ns, (u64)0);
   _urgent_latched = false;
   _urgent_release_ticks = 0;
-  // BFS-thread owned like the two fields above; stopThread() has joined that thread.
   _admission_growth_baseline = 0;
   // Same per-search candidate/discovered canary state runPass()'s terminal branch and
   // restartSearch() clear - zeroing the counts here closes the stale-chain windows in
