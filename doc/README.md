@@ -33,6 +33,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 
 ### Build System
 - [BuildSystemGuide](building/BuildSystemGuide.md) - Comprehensive build system documentation
+- [CodeCoverage](building/CodeCoverage.md) - Opt-in C++ (gcovr) and Java (JaCoCo) coverage reports, prerequisites, debug-only scope
 - [GradleTasks](building/GradleTasks.md) - Available Gradle tasks reference
 - [JdkUpgrades](building/JdkUpgrades.md) - Two-JDK pattern and JDK upgrade touchpoints
 - [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation and Make-built test helper contracts

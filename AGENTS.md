@@ -82,11 +82,14 @@ and `:ddprof-lib:benchmarks`), `ddprof-test` (Java integration tests), `ddprof-t
   file and point at it.
 - If a step fails, print the failing command and a one-line hint, then stop.
 - "build assembleDebugJar" means `./.claude/commands/build-and-summarize assembleDebugJar`.
+- When renaming a symbol or concept, grep for the old name and update function names, comments and the PR title/description to the new name before requesting review.
 
 ## Build & Test Quick Reference
 
 Configurations: `release`, `debug`, plus `asan`/`tsan`/`fuzzer` when the sanitizer runtime
-is found for the selected compiler (inactive on macOS and musl).
+is found for the selected compiler (inactive on macOS and musl), plus opt-in `coverage`
+with `-PenableCoverage` (`:ddprof-lib:coverageReport`; the C++ report covers only the
+`-O0 -DDEBUG` build — see [doc/building/CodeCoverage.md](doc/building/CodeCoverage.md)).
 
 ```bash
 ./.claude/commands/build-and-summarize buildRelease      # release library + JAR
@@ -285,17 +288,45 @@ beyond the raw-monitor, memory-management and environment-local-storage function
 (see `ReferenceChainTracker::onGCStart()`). Profiler threads that need JNI attach with
 `VM::attachThread()` and call `VM::detachThread()` before they exit.
 
+**JNI/JVMTI resource cleanup.** Release every JNI local reference and JVMTI-allocated
+buffer (e.g. the `GetAllThreads()` array, freed with `Deallocate`) on every exit path —
+break, early return, skip — not only on the main path. On long-lived native threads (e.g.
+the reference-chain BFS thread) local refs are not freed until detach.
+
+**Clocks.** Use a monotonic clock for deadlines, TTLs and elapsed time, and convert with
+the helper matching the clock that produced the timestamp (`OS::nanotime()` values are
+nanoseconds; `TSC::ticks_to_millis()` takes TSC ticks). Never mix the two.
+
+**Recording lifecycle (stop/start/restart).** State that outlives `Profiler::stop()`
+(caches, frontier/tracking tables, cached class-map ids, clocks and deadlines, JNI global
+refs) must either be cleared in `stop()`/`start()` or be tagged with a generation and
+re-validated on use. `Profiler::start()` clears `_class_map` only on a reset start
+(`ACTION_START` or the first start); `ACTION_RESUME` keeps it. A cleared dictionary
+invalidates every stored class id, so state that caches ids must be re-validated on a
+reset start. If the `RefCountGuard` drain times out, `clearAll()` leaves the dictionary
+unchanged. Events queued since the last `dump()` must be written before
+`stop()` discards them.
+
 **Atomic memory ordering (arm64).** arm64 is weakly ordered (x86 is TSO); relaxed-ordering
-bugs are silent arm64-only lockups. Cross-thread reads: `__ATOMIC_ACQUIRE`. Cross-thread
-writes: `__ATOMIC_RELEASE`. Count + pointer two-phase publication: both the count load and
-the pointer load need acquire semantics. Default stance: acquire/release — the cost is
-negligible; the correctness cost is enormous. Beyond ordering: return addresses can carry
+bugs are silent arm64-only lockups. Cross-thread reads: acquire ordering
+(`__ATOMIC_ACQUIRE` / `std::memory_order_acquire`), including loads of pointers published
+by a release `compare_exchange`; relaxed only with a proof of no ordering dependency,
+stated in a comment. Cross-thread writes: `__ATOMIC_RELEASE`, including `volatile` or plain
+flags (e.g. `_running`) and configuration fields written in `start()` — a plain `volatile`
+access emits no barrier on arm64, so use `__atomic_store_n(..., __ATOMIC_RELEASE)` and
+`__atomic_load_n(..., __ATOMIC_ACQUIRE)`. Match every release store with an acquire load of
+the same variable. Count + pointer two-phase publication: both the count load and the
+pointer load need acquire semantics. Default stance: acquire for loads, release for
+stores; `acq_rel` only on read-modify-write operations that both consume and publish
+data; relaxed only for counters or flags with no dependent data, with a comment saying so. Beyond ordering: return addresses can carry
 PAC bits — pass them through `stripPointer()` (`arch.h`) before comparing, looking up or
 recording. At the sampled leaf the return address is still in LR (take it from the
 `ucontext`). On Linux aarch64 there is no red zone, so memory below the sampled SP may be
 overwritten by signal delivery.
 
-**Resource discipline.** Minimize allocations — we fight malloc-arena fragmentation. O(N)
+**Resource discipline.** Minimize allocations — we fight malloc-arena fragmentation. This
+applies to Java code on context/sampling paths too: avoid string concatenation, boxing and
+varargs there, including when building error or label strings. O(N)
 linear scans only for small sets (cutoff ~256 elements); larger sets need an index or binary
 search. Do not resolve symbols or line tables eagerly in hot paths.
 
@@ -329,24 +360,88 @@ exception list.
   the aarch64 container (`./utils/run-containers-tests.sh --arch=aarch64`).
   `assert()` is compiled out of release builds (`-DNDEBUG`): never rely on it for safety
   and never put side effects in it.
+- Platform-specific code goes in per-OS implementation files (`os_linux.cpp`,
+  `os_macos.cpp`, `libraryPatcher_linux.cpp`, etc.), never in a single shared file guarded
+  by `#ifdef`. Name new files `<module>_<os>.cpp`.
 - Provide javadoc for public classes and methods, and for non-trivial private/package-private
-  code. Provide comprehensive tests for new functionality; for bug fixes, a test that fails
-  before the fix and passes after.
+  code, including C++ algorithms (probing/compaction loops, index management,
+  randomization): state the invariant and why the approach is needed. Verify every javadoc
+  claim (thread safety, ownership, nullability, return values, clearing semantics, failure
+  modes) against the implementation; public Javadoc must not reference private symbols.
+- Provide comprehensive tests for new functionality: every branch, marker and error path
+  (including CI and shell scripts) needs a test that fails when that branch is removed or
+  mistyped — every new guard and boundary branch (null inputs, exact size/index limits,
+  first value rejected past a capacity), counter label and RAII guard contract, and every
+  new branch in concurrency, eviction, overflow and aging logic. Tests that exercise only
+  an empty or trivial state, and manual runs, do not count. Each test must assert its
+  claim (no print-only checks), fail if the behavior it names is removed, and not
+  duplicate another test's assertions. Tests must fail fast on missing data: assert that
+  JFR fields and accessors the event requires are non-null before any loop, and cover
+  every event field and code path the feature writes.
+- Bug fixes need a test in the same PR, not a follow-up: it fails before the fix and
+  passes after. Native-only fixes need a gtest in `ddprof-lib/src/test/cpp`. Assert that
+  the scenario was actually reached (e.g. threshold crossed, signals suppressed), not just
+  that some result exists.
+- Treat caller contract violations (null arguments, mismatched array lengths, an operation
+  that must never fail in a test) as bugs: throw instead of returning false or
+  incrementing a failure counter, and do not add validation that duplicates what the loop
+  already checks.
+- Explain in a comment why a non-obvious call, init-order assumption, sentinel return value
+  (e.g. 0 meaning miss/full), omitted lock, unsynchronized access or read of a specific
+  buffer (e.g. standby) is safe, and why a workaround or test exclusion exists.
 - Keep code lean and easy to follow; factor self-contained code into short functions with
   explicit names. Datadog-specific extensions are integrated directly into base files (e.g.
   `stackWalker.h`); exclude `ddprof-lib/build/async-profiler` from usage searches.
-- Copyright: new files get `Copyright <current year>, Datadog, Inc`. When modifying an
-  existing Datadog copyright, update the end year. Preserve all other copyrights. Add a
-  copyright line to files missing one.
+- Copyright: new source files (including tests) start with the short header
+  `Copyright <current year>, Datadog, Inc.` — no full license text block. When modifying
+  an existing Datadog copyright, update the end year (e.g. `2025, 2026, Datadog`) in every
+  file the change touches, including test, moved and refactored files. Preserve all other
+  copyrights. Add a copyright line to modified C/C++/Java/Kotlin files missing one; CI and
+  config files (Dockerfiles, `.gitlab/**`) are exempt.
 - Commits: logical chunks, messages based solely on the actual diff. Always run
   `spotlessApply` before committing. Never commit files from other projects or scratch files.
   **Never commit design artifacts automatically** — plans, specs, review reports, audit
   findings, session notes, analysis dumps — even when they live in the repo tree. Always
   ask for permission first and commit them only if the user explicitly says so.
-- C/C++ style: match the surrounding indentation exactly; don't split inline logic into
-  helpers unless reused or genuinely hard to follow; "why" comments must reference concrete
-  mechanisms (e.g. "ASAN's allocator lock is reentrant"), never speculative claims about
-  HotSpot/glibc/ASAN internals — if unsure, describe the observable symptom.
+- Scope: keep each PR scoped to its stated purpose. Put unrelated production changes
+  (e.g. a separate bug fix found while working), renames and cleanups in their own PR, do
+  not add code with no production caller (stage it in the PR that needs it), and do not
+  delete passing tests without stating why. When a change alters behavior described in
+  `doc/` or in comments, update those in the same PR.
+- Before requesting review, self-check the diff for unused variables, unused or duplicated
+  macros, dead code (methods, JNI entry points, fields, no-op functions, empty files left
+  without callers; test-only helpers stay only if marked as such) and misspelled
+  identifiers/comments. Write the PR title and description from the actual diff, re-check
+  them after the scope changes, and describe crash or bug mechanisms only as far as the
+  code and tests confirm.
+- C/C++ style: match the surrounding indentation and spacing exactly; don't split inline
+  logic into helpers unless reused or genuinely hard to follow; extract code that appears a
+  second time (e.g. in copy constructors, assignment operators) into one shared helper; use
+  `static_cast`/`reinterpret_cast`, not C-style casts; give file-local helpers internal
+  linkage (`static`); no commented-out code, redundant `inline` on in-class or constexpr
+  definitions, redundant access specifiers, or redundant conditions — a disjunct equivalent
+  to an adjacent check is dead; remove it, or keep it only as a deliberate defensive guard
+  whose comment does not claim it catches a distinct case; add duplicated fast-path variants
+  (e.g. `JavaCritical_*`) only for demonstrably performance-critical methods.
+- Comments: "why" comments must reference concrete mechanisms (e.g. "ASAN's allocator
+  lock is reentrant"), never speculative claims about HotSpot/glibc/ASAN/ISA internals — if
+  unsure, describe the observable symptom. Describe current behavior, not history; cite no
+  tickets, plan documents, design docs or line numbers (refer to symbols). Name each
+  thread or actor explicitly. Scope words ("only", "every", "never blocks", "single-threaded",
+  "no lock needed") and invariants (e.g. "always leaves a terminator") must hold on every
+  branch and for every caller thread, including early returns, timeouts and `siglongjmp`.
+  Check the actual callers before claiming a context (signal handler vs JNI). Prefer a
+  named `constexpr` over a comment restating a magic number. Comments on workarounds state
+  what breaks without them (symptom, JDK/arch/libc) and when they can be removed. State
+  each fact once, and omit comments that restate an obvious bounds check. After any
+  change, refactor or API rename, re-read the nearby comments against the final diff and
+  grep for the old name or behavior (including headers, tests and callers' comments).
+  Proofread comments, javadoc and exception messages. Hold user-facing operational
+  messages (error/warning logs, script and CLI output) to the same standard of accuracy:
+  state only what is known to be true, and recommend only next steps that can actually
+  succeed — never advise a retry that cannot clear the condition, never report a pending
+  state (e.g. a run awaiting approval) as failed, and never warn that something may still
+  be running when it is known to be terminal.
 - **RAII for every acquire/release pair** (C/C++). A lock, a heap allocation, or a flag
   that must be restored is released by a guard or owner destructor, not by a manual call
   at each exit. Reuse `SharedLockGuard`, `ExclusiveLockGuard`, `OptionalSharedLockGuard`,
@@ -356,6 +451,14 @@ exception list.
   shares a lock with signal handlers, end an owner that frees memory outside the exclusive
   critical section, because its destructor frees at scope end.
 - Always challenge proposals with deep analysis when you have hard evidence.
+- CI and automation scripts: before rewriting a script invoked from `.gitlab-ci.yml` or
+  `.gitlab/**/*.yml`, run `git log -p -- <script>` and enumerate every behavior branch
+  (fallbacks, env-var-driven paths, error exits); preserve all unless asked to drop one.
+  Grep the calling jobs for how it is invoked (env vars, expected exit codes). When
+  removing an item from a default list or config (an antagonist, a test tag, a feature
+  flag) or deleting a script or file, grep the whole repo (including `.gitlab/**`) and cite
+  the file/line proving it is unused. After changing a CI-invoked script, run `bash -n` and
+  trace each CI job that calls it.
 
 ## Work Tracking
 
@@ -452,7 +555,12 @@ description-specific:
 - **Explain the WHYs, not the WHATs.** Focus on non-obvious motivation and
   limitations: why this approach was chosen, what alternatives were rejected and
   why, what constraints shaped the design, what the change does NOT fix. Do not
-  reiterate what the code obviously shows.
+  reiterate what the code obviously shows. When a change deliberately alters
+  behavior with user-visible impact (JFR event schema, signal volume, resident
+  memory, suppression scopes) or accepts a recurring per-call or footprint cost,
+  state the decision and the accepted cost explicitly and flag it for reviewer
+  acknowledgment — never leave it implicit in code, a test rename, or a leftover
+  template marker in the description.
 - **Only the final state matters.** Never include ephemeral working knowledge —
   investigation detours, dead-end hypotheses, intermediate states, tool runs,
   session history. If a detail did not survive into the final change, it does not
@@ -482,7 +590,10 @@ description-specific:
   enforced in CI by the `qualityChecks` task; design artifacts under `docs/sphinx/`,
   `.sphinx/`, and similar scratch paths must never be tracked.
 - Documentation reflects the current state — never transient/historical notes, and never
-  claims that aren't true of the code. Verify numbers before writing them down.
+  claims that aren't true of the code. Verify numbers before writing them down. Preserved
+  historical sections of landed design/handover docs ("Suggested next steps", unverified
+  hypotheses, open items) must be rewritten or deleted once the work they instruct is done:
+  a reader must never be pointed at already-finished work.
 - Update this file from repeated failures: when an agent repeats a mistake or needs
   the same undocumented explanation twice, it proposes a concise correction here
   (or to the affected `doc/` page); the responsible team reviews it, and stale
