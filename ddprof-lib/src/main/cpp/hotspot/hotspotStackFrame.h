@@ -119,6 +119,43 @@ public:
     bool unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
     bool unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
 
+    // For a directly sampled enterSpecial, returns the number of stack
+    // words up to the carrier SP. Two or more words include saved FP/PC; before
+    // saving and after restoring them, FP is still in the sampled register and
+    // PC is in LR (aarch64, zero words) or at SP (x64, one word). Returns -1 for
+    // unsupported code sections or invalid frame metadata. Interpreter-only entry
+    // setup is located before the verified compiled entry; arm64 VM-leaf spills
+    // add two temporary words. Never infer a sampled layout from a return PC:
+    // its instruction has not executed with the sampled register values.
+    // A negative result may conservatively reject an unsupported code section.
+    int continuationEntryFrameWords(VMNMethod* nm, const void* pc);
+
+#ifdef __x86_64__
+    struct ContinuationEntryLayout {
+        int words;      // words from the current SP to the carrier SP
+        bool saved_fp;  // otherwise use the current (possibly unwound) FP
+    };
+
+    // Code-only decoding of the generated exception exit. Unlike the ordinary
+    // entry layout, its exception spill is not a saved FP. The PC is the last
+    // stack word, or (zero words) interrupted RDX. Return-address mode accepts
+    // only resolver call returns, never a phase requiring interrupted registers.
+    static bool continuationEntryExceptionLayout(VMNMethod* nm, const void* pc,
+                                                 bool return_address, ContinuationEntryLayout& layout);
+#endif
+
+#ifdef __aarch64__
+    // Temporary SP adjustment from the entry's VM-leaf call. Reads code only,
+    // so it also applies to return PCs recovered while unwinding native frames.
+    static int continuationEntrySpillWords(VMNMethod* nm, const void* pc);
+#endif
+
+    // Decodes only the return-barrier prefix that loads JavaThread::_cont_entry
+    // into SP. Called during initialization on a bounded copy of the code.
+    // Returns -1 for unknown instructions; the caller must validate the offset
+    // against the exported JavaThread size before publishing it to walkers.
+    static int continuationEntryThreadOffset(const unsigned char* code, size_t size);
+
     static bool unwindAtomicStub(const StackFrame& frame, const void*& pc);
 
 private:

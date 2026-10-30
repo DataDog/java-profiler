@@ -10,7 +10,7 @@
 
 // Compile-time checks: the predicates and per-site constants are constexpr.
 static_assert(!contBoundaryProvesComplete(ContBoundary::Frozen), "Frozen must not prove completeness");
-static_assert(!contBoundaryEntryFpIsCurrentFp(ContBoundary::Frozen), "Frozen uses *fp layout");
+static_assert(!contBoundaryEntryFpIsCurrentFp(ContBoundary::Frozen), "Frozen rejects the FP fallback");
 static_assert(contBoundaryProvesComplete(ContBoundary::Thawed), "Thawed proves completeness");
 static_assert(contBoundaryEntryFpIsCurrentFp(ContBoundary::Thawed), "Thawed uses fp layout");
 static_assert(!contBoundaryProvesComplete(ContBoundary::Unverified), "Unverified must not prove completeness");
@@ -22,10 +22,10 @@ static_assert(contBoundaryEntryFpIsCurrentFp(CONT_BOUNDARY_AT_SPECULATIVE_UNKNOW
 static_assert(!contBoundaryProvesComplete(CONT_BOUNDARY_AT_RETURN_BARRIER),
               "return barrier crossing must mark the sample truncated");
 static_assert(!contBoundaryEntryFpIsCurrentFp(CONT_BOUNDARY_AT_RETURN_BARRIER),
-              "return barrier crossing uses *fp layout");
+              "return barrier crossing rejects the FP fallback");
 
-// R4: return barrier (frozen frames remain) marks truncated and uses *fp.
-TEST(ContBoundary, FrozenMarksTruncatedAndUsesSavedFp) {
+// R4: a return barrier marks truncation and requires entry metadata.
+TEST(ContBoundary, FrozenMarksTruncatedAndRejectsFpFallback) {
     EXPECT_FALSE(contBoundaryProvesComplete(ContBoundary::Frozen));
     EXPECT_FALSE(contBoundaryEntryFpIsCurrentFp(ContBoundary::Frozen));
 }
