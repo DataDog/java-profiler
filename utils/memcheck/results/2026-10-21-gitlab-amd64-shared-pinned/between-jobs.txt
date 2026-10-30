@@ -1,0 +1,22 @@
+== runner shape
+memcheck-1: nproc=94 | cpu.max=max 100000 | cpu_model=Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz | memory.max=6442450944
+memcheck-2: nproc=81 | cpu.max=max 100000 | cpu_model=Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz | memory.max=6442450944
+memcheck-3: nproc=28 | cpu.max=max 100000 | cpu_model=Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz | memory.max=6442450944
+memcheck-4: nproc=60 | cpu.max=max 100000 | cpu_model=Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz | memory.max=6442450944
+memcheck-5: nproc=75 | cpu.max=max 100000 | cpu_model=Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz | memory.max=6442450944
+  DIFFERS across jobs: nproc: ['28', '60', '75', '81', '94']
+
+== per-job mean vs the other jobs (gated metrics); TRIP if |shift| > max(256 KiB, 4*SD_within)
+trips: 0
+
+== largest shift/threshold ratios
+ 0.48 memcheck-2 mixed    counters native_mem_live_bytes                         shift   -146.9 KiB  SD_within   77.0 KiB
+ 0.39 memcheck-2 mixed    counters native_mem_live_bytes.calltrace               shift   -135.8 KiB  SD_within   86.4 KiB
+ 0.37 memcheck-2 mixed    nmt      code                                          shift   +652.2 KiB  SD_within  435.9 KiB
+ 0.32 memcheck-1 traces   counters native_mem_live_bytes                         shift   -103.1 KiB  SD_within   80.0 KiB
+ 0.27 memcheck-1 traces   counters native_mem_max_bytes                          shift   -141.8 KiB  SD_within  133.1 KiB
+ 0.26 memcheck-1 traces   counters native_mem_post_flush_max_bytes.calltrace     shift    -91.6 KiB  SD_within   86.8 KiB
+ 0.26 memcheck-1 traces   counters native_mem_max_bytes.calltrace                shift    -91.6 KiB  SD_within   86.8 KiB
+ 0.26 memcheck-5 mixed    counters native_mem_live_bytes                         shift    +80.6 KiB  SD_within   77.0 KiB
+ 0.26 memcheck-5 classesM counters native_mem_max_bytes                          shift   +296.9 KiB  SD_within  287.6 KiB
+ 0.25 memcheck-5 classesM counters native_mem_post_flush_max_bytes.calltrace     shift   +205.1 KiB  SD_within  203.1 KiB
