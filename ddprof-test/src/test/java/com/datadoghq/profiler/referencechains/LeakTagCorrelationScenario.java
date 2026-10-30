@@ -91,6 +91,31 @@ public final class LeakTagCorrelationScenario {
   private static final int SEED_CHUNKS = 10;
 
   /**
+   * Growth schedule of run()'s 25-round loop (load-bearing, see the loop's own comment): the leak
+   * grows by {@link #CHUNKS_PER_GROWTH_ROUND} chunks in each of rounds 1..GROWTH_ROUNDS, and only
+   * by one chunk every {@link #QUIET_TOP_UP_EVERY}th round after that. Invariants:
+   * <ul>
+   *   <li>Total leak = SEED_CHUNKS + GROWTH_ROUNDS * CHUNKS_PER_GROWTH_ROUND + (25 -
+   *   GROWTH_ROUNDS) / QUIET_TOP_UP_EVERY = 10 + 20 + 3 = 33 chunks, below the 35 of the earlier
+   *   one-chunk-every-round schedule - a smaller working set, never a larger one.</li>
+   *   <li>Every {@link #LEAK_SINK} backing-array replacement (capacity 10 -> 15 -> 22 -> 33 at
+   *   sizes 11/16/23) happens inside the growth rounds, i.e. after the first-pass wait (so the
+   *   resize case LEAK_SINK exists for is still exercised) and before the tail; the tail
+   *   top-ups fill size 31..33 within the final capacity 33, so the tail never replaces
+   *   elementData again.</li>
+   *   <li>The growth rounds alone span 10 GC epochs (one System.gc() per round), i.e.
+   *   KLASS_POPULATION_MIN_FILL_FOR_TREND ring samples of real growth; the tail top-ups keep a
+   *   fresh surviving-age cohort arriving so the real fold's trend does not go flat, and
+   *   debug builds additionally push one seeded rising epoch every round.</li>
+   * </ul>
+   */
+  private static final int GROWTH_ROUNDS = 10;
+
+  private static final int CHUNKS_PER_GROWTH_ROUND = 2;
+
+  private static final int QUIET_TOP_UP_EVERY = 5;
+
+  /**
    * Per-round trend-maintenance epoch counter (debug builds only), same pattern as
    * StaticFieldGrowingCollectionScenario: a one-shot seeded ramp ages out of LivenessTracker's
    * hysteresis once enough real fold samples interleave (observed live: the byte[] candidate
@@ -309,11 +334,23 @@ public final class LeakTagCorrelationScenario {
     // every scanned dump are accumulated into the kept result.
     ScanResult best = null;
     int totalRounds = 25;
-    // Slow growth per round is deliberate: each chunk clears the allocation sampler's floor on
-    // its own (see CHUNK_BYTES), so every allocation is sampled, tracked, and taggable - the
-    // per-round population growth is only the trend signal, not a sampling-volume requirement.
+    // Front-loaded growth, quiet tail (see GROWTH_ROUNDS): rounds 1..GROWTH_ROUNDS grow the leak,
+    // every later round is a quiet poll with only the sparse QUIET_TOP_UP_EVERY top-up. Pass 1
+    // (the first pass that can intercept a leak tag) is gated by repaying pass 0's CPU
+    // pain-budget debt, which on a slow cell lands anywhere in the tail or grace period; with
+    // the growth already done by then, every chunk is tracked, leak-tagged, and sitting in the
+    // final elementData whenever that pass lands. Each chunk still clears the allocation
+    // sampler's floor on its own (see CHUNK_BYTES), so every allocation is sampled, tracked, and
+    // taggable - the per-round growth is only the trend signal, not a sampling-volume
+    // requirement, and in debug builds the per-round seeded ramp below keeps both trends
+    // qualifying through the quiet tail.
     for (int round = 1; round <= totalRounds; round++) {
-      addChunk();
+      int newChunks = round <= GROWTH_ROUNDS
+          ? CHUNKS_PER_GROWTH_ROUND
+          : (round % QUIET_TOP_UP_EVERY == 0 ? 1 : 0);
+      for (int c = 0; c < newChunks; c++) {
+        addChunk();
+      }
       if (debugBuild) {
         hysteresisEpoch++;
         ReferenceChainTestHooks.seedKlassPopulationSample0(

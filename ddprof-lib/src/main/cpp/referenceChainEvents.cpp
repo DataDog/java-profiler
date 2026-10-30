@@ -150,11 +150,12 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     return;
   }
 
-  // Don't rebuild chains against cache entries the heap callback asked to drop.
-  drainPendingChainInvalidations();
-
   // Stamp every entry this poll refreshes with the current search generation.
   const u64 current_search_ns = load(_search_start_ns);
+
+  // Don't rebuild chains against cache entries the heap callback asked to drop, and refresh the
+  // ones whose path changed (the only site that applies REBUILD invalidations).
+  applyPendingChainInvalidations(jvmti, jni, current_search_ns);
 
   // klass_ids resolved (and therefore already pruned-if-dead) by the candidate loop below, so the
   // prune pass afterwards skips re-resolving them - it only needs to cover cached klasses that are
@@ -572,7 +573,7 @@ int ReferenceChainTracker::snapshotResolvedChainTags(jlong *out) {
 
 void ReferenceChainTracker::deferResolvedChainInvalidation(
     jlong source_tag, const jlong *resolved_chain_tags,
-    int resolved_chain_tag_count) {
+    int resolved_chain_tag_count, ChainInvalidationKind kind) {
   bool was_cached = false;
   for (int i = 0; i < resolved_chain_tag_count; i++) {
     if (resolved_chain_tags[i] == source_tag) {
@@ -583,32 +584,61 @@ void ReferenceChainTracker::deferResolvedChainInvalidation(
   if (!was_cached) {
     return;
   }
+  // Cache keys are frontier tags (>= 0); a negative key would alias another tag's REBUILD
+  // encoding, so it is never queued.
+  assert(source_tag >= 0);
+  if (source_tag < 0) {
+    return;
+  }
+  const jlong evict = encodePendingChainInvalidation(source_tag, ChainInvalidationKind::EVICT);
+  const jlong rebuild = encodePendingChainInvalidation(source_tag, ChainInvalidationKind::REBUILD);
 
   _pending_chain_invalidations_lock.lock();
-  for (jlong tag : _pending_chain_invalidations) {
-    if (tag == source_tag) {
+  for (jlong &pending : _pending_chain_invalidations) {
+    if (pending == evict) {
+      _pending_chain_invalidations_lock.unlock();
+      return; // EVICT already queued - it wins over any REBUILD
+    }
+    if (pending == rebuild) {
+      if (kind == ChainInvalidationKind::EVICT) {
+        pending = evict; // the source was rejected after its path changed: erase, don't rebuild
+      }
       _pending_chain_invalidations_lock.unlock();
       return;
     }
   }
   // Cache insertion is serialized with traversals on the engine thread and dumps can only remove
-  // keys, so one pre-traversal snapshot bounds distinct eligible tags to the cache cap.
+  // keys, so one pre-traversal snapshot bounds distinct eligible tags to the cache cap. REBUILD
+  // entries the dump path leaves pending do not break the bound: only pollWatchedTargets() inserts
+  // into the cache, and it drains every pending entry first.
   assert((int)_pending_chain_invalidations.size() <
          MAX_PENDING_CHAIN_INVALIDATIONS);
   if ((int)_pending_chain_invalidations.size() <
       MAX_PENDING_CHAIN_INVALIDATIONS) {
-    _pending_chain_invalidations.push_back(source_tag);
+    _pending_chain_invalidations.push_back(
+        kind == ChainInvalidationKind::REBUILD ? rebuild : evict);
   }
   _pending_chain_invalidations_lock.unlock();
 }
 
 void ReferenceChainTracker::drainPendingChainInvalidations() {
   // Serialize drainers and scratch-buffer use with the cache. The producer lock is held only for
-  // the O(1) handoff, never for unordered_map erase or node destruction.
+  // a bounded (<= MAX_PENDING_CHAIN_INVALIDATIONS) in-place partition - EVICT entries move to the
+  // reserved scratch buffer, REBUILD entries stay pending for the BFS thread - never for
+  // unordered_map erase or node destruction. Neither step reallocates.
   ExclusiveLockGuard guard(&_resolved_chains_lock);
   _pending_chain_invalidations_lock.lock();
   assert(_draining_chain_invalidations.empty());
-  _pending_chain_invalidations.swap(_draining_chain_invalidations);
+  size_t kept = 0;
+  for (size_t i = 0; i < _pending_chain_invalidations.size(); i++) {
+    jlong pending = _pending_chain_invalidations[i];
+    if (isPendingChainRebuild(pending)) {
+      _pending_chain_invalidations[kept++] = pending;
+    } else {
+      _draining_chain_invalidations.push_back(pending);
+    }
+  }
+  _pending_chain_invalidations.resize(kept);
   _pending_chain_invalidations_lock.unlock();
 
   for (jlong tag : _draining_chain_invalidations) {
@@ -618,6 +648,76 @@ void ReferenceChainTracker::drainPendingChainInvalidations() {
     }
   }
   _draining_chain_invalidations.clear();
+}
+
+void ReferenceChainTracker::applyPendingChainInvalidations(
+    jvmtiEnv *jvmti, JNIEnv *jni, u64 current_search_ns) {
+  // REBUILD tags whose cached chain is current-generation. A chain cached by an earlier search
+  // under the same numeric tag describes a different object (restartSearch() resets the tag
+  // namespace), so a path change on the new object says nothing about it: leave it alone.
+  jlong rebuild_tags[MAX_PENDING_CHAIN_INVALIDATIONS];
+  int rebuild_count = 0;
+  {
+    ExclusiveLockGuard guard(&_resolved_chains_lock);
+    _pending_chain_invalidations_lock.lock();
+    assert(_draining_chain_invalidations.empty());
+    _pending_chain_invalidations.swap(_draining_chain_invalidations);
+    _pending_chain_invalidations_lock.unlock();
+
+    for (jlong pending : _draining_chain_invalidations) {
+      jlong tag = pendingChainInvalidationTag(pending);
+      if (!isPendingChainRebuild(pending)) {
+        if (_resolved_chains.erase(tag) > 0) {
+          TEST_LOG("ReferenceChainTracker::drainPendingChainInvalidations source_tag=%lld",
+                   (long long)tag);
+        }
+        continue;
+      }
+      auto it = _resolved_chains.find(tag);
+      if (it != _resolved_chains.end() &&
+          it->second.source_search_ns == current_search_ns &&
+          rebuild_count < MAX_PENDING_CHAIN_INVALIDATIONS) {
+        rebuild_tags[rebuild_count++] = tag;
+      }
+    }
+    _draining_chain_invalidations.clear();
+  }
+
+  for (int i = 0; i < rebuild_count; i++) {
+    const jlong tag = rebuild_tags[i];
+    ReferenceChainEvent event;
+    // The frontier entry stays intact until restartSearch(), so this does not depend on the
+    // candidate/discovered slots runPass()'s terminal branch may already have zeroed.
+    if (!buildChainEvent(jvmti, jni, tag, &event)) {
+      TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations rebuild failed, "
+               "keeping cached chain source_tag=%lld",
+               (long long)tag);
+      continue;
+    }
+    if (suppressChainEvent(event)) {
+      // The new path turned the chain into a filtered shape: same outcome as every other build
+      // site (see buildDiscoveredInstanceChains()).
+      invalidateResolvedChain(tag);
+      continue;
+    }
+    if (isLeakTag((jlong)event._target_tag) && !chainTargetsCurrentLeakOwner(event)) {
+      // Dead-owner rebuild: keep the old chain; the next dump evicts it if it is dead too.
+      continue;
+    }
+    event._start_time = TSC::ticks();
+    ExclusiveLockGuard guard(&_resolved_chains_lock);
+    auto it = _resolved_chains.find(tag);
+    // Replace only: a dump may have evicted the entry (dead owner) since the scan above, and a
+    // rebuild must never resurrect it.
+    if (it != _resolved_chains.end() &&
+        it->second.source_search_ns == current_search_ns) {
+      it->second.event = std::move(event);
+      it->second.source_tag = tag;
+      TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations rebuilt "
+               "source_tag=%lld depth=%u",
+               (long long)tag, it->second.event._depth);
+    }
+  }
 }
 
 void ReferenceChainTracker::clearPendingChainInvalidations() {
@@ -759,7 +859,8 @@ void ReferenceChainTracker::recordDiscoveredInstance(
         _candidate_discovered_tags[s][d] = frontier_tag;
         if (invalidation_mode == CacheInvalidationMode::DEFERRED) {
           deferResolvedChainInvalidation(victim, resolved_chain_tags,
-                                         resolved_chain_tag_count);
+                                         resolved_chain_tag_count,
+                                         ChainInvalidationKind::EVICT);
         } else {
           invalidateResolvedChain(victim);
         }
