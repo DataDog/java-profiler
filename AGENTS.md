@@ -423,6 +423,15 @@ exception list.
   to an adjacent check is dead; remove it, or keep it only as a deliberate defensive guard
   whose comment does not claim it catches a distinct case; add duplicated fast-path variants
   (e.g. `JavaCritical_*`) only for demonstrably performance-critical methods.
+- **Comment budget (mechanical gate).** Before finishing any change, run a prune pass
+  over every comment and javadoc you wrote: each comment ≤3 lines, and each line must
+  state a distinct constraint (a non-obvious mechanism, invariant, or consequence) that
+  the reader could not get from the code. A comment that needs more than 3 lines
+  requires per-line justification in the task summary. Prefer spending the effort on
+  cutting — a verbose comment is review surface, not safety. The same cut applies to
+  paragraphs in `doc/` pages and PR descriptions: fewer sentences that each carry a
+  fact beat more sentences that carry emphasis. This gate complements the comment
+  rules above; it does not replace them.
 - Comments: "why" comments must reference concrete mechanisms (e.g. "ASAN's allocator
   lock is reentrant"), never speculative claims about HotSpot/glibc/ASAN/ISA internals — if
   unsure, describe the observable symptom. Describe current behavior, not history; cite no
