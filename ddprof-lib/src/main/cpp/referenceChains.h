@@ -147,8 +147,10 @@ private:
   // End-of-pass timestamp of the last pass that ran with a canary chase still open (the reference
   // point for the spacing above).
   u64 _last_canary_pass_ns;
-  // Whether threadLoop()'s OOM urgency ramp is currently active, set each loop iteration BEFORE
-  // shouldRunPass() (same thread, no atomics needed).
+  // Whether threadLoop()'s OOM urgency ramp is currently active, set each loop iteration by
+  // publishUrgencyState() BEFORE shouldRunPass() (same BFS thread), and otherwise only by test
+  // seams (setOomRampActiveForTest(), publishUrgencyStateForTest()) while no BFS thread is live -
+  // no atomics needed.
   bool _oom_ramp_active;
 
   // How many consecutive times in a row runPass()'s canary-stuck check
@@ -353,7 +355,12 @@ private:
   // running baseline: every admitted sample raises it (a plateau loses the
   // boost, a recovered spike never passes it), and the emergency band seeds
   // the same baseline at entry so the ramp-band comparison stays continuous.
-  // Written and read only from threadLoop() on the BFS thread - no atomics.
+  // Written and read by updateUrgentAdmission() on the BFS thread (threadLoop()
+  // via publishUrgencyState()); also reset by stop() and resetSearchStateForTest()
+  // (both only after stopThread() has joined the BFS thread) and by test seams
+  // (resetUrgencyForTest(), updateUrgentAdmissionForTest(),
+  // publishUrgencyStateForTest()) that run only while no BFS thread is live -
+  // so there is no concurrent access and no atomics are needed.
   // 0 = no baseline for the current episode (a used value of 0 cannot be a
   // real sample: onGC() only records used > 0).
   u64 _admission_growth_baseline;
@@ -778,19 +785,28 @@ private:
   }
   void threadLoop();
 
-  // Runs a pass when the GC-finish epoch advanced or the cadence elapsed.
+  // Runs a pass when the GC-finish epoch advanced or the cadence elapsed. The two-arg form
+  // consumes the caller's per-iteration OOM projection (threadLoop()'s single secondsToOOM()
+  // read, passed down to the restart gate and the urgency latch so every decision of one
+  // iteration sees the same sample); the one-arg form reads secondsToOOM() once and forwards
+  // (JNI shouldRunPassForTest(), gtest accessors).
   bool shouldRunPass(u64 now_ns);
+  bool shouldRunPass(u64 now_ns, double seconds_to_oom);
 
   // Cheap probe (max=1, not the real poll pollWatchedTargets() makes) into LivenessTracker's
   // population-trend table: true if at least one klass shows a positive population slope worth
   // chasing. Always false when no leak-signal source (generations or liveheap tracking) is
   // active - the population table and heap-floor ring never fill without one, and a search
   // would run whole-heap BFS passes with zero candidates for zero diagnostic value.
-  bool hasLeakSignal();
+  // seconds_to_oom is the caller's projection (passed to isUrgent()), never re-read here.
+  bool hasLeakSignal(double seconds_to_oom);
 
   // Latched, hysteretic view of LivenessTracker::secondsToOOM() crossing OOM_URGENT_THRESHOLD_S -
-  // see _urgent_latched for the latch/release rules and why the raw comparison flaps.
+  // see _urgent_latched for the latch/release rules and why the raw comparison flaps. The
+  // one-arg form evaluates the caller's projection; the zero-arg form reads secondsToOOM() and
+  // forwards (runPass()'s no-progress check in referenceChainTraversal.cpp, isUrgentForTest()).
   bool isUrgent() const;
+  bool isUrgent(double seconds_to_oom) const;
 
   // Computes the 100% tracking-admission decision for one threadLoop()
   // iteration and maintains _admission_growth_baseline. Raw `urgent` still
@@ -800,10 +816,18 @@ private:
   // sufficient, and OOM_URGENT_THRESHOLD_S for the emergency split.
   bool updateUrgentAdmission(double seconds_to_oom, bool urgent);
 
+  // Publishes one threadLoop() iteration's urgency: _oom_ramp_active follows the raw band
+  // (`urgent`) for shouldRunPass()'s canary-backoff bypass; LivenessTracker's 100% tracking boost
+  // (setUrgentTracking()) follows updateUrgentAdmission()'s growth-gated decision, never raw
+  // `urgent`. Extracted from threadLoop() so the wiring is testable without a BFS thread.
+  void publishUrgencyState(double seconds_to_oom, bool urgent);
+
   // Search restart gate: true once _safepoint_pain_budget has
   // drained back to zero (canStartNow()) *and* hasLeakSignal() above reports at least one leak
-  // candidate.
+  // candidate. The two-arg form consumes the caller's projection; the one-arg form reads
+  // secondsToOOM() once and forwards.
   bool canAffordNewSearch(u64 now_ns);
+  bool canAffordNewSearch(u64 now_ns, double seconds_to_oom);
 
   // Resets every per-search field back to its just-constructed value so the next runPass() call
   // takes the "first pass of a search" branch again, exactly like a fresh ReferenceChainTracker

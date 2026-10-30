@@ -11,6 +11,7 @@ import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -40,6 +41,9 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
   // genuine history outranks the seeded ramp.
   private static final int SLOPE_TEST_KLASS_ID = 987001;
   private static final int CHAIN_TEST_KLASS_ID = 987002;
+  // Arbitrary non-zero burn-in stamp: LivenessTracker::initialize() only CASes the stamp from 0,
+  // so a non-zero value cannot be overwritten by a concurrent profiler start mid-test.
+  private static final long KNOWN_ACTIVATION_STAMP_NS = 42L;
 
   private static final class ChainTarget {}
 
@@ -193,5 +197,30 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
   @Test
   public void observedChainHeadsIsEmptyForNoEvents() {
     assertTrue(ReferenceChainAssertions.observedChainHeads(null).isEmpty());
+  }
+
+  /**
+   * Kills a dropped negative-argument guard in setLeakSignalActivatedNsForTest0 (javaApi.cpp):
+   * without it a negative jlong would be stored as a u64 near UINT64_MAX, which secondsToOOM()
+   * reads as burn-in-never-passed. Asserts the throw AND that the stored stamp is unchanged; the
+   * original stamp is restored on every exit path (shared, no-forkEvery JVM).
+   */
+  @Test
+  public void shouldRejectNegativeLeakSignalActivationStamp() {
+    assumeDebugBuild();
+    long savedActivationNs = ReferenceChainTestHooks.backdateLeakSignalActivationForTest0();
+    long observed;
+    try {
+      ReferenceChainTestHooks.setLeakSignalActivatedNsForTest0(KNOWN_ACTIVATION_STAMP_NS);
+      assertThrows(IllegalArgumentException.class,
+          () -> ReferenceChainTestHooks.setLeakSignalActivatedNsForTest0(-1L),
+          "A negative burn-in stamp must be rejected, not cast to a huge u64");
+      // Returns the current stamp (and backdates; the finally block restores the original).
+      observed = ReferenceChainTestHooks.backdateLeakSignalActivationForTest0();
+    } finally {
+      ReferenceChainTestHooks.setLeakSignalActivatedNsForTest0(savedActivationNs);
+    }
+    assertEquals(KNOWN_ACTIVATION_STAMP_NS, observed,
+        "A rejected negative stamp must leave the previous stamp in place");
   }
 }
