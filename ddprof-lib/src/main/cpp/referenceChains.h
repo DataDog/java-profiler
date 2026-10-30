@@ -640,10 +640,8 @@ private:
   //     consumed by runPass()'s no-progress abandonment branch, which it suppresses while latched;
   // (b) updateUrgentAdmission()'s emergency band, where tracking admission goes to 100% without
   //     heap-growth evidence.
-  // It never authorizes starting a search: hasLeakSignal() still requires selectLeakCandidates()
-  // to return at least one klass past its per-klass ring-fill/hysteresis gate
-  // (KLASS_POPULATION_MIN_FILL_FOR_TREND plus LEAK_TREND_HYSTERESIS_BASE/CORROBORATED epochs,
-  // livenessTracker.h), and urgency never stands in for that.
+  // It never authorizes starting a search - urgency never stands in for
+  // selectLeakCandidates()'s per-klass gate (see hasLeakSignal()).
   static constexpr double OOM_URGENT_THRESHOLD_S = 300.0; // 5 minutes
 
   // Release side of OOM_URGENT_THRESHOLD_S's hysteresis (see _urgent_latched).

@@ -2132,10 +2132,7 @@ Error LivenessTracker::initialize(Arguments &args) {
   // observe the flag it was actually started with, even though the tracking
   // table itself persists across recordings.
   _gc_generations.store(args._gc_generations, std::memory_order_relaxed);
-  // Either generations tracking or liveheap tracking is a sufficient source
-  // for the population-trend signal (they drive the same mechanisms here;
-  // liveheap additionally preserves stack traces for its samples) - see
-  // _leak_signal_enabled's own comment (livenessTracker.h).
+  // See _leak_signal_enabled's own comment for why either source suffices.
   _leak_signal_enabled.store(args._gc_generations || args._record_liveness,
                              std::memory_order_relaxed);
 

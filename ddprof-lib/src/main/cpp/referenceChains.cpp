@@ -778,11 +778,8 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
 bool ReferenceChainTracker::isUrgent() const {
   static_assert(LivenessTracker::OOM_PROJECTION_BURN_IN_NS / 1e9 >= OOM_URGENT_THRESHOLD_S,
                 "burn-in must cover the urgent horizon");
-  // Warmup is filtered inside secondsToOOM(): no projection (-1) until
-  // OOM_PROJECTION_BURN_IN_NS after the leak signal first activated. Age-based
-  // on purpose - a guard on the heap-floor ring's time span shrinks with GC
-  // frequency and suppressed the latch in exactly the back-to-back-GC
-  // imminent-OOM case.
+  // Warmup is filtered inside secondsToOOM(): no projection (-1) until the
+  // burn-in passes (see OOM_PROJECTION_BURN_IN_NS for why it is age-based).
   double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();
   if (seconds_to_oom >= 0 && seconds_to_oom < OOM_URGENT_THRESHOLD_S) {
     _urgent_release_ticks = 0;
