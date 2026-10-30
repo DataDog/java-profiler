@@ -712,25 +712,30 @@ TEST_F(ReferenceChainsBfsTest, CanaryStuckLimitDoublesPerRestartAndResetsOnClean
     // frontier-stall precondition, checked first) is deliberately suppressed by isUrgent(), and
     // at the base limit both conditions would fire on the same pass. Seed a ~224s-to-OOM
     // projection the same way referenceChainsOomTests.inc does (linear ramp over synthetic
-    // timestamps); restored at the end so later tests see default heap state.
+    // timestamps; the 60s spacing is arbitrary) with secondsToOOM()'s age-based burn-in stamp
+    // backdated past OOM_PROJECTION_BURN_IN_NS; restored at the end so later tests see default
+    // heap state.
     constexpr u64 SEC_NS = 1000000000ULL;
     constexpr u64 MiB = 1ULL << 20;
     constexpr u64 MAX_HEAP_TEST = 1024 * MiB;
     LivenessTracker::instance()->setMaxHeapBytesForTest((jlong)MAX_HEAP_TEST);
     LivenessTracker::instance()->setGcGenerationsForTest(true);
+    LivenessTracker::instance()->setLeakSignalActivatedNsForTest(
+        OS::nanotime() - LivenessTracker::OOM_PROJECTION_BURN_IN_NS - SEC_NS);
 #ifdef DEBUG
     LivenessTracker::instance()->setHeapFloorRecordingForTest(false);
 #endif
     {
         u64 clock_ns = 0;
-        u64 last_used = MAX_HEAP_TEST - 224 * MiB;
+        // remaining * 60s / 1MiB == 240  =>  remaining == 4MiB
+        u64 last_used = MAX_HEAP_TEST - 4 * MiB;
         for (int i = 0; i < 30; i++) {
             LivenessTracker::instance()->heapFloorRecordForTest(
                 last_used - MiB * (u64)(29 - i), clock_ns, 0);
-            clock_ns += SEC_NS;
+            clock_ns += 60 * SEC_NS;
         }
     }
-    ASSERT_NEAR(LivenessTracker::instance()->secondsToOOM(), 224.0, 1.0);
+    ASSERT_NEAR(LivenessTracker::instance()->secondsToOOM(), 240.0, 1.0);
 
     constexpr int kChainLength = 10;
     std::vector<int> nodes;
@@ -797,13 +802,15 @@ TEST_F(ReferenceChainsBfsTest, CanaryStuckLimitDoublesPerRestartAndResetsOnClean
               ReferenceChainsTestAccessor::canaryStuckPassLimitForTest());
 
     // This test deliberately reaches states the fixtures' SetUp reset() cannot fully neutralize
-    // for a *latched* tracker: the urgency latch (isUrgent() keeps bypassing the candidate gate
-    // until it releases on its own, breaking later tests' gate expectations under shuffled
-    // order), the watched-leak-klass list (restartSearch() does not clear it), and whatever
+    // for a *latched* tracker: the urgency latch (the latched tracker keeps suppressing
+    // runPass()'s no-progress abandonment until it releases on its own, breaking later tests'
+    // terminal-state expectations under shuffled order), the watched-leak-klass list (restartSearch() does not clear it), and whatever
     // candidate/found state the last runPass() left. Restore all of it - the same seam the
     // fixtures use in SetUp, applied to the leaked half.
     LivenessTracker::instance()->setMaxHeapBytesForTest(-1);
     LivenessTracker::instance()->setGcGenerationsForTest(false);
+    // 0 = "never activated"; the next start() re-stamps it through the CAS from 0.
+    LivenessTracker::instance()->setLeakSignalActivatedNsForTest(0);
     tracker->stop();
     ReferenceChainsTestAccessor::resetUrgencyForTest();
     ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({});
@@ -884,6 +891,31 @@ TEST_F(ReferenceChainsBfsTest, CanaryLaneBacksOffWithoutProgressAndResetsOnProgr
     EXPECT_EQ(1, ReferenceChainsTestAccessor::canaryBackoffMult())
         << "candidate progress must reset the spacing multiplier to 1";
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime()));
+
+    tracker->stop();
+}
+
+// With no leak-signal source active (neither generations nor liveheap
+// tracking), the collector must stay completely idle: no first pass and no
+// restart, ever. Searching without a signal runs whole-heap BFS passes with
+// zero candidates - the exact waste the leak-signal gate exists to prevent.
+TEST_F(ReferenceChainsBfsTest, NoSearchWithoutLeakSignalSource) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    // Force the no-signal state regardless of what earlier tests left behind:
+    // setGcGenerationsForTest(false) clears both the raw option flag and the
+    // effective leak-signal gate (initialize() would derive the effective
+    // flag from generations || liveheap; this seam bypasses initialize()).
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+    ASSERT_FALSE(LivenessTracker::instance()->leakSignalEnabled());
+
+    // First-search gate: a brand-new tracker must not start a pass.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::canAffordNewSearch(OS::nanotime()));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime()))
+        << "no leak-signal source means no search, not a search without a gate";
 
     tracker->stop();
 }

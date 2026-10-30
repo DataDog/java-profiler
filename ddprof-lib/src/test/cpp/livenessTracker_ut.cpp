@@ -19,6 +19,7 @@
 #include "arguments.h"
 #include "counters.h"
 #include "objectSampler.h"
+#include "os.h"
 #include "profiler.h"
 #include "referenceChainsTestAccessors.h"
 #include "vmEntry.h"
@@ -1162,14 +1163,53 @@ public:
         return t->_last_gc_epoch;
     }
 
+    // Mirrors the generations value into the effective leak-signal flag, so it
+    // CANNOT model a liveheap-only session (generations off, signal on). Use
+    // initializeGatesOnlyForTest() (real initialize() derivation) or
+    // LivenessTracker::setLeakSignalSourcesForTest() for that.
     static void setSessionGatesForTest(LivenessTracker *t, bool enabled,
                                        bool generations) {
         t->_enabled = enabled;
         t->_gc_generations.store(generations, std::memory_order_relaxed);
+        t->_leak_signal_enabled.store(generations, std::memory_order_relaxed);
     }
 
     static bool enabledForTest(LivenessTracker *t) {
         return t->_enabled;
+    }
+
+    static bool initializedForTest(LivenessTracker *t) {
+        return t->_initialized;
+    }
+
+    static u64 leakSignalActivatedNsForTest(LivenessTracker *t) {
+        return t->_leak_signal_activated_ns.load(std::memory_order_acquire);
+    }
+
+    // Runs the real (private) initialize() with _initialized forced true, so it
+    // takes the early return right after deriving the session gates - no
+    // VM/JNI/table init and no persistent _initialized flip on the singleton.
+    // Restores every other field initialize() touches ahead of that guard
+    // (_initialized, _enabled, _record_heap_usage, _watched_tid_count,
+    // _urgent_tracking and the burn-in stamp); only _gc_generations and
+    // _leak_signal_enabled keep the values initialize() derived.
+    static void initializeGatesOnlyForTest(LivenessTracker *t, Arguments &args) {
+        bool saved_initialized = t->_initialized;
+        bool saved_enabled = t->_enabled;
+        bool saved_heap_usage = t->_record_heap_usage;
+        int saved_watched = __atomic_load_n(&t->_watched_tid_count, __ATOMIC_ACQUIRE);
+        bool saved_urgent = __atomic_load_n(&t->_urgent_tracking, __ATOMIC_ACQUIRE);
+        u64 saved_stamp = t->_leak_signal_activated_ns.load(std::memory_order_acquire);
+        t->_initialized = true;
+        // Returns _stored_error from any prior real start - not under test.
+        Error ignored = t->initialize(args);
+        (void)ignored;
+        t->_initialized = saved_initialized;
+        t->_enabled = saved_enabled;
+        t->_record_heap_usage = saved_heap_usage;
+        __atomic_store_n(&t->_watched_tid_count, saved_watched, __ATOMIC_RELEASE);
+        __atomic_store_n(&t->_urgent_tracking, saved_urgent, __ATOMIC_RELEASE);
+        t->_leak_signal_activated_ns.store(saved_stamp, std::memory_order_release);
     }
 
     static bool entryAgeAndAdmissionForTest(LivenessTracker *t, u32 idx,
@@ -1192,6 +1232,108 @@ TEST(LivenessTrackerSessionTest, ResetSessionClearsOnlyRecordingGates) {
     tracker->resetSession();
     EXPECT_FALSE(LivenessTrackerTestAccessor::enabledForTest(tracker));
     EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_FALSE(tracker->leakSignalEnabled());
+}
+
+// hasLeakSignal() must never authorize a search without a leak-signal source:
+// with neither generations nor liveheap+referencechains active, the population
+// table and heap-floor ring never fill, and searching would run whole-heap BFS
+// passes with zero candidates, growing the frontier table to its cap while
+// emitting nothing.
+TEST(LivenessTrackerSessionTest, LeakSignalRequiresGenerationsOrLiveness) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/false, /*generations=*/false);
+    EXPECT_FALSE(tracker->leakSignalEnabled());
+
+    // Liveheap plus referencechains is a sufficient source: driven through the
+    // real initialize() derivation from parsed arguments, which
+    // setSessionGatesForTest cannot model.
+    Arguments live;
+    ASSERT_FALSE(live.parse("memory=1048576:l,referencechains=true"));
+    ASSERT_TRUE(live._record_liveness);
+    ASSERT_TRUE(live._reference_chains);
+    ASSERT_FALSE(live._gc_generations);
+    u64 stamp_before = LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker);
+    bool initialized_before = LivenessTrackerTestAccessor::initializedForTest(tracker);
+    bool enabled_before = LivenessTrackerTestAccessor::enabledForTest(tracker);
+    LivenessTrackerTestAccessor::initializeGatesOnlyForTest(tracker, live);
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_TRUE(tracker->leakSignalEnabled())
+        << "initialize() must derive the leak signal from generations || (liveheap && referencechains)";
+    // The helper restores every non-gate field it touched.
+    EXPECT_EQ(stamp_before, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker));
+    EXPECT_EQ(initialized_before, LivenessTrackerTestAccessor::initializedForTest(tracker));
+    EXPECT_EQ(enabled_before, LivenessTrackerTestAccessor::enabledForTest(tracker));
+
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/false, /*generations=*/false);
+}
+
+// initialize() derives the gates: gcGenerationsEnabled() == generations,
+// leakSignalEnabled() == generations || (liveheap && referencechains). The
+// collector is the signal's only consumer, so liveheap alone must not arm it.
+TEST(LivenessTrackerSessionTest, LeakSignalDerivedByInitialize) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    struct Row {
+        const char *spec;
+        bool liveness;
+        bool generations;
+        bool refchains;
+        bool expect_signal;
+    };
+    const Row rows[] = {
+        {"memory=1048576:l", true, false, false, false},
+        {"memory=1048576:l,referencechains=true", true, false, true, true},
+        {"generations=true", false, true, false, true},
+        {"generations=true,memory=1048576:l", true, true, false, true},
+        {"memory=1048576:a", false, false, false, false},
+    };
+    for (const Row &row : rows) {
+        Arguments args;
+        ASSERT_FALSE(args.parse(row.spec)) << "row " << row.spec;
+        ASSERT_EQ(row.liveness, args._record_liveness) << "row " << row.spec;
+        ASSERT_EQ(row.generations, args._gc_generations) << "row " << row.spec;
+        ASSERT_EQ(row.refchains, args._reference_chains) << "row " << row.spec;
+        bool initialized_before = LivenessTrackerTestAccessor::initializedForTest(tracker);
+        bool enabled_before = LivenessTrackerTestAccessor::enabledForTest(tracker);
+        u64 stamp_before = LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker);
+        LivenessTrackerTestAccessor::initializeGatesOnlyForTest(tracker, args);
+        EXPECT_EQ(row.generations, tracker->gcGenerationsEnabled()) << "row " << row.spec;
+        EXPECT_EQ(row.expect_signal, tracker->leakSignalEnabled()) << "row " << row.spec;
+        EXPECT_EQ(initialized_before, LivenessTrackerTestAccessor::initializedForTest(tracker))
+            << "row " << row.spec;
+        EXPECT_EQ(enabled_before, LivenessTrackerTestAccessor::enabledForTest(tracker))
+            << "row " << row.spec;
+        EXPECT_EQ(stamp_before, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+            << "row " << row.spec;
+    }
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/false, /*generations=*/false);
+    EXPECT_FALSE(tracker->leakSignalEnabled());
+}
+
+// setLeakSignalSourcesForTest() applies initialize()'s derivation, and
+// setGcGenerationsForTest(v) keeps setting BOTH flags to v (existing callers
+// depend on it).
+TEST(LivenessTrackerSessionTest, LeakSignalSourcesSeamMatchesDerivation) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setLeakSignalSourcesForTest(/*generations=*/false, /*liveness=*/true);
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_TRUE(tracker->leakSignalEnabled());
+    tracker->setLeakSignalSourcesForTest(/*generations=*/true, /*liveness=*/false);
+    EXPECT_TRUE(tracker->gcGenerationsEnabled());
+    EXPECT_TRUE(tracker->leakSignalEnabled());
+    tracker->setLeakSignalSourcesForTest(/*generations=*/false, /*liveness=*/false);
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_FALSE(tracker->leakSignalEnabled());
+    tracker->setGcGenerationsForTest(true);
+    EXPECT_TRUE(tracker->gcGenerationsEnabled());
+    EXPECT_TRUE(tracker->leakSignalEnabled());
+    tracker->setGcGenerationsForTest(false);
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_FALSE(tracker->leakSignalEnabled());
 }
 
 // cleanup_table() calls VM::jni(), so install a fake JavaVM.
@@ -1314,13 +1456,22 @@ protected:
         installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
         LivenessTracker::instance()->klassPopulationResetForTest();
         LivenessTracker::instance()->setGcGenerationsForTest(true);
+        // Past the burn-in (gtest never runs initialize(), so nothing stamps it).
+        LivenessTracker::instance()->setLeakSignalActivatedNsForTest(backdatedStamp());
     }
 
     void TearDown() override {
         LivenessTracker::instance()->klassPopulationResetForTest();
         LivenessTracker::instance()->setGcGenerationsForTest(false);
         LivenessTracker::instance()->setMaxHeapBytesForTest(-1);
+        // 0 = "never activated"; the next start() re-stamps it through the CAS from 0.
+        LivenessTracker::instance()->setLeakSignalActivatedNsForTest(0);
         restoreDefaultSignalHandlers();
+    }
+
+    // A burn-in stamp one second past OOM_PROJECTION_BURN_IN_NS (modular u64).
+    static u64 backdatedStamp() {
+        return OS::nanotime() - LivenessTracker::OOM_PROJECTION_BURN_IN_NS - SEC_NS;
     }
 
     // Ten samples, one second apart, growing by 100MiB each: earliest third
@@ -1459,6 +1610,67 @@ TEST_F(SecondsToOOMTest, FloorAtMaxHeapReturnsZero) {
     seedRisingFloor(tracker);
 
     EXPECT_EQ(tracker->secondsToOOM(), 0.0);
+}
+
+// Within OOM_PROJECTION_BURN_IN_NS of activation no projection is offered, even
+// for a history that projects cleanly once the burn-in has passed.
+TEST_F(SecondsToOOMTest, BurnInWithholdsProjection) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setLeakSignalActivatedNsForTest(OS::nanotime());
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    seedRisingFloor(tracker);
+    EXPECT_LT(tracker->secondsToOOM(), 0.0) << "projection must be withheld during burn-in";
+
+    tracker->setLeakSignalActivatedNsForTest(backdatedStamp());
+    EXPECT_NEAR(tracker->secondsToOOM(), 9.0, 1e-6);
+}
+
+// A 0 stamp means "never activated", not "activated at the epoch" (which would
+// make the modular age equal nanotime() and usually exceed the burn-in).
+TEST_F(SecondsToOOMTest, NeverActivatedWithholdsProjection) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setLeakSignalActivatedNsForTest(0);
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    seedRisingFloor(tracker);
+    EXPECT_LT(tracker->secondsToOOM(), 0.0);
+}
+
+// The burn-in stamp is per process: neither the ring resets nor
+// resetSession() may zero or re-stamp it.
+TEST_F(SecondsToOOMTest, StampSurvivesResetSeams) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    bool enabled_before = LivenessTrackerTestAccessor::enabledForTest(tracker);
+    u64 stamp = LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker);
+    ASSERT_NE(0u, stamp);
+
+    tracker->klassPopulationResetForTest();
+#ifdef DEBUG
+    tracker->setHeapFloorRecordingForTest(false);
+    tracker->heapFloorResetForTest();
+    tracker->setHeapFloorRecordingForTest(true);
+#endif
+    tracker->resetSession();
+    // resetSession() clears _enabled and both gates; re-arm the signal and
+    // restore _enabled in one call so neither leaks into later tests.
+    LivenessTrackerTestAccessor::setSessionGatesForTest(tracker, enabled_before,
+                                                       /*generations=*/true);
+    EXPECT_EQ(stamp, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker));
+
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    seedRisingFloor(tracker);
+    EXPECT_NEAR(tracker->secondsToOOM(), 9.0, 1e-6);
+}
+
+// onGC() records heap-floor samples whenever the effective leak signal is on -
+// a liveheap-only session (generations off) must still feed secondsToOOM().
+TEST_F(SecondsToOOMTest, OnGCRecordsHeapFloorWithLiveheapOnlySource) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setLeakSignalSourcesForTest(/*generations=*/false, /*liveness=*/true);
+    ASSERT_FALSE(tracker->gcGenerationsEnabled());
+    ASSERT_TRUE(tracker->leakSignalEnabled());
+    // The helper EXPECTs that onGC() grew the heap-floor ring by one sample.
+    (void)LivenessTrackerTestAccessor::containerUsageRecordedByOnGC(tracker,
+                                                                    /*limit_resolved=*/false);
 }
 
 // ---------------------------------------------------------------------------
@@ -2507,6 +2719,8 @@ protected:
         tracker->admissionResetForTest();
         tracker->setSubsampleRatioForTest(0.1);
         tracker->setGcGenerationsForTest(false);
+        // 0 = "never activated"; the next start() re-stamps it through the CAS from 0.
+        tracker->setLeakSignalActivatedNsForTest(0);
         // start() resolved the heap limits from the mock JVM.
         tracker->heapLimitsResetForTest();
         VMTestAccessor::setVm(saved_vm);
@@ -2935,4 +3149,94 @@ TEST_F(LivenessTrackerMockJvmTest, SlotsPastTableSizeAreClearedAfterCompaction) 
             EXPECT_EQ(0u, cached) << "slot " << i;
         }
     }
+}
+
+// The leak signal's only consumer is the reference-chain collector: a plain
+// liveheap session must keep the signal and its consumers disarmed through
+// the real start() -> initialize() path, and liveheap + referencechains must
+// arm them. The other fixtures arm the gate only through seams, so they
+// cannot tell the two flags apart.
+TEST_F(LivenessTrackerMockJvmTest, LiveheapLeakSignalArmingRequiresReferenceChainConsumer) {
+    constexpr u64 SEC_NS = 1000000000ULL;
+    constexpr u64 MiB = 1ULL << 20;
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    // 1. Liveheap-only: the gate stores (and the burn-in CAS) precede
+    // initialize()'s _initialized guard, so a repeated start() re-derives them.
+    tracker->setLeakSignalActivatedNsForTest(0);
+    Arguments args;
+    ASSERT_FALSE(args.parse("memory=1048576:l"));
+    ASSERT_TRUE(args._record_liveness);
+    ASSERT_FALSE(args._gc_generations);
+    ASSERT_FALSE(args._reference_chains);
+    ASSERT_FALSE(tracker->start(args));
+    tracker->setSubsampleRatioForTest(1.0);
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_FALSE(tracker->leakSignalEnabled())
+        << "a plain liveheap session has no signal consumer - the gate must stay off";
+
+    // The consumers keyed on the gate stay idle: no projection even with a
+    // rising ring, and no forced sweep folding the population.
+    tracker->klassPopulationResetForTest(); // also clears the heap-floor ring
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    for (int i = 0; i < 10; i++) {
+        tracker->heapFloorRecordForTest(1000 * MiB + (u64)i * 100 * MiB, (u64)i * SEC_NS);
+    }
+    EXPECT_LT(tracker->secondsToOOM(), 0.0)
+        << "secondsToOOM() must not project in a plain liveheap session";
+    tracker->klassPopulationResetForTest();
+    tracker->setMaxHeapBytesForTest(-1);
+
+    u32 retained_id = classIdOf(kRetainedSignature);
+    ASSERT_NE(0u, retained_id);
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    KlassPopulationEntry entry{};
+    ASSERT_FALSE(tracker->klassPopulationLookupForTest(retained_id, &entry));
+    sweep(); // GarbageCollectionFinish + maybeForceCleanup(fake_now_ns)
+    EXPECT_FALSE(tracker->klassPopulationLookupForTest(retained_id, &entry))
+        << "maybeForceCleanup() must not fold the population in a plain liveheap session";
+
+    // 2. Restart as liveheap + referencechains: the collector will run, so
+    // the same derivation arms the signal.
+    ASSERT_FALSE(args.parse("memory=1048576:l,referencechains=true"));
+    ASSERT_TRUE(args._reference_chains);
+    ASSERT_FALSE(tracker->start(args));
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_TRUE(tracker->leakSignalEnabled())
+        << "liveheap with referencechains must arm the leak signal";
+
+    // 3. Burn-in stamp lifecycle: start() stamps it from 0 and never re-stamps.
+    EXPECT_NE(0u, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+        << "the first enabled start() must stamp the burn-in clock";
+    u64 backdated = OS::nanotime() - LivenessTracker::OOM_PROJECTION_BURN_IN_NS - SEC_NS;
+    tracker->setLeakSignalActivatedNsForTest(backdated);
+    ASSERT_FALSE(tracker->start(args));
+    EXPECT_EQ(backdated, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+        << "a later start() must not re-stamp the burn-in clock";
+
+    // 4. secondsToOOM() projects in the armed session. Runs before any
+    // sweep(): onGC() records real-clock floor samples while the signal is on.
+    tracker->klassPopulationResetForTest(); // also clears the heap-floor ring
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    for (int i = 0; i < 10; i++) {
+        tracker->heapFloorRecordForTest(1000 * MiB + (u64)i * 100 * MiB, (u64)i * SEC_NS);
+    }
+    // GE rather than NEAR: start() resolved the real container limit.
+    EXPECT_GE(tracker->secondsToOOM(), 0.0)
+        << "secondsToOOM() must project once the signal is armed";
+    tracker->klassPopulationResetForTest(); // drop the seeded ring before the sweep
+    tracker->setMaxHeapBytesForTest(-1);
+
+    // 5. maybeForceCleanup() sweeps and folds the population. track() never
+    // folds, so the only route to a population entry is that sweep.
+    retained_id = classIdOf(kRetainedSignature);
+    ASSERT_NE(0u, retained_id);
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    ASSERT_FALSE(tracker->klassPopulationLookupForTest(retained_id, &entry));
+    sweep(); // GarbageCollectionFinish + maybeForceCleanup(fake_now_ns)
+    EXPECT_TRUE(tracker->klassPopulationLookupForTest(retained_id, &entry))
+        << "maybeForceCleanup() must sweep and fold the population once the signal is armed";
+
+    // 6. TearDown clears the gates via setGcGenerationsForTest(false).
+    tracker->setLeakSignalActivatedNsForTest(0);
 }

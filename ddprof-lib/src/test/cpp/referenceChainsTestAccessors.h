@@ -124,6 +124,16 @@ public:
         return ReferenceChainTracker::instance()->shouldRunPass(now_ns);
     }
 
+    // Projection-taking overloads: threadLoop()'s single per-iteration secondsToOOM() read is
+    // passed through instead of re-read.
+    static bool canAffordNewSearch(u64 now_ns, double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->canAffordNewSearch(now_ns, seconds_to_oom);
+    }
+
+    static bool shouldRunPass(u64 now_ns, double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->shouldRunPass(now_ns, seconds_to_oom);
+    }
+
     static void setSearchPainMs(u64 ms) {
         ReferenceChainTracker::instance()->_search_pain_ms = ms;
     }
@@ -170,11 +180,36 @@ public:
     static int urgentReleaseTicksForTest() {
         return ReferenceChainTracker::instance()->urgentReleaseTicksForTest();
     }
-    static bool urgentSearchSpentForTest() {
-        return ReferenceChainTracker::instance()->urgentSearchSpentForTest();
-    }
     static void resetUrgencyForTest() {
         ReferenceChainTracker::instance()->resetUrgencyForTest();
+    }
+    // Urgent-admission growth gate: updateUrgentAdmission()'s per-iteration
+    // decision (referenceChains.cpp) - the admission half of threadLoop()'s
+    // ramp handling, testable without the BFS thread.
+    static bool updateUrgentAdmissionForTest(double seconds_to_oom, bool urgent) {
+        return ReferenceChainTracker::instance()->updateUrgentAdmission(seconds_to_oom,
+                                                                        urgent);
+    }
+    // True while the BFS thread (startThread()/threadLoop()) is live. start() never spawns it
+    // (only startThread() does - profiler.cpp and the JNI-only resetSearchStateForTest()), so
+    // gtests may drive BFS-thread-only seams after start(); tests that rely on that assert this
+    // is false.
+    static bool bfsThreadRunning() {
+        return ReferenceChainTracker::instance()->_running.load(std::memory_order_acquire);
+    }
+    // threadLoop()'s publish step: ramp flag + growth-gated tracking boost.
+    static void publishUrgencyStateForTest(double seconds_to_oom, bool urgent) {
+        ReferenceChainTracker::instance()->publishUrgencyState(seconds_to_oom, urgent);
+    }
+    static bool oomRampActiveForTest() {
+        return ReferenceChainTracker::instance()->_oom_ramp_active;
+    }
+    // Projection-taking urgency decisions (consume the passed value, never re-read).
+    static bool isUrgentWithProjectionForTest(double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->isUrgent(seconds_to_oom);
+    }
+    static bool hasLeakSignalForTest(double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->hasLeakSignal(seconds_to_oom);
     }
     // Applied vs configured CPU pain-budget refill rate (shouldRunPass()'s
     // canary-refill raise).
@@ -361,11 +396,10 @@ public:
 
     // Recording-boundary tests: seed a latched urgency episode (the state the OOM-projection
     // machine leaves behind) without driving LivenessTracker's heap-floor history.
-    static void setUrgencyEpisodeForTest(bool latched, int ticks, bool spent) {
+    static void setUrgencyEpisodeForTest(bool latched, int ticks) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         t->_urgent_latched = latched;
         t->_urgent_release_ticks = ticks;
-        t->_urgent_search_spent = spent;
     }
 
     static u64 searchStartNsForTest() {

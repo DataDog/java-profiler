@@ -1,3 +1,7 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package com.datadoghq.native.gtest
 
@@ -9,6 +13,7 @@ import com.datadoghq.native.util.PlatformUtils
 import org.gradle.api.Project
 import org.gradle.api.file.FileCollection
 import org.gradle.api.tasks.Exec
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskProvider
 import java.io.File
 
@@ -122,6 +127,25 @@ class GtestTaskBuilder(
                     testFile
                 )
             }
+
+            // Test .inc/.h files resolve via quoted includes relative to the test
+            // directory and appear in no include path, so register them here or an
+            // .inc-only edit reports UP-TO-DATE and runs a stale binary. Inputs,
+            // not sources: compiling an .inc standalone would emit duplicate symbols.
+            // The sweep is deliberately broad (every test-dir .inc/.h for every gtest
+            // task): the test dir is flat with a handful of shared headers, mapping
+            // headers to the tests that include them would need include parsing, and
+            // over-invalidation is preferred to running a stale binary. The input is
+            // named and RELATIVE so relocating the checkout/build dir does not change
+            // its fingerprint.
+            inputs.files(
+                project.fileTree(testFile.parentFile) {
+                    include("**/*.inc", "**/*.h")
+                }
+            )
+                .withPropertyName("testIncludeInputs")
+                .withPathSensitivity(PathSensitivity.RELATIVE)
+
             includes.from(includeFiles)
             objectFileDir.set(objDir)
         }

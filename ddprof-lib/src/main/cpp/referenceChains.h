@@ -147,8 +147,10 @@ private:
   // End-of-pass timestamp of the last pass that ran with a canary chase still open (the reference
   // point for the spacing above).
   u64 _last_canary_pass_ns;
-  // Whether threadLoop()'s OOM urgency ramp is currently active, set each loop iteration BEFORE
-  // shouldRunPass() (same thread, no atomics needed).
+  // Whether threadLoop()'s OOM urgency ramp is currently active, set each loop iteration by
+  // publishUrgencyState() BEFORE shouldRunPass() (same BFS thread), and otherwise only by test
+  // seams (setOomRampActiveForTest(), publishUrgencyStateForTest()) while no BFS thread is live -
+  // no atomics needed.
   bool _oom_ramp_active;
 
   // How many consecutive times in a row runPass()'s canary-stuck check
@@ -338,12 +340,30 @@ private:
   // Hysteresis state behind isUrgent().
   mutable bool _urgent_latched;
   mutable int _urgent_release_ticks;
-  mutable bool _urgent_search_spent;
 
   // Set (once) at the same point runPass() moves _search_state to ABANDONED - see
   // SearchAbandonReason's own comment for why this exists and buildAbandonedEvent()/abandonReason()
   // below for how it is read.
   volatile u8 _abandon_reason;
+
+  // CONSTRAINT (urgent-admission growth gate): the heap-floor projection is a
+  // least-squares regression over a 30-sample window, so a single spike sample
+  // keeps the projection inside the ramp band for ~6-7 recovery GCs AFTER the
+  // heap has physically stopped growing - band residence alone does not
+  // establish growth. updateUrgentAdmission() therefore admits the 100%
+  // tracking boost only while a newer heap-floor sample grows past the
+  // running baseline: every admitted sample raises it (a plateau loses the
+  // boost, a recovered spike never passes it), and the emergency band seeds
+  // the same baseline at entry so the ramp-band comparison stays continuous.
+  // Written and read by updateUrgentAdmission() on the BFS thread (threadLoop()
+  // via publishUrgencyState()); also reset by stop() and resetSearchStateForTest()
+  // (both only after stopThread() has joined the BFS thread) and by test seams
+  // (resetUrgencyForTest(), updateUrgentAdmissionForTest(),
+  // publishUrgencyStateForTest()) that run only while no BFS thread is live -
+  // so there is no concurrent access and no atomics are needed.
+  // 0 = no baseline for the current episode (a used value of 0 cannot be a
+  // real sample: onGC() only records used > 0).
+  u64 _admission_growth_baseline;
 
   // Wall-clock timestamp (OS::nanotime()) of the search's first pass - baseline for the TTL cutoff
   // above.
@@ -623,11 +643,13 @@ private:
   // Fallback cadence between passes.
   static constexpr u64 PASS_CADENCE_NS = 1000000000ULL; // 1s
 
-  // Heap-wide time-to-OOM urgency threshold (LivenessTracker::secondsToOOM()) - hasLeakSignal()
-  // below forces a search to start immediately once the projection drops under this, rather than
-  // waiting for a klass to clear selectLeakCandidates()'s own per-klass ring-fill/hysteresis gate
-  // (KLASS_POPULATION_MIN_FILL_FOR_TREND plus LEAK_TREND_HYSTERESIS_BASE/ CORROBORATED epochs,
-  // livenessTracker.h).
+  // Heap-wide time-to-OOM urgency threshold (LivenessTracker::secondsToOOM()). It has two uses:
+  // (a) isUrgent()'s latch threshold (released via OOM_URGENT_RELEASE_S below); the latch is
+  //     consumed by runPass()'s no-progress abandonment branch, which it suppresses while latched;
+  // (b) updateUrgentAdmission()'s emergency band, where tracking admission goes to 100% without
+  //     heap-growth evidence.
+  // It never authorizes starting a search - urgency never stands in for
+  // selectLeakCandidates()'s per-klass gate (see hasLeakSignal()).
   static constexpr double OOM_URGENT_THRESHOLD_S = 300.0; // 5 minutes
 
   // Release side of OOM_URGENT_THRESHOLD_S's hysteresis (see _urgent_latched).
@@ -738,8 +760,9 @@ private:
         _effective_budget(0), _effective_cadence_ns(PASS_CADENCE_NS),
         _pause_pid(1, 1.0, 1.0, 1.0, 1, 1.0), _search_started(false),
         _tags_released(true), _urgent_latched(false),
-        _urgent_release_ticks(0), _urgent_search_spent(false),
+        _urgent_release_ticks(0),
         _urgency_budget_boosted(false), _configured_budget(0),
+        _admission_growth_baseline(0),
         _search_state(SearchState::RUNNING),
         _abandon_reason(SearchAbandonReason::NONE), _search_start_ns(0),
         _last_pass_gc_finish_epoch(0), _last_pass_ns(0),
@@ -762,22 +785,49 @@ private:
   }
   void threadLoop();
 
-  // Runs a pass when the GC-finish epoch advanced or the cadence elapsed.
+  // Runs a pass when the GC-finish epoch advanced or the cadence elapsed. The two-arg form
+  // consumes the caller's per-iteration OOM projection (threadLoop()'s single secondsToOOM()
+  // read, passed down to the restart gate and the urgency latch so every decision of one
+  // iteration sees the same sample); the one-arg form reads secondsToOOM() once and forwards
+  // (JNI shouldRunPassForTest(), gtest accessors).
   bool shouldRunPass(u64 now_ns);
+  bool shouldRunPass(u64 now_ns, double seconds_to_oom);
 
   // Cheap probe (max=1, not the real poll pollWatchedTargets() makes) into LivenessTracker's
   // population-trend table: true if at least one klass shows a positive population slope worth
-  // chasing.
-  bool hasLeakSignal();
+  // chasing. Always false when no leak-signal source (generations or liveheap tracking) is
+  // active - the population table and heap-floor ring never fill without one, and a search
+  // would run whole-heap BFS passes with zero candidates for zero diagnostic value.
+  // seconds_to_oom is the caller's projection (passed to isUrgent()), never re-read here.
+  bool hasLeakSignal(double seconds_to_oom);
 
   // Latched, hysteretic view of LivenessTracker::secondsToOOM() crossing OOM_URGENT_THRESHOLD_S -
-  // see _urgent_latched for the latch/release rules and why the raw comparison flaps.
+  // see _urgent_latched for the latch/release rules and why the raw comparison flaps. The
+  // one-arg form evaluates the caller's projection; the zero-arg form reads secondsToOOM() and
+  // forwards (runPass()'s no-progress check in referenceChainTraversal.cpp, isUrgentForTest()).
   bool isUrgent() const;
+  bool isUrgent(double seconds_to_oom) const;
+
+  // Computes the 100% tracking-admission decision for one threadLoop()
+  // iteration and maintains _admission_growth_baseline. Raw `urgent` still
+  // drives the budget/cadence ramp; admission alone is additionally gated on
+  // heap growth evidence outside the emergency band - see
+  // _admission_growth_baseline's comment for why band residence is not
+  // sufficient, and OOM_URGENT_THRESHOLD_S for the emergency split.
+  bool updateUrgentAdmission(double seconds_to_oom, bool urgent);
+
+  // Publishes one threadLoop() iteration's urgency: _oom_ramp_active follows the raw band
+  // (`urgent`) for shouldRunPass()'s canary-backoff bypass; LivenessTracker's 100% tracking boost
+  // (setUrgentTracking()) follows updateUrgentAdmission()'s growth-gated decision, never raw
+  // `urgent`. Extracted from threadLoop() so the wiring is testable without a BFS thread.
+  void publishUrgencyState(double seconds_to_oom, bool urgent);
 
   // Search restart gate: true once _safepoint_pain_budget has
   // drained back to zero (canStartNow()) *and* hasLeakSignal() above reports at least one leak
-  // candidate.
+  // candidate. The two-arg form consumes the caller's projection; the one-arg form reads
+  // secondsToOOM() once and forwards.
   bool canAffordNewSearch(u64 now_ns);
+  bool canAffordNewSearch(u64 now_ns, double seconds_to_oom);
 
   // Resets every per-search field back to its just-constructed value so the next runPass() call
   // takes the "first pass of a search" branch again, exactly like a fresh ReferenceChainTracker
@@ -1144,15 +1194,16 @@ public:
   void setSearchStartedForTest(bool v) { _search_started = v; }
   // OOM-urgency hysteresis state (isUrgent()'s latch/release machine,
   // referenceChains.cpp): tests drive it via isUrgentForTest() and assert on
-  // the raw latch/tick/entitlement reads.
+  // the raw latch/tick reads.
   bool isUrgentForTest() const { return isUrgent(); }
   bool urgentLatchedForTest() const { return _urgent_latched; }
   int urgentReleaseTicksForTest() const { return _urgent_release_ticks; }
-  bool urgentSearchSpentForTest() const { return _urgent_search_spent; }
   void resetUrgencyForTest() {
     _urgent_latched = false;
     _urgent_release_ticks = 0;
-    _urgent_search_spent = false;
+    // updateUrgentAdmission()'s episode baseline - a stale one across tests
+    // would make an episode's "first observation" branch unreachable.
+    _admission_growth_baseline = 0;
   }
   // Applied vs configured CPU pain-budget refill rate: shouldRunPass() raises
   // the applied rate CANARY_PAIN_BUDGET_REFILL_MULTIPLIER-fold only while a
@@ -1392,10 +1443,10 @@ public:
 
   // Test seam - not part of the production API. Evaluates the real private scheduling gate without
   // executing a BFS pass. This is not read-only: while holding _engine_lock like threadLoop(), the
-  // gate may account a completed search's pain and restart/reset terminal search state. It also
-  // exposes whether LivenessTracker::secondsToOOM()'s urgent-OOM bypass opens the gate even with no
-  // per-klass candidate; runReferenceChainPass0() cannot show that because it calls runPass()
-  // directly and never consults the gate.
+  // gate may account a completed search's pain and restart/reset terminal search state. It lets a
+  // test confirm the gate stays closed with no per-klass candidate, urgency latched or not;
+  // runReferenceChainPass0() cannot show that because it calls runPass() directly and never
+  // consults the gate.
   bool shouldRunPassForTest(u64 now_ns) {
     MutexLocker engine_guard(_engine_lock);
     return shouldRunPass(now_ns);

@@ -1,3 +1,7 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 // ---------------------------------------------------------------------------
 // Lifecycle churn (C4): stop/restart-shaped interleavings against an in-flight
@@ -316,8 +320,7 @@ TEST_F(ReferenceChainsRecordingBoundaryTest,
     // A search still in flight when the profiler stops: started, RUNNING, a TTL clock that
     // predates the stop, a latched urgency episode, and live canary candidate state.
     ReferenceChainsTestAccessor::setInFlightSearchForTest(1ULL << 40);
-    ReferenceChainsTestAccessor::setUrgencyEpisodeForTest(/*latched=*/true, /*ticks=*/2,
-                                                          /*spent=*/true);
+    ReferenceChainsTestAccessor::setUrgencyEpisodeForTest(/*latched=*/true, /*ticks=*/2);
     ReferenceChainsTestAccessor::setCandidateCountForTest(2);
     ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(0x1);
     ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 42);
@@ -337,7 +340,6 @@ TEST_F(ReferenceChainsRecordingBoundaryTest,
     // The urgency episode does not carry over into the next recording.
     EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest());
     EXPECT_EQ(0, ReferenceChainsTestAccessor::urgentReleaseTicksForTest());
-    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentSearchSpentForTest());
     // The canary/discovered candidate state is cleared with the search that owned it.
     EXPECT_EQ(0, ReferenceChainsTestAccessor::candidateCountForTest());
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::candidateFoundBitsForTest());
@@ -375,8 +377,25 @@ TEST_F(ReferenceChainsRecordingBoundaryTest,
     // The release pass was the terminal no-op: no walk ran.
     EXPECT_EQ(0, tracker->passesRun());
 
-    // With generations disabled (this fixture's SetUp), canAffordNewSearch() is unconditional,
-    // so the next shouldRunPass() restarts the search - exactly like a brand-new tracker.
+    // With no leak-signal source (this fixture's SetUp), canAffordNewSearch() always refuses, so
+    // the terminal search stays terminal. Arm the signal (generations tracking alone is a
+    // sufficient source) AND seed a growing candidate: the restart gate requires both the signal
+    // source and a live leak indication (hasLeakSignal()'s selectLeakCandidates() probe);
+    // TearDown restores the no-signal state.
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    int fake_object_storage = 0;
+    {
+        int slot;
+        bool created;
+        for (u16 i = 1; i <= 20; i++) {
+            LivenessTracker::instance()->klassPopulationRecordForTest(
+                /*klass_id=*/1, i, i, &slot, &created);
+            LivenessTracker::instance()->tidTrendRecordForTest(
+                /*klass_id=*/1, /*tid=*/4242, (u32)i, (u64)i);
+        }
+        LivenessTracker::instance()->klassPopulationSetRepresentativeForTest(
+            nullptr, /*klass_id=*/1, (jweak)&fake_object_storage);
+    }
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2000));
     EXPECT_EQ(SearchState::RUNNING,
               ReferenceChainsTestAccessor::searchStateForTest());
@@ -419,7 +438,24 @@ TEST_F(ReferenceChainsRecordingBoundaryTest, NoStaleFrontierIdsAfterRecordingBou
     EXPECT_TRUE(ReferenceChainsTestAccessor::tagsReleased());
     // ... and the restart that follows resets the frontier content, so no chain can ever be
     // built from the previous _class_map generation's ids (which cannot be remapped: the
-    // dictionary contents are gone and its id namespace restarts at 1).
+    // dictionary contents are gone and its id namespace restarts at 1). Arm the leak signal AND
+    // seed a growing candidate for the restart step only - the restart gate requires both the
+    // signal source (generations or liveheap) and a live leak indication; the no-signal state
+    // this fixture runs in would keep the search terminal. TearDown restores it.
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    {
+        int fake_object_storage = 0;
+        int slot;
+        bool created;
+        for (u16 i = 1; i <= 20; i++) {
+            LivenessTracker::instance()->klassPopulationRecordForTest(
+                /*klass_id=*/1, i, i, &slot, &created);
+            LivenessTracker::instance()->tidTrendRecordForTest(
+                /*klass_id=*/1, /*tid=*/4242, (u32)i, (u64)i);
+        }
+        LivenessTracker::instance()->klassPopulationSetRepresentativeForTest(
+            nullptr, /*klass_id=*/1, (jweak)&fake_object_storage);
+    }
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2000));
     EXPECT_EQ(SearchState::RUNNING,
               ReferenceChainsTestAccessor::searchStateForTest());

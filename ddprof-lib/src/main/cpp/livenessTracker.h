@@ -38,7 +38,7 @@ typedef struct TrackingEntry {
   jlong leak_tag;  // 0 = untagged; otherwise a tag from the leak tag pool
   Context ctx;
   // Set by cleanup_table()'s survivor loop via resolveKlassId() when
-  // _gc_generations is enabled (0 otherwise, or if resolution failed - 0 is
+  // leak-signal tracking is enabled (0 otherwise, or if resolution failed - 0 is
   // StringDictionary's own "no entry" sentinel, so a real id is never 0).
   // flush_table() reuses this instead of re-resolving the same object's
   // class via a second resolveKlassId() JNI round-trip - an object's class
@@ -464,6 +464,21 @@ private:
   // still be reading it from a session that persists across a restart.
   std::atomic<bool> _gc_generations;
 
+  // True when a leak-signal source is active: generations, or liveheap with
+  // referencechains enabled - the collector is the signal's only consumer, so
+  // a plain liveheap session keeps the flag (and its per-epoch klass folding,
+  // heap-floor ring and forced sweeps) off. Derived in initialize(); same
+  // atomicity/reader argument as _gc_generations above.
+  std::atomic<bool> _leak_signal_enabled;
+
+  // OS::nanotime() of the first initialize() that enabled the leak signal; 0
+  // means never activated. Set once by a CAS from 0 and never reset by
+  // production code (not by stop()/resetSession(), not by the ring resets), so
+  // it is per process, not per recording. Drives secondsToOOM()'s age-based
+  // burn-in (see OOM_PROJECTION_BURN_IN_NS). Written with release, read with
+  // acquire.
+  std::atomic<u64> _leak_signal_activated_ns;
+
   // Per-klass population history table (see KlassPopulationEntry above).
   // Populated only from cleanup_table()'s GC-epoch-advance pass, never from
   // track() (the allocation sampling hot path) - see
@@ -614,7 +629,7 @@ private:
   // force=true is used by track()'s table-overflow branch to run a cleanup
   // synchronously from the allocation-sampling call stack, bypassing the
   // GC-epoch-changed check below. The per-klass population tracking below
-  // (_gc_generations) runs on both paths, once per genuinely new GC epoch
+  // (leak-signal gated) runs on both paths, once per genuinely new GC epoch
   // (see "is_epoch_owner" in livenessTracker.cpp).
   //
   // allow_resolve gates resolveKlassId() - GetClassSignature plus a class-map
@@ -838,6 +853,11 @@ public:
   // and secondsToOOM(). See _max_heap_bytes's own comment above.
   jlong maxHeapBytes() const { return _max_heap_bytes; }
 
+  // Reads the used-bytes value of the newest _heap_floor_ring sample (0 when
+  // the ring is empty) - the urgent-admission gate's freshest physical growth
+  // evidence. See the definition for the SPSC acquire pairing.
+  u64 newestHeapFloorSample() const;
+
   constexpr static int MAX_LEAK_CANDIDATES = 5;
   // Delete copy constructor and assignment operator to prevent copies
   LivenessTracker(const LivenessTracker&) = delete;
@@ -854,6 +874,8 @@ public:
         _max_heap_bytes(-1), _container_memory_limit(-1),
         _container_limit_resolved(false),
         _gc_generations(false),
+        _leak_signal_enabled(false),
+        _leak_signal_activated_ns(0),
         _klass_population_size(0), _klass_count_scratch_size(0),
         _last_class_map_generation(0),
         _leak_tag_free_count(LEAK_TAG_POOL_SIZE),
@@ -917,8 +939,11 @@ public:
   void noteSelectedCandidates(const KlassCandidate *candidates, int count);
 
   // Urgency raise toggle - see admitForTracking()'s comment above. Set every
-  // threadLoop() iteration with that iteration's urgency computation, so the
-  // boost tracks the ramp exactly (both engaging and releasing).
+  // threadLoop() iteration with that iteration's urgency computation, except
+  // that outside the emergency band (< OOM_URGENT_THRESHOLD_S) the boost
+  // additionally requires fresh heap growth evidence - see
+  // ReferenceChainTracker::updateUrgentAdmission() for why the raw ramp
+  // comparison alone is not safe to admit on.
   void setUrgentTracking(bool urgent);
 
   void flush(std::set<int> &tracked_thread_ids);
@@ -935,7 +960,7 @@ public:
   // population trend is positive (growing), ranked by trend magnitude
   // descending, capped at MAX_LEAK_CANDIDATES regardless of `max` (design
   // doc's Open Question 3 "top 3-5" cutoff). Returns the number of
-  // candidates written (0 if _gc_generations was never enabled -
+  // candidates written (0 if leak-signal tracking was never enabled -
   // _klass_population stays empty in that case, since population tracking
   // is gated on it, so no separate guard is needed here). Called on demand
   // by the BFS-pass poll, not on any timer of its own; does no JNI work, so it is safe
@@ -1013,15 +1038,19 @@ public:
   // pattern selectLeakCandidates()/getLiveTraceIds() already use.
   jobject resolveCandidateRepresentative(JNIEnv *env, u32 klass_id);
 
-  // Exposes the _gc_generations gate (see that member's own comment) so a
-  // caller outside this class - ReferenceChainTracker::pollWatchedTargets()
-  // (referenceChains.cpp), the LivenessTracker-to-ReferenceChainTracker
-  // bridging step - can skip calling selectLeakCandidates() entirely when
-  // the feature isn't in use,
-  // rather than relying on that method's own "returns 0" fallback to make
-  // the no-op cheap. Read-only; this accessor never toggles the flag.
+  // Test-only observation point for the explicit generations option: no
+  // production code keys on it (the gate is leakSignalEnabled()), so it is
+  // compiled out of the shipped release library.
+#if defined(DEBUG) || defined(UNIT_TEST)
   bool gcGenerationsEnabled() const {
     return _gc_generations.load(std::memory_order_relaxed);
+  }
+#endif
+
+  // The effective gate ReferenceChainTracker::hasLeakSignal() keys on (see
+  // _leak_signal_enabled's own comment).
+  bool leakSignalEnabled() const {
+    return _leak_signal_enabled.load(std::memory_order_relaxed);
   }
 
   // Time-to-OOM projection against whichever of two independent boundaries
@@ -1039,16 +1068,13 @@ public:
   // under-warn right up until an OOM-kill from container memory pressure
   // that had nothing to do with heap occupancy.
   //
-  // Exists because selectLeakCandidates()'s per-klass gate
-  // (KLASS_POPULATION_MIN_FILL_FOR_TREND ring samples plus
-  // LEAK_TREND_HYSTERESIS_BASE/CORROBORATED consecutive qualifying epochs)
-  // can take longer to trust a candidate than a fast leak has left before
-  // OOM - this gives ReferenceChainTracker::hasLeakSignal() an independent,
-  // rate-based signal to start a search immediately instead of waiting on
-  // that gate. Not a claim that growth stays linear, only that a
-  // short-horizon linear extrapolation is a reasonable urgency signal.
+  // The projection feeds the urgency latch (ReferenceChainTracker::isUrgent()),
+  // the urgent admission ramp (ReferenceChainTracker::updateUrgentAdmission())
+  // and threadLoop()'s OOM cadence/budget ramp; it never starts a search (see
+  // OOM_URGENT_THRESHOLD_S). It is a short-horizon linear extrapolation, not a
+  // claim that growth stays linear.
   // Returns a negative value if the chosen ring is not filled enough yet
-  // (gcGenerationsEnabled() is off, or too few GC epochs have happened), not
+  // (leakSignalEnabled() is off, or too few GC epochs have happened), not
   // rising, or neither _max_heap_bytes nor _container_memory_limit was ever
   // resolved - callers must treat any non-positive return as "no projection
   // available", not "zero seconds". Returns 0 if the chosen ring's recent
@@ -1063,7 +1089,20 @@ public:
   // this method additionally divides by elapsed time, so the same gap
   // understates the growth rate (overstates the projected time-to-OOM)
   // rather than the reverse - not solved here.
+  // Returns -1 while the leak signal is in its burn-in (see
+  // OOM_PROJECTION_BURN_IN_NS); otherwise see the comment above.
   double secondsToOOM() const;
+
+  // secondsToOOM() withholds its projection (returns -1) for this long after
+  // the leak signal first activated (_leak_signal_activated_ns): a fresh
+  // process's warmup heap growth projects an imminent OOM exactly like a leak
+  // does. The burn-in is age-based rather than based on the heap-floor ring's
+  // time span on purpose - the ring holds one sample per GC, so near OOM
+  // back-to-back GCs compress its span to seconds and a span-based guard
+  // would suppress urgency in exactly the imminent-OOM case. Must be >=
+  // ReferenceChainTracker::OOM_URGENT_THRESHOLD_S (static_assert in
+  // referenceChains.cpp).
+  static constexpr u64 OOM_PROJECTION_BURN_IN_NS = 300ULL * 1000000000ULL;
 
   // Third trigger for cleanup_table(), alongside track()'s table-overflow
   // branch (forced) and flush_table()'s JFR-flush cadence (organic): those
@@ -1545,7 +1584,7 @@ public:
     _test_klass_alias_count = 0;
     _table_lock.unlock();
     // Also reset the heap-floor ring: it is a sibling piece of the same
-    // _gc_generations-gated feature, read by every selectLeakCandidates()
+    // leak-signal-gated feature, read by every selectLeakCandidates()
     // scan (heapFloorRising()), so leaving it populated across tests in the
     // same gtest binary would leak one test's heap-usage history into the
     // next test's hysteresis threshold. storeRelease() (not plain store())
@@ -1642,17 +1681,41 @@ public:
   }
 #endif
 
-  // Sets _gc_generations directly, bypassing initialize() (which requires a
-  // live JVM - VM::hotspot_version()/VM::jni(), see that method's own code -
-  // out of gtest's reach the same way foldKlassCountsLocked()'s
-  // representative-minting step is, per this seam block's own comment
-  // above). Callers outside this class that only need to exercise
-  // gcGenerationsEnabled()'s gate (e.g. referenceChains_ut.cpp's
-  // pollWatchedTargets() tests) use this instead of standing up a full
-  // initialize()/start() call.
-  void setGcGenerationsForTest(bool v) {
-    _gc_generations.store(v, std::memory_order_relaxed);
+#if defined(DEBUG) || defined(UNIT_TEST)
+  // Test-only mutators of the leak-signal gates and the burn-in stamp.
+  // DEBUG backs the JNI seams javaApi.cpp exposes to ddprof-test (debug
+  // library build); UNIT_TEST covers the gtest binaries, whose release
+  // configuration compiles with -DNDEBUG and no -DDEBUG. The shipped
+  // release library defines neither.
+
+  // Sets the two leak-signal gates directly, bypassing initialize() (which
+  // requires a live JVM, out of gtest's reach - see this seam block's own
+  // comment above), with the same derivation initialize() applies.
+  // (generations=false, liveness=true) represents liveheap + referencechains
+  // - the only production-reachable state where liveness alone arms the signal.
+  void setLeakSignalSourcesForTest(bool generations, bool liveness) {
+    _gc_generations.store(generations, std::memory_order_relaxed);
+    _leak_signal_enabled.store(generations || liveness, std::memory_order_relaxed);
   }
+
+  // Convenience for callers that only need the generations-only configuration:
+  // sets BOTH flags to v (the generations option alone arms the signal).
+  void setGcGenerationsForTest(bool v) { setLeakSignalSourcesForTest(v, /*liveness=*/false); }
+
+  // Overrides the burn-in stamp (see _leak_signal_activated_ns). initialize()
+  // needs a live JVM, so gtest never stamps it; 0 restores "never activated".
+  // Tests backdate it with modular u64 arithmetic, e.g.
+  // OS::nanotime() - OOM_PROJECTION_BURN_IN_NS - margin.
+  void setLeakSignalActivatedNsForTest(u64 ns) {
+    _leak_signal_activated_ns.store(ns, std::memory_order_release);
+  }
+
+  // Read side of setLeakSignalActivatedNsForTest(): lets a DEBUG seam save the
+  // current stamp before backdating it and restore it afterwards.
+  u64 leakSignalActivatedNsForTest() const {
+    return _leak_signal_activated_ns.load(std::memory_order_acquire);
+  }
+#endif // DEBUG || UNIT_TEST
 
 private:
   void getLiveTraceIds(CallTraceIdSet& out_buffer);

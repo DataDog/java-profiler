@@ -10,6 +10,8 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -39,6 +41,9 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
   // genuine history outranks the seeded ramp.
   private static final int SLOPE_TEST_KLASS_ID = 987001;
   private static final int CHAIN_TEST_KLASS_ID = 987002;
+  // Arbitrary non-zero burn-in stamp: LivenessTracker::initialize() only CASes the stamp from 0,
+  // so a non-zero value cannot be overwritten by a concurrent profiler start mid-test.
+  private static final long KNOWN_ACTIVATION_STAMP_NS = 42L;
 
   private static final class ChainTarget {}
 
@@ -158,5 +163,64 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
     } finally {
       chainTargetHolder = null; // shared-JVM hygiene
     }
+  }
+
+  /** The shared discovery-test failure fingerprint is empty on release builds (the gate lives in
+   *  the helper) and, on debug builds, carries the canonical segments in the canonical order. Read
+   *  only on the seams - no reset/seed calls. */
+  @Test
+  public void failureDiagnosticsFingerprintHasCanonicalSegments() {
+    String d = ReferenceChainAssertions.referenceChainFailureDiagnostics(new Object(), null);
+    if (!ReferenceChainAssertions.isDebugInstrumentedBuild()) {
+      assertEquals("", d, "release builds must keep the plain failure message");
+      return;
+    }
+    assertTrue(d.startsWith(" [leak-signal candidates=["), d);
+    assertTrue(d.endsWith(", observedChain0s=[]]"), d);
+    String[] segments = {
+        "leak-signal candidates=",
+        ", bfsPassesRun=",
+        ", representativeFrontierState=",
+        " (-1=never admitted, 0=admitted pending expansion, 1=expanded, 3=abandoned)",
+        ", observedChain0s="
+    };
+    int previous = -1;
+    for (String segment : segments) {
+      int index = d.indexOf(segment);
+      assertTrue(index > previous, "segment '" + segment + "' missing or out of order in: " + d);
+      previous = index;
+    }
+    assertTrue(d.matches("(?s).*representativeFrontierState=-?\\d+ \\(-1=never admitted.*"), d);
+  }
+
+  /** observedChainHeads tolerates absent events: never throws, never returns null. */
+  @Test
+  public void observedChainHeadsIsEmptyForNoEvents() {
+    assertTrue(ReferenceChainAssertions.observedChainHeads(null).isEmpty());
+  }
+
+  /**
+   * Kills a dropped negative-argument guard in setLeakSignalActivatedNsForTest0 (javaApi.cpp):
+   * without it a negative jlong would be stored as a u64 near UINT64_MAX, which secondsToOOM()
+   * reads as burn-in-never-passed. Asserts the throw AND that the stored stamp is unchanged; the
+   * original stamp is restored on every exit path (shared, no-forkEvery JVM).
+   */
+  @Test
+  public void shouldRejectNegativeLeakSignalActivationStamp() {
+    assumeDebugBuild();
+    long savedActivationNs = ReferenceChainTestHooks.backdateLeakSignalActivationForTest0();
+    long observed;
+    try {
+      ReferenceChainTestHooks.setLeakSignalActivatedNsForTest0(KNOWN_ACTIVATION_STAMP_NS);
+      assertThrows(IllegalArgumentException.class,
+          () -> ReferenceChainTestHooks.setLeakSignalActivatedNsForTest0(-1L),
+          "A negative burn-in stamp must be rejected, not cast to a huge u64");
+      // Returns the current stamp (and backdates; the finally block restores the original).
+      observed = ReferenceChainTestHooks.backdateLeakSignalActivationForTest0();
+    } finally {
+      ReferenceChainTestHooks.setLeakSignalActivatedNsForTest0(savedActivationNs);
+    }
+    assertEquals(KNOWN_ACTIVATION_STAMP_NS, observed,
+        "A rejected negative stamp must leave the previous stamp in place");
   }
 }
