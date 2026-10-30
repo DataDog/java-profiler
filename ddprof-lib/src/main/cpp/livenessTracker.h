@@ -466,18 +466,13 @@ private:
 
   // Effective leak-signal availability: true when the population-trend signal
   // consumed by ReferenceChainTracker::hasLeakSignal() can be constructed at
-  // all. generations tracking and liveheap tracking drive the same
-  // mechanisms here (per-klass population table, heap-floor ring,
-  // secondsToOOM() projection) - liveheap additionally preserves stack
-  // traces for its live samples - so either option is sufficient. When
-  // neither is on, there is no signal source and the reference-chain
-  // collector must stay idle (hasLeakSignal() -> false): running whole-heap
-  // searches with zero candidates "just in case" is the exact waste the
-  // leak-signal gate exists to prevent (observed as a frontier table grown
-  // to its cap with reference_chain_candidate_count == 0 in a healthy
-  // process when this used to fall back to "always true"). Set from
-  // args._gc_generations || args._record_liveness in initialize(). Same
-  // atomicity/reader argument as _gc_generations above.
+  // all. Generations tracking and liveheap tracking drive the same mechanisms
+  // here (per-klass population table, heap-floor ring, secondsToOOM()
+  // projection) - liveheap additionally preserves stack traces - so either
+  // option suffices; with neither on, hasLeakSignal() -> false and the
+  // reference-chain collector must stay idle instead of searching with zero
+  // candidates. Set from args._gc_generations || args._record_liveness in
+  // initialize(). Same atomicity/reader argument as _gc_generations above.
   std::atomic<bool> _leak_signal_enabled;
 
   // OS::nanotime() of the first initialize() that enabled the leak signal; 0
@@ -863,11 +858,8 @@ public:
   jlong maxHeapBytes() const { return _max_heap_bytes; }
 
   // Reads the used-bytes value of the newest _heap_floor_ring sample (0 when
-  // the ring is empty). Matches recordHeapFloorSampleUnchecked()'s SPSC
-  // publish order - loadAcquire() on the index fields is what makes the
-  // payload store visible. Consumed by ReferenceChainTracker's urgent-admission
-  // gate as the freshest physical growth evidence; it must observe the same
-  // samples the projection does, hence the same acquire pairing.
+  // the ring is empty) - the urgent-admission gate's freshest physical growth
+  // evidence. See the definition for the SPSC acquire pairing.
   u64 newestHeapFloorSample() const;
 
   constexpr static int MAX_LEAK_CANDIDATES = 5;
@@ -1050,23 +1042,14 @@ public:
   // pattern selectLeakCandidates()/getLiveTraceIds() already use.
   jobject resolveCandidateRepresentative(JNIEnv *env, u32 klass_id);
 
-  // Read-only observation point for the explicit generations option
-  // (_gc_generations; see that member's own comment), so tests and
-  // diagnostics can tell it apart from the effective leakSignalEnabled() gate
-  // (generations OR liveheap). No production code keys on it: since the
-  // reference-chain signal gates moved to leakSignalEnabled(), the
-  // population, heap-floor and search gates all read _leak_signal_enabled.
-  // This accessor never toggles the flag.
+  // Read-only observation point for the explicit generations option (see
+  // _gc_generations's own comment); no production code keys on it.
   bool gcGenerationsEnabled() const {
     return _gc_generations.load(std::memory_order_relaxed);
   }
 
-  // Exposes the effective leak-signal availability (see _leak_signal_enabled's
-  // own comment) - the gate ReferenceChainTracker::hasLeakSignal() keys on.
-  // True when generations tracking OR liveheap tracking is on; false means no
-  // population-trend signal can ever be constructed and the reference-chain
-  // collector must not search. Read-only; this accessor never toggles the
-  // flag.
+  // The effective gate ReferenceChainTracker::hasLeakSignal() keys on (see
+  // _leak_signal_enabled's own comment).
   bool leakSignalEnabled() const {
     return _leak_signal_enabled.load(std::memory_order_relaxed);
   }
@@ -1088,11 +1071,9 @@ public:
   //
   // The projection feeds the urgency latch (ReferenceChainTracker::isUrgent()),
   // the urgent admission ramp (ReferenceChainTracker::updateUrgentAdmission())
-  // and threadLoop()'s OOM cadence/budget ramp. It does NOT start a search:
-  // ReferenceChainTracker::hasLeakSignal() still returns true only when
-  // selectLeakCandidates() yields a klass, urgency or not. Not a claim that
-  // growth stays linear, only that a short-horizon linear extrapolation is a
-  // reasonable urgency signal.
+  // and threadLoop()'s OOM cadence/budget ramp; it never starts a search (see
+  // OOM_URGENT_THRESHOLD_S). It is a short-horizon linear extrapolation, not a
+  // claim that growth stays linear.
   // Returns a negative value if the chosen ring is not filled enough yet
   // (leakSignalEnabled() is off, or too few GC epochs have happened), not
   // rising, or neither _max_heap_bytes nor _container_memory_limit was ever
@@ -1109,10 +1090,8 @@ public:
   // this method additionally divides by elapsed time, so the same gap
   // understates the growth rate (overstates the projected time-to-OOM)
   // rather than the reverse - not solved here.
-  // Short-horizon linear extrapolation of the rising JVM heap-floor and
-  // container-memory trends against their limits (see the long comment in
-  // livenessTracker.h). Returns -1 while the leak signal is in its burn-in
-  // (see OOM_PROJECTION_BURN_IN_NS).
+  // Returns -1 while the leak signal is in its burn-in (see
+  // OOM_PROJECTION_BURN_IN_NS); otherwise see the comment above.
   double secondsToOOM() const;
 
   // secondsToOOM() withholds its projection (returns -1) for this long after
