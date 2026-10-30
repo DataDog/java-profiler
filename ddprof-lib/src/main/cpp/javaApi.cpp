@@ -1423,6 +1423,14 @@ Java_com_datadoghq_profiler_JavaProfiler_backdateLeakSignalActivationForTest0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setLeakSignalActivatedNsForTest0(
     JNIEnv *env, jclass unused, jlong activatedNs) {
+  if (activatedNs < 0) {
+    // A raw jlong->u64 cast would turn a negative argument into a stamp near UINT64_MAX,
+    // which secondsToOOM() reads as burn-in-never-passed - a mis-wired test would then look
+    // like a dormant projection instead of an invalid input.
+    throwNew(env, "java/lang/IllegalArgumentException",
+             "activatedNs must be >= 0 (0 = never activated)");
+    return;
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
   LivenessTracker::instance()->setLeakSignalActivatedNsForTest((u64)activatedNs);
 }

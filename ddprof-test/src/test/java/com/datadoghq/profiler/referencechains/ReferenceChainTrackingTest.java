@@ -726,8 +726,10 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     // dump() must precede it.
     System.gc();
     Path warmupDumpPath = Files.createTempFile("referencechains-abandoned-test-warmup-", ".jfr");
-    Files.deleteIfExists(warmupDumpPath);
     try {
+      // Inside the guard: createTempFile() already created the file, so a throw between
+      // creation and the finally below would otherwise leak it.
+      Files.deleteIfExists(warmupDumpPath);
       dump(warmupDumpPath);
     } finally {
       Files.deleteIfExists(warmupDumpPath);
