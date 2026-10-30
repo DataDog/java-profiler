@@ -97,6 +97,11 @@ public:
     // When non-zero, mock_GetObjectsWithTags() below busy-waits this many nanoseconds.
     u64 gotw_delay_ns = 0;
 
+    // When non-zero, mock_IterateOverReachableObjects() below busy-waits this many nanoseconds
+    // before reporting roots - a deterministic in-safepoint cost for root enumeration, measured
+    // by runPassManualWalk() into _last_root_enum_safepoint_ms.
+    u64 ior_delay_ns = 0;
+
     // Synthetic frontier-holder arrays for expandFrontier()'s array-holder walk:
     // mock_NewObjectArray() hands back an opaque handle, mock_SetObjectArrayElement() records its
     // elements here, and mock_FollowReferences() treats every recorded element as an expansion seed
@@ -428,6 +433,12 @@ public:
             jvmtiEnv *, jvmtiHeapRootCallback heap_root_cb,
             jvmtiStackReferenceCallback, jvmtiObjectReferenceCallback,
             const void *user_data) {
+        if (active_fixture->ior_delay_ns != 0) {
+            u64 until = OS::nanotime() + active_fixture->ior_delay_ns;
+            while (OS::nanotime() < until) {
+                // busy-wait (see gotw_delay_ns): the measured duration must not undershoot.
+            }
+        }
         for (auto &e : active_fixture->script) {
             if (e.referrer_idx != -1) {
                 continue;
