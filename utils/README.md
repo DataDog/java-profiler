@@ -65,9 +65,10 @@ A dry run never creates a tag, pushes a branch, or triggers GitLab.
 
 If workflow monitoring loses its API connection, the script checks the run's
 status and reconnects to the same run, making up to three monitoring attempts
-per monitoring window. All attempts share a one-hour deadline. After that deadline,
-the script allows up to ten seconds for a final status query. If it cannot confirm
-the result, an interactive session asks whether to watch the same run for another
+per monitoring window. All attempts share a one-hour deadline. When the deadline
+is reached, the script allows up to ten seconds for a final status query, including
+when it must retry a query interrupted by the shared deadline. If the result remains
+unconfirmed, an interactive session asks whether to watch the same run for another
 hour. Answering `y` or `yes` renews the deadline and monitoring attempts. Answering
 `n`, pressing Enter, or reaching EOF stops monitoring with
 `WORKFLOW STATUS UNKNOWN` and a nonzero exit. Unattended sessions stop without

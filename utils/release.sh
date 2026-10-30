@@ -755,21 +755,31 @@ if gh workflow run release-validated.yml \
             # itself before deciding that the remote workflow failed.
             print_warning "Workflow monitoring stopped; checking GitHub for the run's status..."
             STATUS_DEADLINE=$MONITOR_DEADLINE
-            if [ "$SECONDS" -ge "$MONITOR_DEADLINE" ]; then
-                # Allow one final status query after the monitoring deadline,
-                # but bound it too so an API outage cannot hang the script.
-                STATUS_DEADLINE=$((SECONDS + 10))
-            fi
-            if REMOTE_CONCLUSION=$(run_before_deadline "$STATUS_DEADLINE" \
-                gh run view "$RUN_ID" --repo "$REPO" \
-                --json status,conclusion \
-                --jq 'if .status == "completed" then (.conclusion // "unknown") else "unknown" end'); then
-                case "$REMOTE_CONCLUSION" in
-                    success|failure|cancelled|timed_out|action_required|startup_failure|stale|neutral|skipped)
-                        WORKFLOW_CONCLUSION="$REMOTE_CONCLUSION"
-                        break
-                        ;;
-                esac
+            while true; do
+                if [ "$SECONDS" -ge "$MONITOR_DEADLINE" ]; then
+                    # Bound the final query too so an API outage cannot hang the script.
+                    STATUS_DEADLINE=$((SECONDS + 10))
+                fi
+                if REMOTE_CONCLUSION=$(run_before_deadline "$STATUS_DEADLINE" \
+                    gh run view "$RUN_ID" --repo "$REPO" \
+                    --json status,conclusion \
+                    --jq 'if .status == "completed" then (.conclusion // "unknown") else "unknown" end'); then
+                    case "$REMOTE_CONCLUSION" in
+                        success|failure|cancelled|timed_out|action_required|startup_failure|stale|neutral|skipped)
+                            WORKFLOW_CONCLUSION="$REMOTE_CONCLUSION"
+                            ;;
+                    esac
+                    break
+                fi
+                # If the shared deadline expired during this query, retry once
+                # with the full final-query allowance before prompting or stopping.
+                if [ "$STATUS_DEADLINE" -ne "$MONITOR_DEADLINE" ] ||
+                   [ "$SECONDS" -lt "$MONITOR_DEADLINE" ]; then
+                    break
+                fi
+            done
+            if [ "$WORKFLOW_CONCLUSION" != "unknown" ]; then
+                break
             fi
 
             if [ "$SECONDS" -ge "$MONITOR_DEADLINE" ]; then

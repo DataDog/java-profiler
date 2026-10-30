@@ -387,6 +387,14 @@ case "$1 $2" in
       exec /bin/sleep 30
     fi
     [ "$CLI_QUERY_EXIT" -eq 0 ] || exit "$CLI_QUERY_EXIT"
+    if [ "${CLI_QUERY_DELAY:-0}" -gt 0 ]; then
+      echo "$$" > "$CLI_STATE/query-pid"
+      exec python3 -c '
+import os, sys, time
+time.sleep(float(os.environ["CLI_QUERY_DELAY"]))
+os.execvp("jq", ["jq", "-nr", "--argjson", "run", os.environ["CLI_REMOTE_JSON"], "$run | " + sys.argv[1]])
+' "${@: -1}"
+    fi
     printf '%s\n' "$CLI_REMOTE_JSON" | jq -r "${@: -1}"
     ;;
   *) echo "Unexpected fixture command: $*" >&2; exit 97 ;;
@@ -493,8 +501,16 @@ expect_monitor 'watch deadline expires' 1 'WORKFLOW STATUS UNKNOWN' 1 1 \
 expect_monitor 'final status confirms success after watch deadline' 0 'WORKFLOW SUCCEEDED' 1 1 \
   RELEASE_MONITOR_TIMEOUT_SECONDS=1 CLI_WATCH_HANG=1
 
-expect_monitor 'status query deadline expires' 1 'WORKFLOW STATUS UNKNOWN' 1 1 \
+expect_monitor 'status query crossing the deadline still confirms success' 0 'WORKFLOW SUCCEEDED' 1 2 \
+  RELEASE_MONITOR_TIMEOUT_SECONDS=2 CLI_WATCH_EXIT=1 CLI_QUERY_DELAY=3 CLI_PTY_REPLIES=n
+[[ "$CLI_OUTPUT" != *'Continue monitoring the same workflow run'* ]] ||
+  fail 'status-query grace was skipped before prompting for an extension'
+
+status_started=$SECONDS
+expect_monitor 'status query deadline expires' 1 'WORKFLOW STATUS UNKNOWN' 1 2 \
   RELEASE_MONITOR_TIMEOUT_SECONDS=1 CLI_WATCH_EXIT=1 CLI_QUERY_HANG=1
+[ "$((SECONDS - status_started))" -lt 14 ] ||
+  fail 'status-query retries exceeded the bounded final grace period'
 
 expect_monitor 'final status query is also bounded' 1 'WORKFLOW STATUS UNKNOWN' 1 1 \
   RELEASE_MONITOR_TIMEOUT_SECONDS=1 CLI_WATCH_HANG=1 CLI_QUERY_HANG=1
