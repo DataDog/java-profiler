@@ -20,9 +20,9 @@
 # Usage: check-release-flags.sh <shared-object>
 #   e.g. check-release-flags.sh libs/linux-x64/libjavaProfiler.so
 #
-# Relies on the release .so still carrying its symbol table: build.sh strips
-# only debug sections (--strip-debug), not the symbol table itself, before
-# this runs.
+# Relies on the release .so still carrying its symbol table: the Gradle link
+# task (NativeLinkTask.kt) strips only debug sections (--strip-debug on Linux,
+# -S on macOS), not the symbol table itself, before this runs.
 #
 # Set NM / STRINGS to point at different binutils tools; the unit tests use
 # them to feed canned output in.
@@ -65,9 +65,9 @@ STRING_MARKERS=(
 SYMTAB=$("${NM}" "${SO}" 2>/dev/null) || die "${NM} failed on ${SO}"
 if [ -z "${SYMTAB}" ]; then
   echo "ERROR: ${NM} found no symbols in ${SO}." >&2
-  echo "       A release build's symbol table survives strip --strip-debug (see" >&2
-  echo "       build.sh), so this is far more likely to mean the wrong file was" >&2
-  echo "       passed than that the library is clean. Refusing to report a pass." >&2
+  echo "       A release build's symbol table survives the link task's debug-only" >&2
+  echo "       strip (NativeLinkTask.kt), so this is far more likely to mean the wrong" >&2
+  echo "       file was passed than that the library is clean. Refusing to report a pass." >&2
   exit 1
 fi
 
