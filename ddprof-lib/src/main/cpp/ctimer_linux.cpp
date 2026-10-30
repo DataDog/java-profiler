@@ -159,15 +159,17 @@ bool CTimer::resizeTimers(int max_timers) {
 
 // A restart with an unchanged pid_max keeps the table and never closes thread
 // unregistration, so an exit during start() still releases its timer. Only an
-// actual replacement freezes the hook calls; if one is still inside the table
-// after the wait budget, start() fails retryably and keeps the old table.
+// actual replacement freezes the hook calls. If one is still inside the table
+// after the wait budget, start() fails and keeps the old table; whether a
+// later start() can succeed depends on the stuck call (see
+// Profiler::startCpuEngine()).
 Error CTimer::sizeTimerTable(int max_timers) {
   if (max_timers == _max_timers) {
     return Error::OK;
   }
   Profiler::ThreadTablesFreeze freeze(Profiler::instance());
   if (!freeze.drained()) {
-    return Error("thread hook calls did not drain; retry start()");
+    return Error("thread hook calls did not drain");
   }
   if (!resizeTimers(max_timers)) {
     return Error("Failed to allocate CPU timer table");

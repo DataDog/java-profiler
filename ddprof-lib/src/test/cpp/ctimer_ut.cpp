@@ -50,8 +50,10 @@ public:
   static bool enginesReady(Profiler *p) {
     return p->_engines_ready.load(std::memory_order_acquire);
   }
+  // Registration and unregistration calls in flight, together.
   static int hookCallsInflight(Profiler *p) {
-    return p->_hook_calls_inflight.load(std::memory_order_acquire);
+    return p->_register_calls_inflight.load(std::memory_order_acquire) +
+           p->_unregister_calls_inflight.load(std::memory_order_acquire);
   }
   static bool closeThreadRegistration(Profiler *p) {
     return p->closeThreadRegistration();
@@ -62,6 +64,25 @@ public:
   static void enableCpuEngine(Profiler *p, int activated) {
     p->enableCpuEngine(activated);
   }
+  static bool replaceCpuEngine(Profiler *p, Engine *next) {
+    return p->replaceCpuEngine(next);
+  }
+  static Engine *cpuEngine(Profiler *p) { return p->_cpu_engine; }
+  static State state(Profiler *p) { return p->state(); }
+
+  // Restores the profiler state on destruction, so a test that drives the
+  // singleton into ERROR does not leak that into later tests.
+  class StateRestore {
+  public:
+    explicit StateRestore(Profiler *p) : _p(p), _state(p->state()) {}
+    ~StateRestore() { _p->_state.store(_state, std::memory_order_release); }
+    StateRestore(const StateRestore &) = delete;
+    StateRestore &operator=(const StateRestore &) = delete;
+
+  private:
+    Profiler *_p;
+    State _state;
+  };
   // Runs body(drained) while a real ThreadTablesFreeze is alive.
   template <typename F> static void withThreadTablesFreeze(Profiler *p, F body) {
     Profiler::ThreadTablesFreeze freeze(p);
@@ -82,21 +103,30 @@ public:
   private:
     long long _saved;
   };
-  // Counts a hook call in flight for its lifetime, as if one were stuck inside
-  // an engine, without needing a thread or an engine to hold it.
-  class HookCallHold {
+  // Counts a hook call in flight on one gate's counter for its lifetime, as if
+  // one were stuck inside an engine, without a thread or an engine to hold it.
+  class InflightHold {
   public:
-    explicit HookCallHold(Profiler *p) : _p(p) {
-      p->_hook_calls_inflight.fetch_add(1, std::memory_order_seq_cst);
+    explicit InflightHold(std::atomic<int> &counter) : _counter(counter) {
+      _counter.fetch_add(1, std::memory_order_seq_cst);
     }
-    ~HookCallHold() {
-      _p->_hook_calls_inflight.fetch_sub(1, std::memory_order_release);
-    }
-    HookCallHold(const HookCallHold &) = delete;
-    HookCallHold &operator=(const HookCallHold &) = delete;
+    ~InflightHold() { _counter.fetch_sub(1, std::memory_order_release); }
+    InflightHold(const InflightHold &) = delete;
+    InflightHold &operator=(const InflightHold &) = delete;
 
   private:
-    Profiler *_p;
+    std::atomic<int> &_counter;
+  };
+  // A registration call held in flight.
+  class HookCallHold : public InflightHold {
+  public:
+    explicit HookCallHold(Profiler *p) : InflightHold(p->_register_calls_inflight) {}
+  };
+  // An unregistration call held in flight.
+  class UnregisterCallHold : public InflightHold {
+  public:
+    explicit UnregisterCallHold(Profiler *p)
+        : InflightHold(p->_unregister_calls_inflight) {}
   };
   static bool threadTablesStable(Profiler *p) {
     return p->_thread_tables_stable.load(std::memory_order_acquire);
@@ -316,13 +346,17 @@ TEST_F(CTimerNativeMemTest, FailedAllocationLeavesEmptyTable) {
 // so a thread that starts or exits while start() registers the existing
 // threads is handled by the pthread hook instead of being missed. The engine
 // is stopped, the gate closed and the SIGPROF disposition restored before the
-// fixture restores the table, so later tests see the process as it was.
+// fixture restores the table, so later tests see the process as it was. The
+// engine is installed as the Profiler's CPU engine while the gate is open, so
+// a hook call in that window reaches it instead of a null engine slot.
 TEST_F(CTimerNativeMemTest, StartOpensThreadRegistration) {
   Profiler *profiler = Profiler::instance();
   ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
   struct sigaction saved_sigprof;
   sigaction(SIGPROF, nullptr, &saved_sigprof);
   CTimer engine;
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &engine, &wall);
   Arguments args;
 
   Error error = CTimerTestAccessor::startWithTableSize(engine, args,
@@ -395,7 +429,7 @@ TEST_F(CTimerNativeMemTest, ResizeKeepsTableWhenHookCallsDoNotDrain) {
   }
 
   EXPECT_TRUE((bool)error);
-  EXPECT_STREQ("thread hook calls did not drain; retry start()",
+  EXPECT_STREQ("thread hook calls did not drain",
                error.message());
   EXPECT_EQ(table, CTimerTestAccessor::timers());
   EXPECT_EQ(64, CTimerTestAccessor::maxTimers());
@@ -557,6 +591,44 @@ TEST(ProfilerEnginesGateTest, CloseThreadRegistrationTimesOutOnStuckHookCall) {
   EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
 }
 
+// stop() keeps unregistration open, and under thread churn unregistration
+// calls can overlap without pause. closeThreadRegistration() therefore waits
+// only for registration calls: an unregistration in flight does not make
+// stop() time out and put the profiler in ERROR.
+TEST(ProfilerEnginesGateTest, CloseThreadRegistrationIgnoresInFlightUnregistration) {
+  Profiler *profiler = Profiler::instance();
+  ProfilerTestAccessor::RegistrationGate gate(profiler);
+  ProfilerTestAccessor::DrainBudget budget(100000000LL);
+
+  bool closed;
+  {
+    ProfilerTestAccessor::UnregisterCallHold hold(profiler);
+    closed = ProfilerTestAccessor::closeThreadRegistration(profiler);
+  }
+
+  EXPECT_TRUE(closed);
+  EXPECT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+}
+
+// A table replacement or a CPU engine change must exclude unregistration as
+// well, so ThreadTablesFreeze also waits for unregistration calls.
+TEST(ProfilerEnginesGateTest, ThreadTablesFreezeWaitsForInFlightUnregistration) {
+  Profiler *profiler = Profiler::instance();
+  ProfilerTestAccessor::DrainBudget budget(100000000LL);
+
+  bool drained = true;
+  {
+    ProfilerTestAccessor::UnregisterCallHold hold(profiler);
+    ProfilerTestAccessor::withThreadTablesFreeze(
+        profiler, [&](bool d) { drained = d; });
+  }
+
+  EXPECT_FALSE(drained);
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+}
+
 // The ThreadTablesFreeze a CPU engine's start() takes around a table
 // replacement closes both gates before it waits for hook
 // calls already inside an engine, does not return while one is, keeps
@@ -687,6 +759,7 @@ TEST(ProfilerEnginesGateTest, FailedCpuEngineStartClosesThreadRegistration) {
   Engine wall;
   ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
   Arguments args;
+  State state_before = ProfilerTestAccessor::state(profiler);
 
   bool started = ProfilerTestAccessor::startCpuEngine(profiler, args);
   bool ready = ProfilerTestAccessor::enginesReady(profiler);
@@ -700,6 +773,109 @@ TEST(ProfilerEnginesGateTest, FailedCpuEngineStartClosesThreadRegistration) {
   EXPECT_EQ(-1, registered);
   EXPECT_EQ(0, cpu.register_calls.load());
   EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+  // The gate closed within the budget, so the profiler stays usable.
+  EXPECT_EQ(state_before, ProfilerTestAccessor::state(profiler));
+}
+
+// If the gate cannot be closed after the CPU engine failed, a hook call may
+// still be inside that engine's table, and only start() replaces tables. The
+// profiler goes to ERROR, which rejects every later start().
+TEST(ProfilerEnginesGateTest, StuckGateAfterCpuEngineFailurePutsProfilerInError) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  ProfilerTestAccessor::StateRestore restore(profiler);
+  FakeCpuEngine cpu(/*fail=*/true, /*open_gate=*/true);
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
+  ProfilerTestAccessor::DrainBudget budget(100000000LL);
+  Arguments args;
+
+  bool started;
+  {
+    ProfilerTestAccessor::HookCallHold hold(profiler);
+    started = ProfilerTestAccessor::startCpuEngine(profiler, args);
+  }
+
+  EXPECT_FALSE(started);
+  EXPECT_EQ(ERROR, ProfilerTestAccessor::state(profiler));
+  EXPECT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+}
+
+// A CPU engine that counts releaseThreads() calls and records the gates it
+// saw while releasing.
+class ReleasingEngine : public Engine {
+public:
+  std::atomic<int> release_calls{0};
+  std::atomic<bool> stable_inside{true};
+  std::atomic<bool> ready_inside{true};
+
+  void releaseThreads() override {
+    release_calls.fetch_add(1);
+    stable_inside.store(
+        ProfilerTestAccessor::threadTablesStable(Profiler::instance()));
+    ready_inside.store(
+        ProfilerTestAccessor::enginesReady(Profiler::instance()));
+  }
+};
+
+// stop() leaves an engine's per-thread resources in place (PerfEvents keeps
+// its fds open), and only unregisterThread() releases them as threads exit.
+// When start() selects another CPU engine, exits no longer reach the previous
+// one, so it releases them before the slot changes, with both gates closed.
+TEST(ProfilerEnginesGateTest, CpuEngineChangeReleasesPreviousEngineThreads) {
+  Profiler *profiler = Profiler::instance();
+  ReleasingEngine previous;
+  FakeCpuEngine next(/*fail=*/false, /*open_gate=*/false);
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &previous, &wall);
+
+  bool replaced = ProfilerTestAccessor::replaceCpuEngine(profiler, &next);
+
+  EXPECT_TRUE(replaced);
+  EXPECT_EQ(1, previous.release_calls.load());
+  EXPECT_FALSE(previous.stable_inside.load());
+  EXPECT_FALSE(previous.ready_inside.load());
+  EXPECT_EQ(&next, ProfilerTestAccessor::cpuEngine(profiler));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+}
+
+// Restarting with the same CPU engine keeps its per-thread resources, so
+// PerfEvents reuses its fds across stop()/start().
+TEST(ProfilerEnginesGateTest, SameCpuEngineKeepsItsThreads) {
+  Profiler *profiler = Profiler::instance();
+  ReleasingEngine engine;
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &engine, &wall);
+
+  bool replaced = ProfilerTestAccessor::replaceCpuEngine(profiler, &engine);
+
+  EXPECT_TRUE(replaced);
+  EXPECT_EQ(0, engine.release_calls.load());
+  EXPECT_EQ(&engine, ProfilerTestAccessor::cpuEngine(profiler));
+}
+
+// If hook calls do not drain, the engine change is refused: the previous
+// engine keeps its resources and its slot, and start() fails retryably.
+TEST(ProfilerEnginesGateTest, CpuEngineChangeKeepsPreviousEngineWhenHookCallsDoNotDrain) {
+  Profiler *profiler = Profiler::instance();
+  ReleasingEngine previous;
+  FakeCpuEngine next(/*fail=*/false, /*open_gate=*/false);
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &previous, &wall);
+  ProfilerTestAccessor::DrainBudget budget(100000000LL);
+
+  bool replaced;
+  {
+    ProfilerTestAccessor::HookCallHold hold(profiler);
+    replaced = ProfilerTestAccessor::replaceCpuEngine(profiler, &next);
+  }
+
+  EXPECT_FALSE(replaced);
+  EXPECT_EQ(0, previous.release_calls.load());
+  EXPECT_EQ(&previous, ProfilerTestAccessor::cpuEngine(profiler));
   EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
 }
 

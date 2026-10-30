@@ -52,6 +52,7 @@ public:
 
   virtual int registerThread(int tid);
   virtual void unregisterThread(int tid);
+  void releaseThreads();
   long interval() const { return _interval; }
 
   const char *name() { return "PerfEvents"; }

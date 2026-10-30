@@ -69,16 +69,21 @@ Profiler::start()
   _engines_ready cleared                       registration closed until the CPU engine
                                                starts; unregistration stays open
   selectCpuEngine / selectWallEngine           engine pointers stored with release
+  replaceCpuEngine()                           on an engine change, the previous engine
+                                               releases its threads under
+                                               ThreadTablesFreeze; timeout -> retryable error
   _jfr.start()
   SamplerPerf::primeClock()                    before any handler can fire
   Profiler::startCpuEngine()    (EM_CPU)       failure -> warning, continue
     _cpu_engine->start()
       CTimer:            ThreadTablesFreeze only if the table size changes;
-                         on a wait timeout (1 s) it fails retryably and keeps
-                         its table
-      PerfEvents:        replaces its table without the freeze (PROF-16359)
+                         on a wait timeout (1 s) it fails and keeps its
+                         table (ERROR below if a registration call is stuck)
+      PerfEvents:        replaces its table without the freeze (PROF-16359);
+                         allocation failure -> error, engine stays off
       CTimer/PerfEvents: openThreadRegistration() after sizing, before listing threads
-    on failure: closeThreadRegistration()
+    on failure: closeThreadRegistration(); timeout -> ERROR, start() undoes
+                its setup and fails
     on success: openThreadRegistration()       no-op for CTimer/PerfEvents
   _wall_engine->enableEvents(true)             BEFORE start(): see below
   _wall_engine->start()         (EM_WALL)
@@ -107,13 +112,18 @@ Profiler::start()
 2. `SignalInflight::drain()` waits until every handler that already passed its
    `_enabled` check has left. If the drain times out, `stop()` returns an error
    and tears nothing down.
-3. `closeThreadRegistration()` clears `_engines_ready` and waits until no hook
-   call that passed the check is still inside an engine.
+3. `closeThreadRegistration()` clears `_engines_ready` and waits until no
+   registration call that passed the check is still inside an engine.
    No `registerThread()` call (pthread hook or JVMTI `ThreadStart`) can then arm
    a timer or open an fd after the engines stop, or still be using a table when
    the next `start()` resizes it. The wait is bounded (1 s). On timeout `stop()`
-   returns an error, tears nothing down and keeps the state `RUNNING`, like
-   step 2; a retried `stop()` runs every step again.
+   logs an error, still completes every step below, and ends in `ERROR` instead
+   of `IDLE`. That is safe because no step frees a per-thread table, and
+   `ERROR` rejects every later `start()`, the only place a table is replaced,
+   so the stuck call can never reach freed memory. The cost: if the stuck call
+   is inside `CTimer::registerThread()` and finishes after `CTimer::stop()`,
+   its timer stays armed for good; its `SIGPROF` is dropped by the disabled
+   handler.
    Unregistration is not closed here: JVMTI `ThreadEnd` and native thread exits
    may still reach `unregisterThread()` while the engines stop. `CTimer::stop()`
    and `CTimer::unregisterThread()` each release a slot with a per-slot CAS and
@@ -178,18 +188,22 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      with acquire. An unregistration that reaches the previous engine only
      releases that thread's own slot. `check()` never writes the slots.
 3. **`PerfEvents` only**: a `pthread_setspecific` GOT hook on the JVM library
-   (`perfEvents_linux.cpp:176`), installed in `PerfEvents::start()`
-   (`perfEvents_linux.cpp:980`).
+   (`pthread_setspecific_hook()`), installed in `PerfEvents::start()`.
 
 Every `Profiler::registerThread()`/`unregisterThread()` call counts itself in
-flight (`HookCallScope`) for as long as it may be inside an engine. Closing a gate
-(`closeThreadRegistration()` in `stop()`, `ThreadTablesFreeze` around a table
-replacement) waits
-for that count to reach zero, at most 1 s, so no `registerThread()` call is inside
-an engine once `stop()` tears it down, and no call at all while `start()` replaces
-its table. If the wait times out, the caller returns a retryable error and
-neither tears down nor replaces anything. The gate flags and the counter use `seq_cst` on both
-sides: either a call sees the gate closed, or the closer sees the call and waits.
+flight (`HookCallScope`) for as long as it may be inside an engine, on its
+gate's own counter (`_register_calls_inflight`, `_unregister_calls_inflight`).
+`closeThreadRegistration()` waits, at most 1 s, only for registration calls, so
+no `registerThread()` call is inside an engine once `stop()` tears it down.
+Unregistration calls are not waited for there: they stay allowed during `stop()`,
+and under thread churn their count may not reach zero within the budget although
+none is stuck. `ThreadTablesFreeze` closes both gates and waits for both counts,
+so no call at all is inside an engine while a table is replaced or a replaced
+CPU engine releases its threads. On a freeze timeout the operation fails and
+replaces nothing; on a `closeThreadRegistration()` timeout the profiler goes to
+`ERROR` (see `stop()` above and `Profiler::startCpuEngine()`). The gate flags and
+the counters use `seq_cst` on both sides: either a call sees the gate closed, or
+the closer sees the call and waits.
 
 Thread cancellation is disabled for the length of each call, because the engine
 calls reach cancellation points (`close()`, `Log::warn()`). Acting on a
@@ -311,7 +325,7 @@ resolved through `Arguments::cpuSamplerInterval()`.
 - **Thread hook**: `start()` patches the JVM library's `pthread_setspecific`
   import so that HotSpot setting or clearing its thread TLS key registers or
   unregisters the thread (`perfEvents_linux.cpp:171-204`).
-- **`stop()` is a no-op** (`perfEvents_linux.cpp:1051`): fds stay open across
+- **`stop()` is a no-op**: fds stay open across
   stop/start, and `registerThread()` skips threads that already have an fd.
   After stop, the cleared `_enabled` flag keeps handlers from recording.
 - **Memory**: the `_events` array and any 2-page mmap ring pages are accounted
@@ -321,6 +335,15 @@ resolved through `Arguments::cpuSamplerInterval()`.
   `pid_max` changed. It does not close the old table's fds or rings, and it
   does not exclude thread unregistration or the signal-path readers
   (`walkKernel()`, `resetBuffer()`) while it does so (PROF-16359).
+- **Allocation failure**: if the table cannot be allocated, `start()` sets
+  `_max_events` back to -1, logs an error and fails before it installs the
+  signal handler, the hook or the registration gate, so the engine stays off
+  for the recording. `walkKernel()` and `resetBuffer()` skip the missing table:
+  fds left armed by an earlier recording keep delivering `SIGPROF`.
+- **Engine change**: `releaseThreads()` closes every fd and unmaps every ring.
+  `Profiler::replaceCpuEngine()` calls it when `start()` selects another CPU
+  engine, because thread exits stop reaching PerfEvents once it leaves the
+  slot.
 - `CSTACK_LBR` and kernel stacks (`walkKernel`) are available only with this
   engine (`Profiler::start()`, `Profiler::getNativeTrace()`).
 

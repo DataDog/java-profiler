@@ -1,5 +1,6 @@
 /*
  * Copyright 2017 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,6 +54,10 @@ public:
 
   virtual int registerThread(int tid) { return -1; }
   virtual void unregisterThread(int tid) {}
+  // Releases the per-thread resources the engine keeps across stop(). Called
+  // when another engine replaces it in its Profiler slot: thread exits no
+  // longer reach it after that, so nothing else would release them.
+  virtual void releaseThreads() {}
 
   virtual void enableEvents(bool enabled) {
     // do nothing

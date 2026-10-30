@@ -174,7 +174,9 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
 // Marks a native-thread hook call as in flight for the duration of a
 // Profiler::registerThread()/unregisterThread() call, so a gate can be closed
-// and the calls that already passed it waited for. The increment and the gate
+// and the calls that already passed it waited for. Each gate has its own
+// counter (_register_calls_inflight, _unregister_calls_inflight). The
+// increment and the gate
 // load in the caller are seq_cst, pairing with the seq_cst gate store and
 // counter load on the closing side: either the hook sees the gate closed, or
 // the closer sees the call in flight and waits for it. registerThreadInEngines()
@@ -200,16 +202,23 @@ void Profiler::openThreadRegistration() {
 
 bool Profiler::closeThreadRegistration() {
   _engines_ready.store(false, std::memory_order_seq_cst);
-  return waitForHookCalls();
+  return waitForHookCalls(/*include_unregistration=*/false);
 }
 
-bool Profiler::waitForHookCalls() {
+bool Profiler::waitForHookCalls(bool include_unregistration) {
   // Hook calls only do a few syscalls per engine, so the wait is short. It is
   // bounded so that a call that never leaves (or a leaked in-flight count)
-  // fails start()/stop() with a retryable error instead of wedging them under
-  // _state_lock. clock_gettime() rather than OS::nanotime(): see
-  // SamplerPerf::primeClock() in start().
-  if (_hook_calls_inflight.load(std::memory_order_seq_cst) == 0) {
+  // fails the caller instead of wedging it under _state_lock.
+  // clock_gettime() rather than OS::nanotime(): see SamplerPerf::primeClock()
+  // in start().
+  auto inflight = [this, include_unregistration]() {
+    int calls = _register_calls_inflight.load(std::memory_order_seq_cst);
+    if (include_unregistration) {
+      calls += _unregister_calls_inflight.load(std::memory_order_seq_cst);
+    }
+    return calls;
+  };
+  if (inflight() == 0) {
     return true;
   }
   long long budget = _hook_drain_timeout_ns;
@@ -224,7 +233,7 @@ bool Profiler::waitForHookCalls() {
   deadline.tv_sec += (time_t)(nsec / 1000000000LL);
   deadline.tv_nsec = (long)(nsec % 1000000000LL);
 
-  while (_hook_calls_inflight.load(std::memory_order_seq_cst) != 0) {
+  while (inflight() != 0) {
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
       Log::warn("Profiler: clock_gettime(CLOCK_MONOTONIC) failed (errno=%d) "
@@ -233,7 +242,7 @@ bool Profiler::waitForHookCalls() {
     }
     if (now.tv_sec > deadline.tv_sec ||
         (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
-      int remaining = _hook_calls_inflight.load(std::memory_order_seq_cst);
+      int remaining = inflight();
       Log::warn("Profiler: timed out after %ldms waiting for %d in-flight "
                 "thread hook call(s)", (long)(budget / 1000000LL), remaining);
       return false;
@@ -281,16 +290,11 @@ int Profiler::registerThreadInEngines(int tid) {
   if (!_instance->_engines_ready.load(std::memory_order_acquire)) {
     return -1; // not registered, as Engine::registerThread() reports it
   }
-  HookCallScope scope(_instance->_hook_calls_inflight);
-  // Threads created before the gate opens are picked up by the CPU engine's
-  // start(), which opens the gate before it lists the existing threads.
+  HookCallScope scope(_instance->_register_calls_inflight);
   if (!_instance->_engines_ready.load(std::memory_order_seq_cst)) {
     return -1; // not registered, as Engine::registerThread() reports it
   }
-  // The gate is open iff the CPU engine started (see startCpuEngine()), so it
-  // admits only that engine. No wall engine overrides
-  // Engine::registerThread(); one that needs per-thread registration needs a
-  // gate that tracks its own start, not this one.
+  // The gate admits only the CPU engine (see _engines_ready).
   Engine *cpu = __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE);
   return cpu->registerThread(tid);
 }
@@ -306,10 +310,8 @@ void Profiler::resetUnregisterObservableForTest() {
 #endif
 
 void Profiler::unregisterThreadInEngines(int tid) {
-  HookCallScope scope(_instance->_hook_calls_inflight);
-  // Gated only while start() may replace the per-thread tables, not on
-  // _engines_ready: a thread started during a recording can exit after stop(),
-  // and PerfEvents keeps its fd open until this call closes it.
+  HookCallScope scope(_instance->_unregister_calls_inflight);
+  // Closed only inside a ThreadTablesFreeze (see _thread_tables_stable).
   if (!_instance->_thread_tables_stable.load(std::memory_order_seq_cst)) {
     return;
   }
@@ -323,11 +325,8 @@ void Profiler::unregisterThreadInEngines(int tid) {
     g_test_last_unregistered_tid.store(tid, std::memory_order_relaxed);
     return;
 #endif
-  // start() may replace the engines concurrently. Either engine
-  // is safe to call: unregisterThread() only releases the exiting thread's own
-  // slot, bound-checked against the engine's current table, and a CTimer table
-  // being replaced is behind the gate above. PerfEvents replaces its table
-  // without the gate (PROF-16359).
+  // start() may replace the engine slots concurrently. Either engine is safe
+  // to call: unregisterThread() releases only the exiting thread's own slot.
   __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE)
       ->unregisterThread(tid);
   __atomic_load_n(&_instance->_wall_engine, __ATOMIC_ACQUIRE)
@@ -1146,27 +1145,64 @@ void Profiler::disableEngines() {
   _wall_engine->enableEvents(false);
 }
 
-// The registration gate is open for a recording only if the CPU engine
-// started. An engine that failed or was not started must never see the hook:
-// its registerThread() would arm a timer or open a perf fd for it. Engines with
-// a per-thread table (CTimer, PerfEvents) open the gate themselves before they
-// list threads, so opening it again here does nothing for them. For engines
-// without a table (ITimer, ITimerJvmti, J9) it opens the gate, so registration
-// follows the profiler lifecycle rather than the engine choice. The gate admits
-// only the CPU engine (registerThreadInEngines()): no wall engine overrides
-// Engine::registerThread(), so a recording whose CPU engine did not start
-// loses nothing with the gate closed.
+// Keeps the registration gate open iff the CPU engine started (see
+// _engines_ready): an engine that failed must never see the hook. Opening it
+// here is a no-op for engines that opened it in their start() (CTimer,
+// PerfEvents), and opens it for the table-less ones (ITimer, ITimerJvmti, J9).
 bool Profiler::startCpuEngine(Arguments &args) {
   Error error = _cpu_engine->start(args);
   if (error) {
-    // The engine may have opened the gate before failing. A call that is
-    // still in flight after the wait budget is waited for again by the
-    // ThreadTablesFreeze in front of the next table replacement.
-    (void)closeThreadRegistration();
     Log::warn("%s", error.message());
+    // The engine may have opened the gate before failing. If a registration
+    // call is still inside it after the wait budget, that call may keep using
+    // the engine's table, and only start() replaces tables. ERROR rejects
+    // every later start(); the caller undoes what its start() set up. A
+    // failed table freeze in the engine's start() ends here too when the
+    // stuck call is a registration call; otherwise the failure is retryable.
+    if (!closeThreadRegistration()) {
+      Log::error("Profiler: a thread registration call did not leave the CPU "
+                 "engine; the profiler is disabled");
+      _state.store(ERROR, std::memory_order_release);
+    }
     return false;
   }
   openThreadRegistration();
+  return true;
+}
+
+// Undoes what start() set up once _jfr.start() succeeded, when start() then
+// fails without a running recording: engine events, the library trap and the
+// refresher, the JFR recording, and the library patches. The patches are
+// restored after JFR stops, as in stop(); a later start() patches again from
+// Libraries::updateSymbols(). Without this, a start() that left the profiler
+// in ERROR would leave the hooks patched for the rest of the process.
+void Profiler::rollBackStart() {
+  disableEngines();
+  switchLibraryTrap(false);
+  _libs->stopRefresher();
+  lockAll();
+  _jfr.stop();
+  unlockAll();
+  LibraryPatcher::unpatch_libraries();
+}
+
+// stop() leaves an engine's per-thread resources in place (PerfEvents keeps
+// its fds so that unregisterThread() closes them when threads exit). Once the
+// slot points at another engine, thread exits no longer reach the previous
+// one, so it releases them first. The freeze keeps registerThread() and
+// unregisterThread() off both engines meanwhile.
+bool Profiler::replaceCpuEngine(Engine *next) {
+  Engine *previous = _cpu_engine;
+  if (previous != NULL && previous != next) {
+    ThreadTablesFreeze freeze(this);
+    if (!freeze.drained()) {
+      return false;
+    }
+    previous->releaseThreads();
+    __atomic_store_n(&_cpu_engine, next, __ATOMIC_RELEASE);
+    return true;
+  }
+  __atomic_store_n(&_cpu_engine, next, __ATOMIC_RELEASE);
   return true;
 }
 
@@ -1778,14 +1814,16 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 
-  // Registration stays closed until the CPU engine started (see
-  // startCpuEngine()), even if an earlier stop() left it open. Unregistration
-  // stays open: a thread exit dropped while the profiler is alive leaves a
-  // stale slot, so only the table replacement inside the CPU engine's start()
-  // closes it (ThreadTablesFreeze). No wait here: nothing below touches a
-  // per-thread table before that freeze waits for the in-flight calls.
+  // Registration stays closed until the CPU engine starts; unregistration
+  // stays open (see _engines_ready). No wait here: only replaceCpuEngine() and
+  // the CPU engine's table sizing touch per-thread tables, each behind its own
+  // ThreadTablesFreeze.
   _engines_ready.store(false, std::memory_order_seq_cst);
-  __atomic_store_n(&_cpu_engine, selectCpuEngine(args), __ATOMIC_RELEASE);
+  if (!replaceCpuEngine(selectCpuEngine(args))) {
+    // Nothing replaced or released yet. Retryable, like the earlier error
+    // returns in this function.
+    return Error("thread hook calls did not drain; retry start()");
+  }
   __atomic_store_n(&_wall_engine, selectWallEngine(args), __ATOMIC_RELEASE);
   _cstack = args._cstack;
   _force_jmethodID = args._force_jmethodID;
@@ -1865,6 +1903,12 @@ Error Profiler::start(Arguments &args, bool reset) {
       startCpuEngine(args)) {
     activated |= EM_CPU;
   }
+  if (state() == ERROR) {
+    // startCpuEngine() could not close the registration gate after the CPU
+    // engine failed. Nothing else has started; undo the setup above.
+    rollBackStart();
+    return Error("thread hook calls did not drain; the profiler is disabled");
+  }
   if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine) {
     // Enable wall clock BEFORE starting its pthread: timerLoopCommon() checks
     // _enabled once at startup and exits early if false, so the pthread would
@@ -1915,12 +1959,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       Log::warn("%s", error.message());
       if (_event_mask == EM_NATIVEMEM) {
         // nativemem is the only requested mode: propagate the real error
-        disableEngines();
-        switchLibraryTrap(false);
-        _libs->stopRefresher();
-        lockAll();
-        _jfr.stop();
-        unlockAll();
+        rollBackStart();
         return error;
       }
       error = Error::OK; // recoverable when other modes are also active
@@ -1975,13 +2014,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error::OK;
   }
   // no engine was activated; perform cleanup
-  disableEngines();
-  switchLibraryTrap(false);
-  _libs->stopRefresher();
-
-  lockAll();
-  _jfr.stop();
-  unlockAll();
+  rollBackStart();
 
   return Error(
       "Neither CPU, wallclock nor allocation profiling could be started");
@@ -2009,23 +2042,20 @@ Error Profiler::stop() {
     return Error("signal handlers did not drain; teardown skipped, retry stop()");
   }
 
-  // Close the registration gate and wait for calls already past it, so no
-  // thread arms a timer or opens an fd after the engines below stop, and
-  // none is still inside a table when the next start() resizes it. JVMTI
-  // ThreadStart goes through the same gate. Only registration is closed:
-  // JVMTI ThreadEnd and native thread exits may still reach unregisterThread()
-  // while the engines stop. That is safe per engine: CTimer::stop() and
-  // CTimer::unregisterThread() each release a slot with a per-slot CAS and
-  // neither frees the table; PerfEvents::stop() is a no-op, so it touches no
-  // slot an unregistration releases; wall engines and ITimer have no
-  // unregisterThread(). Only a CPU engine's start() replaces its table:
-  // CTimer under ThreadTablesFreeze, PerfEvents without it (PROF-16359).
-  // Unregistration stays open so PerfEvents can close the fd of a thread that
-  // exits after stop().
-  if (!closeThreadRegistration()) {
-    // Same retry contract as the SignalInflight timeout above: state stays
-    // RUNNING, no engine stop has run, and a retry re-runs every step.
-    return Error("thread hook calls did not drain; teardown skipped, retry stop()");
+  // Close the registration gate and wait for the calls already past it, so no
+  // thread arms a timer or opens an fd after the engines below stop.
+  // Unregistration stays open (see _thread_tables_stable). The engine stops
+  // below tolerate a concurrent unregisterThread() because none of them frees
+  // a per-thread table: CTimer releases slots with a per-slot CAS, and
+  // PerfEvents::stop() is a no-op. For the same reason the stop still
+  // completes if a registration call is stuck inside an engine after the wait
+  // budget; the profiler then ends in ERROR, which rejects every later
+  // start(), the only place a table is replaced. Unregistration calls are not
+  // waited for here: they may keep arriving during stop() under thread churn.
+  bool hooks_drained = closeThreadRegistration();
+  if (!hooks_drained) {
+    Log::error("Profiler: thread hook calls did not drain; stopping and "
+               "disabling the profiler");
   }
 
   if (_event_mask & EM_ALLOC)
@@ -2148,6 +2178,10 @@ Error Profiler::stop() {
   // owned by library metadata, so we must keep library patches active until after serialization
   LibraryPatcher::unpatch_libraries();
 
+  if (!hooks_drained) {
+    _state.store(ERROR, std::memory_order_release);
+    return Error("thread hook calls did not drain; the profiler is stopped and disabled");
+  }
   _state.store(IDLE, std::memory_order_release);
   return Error::OK;
 }

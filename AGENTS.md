@@ -284,16 +284,23 @@ for a temporary window.
   `Profiler::openThreadRegistration()`, then lists the existing threads. Free or
   replace a table only while its gate is closed: closing a gate
   (`closeThreadRegistration()`, `ThreadTablesFreeze`) waits until no call is inside an
-  engine. The wait is bounded; when it reports failure, tear nothing down, replace no
-  table and return a retryable error. Known exception: `PerfEvents::start()` still
+  engine. Each gate counts its calls separately: `closeThreadRegistration()` waits only
+  for registration calls, because unregistration stays open during `stop()`;
+  `ThreadTablesFreeze` waits for both. The wait is bounded; when it reports failure,
+  free or replace no table. A `ThreadTablesFreeze` timeout fails the operation; a
+  `closeThreadRegistration()` timeout puts the profiler in `ERROR` (`stop()` still
+  completes, since it frees no table), so no later `start()` replaces a table under
+  the stuck call. Engine
+  resources kept across `stop()` are released (`Engine::releaseThreads()`) when another
+  engine replaces the CPU engine. Known exception: `PerfEvents::start()` still
   replaces `_events` without a gate (PROF-16359). `Profiler::startCpuEngine()` opens the
   registration gate once any CPU engine started, so the gate is open iff it did, and it
   admits only the CPU engine. A wall engine that needs `registerThread()` needs its own
   gate: opening this one would also admit a CPU engine that failed;
 - an engine's `stop()` must tolerate a concurrent `unregisterThread()`: `stop()` closes
   only the registration gate, and unregistration stays open while the engines stop;
-- close unregistration (`ThreadTablesFreeze`) only around an actual table replacement,
-  never for a whole `start()`: an exit dropped while it is closed leaves a stale slot
+- close unregistration (`ThreadTablesFreeze`) only around an actual table replacement
+  or a CPU engine change, never for a whole `start()`: an exit dropped while it is closed leaves a stale slot
   that a thread reusing the tid cannot claim, and `start()`/`stop()` cycles repeat;
 - restore the cancellation state outside every destructor-bearing scope, never from a
   destructor: current glibc acts on a pending asynchronous cancellation as soon as it
