@@ -129,8 +129,15 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
    * told apart from a contract violation (see {@link #checkNoCandidateFreeActivity}).
    */
   private static GateEvaluation evaluateGateAfterSearchReset() {
-    ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
+    // Sampled BEFORE the reset: a pass whose gate decision was made on an organic candidate
+    // executes under the engine lock, so the decision and its pass counter increment can
+    // straddle the reset (the counter is zeroed by the reset, and only at pass END - a long
+    // in-flight pass is invisible to a stable-counter check). The candidate that legitimized
+    // such a pass stays selectable from the population table - deliberately not reset here -
+    // so reading it before the reset, while the decision is fresh, is what keeps the
+    // candidateSeen bracket honest.
     int[] candidatesBefore = ReferenceChainTestHooks.selectLeakCandidateKlassIds0();
+    ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     int passesBefore = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
     GateEvaluation e = new GateEvaluation();
     e.gateOpen = ReferenceChainTestHooks.shouldRunPassForTest0();
