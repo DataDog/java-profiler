@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-10-30 12:40:39 EDT
+**Date:** 2026-10-30 13:48:57 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 99 |
-| Sample Rate | 1.65/sec |
-| Health Score | 103% |
+| CPU Samples | 98 |
+| Sample Rate | 1.63/sec |
+| Health Score | 102% |
 | Threads | 9 |
 | Allocations | 0 |
 
@@ -38,9 +38,9 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 94 |
-| Sample Rate | 1.57/sec |
-| Health Score | 98% |
+| CPU Samples | 120 |
+| Sample Rate | 2.00/sec |
+| Health Score | 125% |
 | Threads | 12 |
 | Allocations | 0 |
 
@@ -48,26 +48,26 @@ title: glibc-arm64-hotspot-jdk8
 <summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1793378201 51
-1793378206 51
-1793378211 51
-1793378216 51
-1793378221 51
-1793378226 51
-1793378231 51
-1793378236 51
-1793378241 51
-1793378246 51
-1793378252 51
-1793378257 51
-1793378262 51
-1793378267 51
-1793378272 51
-1793378277 51
-1793378282 51
-1793378287 51
-1793378292 51
-1793378297 51
+1793382285 51
+1793382290 51
+1793382295 51
+1793382300 51
+1793382305 51
+1793382310 51
+1793382315 51
+1793382320 51
+1793382325 51
+1793382330 51
+1793382335 51
+1793382340 51
+1793382345 51
+1793382350 51
+1793382355 51
+1793382360 51
+1793382365 51
+1793382370 51
+1793382375 51
+1793382380 51
 ```
 </details>
 
