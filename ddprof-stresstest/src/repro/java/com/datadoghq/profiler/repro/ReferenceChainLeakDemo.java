@@ -56,6 +56,16 @@ import java.util.Map;
  * anywhere near this app's {@code CachedEntry} population. Pass {@code firstpassbudget=N}
  * explicitly only to override that auto-scaled default.
  *
+ * <p>Optional escape-analysis spin workers: setting {@code REFCHAINS_EASPIN=<thread count>}
+ * (e.g. {@code REFCHAINS_EASPIN=4}) starts worker threads that hold compiled frames with
+ * scalar-replaced (EA-eliminated) locals on stack while the tracker runs, so the root
+ * enumeration's forced deoptimizations (see {@link #spinLoop}) become observable in the
+ * recording. Each worker busy-spins one full
+ * core while it runs; the workers stop at the run's duration deadline (within one
+ * {@code spinLoop} trip) and, in the default run-forever mode, only at JVM exit - size the
+ * count well below the core count when comparing safepoint/GC timings, since the spin load
+ * competes with GC and the tracker thread.
+ *
  * <p>Grows an ever-referenced, never-evicted {@code HashMap}-backed cache (same shape as
  * ddprof-test's {@code LeakingCacheScenario}). Two deliberate choices, both found by running
  * without them and never seeing a chain get discovered:
@@ -181,6 +191,8 @@ public final class ReferenceChainLeakDemo {
 
         long startNanos = System.nanoTime();
         long deadlineNanos = durationSeconds >= 0 ? startNanos + durationSeconds * 1_000_000_000L : Long.MAX_VALUE;
+
+        startEaSpinWorkers(deadlineNanos);
         long startHeapUsedMb = heapUsedMb();
 
         long nextKey = 300;
@@ -240,6 +252,9 @@ public final class ReferenceChainLeakDemo {
 
             Thread.sleep(roundIntervalMs);
         }
+
+        // Wind down the EA spin workers (no-op if none started) before the final dump/metrics.
+        spinStop = true;
 
         if (durationSeconds >= 0) {
             profiler.dump(snapshotPath);
@@ -307,6 +322,90 @@ public final class ReferenceChainLeakDemo {
 
     private static String pct(double fraction) {
         return String.format("%.1f%%", fraction * 100.0);
+    }
+
+    /**
+     * Escape-analysis spin workers ({@code REFCHAINS_EASPIN=<n>} threads, default 0): while a
+     * worker sits in {@link #spinLoop}, the root enumeration's
+     * {@code EscapeBarrier::deoptimize_objects_all_threads} deoptimizes its compiled frame
+     * ({@code has_ea_local_in_scope()}). A forced deopt makes the nmethod not-entrant;
+     * re-invoking the method re-compiles it and re-applies EA, so deopts recur for the whole run.
+     *
+     * <p>Each worker is a full-core busy loop. In a bounded run it exits within one
+     * {@code spinLoop} trip once {@code deadlineNanos} passes or the main loop ends
+     * ({@link #spinStop}), so the final dump/metrics are not perturbed; in the default
+     * run-forever mode ({@code deadlineNanos == Long.MAX_VALUE}) it runs until JVM exit (daemon),
+     * matching the main loop. Extra spin load competes with GC and the tracker thread, so size
+     * {@code n} well below the core count when comparing safepoint/GC timings.
+     */
+    private static void startEaSpinWorkers(final long deadlineNanos) {
+        int threads;
+        String raw = System.getenv("REFCHAINS_EASPIN");
+        if (raw == null || raw.trim().isEmpty()) {
+            return;
+        }
+        try {
+            threads = Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            System.err.println("[repro] invalid REFCHAINS_EASPIN='" + raw + "' - starting no spin workers");
+            return;
+        }
+        for (int t = 0; t < threads; t++) {
+            final long seed = 0x51ED270B + t * 0x9E3779B97F4A7C15L;
+            Thread th = new Thread(() -> {
+                // Re-checked once per spinLoop trip, never inside spinLoop - its body shape is
+                // load-bearing for the EA deopt target - so exit latency is at most one trip.
+                while (!spinStop && System.nanoTime() < deadlineNanos) {
+                    spinLoop(seed, SPIN_TRIP_COUNT, SPIN_SALT);
+                }
+            }, "easpin-" + t);
+            th.setDaemon(true);
+            th.start();
+        }
+        System.out.println("[repro] started " + threads + " EA spin workers (one busy core each, "
+                + (deadlineNanos == Long.MAX_VALUE ? "until JVM exit" : "until the run deadline")
+                + ") - root enumerations should now deoptimize their compiled frames");
+    }
+
+    private static final long SPIN_TRIP_COUNT = 300_000_000L;
+    private static final long SPIN_SALT = 0x27D4EB2F165667C5L;
+
+    // Set once run()'s main loop exits; spin workers check it between spinLoop trips. In bounded
+    // mode the main loop exits at the same deadline the workers check, so the flag only shortens
+    // the window by at most one trip; in run-forever mode the main loop never exits, so the flag
+    // is never set and the workers stop at JVM exit.
+    private static volatile boolean spinStop;
+
+    /**
+     * One field, one constructor argument, so C2 scalar-replaces the instance - the shape
+     * {@code has_ea_local_in_scope()} reports. Identity hashCode, monitors, or a non-inlined
+     * call taking the object force a heap allocation and remove the deopt target.
+     */
+    private static final class EaLocal {
+        long f;
+
+        EaLocal(long f) {
+            this.f = f;
+        }
+    }
+
+    /**
+     * Loop body shaped for a reliable deopt target: one {@code EaLocal} live across every
+     * iteration (at any safepoint inside the loop the compiled scope holds the scalar-replaced
+     * local), a conditional {@code p.f} write so the read cannot be hoisted away, and a salt-xor
+     * so the accumulator cannot be evaluated symbolically and the loop must actually run.
+     */
+    private static long spinLoop(long seed, long iterations, long salt) {
+        EaLocal p = new EaLocal(seed ^ salt);
+        long acc = seed;
+        for (long i = 0; i < iterations; i++) {
+            acc += p.f;
+            acc ^= salt;
+            if ((i & 0xFFFF) == 0) {
+                p.f = acc;
+            }
+        }
+        return acc + p.f;
     }
 
     /**
