@@ -1604,6 +1604,12 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 
+  // Per-recording jvmtistacks options are parsed after the VM probe ran, so
+  // the extension may still be unpublished here; initialize and publish it
+  // now (idempotent, quiet when the extension is absent).
+  if (args._jvmtistacks) {
+    VM::enableRequestStackTrace();
+  }
   _cpu_engine = selectCpuEngine(args);
   _wall_engine = selectWallEngine(args);
   _cstack = args._cstack;
@@ -1963,6 +1969,12 @@ Error Profiler::check(Arguments &args) {
 
   error = checkJvmCapabilities();
 
+  // Match Profiler::start(): a check command with jvmtistacks must report the
+  // same engine availability a subsequent start would see, which requires the
+  // extension to be initialized first (idempotent, quiet when absent).
+  if (args._jvmtistacks) {
+    VM::enableRequestStackTrace();
+  }
   if (!error && (args._event != NULL || args._cpu >= 0)) {
     _cpu_engine = selectCpuEngine(args);
     error = _cpu_engine->check(args);

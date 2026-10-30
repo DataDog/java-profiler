@@ -54,6 +54,7 @@ bool VM::_is_adaptive_gc_boundary_flag_set = false;
 
 jvmtiExtensionFunction VM::_request_stack_trace = nullptr;
 jvmtiExtensionFunction VM::_init_request_stack_trace = nullptr;
+jvmtiExtensionFunction VM::_discovered_request_stack_trace = nullptr;
 
 jvmtiError(JNICALL *VM::_orig_RedefineClasses)(jvmtiEnv *, jint,
                                                const jvmtiClassDefinition *);
@@ -398,17 +399,28 @@ bool VM::initLibrary(JavaVM *vm) {
 void VM::probeJFRRequestStackTrace() {
   jint ext_count = 0;
   jvmtiExtensionFunctionInfo *ext_functions = nullptr;
+  // The extension function pointers are collected into locals and published
+  // only after InitializeRequestStackTrace has succeeded (see below), so a
+  // concurrent reader of _request_stack_trace never observes it non-null
+  // while the extension is still uninitialized.
+  jvmtiExtensionFunction request_fn = nullptr;
+  jvmtiExtensionFunction init_fn = nullptr;
   if (_jvmti->GetExtensionFunctions(&ext_count, &ext_functions) == 0) {
     for (jint i = 0; i < ext_count; i++) {
       if (strcmp(ext_functions[i].id,
                  "com.sun.hotspot.functions.RequestStackTrace") == 0) {
-        __atomic_store_n(&_request_stack_trace, ext_functions[i].func, __ATOMIC_RELEASE);
+        request_fn = ext_functions[i].func;
       } else if (strcmp(ext_functions[i].id,
                         "com.sun.hotspot.functions.InitializeRequestStackTrace") == 0) {
-        _init_request_stack_trace = ext_functions[i].func;
+        init_fn = ext_functions[i].func;
       }
-      for (jint j = 0; j < ext_functions[i].param_count; j++) {
-        _jvmti->Deallocate((unsigned char *)ext_functions[i].params[j].name);
+      // The JVMTI spec leaves params NULL when param_count is 0; guard
+      // against conformance-defect JVMs reporting param_count > 0 with a
+      // NULL params array as well.
+      if (ext_functions[i].params != nullptr) {
+        for (jint j = 0; j < ext_functions[i].param_count; j++) {
+          _jvmti->Deallocate((unsigned char *)ext_functions[i].params[j].name);
+        }
       }
       _jvmti->Deallocate((unsigned char *)ext_functions[i].params);
       _jvmti->Deallocate((unsigned char *)ext_functions[i].errors);
@@ -418,31 +430,69 @@ void VM::probeJFRRequestStackTrace() {
     _jvmti->Deallocate((unsigned char *)ext_functions);
   }
 
+  // Discovery is unconditional: per-recording jvmtistacks options are parsed
+  // after this probe ran (the JNI load path calls initProfilerBridge() before
+  // any recording command), so a later start command must be able to enable
+  // the extension via enableRequestStackTrace() from the recorded pointers.
+  __atomic_store_n(&_discovered_request_stack_trace, request_fn, __ATOMIC_RELEASE);
+  __atomic_store_n(&_init_request_stack_trace, init_fn, __ATOMIC_RELEASE);
+
   if (_agent_args._jvmtistacks) {
-    if (_request_stack_trace == nullptr || _init_request_stack_trace == nullptr) {
+    if (request_fn == nullptr || init_fn == nullptr) {
       Log::warn("jvmtistacks requested but HotSpot RequestStackTrace extension "
                 "is not available on this JVM");
       Counters::increment(JVMTI_STACKS_INIT_FAILED);
     } else {
-      initializeRequestStackTrace();
+      enableRequestStackTrace();
     }
   }
 }
 
 // Must not be called from a signal handler — invokes JVMTI which is not async-signal-safe.
 bool VM::initializeRequestStackTrace() {
-  if (__atomic_load_n(&_request_stack_trace, __ATOMIC_RELAXED) == nullptr || _init_request_stack_trace == nullptr) {
+  // The caller verifies the presence of the request function before publishing
+  // it; here only the init function must be set.
+  jvmtiExtensionFunction init_fn = __atomic_load_n(&_init_request_stack_trace, __ATOMIC_ACQUIRE);
+  if (init_fn == nullptr) {
     return false;
   }
-  jvmtiError rc = _init_request_stack_trace(_jvmti);
+  jvmtiError rc = init_fn(_jvmti);
   if (rc == JVMTI_ERROR_NONE) {
     Counters::increment(JVMTI_STACKS_INIT_OK);
     return true;
   }
   Log::warn("InitializeRequestStackTrace failed: %d", rc);
-  __atomic_store_n(&_request_stack_trace, (jvmtiExtensionFunction)nullptr, __ATOMIC_RELEASE);
+  // No rollback needed: _request_stack_trace is published by the caller only
+  // after initialization succeeds, so it is still null here.
   Counters::increment(JVMTI_STACKS_INIT_FAILED);
   return false;
+}
+
+// Must not be called from a signal handler — invokes JVMTI which is not async-signal-safe.
+bool VM::enableRequestStackTrace() {
+  if (canRequestStackTrace()) {
+    return true;
+  }
+  // The request function was never discovered (or only one of the two
+  // extensions exists): the probe already warned on an explicit jvmtistacks
+  // request, so stay quiet here — a recording command that did not ask for
+  // jvmtistacks must not produce warnings at all.
+  if (__atomic_load_n(&_discovered_request_stack_trace, __ATOMIC_ACQUIRE) == nullptr ||
+      __atomic_load_n(&_init_request_stack_trace, __ATOMIC_ACQUIRE) == nullptr) {
+    return false;
+  }
+  // Publication order as in the probe: _init_request_stack_trace is already
+  // stored; the RELEASE store of _request_stack_trace below pairs with the
+  // ACQUIRE loads in canRequestStackTrace()/requestStackTrace(), so any
+  // reader that observes the request function also observes the initialized
+  // init function.
+  if (!initializeRequestStackTrace()) {
+    return false;
+  }
+  __atomic_store_n(&_request_stack_trace,
+                   __atomic_load_n(&_discovered_request_stack_trace, __ATOMIC_ACQUIRE),
+                   __ATOMIC_RELEASE);
+  return true;
 }
 
 // JVMTI delivers ONE callback per event slot; both trackers need the
