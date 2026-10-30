@@ -24,7 +24,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -453,9 +452,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           // test's grace loop below - this fixture's own ArrayList resizes invalidate the walked
           // element path the same way, and the BFS thread's pass availability is governed by its
           // own backoff/pain-budget scheduling).
-          if (ReferenceChainAssertions.isDebugInstrumentedBuild()) {
-            driveReferenceChainPasses(2);
-          }
+          driveReferenceChainPasses(2);
           Thread.sleep(300);
           dump(scratchDumpPath);
           match = ReferenceChainAssertions.findMatchForClass(verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false), ChainLink.class);
@@ -473,28 +470,24 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // same scheduling-independent margin.
       JfrEvents lastEvents = null;
       for (int attempt = 0; match == null && attempt < 10; attempt++) {
-        if (ReferenceChainAssertions.isDebugInstrumentedBuild()) {
-          driveReferenceChainPasses(8);
-        }
+        driveReferenceChainPasses(8);
         Thread.sleep(1000);
         dump(scratchDumpPath);
         lastEvents = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
         match = ReferenceChainAssertions.findMatchForClass(lastEvents, ChainLink.class);
       }
 
-      // Same failure diagnostics as the cache-leak test's assertion below: empty leak-signal
-      // candidates mean the trend gate never opened; a non-empty list with no cached chain means
-      // the walk never admitted/tagged the representative. Debug-only seams; release failures
-      // keep the plain message.
-      String failureDiagnostics = "";
-      if (match == null && ReferenceChainAssertions.isDebugInstrumentedBuild()) {
-        failureDiagnostics = " [leak-signal candidates="
-            + Arrays.toString(ReferenceChainTestHooks.selectLeakCandidateKlassIds0())
-            + ", bfsPassesRun=" + ReferenceChainTestHooks.referenceChainPassesRunForTest0()
-            + ", representativeFrontierState="
-            + ReferenceChainTestHooks.getReferenceChainFrontierStateForTest0(gcRootHolder.get(0))
-            + " (-1=never admitted, 0=admitted pending expansion, 1=expanded, 3=abandoned)]";
-      }
+      // Same failure diagnostics as the cache-leak test's assertion below (one shared helper,
+      // ReferenceChainAssertions.referenceChainFailureDiagnostics): empty leak-signal candidates
+      // mean the trend gate never opened; a non-empty list with representative frontier state -1
+      // means the walk never admitted the representative; observedChain0s (from lastEvents, the
+      // final grace-loop dump) with real (non-sentinel) heads that all differ from ChainLink means
+      // chains fired for a different klass, while only <empty-chain>/<non-array-chain:...>
+      // sentinels mean events were emitted but carried no chain. Debug-only seams; release
+      // failures keep the plain message.
+      String failureDiagnostics = match == null
+          ? ReferenceChainAssertions.referenceChainFailureDiagnostics(gcRootHolder.get(0), lastEvents)
+          : "";
       assertNotNull(match,
           "Never observed a datadog.ReferenceChain event whose chain[0] is " + ChainLink.class
               + " after " + gcRootHolder.size() + " retained ChainLink instances across up to "
@@ -680,9 +673,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           // intervening gc() (so cleanup_table()'s epoch-advance pass stays a no-op and the
           // population trend is undisturbed) gives it a window; the debug-only seam passes make
           // the frontier progress deterministic on top.
-          if (ReferenceChainAssertions.isDebugInstrumentedBuild()) {
-            driveReferenceChainPasses(2);
-          }
+          driveReferenceChainPasses(2);
           Thread.sleep(300);
           dump(scratchDumpPath);
           JfrEvents events3 = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
@@ -710,9 +701,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // the same per-iteration tail the BFS thread runs.
       JfrEvents lastEvents = null;
       for (int attempt = 0; match == null && attempt < 10; attempt++) {
-        if (ReferenceChainAssertions.isDebugInstrumentedBuild()) {
-          driveReferenceChainPasses(8);
-        }
+        driveReferenceChainPasses(8);
         Thread.sleep(1000);
         dump(scratchDumpPath);
         lastEvents = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
@@ -723,20 +712,17 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // never opened (empty leak-signal candidates - the seeded/organic population trend failed to
       // qualify), the gate opened but the walk never admitted the representative (frontier state
       // -1 - the cumulative-frontier-progress shortfall the seam-driven passes above exist to
-      // prevent), or chains were emitted for a DIFFERENT klass (observedChain0s non-empty - the
-      // candidate mechanism picked another growing klass, e.g. an incidental byte[]/String trend,
-      // and CachedPayload's own tags were never intercepted). Debug-only seams: release-build
-      // stubs cannot report any of these states, so release failures keep the plain message.
-      String failureDiagnostics = "";
-      if (match == null && ReferenceChainAssertions.isDebugInstrumentedBuild()) {
-        failureDiagnostics = " [leak-signal candidates="
-            + Arrays.toString(ReferenceChainTestHooks.selectLeakCandidateKlassIds0())
-            + ", bfsPassesRun=" + ReferenceChainTestHooks.referenceChainPassesRunForTest0()
-            + ", representativeFrontierState="
-            + ReferenceChainTestHooks.getReferenceChainFrontierStateForTest0(cache.get(keys[0]))
-            + " (-1=never admitted, 0=admitted pending expansion, 1=expanded, 3=abandoned)"
-            + ", observedChain0s=" + ReferenceChainAssertions.observedChainHeads(lastEvents) + "]";
-      }
+      // prevent), chains were emitted for a DIFFERENT klass (observedChain0s holds real,
+      // non-sentinel heads that all differ from CachedPayload - the candidate mechanism picked
+      // another growing klass, e.g. an incidental byte[]/String trend, and CachedPayload's own tags
+      // were never intercepted), or events were emitted but carried no chain (observedChain0s holds
+      // only <empty-chain>/<non-array-chain:...> sentinels). The fingerprint comes from the shared
+      // ReferenceChainAssertions.referenceChainFailureDiagnostics helper (same as the gc-root
+      // test's). Debug-only seams: release-build stubs cannot report any of these states, so
+      // release failures keep the plain message.
+      String failureDiagnostics = match == null
+          ? ReferenceChainAssertions.referenceChainFailureDiagnostics(cache.get(keys[0]), lastEvents)
+          : "";
       assertNotNull(match,
           "Never observed a datadog.ReferenceChain event whose chain[0] is " + CachedPayload.class
               + " after " + cache.size() + " cached entries across up to " + totalRounds
@@ -944,8 +930,8 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
    * debug-only {@link ReferenceChainTestHooks#runReferenceChainPass0()} seam, each followed by the
    * per-iteration target poll ({@link ReferenceChainTestHooks#pollReferenceChainTargets0()}) -
    * the same pass + poll pair one BFS-thread loop iteration performs. A no-op in release builds
-   * (the seam stubs return immediately); release discovery falls back to the organic BFS-thread
-   * cadence.
+   * (checked here, so callers need not gate it); release discovery falls back to the organic
+   * BFS-thread cadence.
    *
    * <p>Passes against a terminal (completed/abandoned) search are no-ops until the BFS thread's
    * shouldRunPass() restarts the search - the restart gate belongs to that thread - so a burst of
@@ -954,6 +940,9 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
    * {@link #shouldReconstructReferrerChainThroughUnboundedCacheLeak()}).
    */
   private static void driveReferenceChainPasses(int maxPasses) {
+    if (!ReferenceChainAssertions.isDebugInstrumentedBuild()) {
+      return; // release builds: the seams are no-op stubs; discovery uses the organic BFS cadence
+    }
     for (int i = 0; i < maxPasses; i++) {
       if (!ReferenceChainTestHooks.runReferenceChainPass0()) {
         return; // reference chains disabled or the tracker never started
