@@ -30,13 +30,20 @@ The population-trend signal is constructed by the liveness tracker, which fills 
 
 A running search uses the following order:
 
-1. Check the non-safepoint CPU cost budget.
-2. If unresolved candidates exist, apply candidate-search backoff.
-3. Otherwise, run after a new GC epoch or after the adaptive fallback cadence expires.
+1. Enforce the minimum pass spacing: no pass starts sooner than the effective cadence after the previous pass ended, on every authorization lane below.
+2. Check the non-safepoint CPU cost budget.
+3. If unresolved candidates exist, apply candidate-search backoff.
+4. Otherwise, run after a new GC epoch or after the adaptive fallback cadence expires.
+
+### Minimum pass spacing
+
+A completed GC authorizes a pass, and a productive canary chase (backoff multiplier one) may run its next pass as soon as scheduling allows - but neither may start sooner than one effective cadence interval after the previous pass ended. Without this floor, a high young-GC rate re-triggers passes at the GC rate even after the pacing controller has widened the cadence to shed in-safepoint load, and the canary lane runs passes with no gap at all. Each pass costs several JVM VM operations (root enumeration, static-field sweep chunks, expansion batches), so unbounded pass rate multiplies into a safepoint storm.
+
+The OOM ramp needs no exemption: while urgent it owns the effective cadence outright, driving this floor down with urgency.
 
 ### Candidate-search backoff
 
-The source calls the focused candidate search the *canary* path. A new candidate or a resolved candidate resets its spacing multiplier to one. With this value, the next pass can start after the previous pass finishes.
+The source calls the focused candidate search the *canary* path. A new candidate or a resolved candidate resets its spacing multiplier to one. With this value, the next pass can start after the previous pass finishes, but never sooner than the minimum pass spacing above.
 
 If a pass makes no candidate progress, the multiplier doubles up to its cap. The required spacing is:
 
@@ -48,9 +55,9 @@ The OOM ramp disables this backoff. The non-safepoint CPU cost budget still appl
 
 ### GC epoch and fallback cadence
 
-When no unresolved candidate controls scheduling, a completed GC authorizes a pass. The tracker compares the current GC-finish epoch with the epoch recorded by the previous pass.
+When no unresolved candidate controls scheduling, a completed GC authorizes a pass. The tracker compares the current GC-finish epoch with the epoch recorded by the previous pass. The authorization remains subject to the minimum pass spacing: when young GCs are more frequent than the effective cadence, the pass rate follows the cadence, not the GC rate.
 
-The fallback cadence also authorizes a pass. It starts at one second and the pause controller can adjust it between 10 milliseconds and four seconds.
+The fallback cadence also authorizes a pass. It starts at one second and the pause controller can adjust it between 10 milliseconds and four seconds. The minimum pass spacing uses the same value, so the two authorizations share one rate bound.
 
 ## Leak signal
 
