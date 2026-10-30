@@ -332,6 +332,10 @@ pointer-not-yet-stored. Never permanently advance an iteration cursor past NULL 
 at the first NULL or track the last contiguous non-NULL entry so missing entries are
 retried.
 
+**Stack completeness.** A successful carrier crossing does not establish a complete
+virtual-thread stack. Preserve walker-reported truncation through JFR serialization;
+see [JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md#continuation-completeness).
+
 **JVM abstraction.** Shared code must not refer to JVM-implementation-specific code directly,
 only through the abstraction files: `jvmSupport.{h,inline.h,cpp}`, `jvmThread.{h,cpp}`,
 `vmEntry.{h,cpp}`, `javaApi.cpp`. Implementation-specific code lives under `hotspot/`,
