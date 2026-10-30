@@ -123,14 +123,10 @@ class GtestTaskBuilder(
                 )
             }
 
-            // The test .cpp pulls sibling .inc/.h files in via quoted includes,
-            // which resolve relative to the test file's directory without any -I
-            // flag, so they appear in no include path. They must not be compile
-            // sources (each .inc is a test partition included exactly once;
-            // compiling them standalone would emit duplicate symbols), but they
-            // are real compile dependencies. Registered as task inputs instead,
-            // so an .inc/.h-only edit invalidates the up-to-date check instead
-            // of silently running a stale binary with the old tests.
+            // Test .inc/.h files resolve via quoted includes relative to the test
+            // directory and appear in no include path, so register them here or an
+            // .inc-only edit reports UP-TO-DATE and runs a stale binary. Inputs,
+            // not sources: compiling an .inc standalone would emit duplicate symbols.
             inputs.files(
                 project.fileTree(testFile.parentFile) {
                     include("**/*.inc", "**/*.h")
