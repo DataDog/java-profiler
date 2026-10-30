@@ -50,6 +50,38 @@ public final class ReferenceChainTestHooks {
         return JavaProfiler.runReferenceChainPass0();
     }
 
+    public static void setReferenceChainPassSpacingForTest0(long msSinceLastPass, long cadenceMs) {
+        JavaProfiler.setReferenceChainPassSpacingForTest0(msSinceLastPass, cadenceMs);
+    }
+
+    public static void shiftReferenceChainLastGcEpochForTest0(long delta) {
+        JavaProfiler.shiftReferenceChainLastGcEpochForTest0(delta);
+    }
+
+    public static void setReferenceChainRootEnumStateForTest0(long msSinceLastEnum, long lastEnumCostMs) {
+        JavaProfiler.setReferenceChainRootEnumStateForTest0(msSinceLastEnum, lastEnumCostMs);
+    }
+
+    public static boolean shouldRunRootEnumForTest0(boolean manualFirstPass) {
+        return JavaProfiler.shouldRunRootEnumForTest0(manualFirstPass);
+    }
+
+    public static long rootEnumIntervalFloorNsForTest0() {
+        return JavaProfiler.rootEnumIntervalFloorNsForTest0();
+    }
+
+    public static long referenceChainGcFinishEpochForTest0() {
+        return JavaProfiler.referenceChainGcFinishEpochForTest0();
+    }
+
+    public static void forceRunningReferenceChainSearchForTest0() {
+        JavaProfiler.forceRunningReferenceChainSearchForTest0();
+    }
+
+    public static void setReferenceChainCanaryStateForTest0(int candidateCount, long foundBits) {
+        JavaProfiler.setReferenceChainCanaryStateForTest0(candidateCount, foundBits);
+    }
+
     public static void pollReferenceChainTargets0() {
         JavaProfiler.pollReferenceChainTargets0();
     }
