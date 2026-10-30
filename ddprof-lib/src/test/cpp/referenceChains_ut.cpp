@@ -46,9 +46,6 @@ static ReferenceChainsGlobalSetup global_setup;
 [[maybe_unused]] static const bool kRcDebugLevelPinnedForTests =
     setenv("DD_PROFILING_REFERENCE_CHAINS_DEBUG", "2", 1) == 0;
 
-// NOTE: the .inc files below are NOT registered as compile inputs by the gtest
-// plugin (GtestTaskBuilder wires only the .cpp into `sources`), so editing an
-// .inc alone leaves this binary stale - touch this file to force recompilation.
 #include "referenceChainsCoreTests.inc"
 #include "referenceChainsBfsTests.inc"
 #include "referenceChainsLifecycleTests.inc"
@@ -60,7 +57,5 @@ static ReferenceChainsGlobalSetup global_setup;
 #include "referenceChainsAnchorTests.inc"
 #include "referenceChainsEventTests.inc"
 #include "referenceChainsPesTests.inc"
-
-// Recompilation marker: .inc files are not compile inputs (see note above).
 
 
