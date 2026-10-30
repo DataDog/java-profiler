@@ -287,7 +287,9 @@ for a temporary window.
   engine. The wait is bounded; when it reports failure, tear nothing down, replace no
   table and return a retryable error. Known exception: `PerfEvents::start()` still
   replaces `_events` without a gate (PROF-16359). `Profiler::startCpuEngine()` opens the
-  registration gate once any CPU engine started, so the gate is open iff it did;
+  registration gate once any CPU engine started, so the gate is open iff it did, and it
+  admits only the CPU engine. A wall engine that needs `registerThread()` needs its own
+  gate: opening this one would also admit a CPU engine that failed;
 - an engine's `stop()` must tolerate a concurrent `unregisterThread()`: `stop()` closes
   only the registration gate, and unregistration stays open while the engines stop;
 - close unregistration (`ThreadTablesFreeze`) only around an actual table replacement,

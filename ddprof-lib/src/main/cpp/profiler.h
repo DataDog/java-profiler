@@ -456,21 +456,22 @@ public:
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);
   /**
-   * Lets the native-thread hook's registerThread()/unregisterThread() reach
-   * the engines. A CPU engine with a per-thread table (CTimer, PerfEvents)
+   * Lets the native-thread hook's registerThread() reach the CPU engine, and
+   * reopens unregistration. A CPU engine with a per-thread table (CTimer, PerfEvents)
    * calls this from its start() once the table is sized and before it lists
    * the existing threads, so the hook handles a thread that starts or exits
    * while start() registers the existing ones. Profiler::startCpuEngine()
    * calls it again once the CPU engine's start() succeeds, and closes the
    * gate if it fails, so the gate is open iff the CPU engine started;
-   * wall-only, noop and failed-CPU recordings leave it closed. A future wall
-   * engine that needs registerThread() must open the gate itself. For CTimer
+   * wall-only, noop and failed-CPU recordings leave it closed. Because the
+   * gate tracks the CPU engine, registerThread() reaches only that engine. A
+   * wall engine that needs registerThread() needs its own gate; opening this
+   * one would also admit a CPU engine that failed. For CTimer
    * this misses no thread: the per-slot CAS resolves the hook and start()
    * registering one tid. PerfEvents::start()'s stale-fd sweep may close the
    * fd of a tid the hook registered after the thread list was taken, and
    * such a thread is then not sampled for the recording (PROF-16359).
-   * Engines without
-   * registerThread() never need the gate. Idempotent.
+   * Engines without registerThread() never need the gate. Idempotent.
    */
   void openThreadRegistration();
 

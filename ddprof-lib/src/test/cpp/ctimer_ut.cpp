@@ -698,9 +698,8 @@ TEST(ProfilerEnginesGateTest, CpuEngineEnabledOnlyIfItStarted) {
 }
 
 // The idle fast path in registerThread() only short-cuts a closed gate: with
-// the gate open the call still reaches the engine, and the in-flight count is
-// back at zero afterwards either way. The return value is not checked with
-// the gate open: the plain wall engine reports -1, which is OR-ed in.
+// the gate open the call still reaches the engine and returns its result, and
+// the in-flight count is back at zero afterwards either way.
 TEST(ProfilerEnginesGateTest, RegisterThreadFastPathDoesNotSkipOpenGate) {
   Profiler *profiler = Profiler::instance();
   ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
@@ -713,11 +712,46 @@ TEST(ProfilerEnginesGateTest, RegisterThreadFastPathDoesNotSkipOpenGate) {
   EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
   {
     ProfilerTestAccessor::RegistrationGate gate(profiler);
-    Profiler::registerThread(OS::threadId());
+    EXPECT_EQ(0, Profiler::registerThread(OS::threadId()));
     EXPECT_EQ(1, cpu.register_calls.load());
     EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
   }
   EXPECT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+}
+
+// A wall engine that counts registerThread() calls.
+class CountingWallEngine : public Engine {
+public:
+  std::atomic<int> register_calls{0};
+
+  int registerThread(int tid) override {
+    register_calls.fetch_add(1);
+    return 0;
+  }
+};
+
+// The registration gate is open iff the CPU engine started, so it admits only
+// the CPU engine. A wall engine never receives the hook through it: it would
+// otherwise be called whenever the CPU engine started, even if the wall engine
+// did not, and a wall engine that opened the gate itself would admit a CPU
+// engine that failed.
+TEST(ProfilerEnginesGateTest, RegistrationGateAdmitsOnlyCpuEngine) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  FakeCpuEngine cpu(/*fail=*/false, /*open_gate=*/false);
+  CountingWallEngine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
+
+  int result;
+  {
+    ProfilerTestAccessor::RegistrationGate gate(profiler);
+    result = Profiler::registerThread(OS::threadId());
+  }
+
+  EXPECT_EQ(0, result);
+  EXPECT_EQ(1, cpu.register_calls.load());
+  EXPECT_EQ(0, wall.register_calls.load());
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
 }
 
 // A negative tid must not index before CTimer's table. The page before the

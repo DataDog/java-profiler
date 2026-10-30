@@ -151,10 +151,13 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      table-less `ITimer`, `ITimerJvmti` and J9 engines) has started. It is
      cleared by `start()`, by `stop()`, by a failed CPU engine start and by
      `ThreadTablesFreeze`, so the gate is open iff the CPU engine started.
-     Wall-only, noop and failed-CPU recordings leave it closed; no wall engine
-     implements `registerThread()`, and one that ever does must open the gate
-     itself. While the gate is closed, `registerThread()` returns before it
-     touches the in-flight counter.
+     Wall-only, noop and failed-CPU recordings leave it closed. Because the
+     gate tracks the CPU engine, it admits only that engine:
+     `registerThread()` never calls the wall engine. No wall engine implements
+     `registerThread()`; one that ever does needs a gate of its own, because
+     opening this one would also admit a CPU engine that failed. While the
+     gate is closed, `registerThread()` returns before it touches the
+     in-flight counter.
    - `PerfEvents::start()`'s stale-fd sweep may close the fd of a tid the hook
      registered after the thread list was taken, and such a thread is then not
      sampled for the recording (PROF-16359).

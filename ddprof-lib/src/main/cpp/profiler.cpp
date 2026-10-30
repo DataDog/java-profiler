@@ -285,9 +285,12 @@ int Profiler::registerThreadInEngines(int tid) {
   if (!_instance->_engines_ready.load(std::memory_order_seq_cst)) {
     return -1; // not registered, as Engine::registerThread() reports it
   }
+  // The gate is open iff the CPU engine started (see startCpuEngine()), so it
+  // admits only that engine. No wall engine overrides
+  // Engine::registerThread(); one that needs per-thread registration needs a
+  // gate that tracks its own start, not this one.
   Engine *cpu = __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE);
-  Engine *wall = __atomic_load_n(&_instance->_wall_engine, __ATOMIC_ACQUIRE);
-  return cpu->registerThread(tid) | wall->registerThread(tid);
+  return cpu->registerThread(tid);
 }
 #ifdef UNIT_TEST
 static std::atomic<int> g_test_last_unregistered_tid{-1};
@@ -1147,9 +1150,10 @@ void Profiler::disableEngines() {
 // a per-thread table (CTimer, PerfEvents) open the gate themselves before they
 // list threads, so opening it again here does nothing for them. For engines
 // without a table (ITimer, ITimerJvmti, J9) it opens the gate, so registration
-// follows the profiler lifecycle rather than the engine choice. No wall engine
-// overrides Engine::registerThread(), so a recording whose CPU engine did not
-// start loses nothing with the gate closed.
+// follows the profiler lifecycle rather than the engine choice. The gate admits
+// only the CPU engine (registerThreadInEngines()): no wall engine overrides
+// Engine::registerThread(), so a recording whose CPU engine did not start
+// loses nothing with the gate closed.
 bool Profiler::startCpuEngine(Arguments &args) {
   Error error = _cpu_engine->start(args);
   if (error) {
