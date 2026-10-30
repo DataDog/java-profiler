@@ -28,6 +28,7 @@
 #include "incbin.h"
 #include "jvmSupport.h"
 #include "jvmThread.h"
+#include "nativeMem.h"
 #include "os.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
@@ -284,6 +285,38 @@ Java_com_datadoghq_profiler_JavaProfiler_getDebugCounters0(JNIEnv *env,
 #else
   return env->NewDirectByteBuffer(nullptr, 0);
 #endif // COUNTERS
+}
+
+// Test seams: the profiler's live native memory per NativeMem category, read
+// directly from the always-on gauges (independent of COUNTERS and of whether a
+// recording is running), and the category names in the same order.
+extern "C" DLLEXPORT jobjectArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_describeNativeMemCategories0(
+    JNIEnv *env, jclass unused) {
+  jobjectArray array = env->NewObjectArray(
+      NM_NUM_CATEGORIES, env->FindClass("java/lang/String"), nullptr);
+  if (array == nullptr) {
+    return nullptr;
+  }
+  for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+    env->SetObjectArrayElement(
+        array, c, env->NewStringUTF(NativeMem::categoryName((NativeMemCategory)c)));
+  }
+  return array;
+}
+
+extern "C" DLLEXPORT jlongArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getNativeMemLive0(JNIEnv *env,
+                                                           jclass unused) {
+  jlong values[NM_NUM_CATEGORIES];
+  for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+    values[c] = (jlong)NativeMem::live((NativeMemCategory)c);
+  }
+  jlongArray array = env->NewLongArray(NM_NUM_CATEGORIES);
+  if (array != nullptr) {
+    env->SetLongArrayRegion(array, 0, NM_NUM_CATEGORIES, values);
+  }
+  return array;
 }
 
 extern "C" DLLEXPORT jobjectArray JNICALL

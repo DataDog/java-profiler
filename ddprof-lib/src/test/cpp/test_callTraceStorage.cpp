@@ -467,6 +467,47 @@ TEST_F(CallTraceStorageTest, ClearMethod) {
     EXPECT_EQ(traces_after_clear, 1);
 }
 
+// release() frees the three tables and the processTraces() collections, so
+// the storage holds no NM_CALLTRACE memory; put() drops its trace meanwhile.
+// acquire() brings the tables back and traces are stored again.
+TEST_F(CallTraceStorageTest, ReleaseFreesAllMemoryAndAcquireRestoresIt) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    ASGCT_CallFrame frame;
+    frame.bci = 10;
+    frame.method_id = (jmethodID)0x1234;
+
+    // The fixture's storage is constant throughout; measure a local one.
+    long long baseline = NativeMem::live(NM_CALLTRACE);
+    {
+        CallTraceStorage local;
+        ASSERT_NE(CallTraceStorage::DROPPED_TRACE_ID, local.put(1, &frame, false, 1));
+        ASSERT_GT(NativeMem::live(NM_CALLTRACE), baseline);
+
+        local.release();
+        EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));
+        EXPECT_EQ(CallTraceStorage::DROPPED_TRACE_ID, local.put(1, &frame, false, 1));
+        local.clear();  // what a fresh start() does; must tolerate released tables
+        EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));
+
+        local.release();  // releasing twice is harmless
+        EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));
+
+        local.acquire();
+        EXPECT_GT(NativeMem::live(NM_CALLTRACE), baseline);
+        u64 trace_id = local.put(1, &frame, false, 1);
+        ASSERT_NE(CallTraceStorage::DROPPED_TRACE_ID, trace_id);
+        CallTrace* found = nullptr;
+        local.processTraces([&](const CallTraceSet& traces) {
+            found = findTraceById(traces, trace_id);
+        });
+        EXPECT_NE(nullptr, found);
+
+        local.release();
+        EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));
+    }
+    EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));  // destroying it released is balanced
+}
+
 TEST_F(CallTraceStorageTest, ConcurrentClearAndPut) {
     ProfiledThread::initCurrentThreadSignalSafe();
 

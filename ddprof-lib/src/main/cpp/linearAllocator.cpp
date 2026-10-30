@@ -35,6 +35,20 @@
   #include <sanitizer/tsan_interface.h>
 #endif
 
+// clear() poisons a chunk's used bytes, and OS::safeFree() unmaps with a raw
+// syscall ASan does not intercept, so the poison would outlive the mapping.
+// The kernel reuses freed address ranges - for a new thread's stack, say,
+// where glibc keeps errno - and ASan would then report every access there as
+// use-after-poison. So a chunk's whole range is unpoisoned as it is given back.
+static inline void unpoisonBeforeUnmap(void* chunk, size_t size) {
+#ifdef ASAN_ENABLED
+  ASAN_UNPOISON_MEMORY_REGION(chunk, size);
+#else
+  (void)chunk;
+  (void)size;
+#endif
+}
+
 LinearAllocator::LinearAllocator(size_t chunk_size) {
   _chunk_size = chunk_size;
   _reserve = _tail = allocateChunk(NULL);
@@ -181,6 +195,7 @@ void LinearAllocator::freeChunks(ChunkList& chunks) {
     #ifdef TSAN_ENABLED
     __tsan_release(current);
     #endif
+    unpoisonBeforeUnmap(current, chunks.chunk_size);
     OS::safeFree(current, chunks.chunk_size);
     Counters::decrement(LINEAR_ALLOCATOR_BYTES, chunks.chunk_size);
     Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);
@@ -314,6 +329,7 @@ void LinearAllocator::freeChunk(Chunk *current) {
   #ifdef TSAN_ENABLED
   __tsan_release(current);
   #endif
+  unpoisonBeforeUnmap(current, _chunk_size);
   OS::safeFree(current, _chunk_size);
   Counters::decrement(LINEAR_ALLOCATOR_BYTES, _chunk_size);
   Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);

@@ -738,10 +738,18 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
   // call_trace_id determined to be reusable at a higher level
 
   if (!_omit_stacktraces && call_trace_id == 0) {
+    // Null while the profiler is idle (stop() frees the buffers); like the
+    // other readers, drop the sample rather than dereference it.
+    CallTraceBuffer *buf = _calltrace_buffer[lock_index];
+    if (buf == nullptr) {
+      atomicIncRelaxed(_failures[-ticks_skipped]);
+      _locks[lock_index].unlock();
+      return false;
+    }
 #ifdef COUNTERS
     u64 startTime = TSC::ticks();
 #endif // COUNTERS
-    ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
+    ASGCT_CallFrame *frames = buf->_asgct_frames;
 
     int num_frames = 0;
 
@@ -1584,8 +1592,14 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_info.clearAll();
   }
 
-  // (Re-)allocate calltrace buffers
-  if (_max_stack_depth != args._jstackdepth) {
+  // Call-trace storage the previous stop() (or the reset above) released.
+  // After resetRecordingState()'s Counters::reset(), so the storage counters
+  // count exactly what this allocates; a resume, which skips the reset, gets
+  // back what stop() released, which stop() had uncounted.
+  acquireRecordingMemory();
+
+  // (Re-)allocate calltrace buffers, also after stop() freed them
+  if (_max_stack_depth != args._jstackdepth || _calltrace_buffer[0] == NULL) {
     size_t prev_nelem = _max_stack_depth + RESERVED_FRAMES;
     size_t nelem = (size_t)args._jstackdepth + RESERVED_FRAMES;
 
@@ -1617,8 +1631,8 @@ Error Profiler::start(Arguments &args, bool reset) {
       CallTraceBuffer *prev = _calltrace_buffer[i];
       _calltrace_buffer[i] = fresh[i];
       _locks[i].unlock();
-      free(prev);
       if (prev != NULL) {
+        free(prev);
         // Account the free after it has happened, consistent with the other
         // decrement sites (FlightRecorder::stop, ~ThreadFilter).
         NativeMem::record(NM_CALLTRACE, -(long long)(prev_nelem * sizeof(CallTraceBuffer)));
@@ -1727,6 +1741,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (error) {
     switchLibraryTrap(false);
     _libs->stopRefresher();
+    releaseRecordingMemory();
     return error;
   }
 
@@ -1869,6 +1884,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   lockAll();
   _jfr.stop();
   unlockAll();
+  releaseRecordingMemory();
 
   return Error(
       "Neither CPU, wallclock nor allocation profiling could be started");
@@ -2012,6 +2028,9 @@ Error Profiler::stop() {
   _thread_info.reportCounters();
 
   rotateDictsAndRun([&]{ _jfr.stop(); });
+  // The final chunk is written: nothing reads the call traces or the
+  // dictionaries until the next start().
+  releaseRecordingMemory();
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
@@ -2315,6 +2334,50 @@ void Profiler::shutdown(Arguments &args) {
   _state.store(TERMINATED, std::memory_order_release);
 }
 
+void Profiler::releaseRecordingMemory() {
+  // No put() can run: every engine that records call traces is stopped (or
+  // was never started) and its signal handlers drained. lockAll() as for
+  // CallTraceStorage::clear(), against any other writer.
+  lockAll();
+  _call_trace_storage.release();
+  size_t nelem = (size_t)_max_stack_depth + RESERVED_FRAMES;
+  for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+    CallTraceBuffer *buf = _calltrace_buffer[i];
+    _calltrace_buffer[i] = NULL;
+    if (buf != NULL) {
+      free(buf);
+      NativeMem::record(NM_CALLTRACE, -(long long)(nelem * sizeof(CallTraceBuffer)));
+    }
+  }
+  unlockAll();
+
+  // StringDictionary::release() drains its accessors itself, like clearAll().
+  // The dictionaries stay open - the tracer keeps registering context values
+  // and endpoints while the profiler is idle - and allocate again on demand.
+  // A dictionary whose drain times out keeps its storage until the next stop().
+  if (!_class_map.release()) {
+    reportDrainTimeout("Class map not released");
+  }
+  if (!_string_label_map.release()) {
+    reportDrainTimeout("String label map not released");
+  }
+  if (_context_value_map.release()) {
+    // The encodings the Java layer cached no longer resolve: have it drop its
+    // ContextValueCache on the next command. That matters for a resume, which
+    // does not reset the dictionaries and so would not set this.
+    _context_value_dict_reset.store(true, std::memory_order_release);
+  } else {
+    reportDrainTimeout("Context value map not released");
+  }
+}
+
+void Profiler::acquireRecordingMemory() {
+  // The dictionaries need nothing here: they allocate on demand.
+  lockAll();
+  _call_trace_storage.acquire();
+  unlockAll();
+}
+
 int Profiler::resetRecordingState() {
   // StringDictionary::clearAll() manages its own synchronisation (RefCountGuard
   // drain) internally; no external lock is needed.  A dictionary whose drain
@@ -2329,11 +2392,14 @@ int Profiler::resetRecordingState() {
     _context_value_dict_reset.store(true, std::memory_order_release);
   }
 
-  if (!_omit_stacktraces) {
-    lockAll();
-    _call_trace_storage.clear();
-    unlockAll();
-  }
+  // Released rather than cleared, before Counters::reset(): the tables still
+  // allocated here (on the first start, those the constructor made) would
+  // otherwise stay counted by nothing, and freeing them at the next stop()
+  // would drive LINEAR_ALLOCATOR_BYTES / CALLTRACE_STORAGE_* negative.
+  // start() allocates fresh tables after the reset (acquireRecordingMemory()).
+  lockAll();
+  _call_trace_storage.release();
+  unlockAll();
 
   Counters::reset();
   // Counters::reset() zeroes the dictionary memory gauges, but the dictionaries

@@ -7,6 +7,7 @@ package com.datadoghq.profiler.lifecycle;
 
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.JfrEvents;
+import com.datadoghq.profiler.NativeMemTestHooks;
 import com.datadoghq.profiler.Platform;
 
 import org.junit.jupiter.api.Assumptions;
@@ -19,7 +20,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Map;
-import java.util.TreeMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -39,6 +39,8 @@ import static org.junit.jupiter.api.Assertions.*;
  *   <li>Profiler can be restarted after stop</li>
  *   <li>Events are recorded in each profiling session</li>
  *   <li>Multiple stop/start cycles work correctly</li>
+ *   <li>Native memory a recording allocates is released on stop, and process-lifetime
+ *       native memory does not grow across restarts (per NativeMem category)</li>
  * </ul>
  *
  * <p>Note: The native shutdown() is called automatically by VMDeath callback
@@ -48,6 +50,29 @@ import static org.junit.jupiter.api.Assertions.*;
 public class ProfilerLifecycleTest {
 
     private static final int WORK_ITERATIONS = 500_000;
+
+    /**
+     * NativeMem categories owned by a recording: released by stop(), so they must read 0
+     * whenever the profiler is idle. {@code calltrace} covers the call-trace storage and
+     * per-thread call-trace buffers, {@code dictionary} the class, string-label and
+     * context-value dictionaries (nothing registers tracer values in this test, which would
+     * make them allocate again while idle). Not listed: {@code perf}, because
+     * PerfEvents::stop() deliberately keeps per-thread events registered across recordings,
+     * and {@code liveness}, because the liveness tracker's table deliberately survives
+     * recordings once a memleak-enabled one has run in this JVM.
+     */
+    private static final String[] RECORDING_SCOPED = {
+            "calltrace", "dictionary", "jfr_buffers", "wallclock", "line_tables", "method_map"};
+
+    /**
+     * Categories that live for the whole process but must not grow from one idle state to the
+     * next. {@code native_symbols} and {@code thread_local} are not listed: they legitimately
+     * grow as libraries are loaded and threads are created.
+     */
+    private static final String[] NO_GROWTH_WHEN_IDLE = {"thread_filter"};
+
+    /** Slack for small, legitimate fluctuations (e.g. a trace recorded during teardown). */
+    private static final long GROWTH_TOLERANCE_BYTES = 64 * 1024;
 
     @Timeout(120)
     @RetryingTest(3)
@@ -62,12 +87,14 @@ public class ProfilerLifecycleTest {
         JavaProfiler profiler = JavaProfiler.getInstance();
         assertNotNull(profiler, "Profiler instance must not be null after init");
         System.out.println("[Lifecycle] Step 1: getInstance() - profiler initialized");
+        nativeMem("after init");
 
         // Step 2: First start() via execute()
         Path jfr1 = Files.createTempFile(recordings, "lifecycle_session1_", ".jfr");
         try {
             profiler.execute("start,wall=1ms,cpu=10ms,jfr,file=" + jfr1.toAbsolutePath());
             System.out.println("[Lifecycle] Step 2: First start() - profiler running");
+            assertRecording(nativeMem("after first start"), "after first start");
 
             // Generate some CPU work to produce samples
             generateCpuWork();
@@ -75,7 +102,7 @@ public class ProfilerLifecycleTest {
             // Step 3: First stop()
             profiler.stop();
             System.out.println("[Lifecycle] Step 3: First stop() - profiler stopped");
-            printNativeMemCounters(profiler, "after first stop");
+            assertIdle(nativeMem("after first stop"), "after first stop");
 
             // Verify first session recorded events
             JfrEvents session1Events = JfrEvents.load(jfr1, "datadog.ExecutionSample"::equals);
@@ -92,6 +119,7 @@ public class ProfilerLifecycleTest {
         try {
             profiler.execute("start,wall=1ms,cpu=10ms,jfr,file=" + jfr2.toAbsolutePath());
             System.out.println("[Lifecycle] Step 4: Second start() - profiler restarted");
+            assertRecording(nativeMem("after second start"), "after second start");
 
             // Generate more CPU work
             generateCpuWork();
@@ -99,7 +127,7 @@ public class ProfilerLifecycleTest {
             // Step 5: Second stop()
             profiler.stop();
             System.out.println("[Lifecycle] Step 5: Second stop() - profiler stopped again");
-            printNativeMemCounters(profiler, "after second stop");
+            assertIdle(nativeMem("after second stop"), "after second stop");
 
             // Verify second session recorded events
             JfrEvents session2Events = JfrEvents.load(jfr2, "datadog.ExecutionSample"::equals);
@@ -132,6 +160,7 @@ public class ProfilerLifecycleTest {
         JavaProfiler profiler = JavaProfiler.getInstance();
 
         final int CYCLES = 5;
+        Map<String, Long> firstIdle = null;
         for (int cycle = 1; cycle <= CYCLES; cycle++) {
             Path jfr = Files.createTempFile(recordings, "lifecycle_cycle" + cycle + "_", ".jfr");
             try {
@@ -143,7 +172,14 @@ public class ProfilerLifecycleTest {
 
                 // Stop
                 profiler.stop();
-                printNativeMemCounters(profiler, "cycle " + cycle + " after stop");
+                String when = "cycle " + cycle + " after stop";
+                Map<String, Long> idle = nativeMem(when);
+                assertIdle(idle, when);
+                if (firstIdle == null) {
+                    firstIdle = idle;
+                } else {
+                    assertNoGrowth(firstIdle, idle, when);
+                }
 
                 // Verify events
                 JfrEvents events = JfrEvents.load(jfr, "datadog.ExecutionSample"::equals);
@@ -209,7 +245,8 @@ public class ProfilerLifecycleTest {
                     Thread.sleep(100);
 
                     profiler.stop();
-                    printNativeMemCounters(profiler, "concurrent cycle " + cycle + " after stop");
+                    String when = "concurrent cycle " + cycle + " after stop";
+                    assertIdle(nativeMem(when), when);
 
                     JfrEvents events = JfrEvents.load(jfr, "datadog.ExecutionSample"::equals);
                     assertTrue(events.hasItems(),
@@ -253,7 +290,7 @@ public class ProfilerLifecycleTest {
 
             // Stop profiler
             profiler.stop();
-            printNativeMemCounters(profiler, "status test after stop");
+            assertIdle(nativeMem("status test after stop"), "status test after stop");
             String statusStopped = profiler.getStatus();
             assertTrue(statusStopped.contains("Running          : false"),
                     "Status should show running=false after stop");
@@ -264,28 +301,53 @@ public class ProfilerLifecycleTest {
     }
 
     /**
-     * Prints the native memory counters ({@code native_mem_*}, {@code malloc_*} and the
-     * per-subsystem {@code *_bytes} gauges). Only called after stop(): start() zeroes all
-     * counters and the native_mem_* / malloc_* / codecache_* mirrors are refreshed only
-     * when a JFR chunk is finalized, so values read before stop() are zero or stale.
-     * Debug counters are only available in builds with COUNTERS enabled.
+     * Reads and prints the profiler's live native memory per NativeMem category, as of the
+     * moment of the call (not a mirror refreshed at JFR chunk boundaries).
      */
-    private static void printNativeMemCounters(JavaProfiler profiler, String transition) {
-        Map<String, Long> memCounters = new TreeMap<>();
-        for (Map.Entry<String, Long> e : profiler.getDebugCounters().entrySet()) {
-            if (e.getKey().endsWith("_bytes")) {
-                memCounters.put(e.getKey(), e.getValue());
-            }
-        }
-        if (memCounters.isEmpty()) {
-            System.out.println("[Lifecycle] Native memory " + transition + ": no counters available");
-            return;
-        }
-        StringBuilder sb = new StringBuilder("[Lifecycle] Native memory " + transition + ":");
-        for (Map.Entry<String, Long> e : memCounters.entrySet()) {
+    private static Map<String, Long> nativeMem(String transition) {
+        Map<String, Long> live = NativeMemTestHooks.liveBytesByCategory();
+        long total = 0;
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Long> e : live.entrySet()) {
             sb.append("\n    ").append(e.getKey()).append(" = ").append(e.getValue());
+            total += e.getValue();
         }
-        System.out.println(sb);
+        System.out.println("[Lifecycle] Native memory " + transition + " (total " + total + "):" + sb);
+        return live;
+    }
+
+    private static long category(Map<String, Long> live, String name) {
+        Long value = live.get(name);
+        assertNotNull(value, "no NativeMem category named " + name + " in " + live.keySet());
+        return value;
+    }
+
+    /**
+     * A running recording holds its JFR buffers and call-trace storage again; also shows the
+     * seam reports real values. Not {@code dictionary}: it allocates on the first insert,
+     * which need not have happened yet right after start().
+     */
+    private static void assertRecording(Map<String, Long> live, String when) {
+        for (String name : new String[] {"jfr_buffers", "calltrace"}) {
+            assertTrue(category(live, name) > 0, "no " + name + " memory " + when);
+        }
+    }
+
+    /** Everything a recording allocates has been released once the profiler is idle. */
+    private static void assertIdle(Map<String, Long> live, String when) {
+        for (String name : RECORDING_SCOPED) {
+            assertEquals(0L, category(live, name), name + " still holds memory " + when);
+        }
+    }
+
+    /** Process-lifetime structures have not grown since an earlier idle state. */
+    private static void assertNoGrowth(Map<String, Long> baseline, Map<String, Long> live, String when) {
+        for (String name : NO_GROWTH_WHEN_IDLE) {
+            long before = category(baseline, name);
+            long now = category(live, name);
+            assertTrue(now <= before + GROWTH_TOLERANCE_BYTES,
+                    name + " grew from " + before + " to " + now + " bytes " + when);
+        }
     }
 
     /**

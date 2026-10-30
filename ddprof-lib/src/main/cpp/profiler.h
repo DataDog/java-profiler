@@ -389,6 +389,12 @@ public:
   void enablePersistentJvmtiEvents();
   void openThreadRegistration();
   void closeThreadRegistration();
+  // Frees the call-trace storage, the per-thread call-trace buffers and the
+  // dictionaries' storage once a recording is over, so the idle profiler
+  // holds none of it. acquireRecordingMemory() allocates the call-trace
+  // storage again on start(); the dictionaries allocate on demand.
+  void releaseRecordingMemory();
+  void acquireRecordingMemory();
 
   /**
    * Remote symbolication packed data layout (BCI_NATIVE_FRAME_REMOTE):

@@ -84,6 +84,11 @@ private:
     
     // Lazy initialization helper to avoid global constructor
     static u64 getNextInstanceId();
+
+    void allocateTables();
+    // Swaps the three table pointers to nullptr and deletes the tables once
+    // drained (a table still guarded after the timeout is leaked).
+    void freeTables();
     
     // Pre-allocated collections for processTraces (single-threaded operation)
     // These collections are reused to eliminate malloc/free cycles
@@ -119,6 +124,17 @@ public:
     // Clears the active and standby tables.
     // Requires put() to be excluded for the duration (see the class comment).
     void clear();
+
+    // Frees all three tables and the processTraces() collections, so the
+    // storage holds no memory while the profiler is idle.  put() drops its
+    // trace (DROPPED_TRACE_ID) until acquire().  Requires put() to be
+    // excluded, like clear(); processTraces() must not be called until
+    // acquire().
+    void release();
+
+    // Allocates the tables again after release(); no-op if allocated.
+    // Requires put() to be excluded.
+    void acquire();
 };
 
 #endif // _CALLTRACESTORAGE_H
