@@ -155,6 +155,32 @@ public final class ReferenceChainAssertions {
   }
 
   /**
+   * {@code chain[0]} (full name, same notation as {@link JfrChainMatch#chain}) of every observed
+   * {@code datadog.ReferenceChain} event in {@code events}, in file order. Diagnostic helper for
+   * failure messages: a non-empty result whose heads all differ from the target class means the
+   * candidate mechanism fired for OTHER klasses, while an empty result means no chain was ever
+   * built.
+   */
+  public static List<String> observedChainHeads(JfrEvents events) {
+    List<String> heads = new ArrayList<>();
+    if (events == null || !events.hasItems()) {
+      return heads;
+    }
+    for (JfrEvent item : events) {
+      Object chainValue = item.get("chain");
+      if (!(chainValue instanceof Object[])) {
+        continue;
+      }
+      Object[] rawChain = (Object[]) chainValue;
+      if (rawChain.length == 0) {
+        continue;
+      }
+      heads.add(classFullName(rawChain[0]));
+    }
+    return heads;
+  }
+
+  /**
    * jafar/{@code JfrEvents}-backed counterpart to {@link #findMatchForClass(IItemCollection, Class)} -
    * see this class's own header comment for why these are two separate overloads rather than one.
    */
