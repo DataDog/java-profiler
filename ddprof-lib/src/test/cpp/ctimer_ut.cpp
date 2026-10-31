@@ -923,10 +923,10 @@ TEST(ProfilerEnginesGateTest, CpuEngineEnabledOnlyIfItStarted) {
   EXPECT_EQ(1, cpu.enable_true_calls.load());
 }
 
-// The idle fast path in registerThread() only short-cuts a closed gate: with
-// the gate open the call still reaches the engine and returns its result, and
-// the in-flight count is back at zero afterwards either way.
-TEST(ProfilerEnginesGateTest, RegisterThreadFastPathDoesNotSkipOpenGate) {
+// With the gate closed registerThread() returns before reaching the engine;
+// with it open the call reaches the engine and returns its result. The
+// in-flight count is back at zero afterwards either way.
+TEST(ProfilerEnginesGateTest, RegisterThreadReachesEngineOnlyWhenGateOpen) {
   Profiler *profiler = Profiler::instance();
   ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
   FakeCpuEngine cpu(/*fail=*/false, /*open_gate=*/false);

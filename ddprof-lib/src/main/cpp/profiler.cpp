@@ -179,9 +179,8 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 // increment and the gate
 // load in the caller are seq_cst, pairing with the seq_cst gate store and
 // counter load on the closing side: either the hook sees the gate closed, or
-// the closer sees the call in flight and waits for it. registerThreadInEngines()
-// skips the scope when an acquire pre-check already sees the registration gate
-// closed; the decision that matters is still the seq_cst pair.
+// the closer sees the call in flight and waits for it. Registration and
+// unregistration both raise the counter on every call.
 class HookCallScope {
 public:
   explicit HookCallScope(std::atomic<int> &inflight) : _inflight(inflight) {
@@ -283,13 +282,10 @@ void Profiler::unregisterThread(int tid) {
 }
 
 int Profiler::registerThreadInEngines(int tid) {
-  // Advisory pre-check: skips the shared counter RMW while idle. A stale
-  // "closed" read equals a call made just before the gate opened, which the
-  // CPU engine's start() covers by listing threads after opening it; a stale
-  // "open" read falls through to the seq_cst re-check below.
-  if (!_instance->_engines_ready.load(std::memory_order_acquire)) {
-    return -1; // not registered, as Engine::registerThread() reports it
-  }
+  // The counter is raised before the gate is read, both seq_cst, so the
+  // closing side either sees this call in flight or this call sees the gate
+  // closed. A thread created before the gate opens is covered by the CPU
+  // engine's start(), which lists threads after opening it.
   HookCallScope scope(_instance->_register_calls_inflight);
   if (!_instance->_engines_ready.load(std::memory_order_seq_cst)) {
     return -1; // not registered, as Engine::registerThread() reports it
