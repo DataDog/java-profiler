@@ -17,19 +17,19 @@ static_assert(std::atomic<long long>::is_always_lock_free,
 // increment is counted in either the current drain or a later one.
 class WallClockCounters {
 private:
-  inline static std::atomic<long long> _suppressed_sampled_run{0};
+  inline static std::atomic<long long> _suppressed_owned_block{0};
 
 public:
-  static void incrementSuppressedSampledRun() {
-    _suppressed_sampled_run.fetch_add(1, std::memory_order_relaxed);
+  static void incrementSuppressedOwnedBlock() {
+    _suppressed_owned_block.fetch_add(1, std::memory_order_relaxed);
   }
 
-  static u64 drainSuppressedSampledRun() {
-    return (u64)_suppressed_sampled_run.exchange(0, std::memory_order_acq_rel);
+  static u64 drainSuppressedOwnedBlock() {
+    return (u64)_suppressed_owned_block.exchange(0, std::memory_order_acq_rel);
   }
 
   static void reset() {
-    _suppressed_sampled_run.store(0, std::memory_order_relaxed);
+    _suppressed_owned_block.store(0, std::memory_order_relaxed);
   }
 };
 

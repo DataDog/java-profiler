@@ -9,8 +9,8 @@ package com.datadoghq.profiler;
 public final class ProfilerOwnedBlockHooks {
     private ProfilerOwnedBlockHooks() {}
 
-    public static void parkEnter(JavaProfiler profiler) {
-        profiler.parkEnter();
+    public static boolean parkEnter(JavaProfiler profiler) {
+        return profiler.parkEnter();
     }
 
     public static void parkExit(JavaProfiler profiler, long blocker, long unblockingSpanId) {
@@ -23,5 +23,14 @@ public final class ProfilerOwnedBlockHooks {
 
     public static void blockExit(JavaProfiler profiler, long token) {
         profiler.blockExit(token);
+    }
+
+    public static long beginTaskBlockForThread(JavaProfiler profiler, Thread thread) {
+        return profiler.beginTaskBlockForThread(thread);
+    }
+
+    public static boolean endTaskBlockForThread(JavaProfiler profiler, Thread thread, long token,
+            long blocker, long unblockingSpanId) {
+        return profiler.endTaskBlockForThread(thread, token, blocker, unblockingSpanId);
     }
 }

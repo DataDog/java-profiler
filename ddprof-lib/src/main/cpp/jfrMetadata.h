@@ -87,6 +87,7 @@ enum JfrType {
   // doc's "no silent truncation" requirement), see jfrMetadata.cpp.
   T_REFERENCE_CHAIN = 129,
   T_REFERENCE_CHAIN_ABANDONED = 130,
+  T_TASK_BLOCK = 131,
   T_ANNOTATION = 200,
   T_LABEL = 201,
   T_CATEGORY = 202,
