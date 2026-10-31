@@ -2195,10 +2195,11 @@ Error Profiler::check(Arguments &args) {
 
   error = checkJvmCapabilities();
 
-  // check() may run while a recording is RUNNING (checkState() rejects only
-  // NEW and ERROR), so it selects into locals and leaves the engine slots to
-  // the engines that start() started: the hooks, the signal handlers (the wall
-  // handler casts wallEngine() to its own type) and stop() all use those.
+  // check() runs while the profiler is IDLE, after stop(): unregistration is
+  // still open then, and the previous recording's engine may hold fds that
+  // only its unregisterThread() closes. Selecting into the slots here would
+  // route those exits to the new engine and leak the fds, so check() selects
+  // into locals. checkState() rejects a RUNNING profiler before this point.
   Engine *cpu_engine = NULL;
   if (!error && (args._event != NULL || args._cpu >= 0)) {
     cpu_engine = selectCpuEngine(args);

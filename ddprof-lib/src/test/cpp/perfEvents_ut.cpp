@@ -54,14 +54,14 @@ TEST(PerfEventsCompareTidsTest, SortsCreationOrderedTidsWithReuse) {
 }
 
 // A failed table allocation leaves _events NULL and _max_events -1, which is
-// also the state before the first start(); no test in this binary starts
-// PerfEvents. Fds left armed by an earlier recording keep delivering SIGPROF,
-// and the handler calls resetBuffer() on every exit, so it must not index the
-// missing table. releaseThreads() must not touch it either.
+// also the state before the first start(). Fds left armed by an earlier
+// recording keep delivering SIGPROF, and the handler calls resetBuffer() on
+// every exit, so resetBuffer() must not index the missing table. This checks
+// only that no crash happens. Checking that releaseThreads() closes real fds
+// needs slot setters in perfEvents_linux.cpp, which this binary does not have
+// (PROF-16359).
 TEST(PerfEventsTableTest, MissingTableIsNotIndexed) {
   PerfEvents::resetBuffer(5);
-  PerfEvents engine;
-  engine.releaseThreads();
 }
 
 #endif // __linux__

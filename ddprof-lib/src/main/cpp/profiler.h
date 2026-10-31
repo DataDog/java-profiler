@@ -168,7 +168,8 @@ private:
   // Replaced only by start(), while thread unregistration is open, so the
   // hook paths (registerThreadInEngines(), unregisterThreadInEngines()) load
   // them with acquire and start() stores them with release. check() selects
-  // into locals: it may run during a recording.
+  // into locals and runs only while IDLE, where the slots still route exits
+  // to the previous recording's engine.
   Engine *_cpu_engine;
   Engine *_wall_engine = NULL;
   Engine *_alloc_engine;

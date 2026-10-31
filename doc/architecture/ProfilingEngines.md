@@ -136,9 +136,9 @@ Profiler::start()
    `_cpu_engine->stop()`.
 
 `Profiler::check()` runs the same selection and calls each engine's `check()`
-without starting anything. It selects into locals and never replaces the
-engine slots: it may run while a recording is `RUNNING`, and the hooks, the
-signal handlers and `stop()` use the slots of the engines `start()` started.
+without starting anything. It runs only while the profiler is `IDLE`
+(`checkState()` rejects a `RUNNING` profiler) and selects into locals, so it
+never replaces the engine slots that thread exits still route to.
 
 ### Thread registration
 
@@ -331,10 +331,11 @@ resolved through `Arguments::cpuSamplerInterval()`.
 - **Memory**: the `_events` array and any 2-page mmap ring pages are accounted
   under `NM_PERF`. The array is counted at its full allocated size, which is
   mostly untouched address space (see Profiler Self-Accounting).
-- **Table replacement**: `start()` frees and reallocates `_events` when
-  `pid_max` changed. It does not close the old table's fds or rings, and it
-  does not exclude thread unregistration or the signal-path readers
-  (`walkKernel()`, `resetBuffer()`) while it does so (PROF-16359).
+- **Table replacement**: when `pid_max` changed, `start()` releases the old
+  table's fds and rings (`releaseThreads()`) and then frees and reallocates
+  `_events`. It does not exclude thread unregistration or the signal-path
+  readers (`walkKernel()`, `resetBuffer()`) while it does so: a handler that
+  already holds a slot pointer can still use the freed table (PROF-16359).
 - **Allocation failure**: if the table cannot be allocated, `start()` sets
   `_max_events` back to -1, logs an error and fails before it installs the
   signal handler, the hook or the registration gate, so the engine stays off
