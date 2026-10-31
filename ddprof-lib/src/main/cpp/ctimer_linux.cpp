@@ -24,6 +24,7 @@
 #include "debugSupport.h"
 #include "libraries.h"
 #include "log.h"
+#include "nativeMem.h"
 #include "profiler.h"
 #include "samplerPerf.h"
 #include "signalCookie.h"
@@ -54,7 +55,7 @@ bool CTimer::_enabled = false;
 int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
-  if (tid >= _max_timers) {
+  if (tid < 0 || tid >= _max_timers) {
     Log::warn("tid[%d] > pid_max[%d]. Restart profiler after changing pid_max",
               tid, _max_timers);
     return -1;
@@ -119,7 +120,7 @@ int CTimer::registerThread(int tid) {
 }
 
 void CTimer::unregisterThread(int tid) {
-  if (tid >= _max_timers) {
+  if (tid < 0 || tid >= _max_timers) {
     return;
   }
   // Atomic acquire to avoid possible leak when unregistering
@@ -129,6 +130,51 @@ void CTimer::unregisterThread(int tid) {
   if (timer != 0 && __sync_bool_compare_and_swap(&_timers[tid], timer--, 0)) {
     syscall(__NR_timer_delete, timer);
   }
+}
+
+// Sizes the tid-indexed timer table and accounts it under NM_CTIMER. Called
+// from sizeTimerTable() under a Profiler::ThreadTablesFreeze, so no
+// thread-hook call (pthread hook or JVMTI ThreadStart/ThreadEnd) can be inside
+// the table while it is replaced.
+//
+// On allocation failure the table is left empty (_max_timers == 0), so the tid
+// bound checks reject every tid instead of indexing a NULL table, and the next
+// start() retries. The table currently held always has _max_timers slots, so
+// that is the size released from NM_CTIMER.
+bool CTimer::resizeTimers(int max_timers) {
+  if (max_timers == _max_timers) {
+    return true;
+  }
+  free(_timers);
+  NativeMem::record(NM_CTIMER, -(long long)((size_t)_max_timers * sizeof(int)));
+  _timers = (int *)calloc(max_timers, sizeof(int));
+  if (_timers == NULL) {
+    _max_timers = 0;
+    return false;
+  }
+  _max_timers = max_timers;
+  NativeMem::record(NM_CTIMER, (long long)((size_t)max_timers * sizeof(int)));
+  return true;
+}
+
+// A restart with an unchanged pid_max keeps the table and never closes thread
+// unregistration, so an exit during start() still releases its timer. Only an
+// actual replacement freezes the hook calls. If one is still inside the table
+// after the wait budget, start() fails and keeps the old table; whether a
+// later start() can succeed depends on the stuck call (see
+// Profiler::startCpuEngine()).
+Error CTimer::sizeTimerTable(int max_timers) {
+  if (max_timers == _max_timers) {
+    return Error::OK;
+  }
+  Profiler::ThreadTablesFreeze freeze(Profiler::instance());
+  if (!freeze.drained()) {
+    return Error("thread hook calls did not drain");
+  }
+  if (!resizeTimers(max_timers)) {
+    return Error("Failed to allocate CPU timer table");
+  }
+  return Error::OK;
 }
 
 Error CTimer::check(Arguments &args) {
@@ -142,6 +188,10 @@ Error CTimer::check(Arguments &args) {
 }
 
 Error CTimer::start(Arguments &args) {
+  return startWithTableSize(args, OS::getMaxThreadId());
+}
+
+Error CTimer::startWithTableSize(Arguments &args, int max_timers) {
   if (args._interval < 0) {
     return Error("interval must be positive");
   }
@@ -150,11 +200,9 @@ Error CTimer::start(Arguments &args) {
   _cstack = args._cstack;
   _signal = SIGPROF;
 
-  int max_timers = OS::getMaxThreadId();
-  if (max_timers != _max_timers) {
-    free(_timers);
-    _timers = (int *)calloc(max_timers, sizeof(int));
-    _max_timers = max_timers;
+  Error error = sizeTimerTable(max_timers);
+  if (error) {
+    return error;
   }
 
   // Prime the origin-check cache from this non-signal context before any
@@ -164,6 +212,10 @@ Error CTimer::start(Arguments &args) {
   OS::primeSignalOriginCheck();
 
   OS::installSignalHandler(_signal, signalHandler);
+
+  // The table is sized: open the hook gate before listing threads (see
+  // Profiler::openThreadRegistration()).
+  Profiler::instance()->openThreadRegistration();
 
   // Register all existing threads. Individual failures are benign — a thread
   // may exit between listThreads() and registerThread(), and new threads

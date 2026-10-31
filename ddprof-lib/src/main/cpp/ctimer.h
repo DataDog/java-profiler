@@ -1,5 +1,6 @@
 /*
  * Copyright 2017 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +26,8 @@
 #include <signal.h>
 
 class CTimer : public Engine {
+  friend class CTimerTestAccessor;
+
 private:
   // cppcheck-suppress unusedPrivateFunction
   static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
@@ -41,6 +44,13 @@ protected:
   static int _max_timers;
   static int *_timers;
 
+  static bool resizeTimers(int max_timers);
+  // Sizes the timer table for start(), replacing it under a
+  // Profiler::ThreadTablesFreeze only when the size changes.
+  static Error sizeTimerTable(int max_timers);
+  // start() with the timer table size passed in rather than read from
+  // pid_max, so a test can drive the allocation-failure path.
+  Error startWithTableSize(Arguments &args, int max_timers);
   int registerThread(int tid);
   void unregisterThread(int tid);
 

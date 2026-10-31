@@ -962,16 +962,29 @@ Error PerfEvents::start(Arguments &args) {
     // sites); capture the old size first since _max_events is overwritten below.
     long long old_bytes =
         (_events != NULL) ? (long long)((size_t)_max_events * sizeof(PerfEvent)) : 0;
+    // The table is the only record of which fd and ring belong to which tid
+    // (stop() keeps them). Release them while it still exists; otherwise
+    // they leak, and stay armed, once it is freed.
+    releaseThreads();
     free(_events);
     if (old_bytes > 0) {
       NativeMem::record(NM_PERF, -old_bytes);
     }
     _events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
-    _max_events = max_events;
-    if (_events != NULL) {
-      NativeMem::record(NM_PERF,
-                        (long long)((size_t)max_events * sizeof(PerfEvent)));
+    if (_events == NULL) {
+      // Back to the not-started value, so registerThread() and
+      // unregisterThread() reject every tid. Return before the signal
+      // handler, the hook and the registration gate are set up: start()
+      // fails, so the CPU engine is neither registered nor enabled for this
+      // recording. The next start() retries the allocation.
+      _max_events = -1;
+      Log::error("perfEvents: could not allocate the table for %d threads; "
+                 "PerfEvents is disabled for this recording", max_events);
+      return Error("Failed to allocate perf event table");
     }
+    _max_events = max_events;
+    NativeMem::record(NM_PERF,
+                      (long long)((size_t)max_events * sizeof(PerfEvent)));
   }
 
   OS::installSignalHandler(SIGPROF, signalHandler);
@@ -979,6 +992,10 @@ Error PerfEvents::start(Arguments &args) {
   // Enable pthread hook before traversing currently running threads
   __atomic_store_n(_pthread_entry, (void *)pthread_setspecific_hook,
                    __ATOMIC_RELEASE);
+
+  // _events is sized: open the hook gate before listing threads (see
+  // Profiler::openThreadRegistration()).
+  Profiler::instance()->openThreadRegistration();
 
   // Create perf_events for all existing threads
   int threads_sz = 0, threads_cap;
@@ -1052,11 +1069,27 @@ void PerfEvents::stop() {
   // check whether the thread has been registered already on start.
 }
 
+// stop() keeps every fd and ring, and only unregisterThread() releases them
+// when a thread exits. Releases them all when nothing else could:
+// Profiler::replaceCpuEngine() calls this under a ThreadTablesFreeze once
+// another CPU engine replaces this one, and start() calls it before it frees
+// the table on a pid_max change. The start() call runs without a freeze, so a
+// concurrent unregisterThread() of the same tid is still possible there
+// (PROF-16359).
+void PerfEvents::releaseThreads() {
+  for (int tid = 0; tid < _max_events; tid++) {
+    unregisterThread(tid);
+  }
+}
+
 int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
                            StackContext *java_ctx) {
   if (!(_ring & RING_KERNEL)) {
     // we are not capturing kernel stacktraces
     return 0;
+  }
+  if (_events == NULL || tid < 0 || tid >= _max_events) {
+    return 0; // no table: the allocation failed (see start())
   }
 
   PerfEvent *event = &_events[tid];
@@ -1148,6 +1181,12 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
 }
 
 void PerfEvents::resetBuffer(int tid) {
+  // Fds left armed by an earlier recording keep delivering SIGPROF, and the
+  // handler calls this on every exit, also after a failed table allocation
+  // left _events NULL (_max_events -1).
+  if (_events == NULL || tid < 0 || tid >= _max_events) {
+    return;
+  }
   PerfEvent *event = &_events[tid];
   if (!event->tryLock()) {
     return; // the event is being destroyed

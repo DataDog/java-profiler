@@ -89,6 +89,56 @@ private:
 
   Mutex _state_lock;
   std::atomic<State> _state;
+  // Thread-registration gates. The pthread_create hook and the JVMTI
+  // ThreadStart/ThreadEnd callbacks reach the engines only through
+  // registerThread()/unregisterThread(), without _state_lock. The two gates
+  // keep them off the per-thread tables that start() sizes, replaces or
+  // releases. This is the reference for the contract in code; the rest is in
+  // doc/architecture/ProfilingEngines.md#thread-registration.
+  //
+  // Registration gate: open iff the CPU engine started, and it admits only
+  // that engine; a wall engine that needs registerThread() needs its own gate.
+  // Set by openThreadRegistration(), from the CPU engine's start() once its
+  // table is sized and from startCpuEngine() on success. Cleared by start(),
+  // closeThreadRegistration() (stop(), failed CPU engine start) and
+  // ThreadTablesFreeze.
+  std::atomic<bool> _engines_ready;
+  // Unregistration gate: open except inside a ThreadTablesFreeze. It stays
+  // open while idle, because PerfEvents keeps its per-thread fds across
+  // stop() and only unregisterThread() closes the fd of a thread that exits
+  // after stop(). An exit that arrives while it is closed is dropped, and its
+  // slot may stay occupied (PROF-16359).
+  std::atomic<bool> _thread_tables_stable;
+  // Hook calls past a gate that may still be inside an engine, counted per
+  // gate. closeThreadRegistration() waits only for registration calls:
+  // unregistration stays open during stop(), and under thread churn its
+  // count may not reach zero within the wait budget, although no call is
+  // stuck. ThreadTablesFreeze closes both gates and waits for both counts.
+  // Kept off _state's cache line: the hook writes them on every native thread
+  // start and exit, while isRunning() reads _state on every intercepted
+  // socket call.
+  alignas(DEFAULT_CACHE_LINE_SIZE) std::atomic<int> _register_calls_inflight;
+  std::atomic<int> _unregister_calls_inflight;
+  // Wait budget of waitForHookCalls(); HOOK_CALLS_DRAIN_TIMEOUT_NS (1 s) in
+  // profiler.cpp. Written only by the friend test accessor. long long: test
+  // budgets of several seconds must not overflow a 32-bit long.
+  static long long _hook_drain_timeout_ns;
+
+  // Closes the registration gate and waits for the registration calls already
+  // past it to leave the engines. Returns false if one is still in flight
+  // after the wait budget (logged); the caller must not free or replace any
+  // table then. stop() and startCpuEngine() put the profiler in ERROR on that
+  // result, so no later start() replaces a table under the stuck call.
+  bool closeThreadRegistration();
+  // Waits until no registration call (and, with include_unregistration, no
+  // unregistration call) is inside an engine, for at most
+  // _hook_drain_timeout_ns. Returns false on timeout (logged); the caller
+  // must not free or replace any table then.
+  bool waitForHookCalls(bool include_unregistration);
+  // Gate checks and engine calls behind registerThread()/unregisterThread(),
+  // run with thread cancellation disabled.
+  static int registerThreadInEngines(int tid);
+  static void unregisterThreadInEngines(int tid);
   // class unload hook
   Trap _class_unload_hook_trap;
   typedef void (*NotifyClassUnloadedFunc)(void *);
@@ -115,6 +165,11 @@ private:
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
+  // Replaced only by start(), while thread unregistration is open, so the
+  // hook paths (registerThreadInEngines(), unregisterThreadInEngines()) load
+  // them with acquire and start() stores them with release. check() selects
+  // into locals and runs only while IDLE, where the slots still route exits
+  // to the previous recording's engine.
   Engine *_cpu_engine;
   Engine *_wall_engine = NULL;
   Engine *_alloc_engine;
@@ -167,6 +222,20 @@ private:
   static bool prewarmUnwinder();
 
   void disableEngines();
+  // Starts _cpu_engine. On success opens thread registration (idempotent for
+  // engines that already opened it); on failure closes it again and logs the
+  // error. If closing times out it also puts the profiler in ERROR. Returns
+  // whether the engine started.
+  bool startCpuEngine(Arguments &args);
+  // Installs next as _cpu_engine. When it replaces another engine, the
+  // previous one releases the per-thread resources it keeps across stop()
+  // (Engine::releaseThreads()) under a ThreadTablesFreeze. Returns false,
+  // replacing nothing, if hook calls do not drain.
+  bool replaceCpuEngine(Engine *next);
+  // Undoes start()'s setup after _jfr.start() when start() then fails.
+  void rollBackStart();
+  // Enables the CPU engine's events iff EM_CPU is in activated.
+  void enableCpuEngine(int activated);
 
   void onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
   void onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
@@ -248,8 +317,41 @@ private:
   }
 
 public:
+  // Closes both thread-registration gates (see _engines_ready) and waits for
+  // the hook calls already past them. Construct it only around an actual
+  // table replacement (CTimer::sizeTimerTable()) or a CPU engine change
+  // (replaceCpuEngine()), never for a whole start(): exits are dropped while
+  // it is alive. The destructor reopens unregistration; registration reopens
+  // only when the CPU engine starts.
+  class ThreadTablesFreeze {
+  public:
+    explicit ThreadTablesFreeze(Profiler *profiler)
+        : _profiler(profiler), _drained(false) {
+      // Both gates: registerThread() must not reach a table being replaced
+      // or released either.
+      _profiler->_engines_ready.store(false, std::memory_order_seq_cst);
+      _profiler->_thread_tables_stable.store(false, std::memory_order_seq_cst);
+      _drained = _profiler->waitForHookCalls(/*include_unregistration=*/true);
+    }
+    ~ThreadTablesFreeze() {
+      _profiler->_thread_tables_stable.store(true, std::memory_order_seq_cst);
+    }
+    // false if hook calls were still in flight after the wait budget; the
+    // caller must then fail without replacing any table.
+    bool drained() const { return _drained; }
+    ThreadTablesFreeze(const ThreadTablesFreeze &) = delete;
+    ThreadTablesFreeze &operator=(const ThreadTablesFreeze &) = delete;
+
+  private:
+    Profiler *_profiler;
+    bool _drained;
+  };
+
   Profiler()
-      : _state_lock(), _state(State::NEW), _class_unload_hook_trap(2),
+      : _state_lock(), _state(State::NEW), _engines_ready(false),
+        _thread_tables_stable(true), _register_calls_inflight(0),
+        _unregister_calls_inflight(0),
+        _class_unload_hook_trap(2),
         _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
         _string_label_map(2), _context_value_map(3), _thread_filter(),
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
@@ -374,6 +476,14 @@ public:
   Error checkState();
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);
+  /**
+   * Opens both thread-registration gates (see _engines_ready). A CPU engine
+   * with a per-thread table calls it from its start() once the table is sized
+   * and before it lists the existing threads, so the hook covers a thread
+   * that starts or exits while start() registers the existing ones.
+   * startCpuEngine() calls it again once the CPU engine started. Idempotent.
+   */
+  void openThreadRegistration();
 
   /**
    * Remote symbolication packed data layout (BCI_NATIVE_FRAME_REMOTE):

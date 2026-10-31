@@ -83,11 +83,11 @@ predicates. More detection-dependent setup:
 - `can_retransform_any_class` is disabled on J9 (`vmEntry.cpp:502`).
 - The JFR `RequestStackTrace` extension is probed only on HotSpot (`vmEntry.cpp:519-521`).
 - The profiler installs its SIGSEGV/SIGBUS handlers only on HotSpot and J9
-  (`profiler.cpp:1168`).
-- On Zing, `GC_TRACES | LAST_JAVA_PC` is forced into `_safe_mode` (`profiler.cpp:1587`).
+  (`Profiler::setupSignalHandlers()`).
+- On Zing, `GC_TRACES | LAST_JAVA_PC` is forced into `_safe_mode` (`Profiler::start()`).
 
 `JVMSupport::initialize()` (`jvmSupport.cpp:32-57`) runs after detection, from
-`Profiler::start()`/`Profiler::init()` (`profiler.cpp:1417`, `profiler.cpp:1437`).
+`Profiler::start()`/`Profiler::init()`.
 It calls `JVMThread::initialize()`, then checks the `ProfiledThread` TLS key.
 If either step fails, profiling is disabled.
 
@@ -116,7 +116,7 @@ gets HotSpot declarations, but it should still call only `JVMSupport::*`.
 
 Callers in shared code:
 
-- Stack walking calls `walkJavaStack` (`profiler.cpp:717`).
+- Stack walking calls `walkJavaStack` (`Profiler::recordSample()`).
 - `stackWalker.cpp:80-82` and `perfEvents_linux.cpp` call `isJitCode` and
   `canUnwind`. Both are signal-handler paths, and on non-HotSpot VMs they
   reduce to constant returns.
@@ -183,7 +183,7 @@ Caveats:
   (for example, a build without JFR), `initLazyResolution()` fails, and
   `initExecution()` falls back to `Partial_loaded` (`jvmSupport.cpp:86-91`).
 - **`cstack=vm` needs `VMStructs`.** If `VMStructs::hasStackStructs()` is false,
-  `cstack=vm` is downgraded to DWARF or `no` (`profiler.cpp:1625-1629`).
+  `cstack=vm` is downgraded to DWARF or `no` (`Profiler::start()`).
 
 #### Continuation completeness
 
@@ -210,7 +210,7 @@ Caveats:
 
 - **The ASGCT-or-JVMTI choice is made per engine.** `Profiler::selectCpuEngine`
   and `selectWallEngine` choose `J9WallClock` (the JVMTI path) when any of these
-  holds (`profiler.cpp:1274-1285`, `profiler.cpp:1321-1333`):
+  holds:
   - `J9Support::shouldUseAsgct()` is false. The system property
     `dd.profiling.ddprof.j9.sampler` set to `jvmti` makes it false
     (`j9/j9Support.h:108-126`).
@@ -237,7 +237,7 @@ behavior is shared code that branches on `VM::isZing()`:
 
 - Java stacks are collected with ASGCT (`jvmSupport.cpp:112-117`).
 - Runtime entries are marked (`vmEntry.cpp:378-379`).
-- `_safe_mode` is forced (`profiler.cpp:1587`).
+- `_safe_mode` is forced (`Profiler::start()`).
 
 Caveat: `JVMThread::nativeThreadId()` sends Zing to
 `VMThread::nativeThreadId()`. That function returns -1 unless
