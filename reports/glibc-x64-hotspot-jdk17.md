@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk17
 
 ## glibc-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-10-31 06:53:48 EDT
+**Date:** 2026-11-01 01:04:51 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 561 |
-| Sample Rate | 9.35/sec |
-| Health Score | 584% |
+| CPU Samples | 432 |
+| Sample Rate | 7.20/sec |
+| Health Score | 450% |
 | Threads | 9 |
-| Allocations | 345 |
+| Allocations | 319 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 789 |
-| Sample Rate | 13.15/sec |
-| Health Score | 822% |
-| Threads | 11 |
-| Allocations | 456 |
+| CPU Samples | 650 |
+| Sample Rate | 10.83/sec |
+| Health Score | 677% |
+| Threads | 10 |
+| Allocations | 463 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 66-66 cores)</summary>
 
 ```
-1793443777 66
-1793443782 66
-1793443787 66
-1793443792 66
-1793443797 66
-1793443802 66
-1793443807 66
-1793443812 66
-1793443817 66
-1793443822 66
-1793443827 66
-1793443832 66
-1793443837 66
-1793443842 66
-1793443847 66
-1793443852 66
-1793443857 66
-1793443862 66
-1793443867 66
-1793443872 66
+1793509238 66
+1793509243 66
+1793509248 66
+1793509253 66
+1793509258 66
+1793509263 66
+1793509268 66
+1793509273 66
+1793509278 66
+1793509283 66
+1793509288 66
+1793509293 66
+1793509298 66
+1793509303 66
+1793509308 66
+1793509313 66
+1793509318 66
+1793509323 66
+1793509328 66
+1793509333 66
 ```
 </details>
 

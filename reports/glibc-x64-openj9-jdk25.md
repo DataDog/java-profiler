@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-10-31 06:53:48 EDT
+**Date:** 2026-11-01 01:04:52 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 466 |
-| Sample Rate | 7.77/sec |
-| Health Score | 486% |
+| CPU Samples | 368 |
+| Sample Rate | 6.13/sec |
+| Health Score | 383% |
 | Threads | 9 |
-| Allocations | 416 |
+| Allocations | 394 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 499 |
-| Sample Rate | 8.32/sec |
-| Health Score | 520% |
-| Threads | 10 |
-| Allocations | 485 |
+| CPU Samples | 503 |
+| Sample Rate | 8.38/sec |
+| Health Score | 524% |
+| Threads | 11 |
+| Allocations | 517 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 66-66 cores)</summary>
+<summary>CPU Timeline (3 unique values: 62-66 cores)</summary>
 
 ```
-1793443806 66
-1793443811 66
-1793443816 66
-1793443821 66
-1793443826 66
-1793443831 66
-1793443836 66
-1793443841 66
-1793443846 66
-1793443851 66
-1793443856 66
-1793443861 66
-1793443866 66
-1793443871 66
-1793443876 66
-1793443881 66
-1793443886 66
-1793443891 66
-1793443896 66
-1793443901 66
+1793509233 66
+1793509238 66
+1793509243 66
+1793509248 66
+1793509253 66
+1793509258 64
+1793509263 64
+1793509268 64
+1793509273 64
+1793509278 64
+1793509283 64
+1793509288 62
+1793509293 62
+1793509298 62
+1793509303 62
+1793509308 62
+1793509313 62
+1793509318 62
+1793509323 62
+1793509328 62
 ```
 </details>
 
