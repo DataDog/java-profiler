@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-11-01 20:28:10 EST
+**Date:** 2026-11-01 20:29:48 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 467 |
-| Sample Rate | 7.78/sec |
-| Health Score | 486% |
+| CPU Samples | 542 |
+| Sample Rate | 9.03/sec |
+| Health Score | 564% |
 | Threads | 8 |
-| Allocations | 388 |
+| Allocations | 363 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 678 |
-| Sample Rate | 11.30/sec |
-| Health Score | 706% |
+| CPU Samples | 744 |
+| Sample Rate | 12.40/sec |
+| Health Score | 775% |
 | Threads | 9 |
-| Allocations | 485 |
+| Allocations | 466 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 49-51 cores)</summary>
+<summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1793582626 51
-1793582631 51
-1793582636 51
-1793582641 51
-1793582646 51
-1793582651 51
-1793582656 51
-1793582661 51
-1793582666 51
-1793582671 51
-1793582676 51
-1793582681 51
-1793582686 51
-1793582691 51
-1793582696 51
-1793582701 51
-1793582706 51
-1793582711 51
-1793582716 51
-1793582721 51
+1793582614 51
+1793582619 51
+1793582624 51
+1793582629 51
+1793582634 51
+1793582639 51
+1793582644 51
+1793582649 51
+1793582654 51
+1793582659 51
+1793582664 51
+1793582669 51
+1793582674 51
+1793582679 51
+1793582684 51
+1793582689 51
+1793582694 51
+1793582699 51
+1793582704 51
+1793582709 51
 ```
 </details>
 
