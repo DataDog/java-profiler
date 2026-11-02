@@ -326,6 +326,17 @@ Error BaseWallClock::start(Arguments &args) {
     return Error("Forced wall engine start failure (unit test)");
   }
 #endif
+  // Defensive (R-C1): a previous stop() whose join failed kept the handle. That
+  // thread was already told to exit; retry the join before reusing _thread. A
+  // join failure on a thread we created signals a programming error, so the
+  // rejection is sticky (logged by the caller).
+  if (_thread != 0) {
+    if (pthread_join(_thread, NULL) == 0) {
+      _thread = 0;
+    } else {
+      return Error("WallClock timer thread from previous run was not joined");
+    }
+  }
   int interval = args._event != NULL ? args._interval : args._wall;
   if (interval < 0) {
     return Error("interval must be positive");
@@ -340,6 +351,7 @@ Error BaseWallClock::start(Arguments &args) {
   _running = true;
 
   if (pthread_create(&_thread, NULL, threadEntry, this) != 0) {
+    _thread = 0;  // *thread is undefined on error (R-C1)
     return Error("Unable to create timer thread");
   }
 
@@ -348,9 +360,10 @@ Error BaseWallClock::start(Arguments &args) {
 
 void BaseWallClock::stop() {
   _running.store(false);
-  // start() can return before pthread_create() runs (e.g. the forced-failure
-  // test hook, or pthread_create() itself failing), leaving _thread at its
-  // constructor sentinel of 0. Profiler::stop() only reaches this call when
+  // _thread is non-zero only between a successful pthread_create() and a
+  // successful pthread_join() (R-C1): start() resets it to 0 when
+  // pthread_create() fails, and the forced-failure test hook returns before
+  // any create, so 0 means "no thread owned". Profiler::stop() only reaches this call when
   // start() actually activated the wall engine, but this guard is kept as
   // defense-in-depth for any other caller of stop() on a never-started
   // instance. Skipping it crashes on musl when _thread is still 0 (observed);
@@ -366,7 +379,9 @@ void BaseWallClock::stop() {
   pthread_kill(_thread, WAKEUP_SIGNAL);
   int res = pthread_join(_thread, NULL);
   if (res != 0) {
-    Log::warn("Unable to join WallClock thread on stop %d", res);
+    // Keep the handle: the next start() retries the join (R-C1).
+    Log::warn("Unable to join WallClock thread on stop %d; keeping handle for retry", res);
+    return;
   }
   _thread = 0;
 }
@@ -434,9 +449,10 @@ void WallClockASGCT::timerLoop() {
     ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
     const bool lazy_backfill =
         _precheck && thread_filter->unfilteredWallTrackingActive();
-    const ThreadFilter::RecordingEpoch recording_epoch =
-        lazy_backfill ? thread_filter->recordingEpoch() : 0;
+    ThreadFilter::RecordingEpoch recording_epoch = 0;
     auto collectThreads = [&](std::vector<ThreadEntry>& entries) {
+      // Re-read once per tick, before any sampleThreads.
+      recording_epoch = lazy_backfill ? thread_filter->recordingEpoch() : 0;
       // Get thread IDs from the filter if it's enabled
       // Otherwise list all threads in the system
       if (thread_filter->enabled()) {
@@ -569,9 +585,10 @@ void WallClockJvmti::timerLoop() {
   ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
   const bool lazy_backfill =
       _precheck && thread_filter->unfilteredWallTrackingActive();
-  const ThreadFilter::RecordingEpoch recording_epoch =
-      lazy_backfill ? thread_filter->recordingEpoch() : 0;
+  ThreadFilter::RecordingEpoch recording_epoch = 0;
   auto collectThreads = [&](std::vector<ThreadEntry> &entries) {
+    // Re-read once per tick, before any sampleThreads.
+    recording_epoch = lazy_backfill ? thread_filter->recordingEpoch() : 0;
     const int refresher_tid = Libraries::instance()->refresherTid();
     if (thread_filter->enabled()) {
       Profiler::instance()->threadFilter()->collect(entries);

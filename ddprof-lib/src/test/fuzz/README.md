@@ -183,14 +183,19 @@ fixed tid domain so slot reuse and registration collisions are frequent. A
 shadow model tracks which tid should currently own which slot and traps on
 any divergence.
 
-**Expected bugs**: a still-live tid handed a second slot, two live tids
-sharing one slot (the single-owner invariant reviewers flagged as at risk
-from `add()`'s unchecked lazy-index fallback), a registry restart
-(`init()`) failing to clear a slot's block-run state via
-`WallClockBlockTracker::resetAll()`, a stale or forged generation token
-incorrectly clearing a newer block run, and any out-of-bounds/use-after-free
-in the lazy chunk allocation paths that slot reuse and registry resets
-exercise.
+**Regression guards** (no known open bugs): a still-live tid handed a
+second slot, or two live tids sharing one slot (the single-owner invariant
+is enforced by `registerThread()`'s dedupe via `lookupSlotIdByTid()` under
+`_registry_lock` plus `indexSlot()`'s duplicate refusal, and `add()` rejects
+a slot whose `nativeTid()` differs - `add()` never binds a tid); a registry
+restart (`init()`) failing to make old block state ineligible or a retained
+owner's re-registration failing to clear it; a stale or forged generation
+token clearing a newer block run, or a correct-generation exit leaving run
+state behind; `add()` failing for an owned tid or context-window membership
+diverging from the shadow model; the owned-block suppression decision
+diverging (in either direction) from the shadow model; and any
+out-of-bounds/use-after-free in the lazy chunk allocation paths that slot
+reuse and registry resets exercise.
 
 ## Corpus
 

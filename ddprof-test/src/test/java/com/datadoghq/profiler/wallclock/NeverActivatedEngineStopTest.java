@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfilerTestSupport;
 import java.util.Map;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
@@ -30,10 +31,17 @@ public class NeverActivatedEngineStopTest extends AbstractProfilerTest {
 
   private static final String COUNTER_NAME = "wall_stop_while_not_activated";
 
+  @AfterEach
+  void clearForceWallStartFailure() {
+    // Runs before AbstractProfilerTest.cleanup(); the toggle is process-wide.
+    JavaProfilerTestSupport.setForceWallStartFailureForTest(false);
+  }
+
   @Override
   protected void beforeProfilerStart() throws Exception {
     super.beforeProfilerStart();
-    // In effect only for this test's start() call; cleared at the top of the test method below.
+    // In effect only for this test's start() call; disarmed at the top of the test method
+    // below and, defensively, in @AfterEach so a skipped or failing test cannot leak it.
     JavaProfilerTestSupport.setForceWallStartFailureForTest(true);
     // The forced-start-failure toggle is a DEBUG-only native hook (no-op in
     // release builds). Self-skip when it isn't armed so the test doesn't fail

@@ -241,17 +241,46 @@ TEST_F(WallClockBlockTrackerTest, ContextEntryWithoutActiveBlockRunIsANoop) {
     EXPECT_FALSE(block_slot->sampledThisRun());
 }
 
-// The ~128 KiB _slots array is an eager, unconditional allocation (unlike
-// ThreadFilter's lazily-chunked storage), so every WallClockBlockTracker must
-// report it to NativeMem (NM_WALLCLOCK) at construction and retract it at
-// destruction.
-TEST(WallClockBlockTrackerNativeMemTest, ConstructionAndDestructionAccountForSlotsArray) {
-    long long before = NativeMem::live(NM_WALLCLOCK);
+// BlockState storage (~128 KiB) is allocated lazily on the first locked
+// registerThread() of the wired filter (R-B2): nothing is allocated or
+// accounted at construction, the storage is accounted to NativeMem
+// (NM_WALLCLOCK) once allocated, stays at a stable address, and the
+// destructor retracts it.
+TEST(WallClockBlockTrackerNativeMemTest, StorageIsAllocatedLazilyAndAccounted) {
+    const long long before = NativeMem::live(NM_WALLCLOCK);
+    const long long storage_bytes =
+        static_cast<long long>(sizeof(WallClockBlockTracker::BlockState)) *
+        ThreadFilter::kMaxThreads;
     {
         WallClockBlockTracker local_tracker;
-        EXPECT_EQ(before + static_cast<long long>(sizeof(WallClockBlockTracker::BlockState)) *
-                                ThreadFilter::kMaxThreads,
-                  NativeMem::live(NM_WALLCLOCK));
+        EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+        EXPECT_EQ(nullptr, local_tracker.slotForId(0));
+        local_tracker.resetAll();                          // null-safe
+        local_tracker.resetSlot(0, OSThreadState::UNKNOWN);  // no-op
+        EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+
+        // Declared after the tracker so it is destroyed first.
+        ThreadFilter local_filter;
+        local_filter.setBlockTracker(&local_tracker);
+        local_filter.init("", true);
+        EXPECT_EQ(0ULL, local_tracker.enterBlockedRun(&local_filter, 0, OSThreadState::CONDVAR_WAIT));
+        EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+
+        ThreadFilter::SlotID slot_id = local_filter.registerThread(1234);
+        ASSERT_GE(slot_id, 0);
+        EXPECT_EQ(before + storage_bytes, NativeMem::live(NM_WALLCLOCK));
+        WallClockBlockTracker::BlockState* block_slot = local_tracker.slotForId(slot_id);
+        ASSERT_NE(nullptr, block_slot);
+        EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
+        EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
+        EXPECT_FALSE(block_slot->sampledThisRun());
+
+        ThreadFilter::SlotID other = local_filter.registerThread(1235);
+        ASSERT_GE(other, 0);
+        local_filter.unregisterThread(other, 1235);
+        EXPECT_TRUE(local_tracker.ensureAllocated());
+        EXPECT_EQ(before + storage_bytes, NativeMem::live(NM_WALLCLOCK));
+        EXPECT_EQ(block_slot, local_tracker.slotForId(slot_id));
     }
     EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
 }

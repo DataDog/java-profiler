@@ -345,7 +345,7 @@ Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfilerTestSupport_setForceWallStartFailureForTest0(
+Java_com_datadoghq_profiler_JavaProfiler_setForceWallStartFailureForTest0(
     JNIEnv *env, jclass unused, jboolean force) {
 #ifdef DEBUG
   BaseWallClock::setForceStartFailureForTest(force);
@@ -353,7 +353,7 @@ Java_com_datadoghq_profiler_JavaProfilerTestSupport_setForceWallStartFailureForT
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfilerTestSupport_isForceWallStartFailureArmedForTest0(
+Java_com_datadoghq_profiler_JavaProfiler_isForceWallStartFailureArmedForTest0(
     JNIEnv *env, jclass unused) {
 #ifdef DEBUG
   return BaseWallClock::isForceStartFailureForTest() ? JNI_TRUE : JNI_FALSE;
@@ -367,9 +367,14 @@ Java_com_datadoghq_profiler_JavaProfilerTestSupport_isForceWallStartFailureArmed
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfilerTestSupport_isThreadRegistryActiveForTest0(
+Java_com_datadoghq_profiler_JavaProfiler_isThreadRegistryActiveForTest0(
     JNIEnv *env, jclass unused) {
-  return Profiler::instance()->threadFilter()->registryActive();
+#ifdef DEBUG
+  return Profiler::instance()->threadFilter()->registryActive() ? JNI_TRUE : JNI_FALSE;
+#else
+  // Release: seam disabled. Callers gate on isForceWallStartFailureArmedForTest0().
+  return JNI_FALSE;
+#endif // DEBUG
 }
 
 extern "C" DLLEXPORT void JNICALL

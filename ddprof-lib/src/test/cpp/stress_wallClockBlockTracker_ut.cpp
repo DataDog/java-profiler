@@ -52,12 +52,14 @@ static void block_run_churn_worker(ThreadFilter* filter, WallClockBlockTracker* 
       u64 token = tracker->enterBlockedRun(filter, slot, state);
       std::this_thread::yield();
       if (token != 0) {
-        // Either exit path may lose the race against a concurrent registry
-        // reset (which is expected and fine); neither may crash or corrupt.
+        // Either exit path (generation-checked exit, or the unconditional
+        // resetSlot(RUNNABLE) clear) may lose the race against a concurrent
+        // registry reset (which is expected and fine); neither may crash or
+        // corrupt.
         if (i & 1) {
           tracker->exitBlockedRun(slot, WallClockBlockTracker::tokenGeneration(token));
         } else {
-          tracker->exitBlockedRun(slot);
+          tracker->resetSlot(slot, OSThreadState::RUNNABLE);
         }
       }
 

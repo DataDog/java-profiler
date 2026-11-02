@@ -29,6 +29,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   private static final long SLEEP_MILLIS = 300;
   private static final String PRE_EXISTING_THREAD_NAME = "unfiltered-precheck-existing";
   private static final String SUPPRESSED_RUN_COUNTER = "wc_signals_suppressed_sampled_run";
+  private static final String REGISTRATION_COUNTER = "thread_registry_hook_reregistration";
   private static final String UNOWNED_SUPPRESSED_COUNTER = "wc_unowned_blocked_suppressed";
 
   private ExecutorService preExistingWorker;
@@ -123,8 +124,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
    */
   @RetryingTest(3)
   public void unregisteredThreadUsesNormalSampling() throws Exception {
-    long registrationsBefore =
-        profiler.getDebugCounters().getOrDefault("thread_registry_hook_reregistration", -1L);
+    long registrationsBefore = registrationCount();
     String threadName = "unfiltered-precheck-unregistered";
     FutureTask<Void> sleep =
         new FutureTask<>(
@@ -138,7 +138,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
     if (registrationsBefore >= 0) {
       assertEquals(
           registrationsBefore,
-          profiler.getDebugCounters().get("thread_registry_hook_reregistration").longValue(),
+          registrationCount(),
           "Ordinary sampling should not allocate a registry slot");
     }
 
@@ -157,15 +157,13 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   @RetryingTest(3)
   public void postStartSleepingThreadLazilyRegistersOwnedBlock() throws Exception {
     String threadName = "unfiltered-precheck-post-start";
-    long registrationsBefore =
-        profiler.getDebugCounters().getOrDefault("thread_registry_hook_reregistration", -1L);
+    long registrationsBefore = registrationCount();
     assertTrue(
         runPostStartSleepingWorker(threadName) != 0,
         "Expected the owned-block hook to register and arm SLEEPING state");
     if (registrationsBefore >= 0) {
       assertTrue(
-          profiler.getDebugCounters().get("thread_registry_hook_reregistration")
-              > registrationsBefore,
+          registrationCount() > registrationsBefore,
           "The first owned-block hook should register lazily; ThreadStart must not reserve a slot");
     }
 
@@ -272,6 +270,8 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
                 long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(SLEEP_MILLIS);
                 while (System.nanoTime() < deadline) {
                   // Keep the OS thread runnable so suppression must come from the owned park marker.
+                  // yield() (not onSpinWait(): --release 8) keeps the spin from starving others.
+                  Thread.yield();
                 }
               } finally {
                 ProfilerOwnedBlockHooks.parkExit(
@@ -288,6 +288,10 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
           suppressedSignals() > suppressedBefore,
           "Expected owned-block once-per-run suppression counter to increase");
     }
+  }
+
+  private long registrationCount() {
+    return profiler.getDebugCounters().getOrDefault(REGISTRATION_COUNTER, -1L);
   }
 
   private long suppressedSignals() {
