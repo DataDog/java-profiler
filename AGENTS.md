@@ -128,9 +128,15 @@ debug symbols via `buildDebug`, memory errors via ASan, suppressions in
 Custom Kotlin-based native build plugin (`build-logic/`) instead of Gradle's
 `cpp-library`/`cpp-application` plugins; it invokes `clang++`/`g++` directly. Build
 configurations are discovered dynamically from `ConfigurationPresets.kt`, never hardcoded.
+Google Test entry-point archives precede their dependencies so architecture-gated
+test files also link on hosts where they register no cases.
 Two-JDK pattern: `JAVA_HOME` (build, JDK 17+, Gradle runs on 21 LTS) runs Gradle;
 `JAVA_TEST_HOME` runs tests against the target JDK; target bytecode is Java 8 via
 `--release 8`.
+
+The `ddprof-stresstest:chaosElements` outgoing configuration shares the chaos JAR
+with `ddprof-test` stack-correctness tests. See
+[TestingGuide.md](doc/building/TestingGuide.md#virtual-thread-remount-correctness).
 
 Details and troubleshooting:
 [build-logic/README.md](build-logic/README.md),
@@ -151,6 +157,7 @@ before working on a subsystem.
 | String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
 | TLS context (thread-local tracing context, distributed tracing) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
+| Native stack unwinding (DWARF CFA rules, arm64 temporary argument areas, JNI wrapper phases and LR/PLT, validated Linux signal-frame recovery) | [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md) |
 | Profiling engines (CPU, wall-clock, allocation, native memory, liveness) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, signal scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |

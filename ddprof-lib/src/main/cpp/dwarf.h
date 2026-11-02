@@ -140,16 +140,29 @@ class DwarfParser {
         // interrupted PC. Becomes FrameDesc::FLAG_SIGNAL_FRAME on every row.
         bool is_signal_frame;
         bool valid;
+        // Return-address stack offset (or LR) established by the CIE.
+        int initial_pc_offset;
     };
 
     static CieInfo defaultCieInfo() {
-        return CieInfo{(u32)sizeof(instruction_t), -(int)sizeof(void*), false, false, false};
+        return CieInfo{(u32)sizeof(instruction_t), -(int)sizeof(void*), false, false, false, INITIAL_PC_OFFSET};
     }
 
     // FrameDesc::flags value implied by `cie`.
     static u32 recordFlags(const CieInfo& cie) {
         return cie.is_signal_frame ? FrameDesc::FLAG_SIGNAL_FRAME : 0;
     }
+
+    // CFI instruction operands must stay within their own CIE/FDE record.
+    class ReadWindowScope {
+        const char*& _end;
+        const char* _previous;
+    public:
+        ReadWindowScope(const char*& end, const char* limit) : _end(end), _previous(end) { _end = limit; }
+        ~ReadWindowScope() { _end = _previous; }
+        ReadWindowScope(const ReadWindowScope&) = delete;
+        ReadWindowScope& operator=(const ReadWindowScope&) = delete;
+    };
 
     // Real toolchains emit long runs of FDEs sharing one CIE, so the last
     // resolved CIE is memoized by its start address: every FDE must resolve
@@ -283,7 +296,7 @@ class DwarfParser {
     CieInfo parseCie();
     CieInfo resolveCie(const char* cie_ptr);
     void parseFde();
-    void parseInstructions(u32 loc, const char* end, const CieInfo& cie);
+    void parseInstructions(u32 loc, const char* end, const CieInfo& cie, int* initial_pc_offset = nullptr);
     int parseExpression();
 
     void addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off, int pc_off, u32 flags);

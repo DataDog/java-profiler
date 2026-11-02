@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <vector>
 
 // Test name for crash handler
@@ -86,6 +87,98 @@ static DwarfParser* parseBuf(const std::vector<uint8_t>& buf) {
     const char* base = reinterpret_cast<const char*>(buf.data());
     return new DwarfParser("test", base, base, buf.size());
 }
+
+static std::vector<uint8_t> buildEhFrameHdrImage(const std::vector<uint8_t>& body,
+                                                const std::vector<uint32_t>& fde_offsets);
+
+// Build a real CIE/FDE instruction stream and own the parser's resulting rows.
+static std::unique_ptr<FrameDesc, decltype(&free)> parseInstructionRows(
+        const std::vector<uint8_t>& instructions, int& count,
+        const std::vector<uint8_t>& initial_rules = {}, bool indexed = false) {
+    std::vector<uint8_t> buf;
+    appendCie(buf);
+    buf[13] = DW_REG_PC;
+    buf[0] += initial_rules.size();
+    buf.insert(buf.end(), initial_rules.begin(), initial_rules.end());
+    uint32_t fde_offset = static_cast<uint32_t>(buf.size());
+    uint32_t cie_offset = fde_offset + 4;
+    put32(buf, 13 + static_cast<uint32_t>(instructions.size()));
+    put32(buf, cie_offset);
+    put32(buf, 0);
+    put32(buf, 256);
+    put8(buf, 0);
+    buf.insert(buf.end(), instructions.begin(), instructions.end());
+    appendTerminator(buf);
+    if (indexed) {
+        auto image = buildEhFrameHdrImage(buf, {fde_offset});
+        const char* base = reinterpret_cast<const char*>(image.data());
+        DwarfParser parser("native-clock", base, base, image.size(),
+                           DwarfParser::EhFrameHdrTag{}, base + image.size());
+        count = parser.count();
+        return {parser.table(), &free};
+    }
+    const char* base = reinterpret_cast<const char*>(buf.data());
+    DwarfParser parser("native-clock", base, base, buf.size());
+    count = parser.count();
+    return {parser.table(), &free};
+}
+
+TEST(DwarfEhFrame, RestoreUsesCieDefinedReturnAddressRule) {
+    // A real CIE can define a return slot different from the ABI default.
+    // Exercise both ELF-header and linear readers, and both restore encodings.
+    const uint8_t reg = DW_REG_PC;
+    for (bool indexed : {false, true}) {
+        for (const auto& restore : std::vector<std::vector<uint8_t>>{{uint8_t(0xc0 | reg)}, {0x06, reg}}) {
+            std::vector<uint8_t> code{uint8_t(0x80 | reg), 3, 0x41};
+            code.insert(code.end(), restore.begin(), restore.end());
+            code.push_back(0x41);
+            int count;
+            auto rows = parseInstructionRows(code, count, {0, uint8_t(0x80 | reg), 2}, indexed);
+            ASSERT_GE(count, 3);
+            EXPECT_EQ(-24, rows.get()[0].pc_off);
+            EXPECT_EQ(-16, rows.get()[1].pc_off);
+        }
+    }
+}
+
+TEST(DwarfEhFrame, LeafReturnAddressUsesArchitectureRegisterOrStackSlot) {
+    int count;
+    auto rows = parseInstructionRows({}, count);
+    ASSERT_EQ(2, count);
+    EXPECT_EQ(INITIAL_PC_OFFSET, rows.get()[0].pc_off);
+    EXPECT_EQ(DW_SAME_FP, rows.get()[0].fp_off);
+}
+
+#ifdef __aarch64__
+TEST(DwarfEhFrame, RestoredLinkRegisterReplacesSavedReturnAddressSlot) {
+    // clock_gettime saves LR at CFA-8, then restores it before returning.
+    // Compact restore, extended restore and same_value must all stop reading
+    // the released stack slot once LR holds the return address again.
+    for (const auto& restore : std::vector<std::vector<uint8_t>>{{0xde}, {0x06, 30}, {0x08, 30}}) {
+        std::vector<uint8_t> code{0x0e, 16, 0x9e, 1, 0x41};
+        code.insert(code.end(), restore.begin(), restore.end());
+        code.insert(code.end(), {0x0e, 0, 0x41});
+        int count;
+        auto rows = parseInstructionRows(code, count);
+        ASSERT_GE(count, 3);
+        EXPECT_EQ(-8, rows.get()[0].pc_off);
+        EXPECT_EQ(DW_LINK_REGISTER, rows.get()[1].pc_off);
+        EXPECT_EQ((u32)DW_REG_SP, rows.get()[1].cfa);
+    }
+}
+
+TEST(DwarfEhFrame, SameValueUsesLrEvenWhenCieDefinesStackSlot) {
+    int count;
+    auto rows = parseInstructionRows({0x08, 30}, count, {0x9e, 2});
+    ASSERT_EQ(2, count);
+    EXPECT_EQ(DW_LINK_REGISTER, rows.get()[0].pc_off);
+}
+
+TEST(DwarfEhFrame, PltLeafReturnsThroughLinkRegister) {
+    EXPECT_EQ(DW_LINK_REGISTER, FrameDesc::empty_frame.pc_off);
+    EXPECT_EQ(DW_SAME_FP, FrameDesc::empty_frame.fp_off);
+}
+#endif
 
 TEST(DwarfEhFrame, EmptySection) {
     std::vector<uint8_t> buf;

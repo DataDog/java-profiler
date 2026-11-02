@@ -460,7 +460,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         uintptr_t carrier_fp, carrier_sp;
         const void* carrier_pc;
         bool valid_carrier_sp;
-        bool sampled_entry = depth == 0 && !walk_pc.isReturnAddress() && continuation_entry_nm != nullptr
+        bool sampled_entry = !walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw()) && continuation_entry_nm != nullptr
                 && CodeHeap::findNMethod(walk_pc.raw()) == continuation_entry_nm;
         int words = sampled_entry ? frame.continuationEntryFrameWords(continuation_entry_nm, walk_pc.raw()) : -1;
         bool saved_fp = words >= 2;
@@ -742,7 +742,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     }
                 }
 
-                if (depth == 0) {
+                if (!walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw())) {
                     VMMethod* method = (VMMethod*)frame.method();
                     jmethodID method_id = getMethodId(method);
                     if (method_id != JMETHODID_NOT_WALKABLE) {
@@ -798,7 +798,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
                 if (nm->isFrameCompleteAt(walk_pc.raw())) {
                     const void* epilogue_pc = walk_pc.raw();
-                    if (depth == 1 && frame.unwindEpilogue(nm, (uintptr_t&)epilogue_pc, sp, fp)) {
+                    if (!walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw()) && frame.unwindEpilogue(nm, (uintptr_t&)epilogue_pc, sp, fp)) {
                         walk_pc.setReturnAddress(epilogue_pc);
                         continue;
                     }
@@ -872,7 +872,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 }
                 continue;
             } else {
-                if (features.vtable_target && nm->isVTableStub() && depth == 0) {
+                if (features.vtable_target && nm->isVTableStub() && !walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw())) {
                     uintptr_t receiver = frame.jarg0();
                     if (receiver != 0) {
                         VMKlass* klass = VMKlass::fromOop(receiver);
@@ -1115,7 +1115,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         have_prev_native_pc = true;
 
         if (!advanceDwarfFrame(walk_pc, sp, fp, bottom, depth, frame,
-                               profiler)) {
+                               profiler, truncated)) {
             break;
         }
     }
