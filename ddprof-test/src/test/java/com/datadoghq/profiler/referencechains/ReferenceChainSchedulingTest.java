@@ -123,7 +123,6 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
         "extending cost must land strictly between the past-base age and the cap");
     assertTrue(ROOT_ENUM_CAPPING_COST_MS * ROOT_ENUM_NS_PER_COST_MS > ROOT_ENUM_MAX_INTERVAL_NS,
         "capping cost must exceed the cap");
-    assertTrue(ROOT_ENUM_MAX_INTERVAL_NS > pastBaseNs, "cap must exceed the past-base age");
     assertTrue(ROOT_ENUM_PAST_CAP_MS * NS_PER_MS > ROOT_ENUM_MAX_INTERVAL_NS,
         "past-cap age must exceed the cap");
   }

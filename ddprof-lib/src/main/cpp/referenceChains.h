@@ -1275,10 +1275,11 @@ public:
   // looks advanced, positive looks stale, without racing the real GC callbacks. A negative delta
   // larger than the live counter clamps to 0 instead of wrapping - a wrap would look stale.
   void shiftLastPassGcEpochForTest(long delta) {
+    MutexLocker engine_guard(_engine_lock);
     u64 epoch = gcFinishEpoch();
-    _last_pass_gc_finish_epoch =
-        delta < 0 ? (epoch >= (u64)(-delta) ? epoch - (u64)(-delta) : 0)
-                  : epoch + (u64)delta;
+    store(_last_pass_gc_finish_epoch,
+          delta < 0 ? (epoch >= (u64)(-delta) ? epoch - (u64)(-delta) : 0)
+                    : epoch + (u64)delta);
   }
   // Seeds shouldRunRootEnum()'s inputs. Engine lock held: both fields are otherwise
   // BFS-thread-owned (runPassManualWalk()). Negative ms_since_last_enum clamps to 0 (never ran).

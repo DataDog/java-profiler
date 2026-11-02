@@ -630,7 +630,7 @@ void ReferenceChainTracker::threadLoop() {
                "lastPassGcFinishEpoch=%llu nowMinusLastPassNs=%llu",
                ++iteration, should_run, (int)_search_state, _passes_run,
                (unsigned long long)load(_effective_cadence_ns), _effective_budget,
-               (unsigned long long)gcFinishEpoch(), (unsigned long long)_last_pass_gc_finish_epoch,
+               (unsigned long long)gcFinishEpoch(), (unsigned long long)load(_last_pass_gc_finish_epoch),
                (unsigned long long)(now_ns - load(_last_pass_ns)));
       runPassSerialized(jvmti, jni);
     }
