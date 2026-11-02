@@ -156,23 +156,116 @@ walker, with raw `Method*` frames, and with lazy jmethodID resolution.
 | File | Role |
 |---|---|
 | `hotspotSupport.{h,cpp}` | `HotspotSupport`: `walkJavaStack`/`walkVM`, ASGCT with fault recovery (`withUcontextFaultRecovery`), jmethodID preload policy, `fjmethodid=lazy` (`registerClass`, `resolve`, redefinition tracking, dump-time class pinning). `JVMSupport` is a friend (`hotspotSupport.h:131`), and the walker internals are private |
-| `hotspotStackFrame.h`, `hotspotStackFrame_{x64,aarch64}.cpp` | `HotspotStackFrame`: unwinds through compiled frames, stubs, prologues, and epilogues, and saves and restores the `JavaFrameAnchor` on fault recovery |
+| `hotspotStackFrame.h`, `hotspotStackFrame_{x64,aarch64}.cpp` | `HotspotStackFrame`: unwinds through compiled frames, stubs, prologues, epilogues and sampled continuation-entry phases, and saves and restores the `JavaFrameAnchor` on fault recovery |
 | `vmStructs.{h,inline.h,cpp}` | Reads `gHotSpotVMStructs` offsets, and defines `VMThread`, `VMMethod`, `VMFlag`, `CodeHeap`, and related types |
 | `jitCodeCache.{h,cpp}` | JIT and runtime-stub address ranges from `CompiledMethodLoad`/`DynamicCodeGenerated`, used by `isJitCode` and `runtimeStubsMemoryUsage` |
 | `stubUnwindInfo.{h,cpp}` | Per-PC unwind phases for HotSpot runtime stubs (aarch64 only). They are computed in the `DynamicCodeGenerated` callback, and the walker reads them without locks |
 | `klassRegistry.{h,cpp}` | Redefinition marks keyed by `Klass*` for `fjmethodid=lazy` (`HotspotSupport::_klass_registry`, `hotspotSupport.h:161`) |
 | `klassTraceId.{h,cpp}` | Finds `Klass::_trace_id` by probing, so a stale raw frame can be told apart from a class that reused the same `Klass*` |
 
+Directly sampled `enterSpecial` frames use
+`HotspotStackFrame::continuationEntryFrameWords()` to locate the carrier SP.
+The helper distinguishes the prologue's register save and storage allocation,
+the complete frame, and the normal epilogue's storage deallocation and register
+restore. The walker checks bounds and alignment before reading saved FP/PC;
+before the save and after the restore it uses the sampled FP and LR (aarch64)
+or return-PC stack slot (x64). Unknown prologues fail rather than applying the
+complete-frame size. Pointer-authentication instructions are recognized on
+arm64, and recovered PCs have PAC bits stripped.
+
+On x64, `continuationEntryExceptionLayout()` decodes the generated exception
+section separately from the scalar normal-frame helper. A bounded scan identifies
+the normal epilogue, then validates the exception cleanup, resolver arguments,
+stack-alignment branches, calls and final `pop rax; pop rdx; jmp rbx` sequence.
+The layout distinguishes saved RBP from restored RBP: after `push rax`, the old
+saved-RBP slot contains an exception object, not a frame pointer. The carrier PC
+is the last live stack word until `pop rdx`; a direct sample at the final jump
+uses interrupted RDX instead. Both near calls and full-address RAX calls are
+recognized, including HotSpot's byte-test optimization for stack alignment.
+
+A native unwind returning to a recognized x64 resolver call uses its reconstructed
+SP and RBP and the still-stacked carrier PC. Only actual call-return instruction
+boundaries qualify; an older PC after `pop rdx` must not borrow interrupted RDX.
+Recovery does not follow `JavaThread::_cont_entry`, which can already name a
+parent, or advance the nested-entry cursor to the retiring spill. Unknown code,
+invalid branch targets, non-instruction PCs and out-of-blob reads fail with
+truthful error/truncation. Carrier SP alignment/bounds and FP/PC admission checks
+remain shared with normal recovery.
+
+Interpreter-only execution uses a separate entry before the verified compiled
+entry on both architectures. The decoder locates that entry's recognized frame
+setup with a bounded scan before the compiled entry. Its prologue and established
+frame then use their own setup rather than the later compiled frame-complete
+offset. Unknown setup sequences fail conservatively.
+
+On arm64 the exception epilogue finishes with `mov x3, lr; br x1` after
+`leave()` has restored SP and FP/LR. A sample at either instruction uses the
+restored FP and LR, including when `leave()` authenticates LR. The decoder
+requires both instructions and bounds the forward read to the same code blob.
+An isolated move or branch does not select this recovery path.
+
+During arm64 exception-handler resolution, `call_VM_leaf_base()` temporarily
+spills `x8` and `x12`. The decoder recognizes the bounded spill, target-load,
+call and restore sequence and adds two words while the spill is live. The
+ordinary entry-frame size applies before the spill and after its restoration.
+This adjustment reads code only and also applies when native unwinding recovers
+a return PC into the spilled entry. It does not use sampled register values at
+that recovered PC.
+
+Normal prologue/epilogue phase recovery applies only to the exact sampled PC.
+Apart from recognized VM-leaf resolver layouts, recovered return addresses keep
+the existing continuation-entry metadata and stack-argument recovery. During
+entry publication and removal, `JavaThread::_cont_entry` can name the enclosing
+entry; a sampled entry only advances the nested-entry cursor when the published
+entry matches its own saved-register slots. The carrier validation and
+continuation truncation policy are shared by both recovery paths.
+
+On HotSpot JDK 21+, initialization recognizes the return-barrier prefix that
+loads `JavaThread::_cont_entry` into SP: `ldr x8, [x28, #offset]; mov sp, x8`
+on arm64, or `mov rsp, [r15 + offset]` on x64. It copies a bounded eight bytes,
+checks the instruction shape and the field's alignment and bounds within the
+exported `JavaThread` size, then publishes the inferred offset with release
+semantics. Bounds use `JavaThread` independently of the smaller `Thread` base
+type used by `VMThread` casts. Walkers acquire-load the offset. Unknown prefixes leave the capability
+unavailable. This inferred offset stays separate from the JDK 27 exported
+fields and does not change anchor redirection or nested-entry handling.
+
+A sample at the return barrier, including one reached through a native signal
+trampoline, may have no decoded Java frame providing its stack-argument count.
+When exported entry metadata is unavailable, that verified frozen boundary can
+use the inferred offset to read the current entry pointer. The `enterSpecial`
+nmethod's validated frame size locates its saved FP/PC pair; stack range,
+alignment and carrier admission checks apply before proceeding. Walks with a
+known argument count retain SP-based recovery. Missing or invalid metadata
+still rejects the walk, and frozen boundaries remain marked truncated.
+
+Recognized arm64 VM-leaf spills also recover an entry that exception cleanup has
+already unlinked from the thread. Exported layouts must agree with the entry FP
+derived from the nmethod size. The nested-entry cursor records that physical entry
+so the next crossing follows its parent once.
+
+Native thaw calls return inside the barrier stub, where SP has already changed.
+The runtime-stub lookup identifies these PCs by matching the registered stub's
+start to the known return-barrier entry. They use the current thread's entry
+metadata, independently of any earlier Java frame's stack-argument count.
+Both stopping at the synthetic root and continuing onto the carrier retain the
+frozen-boundary truncation flag. Missing entry metadata still rejects recovery.
+
+Every continuation crossing retires both the live Java frame anchor and its saved
+recovery SP. The post-loop anchor fallback must not append frames from the consumed
+continuation again, whether the walk stops at the synthetic root or continues onto
+the carrier.
+
 Caveats:
 
 - **Architecture-specific unwinding.** `unwindAtomicStub` always returns
-  `false` on x86_64 (`hotspot/hotspotStackFrame_x64.cpp:179-181`). On aarch64 it
+  `false` on x86_64 (`hotspot/hotspotStackFrame_x64.cpp:213-215`). On aarch64 it
   unwinds through generated `Stub*` code when the link register points into
-  libjvm (`hotspot/hotspotStackFrame_aarch64.cpp:335-343`). The unwind helpers
+  libjvm (`hotspot/hotspotStackFrame_aarch64.cpp:370-379`). The unwind helpers
   return the raw return address on every architecture. When the result is
   written back into the ucontext for an ASGCT retry,
   `stepIntoCallForAsgct()` subtracts one only on x86_64
-  (`hotspot/hotspotStackFrame.h:125-131`).
+  (`hotspot/hotspotStackFrame.h:133-139`).
 - **Stub unwind tables.** `StubUnwindInfo` exists only on aarch64. On x64,
   `unwindStub()` ignores the `info` argument (`hotspot/hotspotStackFrame.h`,
   comment on `unwindStub`).
@@ -196,8 +289,8 @@ callers, so reaching a carrier does not clear that flag.
 `Recording::writeStackTraceHeader` preserves the walker flag even when the final
 Java frame is an entry method such as `Thread.run`. A verified thawed crossing also
 preserves truncation established earlier in the walk. The blocking virtual-thread
-wall-clock regression checks truthful truncation when carrier ancestry is missing;
-carrier recovery itself remains a separate correctness requirement.
+wall-clock regression requires carrier ancestry. `FrozenVirtualThreadStackTest`
+separately compares logical callers and verifies truthful completeness reporting.
 
 ### `j9/`
 
