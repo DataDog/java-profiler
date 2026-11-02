@@ -13,6 +13,7 @@
 #include "guards.h"
 #include "hotspot/contBoundary.h"
 #include "hotspot/hotspotSupport.h"
+#include "hotspot/frozenStackWalker.h"
 #include "hotspot/jitCodeCache.h"
 #include "hotspot/klassTraceId.h"
 #include "hotspot/vmStructs.inline.h"
@@ -391,6 +392,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     // Last ContinuationEntry crossed; advanced via parent() for nested continuations.
     VMContinuationEntry* cont_entry = nullptr;
+    unsigned int continuation_depth = 0;
     int continuation_stack_args = -1;
     VMNMethod* continuation_entry_nm = VMStructs::enterSpecialNMethod();
 
@@ -420,7 +422,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     // Advances through a continuation boundary to the carrier frame.
     // Without carrier_frames (default, cstack=vm): always stops with a "JVM Continuation"
-    // synthetic root frame; frozen VT callers are not reconstructed.
+    // synthetic root frame after recovering frozen callers where supported.
     // With carrier_frames (cstack=vmx): attempts to walk through; failures emit BCI_ERROR
     // so the sample is truthfully marked truncated.
     // Walks cont_entry->parent() on repeated calls to handle nested continuations
@@ -429,9 +431,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     //
     // kind: how the caller classified the boundary (see hotspot/contBoundary.h).
     //   Completeness: unless kind proves completeness (verified Thawed), older
-    //     Java callers may remain frozen in a heap StackChunk and be skipped by
-    //     this walker, so the sample is marked truncated. That covers Frozen
-    //     (return barrier) and Unverified (speculative unknown-nmethod crossing).
+    //     Java callers may remain frozen in a heap StackChunk. Frozen boundaries
+    //     attempt heap recovery and clear the new truncation only on success;
+    //     Unverified crossings stay truncated without attempting heap recovery.
     //   Layout: without exported ContinuationEntry metadata, known boundaries
     //     use SP, stack arguments and the generated enterSpecial frame size.
     //     If that metadata is unavailable, Thawed/Unverified use fp as a
@@ -445,12 +447,22 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         // anchor would append frames from below the boundary a second time.
         anchor = NULL;
         saved_anchor_sp = 0;
-        // Unless the boundary is verified fully thawed, older Java callers may
-        // remain in heap StackChunks, which this walker skips even when carrier
-        // walking succeeds.
-        if (!contBoundaryProvesComplete(kind) && truncated != nullptr) {
-            *truncated = true;
+        if (!contBoundaryProvesComplete(kind)) {
+            bool was_truncated = truncated != nullptr && *truncated;
+            // A recovered fault can bypass append's return and the rest of this
+            // lambda. Keep the partial trace truncated unless recovery completes.
+            if (truncated != nullptr) *truncated = true;
+            // Only a verified return barrier identifies frozen callers safely.
+            if (kind == ContBoundary::Frozen) {
+                if (FrozenStackWalker::append(vm_thread, entry_pc, continuation_depth, frames, depth, actual_max_depth, details)) {
+                    Counters::increment(WALKVM_FROZEN_RECOVERED);
+                    if (truncated != nullptr) *truncated = was_truncated;
+                } else {
+                    Counters::increment(WALKVM_FROZEN_FAILED);
+                }
+            }
         }
+        continuation_depth++;
         if (depth >= actual_max_depth) return false;
         if (!features.carrier_frames) {
             fillFrame(frames[depth++], BCI_NATIVE_FRAME, CONT_ROOT_FRAME);

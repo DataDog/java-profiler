@@ -203,6 +203,12 @@ typedef void* address;
         field_with_version(_nmethod_entry_address, offset, 8, 22, MATCH_SYMBOLS("_verified_entry_point"))           \
         field(_nmethod_state_offset, offset, MATCH_SYMBOLS("_state"))                                               \
         field(_nmethod_level_offset, offset, MATCH_SYMBOLS("_comp_level"))                                          \
+        field_with_version(_nmethod_orig_pc_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_orig_pc_offset"))      \
+        field_with_version(_nmethod_deopt_handler_address, offset, 21, 22, MATCH_SYMBOLS("_deopt_handler_begin"))   \
+        field_with_version(_nmethod_deopt_mh_handler_address, offset, 21, 22, MATCH_SYMBOLS("_deopt_mh_handler_begin")) \
+        field_with_version(_nmethod_deopt_handler_offset, offset, 23, 25, MATCH_SYMBOLS("_deopt_handler_offset"))     \
+        field_with_version(_nmethod_deopt_mh_handler_offset, offset, 23, 25, MATCH_SYMBOLS("_deopt_mh_handler_offset")) \
+        field_with_version(_nmethod_deopt_handler_entry_offset, offset, 26, MAX_VERSION, MATCH_SYMBOLS("_deopt_handler_entry_offset")) \
         field_with_version(_nmethod_entry_bci_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_entry_bci"))           \
         field_with_version(_nmethod_metadata_offset, offset, MIN_VERSION, 24, MATCH_SYMBOLS("_metadata_offset"))    \
         field_with_version(_nmethod_immutable_offset, offset, 23, MAX_VERSION, MATCH_SYMBOLS("_immutable_data"))    \
@@ -245,6 +251,7 @@ typedef void* address;
         field(_symbol_body_offset, offset, MATCH_SYMBOLS("_body"))                                                  \
     type_end()                                                                                                      \
     type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread", "Thread"))                                                 \
+        field_with_version(_thread_oop_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_threadObj"))                \
         field(_thread_osthread_offset, offset, MATCH_SYMBOLS("_osthread"))                                          \
         field(_thread_anchor_offset, offset, MATCH_SYMBOLS("_anchor"))                                              \
         field(_thread_state_offset, offset, MATCH_SYMBOLS("_thread_state"))                                         \
@@ -323,6 +330,13 @@ typedef void* address;
     type_end()                                                                                                      \
     type_begin(VMOop, MATCH_SYMBOLS("oopDesc"))                                                                     \
         field(_oop_klass_offset, offset, MATCH_SYMBOLS("_metadata._klass", "_compressed_klass"))                    \
+    type_end()                                                                                                      \
+    type_begin(VMOopHandle, MATCH_SYMBOLS("OopHandle"))                                                             \
+        field_with_version(_oop_handle_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_obj"))                     \
+    type_end()                                                                                                      \
+    type_begin(VMCompressedOops, MATCH_SYMBOLS("CompressedOops"))                                                  \
+        field_with_version(_narrow_oop_base_addr, address, 21, MAX_VERSION, MATCH_SYMBOLS("_narrow_oop._base", "_base")) \
+        field_with_version(_narrow_oop_shift_addr, address, 21, MAX_VERSION, MATCH_SYMBOLS("_narrow_oop._shift", "_shift")) \
     type_end()                                                                                                      \
     type_begin(VMUniverse, MATCH_SYMBOLS("Universe", "CompressedKlassPointers"))                                    \
         field(_narrow_klass_base_addr, address, MATCH_SYMBOLS("_narrow_klass._base", "_base"))                      \
@@ -924,6 +938,13 @@ DECLARE(VMThread)
 
     JVMJavaThreadState state();
 
+    // Only read under a collector/state guard and walkVM's fault recovery.
+    uintptr_t carrierThreadOop() {
+        if (_thread_oop_offset < 0 || _oop_handle_offset < 0) return 0;
+        uintptr_t* handle = *(uintptr_t**)at(_thread_oop_offset + _oop_handle_offset);
+        return handle == nullptr ? 0 : __atomic_load_n(handle, __ATOMIC_ACQUIRE);
+    }
+
     bool inDeopt() {
         if (!isJavaThread(this)) return false;
         assert(_thread_vframe_offset >= 0);
@@ -1200,6 +1221,10 @@ DECLARE(VMNMethod)
     }
 
     int findScopeOffset(const void* pc);
+
+    // A deoptimized frozen frame stores its original PC relative to unextended SP.
+    // Returns nullptr if the saved slot or PC cannot be validated within this frame/nmethod.
+    const void* originalPC(const void* pc, uintptr_t unextended_sp, uintptr_t low, uintptr_t frame_end);
 DECLARE_END
 
 class CodeHeap : VMStructs {

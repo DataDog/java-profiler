@@ -18,6 +18,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 ## Quick Navigation
 
 ### Architecture
+- [FrozenStackWalker](architecture/FrozenStackWalker.md) - Supported HotSpot heap stack-chunk recovery, safety gates, deoptimization and truncation fallback
 - [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer architecture for call traces
 - [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: recordings, buffers, metadata, constant pools
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation
