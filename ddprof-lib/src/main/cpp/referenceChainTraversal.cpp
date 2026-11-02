@@ -233,13 +233,9 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       return;
     }
     if (ctx.truncated) {
-      // A truncated attempt is retried after the normal adaptive interval (shouldRunRootEnum()),
-      // not on the very next pass: with a first-pass budget too small for the live heap every
-      // attempt truncates, and a next-pass retry would turn every pass into a deopt-all
-      // enumeration (see ROOT_ENUM_MIN_INTERVAL_NS's comment). Root admission is best-effort -
-      // meanwhile this pass ends here (an incomplete enumeration would leave the frontier's root
-      // picture inconsistent with the expansion phases below) and the next pass's expansion
-      // phases proceed on the roots already admitted.
+      // A truncated attempt ends this pass - an incomplete enumeration leaves the frontier's root
+      // picture inconsistent with the expansion phases below, so the next pass expands on the
+      // roots already admitted. Retry timing is shouldRunRootEnum()'s (ROOT_ENUM_MIN_INTERVAL_NS).
       *truncated = true;
       *frontier_cap_hit = ctx.frontier_cap_hit;
       return;

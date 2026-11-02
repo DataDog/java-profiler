@@ -60,11 +60,8 @@ import java.util.Map;
  * (e.g. {@code REFCHAINS_EASPIN=4}) starts worker threads that hold compiled frames with
  * scalar-replaced (EA-eliminated) locals on stack while the tracker runs, so the root
  * enumeration's forced deoptimizations (see {@link #spinLoop}) become observable in the
- * recording. Each worker busy-spins one full
- * core while it runs; the workers stop at the run's duration deadline (within one
- * {@code spinLoop} trip) and, in the default run-forever mode, only at JVM exit - size the
- * count well below the core count when comparing safepoint/GC timings, since the spin load
- * competes with GC and the tracker thread.
+ * recording. Workers are full-core busy loops - size the count well below the core count when
+ * comparing safepoint/GC timings (exit semantics in {@link #startEaSpinWorkers}).
  *
  * <p>Grows an ever-referenced, never-evicted {@code HashMap}-backed cache (same shape as
  * ddprof-test's {@code LeakingCacheScenario}). Two deliberate choices, both found by running
@@ -335,8 +332,7 @@ public final class ReferenceChainLeakDemo {
      * {@code spinLoop} trip once {@code deadlineNanos} passes or the main loop ends
      * ({@link #spinStop}), so the final dump/metrics are not perturbed; in the default
      * run-forever mode ({@code deadlineNanos == Long.MAX_VALUE}) it runs until JVM exit (daemon),
-     * matching the main loop. Extra spin load competes with GC and the tracker thread, so size
-     * {@code n} well below the core count when comparing safepoint/GC timings.
+     * matching the main loop.
      */
     private static void startEaSpinWorkers(final long deadlineNanos) {
         int threads;

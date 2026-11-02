@@ -22,14 +22,13 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * Pins the two scheduling gates that bound the reference-chain tracker's JVMTI heap-walk
  * frequency on services with a high young-GC rate:
  * <ul>
- *   <li><b>Minimum pass spacing</b> ({@code shouldRunPass()}): every authorization lane - GC
- *   epoch, canary back-to-back, fallback cadence - waits out {@code _effective_cadence_ns} since
- *   the previous pass; otherwise pass rate tracks the GC rate.</li>
+ *   <li><b>Minimum pass spacing</b> ({@code shouldRunPass()}): every authorization lane waits out
+ *   {@code _effective_cadence_ns} since the previous pass.</li>
  *   <li><b>Adaptive root-enumeration interval</b> ({@code shouldRunRootEnum()}): re-enumeration
  *   waits out {@code ROOT_ENUM_MIN_INTERVAL_NS} extended by the last attempt's measured
- *   in-safepoint cost; otherwise a next-pass retry of a truncated attempt turns every pass into
- *   a deopt-all pass.</li>
+ *   in-safepoint cost.</li>
  * </ul>
+ * The mechanisms these gates bound are documented on the constants in referenceChains.h.
  *
  * <p>Only runs under the debug native build - the backing native methods do not exist in a
  * release build, same pattern as {@link ReferenceChainTestSeamsTest}.

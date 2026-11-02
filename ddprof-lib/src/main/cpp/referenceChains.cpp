@@ -1209,12 +1209,9 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _last_resolved_class_count = 0;
   _last_static_field_class_count = -1;
   _static_field_sweep_cursor = 0;
-  // Same contract for the pacing/enumeration state the scheduling gates read: an earlier test's
-  // setPassSpacingForTest() cadence (possibly stretched to tens of seconds) or root-enumeration
-  // cost would otherwise throttle every later test's BFS thread for that test's whole lifetime.
-  // The gate's other input, _last_pass_ns, is already zeroed above next to _passes_run, so after
-  // this reset now - _last_pass_ns >= _effective_cadence_ns holds immediately and the
-  // minimum-spacing gate is open. Plain write: the BFS thread is stopped here.
+  // Reset the pacing/enumeration state the scheduling gates read: an earlier test's seeded
+  // cadence or root-enum cost would otherwise throttle every later test's BFS thread; _last_pass_ns
+  // is already zeroed above, so the spacing gate is open. Plain write: the BFS thread is stopped.
   _effective_cadence_ns = PASS_CADENCE_NS;
   _last_root_enum_ns = 0;
   _last_root_enum_safepoint_ms = 0;

@@ -799,11 +799,10 @@ public final class JavaProfiler {
      */
     static native boolean isUrgentForTest0();
 
-     * Test seam (debug native builds only): places the previous reference-chain pass
-     * {@code msSinceLastPass} milliseconds in the past and sets the effective cadence to
-     * {@code cadenceMs}, so {@link #shouldRunPassForTest0()} evaluates its minimum-pass-spacing
-     * gate against a controlled spacing without sleeping. Values persist until the next call or
-     * the next real BFS pass overwrites them.
+    /**
+     * Test seam (debug native builds only): backdates the previous pass and sets the effective
+     * cadence so {@link #shouldRunPassForTest0()} evaluates its minimum-pass-spacing gate without
+     * sleeping. Values persist until the next call or the next real BFS pass overwrites them.
      */
     static native void setReferenceChainPassSpacingForTest0(long msSinceLastPass,
                                                             long cadenceMs);

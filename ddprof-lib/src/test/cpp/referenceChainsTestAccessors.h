@@ -238,12 +238,10 @@ public:
         ReferenceChainTracker::instance()->setSearchStartedForTest(v);
     }
 
-    // Backdates the previous pass's end so shouldRunPass()'s minimum-spacing gate (which compares
-    // now_ns - _last_pass_ns against _effective_cadence_ns) stays open while a test exercises a
-    // specific authorization lane (canary backoff, GC epoch) in isolation. The store goes through
-    // the tracker seam, so it is made under _engine_lock with store() and is ordered with any
-    // pass; a real pass can still overwrite the seed between the seed and the assert (the same
-    // limitation as forceRunningSearchForTest()).
+    // Backdates the previous pass's end so the minimum-spacing gate stays open while a test
+    // exercises one authorization lane (canary backoff, GC epoch) in isolation. Goes through the
+    // tracker seam (engine lock + store(), ordered with any pass); a real pass can still overwrite
+    // the seed between seed and assert - tests retry, same as forceRunningSearchForTest().
     static void setLastPassNsForTest(u64 ns) {
         ReferenceChainTracker::instance()->setLastPassNsForTest(ns);
     }

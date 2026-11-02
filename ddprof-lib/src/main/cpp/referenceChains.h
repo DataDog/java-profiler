@@ -700,12 +700,10 @@ private:
   static constexpr int AUTO_FIRST_PASS_BUDGET_MULTIPLIER = 50;
   static constexpr int AUTO_FIRST_PASS_BUDGET_CAP = 200000;
 
-  // Minimum wall-clock gap between root/stack-ref enumeration attempts
-  // (runPassManualWalk()'s IterateOverReachableObjects call). Every attempt deoptimizes, on
-  // every thread, each compiled frame whose scope holds a scalar-replaced (EA-eliminated)
-  // object - one VM_DeoptimizeFrame per frame, and the JIT re-creates those frames between
-  // attempts - so a truncated attempt must not retry on the very next pass: that would turn
-  // every pass into a deopt-all pass.
+  // Minimum wall-clock gap between root/stack-ref enumeration attempts (runPassManualWalk()'s
+  // IterateOverReachableObjects call). Every attempt deoptimizes every compiled frame holding a
+  // scalar-replaced object (one VM_DeoptimizeFrame each, re-created by the JIT between attempts),
+  // so a truncated attempt must never retry on the very next pass.
   static constexpr u64 ROOT_ENUM_MIN_INTERVAL_NS = 2000000000ULL; // 2s
 
   // Interval extension per millisecond of measured in-safepoint cost of the last attempt: an
@@ -1314,9 +1312,8 @@ public:
   // Forces a started, RUNNING search with fresh pain budgets so shouldRunPassForTest() evaluates
   // the running-search gates deterministically; a concurrently passing BFS thread can still drive
   // the real search terminal in the seed-to-call window - tests retry the seed.
-  // _tags_released is deliberately left untouched: it is only consulted once the search is
-  // terminal, and the production RUNNING->terminal transition recomputes it from
-  // releaseSearchTags(). Forcing it true could let restartSearch() rewind _next_tag over live tags.
+  // _tags_released stays untouched: the terminal transition recomputes it from releaseSearchTags();
+  // forcing it true could let restartSearch() rewind _next_tag over live tags.
   void forceRunningSearchForTest() {
     MutexLocker engine_guard(_engine_lock);
     _search_started = true;
