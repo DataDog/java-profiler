@@ -221,16 +221,7 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
     for (u32 i = 0; i < _table_size; i++) {
       _table[i].cached_klass_id = 0;
     }
-    for (int i = 0; i < _klass_population_size; i++) {
-      for (int r = 0; r < _klass_population[i].representative_count; r++) {
-        jweak rep = _klass_population[i].representatives[r];
-        if (rep != nullptr) {
-          env->DeleteWeakGlobalRef(rep);
-        }
-      }
-    }
-    _klass_population_size = 0;
-    _klass_count_scratch_size = 0;
+    resetKlassPopulationLocked(env);
     _last_class_map_generation = current_class_map_generation;
   }
 
@@ -1982,8 +1973,8 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
   }
 }
 
-Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
-  _table_max_cap = 0;
+Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval,
+                                        int *max_cap) {
   jlong max_heap = HeapUsage::getMaxHeap(jni);
   if (max_heap == -1) {
     return Error("Can not track liveness for allocation samples without heap "
@@ -2008,12 +1999,7 @@ Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
               "not cover full heap.",
               sampling_interval);
   }
-  _table_max_cap = std::min(MAX_TRACKING_TABLE_SIZE, required_table_capacity);
-
-  _table_cap = std::max(
-      2048,
-      _table_max_cap /
-          8); // the table will grow at most 3 times before fully covering heap
+  *max_cap = std::min(MAX_TRACKING_TABLE_SIZE, required_table_capacity);
 
   return Error::OK;
 }
@@ -2028,10 +2014,10 @@ Error LivenessTracker::start(Arguments &args) {
   if (err) {
     return err;
   }
-  // Initialize leak tag free list. The tracking table survives stop()/
-  // start() (see stop()'s own comment), and a preserved entry may still own
-  // a leak tag - so reclaim those first and build the free list from the
-  // remainder. Blindly marking every tag free would let a new object
+  // Initialize leak tag free list. release() leaves the table empty and every
+  // tag free at each stop(), so this normally rebuilds an all-free pool; it
+  // still reclaims tags owned by table entries first, so that no path that
+  // keeps a table (initialize()'s early return) can hand out an owned tag. Blindly marking every tag free would let a new object
   // receive a tag another live object still owns (corrupting leak-tag
   // correlation for both), and the eventual second releaseLeakTag() of the
   // duplicate would push the same index twice and write past
@@ -2088,8 +2074,106 @@ void LivenessTracker::stop() {
   cleanup_table();
   flush_table(nullptr);
 
-  // do not disable GC notifications here - the tracker is supposed to survive
-  // multiple recordings
+  // The table itself is freed later, by release(): the final chunk still
+  // asks getLiveTraceIds() which call traces to keep, and the BFS thread may
+  // be tagging until ReferenceChainTracker::stopThread() joins it.
+  // GC notifications stay enabled; onGC() ignores them while released.
+}
+
+void LivenessTracker::clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env) {
+  // tagLeakInstances() puts pool tags on the objects themselves, and
+  // ReferenceChainTracker::releaseSearchTags() clears only its own search
+  // tags. A tag left on a live object would collide with the same pool slot
+  // once the next recording hands it to another object.
+  if (jvmti == nullptr || jvmti->functions->GetObjectsWithTags == nullptr) {
+    return;
+  }
+  jlong tags[LEAK_TAG_POOL_SIZE];
+  for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
+    tags[i] = LEAK_TAG_BASE + i;
+  }
+  jint count = 0;
+  jobject *objects = nullptr;
+  jlong *found_tags = nullptr;
+  if (jvmti->GetObjectsWithTags(LEAK_TAG_POOL_SIZE, tags, &count, &objects,
+                                &found_tags) != JVMTI_ERROR_NONE) {
+    Log::warn("LivenessTracker: GetObjectsWithTags failed while releasing "
+              "leak tags");
+    return;
+  }
+  for (jint i = 0; i < count; i++) {
+    jvmti->SetTag(objects[i], 0);
+    if (env != nullptr) {
+      env->DeleteLocalRef(objects[i]);
+    }
+  }
+  if (objects != nullptr) {
+    jvmti->Deallocate((unsigned char *)objects);
+  }
+  if (found_tags != nullptr) {
+    jvmti->Deallocate((unsigned char *)found_tags);
+  }
+}
+
+void LivenessTracker::resetKlassPopulationLocked(JNIEnv *env) {
+  for (int i = 0; i < _klass_population_size; i++) {
+    for (int r = 0; r < _klass_population[i].representative_count; r++) {
+      jweak rep = _klass_population[i].representatives[r];
+      if (rep != nullptr && env != nullptr) {
+        env->DeleteWeakGlobalRef(rep);
+      }
+    }
+  }
+  _klass_population_size = 0;
+  _klass_count_scratch_size = 0;
+}
+
+void LivenessTracker::release(JNIEnv *env) {
+  if (!_initialized || _table == nullptr) {
+    // Never set up, or set up with liveness tracking unavailable: nothing to
+    // free, and keeping _initialized keeps that outcome cached.
+    return;
+  }
+
+  // Before taking the table lock: GetObjectsWithTags walks the tag map, and
+  // the only other tagger (tagLeakInstances(), BFS thread) is joined.
+  clearLeakTagsOnObjects(VM::jvmti(), env);
+
+  _table_lock.lock();
+  for (int i = 0; i < _table_size; i++) {
+    __atomic_store_n(&_table[i].ready, 0, __ATOMIC_RELEASE);
+    jweak ref = _table[i].ref;
+    _table[i].ref = nullptr;
+    if (ref != nullptr && env != nullptr) {
+      env->DeleteWeakGlobalRef(ref);
+    }
+  }
+  resetKlassPopulationLocked(env);
+  free(_table);
+  NativeMem::record(NM_LIVENESS, -(long long)sizeof(TrackingEntry) * _table_cap);
+  _table = nullptr;
+  _table_size = 0;
+  _table_cap = 0;
+  // An allocation callback still in flight sees no capacity: track() bails
+  // out before reserving a slot, or, past that check, its growth path
+  // computes min(0 * 2, 0) == _table_cap under this lock and never
+  // reallocates - it just deletes its weak ref.
+  _table_max_cap = 0;
+  _enabled = false;
+  _gc_generations.store(false, std::memory_order_relaxed);
+  _table_lock.unlock();
+
+  {
+    ExclusiveLockGuard guard(&_leak_tag_pool_lock);
+    resetLeakTagPoolLocked();
+  }
+
+  // start() registers its checker again.
+  Profiler::instance()->clearLivenessCheckers();
+  // The next start() runs initialize() in full: a fresh table sized for that
+  // recording's interval, its live-samples ratio, and the current class-map
+  // generation.
+  _initialized = false;
 }
 
 Error LivenessTracker::initialize(Arguments &args) {
@@ -2122,11 +2206,9 @@ Error LivenessTracker::initialize(Arguments &args) {
   __atomic_store_n(&_urgent_tracking, false, __ATOMIC_RELEASE);
 
   if (_initialized) {
-    // if the tracker was previously initialized return the stored result for
-    // consistency this hack also means that if the profiler is started with
-    // different arguments for liveness tracking those will be ignored it is
-    // required in order to be able to track the object liveness across many
-    // recordings
+    // Initialized and not released since: a previous start found liveness
+    // tracking unavailable (release() keeps that outcome rather than
+    // re-warning on every start), or the tracker is already set up.
     return _stored_error;
   }
   _initialized = true;
@@ -2160,7 +2242,8 @@ Error LivenessTracker::initialize(Arguments &args) {
 
   JNIEnv *env = VM::jni();
 
-  Error err = initialize_table(env, args._memory);
+  int max_cap = 0;
+  Error err = initialize_table(env, args._memory, &max_cap);
   if (err) {
     Log::warn("Liveness tracking requires heap size information");
     // disable liveness tracking
@@ -2186,19 +2269,28 @@ Error LivenessTracker::initialize(Arguments &args) {
   // decision in track() is an integer compare rather than a double multiply.
   _subsample = SubsampleRate(args._live_samples_ratio);
 
-  _table_size = 0;
-  _table_cap =
-      std::min(2048, _table_max_cap); // with default 512k sampling interval, it's
-                                   // enough for 1G of heap
-  _table = (TrackingEntry *)malloc(sizeof(TrackingEntry) * _table_cap);
-  if (_table != NULL) {
-    NativeMem::record(NM_LIVENESS, (long long)sizeof(TrackingEntry) * _table_cap);
+  int cap = std::min(2048, max_cap); // with default 512k sampling interval,
+                                     // it's enough for 1G of heap
+  TrackingEntry *table = (TrackingEntry *)malloc(sizeof(TrackingEntry) * cap);
+  if (table != NULL) {
+    NativeMem::record(NM_LIVENESS, (long long)sizeof(TrackingEntry) * cap);
     // Uninitialized malloc storage must never look published to a
     // shared-mode scanner (see TrackingEntry::ready's own comment).
-    for (int i = 0; i < _table_cap; i++) {
-      _table[i].ready = 0;
+    for (int i = 0; i < cap; i++) {
+      table[i].ready = 0;
     }
+  } else {
+    cap = 0;
   }
+  // Published together under the exclusive lock: an allocation callback still
+  // in flight from the previous recording (see release()) may be in track(),
+  // and must never see a capacity without the table it belongs to.
+  _table_lock.lock();
+  _table = table;
+  _table_size = 0;
+  _table_cap = cap;
+  _table_max_cap = table != NULL ? max_cap : 0;
+  _table_lock.unlock();
 
   _gc_epoch = 0;
   _last_gc_epoch = 0;

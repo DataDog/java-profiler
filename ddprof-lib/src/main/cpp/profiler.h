@@ -365,6 +365,9 @@ public:
   void registerLivenessChecker(LivenessChecker checker) {
     _call_trace_storage.registerLivenessChecker(checker);
   }
+  void clearLivenessCheckers() {
+    _call_trace_storage.clearLivenessCheckers();
+  }
 
   inline u32 recordingEpoch() {
     // no thread reordering constraints

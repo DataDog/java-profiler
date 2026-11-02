@@ -2335,6 +2335,11 @@ void Profiler::shutdown(Arguments &args) {
 }
 
 void Profiler::releaseRecordingMemory() {
+  // First, while getLiveTraceIds() is no longer consulted (the final chunk is
+  // written) and the reference-chain BFS thread is joined; a no-op on the
+  // start() error paths, which run before the tracker is set up.
+  LivenessTracker::instance()->release(VM::jni());
+
   // No put() can run: every engine that records call traces is stopped (or
   // was never started) and its signal handlers drained. lockAll() as for
   // CallTraceStorage::clear(), against any other writer.

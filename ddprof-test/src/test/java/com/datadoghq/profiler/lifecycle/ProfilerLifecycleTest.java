@@ -19,6 +19,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -56,13 +58,13 @@ public class ProfilerLifecycleTest {
      * whenever the profiler is idle. {@code calltrace} covers the call-trace storage and
      * per-thread call-trace buffers, {@code dictionary} the class, string-label and
      * context-value dictionaries (nothing registers tracer values in this test, which would
-     * make them allocate again while idle). Not listed: {@code perf}, because
-     * PerfEvents::stop() deliberately keeps per-thread events registered across recordings,
-     * and {@code liveness}, because the liveness tracker's table deliberately survives
-     * recordings once a memleak-enabled one has run in this JVM.
+     * make them allocate again while idle), {@code liveness} the liveness tracker's tracking
+     * table. Not listed: {@code perf}, because PerfEvents::stop() deliberately keeps
+     * per-thread events registered across recordings.
      */
     private static final String[] RECORDING_SCOPED = {
-            "calltrace", "dictionary", "jfr_buffers", "wallclock", "line_tables", "method_map"};
+            "calltrace", "dictionary", "jfr_buffers", "wallclock", "line_tables", "method_map",
+            "liveness"};
 
     /**
      * Categories that live for the whole process but must not grow from one idle state to the
@@ -269,6 +271,52 @@ public class ProfilerLifecycleTest {
         System.out.println("[Lifecycle] Concurrent work lifecycle test completed");
     }
 
+    /**
+     * The liveness tracker frees its table on stop() and builds a fresh one on start(): each
+     * recording reports the objects it saw survive, and none of it is held while idle.
+     */
+    @Timeout(120)
+    @RetryingTest(3)
+    public void testLivenessRestartCycles() throws Exception {
+        Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11), "liveness requires Java 11+");
+        Assumptions.assumeTrue(!Platform.isJ9(), "J9 has a different JVMTI implementation");
+        Assumptions.assumeTrue(!Platform.isZing(), "Zing does not support liveness tracking");
+
+        Path recordings = Files.createDirectories(Paths.get("/tmp/recordings/lifecycle"));
+        JavaProfiler profiler = JavaProfiler.getInstance();
+
+        final int CYCLES = 3;
+        for (int cycle = 1; cycle <= CYCLES; cycle++) {
+            Path jfr = Files.createTempFile(recordings, "liveness_cycle" + cycle + "_", ".jfr");
+            try {
+                profiler.execute("start,memory=256:L,jfr,file=" + jfr.toAbsolutePath());
+                String when = "liveness cycle " + cycle;
+                assertTrue(category(nativeMem(when + " after start"), "liveness") > 0,
+                        "no liveness table " + when + " after start");
+
+                // Retained across the GCs below, so the tracker sees them survive; referenced
+                // again after stop() so they stay reachable until the final chunk is written.
+                List<byte[]> retained = allocateRetained();
+                for (int i = 0; i < 3; i++) {
+                    System.gc();
+                    Thread.sleep(50);
+                }
+
+                profiler.stop();
+                assertIdle(nativeMem(when + " after stop"), when + " after stop");
+                assertFalse(retained.isEmpty());
+
+                JfrEvents live = JfrEvents.load(jfr, "datadog.HeapLiveObject"::equals);
+                assertTrue(live.hasItems(),
+                        "Cycle " + cycle + " must record HeapLiveObject events");
+                System.out.println("[Lifecycle] Liveness cycle " + cycle + "/" + CYCLES +
+                        " recorded " + live.count() + " live objects");
+            } finally {
+                Files.deleteIfExists(jfr);
+            }
+        }
+    }
+
     @Timeout(60)
     @Test
     public void testStatusReflectsLifecycleState() throws Exception {
@@ -348,6 +396,15 @@ public class ProfilerLifecycleTest {
             assertTrue(now <= before + GROWTH_TOLERANCE_BYTES,
                     name + " grew from " + before + " to " + now + " bytes " + when);
         }
+    }
+
+    /** Allocates ~64 MiB of 64 KiB arrays, enough for a 256 KiB sampling interval to hit. */
+    private static List<byte[]> allocateRetained() {
+        List<byte[]> retained = new ArrayList<>();
+        for (int i = 0; i < 1024; i++) {
+            retained.add(new byte[64 * 1024]);
+        }
+        return retained;
     }
 
     /**

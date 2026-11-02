@@ -189,9 +189,9 @@ Error ObjectSampler::start(Arguments &args) {
   }
   if (_interval > 0) {
     // LivenessTracker is started unconditionally (below) so it picks up this
-    // recording's flags instead of keeping the previous recording's.
-    // It must finish before callbacks are enabled: initialize_table()
-    // publishes _table_cap before _table is allocated.
+    // recording's flags instead of keeping the previous recording's. It must
+    // finish before callbacks are enabled, so that this recording's
+    // allocations find its tracking table in place.
     _alloc_event_count = 0;
     error = LivenessTracker::instance()->start(args);
     if (error) {
