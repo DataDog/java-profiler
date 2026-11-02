@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk17
 
 ## glibc-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-11-02 06:22:20 EST
+**Date:** 2026-11-02 07:03:40 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 438 |
-| Sample Rate | 7.30/sec |
-| Health Score | 456% |
+| CPU Samples | 426 |
+| Sample Rate | 7.10/sec |
+| Health Score | 444% |
 | Threads | 8 |
-| Allocations | 366 |
+| Allocations | 318 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 739 |
-| Sample Rate | 12.32/sec |
-| Health Score | 770% |
-| Threads | 10 |
-| Allocations | 470 |
+| CPU Samples | 496 |
+| Sample Rate | 8.27/sec |
+| Health Score | 517% |
+| Threads | 9 |
+| Allocations | 456 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1793618310 32
-1793618315 32
-1793618320 32
-1793618325 32
-1793618330 32
-1793618335 32
-1793618340 32
-1793618345 32
-1793618350 32
-1793618355 32
-1793618360 32
-1793618365 32
-1793618370 32
-1793618375 32
-1793618380 32
-1793618385 32
-1793618390 32
-1793618395 32
-1793618400 32
-1793618405 32
+1793620780 32
+1793620785 32
+1793620790 32
+1793620795 32
+1793620801 32
+1793620806 32
+1793620811 32
+1793620816 32
+1793620821 32
+1793620826 32
+1793620831 32
+1793620836 32
+1793620841 32
+1793620846 32
+1793620851 32
+1793620856 32
+1793620861 32
+1793620866 32
+1793620871 32
+1793620876 32
 ```
 </details>
 
