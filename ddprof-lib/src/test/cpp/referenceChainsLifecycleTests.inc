@@ -80,7 +80,6 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
     constexpr int kGcCycles = 200;
     constexpr int kAbortCycles = 30;
 
-    std::atomic<bool> stop_flag{false};
     std::atomic<bool> pass_done{false};
     std::atomic<int> restarts{0};
     std::atomic<int> aborted_passes{0};
@@ -99,6 +98,10 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
     // construction.
     std::atomic<bool> first_window_open{false};
 
+    // No stop_flag: the pass loop's only exits are its own bounds (kMaxSearches/kMaxPasses) and
+    // the !ok early-exit. The abort thread must not stop it - its 30 windows can complete faster
+    // than the first search terminates (the abort flag's duty cycle truncates every walk in
+    // between), and stopping then would end the churn with zero terminal outcomes.
     std::thread pass_thread([&] {
         // Deterministic window 1: do not start passes until the abort thread's first store is
         // visible (see first_window_open's comment). Bounded so a dead abort thread cannot hang
@@ -110,8 +113,7 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
         }
         for (int searches = 0;
              searches < kMaxSearches &&
-             total_passes.load(std::memory_order_relaxed) < kMaxPasses &&
-             !stop_flag.load(std::memory_order_relaxed);
+             total_passes.load(std::memory_order_relaxed) < kMaxPasses;
              /* advanced by the restart below */) {
             total_passes.fetch_add(1, std::memory_order_relaxed);
             bool truncated = true;
@@ -123,7 +125,6 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
             if (!ok) {
                 // Disabled/no-frontier early exit - nothing sensible is
                 // running anymore; stop churning.
-                stop_flag.store(true, std::memory_order_relaxed);
                 break;
             }
             // The request is held far longer than one pass, so a read here is
@@ -161,7 +162,6 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
             restarts.fetch_add(1, std::memory_order_relaxed);
             searches++;
         }
-        stop_flag.store(true, std::memory_order_relaxed);
         pass_done.store(true, std::memory_order_relaxed);
     });
 
@@ -208,7 +208,6 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
             usleep(100);
         }
         ReferenceChainsTestAccessor::setAbortPassRequestedForTest(false);
-        stop_flag.store(true, std::memory_order_relaxed);
     });
 
     pass_thread.join();
