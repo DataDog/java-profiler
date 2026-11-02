@@ -44,7 +44,7 @@ public class AllocStackVerifyTest extends AbstractProfilerTest {
     AtomicLong blobs = new AtomicLong();
     AtomicLong expected = new AtomicLong();
     streamEvents("datadog.ObjectSample", event -> {
-      if (AllocStackWorkload.isBlobSample(event)) {
+      if (AllocStackWorkload.isBlobSample(event) && !AllocStackWorkload.isDroppedSample(event)) {
         blobs.incrementAndGet();
         if (AllocStackWorkload.hasExpectedStack(event)) {
           expected.incrementAndGet();
@@ -79,7 +79,7 @@ public class AllocStackVerifyTest extends AbstractProfilerTest {
     AtomicLong blobs = new AtomicLong();
     AtomicLong expected = new AtomicLong();
     streamEvents("datadog.ObjectSample", event -> {
-      if (AllocStackWorkload.isBlobSample(event)) {
+      if (AllocStackWorkload.isBlobSample(event) && !AllocStackWorkload.isDroppedSample(event)) {
         blobs.incrementAndGet();
         if (AllocStackWorkload.hasExpectedStack(event)) {
           expected.incrementAndGet();

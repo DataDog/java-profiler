@@ -53,8 +53,25 @@ final class AllocStackWorkload implements Runnable {
   }
 
   /**
-   * Whether a sample's stack has {@code allocate} followed by {@code DEPTH + 1}
-   * {@code recurse} frames, i.e. the walk neither lost nor invented a frame.
+   * Whether a sample's stack was dropped by the call-trace storage: it then carries a single
+   * synthetic frame instead of the walked stack, however the stack was captured.
+   */
+  static boolean isDroppedSample(JfrEvent event) {
+    JfrStackTrace stackTrace = event.getStackTrace();
+    if (stackTrace == null || stackTrace.isEmpty()) {
+      return false;
+    }
+    String top = stackTrace.frames().get(0).methodName();
+    return top != null && top.startsWith("<dropped");
+  }
+
+  /**
+   * Whether a sample's stack has {@code DEPTH + 1} consecutive {@code recurse} frames on top,
+   * optionally below one {@code allocate} frame, i.e. the walk neither lost nor invented a
+   * frame. {@code allocate} is optional because a JIT may inline it so that the JVM's own
+   * stack at the allocation site no longer contains it (Graal does); JVMTI GetStackTrace
+   * reports the same, so the VM walker matching GetStackTrace is checked separately, by
+   * allocstack=verify.
    */
   static boolean hasExpectedStack(JfrEvent event) {
     JfrStackTrace stackTrace = event.getStackTrace();
@@ -62,19 +79,17 @@ final class AllocStackWorkload implements Runnable {
       return false;
     }
     List<JfrFrame> frames = stackTrace.frames();
-    int top = 0;
-    while (top < frames.size() && !"allocate".equals(frames.get(top).methodName())) {
-      top++;
-    }
-    if (top == frames.size() || frames.size() < top + 1 + DEPTH + 1) {
+    int first = "allocate".equals(frames.get(0).methodName()) ? 1 : 0;
+    if (frames.size() < first + DEPTH + 2) {
       return false;
     }
-    for (int i = top + 1; i <= top + DEPTH + 1; i++) {
+    for (int i = first; i <= first + DEPTH; i++) {
       if (!"recurse".equals(frames.get(i).methodName())) {
         return false;
       }
     }
-    return true;
+    // The recursion ends at run(): no further recurse frame below the DEPTH + 1 expected.
+    return !"recurse".equals(frames.get(first + DEPTH + 1).methodName());
   }
 
   /** Runs the workload on a virtual thread, or returns false on a JDK without them. */
