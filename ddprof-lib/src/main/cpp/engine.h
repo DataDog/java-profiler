@@ -1,5 +1,6 @@
 /*
  * Copyright 2017 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -50,6 +51,12 @@ public:
   virtual Error start(Arguments &args);
   virtual void stop();
   virtual long interval() const { return 0L; }
+
+  // Whether this engine can keep the ThreadFilter registry populated and
+  // tracked when context filtering is disabled with an explicit empty
+  // `filter=` (e.g. to support wall-clock prechecks). Without a filter
+  // argument the filter defaults to "0", which enables context filtering.
+  virtual bool supportsUnfilteredThreadRegistryTracking() const { return false; }
 
   virtual int registerThread(int tid) { return -1; }
   virtual void unregisterThread(int tid) {}
