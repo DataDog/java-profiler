@@ -566,6 +566,52 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
   return depth;
 }
 
+// Whether a JVMTI sample was taken on a virtual thread. Its stack is left to
+// GetStackTrace, which stops at the continuation boundary: the VM walker only
+// recognizes that boundary where VMStructs exposes the continuation entry
+// (JDK 27+) and otherwise walks on into the carrier's frames.
+static bool isVirtualThread(jthread thread) {
+#ifdef JNI_VERSION_21
+  if (VM::java_version() >= 21) {
+    JNIEnv* jni = VM::jni();
+    return jni != nullptr && jni->IsVirtualThread(thread);
+  }
+#endif
+  return false;
+}
+
+// allocstack=verify: checks a VM-walked allocation stack against JVMTI
+// GetStackTrace on the same thread, frame by frame (method and bci), counting
+// ALLOC_STACK_VERIFIED / ALLOC_STACK_MISMATCH. Diagnostics and tests only:
+// GetStackTrace allocates, which is what the VM walker avoids.
+static void verifyAllocStack(const ASGCT_CallFrame* frames, int num_frames, jthread thread, int max_depth) {
+  const int VERIFY_DEPTH = 1024;
+  jvmtiFrameInfo expected[VERIFY_DEPTH];
+  jint depth = max_depth < VERIFY_DEPTH ? max_depth : VERIFY_DEPTH;
+  jint expected_count = 0;
+  if (VM::jvmti()->GetStackTrace(thread, 0, depth, expected, &expected_count) != JVMTI_ERROR_NONE) {
+    return;
+  }
+  int walked = num_frames;
+  int compared = walked < expected_count ? walked : expected_count;
+  int first_diff = (walked == expected_count || compared == depth) ? -1 : compared;
+  for (int i = 0; i < compared; i++) {
+    int expected_bci = expected[i].location < 0 ? 0 : (int)expected[i].location;
+    // With fjmethodid=false the walker may record a raw Method* instead of a
+    // jmethodID; such a frame is compared by bci only.
+    bool same_method = FrameType::isRawPointer(frames[i].bci) || frames[i].method_id == expected[i].method;
+    if (!same_method || FrameType::bci(frames[i].bci) != expected_bci) {
+      first_diff = i;
+      break;
+    }
+  }
+  Counters::increment(ALLOC_STACK_VERIFIED);
+  if (first_diff >= 0) {
+    Counters::increment(ALLOC_STACK_MISMATCH);
+    TEST_LOG("allocstack mismatch: vm frames=%d jvmti frames=%d first difference at %d", walked, expected_count, first_diff);
+  }
+}
+
 u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
   // Called from non-signal based sampler
   ProfiledThread* prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
@@ -605,8 +651,28 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
     jvmtiFrameInfo *jvmti_frames = buf->_jvmti_frames;
 
     int num_frames = 0;
+    bool truncated = false;
 
-    if (VM::jvmti()->GetStackTrace(thread, 0, _max_stack_depth, jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
+    // The VM walker reads the stack in place. GetStackTrace builds a vframe
+    // per frame in this thread's resource area, which deep stacks grow by
+    // malloc'd chunks: on the allocating application threads, across all
+    // their glibc arenas.
+    int walked = _alloc_stack != ALLOCSTACK_JVMTI && !isVirtualThread(thread)
+        ? JVMSupport::walkCurrentJavaStack(frames, _max_stack_depth, event_type, lock_index, &truncated)
+        : -1;
+    if (walked <= 0 && _alloc_stack != ALLOCSTACK_JVMTI) {
+      // A virtual thread, no Java frame from the walker or no walker on this
+      // JVM: use JVMTI.
+      Counters::increment(ALLOC_STACK_VM_FALLBACK);
+      truncated = false;
+    }
+    if (walked > 0) {
+      num_frames = walked;
+      Counters::increment(ALLOC_STACK_VM);
+      if (_alloc_stack == ALLOCSTACK_VERIFY) {
+        verifyAllocStack(frames, num_frames, thread, _max_stack_depth);
+      }
+    } else if (VM::jvmti()->GetStackTrace(thread, 0, _max_stack_depth, jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
       // Convert to AsyncGetCallTrace format.
       // Note: jvmti_frames and frames may overlap.
       for (int i = 0; i < num_frames; i++) {
@@ -638,7 +704,7 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
       }
     }
 
-    call_trace_id = _call_trace_storage.put(num_frames, frames, false, counter);
+    call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
 #ifdef COUNTERS
     u64 duration = TSC::ticks() - startTime;
     if (duration > 0) {
@@ -1630,6 +1696,17 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   args._cstack = _cstack;
+
+  // Allocation/live-heap stacks: the VM walker needs the VMStructs stack walking
+  // cstack=vm uses, so by default it follows cstack.
+  _alloc_stack = args._alloc_stack;
+  if (_alloc_stack == ALLOCSTACK_AUTO) {
+    _alloc_stack = VM::isHotspot() && _cstack == CSTACK_VM ? ALLOCSTACK_VM : ALLOCSTACK_JVMTI;
+  } else if (_alloc_stack != ALLOCSTACK_JVMTI && !(VM::isHotspot() && VMStructs::hasStackStructs())) {
+    Log::warn("allocstack=vm/verify needs HotSpot VMStructs stack walking; using allocstack=jvmti");
+    _alloc_stack = ALLOCSTACK_JVMTI;
+  }
+
   // Prepare JVMSupport for execution. Must follow the _cstack resolution
   // above: initExecution() picks the jmethodID mode from cstackMode().
   JVMSupport::initExecution(args, VM::jvmti(), VM::jni());

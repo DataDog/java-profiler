@@ -291,7 +291,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type,
                         const void* entry_pc, bool pc_is_return_address,
-                        uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated) {
+                        uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated,
+                        bool seeded_from_anchor) {
 
     // VMStructs is only available for hotspot JVM
     assert(VM::isHotspot());
@@ -365,7 +366,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     int fp_chain_depth = 0;
 
     VMJavaFrameAnchor* anchor = NULL;
-    if (vm_thread != NULL) {
+    if (vm_thread != NULL && !seeded_from_anchor) {
+        // A walk seeded from the anchor (walkCurrentJavaStack) has already
+        // consumed it; redirecting to it again would return to its stub frame.
         anchor = vm_thread->anchor();
         if (anchor == NULL) {
             Counters::increment(WALKVM_ANCHOR_NULL);
@@ -410,7 +413,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     // Show extended frame types and stub frames for execution-type events
     bool details = event_type <= SOCKET_SAMPLE || features.mixed;
 
-    if (details && vm_thread != NULL && VMThread::isJavaThread(vm_thread)) {
+    if (details && !seeded_from_anchor && vm_thread != NULL && VMThread::isJavaThread(vm_thread)) {
         anchor = vm_thread->anchor();
     }
 
@@ -1396,6 +1399,49 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     return asyncJavaTraceWithPostProcessing(ucontext, frames, max_depth, java_ctx, truncated, prof_thread);
   }
   return 0;
+}
+
+int HotspotSupport::walkCurrentJavaStack(ASGCT_CallFrame* frames, int max_depth, jint event_type,
+                                         int lock_index, bool* truncated) {
+  VMThread* vm_thread = VMThread::current();
+  if (vm_thread == nullptr || !VMThread::isJavaThread(vm_thread)) {
+    return -1;
+  }
+  VMJavaFrameAnchor* anchor = vm_thread->anchor();
+  if (anchor == nullptr || anchor->lastJavaSP() == 0) {
+    return -1;
+  }
+  const void* pc = anchor->lastJavaPC();
+  uintptr_t sp = anchor->lastJavaSP();
+  uintptr_t fp = anchor->lastJavaFP();
+  // The reads below happen before walkVM() installs its crash protection. They
+  // are safe: this runs on the sampled thread itself, inside a JVMTI callback,
+  // so its anchor is stable and sp points into its own live stack.
+  if (pc == nullptr) {
+    // Not made walkable: the return address into the last Java frame sits
+    // just below its sp, as in HotSpot's JavaFrameAnchor::make_walkable().
+    pc = stripPointer(((const void**)sp)[-1]);
+  }
+  // Compiled code reaches the VM through a runtime stub (e.g. the C2 allocation
+  // slow path), which sets the anchor to its own frame. walkVM() does not
+  // unwind a stub at depth 0, as a signal may interrupt one before its frame is
+  // complete; an anchor is only set once the frame is complete, so step to the
+  // caller here, the way HotSpot's frame::sender_for_compiled_frame() does.
+  VMNMethod* stub = CodeHeap::findNMethod(pc);
+  if (stub != nullptr && !stub->isNMethod() && !stub->isInterpreter()) {
+    int frame_size = stub->frameSize();
+    if (frame_size <= 0 || frame_size > MAX_FRAME_SIZE_WORDS) {
+      return -1;
+    }
+    sp += frame_size * sizeof(void*);
+    fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
+    pc = stripPointer(((const void**)sp)[-FRAME_PC_SLOT]);
+  }
+  StackWalkFeatures features = Profiler::instance()->stackWalkFeatures();
+  // The anchor pc is where the last Java frame resumes, i.e. a return address.
+  return walkVM(&empty_ucontext, frames, max_depth, features, eventTypeFromBCI(event_type),
+                pc, /*pc_is_return_address=*/true, sp, fp, lock_index, truncated,
+                /*seeded_from_anchor=*/true);
 }
 
 static void patchClassLoaderData(JNIEnv* jni, jclass klass) {

@@ -131,6 +131,15 @@ enum CStack {
 
 enum Output { OUTPUT_NONE, OUTPUT_COLLAPSED, OUTPUT_JFR };
 
+// How allocation and live-heap samples, which are taken in a JVMTI callback on the
+// allocating thread, capture their Java stack.
+enum AllocStack {
+  ALLOCSTACK_AUTO,   // VM stack walker on HotSpot with cstack=vm/vmx, JVMTI GetStackTrace otherwise
+  ALLOCSTACK_VM,     // VM stack walker (HotSpot only; other JVMs use GetStackTrace)
+  ALLOCSTACK_JVMTI,  // JVMTI GetStackTrace
+  ALLOCSTACK_VERIFY  // VM stack walker, cross-checked against GetStackTrace (diagnostics, tests)
+};
+
 enum JfrOption {
   NO_SYSTEM_INFO = 0x1,
   NO_SYSTEM_PROPS = 0x2,
@@ -263,6 +272,7 @@ public:
   std::vector<std::string> _unknown_args;
   const char* _filter;
   CStack _cstack;
+  AllocStack _alloc_stack;
   Clock _clock;
   int _jfr_options;
   std::vector<std::string> _context_attributes;
@@ -315,6 +325,7 @@ public:
         _unknown_args({}),
         _filter(NULL),
         _cstack(CSTACK_DEFAULT),
+        _alloc_stack(ALLOCSTACK_AUTO),
         _clock(CLK_DEFAULT),
         _jfr_options(0),
         _context_attributes({}),

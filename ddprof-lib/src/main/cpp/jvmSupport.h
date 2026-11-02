@@ -59,6 +59,16 @@ public:
     static void initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni);
 
     static int walkJavaStack(StackWalkRequest& request);
+
+    // Walks the Java stack of the current thread from its last Java frame, for
+    // samples taken in a JVMTI callback on the sampled thread itself (e.g.
+    // SampledObjectAlloc). Unlike JVMTI GetStackTrace it allocates nothing:
+    // GetStackTrace materializes a vframe per frame in the thread's resource
+    // area, which grows by 32 KiB chunks malloc'd from the sampled thread.
+    // Returns the number of frames, or -1 when not supported on this JVM (the
+    // caller then falls back to GetStackTrace).
+    static int walkCurrentJavaStack(ASGCT_CallFrame* frames, int max_depth, jint event_type,
+                                    int lock_index, bool* truncated);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc);
     static inline bool isJitCode(const void* pc);
     // Live heap usage of the JIT runtime-stubs code cache. HotSpot-only; 0 on

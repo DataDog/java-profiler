@@ -360,6 +360,16 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
      `weight = 1 / (1 - exp(-size / interval))` and calls
      `recordJVMTISample()`. When only liveness is recorded, the sample is
      deferred (`deferred = !_record_allocations`).
+     `recordJVMTISample()` captures the stack according to `allocstack`: by
+     default (HotSpot with `cstack=vm`/`vmx`) with the VM stack walker,
+     seeded from the thread's last Java frame
+     (`HotspotSupport::walkCurrentJavaStack()`), otherwise, and for virtual
+     threads, with JVMTI `GetStackTrace`. `GetStackTrace` builds a vframe per
+     frame in the calling thread's resource area, which deep stacks grow by
+     malloc'd 32 KiB chunks on the allocating application threads; glibc
+     keeps that memory resident in those threads' arenas. `allocstack=jvmti`
+     forces `GetStackTrace`; `allocstack=verify` cross-checks every VM walk
+     against it (`alloc_stack_verified` / `alloc_stack_mismatch` counters).
   3. Rate control: every `_target_samples_per_window` (100) samples, if more
      than 1 s has passed, one thread wins a CAS and runs a `PidController`
      that adjusts `_interval` within `[configured, INT32_MAX]` and re-applies

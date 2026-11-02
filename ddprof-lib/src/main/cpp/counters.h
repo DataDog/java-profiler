@@ -91,6 +91,10 @@
   X(WC_SIGNAL_QUEUE_FULL, "wc_signals_queue_full")                             \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
+  X(ALLOC_STACK_VM, "alloc_stack_vm")                                          \
+  X(ALLOC_STACK_VM_FALLBACK, "alloc_stack_vm_fallback")                        \
+  X(ALLOC_STACK_VERIFIED, "alloc_stack_verified")                              \
+  X(ALLOC_STACK_MISMATCH, "alloc_stack_mismatch")                              \
   X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")             \
   X(CALLTRACE_STORAGE_EXPANSION_SKIPPED, "calltrace_storage_expansion_skipped") \
   X(LINE_NUMBER_TABLES, "line_number_tables")                                  \

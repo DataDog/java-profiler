@@ -138,7 +138,8 @@ private:
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
                       const void* pc, bool pc_is_return_address,
-                      uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated);
+                      uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated,
+                      bool seeded_from_anchor = false);
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
                       int lock_index, bool* truncated = nullptr);
@@ -354,6 +355,11 @@ public:
     }
 
     static int walkJavaStack(StackWalkRequest& request);
+
+    // See JVMSupport::walkCurrentJavaStack(). Seeds walkVM() with the current
+    // thread's last Java frame anchor, which is where GetStackTrace starts too.
+    static int walkCurrentJavaStack(ASGCT_CallFrame* frames, int max_depth, jint event_type,
+                                    int lock_index, bool* truncated);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc) {
         return HotspotStackFrame::unwindAtomicStub(frame, pc);
     }

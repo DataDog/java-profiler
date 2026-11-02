@@ -154,6 +154,9 @@ private:
   Libraries* _libs;
   u32 _num_context_attributes;
   bool _omit_stacktraces;
+  // How allocation/live-heap samples capture their stack (allocstack), resolved
+  // at start: never ALLOCSTACK_AUTO.
+  AllocStack _alloc_stack;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
   bool _sanity_check_failed;
   // _sanity_check_message points into SanityChecker's static error buffer.
@@ -259,7 +262,7 @@ public:
         _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _force_jmethodID(true),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
-        _num_context_attributes(0), _omit_stacktraces(false),
+        _num_context_attributes(0), _omit_stacktraces(false), _alloc_stack(ALLOCSTACK_JVMTI),
         _remote_symbolication(false), _sanity_check_failed(false),
         _sanity_check_message(NULL), _dlopen_entry(NULL) {
 

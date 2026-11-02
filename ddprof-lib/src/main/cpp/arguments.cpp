@@ -115,6 +115,10 @@ static const Multiplier UNIVERSAL[] = {
 //     cstack=MODE        - how to collect C stack frames in addition to Java
 //     stack
 //                          MODE is 'fp', 'dwarf', 'lbr', 'vm' or 'no'
+//     allocstack=MODE    - how allocation/live-heap samples capture their Java
+//                          stack: 'vm' (VM stack walker, the default on HotSpot
+//                          with cstack=vm/vmx), 'jvmti' (GetStackTrace) or
+//                          'verify' (vm, cross-checked against GetStackTrace)
 //     allkernel          - include only kernel-mode events
 //     alluser            - include only user-mode events
 //
@@ -365,6 +369,17 @@ Error Arguments::parse(const char *args) {
         } else {
           msg = "Invalid cstack value";
         }
+      }
+
+      CASE("allocstack")
+      if (value != NULL && strcmp(value, "vm") == 0) {
+        _alloc_stack = ALLOCSTACK_VM;
+      } else if (value != NULL && strcmp(value, "jvmti") == 0) {
+        _alloc_stack = ALLOCSTACK_JVMTI;
+      } else if (value != NULL && strcmp(value, "verify") == 0) {
+        _alloc_stack = ALLOCSTACK_VERIFY;
+      } else {
+        msg = "Invalid allocstack value";
       }
 
       CASE("attributes")
