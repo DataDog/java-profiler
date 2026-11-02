@@ -723,6 +723,17 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns, double seconds_to_oom) {
   // _candidate_found_bits.
   bool canary_active = _candidate_count > 0 &&
       __builtin_popcountll(_candidate_found_bits) < (u64)_candidate_count;
+  // Adaptive CPU budget: 100x refill while a canary chase is open - NOT a rate control (the canary
+  // lane's rate is bounded by _canary_backoff_ns's progress-driven exponential backoff, see its own
+  // comment) but a double-throttle guard: the base refill rate is tuned for the ordinary ~1 pass/s
+  // whole-graph cadence and would otherwise starve a chase the backoff has already paced. Applied
+  // before the minimum-pass-spacing gate so the wait it induces drains at the current rate, not
+  // the previous episode's.
+  double multiplier =
+      canary_active ? CANARY_PAIN_BUDGET_REFILL_MULTIPLIER : 1.0;
+  _cpu_pain_budget.setRefillRate(
+      std::min(_pain_budget_refill_rate * multiplier, 1.0),
+      now_ns);
   // Minimum pass spacing on every authorization lane (GC epoch, canary back-to-back, fallback
   // cadence): a completed GC must not bypass the pacing, and the canary lane's mult==1
   // back-to-back spacing would otherwise run passes with no gap. No OOM-ramp exemption: while
@@ -735,15 +746,6 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns, double seconds_to_oom) {
              (unsigned long long)cadence_ns);
     return false;
   }
-  // Adaptive CPU budget: 100x refill while a canary chase is open - NOT a rate control (the canary
-  // lane's rate is bounded by _canary_backoff_ns's progress-driven exponential backoff, see its own
-  // comment) but a double-throttle guard: the base refill rate is tuned for the ordinary ~1 pass/s
-  // whole-graph cadence and would otherwise starve a chase the backoff has already paced.
-  double multiplier =
-      canary_active ? CANARY_PAIN_BUDGET_REFILL_MULTIPLIER : 1.0;
-  _cpu_pain_budget.setRefillRate(
-      std::min(_pain_budget_refill_rate * multiplier, 1.0),
-      now_ns);
   if (!_cpu_pain_budget.canStartNow(now_ns)) {
     TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass blocked by cpu_pain_budget "
              "balance=%.1fms refill_rate=%.4f canary_active=%d "
