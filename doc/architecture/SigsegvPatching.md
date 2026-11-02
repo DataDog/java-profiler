@@ -40,7 +40,7 @@ This ensures:
 
 2. **`libraryPatcher_linux.cpp`** - GOT patching:
    - `LibraryPatcher::patch_sigaction_in_library()` - Patches the sigaction GOT entry in one library
-   - `LibraryPatcher::patch_sigaction()` - Patches every loaded library not yet patched; a no-op until `LibraryPatcher::initialize()` has run
+   - `LibraryPatcher::patch_sigaction()` - Patches every loaded library not yet patched; a no-op until `LibraryPatcher::initialize_persistent()` has run
 
 3. **`codeCache.cpp`** - Import tracking:
    - Tracks `sigaction` imports in loaded libraries (via `im_sigaction`)
@@ -61,9 +61,14 @@ JVM Initialization
             ├── OS::replaceSigsegvHandler() / replaceSigbusHandler()
             └── LibraryPatcher::patch_sigaction()    no-op if LibraryPatcher is not initialized yet
 
+Java API init (JavaProfiler.getInstance() -> init0)
+    └── Profiler::init()                             (once, state NEW)
+        └── LibraryPatcher::initialize_persistent()  enables patching
+
 Profiling Start
     └── Profiler::start()
-        ├── LibraryPatcher::initialize()             enables patching
+        ├── LibraryPatcher::initialize_persistent()  idempotent; the first call on the
+        │                                            -agentpath path (VMInit -> run())
         ├── Libraries::startRefresher()
         └── switchLibraryTrap(true)                  enable dlopen hook
 
@@ -72,7 +77,7 @@ Library Load (via dlopen) / refresher tick with dirty flag
         └── LibraryPatcher::patch_sigaction()        patch every loaded, not-yet-patched lib
 ```
 
-`LibraryPatcher::initialize()` is first called from `Profiler::start()`, which normally runs after `VM::ready()`. In that order the `patch_sigaction()` call in `setupSignalHandlers()` returns immediately, and libraries loaded before `start()` are patched by the first `Libraries::refresh()` after it (triggered by a `dlopen` or by the refresher thread when the library set is marked dirty). GOT patches are not undone by `stop()`.
+`LibraryPatcher::initialize_persistent()` is first called from `Profiler::init()` (Java API path) or `Profiler::start()` (`-agentpath` path), both of which normally run after `VM::ready()`. In that order the `patch_sigaction()` call in `setupSignalHandlers()` returns immediately, and libraries loaded before then are patched by the next `Libraries::refresh()` (triggered by a `dlopen`, by the refresher thread when the library set is marked dirty, or by `start()`'s first `updateSymbols()`). The `sigaction` and `pthread_create` GOT patches are persistent: `stop()` (`LibraryPatcher::unpatch_libraries()`) only undoes the socket hooks.
 
 ### Signal Handler Chain
 

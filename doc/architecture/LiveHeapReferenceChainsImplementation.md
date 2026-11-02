@@ -120,6 +120,8 @@ The callback stops admission when it reaches the edge budget, deadline check, ho
 
 Leak tags are positive tags from a fixed pool. Each reuse has an incarnation value. The incarnation prevents emission of an old owner's cached chain for a new owner of the same numeric tag.
 
+Leak tags, like the rest of the `LivenessTracker` state, are recording-scoped. When a recording stops, `LivenessTracker::release()` clears the JVMTI tag of every object that still carries a pool tag (one `GetObjectsWithTags` over the pool; `releaseSearchTags()` only clears frontier tags), frees the tracking table and the per-klass population, and rebuilds the pool as all free, bumping the incarnation of every slot that had an owner. Leak-candidate selection therefore starts over in the next recording and needs a few GC cycles to find candidates again.
+
 Candidate representatives are not pre-tagged with negative marker tags. The walk discovers a candidate when it reaches a leak-tagged instance or correlates a leak tag with an object that the frontier already admitted.
 
 For each watched class, the tracker keeps at most eight discovered frontier entries. A leak-correlated entry can replace an uncorrelated entry when those slots are full.

@@ -19,7 +19,8 @@ liveness checker carries the trace over to later JFR chunks.
 2. **Unique trace IDs**: `(instance_id << 32) | (slot_base + slot)`; a table
    gets a fresh instance ID every time it retires from the active role.
 3. **Continuity**: traces reported live by a liveness checker survive into the
-   next cycle with their original IDs.
+   next cycle with their original IDs, within a recording (the storage, like the
+   liveness tracker, is released when the recording stops).
 4. **Zero-copy rotation**: tables change role by pointer swaps.
 5. **Safe reclamation**: a table's memory is freed only after the guards on it
    have drained.
@@ -120,11 +121,14 @@ in [RefCountGuard](RefCountGuard.md).
   `CallTraceStorage` object itself freed; the table-level drains only cover a
   straggler that already holds a guard.
 
-Today `Profiler` excludes `put()` from `processTraces()` and `clear()`, and never
-destroys its `CallTraceStorage`: every `put()` runs under one of the stripe
-locks, and every `processTraces()` / `clear()` caller (`FlightRecorder::stop()` /
-`dump()` via `rotateDictsAndRun()`, and `Profiler::start()`) holds `lockAll()`,
-which the dump needs anyway for the per-stripe JFR buffers. The drains therefore
+Today `Profiler` excludes `put()` from `processTraces()`, `release()` and
+`acquire()`, and never destroys its `CallTraceStorage`: every `put()` runs under
+one of the stripe locks, and every `processTraces()` / `release()` / `acquire()`
+caller (`FlightRecorder::stop()` / `dump()` via `rotateDictsAndRun()`, and
+`Profiler::start()` / `stop()` through `resetRecordingState()`,
+`acquireRecordingMemory()` and `releaseRecordingMemory()`) holds `lockAll()`,
+which the dump needs anyway for the per-stripe JFR buffers. `clear()` has no
+production caller left. The drains therefore
 find no guard on the table. If a drain does time out, debug builds abort and
 release builds leak instead of freeing memory a `put()` may still be writing
 (`clearTableOnly()` leaks the detached chunks, the destructor leaks the table).
@@ -132,12 +136,37 @@ release builds leak instead of freeing memory a `put()` may still be writing
 `_generation_counter` is initialized but not read anywhere; ABA safety comes from
 the guard plus the pointer re-check in `put()`, not from a generation check.
 
+## Recording Lifecycle (`release()` / `acquire()`)
+
+The storage holds memory only while a recording runs:
+
+- **`release()`** frees all three tables (through `freeTables()`, which swaps each
+  pointer to `nullptr` and deletes the table once drained, like the destructor) and
+  swaps both `processTraces()` collections with empty ones so their bucket arrays
+  are freed too. `Profiler::releaseRecordingMemory()` calls it at the end of
+  `stop()`, once the final chunk is written, and on `start()`'s error paths;
+  `resetRecordingState()` calls it on a fresh start so the tables the new recording
+  uses are counted after `Counters::reset()`. Nothing is preserved for the liveness
+  checkers: the `LivenessTracker` is released at the same boundary.
+- While released, `put()` finds `_active_storage == nullptr` and returns
+  `DROPPED_TRACE_ID`. `processTraces()` must not be called until `acquire()`; it
+  dereferences the standby and scratch tables without a null check.
+- **`acquire()`** allocates fresh tables (fresh instance IDs) and is a no-op if they
+  exist. `Profiler::start()` calls it through `acquireRecordingMemory()`, after the
+  reset block.
+
+`Profiler` also frees the per-stripe `CallTraceBuffer`s (the frame scratch buffers
+`recordSample()` unwinds into) in `releaseRecordingMemory()`, under `lockAll()`.
+`start()` reallocates them when `_calltrace_buffer[0]` is `NULL`. Every reader takes
+its stripe lock and drops the sample when its buffer is `NULL`.
+
 ## Pre-allocated Buffers
 
 `processTraces()` reuses two member collections instead of allocating per call:
 `_traces_buffer` (`CallTraceSet`, pre-sized for 2048 traces) and
 `_preserve_set_buffer` (`CallTraceIdSet`, pre-sized for 1024 IDs). Both use
-`CountingAllocator`, so their memory is reported under `NM_CALLTRACE`.
+`CountingAllocator`, so their memory is reported under `NM_CALLTRACE`. They are
+pre-sized again by every `acquire()` and freed by `release()`.
 
 ## Liveness Preservation
 
@@ -148,8 +177,9 @@ typedef std::function<void(CallTraceIdSet&)> LivenessChecker;
 Checkers are registered with `registerLivenessChecker()` (exposed as
 `Profiler::registerLivenessChecker()`) and removed with
 `clearLivenessCheckers()`. The live-heap tracker (`livenessTracker.cpp`)
-registers one that adds the trace IDs of tracked allocations that are still
-live, so their stacks are written again in later chunks.
+registers one per recording that adds the trace IDs of tracked allocations that
+are still live, so their stacks are written again in later chunks; its
+`release()` clears the checkers again when the recording stops.
 
 A preserved trace is reinserted by ID (`putWithExistingId()`), not by stack
 hash, so identical stacks from different tenures keep their distinct IDs. The

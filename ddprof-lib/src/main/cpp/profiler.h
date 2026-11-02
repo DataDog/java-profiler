@@ -392,10 +392,12 @@ public:
   void enablePersistentJvmtiEvents();
   void openThreadRegistration();
   void closeThreadRegistration();
-  // Frees the call-trace storage, the per-thread call-trace buffers and the
-  // dictionaries' storage once a recording is over, so the idle profiler
-  // holds none of it. acquireRecordingMemory() allocates the call-trace
-  // storage again on start(); the dictionaries allocate on demand.
+  // Frees the call-trace storage, the per-thread call-trace buffers, the
+  // liveness tracker's state and the class and string-label dictionaries'
+  // storage once a recording is over, so the idle profiler holds none of it.
+  // The context-value dictionary is kept (see the definition).
+  // acquireRecordingMemory() allocates the call-trace storage again on
+  // start(); the dictionaries allocate on demand.
   void releaseRecordingMemory();
   void acquireRecordingMemory();
 

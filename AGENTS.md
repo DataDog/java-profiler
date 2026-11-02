@@ -164,14 +164,14 @@ before working on a subsystem.
 
 | Subsystem | Details |
 |---|---|
-| Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
-| String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
+| Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation, freed on stop) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
+| String dictionary (lazily allocated arena chunks, rotation/clear/release protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
 | TLS context (thread-local tracing context, distributed tracing) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
 | Profiling engines (CPU, wall-clock, allocation, native memory, liveness) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, signal scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
-| Native memory profiling (malloc/free interception, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
+| Native memory profiling (malloc interception installed per recording and restored on stop, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
 | Startup sanity checks | [doc/architecture/SanityChecks.md](doc/architecture/SanityChecks.md) |
 | SIGSEGV-safe library patching | [doc/architecture/SigsegvPatching.md](doc/architecture/SigsegvPatching.md) |
 | Event type system | [doc/reference/EventTypeSystem.md](doc/reference/EventTypeSystem.md) |
@@ -315,12 +315,32 @@ nanoseconds; `TSC::ticks_to_millis()` takes TSC ticks). Never mix the two.
 **Recording lifecycle (stop/start/restart).** State that outlives `Profiler::stop()`
 (caches, frontier/tracking tables, cached class-map ids, clocks and deadlines, JNI global
 refs) must either be cleared in `stop()`/`start()` or be tagged with a generation and
-re-validated on use. `Profiler::start()` clears `_class_map` only on a reset start
-(`ACTION_START` or the first start); `ACTION_RESUME` keeps it. A cleared dictionary
-invalidates every stored class id, so state that caches ids must be re-validated on a
-reset start. If the `RefCountGuard` drain times out, `clearAll()` leaves the dictionary
-unchanged. Events queued since the last `dump()` must be written before
-`stop()` discards them.
+re-validated on use. Recording-scoped memory is freed at the end of `stop()` by
+`Profiler::releaseRecordingMemory()` — call-trace storage and per-stripe frame buffers,
+the `_class_map` and `_string_label_map` storage (`StringDictionary::release()`, ids
+kept), and the `LivenessTracker` state (`LivenessTracker::release()`) — and malloc
+hooks are restored; see [ProfilerMemoryRequirements](doc/reference/ProfilerMemoryRequirements.md#idle-profiler-after-stop).
+Anything a late writer can still reach after `stop()` (an allocation callback, a
+malloc/socket hook already past its GOT load, a tracer thread) must find the freed
+state null or zero-capacity under the same lock it writes under, and must decide
+ownership of what it inserted while holding that lock, never by re-reading shared
+state after unlocking. `_context_value_map` is deliberately kept across `stop()`:
+threads cache its encodings in their `ProfiledThread` sidecar. `Profiler::start()`
+clears the dictionaries only on a reset start (`ACTION_START` or the first start);
+`ACTION_RESUME` keeps their ids. A released or cleared dictionary bumps its generation,
+so state that caches ids must re-validate against `generation()`. If the
+`RefCountGuard` drain times out, `clearAll()`/`release()` leave the dictionary
+unchanged. Events queued since the last `dump()` must be written before `stop()`
+discards them.
+
+**Persistent hooks.** The `pthread_create` and `sigaction` GOT hooks are installed once
+(`LibraryPatcher::initialize_persistent()`, from `Profiler::init()` or the first
+`start()`) and never unpatched, so they run before the first `start()` and between
+recordings. Code they reach must tolerate an idle profiler: `Profiler::registerThread()`
+registers with engines only while `_thread_registration_open` is set (opened just
+before the engines start, closed first thing in `stop()`, with a fence and a re-check
+that undoes a racing registration); `unregisterThread()` is ungated and tolerates no
+engine being selected.
 
 **Atomic memory ordering (arm64).** arm64 is weakly ordered (x86 is TSO); relaxed-ordering
 bugs are silent arm64-only lockups. Cross-thread reads: acquire ordering

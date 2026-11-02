@@ -2357,8 +2357,8 @@ void Profiler::releaseRecordingMemory() {
   unlockAll();
 
   // StringDictionary::release() drains its accessors itself, like clearAll().
-  // The dictionaries stay open - the tracer keeps registering context values
-  // and endpoints while the profiler is idle - and allocate again on demand.
+  // The dictionaries stay open - the tracer keeps registering endpoints while
+  // the profiler is idle - and allocate again on demand.
   // A dictionary whose drain times out keeps its storage until the next stop().
   if (!_class_map.release()) {
     reportDrainTimeout("Class map not released");
@@ -2366,14 +2366,11 @@ void Profiler::releaseRecordingMemory() {
   if (!_string_label_map.release()) {
     reportDrainTimeout("String label map not released");
   }
-  if (_context_value_map.release()) {
-    // The encodings the Java layer cached no longer resolve: have it drop its
-    // ContextValueCache on the next command. That matters for a resume, which
-    // does not reset the dictionaries and so would not set this.
-    _context_value_dict_reset.store(true, std::memory_order_release);
-  } else {
-    reportDrainTimeout("Context value map not released");
-  }
+  // Not _context_value_map: its encodings are cached per thread (the
+  // ProfiledThread tag-encoding sidecar), and a span that stays active across
+  // stop()/start() keeps sampling them until it rewrites its context. Kept,
+  // they stay resolvable: rotate() carries every entry into the next
+  // recording's constant pool. Only a fresh start's clearAll() resets it.
 }
 
 void Profiler::acquireRecordingMemory() {

@@ -2479,13 +2479,21 @@ retry:
 
   // Increment _table_size in a thread-safe manner (CAS) and store the new value
   // in idx It bails out if _table_size would overflow _table_cap
+  //
+  // Whether the insert succeeded is decided here, under the lock, and never
+  // re-derived from _table_cap after unlocking: once inserted, the ref belongs
+  // to the table, and release() can delete it and drop _table_cap to 0 as soon
+  // as this shared lock is gone - an idx == _table_cap check then would take
+  // the overflow path and delete the ref a second time.
+  const int cap = _table_cap;
   int idx;
   do {
     idx = __atomic_load_n(&_table_size, __ATOMIC_RELAXED);
-  } while (idx < _table_cap &&
+  } while (idx < cap &&
            !__sync_bool_compare_and_swap(&_table_size, idx, idx + 1));
+  const bool inserted = idx < cap;
 
-  if (idx < _table_cap) {
+  if (inserted) {
     // Unpublish first: a previous entry at this index may still be visible
     // to shared-mode scanners (their acquire load below then skips it
     // instead of racing the re-fill).
@@ -2509,7 +2517,7 @@ retry:
 
   _table_lock.unlockShared();
 
-  if (idx == _table_cap) {
+  if (!inserted) {
     if (!retried) {
       // guarantees we don't busy loop until memory exhaustion
       retried = true;

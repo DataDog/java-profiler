@@ -80,6 +80,15 @@ predicates. More detection-dependent setup:
 - `VM::ready()` initializes `VMStructs` only on HotSpot (`vmEntry.cpp:605-612`).
   It can be called more than once. A static flag ensures that the signal
   handlers are installed only once.
+- JVMTI event enabling is split. `VM::initProfilerBridge()` enables only
+  `VM_DEATH` and `NATIVE_METHOD_BIND` (a native binds once and bindings cannot be
+  replayed, so `getMemoryUsage0`'s binding must be seen from agent load). The
+  metadata events (`CLASS_LOAD`, `CLASS_PREPARE`, `DYNAMIC_CODE_GENERATED`, and
+  `COMPILED_METHOD_LOAD` when CodeHeap is unavailable) are enabled on the first
+  `start()` by `Profiler::enablePersistentJvmtiEvents()`, before
+  `JVMSupport::initExecution()` snapshots the loaded classes, and stay enabled
+  for the life of the process. It replays the code generated before then with
+  `GenerateEvents()` in every load mode, not just attach.
 - `can_retransform_any_class` is disabled on J9 (`vmEntry.cpp:502`).
 - The JFR `RequestStackTrace` extension is probed only on HotSpot (`vmEntry.cpp:519-521`).
 - The profiler installs its SIGSEGV/SIGBUS handlers only on HotSpot and J9

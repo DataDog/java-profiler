@@ -56,15 +56,22 @@ public class ProfilerLifecycleTest {
     /**
      * NativeMem categories owned by a recording: released by stop(), so they must read 0
      * whenever the profiler is idle. {@code calltrace} covers the call-trace storage and
-     * per-thread call-trace buffers, {@code dictionary} the class, string-label and
-     * context-value dictionaries (nothing registers tracer values in this test, which would
-     * make them allocate again while idle), {@code liveness} the liveness tracker's tracking
-     * table. Not listed: {@code perf}, because PerfEvents::stop() deliberately keeps
-     * per-thread events registered across recordings.
+     * per-thread call-trace buffers, {@code liveness} the liveness tracker's tracking table.
+     * Not listed: {@code perf}, because PerfEvents::stop() deliberately keeps per-thread
+     * events registered across recordings, and {@code dictionary}, which also counts the
+     * context-value dictionary that deliberately survives stop() (threads cache its
+     * encodings) - and that any earlier test in this JVM may have filled. The released
+     * dictionaries are checked one by one through {@link #RECORDING_SCOPED_DICTIONARIES}.
      */
     private static final String[] RECORDING_SCOPED = {
-            "calltrace", "dictionary", "jfr_buffers", "wallclock", "line_tables", "method_map",
-            "liveness"};
+            "calltrace", "jfr_buffers", "wallclock", "line_tables", "method_map", "liveness"};
+
+    /**
+     * Per-dictionary storage gauges (debug counters, compiled into every build) of the
+     * dictionaries stop() releases: the class-name and the string-label (endpoint) maps.
+     */
+    private static final String[] RECORDING_SCOPED_DICTIONARIES = {
+            "dictionary_classes_bytes", "dictionary_endpoints_bytes"};
 
     /**
      * Categories that live for the whole process but must not grow from one idle state to the
@@ -382,9 +389,15 @@ public class ProfilerLifecycleTest {
     }
 
     /** Everything a recording allocates has been released once the profiler is idle. */
-    private static void assertIdle(Map<String, Long> live, String when) {
+    private static void assertIdle(Map<String, Long> live, String when) throws IOException {
         for (String name : RECORDING_SCOPED) {
             assertEquals(0L, category(live, name), name + " still holds memory " + when);
+        }
+        Map<String, Long> counters = JavaProfiler.getInstance().getDebugCounters();
+        for (String name : RECORDING_SCOPED_DICTIONARIES) {
+            Long bytes = counters.get(name);
+            assertNotNull(bytes, "no debug counter named " + name + " in " + counters.keySet());
+            assertEquals(0L, (long) bytes, name + " still holds memory " + when);
         }
     }
 

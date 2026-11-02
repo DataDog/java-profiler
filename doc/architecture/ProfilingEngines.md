@@ -114,9 +114,21 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
    (`blockProfilingForExit()`).
 2. **Native threads**: on Linux, `LibraryPatcher`'s `pthread_create` GOT hook
    wraps the start routine (`start_routine_wrapper()`) and calls
-   `Profiler::registerThread()` (`libraryPatcher_linux.cpp:553`). On exit,
-   `unregister_and_release()` calls `Profiler::unregisterThread()`
-   (`libraryPatcher_linux.cpp:249`).
+   `Profiler::registerThread()`. On exit, `unregister_and_release()` calls
+   `Profiler::unregisterThread()`. The hook is **persistent**: installed once
+   `Profiler::init()` (or the first `start()`) calls
+   `LibraryPatcher::initialize_persistent()`, and never unpatched, so it also
+   runs before the first `start()` and between recordings. Registration is
+   therefore gated: `Profiler::registerThread()` returns without touching an
+   engine unless `_thread_registration_open` is set, which `start()` opens
+   just before the engines start and `stop()` closes before disabling them.
+   After closing, `stop()` fences, and `registerThread()` re-checks the flag
+   after registering and undoes the registration if it closed meanwhile, so
+   a racing registration is either seen by the engine's teardown or undone.
+   `CTimer` keeps its own `_registration_open` with the same close-fence-recheck
+   protocol around its `stop()` sweep. `unregisterThread()` is not gated (a
+   thread registered during a recording may exit after it) and tolerates no
+   engine having been selected yet.
 3. **`PerfEvents` only**: a `pthread_setspecific` GOT hook on the JVM library
    (`perfEvents_linux.cpp:176`), installed in `PerfEvents::start()`
    (`perfEvents_linux.cpp:980`).
@@ -382,11 +394,17 @@ chains are described in
 [LiveHeapReferenceChainsImplementation.md](LiveHeapReferenceChainsImplementation.md).
 
 - **Enablement**: `_enabled = gc_generations || record_liveness`. The tracking
-  table is set up once per process and **persists across recordings**
-  (`_initialized`; `livenessTracker.cpp:2095-2140`). Later starts get back the
-  stored initialization result. Liveness tracking turns itself off (by setting
-  `_table_max_cap = 0`) on HotSpot older than 11, when the max heap size is
-  unknown, or when `Class.getName` cannot be resolved.
+  state is **recording-scoped**: `initialize()` sets the table up on the first
+  enabled `start()` after a release, reading that recording's interval and
+  live-samples ratio, and `release()` frees it when the recording stops (see
+  below). Objects allocated before a stop are not reported after the next start,
+  and leak-candidate selection warms up again over a few GC cycles. Liveness
+  tracking turns itself off (by setting `_table_max_cap = 0`) on HotSpot older
+  than 11, when the max heap size is unknown, or when `Class.getName` cannot be
+  resolved; that outcome stays cached (`_initialized`) across recordings. The
+  table, `_table_size`, `_table_cap` and `_table_max_cap` are published together
+  under the exclusive table lock, so a callback left over from the previous
+  recording never sees a capacity without its table.
 - **Table size**: `min(MAX_TRACKING_TABLE_SIZE (262144), max_heap /
   interval)`. It grows by doubling up to that cap (`livenessTracker.cpp:1985`).
   Memory is accounted under `NM_LIVENESS`.
@@ -397,8 +415,12 @@ chains are described in
   2. `NewWeakGlobalRef(object)`.
   3. `_table_lock.tryLockShared()`. If the lock is not available, the weak ref
      is deleted and the sample is dropped (`livenessTracker.cpp:2381`).
-  4. Reserves a slot by CASing `_table_size`, fills it, and publishes it with
-     a release store to `ready`.
+  4. Reserves a slot by CASing `_table_size` against a `_table_cap` snapshot
+     taken under the shared lock, fills it, and publishes it with a release
+     store to `ready`. Whether the insert succeeded is decided there: once
+     inserted, the weak ref belongs to the table (which `release()` may delete
+     as soon as the lock is dropped), so it is never re-derived from
+     `_table_cap` after unlocking.
   5. When the table is full, runs one forced reap-only `cleanup_table()`, may
      grow the table under the exclusive lock, and retries once.
 - **GC hook**: `vmEntry.cpp:454` fans `GarbageCollectionFinish` out to
@@ -415,21 +437,32 @@ chains are described in
   `recordDeferredSample()` (`livenessTracker.cpp:1962`). When heap-usage
   recording is enabled, it also writes a heap-usage event.
 - **Trace retention**: when enabled, `start()` registers a liveness checker
-  with `CallTraceStorage` (`livenessTracker.cpp:2071`). The checker returns the
-  `call_trace_id` of every published entry, so the stacks of live objects
-  survive trace-storage rotation (see [CallTraceStorage.md](CallTraceStorage.md)).
-  Production code never calls `CallTraceStorage::clearLivenessCheckers()`, so
-  each enabled `start()` appends another checker.
-- **`stop()`** cleans up and flushes the table, but deliberately leaves GC
-  notifications enabled (`livenessTracker.cpp:2083-2093`).
+  with `CallTraceStorage`. The checker returns the `call_trace_id` of every
+  published entry, so the stacks of live objects survive trace-storage rotation
+  within a recording (see [CallTraceStorage.md](CallTraceStorage.md)).
+  `release()` clears the checkers, so each recording registers exactly one.
+- **`stop()`** cleans up and flushes the table into the final chunk, but
+  deliberately leaves GC notifications enabled (`onGC()` ignores them while the
+  tracker is released).
+- **`release()`** runs from `Profiler::releaseRecordingMemory()`, after the final
+  chunk is written and the reference-chain BFS thread is joined. It clears the
+  JVMTI tag of every object still carrying a leak-pool tag (one
+  `GetObjectsWithTags` over the pool; `releaseSearchTags()` clears only search
+  tags), then under the exclusive lock deletes every entry's weak ref and the
+  population representatives' weak refs, frees the table, and zeroes
+  `_table_cap`/`_table_max_cap`/`_enabled`. It then rebuilds the leak-tag pool as
+  all free, clears the liveness checkers, and resets `_initialized` so the next
+  `start()` initializes from scratch. An allocation callback still in flight
+  finds no capacity and deletes only its own, never-inserted weak ref. It is a
+  no-op when no table was allocated.
 
 ## Native Malloc Sampling (`MallocTracer`, `mallocTracer.{h,cpp}`)
 
 The full design is in [NativeMemoryProfiling.md](NativeMemoryProfiling.md).
 In summary:
 
-- **Classes**: `MallocHooker` owns GOT patching (`_patch_lock`,
-  `_patched_libs`, `_initialized`; `mallocTracer.h:17`). `MallocTracer :
+- **Classes**: `MallocHooker` owns GOT patching (`_patched_libs`,
+  `_initialized`, the `_entries` table of patched slots; `mallocTracer.h`). `MallocTracer :
   Engine` owns the sampling state (`mallocTracer.h:32`). There is no
   `free_hook` and no `calloc_hook_dummy`. The hooks are `malloc_hook`,
   `calloc_hook`, `realloc_hook`, `posix_memalign_hook`, and
@@ -438,8 +471,9 @@ In summary:
   `im_malloc`/`im_realloc`/`im_aligned_alloc` GOT entries of every native
   library. It also rewrites `im_calloc`/`im_posix_memalign` unless the libc
   implements them on top of `malloc`/`aligned_alloc`
-  (`detectNestedMalloc()`). `_patched_libs` only grows; hooks are never
-  removed. Libraries loaded later are patched by `Libraries::refresh()`
+  (`detectNestedMalloc()`). Every patched slot is recorded, and `stop()`
+  restores them and resets `_patched_libs`, so hooks exist only while a
+  recording runs. Libraries loaded later are patched by `Libraries::refresh()`
   (`libraries.cpp:90-91`).
 - **Signals**: none. Hooks run synchronously on the allocating thread.
 - **Sampling**: `maybeRecord()` (`mallocTracer.cpp:312`) acquires the
