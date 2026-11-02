@@ -135,13 +135,46 @@ An object can change after its first expansion. For example, a long-lived collec
 | Leak accumulation | 16 | Select parents that accumulate instances of watched classes. |
 | Stale expanded entries | 256 | Provide eventual low-priority rechecks across the frontier table. |
 | Transient root kinds | 16 | Improve root attribution when later observations provide a more durable root kind. |
-| Static anchors | 32 selected, plus 16 FIFO entries | Descend from selected objects held by static fields. |
+| Anchors | 32 selected, plus 16 FIFO entries | Descend from indexed anchors: objects held by static fields or JNI globals, and confirmed collection/map holders first seen as stack or JNI locals. See [Anchor index](#anchor-index). |
 
 Leak accumulation has two levels. The first groups admissions by leaf class and parent class. The second ranks parent object tags within the selected group.
 
 When a class first becomes watched, the tracker scans existing expanded entries for matching stable class tags. This scan supplies data that admission-time tracking could not collect before the class became watched.
 
 Rotation improves coverage but remains bounded and best effort.
+
+### Anchor index
+
+`collectStaticFieldAnchorsForRotation()` selects descend-walk anchors from an index
+(`_static_anchor_index`), not from the full frontier table. The index has two shares:
+
+- **Durable share.** Root-attached `STATIC_FIELD` and `JNI_GLOBAL` entries, added by
+  `addToStaticAnchorIndex()`. Such an entry is selectable while it stays root-attached with a
+  durable root kind. Once it is classified as a collection or map, it stays selectable after
+  reparenting. A reparented holder of any other class gets one walk from the at-risk FIFO
+  (`pushAtRiskStaticAnchor()`).
+- **Local share.** Holders that root enumeration reports as `STACK_LOCAL` or `JNI_LOCAL` roots.
+  `heapRootCallback()` passes them to `noteLocalRootHolder()`. A holder is indexed only after
+  `reconcileAnchorClassShapes()` classifies its class as implementing `java.util.Collection` or
+  `java.util.Map`. A confirmed collection remains selectable after expansion reparents it into a
+  deeper chain, so the tracker still observes replacement backing storage such as a resized
+  `HashMap.table`. Local holders of any other class are never indexed.
+
+Classification needs JNI, which the heap-root callback cannot use. A holder whose class is not
+yet classified waits in `_pending_local_anchors`, capped at 1024 entries.
+`resolvePendingLocalAnchors()` runs after each `reconcileAnchorClassShapes()`. It indexes the
+confirmed collections and drops everything else, including holders whose class is still
+unclassified. The next root enumeration reports a dropped holder again. Reconciliation
+classifies pending holder classes before unclassified durable-anchor classes, within the
+128-classes-per-pass budget.
+
+The local share is capped at 4096 entries (`LOCAL_ANCHOR_INDEX_CAP`). This keeps the per-pass
+index scan proportional to the durable share plus a constant, regardless of how many locals the
+application holds. When the cap is reached, `compactLocalAnchors()` removes local entries that
+are no longer selectable, such as entries whose object died, at most once per resolve call. If the share is still
+full of live collections, new local holders are not indexed until entries die or the search
+restarts. A local holder that a durable root later attaches moves to the durable share and stops
+counting against the cap. `restartSearch()` clears both shares and the pending buffer.
 
 ## Search termination
 

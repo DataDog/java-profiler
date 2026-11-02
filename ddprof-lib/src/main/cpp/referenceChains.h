@@ -455,9 +455,11 @@ private:
   std::unordered_map<u32, u32> _static_anchor_fifo_klass_counts;
   static constexpr u32 STATIC_ANCHOR_ATRISK_PER_KLASS_CAP = 64;
 
-  // Index of durable roots and observed local holders. Known collections remain
-  // eligible after reparenting, so replacing their storage is still observed.
-  // Non-collection local holders are excluded after classification.
+  // Index of durable roots and CONFIRMED-container local holders. Known collections remain
+  // eligible after reparenting, so replacing their storage is still observed. A stack/JNI-local
+  // root is indexed only once its class is classified as a collection/map (see
+  // noteLocalRootHolder()/resolvePendingLocalAnchors()); non-collection local holders are never
+  // indexed, and the local share of the index is capped at LOCAL_ANCHOR_INDEX_CAP.
   // collectStaticFieldAnchorsForRotation() iterates these anchors rather than
   // scanning the full frontier table.
   std::vector<jlong> _static_anchor_index;
@@ -468,6 +470,26 @@ private:
   // Dedup companion for _static_anchor_index (O(1) membership; the population is ~28k on a real JVM
   // - see addToStaticAnchorIndex()'s own comment).
   std::unordered_set<jlong> _static_anchor_index_tags;
+
+  // Subset of _static_anchor_index_tags that were indexed as stack/JNI-local holders (not as
+  // durable roots). Its size is the local share of the index, capped at LOCAL_ANCHOR_INDEX_CAP so
+  // per-pass anchor selection stays O(durable anchors + cap) no matter how many locals the
+  // application holds. A tag later indexed as a durable root leaves this set (uncapped share).
+  std::unordered_set<jlong> _local_anchor_tags;
+  static constexpr size_t LOCAL_ANCHOR_INDEX_CAP = 4096;
+
+  // Local-root holders whose class was not yet classified when root enumeration reported them
+  // (classification needs JNI, which the heap-root callback cannot use). Drained - indexed if
+  // confirmed containers, dropped otherwise - by resolvePendingLocalAnchors() after every
+  // reconcileAnchorClassShapes(); an entry whose class is still unclassified is dropped too and
+  // re-reported by the next root enumeration. Capped so a burst of locals cannot grow it.
+  struct PendingLocalAnchor {
+    jlong tag;
+    jlong class_tag;
+  };
+  std::vector<PendingLocalAnchor> _pending_local_anchors;
+  std::unordered_set<jlong> _pending_local_anchor_tags;
+  static constexpr size_t PENDING_LOCAL_ANCHOR_CAP = 1024;
 
   // Shape of a class as an anchor candidate: does the class implement java/util/Collection or
   // java/util/Map (directly or via superclasses/ interfaces)?
@@ -946,6 +968,17 @@ private:
   void addToStaticAnchorIndex(jlong tag, jlong own_class_tag, u8 root_kind);
   // Shared deduplicated index insertion for durable roots and local holders.
   void indexAnchorForRotation(jlong tag, jlong own_class_tag);
+  // Heap-root callback hook for a stack/JNI-local holder: indexes a confirmed container (under
+  // LOCAL_ANCHOR_INDEX_CAP), ignores a classified non-container, and parks an unclassified holder
+  // (or one met at the cap) in the capped _pending_local_anchors buffer. No JNI, no frontier lock.
+  void noteLocalRootHolder(jlong tag, jlong own_class_tag);
+  // BFS thread, after reconcileAnchorClassShapes(): indexes pending holders confirmed as
+  // containers, drops the rest, and empties the pending buffer.
+  void resolvePendingLocalAnchors();
+  // Removes local-holder index entries that are no longer selectable (dead or demoted), keeping
+  // _static_anchor_fresh_queue a suffix of the index. Run at most once per
+  // resolvePendingLocalAnchors() call, only when the local cap is reached.
+  void compactLocalAnchors();
 
   // True iff `klass` implements java/util/Collection or java/util/Map, directly or transitively
   // (superclass chain + interfaces of every visited class, depth-bounded, visited set to survive

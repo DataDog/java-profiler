@@ -333,7 +333,125 @@ void ReferenceChainTracker::addToStaticAnchorIndex(jlong tag,
       root_kind != (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
     return;
   }
+  // A local holder later attached by a durable root now belongs to the uncapped durable share;
+  // release its slot in the local cap (it stays indexed - the dedup below is a no-op for it).
+  _local_anchor_tags.erase(tag);
   indexAnchorForRotation(tag, own_class_tag);
+}
+
+void ReferenceChainTracker::noteLocalRootHolder(jlong tag,
+                                                jlong own_class_tag) {
+  if (_static_anchor_index_tags.count(tag) > 0) {
+    return; // already indexed (durable root or earlier local report)
+  }
+  auto shape = _class_shape_cache.find(own_class_tag);
+  if (shape != _class_shape_cache.end()) {
+    if (shape->second != (u8)AnchorClassShape::CONTAINER) {
+      return; // classified non-container: never indexed
+    }
+    if (_local_anchor_tags.size() < LOCAL_ANCHOR_INDEX_CAP) {
+      _local_anchor_tags.insert(tag);
+      indexAnchorForRotation(tag, own_class_tag);
+      return;
+    }
+    // At the cap: defer to resolvePendingLocalAnchors(), which may compact dead local entries
+    // (it can take the frontier lock; this callback must not).
+  }
+  if (_pending_local_anchors.size() >= PENDING_LOCAL_ANCHOR_CAP) {
+    return; // re-reported by the next root enumeration
+  }
+  if (!_pending_local_anchor_tags.insert(tag).second) {
+    return;
+  }
+  _pending_local_anchors.push_back(PendingLocalAnchor{tag, own_class_tag});
+}
+
+void ReferenceChainTracker::resolvePendingLocalAnchors() {
+  if (_pending_local_anchors.empty()) {
+    return;
+  }
+  bool compacted = false;
+  for (const PendingLocalAnchor &pending : _pending_local_anchors) {
+    if (_static_anchor_index_tags.count(pending.tag) > 0) {
+      continue;
+    }
+    auto shape = _class_shape_cache.find(pending.class_tag);
+    if (shape == _class_shape_cache.end() ||
+        shape->second != (u8)AnchorClassShape::CONTAINER) {
+      continue; // non-container, or still unclassified: dropped (see the buffer's comment)
+    }
+    if (_local_anchor_tags.size() >= LOCAL_ANCHOR_INDEX_CAP && !compacted) {
+      compactLocalAnchors();
+      compacted = true;
+    }
+    if (_local_anchor_tags.size() >= LOCAL_ANCHOR_INDEX_CAP) {
+      continue; // still full of live containers: the cap holds
+    }
+    _local_anchor_tags.insert(pending.tag);
+    indexAnchorForRotation(pending.tag, pending.class_tag);
+  }
+  // Keep capacity: the buffer refills on every root enumeration.
+  _pending_local_anchors.clear();
+  _pending_local_anchor_tags.clear();
+}
+
+void ReferenceChainTracker::compactLocalAnchors() {
+  if (_local_anchor_tags.empty()) {
+    return;
+  }
+  std::unordered_set<jlong> removed;
+  _frontier->withSharedLock([&](const FrontierTable *frontier) {
+    size_t idx_size = _static_anchor_index.size();
+    for (size_t i = 0; i < idx_size; i++) {
+      jlong tag = _static_anchor_index[i];
+      if (_local_anchor_tags.count(tag) == 0) {
+        continue; // durable share: not compacted here
+      }
+      jlong own_class_tag = i < _static_anchor_own_class_tags.size()
+                                ? _static_anchor_own_class_tags[i] : 0;
+      FrontierEntry entry{};
+      // Same eligibility as collectStaticFieldAnchorsForRotation(): a released (ABANDONED) entry
+      // is a dead object and can never be selected again.
+      if (!frontier->lookupLocked(tag, &entry) ||
+          !isSelectableAnchor(entry, own_class_tag) ||
+          (entry.state != FrontierEntryState::FRONTIER &&
+           entry.state != FrontierEntryState::EXPANDED)) {
+        removed.insert(tag);
+      }
+    }
+  });
+  if (removed.empty()) {
+    return;
+  }
+  // Stable in-place compaction of the two parallel vectors keeps relative order, so the fresh
+  // queue (a suffix of the index) stays a suffix once the same tags leave it too.
+  size_t out = 0;
+  for (size_t i = 0; i < _static_anchor_index.size(); i++) {
+    jlong tag = _static_anchor_index[i];
+    if (removed.count(tag) > 0) {
+      continue;
+    }
+    _static_anchor_index[out] = tag;
+    if (i < _static_anchor_own_class_tags.size()) {
+      _static_anchor_own_class_tags[out] = _static_anchor_own_class_tags[i];
+    }
+    out++;
+  }
+  _static_anchor_index.resize(out);
+  if (_static_anchor_own_class_tags.size() > out) {
+    _static_anchor_own_class_tags.resize(out);
+  }
+  for (jlong tag : removed) {
+    _static_anchor_index_tags.erase(tag);
+    _local_anchor_tags.erase(tag);
+  }
+  _static_anchor_fresh_queue.erase(
+      std::remove_if(_static_anchor_fresh_queue.begin(),
+                     _static_anchor_fresh_queue.end(),
+                     [&](jlong tag) { return removed.count(tag) > 0; }),
+      _static_anchor_fresh_queue.end());
+  // Positions shifted: the collector clamps out-of-range cursors; in-range ones only lose fairness
+  // for one lap.
 }
 
 bool ReferenceChainTracker::isSelectableAnchor(const FrontierEntry &entry,
@@ -491,24 +609,31 @@ void ReferenceChainTracker::reconcileAnchorClassShapes(jvmtiEnv *jvmti,
   if (jni == nullptr) {
     return;
   }
-  if (_static_anchor_own_class_tags.empty()) {
+  if (_static_anchor_own_class_tags.empty() && _pending_local_anchors.empty()) {
     return;
   }
-  // Collect up to ANCHOR_SHAPE_RECONCILE_BUDGET distinct class tags that appear in the anchor index
-  // but are not yet classified.
+  // Collect up to ANCHOR_SHAPE_RECONCILE_BUDGET distinct class tags that appear in the pending
+  // local-holder buffer or the anchor index but are not yet classified. Pending holders go first:
+  // resolvePendingLocalAnchors() drops any still unclassified after this call, while indexed
+  // durable anchors simply wait for a later pass.
   std::vector<jlong> unknown;
   unknown.reserve(8);
   std::unordered_set<jlong> seen;
-  for (jlong class_tag : _static_anchor_own_class_tags) {
+  auto consider = [&](jlong class_tag) {
     if (class_tag == 0 || seen.count(class_tag) > 0 ||
         _class_shape_cache.count(class_tag) > 0) {
-      continue;
+      return true;
     }
     seen.insert(class_tag);
     unknown.push_back(class_tag);
-    if ((int)unknown.size() >= ANCHOR_SHAPE_RECONCILE_BUDGET) {
-      break;
-    }
+    return (int)unknown.size() < ANCHOR_SHAPE_RECONCILE_BUDGET;
+  };
+  bool room = true;
+  for (size_t i = 0; room && i < _pending_local_anchors.size(); i++) {
+    room = consider(_pending_local_anchors[i].class_tag);
+  }
+  for (size_t i = 0; room && i < _static_anchor_own_class_tags.size(); i++) {
+    room = consider(_static_anchor_own_class_tags[i]);
   }
   if (unknown.empty()) {
     return;

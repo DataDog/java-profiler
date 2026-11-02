@@ -138,15 +138,12 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   }
   // Remember local holders before expansion can reparent them into a deeper
   // chain. Known collections still need bounded descend walks after that change
-  // to observe replacement backing storage. Classification runs outside this
-  // callback; unknown types are indexed but do not qualify for a walk yet.
+  // to observe replacement backing storage. Only confirmed containers enter the
+  // anchor index (capped); classification runs outside this callback, so an
+  // unclassified holder waits in a capped pending buffer instead.
   if (isTransientRootKind(translated_root_kind) && class_tag != 0 &&
       *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
-    auto shape = ctx->tracker->_class_shape_cache.find(class_tag);
-    if (shape == ctx->tracker->_class_shape_cache.end() ||
-        shape->second == (u8)AnchorClassShape::CONTAINER) {
-      ctx->tracker->indexAnchorForRotation(*tag_ptr, class_tag);
-    }
+    ctx->tracker->noteLocalRootHolder(*tag_ptr, class_tag);
   }
   return JVMTI_ITERATION_CONTINUE;
 }
@@ -371,6 +368,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // collectStaticFieldAnchorsForRotation()/ walkStaticFieldAnchors()'s own comments) - not pushed
   // onto the priority lane, so they are independent of the queue tiers above.
   reconcileAnchorClassShapes(jvmti, jni);
+  resolvePendingLocalAnchors();
   std::vector<jlong> static_anchor_tags =
       collectStaticFieldAnchorsForRotation(STATIC_ANCHOR_ROTATION_BUDGET);
   std::vector<AtRiskAnchor> static_anchor_fifo_drained;
