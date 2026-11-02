@@ -97,6 +97,7 @@ class GtestPlugin : Plugin<Project> {
     }
 
     private fun createBuildNativeLibsTask(project: Project, extension: GtestExtension, hasGtest: Boolean) {
+        val compiler = findCompiler(project)
         project.tasks.register("buildNativeLibs") {
             group = "build"
             description = "Build the native libs for the Google Tests"
@@ -132,13 +133,13 @@ class GtestPlugin : Plugin<Project> {
                     val libDir = File("$targetDir/$libName")
                     val libSrcDir = File("$srcDir/$libName")
 
-                    // Use ProcessBuilder directly (Gradle 9 removed project.exec in task actions)
-                    val process = ProcessBuilder("sh", "-c", """
-                        echo "Processing library: $libName @ $libSrcDir"
-                        mkdir -p $libDir
-                        cd $libSrcDir
-                        make TARGET_DIR=$libDir
-                    """.trimIndent())
+                    project.logger.lifecycle("Processing library: $libName @ $libSrcDir")
+                    if (!libDir.isDirectory && !libDir.mkdirs()) {
+                        throw org.gradle.api.GradleException("Failed to create native lib output directory: $libDir")
+                    }
+                    // Pass only the compiler, not sanitizer flags: allocator probes need the real allocator.
+                    val process = ProcessBuilder("make", "TARGET_DIR=$libDir", "CXX=$compiler")
+                        .directory(libSrcDir)
                         .inheritIO()
                         .start()
                     val exitCode = process.waitFor()
@@ -148,6 +149,7 @@ class GtestPlugin : Plugin<Project> {
                 }
             }
 
+            inputs.property("compiler", compiler)
             inputs.files(project.fileTree(srcDir))
             outputs.dir(targetDir)
         }

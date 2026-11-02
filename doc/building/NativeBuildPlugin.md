@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Native Build Plugin Architecture
 
 This document describes the architecture of the Kotlin-based native build plugin (`com.datadoghq.native-build`) used for C++ compilation in the Datadog Java Profiler project.
@@ -385,6 +387,13 @@ For each test file, GtestPlugin creates:
   config by `compileGtestLibrary{Config}`)
 - `linkGtest{Config}_{TestName}` - Link test executable
 - `gtest{Config}_{TestName}` - Execute the test
+
+On Linux, `buildNativeLibs` passes the resolved C++ compiler to each helper Makefile as
+`CXX`, including overrides from `-Pnative.forceCompiler`. The compiler is a task input,
+so changing it rebuilds the helpers. Makefiles keep their own compiler and linker flags;
+configuration sanitizer flags are not forwarded. The allocator footprint probe must use
+the real allocator rather than a sanitizer replacement. Helpers that hardcode a compiler
+instead of using `CXX` retain that choice.
 
 See `build-logic/README.md` for full GtestPlugin documentation.
 

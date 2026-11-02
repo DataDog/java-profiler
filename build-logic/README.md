@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Native Build Plugins
 
 This directory contains a Gradle composite build that provides plugins for building C++ libraries and tests:
@@ -314,6 +316,11 @@ GtestPlugin consumes configurations from NativeBuildPlugin:
 1. **Shared configurations**: Uses the same release/debug/asan/tsan/fuzzer configs
 2. **Compiler detection**: Uses `PlatformUtils.findCompiler()` with `-Pnative.forceCompiler` support
 3. **Consistent flags**: Inherits compiler/linker args from build configurations
+
+Linux support helpers built by `buildNativeLibs` receive the resolved compiler as Make's
+`CXX` variable. Changing the compiler invalidates the helper task. Their Makefiles own
+the flags; configuration sanitizer flags are not forwarded, so allocator probes remain
+unsanitized. Makefiles that hardcode a compiler instead of using `CXX` are unchanged.
 
 ## Example Output
 
