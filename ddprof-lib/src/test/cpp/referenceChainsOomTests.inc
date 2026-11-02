@@ -1395,6 +1395,41 @@ TEST_F(ReferenceChainsCanaryRefillTest, RefillRaiseTracksOpenChaseExactly) {
     ReferenceChainsTestAccessor::reset();
 }
 
+// The refill raise must be applied BEFORE the minimum-pass-spacing gate
+// returns: the gate's induced wait drains _cpu_pain_budget, so a spacing-closed
+// evaluation with a chase open must still apply the chase's rate (reverting the
+// ordering leaves the rate at its base here).
+TEST_F(ReferenceChainsCanaryRefillTest, RefillRaiseAppliesBeforeSpacingGate) {
+    ReferenceChainsTestAccessor::reset();
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ASSERT_FALSE(tracker->start(args));
+
+    ReferenceChainsTestAccessor::setSearchStartedForTest(true);
+    double base = ReferenceChainsTestAccessor::basePainBudgetRefillRateForTest();
+
+    // Chase open, spacing gate closed: the gate holds the pass, but the rate
+    // must already be raised - the wait it induces drains at the current rate.
+    ReferenceChainsTestAccessor::setCandidateCountForTest(2);
+    ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(0x1);
+    u64 now = 1000;
+    ReferenceChainsTestAccessor::setLastPassNsForTest(now); // now - last = 0 < cadence
+    EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(now))
+        << "the spacing gate must hold this pass";
+    EXPECT_DOUBLE_EQ(std::min(base * ReferenceChainTracker::CANARY_PAIN_BUDGET_REFILL_MULTIPLIER, 1.0),
+                     ReferenceChainsTestAccessor::cpuPainBudgetRefillRateForTest());
+
+    // Sanity: with the gate reopened the chase lane authorizes and the rate stays raised.
+    now += 1000000000ULL;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(now));
+    EXPECT_DOUBLE_EQ(std::min(base * ReferenceChainTracker::CANARY_PAIN_BUDGET_REFILL_MULTIPLIER, 1.0),
+                     ReferenceChainsTestAccessor::cpuPainBudgetRefillRateForTest());
+
+    tracker->stop();
+    ReferenceChainsTestAccessor::reset();
+}
+
 // stop() ends the urgency episode at a recording boundary, so it must clear
 // updateUrgentAdmission()'s growth baseline along with the latch: the
 // heap-floor ring survives the boundary, and a baseline left over from the
