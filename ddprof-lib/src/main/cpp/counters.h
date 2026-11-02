@@ -42,6 +42,7 @@
   X(DICTIONARY_ENDPOINTS_ARENA_WASTE_BYTES, "dictionary_endpoints_arena_waste_bytes") \
   X(DICTIONARY_CONTEXT_ARENA_WASTE_BYTES, "dictionary_context_arena_waste_bytes")     \
   X(DICTIONARY_DRAIN_TIMEOUTS, "dictionary_drain_timeouts")                    \
+  X(REFCOUNT_NESTED_OVERFLOW, "refcount_nested_overflow")                      \
   X(DICTIONARY_ID_CONFLICTS, "dictionary_id_conflicts")                        \
   X(CLASS_MAP_AT_CAPACITY, "class_map_at_capacity_drops")                      \
   X(CONTEXT_STORAGE_BYTES, "context_storage_bytes")                            \
@@ -135,6 +136,11 @@
   X(WALKVM_STUB_INFO_HIT, "walkvm_stub_info_hit")                            \
   X(WALKVM_STUB_INFO_FALLBACK, "walkvm_stub_info_fallback")                  \
   X(WALKVM_STUB_INFO_REGISTRATION_FAILED, "walkvm_stub_info_registration_failed") \
+  /* Runtime-stub lookups (JitCodeCache::findRuntimeStub/findRuntimeStubInfo)  \
+   * that returned "not found" without searching because a registration held  \
+   * the stubs lock exclusively; the stack walk continued with its             \
+   * stub-not-found fallback. */                                               \
+  X(STUB_LOOKUP_LOCK_UNAVAILABLE, "stub_lookup_lock_unavailable")            \
   X(WALKVM_FP_CHAIN_ATTEMPT, "walkvm_fp_chain_attempt")                      \
   X(WALKVM_FP_CHAIN_REACHED_CODEHEAP, "walkvm_fp_chain_reached_codeheap")    \
   X(WALKVM_ANCHOR_NOT_IN_JAVA,  "walkvm_anchor_not_in_java")                   \

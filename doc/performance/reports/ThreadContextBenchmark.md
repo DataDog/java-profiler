@@ -1,314 +1,431 @@
-# ThreadContext Benchmark Report — 2026-03-21 (updated 2026-04-07)
+# ThreadContext Benchmark Report
+
+Current numbers: 2026-10-26, Linux x86_64. Historical numbers: 2026-03-21 and 2026-04-07,
+macOS arm64.
 
 ## Objective
 
-Verify that `ThreadContext` operations scale linearly across threads and
-that no false sharing exists between per-thread `Context` structs
-allocated on the native heap via `ProfiledThread`.
-
-## Environment
-
-### 2026-04-07 (current)
-
-| Property       | Value                           |
-|----------------|---------------------------------|
-| OS             | macOS Darwin 25.3.0 (arm64)     |
-| JDK            | Temurin 25.0.2                  |
-| JMH            | 1.37                            |
-| Forks          | 1                               |
-| Warmup         | 2 iterations x 1 s              |
-| Measurement    | 3 iterations x 2 s              |
-| Mode           | Average time (ns/op)            |
-
-### 2026-03-21 (baseline)
-
-| Property       | Value                           |
-|----------------|---------------------------------|
-| OS             | macOS Darwin 25.3.0 (arm64)     |
-| JDK            | Zulu 25.0.2                     |
-| JMH            | 1.37                            |
-| Forks          | 2                               |
-| Warmup         | 3 iterations x 1 s              |
-| Measurement    | 5 iterations x 2 s              |
-| Mode           | Average time (ns/op)            |
-
-## Benchmark Design
-
-The benchmark class `ThreadContextBenchmark` uses two JMH `@State` scopes:
-
-- **`ProfilerState` (`Scope.Benchmark`)** — starts the profiler once per
-  trial, shared across all threads. Prevents the "Profiler already
-  started" race that occurs when multiple threads each try to call
-  `profiler.execute("start,...")`.
-
-- **`ThreadState` (`Scope.Thread`)** — each JMH worker thread gets its own
-  `ThreadContext`, random span IDs, and counter. This mirrors production
-  behavior where each application thread owns an independent context.
-
-Multi-threaded variants use JMH's `@Threads` annotation at the method
-level. The single-threaded benchmarks run with the default thread count
-of 1.
-
-## Results
-
-### 2026-04-07 — Current (Temurin 25, 1 fork)
-
-```
-Benchmark                                 Mode  Cnt   Score   Error  Units
-ThreadContextBenchmark.clearContext       avgt    3   4.279 ± 0.236  ns/op
-ThreadContextBenchmark.getSpanId         avgt    3   1.046 ± 0.054  ns/op
-ThreadContextBenchmark.setAttrCacheHit   avgt    3   9.512 ± 0.213  ns/op
-ThreadContextBenchmark.setContextFull    avgt    3   5.993 ± 0.094  ns/op
-ThreadContextBenchmark.setContextFull_2t avgt    3   6.360 ± 0.680  ns/op
-ThreadContextBenchmark.setContextFull_4t avgt    3   6.162 ± 1.297  ns/op
-ThreadContextBenchmark.spanLifecycle     avgt    3  16.345 ± 0.935  ns/op
-ThreadContextBenchmark.spanLifecycle_2t  avgt    3  14.475 ± 1.104  ns/op
-ThreadContextBenchmark.spanLifecycle_4t  avgt    3  15.233 ± 0.302  ns/op
-```
-
-### 2026-03-21 — Baseline (Zulu 25, 2 forks)
-
-```
-Benchmark                                 Mode  Cnt   Score   Error  Units
-ThreadContextBenchmark.clearContext       avgt    9   5.011 ± 0.039  ns/op
-ThreadContextBenchmark.setAttrCacheHit   avgt    9  10.707 ± 0.077  ns/op
-ThreadContextBenchmark.setContextFull    avgt    9  11.104 ± 0.338  ns/op
-ThreadContextBenchmark.setContextFull_2t avgt    9  11.081 ± 0.105  ns/op
-ThreadContextBenchmark.setContextFull_4t avgt    9  11.741 ± 0.338  ns/op
-ThreadContextBenchmark.spanLifecycle     avgt    9  30.430 ± 0.129  ns/op
-ThreadContextBenchmark.spanLifecycle_2t  avgt    9  30.674 ± 0.093  ns/op
-ThreadContextBenchmark.spanLifecycle_4t  avgt    9  32.203 ± 0.309  ns/op
-```
-
-### Single-Threaded Breakdown (2026-04-07)
-
-| Benchmark        | ns/op  | Error   | vs Baseline | Description                                    |
-|------------------|--------|---------|-------------|------------------------------------------------|
-| `clearContext`   |  4.279 | ± 0.236 | -14.6%      | Zero-fill all four context fields              |
-| `getSpanId`      |  1.046 | ± 0.054 | N/A (new)   | Direct ByteBuffer read of span ID              |
-| `setContextFull` |  5.993 | ± 0.094 | **-46.0%**  | Write localRootSpanId, spanId, traceIdHigh, traceIdLow |
-| `setAttrCacheHit`|  9.512 | ± 0.213 | -11.2%      | Set string attribute (dictionary cache hit)    |
-| `spanLifecycle`  | 16.345 | ± 0.935 | **-46.3%**  | `setContextFull` + `setAttrCacheHit` combined  |
-
-`getSpanId` at **1.046 ns** confirms the direct ByteBuffer read compiles to a
-single memory load — effectively free compared to the removed `getContext()` path
-(71.6 ns, dominated by `long[]` JNI allocation).
-
-`setContextFull` improved from 11.1 ns to 6.0 ns (-46%), and `spanLifecycle` from
-30.4 ns to 16.3 ns (-46%). This reflects OTEP record write optimizations accumulated
-since the baseline (removed redundant `full_fence`, tightened detach/attach window,
-direct sidecar writes replacing dictionary lookups for LRS).
-
-### False Sharing Analysis (2026-04-07)
-
-| Benchmark        | 1 thread | 2 threads | 4 threads | 1t to 2t | 1t to 4t |
-|------------------|----------|-----------|-----------|----------|----------|
-| `setContextFull` | 5.993    | 6.360     | 6.162     | +6.1%    | +2.8%    |
-| `spanLifecycle`  | 16.345   | 14.475    | 15.233    | -11.5%\* | -6.8%\*  |
-
-\* The `spanLifecycle` multi-thread results are below the single-thread score.
-With 1 fork and 3 measurement iterations, noise floor is ~1 ns. The inversion is
-within measurement noise, not a real effect. Re-run with 2+ forks to confirm.
-
-**At 4 threads (`setContextFull`):** +2.8% increase. Well below false-sharing
-threshold (typically 2-10x). Consistent with L2/L3 cache pressure and MOESI
-coherency traffic with no same-cache-line contention.
-
-### Verdict
-
-**No false sharing detected.** Consistent with the 2026-03-21 result. Per-thread
-`OtelThreadContextRecord` structs embedded in `ProfiledThread` are sufficiently
-separated in memory. Throughput scales near-linearly from 1 to 4 threads.
-
-## JNI vs ByteBuffer Implementation Comparison
-
-Prior to commit `e7e1c3ce`, the context write path used JNI native
-methods for every operation. The current implementation replaced the
-per-operation JNI calls with direct `ByteBuffer` writes to native memory,
-keeping JNI only for one-time value registration. This section documents
-the measured regression in the old JNI path and explains its root cause.
-
-### Before/After Benchmark Data
-
-The "JNI" column was captured on Java 25 (Temurin 25.0.2) where
-`ThreadContext` routed all writes through JNI native methods. The
-"ByteBuffer" column is the current implementation on Java 25 (Zulu
-25.0.2) where all hot-path writes go through `DirectByteBuffer`.
-Both are standard OpenJDK 25 distributions with no profiling-relevant
-divergences; the vendor difference does not materially affect the comparison.
-
-| Benchmark        | JNI (ns/op) | ByteBuffer 2026-03-21 | ByteBuffer 2026-04-07 | JNI→current |
-|------------------|------------:|----------------------:|----------------------:|------------:|
-| `clearContext`   |         6.5 |                 5.011 |                 4.279 |      1.5x   |
-| `setContextFull` |        20.0 |                11.104 |                 5.993 |      3.3x   |
-| `setAttrCacheHit`|       114.8 |                10.707 |                 9.512 |     12.1x   |
-| `spanLifecycle`  |       146.3 |                30.430 |                16.345 |      9.0x   |
-
-The span lifecycle hot path improved by **9.0x** from JNI (146 ns) to the current
-ByteBuffer implementation (16.3 ns). The dominant contributor is `setContextAttribute`,
-which improved by **12.1x** (115 ns → 9.5 ns). Additional gains since the 2026-03-21
-baseline reflect OTEP record write optimizations (removed `full_fence`, tightened
-detach/attach, direct sidecar writes).
-
-### Why the JNI Path Was Slow
-
-The old `setContextAttribute0` JNI method accepted a `java.lang.String`:
-
-```c
-JNICALL Java_com_datadoghq_profiler_ThreadContext_setContextAttribute0(
-    JNIEnv* env, jclass unused, jint keyIndex, jstring value)
-```
-
-Every invocation paid three costs that the ByteBuffer path avoids:
-
-**1. JNI boundary crossing (~15-20 ns)**
-
-Each JNI call transitions from compiled Java code to native code through
-the JNI stub. The JVM must save the Java frame state, set up the native
-frame, and pass arguments through the JNI calling convention. On return,
-it must restore Java state and check for pending exceptions. Even for
-trivial native methods with all-primitive signatures (like
-`setContextFull0(long, long, long, long)`), this costs ~10 ns. With
-object references in the signature, the cost increases due to handle
-table management (see point 2).
-
-**2. JNI String marshalling (~40-60 ns)**
-
-The `jstring` parameter triggers JNI local reference tracking. Inside
-the native method, `JniString` called `GetStringUTFChars()` to obtain a
-modified-UTF-8 copy of the string data. This involves:
-
-- Acquiring the string's backing array (may pin or copy).
-- Converting UTF-16 code units to modified-UTF-8.
-- Allocating a temporary native buffer for the result.
-- Releasing the string via `ReleaseStringUTFChars()` on scope exit.
-
-For a typical 15-character HTTP route like `"GET /api/users"`, this
-UTF-16-to-UTF-8 conversion and copy dominates the call cost.
-
-**3. Dictionary lookup on every call (~30-40 ns)**
-
-After extracting the C string, `ContextApi::setAttribute()` performed a
-`Dictionary::bounded_lookup()` to resolve the string to a numeric
-encoding. This hash-table lookup happened on every call, even for
-repeated values of the same attribute — the JNI path had no caching
-layer.
-
-**Total JNI path cost:** ~15 + ~50 + ~35 = ~100 ns, consistent with
-the measured 115 ns (the remainder is `JniString` construction overhead
-and mode-checking branches).
-
-### Why the ByteBuffer Path Is Fast
-
-The current implementation splits attribute setting into two phases:
-
-**Phase 1 — One-time registration (cache miss, ~100+ ns, amortized away)**
-
-On the first call with a new string value, `registerConstant0(String)`
-crosses JNI once to register the value in the native `Dictionary` and
-returns its integer encoding. The encoding and the string's UTF-8 bytes
-are stored in a per-thread 256-slot direct-mapped cache:
-
-```java
-encoding = registerConstant0(value);          // one JNI call
-utf8 = value.getBytes(StandardCharsets.UTF_8); // one allocation
-attrCacheEncodings[slot] = encoding;
-attrCacheBytes[slot] = utf8;
-attrCacheKeys[slot] = value;                  // commit
-```
-
-**Phase 2 — Cached hot path (cache hit, ~11 ns, zero JNI)**
-
-On subsequent calls with the same string value (the common case — web
-applications cycle through a small set of routes), the path is:
-
-```java
-if (value.equals(attrCacheKeys[slot])) {
-    encoding = attrCacheEncodings[slot];       // int read
-    utf8 = attrCacheBytes[slot];               // ref read
-}
-BUFFER_WRITER.writeOrderedInt(sidecarBuffer, keyIndex * 4, encoding);
-detach();
-replaceOtepAttribute(otepKeyIndex, utf8);
-attach();
-```
-
-This performs:
-- One `String.equals()` comparison (~3 ns for short strings).
-- One ordered int write to the sidecar `DirectByteBuffer` (~2 ns).
-- Detach/attach protocol with `storeFence` barriers (~4 ns on ARM).
-- A `ByteBuffer.put()` sequence for the OTEP attrs_data (~2 ns).
-
-No JNI crossing. No string marshalling. No dictionary lookup.
-
-### Why All-Primitive JNI Was Also Slower
-
-Even `setContextFull0(long, long, long, long)` — which has no object
-parameters — was 1.8x slower than the ByteBuffer path (20 ns vs 11 ns).
-The JNI stub overhead alone accounts for ~10 ns. The ByteBuffer path
-replaces this with `ByteBuffer.putLong()` calls that the JIT compiles
-to direct memory stores, plus two `storeFence` barriers for the
-detach/attach protocol. On ARM, `storeFence` compiles to a DMB ISHST
-instruction (~2 ns), making the total ByteBuffer overhead ~6 ns for
-four long writes plus two fences — well under the JNI stub cost.
-
-On x86, `storeFence` is a no-op (Total Store Order provides free
-store-store ordering), so the ByteBuffer path would be even cheaper.
-
-### Cache Hit Rate in Production
-
-The attribute cache is a 256-slot direct-mapped cache keyed by
-`String.hashCode() & 0xFF`. In typical web applications:
-
-- HTTP route attributes cycle through 5-50 unique values.
-- Span IDs change every request, but they use the `put()` path (no
-  string marshalling).
-- The cache hit rate for string attributes is effectively 100% in
-  steady state, since the working set is far smaller than 256 slots.
-
-This means the amortized cost of `setContextAttribute` in production is
-the cache-hit cost of ~11 ns, not the registration cost.
-
-## Cost Model for Instrumentation Budget
-
-Based on these results, the per-span instrumentation cost on the context
-hot path is:
-
-| Operation              | Cost (2026-03-21) | Cost (2026-04-07) |
-|------------------------|------------------:|------------------:|
-| Span start (set IDs)   | ~11 ns            | ~6 ns             |
-| Set one attribute       | ~11 ns            | ~10 ns            |
-| Full span lifecycle     | ~30 ns            | ~16 ns            |
-| Span end (clear)        | ~5 ns             | ~4 ns             |
-| Read span ID            | ~72 ns (alloc)    | ~1 ns (direct)    |
-| **Total per-span**      | **~35 ns**        | **~20 ns**        |
-
-At 20 ns per span, a single thread can sustain ~50 million span
-transitions per second before the context layer becomes a bottleneck.
-For a typical web application processing 10K-100K requests/second, this
-represents less than 0.002% of available CPU time.
+Measure the cost of each thread-context write on the span start and span end paths.
+Verify that the cost stays flat as the thread count grows. A flat cost shows that the
+per-thread OTEP records in `ProfiledThread` do not share cache lines.
+
+## Implementation History
+
+The context storage has three implementations. The first rewrite removed the JNI call from
+each write to make writes faster. The second rewrite fixed a use-after-free risk under
+virtual threads and moved the writes back into native code. The current numbers apply to
+the all-native implementation only.
+
+| Implementation | On `main` | Write mechanism |
+|---|---|---|
+| JNI (pre-2026-04-08) | Never. Branch `jb/otel_ctx`, before #347 merged on 2026-04-08. | One JNI call per write. Attribute values cross JNI as a `jstring`. |
+| ByteBuffer | From 2026-04-08 (#347) to 2026-07-31 (#696). | Java writes the OTEP record through a cached `DirectByteBuffer` for each thread. Writes make no JNI call. |
+| All-native (current) | Since 2026-07-10 (#631). The only implementation since 2026-07-31 (#696). | One JNI call per write. Attribute values cross JNI as a cached encoding and a UTF-8 `byte[]`. |
+
+**Why the all-native implementation replaced the ByteBuffer implementation.** The ByteBuffer
+implementation cached a `DirectByteBuffer` over the native record of each Java thread. When
+a virtual thread migrated, the cached buffer could point at freed memory. The all-native
+implementation caches no buffer. Each JNI call finds the record of the current carrier
+thread. A native frame pins a mounted virtual thread to its carrier until the call returns.
+Thus the record cannot change during the write (see the all-native context write API in
+`javaApi.cpp`).
+
+**Why the JNI implementation was slow.** For each call, `setContextAttribute0(int, String)`
+converted the `jstring` to a C string (`JniString`). Then `ContextApi::setAttribute()` did a
+`Dictionary::bounded_lookup()`. The all-native implementation finds the encoding in Java,
+in `ContextValueCache`. This cache has 256 direct-mapped slots, keyed by
+`String.hashCode()`. Only a cache miss calls `registerConstant0()` through JNI.
+
+### All-Native Write Path
+
+| Java API | Native entry point | Work per call |
+|---|---|---|
+| `JavaProfiler.setTraceContext(...)` | `setTraceContext0` | Find the `ProfiledThread`. Copy up to two attribute values from `byte[]`. Detach the record. Write the trace ID, the span ID and the local root span ID. Reset all custom slots. Write the activation attributes. Attach the record. |
+| `JavaProfiler.setContextValue(slot, value)` | `setContextValue0` | Find the value in `ContextValueCache`. Find the `ProfiledThread`. Copy the value from `byte[]`. Detach the record. Replace one attribute. Attach the record. |
+| `JavaProfiler.clearTraceContext()` | `clearTraceContext0` | Find the `ProfiledThread`. Detach the record. Set the trace ID, the span ID, the local root span ID and the custom slots to zero. Leave the record detached. |
+
+To detach the record, the code stores `valid=0` and then issues a release fence. To attach
+the record, the code issues a release fence and then stores `valid=1`. On x86, the release
+fence is only a compiler barrier.
+
+The all-native implementation has no span ID getter. Thus the `getSpanId` benchmark has no
+all-native equivalent. The only Java read method is `JavaProfiler.copyContextTags(int[])`,
+which copies the custom-slot encodings.
+
+## Current Results — 2026-10-26 (Linux x86_64)
+
+### Environment
+
+| Property | Value |
+|---|---|
+| Host | AWS, Intel Xeon Platinum 8175M @ 2.50 GHz, 8 cores / 16 threads, 1 socket |
+| OS | Ubuntu 22.04.5 LTS, kernel 6.8.0-1057-aws |
+| JDK | Temurin 25.0.3+9 |
+| JMH | 1.37, Blackhole mode `compiler` (auto-detected) |
+| Forks | 2 |
+| Warmup | 3 iterations x 1 s |
+| Measurement | 5 iterations x 2 s |
+| Mode | Average time (ns/op) |
+| Native library | Release build |
+
+All three implementations ran on the same host, with the same JDK and the same JMH
+settings. For the procedure and the benchmark sources, see
+[Reproducing the Numbers](#reproducing-the-numbers).
+
+| Implementation | Implementation commit | Benchmark source |
+|---|---|---|
+| JNI (pre-2026-04-08) | [`8c44a91e7`](https://github.com/DataDog/java-profiler/commit/8c44a91e727dc906981d3a0237a99da7fe6e73ec) | [Historical benchmark](#historical-benchmark-jni-and-bytebuffer), run with `-Dtcb.extra=,ctxstorage=otel` |
+| ByteBuffer | [`86367c704`](https://github.com/DataDog/java-profiler/commit/86367c7040a22175d9569c69cdbe92a2000b1de1) | [`ThreadContextBenchmark.java` at that commit][old-benchmark], without the `reapply*` benchmarks |
+| All-native (current) | [`0ed46a634`](https://github.com/DataDog/java-profiler/commit/0ed46a634d585df3974b40b4207676a83bf0ff1f) | `ThreadContextBenchmark.java` in the current tree, not at `0ed46a634` (see the [call mapping](#current-benchmark-all-native)) |
+
+[old-benchmark]: https://github.com/DataDog/java-profiler/blob/86367c7040a22175d9569c69cdbe92a2000b1de1/ddprof-stresstest/src/jmh/java/com/datadoghq/profiler/stresstest/scenarios/throughput/ThreadContextBenchmark.java
+
+The JNI implementation ran in OTEL mode (`ctxstorage=otel`), because its default mode does
+not write the OTEP record. The ByteBuffer and all-native implementations always write the
+OTEP record.
+
+### Three-Way Comparison (ns/op)
+
+| Benchmark | JNI (pre-2026-04-08) | ByteBuffer | All-native (current) |
+|---|---:|---:|---:|
+| `setContextFull` | 37.485 ± 0.602 | 17.076 ± 0.164 | 31.284 ± 0.125 |
+| `setContextFull_2t` | 39.113 ± 2.721 | 17.046 ± 0.098 | 31.531 ± 0.311 |
+| `setContextFull_4t` | 37.255 ± 0.345 | 17.058 ± 0.066 | 31.686 ± 0.211 |
+| `setAttrCacheHit` | 172.374 ± 0.615 | 28.097 ± 0.571 | 60.903 ± 0.321 † |
+| `spanLifecycle` | 226.411 ± 4.547 | 43.848 ± 0.159 | 91.242 ± 0.639 |
+| `spanLifecycle_2t` | 226.072 ± 2.023 | 44.045 ± 2.397 | 91.023 ± 0.593 |
+| `spanLifecycle_4t` | 223.611 ± 3.550 | 43.944 ± 2.273 | 91.578 ± 0.695 |
+| `clearContext` | 22.230 ± 0.080 | 15.643 ± 8.683 \* | 17.162 ± 0.247 |
+| `getSpanId` | 80.147 ± 0.370 | 2.291 ± 0.004 | — |
+
+\* The two forks disagree: fork 1 measured 21.1 ns and fork 2 measured 10.2 ns. Each fork
+was stable, so the mean describes neither fork. Do not use this value for comparison.
+
+† 6 forks. In the 2-fork run, one fork measured 73.9 ns and the other 61.0 ns
+(67.434 ± 10.294). In the 6-fork run, all forks measured between 60.7 ns and 61.4 ns.
+
+| Benchmark | All-native vs JNI | All-native vs ByteBuffer |
+|---|---:|---:|
+| `setContextFull` | 1.20x faster | 1.83x slower |
+| `setAttrCacheHit` | 2.83x faster | 2.17x slower |
+| `spanLifecycle` | 2.48x faster | 2.08x slower |
+
+The JNI ratios compare different work. In the JNI implementation, `put()` keeps the
+existing custom attributes, copies them through a buffer, and does not reset the custom
+slots. `setTraceContext()` resets all custom slots.
+
+The JNI and all-native implementations both make one JNI call per write. The attribute
+write gains the most over the JNI implementation. The JNI implementation converts and
+looks up a `jstring` on each call. The all-native implementation passes a cached encoding
+and a `byte[]` instead.
+
+Compared with the ByteBuffer implementation, each all-native call adds one JNI transition
+and one `ProfiledThread` lookup. Each attribute write also adds one `byte[]` copy, and its
+value cache is different. The ByteBuffer implementation kept plain arrays in each
+`ThreadContext`. `ContextValueCache` is one `AtomicReferenceArray` for all threads, and each
+cache hit does a volatile read. A profile is necessary to show how much of the 2x difference
+each of these costs causes.
+
+### False Sharing (all-native)
+
+| Benchmark | 1 thread | 2 threads | 4 threads | 1t to 4t |
+|---|---:|---:|---:|---:|
+| `setContextFull` | 31.284 | 31.531 | 31.686 | +1.3% |
+| `spanLifecycle` | 91.242 | 91.023 | 91.578 | +0.4% |
+
+None of the three implementations shows false sharing on this host. Each multi-threaded
+result is within 5% of the related single-threaded result.
+
+### JNI (pre-2026-04-08) in Default Mode
+
+Same host and settings, with the default `ctxstorage`. In this mode, the JNI
+implementation does not write the OTEP record. Thus these numbers are not comparable to
+the three-way comparison. They show how much of the JNI cost comes from the OTEP record
+write.
+
+| Benchmark | ns/op |
+|---|---:|
+| `setContextFull` | 18.337 ± 0.128 |
+| `setContextFull_2t` | 20.812 ± 3.474 \* |
+| `setContextFull_4t` | 18.348 ± 0.047 |
+| `setAttrCacheHit` | 157.734 ± 0.302 |
+| `spanLifecycle` | 175.971 ± 0.425 |
+| `spanLifecycle_2t` | 178.703 ± 3.981 |
+| `spanLifecycle_4t` | 177.848 ± 2.061 |
+| `clearContext` | 18.023 ± 0.157 |
+| `getSpanId` | 2.692 ± 0.022 |
+
+\* The two forks disagree: 18.6 ns and 23.0 ns.
+
+### Cost Model (Linux x86_64, 2026-10-26)
+
+| Operation | JNI (pre-2026-04-08) | ByteBuffer | All-native (current) |
+|---|---:|---:|---:|
+| Span start (`setContextFull`) | ~37 ns | ~17 ns | ~31 ns |
+| One attribute (`setAttrCacheHit`) | ~172 ns | ~28 ns | ~61 ns |
+| Span start and one attribute (`spanLifecycle`) | ~226 ns | ~44 ns | ~91 ns |
+| Span end (`clearContext`) | ~22 ns | 10–21 ns | ~17 ns |
+| **Span start, one attribute and span end** | **~248 ns** | **~54–65 ns** | **~108 ns** |
+
+The cost model adds results of separate benchmarks, and two of them do not run in a
+production state. Each benchmark runs in its own fork. Thus `clearContext` clears a record
+that is already clear, and `setAttrCacheHit` writes an attribute without a preceding
+`setTraceContext()`. The span-end and attribute costs are estimates.
+
+With the all-native implementation, one span start, one attribute and one span end cost
+about 108 ns. With this estimate, one thread can do about 9 million such spans per second.
+At 100,000 spans per second, the context writes use about 10.8 ms of CPU time per second,
+or about 1.1% of one core. These are estimates, not production measurements.
+
+## Historical Results — macOS arm64 (ByteBuffer)
+
+These runs measured the ByteBuffer implementation on a laptop. Do not compare them with
+the Linux numbers, because the CPU, the OS and the JDK build are different.
+
+| Property | 2026-03-21 | 2026-04-07 |
+|---|---|---|
+| OS | macOS Darwin 25.3.0 (arm64) | macOS Darwin 25.3.0 (arm64) |
+| JDK | Zulu 25.0.2 | Temurin 25.0.2 |
+| JMH | 1.37 | 1.37 |
+| Forks | 2 | 1 |
+| Warmup | 3 iterations x 1 s | 2 iterations x 1 s |
+| Measurement | 5 iterations x 2 s | 3 iterations x 2 s |
+
+| Benchmark | 2026-03-21 (ns/op) | 2026-04-07 (ns/op) |
+|---|---:|---:|
+| `clearContext` | 5.011 ± 0.039 | 4.279 ± 0.236 |
+| `getSpanId` | — | 1.046 ± 0.054 |
+| `setAttrCacheHit` | 10.707 ± 0.077 | 9.512 ± 0.213 |
+| `setContextFull` | 11.104 ± 0.338 | 5.993 ± 0.094 |
+| `setContextFull_2t` | 11.081 ± 0.105 | 6.360 ± 0.680 |
+| `setContextFull_4t` | 11.741 ± 0.338 | 6.162 ± 1.297 |
+| `spanLifecycle` | 30.430 ± 0.129 | 16.345 ± 0.935 |
+| `spanLifecycle_2t` | 30.674 ± 0.093 | 14.475 ± 1.104 |
+| `spanLifecycle_4t` | 32.203 ± 0.309 | 15.233 ± 0.302 |
+
+The 2026-04-07 run used 1 fork and 3 iterations. In that run, the multi-threaded
+`spanLifecycle` results are lower than the single-threaded result. The difference is
+within the noise of 1 fork and 3 iterations.
+
+The JNI implementation on the same laptop, with Temurin 25.0.2:
+
+| Benchmark | JNI (ns/op) |
+|---|---:|
+| `clearContext` | 6.5 |
+| `setContextFull` | 20.0 |
+| `setAttrCacheHit` | 114.8 |
+| `spanLifecycle` | 146.3 |
 
 ## Recommendations
 
-1. **No action needed on false sharing.** The current `ProfiledThread`
-   allocation strategy (one heap allocation per thread) provides
-   sufficient cache-line isolation. Confirmed by both the 2026-03-21 and
-   2026-04-07 runs.
+1. **Take no action on false sharing on Linux x86_64.** All three implementations stay
+   flat from 1 to 4 threads.
+2. **Profile the all-native implementation** if its 2x cost over the ByteBuffer
+   implementation matters. Measure the JNI transition, the `ProfiledThread` lookup, the
+   `byte[]` copy and the `ContextValueCache` lookup separately.
+3. **Test more threads.** Add `@Threads(8)` and `@Threads(16)` variants. Run them on a
+   host with enough physical cores.
+4. **Measure cache misses on Linux.** Run
+   `perf stat -e L1-dcache-load-misses,LLC-load-misses` and compare the miss rates across
+   thread counts.
 
-2. **`getContext` allocation (resolved).** The original `getContext` method
-   allocated a `long[]` per call (~71.6 ns). Resolved by replacing `getContext()`
-   with direct `DirectByteBuffer` reads in `getSpanId()` (1.0 ns) and
-   `getRootSpanId()`, eliminating the JNI call and array allocation entirely.
+## Reproducing the Numbers
 
-3. **Re-run multi-threaded variants with 2+ forks.** The 2026-04-07 run used
-   1 fork with 3 iterations; `setContextFull_4t` has a ±21% error bar and the
-   `spanLifecycle` multi-thread results show noise-floor inversion. A 2-fork run
-   would produce publication-quality error bars.
+The current benchmark is in the tree at
+`ddprof-stresstest/src/jmh/java/com/datadoghq/profiler/stresstest/scenarios/throughput/ThreadContextBenchmark.java`.
+The historical benchmark uses the `ThreadContext` API, which #696 deleted. To see the
+original file on GitHub, open [`ThreadContextBenchmark.java` at `86367c704`][old-benchmark].
+This report contains the [modified source](#historical-benchmark-jni-and-bytebuffer) that
+ran against both historical implementations.
 
-4. **Higher thread counts.** To stress-test on server hardware, add `@Threads(8)`
-   and `@Threads(16)` variants and run on a machine with sufficient physical cores.
-   On a laptop, 4 threads saturates the performance core complex.
+### Procedure
 
-5. **Linux `perf stat` validation.** For definitive cache-miss evidence, run on
-   Linux with `perf stat -e L1-dcache-load-misses,LLC-load-misses` and compare
-   miss rates across thread counts.
+1. Check out the commit of the implementation. For the all-native implementation, use the
+   current tree. For `8c44a91e7`, replace `ThreadContextBenchmark.java` at the path above
+   with the [historical benchmark](#historical-benchmark-jni-and-bytebuffer). For
+   `86367c704`, use the file at that commit without changes.
+2. Build the JMH jar. Set `JAVA_HOME` to JDK 21 and `JAVA_TEST_HOME` to the JDK under test.
+
+   ```bash
+   ./.claude/commands/build-and-summarize :ddprof-stresstest:jmhJar -Pskip-tests -Pskip-gtest
+   ```
+3. Make sure that the jar contains only the release build of the native library.
+   `stresstests.jar` contains two `libjavaProfiler` entries with the same name: the debug
+   build and the release build. Remove both entries, then add the release build:
+
+   ```bash
+   cp ddprof-stresstest/build/libs/stresstests.jar bench.jar
+   zip -d bench.jar META-INF/native-libs/linux-x64/libjavaProfiler.so
+   (cd ddprof-lib/build/native/release && \
+    zip "$OLDPWD/bench.jar" META-INF/native-libs/linux-x64/libjavaProfiler.so)
+   ```
+4. Run the jar directly, and set all JMH options and the time unit explicitly. Put the
+   benchmark regex in single quotes. In double quotes, interactive bash and zsh expand
+   `!reapply` as a history reference. Do not run the benchmark through Gradle. The `jmh {}`
+   block in `ddprof-stresstest/build.gradle.kts` sets `fork`, `iterations` and
+   `timeOnIteration`, and these settings override the class annotations. The jar's `Main`
+   also replaces each option that is not on the command line: 1 fork, 0 warmup iterations,
+   1 measurement iteration of 5 s, and microseconds.
+
+   ```bash
+   # All-native and ByteBuffer
+   java -jar bench.jar 'ThreadContextBenchmark\.(?!reapply)' \
+     -f 2 -wi 3 -w 1s -i 5 -r 2s -tu ns -bm avgt -rf json -rff results.json
+
+   # JNI (pre-2026-04-08), OTEL mode
+   java -jar bench.jar "ThreadContextBenchmark" \
+     -jvmArgsAppend "-Dtcb.extra=,ctxstorage=otel" \
+     -f 2 -wi 3 -w 1s -i 5 -r 2s -tu ns -bm avgt -rf json -rff results-otel.json
+   ```
+
+### Current Benchmark (all-native)
+
+The current benchmark is a port of the historical benchmark to the all-native API. It has
+no `getSpanId` benchmark. The table shows how the measured calls map:
+
+| Benchmark | Historical call | All-native call |
+|---|---|---|
+| `setContextFull` | `ThreadContext.put(lrs, span, 0, trLo)` | `setTraceContext(lrs, span, 0, trLo, -1, null, -1, null)` |
+| `setAttrCacheHit` | `ThreadContext.setContextAttribute(0, route)` | `setContextValue(0, route)` |
+| `clearContext` | `ThreadContext.put(0, 0, 0, 0)` | `clearTraceContext()` |
+
+In the ByteBuffer implementation, `put()` resets all custom slots. `setTraceContext()` also
+resets all custom slots. Thus `setContextFull` measures the same work in both
+implementations.
+
+Both benchmarks cycle through the same five routes. The historical benchmark uses
+`ROUTES[counter++ % ROUTES.length]`. After 2^31 calls on one thread, the `int` counter
+becomes negative, and the array access throws `ArrayIndexOutOfBoundsException`. The
+current benchmark keeps the counter in the range 0 to 4. Runs with the settings in this
+report stay far below 2^31 calls per thread.
+
+### Historical Benchmark (JNI and ByteBuffer)
+
+This source is [`ThreadContextBenchmark.java` from `86367c704`][old-benchmark], with these
+changes:
+
+- It has no `reapply*` benchmarks and no `ReapplyState` class. These benchmarks use API
+  that `8c44a91e7` does not have.
+- The start command appends the `tcb.extra` system property.
+- This report leaves out the license header and the class javadoc. The
+  `StandardCharsets` import is removed, because only `ReapplyState` used it.
+
+When `tcb.extra` is not set, the start command and all measured methods are the same as in
+`86367c704`.
+
+```java
+package com.datadoghq.profiler.stresstest.scenarios.throughput;
+
+import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.ThreadContext;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import org.openjdk.jmh.annotations.Benchmark;
+import org.openjdk.jmh.annotations.BenchmarkMode;
+import org.openjdk.jmh.annotations.Fork;
+import org.openjdk.jmh.annotations.Level;
+import org.openjdk.jmh.annotations.Measurement;
+import org.openjdk.jmh.annotations.Mode;
+import org.openjdk.jmh.annotations.OutputTimeUnit;
+import org.openjdk.jmh.annotations.Scope;
+import org.openjdk.jmh.annotations.Setup;
+import org.openjdk.jmh.annotations.State;
+import org.openjdk.jmh.annotations.Threads;
+import org.openjdk.jmh.annotations.Warmup;
+
+@BenchmarkMode(Mode.AverageTime)
+@OutputTimeUnit(TimeUnit.NANOSECONDS)
+@Fork(value = 2, warmups = 0)
+@Warmup(iterations = 3, time = 1)
+@Measurement(iterations = 5, time = 2)
+public class ThreadContextBenchmark {
+
+    private static final String[] ROUTES = {
+        "GET /api/users", "POST /api/orders", "GET /api/health",
+        "PUT /api/users/{id}", "DELETE /api/sessions"
+    };
+
+    @State(Scope.Benchmark)
+    public static class ProfilerState {
+        JavaProfiler profiler;
+
+        @Setup(Level.Trial)
+        public void setup() throws Exception {
+            profiler = JavaProfiler.getInstance();
+            Path jfr = Files.createTempFile("bench", ".jfr");
+            profiler.execute("start,cpu=10ms,attributes=http.route" + System.getProperty("tcb.extra", "") + ",jfr,file=" + jfr.toAbsolutePath());
+        }
+    }
+
+    @State(Scope.Thread)
+    public static class ThreadState {
+        ThreadContext ctx;
+        long spanId;
+        long localRootSpanId;
+        long traceIdLow;
+        int counter;
+
+        @Setup(Level.Trial)
+        public void setup(ProfilerState ps) {
+            ctx = ps.profiler.getThreadContext();
+            spanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+            localRootSpanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+            traceIdLow = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        }
+    }
+
+    @Benchmark
+    public void setContextFull(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.traceIdLow);
+    }
+
+    @Benchmark
+    public boolean setAttrCacheHit(ThreadState ts) {
+        return ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
+    }
+
+    @Benchmark
+    public void spanLifecycle(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.traceIdLow);
+        ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
+    }
+
+    @Benchmark
+    @Threads(2)
+    public void setContextFull_2t(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.traceIdLow);
+    }
+
+    @Benchmark
+    @Threads(4)
+    public void setContextFull_4t(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.traceIdLow);
+    }
+
+    @Benchmark
+    @Threads(2)
+    public void spanLifecycle_2t(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.traceIdLow);
+        ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
+    }
+
+    @Benchmark
+    @Threads(4)
+    public void spanLifecycle_4t(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.traceIdLow);
+        ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
+    }
+
+    @Benchmark
+    public long getSpanId(ThreadState ts) {
+        return ts.ctx.getSpanId();
+    }
+
+    @Benchmark
+    public void clearContext(ThreadState ts) {
+        ts.ctx.put(0, 0, 0, 0);
+    }
+}
+```

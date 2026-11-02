@@ -176,8 +176,8 @@ CodeCache::~CodeCache() {
 }
 
 long long CodeCache::memoryUsage() const {
-  // O(1): _memory_usage is updated incrementally by the constructor, add(),
-  // expand(), and setDwarfTable() -- the same pre-publication mutators that
+  // O(1): _memory_usage is updated incrementally by the constructor,
+  // add()/commitAdd(), and setDwarfTable() -- the same pre-publication mutators that
   // used to be re-summed here on every call. Safe to read lock-free once
   // published (Libraries::native_libs) because those mutators never run
   // afterwards (asserted via _published), same invariant the old per-call
@@ -191,55 +191,76 @@ long long CodeCache::memoryUsage() const {
   return _memory_usage;
 }
 
-void CodeCache::expand() {
-  // Must not run after publication: memoryUsage() reads _blobs lock-free from
-  // the dump thread and a concurrent realloc would free it underneath.
-  assert(!_published.load(std::memory_order_acquire) &&
-         "expand() on a published CodeCache races memoryUsage()");
-  CodeBlob *old_blobs = _blobs;
-  CodeBlob *new_blobs = new CodeBlob[_capacity * 2];
-
-  memcpy(new_blobs, old_blobs, _count * sizeof(CodeBlob));
-
-  // Delta is exactly the current (pre-doubling) capacity's worth of blobs.
-  _memory_usage += (long long)_capacity * sizeof(CodeBlob);
-  _capacity *= 2;
-  _blobs = new_blobs;
-  delete[] old_blobs;
-}
-
-void CodeCache::add(const void *start, int length, const char *name,
-                    bool update_bounds) {
+void CodeCache::prepareAdd(const char *name, PreparedAdd &prepared) const {
   // Symbols are added while parsing a library, before it is registered into a
   // CodeCacheArray. Adding after publication would race memoryUsage() (which
   // reads _blobs/_count lock-free at dump time). Unpublished standalone caches
   // (e.g. _runtime_stubs) are exempt — they are never published.
   assert(!_published.load(std::memory_order_acquire) &&
          "add() on a published CodeCache races memoryUsage()");
+  // A reused PreparedAdd would leak the allocations it still owns.
+  assert(prepared.name == nullptr && prepared.grown == nullptr);
   char *name_copy = NativeFunc::create(name, _lib_index);
-  _memory_usage += (long long)NativeFunc::allocSize(name);
+  prepared.name = name_copy;
+  prepared.name_size = (long long)NativeFunc::allocSize(name);
   // Measured off the block just handed back, while the pointer is in hand: the
   // gauge is published as a total at add() time, with no pointer left to probe.
-  _name_overhead += (long long)NativeFunc::nameOverhead(name_copy);
+  prepared.name_overhead = (long long)NativeFunc::nameOverhead(name_copy);
   // Replace non-printable characters
   for (char *s = name_copy; *s != 0; s++) {
     if (*s < ' ')
       *s = '?';
   }
 
+  prepared.capacity = _capacity;
+  prepared.grown = nullptr;
   if (_count >= _capacity) {
-    expand();
+    prepared.grown = new CodeBlob[_capacity * 2];
+    memcpy(prepared.grown, _blobs, _count * sizeof(CodeBlob));
   }
+}
+
+CodeBlob *CodeCache::commitAdd(const void *start, int length,
+                               PreparedAdd &prepared,
+                               bool update_bounds) {
+  assert(!_published.load(std::memory_order_acquire) &&
+         "add() on a published CodeCache races memoryUsage()");
+  // A mutation between prepareAdd() and commitAdd() would make the grown copy
+  // stale or leave no free slot.
+  assert(prepared.capacity == _capacity &&
+         (prepared.grown != nullptr || _count < _capacity));
+  CodeBlob *retired = nullptr;
+  if (prepared.grown != nullptr) {
+    // Delta is exactly the current (pre-doubling) capacity's worth of blobs.
+    _memory_usage += (long long)_capacity * sizeof(CodeBlob);
+    _capacity *= 2;
+    retired = _blobs;
+    _blobs = prepared.grown;
+  }
+  _memory_usage += prepared.name_size;
+  _name_overhead += prepared.name_overhead;
 
   const void *end = (const char *)start + length;
   _blobs[_count]._start = start;
   _blobs[_count]._end = end;
-  _blobs[_count]._name = name_copy;
+  _blobs[_count]._name = prepared.name;
   _count++;
+  // The cache owns both allocations now; the PreparedAdd destructor must not
+  // free them.
+  prepared.name = nullptr;
+  prepared.grown = nullptr;
 
   if (update_bounds) {
     updateBounds(start, end);
   }
+  return retired;
+}
+
+void CodeCache::add(const void *start, int length, const char *name,
+                    bool update_bounds) {
+  PreparedAdd prepared;
+  prepareAdd(name, prepared);
+  delete[] commitAdd(start, length, prepared, update_bounds);
 }
 
 void CodeCache::updateBounds(const void *start, const void *end) {
