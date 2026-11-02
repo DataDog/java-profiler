@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk8
 
 ## musl-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-02 08:00:04 EST
+**Date:** 2026-11-02 08:53:12 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 116 |
-| Sample Rate | 1.93/sec |
-| Health Score | 121% |
-| Threads | 5 |
+| CPU Samples | 141 |
+| Sample Rate | 2.35/sec |
+| Health Score | 147% |
+| Threads | 6 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 240 |
-| Sample Rate | 4.00/sec |
-| Health Score | 250% |
-| Threads | 8 |
+| CPU Samples | 180 |
+| Sample Rate | 3.00/sec |
+| Health Score | 188% |
+| Threads | 6 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 29-31 cores)</summary>
 
 ```
-1793624151 29
-1793624156 29
-1793624161 29
-1793624166 29
-1793624171 29
-1793624176 31
-1793624181 31
-1793624186 31
-1793624191 31
-1793624196 31
-1793624201 31
-1793624206 31
-1793624211 31
-1793624216 31
-1793624221 31
-1793624226 31
-1793624231 31
-1793624236 31
-1793624241 31
-1793624246 31
+1793627295 29
+1793627300 29
+1793627305 29
+1793627310 29
+1793627315 29
+1793627320 29
+1793627325 29
+1793627330 29
+1793627335 29
+1793627340 29
+1793627345 29
+1793627350 29
+1793627355 29
+1793627360 31
+1793627365 31
+1793627370 31
+1793627375 31
+1793627380 31
+1793627385 31
+1793627390 31
 ```
 </details>
 
