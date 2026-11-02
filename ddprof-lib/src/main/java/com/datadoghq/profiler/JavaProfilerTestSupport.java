@@ -37,9 +37,29 @@ public final class JavaProfilerTestSupport {
         return isThreadRegistryActiveForTest0();
     }
 
+    /**
+     * Records a blocked sample and its deferred tail through the native wall precheck path,
+     * inserting a real JFR dump at the selected boundary. Debug builds only.
+     *
+     * @param snapshot path receiving the chunk before the deferred tail
+     * @param beforePublication whether to dump between primary recording and precheck completion;
+     *     otherwise dump between tail preparation and recording
+     * @param resetBeforeTail whether to reset the cached state after tail preparation
+     * @return whether both primary samples were recorded and the dump succeeded;
+     *     always {@code false} outside debug builds
+     */
+    public static boolean recordUnownedWallTailAcrossDumpForTest(
+            String snapshot, boolean beforePublication, boolean resetBeforeTail) {
+        return recordUnownedWallTailAcrossDumpForTest0(
+                Thread.currentThread(), snapshot, beforePublication, resetBeforeTail);
+    }
+
     private static native void setForceWallStartFailureForTest0(boolean force);
 
     private static native boolean isForceWallStartFailureArmedForTest0();
 
     private static native boolean isThreadRegistryActiveForTest0();
+
+    private static native boolean recordUnownedWallTailAcrossDumpForTest0(
+            Thread thread, String snapshot, boolean beforePublication, boolean resetBeforeTail);
 }

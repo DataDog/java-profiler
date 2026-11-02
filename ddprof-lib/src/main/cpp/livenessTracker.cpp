@@ -2565,8 +2565,7 @@ void LivenessTracker::onGC() {
 }
 
 void LivenessTracker::getLiveTraceIds(CallTraceIdSet& out_buffer) {
-  out_buffer.clear();
-  
+  // processTraces() clears the shared set before invoking all liveness checkers.
   if (!_enabled || !_initialized) {
     return;
   }
@@ -2574,12 +2573,15 @@ void LivenessTracker::getLiveTraceIds(CallTraceIdSet& out_buffer) {
   // Lock the table to iterate over tracking entries
   _table_lock.lockShared();
   
-  // Reserve space to avoid reallocations during filling
-  // Note: unordered_set uses rehash for capacity management
-  out_buffer.rehash(static_cast<size_t>(_table_size / 0.75f));
+  const int table_size = __atomic_load_n(&_table_size, __ATOMIC_ACQUIRE);
+  // Include IDs from earlier checkers without shrinking their reserved capacity.
+  const size_t capacity = out_buffer.size() + static_cast<size_t>(table_size);
+  if (capacity > out_buffer.bucket_count() * out_buffer.max_load_factor()) {
+    out_buffer.reserve(capacity);
+  }
   
   // Collect call_trace_id values from all live tracking entries
-  for (int i = 0; i < _table_size; i++) {
+  for (int i = 0; i < table_size; i++) {
     TrackingEntry* entry = &_table[i];
     // Skip unpublished slots (shared lock - see TrackingEntry::ready).
     if (__atomic_load_n(&entry->ready, __ATOMIC_ACQUIRE) != 1) {

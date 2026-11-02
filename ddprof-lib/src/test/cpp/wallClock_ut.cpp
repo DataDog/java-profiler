@@ -9,7 +9,11 @@
 #include <csignal>
 #include <thread>
 #include "arguments.h"
+#include "counters.h"
+#include "profiler.h"
 #include "wallClock.h"
+
+#include <memory>
 
 // profiler.cpp's Profiler::start() falls back to ThreadFilter::deactivateRecording()
 // when the wall engine fails to start. This proves BaseWallClock::start() can
@@ -194,4 +198,86 @@ TEST_F(WallClockCapacityTest, ExhaustionKeepsSendingSignalsAcrossRecordings) {
         registry.deactivateRecording();
         registry.init("", true);
     }
+}
+
+class WallClockPrecheckTest : public ::testing::Test {
+protected:
+    static constexpr int kTid = 12345;
+    Profiler* profiler = Profiler::instance();
+    ThreadFilter* filter = profiler->threadFilter();
+    WallClockBlockTracker* tracker = profiler->blockTracker();
+    std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current{
+        nullptr, ProfiledThread::deleteForTest};
+    ThreadFilter::SlotID slot_id = -1;
+
+    void SetUp() override {
+        Counters::reset();
+        filter->init("", true);
+        slot_id = filter->registerThread(kTid);
+        ASSERT_GE(slot_id, 0);
+        current.reset(ProfiledThread::forTid(kTid));
+        current->setFilterSlotId(slot_id);
+    }
+
+    void TearDown() override {
+        tracker->resetAll();
+        filter->deactivateRecording();
+        current.reset();
+        Counters::reset();
+    }
+};
+
+TEST_F(WallClockPrecheckTest, UnownedObservationsRetainUnitWeightWithoutFallback) {
+    // Repeated short blocked bursts used to lose their suppressed remainder
+    // on every runnable observation in the delegated JVMTI path.
+    for (int burst = 0; burst < 3; ++burst) {
+        for (int observation = 0; observation < 7; ++observation) {
+            OSThreadState state = observation < 6 ? OSThreadState::SLEEPING
+                                                  : OSThreadState::RUNNABLE;
+            u64 weight = 0;
+            EXPECT_FALSE(BaseWallClock::wallPrecheckForTest(
+                current.get(), false, state, weight, true));
+            EXPECT_EQ(1ULL, weight);
+        }
+    }
+    EXPECT_EQ(0ULL, tracker->slotForId(slot_id)->unowned_blocked_pending_weight.load());
+    EXPECT_EQ(0, Counters::getCounter(WC_UNOWNED_BLOCKED_SUPPRESSED));
+    EXPECT_EQ(0, Counters::getCounter(WC_UNOWNED_BLOCKED_RECORDED));
+}
+
+TEST_F(WallClockPrecheckTest, OwnedBlocksStillSuppressWithoutUnownedFallback) {
+    u64 token = tracker->enterBlockedRun(
+        filter, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+    ASSERT_NE(0ULL, token);
+    u64 weight = 0;
+
+    // A failed write must leave the owned run eligible for another attempt.
+    EXPECT_FALSE(BaseWallClock::wallPrecheckForTest(
+        current.get(), false, OSThreadState::SLEEPING, weight, false));
+    EXPECT_FALSE(BaseWallClock::wallPrecheckForTest(
+        current.get(), false, OSThreadState::SLEEPING, weight, true));
+    EXPECT_TRUE(BaseWallClock::wallPrecheckForTest(
+        current.get(), false, OSThreadState::SLEEPING, weight));
+    EXPECT_EQ(1, Counters::getCounter(WC_SIGNAL_SUPPRESSED_OWNED_BLOCK));
+
+    ASSERT_TRUE(tracker->exitBlockedRun(
+        slot_id, WallClockBlockTracker::tokenGeneration(token)));
+    EXPECT_FALSE(BaseWallClock::wallPrecheckForTest(
+        current.get(), false, OSThreadState::SLEEPING, weight, true));
+    EXPECT_EQ(1ULL, weight);
+}
+
+TEST_F(WallClockPrecheckTest, UnownedFallbackStillAccumulatesWeightWhenEnabled) {
+    u64 weight = 0;
+    EXPECT_FALSE(BaseWallClock::wallPrecheckForTest(
+        current.get(), true, OSThreadState::SLEEPING, weight, true));
+    EXPECT_EQ(1ULL, weight);
+    for (int observation = 0; observation < 9; ++observation) {
+        EXPECT_TRUE(BaseWallClock::wallPrecheckForTest(
+            current.get(), true, OSThreadState::SLEEPING, weight));
+    }
+    EXPECT_FALSE(BaseWallClock::wallPrecheckForTest(
+        current.get(), true, OSThreadState::SLEEPING, weight, true));
+    EXPECT_EQ(10ULL, weight);
+    EXPECT_EQ(9, Counters::getCounter(WC_UNOWNED_BLOCKED_SUPPRESSED));
 }

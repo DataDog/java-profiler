@@ -12,6 +12,7 @@
 #include "threadLocalData.inline.h"
 #include "counters.h"
 
+#include <memory>
 #include <mutex>
 #include <pthread.h>
 
@@ -126,6 +127,41 @@ TEST_F(ThreadLocalDataPoolTest, reclaimedSlotHasResetState) {
     ThreadLocalDataPool::destroyForTest(pool);
 }
 
+TEST_F(ThreadLocalDataPoolTest, reclaimedSlotCanBeginTaskBlockAfterAbandonedInterval) {
+    std::unique_ptr<ThreadLocalDataPool, void (*)(ThreadLocalDataPool*)> pool(
+        ThreadLocalDataPool::createForTest(1), ThreadLocalDataPool::destroyForTest);
+
+    ProfiledThread* first = pool->claimForTest(100);
+    ASSERT_NE(first, nullptr);
+    Context first_context{};
+    first_context.spanId = 123;
+    ASSERT_TRUE(first->taskBlockEnter(2048, 12345, first_context));
+
+    // The first thread exits without ending its interval. Reclaiming its slot
+    // must let a different thread start and finish an independent interval.
+    ASSERT_TRUE(pool->unclaimForTest(first));
+    ProfiledThread* second = pool->claimForTest(200);
+    ASSERT_EQ(second, first);
+    EXPECT_EQ(second->tid(), 200);
+
+    Context second_context{};
+    second_context.rootSpanId = 456;
+    second_context.setTag(0, 789);
+    ASSERT_TRUE(second->taskBlockEnter(4096, 67890, second_context));
+
+    u64 start_ticks = 0;
+    Context exited_context{};
+    EXPECT_FALSE(second->taskBlockExit(2048, start_ticks, exited_context));
+    ASSERT_TRUE(second->taskBlockExit(4096, start_ticks, exited_context));
+    EXPECT_EQ(start_ticks, 67890ULL);
+    EXPECT_EQ(exited_context.spanId, second_context.spanId);
+    EXPECT_EQ(exited_context.rootSpanId, second_context.rootSpanId);
+    for (u32 i = 0; i < DD_TAGS_CAPACITY; i++) {
+        EXPECT_EQ(exited_context.getTag(i), second_context.getTag(i));
+    }
+    EXPECT_TRUE(pool->unclaimForTest(second));
+}
+
 // Broader companion to reclaimedSlotHasResetState above, which only checks
 // filterSlotId and _in_critical_section. This dirties every field
 // unclaimAndReset() is responsible for and asserts the result matches a
@@ -154,6 +190,13 @@ TEST(ProfiledThreadTest, UnclaimAndResetMatchesFreshInstance) {
     dirty->setJavaThread(true);
     ASSERT_TRUE(dirty->parkEnter());
     dirty->setParkBlockToken(0x1234);
+    Context task_block_context{};
+    task_block_context.spanId = 0x6000;
+    task_block_context.rootSpanId = 0x7000;
+    for (u32 i = 0; i < DD_TAGS_CAPACITY; i++) {
+        task_block_context.setTag(i, 0x100 + i);
+    }
+    ASSERT_TRUE(dirty->taskBlockEnter(0x8000, 0x9000, task_block_context));
     dirty->setFilterSlotId(42);
     dirty->startInitWindow();
     dirty->enterSignalScope();
@@ -193,6 +236,13 @@ TEST(ProfiledThreadTest, UnclaimAndResetMatchesFreshInstance) {
     EXPECT_EQ(reset_snapshot.recording_epoch, fresh_snapshot.recording_epoch);
     EXPECT_EQ(reset_snapshot.misc_flags, fresh_snapshot.misc_flags);
     EXPECT_EQ(reset_snapshot.park_block_token, fresh_snapshot.park_block_token);
+    EXPECT_EQ(reset_snapshot.task_block_start_ticks, fresh_snapshot.task_block_start_ticks);
+    EXPECT_EQ(reset_snapshot.task_block_token, fresh_snapshot.task_block_token);
+    EXPECT_EQ(reset_snapshot.task_block_context.spanId, fresh_snapshot.task_block_context.spanId);
+    EXPECT_EQ(reset_snapshot.task_block_context.rootSpanId, fresh_snapshot.task_block_context.rootSpanId);
+    for (u32 i = 0; i < DD_TAGS_CAPACITY; i++) {
+        EXPECT_EQ(reset_snapshot.task_block_context.getTag(i), fresh_snapshot.task_block_context.getTag(i));
+    }
     EXPECT_EQ(reset_snapshot.filter_slot_id, fresh_snapshot.filter_slot_id);
     EXPECT_EQ(reset_snapshot.init_window, fresh_snapshot.init_window);
     EXPECT_EQ(reset_snapshot.signal_depth, fresh_snapshot.signal_depth);

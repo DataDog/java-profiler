@@ -156,11 +156,11 @@ TEST_P(WallClockBlockRestartTest, PausedHookDoesNotMutateReplacementAcrossRestar
     // Model only successful sample completion, as finishWallPrecheck() does.
     // Admission and the stale caller's exit above use the actual JNI bodies.
     if (block->activeBlockOwner() != BlockRunOwner::NONE) {
-        block->markSampledThisRun(hookState());
+        block->markBlockGenerationSampled(block->blockGeneration());
     }
     ThreadEntry replacement{current->tid(), identity, replacement_slot,
                              identity->lifecycleGeneration(), identity->recordingEpoch()};
-    EXPECT_FALSE(tracker->shouldSuppressOwnedBlock(registry, replacement))
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(registry, replacement))
         << "A thread that never entered a block became suppressible";
 
     // A bogus active run must also not prevent the new owner arming its own run.
@@ -183,16 +183,16 @@ TEST_P(WallClockBlockRestartTest, SurvivingOwnerRefreshesOnlyRecordingState) {
     auto* block = tracker->slotForId(slot_id);
     u64 generation = identity->lifecycleGeneration();
     u64 epoch = registry->recordingEpoch();
-    block->markSampledThisRun(hookState());
+    block->markBlockGenerationSampled(block->blockGeneration());
     ThreadEntry stale{current->tid(), identity, slot_id, generation, epoch};
-    ASSERT_TRUE(tracker->shouldSuppressOwnedBlock(registry, stale));
+    ASSERT_TRUE(tracker->isOwnedBlockSuppressionCandidate(registry, stale));
 
     registry->deactivateRecording();
     registry->init("", true);
     ASSERT_EQ(identity, registry->lookupByTid(current->tid()));
     EXPECT_EQ(generation, identity->lifecycleGeneration());
     EXPECT_EQ(nullptr, registry->activeSlotForId(slot_id, current->tid()));
-    EXPECT_FALSE(tracker->shouldSuppressOwnedBlock(registry, stale));
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(registry, stale));
     exitHook(old_token);
 
     u64 new_token = enterHook();
@@ -200,15 +200,18 @@ TEST_P(WallClockBlockRestartTest, SurvivingOwnerRefreshesOnlyRecordingState) {
     EXPECT_NE(old_token, new_token);
     EXPECT_EQ(slot_id, current->filterSlotId());
     EXPECT_EQ(registry->recordingEpoch(), identity->recordingEpoch());
-    EXPECT_FALSE(block->sampledThisRun());
+    EXPECT_EQ(0ULL, block->sampledBlockGeneration());
     EXPECT_EQ(hookState(), block->activeBlockState());
     exitHook(new_token);
 }
 
 TEST_P(WallClockBlockRestartTest, ThreadExitWhileStoppedRetiresIdentity) {
     AdmissionPause pause;
+    // Make the caller register again rather than refresh a retained identity.
+    registry->unregisterThreadByTid(current->tid());
     int worker_tid = -1;
     int worker_slot = -1;
+    u64 worker_lifecycle_generation = 0;
     u64 token = 0;
     std::thread worker([&] {
         auto* self = ProfiledThread::initCurrentThreadSignalSafe();
@@ -216,6 +219,7 @@ TEST_P(WallClockBlockRestartTest, ThreadExitWhileStoppedRetiresIdentity) {
         worker_tid = self->tid();
         token = enterHook();
         worker_slot = self->filterSlotId();
+        worker_lifecycle_generation = registry->slotForId(worker_slot)->lifecycleGeneration();
         AdmissionPause::pause(&pause);
         // No ThreadEnd callback or explicit unregister: pthread teardown must
         // retire this identity while registry admission is disabled.
@@ -236,6 +240,10 @@ TEST_P(WallClockBlockRestartTest, ThreadExitWhileStoppedRetiresIdentity) {
     ASSERT_TRUE(reached);
     ASSERT_NE(0u, token);
     EXPECT_EQ(nullptr, registry->lookupByTid(worker_tid));
+    auto* retired_identity = registry->slotForId(worker_slot);
+    ASSERT_NE(nullptr, retired_identity);
+    EXPECT_EQ(-1, retired_identity->nativeTid());
+    EXPECT_EQ(0u, retired_identity->recordingEpoch());
     auto* block = tracker->slotForId(worker_slot);
     ASSERT_NE(nullptr, block);
     EXPECT_EQ(BlockRunOwner::NONE, block->activeBlockOwner());
@@ -244,7 +252,18 @@ TEST_P(WallClockBlockRestartTest, ThreadExitWhileStoppedRetiresIdentity) {
     registry->init("", true);
     u64 new_token = enterHook();
     ASSERT_NE(0u, new_token);
-    EXPECT_NE(nullptr, registry->activeSlotForId(current->filterSlotId(), current->tid()));
-    EXPECT_NE(token, new_token);
+    auto* new_identity = registry->activeSlotForId(current->filterSlotId(), current->tid());
+    ASSERT_NE(nullptr, new_identity);
+    EXPECT_EQ(current->tid(), new_identity->nativeTid());
+    // popFromFreeList() starts at a shard selected by the calling thread's ID,
+    // so the caller may receive another free slot. Lifecycle counters belong
+    // to individual slots and can only be compared when the slot is reused.
+    if (current->filterSlotId() == worker_slot) {
+        EXPECT_GT(new_identity->lifecycleGeneration(), worker_lifecycle_generation);
+    }
+    auto* new_block = tracker->slotForId(current->filterSlotId());
+    ASSERT_NE(nullptr, new_block);
+    EXPECT_EQ(BlockRunOwner::JAVA, new_block->activeBlockOwner());
+    EXPECT_EQ(hookState(), new_block->activeBlockState());
     exitHook(new_token);
 }

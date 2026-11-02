@@ -1090,9 +1090,27 @@ TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountEmptyTableReturnsZer
 // uses for heapFloorRising(), plus setMaxHeapBytesForTest() to avoid the
 // JNI-dependent HeapUsage::getMaxHeap() call this suite has no live JVM for.
 // ---------------------------------------------------------------------------
-// Reaches the private state onGC()'s container-usage gate depends on.
+// Reaches private state for GC and liveness-collection tests.
 class LivenessTrackerTestAccessor {
 public:
+    static void collectLiveTraceIdsForTest(LivenessTracker *t, bool enabled,
+                                           bool initialized, TrackingEntry *entries,
+                                           int count, CallTraceIdSet& ids) {
+        bool saved_enabled = t->_enabled;
+        bool saved_initialized = t->_initialized;
+        TrackingEntry *saved_table = t->_table;
+        int saved_size = t->_table_size;
+        t->_enabled = enabled;
+        t->_initialized = initialized;
+        t->_table = entries;
+        t->_table_size = count;
+        t->getLiveTraceIds(ids);
+        t->_enabled = saved_enabled;
+        t->_initialized = saved_initialized;
+        t->_table = saved_table;
+        t->_table_size = saved_size;
+    }
+
     // Runs one onGC() with the given _container_limit_resolved value and returns the
     // container usage it recorded. Restores the touched fields afterwards.
     static u64 containerUsageRecordedByOnGC(LivenessTracker *t, bool limit_resolved) {
@@ -1184,6 +1202,63 @@ public:
         return true;
     }
 };
+
+TEST(LivenessTraceIdsTest, DisabledCheckerPreservesOtherCheckersIds) {
+    CallTraceIdSet ids{99};
+    LivenessTrackerTestAccessor::collectLiveTraceIdsForTest(
+        LivenessTracker::instance(), false, true, nullptr, 0, ids);
+    EXPECT_EQ(1U, ids.size());
+    EXPECT_EQ(1U, ids.count(99));
+}
+
+TEST(LivenessTraceIdsTest, UninitializedCheckerPreservesOtherCheckersIds) {
+    CallTraceIdSet ids{99};
+    LivenessTrackerTestAccessor::collectLiveTraceIdsForTest(
+        LivenessTracker::instance(), true, false, nullptr, 0, ids);
+    EXPECT_EQ(1U, ids.size());
+    EXPECT_EQ(1U, ids.count(99));
+}
+
+TEST(LivenessTraceIdsTest, AddsOnlyPublishedLiveIdsWithoutErasingOtherCheckersIds) {
+    TrackingEntry entries[4]{};
+    entries[0].ready = 1;
+    entries[0].ref = reinterpret_cast<jweak>(1);
+    entries[0].call_trace_id = 42;
+    entries[1].ref = reinterpret_cast<jweak>(1);
+    entries[1].call_trace_id = 43; // Not published yet.
+    entries[2].ready = 1;
+    entries[2].call_trace_id = 44; // No live reference.
+    entries[3].ready = 1;
+    entries[3].ref = reinterpret_cast<jweak>(1);
+    entries[3].call_trace_id = 42; // Duplicate live trace.
+    CallTraceIdSet ids{99};
+
+    LivenessTrackerTestAccessor::collectLiveTraceIdsForTest(
+        LivenessTracker::instance(), true, true, entries, 4, ids);
+
+    EXPECT_EQ(2U, ids.size());
+    EXPECT_EQ(1U, ids.count(99));
+    EXPECT_EQ(1U, ids.count(42));
+    EXPECT_EQ(0U, ids.count(43));
+    EXPECT_EQ(0U, ids.count(44));
+}
+
+TEST(LivenessTraceIdsTest, PreservesPreallocatedCapacityForOtherCheckers) {
+    TrackingEntry entry{};
+    entry.ready = 1;
+    entry.ref = reinterpret_cast<jweak>(1);
+    entry.call_trace_id = 42;
+    CallTraceIdSet ids{99};
+    ids.reserve(256);
+    size_t buckets = ids.bucket_count();
+
+    LivenessTrackerTestAccessor::collectLiveTraceIdsForTest(
+        LivenessTracker::instance(), true, true, &entry, 1, ids);
+
+    EXPECT_EQ(1U, ids.count(99));
+    EXPECT_EQ(1U, ids.count(42));
+    EXPECT_GE(ids.bucket_count(), buckets);
+}
 
 TEST(LivenessTrackerSessionTest, ResetSessionClearsOnlyRecordingGates) {
     LivenessTracker *tracker = LivenessTracker::instance();
