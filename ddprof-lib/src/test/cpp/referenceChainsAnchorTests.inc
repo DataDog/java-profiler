@@ -809,3 +809,174 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
 // offset, the superclass-chain order, the interface-referrer branch - and degrade to the edge KIND
 // on any undecodable hop, never a fabricated name (the fail-safe contract: a wrong numbering on an
 // unverified JVM degrades, it does not lie).
+
+// Local-root holders enter the anchor index only once confirmed as containers: a classified
+// non-container is ignored outright, and an unclassified holder waits in the pending buffer and is
+// dropped by the resolve step if its class is still unknown or turns out to be a non-container.
+TEST_F(ReferenceChainsBfsTest, LocalRootAnchorIndexHoldsOnlyConfirmedContainers) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const jlong kNonContainer = -201, kLater = -202, kNever = -203, kContainer = -204;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kNonContainer, false);
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kContainer, true);
+
+    // Classified non-container: neither indexed nor parked.
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(301, kNonContainer);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+
+    // Classified container: indexed directly and counted against the local cap.
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(302, kContainer);
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::localAnchorCountForTest());
+
+    // Unclassified holders are parked (deduplicated), not indexed.
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(303, kLater);
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(303, kLater);
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(304, kNever);
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+
+    // kLater classifies as a non-container, kNever stays unknown: both are dropped, and the
+    // pending buffer is emptied every resolve.
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kLater, false);
+    ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+
+    tracker->stop();
+}
+
+// The local share of the anchor index is capped, and the pending buffer is capped too, so the
+// per-pass anchor scan cannot grow with the number of application locals. At the cap, the resolve
+// step compacts away local entries whose frontier entry is gone before admitting new ones.
+TEST_F(ReferenceChainsBfsTest, LocalRootAnchorIndexIsCappedAndCompactsDeadEntries) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const size_t cap = ReferenceChainsTestAccessor::kLocalAnchorIndexCap;
+    const size_t pending_cap = ReferenceChainsTestAccessor::kPendingLocalAnchorCap;
+    const jlong kContainer = -301;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kContainer, true);
+
+    // A durable anchor is outside the local share and must survive compaction.
+    const jlong durable = 50;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, durable, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        durable, -302, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+
+    // Fill the local share with holders whose frontier entries are then released (dead objects:
+    // the GC cleanup marks them ABANDONED).
+    const jlong dead_base = 100;
+    for (size_t i = 0; i < cap; i++) {
+        jlong tag = dead_base + (jlong)i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::EXPANDED,
+            JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(tag, kContainer);
+        frontier->clear(tag);
+    }
+    ASSERT_EQ(cap, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    ASSERT_EQ(cap + 1, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+
+    // Containers met at the cap are parked, and the pending buffer stops at its own cap.
+    // Above every inserted tag, so un-inserted parked tags have no frontier entry at all.
+    const jlong live_base = dead_base + (jlong)cap + 1000;
+    for (size_t i = 0; i < pending_cap + 10; i++) {
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(live_base + (jlong)i,
+                                                                kContainer);
+    }
+    EXPECT_EQ(cap, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    EXPECT_EQ(pending_cap, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+
+    // Only one parked holder is live; the resolve step compacts the dead local entries and
+    // admits it. Dead parked holders are indexed too (liveness is checked at selection), but
+    // all of them fit once the dead share is gone.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, live_base, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
+    EXPECT_EQ(pending_cap, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    EXPECT_EQ(pending_cap + 1, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    EXPECT_LE(ReferenceChainsTestAccessor::freshAnchorQueueSizeForTest(),
+              ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
+    EXPECT_NE(std::find(selected.begin(), selected.end(), durable), selected.end())
+        << "durable anchor lost by local-share compaction";
+    EXPECT_NE(std::find(selected.begin(), selected.end(), live_base), selected.end())
+        << "live local container not admitted after compaction";
+
+    tracker->stop();
+}
+
+// When every local entry is live the cap holds: no compaction can free a slot, new holders are
+// not indexed, and the pending buffer is still emptied.
+TEST_F(ReferenceChainsBfsTest, LocalRootAnchorCapHoldsWhenAllEntriesLive) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const size_t cap = ReferenceChainsTestAccessor::kLocalAnchorIndexCap;
+    const jlong kContainer = -401;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kContainer, true);
+    for (size_t i = 0; i < cap; i++) {
+        jlong tag = 1000 + (jlong)i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(tag, kContainer);
+    }
+    const jlong extra = 1000 + (jlong)cap;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, extra, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(extra, kContainer);
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+
+    ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
+    EXPECT_EQ(cap, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    EXPECT_EQ(cap, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+
+    tracker->stop();
+}
+
+// A local holder later attached by a durable root moves to the uncapped durable share, freeing its
+// local-cap slot without duplicating the index entry.
+TEST_F(ReferenceChainsBfsTest, DurableRootUpgradeReleasesLocalAnchorSlot) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const jlong kContainer = -501;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kContainer, true);
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(777, kContainer);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        777, kContainer, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+
+    // restartSearch() resets the local share and the pending buffer with the rest of the index.
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(778, -502);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    ReferenceChainsTestAccessor::restartSearchForTest();
+    EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexIsEmptyForTest());
+
+    tracker->stop();
+}

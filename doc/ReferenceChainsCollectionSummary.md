@@ -105,9 +105,16 @@ the tracking table. The expensive class-history fold is kept off that callback p
 
 ## Mutable-container coverage
 
-A long-lived collection can receive references after its first expansion. Bounded rotation
-revisits leak-accumulating parents, stale expanded entries, transient-root entries, and static
-anchors. This adds opportunities to discover changed references, not complete mutation coverage.
+A one-time breadth-first walk cannot observe references that appear after the first expansion of an object. This matters for a long-lived collection that receives new elements.
+
+The tracker addresses this case with bounded rotation:
+
+- Leak-accumulation rotation selects parent objects that receive instances of watched classes.
+- Stale-entry rotation revisits older expanded entries.
+- Root-kind rotation revisits entries with transient root attribution.
+- Anchor rotation descends from selected objects held by static fields or JNI globals, and from a capped set of confirmed collection/map holders first seen as stack or JNI locals.
+
+Heap callbacks record anchor-index effects in a bounded journal. The traversal caller replays accepted observations after the JVMTI call returns. Rotation improves coverage, but it does not guarantee that the tracker observes every mutation.
 
 ## Cost controls
 

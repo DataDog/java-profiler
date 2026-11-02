@@ -96,6 +96,9 @@ public:
         t->_static_anchor_index.clear();
         t->_static_anchor_own_class_tags.clear();
         t->_static_anchor_index_tags.clear();
+        t->_local_anchor_tags.clear();
+        t->_pending_local_anchors.clear();
+        t->_pending_local_anchor_tags.clear();
         t->_anchor_container_cursor = 0;
         t->_anchor_other_cursor = 0;
         t->_class_shape_cache.clear();
@@ -533,8 +536,35 @@ public:
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         return t->_static_anchor_index.empty() &&
                t->_static_anchor_own_class_tags.empty() &&
-               t->_static_anchor_index_tags.empty();
+               t->_static_anchor_index_tags.empty() &&
+               t->_local_anchor_tags.empty() &&
+               t->_pending_local_anchors.empty() &&
+               t->_pending_local_anchor_tags.empty();
     }
+
+    // Local-root anchor seams (see noteLocalRootHolder()/resolvePendingLocalAnchors()).
+    static void noteLocalRootHolderForTest(jlong tag, jlong class_tag) {
+        ReferenceChainTracker::instance()->noteLocalRootHolder(tag, class_tag);
+    }
+    static void resolvePendingLocalAnchorsForTest() {
+        ReferenceChainTracker::instance()->resolvePendingLocalAnchors();
+    }
+    static size_t anchorIndexSizeForTest() {
+        return ReferenceChainTracker::instance()->_static_anchor_index.size();
+    }
+    static size_t localAnchorCountForTest() {
+        return ReferenceChainTracker::instance()->_local_anchor_tags.size();
+    }
+    static size_t pendingLocalAnchorCountForTest() {
+        return ReferenceChainTracker::instance()->_pending_local_anchors.size();
+    }
+    static size_t freshAnchorQueueSizeForTest() {
+        return ReferenceChainTracker::instance()->_static_anchor_fresh_queue.size();
+    }
+    static constexpr size_t kLocalAnchorIndexCap =
+        ReferenceChainTracker::LOCAL_ANCHOR_INDEX_CAP;
+    static constexpr size_t kPendingLocalAnchorCap =
+        ReferenceChainTracker::PENDING_LOCAL_ANCHOR_CAP;
 
     static jlong discoveredTagForTest(int slot, int idx) {
         return ReferenceChainTracker::instance()
