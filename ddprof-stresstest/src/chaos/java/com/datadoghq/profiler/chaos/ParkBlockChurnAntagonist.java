@@ -180,18 +180,22 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
     /**
      * Joins every worker of {@code batch} before the next batch is spawned, so at most one batch
      * is alive at any time. A worker still alive after {@link #STALL_TIMEOUT_MILLIS} is recorded
-     * as a failure and stops the workload instead of being stacked under new batches.
+     * as a failure and stops the workload instead of being stacked under new batches. A shutdown
+     * request ({@code running == false}) drains the remaining workers before returning: each
+     * worker runs one bounded block, so leaving them unjoined would let block hooks fire after
+     * {@link #stopGracefully(Duration)} reports the antagonist as stopped.
      *
-     * @return true when the whole batch exited; false when the loop must stop
+     * @return true when the whole batch exited and the loop may continue; false when the loop must stop
      */
     private boolean awaitBatch(List<Thread> batch) {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(STALL_TIMEOUT_MILLIS);
+        boolean shutdown = false;
         for (Thread t : batch) {
             try {
                 while (t.isAlive()) {
                     t.join(1_000L);
                     if (!running) {
-                        return false;
+                        shutdown = true;
                     }
                     if (t.isAlive() && System.nanoTime() - deadline > 0) {
                         failure.compareAndSet(null, new IllegalStateException(
@@ -205,7 +209,7 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
                 return false;
             }
         }
-        return true;
+        return !shutdown;
     }
 
     /** Wakes {@code t} mid-block so its exit hook races against interruption. */
