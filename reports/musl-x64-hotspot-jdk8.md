@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk8
 
 ## musl-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-11-01 20:29:50 EST
+**Date:** 2026-11-01 20:32:53 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 335 |
-| Sample Rate | 5.58/sec |
-| Health Score | 349% |
-| Threads | 8 |
+| CPU Samples | 159 |
+| Sample Rate | 2.65/sec |
+| Health Score | 166% |
+| Threads | 5 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 249 |
-| Sample Rate | 4.15/sec |
-| Health Score | 259% |
-| Threads | 8 |
+| CPU Samples | 165 |
+| Sample Rate | 2.75/sec |
+| Health Score | 172% |
+| Threads | 7 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 66-66 cores)</summary>
 
 ```
-1793582618 66
-1793582623 66
-1793582628 66
-1793582633 66
-1793582638 66
-1793582643 66
-1793582648 66
-1793582653 66
-1793582658 66
-1793582663 66
-1793582668 66
-1793582673 66
-1793582678 66
-1793582683 66
-1793582688 66
-1793582693 66
-1793582698 66
-1793582703 66
-1793582708 66
-1793582713 66
+1793582726 66
+1793582731 66
+1793582736 66
+1793582741 66
+1793582746 66
+1793582751 66
+1793582756 66
+1793582761 66
+1793582766 66
+1793582771 66
+1793582776 66
+1793582781 66
+1793582786 66
+1793582791 66
+1793582796 66
+1793582801 66
+1793582806 66
+1793582811 66
+1793582816 66
+1793582821 66
 ```
 </details>
 
