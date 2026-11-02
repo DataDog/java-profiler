@@ -24,6 +24,14 @@ class VMTestAccessor {
 public:
     static jvmtiEnv* getJvmti() { return VM::_jvmti; }
     static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
+    static jvmtiExtensionFunction getRequestStackTrace() { return VM::_request_stack_trace; }
+    static void setRequestStackTrace(jvmtiExtensionFunction fn) { VM::_request_stack_trace = fn; }
+    static jvmtiExtensionFunction getInitRequestStackTrace() { return VM::_init_request_stack_trace; }
+    static void setInitRequestStackTrace(jvmtiExtensionFunction fn) { VM::_init_request_stack_trace = fn; }
+    static jvmtiExtensionFunction getDiscoveredRequestStackTrace() { return VM::_discovered_request_stack_trace; }
+    static void setDiscoveredRequestStackTrace(jvmtiExtensionFunction fn) { VM::_discovered_request_stack_trace = fn; }
+    static bool enableRequestStackTrace() { return VM::enableRequestStackTrace(); }
+    static void probeJFRRequestStackTrace() { VM::probeJFRRequestStackTrace(); }
     // VM::jni() goes through VM::_vm, and VM::hotspot_version() reports -1 unless VM::_hotspot is
     // set - both are needed to drive LivenessTracker::start() against a mock JVM.
     static JavaVM* getVm() { return VM::_vm; }
