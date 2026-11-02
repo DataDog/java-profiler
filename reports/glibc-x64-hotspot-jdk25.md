@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk25
 
 ## glibc-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-11-02 05:32:50 EST
+**Date:** 2026-11-02 05:56:16 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 385 |
-| Sample Rate | 6.42/sec |
-| Health Score | 401% |
+| CPU Samples | 368 |
+| Sample Rate | 6.13/sec |
+| Health Score | 383% |
 | Threads | 9 |
-| Allocations | 426 |
+| Allocations | 395 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 480 |
-| Sample Rate | 8.00/sec |
-| Health Score | 500% |
-| Threads | 10 |
-| Allocations | 489 |
+| CPU Samples | 527 |
+| Sample Rate | 8.78/sec |
+| Health Score | 549% |
+| Threads | 11 |
+| Allocations | 500 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 39-41 cores)</summary>
+<summary>CPU Timeline (1 unique values: 41-41 cores)</summary>
 
 ```
-1793615292 41
-1793615297 41
-1793615302 41
-1793615307 41
-1793615312 41
-1793615317 41
-1793615322 41
-1793615327 41
-1793615332 41
-1793615337 41
-1793615342 41
-1793615347 39
-1793615352 39
-1793615357 39
-1793615362 39
-1793615367 39
-1793615372 39
-1793615377 41
-1793615382 41
-1793615387 41
+1793616730 41
+1793616735 41
+1793616740 41
+1793616745 41
+1793616750 41
+1793616755 41
+1793616760 41
+1793616765 41
+1793616770 41
+1793616775 41
+1793616780 41
+1793616785 41
+1793616790 41
+1793616795 41
+1793616800 41
+1793616805 41
+1793616810 41
+1793616815 41
+1793616820 41
+1793616825 41
 ```
 </details>
 
