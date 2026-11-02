@@ -591,7 +591,14 @@ TEST_F(ReferenceChainsBfsTest, RootContainerRemainsWalkableAfterReparentingAndMu
     // Classification runs outside the heap callback. Unknown transient roots
     // must not get a descend walk before being confirmed as containers.
     EXPECT_TRUE(ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4).empty());
+    // Neither holder is indexed yet: the unclassified one waits in the pending buffer, the
+    // classified non-container is never indexed.
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    // Stand-in for reconcileAnchorClassShapes() + the resolve step that follows it in a pass.
     ReferenceChainsTestAccessor::primeClassShapeForTest(container_class_tag, true);
+    ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
     // A deeper retaining path replaces the initial local-root attribution.
     // The container still needs repeated walks when its backing storage changes.
     ASSERT_TRUE(tracker->frontierTable()->improveChain(
