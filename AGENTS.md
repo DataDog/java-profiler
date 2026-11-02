@@ -1,3 +1,22 @@
+<!-- cairn:knowledgebase begin (managed by cairn; do not edit manually) -->
+## Cairn knowledgebase (optional)
+
+If `.knowledgebase/memories/` exists, this repo carries distilled
+institutional memory from past cairn investigations (confirmed findings
+and refuted dead ends); if your harness also provides the cairn-memory
+skill, consult it before design, implementation, or review work here.
+If cairn is not available in your environment, skip this section —
+nothing else in this file depends on it.
+
+**Never review `.knowledgebase/`.** It is machine-managed data, not project
+code: do not open review threads on it, do not include it in review scopes or
+diffs-to-review summaries, do not flag its files for style, correctness, or
+comment-budget issues, and do not propose edits to it as review findings.
+The only permitted interaction is reading memories via the cairn tooling;
+writes happen exclusively through `cairn memorize`, never by hand-editing
+committed memory files.
+<!-- cairn:knowledgebase end -->
+
 <!-- CLAUDE BOOTSTRAP INSTRUCTIONS
 If you are Claude and reading this file, check if CLAUDE.md exists in the same directory.
 If CLAUDE.md does not exist or only contains the redirect + Compact Instructions below, that
