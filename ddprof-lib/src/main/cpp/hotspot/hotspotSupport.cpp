@@ -1437,7 +1437,11 @@ int HotspotSupport::walkCurrentJavaStack(ASGCT_CallFrame* frames, int max_depth,
     fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
     pc = stripPointer(((const void**)sp)[-FRAME_PC_SLOT]);
   }
+  // Allocation stacks are Java-only, like the GetStackTrace frames they replace:
+  // cstack=vmx's mixed mode would add the native frames below the Java stack.
   StackWalkFeatures features = Profiler::instance()->stackWalkFeatures();
+  features.mixed = 0;
+  features.carrier_frames = 0;
   // The anchor pc is where the last Java frame resumes, i.e. a return address.
   return walkVM(&empty_ucontext, frames, max_depth, features, eventTypeFromBCI(event_type),
                 pc, /*pc_is_return_address=*/true, sp, fp, lock_index, truncated,

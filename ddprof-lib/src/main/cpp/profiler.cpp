@@ -569,7 +569,9 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 // Whether a JVMTI sample was taken on a virtual thread. Its stack is left to
 // GetStackTrace, which stops at the continuation boundary: the VM walker only
 // recognizes that boundary where VMStructs exposes the continuation entry
-// (JDK 27+) and otherwise walks on into the carrier's frames.
+// (JDK 27+) and otherwise walks on into the carrier's frames. JNI's
+// IsVirtualThread exists from JDK 21; preview virtual threads on JDK 19/20 are
+// not detected.
 static bool isVirtualThread(jthread thread) {
 #ifdef JNI_VERSION_21
   if (VM::java_version() >= 21) {

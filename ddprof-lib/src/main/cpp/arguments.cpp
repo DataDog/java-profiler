@@ -118,7 +118,8 @@ static const Multiplier UNIVERSAL[] = {
 //     allocstack=MODE    - how allocation/live-heap samples capture their Java
 //                          stack: 'vm' (VM stack walker, the default on HotSpot
 //                          with cstack=vm/vmx), 'jvmti' (GetStackTrace) or
-//                          'verify' (vm, cross-checked against GetStackTrace)
+//                          'verify' (vm, cross-checked against GetStackTrace);
+//                          either way the stacks are Java-only, also with vmx
 //     allkernel          - include only kernel-mode events
 //     alluser            - include only user-mode events
 //
