@@ -355,8 +355,12 @@ private:
   // running baseline: every admitted sample raises it (a plateau loses the
   // boost, a recovered spike never passes it), and the emergency band seeds
   // the same baseline at entry so the ramp-band comparison stays continuous.
+  // The ramp-band comparison is evaluated once per NEW heap-floor sample (one
+  // per GC); the decision is retained until the next sample arrives (see
+  // _admission_sample_seq/_admission_decision below).
   // Written and read by updateUrgentAdmission() on the BFS thread (threadLoop()
-  // via publishUrgencyState()); also reset by stop() and resetSearchStateForTest()
+  // via publishUrgencyState()); also reset - together with
+  // _admission_sample_seq/_admission_decision - by stop() and resetSearchStateForTest()
   // (both only after stopThread() has joined the BFS thread) and by test seams
   // (resetUrgencyForTest(), updateUrgentAdmissionForTest(),
   // publishUrgencyStateForTest()) that run only while no BFS thread is live -
@@ -364,6 +368,18 @@ private:
   // 0 = no baseline for the current episode (a used value of 0 cannot be a
   // real sample: onGC() only records used > 0).
   u64 _admission_growth_baseline;
+  // Sample-freshness companions of _admission_growth_baseline, same owner and
+  // same no-atomics argument (BFS thread; reset only with no BFS thread live).
+  // _admission_sample_seq is the LivenessTracker heap-floor sequence number
+  // (newestHeapFloorSample(&seq)) of the sample the ramp-band gate last
+  // evaluated (0 = none this episode); _admission_decision is that
+  // evaluation's result. threadLoop() runs far more often than GCs record
+  // samples, so updateUrgentAdmission() re-evaluates only when a NEW sample
+  // arrives and otherwise returns the retained decision - re-comparing the
+  // same sample against the baseline it just raised would turn every admitted
+  // growth sample into a one-iteration pulse.
+  u64 _admission_sample_seq;
+  bool _admission_decision;
 
   // Wall-clock timestamp (OS::nanotime()) of the search's first pass - baseline for the TTL cutoff
   // above.
@@ -762,7 +778,7 @@ private:
         _tags_released(true), _urgent_latched(false),
         _urgent_release_ticks(0),
         _urgency_budget_boosted(false), _configured_budget(0),
-        _admission_growth_baseline(0),
+        _admission_growth_baseline(0), _admission_sample_seq(0), _admission_decision(false),
         _search_state(SearchState::RUNNING),
         _abandon_reason(SearchAbandonReason::NONE), _search_start_ns(0),
         _last_pass_gc_finish_epoch(0), _last_pass_ns(0),
@@ -808,8 +824,11 @@ private:
   bool isUrgent() const;
   bool isUrgent(double seconds_to_oom) const;
 
-  // Computes the 100% tracking-admission decision for one threadLoop()
-  // iteration and maintains _admission_growth_baseline. Raw `urgent` still
+  // Computes the 100% tracking-admission decision. Outside the emergency band
+  // the decision is re-evaluated only when a new heap-floor sample arrives and
+  // is retained between samples (threadLoop() iterates far more often than GCs
+  // record samples); maintains _admission_growth_baseline,
+  // _admission_sample_seq and _admission_decision. Raw `urgent` still
   // drives the budget/cadence ramp; admission alone is additionally gated on
   // heap growth evidence outside the emergency band - see
   // _admission_growth_baseline's comment for why band residence is not
@@ -1204,6 +1223,14 @@ public:
     // updateUrgentAdmission()'s episode baseline - a stale one across tests
     // would make an episode's "first observation" branch unreachable.
     _admission_growth_baseline = 0;
+    // The freshness pair needs its own reset even though the baseline reset
+    // already forces a ramp-band re-entry through the first-observation
+    // branch: an emergency-band re-entry seeds the baseline without touching
+    // _admission_sample_seq/_admission_decision, so a leaked pair would make
+    // the next ramp-band call with no new sample return the previous test's
+    // retained decision.
+    _admission_sample_seq = 0;
+    _admission_decision = false;
   }
   // Applied vs configured CPU pain-budget refill rate: shouldRunPass() raises
   // the applied rate CANARY_PAIN_BUDGET_REFILL_MULTIPLIER-fold only while a

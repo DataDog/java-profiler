@@ -392,8 +392,22 @@ private:
   // libraries) - see secondsToOOM()'s own comment for how this ring and
   // _heap_floor_ring are used as two independent OOM boundaries.
   u64 _container_mem_ring[KLASS_POPULATION_RING_SIZE];
+  // Per-sample identity, paired index-for-index with _heap_floor_ring (same
+  // head/fill, pushed by the same recordHeapFloorSampleUnchecked() call before
+  // the head storeRelease). Values come from _heap_floor_sample_seq below, so a
+  // slot's seq names exactly one recorded sample for the process lifetime -
+  // the urgent-admission gate (ReferenceChainTracker::updateUrgentAdmission())
+  // uses it to tell "a new GC sample arrived" from "re-reading the same one".
+  u64 _heap_floor_seq_ring[KLASS_POPULATION_RING_SIZE];
   volatile u8 _heap_floor_ring_head;
   volatile u8 _heap_floor_ring_fill;
+  // Monotonic heap-floor sample counter (first sample = 1, 0 = "no sample").
+  // Written only by recordHeapFloorSampleUnchecked() (single writer at a time,
+  // same argument as _heap_floor_ring) and published through the slot ring
+  // above; never reset - not by heapFloorResetForTest(), not by
+  // klassPopulationResetForTest(), not by stop()/start() - so a sequence value
+  // can never alias an earlier sample.
+  u64 _heap_floor_sample_seq;
 
   // Debug-only test seam: when true, onGC() skips recordHeapFloorSample()
   // so a test can seed the ring exclusively via heapFloorRecordForTest()
@@ -855,8 +869,12 @@ public:
 
   // Reads the used-bytes value of the newest _heap_floor_ring sample (0 when
   // the ring is empty) - the urgent-admission gate's freshest physical growth
-  // evidence. See the definition for the SPSC acquire pairing.
-  u64 newestHeapFloorSample() const;
+  // evidence. When seq_out is non-null it is ALWAYS written: the newest slot's
+  // _heap_floor_seq_ring value, read from the same slot as the returned used
+  // value (0 when the ring is empty), so a caller can tell a new sample from a
+  // re-read of the one it already consumed. See the definition for the SPSC
+  // acquire pairing.
+  u64 newestHeapFloorSample(u64 *seq_out = nullptr) const;
 
   constexpr static int MAX_LEAK_CANDIDATES = 5;
   // Delete copy constructor and assignment operator to prevent copies
@@ -870,7 +888,7 @@ public:
         _record_heap_usage(false), _Class(NULL),
         _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
         _last_cleanup_ns(0), _used_after_last_gc(0),
-        _heap_floor_ring_head(0), _heap_floor_ring_fill(0),
+        _heap_floor_ring_head(0), _heap_floor_ring_fill(0), _heap_floor_sample_seq(0),
         _max_heap_bytes(-1), _container_memory_limit(-1),
         _container_limit_resolved(false),
         _gc_generations(false),
@@ -1590,7 +1608,8 @@ public:
     // next test's hysteresis threshold. storeRelease() (not plain store())
     // so the reset is published to the BFS/GC thread on arm64's weak memory
     // model - a relaxed store may never be visible to a reader doing
-    // loadAcquire() on these same indices.
+    // loadAcquire() on these same indices. _heap_floor_sample_seq is
+    // deliberately not reset (see its comment).
     storeRelease(_heap_floor_ring_head, (u8)0);
     storeRelease(_heap_floor_ring_fill, (u8)0);
   }
@@ -1628,6 +1647,7 @@ public:
   // enabled fails the assert instead of racing a live reader. Non-DEBUG
   // builds compile the reset bare - the flag does not exist there and the
   // JNI entry that reaches this seam is compiled out.
+  // _heap_floor_sample_seq is deliberately not reset (see its comment).
   void heapFloorResetForTest() {
 #ifdef DEBUG
     if (!_heap_floor_recording_disabled_for_test.load(std::memory_order_acquire)) {

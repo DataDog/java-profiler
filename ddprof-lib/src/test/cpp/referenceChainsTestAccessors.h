@@ -183,8 +183,9 @@ public:
     static void resetUrgencyForTest() {
         ReferenceChainTracker::instance()->resetUrgencyForTest();
     }
-    // Urgent-admission growth gate: updateUrgentAdmission()'s per-iteration
-    // decision (referenceChains.cpp) - the admission half of threadLoop()'s
+    // Urgent-admission growth gate: updateUrgentAdmission()'s urgent admission
+    // decision (referenceChains.cpp; re-evaluated only when a new heap-floor
+    // sample arrives, retained between samples) - the admission half of threadLoop()'s
     // ramp handling, testable without the BFS thread.
     static bool updateUrgentAdmissionForTest(double seconds_to_oom, bool urgent) {
         return ReferenceChainTracker::instance()->updateUrgentAdmission(seconds_to_oom,

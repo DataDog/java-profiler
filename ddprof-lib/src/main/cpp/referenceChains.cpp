@@ -388,10 +388,14 @@ void ReferenceChainTracker::stop() {
   // - _search_start_ns still holds the previous recording's clock, so the entire stopped gap
   //   would count toward the new recording's TTL and could abandon "its" search on the first
   //   pass with a spurious abandonment event for a search the new recording never started;
-  // - _urgent_latched/_urgent_release_ticks/_admission_growth_baseline would carry the previous
+  // - _urgent_latched/_urgent_release_ticks/_admission_growth_baseline (and its
+  //   _admission_sample_seq/_admission_decision freshness state) would carry the previous
   //   recording's urgency episode into the new one (a stale growth baseline would let the new
   //   recording's first urgent observation skip updateUrgentAdmission()'s entry re-snapshot and
-  //   admit against the old recording's heap level);
+  //   admit against the old recording's heap level). The freshness pair needs its own reset:
+  //   an emergency-band first observation in the new recording seeds the baseline without
+  //   touching the pair, and a leaked pair would then make the next ramp-band call with no new
+  //   GC sample return the old recording's retained admission;
   // - the frontier's referrer_klass slots hold StringDictionary ids from a _class_map that
   //   Profiler::start() is about to wipe (ids restart at 1) - they cannot be remapped, so a
   //   chain built from a surviving entry after the boundary would name whichever class the new
@@ -417,6 +421,8 @@ void ReferenceChainTracker::stop() {
   _urgent_latched = false;
   _urgent_release_ticks = 0;
   _admission_growth_baseline = 0;
+  _admission_sample_seq = 0;
+  _admission_decision = false;
   // Same per-search candidate/discovered canary state runPass()'s terminal branch and
   // restartSearch() clear - zeroing the counts here closes the stale-chain windows in
   // pollWatchedTargets() (dead-representative canary path, discovered-instances path) for the
@@ -584,7 +590,9 @@ void ReferenceChainTracker::threadLoop() {
     // gate is bypassed while the OOM urgency ramp is active (see _oom_ramp_active's own comment).
     // The 100% tracking admission (setUrgentTracking(), livenessTracker.h) follows the same ramp
     // state, but outside the emergency band it is additionally gated on fresh heap growth evidence
-    // (updateUrgentAdmission()/the _admission_growth_baseline constraint): the smoothed projection
+    // (updateUrgentAdmission()/the _admission_growth_baseline constraint), evaluated once per new
+    // heap-floor sample (GC) and held until the next sample - so an admitted growth sample keeps
+    // the boost on until the next GC rather than for a single iteration: the smoothed projection
     // can stay inside the band for many GCs after the heap has physically stopped growing, and
     // boosting admission on a recovered spike only buys table churn. The budget/cadence ramp above
     // stays keyed on the raw band comparison - without a running search (the candidate gate) those
@@ -828,8 +836,12 @@ bool ReferenceChainTracker::isUrgent(double seconds_to_oom) const {
 bool ReferenceChainTracker::updateUrgentAdmission(double seconds_to_oom, bool urgent) {
   if (!urgent) {
     // Cleared when the episode ends so the next episode re-snapshots against
-    // its own entry state instead of inheriting a stale baseline.
+    // its own entry state instead of inheriting a stale baseline. The
+    // freshness state goes with it so a retained decision never carries into
+    // the next episode.
     _admission_growth_baseline = 0;
+    _admission_sample_seq = 0;
+    _admission_decision = false;
     return false;
   }
   // Emergency band: the projection says minutes at most - capture what the
@@ -846,9 +858,13 @@ bool ReferenceChainTracker::updateUrgentAdmission(double seconds_to_oom, bool ur
         _admission_growth_baseline = newest_used;
       }
     }
+    // Emergency admission is not growth evidence: _admission_sample_seq /
+    // _admission_decision stay untouched, so a later ramp-band observation
+    // still evaluates the newest sample against the (seeded) baseline.
     return true;
   }
-  u64 newest_used = LivenessTracker::instance()->newestHeapFloorSample();
+  u64 newest_seq = 0;
+  u64 newest_used = LivenessTracker::instance()->newestHeapFloorSample(&newest_seq);
   if (newest_used == 0) {
     // No sample to reason about (the ring cannot be empty while a projection
     // exists - secondsToOOM() requires MIN_FILL samples - so this is purely
@@ -860,16 +876,26 @@ bool ReferenceChainTracker::updateUrgentAdmission(double seconds_to_oom, bool ur
     // only once a newer sample has grown past it - one GC away for a real
     // leak, never for a heap that has stopped growing.
     _admission_growth_baseline = newest_used;
+    _admission_sample_seq = newest_seq;
+    _admission_decision = false;
     return false;
   }
+  if (newest_seq == _admission_sample_seq) {
+    // No GC has recorded a new sample since the last evaluation: hold the
+    // decision. Re-comparing this sample against the baseline it may just
+    // have raised would always read "no growth" and drop the boost after a
+    // single iteration.
+    return _admission_decision;
+  }
+  _admission_sample_seq = newest_seq;
   // High-water mark: every admitted sample raises the baseline, so a heap
   // that plateaus above the entry level loses the boost until growth resumes
   // past the previous peak - a frozen entry snapshot would keep admitting it.
-  if (newest_used > _admission_growth_baseline) {
+  _admission_decision = newest_used > _admission_growth_baseline;
+  if (_admission_decision) {
     _admission_growth_baseline = newest_used;
-    return true;
   }
-  return false;
+  return _admission_decision;
 }
 
 void ReferenceChainTracker::publishUrgencyState(double seconds_to_oom, bool urgent) {
@@ -1037,10 +1063,15 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _cpu_pain_budget = PainBudget(_pain_budget_refill_rate);
   // Same test-isolation rationale: a latched urgency episode left behind by an earlier test would
   // otherwise ramp this one's cadence and pause target from a stale projection, and a stale
-  // admission growth baseline would skip this test's first-observation re-snapshot.
+  // admission growth baseline would skip this test's first-observation re-snapshot, or a retained
+  // admission decision (_admission_sample_seq/_admission_decision - an emergency-band re-entry
+  // seeds the baseline without touching them, same reason as stop()) would be returned for this
+  // test's first ramp-band call without a new sample.
   _urgent_latched = false;
   _urgent_release_ticks = 0;
   _admission_growth_baseline = 0;
+  _admission_sample_seq = 0;
+  _admission_decision = false;
 
   if (_frontier != nullptr) {
     // Rebuilds the table at this test's own _configured_frontier_cap, undoing any smaller framecap=

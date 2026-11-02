@@ -1212,6 +1212,35 @@ public:
         t->_leak_signal_activated_ns.store(saved_stamp, std::memory_order_release);
     }
 
+    // Like initializeGatesOnlyForTest(), but presets the burn-in stamp to
+    // `preset`, runs initialize() (with _initialized forced true, so it reaches
+    // the burn-in CAS and then takes the early return), returns the stamp
+    // initialize() left behind, and restores every field it touched - the stamp
+    // included - so the singleton is unchanged afterwards (only
+    // _gc_generations and _leak_signal_enabled keep the derived values, as in
+    // initializeGatesOnlyForTest()).
+    static u64 stampAfterInitializeForTest(LivenessTracker *t, Arguments &args, u64 preset) {
+        bool saved_initialized = t->_initialized;
+        bool saved_enabled = t->_enabled;
+        bool saved_heap_usage = t->_record_heap_usage;
+        int saved_watched = __atomic_load_n(&t->_watched_tid_count, __ATOMIC_ACQUIRE);
+        bool saved_urgent = __atomic_load_n(&t->_urgent_tracking, __ATOMIC_ACQUIRE);
+        u64 saved_stamp = t->_leak_signal_activated_ns.load(std::memory_order_acquire);
+        t->_leak_signal_activated_ns.store(preset, std::memory_order_release);
+        t->_initialized = true;
+        // Returns _stored_error from any prior real start - not under test.
+        Error ignored = t->initialize(args);
+        (void)ignored;
+        u64 result = t->_leak_signal_activated_ns.load(std::memory_order_acquire);
+        t->_initialized = saved_initialized;
+        t->_enabled = saved_enabled;
+        t->_record_heap_usage = saved_heap_usage;
+        __atomic_store_n(&t->_watched_tid_count, saved_watched, __ATOMIC_RELEASE);
+        __atomic_store_n(&t->_urgent_tracking, saved_urgent, __ATOMIC_RELEASE);
+        t->_leak_signal_activated_ns.store(saved_stamp, std::memory_order_release);
+        return result;
+    }
+
     static bool entryAgeAndAdmissionForTest(LivenessTracker *t, u32 idx,
                                              jlong *age,
                                              u64 *admission_epoch) {
@@ -1312,6 +1341,75 @@ TEST(LivenessTrackerSessionTest, LeakSignalDerivedByInitialize) {
     LivenessTrackerTestAccessor::setSessionGatesForTest(
         tracker, /*enabled=*/false, /*generations=*/false);
     EXPECT_FALSE(tracker->leakSignalEnabled());
+}
+
+// The burn-in stamp (_leak_signal_activated_ns) marks the first EFFECTIVE
+// leak-signal activation: initialize() must gate its CAS on the derived leak
+// signal (generations || (liveheap && referencechains)), not on the coarser
+// _enabled (generations || liveheap). A plain liveheap start stamping it would
+// let a later reference-chain recording inherit an already-expired burn-in.
+// A pre-existing stamp is never overwritten. Every row runs with _initialized
+// forced true, so a stamp proves the CAS sits ahead of the early return.
+TEST(LivenessTrackerSessionTest, BurnInStampFollowsEffectiveLeakSignal) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    constexpr u64 SENTINEL = 0x1234ULL;
+    struct Row {
+        const char *spec;
+        u64 preset;
+        bool expect_fresh_stamp; // true: non-zero, != preset; false: == preset
+    };
+    const Row rows[] = {
+        {"memory=1048576:l", 0, false},
+        {"memory=1048576:l,referencechains=true", 0, true},
+        {"generations=true", 0, true},
+        {"generations=true,memory=1048576:l", 0, true},
+        {"memory=1048576:a", 0, false},
+        {"memory=1048576:l,referencechains=true", SENTINEL, false},
+        {"generations=true", SENTINEL, false},
+        {"memory=1048576:l", SENTINEL, false},
+    };
+    for (const Row &row : rows) {
+        Arguments args;
+        ASSERT_FALSE(args.parse(row.spec)) << "row " << row.spec;
+        u64 stamp_before = LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker);
+        u64 stamp = LivenessTrackerTestAccessor::stampAfterInitializeForTest(tracker, args,
+                                                                             row.preset);
+        if (row.expect_fresh_stamp) {
+            EXPECT_NE(0u, stamp) << "row " << row.spec << " preset " << row.preset
+                                 << ": a leak-signal start must stamp the burn-in clock";
+        } else {
+            EXPECT_EQ(row.preset, stamp)
+                << "row " << row.spec << " preset " << row.preset
+                << ": the stamp must be left alone (no leak signal, or already stamped)";
+        }
+        EXPECT_EQ(stamp_before, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+            << "row " << row.spec << ": the accessor must restore the stamp";
+    }
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/false, /*generations=*/false);
+}
+
+// Reviewer scenario: a first plain liveheap recording followed (later) by a
+// liveheap + referencechains recording. The burn-in must start at the second
+// (first leak-signal) start, not at the plain liveheap start.
+TEST(LivenessTrackerSessionTest, PlainLiveheapStartDoesNotConsumeBurnIn) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    Arguments plain;
+    ASSERT_FALSE(plain.parse("memory=1048576:l"));
+    Arguments chains;
+    ASSERT_FALSE(chains.parse("memory=1048576:l,referencechains=true"));
+
+    u64 s = LivenessTrackerTestAccessor::stampAfterInitializeForTest(tracker, plain, 0);
+    EXPECT_EQ(0u, s) << "a plain liveheap start must not stamp the burn-in clock";
+
+    u64 before_second = OS::nanotime();
+    u64 s2 = LivenessTrackerTestAccessor::stampAfterInitializeForTest(tracker, chains, s);
+    EXPECT_NE(0u, s2) << "the first leak-signal start must stamp the burn-in clock";
+    EXPECT_GE(s2, before_second)
+        << "the burn-in must start at the first leak-signal start, not the plain liveheap start";
+
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/false, /*generations=*/false);
 }
 
 // setLeakSignalSourcesForTest() applies initialize()'s derivation, and
@@ -3174,6 +3272,8 @@ TEST_F(LivenessTrackerMockJvmTest, LiveheapLeakSignalArmingRequiresReferenceChai
     EXPECT_FALSE(tracker->gcGenerationsEnabled());
     EXPECT_FALSE(tracker->leakSignalEnabled())
         << "a plain liveheap session has no signal consumer - the gate must stay off";
+    EXPECT_EQ(0u, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+        << "a plain liveheap start() must not consume the burn-in stamp";
 
     // The consumers keyed on the gate stay idle: no projection even with a
     // rising ring, and no forced sweep folding the population.

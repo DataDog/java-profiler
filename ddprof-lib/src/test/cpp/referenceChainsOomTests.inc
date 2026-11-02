@@ -568,6 +568,256 @@ TEST_F(OomUrgencyTest, BandExitResetsGrowthBaseline) {
     EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
 }
 
+// The ramp-band growth gate is evaluated once per NEW heap-floor sample (one
+// per GC), but threadLoop() calls it every iteration (~1s). Admitting raises
+// the baseline to the admitted sample, so re-comparing that same sample on
+// the next iteration would read "no growth" and turn the boost into a
+// one-iteration pulse per growing GC. The decision must be held until a
+// genuinely new sample arrives.
+TEST_F(OomUrgencyTest, AdmissionHeldUntilNextHeapFloorSample) {
+    ASSERT_NEAR(project(1500.0), 1500.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(1500.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    // No new sample: the admission must hold across iterations, also while the
+    // (passed-in) projection drifts inside the ramp band.
+    for (double s : {1500.0, 1490.0, 1480.0, 1500.0}) {
+        EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(s, true))
+            << "admission must hold until a new heap-floor sample arrives (projection " << s
+            << ")";
+    }
+
+    // A new sample below the raised high-water mark closes the held state, and
+    // the closed state is held as well.
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE / 2, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+}
+
+// A non-admitting evaluation is held just like an admitting one: repeated
+// iterations without a new sample must not spuriously re-admit.
+TEST_F(OomUrgencyTest, NonAdmittingDecisionHeldUntilNextSample) {
+    ASSERT_NEAR(project(1500.0), 1500.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(1500.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    // New sample equal to the raised mark: not growth.
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    for (int i = 0; i < 3; i++) {
+        EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
+            << "repeat " << i << ": a held non-admitting decision must not re-admit";
+    }
+
+    // Non-vacuity: growth past the high-water mark re-admits.
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + 2 * RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+}
+
+// The first observation of an episode snapshots the baseline and does not
+// admit; repeating it without a new sample must neither admit nor move the
+// baseline.
+TEST_F(OomUrgencyTest, FirstObservationStaysUnadmittedWithoutNewSample) {
+    ASSERT_NEAR(project(1500.0), 1500.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(1500.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    for (int i = 0; i < 3; i++) {
+        EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
+            << "repeat " << i;
+    }
+    // Control: the baseline is still the entry sample.
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+}
+
+// Emergency admission is not growth evidence and does not consume sample
+// freshness: a ramp-band observation of the very sample the emergency band
+// seeded evaluates it (equality is not growth) and holds that false - a stale
+// true must not be retained from the emergency call.
+TEST_F(OomUrgencyTest, EmergencySeedThenRampSameSampleStaysUnadmitted) {
+    ASSERT_NEAR(project(299.0), 299.0, 1.0);
+    u64 entry = MAX_HEAP - (u64)(299.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+    ASSERT_EQ(entry, LivenessTracker::instance()->newestHeapFloorSample());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(299.0, true));
+
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(400.0, true))
+        << "the emergency-seeded sample is not growth past itself";
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(400.0, true));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(400.0, true));
+
+    LivenessTracker::instance()->heapFloorRecordForTest(entry + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(400.0, true));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(400.0, true))
+        << "admission must hold until a new heap-floor sample arrives";
+}
+
+// An emergency-band observation in the middle of a held ramp-band admission
+// admits (as always) and neither resets nor re-evaluates the retained ramp
+// decision.
+TEST_F(OomUrgencyTest, EmergencyBandDoesNotDisturbRetainedRampDecision) {
+    ASSERT_NEAR(project(1500.0), 1500.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(1500.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(299.0, true));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
+        << "the retained ramp decision must survive an emergency-band observation";
+
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+}
+
+// The reset tests below re-enter through the emergency band on purpose: every
+// reset site also zeroes the growth baseline, so a ramp-band re-entry with no
+// new sample would take the first-observation branch (which overwrites the
+// freshness pair) and return false either way. The emergency band seeds the
+// baseline WITHOUT touching the freshness pair, so only a leaked pair can make
+// the following ramp-band call (same sample) return the stale true.
+
+// Episode end (!urgent) must drop the retained admission along with the
+// baseline.
+TEST_F(OomUrgencyTest, EpisodeEndDropsRetainedAdmission) {
+    ASSERT_NEAR(project(1500.0), 1500.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(1500.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(-1.0, false));
+
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(299.0, true));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
+        << "the !urgent branch must clear the retained admission decision and sample seq";
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + 2 * RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+}
+
+// resetUrgencyForTest() must clear the retained admission as well.
+TEST_F(OomUrgencyTest, UrgencyResetSeamClearsRetainedAdmission) {
+    ASSERT_NEAR(project(1500.0), 1500.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(1500.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    ReferenceChainsTestAccessor::resetUrgencyForTest();
+
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(299.0, true));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(400.0, true))
+        << "resetUrgencyForTest() must clear the retained admission decision and sample seq";
+
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + 2 * RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(400.0, true));
+}
+
+// publishUrgencyState() must forward the retained decision: the 100% boost
+// observed through LivenessTracker's admission gate stays on between GCs.
+TEST_F(OomUrgencyTest, PublishedBoostHeldUntilNextHeapFloorSample) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    struct Restore {
+        ~Restore() {
+            ReferenceChainsTestAccessor::publishUrgencyStateForTest(-1.0, false);
+            LivenessTracker::instance()->admissionResetForTest();
+            LivenessTracker::instance()->setSubsampleRatioForTest(0.1);
+        }
+    } restore;
+    lt->admissionResetForTest();
+    const jint TID = 1234;
+
+    ASSERT_NEAR(project(1500.0), 1500.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(1500.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+
+    ReferenceChainsTestAccessor::publishUrgencyStateForTest(1500.0, true);
+    EXPECT_FALSE(lt->admitForTrackingForTest(TID)) << "entry observation must not boost";
+
+    lt->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    ReferenceChainsTestAccessor::publishUrgencyStateForTest(1490.0, true);
+    EXPECT_TRUE(lt->admitForTrackingForTest(TID)) << "growth must boost";
+
+    for (int i = 0; i < 2; i++) {
+        ReferenceChainsTestAccessor::publishUrgencyStateForTest(1490.0, true);
+        EXPECT_TRUE(ReferenceChainsTestAccessor::oomRampActiveForTest()) << i;
+        EXPECT_TRUE(lt->admitForTrackingForTest(TID))
+            << "repeat " << i << ": boost must persist until the next GC sample";
+    }
+
+    ReferenceChainsTestAccessor::publishUrgencyStateForTest(-1.0, false);
+    EXPECT_FALSE(lt->admitForTrackingForTest(TID));
+}
+
+// newestHeapFloorSample(&seq) contract: seq identifies one recorded sample,
+// strictly increases per sample (also for equal used/timestamp values), is
+// stable on re-read, is 0 for an empty ring, and survives the ring resets -
+// so a reset ring followed by a new sample never reproduces a cached seq.
+TEST_F(OomUrgencyTest, HeapFloorSequenceIsMonotonicAcrossResets) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    lt->heapFloorResetForTest();
+    u64 seq = 123;
+    EXPECT_EQ(0u, lt->newestHeapFloorSample(&seq));
+    EXPECT_EQ(0u, seq) << "an empty ring must write 0 to seq_out";
+
+    lt->heapFloorRecordForTest(500 * MiB, 7, 0);
+    u64 s1 = 0;
+    EXPECT_EQ(500 * MiB, lt->newestHeapFloorSample(&s1));
+    EXPECT_NE(0u, s1);
+    EXPECT_EQ(500 * MiB, lt->newestHeapFloorSample());
+
+    lt->heapFloorRecordForTest(500 * MiB, 7, 0);
+    u64 s2 = 0;
+    EXPECT_EQ(500 * MiB, lt->newestHeapFloorSample(&s2));
+    EXPECT_GT(s2, s1) << "identity is per sample, not per value/timestamp";
+
+    u64 s2_again = 0;
+    lt->newestHeapFloorSample(&s2_again);
+    EXPECT_EQ(s2, s2_again) << "a re-read must report the same sample";
+
+    lt->heapFloorResetForTest();
+    lt->heapFloorRecordForTest(500 * MiB, 7, 0);
+    u64 s3 = 0;
+    lt->newestHeapFloorSample(&s3);
+    EXPECT_GT(s3, s2) << "heapFloorResetForTest() must not reset the sample counter";
+
+    lt->klassPopulationResetForTest();
+    lt->heapFloorRecordForTest(500 * MiB, 7, 0);
+    u64 s4 = 0;
+    lt->newestHeapFloorSample(&s4);
+    EXPECT_GT(s4, s3) << "klassPopulationResetForTest() must not reset the sample counter";
+
+    for (int i = 0; i < 31; i++) {
+        lt->heapFloorRecordForTest(500 * MiB + (u64)i, 7, 0);
+    }
+    u64 s5 = 0;
+    EXPECT_EQ(500 * MiB + 30, lt->newestHeapFloorSample(&s5));
+    EXPECT_EQ(31u, s5 - s4) << "one increment per sample, newest slot after a ring wrap";
+
+    lt->heapFloorResetForTest();
+}
+
 // The canary-refill half: shouldRunPass() raises the CPU pain budget's
 // refill rate CANARY_PAIN_BUDGET_REFILL_MULTIPLIER-fold exactly while a
 // canary chase is open (candidates exist and not all are found), and puts it
@@ -715,6 +965,67 @@ TEST_F(ReferenceChainsCanaryRefillTest, StopClearsAdmissionGrowthBaseline) {
     EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
         << "stop() must clear _admission_growth_baseline";
     // Positive control: growth past the new snapshot admits.
+    lt->heapFloorRecordForTest(700 * MiB, 3, 0);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+}
+
+// stop() must also clear the retained admission (_admission_sample_seq /
+// _admission_decision), not only the growth baseline. The heap-floor ring
+// survives the recording boundary, so the admitted sample stays newest; an
+// emergency-band first observation in the new recording seeds the baseline
+// without touching the freshness pair, and a leaked pair would then make the
+// next ramp-band call (no new GC sample) return the old recording's retained
+// admission. Same BFS-thread precondition as StopClearsAdmissionGrowthBaseline.
+TEST_F(ReferenceChainsCanaryRefillTest, StopClearsRetainedAdmission) {
+
+    constexpr u64 MiB = 1ULL << 20;
+    LivenessTracker *lt = LivenessTracker::instance();
+    ReferenceChainsTestAccessor::reset(); // also resetUrgencyForTest()
+#ifdef DEBUG
+    lt->setHeapFloorRecordingForTest(false);
+#endif
+    lt->heapFloorResetForTest();
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ASSERT_FALSE(tracker->start(args));
+
+    struct Cleanup {
+        ReferenceChainTracker *tracker;
+        LivenessTracker *lt;
+        ~Cleanup() {
+            tracker->stop();
+            ReferenceChainsTestAccessor::resetUrgencyForTest();
+            lt->heapFloorResetForTest(); // while recording is still disabled
+#ifdef DEBUG
+            lt->setHeapFloorRecordingForTest(true);
+#endif
+            ReferenceChainsTestAccessor::reset();
+        }
+    } cleanup{tracker, lt};
+    ASSERT_FALSE(ReferenceChainsTestAccessor::bfsThreadRunning())
+        << "updateUrgentAdmissionForTest() would race threadLoop()";
+
+    // Recording 1: snapshot 500MiB, admit 600MiB, hold the admission.
+    lt->heapFloorRecordForTest(500 * MiB, 1, 0);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    lt->heapFloorRecordForTest(600 * MiB, 2, 0);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    tracker->stop();
+    ASSERT_FALSE(tracker->start(args));
+    ASSERT_FALSE(ReferenceChainsTestAccessor::bfsThreadRunning())
+        << "updateUrgentAdmissionForTest() would race threadLoop()";
+
+    // Recording 2, no new sample: emergency entry seeds the baseline at
+    // 600MiB; the ramp-band call must evaluate (600 > 600 is false), not
+    // return recording 1's retained true.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(299.0, true));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
+        << "stop() must clear the retained admission decision and sample seq";
+
+    // Positive control: growth past the seeded baseline admits.
     lt->heapFloorRecordForTest(700 * MiB, 3, 0);
     EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
 }

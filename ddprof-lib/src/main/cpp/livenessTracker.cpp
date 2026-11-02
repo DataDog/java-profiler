@@ -1477,19 +1477,32 @@ void LivenessTracker::recordTidTrendSamplesLocked(
   }
 }
 
-u64 LivenessTracker::newestHeapFloorSample() const {
+u64 LivenessTracker::newestHeapFloorSample(u64 *seq_out) const {
   // Matches recordHeapFloorSampleUnchecked()'s storeRelease() on both index
   // fields - loadAcquire() here is what makes the payload read below visible.
   u8 fill = loadAcquire(_heap_floor_ring_fill);
   u8 head = loadAcquire(_heap_floor_ring_head);
   if (fill == 0) {
+    if (seq_out != nullptr) {
+      *seq_out = 0;
+    }
     return 0;
   }
   // head points one past the newest slot (recordHeapFloorSampleUnchecked()
   // stores then advances) - step back one, wrapping over the ring size.
   u8 newest = (u8)((head + KLASS_POPULATION_RING_SIZE - 1) %
                    KLASS_POPULATION_RING_SIZE);
-  return load(_heap_floor_ring[newest]);
+  u64 used = load(_heap_floor_ring[newest]);
+  if (seq_out != nullptr) {
+    // Read from the SAME slot as `used`, never from _heap_floor_sample_seq: a
+    // global counter read could tear against the slot (the seq of sample N+1
+    // paired with the value of sample N) and make the urgent-admission gate
+    // treat a re-read as a new sample. The newest slot is not rewritten until
+    // KLASS_POPULATION_RING_SIZE further samples are recorded, so the pair is
+    // consistent.
+    *seq_out = load(_heap_floor_seq_ring[newest]);
+  }
+  return used;
 }
 
 void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns, u64 container_used) {
@@ -1520,13 +1533,18 @@ void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns,
   // (The previous version had this backwards - storeRelease() on the
   // payload with a plain store on the index - which does not establish any
   // ordering between "the index says this slot is valid" and "the payload
-  // for that slot is visible".) _heap_floor_time_ring's and
-  // _container_mem_ring's payload writes below are plain stores for the
-  // same reason - they precede the same storeRelease() in program order.
+  // for that slot is visible".) _heap_floor_time_ring's,
+  // _container_mem_ring's and _heap_floor_seq_ring's payload writes below are
+  // plain stores for the same reason - they precede the same storeRelease()
+  // in program order. _heap_floor_sample_seq itself is only ever read and
+  // written here (single writer at a time), readers see it via the slot ring.
   u8 head = load(_heap_floor_ring_head);
   store(_heap_floor_ring[head], used);
   store(_heap_floor_time_ring[head], timestamp_ns);
   store(_container_mem_ring[head], container_used);
+  u64 seq = _heap_floor_sample_seq + 1;
+  _heap_floor_sample_seq = seq;
+  store(_heap_floor_seq_ring[head], seq);
   storeRelease(_heap_floor_ring_head, (u8)((head + 1) % KLASS_POPULATION_RING_SIZE));
   u8 fill = load(_heap_floor_ring_fill);
   if (fill < KLASS_POPULATION_RING_SIZE) {
@@ -2155,12 +2173,19 @@ Error LivenessTracker::initialize(Arguments &args) {
   __atomic_store_n(&_watched_tid_count, 0, __ATOMIC_RELEASE);
   __atomic_store_n(&_urgent_tracking, false, __ATOMIC_RELEASE);
 
-  // First activation stamps the burn-in clock (see _leak_signal_activated_ns).
-  // Only reached with _enabled == true, i.e. generations || liveness, so the
-  // leak signal is on. CAS from 0: later starts never re-stamp it.
-  u64 never_activated = 0;
-  _leak_signal_activated_ns.compare_exchange_strong(
-      never_activated, OS::nanotime(), std::memory_order_release, std::memory_order_relaxed);
+  // First effective leak-signal activation stamps the burn-in clock (see
+  // _leak_signal_activated_ns). _enabled (generations || liveness) is coarser
+  // than the leak signal (generations || (liveness && referencechains)): a
+  // plain liveheap start must not stamp, or a later recording that enables
+  // reference chains would inherit an already-expired burn-in. CAS from 0:
+  // later starts never re-stamp it. Stays ahead of the _initialized early
+  // return so the first signal-on start after earlier non-signal starts can
+  // still stamp.
+  if (_leak_signal_enabled.load(std::memory_order_relaxed)) {
+    u64 never_activated = 0;
+    _leak_signal_activated_ns.compare_exchange_strong(
+        never_activated, OS::nanotime(), std::memory_order_release, std::memory_order_relaxed);
+  }
 
   if (_initialized) {
     // if the tracker was previously initialized return the stored result for
