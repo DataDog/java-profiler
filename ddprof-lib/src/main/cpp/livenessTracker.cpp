@@ -1536,14 +1536,25 @@ void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns,
   // for that slot is visible".) _heap_floor_time_ring's,
   // _container_mem_ring's and _heap_floor_seq_ring's payload writes below are
   // plain stores for the same reason - they precede the same storeRelease()
-  // in program order. _heap_floor_sample_seq itself is only ever read and
-  // written here (single writer at a time), readers see it via the slot ring.
+  // in program order.
+  //
+  // _heap_floor_sample_seq is bumped with an atomic relaxed fetch-add, so two
+  // overlapping callers can never obtain the same seq; readers see it only via
+  // the slot ring. The head/slot writes themselves still assume one writer at
+  // a time: HotSpot never posts GarbageCollectionFinish concurrently, but
+  // JVMTI does not document that, so on other VMs (J9, Zing via the
+  // abstraction layer) two overlapping callbacks could overwrite the same
+  // slot. Overlap can lose a sample but never produces a duplicate seq, so the
+  // urgent-admission freshness gate cannot mistake a new sample for an
+  // already-consumed one.
   u8 head = load(_heap_floor_ring_head);
   store(_heap_floor_ring[head], used);
   store(_heap_floor_time_ring[head], timestamp_ns);
   store(_container_mem_ring[head], container_used);
-  u64 seq = _heap_floor_sample_seq + 1;
-  _heap_floor_sample_seq = seq;
+  // Atomic bump: seq uniqueness must not depend on the single-writer
+  // assumption (see above). Relaxed suffices - readers only see seq via the
+  // slot store below, published by the head storeRelease().
+  u64 seq = __atomic_add_fetch(&_heap_floor_sample_seq, (u64)1, __ATOMIC_RELAXED);
   store(_heap_floor_seq_ring[head], seq);
   storeRelease(_heap_floor_ring_head, (u8)((head + 1) % KLASS_POPULATION_RING_SIZE));
   u8 fill = load(_heap_floor_ring_fill);

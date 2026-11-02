@@ -128,19 +128,22 @@ class GtestTaskBuilder(
                 )
             }
 
-            // Test .inc/.h files resolve via quoted includes relative to the test
-            // directory and appear in no include path, so register them here or an
-            // .inc-only edit reports UP-TO-DATE and runs a stale binary. Inputs,
-            // not sources: compiling an .inc standalone would emit duplicate symbols.
-            // The sweep is deliberately broad (every test-dir .inc/.h for every gtest
-            // task): the test dir is flat with a handful of shared headers, mapping
-            // headers to the tests that include them would need include parsing, and
+            // Test header/include files (.inc/.h/.hpp/.hh/.hxx/.ipp) resolve via quoted
+            // includes relative to the test directory and appear in no include path,
+            // so register them here or an .inc-only edit reports UP-TO-DATE and runs a
+            // stale binary. Inputs, not sources: compiling an .inc standalone would
+            // emit duplicate symbols. A new test-local include extension must be
+            // added to the pattern list below, or edits to such files will run a
+            // stale test binary.
+            // The sweep is deliberately broad (every test-dir header/include file for
+            // every gtest task): the test dir is flat with a handful of shared
+            // headers, mapping headers to the tests that include them would need include parsing, and
             // over-invalidation is preferred to running a stale binary. The input is
             // named and RELATIVE so relocating the checkout/build dir does not change
             // its fingerprint.
             inputs.files(
                 project.fileTree(testFile.parentFile) {
-                    include("**/*.inc", "**/*.h")
+                    include("**/*.inc", "**/*.h", "**/*.hpp", "**/*.hh", "**/*.hxx", "**/*.ipp")
                 }
             )
                 .withPropertyName("testIncludeInputs")

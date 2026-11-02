@@ -518,10 +518,47 @@ TEST_F(OomUrgencyTest, EmergencyBandEntrySeedsGrowthBaseline) {
     EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(400.0, true));
 }
 
+// Boundary of the emergency band: a projection of exactly OOM_URGENT_THRESHOLD_S
+// (300s) is ramp band, not emergency. updateUrgentAdmission() keeps the
+// growth-evidence hold (first observation snapshots and does not admit; only a
+// strictly larger newer sample admits), and isUrgent() does not latch. A
+// `<` -> `<=` slip at either threshold comparison fails here.
+TEST_F(OomUrgencyTest, ProjectionAtUrgentThresholdIsRampBandAndDoesNotLatch) {
+    ASSERT_NEAR(project(300.0), 300.0, 1.0);
+    u64 peak = MAX_HEAP - (u64)(300.0 * (double)RATE / (double)SAMPLE_SPACING_S);
+    ASSERT_EQ(peak, LivenessTracker::instance()->newestHeapFloorSample())
+        << "scenario requires the entry snapshot to be the ramp peak";
+
+    // Exactly at the threshold: no emergency waiver, so the first observation
+    // only snapshots the entry baseline.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(300.0, true))
+        << "a projection equal to OOM_URGENT_THRESHOLD_S must not take the emergency band";
+
+    // Equal newer sample: not growth.
+    LivenessTracker::instance()->heapFloorRecordForTest(peak, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(300.0, true))
+        << "an equal newer sample is not growth evidence";
+
+    // Strictly larger newer sample: ramp-band growth admits (non-vacuity).
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(300.0, true))
+        << "ramp-band growth must admit at the threshold projection";
+
+    // isUrgent(): 300.0 does not latch; just below does.
+    ASSERT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::isUrgentWithProjectionForTest(300.0))
+        << "a projection equal to OOM_URGENT_THRESHOLD_S must not latch urgency";
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isUrgentWithProjectionForTest(299.9));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest());
+}
+
 // The growth baseline is a high-water mark: every admitted sample raises it,
 // so a heap that plateaus above the episode's entry level loses the boost -
 // comparing against a frozen entry snapshot would keep admitting a heap that
-// has stopped growing.
+// has stopped growing - and non-admitted samples never lower it.
 TEST_F(OomUrgencyTest, PlateauAboveEntryBaselineLosesBoost) {
     ASSERT_NEAR(project(1500.0), 1500.0, 1.0);
     u64 peak = MAX_HEAP - (u64)(1500.0 * (double)RATE / (double)SAMPLE_SPACING_S);
@@ -538,6 +575,15 @@ TEST_F(OomUrgencyTest, PlateauAboveEntryBaselineLosesBoost) {
     _clock_ns += SAMPLE_SPACING_S * SEC_NS;
     EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
         << "a plateau above the entry level is not growth evidence";
+
+    // A non-admitted sample must not move the high-water mark: a later sample
+    // equal to the previous peak (peak + RATE) is still not growth. Raising
+    // the baseline on every sample would have dragged it down to
+    // peak + RATE / 2 and admitted this one.
+    LivenessTracker::instance()->heapFloorRecordForTest(peak + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
+        << "a non-admitted sample must not lower the growth baseline";
 
     // Growth resuming past the previous peak re-admits.
     LivenessTracker::instance()->heapFloorRecordForTest(peak + 2 * RATE, _clock_ns, 0);

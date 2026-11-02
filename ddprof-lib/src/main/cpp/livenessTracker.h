@@ -371,7 +371,9 @@ private:
   // resolveKlassId()) under the exclusive _table_lock on another thread, and
   // such a call can wait for that stop to end - spinning on _table_lock here
   // would then never return. GC completions are never
-  // concurrent with each other (HotSpot never runs two GCs at once), so
+  // concurrent with each other (HotSpot never runs two GCs at once - a
+  // HotSpot behaviour, not a documented JVMTI contract; other VMs such as
+  // J9/Zing behind the abstraction layer may differ), so
   // onGC() is always a single writer at a time, matching the existing
   // lock-free _gc_epoch/_used_after_last_gc fields' own assumption - see
   // recordHeapFloorSample()/heapFloorRising() (livenessTracker.cpp) for the
@@ -402,11 +404,12 @@ private:
   volatile u8 _heap_floor_ring_head;
   volatile u8 _heap_floor_ring_fill;
   // Monotonic heap-floor sample counter (first sample = 1, 0 = "no sample").
-  // Written only by recordHeapFloorSampleUnchecked() (single writer at a time,
-  // same argument as _heap_floor_ring) and published through the slot ring
-  // above; never reset - not by heapFloorResetForTest(), not by
-  // klassPopulationResetForTest(), not by stop()/start() - so a sequence value
-  // can never alias an earlier sample.
+  // Bumped only by recordHeapFloorSampleUnchecked() via an atomic relaxed
+  // fetch-add (__atomic_add_fetch), so values stay unique even if the
+  // single-writer assumption on _heap_floor_ring does not hold on a given VM,
+  // and published through the slot ring above; never reset - not by
+  // heapFloorResetForTest(), not by klassPopulationResetForTest(), not by
+  // stop()/start() - so a sequence value can never alias an earlier sample.
   u64 _heap_floor_sample_seq;
 
   // Debug-only test seam: when true, onGC() skips recordHeapFloorSample()
