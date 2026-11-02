@@ -96,6 +96,45 @@ TEST_F(StackWalkerTest, dropUnknownLeaf_unknown_non_leaf_not_dropped) {
     EXPECT_NE(nullptr, frames[2].method_id);
 }
 
+static ASGCT_CallFrame errorFrame(const char* reason) {
+    ASGCT_CallFrame f = {};
+    f.bci = BCI_ERROR;
+    f.method_id = (jmethodID)reason;
+    return f;
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_empty_walk_is_incomplete) {
+    ASGCT_CallFrame frames[1];
+    EXPECT_FALSE(StackWalkValidation::isCompleteWalk(frames, 0));
+    EXPECT_FALSE(StackWalkValidation::isCompleteWalk(frames, -1));
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_java_frames_are_complete) {
+    ASGCT_CallFrame frames[3] = { knownFrame(1), knownFrame(2), knownFrame(3) };
+    EXPECT_TRUE(StackWalkValidation::isCompleteWalk(frames, 3));
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_error_only_walk_is_incomplete) {
+    // What walkVM() returns when it faults before reaching the first Java frame.
+    ASGCT_CallFrame frames[1] = { errorFrame("break_not_walkable") };
+    EXPECT_FALSE(StackWalkValidation::isCompleteWalk(frames, 1));
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_error_root_is_incomplete) {
+    ASGCT_CallFrame frames[3] = { knownFrame(1), knownFrame(2), errorFrame("break_compiled") };
+    EXPECT_FALSE(StackWalkValidation::isCompleteWalk(frames, 3));
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_skipped_frames_is_incomplete) {
+    ASGCT_CallFrame frames[3] = { knownFrame(1), errorFrame("[skipped frames]"), knownFrame(2) };
+    EXPECT_FALSE(StackWalkValidation::isCompleteWalk(frames, 3));
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_only_checks_up_to_depth) {
+    ASGCT_CallFrame frames[2] = { knownFrame(1), errorFrame("stale") };
+    EXPECT_TRUE(StackWalkValidation::isCompleteWalk(frames, 1));
+}
+
 // ---- isValidFP ----
 
 TEST_F(StackWalkerTest, isValidFP_null_is_invalid) {

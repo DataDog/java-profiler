@@ -59,6 +59,10 @@ public class AllocStackVerifyTest extends AbstractProfilerTest {
       assertTrue(counters.get("alloc_stack_vm") > 0, "the VM walker was not used: " + counters);
       assertTrue(counters.get("alloc_stack_verified") >= 100, "too few verified samples: " + counters);
       assertEquals(0L, counters.get("alloc_stack_mismatch"), "walks differing from GetStackTrace: " + counters);
+      // A walk that loses a frame falls back to GetStackTrace before it is verified, so a
+      // walker regression would show up here rather than as a mismatch.
+      assertTrue(counters.get("alloc_stack_vm_fallback") * 100 <= counters.get("alloc_stack_vm"),
+          "too many fallbacks to GetStackTrace: " + counters);
     }
   }
 

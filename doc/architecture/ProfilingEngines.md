@@ -364,7 +364,9 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
      default (HotSpot with `cstack=vm`/`vmx`) with the VM stack walker,
      seeded from the thread's last Java frame
      (`HotspotSupport::walkCurrentJavaStack()`), otherwise, and for virtual
-     threads, with JVMTI `GetStackTrace`. Either way the stack is Java-only,
+     threads, with JVMTI `GetStackTrace`, which also takes over when the VM
+     walk faults or loses frames (any `BCI_ERROR` frame; counted as
+     `alloc_stack_vm_fallback`). Either way the stack is Java-only,
      also with `cstack=vmx`. `GetStackTrace` builds a vframe per
      frame in the calling thread's resource area, which deep stacks grow by
      malloc'd 32 KiB chunks on the allocating application threads; glibc

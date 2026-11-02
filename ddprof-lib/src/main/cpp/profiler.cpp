@@ -663,8 +663,8 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
         ? JVMSupport::walkCurrentJavaStack(frames, _max_stack_depth, event_type, lock_index, &truncated)
         : -1;
     if (walked <= 0 && _alloc_stack != ALLOCSTACK_JVMTI) {
-      // A virtual thread, no Java frame from the walker or no walker on this
-      // JVM: use JVMTI.
+      // A virtual thread, a walk that lost frames or no walker on this JVM:
+      // use JVMTI.
       Counters::increment(ALLOC_STACK_VM_FALLBACK);
       truncated = false;
     }

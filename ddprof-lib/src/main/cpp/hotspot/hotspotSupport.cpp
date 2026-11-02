@@ -1403,6 +1403,26 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
 
 int HotspotSupport::walkCurrentJavaStack(ASGCT_CallFrame* frames, int max_depth, jint event_type,
                                          int lock_index, bool* truncated) {
+  ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
+  if (prof_thread == nullptr) {
+    return -1;
+  }
+  // The anchor and stub reads below happen before walkVM() installs its own
+  // crash protection, so they get theirs: this runs on the sampled thread, whose
+  // anchor is stable inside a JVMTI callback, but the reads go through VMStructs
+  // offsets, which fault-injection builds (__FAULT_INJECTION__) deliberately
+  // corrupt. A fault falls back to GetStackTrace.
+  sigjmp_buf crash_protection_ctx;
+  JmpCtxScope jmp_scope(prof_thread);
+  if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+    // checkFault() does a siglongjmp from inside segvHandler, bypassing
+    // segvHandler's SignalHandlerScope destructor.  Compensate.
+    SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+    jmp_scope.restore();
+    return -1;
+  }
+  jmp_scope.install(&crash_protection_ctx);
+
   VMThread* vm_thread = VMThread::current();
   if (vm_thread == nullptr || !VMThread::isJavaThread(vm_thread)) {
     return -1;
@@ -1414,9 +1434,6 @@ int HotspotSupport::walkCurrentJavaStack(ASGCT_CallFrame* frames, int max_depth,
   const void* pc = anchor->lastJavaPC();
   uintptr_t sp = anchor->lastJavaSP();
   uintptr_t fp = anchor->lastJavaFP();
-  // The reads below happen before walkVM() installs its crash protection. They
-  // are safe: this runs on the sampled thread itself, inside a JVMTI callback,
-  // so its anchor is stable and sp points into its own live stack.
   if (pc == nullptr) {
     // Not made walkable: the return address into the last Java frame sits
     // just below its sp, as in HotSpot's JavaFrameAnchor::make_walkable().
@@ -1442,10 +1459,15 @@ int HotspotSupport::walkCurrentJavaStack(ASGCT_CallFrame* frames, int max_depth,
   StackWalkFeatures features = Profiler::instance()->stackWalkFeatures();
   features.mixed = 0;
   features.carrier_frames = 0;
+  // walkVM() chains its own crash protection onto the previous context.
+  jmp_scope.restore();
   // The anchor pc is where the last Java frame resumes, i.e. a return address.
-  return walkVM(&empty_ucontext, frames, max_depth, features, eventTypeFromBCI(event_type),
-                pc, /*pc_is_return_address=*/true, sp, fp, lock_index, truncated,
-                /*seeded_from_anchor=*/true);
+  int depth = walkVM(&empty_ucontext, frames, max_depth, features, eventTypeFromBCI(event_type),
+                     pc, /*pc_is_return_address=*/true, sp, fp, lock_index, truncated,
+                     /*seeded_from_anchor=*/true);
+  // Unlike a signal-time walk, this thread can still be walked by GetStackTrace,
+  // which gets the whole stack: prefer that over a walk that lost frames.
+  return StackWalkValidation::isCompleteWalk(frames, depth) ? depth : 0;
 }
 
 static void patchClassLoaderData(JNIEnv* jni, jclass klass) {

@@ -68,6 +68,22 @@ namespace StackWalkValidation {
         return depth;
     }
 
+    // Whether a walk produced frames without losing any: walkVM() records each
+    // place it lost frames as a BCI_ERROR frame -- a crash-protection recovery
+    // ("break_not_walkable"), a frame it could not unwind ("break_*"), or a gap
+    // it skipped ("[skipped frames]").
+    static inline bool isCompleteWalk(const ASGCT_CallFrame* frames, int depth) {
+        if (depth <= 0) {
+            return false;
+        }
+        for (int i = 0; i < depth; i++) {
+            if (frames[i].bci == BCI_ERROR) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     static inline bool isPlausibleInterpreterFrame(uintptr_t fp, uintptr_t sp, int bcp_offset){
         return fp != 0 && aligned(fp) && !inDeadZone((const void*)fp)
                 && sp != 0 && sp > fp - MAX_INTERPRETER_FRAME_SIZE
