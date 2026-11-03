@@ -59,6 +59,11 @@ public:
     static void initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni);
 
     static int walkJavaStack(StackWalkRequest& request);
+
+    // HotSpot-only capture for JVMTI callbacks on the sampled thread.
+    // Returns usable frames without vframe allocations; 0 requests JVMTI capture
+    // when unsupported, incomplete, or unsafe to retain.
+    static int walkCurrentJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc);
     static inline bool isJitCode(const void* pc);
     // Live heap usage of the JIT runtime-stubs code cache. HotSpot-only; 0 on

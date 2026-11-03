@@ -66,6 +66,25 @@ const int RESERVED_FRAMES   = 10;  // for synthetic frames
 union CallTraceBuffer {
   ASGCT_CallFrame _asgct_frames[1];
   jvmtiFrameInfo _jvmti_frames[1];
+
+  static constexpr int MAX_VERIFICATION_DEPTH = 1024;
+
+  static int verificationDepth(int max_depth) {
+    return max_depth < MAX_VERIFICATION_DEPTH ? max_depth : MAX_VERIFICATION_DEPTH;
+  }
+
+  static size_t capacity(int max_depth, AllocStack mode) {
+    return static_cast<size_t>(max_depth) + RESERVED_FRAMES +
+           (mode == ALLOCSTACK_VERIFY ? verificationDepth(max_depth) : 0);
+  }
+
+  // The union's Java and JVMTI arrays overlap; verification needs a separate tail.
+  jvmtiFrameInfo* verificationFrames(int max_depth, size_t available_frames) {
+    if (available_frames < capacity(max_depth, ALLOCSTACK_VERIFY)) {
+      return nullptr;
+    }
+    return reinterpret_cast<jvmtiFrameInfo*>(this + max_depth + RESERVED_FRAMES);
+  }
 };
 
 class FrameName;
@@ -144,6 +163,7 @@ private:
   SpinLock _locks[CONCURRENCY_LEVEL];
   CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
   int _max_stack_depth;
+  size_t _calltrace_buffer_capacity[CONCURRENCY_LEVEL];
   StackWalkFeatures _features;
   int _safe_mode;
   CStack _cstack;
@@ -154,6 +174,9 @@ private:
   Libraries* _libs;
   u32 _num_context_attributes;
   bool _omit_stacktraces;
+  // How allocation/live-heap samples capture their stack (allocstack), resolved
+  // at start: never ALLOCSTACK_AUTO.
+  AllocStack _alloc_stack;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
   bool _sanity_check_failed;
   // _sanity_check_message points into SanityChecker's static error buffer.
@@ -165,6 +188,8 @@ private:
   static void *dlopen_hook(const char *filename, int flags);
   void switchLibraryTrap(bool enable);
   static bool prewarmUnwinder();
+  static void verifyAllocStack(const ASGCT_CallFrame* frames, int num_frames, jthread thread,
+                               int max_depth, jvmtiFrameInfo* expected);
 
   void disableEngines();
 
@@ -256,10 +281,10 @@ public:
         _alloc_engine(NULL), _event_mask(0),
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
         _total_samples(0), _sample_seq(0), _failures(),
-        _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
+        _max_stack_depth(0), _calltrace_buffer_capacity(), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _force_jmethodID(true),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
-        _num_context_attributes(0), _omit_stacktraces(false),
+        _num_context_attributes(0), _omit_stacktraces(false), _alloc_stack(ALLOCSTACK_JVMTI),
         _remote_symbolication(false), _sanity_check_failed(false),
         _sanity_check_message(NULL), _dlopen_entry(NULL) {
 

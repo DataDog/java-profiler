@@ -101,6 +101,7 @@ If either step fails, profiling is disabled.
 | `initialize()` | shared (`JVMThread` + `ProfiledThread` TLS) | shared |
 | `initExecution(args, jvmti, jni)` | selects `Fully_loaded`, `Partial_loaded`, or `Lazy_loaded` via `HotspotSupport::shouldPreloadJmethodIDs` / `canResolveLazily` / `initLazyResolution` (`jvmSupport.cpp:79-94`) | always `Fully_loaded`. `fjmethodid=lazy` only logs a warning (`jvmSupport.cpp:95-97`) |
 | `walkJavaStack(request)` | `HotspotSupport::walkJavaStack` | ASGCT through `asyncGetCallTrace()`. Debug builds assert that the event is CPU, wall, native malloc, or native socket (`jvmSupport.cpp:112-117`) |
+| `walkCurrentJavaStack(request)` | anchor-seeded `walkVM`; returns 0 for failed or unsafe allocation stacks | returns 0 for JVMTI retry |
 | `canUnwind(frame, pc)` (inline) | `HotspotStackFrame::unwindAtomicStub` | `false` |
 | `isJitCode(pc)` (inline) | `JitCodeCache::isJitCode` | `false` |
 | `runtimeStubsMemoryUsage()` (inline) | `JitCodeCache::runtimeStubsMemoryUsage` | `0` |
@@ -125,6 +126,11 @@ Callers in shared code:
 - The class hooks in `vmEntry.cpp` call the load and redefinition functions:
   `ClassPrepare` at `vmEntry.cpp:641-645`, and the
   `RedefineClasses`/`RetransformClasses` hooks at `vmEntry.cpp:687-731`.
+
+`jniHelper.h` calls `IsVirtualThread` through JNI slot 234 on JDK 21+,
+independently of the headers used to build the library. `vmEntry.h` defines the
+`JMETHODID_NOT_WALKABLE` frame sentinel; allocation capture retries with JVMTI
+rather than retaining unresolved Java frames.
 
 ## `jvmThread.h` / `jvmThread.cpp`: the `JVMThread` facade
 
