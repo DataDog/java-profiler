@@ -164,7 +164,7 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
   u64 target_gc_epoch = load(_gc_epoch);
   TEST_LOG_SUMMARY("LivenessTracker::cleanup_table forced=%d leak_signal=%d gc_generations=%d current_epoch=%llu "
            "target_epoch=%llu table_size=%d",
-           forced, _leak_signal_enabled.load(std::memory_order_relaxed),
+           forced, _leak_signal_enabled.load(std::memory_order_acquire),
            _gc_generations.load(std::memory_order_relaxed), (unsigned long long)current,
            (unsigned long long)target_gc_epoch, _table_size);
 
@@ -276,7 +276,7 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
           }
         }
 
-        if (_leak_signal_enabled.load(std::memory_order_relaxed) && is_epoch_owner) {
+        if (_leak_signal_enabled.load(std::memory_order_acquire) && is_epoch_owner) {
           // Per-klass population tracking (design doc's Open Question 3) -
           // gated on the effective leak-signal availability: generations
           // tracking and liveheap tracking drive the same mechanisms, so the
@@ -362,7 +362,7 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
                1.0f * (end - start) / 1000 / 1000,
                1.0f * (end - start) / 1000 / sz);
   }
-  if (_leak_signal_enabled.load(std::memory_order_relaxed) && is_epoch_owner) {
+  if (_leak_signal_enabled.load(std::memory_order_acquire) && is_epoch_owner) {
     // Outside the `sz > 0` block: a sweep that finds the table already empty
     // still owns this epoch. foldKlassCountsLocked() records zero population
     // samples for klasses whose every tracked instance died (they never
@@ -1639,9 +1639,9 @@ double LivenessTracker::secondsToOOM() const {
   jlong max_heap = _max_heap_bytes;
   jlong container_limit = _container_memory_limit;
 #endif
-  if (!_leak_signal_enabled.load(std::memory_order_relaxed) || max_heap <= 0) {
+  if (!_leak_signal_enabled.load(std::memory_order_acquire) || max_heap <= 0) {
     TEST_LOG("LivenessTracker::secondsToOOM -> -1 (leak_signal=%d max_heap=%lld)",
-             (int)_leak_signal_enabled.load(std::memory_order_relaxed), (long long)max_heap);
+             (int)_leak_signal_enabled.load(std::memory_order_acquire), (long long)max_heap);
     return -1;
   }
   // Age-based burn-in (see OOM_PROJECTION_BURN_IN_NS): no projection until the
@@ -2100,7 +2100,7 @@ Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
 void LivenessTracker::resetSession() {
   _enabled = false;
   _gc_generations.store(false, std::memory_order_relaxed);
-  _leak_signal_enabled.store(false, std::memory_order_relaxed);
+  _leak_signal_enabled.store(false, std::memory_order_release);
 }
 
 Error LivenessTracker::start(Arguments &args) {
@@ -2182,10 +2182,13 @@ Error LivenessTracker::initialize(Arguments &args) {
   // observe the flag it was actually started with, even though the tracking
   // table itself persists across recordings.
   _gc_generations.store(args._gc_generations, std::memory_order_relaxed);
-  // See _leak_signal_enabled's comment for the derivation.
+  // See _leak_signal_enabled's comment for the derivation. Release: the
+  // flag gates klass-folding/heap-floor/forced-sweep work whose readers
+  // consume table state populated under the same flag (AGENTS.md's default
+  // for config fields written in start()); acquire on every load.
   _leak_signal_enabled.store(args._gc_generations
                                  || (args._record_liveness && args._reference_chains),
-                             std::memory_order_relaxed);
+                             std::memory_order_release);
 
   if (!_enabled) {
     return Error::OK;
@@ -2213,7 +2216,7 @@ Error LivenessTracker::initialize(Arguments &args) {
   // later starts never re-stamp it. Stays ahead of the _initialized early
   // return so the first signal-on start after earlier non-signal starts can
   // still stamp.
-  if (_leak_signal_enabled.load(std::memory_order_relaxed)) {
+  if (_leak_signal_enabled.load(std::memory_order_acquire)) {
     u64 never_activated = 0;
     _leak_signal_activated_ns.compare_exchange_strong(
         never_activated, OS::nanotime(), std::memory_order_release, std::memory_order_relaxed);
@@ -2577,7 +2580,7 @@ retry:
 }
 
 void LivenessTracker::maybeForceCleanup(u64 now_ns) {
-  if (!_enabled || !_leak_signal_enabled.load(std::memory_order_relaxed)) {
+  if (!_enabled || !_leak_signal_enabled.load(std::memory_order_acquire)) {
     return;
   }
   constexpr u64 FORCE_CLEANUP_INTERVAL_NS = 30ULL * 1000 * 1000 * 1000;
@@ -2633,7 +2636,7 @@ void LivenessTracker::onGC() {
     store(_used_after_last_gc, HeapUsage::get(false)._used);
   }
 
-  if (_leak_signal_enabled.load(std::memory_order_relaxed)) {
+  if (_leak_signal_enabled.load(std::memory_order_acquire)) {
     // Feeds heapFloorRising()'s corroboration check (selectLeakCandidates())
     // - gated on the effective leak-signal availability, same as the
     // per-klass population table itself, since this ring exists purely to

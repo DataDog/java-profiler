@@ -484,16 +484,22 @@ private:
   // True when a leak-signal source is active: generations, or liveheap with
   // referencechains enabled - the collector is the signal's only consumer, so
   // a plain liveheap session keeps the flag (and its per-epoch klass folding,
-  // heap-floor ring and forced sweeps) off. Derived in initialize(); same
-  // atomicity/reader argument as _gc_generations above.
+  // heap-floor ring and forced sweeps) off. Derived in initialize(); written
+  // with release, read with acquire (the readers consume table state
+  // populated under the same flag). Cleared again by
+  // disableChainOnlyLeakSignal() when Profiler::start() armed it for the
+  // (liveness && reference_chains) leg but ReferenceChainTracker::start()
+  // then failed - without the tracker the flag's work has no consumer.
   std::atomic<bool> _leak_signal_enabled;
 
   // OS::nanotime() of the first initialize() that enabled the leak signal; 0
-  // means never activated. Set once by a CAS from 0 and never reset by
-  // production code (not by stop()/resetSession(), not by the ring resets), so
-  // it is per process, not per recording. Drives secondsToOOM()'s age-based
-  // burn-in (see OOM_PROJECTION_BURN_IN_NS). Written with release, read with
-  // acquire.
+  // means never activated. Set once by a CAS from 0; the only production
+  // reset is disableChainOnlyLeakSignal()'s chains-start-failure path (which
+  // also clears the flag), so a later chains-enabled start re-stamps and
+  // gets its own burn-in. stop()/resetSession() and the ring resets never
+  // touch it: per process, not per recording. Drives secondsToOOM()'s
+  // age-based burn-in (see OOM_PROJECTION_BURN_IN_NS). Written with release,
+  // read with acquire.
   std::atomic<u64> _leak_signal_activated_ns;
 
   // Per-klass population history table (see KlassPopulationEntry above).
@@ -1082,7 +1088,24 @@ public:
   // The effective gate ReferenceChainTracker::hasLeakSignal() keys on (see
   // _leak_signal_enabled's own comment).
   bool leakSignalEnabled() const {
-    return _leak_signal_enabled.load(std::memory_order_relaxed);
+    return _leak_signal_enabled.load(std::memory_order_acquire);
+  }
+
+  // Profiler::start() calls this when ReferenceChainTracker::start() failed:
+  // the flag's (liveness && reference_chains) leg then has no consumer, so a
+  // plain-liveheap session must not pay klass folding, heap-floor sampling
+  // and forced sweeps. The generations leg keeps its own consumer - cleared
+  // only when generations tracking is off. Also unstamps the burn-in clock
+  // if this start stamped it: a chains-requested-but-failed start must not
+  // leave a later chains-enabled recording with an already-expired burn-in
+  // (same rationale as the plain-liveheap rule at the stamping site). Safe:
+  // with the tracker failed to start no sampler work reads the flag/stamp.
+  void disableChainOnlyLeakSignal() {
+    if (_gc_generations.load(std::memory_order_acquire)) {
+      return;
+    }
+    _leak_signal_enabled.store(false, std::memory_order_release);
+    _leak_signal_activated_ns.store(0, std::memory_order_release);
   }
 
   // Time-to-OOM projection against whichever of two independent boundaries
@@ -1741,7 +1764,7 @@ public:
   // - the only production-reachable state where liveness alone arms the signal.
   void setLeakSignalSourcesForTest(bool generations, bool liveness) {
     _gc_generations.store(generations, std::memory_order_relaxed);
-    _leak_signal_enabled.store(generations || liveness, std::memory_order_relaxed);
+    _leak_signal_enabled.store(generations || liveness, std::memory_order_release);
   }
 
   // Convenience for callers that only need the generations-only configuration:

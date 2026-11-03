@@ -1724,6 +1724,10 @@ Error Profiler::start(Arguments &args, bool reset) {
     error = ReferenceChainTracker::instance()->start(args);
     if (error) {
       Log::warn("%s", error.message());
+      // The leak-signal flag was armed for the (liveness && reference_chains) leg before this
+      // start; with the tracker failed, that leg's work has no consumer - clear it again (and
+      // the burn-in stamp it stamped) so a plain-liveheap session doesn't pay for it.
+      LivenessTracker::instance()->disableChainOnlyLeakSignal();
       error = Error::OK; // recoverable - recording continues without chains
     } else {
       ReferenceChainTracker::instance()->startThread();
