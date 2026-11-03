@@ -4,8 +4,8 @@
 # Run tests in containers with various OS/libc/JDK combinations (similar to CI)
 # Defaults to Podman; use --container=docker to use Docker.
 # Uses two-level container image caching:
-#   1. Base image with OS + build tools (java-profiler-base:<libc>-<arch>)
-#   2. JDK-specific image on top (java-profiler-test:<libc>-jdk<version>-<arch>)
+#   1. Base: java-profiler-base:<libc>-<arch>[-clang17] (suffix for glibc)
+#   2. JDK: java-profiler-test:<libc>-jdk<version>-<arch>[-clang17]
 #
 # Usage: ./utils/run-containers-tests.sh [options]
 #   --libc=glibc|musl|all[,..]    (default: glibc)
@@ -967,9 +967,13 @@ if [[ -z "$JDK_URL" ]]; then
     exit 1
 fi
 
-# Image names for caching
-BASE_IMAGE_NAME="${BASE_IMAGE_PREFIX}:${LIBC}-${ARCH}"
-IMAGE_NAME="${IMAGE_PREFIX}:${LIBC}-jdk${JDK_VERSION}-${ARCH}"
+# Version both glibc cache levels so pre-Clang-17 images are not reused.
+IMAGE_TAG_SUFFIX=""
+if [[ "$LIBC" == "glibc" ]]; then
+    IMAGE_TAG_SUFFIX="-clang17"
+fi
+BASE_IMAGE_NAME="${BASE_IMAGE_PREFIX}:${LIBC}-${ARCH}${IMAGE_TAG_SUFFIX}"
+IMAGE_NAME="${IMAGE_PREFIX}:${LIBC}-jdk${JDK_VERSION}-${ARCH}${IMAGE_TAG_SUFFIX}"
 
 # Container platform for cross-architecture support
 CONTAINER_PLATFORM=""
@@ -1039,32 +1043,7 @@ RUN mkdir -p /gradle-cache
 WORKDIR /workspace
 EOF
     else
-        # libclang-rt-dev is only available on x64, not arm64
-        if [[ "$ARCH" == "x64" ]]; then
-            CLANG_RT_PKG="libclang-dev"
-        else
-            CLANG_RT_PKG=""
-        fi
-        # On aarch64, install clang-17 + libclang-rt-17-dev from the LLVM apt repository.
-        # GCC 11's libtsan only knows 39-bit VMA; the linuxkit kernel (Docker Desktop)
-        # uses 48-bit VMA, so GCC 11's TSan crashes with "unexpected memory mapping".
-        # Clang-17's compiler-rt TSan runtime handles both 39-bit and 48-bit VMA.
-        # libclang-rt-17-dev provides libclang_rt.tsan-aarch64.{a,so} that clang-17
-        # needs when linking executables with -fsanitize=thread.
-        if [[ "$ARCH" == "aarch64" ]]; then
-            CLANG17_BLOCK='
-# Install clang-17 + compiler-rt for TSan 48-bit VMA support (aarch64 only)
-RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-        | gpg --dearmor -o /etc/apt/trusted.gpg.d/llvm.gpg \
-    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" \
-        > /etc/apt/sources.list.d/llvm.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends clang-17 libclang-rt-17-dev \
-    && rm -rf /var/lib/apt/lists/*'
-        else
-            CLANG17_BLOCK=''
-        fi
-        cat > "$DOCKERFILE_DIR/Dockerfile.base" <<EOF
+        cat > "$DOCKERFILE_DIR/Dockerfile.base" <<'EOF'
 FROM ubuntu:22.04
 
 # Avoid interactive prompts
@@ -1072,17 +1051,29 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install build dependencies
 # - libasan/libtsan for GCC sanitizers
-# - libclang-rt-dev for clang sanitizers and libFuzzer (x64 only)
 # - gnupg for LLVM apt key import
 # - openssh-client for git clone over SSH
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        curl wget gnupg bash make g++ clang git jq cmake \
+        curl wget gnupg bash make g++ git jq cmake \
         libgtest-dev libgmock-dev tar binutils libc6-dbg \
         ca-certificates linux-libc-dev \
-        libasan6 libtsan0 ${CLANG_RT_PKG} openssh-client build-essential gdb && \
+        libasan6 libtsan0 openssh-client build-essential gdb && \
     rm -rf /var/lib/apt/lists/*
-${CLANG17_BLOCK}
+
+# Use Clang 17 on both architectures to avoid Clang 14's masked-index UBSan failure.
+# Matching compiler-rt supplies sanitizers and libFuzzer, including aarch64 TSan
+# support for the 48-bit VMA used by linuxkit kernels.
+RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+        | gpg --dearmor -o /etc/apt/trusted.gpg.d/llvm.gpg \
+    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" \
+        > /etc/apt/sources.list.d/llvm.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends clang-17 libclang-rt-17-dev \
+    && update-alternatives --install /usr/bin/clang clang /usr/bin/clang-17 170 \
+        --slave /usr/bin/clang++ clang++ /usr/bin/clang++-17 \
+    && update-alternatives --set clang /usr/bin/clang-17 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set up Gradle cache directory
 ENV GRADLE_USER_HOME=/gradle-cache

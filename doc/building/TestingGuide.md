@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Testing Guide
 
 This document describes the complete test strategy for the java-profiler project:
@@ -332,6 +334,66 @@ catching races with per-second probability too low for any bounded CI window.
 # Drop into a shell inside the container (SYS_PTRACE enabled for gdb)
 ./utils/run-containers-tests.sh --shell
 ```
+
+### Container toolchain checks
+
+Glibc test images retain Ubuntu 22.04. Both x64 and aarch64 install `clang-17`
+and matching `libclang-rt-17-dev` from the LLVM Jammy repository. Linked
+`update-alternatives` entries select `clang` and `clang++` 17 by default. This
+avoids the masked-index bounds diagnostic observed with Clang 14.0.0 on aarch64
+under ASan/UBSan without changing source indexing or disabling sanitizer checks.
+The versioned `clang++-17` binary remains available for the aarch64 TSan override.
+Musl retains Alpine 3.21 and its Clang/compiler-rt packages.
+
+Both glibc cache levels include the toolchain version:
+
+| Layer | Glibc tag | Musl tag (unchanged) |
+|-------|-----------|----------------------|
+| Base | `java-profiler-base:glibc-<arch>-clang17` | `java-profiler-base:musl-<arch>` |
+| JDK | `java-profiler-test:glibc-jdk<version>-<arch>-clang17` | `java-profiler-test:musl-jdk<version>-<arch>` |
+
+Legacy glibc tags are not reused or deleted. `--rebuild-base` rebuilds only the
+base; a cached JDK layer can still be reused. Use `--rebuild` to refresh both
+layers when qualifying a toolchain or package change.
+
+Run the hermetic runner tests without containers, downloads, packages, or Gradle:
+
+```bash
+bash -n utils/run-containers-tests.sh
+bash -n utils/tests/test_run_containers_tests.sh
+bash -n utils/tests/test_masked_index_compiler.sh
+bash utils/tests/test_run_containers_tests.sh
+```
+
+These tests capture generated Dockerfiles and runtime arguments using stateful
+fake Docker/Podman commands. They verify recipes, cache selection, rebuild modes,
+matrix forwarding/filtering, source modes, and TSan command generation. They do
+not prove repository/package availability, runtime resolution, or compiler behavior.
+
+Inside a provisioned Linux glibc image, check the default compiler and run the
+standalone compiler smoke:
+
+```bash
+clang --version
+clang++ --version
+bash utils/tests/test_masked_index_compiler.sh clang++
+```
+
+The smoke prints compiler/resource/runtime identities and uses the full project
+Linux ASan/UBSan compile flags and native-test executable linker flags. Like the
+native tests, it lets the compiler embed its sanitizer runtime instead of mixing
+static and shared ASan runtimes. It checks all 2048 valid slots, exact cell
+addresses and content, seven publication states per slot, disabled snapshots,
+unallocated chunks, and four invalid boundaries. It preserves the signed-slot
+masked address expression that exposes the Clang 14 aarch64 failure. A comparison
+with an installed Clang 14.0.0 and matching runtime is expected to fail on aarch64;
+it must not be treated as a passing test or generalized to every Clang 14 build.
+The smoke does not replace native or Java integration tests.
+
+Aarch64 glibc TSan runs still generate `-Pnative.forceCompiler=clang++-17`,
+`--privileged`, and `sysctl -w vm.mmap_rnd_bits=28`. Running that cell can change
+the container host's kernel setting; do not execute it without authorization.
+The hermetic tests inspect these strings without executing them.
 
 ### Running the chaos harness locally
 

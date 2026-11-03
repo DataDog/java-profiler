@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Datadog Java Profiler Library
 _Based on [async-profiler 2.8.3](https://github.com/async-profiler/async-profiler/releases/tag/v2.8.3)_
 
@@ -156,8 +158,10 @@ The project includes both Java and C++ unit tests. You can run them using:
 
 ### Container-Based Testing (musl/glibc)
 Run tests in containers to test on different libc implementations. The script defaults to Podman; on macOS use Docker via colima (`--container=docker`) — podman's credential-helper lookup for the Datadog registries (ddtool) fails outside the CI network and aborts container commands. Uses two-level container image caching for fast subsequent runs:
-1. **Base image** (`java-profiler-base:<libc>-<arch>`) - OS with all build tools + sanitizers
-2. **JDK image** (`java-profiler-test:<libc>-jdk<version>-<arch>`) - Adds JDK + Gradle
+1. **Base image** - OS with build tools + sanitizers: `java-profiler-base:glibc-<arch>-clang17` or `java-profiler-base:musl-<arch>`
+2. **JDK image** - Adds JDK + Gradle: `java-profiler-test:glibc-jdk<version>-<arch>-clang17` or `java-profiler-test:musl-jdk<version>-<arch>`
+
+Glibc images use Ubuntu 22.04 with Clang/Clang++ 17 selected as defaults and matching `libclang-rt-17-dev` on both x64 and aarch64. The `-clang17` tags bypass older toolchain caches at both levels. Musl images retain Alpine 3.21 and its Clang/compiler-rt packages. `--rebuild-base` refreshes only the base and may reuse the cached JDK image; use `--rebuild` to refresh both layers.
 
 By default, the script clones the repository at the current commit for clean builds. Use `--mount` to mount the local directory instead (faster but may have stale artifacts).
 

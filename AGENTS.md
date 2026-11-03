@@ -22,6 +22,8 @@ demand — full file contents, grep/search dumps, build/test logs — summarize 
 one-line pointer (what was read/run and the conclusion) instead of retaining them verbatim.
 -->
 
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # AGENTS.md
 
 This file provides guidance to AI coding assistants when working with code in this
@@ -111,7 +113,10 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   — defaults to podman; on macOS use either podman or Docker through colima
   (`--container=docker` after `colima start` — check availability with
   `podman info` / `docker info` and pick the runtime whose daemon answers).
-  Full flags in
+  Glibc images retain Ubuntu 22.04 and default to Clang 17 with matching compiler-rt
+  on x64/aarch64; both cache tags end in `-clang17`. Musl remains Alpine 3.21.
+  `--rebuild-base` rebuilds only the base; use `--rebuild` to refresh both layers.
+  Full flags and toolchain checks in
   [doc/building/TestingGuide.md](doc/building/TestingGuide.md).
 
 Full task reference: [doc/building/GradleTasks.md](doc/building/GradleTasks.md). Native issues:
