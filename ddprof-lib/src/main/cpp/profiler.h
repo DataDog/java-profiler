@@ -165,7 +165,7 @@ private:
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
-  // Replaced only by start(), while thread unregistration is open, so the
+  // CPU engine is only replaced by start(), while thread unregistration is open, so the
   // hook paths (registerThreadInEngines(), unregisterThreadInEngines()) load
   // them with acquire and start() stores them with release. check() selects
   // into locals and runs only while IDLE, where the slots still route exits

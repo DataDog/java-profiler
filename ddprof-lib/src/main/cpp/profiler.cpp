@@ -1892,8 +1892,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // can fire.
   SamplerPerf::primeClock();
 
-  // error is Error::OK here: every earlier failure returned. A CPU engine
-  // failure is recoverable and logged by startCpuEngine().
+  // A CPU engine failure is recoverable and logged by startCpuEngine().
   int activated = 0;
   if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine &&
       startCpuEngine(args)) {
@@ -2049,10 +2048,6 @@ Error Profiler::stop() {
   // start(), the only place a table is replaced. Unregistration calls are not
   // waited for here: they may keep arriving during stop() under thread churn.
   bool hooks_drained = closeThreadRegistration();
-  if (!hooks_drained) {
-    Log::error("Profiler: thread hook calls did not drain; stopping and "
-               "disabling the profiler");
-  }
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
