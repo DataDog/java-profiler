@@ -20,9 +20,11 @@ The GC callback does not wake the thread. The normal idle loop checks the state 
 
 Before the first search, `shouldRunPass()` calls `canAffordNewSearch()`. The gate always requires a leak indication: `selectLeakCandidates()` finds a class with sustained population growth. The safepoint cost budget must also permit the search.
 
-Urgency does not authorize a search. A candidate-less search can never emit a chain, and while urgent the 30-pass no-progress abandonment is suppressed, so it would run to the full TTL doing whole-heap BFS. Urgency applies through the ramp once a search is running.
+Urgency does not authorize a search. A candidate-less search can never emit a chain, and while urgent the 30-pass no-progress abandonment is suppressed, so it would run to the full TTL doing whole-heap BFS. Urgency instead acts before the gate: on every iteration, `threadLoop()` computes the OOM ramp from the OOM projection and calls `publishUrgencyState()`, which publishes the ramp state and the tracking-admission decision, before `shouldRunPass()` evaluates the search gate.
 
-The tradeoff of this candidate-only gate: a heap-wide leak spread across many classes, none of which individually clears `selectLeakCandidates()`'s per-klass ring-fill/hysteresis gate, never opens the gate, even in the emergency band (projected OOM under 5 minutes). No chains are produced in that case. Each such refused evaluation increments the `reference_chain_urgent_no_candidate` counter (about once per second while urgency is latched and no candidate exists), so the gap is visible in the diagnostics rather than silent, and it can be told apart from an idle healthy process.
+In the emergency band, where the projection is under `OOM_URGENT_THRESHOLD_S` (5 minutes), `updateUrgentAdmission()` turns on the global 100% tracking admission with zero candidates and no running search. `admitForTracking()` falls back to the normal admission rules while the tracking table is at `_table_max_cap`; that case increments `LIVENESS_URGENT_BOOST_BACKED_OFF`, and each admitted allocation increments `LIVENESS_URGENT_BOOST_ADMITS`.
+
+The tradeoff of this candidate-only gate: a heap-wide leak spread across many classes, none of which individually clears `selectLeakCandidates()`'s per-klass ring-fill/hysteresis gate, never opens the gate, even in the emergency band (projected OOM under 5 minutes). No chains are produced in that case. Each such refused evaluation increments the `reference_chain_urgent_no_candidate` counter. The evaluation runs only after the safepoint cost budget permits it: `canAffordNewSearch()` checks the budget before it calls `hasLeakSignal()`. The evaluation rate therefore follows the ramped cadence, not a fixed rate. The gap is visible in the diagnostics rather than silent, and it can be told apart from an idle healthy process.
 
 The population-trend signal is constructed by the liveness tracker, which fills the per-klass population table and the heap-floor ring when generations tracking OR liveheap tracking with reference chains enabled is active (the two options drive the same tracking mechanisms; liveheap additionally preserves stack traces for its samples). The reference-chain collector is the signal's only consumer, so a plain liveheap session without `referencechains` keeps the signal disarmed. When no source is active, no signal can ever be produced: `hasLeakSignal()` returns false, and the collector stays idle - it never runs a pass, restart, or search.
 
@@ -50,7 +52,7 @@ The OOM ramp disables this backoff. The non-safepoint CPU cost budget still appl
 
 When no unresolved candidate controls scheduling, a completed GC authorizes a pass. The tracker compares the current GC-finish epoch with the epoch recorded by the previous pass.
 
-The fallback cadence also authorizes a pass. It starts at one second and the pause controller can adjust it between 10 milliseconds and four seconds.
+The fallback cadence also authorizes a pass. It starts at one second. Two writers adjust it between 10 milliseconds and four seconds: the pause controller (`updatePacing()`) and the OOM urgency ramp. When an urgency episode ends, the ramp restores the one-second fallback in the same iteration.
 
 ## Leak signal
 
@@ -116,7 +118,7 @@ neither source provides a valid estimate, or that the projection is still in its
 
 Two ranges have different purposes:
 
-- At less than 30 minutes, the OOM ramp increases the pause target, shortens the cadence, and increases the edge-budget ceiling. The 100% liveness-sampling admission follows the same band, but outside the emergency band it additionally requires fresh growth evidence: the newest heap-floor sample must exceed the episode's running high-water mark (the entry value, raised by every admitted sample). The growth check is evaluated once per new heap-floor sample (one per GC), and its result is held until the next sample arrives, so an admitted growth sample keeps the boost on until the next GC. The projection is a smoothed regression over a 30-sample window, so a single spike sample keeps the projection inside the band for several recovery GCs after the heap has physically stopped growing. Growth evidence is what keeps the admission boost off for such a recovered spike. Inside the emergency band (less than 5 minutes), admission is immediate.
+- At less than 30 minutes, the OOM ramp increases the pause target, shortens the cadence toward its 10 millisecond floor, and increases the edge-budget ceiling. The 100% liveness-sampling admission follows the same band, but outside the emergency band it additionally requires fresh growth evidence: the newest heap-floor sample must exceed the episode's running high-water mark (the entry value, raised by every admitted sample). The growth check is evaluated once per new heap-floor sample (one per GC), and its result is held until the next sample arrives, so an admitted growth sample keeps the boost on until the next GC. The projection is a smoothed regression over a 30-sample window, so a single spike sample keeps the projection inside the band for several recovery GCs after the heap has physically stopped growing. Growth evidence is what keeps the admission boost off for such a recovered spike. Inside the emergency band (less than 5 minutes), admission is immediate.
 - At less than 5 minutes, `isUrgent()` latches an urgent episode. The latch does not start searches, and the ramp calculation does not consult it. Its only consumer is the no-progress abandonment of a running search, which it suppresses while the latch is held.
 
 Both ranges apply only after the burn-in period.
@@ -126,6 +128,8 @@ For `OOM_PROJECTION_BURN_IN_NS` (5 minutes) after the leak signal first activate
 The urgent latch clears after five consecutive checks at 10 minutes or more, or after five consecutive checks with no valid rising-trend estimate. This hysteresis keeps the urgent episode itself from flapping when the estimate moves around the threshold; the admission boost, which releases on the raw band comparison, does not follow this hysteresis.
 
 The ramp and the latch use different thresholds. Entering the ramp does not by itself latch urgency.
+
+The ramp shortens both the idle sleep and the fallback cadence gate. It runs from one second (`PASS_CADENCE_NS`) at 30 minutes out to 10 milliseconds (`URGENT_CADENCE_NS`) at OOM, following `cadence = 1 s × 0.01^(1 − s/1800)` for a projection of s seconds. This allows up to about 100 loop evaluations per second, not counting evaluation time. At the 5-minute boundary the ramp gives about 21.5 milliseconds, about 46 evaluations per second. These values follow from the formula; execution time per evaluation is additional, and none of them is a guarantee.
 
 ## Terminal state and restart
 

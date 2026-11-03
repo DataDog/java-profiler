@@ -173,7 +173,7 @@ The implementation controls different costs separately:
 
 - `_effective_budget` limits edge admission for ordinary work.
 - `_pause_pid` adjusts that budget from measured in-safepoint time.
-- `_effective_cadence_ns` changes when the budget controller reaches a limit.
+- `_effective_cadence_ns` changes when the budget controller reaches a limit and while the OOM urgency ramp is active. When an urgency episode ends, the ramp restores the one-second fallback in the same iteration.
 - `_safepoint_pain_budget` gates a later search.
 - `_cpu_pain_budget` gates passes in the current search.
 - `_configured_frontier_cap` limits native metadata.
