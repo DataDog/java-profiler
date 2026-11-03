@@ -824,11 +824,13 @@ private:
   bool hasLeakSignal(double seconds_to_oom);
 
   // Latched, hysteretic view of LivenessTracker::secondsToOOM() crossing OOM_URGENT_THRESHOLD_S -
-  // see _urgent_latched for the latch/release rules and why the raw comparison flaps. The
-  // one-arg form evaluates the caller's projection; the zero-arg form reads secondsToOOM() and
-  // forwards (runPass()'s no-progress check in referenceChainTraversal.cpp, isUrgentForTest()).
-  bool isUrgent() const;
+  // see _urgent_latched for the latch/release rules and why the raw comparison flaps. The latch
+  // machine runs once per iteration in publishUrgencyState(), on the caller's projection
+  // (threadLoop()'s single read); runPass() and hasLeakSignal() consume the latched state via
+  // urgencyLatched() without advancing the machine.
   bool isUrgent(double seconds_to_oom) const;
+  // Read-only view of the latch (see isUrgent()).
+  bool urgencyLatched() const { return _urgent_latched; }
 
   // Computes the 100% tracking-admission decision. Outside the emergency band
   // the decision is re-evaluated only when a new heap-floor sample arrives and
@@ -843,6 +845,9 @@ private:
 
   // Publishes one threadLoop() iteration's urgency: _oom_ramp_active follows the raw band
   // (`urgent`) for shouldRunPass()'s canary-backoff bypass; LivenessTracker's 100% tracking boost
+  void resetUrgencyState();
+  void closeUrgencyEpisode();
+
   // (setUrgentTracking()) follows updateUrgentAdmission()'s growth-gated decision, never raw
   // `urgent`. Extracted from threadLoop() so the wiring is testable without a BFS thread.
   void publishUrgencyState(double seconds_to_oom, bool urgent);
@@ -1225,24 +1230,10 @@ public:
   // OOM-urgency hysteresis state (isUrgent()'s latch/release machine,
   // referenceChains.cpp): tests drive it via isUrgentForTest() and assert on
   // the raw latch/tick reads.
-  bool isUrgentForTest() const { return isUrgent(); }
+  bool isUrgentForTest() const;
   bool urgentLatchedForTest() const { return _urgent_latched; }
   int urgentReleaseTicksForTest() const { return _urgent_release_ticks; }
-  void resetUrgencyForTest() {
-    _urgent_latched = false;
-    _urgent_release_ticks = 0;
-    // updateUrgentAdmission()'s episode baseline - a stale one across tests
-    // would make an episode's "first observation" branch unreachable.
-    _admission_growth_baseline = 0;
-    // The freshness pair needs its own reset even though the baseline reset
-    // already forces a ramp-band re-entry through the first-observation
-    // branch: an emergency-band re-entry seeds the baseline without touching
-    // _admission_sample_seq/_admission_decision, so a leaked pair would make
-    // the next ramp-band call with no new sample return the previous test's
-    // retained decision.
-    _admission_sample_seq = 0;
-    _admission_decision = false;
-  }
+  void resetUrgencyForTest() { resetUrgencyState(); }
   // Applied vs configured CPU pain-budget refill rate: shouldRunPass() raises
   // the applied rate CANARY_PAIN_BUDGET_REFILL_MULTIPLIER-fold only while a
   // canary chase is open - the engage/disengage pair the refill test asserts.

@@ -421,24 +421,15 @@ void ReferenceChainTracker::stop() {
   // updateUrgentAdmission(), restartSearch()) as plain stores; safe to reset
   // from this thread only because stopThread() has joined that thread.
   store(_search_start_ns, (u64)0);
-  _urgent_latched = false;
-  _urgent_release_ticks = 0;
-  _admission_growth_baseline = 0;
-  _admission_sample_seq = 0;
-  _admission_decision = false;
+  resetUrgencyState();
   // Close the urgency episode the BFS thread may have left open: the boosted
   // budget ceiling and the ramped cadence are episode state - the same state
   // applyOomRamp()'s first non-urgent iteration restores on the BFS thread -
   // and a mid-episode stop() would otherwise leak them past the recording
   // boundary (buildAbandonedEvent() reads _budget after this point).
-  // Guarded on the boost flag because outside an episode updatePacing()
-  // owns _effective_cadence_ns; stopThread() has already joined the BFS
-  // thread, so these writes are as safe as the urgency resets above.
-  if (_urgency_budget_boosted) {
-    _urgency_budget_boosted = false;
-    _budget = _configured_budget;
-    _effective_cadence_ns = PASS_CADENCE_NS;
-  }
+  // stopThread() has already joined the BFS thread, so these writes are as
+  // safe as the urgency resets above.
+  closeUrgencyEpisode();
   // Same per-search candidate/discovered canary state runPass()'s terminal branch and
   // restartSearch() clear - zeroing the counts here closes the stale-chain windows in
   // pollWatchedTargets() (dead-representative canary path, discovered-instances path) for the
@@ -549,11 +540,9 @@ bool ReferenceChainTracker::applyOomRamp(double seconds_to_oom) {
              "budget=%d configured=%d",
              _budget, _configured_budget);
   } else if (!urgent && _urgency_budget_boosted) {
-    _urgency_budget_boosted = false;
-    _budget = _configured_budget;
+    closeUrgencyEpisode();
     // The episode owned the cadence while it ran; hand it back at the fallback in the same
     // iteration so the idle loop stops waking at the ramped rate.
-    _effective_cadence_ns = PASS_CADENCE_NS;
     TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop urgency budget restore "
              "budget=%d", _budget);
   }
@@ -809,7 +798,10 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns, double seconds_to_oom) {
 // reusing pollWatchedTargets()'s own selectLeakCandidates() call - that one runs after runPass() in
 // threadLoop()'s own iteration and needs the *list* to poll each candidate's tag; this only needs
 // to know whether at least one exists.
-bool ReferenceChainTracker::isUrgent() const {
+// Test-driving form of the latch machine: evaluates the live projection
+// (what the zero-arg form used to read) so tests advance the same machine
+// publishUrgencyState() runs per iteration.
+bool ReferenceChainTracker::isUrgentForTest() const {
   return isUrgent(LivenessTracker::instance()->secondsToOOM());
 }
 
@@ -929,8 +921,42 @@ bool ReferenceChainTracker::updateUrgentAdmission(double seconds_to_oom, bool ur
   return _admission_decision;
 }
 
+// The urgency/admission reset shared by stop(), resetSearchStateForTest() and
+// resetUrgencyForTest(): the latch/release machine, the episode baseline, and
+// the freshness pair - the pair needs its own reset because an emergency-band
+// re-entry seeds the baseline without touching it, so a leaked pair would
+// make the next ramp-band call with no new GC sample return the previous
+// recording's (or test's) retained admission decision.
+void ReferenceChainTracker::resetUrgencyState() {
+  _urgent_latched = false;
+  _urgent_release_ticks = 0;
+  _admission_growth_baseline = 0;
+  _admission_sample_seq = 0;
+  _admission_decision = false;
+}
+
+// Closes an urgency episode: restores the boosted budget ceiling and the
+// ramped cadence. Guarded on the boost flag because outside an episode
+// updatePacing() owns _effective_cadence_ns; applyOomRamp() and stop() (the
+// latter only because stopThread() has already joined the BFS thread) are the
+// production callers.
+void ReferenceChainTracker::closeUrgencyEpisode() {
+  if (_urgency_budget_boosted) {
+    _urgency_budget_boosted = false;
+    _budget = _configured_budget;
+    _effective_cadence_ns = PASS_CADENCE_NS;
+  }
+}
+
 void ReferenceChainTracker::publishUrgencyState(double seconds_to_oom, bool urgent) {
   _oom_ramp_active = urgent;
+  // The latch machine runs here, once per iteration on threadLoop()'s single
+  // projection read. It must not run inside hasLeakSignal(): that gate sits
+  // behind canAffordNewSearch()'s cooldown check, and while the cooldown
+  // blocks restarts the latch would stay frozen - possibly still latched
+  // after the heap recovered, suppressing runPass()'s no-progress
+  // abandonment for a search the stale latch then starts.
+  isUrgent(seconds_to_oom);
   LivenessTracker::instance()->setUrgentTracking(updateUrgentAdmission(seconds_to_oom, urgent));
 }
 
@@ -945,16 +971,15 @@ bool ReferenceChainTracker::hasLeakSignal(double seconds_to_oom) {
     // diagnostic value.
     return false;
   }
-  // isUrgent() is called unconditionally, not short-circuited behind any
-  // branch: it maintains the latch/release state (see _urgent_latched), whose
-  // only consumer is the no-progress-abandonment suppression once a search
-  // runs (runPass()'s terminal gate). It evaluates the caller's projection
-  // (threadLoop()'s single per-iteration read), not a fresh secondsToOOM().
-  // The OOM ramp's budget/cadence effects in threadLoop() follow the raw band
-  // comparison, and the 100% tracking admission follows
-  // updateUrgentAdmission()'s growth gate (via publishUrgencyState()) -
+  // Reads the latch published by this iteration's publishUrgencyState() call
+  // (which runs isUrgent() unconditionally, on threadLoop()'s single
+  // projection read) - never a fresh secondsToOOM(), and never an update:
+  // this gate sits behind canAffordNewSearch()'s cooldown, so advancing the
+  // latch here would freeze it for the cooldown's duration. The OOM ramp's
+  // budget/cadence effects follow the raw band comparison and the 100%
+  // tracking admission follows updateUrgentAdmission()'s growth gate;
   // neither waits for this latch.
-  bool urgent = isUrgent(seconds_to_oom);
+  bool urgent = _urgent_latched;
   KlassCandidate probe[1];
   int n = LivenessTracker::instance()->selectLeakCandidates(probe, 1);
   // The urgent latch does NOT entitle a candidate-less search. With nothing
@@ -1093,16 +1118,12 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   // _safepoint_pain_budget above.
   _cpu_pain_budget = PainBudget(_pain_budget_refill_rate);
   // Same test-isolation rationale: a latched urgency episode left behind by an earlier test would
-  // otherwise ramp this one's cadence and pause target from a stale projection, and a stale
-  // admission growth baseline would skip this test's first-observation re-snapshot, or a retained
-  // admission decision (_admission_sample_seq/_admission_decision - an emergency-band re-entry
-  // seeds the baseline without touching them, same reason as stop()) would be returned for this
-  // test's first ramp-band call without a new sample.
-  _urgent_latched = false;
-  _urgent_release_ticks = 0;
-  _admission_growth_baseline = 0;
-  _admission_sample_seq = 0;
-  _admission_decision = false;
+  // otherwise ramp this one's cadence and pause target from a stale projection. resetUrgencyState()
+  // covers the latch/baseline/freshness pair (the pair rationale matches stop());
+  // closeUrgencyEpisode() also restores a boosted _budget/_effective_cadence_ns, which the reset
+  // previously missed - a prior test's mid-episode stop leaked the boost into this one.
+  resetUrgencyState();
+  closeUrgencyEpisode();
 
   if (_frontier != nullptr) {
     // Rebuilds the table at this test's own _configured_frontier_cap, undoing any smaller framecap=

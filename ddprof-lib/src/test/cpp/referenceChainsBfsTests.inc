@@ -736,6 +736,11 @@ TEST_F(ReferenceChainsBfsTest, CanaryStuckLimitDoublesPerRestartAndResetsOnClean
         }
     }
     ASSERT_NEAR(LivenessTracker::instance()->secondsToOOM(), 240.0, 1.0);
+    // runPass() consumes the iteration's latched urgency (publishUrgencyState()
+    // is threadLoop()'s per-iteration latch update and does not run here), so
+    // seed the latch the way threadLoop() would with this projection.
+    ReferenceChainsTestAccessor::publishUrgencyStateForTest(240.0, true);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest());
 
     constexpr int kChainLength = 10;
     std::vector<int> nodes;
@@ -813,6 +818,9 @@ TEST_F(ReferenceChainsBfsTest, CanaryStuckLimitDoublesPerRestartAndResetsOnClean
     LivenessTracker::instance()->setLeakSignalActivatedNsForTest(0);
     tracker->stop();
     ReferenceChainsTestAccessor::resetUrgencyForTest();
+    // The per-iteration publish (publishUrgencyStateForTest above) set the ramp flag; the latch
+    // reset does not cover it, and the next test's canary-backoff gate keys on it.
+    ReferenceChainsTestAccessor::setOomRampActive(false);
     ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({});
     ReferenceChainsTestAccessor::reset();
 }

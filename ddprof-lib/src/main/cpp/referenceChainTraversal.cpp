@@ -1128,9 +1128,11 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
              (unsigned long long)((OS::nanotime() -
                                    load(_search_start_ns)) / 1000000));
   } else if (_passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT &&
-             !isUrgent()) {
+             !urgencyLatched()) {
     // The frontier hasn't grown for NO_PROGRESS_PASS_LIMIT consecutive passes — the search is
-    // genuinely stuck (not just slow), so abandon.
+    // genuinely stuck (not just slow), so abandon. Reads the latch published by
+    // publishUrgencyState()'s per-iteration isUrgent() call; calling isUrgent() here would
+    // advance the machine from a second, freshly-read projection.
     store(_abandon_reason, (u8)SearchAbandonReason::TTL);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
     enqueuePendingAbandonedEvent();
@@ -1145,8 +1147,8 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
              _passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT &&
              _passes_since_last_candidate_progress >=
                  canaryStuckPassLimit()) {
-    // Canary-specific stuck detector - deliberately NOT suppressed by isUrgent() (contrast the
-    // ordinary TTL check above).
+    // Canary-specific stuck detector - deliberately NOT suppressed by the urgency latch
+    // urgencyLatched() (contrast the ordinary TTL check above).
     store(_abandon_reason, (u8)SearchAbandonReason::CANARY_STUCK);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
     enqueuePendingAbandonedEvent();

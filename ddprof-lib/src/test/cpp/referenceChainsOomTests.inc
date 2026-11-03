@@ -118,6 +118,31 @@ TEST_F(OomUrgencyTest, MidBandOscillationNeverFlaps) {
     }
 }
 
+// The latch machine runs in publishUrgencyState(), once per iteration on
+// threadLoop()'s single projection - not in hasLeakSignal(), which sits
+// behind canAffordNewSearch()'s cooldown and would otherwise freeze the
+// latch (possibly stale-latched after the heap recovered) for as long as
+// the cooldown blocks restarts. Drives the machine through the production
+// entry point the loop uses, including the release after 5 clear
+// observations.
+TEST_F(OomUrgencyTest, LatchMachineRunsThroughPublishUrgencyState) {
+    ASSERT_NEAR(project(299.0), 299.0, 1.0);
+    ReferenceChainsTestAccessor::publishUrgencyStateForTest(299.0, true);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest());
+
+    // Five consecutive clear observations through the production entry point
+    // release the latch, one tick at a time.
+    for (int i = 1; i <= 4; i++) {
+        ReferenceChainsTestAccessor::publishUrgencyStateForTest(700.0, false);
+        EXPECT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest())
+            << "released after only " << i << " clear observations";
+        EXPECT_EQ(i, ReferenceChainsTestAccessor::urgentReleaseTicksForTest());
+    }
+    ReferenceChainsTestAccessor::publishUrgencyStateForTest(700.0, false);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest());
+    EXPECT_EQ(0, ReferenceChainsTestAccessor::urgentReleaseTicksForTest());
+}
+
 // A single observation past the release bar must NOT release; only
 // URGENT_RELEASE_CONSECUTIVE (5) consecutive clear observations do, and any
 // mid-band reading in between restarts the count.
@@ -286,12 +311,16 @@ TEST_F(OomUrgencyTest, UrgencyDecisionsConsumeThePassedProjection) {
     EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest())
         << "isUrgent(double) must not re-read the live (urgent) projection";
 
-    // hasLeakSignal(double).
+    // hasLeakSignal(double) - and everything forwarding into it
+    // (canAffordNewSearch, shouldRunPass) - only READS the latch: the machine
+    // advances once per iteration in publishUrgencyState(), never from the
+    // gates behind canAffordNewSearch()'s cooldown (a stale latch frozen for
+    // the cooldown's duration was the regression this contract pins against).
     ReferenceChainsTestAccessor::resetUrgencyForTest();
     ASSERT_LT(project(0.0, /*flat=*/true), 0.0);
     ReferenceChainsTestAccessor::hasLeakSignalForTest(200.0);
-    EXPECT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest())
-        << "hasLeakSignal() must latch on the passed projection, not re-read secondsToOOM()";
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest())
+        << "hasLeakSignal() must not advance the latch machine";
     ReferenceChainsTestAccessor::resetUrgencyForTest();
     ASSERT_NEAR(project(200.0), 200.0, 1.0);
     ReferenceChainsTestAccessor::hasLeakSignalForTest(-1.0);
@@ -304,12 +333,12 @@ TEST_F(OomUrgencyTest, UrgencyDecisionsConsumeThePassedProjection) {
     ReferenceChainsTestAccessor::resetUrgencyForTest();
     ASSERT_LT(project(0.0, /*flat=*/true), 0.0);
     ReferenceChainsTestAccessor::canAffordNewSearch(OS::nanotime(), 200.0);
-    EXPECT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest())
-        << "canAffordNewSearch() must forward the passed projection";
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest())
+        << "canAffordNewSearch() must not advance the latch machine";
     ReferenceChainsTestAccessor::resetUrgencyForTest();
     ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime(), 200.0);
-    EXPECT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest())
-        << "shouldRunPass() must forward the passed projection";
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest())
+        << "shouldRunPass() must not advance the latch machine";
 
     ReferenceChainsTestAccessor::reset();
     ReferenceChainsTestAccessor::resetUrgencyForTest();

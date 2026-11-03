@@ -207,7 +207,8 @@ public:
     static bool bfsThreadRunning() {
         return ReferenceChainTracker::instance()->_running.load(std::memory_order_acquire);
     }
-    // threadLoop()'s publish step: ramp flag + growth-gated tracking boost.
+    // threadLoop()'s publish step: ramp flag + the latch machine (once per
+    // iteration on the caller's projection) + growth-gated tracking boost.
     static void publishUrgencyStateForTest(double seconds_to_oom, bool urgent) {
         ReferenceChainTracker::instance()->publishUrgencyState(seconds_to_oom, urgent);
     }
