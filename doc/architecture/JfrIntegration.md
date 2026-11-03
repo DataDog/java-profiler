@@ -201,7 +201,7 @@ reference-chain events under a stripe lock, refreshes libraries and thread
 names, then runs `_jfr.dump()` inside `rotateDictsAndRun()`. `Profiler::stop()`
 runs `_jfr.stop()` the same way.
 
-`rotateDictsAndRun()` (`profiler.h:245-268`):
+`rotateDictsAndRun()` (`profiler.h`):
 
 1. Blocks profiling signals on the dumping thread (`SignalBlocker`).
 2. Rotates `_class_map`, `_string_label_map` and `_context_value_map`, so each
