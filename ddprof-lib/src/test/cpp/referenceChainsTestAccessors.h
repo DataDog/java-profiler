@@ -201,6 +201,12 @@ public:
     static bool admissionDecisionForTest() {
         return ReferenceChainTracker::instance()->_admission_decision;
     }
+    // updateUrgentAdmission()'s emergency-band seed anchor: the newest heap-floor
+    // sample captured at emergency-band entry (referenceChains.cpp), or 0 (the
+    // unseeded sentinel) while no seed has been taken.
+    static u64 admissionGrowthBaselineForTest() {
+        return ReferenceChainTracker::instance()->_admission_growth_baseline;
+    }
     // True while the BFS thread (startThread()/threadLoop()) is live. start() never spawns it
     // (only startThread() does - profiler.cpp and the JNI-only resetSearchStateForTest()), so
     // gtests may drive BFS-thread-only seams after start(); tests that rely on that assert this
