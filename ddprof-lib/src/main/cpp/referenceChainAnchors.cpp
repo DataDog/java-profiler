@@ -345,20 +345,50 @@ void ReferenceChainTracker::noteLocalRootHolder(jlong tag,
     return; // already indexed (durable root or earlier local report)
   }
   auto shape = _class_shape_cache.find(own_class_tag);
+  bool confirmed_container = false;
   if (shape != _class_shape_cache.end()) {
     if (shape->second != (u8)AnchorClassShape::CONTAINER) {
       return; // classified non-container: never indexed
     }
     if (_local_anchor_tags.size() < LOCAL_ANCHOR_INDEX_CAP) {
-      _local_anchor_tags.insert(tag);
+      _local_anchor_tags.emplace(tag, own_class_tag);
       indexAnchorForRotation(tag, own_class_tag);
       return;
     }
     // At the cap: defer to resolvePendingLocalAnchors(), which may compact dead local entries
     // (it can take the frontier lock; this callback must not).
+    confirmed_container = true;
   }
   if (_pending_local_anchors.size() >= PENDING_LOCAL_ANCHOR_CAP) {
-    return; // re-reported by the next root enumeration
+    if (!confirmed_container || _pending_local_anchor_tags.count(tag) > 0) {
+      return; // re-reported by the next root enumeration
+    }
+    // A confirmed container is walkable as soon as a local slot frees, so it outranks an entry not
+    // yet confirmed as a container: evict the oldest such entry (re-reported by the next root
+    // enumeration). Forward-only cursor: while the buffer is full nothing is appended, the only
+    // overwrite is at the cursor with a container, and skipped slots are containers, so every slot
+    // below the cursor stays a confirmed container and the scan totals <= PENDING_LOCAL_ANCHOR_CAP
+    // per enumeration.
+    if (_pending_local_evict_cursor > _pending_local_anchors.size()) {
+      _pending_local_evict_cursor = 0; // defensive; cannot happen while the buffer is full
+    }
+    while (_pending_local_evict_cursor < _pending_local_anchors.size()) {
+      auto s = _class_shape_cache.find(
+          _pending_local_anchors[_pending_local_evict_cursor].class_tag);
+      if (s == _class_shape_cache.end() ||
+          s->second != (u8)AnchorClassShape::CONTAINER) {
+        break;
+      }
+      _pending_local_evict_cursor++;
+    }
+    if (_pending_local_evict_cursor >= _pending_local_anchors.size()) {
+      return; // only confirmed containers parked: dropped, re-reported by the next enumeration
+    }
+    PendingLocalAnchor &victim = _pending_local_anchors[_pending_local_evict_cursor++];
+    _pending_local_anchor_tags.erase(victim.tag);
+    victim = PendingLocalAnchor{tag, own_class_tag};
+    _pending_local_anchor_tags.insert(tag);
+    return;
   }
   if (!_pending_local_anchor_tags.insert(tag).second) {
     return;
@@ -381,47 +411,50 @@ void ReferenceChainTracker::resolvePendingLocalAnchors() {
       continue; // non-container, or still unclassified: dropped (see the buffer's comment)
     }
     if (_local_anchor_tags.size() >= LOCAL_ANCHOR_INDEX_CAP && !compacted) {
-      compactLocalAnchors();
+      // At most one compaction attempt per call. After a compaction that removed nothing (local
+      // share full of live containers), skip the next LOCAL_ANCHOR_COMPACT_BACKOFF attempts so a
+      // saturated-but-live share does not pay the locked O(cap) scan every pass.
       compacted = true;
+      if (_local_compact_backoff > 0) {
+        _local_compact_backoff--;
+      } else {
+        _local_compact_backoff =
+            compactLocalAnchors() == 0 ? LOCAL_ANCHOR_COMPACT_BACKOFF : 0;
+      }
     }
     if (_local_anchor_tags.size() >= LOCAL_ANCHOR_INDEX_CAP) {
-      continue; // still full of live containers: the cap holds
+      continue; // still full (live containers, or compaction backed off): the cap holds
     }
-    _local_anchor_tags.insert(pending.tag);
+    _local_anchor_tags.emplace(pending.tag, pending.class_tag);
     indexAnchorForRotation(pending.tag, pending.class_tag);
   }
   // Keep capacity: the buffer refills on every root enumeration.
   _pending_local_anchors.clear();
   _pending_local_anchor_tags.clear();
+  _pending_local_evict_cursor = 0;
 }
 
-void ReferenceChainTracker::compactLocalAnchors() {
+size_t ReferenceChainTracker::compactLocalAnchors() {
   if (_local_anchor_tags.empty()) {
-    return;
+    return 0;
   }
   std::unordered_set<jlong> removed;
   _frontier->withSharedLock([&](const FrontierTable *frontier) {
-    size_t idx_size = _static_anchor_index.size();
-    for (size_t i = 0; i < idx_size; i++) {
-      jlong tag = _static_anchor_index[i];
-      if (_local_anchor_tags.count(tag) == 0) {
-        continue; // durable share: not compacted here
-      }
-      jlong own_class_tag = i < _static_anchor_own_class_tags.size()
-                                ? _static_anchor_own_class_tags[i] : 0;
+    // Only the local share (O(cap)): the durable share is never compacted here.
+    for (const auto &local : _local_anchor_tags) {
       FrontierEntry entry{};
       // Same eligibility as collectStaticFieldAnchorsForRotation(): a released (ABANDONED) entry
       // is a dead object and can never be selected again.
-      if (!frontier->lookupLocked(tag, &entry) ||
-          !isSelectableAnchor(entry, own_class_tag) ||
+      if (!frontier->lookupLocked(local.first, &entry) ||
+          !isSelectableAnchor(entry, local.second) ||
           (entry.state != FrontierEntryState::FRONTIER &&
            entry.state != FrontierEntryState::EXPANDED)) {
-        removed.insert(tag);
+        removed.insert(local.first);
       }
     }
   });
   if (removed.empty()) {
-    return;
+    return 0;
   }
   // Stable in-place compaction of the two parallel vectors keeps relative order, so the fresh
   // queue (a suffix of the index) stays a suffix once the same tags leave it too.
@@ -452,6 +485,7 @@ void ReferenceChainTracker::compactLocalAnchors() {
       _static_anchor_fresh_queue.end());
   // Positions shifted: the collector clamps out-of-range cursors; in-range ones only lose fairness
   // for one lap.
+  return removed.size();
 }
 
 bool ReferenceChainTracker::isSelectableAnchor(const FrontierEntry &entry,
@@ -604,14 +638,8 @@ bool ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
   return found;
 }
 
-void ReferenceChainTracker::reconcileAnchorClassShapes(jvmtiEnv *jvmti,
-                                                        JNIEnv *jni) {
-  if (jni == nullptr) {
-    return;
-  }
-  if (_static_anchor_own_class_tags.empty() && _pending_local_anchors.empty()) {
-    return;
-  }
+std::vector<jlong>
+ReferenceChainTracker::collectUnclassifiedAnchorClassTags() const {
   // Collect up to ANCHOR_SHAPE_RECONCILE_BUDGET distinct class tags that appear in the pending
   // local-holder buffer or the anchor index but are not yet classified. Pending holders go first:
   // resolvePendingLocalAnchors() drops any still unclassified after this call, while indexed
@@ -635,6 +663,18 @@ void ReferenceChainTracker::reconcileAnchorClassShapes(jvmtiEnv *jvmti,
   for (size_t i = 0; room && i < _static_anchor_own_class_tags.size(); i++) {
     room = consider(_static_anchor_own_class_tags[i]);
   }
+  return unknown;
+}
+
+void ReferenceChainTracker::reconcileAnchorClassShapes(jvmtiEnv *jvmti,
+                                                        JNIEnv *jni) {
+  if (jni == nullptr) {
+    return;
+  }
+  if (_static_anchor_own_class_tags.empty() && _pending_local_anchors.empty()) {
+    return;
+  }
+  std::vector<jlong> unknown = collectUnclassifiedAnchorClassTags();
   if (unknown.empty()) {
     return;
   }

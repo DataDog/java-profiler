@@ -474,15 +474,31 @@ private:
   // Subset of _static_anchor_index_tags that were indexed as stack/JNI-local holders (not as
   // durable roots). Its size is the local share of the index, capped at LOCAL_ANCHOR_INDEX_CAP so
   // per-pass anchor selection stays O(durable anchors + cap) no matter how many locals the
-  // application holds. A tag later indexed as a durable root leaves this set (uncapped share).
-  std::unordered_set<jlong> _local_anchor_tags;
+  // application holds. A tag later indexed as a durable root leaves this map (uncapped share).
+  // Maps each local holder tag to its own runtime class tag at admission time, so
+  // compactLocalAnchors() can evaluate isSelectableAnchor() by iterating only the local share
+  // (O(cap)) instead of scanning the whole, uncapped index.
+  std::unordered_map<jlong, jlong> _local_anchor_tags;
   static constexpr size_t LOCAL_ANCHOR_INDEX_CAP = 4096;
+  // compactLocalAnchors() attempts to skip after one that removed nothing (local share full of
+  // live containers): bounds the steady-state locked O(cap) scan to one in every
+  // LOCAL_ANCHOR_COMPACT_BACKOFF + 1 at-cap resolve passes. While backing off, a container met at
+  // the cap is dropped from the pending buffer and re-reported by the next root enumeration; dead
+  // locals hold their slots for at most this many extra at-cap passes.
+  static constexpr int LOCAL_ANCHOR_COMPACT_BACKOFF = 8;
+  // At-cap compaction attempts still to skip. Set by a no-progress compaction, decremented by each
+  // skipped attempt, zeroed by a productive one; untouched while the local share is under the cap.
+  int _local_compact_backoff = 0;
 
   // Local-root holders whose class was not yet classified when root enumeration reported them
   // (classification needs JNI, which the heap-root callback cannot use). Drained - indexed if
   // confirmed containers, dropped otherwise - by resolvePendingLocalAnchors() after every
   // reconcileAnchorClassShapes(); an entry whose class is still unclassified is dropped too and
-  // re-reported by the next root enumeration. Capped so a burst of locals cannot grow it.
+  // re-reported by the next root enumeration. Capped so a burst of locals cannot grow it. When the
+  // buffer is full, a confirmed container met at the local cap evicts the oldest entry not
+  // confirmed as a container (that entry is re-reported by the next root enumeration); an
+  // unclassified holder met at a full buffer, or a container met at a buffer holding only
+  // confirmed containers, is dropped and re-reported.
   struct PendingLocalAnchor {
     jlong tag;
     jlong class_tag;
@@ -490,6 +506,9 @@ private:
   std::vector<PendingLocalAnchor> _pending_local_anchors;
   std::unordered_set<jlong> _pending_local_anchor_tags;
   static constexpr size_t PENDING_LOCAL_ANCHOR_CAP = 1024;
+  // noteLocalRootHolder() eviction cursor (forward-only): every _pending_local_anchors slot below it
+  // holds a confirmed container. Reset together with the buffer.
+  size_t _pending_local_evict_cursor = 0;
 
   // Shape of a class as an anchor candidate: does the class implement java/util/Collection or
   // java/util/Map (directly or via superclasses/ interfaces)?
@@ -970,15 +989,17 @@ private:
   void indexAnchorForRotation(jlong tag, jlong own_class_tag);
   // Heap-root callback hook for a stack/JNI-local holder: indexes a confirmed container (under
   // LOCAL_ANCHOR_INDEX_CAP), ignores a classified non-container, and parks an unclassified holder
-  // (or one met at the cap) in the capped _pending_local_anchors buffer. No JNI, no frontier lock.
+  // (or one met at the cap) in the capped _pending_local_anchors buffer; at a full buffer a
+  // confirmed container evicts the oldest not-confirmed entry. No JNI, no frontier lock.
   void noteLocalRootHolder(jlong tag, jlong own_class_tag);
   // BFS thread, after reconcileAnchorClassShapes(): indexes pending holders confirmed as
   // containers, drops the rest, and empties the pending buffer.
   void resolvePendingLocalAnchors();
   // Removes local-holder index entries that are no longer selectable (dead or demoted), keeping
-  // _static_anchor_fresh_queue a suffix of the index. Run at most once per
-  // resolvePendingLocalAnchors() call, only when the local cap is reached.
-  void compactLocalAnchors();
+  // _static_anchor_fresh_queue a suffix of the index. Scans only the local share. Run at most once
+  // per resolvePendingLocalAnchors() call, only when the local cap is reached and the backoff
+  // (_local_compact_backoff) is not active. Returns the number of removed entries.
+  size_t compactLocalAnchors();
 
   // True iff `klass` implements java/util/Collection or java/util/Map, directly or transitively
   // (superclass chain + interfaces of every visited class, depth-bounded, visited set to survive
@@ -995,6 +1016,10 @@ private:
   // pass via one GetObjectsWithTags call (class objects are tagged with their class tags) and
   // classifies each.
   void reconcileAnchorClassShapes(jvmtiEnv *jvmti, JNIEnv *jni);
+  // Pure (no JNI) collection step of reconcileAnchorClassShapes(): up to
+  // ANCHOR_SHAPE_RECONCILE_BUDGET distinct non-zero class tags absent from _class_shape_cache,
+  // pending local holders first (buffer order), then indexed anchors (index order). Read-only.
+  std::vector<jlong> collectUnclassifiedAnchorClassTags() const;
   // Pops up to max_count AtRiskAnchor entries off _static_anchor_fifo's front into `out`
   // (appending), decrementing each popped entry's class occupancy in
   // _static_anchor_fifo_klass_counts (erased at zero, so the map tracks the FIFO's live contents),
