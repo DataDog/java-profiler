@@ -875,7 +875,7 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
       }
     } else if (bci == BCI_VTABLE_RECEIVER) {
       // Synthetic vtable-receiver frame: method_id holds a VMSymbol*
-      // captured in walkVM. The Symbol -> class_id resolution (with
+      // captured by the HotSpot walkers. The Symbol -> class_id resolution (with
       // synthetic-accessor/LambdaForm normalisation) was already done
       // above via resolveVTableReceiverCached, which also handles
       // resolution failures by mapping them to "<unresolved_vtable_receiver>"

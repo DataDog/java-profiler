@@ -185,6 +185,29 @@ Caveats:
 - **`cstack=vm` needs `VMStructs`.** If `VMStructs::hasStackStructs()` is false,
   `cstack=vm` is downgraded to DWARF or `no` (`profiler.cpp:1625-1629`).
 
+### HotSpot vtable receiver frames
+
+With `vtable_target` enabled (`cpu` enables it) and class-name VMStructs
+available, the VM walker and ASGCT stub recovery can insert a
+`<vtable_receiver>` frame immediately before the sampled vtable stub (leaf
+first). ASGCT recovery supports this with FP/DWARF native walking; it does
+not require `cstack=vm` or change platform walker defaults. `cstack=no` does
+not emit the stub or its receiver.
+
+`HotspotSupport::captureVtableReceiver()` shares the signal-safe oop-to-Klass-to-Symbol
+read between the walkers. The caller first identifies a vtable stub. Capture
+requires pc/sp/fp to match the interrupted leaf: a Java-context redirect or
+an unwind to a caller cannot reuse the leaf's argument registers as that
+caller's receiver. The reads run inside the existing walk/crash-recovery
+scope, before the stub is unwound. The frame budget must leave room for the
+stub; ASGCT also reserves a slot for its retry or error frame.
+
+The synthetic frame stores a raw `VMSymbol*` with `BCI_VTABLE_RECEIVER`, not
+a `jmethodID`. Dump-time `Lookup::resolveVTableReceiver()` reads the symbol
+via `SafeAccess` and emits the receiver class as the declaring class of
+`<vtable_receiver>`. No class-name lookup, allocation, or JNI call is added
+to signal-time capture. Object-header decoding remains in `VMKlass::fromOop()`.
+
 ### `j9/`
 
 | File | Role |

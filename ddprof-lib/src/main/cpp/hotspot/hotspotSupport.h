@@ -154,6 +154,12 @@ private:
                                  int max_depth, StackContext *java_ctx,
                                  bool *truncated, HotspotStackFrame::RegisterSnapshot& ctx_snapshot);
 
+    // The caller identifies a vtable stub. Only the interrupted frame's argument
+    // registers can supply its receiver; pc/sp/fp must still describe that leaf.
+    // Requires the caller's crash-protection scope. Resolution stays at dump time.
+    static VMSymbol* captureVtableReceiver(HotspotStackFrame& frame, uintptr_t pc,
+                                         uintptr_t sp, uintptr_t fp, StackWalkFeatures features);
+
     static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all);
 
     // fjmethodid=lazy: redefinition marks of the classes redefined while lazy
