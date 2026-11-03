@@ -365,8 +365,10 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
      seeded from the thread's last Java frame
      (`HotspotSupport::walkCurrentJavaStack()`), otherwise, and for virtual
      threads, with JVMTI `GetStackTrace`, which also takes over when the VM
-     walk faults or loses frames (any `BCI_ERROR` frame; counted as
-     `alloc_stack_vm_fallback`). Either way the stack is Java-only,
+     walk faults, loses frames, or cannot resolve a Java method (counted as
+     `alloc_stack_vm_fallback`). A fault returns failure even at the depth limit.
+     Virtual-thread detection uses the runtime JNI table, including libraries
+     built with pre-21 headers. Either way the stack is Java-only,
      also with `cstack=vmx`. `GetStackTrace` builds a vframe per
      frame in the calling thread's resource area, which deep stacks grow by
      malloc'd 32 KiB chunks on the allocating application threads; glibc

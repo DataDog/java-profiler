@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstring>
 #include <ucontext.h>
+#include <sys/mman.h>
 #include "arch.h"
 #include "codeCache.h"
 #include "dwarf.h"
@@ -45,9 +46,12 @@ class HotspotSupportTestAccessor {
   public:
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
-                      int lock_index, bool* truncated) {
+                      int lock_index, bool* truncated, bool seeded_from_anchor = false) {
+        StackFrame frame(ucontext);
         return HotspotSupport::walkVM(ucontext, frames, max_depth, features,
-                                      event_type, lock_index, truncated);
+                                      event_type, reinterpret_cast<const void *>(frame.pc()),
+                                      false, frame.sp(), frame.fp(), lock_index, truncated,
+                                      seeded_from_anchor);
     }
 };
 
@@ -241,7 +245,8 @@ class WalkVmNativePathTest : public ::testing::Test {
     // return-address slot. EXECUTION_SAMPLE keeps `details` on so native
     // frames carry their resolved names.
     int walk(const void* leaf_pc, const void* caller_ra,
-             ASGCT_CallFrame* frames, int max_depth) {
+             ASGCT_CallFrame* frames, int max_depth, bool seeded_from_anchor = false,
+             bool* truncated = nullptr) {
         static uintptr_t scratch[64];
         memset(scratch, 0, sizeof(scratch));
         uintptr_t frame_fp = (uintptr_t)&scratch[16];
@@ -266,7 +271,7 @@ class WalkVmNativePathTest : public ::testing::Test {
         StackWalkFeatures features{};
         return HotspotSupportTestAccessor::walkVM(&uc, frames, max_depth, features,
                                                   EXECUTION_SAMPLE, /*lock_index=*/0,
-                                                  /*truncated=*/nullptr);
+                                                  truncated, seeded_from_anchor);
     }
 
     static const char* nameOf(const ASGCT_CallFrame& f) {
@@ -277,6 +282,45 @@ class WalkVmNativePathTest : public ::testing::Test {
     SigAction _orig_segv = nullptr;
     SigAction _orig_bus = nullptr;
 };
+
+// The second frame store faults after depth++ at, below, or above the limit.
+// Seeded allocation walks must return failure in all three cases for JVMTI retry.
+class WalkVmSeededFaultTest : public WalkVmNativePathTest,
+                              public ::testing::WithParamInterface<int> {
+protected:
+    void SetUp() override {
+        WalkVmNativePathTest::SetUp();
+        memory = mmap(nullptr, 2 * OS::page_size, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        ASSERT_NE(MAP_FAILED, memory);
+        ASSERT_EQ(0, mprotect(static_cast<char *>(memory) + OS::page_size,
+                              OS::page_size, PROT_NONE));
+    }
+
+    void TearDown() override {
+        if (memory != MAP_FAILED) {
+            munmap(memory, 2 * OS::page_size);
+        }
+        WalkVmNativePathTest::TearDown();
+    }
+
+    void *memory = MAP_FAILED;
+};
+
+TEST_P(WalkVmSeededFaultTest, FaultReturnsFailureRegardlessOfDepthLimit) {
+    auto *frames = reinterpret_cast<ASGCT_CallFrame *>(
+        static_cast<char *>(memory) + OS::page_size) - 1;
+    bool truncated = false;
+    int depth = walk(kSymbolLibBase + kFirstOff + 4, kSymbolLibBase + kBoundary + 4,
+                     frames, GetParam(), true, &truncated);
+    EXPECT_EQ(0, depth);
+    EXPECT_EQ(BCI_NATIVE_FRAME, frames[0].bci);
+    EXPECT_STREQ("walkvm_attr_first", nameOf(frames[0]));
+    EXPECT_FALSE(ProfiledThread::current()->isProtected());
+    EXPECT_EQ(0, getInSignalDepth());
+}
+
+INSTANTIATE_TEST_SUITE_P(DepthLimits, WalkVmSeededFaultTest, ::testing::Values(1, 2, 8));
 
 // The point of threading the flag: the leaf pc comes from the ucontext and is
 // exact, the frame above it comes out of a return-address slot. Both land on

@@ -24,6 +24,7 @@
 #include "hotspot/hotspotSupport.h"
 #include "j9/j9Support.h"
 #include "j9/j9WallClock.h"
+#include "jniHelper.h"
 #include "jvmSupport.h"
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
@@ -566,22 +567,6 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
   return depth;
 }
 
-// Whether a JVMTI sample was taken on a virtual thread. Its stack is left to
-// GetStackTrace, which stops at the continuation boundary: the VM walker only
-// recognizes that boundary where VMStructs exposes the continuation entry
-// (JDK 27+) and otherwise walks on into the carrier's frames. JNI's
-// IsVirtualThread exists from JDK 21; preview virtual threads on JDK 19/20 are
-// not detected.
-static bool isVirtualThread(jthread thread) {
-#ifdef JNI_VERSION_21
-  if (VM::java_version() >= 21) {
-    JNIEnv* jni = VM::jni();
-    return jni != nullptr && jni->IsVirtualThread(thread);
-  }
-#endif
-  return false;
-}
-
 // allocstack=verify: checks a VM-walked allocation stack against JVMTI
 // GetStackTrace on the same thread, frame by frame (method and bci), counting
 // ALLOC_STACK_VERIFIED / ALLOC_STACK_MISMATCH. Diagnostics and tests only:
@@ -659,7 +644,7 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
     // per frame in this thread's resource area, which deep stacks grow by
     // malloc'd chunks: on the allocating application threads, across all
     // their glibc arenas.
-    int walked = _alloc_stack != ALLOCSTACK_JVMTI && !isVirtualThread(thread)
+    int walked = _alloc_stack != ALLOCSTACK_JVMTI && !jniIsVirtualThread(VM::jni(), thread, VM::java_version())
         ? JVMSupport::walkCurrentJavaStack(frames, _max_stack_depth, event_type, lock_index, &truncated)
         : -1;
     if (walked <= 0 && _alloc_stack != ALLOCSTACK_JVMTI) {

@@ -68,16 +68,16 @@ namespace StackWalkValidation {
         return depth;
     }
 
-    // Whether a walk produced frames without losing any: walkVM() records each
-    // place it lost frames as a BCI_ERROR frame -- a crash-protection recovery
-    // ("break_not_walkable"), a frame it could not unwind ("break_*"), or a gap
-    // it skipped ("[skipped frames]").
+    // Allocation samples can retry with JVMTI when unwinding or method
+    // resolution fails. Synthetic native roots do not carry jmethodIDs.
     static inline bool isCompleteWalk(const ASGCT_CallFrame* frames, int depth) {
         if (depth <= 0) {
             return false;
         }
         for (int i = 0; i < depth; i++) {
-            if (frames[i].bci == BCI_ERROR) {
+            if (frames[i].bci == BCI_ERROR ||
+                    (frames[i].bci >= 0 && (frames[i].method_id == nullptr ||
+                                           frames[i].method_id == JMETHODID_NOT_WALKABLE))) {
                 return false;
             }
         }

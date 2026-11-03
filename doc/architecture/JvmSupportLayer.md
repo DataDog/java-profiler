@@ -126,6 +126,11 @@ Callers in shared code:
   `ClassPrepare` at `vmEntry.cpp:641-645`, and the
   `RedefineClasses`/`RetransformClasses` hooks at `vmEntry.cpp:687-731`.
 
+`jniHelper.h` calls `IsVirtualThread` through JNI slot 234 on JDK 21+,
+independently of the headers used to build the library. `vmEntry.h` defines the
+`JMETHODID_NOT_WALKABLE` frame sentinel; allocation capture retries with JVMTI
+rather than retaining unresolved Java frames.
+
 ## `jvmThread.h` / `jvmThread.cpp`: the `JVMThread` facade
 
 `JVMThread` keeps a pointer to the VM's own thread structure for the current

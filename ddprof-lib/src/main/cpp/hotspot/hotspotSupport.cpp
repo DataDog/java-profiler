@@ -332,7 +332,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         // segvHandler's SignalHandlerScope destructor.  Compensate.
         SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
         jmp_scope.restore();
-        if (depth < max_depth) {
+        // Synchronous allocation samples can retry with JVMTI even when the
+        // fault leaves no room for an error marker at the depth limit.
+        if (!seeded_from_anchor && depth < max_depth) {
             fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
         }
 #ifdef DEBUG
@@ -341,7 +343,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             unwindFailures->clear();
         }
 #endif // DEBUG
-        return depth;
+        return seeded_from_anchor ? 0 : depth;
     }
 
     jmp_scope.install(&crash_protection_ctx);
