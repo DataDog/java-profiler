@@ -936,6 +936,12 @@ void ReferenceChainTracker::publishUrgencyState(double seconds_to_oom, bool urge
   LivenessTracker::instance()->setUrgentTracking(updateUrgentAdmission(seconds_to_oom, urgent));
 }
 
+// Contract: the decision depends only on leakSignalEnabled(), selectLeakCandidates() and the
+// latch this iteration's publishUrgencyState() already published (read here, never advanced).
+// seconds_to_oom is used only for logging and does not affect the decision: it is never compared
+// and never forwarded to isUrgent() or updateUrgentAdmission() - it reaches only the
+// TEST_LOG_SUMMARY diagnostic below, staying in the signature so the iteration's projection
+// appears in the gate's log next to the latch it produced.
 bool ReferenceChainTracker::hasLeakSignal(double seconds_to_oom) {
   if (!LivenessTracker::instance()->leakSignalEnabled()) {
     // No population-trend signal can be constructed - generations tracking

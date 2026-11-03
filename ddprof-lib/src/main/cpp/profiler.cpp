@@ -1715,24 +1715,31 @@ Error Profiler::start(Arguments &args, bool reset) {
       }
     }
   }
-  if ((activated & EM_ALLOC) && args._reference_chains) {
+  if (args._reference_chains) {
     // Reference-chain tracking chases LivenessTracker's leak-tagged
     // candidates, so it only runs when allocation sampling actually
     // activated. Must run AFTER ObjectSampler::start() ->
     // LivenessTracker::start() (ordering noted in referenceChains.cpp) -
     // the block above is that ordering point.
-    error = ReferenceChainTracker::instance()->start(args);
-    if (error) {
-      Log::warn("%s", error.message());
-      // The leak-signal flag was armed for the (liveness && reference_chains) leg before this
-      // start; with the tracker failed, that leg's work has no consumer - clear it again (and
-      // the burn-in stamp it stamped) so a plain-liveheap session doesn't pay for it.
+    bool chains_active = false;
+    if (activated & EM_ALLOC) {
+      error = ReferenceChainTracker::instance()->start(args);
+      if (error) {
+        Log::warn("%s", error.message());
+        error = Error::OK; // recoverable - recording continues without chains
+      } else {
+        ReferenceChainTracker::instance()->startThread();
+        // Pre-existing threads are registered below, once thread events are on.
+        _reference_chains_active = true;
+        chains_active = true;
+      }
+    }
+    if (!chains_active) {
+      // initialize() may have armed the leak signal (and stamped burn-in) for the
+      // (liveness && reference_chains) leg; with chains not active - alloc engine did not
+      // activate, or the tracker failed to start - that leg has no consumer. Clear it
+      // (generations keeps its own leg).
       LivenessTracker::instance()->disableChainOnlyLeakSignal();
-      error = Error::OK; // recoverable - recording continues without chains
-    } else {
-      ReferenceChainTracker::instance()->startThread();
-      // Pre-existing threads are registered below, once thread events are on.
-      _reference_chains_active = true;
     }
   }
   if (_event_mask & EM_NATIVEMEM) {

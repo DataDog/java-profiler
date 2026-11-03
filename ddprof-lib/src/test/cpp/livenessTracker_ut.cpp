@@ -1466,6 +1466,70 @@ TEST(LivenessTrackerSessionTest, LeakSignalSourcesSeamMatchesDerivation) {
     EXPECT_FALSE(tracker->leakSignalEnabled());
 }
 
+// Profiler::start() calls disableChainOnlyLeakSignal() whenever referencechains was requested but
+// the chain tracker did not activate (alloc engine not activated, or tracker start failed). It
+// must clear ONLY the chain-only leg: the flag and the burn-in stamp go when chains armed the
+// signal without a consumer, and both survive untouched when generations keeps its own consumer.
+// The SENTINEL is set AFTER initializeGatesOnlyForTest() because that seam restores the burn-in
+// stamp (but keeps the derived session gates).
+TEST(LivenessTrackerSessionTest, DisableChainOnlyLeakSignalClearsOnlyChainLeg) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    constexpr u64 SENTINEL = 0x5678ULL;
+    u64 saved_stamp = LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker);
+
+    // Row 1 - chain-only via the real initialize() derivation: liveheap + referencechains arms
+    // the signal without generations; the call must clear both the flag and the burn-in stamp.
+    {
+        Arguments args;
+        ASSERT_FALSE(args.parse("memory=1048576:l,referencechains=true"));
+        LivenessTrackerTestAccessor::initializeGatesOnlyForTest(tracker, args);
+        ASSERT_FALSE(tracker->gcGenerationsEnabled());
+        ASSERT_TRUE(tracker->leakSignalEnabled());
+        tracker->setLeakSignalActivatedNsForTest(SENTINEL);
+        tracker->disableChainOnlyLeakSignal();
+        EXPECT_FALSE(tracker->gcGenerationsEnabled());
+        EXPECT_FALSE(tracker->leakSignalEnabled())
+            << "a chain-only leak signal must be cleared when chains did not activate";
+        EXPECT_EQ(0u, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+            << "the burn-in stamp must be unstamped so a later chains start re-stamps";
+    }
+
+    // Row 2 - generations on: the generations leg keeps its own consumer, so the early-return
+    // guard must leave BOTH the flag and the stamp alone.
+    {
+        Arguments args;
+        ASSERT_FALSE(args.parse("generations=true,referencechains=true"));
+        LivenessTrackerTestAccessor::initializeGatesOnlyForTest(tracker, args);
+        ASSERT_TRUE(tracker->gcGenerationsEnabled());
+        ASSERT_TRUE(tracker->leakSignalEnabled());
+        tracker->setLeakSignalActivatedNsForTest(SENTINEL);
+        tracker->disableChainOnlyLeakSignal();
+        EXPECT_TRUE(tracker->gcGenerationsEnabled());
+        EXPECT_TRUE(tracker->leakSignalEnabled())
+            << "the generations leg must keep its leak signal";
+        EXPECT_EQ(SENTINEL, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+            << "the generations burn-in stamp must be preserved";
+    }
+
+    // Row 3 - unarmed / resetSession() state (alloc engine never started LivenessTracker): the
+    // call is idempotent and still clears a stale stamp left from an earlier start.
+    {
+        tracker->resetSession();
+        ASSERT_FALSE(tracker->leakSignalEnabled());
+        tracker->setLeakSignalActivatedNsForTest(SENTINEL);
+        tracker->disableChainOnlyLeakSignal();
+        EXPECT_FALSE(tracker->leakSignalEnabled());
+        EXPECT_EQ(0u, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+            << "a stale burn-in stamp must not survive a chains-less session";
+    }
+
+    // Restore the entry stamp and reset the session gates (singleton hygiene).
+    tracker->setLeakSignalActivatedNsForTest(saved_stamp);
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/false, /*generations=*/false);
+    EXPECT_FALSE(tracker->leakSignalEnabled());
+}
+
 // cleanup_table() calls VM::jni(), so install a fake JavaVM.
 static JNIEnv_ g_cleanup_table_mock_jni_env{};
 

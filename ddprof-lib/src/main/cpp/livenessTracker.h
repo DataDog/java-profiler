@@ -1085,15 +1085,22 @@ public:
     return _leak_signal_enabled.load(std::memory_order_acquire);
   }
 
-  // Profiler::start() calls this when ReferenceChainTracker::start() failed: the flag's
+  // Profiler::start() calls this when reference chains were requested but did not activate
+  // (alloc engine not activated, or ReferenceChainTracker::start() failed): the flag's
   // (liveness && reference_chains) leg then has no consumer, so a plain-liveheap session must not
   // pay for it; generations keeps its own consumer. Also unstamps the burn-in clock so a later
-  // chains-enabled start re-stamps and gets its own burn-in. Safe: with the tracker failed, no
-  // sampler work reads the flag or the stamp.
+  // chains-enabled start re-stamps and gets its own burn-in. Concurrent readers are tolerated:
+  // see the ordering note on the stores below.
   void disableChainOnlyLeakSignal() {
     if (_gc_generations.load(std::memory_order_acquire)) {
       return;
     }
+    // Ordering: flag first, stamp second (both release) - a reader that sees the flag already
+    // false never reaches the stamp read. A reader that acquired the flag as true just before
+    // this can still observe the zeroed stamp; that transient is safe only because
+    // secondsToOOM() returns -1 on activated_ns == 0. Keep that guard if secondsToOOM() is
+    // refactored, or this unstamping can yield a spurious projection and a spurious urgent
+    // latch.
     _leak_signal_enabled.store(false, std::memory_order_release);
     _leak_signal_activated_ns.store(0, std::memory_order_release);
   }

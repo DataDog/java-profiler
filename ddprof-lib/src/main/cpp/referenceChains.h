@@ -820,7 +820,10 @@ private:
   // chasing. Always false when no leak-signal source (generations or liveheap tracking) is
   // active - the population table and heap-floor ring never fill without one, and a search
   // would run whole-heap BFS passes with zero candidates for zero diagnostic value.
-  // seconds_to_oom is the caller's projection (passed to isUrgent()), never re-read here.
+  // seconds_to_oom is the caller's projection: used only for the gate's debug/test log
+  // (TEST_LOG_SUMMARY); it does not affect the decision - the urgency latch was already
+  // advanced once per iteration in publishUrgencyState(), and hasLeakSignal() reads it
+  // (_urgent_latched) read-only, never re-reading secondsToOOM().
   bool hasLeakSignal(double seconds_to_oom);
 
   // Latched, hysteretic view of LivenessTracker::secondsToOOM() crossing OOM_URGENT_THRESHOLD_S -
@@ -842,13 +845,13 @@ private:
   // sufficient, and OOM_URGENT_THRESHOLD_S for the emergency split.
   bool updateUrgentAdmission(double seconds_to_oom, bool urgent);
 
-  // Publishes one threadLoop() iteration's urgency: _oom_ramp_active follows the raw band
-  // (`urgent`) for shouldRunPass()'s canary-backoff bypass; LivenessTracker's 100% tracking boost
   // Shared urgency/admission reset (stop()/resetSearchStateForTest()/resetUrgencyForTest()) and
   // episode close - see the definitions in referenceChains.cpp.
   void resetUrgencyState();
   void closeUrgencyEpisode();
 
+  // Publishes one threadLoop() iteration's urgency: _oom_ramp_active follows the raw band
+  // (`urgent`) for shouldRunPass()'s canary-backoff bypass; LivenessTracker's 100% tracking boost
   // (setUrgentTracking()) follows updateUrgentAdmission()'s growth-gated decision, never raw
   // `urgent`. Extracted from threadLoop() so the wiring is testable without a BFS thread.
   void publishUrgencyState(double seconds_to_oom, bool urgent);
