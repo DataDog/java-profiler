@@ -322,6 +322,22 @@ TEST_P(WalkVmSeededFaultTest, FaultReturnsFailureRegardlessOfDepthLimit) {
 
 INSTANTIATE_TEST_SUITE_P(DepthLimits, WalkVmSeededFaultTest, ::testing::Values(1, 2, 8));
 
+class WalkVmSignalFaultTest : public WalkVmSeededFaultTest {};
+
+TEST_P(WalkVmSignalFaultTest, FaultAtDepthLimitMarksTruncationAndClampsDepth) {
+    auto* frames = reinterpret_cast<ASGCT_CallFrame*>(
+        static_cast<char*>(memory) + OS::page_size) - 1;
+    bool truncated = false;
+    int depth = walk(kSymbolLibBase + kFirstOff + 4, kSymbolLibBase + kBoundary + 4,
+                     frames, GetParam(), false, &truncated);
+    EXPECT_TRUE(truncated);
+    EXPECT_LE(depth, GetParam());
+    EXPECT_FALSE(ProfiledThread::current()->isProtected());
+    EXPECT_EQ(0, getInSignalDepth());
+}
+
+INSTANTIATE_TEST_SUITE_P(DepthLimits, WalkVmSignalFaultTest, ::testing::Values(1, 2));
+
 // The point of threading the flag: the leaf pc comes from the ucontext and is
 // exact, the frame above it comes out of a return-address slot. Both land on
 // the same zero-gap boundary address, and they must resolve to different

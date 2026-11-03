@@ -367,6 +367,8 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
      threads, with JVMTI `GetStackTrace`, which also takes over when the VM
      walk faults, loses frames, or cannot resolve a Java method (counted as
      `alloc_stack_vm_fallback`). A fault returns failure even at the depth limit.
+     JVMTI capture probes one extra frame to detect truncation without marking
+     an exactly-full, complete stack truncated.
      Untagged raw `Method*` frames also trigger a retry: only jmethodIDs and
      lazy frames carrying class-load tags are safe to retain across chunks.
      Virtual-thread skips have a separate `alloc_stack_virtual_thread` counter;
@@ -377,7 +379,9 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
      malloc'd 32 KiB chunks on the allocating application threads; glibc
      keeps that memory resident in those threads' arenas. `allocstack=jvmti`
      forces `GetStackTrace`; `allocstack=verify` cross-checks every VM walk
-     against it (`alloc_stack_verified` / `alloc_stack_mismatch` counters).
+     against it (`alloc_stack_verified` counts comparisons, including mismatches;
+     `alloc_stack_mismatch` counts differing comparisons). When JVMTI fills the
+     verification window, only that prefix is compared.
      Verification reserves up to 1024 JVMTI frames per stripe beyond its captured
      frames; other modes reserve no verification space. Changing modes resizes
      these buffers even when the configured stack depth stays the same.

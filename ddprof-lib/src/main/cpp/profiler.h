@@ -188,6 +188,8 @@ private:
   static void *dlopen_hook(const char *filename, int flags);
   void switchLibraryTrap(bool enable);
   static bool prewarmUnwinder();
+  static void verifyAllocStack(const ASGCT_CallFrame* frames, int num_frames, jthread thread,
+                               int max_depth, jvmtiFrameInfo* expected);
 
   void disableEngines();
 

@@ -5,6 +5,7 @@
  */
 
 #include <cassert>
+#include <climits>
 #include "profiler.h"
 #include "asyncSampleMutex.h"
 #include "mallocTracer.h"
@@ -571,7 +572,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 // GetStackTrace on the same thread, frame by frame (method and bci), counting
 // ALLOC_STACK_VERIFIED / ALLOC_STACK_MISMATCH. Diagnostics and tests only:
 // GetStackTrace allocates, which is what the VM walker avoids.
-static void verifyAllocStack(const ASGCT_CallFrame* frames, int num_frames, jthread thread,
+void Profiler::verifyAllocStack(const ASGCT_CallFrame* frames, int num_frames, jthread thread,
                              int max_depth, jvmtiFrameInfo* expected) {
   jint depth = CallTraceBuffer::verificationDepth(max_depth);
   jint expected_count = 0;
@@ -648,8 +649,9 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
       if (jniIsVirtualThread(VM::jni(), thread, VM::java_version())) {
         Counters::increment(ALLOC_STACK_VIRTUAL_THREAD);
       } else {
-        walked = JVMSupport::walkCurrentJavaStack(frames, _max_stack_depth, event_type,
-                                                 lock_index, &truncated);
+        StackWalkRequest request = {event_type, lock_index, nullptr,
+                                    frames, _max_stack_depth, nullptr, &truncated};
+        walked = JVMSupport::walkCurrentJavaStack(request);
         if (walked == 0) {
           Counters::increment(ALLOC_STACK_VM_FALLBACK);
           truncated = false;
@@ -668,7 +670,10 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
           verifyAllocStack(frames, num_frames, thread, _max_stack_depth, expected);
         }
       }
-    } else if (VM::jvmti()->GetStackTrace(thread, 0, _max_stack_depth, jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
+    } else if (VM::jvmti()->GetStackTrace(thread, 0, _max_stack_depth + (_max_stack_depth < INT_MAX),
+                                            jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
+      truncated = num_frames > _max_stack_depth;
+      if (truncated) num_frames = _max_stack_depth;
       // Convert to AsyncGetCallTrace format.
       // Note: jvmti_frames and frames may overlap.
       for (int i = 0; i < num_frames; i++) {

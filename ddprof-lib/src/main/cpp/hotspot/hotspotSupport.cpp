@@ -343,6 +343,10 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             unwindFailures->clear();
         }
 #endif // DEBUG
+        if (truncated != nullptr) {
+            *truncated = true;
+            if (depth > max_depth) depth = max_depth;
+        }
         return seeded_from_anchor ? 0 : depth;
     }
 
@@ -1419,8 +1423,12 @@ bool HotspotSupport::isSafeAllocationStack(const ASGCT_CallFrame* frames, int de
   return true;
 }
 
-int HotspotSupport::walkCurrentJavaStack(ASGCT_CallFrame* frames, int max_depth, jint event_type,
-                                         int lock_index, bool* truncated) {
+int HotspotSupport::walkCurrentJavaStack(StackWalkRequest& request) {
+  ASGCT_CallFrame* frames = request.frames;
+  int max_depth = request.max_depth;
+  jint event_type = request.event_type;
+  int lock_index = request.lock_index;
+  bool* truncated = request.truncated;
   ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
   if (prof_thread == nullptr) {
     return 0;

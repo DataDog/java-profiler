@@ -120,10 +120,9 @@ int JVMSupport::walkJavaStack(StackWalkRequest& request) {
     return 0;
 }
 
-int JVMSupport::walkCurrentJavaStack(ASGCT_CallFrame* frames, int max_depth, jint event_type,
-                                     int lock_index, bool* truncated) {
+int JVMSupport::walkCurrentJavaStack(StackWalkRequest& request) {
     if (VM::isHotspot()) {
-        return HotspotSupport::walkCurrentJavaStack(frames, max_depth, event_type, lock_index, truncated);
+        return HotspotSupport::walkCurrentJavaStack(request);
     }
     return 0;
 }

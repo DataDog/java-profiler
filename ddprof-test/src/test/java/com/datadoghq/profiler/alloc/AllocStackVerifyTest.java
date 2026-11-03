@@ -63,7 +63,7 @@ public class AllocStackVerifyTest extends AbstractProfilerTest {
       assertEquals(0L, counters.get("alloc_stack_mismatch"), "walks differing from GetStackTrace: " + counters);
       // A walk that loses a frame falls back to GetStackTrace before it is verified, so a
       // walker regression would show up here rather than as a mismatch.
-      assertTrue(counters.get("alloc_stack_vm_fallback") * 100 <= counters.get("alloc_stack_vm"),
+      assertTrue(counters.get("alloc_stack_vm_fallback") <= counters.get("alloc_stack_vm") / 100,
           "too many fallbacks to GetStackTrace: " + counters);
     }
   }

@@ -36,8 +36,8 @@ public class AllocStackDefaultTest extends AbstractProfilerTest {
     Map<String, Long> counters = profiler.getDebugCounters();
     long walked = counters.getOrDefault("alloc_stack_vm", 0L);
     long fallback = counters.getOrDefault("alloc_stack_vm_fallback", 0L);
-    assertTrue(walked > 0, "the VM walker did not capture allocation stacks by default: " + counters);
+    assertTrue(walked >= 100, "too few VM allocation samples to evaluate fallback rate: " + counters);
     // A sample with no Java frame for the walker falls back; that is the exception.
-    assertTrue(fallback * 100 <= walked, "too many fallbacks to GetStackTrace: " + counters);
+    assertTrue(fallback <= walked / 100, "too many fallbacks to GetStackTrace: " + counters);
   }
 }

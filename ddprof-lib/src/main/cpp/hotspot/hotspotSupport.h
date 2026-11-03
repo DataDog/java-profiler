@@ -360,8 +360,7 @@ public:
 
     // See JVMSupport::walkCurrentJavaStack(). Seeds walkVM() with the current
     // thread's last Java frame anchor, which is where GetStackTrace starts too.
-    static int walkCurrentJavaStack(ASGCT_CallFrame* frames, int max_depth, jint event_type,
-                                    int lock_index, bool* truncated);
+    static int walkCurrentJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc) {
         return HotspotStackFrame::unwindAtomicStub(frame, pc);
     }
