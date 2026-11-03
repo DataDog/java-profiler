@@ -151,6 +151,32 @@ TEST_F(ArgumentsTest, InvalidNosanityValueIsAnError) {
     EXPECT_TRUE(error);
 }
 
+// allocstack defaults to auto (resolved at start from cstack) and accepts
+// vm, jvmti and verify.
+TEST_F(ArgumentsTest, AllocstackValues) {
+    Arguments defaults;
+    EXPECT_FALSE(defaults.parse(""));
+    EXPECT_EQ(defaults._alloc_stack, ALLOCSTACK_AUTO);
+
+    const struct { const char* arg; AllocStack expected; } cases[] = {
+        {"allocstack=vm", ALLOCSTACK_VM},
+        {"allocstack=jvmti", ALLOCSTACK_JVMTI},
+        {"allocstack=verify", ALLOCSTACK_VERIFY},
+    };
+    for (const auto& c : cases) {
+        Arguments args;
+        EXPECT_FALSE(args.parse(c.arg)) << c.arg;
+        EXPECT_EQ(args._alloc_stack, c.expected) << c.arg;
+    }
+}
+
+TEST_F(ArgumentsTest, InvalidAllocstackValueIsAnError) {
+    for (const char* arg : {"allocstack=walk", "allocstack", "allocstack="}) {
+        Arguments args;
+        EXPECT_TRUE(args.parse(arg)) << arg;
+    }
+}
+
 TEST_F(ArgumentsTest, InvalidJvmtistacksValueIsAnError) {
     Arguments args;
     Error error = args.parse("jvmtistacks=xyz");

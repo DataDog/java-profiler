@@ -95,11 +95,11 @@ predicates. More detection-dependent setup:
 - `can_retransform_any_class` is disabled on J9 (`vmEntry.cpp:502`).
 - The JFR `RequestStackTrace` extension is probed only on HotSpot (`vmEntry.cpp:519-521`).
 - The profiler installs its SIGSEGV/SIGBUS handlers only on HotSpot and J9
-  (`profiler.cpp:1168`).
-- On Zing, `GC_TRACES | LAST_JAVA_PC` is forced into `_safe_mode` (`profiler.cpp:1587`).
+  (`Profiler::setupSignalHandlers()`).
+- On Zing, `GC_TRACES | LAST_JAVA_PC` is forced into `_safe_mode` (`Profiler::start()`).
 
 `JVMSupport::initialize()` (`jvmSupport.cpp:32-57`) runs after detection, from
-`Profiler::start()`/`Profiler::init()` (`profiler.cpp:1417`, `profiler.cpp:1437`).
+`Profiler::start()`/`Profiler::init()`.
 It calls `JVMThread::initialize()`, then checks the `ProfiledThread` TLS key.
 If either step fails, profiling is disabled.
 
@@ -113,6 +113,7 @@ If either step fails, profiling is disabled.
 | `initialize()` | shared (`JVMThread` + `ProfiledThread` TLS) | shared |
 | `initExecution(args, jvmti, jni)` | selects `Fully_loaded`, `Partial_loaded`, or `Lazy_loaded` via `HotspotSupport::shouldPreloadJmethodIDs` / `canResolveLazily` / `initLazyResolution` (`jvmSupport.cpp:79-94`) | always `Fully_loaded`. `fjmethodid=lazy` only logs a warning (`jvmSupport.cpp:95-97`) |
 | `walkJavaStack(request)` | `HotspotSupport::walkJavaStack` | ASGCT through `asyncGetCallTrace()`. Debug builds assert that the event is CPU, wall, native malloc, or native socket (`jvmSupport.cpp:112-117`) |
+| `walkCurrentJavaStack(request)` | anchor-seeded `walkVM`; returns 0 for failed or unsafe allocation stacks | returns 0 for JVMTI retry |
 | `canUnwind(frame, pc)` (inline) | `HotspotStackFrame::unwindAtomicStub` | `false` |
 | `isJitCode(pc)` (inline) | `JitCodeCache::isJitCode` | `false` |
 | `runtimeStubsMemoryUsage()` (inline) | `JitCodeCache::runtimeStubsMemoryUsage` | `0` |
@@ -128,7 +129,7 @@ gets HotSpot declarations, but it should still call only `JVMSupport::*`.
 
 Callers in shared code:
 
-- Stack walking calls `walkJavaStack` (`profiler.cpp:717`).
+- Stack walking calls `walkJavaStack` (`Profiler::recordSample()`).
 - `stackWalker.cpp:80-82` and `perfEvents_linux.cpp` call `isJitCode` and
   `canUnwind`. Both are signal-handler paths, and on non-HotSpot VMs they
   reduce to constant returns.
@@ -137,6 +138,11 @@ Callers in shared code:
 - The class hooks in `vmEntry.cpp` call the load and redefinition functions:
   `ClassPrepare` at `vmEntry.cpp:641-645`, and the
   `RedefineClasses`/`RetransformClasses` hooks at `vmEntry.cpp:687-731`.
+
+`jniHelper.h` calls `IsVirtualThread` through JNI slot 234 on JDK 21+,
+independently of the headers used to build the library. `vmEntry.h` defines the
+`JMETHODID_NOT_WALKABLE` frame sentinel; allocation capture retries with JVMTI
+rather than retaining unresolved Java frames.
 
 ## `jvmThread.h` / `jvmThread.cpp`: the `JVMThread` facade
 
@@ -195,7 +201,7 @@ Caveats:
   (for example, a build without JFR), `initLazyResolution()` fails, and
   `initExecution()` falls back to `Partial_loaded` (`jvmSupport.cpp:86-91`).
 - **`cstack=vm` needs `VMStructs`.** If `VMStructs::hasStackStructs()` is false,
-  `cstack=vm` is downgraded to DWARF or `no` (`profiler.cpp:1625-1629`).
+  `cstack=vm` is downgraded to DWARF or `no` (`Profiler::start()`).
 
 #### Continuation completeness
 
@@ -222,7 +228,7 @@ Caveats:
 
 - **The ASGCT-or-JVMTI choice is made per engine.** `Profiler::selectCpuEngine`
   and `selectWallEngine` choose `J9WallClock` (the JVMTI path) when any of these
-  holds (`profiler.cpp:1274-1285`, `profiler.cpp:1321-1333`):
+  holds:
   - `J9Support::shouldUseAsgct()` is false. The system property
     `dd.profiling.ddprof.j9.sampler` set to `jvmti` makes it false
     (`j9/j9Support.h:108-126`).
@@ -249,7 +255,7 @@ behavior is shared code that branches on `VM::isZing()`:
 
 - Java stacks are collected with ASGCT (`jvmSupport.cpp:112-117`).
 - Runtime entries are marked (`vmEntry.cpp:378-379`).
-- `_safe_mode` is forced (`profiler.cpp:1587`).
+- `_safe_mode` is forced (`Profiler::start()`).
 
 Caveat: `JVMThread::nativeThreadId()` sends Zing to
 `VMThread::nativeThreadId()`. That function returns -1 unless

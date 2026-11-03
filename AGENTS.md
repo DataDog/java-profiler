@@ -168,7 +168,7 @@ before working on a subsystem.
 | String dictionary (lazily allocated arena chunks, rotation/clear/release protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
 | TLS context (thread-local tracing context, distributed tracing) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
-| Profiling engines (CPU, wall-clock, allocation, native memory, liveness) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
+| Profiling engines (CPU, wall-clock, allocation, native memory, liveness; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, signal scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
 | Native memory profiling (malloc interception installed per recording and restored on stop, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
@@ -294,6 +294,14 @@ Otherwise a signal can sample a half-torn-down thread, or re-acquire a
 thread that keeps running silently stops profiling that thread — use `SignalBlocker`
 for a temporary window.
 
+**Thread registration.** Thread hooks (`pthread_create`, JVMTI `ThreadStart`/`ThreadEnd`)
+run without `_state_lock` and overlap `start()`/`stop()`. Reach engines only through
+`Profiler::registerThread()`/`unregisterThread()`, never `_cpu_engine->…` directly. An
+engine with a per-thread table sizes it before `openThreadRegistration()` and frees or
+replaces it only under `ThreadTablesFreeze`; that freeze closes unregistration only around
+the replacement, never for a whole `start()`. Details:
+[ProfilingEngines.md](doc/architecture/ProfilingEngines.md#thread-registration).
+
 **JVMTI callbacks.** Callbacks run on whichever JVM thread triggers the event —
 including compiler, VM and GC threads that never went through our `pthread_create`
 hook — so call `ProfiledThread::initCurrentThreadSignalSafe()` first.
@@ -338,11 +346,9 @@ discards them.
 `start()`) and never unpatched, so they run before the first `start()` and between
 recordings. They must stay transparent: the `pthread_create` wrapper passes the
 routine's return value to `pthread_exit()`. Code they reach must tolerate an idle
-profiler: `Profiler::registerThread()` registers with engines only while
-`_thread_registration_open` is set (opened just
-before the engines start, closed first thing in `stop()`, with a fence and a re-check
-that undoes a racing registration); `unregisterThread()` is ungated and tolerates no
-engine being selected.
+profiler, including one that never started: registration goes through the gates in
+**Thread registration** above, and `unregisterThread()` skips an engine slot that is
+still `NULL` before the first `start()`.
 
 **Atomic memory ordering (arm64).** arm64 is weakly ordered (x86 is TSO); relaxed-ordering
 bugs are silent arm64-only lockups. Cross-thread reads: acquire ordering

@@ -26,6 +26,8 @@
 #include <signal.h>
 
 class CTimer : public Engine {
+  friend class CTimerTestAccessor;
+
 private:
   // cppcheck-suppress unusedPrivateFunction
   static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
@@ -34,10 +36,6 @@ protected:
   // Accessed from signal handlers (including CTimerJvmti subclass), so must
   // be async-signal-safe. Mutated via enableEvents().
   static bool _enabled;
-  // Whether registerThread() may arm timers: open from start() until stop().
-  // Unlike _enabled, it also covers the window between start() and
-  // enableEvents(true), when threads must already be registered.
-  static bool _registration_open;
 
   static long _interval;
   static CStack _cstack;
@@ -46,8 +44,18 @@ protected:
   static int _max_timers;
   static int *_timers;
 
+  static bool resizeTimers(int max_timers);
+  // Sizes the timer table for start(), replacing it under a
+  // Profiler::ThreadTablesFreeze only when the size changes.
+  static Error sizeTimerTable(int max_timers);
+  // start() with the timer table size passed in rather than read from
+  // pid_max, so a test can drive the allocation-failure path.
+  Error startWithTableSize(Arguments &args, int max_timers);
   int registerThread(int tid);
   void unregisterThread(int tid);
+  // Unregisters the tids recorded by Profiler::recordSkippedUnregistration(),
+  // after the listing may have armed a timer for an exited thread.
+  void replaySkippedUnregistrations();
 
 public:
   const char *units() { return "ns"; }
