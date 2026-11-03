@@ -63,13 +63,31 @@ can be cancelled at any time with `q` or Ctrl-C.
 
 A dry run never creates a tag, pushes a branch, or triggers GitLab.
 
+If workflow monitoring loses its API connection, the script checks the run's
+status and reconnects to the same run, making up to three monitoring attempts
+per monitoring window. All attempts share a one-hour deadline. When the deadline
+is reached, the script allows up to ten seconds for a final status query, including
+when it must retry a query interrupted by the shared deadline. If the result remains
+unconfirmed, an interactive session asks whether to watch the same run for another
+hour. Answering `y` or `yes` renews the deadline and monitoring attempts. Answering
+`n`, pressing Enter, or reaching EOF stops monitoring with
+`WORKFLOW STATUS UNKNOWN` and a nonzero exit. Unattended sessions stop without
+prompting. The remote workflow keeps running when local monitoring stops.
+`RELEASE_MONITOR_TIMEOUT_SECONDS` overrides the default 3600-second deadline.
+Check the existing run before starting another release.
+Recognized completed outcomes retain GitHub's exact conclusion in the output.
+Only a confirmed `success` exits zero; other recognized conclusions exit nonzero.
+Only `failure` and `startup_failure` are labelled as workflow failures.
+
 ### Testing release automation
 
 `.github/scripts/tests/test_release_automation.sh` is a single hermetic shell
-test. It validates release tag/branch creation, version computation, and
-trivial-PR authorization using temporary local git fixtures. It does not
-load credentials or invoke `gh`, so it cannot publish, tag, push, or merge
+test. It validates release tag/branch creation, version computation,
+trivial-PR authorization, and recovery from workflow monitoring errors using
+temporary local Git repositories and a GitHub CLI fixture. It does not load
+credentials or contact GitHub, so it cannot publish, tag, push, or merge
 anything remotely.
+The terminal interaction tests require Python 3.
 
 ```bash
 .github/scripts/tests/test_release_automation.sh

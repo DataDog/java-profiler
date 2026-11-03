@@ -5,6 +5,7 @@
 
 package com.datadoghq.profiler;
 
+import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -34,7 +35,14 @@ import static org.junit.jupiter.api.Assertions.*;
 public abstract class AbstractProfilerTest {
   private static final boolean ALLOW_NATIVE_CSTACKS = true;
 
-  private boolean stopped = true;
+  // Package-private so lifecycle regression tests (ProfilerTeardownIntegrityTest) can
+  // resync the flag when they restart the profiler behind stopProfiler()'s back.
+  boolean stopped = true;
+  // Every recording created by this JVM's tests. An aborted teardown orphans its own
+  // dump and the owning instance is gone; only this list still references it, so the
+  // next cleanup() reaps it. The runner executes test classes sequentially within a
+  // fork, so no in-JVM concurrent access is possible.
+  private static final List<Path> CREATED_RECORDINGS = new ArrayList<>();
   private Map<Path, Long> sanitizerLogSizesBefore = new HashMap<>();
 
   public static final String LAMBDA_QUALIFIER = Platform.isJavaVersionAtLeast(21) ? "$$Lambda." : "$$Lambda$";
@@ -72,7 +80,10 @@ public abstract class AbstractProfilerTest {
   }
 
   protected JavaProfiler profiler;
-  private Path jfrDump;
+  // Package-private for the lifecycle regression tests. A test that restarts the
+  // profiler behind the base class's back must resync BOTH this field and `stopped`,
+  // or stopProfiler()'s checkConfig() validates a stale recording.
+  Path jfrDump;
 
   // Set at the very start of setupProfiler(), before getProfilerCommand() is
   // consulted, so a subclass can branch its command on the current test
@@ -141,11 +152,11 @@ public abstract class AbstractProfilerTest {
   }
 
   /**
-   * Whether the tests run against the -O0 debug build of the native library, which unwinds
-   * several times slower than the release build.
+   * Whether the tests run against an -O0 debug build of the native library (debug or coverage),
+   * which unwinds several times slower than the release build.
    */
   protected final boolean isDebugBuild() {
-    return "debug".equals(System.getProperty("ddprof_test.config"));
+    return NativeBuildConfig.isDebug();
   }
 
   private static long getPid() {
@@ -224,6 +235,7 @@ public abstract class AbstractProfilerTest {
     }
 
     jfrDump = Files.createTempFile(rootDir, testInfo.getTestMethod().map(m -> m.getDeclaringClass().getSimpleName() + "_" + m.getName()).orElse("unknown") + (testConfig.isEmpty() ? "" : "-" + testConfig.replace('/', '_')), ".jfr");
+    CREATED_RECORDINGS.add(jfrDump);
     profiler = JavaProfiler.getInstance();
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
     cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);
@@ -241,19 +253,85 @@ public abstract class AbstractProfilerTest {
     }
 
     System.out.println("===> command: " + command);
-    profiler.execute(command);
+    try {
+      profiler.execute(command);
+    } catch (IllegalStateException e) {
+      // Recover only from the poisoned-singleton state: a failing earlier test left the
+      // process-wide singleton started and aborted its own teardown. Any other start
+      // failure is a test-authoring bug; stopping the singleton for it would silently
+      // kill a live recording. If stop() or the retry fails, rethrow the original
+      // exception with the secondary failure attached as suppressed, so it never masks
+      // the root cause.
+      String msg = e.getMessage();
+      if (msg == null || !msg.contains("already started")) {
+        throw e;
+      }
+      try {
+        stopRetryingOnDrainTimeout(profiler);
+        // Resync: the singleton is really stopped now. Without this, a failed retry
+        // leaves stopped==false and cleanup()'s stopProfiler() throws a misleading
+        // "not active" that masks the setup failure.
+        stopped = true;
+      } catch (Exception stopFailure) {
+        e.addSuppressed(stopFailure);
+        throw e;
+      }
+      try {
+        profiler.execute(command);
+      } catch (Exception retryFailure) {
+        e.addSuppressed(retryFailure);
+        throw e;
+      }
+    }
     stopped = false;
     before();
   }
 
   @AfterEach
   public void cleanup() throws Exception {
-    after();
-    stopProfiler();
+    Throwable failure = null;
+    try {
+      after();
+    } catch (Throwable t) {
+      failure = t;
+    }
+    try {
+      // stopProfiler must run even when after() throws: the profiler singleton is
+      // process-wide, and leaving it started fails every subsequent test in this JVM
+      // with IllegalStateException instead of just this one.
+      stopProfiler();
+    } catch (Throwable t) {
+      if (failure == null) {
+        failure = t;
+      } else {
+        failure.addSuppressed(t);
+      }
+    }
+    // Bookkeeping must run even when after() or stopProfiler() failed: skipping it
+    // leaks recordings and hides sanitizer errors detected during the test.
     dumpSanitizerLogs();
     System.out.println("===> keep_jfrs: " + Boolean.getBoolean("ddprof_test.keep_jfrs"));
-    if (jfrDump != null && !Boolean.getBoolean("ddprof_test.keep_jfrs")) {
-      Files.deleteIfExists(jfrDump);
+    if (!Boolean.getBoolean("ddprof_test.keep_jfrs")) {
+      for (Path recording : CREATED_RECORDINGS) {
+        try {
+          Files.deleteIfExists(recording);
+        } catch (IOException e) {
+          if (failure == null) {
+            failure = e;
+          } else {
+            failure.addSuppressed(e);
+          }
+        }
+      }
+    }
+    CREATED_RECORDINGS.clear();
+    if (failure instanceof Exception) {
+      throw (Exception) failure;
+    }
+    if (failure != null) {
+      // after() can also fail with an Error (e.g. AssertionError); rethrow as-is
+      // instead of wrapping, so the primary failure keeps its type.
+      throw (Error) failure;
     }
   }
 
@@ -319,6 +397,33 @@ public abstract class AbstractProfilerTest {
     if (!stopped) {
       profiler.dump(recording);
     }
+  }
+
+  /**
+   * Stops the profiler, retrying the documented-retryable "signal handlers did not
+   * drain" outcome of {@code Profiler::stop()} (state stays RUNNING, teardown skipped,
+   * retry is idempotent). Bounded: 10 attempts x 10ms covers observed drain times;
+   * exceeding it rethrows the last drain failure instead of masking it.
+   */
+  public static void stopRetryingOnDrainTimeout(JavaProfiler profiler) {
+    for (int attempt = 0; attempt < 10; attempt++) {
+      try {
+        profiler.stop();
+        return;
+      } catch (IllegalStateException e) {
+        String msg = e.getMessage();
+        if (msg == null || !msg.contains("did not drain")) {
+          throw e;
+        }
+        try {
+          Thread.sleep(10);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw e;
+        }
+      }
+    }
+    throw new IllegalStateException("stop() did not drain signal handlers after 10 retries");
   }
 
   /**

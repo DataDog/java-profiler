@@ -1,3 +1,7 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package com.datadoghq.profiler
 
@@ -77,6 +81,23 @@ import javax.inject.Inject
  * ```
  */
 class ProfilerTestPlugin : Plugin<Project> {
+
+    companion object {
+        private const val ADDITIONAL_JVM_ARGS_EXTENSION = "additionalJvmArgs"
+
+        /**
+         * Extra JVM args a build script can contribute to a musl Exec test task (e.g.
+         * ddprof-test's JaCoCo agent for the coverage tasks, which Gradle only attaches to
+         * Test tasks). Get-or-create, since a build script's configureEach on the task can
+         * run before the plugin's own configuration of it.
+         */
+        @Suppress("UNCHECKED_CAST")
+        fun additionalJvmArgs(task: Exec): ListProperty<String> =
+            task.extensions.findByName(ADDITIONAL_JVM_ARGS_EXTENSION) as ListProperty<String>?
+                ?: task.project.objects.listProperty(String::class.java).also {
+                    task.extensions.add(ADDITIONAL_JVM_ARGS_EXTENSION, it)
+                }
+    }
 
     override fun apply(project: Project) {
         val extension = project.extensions.create(
@@ -362,6 +383,9 @@ class ProfilerTestPlugin : Plugin<Project> {
                 }
                 allArgs.addAll(testConfig.extraJvmArgs)
                 allArgs.addAll(testConfig.configJvmArgs)
+                // Read here, not contributed via a doFirst of the build script's own: that
+                // would run before this one and its args would be overwritten.
+                allArgs.addAll(additionalJvmArgs(execTask).get())
 
                 // System properties
                 testConfig.systemProperties.forEach { (key, value) ->
