@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.cpu;
 
 import com.datadoghq.profiler.AbstractProcessProfilerTest;
+import com.datadoghq.profiler.NativeBuildConfig;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
@@ -52,7 +53,7 @@ public class LazyTraceIdJfrValidationTest extends AbstractProcessProfilerTest {
     @Timeout(120)
     public void calibratedTraceIdMatchesJfrClassId() throws Exception {
         // The profiler's side of the comparison is a debug-build log line.
-        Assumptions.assumeTrue("debug".equals(System.getProperty("ddprof_test.config")), "needs a debug build");
+        Assumptions.assumeTrue(NativeBuildConfig.isDebug(), "needs a debug build");
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9() || Platform.isGraal(), "HotSpot only");
         Assumptions.assumeTrue(jfrConsumerAvailable(), "JFR not available");
 

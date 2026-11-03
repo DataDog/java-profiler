@@ -181,7 +181,10 @@ final class BaseContextWallClockTest {
         assertFalse(states.contains("NEW"));
         assertFalse(states.contains("TERMINATED"));
         // the sanitizer configurations are not playing that well with the sample distribution
-        // still useful to run the profiler, though - so just skipping the assertions here
+        // still useful to run the profiler, though - so just skipping the assertions here.
+        // The same goes for coverage: atomic gcov counter updates on every edge of the signal
+        // handlers perturb timing like the sanitizers do, and a failure here would keep
+        // coverageReport red, so the check is keyed on "debug" itself, not isDebug().
         if (config.equals("release") || config.equals("debug")) {
             double totalWeight = method1Weight + method2Weight + method3Weight + unattributedWeight;
             // Each method sleeps for the same duration (10ms), so each should contribute ~33%.
