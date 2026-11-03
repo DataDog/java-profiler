@@ -298,16 +298,13 @@
    * the ramped cadence. */ \
   X(REFERENCE_CHAIN_URGENT_NO_CANDIDATE, "reference_chain_urgent_no_candidate") \
   /* Heap-floor seqlock: samples DROPPED by a writer that lost the per-slot \
-   * claim (CAS lost, or head already unstable). One increment per dropped \
-   * sample, in GC-callback context - no logging there, so this is the only \
-   * observability for overlap-driven loss. Never fires while GC callbacks \
-   * are serialized (HotSpot). */ \
+   * claim (CAS lost, or head already unstable) - the only observability for \
+   * overlap-driven loss, since GC callbacks cannot log. Never fires while GC \
+   * callbacks are serialized (HotSpot). */ \
   X(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP, "heap_floor_sample_dropped_overlap") \
-  /* Heap-floor seqlock: reads that exhausted HEAP_FLOOR_READ_ATTEMPTS \
-   * without a consistent (used, seq) pair (also counts the emergency-band \
-   * seed's seq_out==nullptr read; one increment per exhausted read, never \
-   * per attempt). A rising value means overlapping writers pin the newest \
-   * slot and the urgent admission gate holds its previous decision. */ \
+  /* Heap-floor seqlock: reads that exhausted HEAP_FLOOR_READ_ATTEMPTS without a consistent \
+   * (used, seq) pair (also the emergency-band seed's seq_out==nullptr read; per exhausted read, \
+   * never per attempt). Rising: overlapping writers pin the newest slot. */ \
   X(HEAP_FLOOR_READ_UNSTABLE, "heap_floor_read_unstable") \
   /* admitStaticFieldRoots() per-class non-static quota: non-STATIC_FIELD \
    * edges (CONSTANT_POOL, INTERFACE, SUPERCLASS, CLASS_LOADER, ...) that \

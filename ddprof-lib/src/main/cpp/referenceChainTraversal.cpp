@@ -1130,9 +1130,8 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   } else if (_passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT &&
              !urgencyLatched()) {
     // The frontier hasn't grown for NO_PROGRESS_PASS_LIMIT consecutive passes — the search is
-    // genuinely stuck (not just slow), so abandon. Reads the latch published by
-    // publishUrgencyState()'s per-iteration isUrgent() call; calling isUrgent() here would
-    // advance the machine from a second, freshly-read projection.
+    // genuinely stuck (not just slow), so abandon. Reads the published latch; calling isUrgent()
+    // here would advance the machine from a second, freshly-read projection.
     store(_abandon_reason, (u8)SearchAbandonReason::TTL);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
     enqueuePendingAbandonedEvent();

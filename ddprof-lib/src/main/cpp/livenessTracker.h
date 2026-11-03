@@ -481,25 +481,19 @@ private:
   // still be reading it from a session that persists across a restart.
   std::atomic<bool> _gc_generations;
 
-  // True when a leak-signal source is active: generations, or liveheap with
-  // referencechains enabled - the collector is the signal's only consumer, so
-  // a plain liveheap session keeps the flag (and its per-epoch klass folding,
-  // heap-floor ring and forced sweeps) off. Derived in initialize(); written
-  // with release, read with acquire (the readers consume table state
-  // populated under the same flag). Cleared again by
-  // disableChainOnlyLeakSignal() when Profiler::start() armed it for the
-  // (liveness && reference_chains) leg but ReferenceChainTracker::start()
-  // then failed - without the tracker the flag's work has no consumer.
+  // True when a leak-signal source is active: generations, or liveheap with referencechains
+  // enabled - the collector is the signal's only consumer, so a plain liveheap session keeps the
+  // flag (and its klass folding, heap-floor ring and forced sweeps) off. Derived in initialize();
+  // written release, read acquire. Cleared again by disableChainOnlyLeakSignal() when the
+  // (liveness && reference_chains) leg was armed but ReferenceChainTracker::start() failed.
   std::atomic<bool> _leak_signal_enabled;
 
-  // OS::nanotime() of the first initialize() that enabled the leak signal; 0
-  // means never activated. Set once by a CAS from 0; the only production
-  // reset is disableChainOnlyLeakSignal()'s chains-start-failure path (which
-  // also clears the flag), so a later chains-enabled start re-stamps and
-  // gets its own burn-in. stop()/resetSession() and the ring resets never
-  // touch it: per process, not per recording. Drives secondsToOOM()'s
-  // age-based burn-in (see OOM_PROJECTION_BURN_IN_NS). Written with release,
-  // read with acquire.
+  // OS::nanotime() of the first initialize() that enabled the leak signal; 0 means never
+  // activated. Set once by a CAS from 0; the only production reset is disableChainOnlyLeakSignal()'s
+  // chains-start-failure path (with the flag), so a later chains-enabled start re-stamps and gets
+  // its own burn-in. stop()/resetSession() and the ring resets never touch it: per process, not per
+  // recording. Drives secondsToOOM()'s age-based burn-in (see OOM_PROJECTION_BURN_IN_NS). Release
+  // write, acquire read.
   std::atomic<u64> _leak_signal_activated_ns;
 
   // Per-klass population history table (see KlassPopulationEntry above).
@@ -1091,15 +1085,11 @@ public:
     return _leak_signal_enabled.load(std::memory_order_acquire);
   }
 
-  // Profiler::start() calls this when ReferenceChainTracker::start() failed:
-  // the flag's (liveness && reference_chains) leg then has no consumer, so a
-  // plain-liveheap session must not pay klass folding, heap-floor sampling
-  // and forced sweeps. The generations leg keeps its own consumer - cleared
-  // only when generations tracking is off. Also unstamps the burn-in clock
-  // if this start stamped it: a chains-requested-but-failed start must not
-  // leave a later chains-enabled recording with an already-expired burn-in
-  // (same rationale as the plain-liveheap rule at the stamping site). Safe:
-  // with the tracker failed to start no sampler work reads the flag/stamp.
+  // Profiler::start() calls this when ReferenceChainTracker::start() failed: the flag's
+  // (liveness && reference_chains) leg then has no consumer, so a plain-liveheap session must not
+  // pay for it; generations keeps its own consumer. Also unstamps the burn-in clock so a later
+  // chains-enabled start re-stamps and gets its own burn-in. Safe: with the tracker failed, no
+  // sampler work reads the flag or the stamp.
   void disableChainOnlyLeakSignal() {
     if (_gc_generations.load(std::memory_order_acquire)) {
       return;

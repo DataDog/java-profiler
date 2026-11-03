@@ -824,10 +824,9 @@ private:
   bool hasLeakSignal(double seconds_to_oom);
 
   // Latched, hysteretic view of LivenessTracker::secondsToOOM() crossing OOM_URGENT_THRESHOLD_S -
-  // see _urgent_latched for the latch/release rules and why the raw comparison flaps. The latch
-  // machine runs once per iteration in publishUrgencyState(), on the caller's projection
-  // (threadLoop()'s single read); runPass() and hasLeakSignal() consume the latched state via
-  // urgencyLatched() without advancing the machine.
+  // see _urgent_latched for the latch/release rules and why the raw comparison flaps. The machine
+  // runs once per iteration in publishUrgencyState() on the caller's projection; runPass() and
+  // hasLeakSignal() consume it read-only via urgencyLatched().
   bool isUrgent(double seconds_to_oom) const;
   // Read-only view of the latch (see isUrgent()).
   bool urgencyLatched() const { return _urgent_latched; }
@@ -845,6 +844,8 @@ private:
 
   // Publishes one threadLoop() iteration's urgency: _oom_ramp_active follows the raw band
   // (`urgent`) for shouldRunPass()'s canary-backoff bypass; LivenessTracker's 100% tracking boost
+  // Shared urgency/admission reset (stop()/resetSearchStateForTest()/resetUrgencyForTest()) and
+  // episode close - see the definitions in referenceChains.cpp.
   void resetUrgencyState();
   void closeUrgencyEpisode();
 

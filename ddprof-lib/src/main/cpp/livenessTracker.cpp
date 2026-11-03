@@ -2182,10 +2182,7 @@ Error LivenessTracker::initialize(Arguments &args) {
   // observe the flag it was actually started with, even though the tracking
   // table itself persists across recordings.
   _gc_generations.store(args._gc_generations, std::memory_order_relaxed);
-  // See _leak_signal_enabled's comment for the derivation. Release: the
-  // flag gates klass-folding/heap-floor/forced-sweep work whose readers
-  // consume table state populated under the same flag (AGENTS.md's default
-  // for config fields written in start()); acquire on every load.
+  // See _leak_signal_enabled's comment for the derivation and the ordering rationale.
   _leak_signal_enabled.store(args._gc_generations
                                  || (args._record_liveness && args._reference_chains),
                              std::memory_order_release);
