@@ -523,30 +523,23 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
    * through {@code java.util.HashMap}'s own internal storage ({@code HashMap$Node}) - that the
    * mechanism correctly walks a real JDK collection's internals, not only purpose-built fixtures.
    *
-   * <p><b>Why {@code cache} is a local variable, not a {@code static} field:</b>
-   * {@code expandFrontier()} freezes whatever children it observes for a node the moment that node
-   * is expanded - it never re-examines an already-{@code EXPANDED} entry for newly-added children.
-   * A {@code static} field becomes a root at class-load time, essentially guaranteeing some early
-   * pass catches it (and marks it {@code EXPANDED}) while still empty - permanently blocking
-   * discovery of anything added afterward. A local variable created fresh at the top of this
-   * method, immediately followed by round-1 allocation, gives root enumeration a real chance to
-   * catch it only after it already holds live data.
+   * <p><b>Why {@code cache} is a local variable, not a {@code static} field:</b> a static field
+   * becomes a root at class-load time and is likely expanded while still empty, so additions made
+   * afterward are discovered only when the bounded rotation revisit
+   * ({@code collectStaleExpandedEntriesForRotation()} in referenceChainWalk.cpp) re-queues that
+   * {@code EXPANDED} entry and re-walks its fields. A local variable created fresh at the top of
+   * this method, immediately followed by round-1 allocation, is first enumerated as a root only
+   * after it already holds live data.
    */
   @Test
   @Order(2)
   public void shouldReconstructReferrerChainThroughUnboundedCacheLeak() throws Exception {
-    // Pre-sized to hold every round's entries without ever crossing HashMap's 0.75 load factor:
-    // 131072 buckets hold up to 98304 entries, and this fixture caps at 69001 + the seed below.
-    // This is load-bearing, not a tuning nicety. Every ordinary resize replaces the table and
-    // rehashes every entry into NEW HashMap$Node objects - the table/Node path the BFS walk
-    // admitted (and the reconstructed chain routes through) dies, the walk prunes the retired
-    // entries, and the replacement table is never admitted because the cache HashMap's own
-    // frontier entry is already EXPANDED (the frozen-children hazard documented in the class
-    // javadoc above) - traced live as a representative permanently stuck at frontier state -1
-    // (never admitted / entry pruned) with zero leak-tag interceptions for the rest of the
-    // search. A fixed table keeps every Node ever admitted (and the representative's parent
-    // chain) alive for the whole test, so the representative path and the rotation re-walk see a
-    // stable, growing container.
+    // Pre-sized so the walk never sees a resize: 131072 buckets admit up to 98304 entries at
+    // HashMap's 0.75 load factor, and this fixture adds 69001 in total (69000 across the rounds
+    // plus the seed below). The table is allocated once and never replaced, so the table/Node
+    // path the walk admits stays the same live objects for the whole test; a replacement table
+    // (e.g. after a resize) would instead be discovered only via the bounded rotation revisit of
+    // EXPANDED entries, within the walk's bounded budget.
     Map<String, CachedPayload> cache = new HashMap<>(1 << 17);
     cache.put("cache-leak-seed", new CachedPayload("cache-leak-seed"));
     if (ReferenceChainAssertions.isDebugInstrumentedBuild()) {
