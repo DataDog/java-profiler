@@ -135,14 +135,21 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
     // candidateSeen bracket honest.
     int[] candidatesBefore = ReferenceChainTestHooks.selectLeakCandidateKlassIds0();
     ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
-    int passesBefore = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
+    // Sampled AFTER the reset, so not a pre-reset baseline: a value > 0 means a pass ENDED
+    // between the reset and this read (the reset zeroes the counter only at pass END, so a
+    // long in-flight pass is still invisible to this read - the candidate bracket plus
+    // checkNoCandidateFreeActivity's retry compensates for that blind spot).
+    int passesAfterReset = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
     GateEvaluation e = new GateEvaluation();
     e.gateOpen = ReferenceChainTestHooks.shouldRunPassForTest0();
     int[] candidatesAfter = ReferenceChainTestHooks.selectLeakCandidateKlassIds0();
+    // Sampled after the gate call: a BFS pass racing between the gate evaluation and this read
+    // is conservatively attributed to the evaluation window (safe direction: it only widens
+    // the observed activity window, never masks a gate violation).
     e.passesAfter = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
     e.candidateSeen = !isEmpty(candidatesBefore) || !isEmpty(candidatesAfter);
     e.detail = "candidatesBefore=" + Arrays.toString(candidatesBefore) + " candidatesAfter="
-        + Arrays.toString(candidatesAfter) + " passesBefore=" + passesBefore
+        + Arrays.toString(candidatesAfter) + " passesAfterReset=" + passesAfterReset
         + " passesAfter=" + e.passesAfter;
     return e;
   }
