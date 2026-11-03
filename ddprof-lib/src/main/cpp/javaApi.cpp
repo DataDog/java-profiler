@@ -1414,8 +1414,15 @@ Java_com_datadoghq_profiler_JavaProfiler_backdateLeakSignalActivationForTest0(
   LivenessTracker *lt = LivenessTracker::instance();
   u64 previous = lt->leakSignalActivatedNsForTest();
   // One second past the burn-in (modular u64), mirroring the gtest fixtures' backdated stamp.
-  lt->setLeakSignalActivatedNsForTest(OS::nanotime() - LivenessTracker::OOM_PROJECTION_BURN_IN_NS -
-                                      1000000000ULL);
+  // Clamped: on a freshly booted CI VM the monotonic clock can be under the burn-in horizon,
+  // and the modular u64 underflow would read back as a negative jlong that
+  // setLeakSignalActivatedNsForTest0() rejects - a throwing finally block with the stamp
+  // left backdated. Stamp 1 is a valid "just activated" substitute there.
+  u64 now = OS::nanotime();
+  u64 stamp = now > (u64)LivenessTracker::OOM_PROJECTION_BURN_IN_NS + 1000000000ULL
+                  ? now - LivenessTracker::OOM_PROJECTION_BURN_IN_NS - 1000000000ULL
+                  : 1;
+  lt->setLeakSignalActivatedNsForTest(stamp);
   return (jlong)previous;
 }
 
