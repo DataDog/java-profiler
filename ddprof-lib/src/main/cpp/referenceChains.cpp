@@ -1096,6 +1096,8 @@ void ReferenceChainTracker::restartSearch() {
   _local_anchor_tags.clear();
   _pending_local_anchors.clear();
   _pending_local_anchor_tags.clear();
+  _local_compact_backoff = 0;
+  _pending_local_evict_cursor = 0;
   _anchor_container_cursor = 0;
   _anchor_other_cursor = 0;
   // Fresh lane: nothing admits before the search does, so nothing can have a pending first look
@@ -1185,6 +1187,8 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _local_anchor_tags.clear();
   _pending_local_anchors.clear();
   _pending_local_anchor_tags.clear();
+  _local_compact_backoff = 0;
+  _pending_local_evict_cursor = 0;
   _anchor_container_cursor = 0;
   _anchor_other_cursor = 0;
   _static_anchor_fresh_queue.clear();

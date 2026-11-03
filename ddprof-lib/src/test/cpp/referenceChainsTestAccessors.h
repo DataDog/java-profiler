@@ -99,6 +99,8 @@ public:
         t->_local_anchor_tags.clear();
         t->_pending_local_anchors.clear();
         t->_pending_local_anchor_tags.clear();
+        t->_local_compact_backoff = 0;
+        t->_pending_local_evict_cursor = 0;
         t->_anchor_container_cursor = 0;
         t->_anchor_other_cursor = 0;
         t->_class_shape_cache.clear();
@@ -539,7 +541,9 @@ public:
                t->_static_anchor_index_tags.empty() &&
                t->_local_anchor_tags.empty() &&
                t->_pending_local_anchors.empty() &&
-               t->_pending_local_anchor_tags.empty();
+               t->_pending_local_anchor_tags.empty() &&
+               t->_local_compact_backoff == 0 &&
+               t->_pending_local_evict_cursor == 0;
     }
 
     // Local-root anchor seams (see noteLocalRootHolder()/resolvePendingLocalAnchors()).
@@ -565,6 +569,30 @@ public:
         ReferenceChainTracker::LOCAL_ANCHOR_INDEX_CAP;
     static constexpr size_t kPendingLocalAnchorCap =
         ReferenceChainTracker::PENDING_LOCAL_ANCHOR_CAP;
+    static constexpr int kLocalCompactBackoff =
+        ReferenceChainTracker::LOCAL_ANCHOR_COMPACT_BACKOFF;
+    static int localCompactBackoffForTest() {
+        return ReferenceChainTracker::instance()->_local_compact_backoff;
+    }
+    static size_t pendingLocalEvictCursorForTest() {
+        return ReferenceChainTracker::instance()->_pending_local_evict_cursor;
+    }
+    // Caller keeps idx < pendingLocalAnchorCountForTest().
+    static jlong pendingLocalAnchorTagForTest(size_t idx) {
+        return ReferenceChainTracker::instance()->_pending_local_anchors[idx].tag;
+    }
+    static bool pendingLocalAnchorContainsForTest(jlong tag) {
+        return ReferenceChainTracker::instance()
+                   ->_pending_local_anchor_tags.count(tag) > 0;
+    }
+
+    // Reconcile collection step (see collectUnclassifiedAnchorClassTags()).
+    static constexpr int kAnchorShapeReconcileBudget =
+        ReferenceChainTracker::ANCHOR_SHAPE_RECONCILE_BUDGET;
+    static std::vector<jlong> unclassifiedAnchorClassTagsForTest() {
+        return ReferenceChainTracker::instance()
+            ->collectUnclassifiedAnchorClassTags();
+    }
 
     static jlong discoveredTagForTest(int slot, int idx) {
         return ReferenceChainTracker::instance()
