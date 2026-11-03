@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk21
 
 ## glibc-arm64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-11-03 10:59:16 EST
+**Date:** 2026-11-03 11:00:41 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 90 |
-| Sample Rate | 1.50/sec |
-| Health Score | 94% |
-| Threads | 12 |
-| Allocations | 74 |
+| CPU Samples | 517 |
+| Sample Rate | 8.62/sec |
+| Health Score | 539% |
+| Threads | 9 |
+| Allocations | 352 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 268 |
-| Sample Rate | 4.47/sec |
-| Health Score | 279% |
-| Threads | 13 |
-| Allocations | 134 |
+| CPU Samples | 78 |
+| Sample Rate | 1.30/sec |
+| Health Score | 81% |
+| Threads | 12 |
+| Allocations | 70 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1793721327 51
-1793721332 51
-1793721337 51
-1793721342 51
-1793721347 51
-1793721352 51
-1793721357 51
-1793721362 51
-1793721367 51
-1793721372 51
-1793721377 51
-1793721382 51
-1793721387 51
-1793721392 51
-1793721397 51
-1793721402 51
-1793721407 51
-1793721412 51
-1793721417 51
-1793721422 51
+1793721268 51
+1793721273 51
+1793721278 51
+1793721283 51
+1793721288 51
+1793721293 51
+1793721298 51
+1793721303 51
+1793721308 51
+1793721313 51
+1793721318 51
+1793721323 51
+1793721329 51
+1793721334 51
+1793721339 51
+1793721344 51
+1793721349 51
+1793721354 51
+1793721359 51
+1793721364 51
 ```
 </details>
 

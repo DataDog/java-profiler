@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk25
 
 ## glibc-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-11-03 10:59:16 EST
+**Date:** 2026-11-03 11:00:41 EST
 
 ### Configuration
 | Setting | Value |
@@ -32,25 +32,22 @@ title: glibc-arm64-openj9-jdk25
 | Sample Rate | 1.28/sec |
 | Health Score | 80% |
 | Threads | 10 |
-| Allocations | 71 |
+| Allocations | 67 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 82 |
-| Sample Rate | 1.37/sec |
-| Health Score | 86% |
-| Threads | 12 |
-| Allocations | 66 |
+| CPU Samples | 79 |
+| Sample Rate | 1.32/sec |
+| Health Score | 82% |
+| Threads | 11 |
+| Allocations | 64 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1793721296 48
-1793721301 48
-1793721306 48
 1793721311 48
 1793721316 48
 1793721321 48
@@ -68,6 +65,9 @@ title: glibc-arm64-openj9-jdk25
 1793721381 48
 1793721386 48
 1793721391 48
+1793721396 48
+1793721401 48
+1793721406 48
 ```
 </details>
 

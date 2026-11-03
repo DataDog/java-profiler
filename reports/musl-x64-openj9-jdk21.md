@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk21
 
 ## musl-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-11-03 10:59:18 EST
+**Date:** 2026-11-03 11:00:44 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 618 |
-| Sample Rate | 10.30/sec |
-| Health Score | 644% |
+| CPU Samples | 506 |
+| Sample Rate | 8.43/sec |
+| Health Score | 527% |
 | Threads | 9 |
-| Allocations | 394 |
+| Allocations | 363 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 721 |
-| Sample Rate | 12.02/sec |
-| Health Score | 751% |
+| CPU Samples | 670 |
+| Sample Rate | 11.17/sec |
+| Health Score | 698% |
 | Threads | 11 |
-| Allocations | 459 |
+| Allocations | 500 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 76-76 cores)</summary>
 
 ```
-1793721264 76
-1793721269 76
-1793721274 76
-1793721279 76
-1793721284 76
-1793721289 76
-1793721294 76
-1793721299 76
-1793721304 76
-1793721309 76
-1793721314 76
-1793721319 76
-1793721324 76
-1793721329 76
-1793721334 76
-1793721339 76
-1793721344 76
-1793721349 76
-1793721354 76
-1793721359 76
+1793721183 76
+1793721188 76
+1793721193 76
+1793721198 76
+1793721203 76
+1793721208 76
+1793721213 76
+1793721218 76
+1793721223 76
+1793721228 76
+1793721233 76
+1793721238 76
+1793721243 76
+1793721248 76
+1793721253 76
+1793721258 76
+1793721263 76
+1793721268 76
+1793721273 76
+1793721278 76
 ```
 </details>
 
