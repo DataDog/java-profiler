@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk17
 
 ## musl-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-11-03 13:50:11 EST
+**Date:** 2026-11-03 14:44:32 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 478 |
-| Sample Rate | 7.97/sec |
-| Health Score | 498% |
+| CPU Samples | 680 |
+| Sample Rate | 11.33/sec |
+| Health Score | 708% |
 | Threads | 8 |
-| Allocations | 395 |
+| Allocations | 380 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 662 |
-| Sample Rate | 11.03/sec |
-| Health Score | 689% |
-| Threads | 9 |
+| CPU Samples | 843 |
+| Sample Rate | 14.05/sec |
+| Health Score | 878% |
+| Threads | 10 |
 | Allocations | 476 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 15-32 cores)</summary>
+<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1793731439 32
-1793731444 32
-1793731449 32
-1793731454 32
-1793731459 32
-1793731464 32
-1793731469 32
-1793731474 15
-1793731479 15
-1793731484 15
-1793731489 15
-1793731494 15
-1793731499 15
-1793731504 15
-1793731509 15
-1793731514 15
-1793731519 15
-1793731524 32
-1793731529 32
-1793731534 15
+1793734713 32
+1793734718 32
+1793734723 32
+1793734728 32
+1793734733 32
+1793734738 32
+1793734743 32
+1793734748 32
+1793734753 32
+1793734758 32
+1793734763 32
+1793734768 32
+1793734773 32
+1793734778 32
+1793734783 32
+1793734788 32
+1793734793 32
+1793734798 32
+1793734803 32
+1793734808 32
 ```
 </details>
 
