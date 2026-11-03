@@ -1,7 +1,10 @@
 name: CI Run
 
 concurrency:
-  group: pr-ci_${{ github.event.pull_request.number }}
+  # Push and workflow_dispatch runs have no pull request number: group them by
+  # ref, or they all share one group and cancel each other, merge queue runs
+  # included.
+  group: pr-ci_${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 on:
