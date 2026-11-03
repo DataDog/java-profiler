@@ -125,7 +125,7 @@ int JVMSupport::walkCurrentJavaStack(ASGCT_CallFrame* frames, int max_depth, jin
     if (VM::isHotspot()) {
         return HotspotSupport::walkCurrentJavaStack(frames, max_depth, event_type, lock_index, truncated);
     }
-    return -1;
+    return 0;
 }
 
 int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* ucontext) {

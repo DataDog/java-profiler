@@ -63,6 +63,9 @@ public:
 
 class HotspotSupportTestAccessor {
 public:
+    static bool isSafeAllocationStack(const ASGCT_CallFrame* frames, int depth) {
+        return HotspotSupport::isSafeAllocationStack(frames, depth);
+    }
     static KlassRegistry& registry() { return HotspotSupport::_klass_registry; }
     static void setLazyUsed(bool used) { HotspotSupport::_lazy_used = used; }
     static bool enterRedefinitionCall() { return HotspotSupport::enterRedefinitionCall(); }
@@ -1040,3 +1043,17 @@ TEST_F(HotspotLazyResolveTest, LookupCacheSeparatesFramesOfDifferentClassLoads) 
     EXPECT_EQ(row, lookup.resolveMethod(after));
 }
 
+
+TEST_F(HotspotLazyResolveTest, AllocationStacksRejectUntaggedMethodPointers) {
+    ASGCT_CallFrame frame = sample();
+    EXPECT_TRUE(HotspotSupportTestAccessor::isSafeAllocationStack(&frame, 1));
+    JVMSupportTestAccessor::setLoadState(JVMSupportTestAccessor::PartialLoaded());
+    frame = sample();
+    ASSERT_EQ(0u, FrameType::rawTag(frame.bci, frame.method));
+    EXPECT_FALSE(HotspotSupportTestAccessor::isSafeAllocationStack(&frame, 1));
+    frame.bci = FrameType::encode(FRAME_JIT_COMPILED, 7);
+    frame.method_id = reinterpret_cast<jmethodID>(1);
+    EXPECT_TRUE(HotspotSupportTestAccessor::isSafeAllocationStack(&frame, 1));
+    frame.method_id = JMETHODID_NOT_WALKABLE;
+    EXPECT_FALSE(HotspotSupportTestAccessor::isSafeAllocationStack(&frame, 1));
+}

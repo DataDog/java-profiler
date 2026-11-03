@@ -10,6 +10,8 @@ import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -92,9 +94,37 @@ public class AllocStackVerifyTest extends AbstractProfilerTest {
     });
     assertTrue(blobs.get() > 0, "no allocation samples of the workload");
     assertEquals(blobs.get(), expected.get(), "allocation samples with a lost or extra frame");
-    if (counters.containsKey("alloc_stack_vm_fallback")) {
-      assertTrue(counters.get("alloc_stack_vm_fallback") > 0, "virtual thread samples did not fall back: " + counters);
+    if (counters.containsKey("alloc_stack_virtual_thread")) {
+      assertTrue(counters.get("alloc_stack_virtual_thread") > 0, "virtual thread samples were not skipped: " + counters);
       assertEquals(0L, counters.get("alloc_stack_mismatch"), counters.toString());
     }
   }
+  @Test
+  public void verifyScratchSurvivesModeChangesAtTheSameStackDepth() throws Exception {
+    stopProfiler();
+    Path recording = Files.createTempFile("alloc-stack-restart", ".jfr");
+    try {
+      for (String mode : new String[] {"jvmti", "verify", "jvmti", "verify"}) {
+        profiler.execute("start,memory=262144:a,allocstack=" + mode + ",jfr,file=" + recording);
+        try {
+          new AllocStackWorkload().run();
+          new AllocStackWorkload().run();
+        } finally {
+          profiler.stop();
+        }
+        Map<String, Long> counters = profiler.getDebugCounters();
+        if (counters.containsKey("alloc_stack_verified")) {
+          if (mode.equals("verify")) {
+            assertTrue(counters.get("alloc_stack_verified") >= 100, counters.toString());
+            assertEquals(0L, counters.get("alloc_stack_mismatch"), counters.toString());
+          } else {
+            assertEquals(0L, counters.get("alloc_stack_verified"), counters.toString());
+          }
+        }
+      }
+    } finally {
+      Files.deleteIfExists(recording);
+    }
+  }
+
 }

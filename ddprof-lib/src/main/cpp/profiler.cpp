@@ -571,10 +571,9 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 // GetStackTrace on the same thread, frame by frame (method and bci), counting
 // ALLOC_STACK_VERIFIED / ALLOC_STACK_MISMATCH. Diagnostics and tests only:
 // GetStackTrace allocates, which is what the VM walker avoids.
-static void verifyAllocStack(const ASGCT_CallFrame* frames, int num_frames, jthread thread, int max_depth) {
-  const int VERIFY_DEPTH = 1024;
-  jvmtiFrameInfo expected[VERIFY_DEPTH];
-  jint depth = max_depth < VERIFY_DEPTH ? max_depth : VERIFY_DEPTH;
+static void verifyAllocStack(const ASGCT_CallFrame* frames, int num_frames, jthread thread,
+                             int max_depth, jvmtiFrameInfo* expected) {
+  jint depth = CallTraceBuffer::verificationDepth(max_depth);
   jint expected_count = 0;
   if (VM::jvmti()->GetStackTrace(thread, 0, depth, expected, &expected_count) != JVMTI_ERROR_NONE) {
     return;
@@ -644,20 +643,30 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
     // per frame in this thread's resource area, which deep stacks grow by
     // malloc'd chunks: on the allocating application threads, across all
     // their glibc arenas.
-    int walked = _alloc_stack != ALLOCSTACK_JVMTI && !jniIsVirtualThread(VM::jni(), thread, VM::java_version())
-        ? JVMSupport::walkCurrentJavaStack(frames, _max_stack_depth, event_type, lock_index, &truncated)
-        : -1;
-    if (walked <= 0 && _alloc_stack != ALLOCSTACK_JVMTI) {
-      // A virtual thread, a walk that lost frames or no walker on this JVM:
-      // use JVMTI.
-      Counters::increment(ALLOC_STACK_VM_FALLBACK);
-      truncated = false;
+    int walked = 0;
+    if (_alloc_stack != ALLOCSTACK_JVMTI) {
+      if (jniIsVirtualThread(VM::jni(), thread, VM::java_version())) {
+        Counters::increment(ALLOC_STACK_VIRTUAL_THREAD);
+      } else {
+        walked = JVMSupport::walkCurrentJavaStack(frames, _max_stack_depth, event_type,
+                                                 lock_index, &truncated);
+        if (walked == 0) {
+          Counters::increment(ALLOC_STACK_VM_FALLBACK);
+          truncated = false;
+        }
+      }
     }
     if (walked > 0) {
       num_frames = walked;
       Counters::increment(ALLOC_STACK_VM);
       if (_alloc_stack == ALLOCSTACK_VERIFY) {
-        verifyAllocStack(frames, num_frames, thread, _max_stack_depth);
+        // Buffer replacement and mode publication happen separately at restart.
+        // A late callback must not verify against a stripe without scratch space.
+        jvmtiFrameInfo* expected = buf->verificationFrames(
+            _max_stack_depth, _calltrace_buffer_capacity[lock_index]);
+        if (expected != nullptr) {
+          verifyAllocStack(frames, num_frames, thread, _max_stack_depth, expected);
+        }
       }
     } else if (VM::jvmti()->GetStackTrace(thread, 0, _max_stack_depth, jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
       // Convert to AsyncGetCallTrace format.
@@ -1592,9 +1601,9 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   // (Re-)allocate calltrace buffers
-  if (_max_stack_depth != args._jstackdepth) {
-    size_t prev_nelem = _max_stack_depth + RESERVED_FRAMES;
-    size_t nelem = (size_t)args._jstackdepth + RESERVED_FRAMES;
+  size_t nelem = CallTraceBuffer::capacity(args._jstackdepth, args._alloc_stack);
+  if (_max_stack_depth != args._jstackdepth || _calltrace_buffer_capacity[0] != nelem) {
+    size_t prev_nelem = _calltrace_buffer_capacity[0];
 
     // Phase 1: allocate all replacements up front. If any allocation fails,
     // roll back the ones already made and leave the profiler unchanged — old
@@ -1623,6 +1632,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       _locks[i].lock();
       CallTraceBuffer *prev = _calltrace_buffer[i];
       _calltrace_buffer[i] = fresh[i];
+      _calltrace_buffer_capacity[i] = nelem;
       _locks[i].unlock();
       free(prev);
       if (prev != NULL) {

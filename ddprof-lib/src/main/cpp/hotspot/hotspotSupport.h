@@ -132,6 +132,8 @@ class HotspotSupport {
     friend class HotspotSupportTestAccessor;
 
 private:
+    static bool isSafeAllocationStack(const ASGCT_CallFrame* frames, int depth);
+
     // pc_is_return_address describes the seed pc: a ucontext pc is the exact
     // interrupted address, while callerPC() is a real return address on every
     // architecture except the one where CALLER_PC_IS_RETURN_ADDRESS is false.

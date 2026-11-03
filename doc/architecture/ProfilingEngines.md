@@ -367,14 +367,20 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
      threads, with JVMTI `GetStackTrace`, which also takes over when the VM
      walk faults, loses frames, or cannot resolve a Java method (counted as
      `alloc_stack_vm_fallback`). A fault returns failure even at the depth limit.
-     Virtual-thread detection uses the runtime JNI table, including libraries
-     built with pre-21 headers. Either way the stack is Java-only,
+     Untagged raw `Method*` frames also trigger a retry: only jmethodIDs and
+     lazy frames carrying class-load tags are safe to retain across chunks.
+     Virtual-thread skips have a separate `alloc_stack_virtual_thread` counter;
+     detection uses the runtime JNI table, including builds with pre-21 headers.
+     Either way the stack is Java-only,
      also with `cstack=vmx`. `GetStackTrace` builds a vframe per
      frame in the calling thread's resource area, which deep stacks grow by
      malloc'd 32 KiB chunks on the allocating application threads; glibc
      keeps that memory resident in those threads' arenas. `allocstack=jvmti`
      forces `GetStackTrace`; `allocstack=verify` cross-checks every VM walk
      against it (`alloc_stack_verified` / `alloc_stack_mismatch` counters).
+     Verification reserves up to 1024 JVMTI frames per stripe beyond its captured
+     frames; other modes reserve no verification space. Changing modes resizes
+     these buffers even when the configured stack depth stays the same.
   3. Rate control: every `_target_samples_per_window` (100) samples, if more
      than 1 s has passed, one thread wins a CAS and runs a `PidController`
      that adjusts `_interval` within `[configured, INT32_MAX]` and re-applies

@@ -92,6 +92,7 @@
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
   X(ALLOC_STACK_VM, "alloc_stack_vm")                                          \
+  X(ALLOC_STACK_VIRTUAL_THREAD, "alloc_stack_virtual_thread")                 \
   X(ALLOC_STACK_VM_FALLBACK, "alloc_stack_vm_fallback")                        \
   X(ALLOC_STACK_VERIFIED, "alloc_stack_verified")                              \
   X(ALLOC_STACK_MISMATCH, "alloc_stack_mismatch")                              \

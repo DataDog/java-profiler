@@ -101,6 +101,7 @@ If either step fails, profiling is disabled.
 | `initialize()` | shared (`JVMThread` + `ProfiledThread` TLS) | shared |
 | `initExecution(args, jvmti, jni)` | selects `Fully_loaded`, `Partial_loaded`, or `Lazy_loaded` via `HotspotSupport::shouldPreloadJmethodIDs` / `canResolveLazily` / `initLazyResolution` (`jvmSupport.cpp:79-94`) | always `Fully_loaded`. `fjmethodid=lazy` only logs a warning (`jvmSupport.cpp:95-97`) |
 | `walkJavaStack(request)` | `HotspotSupport::walkJavaStack` | ASGCT through `asyncGetCallTrace()`. Debug builds assert that the event is CPU, wall, native malloc, or native socket (`jvmSupport.cpp:112-117`) |
+| `walkCurrentJavaStack(...)` | anchor-seeded `walkVM`; returns 0 for failed or unsafe allocation stacks | returns 0 for JVMTI retry |
 | `canUnwind(frame, pc)` (inline) | `HotspotStackFrame::unwindAtomicStub` | `false` |
 | `isJitCode(pc)` (inline) | `JitCodeCache::isJitCode` | `false` |
 | `runtimeStubsMemoryUsage()` (inline) | `JitCodeCache::runtimeStubsMemoryUsage` | `0` |

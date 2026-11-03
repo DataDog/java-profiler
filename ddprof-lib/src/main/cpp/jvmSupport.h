@@ -65,9 +65,8 @@ public:
     // SampledObjectAlloc). Unlike JVMTI GetStackTrace it allocates nothing:
     // GetStackTrace materializes a vframe per frame in the thread's resource
     // area, which grows by 32 KiB chunks malloc'd from the sampled thread.
-    // Returns the number of frames; 0 when the walk lost frames (it faulted or
-    // could not unwind one), or -1 when it cannot run here (e.g. not supported
-    // on this JVM). The caller then falls back to GetStackTrace.
+    // Returns the number of usable frames, or 0 when unavailable, incomplete,
+    // or unsafe to retain. The caller then falls back to GetStackTrace.
     static int walkCurrentJavaStack(ASGCT_CallFrame* frames, int max_depth, jint event_type,
                                     int lock_index, bool* truncated);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc);
