@@ -30,7 +30,9 @@ u64 CallTraceStorage::getNextInstanceId() {
 }
 
 CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storage(nullptr), _scratch_storage(nullptr), _generation_counter(1), _liveness_lock(0) {
-    allocateTables();
+    // No tables yet: acquire() allocates them when a recording starts, so the
+    // storage holds none while the profiler is idle - including before the
+    // first start(), as Profiler's member is constructed when the library loads.
 
     // Pre-allocate containers to avoid malloc() during hot path operations
     _liveness_checkers.reserve(4);      // Typical max: 1-2 checkers, avoid growth
@@ -198,6 +200,17 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
  * It is not designed to be called concurrently with itself.
  */
 void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> processor) {
+    // Released (or never acquired): nothing to rotate. Hand the processor the
+    // dropped-trace placeholder alone, in a local set, so a chunk written
+    // without a recording (tests write standalone chunks) neither crashes nor
+    // makes the idle storage allocate its collections again.
+    if (__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE) == nullptr) {
+        CallTraceSet traces;
+        traces.insert(getDroppedTrace());
+        processor(traces);
+        return;
+    }
+
     // PHASE 1: Collect liveness information with simple lock (rare operation)
     {
         SharedLockGuard lock(&_liveness_lock);

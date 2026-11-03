@@ -228,10 +228,13 @@ invalidated when the context-value dictionary was actually reset.
 `release()` runs the same drain as `clearAll()` (steps 1, 2, 4, 6, 7), but in step 3
 calls `release()` on each buffer, freeing the root tables and every arena chunk, and
 it **skips step 5**: the id counter is not restarted, so an id handed out before the
-release can never alias a key inserted after it. The dictionary stays open; callers
-that keep looking keys up while the profiler is idle (the tracer's endpoints) get ids
-from freshly allocated storage. On a drain timeout nothing is freed and the caller
-reports it.
+release can never alias a key inserted after it. The dictionary stays open; a caller
+racing the release, or one that looks keys up while the profiler is idle, gets ids from
+freshly allocated storage. The tracer-facing JNI paths that intern into the class-name
+and string-label maps (`recordTrace0` for endpoints, `recordQueueEnd0` for queue-time
+class names) do nothing while the profiler is not running, since no recording would
+take their events, so in practice the released maps stay empty until the next start.
+On a drain timeout nothing is freed and the caller reports it.
 
 `Profiler::releaseRecordingMemory()` releases `_class_map` and `_string_label_map` at
 the end of `stop()`. It deliberately does **not** release `_context_value_map`: each

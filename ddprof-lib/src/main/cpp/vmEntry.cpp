@@ -550,10 +550,13 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // via Profiler::enablePersistentJvmtiEvents(), which replays the code
   // generated before then.
 
-  // DebugNonSafepoints: Set early when CompiledMethodLoad won't be used
-  // (COMPILED_METHOD_LOAD auto-enables it, so we only need manual setup when
-  // we won't use CompiledMethodLoad events).
-  if (hotspot_version() != 0 && CodeHeap::available()) {
+  // DebugNonSafepoints: set at agent load on every HotSpot, so methods compiled
+  // before the first start() get non-safepoint debug info too. Enabling
+  // COMPILED_METHOD_LOAD would also turn it on, but that event is only enabled
+  // on the first start() (and only where CodeHeap is unavailable), and its
+  // GenerateEvents() replay cannot add debug info to code compiled before then.
+  // VMFlag::find() returns NULL when the flag table was not resolved.
+  if (isHotspot()) {
     VMFlag* f = VMFlag::find("DebugNonSafepoints", {VMFlag::Type::Bool});
     TEST_LOG("DebugNonSafepoints flag %s", f != NULL ? "found" : "not found");
     if (f != NULL && f->isDefault()) {

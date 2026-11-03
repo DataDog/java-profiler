@@ -88,7 +88,10 @@ predicates. More detection-dependent setup:
   `start()` by `Profiler::enablePersistentJvmtiEvents()`, before
   `JVMSupport::initExecution()` snapshots the loaded classes, and stay enabled
   for the life of the process. It replays the code generated before then with
-  `GenerateEvents()` in every load mode, not just attach.
+  `GenerateEvents()` in every load mode, not just attach. Because the replay cannot
+  add debug info to code compiled before then, `initProfilerBridge()` sets the
+  `DebugNonSafepoints` flag itself at agent load on every HotSpot, rather than relying
+  on `COMPILED_METHOD_LOAD` to turn it on.
 - `can_retransform_any_class` is disabled on J9 (`vmEntry.cpp:502`).
 - The JFR `RequestStackTrace` extension is probed only on HotSpot (`vmEntry.cpp:519-521`).
 - The profiler installs its SIGSEGV/SIGBUS handlers only on HotSpot and J9

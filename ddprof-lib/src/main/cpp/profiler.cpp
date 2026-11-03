@@ -1492,6 +1492,9 @@ Error Profiler::init() {
     // Must be done after JVMSupport::initialize() as the pthread_create hook
     // calls Profiler::registerThread() which needs ProfiledThread TLS to exist.
     LibraryPatcher::initialize_persistent();
+
+    // The idle footprint before the first start().
+    NativeMem::logLive("after init");
   }
   // Unlike checkState(), init() does not reject a RUNNING/TERMINATED
   // profiler: it is idempotent per-thread setup for the Java API
@@ -1510,6 +1513,9 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (error) {
     return error;
   }
+
+  // The idle footprint this start() begins from.
+  NativeMem::logLive("before start");
 
   // Sanity checks run at most once per process, across start and stop cycles.
   // Profiler::start() sets sanity_checked to true before it checks
@@ -1615,6 +1621,8 @@ Error Profiler::start(Arguments &args, bool reset) {
         for (int j = 0; j < i; j++) {
           free(fresh[j]);
         }
+        // Give back what acquireRecordingMemory() allocated above.
+        releaseRecordingMemory();
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
@@ -1816,13 +1824,16 @@ Error Profiler::start(Arguments &args, bool reset) {
     if (error) {
       Log::warn("%s", error.message());
       if (_event_mask == EM_NATIVEMEM) {
-        // nativemem is the only requested mode: propagate the real error
+        // nativemem is the only requested mode: propagate the real error,
+        // with the same cleanup as the "no engine activated" path below
+        closeThreadRegistration();
         disableEngines();
         switchLibraryTrap(false);
         _libs->stopRefresher();
         lockAll();
         _jfr.stop();
         unlockAll();
+        releaseRecordingMemory();
         return error;
       }
       error = Error::OK; // recoverable when other modes are also active
@@ -2357,8 +2368,9 @@ void Profiler::releaseRecordingMemory() {
   unlockAll();
 
   // StringDictionary::release() drains its accessors itself, like clearAll().
-  // The dictionaries stay open - the tracer keeps registering endpoints while
-  // the profiler is idle - and allocate again on demand.
+  // The dictionaries stay open and allocate again on demand, but nothing
+  // should insert while idle: the JNI paths that intern on the tracer's behalf
+  // (recordTrace0, recordQueueEnd0) skip their work unless the profiler runs.
   // A dictionary whose drain times out keeps its storage until the next stop().
   if (!_class_map.release()) {
     reportDrainTimeout("Class map not released");
@@ -2394,11 +2406,12 @@ int Profiler::resetRecordingState() {
     _context_value_dict_reset.store(true, std::memory_order_release);
   }
 
-  // Released rather than cleared, before Counters::reset(): the tables still
-  // allocated here (on the first start, those the constructor made) would
-  // otherwise stay counted by nothing, and freeing them at the next stop()
-  // would drive LINEAR_ALLOCATOR_BYTES / CALLTRACE_STORAGE_* negative.
-  // start() allocates fresh tables after the reset (acquireRecordingMemory()).
+  // Normally a no-op - stop() and every failed start() release the tables -
+  // but any table still allocated here must be released before
+  // Counters::reset(): it would otherwise stay counted by nothing, and
+  // freeing it at the next stop() would drive LINEAR_ALLOCATOR_BYTES /
+  // CALLTRACE_STORAGE_* negative. start() allocates fresh tables after the
+  // reset (acquireRecordingMemory()).
   lockAll();
   _call_trace_storage.release();
   unlockAll();

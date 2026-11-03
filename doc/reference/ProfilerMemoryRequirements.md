@@ -168,8 +168,8 @@ Growth:
   table and first arena chunk)
 - `clearAll()` on a fresh profiler start resets all buffers
 - `stop()` frees all storage of the class-name and string-label dictionaries
-  (`release()`); the tracer can still register endpoints while idle, which allocates
-  again. The context-value dictionary is kept across `stop()`, because threads cache
+  (`release()`); the tracer's endpoint and queue-time calls skip interning while the
+  profiler is idle, so they stay empty until the next start. The context-value dictionary is kept across `stop()`, because threads cache
   its encodings (see [StringDictionary](../architecture/StringDictionary.md#release-protocol))
 
 ### 6. Recording Buffers (JFR Event Storage)

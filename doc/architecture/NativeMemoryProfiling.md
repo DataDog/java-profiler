@@ -84,7 +84,9 @@ unless `running() && ret != NULL && size != 0`.
 
 The GOT-patching state lives in `MallocHooker` (`_patched_libs`, `_initialized`, and
 the `_entries` table of patched slots, guarded by `LibraryPatcher::_lock` on Linux and
-by `_patch_lock` elsewhere); the sampling state lives in `MallocTracer`. `MallocTracer::start()`
+by `_patch_lock` on macOS); the sampling state lives in `MallocTracer`. The two
+platform implementations of `patchLibraries()` / `unpatchLibraries()` live in
+`mallocTracer_linux.cpp` and `mallocTracer_macos.cpp`. `MallocTracer::start()`
 (called on every profiler start that requests `nativemem`) runs:
 
 1. Resets per-session sampling state: `_configured_interval` / `_interval` (from
@@ -132,7 +134,7 @@ by `_patch_lock` elsewhere); the sampling state lives in `MallocTracer`. `Malloc
    hooked for good. On Linux the patching runs inside a
    `LibraryPatcher::LiveLibraryWalk`: a library is visited only while the loader keeps
    it mapped and only if it is still the image its `CodeCache` describes, so a slot
-   address saved in a stale cache is never written through. Elsewhere each library is
+   address saved in a stale cache is never written through. On macOS each library is
    pinned with `UnloadProtection` under `_patch_lock`. Either way the walk re-checks
    `MallocTracer::running()` under its lock, so a refresh that raced `stop()` does not
    re-hook after the restore.
@@ -150,7 +152,7 @@ GOT load records nothing, then calls **`MallocHooker::unpatchLibraries()`**:
 - On Linux, in a `LiveLibraryWalk` (one visit per library, entries sorted by library),
   each recorded slot is restored with a compare-and-swap from the hook back to the
   saved original, so a slot something else has re-patched since is left alone.
-  Elsewhere each library is pinned with `UnloadProtection` for the restore.
+  On macOS each library is pinned with `UnloadProtection` for the restore.
 - Entries of a library the walk did not visit (unloaded, or no longer verifiably the
   image they were saved from) are dropped without being written: they can never be
   written through again.
@@ -391,8 +393,8 @@ writeCurrentContext(buf);
 
 | Concern | Mechanism |
 |---------|-----------|
-| GOT patching and restoring across threads | Linux: `LibraryPatcher::_lock`, held by the `LiveLibraryWalk` that patches or restores; elsewhere `MallocHooker::_patch_lock` (Mutex) |
-| Library unload during patching or restoring | Linux: the walk visits only libraries the loader keeps mapped, after an identity check; elsewhere an `UnloadProtection` handle per library |
+| GOT patching and restoring across threads | Linux: `LibraryPatcher::_lock`, held by the `LiveLibraryWalk` that patches or restores; macOS: `MallocHooker::_patch_lock` (Mutex) |
+| Library unload during patching or restoring | Linux: the walk visits only libraries the loader keeps mapped, after an identity check; macOS: an `UnloadProtection` handle per library |
 | Refresher re-hooking after `stop()` | Refresher stopped before `malloc_tracer.stop()`; `running()` re-checked under the walk's lock |
 | Allocation byte counter | Lock-free CAS loop in `shouldSample` |
 | Reentrant allocations from the profiler | `CriticalSection` in `maybeRecord` — nested calls do not record |

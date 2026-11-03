@@ -43,6 +43,11 @@ class MallocHooker {
     static void patchImport(CodeCache* cc, ImportId id, void* hook_fn, void* orig_fn);
     static void patchSlot(CodeCache* cc, void** location, void* hook_fn, void* orig_fn);
     static void patchLibrary(CodeCache* cc);
+    // Shared by the per-platform patchLibraries()/unpatchLibraries()
+    // (mallocTracer_linux.cpp, mallocTracer_macos.cpp).
+    static bool symbolsResolved();
+    static void restoreSlot(const MallocPatchEntry& entry);
+    static void sortEntriesByLibrary();
 
   public:
     // Returns true if symbols were successfully resolved.

@@ -128,8 +128,8 @@ public:
     // Frees all three tables and the processTraces() collections, so the
     // storage holds no memory while the profiler is idle.  put() drops its
     // trace (DROPPED_TRACE_ID) until acquire().  Requires put() to be
-    // excluded, like clear(); processTraces() must not be called until
-    // acquire().  Nothing is preserved for the liveness checkers: the
+    // excluded, like clear(); processTraces() until acquire() hands its
+    // processor only the dropped-trace placeholder.  Nothing is preserved for the liveness checkers: the
     // LivenessTracker is released at the same recording boundary, so no
     // tracked object refers to a trace from before it.
     void release();

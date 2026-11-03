@@ -20,6 +20,7 @@
 #include <link.h>
 #include <mutex>
 #include <setjmp.h>
+#include <stddef.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
@@ -663,25 +664,68 @@ void LibraryPatcher::unpatch_libraries() {
   unpatch_socket_functions();
 }
 
-void LibraryPatcher::patch_pthread_create() {
-  LiveLibraryWalk walk(
-      [](void* ctx) {
-        const CodeCacheArray& native_libs = *(const CodeCacheArray*)ctx;
-        int num_of_libs = native_libs.count();
-        for (int index = 0; index < num_of_libs; index++) {
-          CodeCache* lib = native_libs.at(index);
-          // Filter out everything patch_library_unlocked() would decline, so that
-          // libraries never patched are not re-checked for liveness on every pass.
-          // Already patched libraries stay candidates: one reloaded at the same
-          // base needs its new GOT re-hooked (see patch_library_unlocked()).
-          if (lib != nullptr && lib->peekImport(im_pthread_create) != nullptr
-              && !excluded_from_pthread_create_patch(lib)) {
-            add_live_candidate(lib, 0);
-          }
+// The process-wide count of unloaded objects (dl_phdr_info::dlpi_subs), or
+// false if the loader does not report it. Must not be called with _lock held
+// (dl_iterate_phdr() takes dl_load_write_lock; see the lock order above).
+static bool loader_unload_count(unsigned long long* subs) {
+  struct Result { bool known; unsigned long long subs; } result = {false, 0};
+  dl_iterate_phdr(
+      [](struct dl_phdr_info* info, size_t size, void* data) -> int {
+        Result* r = (Result*)data;
+        if (size >= offsetof(struct dl_phdr_info, dlpi_subs) + sizeof(info->dlpi_subs)) {
+          r->known = true;
+          r->subs = info->dlpi_subs;
         }
+        return 1;  // the counters are global; the first object is enough
       },
-      (void*)&Libraries::instance()->native_libs(),
-      [](CodeCache* lib, int) { patch_library_unlocked(lib); });
+      &result);
+  *subs = result.subs;
+  return result.known;
+}
+
+// The unload count as of the last pass that re-checked every already patched
+// library, or ~0 before the first one.
+static std::atomic<unsigned long long> pthread_create_checked_subs{~0ULL};
+
+void LibraryPatcher::patch_pthread_create() {
+  // An already patched library only needs another look when it was reloaded
+  // at the same base, whose fresh GOT holds the real pthread_create again (see
+  // patch_library_unlocked()). That takes an unload first, so while no object
+  // has been unloaded since the last full pass they are left out of the walk,
+  // sparing every refresh an identity check (fingerprint or stat()) per
+  // patched library. musl never unmaps, so nothing is ever reloaded there.
+  // Racing refreshes may each do a full pass, or store an older count; either
+  // only costs a redundant re-check later.
+  unsigned long long subs = 0;
+  bool subs_known = !OS::isMusl() && loader_unload_count(&subs);
+  bool recheck_patched = !OS::isMusl() &&
+      (!subs_known || subs != pthread_create_checked_subs.load(std::memory_order_acquire));
+
+  struct Context { const CodeCacheArray* native_libs; bool recheck_patched; };
+  Context ctx = {&Libraries::instance()->native_libs(), recheck_patched};
+  {
+    LiveLibraryWalk walk(
+        [](void* data) {
+          const Context& c = *(const Context*)data;
+          int num_of_libs = c.native_libs->count();
+          for (int index = 0; index < num_of_libs; index++) {
+            CodeCache* lib = c.native_libs->at(index);
+            // Filter out everything patch_library_unlocked() would decline, so
+            // that libraries never patched are not re-checked for liveness on
+            // every pass.
+            if (lib != nullptr && lib->peekImport(im_pthread_create) != nullptr
+                && !excluded_from_pthread_create_patch(lib)
+                && (c.recheck_patched || !has_entry_for(_patched_entries, _size, lib))) {
+              add_live_candidate(lib, 0);
+            }
+          }
+        },
+        &ctx,
+        [](CodeCache* lib, int) { patch_library_unlocked(lib); });
+  }
+  if (recheck_patched && subs_known) {
+    pthread_create_checked_subs.store(subs, std::memory_order_release);
+  }
 }
 
 // Patch sigaction in all libraries to prevent any library from overwriting

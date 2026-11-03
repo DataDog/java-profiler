@@ -243,6 +243,13 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
     JNIEnv *env, jclass unused, jlong rootSpanId, jstring endpoint,
     jstring operation, jint sizeLimit) {
+  if (!Profiler::instance()->isRunning()) {
+    // Nothing records the event while idle (no JFR recording), and interning
+    // the endpoint would allocate the string-label dictionary stop() just
+    // released. Answer what an empty dictionary would: accepted if the limit
+    // admits any entry.
+    return sizeLimit > 0 ? JNI_TRUE : JNI_FALSE;
+  }
   JniString endpoint_str(env, endpoint);
 
   // Initialize thread TLS if it has not yet done
@@ -370,6 +377,11 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     JNIEnv *env, jclass unused, jlong startTime, jlong endTime, jstring task,
     jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
+  if (!Profiler::instance()->isRunning()) {
+    // Nothing records the event while idle; interning the names would
+    // allocate the class-name dictionary stop() just released.
+    return;
+  }
 
   // Initialize thread TLS if it has not yet done
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();

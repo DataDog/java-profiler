@@ -1029,9 +1029,9 @@ public:
 
     // Like clearAll(), but frees all storage - root tables and arena chunks
     // included - so the dictionary holds no memory until something inserts
-    // again, which allocates on demand.  It stays open: callers that keep
-    // looking keys up while the profiler is idle (the tracer's endpoints)
-    // still get ids.  Unlike clearAll() the id counter is NOT
+    // again, which allocates on demand.  It stays open: a caller racing the
+    // release, or one that looks keys up while the profiler is idle, still
+    // gets ids.  Unlike clearAll() the id counter is NOT
     // restarted, so an id handed out before the release cannot alias a key
     // inserted after it.  Returns false, leaving the dictionary unchanged, if
     // the drain times out; the caller reports it.

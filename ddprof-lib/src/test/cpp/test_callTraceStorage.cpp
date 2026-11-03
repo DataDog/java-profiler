@@ -41,6 +41,7 @@ protected:
         // Install crash handler for debugging potential issues
         installGtestCrashHandler<TEST_NAME>();
         storage = std::make_unique<CallTraceStorage>();
+        storage->acquire();
     }
 
     void TearDown() override {
@@ -480,6 +481,7 @@ TEST_F(CallTraceStorageTest, ReleaseFreesAllMemoryAndAcquireRestoresIt) {
     long long baseline = NativeMem::live(NM_CALLTRACE);
     {
         CallTraceStorage local;
+        local.acquire();
         ASSERT_NE(CallTraceStorage::DROPPED_TRACE_ID, local.put(1, &frame, false, 1));
         ASSERT_GT(NativeMem::live(NM_CALLTRACE), baseline);
 
@@ -1478,6 +1480,7 @@ TEST(CallTraceStorageDrainTest, DestructorLeaksTableStillGuarded) {
     ProfiledThread::initCurrentThreadSignalSafe();
     const long long live_before = NativeMem::live(NM_CALLTRACE);
     CallTraceStorage* storage = new CallTraceStorage();
+    storage->acquire();
     u64 id;
     CallTrace* held = putAndFindTrace(storage, 4343, &id);
     ASSERT_NE(nullptr, held);
@@ -1505,6 +1508,7 @@ TEST(CallTraceStorageDrainTest, DestructorLeaksTableStillGuarded) {
 TEST(CallTraceStorageDrainTest, ProcessTracesAfterFailedDrainLeaksOnce) {
     ProfiledThread::initCurrentThreadSignalSafe();
     CallTraceStorage storage;
+    storage.acquire();
     u64 id;
     CallTrace* held = putAndFindTrace(&storage, 4444, &id);
     ASSERT_NE(nullptr, held);

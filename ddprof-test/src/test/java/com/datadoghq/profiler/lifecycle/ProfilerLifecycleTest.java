@@ -357,7 +357,8 @@ public class ProfilerLifecycleTest {
 
     /**
      * Reads and prints the profiler's live native memory per NativeMem category, as of the
-     * moment of the call (not a mirror refreshed at JFR chunk boundaries).
+     * moment of the call (not a mirror refreshed at JFR chunk boundaries). Categories are
+     * printed in bytes, the total in KB.
      */
     private static Map<String, Long> nativeMem(String transition) {
         Map<String, Long> live = NativeMemTestHooks.liveBytesByCategory();
@@ -367,7 +368,8 @@ public class ProfilerLifecycleTest {
             sb.append("\n    ").append(e.getKey()).append(" = ").append(e.getValue());
             total += e.getValue();
         }
-        System.out.println("[Lifecycle] Native memory " + transition + " (total " + total + "):" + sb);
+        System.out.println("[Lifecycle] Native memory " + transition
+                + String.format(" (total %.1f KB):", total / 1024.0) + sb);
         return live;
     }
 

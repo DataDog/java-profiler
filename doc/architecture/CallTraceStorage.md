@@ -138,19 +138,23 @@ the guard plus the pointer re-check in `put()`, not from a generation check.
 
 ## Recording Lifecycle (`release()` / `acquire()`)
 
-The storage holds memory only while a recording runs:
+The storage holds memory only while a recording runs. The constructor allocates no
+tables (`Profiler`'s member is constructed when the library loads, possibly long
+before the first `start()`); `acquire()` is the only place they are allocated.
 
 - **`release()`** frees all three tables (through `freeTables()`, which swaps each
   pointer to `nullptr` and deletes the table once drained, like the destructor) and
   swaps both `processTraces()` collections with empty ones so their bucket arrays
   are freed too. `Profiler::releaseRecordingMemory()` calls it at the end of
-  `stop()`, once the final chunk is written, and on `start()`'s error paths;
+  `stop()`, once the final chunk is written, and on every `start()` error path after
+  `acquireRecordingMemory()`;
   `resetRecordingState()` calls it on a fresh start so the tables the new recording
   uses are counted after `Counters::reset()`. Nothing is preserved for the liveness
   checkers: the `LivenessTracker` is released at the same boundary.
 - While released, `put()` finds `_active_storage == nullptr` and returns
-  `DROPPED_TRACE_ID`. `processTraces()` must not be called until `acquire()`; it
-  dereferences the standby and scratch tables without a null check.
+  `DROPPED_TRACE_ID`, and `processTraces()` hands its processor a local set holding
+  only the dropped-trace placeholder (a chunk written without a recording, as gtests
+  do, then contains no stack traces) without allocating anything.
 - **`acquire()`** allocates fresh tables (fresh instance IDs) and is a no-op if they
   exist. `Profiler::start()` calls it through `acquireRecordingMemory()`, after the
   reset block.
