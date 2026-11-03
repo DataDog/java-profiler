@@ -166,14 +166,21 @@ yet classified waits in `_pending_local_anchors`, capped at 1024 entries.
 confirmed collections and drops everything else, including holders whose class is still
 unclassified. The next root enumeration reports a dropped holder again. Reconciliation
 classifies pending holder classes before unclassified durable-anchor classes, within the
-128-classes-per-pass budget.
+128-classes-per-pass budget. When the pending buffer is full, a holder already confirmed as a
+collection (met while the local share is at its cap) evicts the oldest entry not confirmed as a
+collection. An unclassified holder that meets a full buffer is dropped, and so is a confirmed
+collection when the buffer holds only confirmed collections. Either way the next root enumeration
+reports it again.
 
 The local share is capped at 4096 entries (`LOCAL_ANCHOR_INDEX_CAP`). This keeps the per-pass
 index scan proportional to the durable share plus a constant, regardless of how many locals the
 application holds. When the cap is reached, `compactLocalAnchors()` removes local entries that
-are no longer selectable, such as entries whose object died, at most once per resolve call. If the share is still
-full of live collections, new local holders are not indexed until entries die or the search
-restarts. A local holder that a durable root later attaches moves to the durable share and stops
+are no longer selectable, such as entries whose object died, at most once per resolve call. It
+scans only the local share, so its cost does not grow with the durable share. If the share is
+still full of live collections, new local holders are not indexed until entries die or the search
+restarts. A compaction that removes nothing skips the next 8 at-cap compaction attempts
+(`LOCAL_ANCHOR_COMPACT_BACKOFF`), so a full share of live collections does not pay the scan on
+every pass. Dead entries can therefore keep their slots for up to 8 extra passes. A local holder that a durable root later attaches moves to the durable share and stops
 counting against the cap. `restartSearch()` clears both shares and the pending buffer.
 
 ## Search termination

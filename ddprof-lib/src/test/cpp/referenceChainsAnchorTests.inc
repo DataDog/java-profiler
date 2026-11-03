@@ -907,6 +907,8 @@ TEST_F(ReferenceChainsBfsTest, LocalRootAnchorIndexIsCappedAndCompactsDeadEntrie
     ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
     EXPECT_EQ(pending_cap, ReferenceChainsTestAccessor::localAnchorCountForTest());
     EXPECT_EQ(pending_cap + 1, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    // A productive compaction leaves the compaction backoff disarmed.
+    EXPECT_EQ(0, ReferenceChainsTestAccessor::localCompactBackoffForTest());
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
     EXPECT_LE(ReferenceChainsTestAccessor::freshAnchorQueueSizeForTest(),
               ReferenceChainsTestAccessor::anchorIndexSizeForTest());
@@ -977,6 +979,284 @@ TEST_F(ReferenceChainsBfsTest, DurableRootUpgradeReleasesLocalAnchorSlot) {
     ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
     ReferenceChainsTestAccessor::restartSearchForTest();
     EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexIsEmptyForTest());
+
+    tracker->stop();
+}
+
+// When the local share is at the cap and full of live containers, a compaction that removes nothing
+// arms a backoff: the next LOCAL_ANCHOR_COMPACT_BACKOFF at-cap resolves skip the locked scan (the
+// cap holds, the parked containers are dropped and re-reported). Dead locals are reclaimed by the
+// first compaction after the backoff runs out, which disarms it. Under the cap the backoff is
+// neither consulted nor changed.
+TEST_F(ReferenceChainsBfsTest, LocalRootAnchorCompactBackoffSkipsNoProgressCompactions) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    EXPECT_EQ(0, ReferenceChainsTestAccessor::localCompactBackoffForTest());
+
+    const size_t cap = ReferenceChainsTestAccessor::kLocalAnchorIndexCap;
+    const int backoff = ReferenceChainsTestAccessor::kLocalCompactBackoff;
+    ASSERT_GT(backoff, 1);
+    const jlong kContainer = -451, kLater = -452;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kContainer, true);
+
+    const jlong local_base = 1000;
+    for (size_t i = 0; i < cap; i++) {
+        jlong tag = local_base + (jlong)i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(tag, kContainer);
+    }
+    ASSERT_EQ(cap, ReferenceChainsTestAccessor::localAnchorCountForTest());
+
+    // Parked containers carry no frontier entry: they are only checked for admission.
+    jlong next_parked = local_base + (jlong)cap + 10000;
+
+    // No-progress compaction arms the backoff; the cap holds.
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(next_parked++, kContainer);
+    ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
+    EXPECT_EQ(cap, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    EXPECT_EQ(cap, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(backoff, ReferenceChainsTestAccessor::localCompactBackoffForTest());
+
+    // A skipped at-cap attempt decrements once per resolve, however many containers were parked.
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(next_parked++, kContainer);
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(next_parked++, kContainer);
+    ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
+    EXPECT_EQ(cap, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    EXPECT_EQ(cap, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(backoff - 1, ReferenceChainsTestAccessor::localCompactBackoffForTest());
+
+    // Under the cap the backoff is untouched: free one local slot via a durable-root upgrade, then
+    // admit a holder that becomes a confirmed container while parked.
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        local_base, kContainer, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    ASSERT_EQ(cap - 1, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    const jlong later = next_parked++;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, later, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(later, kLater);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kLater, true);
+    ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
+    EXPECT_EQ(cap, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    const size_t index_size = cap + 1; // the upgraded durable entry stays indexed
+    EXPECT_EQ(index_size, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(backoff - 1, ReferenceChainsTestAccessor::localCompactBackoffForTest());
+
+    // Kill part of the local share. While the backoff is armed the dead entries keep their slots.
+    const size_t dead = 100;
+    for (size_t i = 1; i <= dead; i++) {
+        frontier->clear(local_base + (jlong)i);
+    }
+    for (int k = backoff - 1; k > 0; k--) {
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(next_parked++, kContainer);
+        ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
+        EXPECT_EQ(cap, ReferenceChainsTestAccessor::localAnchorCountForTest());
+        EXPECT_EQ(index_size, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+        EXPECT_EQ(k - 1, ReferenceChainsTestAccessor::localCompactBackoffForTest());
+    }
+
+    // Backoff exhausted: the next at-cap resolve compacts the dead share, disarms the backoff and
+    // admits the parked container.
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(next_parked++, kContainer);
+    ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
+    EXPECT_EQ(cap - dead + 1, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    EXPECT_EQ(index_size - dead + 1, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(0, ReferenceChainsTestAccessor::localCompactBackoffForTest());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+
+    tracker->stop();
+}
+
+// A full pending buffer gives confirmed containers (met at the local cap) priority over entries not
+// yet confirmed as containers: the oldest such entry is evicted through a forward-only cursor, dedup
+// stays exact, and once only confirmed containers are parked a further container is dropped (to be
+// re-reported by the next root enumeration).
+TEST_F(ReferenceChainsBfsTest, LocalRootAnchorPendingBufferEvictsForConfirmedContainer) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const size_t cap = ReferenceChainsTestAccessor::kLocalAnchorIndexCap;
+    const size_t pending_cap = ReferenceChainsTestAccessor::kPendingLocalAnchorCap;
+    ASSERT_GT(pending_cap, 8u);
+    const jlong kContainer = -601, kUnknown = -602;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kContainer, true);
+
+    // Fill the local cap so confirmed containers park instead of being indexed directly.
+    for (size_t i = 0; i < cap; i++) {
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(10000 + (jlong)i, kContainer);
+    }
+    ASSERT_EQ(cap, ReferenceChainsTestAccessor::localAnchorCountForTest());
+
+    // Fill the pending buffer with unclassified holders.
+    const jlong unk_base = 20000;
+    for (size_t i = 0; i < pending_cap; i++) {
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(unk_base + (jlong)i, kUnknown);
+    }
+    ASSERT_EQ(pending_cap, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    ASSERT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalEvictCursorForTest());
+
+    // The first container evicts the oldest unclassified entry, in place.
+    const jlong c_base = 30000;
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(c_base, kContainer);
+    EXPECT_EQ(pending_cap, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::pendingLocalAnchorContainsForTest(c_base));
+    EXPECT_EQ(c_base, ReferenceChainsTestAccessor::pendingLocalAnchorTagForTest(0));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::pendingLocalAnchorContainsForTest(unk_base));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::pendingLocalAnchorContainsForTest(unk_base + 1));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingLocalEvictCursorForTest());
+
+    // The second evicts the next-oldest; the parked container below the cursor is kept.
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(c_base + 1, kContainer);
+    EXPECT_EQ(pending_cap, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    EXPECT_EQ(c_base, ReferenceChainsTestAccessor::pendingLocalAnchorTagForTest(0));
+    EXPECT_EQ(c_base + 1, ReferenceChainsTestAccessor::pendingLocalAnchorTagForTest(1));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::pendingLocalAnchorContainsForTest(unk_base + 1));
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::pendingLocalEvictCursorForTest());
+
+    // Dedup: re-reporting a parked container or a parked unclassified holder changes nothing.
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(c_base, kContainer);
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(unk_base + 5, kUnknown);
+    EXPECT_EQ(pending_cap, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    EXPECT_EQ(c_base, ReferenceChainsTestAccessor::pendingLocalAnchorTagForTest(0));
+    EXPECT_EQ(c_base + 1, ReferenceChainsTestAccessor::pendingLocalAnchorTagForTest(1));
+    EXPECT_EQ(unk_base + 2, ReferenceChainsTestAccessor::pendingLocalAnchorTagForTest(2));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::pendingLocalAnchorContainsForTest(unk_base + 2));
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::pendingLocalEvictCursorForTest());
+
+    // A new unclassified holder at a full buffer is dropped (no eviction).
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(40000, kUnknown);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::pendingLocalAnchorContainsForTest(40000));
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::pendingLocalEvictCursorForTest());
+
+    // Evict every remaining unclassified entry.
+    for (size_t i = 2; i < pending_cap; i++) {
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(c_base + (jlong)i, kContainer);
+    }
+    EXPECT_EQ(pending_cap, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    EXPECT_EQ(pending_cap, ReferenceChainsTestAccessor::pendingLocalEvictCursorForTest());
+    for (size_t i = 0; i < pending_cap; i++) {
+        EXPECT_EQ(c_base + (jlong)i, ReferenceChainsTestAccessor::pendingLocalAnchorTagForTest(i));
+        EXPECT_FALSE(
+            ReferenceChainsTestAccessor::pendingLocalAnchorContainsForTest(unk_base + (jlong)i));
+    }
+
+    // Only confirmed containers are parked: a further container is dropped.
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(50000, kContainer);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::pendingLocalAnchorContainsForTest(50000));
+    EXPECT_EQ(pending_cap, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+
+    // Resolve empties the buffer and rewinds the cursor.
+    ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalEvictCursorForTest());
+
+    tracker->stop();
+}
+
+// The per-pass classification request (the pure first step of reconcileAnchorClassShapes()) holds
+// exactly ANCHOR_SHAPE_RECONCILE_BUDGET distinct class tags, in pending-buffer order; holders whose
+// classes did not make the batch stay unclassified and are dropped by the resolve step.
+TEST_F(ReferenceChainsBfsTest, AnchorShapeReconcileBudgetCapsRequestedClasses) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const int budget = ReferenceChainsTestAccessor::kAnchorShapeReconcileBudget;
+    const int extra = 10;
+    ASSERT_GT(ReferenceChainsTestAccessor::kPendingLocalAnchorCap, (size_t)(budget + extra + 1));
+    ASSERT_GT(ReferenceChainsTestAccessor::kLocalAnchorIndexCap, (size_t)(budget + 1));
+
+    // Holder 61000 shares the first holder's class: the request must list it once.
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(60000, -7000);
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(61000, -7000);
+    for (int i = 1; i < budget + extra; i++) {
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(60000 + i, -(jlong)(7000 + i));
+    }
+    ASSERT_EQ((size_t)(budget + extra + 1),
+              ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+
+    std::vector<jlong> req = ReferenceChainsTestAccessor::unclassifiedAnchorClassTagsForTest();
+    ASSERT_EQ((size_t)budget, req.size());
+    for (int i = 0; i < budget; i++) {
+        EXPECT_EQ(-(jlong)(7000 + i), req[i]);
+    }
+
+    // Classify the requested batch as containers; the remainder stays unclassified and is dropped.
+    for (jlong class_tag : req) {
+        ReferenceChainsTestAccessor::primeClassShapeForTest(class_tag, true);
+    }
+    ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
+    EXPECT_EQ((size_t)(budget + 1), ReferenceChainsTestAccessor::localAnchorCountForTest());
+    EXPECT_EQ((size_t)(budget + 1), ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::unclassifiedAnchorClassTagsForTest().empty());
+
+    tracker->stop();
+}
+
+// Pending holders' classes are requested before indexed anchors' classes (the pending ones are
+// dropped if left unclassified; indexed anchors just wait), and the index scan stops once the
+// budget is exhausted.
+TEST_F(ReferenceChainsBfsTest, AnchorShapeReconcilePrefersPendingHolders) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const int budget = ReferenceChainsTestAccessor::kAnchorShapeReconcileBudget;
+    const int fresh_pending = 4;
+    ASSERT_GT(ReferenceChainsTestAccessor::kPendingLocalAnchorCap, (size_t)(budget + fresh_pending));
+    ASSERT_GT(ReferenceChainsTestAccessor::kLocalAnchorIndexCap, (size_t)(budget + 1));
+    // Class-tag ranges below must stay disjoint.
+    ASSERT_LT(budget + 20, 500);
+
+    // Phase 1: durable anchors with unclassified classes, then a full budget of pending classes.
+    const int durable_first = 20;
+    for (int i = 0; i < durable_first; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            80000 + i, -(jlong)(9000 + i), JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    for (int i = 0; i < budget; i++) {
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(81000 + i, -(jlong)(9500 + i));
+    }
+    std::vector<jlong> req = ReferenceChainsTestAccessor::unclassifiedAnchorClassTagsForTest();
+    ASSERT_EQ((size_t)budget, req.size());
+    for (int i = 0; i < budget; i++) {
+        EXPECT_EQ(-(jlong)(9500 + i), req[i]);
+    }
+    for (int i = 0; i < durable_first; i++) {
+        EXPECT_EQ(std::find(req.begin(), req.end(), -(jlong)(9000 + i)), req.end())
+            << "durable class requested ahead of pending classes";
+    }
+
+    // Phase 2: nothing classified, so the resolve drops every pending holder. A few new pending
+    // classes come first, then durable classes fill the rest of the budget in index order.
+    ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
+    ASSERT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    for (int i = 0; i < fresh_pending; i++) {
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(82000 + i, -(jlong)(9800 + i));
+    }
+    for (int i = durable_first; i < budget + durable_first; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            80000 + i, -(jlong)(9000 + i), JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    req = ReferenceChainsTestAccessor::unclassifiedAnchorClassTagsForTest();
+    ASSERT_EQ((size_t)budget, req.size());
+    for (int i = 0; i < fresh_pending; i++) {
+        EXPECT_EQ(-(jlong)(9800 + i), req[i]);
+    }
+    for (int j = 0; j < budget - fresh_pending; j++) {
+        EXPECT_EQ(-(jlong)(9000 + j), req[fresh_pending + j]);
+    }
 
     tracker->stop();
 }
