@@ -170,9 +170,11 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      gate tracks the CPU engine, it admits only that engine:
      `registerThread()` never calls the wall engine. No wall engine implements
      `registerThread()`; one that ever does needs a gate of its own, because
-     opening this one would also admit a CPU engine that failed. While the
-     gate is closed, `registerThread()` returns before it touches the
-     in-flight counter.
+     opening this one would also admit a CPU engine that failed. Every
+     `registerThread()` call raises the registration counter first, then reads
+     the gate `seq_cst`; a closed gate makes it return without reaching the
+     engine. The counter-before-gate order is what lets a closer tell a stale
+     gate read from a call the drain covers, so it must not be reordered.
    - `PerfEvents::start()`'s stale-fd sweep may close the fd of a tid the hook
      registered after the thread list was taken, and such a thread is then not
      sampled for the recording (PROF-16359).
