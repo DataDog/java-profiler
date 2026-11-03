@@ -40,7 +40,7 @@ public class JavaProfilerApiSurfaceTest {
             "heapFloorResetForTest0", "heapFloorRisingForTest0",
             "shouldRunPassForTest0", "referenceChainPassesRunForTest0",
             "backdateLeakSignalActivationForTest0", "setLeakSignalActivatedNsForTest0",
-            "secondsToOOMForTest0", "urgentLatchedForTest0"));
+            "secondsToOOMForTest0", "urgentLatchedForTest0", "isUrgentForTest0"));
 
     @Test
     public void referenceChainTestSeamsAreNotPublicApi() {

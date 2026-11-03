@@ -791,6 +791,14 @@ public final class JavaProfiler {
      */
     static native boolean urgentLatchedForTest0();
 
+    /**
+     * Test seam (debug native builds only): drives ReferenceChainTracker's urgency latch machine
+     * once on the live projection - what {@code publishUrgencyState()} does per iteration. The
+     * gate ({@code hasLeakSignal()}) only reads the latch, so tests that need a latched episode
+     * drive it here. The release stub returns {@code false}.
+     */
+    static native boolean isUrgentForTest0();
+
     // ---- Test-only reads of the current thread's OTEP record ----------------------------------
     // Each resolves the current carrier's record directly (like the write primitives above) with
     // no cached buffer and no per-thread Java object; introspection/test use only.

@@ -1460,6 +1460,19 @@ Java_com_datadoghq_profiler_JavaProfiler_urgentLatchedForTest0(JNIEnv *env,
   return tracker->urgentLatchedForTest() ? JNI_TRUE : JNI_FALSE;
 }
 
+// Drives the latch machine once on the live projection - what threadLoop()'s
+// publishUrgencyState() does per iteration. The gate (hasLeakSignal()) no
+// longer advances the machine, so tests that need a latched episode drive it
+// here. Mutated under _engine_lock, same as the read above.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_isUrgentForTest0(JNIEnv *env,
+                                                           jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+  MutexLocker engine_guard(tracker->_engine_lock);
+  return tracker->isUrgentForTest() ? JNI_TRUE : JNI_FALSE;
+}
+
 #else // !DEBUG
 
 // Release builds: no-op stubs so the Java natives still link.
@@ -1595,6 +1608,12 @@ Java_com_datadoghq_profiler_JavaProfiler_secondsToOOMForTest0(JNIEnv *env,
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_urgentLatchedForTest0(JNIEnv *env,
                                                                 jclass unused) {
+  return JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_isUrgentForTest0(JNIEnv *env,
+                                                           jclass unused) {
   return JNI_FALSE;
 }
 

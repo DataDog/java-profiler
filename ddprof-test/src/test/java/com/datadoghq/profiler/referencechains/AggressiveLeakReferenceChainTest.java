@@ -49,9 +49,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * {@code OOM_PROJECTION_BURN_IN_NS} (5 minutes) after the leak signal first activated, and this
  * class may run inside that window, so each gate test backdates the burn-in stamp with
  * {@code backdateLeakSignalActivationForTest0()} and restores it in its finally block. Positive
- * controls ({@code secondsToOOMForTest0()} for the projection, {@code urgentLatchedForTest0()} for
- * the urgency latch) prove the urgency machine is engaged (or provably not, for the flat-floor
- * control) before any negative gate assertion is trusted. {@code shouldRunPassForTest0()} then
+ * controls ({@code secondsToOOMForTest0()} for the projection, {@code isUrgentForTest0()}/{@code
+ * urgentLatchedForTest0()} for the urgency machine) prove the urgency machine is engaged (or
+ * provably not, for the flat-floor control) before any negative gate assertion is trusted. {@code shouldRunPassForTest0()} then
  * evaluates {@code ReferenceChainTracker::shouldRunPass()} - the gate {@code hasLeakSignal()}
  * feeds - directly on a freshly reset search, rather than running a real pass or waiting on the
  * live BFS thread, so this class never depends on {@code selectLeakCandidates()} ranking
@@ -281,15 +281,26 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
               + secondsToOom + " - the burn-in backdate did not take effect or the seeds no "
               + "longer project, so the closed gate below would prove nothing");
 
+      // Positive control 2: drive the urgency machine on the seeded projection - the same call
+      // threadLoop()'s publishUrgencyState() makes per iteration - and it must latch, proving the
+      // projection genuinely sits in the urgent band. The gate below is evaluated after the
+      // search reset (which clears this latch again); under the candidate-gate contract the
+      // gate's decision reads only selectLeakCandidates() - the latch suppresses no-progress
+      // abandonment in a running search, it never opens the gate.
+      assertTrue(ReferenceChainTestHooks.isUrgentForTest0(),
+          "The urgency machine must latch on the seeded urgent-band projection ("
+              + secondsToOom + "s)");
+      assertTrue(ReferenceChainTestHooks.urgentLatchedForTest0(),
+          "The drive must leave the latch held");
+
       GateEvaluation e = evaluateGateAfterSearchReset();
       checkNoCandidateFreeActivity(e);
 
-      // Positive control 2: the gate evaluation must have latched urgency from the seeded
-      // projection, so the gate is closed by the candidate requirement and not by a dormant
-      // urgency machine.
-      assertTrue(ReferenceChainTestHooks.urgentLatchedForTest0(),
-          "Urgency must be latched after evaluating the gate on an urgent-band projection ("
-              + secondsToOom + "s)");
+      // The gate must not have advanced the latch machine: after the reset's clear, an
+      // evaluation on a candidate-less urgent-band projection leaves it cleared (the machine
+      // advances only in publishUrgencyState()).
+      assertFalse(ReferenceChainTestHooks.urgentLatchedForTest0(),
+          "The gate evaluation must not advance the latch machine");
 
       assertFalse(e.gateOpen,
           "Expected the search gate to stay closed: urgency is latched but no per-klass "
@@ -336,11 +347,16 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
       // evaluateGateAfterSearchReset()), not the population: resetKlassPopulationForTest0() also
       // zeroes the heap-floor ring seeded above, which would turn this control into a trivial
       // "insufficient fill" pass.
+      // Control: driving the urgency machine on the flat projection must not latch - the
+      // machine's own answer, independent of the gate.
+      assertFalse(ReferenceChainTestHooks.isUrgentForTest0(),
+          "A flat heap floor gives no projection, so driving the urgency machine must not latch");
       GateEvaluation e = evaluateGateAfterSearchReset();
       checkNoCandidateFreeActivity(e);
 
       assertFalse(ReferenceChainTestHooks.urgentLatchedForTest0(),
-          "A flat heap floor gives no projection, so it must leave urgency unlatched");
+          "A flat heap floor gives no projection, so it must leave urgency unlatched - and the "
+              + "gate evaluation must not advance the latch machine");
       assertFalse(e.gateOpen,
           "Expected the search-restart gate to stay closed: no heap growth and no per-klass "
               + "candidate give hasLeakSignal() nothing to trust (" + e.detail + ")");

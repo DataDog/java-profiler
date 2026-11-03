@@ -140,4 +140,9 @@ public final class ReferenceChainTestHooks {
     public static boolean urgentLatchedForTest0() {
         return JavaProfiler.urgentLatchedForTest0();
     }
+
+    /** Drives the urgency latch machine once on the live projection (debug native builds only). */
+    public static boolean isUrgentForTest0() {
+        return JavaProfiler.isUrgentForTest0();
+    }
 }
