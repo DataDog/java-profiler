@@ -1492,8 +1492,11 @@ u64 LivenessTracker::newestHeapFloorSample(u64 *seq_out) const {
       }
       return 0;
     }
-    // head points one past the newest slot (the writer stores then advances)
-    // - step back one, wrapping over the ring size.
+    // head points one past the newest slot: the claim-first writer advances
+    // head when it claims the index, before the payload/seq publish, so the
+    // newest slot can transiently hold the sentinel (retry) and otherwise
+    // carries the newest published sample - step back one, wrapping over the
+    // ring size.
     u8 newest = (u8)((head + KLASS_POPULATION_RING_SIZE - 1) %
                     KLASS_POPULATION_RING_SIZE);
     u64 seq_before = loadAcquire(_heap_floor_seq_ring[newest]);
@@ -1550,14 +1553,39 @@ void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns,
   // Lock-free, single-writer-at-a-time - see _heap_floor_ring's own comment
   // (livenessTracker.h) for why onGC() cannot take _table_lock here.
   //
-  // Per-slot seqlock claim: CAS the target slot's seq word to
-  // HEAP_FLOOR_SEQ_UNSTABLE. The explicit sentinel check stops a
-  // sentinel-over-sentinel CAS from admitting a second writer into a slot
-  // the first writer still claims; a failed CAS means another writer
-  // overlaps (mid-claim, or already finished with a newer seq) - drop this
-  // sample, counted as HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP (lock-free relaxed
-  // counter; no logging - GC-callback context).
-  u8 head = load(_heap_floor_ring_head);
+  // Claim the slot index through head FIRST: winning the CAS on
+  // _heap_floor_ring_head (h -> h+1) hands this writer slot h exclusively -
+  // no other writer can target it until the ring wraps RING_SIZE claims
+  // later - and advances head BEFORE any payload byte moves. The prior
+  // order - write, publish seq, then advance head - left a gap where a
+  // second writer loading the not-yet-advanced head saw the first writer's
+  // just-published seq as a valid claim baseline, won the per-slot CAS, and
+  // overwrote the completed sample (both writers then bumped fill
+  // non-atomically). Settling the index before the seq claim closes that
+  // gap: the seq-claim CAS below runs on an exclusively-owned slot.
+  u8 head;
+  for (;;) {
+    head = loadAcquire(_heap_floor_ring_head);
+    if (__atomic_compare_exchange_n(&_heap_floor_ring_head, &head,
+                                    (u8)((head + 1) % KLASS_POPULATION_RING_SIZE),
+                                    false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+      break;
+    }
+    // Lost the head race - another writer claimed slot `head`; retry with
+    // the new head (GC-callback context: bounded contention, no blocking).
+  }
+  // We own slot `head`. Its seq holds the previous occupant's sample (a
+  // stale valid value, written RING_SIZE samples ago) - or the sentinel if
+  // a lapped writer is still mid-write on it, which requires RING_SIZE
+  // concurrent in-flight writers and is impossible while the single-writer
+  // contract holds (GC callbacks are serialized). Claim the seq word for
+  // the payload stores: the sentinel marks the write in progress for
+  // concurrent readers (the seq-pairing checks in newestHeapFloorSample()/
+  // heapFloorRising()/secondsToOOM() make them retry instead of pairing the
+  // new used with the old timestamp). Keep the drop as the lap's defensive
+  // guard - counted, silent (GC-callback context) - but do not build on it:
+  // the dropped sample leaves this slot at the sentinel until the ring wraps
+  // back around, degrading the newest read in the meantime.
   u64 prev = load(_heap_floor_seq_ring[head]);
   if (prev == HEAP_FLOOR_SEQ_UNSTABLE ||
       !__atomic_compare_exchange_n(&_heap_floor_seq_ring[head], &prev,
@@ -1577,11 +1605,35 @@ void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns,
   // Relaxed suffices - the seq is published only by the release store below.
   u64 seq = __atomic_add_fetch(&_heap_floor_sample_seq, (u64)1, __ATOMIC_RELAXED);
   storeRelease(_heap_floor_seq_ring[head], seq);
-  storeRelease(_heap_floor_ring_head, (u8)((head + 1) % KLASS_POPULATION_RING_SIZE));
   u8 fill = load(_heap_floor_ring_fill);
   if (fill < KLASS_POPULATION_RING_SIZE) {
     storeRelease(_heap_floor_ring_fill, (u8)(fill + 1));
   }
+}
+
+// The heap-floor window's exclusive end for ringWindowStats(): head, stepped
+// back one slot when the newest slot is still in-flight (seq sentinel). The
+// claim-first writer (recordHeapFloorSampleUnchecked()) advances head before
+// the payload/seq publish, so the newest slot can be in-flight; the window
+// must end at the last published sample. Benign race with the publish: the
+// window then just excludes the freshest sample (stale-but-consistent values)
+// instead of spanning the in-flight slot. Single-writer contract: at most one
+// slot can be in-flight, and it is always head-1.
+// On a step-back *fill is clamped to RING_SIZE-1: a full ring's window would
+// otherwise start at (newest - RING_SIZE) == newest and read the in-flight
+// slot as its oldest sample. A non-full fill needs no clamp - the writer
+// increments fill only after the seq publish, so it never counts the
+// in-flight slot.
+u8 LivenessTracker::heapFloorWindowHead(u8 head, u8 *fill) const {
+  u8 newest = (u8)((head + KLASS_POPULATION_RING_SIZE - 1) %
+                   KLASS_POPULATION_RING_SIZE);
+  if (loadAcquire(_heap_floor_seq_ring[newest]) == HEAP_FLOOR_SEQ_UNSTABLE) {
+    if (*fill > KLASS_POPULATION_RING_SIZE - 1) {
+      *fill = (u8)(KLASS_POPULATION_RING_SIZE - 1);
+    }
+    return newest;
+  }
+  return head;
 }
 
 bool LivenessTracker::heapFloorRising() const {
@@ -1589,9 +1641,15 @@ bool LivenessTracker::heapFloorRising() const {
   // loadAcquire() here is what makes the payload writes below visible.
   u8 fill = loadAcquire(_heap_floor_ring_fill);
   u8 head = loadAcquire(_heap_floor_ring_head);
+  // The claim-first writer advances head before the payload/seq publish, so
+  // the newest slot can be in-flight (seq sentinel); end the window at the
+  // last published sample instead. Benign race: the writer may publish right
+  // after the check - the window then just excludes the freshest sample
+  // (stale-but-consistent values) rather than spanning the in-flight slot.
+  u8 window_head = heapFloorWindowHead(head, &fill);
   RingWindowStats stats;
   if (!ringWindowStats(
-          head, fill, KLASS_POPULATION_RING_SIZE,
+          window_head, fill, KLASS_POPULATION_RING_SIZE,
           KLASS_POPULATION_MIN_FILL_FOR_TREND,
           [this](int i) { return (double)load(_heap_floor_ring[i]); },
           &stats)) {
@@ -1668,6 +1726,9 @@ double LivenessTracker::secondsToOOM() const {
   // its projection simply does not fire.
   u8 fill = loadAcquire(_heap_floor_ring_fill);
   u8 head = loadAcquire(_heap_floor_ring_head);
+  // Same in-flight-slot step-back as heapFloorRising(): the claim-first writer
+  // can have head one past an unpublished slot.
+  u8 window_head = heapFloorWindowHead(head, &fill);
   if (fill < KLASS_POPULATION_MIN_FILL_FOR_TREND) {
     TEST_LOG("LivenessTracker::secondsToOOM -> -1 (INSUFFICIENT_FILL fill=%d need=%d)",
              (int)fill, KLASS_POPULATION_MIN_FILL_FOR_TREND);
@@ -1675,7 +1736,7 @@ double LivenessTracker::secondsToOOM() const {
   }
   RingWindowStats time_stats;
   if (!ringWindowStats(
-          head, fill, KLASS_POPULATION_RING_SIZE,
+          window_head, fill, KLASS_POPULATION_RING_SIZE,
           KLASS_POPULATION_MIN_FILL_FOR_TREND,
           [this](int i) { return (double)load(_heap_floor_time_ring[i]); },
           &time_stats)) {
@@ -1694,11 +1755,11 @@ double LivenessTracker::secondsToOOM() const {
 
   RingWindowStats heap_bytes;
   if (max_heap > 0 &&
-      ringWindowStats(head, fill, KLASS_POPULATION_RING_SIZE,
+      ringWindowStats(window_head, fill, KLASS_POPULATION_RING_SIZE,
                       KLASS_POPULATION_MIN_FILL_FOR_TREND,
                       [this](int i) { return (double)load(_heap_floor_ring[i]); },
                       &heap_bytes) &&
-      corroborateRecentHalf(head, fill, KLASS_POPULATION_RING_SIZE,
+      corroborateRecentHalf(window_head, fill, KLASS_POPULATION_RING_SIZE,
                             HEAP_FLOOR_RECENT_HALF_MIN_FILL,
                             [this](int i) { return (double)load(_heap_floor_ring[i]); })) {
     // A dip-then-recover window passes corroborateRecentHalf() but can have a
@@ -1719,11 +1780,11 @@ double LivenessTracker::secondsToOOM() const {
 
   RingWindowStats container_bytes;
   if (container_limit > 0 &&
-      ringWindowStats(head, fill, KLASS_POPULATION_RING_SIZE,
+      ringWindowStats(window_head, fill, KLASS_POPULATION_RING_SIZE,
                       KLASS_POPULATION_MIN_FILL_FOR_TREND,
                       [this](int i) { return (double)load(_container_mem_ring[i]); },
                       &container_bytes) &&
-      corroborateRecentHalf(head, fill, KLASS_POPULATION_RING_SIZE,
+      corroborateRecentHalf(window_head, fill, KLASS_POPULATION_RING_SIZE,
                             HEAP_FLOOR_RECENT_HALF_MIN_FILL,
                             [this](int i) { return (double)load(_container_mem_ring[i]); })) {
     // Same guard as for the heap.

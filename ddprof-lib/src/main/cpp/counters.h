@@ -297,10 +297,10 @@
    * runs only after canAffordNewSearch()'s safepoint budget check and follows \
    * the ramped cadence. */ \
   X(REFERENCE_CHAIN_URGENT_NO_CANDIDATE, "reference_chain_urgent_no_candidate") \
-  /* Heap-floor seqlock: samples DROPPED by a writer that lost the per-slot \
-   * claim (CAS lost, or head already unstable) - the only observability for \
-   * overlap-driven loss, since GC callbacks cannot log. Never fires while GC \
-   * callbacks are serialized (HotSpot). */ \
+  /* Heap-floor seqlock: samples DROPPED when a writer claims a slot whose \
+   * seq is still the sentinel - only possible if the ring lapped an \
+   * in-flight writer (RING_SIZE concurrent writers; never under the \
+   * single-writer onGC() contract). Defensive observability only. */ \
   X(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP, "heap_floor_sample_dropped_overlap") \
   /* Heap-floor seqlock: reads that exhausted HEAP_FLOOR_READ_ATTEMPTS without a consistent \
    * (used, seq) pair (also the emergency-band seed's seq_out==nullptr read; per exhausted read, \

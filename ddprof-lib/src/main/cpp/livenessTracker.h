@@ -375,9 +375,11 @@ private:
   // HotSpot behaviour, not a documented JVMTI contract; other VMs such as
   // J9/Zing behind the abstraction layer may differ), so
   // onGC() is always a single writer at a time, matching the existing
-  // lock-free _gc_epoch/_used_after_last_gc fields' own assumption - see
-  // recordHeapFloorSample()/heapFloorRising() (livenessTracker.cpp) for the
-  // load/store ordering this relies on.
+  // lock-free _gc_epoch/_used_after_last_gc fields' own assumption.
+  // recordHeapFloorSampleUnchecked() still claims each slot index through
+  // an atomic head CAS before writing, so a contract violation degrades to
+  // lost samples and sentinel-guarded reads rather than torn ones - see that
+  // method's comment for the order and what each guard covers.
   u64 _heap_floor_ring[KLASS_POPULATION_RING_SIZE];
   // OS::nanotime() paired index-for-index with _heap_floor_ring above (same
   // head/fill, always pushed together by recordHeapFloorSample() - see that
@@ -845,6 +847,12 @@ private:
   // rather than this method calling them internally - keeps this method
   // itself deterministic for the heapFloorRecordForTest() test seam below.
   void recordHeapFloorSample(u64 used, u64 timestamp_ns, u64 container_used);
+
+  // The heap-floor window's exclusive end for ringWindowStats(): head, stepped
+  // back one slot when the newest slot is still in-flight (seq sentinel), with
+  // *fill clamped so the window excludes that slot - see the definition in
+  // livenessTracker.cpp.
+  u8 heapFloorWindowHead(u8 head, u8 *fill) const;
 
   // Internal: pushes to the rings without checking
   // _heap_floor_recording_disabled_for_test. Called by

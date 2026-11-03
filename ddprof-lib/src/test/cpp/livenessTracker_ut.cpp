@@ -1253,15 +1253,6 @@ public:
         return true;
     }
 
-    // Swaps the head slot's seqlock word for `value` (e.g. the busy
-    // sentinel) and returns the previous value so the caller can restore it.
-    static u64 swapHeapFloorHeadSeqForTest(LivenessTracker *t, u64 value) {
-        u8 head = t->_heap_floor_ring_head;
-        u64 prev = t->_heap_floor_seq_ring[head];
-        t->_heap_floor_seq_ring[head] = value;
-        return prev;
-    }
-
     // Swaps the newest slot's ((head + ring - 1) % ring) seqlock word for
     // `value` and returns the previous value - the same slot the reader
     // validates in newestHeapFloorSample().
@@ -1271,6 +1262,17 @@ public:
         u64 prev = t->_heap_floor_seq_ring[newest];
         t->_heap_floor_seq_ring[newest] = value;
         return prev;
+    }
+
+    // Stores `value` into seq slot `idx` and returns the previous value.
+    static u64 swapHeapFloorSeqAtForTest(LivenessTracker *t, u8 idx, u64 value) {
+        u64 prev = t->_heap_floor_seq_ring[idx];
+        t->_heap_floor_seq_ring[idx] = value;
+        return prev;
+    }
+
+    static u8 heapFloorWindowHeadForTest(LivenessTracker *t, u8 head, u8 *fill) {
+        return t->heapFloorWindowHead(head, fill);
     }
 
     static u8 heapFloorRingHeadForTest(LivenessTracker *t) {
@@ -1981,10 +1983,77 @@ TEST_F(HeapFloorSeqlockTest, NewestSampleReportsUnstableAfterRetryBound) {
         << "an exhausted read with seq_out == nullptr must be counted";
 }
 
-// A slot pinned at the sentinel models an overlapping writer mid-claim:
-// the writer drops its sample (head, fill and the sample counter unchanged)
-// and the next accepted sample takes the very next seq - no gap, no duplicate.
-TEST_F(HeapFloorSeqlockTest, OverlappingWriterDropsSampleWithoutDuplicateSeq) {
+// A slot pinned at the sentinel models a lapped writer still mid-write on
+// the slot the current claim targets (RING_SIZE concurrent writers - the
+// only way the seq-claim guard can fail under the claim-first order). The
+// writer drops its sample (fill and the sample counter unchanged) but the
+// head claim has already advanced past the sentinel slot, which stays
+// pinned until the ring wraps back around; window reads step over it
+// (heapFloorWindowHead()).
+// heapFloorWindowHead(): a published newest slot leaves head and fill alone;
+// an in-flight newest slot (seq sentinel) steps the window end back one slot
+// and, on a full ring only, clamps fill to RING_SIZE-1 - otherwise the
+// window would start at the in-flight slot and read it as the oldest sample.
+TEST_F(HeapFloorSeqlockTest, WindowHeadExcludesInFlightSlot) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    const int ring = LivenessTracker::heapFloorRingSizeForTest();
+    struct NewestSeqRestore {
+        LivenessTracker *t;
+        bool armed;
+        u64 saved;
+        ~NewestSeqRestore() {
+            if (armed) {
+                LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(t, saved);
+            }
+        }
+    } pin{lt, false, 0};
+
+    // Non-full ring.
+    for (int i = 0; i < 5; i++) {
+        lt->heapFloorRecordForTest(1000 + (u64)i, (u64)i + 1);
+    }
+    u8 head = LivenessTrackerTestAccessor::heapFloorRingHeadForTest(lt);
+    u8 fill = LivenessTrackerTestAccessor::heapFloorRingFillForTest(lt);
+    ASSERT_EQ(5, fill);
+    u8 f = fill;
+    EXPECT_EQ(head, LivenessTrackerTestAccessor::heapFloorWindowHeadForTest(lt, head, &f))
+        << "a published newest slot must leave the window end at head";
+    EXPECT_EQ(fill, f);
+
+    pin.saved = LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(
+        lt, LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE);
+    pin.armed = true;
+    u8 newest = (u8)((head + ring - 1) % ring);
+    f = fill;
+    EXPECT_EQ(newest, LivenessTrackerTestAccessor::heapFloorWindowHeadForTest(lt, head, &f))
+        << "an in-flight newest slot must step the window end back one slot";
+    EXPECT_EQ(fill, f) << "a non-full fill never counts the in-flight slot - no clamp";
+    LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(lt, pin.saved);
+    pin.armed = false;
+
+    // Full ring.
+    for (int i = 5; i < ring + 3; i++) {
+        lt->heapFloorRecordForTest(1000 + (u64)i, (u64)i + 1);
+    }
+    head = LivenessTrackerTestAccessor::heapFloorRingHeadForTest(lt);
+    fill = LivenessTrackerTestAccessor::heapFloorRingFillForTest(lt);
+    ASSERT_EQ(ring, fill);
+    f = fill;
+    EXPECT_EQ(head, LivenessTrackerTestAccessor::heapFloorWindowHeadForTest(lt, head, &f));
+    EXPECT_EQ(fill, f) << "a published full ring keeps the full window";
+
+    pin.saved = LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(
+        lt, LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE);
+    pin.armed = true;
+    newest = (u8)((head + ring - 1) % ring);
+    f = fill;
+    EXPECT_EQ(newest, LivenessTrackerTestAccessor::heapFloorWindowHeadForTest(lt, head, &f));
+    EXPECT_EQ(ring - 1, f)
+        << "a full ring's stepped-back window must drop one slot, or it starts at the "
+           "in-flight slot";
+}
+
+TEST_F(HeapFloorSeqlockTest, LapOverlapDropsSampleWithoutDuplicateSeq) {
     LivenessTracker *lt = LivenessTracker::instance();
     HeapFloorReadHookGuard hook_guard;
     lt->heapFloorRecordForTest(1000, 1);
@@ -1994,25 +2063,48 @@ TEST_F(HeapFloorSeqlockTest, OverlappingWriterDropsSampleWithoutDuplicateSeq) {
     u8 head = LivenessTrackerTestAccessor::heapFloorRingHeadForTest(lt);
     u8 fill = LivenessTrackerTestAccessor::heapFloorRingFillForTest(lt);
     u64 sample_seq = LivenessTrackerTestAccessor::heapFloorSampleSeqForTest(lt);
-    u64 saved = LivenessTrackerTestAccessor::swapHeapFloorHeadSeqForTest(
-        lt, LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE);
+    // Pin the head slot at the sentinel for the rest of the test: under the
+    // claim-first order the drop consumes the head claim, so the slot stays
+    // pinned while the lapped writer is (simulated as) still mid-write. The
+    // ring resets do not touch the seq ring, so the guard restores the slot
+    // on every exit - a leaked sentinel makes later tests drop samples there.
+    struct SeqSlotRestore {
+        LivenessTracker *t;
+        u8 idx;
+        u64 saved;
+        ~SeqSlotRestore() {
+            LivenessTrackerTestAccessor::swapHeapFloorSeqAtForTest(t, idx, saved);
+        }
+    } pin{lt, head,
+          LivenessTrackerTestAccessor::swapHeapFloorSeqAtForTest(
+              lt, head, LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE)};
 
     long long dropped = Counters::getCounter(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP);
     lt->heapFloorRecordForTest(1100, 2);
     EXPECT_EQ(dropped + 1, Counters::getCounter(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP))
         << "a dropped sample must be counted";
-    EXPECT_EQ(head, LivenessTrackerTestAccessor::heapFloorRingHeadForTest(lt))
-        << "a dropped sample must not advance the ring";
+    EXPECT_EQ((u8)((head + 1) % LivenessTracker::heapFloorRingSizeForTest()),
+              LivenessTrackerTestAccessor::heapFloorRingHeadForTest(lt))
+        << "the head claim settles before the seq claim, so a dropped sample\n"
+           "leaves head advanced past the pinned slot";
     EXPECT_EQ(fill, LivenessTrackerTestAccessor::heapFloorRingFillForTest(lt))
         << "a dropped sample must not change the fill";
     EXPECT_EQ(sample_seq, LivenessTrackerTestAccessor::heapFloorSampleSeqForTest(lt))
         << "a dropped sample must not consume a sequence number";
 
-    LivenessTrackerTestAccessor::swapHeapFloorHeadSeqForTest(lt, saved);
+    // The pinned slot degrades the newest read until the ring wraps onto it:
+    // the read retries on the sentinel, exhausts, and reports the sentinel
+    // seq (counted as READ_UNSTABLE) - the documented cost of the lap drop.
+    u64 seq = 0xdeadbeef;
+    EXPECT_EQ(0u, lt->newestHeapFloorSample(&seq));
+    EXPECT_EQ(LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE, seq);
+
+    // A following accepted sample takes the very next seq - no gap, no
+    // duplicate - and the newest read recovers (it targets the next slot;
+    // the pinned slot stays sentinel until the ring wraps onto it).
     lt->heapFloorRecordForTest(1100, 2);
     EXPECT_EQ(dropped + 1, Counters::getCounter(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP))
         << "an accepted sample must not be counted as dropped";
-    u64 seq = 0;
     EXPECT_EQ(1100u, lt->newestHeapFloorSample(&seq));
     EXPECT_EQ(prev_seq + 1, seq)
         << "the dropped writer must leave neither a gap nor a duplicate";
