@@ -1102,6 +1102,8 @@ TEST_F(OomUrgencyTest, UrgencyExitRestoresFallbackCadence) {
             ReferenceChainsTestAccessor::restoreOomRampStateForTest(saved);
         }
     } restore{ReferenceChainsTestAccessor::saveOomRampStateForTest()};
+    // The cadence ramp paces passes, so it applies only while a search runs.
+    ReferenceChainsTestAccessor::setSearchRunningForTest(true);
 
     // Seed a known budget ceiling and pause target: the singleton may never
     // have been start()ed (zeros would make the boost and the ramp vacuous).
@@ -1161,6 +1163,62 @@ TEST_F(OomUrgencyTest, UrgencyExitRestoresFallbackCadence) {
         << "the episode end must restore the configured pause target";
 }
 
+// The cadence ramp paces passes, so with no search running - not started, or
+// terminal awaiting a restart - an urgent iteration holds the 1s fallback:
+// the idle wake only probes selectLeakCandidates(), and ramping it would
+// spend up to ~100 probes/s. The rest of the episode (budget boost, pause
+// target) still applies, and the ramp follows the search state both ways.
+TEST_F(OomUrgencyTest, UrgentIdleWakeHoldsFallbackCadence) {
+    ASSERT_FALSE(ReferenceChainsTestAccessor::bfsThreadRunning())
+        << "applyOomRampForTest() would race threadLoop()";
+    const u64 pass_ns = ReferenceChainsTestAccessor::baselineCadenceNs();
+    const u64 urgent_ns = ReferenceChainsTestAccessor::urgentCadenceNsForTest();
+    struct Restore {
+        ReferenceChainsTestAccessor::OomRampState saved;
+        ~Restore() {
+            ReferenceChainsTestAccessor::applyOomRampForTest(-1.0);
+            ReferenceChainsTestAccessor::setEffectiveCadenceNs(
+                ReferenceChainsTestAccessor::baselineCadenceNs());
+            ReferenceChainsTestAccessor::restoreOomRampStateForTest(saved);
+        }
+    } restore{ReferenceChainsTestAccessor::saveOomRampStateForTest()};
+    const int configured_budget = 1000;
+    ReferenceChainsTestAccessor::setBudgetsForTest(configured_budget, configured_budget);
+    ReferenceChainsTestAccessor::setPauseTargetsForTest(20);
+    ReferenceChainsTestAccessor::setEffectiveCadenceNs(2 * pass_ns);
+
+    // Not started (a fresh tracker or a just-restarted search).
+    ReferenceChainsTestAccessor::setSearchNotStartedForTest();
+    EXPECT_TRUE(ReferenceChainsTestAccessor::applyOomRampForTest(0.0));
+    EXPECT_EQ(pass_ns, ReferenceChainsTestAccessor::effectiveCadenceNs())
+        << "no search started: the urgent idle wake must hold the fallback cadence";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::urgencyBudgetBoostedForTest())
+        << "the episode still opens with no search running";
+    EXPECT_EQ(std::min(configured_budget * 4, MAX_REFERENCE_CHAINS_BUDGET),
+              ReferenceChainsTestAccessor::budgetForTest());
+    EXPECT_EQ(ReferenceChainsTestAccessor::urgentPauseTargetMsForTest(),
+              ReferenceChainsTestAccessor::effectivePauseTargetMsForTest())
+        << "the pause-target ramp does not depend on the search state";
+
+    // Terminal, awaiting a restart.
+    ReferenceChainsTestAccessor::setSearchRunningForTest(false);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::applyOomRampForTest(0.0));
+    EXPECT_EQ(pass_ns, ReferenceChainsTestAccessor::effectiveCadenceNs())
+        << "terminal search: the urgent idle wake must hold the fallback cadence";
+
+    // Running: the ramp paces passes.
+    ReferenceChainsTestAccessor::setSearchRunningForTest(true);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::applyOomRampForTest(0.0));
+    EXPECT_EQ(urgent_ns, ReferenceChainsTestAccessor::effectiveCadenceNs())
+        << "a running search must ramp to the urgent cadence floor";
+
+    // The search ends mid-episode: the next urgent iteration drops back.
+    ReferenceChainsTestAccessor::setSearchRunningForTest(false);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::applyOomRampForTest(0.0));
+    EXPECT_EQ(pass_ns, ReferenceChainsTestAccessor::effectiveCadenceNs())
+        << "a search ending mid-episode must return the idle wake to the fallback";
+}
+
 // Outside an episode, a non-urgent iteration must not touch a cadence that
 // updatePacing() has adapted (2s here, past the fallback, to prove the write
 // path is not merely "leave PASS_CADENCE_NS alone"). Closing an episode is
@@ -1179,6 +1237,8 @@ TEST_F(OomUrgencyTest, NonUrgentIterationKeepsPacedCadence) {
             ReferenceChainsTestAccessor::restoreOomRampStateForTest(saved);
         }
     } restore{ReferenceChainsTestAccessor::saveOomRampStateForTest()};
+    // The cadence ramp paces passes, so it applies only while a search runs.
+    ReferenceChainsTestAccessor::setSearchRunningForTest(true);
 
     ReferenceChainsTestAccessor::setEffectiveCadenceNs(paced_ns);
     EXPECT_FALSE(ReferenceChainsTestAccessor::applyOomRampForTest(-1.0));
@@ -1216,6 +1276,8 @@ TEST_F(OomUrgencyTest, RampEdgeFlapRestoresAndRecomputesCadence) {
             ReferenceChainsTestAccessor::restoreOomRampStateForTest(saved);
         }
     } restore{ReferenceChainsTestAccessor::saveOomRampStateForTest()};
+    // The cadence ramp paces passes, so it applies only while a search runs.
+    ReferenceChainsTestAccessor::setSearchRunningForTest(true);
 
     // Half the ceiling: the 4x boost must clamp at MAX_REFERENCE_CHAINS_BUDGET
     // on every episode open and restore the configured value on every close.
@@ -1508,6 +1570,7 @@ TEST_F(ReferenceChainsCanaryRefillTest, StopClosesOpenUrgencyEpisode) {
         << "applyOomRampForTest() would race threadLoop()";
     EXPECT_EQ(pass_ns, ReferenceChainsTestAccessor::effectiveCadenceNs())
         << "start() reseeds the cadence";
+    ReferenceChainsTestAccessor::setSearchRunningForTest(true);
     ASSERT_TRUE(ReferenceChainsTestAccessor::applyOomRampForTest(0.0));
     ASSERT_TRUE(ReferenceChainsTestAccessor::urgencyBudgetBoostedForTest());
     ASSERT_EQ(std::min(configured * 4, MAX_REFERENCE_CHAINS_BUDGET),

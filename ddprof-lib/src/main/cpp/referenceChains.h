@@ -857,8 +857,9 @@ private:
   void publishUrgencyState(double seconds_to_oom, bool urgent);
 
   // threadLoop()'s per-iteration OOM ramp: pause target, cadence and the urgency budget
-  // boost/restore, keyed on the raw band comparison (never the latch). Returns that raw `urgent`
-  // so the caller needs no second evaluation.
+  // boost/restore, keyed on the raw band comparison (never the latch). The cadence ramps only while
+  // a search is running; an urgent iteration with no search running holds PASS_CADENCE_NS. Returns
+  // that raw `urgent` so the caller needs no second evaluation.
   bool applyOomRamp(double seconds_to_oom);
 
   // Search restart gate: true once _safepoint_pain_budget has

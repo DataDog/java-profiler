@@ -597,9 +597,9 @@ public:
     }
 
     // Every scheduling field an urgency episode (applyOomRamp()) mutates or a test seeds to drive
-    // it - cadence, budget + boost flag, configured budget, configured/effective pause target and
-    // the pause PidController - so a test can restore the singleton exactly as it found it.
-    // Field order is fixed for aggregate init.
+    // it - cadence, budget + boost flag, configured budget, configured/effective pause target, the
+    // pause PidController and the search-running state the cadence ramp keys on - so a test can
+    // restore the singleton exactly as it found it. Field order is fixed for aggregate init.
     struct OomRampState {
         u64 cadence_ns;
         int budget;
@@ -608,12 +608,14 @@ public:
         long pause_target_ms;
         long effective_pause_target_ms;
         PidController pause_pid;
+        bool search_started;
+        u8 search_state;
     };
     static OomRampState saveOomRampStateForTest() {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         return {t->_effective_cadence_ns, t->_budget, t->_urgency_budget_boosted,
                 t->_configured_budget, t->_pause_target_ms, t->_effective_pause_target_ms,
-                t->_pause_pid};
+                t->_pause_pid, t->_search_started, t->_search_state};
     }
     static void restoreOomRampStateForTest(const OomRampState &state) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
@@ -624,6 +626,21 @@ public:
         t->_pause_target_ms = state.pause_target_ms;
         t->_effective_pause_target_ms = state.effective_pause_target_ms;
         t->_pause_pid = state.pause_pid;
+        t->_search_started = state.search_started;
+        t->_search_state = state.search_state;
+    }
+    // applyOomRamp() ramps the cadence only while a search is running: seeds a started RUNNING
+    // search (running) or a started COMPLETED one awaiting a restart (!running).
+    static void setSearchRunningForTest(bool running) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_search_started = true;
+        t->_search_state = running ? SearchState::RUNNING : SearchState::COMPLETED;
+    }
+    // The state restartSearch() and a fresh tracker leave: not started, RUNNING.
+    static void setSearchNotStartedForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_search_started = false;
+        t->_search_state = SearchState::RUNNING;
     }
 
     // Urgency-episode budget state (applyOomRamp()'s boost/restore, stop()'s closer).

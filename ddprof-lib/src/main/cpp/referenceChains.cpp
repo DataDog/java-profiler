@@ -499,11 +499,23 @@ bool ReferenceChainTracker::applyOomRamp(double seconds_to_oom) {
     double x = 1.0 - seconds_to_oom / OOM_RAMP_START_S; // 0 at 30min out, 1 at OOM
     target_ms = std::lround(_pause_target_ms *
         std::pow((double)URGENT_PAUSE_TARGET_MS / std::max(_pause_target_ms, 1L), x));
-    // Ramp from the fixed configured cadence, not the currently-adaptive _effective_cadence_ns -
-    // using the live value as the ramp's own moving anchor would compound the exponent across
-    // iterations instead of tracking urgency directly from a stable baseline.
-    cadence_ns = (u64)std::llround((double)PASS_CADENCE_NS *
-        std::pow((double)URGENT_CADENCE_NS / (double)PASS_CADENCE_NS, x));
+    // The cadence ramp applies only while a search is running: it paces passes. With no search
+    // running (not started, or terminal awaiting a restart) a wake does no pass, only the restart
+    // gate's selectLeakCandidates() probe under the shared _table_lock - ramping that idle wake
+    // toward URGENT_CADENCE_NS would spend up to ~100 probes/s for at most 1s faster candidate
+    // discovery against a 30-minute horizon. Such iterations hold PASS_CADENCE_NS; a search
+    // started by the restart gate runs its first pass without sleeping, and the next iteration
+    // sees it running and ramps.
+    bool search_running = _search_started && load(_search_state) == (u8)SearchState::RUNNING;
+    if (search_running) {
+      // Ramp from the fixed configured cadence, not the currently-adaptive _effective_cadence_ns -
+      // using the live value as the ramp's own moving anchor would compound the exponent across
+      // iterations instead of tracking urgency directly from a stable baseline.
+      cadence_ns = (u64)std::llround((double)PASS_CADENCE_NS *
+          std::pow((double)URGENT_CADENCE_NS / (double)PASS_CADENCE_NS, x));
+    } else {
+      cadence_ns = PASS_CADENCE_NS;
+    }
     // Cadence ownership on every branch: urgent iterations set it here, the episode's end (or
     // stop()) restores PASS_CADENCE_NS, and otherwise updatePacing() owns it.
     _effective_cadence_ns = cadence_ns;
@@ -587,8 +599,8 @@ void ReferenceChainTracker::threadLoop() {
     DEBUG_ONLY(rcDebugLevelRefresh());
 
     // Hand the ramp state to shouldRunPass() before it decides: _oom_ramp_active bypasses the
-    // canary-backoff gate, the growth-gated admission (held between heap-floor samples) follows
-    // the same hand-off, and the cadence ramp shortens the idle sleep with no search running.
+    // canary-backoff gate, and the growth-gated admission (held between heap-floor samples)
+    // follows the same hand-off.
     publishUrgencyState(seconds_to_oom, urgent);
 
     // shouldRunPass()'s restart branch (restartSearch()) clears _pending_expand/_priority_expand
