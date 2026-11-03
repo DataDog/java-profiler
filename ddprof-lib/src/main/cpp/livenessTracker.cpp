@@ -1556,13 +1556,10 @@ void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns,
   // Claim the slot index through head FIRST: winning the CAS on
   // _heap_floor_ring_head (h -> h+1) hands this writer slot h exclusively -
   // no other writer can target it until the ring wraps RING_SIZE claims
-  // later - and advances head BEFORE any payload byte moves. The prior
-  // order - write, publish seq, then advance head - left a gap where a
-  // second writer loading the not-yet-advanced head saw the first writer's
-  // just-published seq as a valid claim baseline, won the per-slot CAS, and
-  // overwrote the completed sample (both writers then bumped fill
-  // non-atomically). Settling the index before the seq claim closes that
-  // gap: the seq-claim CAS below runs on an exclusively-owned slot.
+  // later - and advances head BEFORE any payload byte moves. Advancing head
+  // after the seq publish instead would let a second writer, loading the
+  // not-yet-advanced head, take the just-published seq as its claim
+  // baseline and overwrite the completed sample.
   u8 head;
   for (;;) {
     head = loadAcquire(_heap_floor_ring_head);
@@ -1580,9 +1577,11 @@ void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns,
   // concurrent in-flight writers and is impossible while the single-writer
   // contract holds (GC callbacks are serialized). Claim the seq word for
   // the payload stores: the sentinel marks the write in progress for
-  // concurrent readers (the seq-pairing checks in newestHeapFloorSample()/
-  // heapFloorRising()/secondsToOOM() make them retry instead of pairing the
-  // new used with the old timestamp). Keep the drop as the lap's defensive
+  // concurrent readers - newestHeapFloorSample() retries on it, and the
+  // window readers (heapFloorRising()/secondsToOOM()) end their window
+  // before it (heapFloorWindowHead()). The window readers check only the
+  // newest slot, so they rely on the single-writer contract's "at most one
+  // slot in flight". Keep the drop as the lap's defensive
   // guard - counted, silent (GC-callback context) - but do not build on it:
   // the dropped sample leaves this slot at the sentinel until the ring wraps
   // back around, degrading the newest read in the meantime.
@@ -1605,9 +1604,15 @@ void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns,
   // Relaxed suffices - the seq is published only by the release store below.
   u64 seq = __atomic_add_fetch(&_heap_floor_sample_seq, (u64)1, __ATOMIC_RELAXED);
   storeRelease(_heap_floor_seq_ring[head], seq);
-  u8 fill = load(_heap_floor_ring_fill);
-  if (fill < KLASS_POPULATION_RING_SIZE) {
-    storeRelease(_heap_floor_ring_fill, (u8)(fill + 1));
+  // Saturating CAS increment: a plain load/store pair would lose an
+  // increment to an overlapping writer, leaving fill below the number of
+  // published samples. Release on success publishes this sample's payload
+  // to readers that acquire-load fill.
+  u8 fill = loadAcquire(_heap_floor_ring_fill);
+  while (fill < KLASS_POPULATION_RING_SIZE &&
+         !__atomic_compare_exchange_n(&_heap_floor_ring_fill, &fill,
+                                      (u8)(fill + 1), false,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
   }
 }
 

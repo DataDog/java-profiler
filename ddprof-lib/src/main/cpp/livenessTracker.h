@@ -377,9 +377,10 @@ private:
   // onGC() is always a single writer at a time, matching the existing
   // lock-free _gc_epoch/_used_after_last_gc fields' own assumption.
   // recordHeapFloorSampleUnchecked() still claims each slot index through
-  // an atomic head CAS before writing, so a contract violation degrades to
-  // lost samples and sentinel-guarded reads rather than torn ones - see that
-  // method's comment for the order and what each guard covers.
+  // an atomic head CAS and bumps fill with a CAS, so overlapping writers
+  // never share a slot or lose a fill increment. The window readers still
+  // rely on the contract: they skip only the newest in-flight slot - see
+  // that method's comment for the order and what each guard covers.
   u64 _heap_floor_ring[KLASS_POPULATION_RING_SIZE];
   // OS::nanotime() paired index-for-index with _heap_floor_ring above (same
   // head/fill, always pushed together by recordHeapFloorSample() - see that
@@ -400,8 +401,8 @@ private:
   // marks a write in progress; any other value names the one recorded sample
   // in that slot (from _heap_floor_sample_seq below) for the process
   // lifetime. The static singleton's zero-initialization guarantees no slot
-  // starts at the sentinel - a slot stuck there would stall the ring
-  // forever.
+  // starts at the sentinel - a slot stuck there would drop every sample
+  // that claims it.
   u64 _heap_floor_seq_ring[KLASS_POPULATION_RING_SIZE];
   volatile u8 _heap_floor_ring_head;
   volatile u8 _heap_floor_ring_fill;

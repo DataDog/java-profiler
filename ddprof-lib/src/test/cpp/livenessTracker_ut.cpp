@@ -2053,6 +2053,55 @@ TEST_F(HeapFloorSeqlockTest, WindowHeadExcludesInFlightSlot) {
            "in-flight slot";
 }
 
+// Overlapping writers (a single-writer contract violation) must each get a
+// distinct slot and a counted fill: with fewer samples than ring slots, fill
+// ends at exactly the number of samples recorded, every seq is unique, and
+// nothing is dropped. A plain load/store fill bump loses increments here.
+TEST_F(HeapFloorSeqlockTest, OverlappingWritersKeepFillAndSeqExact) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    const int ring = LivenessTracker::heapFloorRingSizeForTest();
+    constexpr int kThreads = 4;
+    const int per_thread = (ring - 1) / kThreads;
+    const int total = kThreads * per_thread;
+    ASSERT_LT(total, ring) << "the ring must not saturate fill";
+
+    // The sample counter is never reset, so compare deltas.
+    u64 seq_before = LivenessTrackerTestAccessor::heapFloorSampleSeqForTest(lt);
+    long long dropped = Counters::getCounter(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP);
+    constexpr int kRounds = 200;
+    for (int round = 0; round < kRounds; round++) {
+        lt->heapFloorResetForTest();
+        std::atomic<int> ready{0};
+        std::atomic<bool> go{false};
+        std::vector<std::thread> threads;
+        for (int t = 0; t < kThreads; t++) {
+            threads.emplace_back([&, t]() {
+                ready.fetch_add(1);
+                while (!go.load(std::memory_order_acquire)) {
+                }
+                for (int i = 0; i < per_thread; i++) {
+                    lt->heapFloorRecordForTest(1000 + (u64)t, (u64)(t * per_thread + i) + 1);
+                }
+            });
+        }
+        while (ready.load() < kThreads) {
+        }
+        go.store(true, std::memory_order_release);
+        for (auto &th : threads) {
+            th.join();
+        }
+        ASSERT_EQ(total, LivenessTrackerTestAccessor::heapFloorRingFillForTest(lt))
+            << "round " << round << ": an overlapping writer lost a fill increment";
+        ASSERT_EQ((u8)(total % ring), LivenessTrackerTestAccessor::heapFloorRingHeadForTest(lt))
+            << "round " << round << ": every sample must claim its own slot";
+    }
+    EXPECT_EQ(seq_before + (u64)kRounds * total,
+              LivenessTrackerTestAccessor::heapFloorSampleSeqForTest(lt))
+        << "every sample must consume exactly one seq";
+    EXPECT_EQ(dropped, Counters::getCounter(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP))
+        << "writers that do not lap the ring must never drop";
+}
+
 TEST_F(HeapFloorSeqlockTest, LapOverlapDropsSampleWithoutDuplicateSeq) {
     LivenessTracker *lt = LivenessTracker::instance();
     HeapFloorReadHookGuard hook_guard;
