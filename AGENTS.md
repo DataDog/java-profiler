@@ -294,6 +294,14 @@ Otherwise a signal can sample a half-torn-down thread, or re-acquire a
 thread that keeps running silently stops profiling that thread — use `SignalBlocker`
 for a temporary window.
 
+**Thread registration.** Thread hooks (`pthread_create`, JVMTI `ThreadStart`/`ThreadEnd`)
+run without `_state_lock` and overlap `start()`/`stop()`. Reach engines only through
+`Profiler::registerThread()`/`unregisterThread()`, never `_cpu_engine->…` directly. An
+engine with a per-thread table sizes it before `openThreadRegistration()` and frees or
+replaces it only under `ThreadTablesFreeze`; that freeze closes unregistration only around
+the replacement, never for a whole `start()`. Details:
+[ProfilingEngines.md](doc/architecture/ProfilingEngines.md#thread-registration).
+
 **JVMTI callbacks.** Callbacks run on whichever JVM thread triggers the event —
 including compiler, VM and GC threads that never went through our `pthread_create`
 hook — so call `ProfiledThread::initCurrentThreadSignalSafe()` first.
