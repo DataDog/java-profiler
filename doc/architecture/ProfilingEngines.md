@@ -178,9 +178,11 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      (`ThreadTablesFreeze`), that is, when the table size changes: the first
      start, or `pid_max` changed. A restart that keeps the table never clears
      it. `PerfEvents::start()` replaces its table without clearing it
-     (PROF-16359). An exit that arrives while the gate is closed is
-     dropped, and if the thread is still listed when the engine lists
-     threads, its slot stays occupied after it dies (PROF-16359). The gate
+     (PROF-16359). An exit that arrives while the gate is closed is recorded
+     by `Profiler::recordSkippedUnregistration()`. `CTimer::start()` replays
+     the record after it lists threads, which removes the timer the listing
+     armed for an exited thread. `PerfEvents::start()` does not replay it, so
+     a thread listed after its exit keeps its fd (PROF-16359). The gate
      stays set while idle, because `PerfEvents::stop()` keeps per-thread fds
      open and this call closes the fd of a thread that exits after `stop()`.
    - `start()` replaces `_cpu_engine`/`_wall_engine` while unregistration is

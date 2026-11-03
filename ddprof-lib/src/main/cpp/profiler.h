@@ -106,8 +106,9 @@ private:
   // Unregistration gate: open except inside a ThreadTablesFreeze. It stays
   // open while idle, because PerfEvents keeps its per-thread fds across
   // stop() and only unregisterThread() closes the fd of a thread that exits
-  // after stop(). An exit that arrives while it is closed is dropped, and its
-  // slot may stay occupied (PROF-16359).
+  // after stop(). An exit that arrives while it is closed is recorded (see
+  // recordSkippedUnregistration()); CTimer replays it after listing threads,
+  // PerfEvents does not (PROF-16359).
   std::atomic<bool> _thread_tables_stable;
   // Hook calls past a gate that may still be inside an engine, counted per
   // gate. closeThreadRegistration() waits only for registration calls:
@@ -317,12 +318,25 @@ private:
   }
 
 public:
+  // Unregistrations that arrived while a ThreadTablesFreeze was closed, in the
+  // order they were skipped. They are written only inside a freeze, and the
+  // freeze waits for every unregistration call to leave before its owner
+  // continues, so the owner reads them without further synchronization.
+  // CTimer::startWithTableSize() replays them after it lists threads.
+  // The record holds 256 entries and is cleared at the start of each start();
+  // entries beyond that are counted and logged, not replayed.
+  static void recordSkippedUnregistration(int tid);
+  static int skippedUnregistrationCount();
+  static int skippedUnregistration(int index);
+  static void clearSkippedUnregistrations();
+
   // Closes both thread-registration gates (see _engines_ready) and waits for
   // the hook calls already past them. Construct it only around an actual
   // table replacement (CTimer::sizeTimerTable()) or a CPU engine change
-  // (replaceCpuEngine()), never for a whole start(): exits are dropped while
-  // it is alive. The destructor reopens unregistration; registration reopens
-  // only when the CPU engine starts.
+  // (replaceCpuEngine()), never for a whole start(): exits that arrive while
+  // it is alive are recorded, not delivered (recordSkippedUnregistration()).
+  // The destructor reopens unregistration; registration reopens only when the
+  // CPU engine starts.
   class ThreadTablesFreeze {
   public:
     explicit ThreadTablesFreeze(Profiler *profiler)

@@ -172,6 +172,39 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   LivenessTracker::instance()->releaseThreadLocalState();
 }
 
+// Skipped unregistrations: see Profiler::recordSkippedUnregistration().
+static const int SKIPPED_UNREGISTRATIONS_CAPACITY = 256;
+static std::atomic<int> g_skipped_tids[SKIPPED_UNREGISTRATIONS_CAPACITY];
+static std::atomic<int> g_skipped_count;
+static std::atomic<int> g_skipped_dropped;
+
+void Profiler::recordSkippedUnregistration(int tid) {
+  int index = g_skipped_count.fetch_add(1, std::memory_order_relaxed);
+  if (index < SKIPPED_UNREGISTRATIONS_CAPACITY) {
+    g_skipped_tids[index].store(tid, std::memory_order_release);
+  } else {
+    g_skipped_dropped.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+int Profiler::skippedUnregistrationCount() {
+  int count = g_skipped_count.load(std::memory_order_acquire);
+  return count < SKIPPED_UNREGISTRATIONS_CAPACITY ? count : SKIPPED_UNREGISTRATIONS_CAPACITY;
+}
+
+int Profiler::skippedUnregistration(int index) {
+  return g_skipped_tids[index].load(std::memory_order_acquire);
+}
+
+void Profiler::clearSkippedUnregistrations() {
+  int dropped = g_skipped_dropped.exchange(0, std::memory_order_relaxed);
+  if (dropped > 0) {
+    Log::warn("Profiler: %d skipped thread unregistration(s) did not fit the "
+              "record; their timers or fds may stay until stop()", dropped);
+  }
+  g_skipped_count.store(0, std::memory_order_relaxed);
+}
+
 // Marks a native-thread hook call as in flight for the duration of a
 // Profiler::registerThread()/unregisterThread() call, so a gate can be closed
 // and the calls that already passed it waited for. Each gate has its own
@@ -307,8 +340,10 @@ void Profiler::resetUnregisterObservableForTest() {
 
 void Profiler::unregisterThreadInEngines(int tid) {
   HookCallScope scope(_instance->_unregister_calls_inflight);
-  // Closed only inside a ThreadTablesFreeze (see _thread_tables_stable).
+  // Closed only inside a ThreadTablesFreeze (see _thread_tables_stable). The
+  // engine that owns the freeze replays the tid after it lists the threads.
   if (!_instance->_thread_tables_stable.load(std::memory_order_seq_cst)) {
+    recordSkippedUnregistration(tid);
     return;
   }
 #ifdef UNIT_TEST
@@ -1815,6 +1850,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   // the CPU engine's table sizing touch per-thread tables, each behind its own
   // ThreadTablesFreeze.
   _engines_ready.store(false, std::memory_order_seq_cst);
+  // Records left by an earlier recording's freezes must not be replayed now.
+  clearSkippedUnregistrations();
   if (!replaceCpuEngine(selectCpuEngine(args))) {
     // Nothing replaced or released yet. Retryable, like the earlier error
     // returns in this function.

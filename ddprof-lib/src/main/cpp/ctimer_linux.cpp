@@ -227,7 +227,15 @@ Error CTimer::startWithTableSize(Arguments &args, int max_timers) {
   }
   delete thread_list;
 
+  replaySkippedUnregistrations();
   return Error::OK;
+}
+
+void CTimer::replaySkippedUnregistrations() {
+  int count = Profiler::skippedUnregistrationCount();
+  for (int i = 0; i < count; i++) {
+    unregisterThread(Profiler::skippedUnregistration(i));
+  }
 }
 
 void CTimer::stop() {

@@ -209,6 +209,9 @@ public:
   static void unregisterThread(CTimer &engine, int tid) {
     engine.unregisterThread(tid);
   }
+  static void replaySkippedUnregistrations(CTimer &engine) {
+    engine.replaySkippedUnregistrations();
+  }
 
   // Hands the current table to the caller without freeing it, so a test can
   // run against an empty table and later reinstate the original one.
@@ -1001,6 +1004,42 @@ TEST(CTimerTableTest, NegativeTidIsRejected) {
     }
   }
   munmap(base, 2 * page_size);
+}
+
+// An unregistration skipped while the table was frozen is recorded, and the
+// timer survives until the replay that follows the listing removes it. The
+// replay is what stops an exited thread from keeping a timer after a restart.
+TEST(CTimerTableTest, SkippedUnregistrationIsReplayed) {
+  Profiler *profiler = Profiler::instance();
+  int tid = OS::threadId();
+  int *table = (int *)calloc(tid + 1, sizeof(int));
+  ASSERT_NE(nullptr, table);
+  struct sigaction saved_sigprof;
+  sigaction(SIGPROF, nullptr, &saved_sigprof);
+  // The armed timer may deliver SIGPROF to this thread before it is replayed.
+  signal(SIGPROF, SIG_IGN);
+  {
+    CTimerTestAccessor::TimerTableSwap swap(table, tid + 1);
+    CTimerTestAccessor::SignalSwap signal_swap(SIGPROF);
+    CTimer engine;
+    ASSERT_EQ(0, CTimerTestAccessor::registerThread(engine, tid));
+    ASSERT_NE(0, table[tid]);
+
+    Profiler::clearSkippedUnregistrations();
+    ProfilerTestAccessor::withThreadTablesFreeze(profiler, [&](bool drained) {
+      EXPECT_TRUE(drained);
+      Profiler::unregisterThread(tid);
+    });
+    EXPECT_EQ(1, Profiler::skippedUnregistrationCount());
+    EXPECT_EQ(tid, Profiler::skippedUnregistration(0));
+    EXPECT_NE(0, table[tid]) << "the skipped unregistration must not run yet";
+
+    CTimerTestAccessor::replaySkippedUnregistrations(engine);
+    EXPECT_EQ(0, table[tid]);
+    Profiler::clearSkippedUnregistrations();
+  }
+  sigaction(SIGPROF, &saved_sigprof, nullptr);
+  free(table);
 }
 
 // A tid equal to the bound must not index one past CTimer's table. The table
