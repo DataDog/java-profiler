@@ -396,6 +396,9 @@ void ReferenceChainTracker::stop() {
   //   an emergency-band first observation in the new recording seeds the baseline without
   //   touching the pair, and a leaked pair would then make the next ramp-band call with no new
   //   GC sample return the old recording's retained admission;
+  // - an urgency episode still open (applyOomRamp()) would carry its boosted _budget ceiling
+  //   (_urgency_budget_boosted) and its ramped _effective_cadence_ns past the boundary - closed
+  //   here with the same restore as applyOomRamp()'s own episode-end branch;
   // - the frontier's referrer_klass slots hold StringDictionary ids from a _class_map that
   //   Profiler::start() is about to wipe (ids restart at 1) - they cannot be remapped, so a
   //   chain built from a surviving entry after the boundary would name whichever class the new
@@ -423,6 +426,19 @@ void ReferenceChainTracker::stop() {
   _admission_growth_baseline = 0;
   _admission_sample_seq = 0;
   _admission_decision = false;
+  // Close the urgency episode the BFS thread may have left open: the boosted
+  // budget ceiling and the ramped cadence are episode state - the same state
+  // applyOomRamp()'s first non-urgent iteration restores on the BFS thread -
+  // and a mid-episode stop() would otherwise leak them past the recording
+  // boundary (buildAbandonedEvent() reads _budget after this point).
+  // Guarded on the boost flag because outside an episode updatePacing()
+  // owns _effective_cadence_ns; stopThread() has already joined the BFS
+  // thread, so these writes are as safe as the urgency resets above.
+  if (_urgency_budget_boosted) {
+    _urgency_budget_boosted = false;
+    _budget = _configured_budget;
+    _effective_cadence_ns = PASS_CADENCE_NS;
+  }
   // Same per-search candidate/discovered canary state runPass()'s terminal branch and
   // restartSearch() clear - zeroing the counts here closes the stale-chain windows in
   // pollWatchedTargets() (dead-representative canary path, discovered-instances path) for the
@@ -498,6 +514,52 @@ void ReferenceChainTracker::stopThread() {
   }
 }
 
+// threadLoop()'s per-iteration OOM ramp: pause target, cadence and the urgency budget
+// boost/restore, keyed on the raw band comparison (never the latch). Returns the raw `urgent`.
+bool ReferenceChainTracker::applyOomRamp(double seconds_to_oom) {
+  bool urgent = seconds_to_oom >= 0 && seconds_to_oom < OOM_RAMP_START_S;
+  long target_ms = _pause_target_ms;
+  u64 cadence_ns = _effective_cadence_ns;
+  if (urgent) {
+    double x = 1.0 - seconds_to_oom / OOM_RAMP_START_S; // 0 at 30min out, 1 at OOM
+    target_ms = std::lround(_pause_target_ms *
+        std::pow((double)URGENT_PAUSE_TARGET_MS / std::max(_pause_target_ms, 1L), x));
+    // Ramp from the fixed configured cadence, not the currently-adaptive _effective_cadence_ns -
+    // using the live value as the ramp's own moving anchor would compound the exponent across
+    // iterations instead of tracking urgency directly from a stable baseline.
+    cadence_ns = (u64)std::llround((double)PASS_CADENCE_NS *
+        std::pow((double)URGENT_CADENCE_NS / (double)PASS_CADENCE_NS, x));
+    // Cadence ownership on every branch: urgent iterations set it here, the episode's end (or
+    // stop()) restores PASS_CADENCE_NS, and otherwise updatePacing() owns it.
+    _effective_cadence_ns = cadence_ns;
+  }
+  if (target_ms != _effective_pause_target_ms) {
+    _effective_pause_target_ms = target_ms;
+    _pause_pid = PidController((u64)std::max(_effective_pause_target_ms, 0L),
+                                10, 1, 2, 1, 5.0);
+  }
+  // Once in the ramp window, hold the budget ceiling raised for the urgency episode's entire
+  // duration rather than only right before OOM: the process is likely to die anyway, so it's
+  // worth spending whatever budget it takes to collect good diagnostic data for as long as we
+  // have.
+  if (urgent && !_urgency_budget_boosted) {
+    _urgency_budget_boosted = true;
+    _budget = std::min(_budget * 4, MAX_REFERENCE_CHAINS_BUDGET);
+    TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop urgency budget boost "
+             "budget=%d configured=%d",
+             _budget, _configured_budget);
+  } else if (!urgent && _urgency_budget_boosted) {
+    _urgency_budget_boosted = false;
+    _budget = _configured_budget;
+    // The episode owned the cadence while it ran; hand it back at the fallback in the same
+    // iteration so the idle loop stops waking at the ramped rate.
+    _effective_cadence_ns = PASS_CADENCE_NS;
+    TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop urgency budget restore "
+             "budget=%d", _budget);
+  }
+  return urgent;
+}
+
 // Runs scheduled passes on an attached agent thread.
 void ReferenceChainTracker::threadLoop() {
   struct Cleanup {
@@ -532,43 +594,10 @@ void ReferenceChainTracker::threadLoop() {
     // The iteration's only projection read - consumed by the ramp below, publishUrgencyState() and
     // shouldRunPass() (restart gate / isUrgent() latch), so every decision sees one sample.
     double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();
-    bool urgent = seconds_to_oom >= 0 && seconds_to_oom < OOM_RAMP_START_S;
-    long target_ms = _pause_target_ms;
+    bool urgent = applyOomRamp(seconds_to_oom);
+    // applyOomRamp() keeps _effective_cadence_ns current, so the sleep below and
+    // shouldRunPass()'s cadence gate always agree on the same value.
     u64 cadence_ns = _effective_cadence_ns;
-    if (urgent) {
-      double x = 1.0 - seconds_to_oom / OOM_RAMP_START_S; // 0 at 30min out, 1 at OOM
-      target_ms = std::lround(_pause_target_ms *
-          std::pow((double)URGENT_PAUSE_TARGET_MS / std::max(_pause_target_ms, 1L), x));
-      // Ramp from the fixed configured cadence, not the currently-adaptive _effective_cadence_ns -
-      // using the live value as the ramp's own moving anchor would compound the exponent across
-      // iterations instead of tracking urgency directly from a stable baseline.
-      cadence_ns = (u64)std::llround((double)PASS_CADENCE_NS *
-          std::pow((double)URGENT_CADENCE_NS / (double)PASS_CADENCE_NS, x));
-      // While urgent, the ramp owns _effective_cadence_ns outright so shouldRunPass()'s cadence
-      // gate and the per-pass log actually reflect it.
-      _effective_cadence_ns = cadence_ns;
-    }
-    if (target_ms != _effective_pause_target_ms) {
-      _effective_pause_target_ms = target_ms;
-      _pause_pid = PidController((u64)std::max(_effective_pause_target_ms, 0L),
-                                  10, 1, 2, 1, 5.0);
-    }
-    // Once in the ramp window, hold the budget ceiling raised for the urgency episode's entire
-    // duration rather than only right before OOM: the process is likely to die anyway, so it's
-    // worth spending whatever budget it takes to collect good diagnostic data for as long as we
-    // have.
-    if (urgent && !_urgency_budget_boosted) {
-      _urgency_budget_boosted = true;
-      _budget = std::min(_budget * 4, MAX_REFERENCE_CHAINS_BUDGET);
-      TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop urgency budget boost "
-               "budget=%d configured=%d",
-               _budget, _configured_budget);
-    } else if (!urgent && _urgency_budget_boosted) {
-      _urgency_budget_boosted = false;
-      _budget = _configured_budget;
-      TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop urgency budget restore "
-               "budget=%d", _budget);
-    }
     // Third trigger for LivenessTracker::cleanup_table() (see
     // LivenessTracker::maybeForceCleanup()'s own comment): track()'s table-overflow branch and
     // flush_table()'s JFR cadence can both starve under ObjectSampler's PID-controlled sampling
@@ -586,18 +615,9 @@ void ReferenceChainTracker::threadLoop() {
     // callbacks, which only read the cached atomic.
     DEBUG_ONLY(rcDebugLevelRefresh());
 
-    // Hand this iteration's ramp state to shouldRunPass() before it decides - the canary-backoff
-    // gate is bypassed while the OOM urgency ramp is active (see _oom_ramp_active's own comment).
-    // The 100% tracking admission (setUrgentTracking(), livenessTracker.h) follows the same ramp
-    // state, but outside the emergency band it is additionally gated on fresh heap growth evidence
-    // (updateUrgentAdmission()/the _admission_growth_baseline constraint), evaluated once per new
-    // heap-floor sample (GC) and held until the next sample - so an admitted growth sample keeps
-    // the boost on until the next GC rather than for a single iteration: the smoothed projection
-    // can stay inside the band for many GCs after the heap has physically stopped growing, and
-    // boosting admission on a recovered spike only buys table churn. The budget/cadence ramp above
-    // stays keyed on the raw band comparison - without a running search (the candidate gate) those
-    // effects cost nothing, while mis-admission during a transient does. publishUrgencyState()
-    // performs both hand-offs.
+    // Hand the ramp state to shouldRunPass() before it decides: _oom_ramp_active bypasses the
+    // canary-backoff gate, the growth-gated admission (held between heap-floor samples) follows
+    // the same hand-off, and the cadence ramp shortens the idle sleep with no search running.
     publishUrgencyState(seconds_to_oom, urgent);
 
     // shouldRunPass()'s restart branch (restartSearch()) clears _pending_expand/_priority_expand
@@ -848,11 +868,17 @@ bool ReferenceChainTracker::updateUrgentAdmission(double seconds_to_oom, bool ur
   // last chapter can before the process dies, without waiting for growth
   // evidence. OOM_URGENT_THRESHOLD_S is isUrgent()'s own latch threshold, so
   // the emergency band and the hysteretic urgent episode cover the same range.
-  if (seconds_to_oom < OOM_URGENT_THRESHOLD_S) {
+  // A negative projection is secondsToOOM()'s "no projection" encoding
+  // (burn-in, not rising, underfilled ring) - the same lower bound isUrgent()
+  // applies - so it is never an emergency: it falls through to the
+  // growth-gated path below.
+  if (seconds_to_oom >= 0 && seconds_to_oom < OOM_URGENT_THRESHOLD_S) {
     if (_admission_growth_baseline == 0) {
       // Seed at emergency-band entry: the burn-in can hide the projection
       // until it is already short, and without a seed the first ramp-band
       // sample would re-snapshot and drop the boost mid-growth.
+      // An unstable read returns 0 and skips the seed - the baseline stays 0,
+      // so the next emergency-band iteration retries.
       u64 newest_used = LivenessTracker::instance()->newestHeapFloorSample();
       if (newest_used != 0) {
         _admission_growth_baseline = newest_used;
@@ -865,6 +891,11 @@ bool ReferenceChainTracker::updateUrgentAdmission(double seconds_to_oom, bool ur
   }
   u64 newest_seq = 0;
   u64 newest_used = LivenessTracker::instance()->newestHeapFloorSample(&newest_seq);
+  if (newest_seq == LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE) {
+    // The reader exhausted its retry bound against a wrapping GC writer: hold
+    // the decision without consuming a seq, so the next iteration re-reads.
+    return _admission_decision;
+  }
   if (newest_used == 0) {
     // No sample to reason about (the ring cannot be empty while a projection
     // exists - secondsToOOM() requires MIN_FILL samples - so this is purely
@@ -932,8 +963,8 @@ bool ReferenceChainTracker::hasLeakSignal(double seconds_to_oom) {
   // candidate-less search would run to the full auto-tuned TTL doing whole-heap
   // BFS - pure cost. A warmup heap-floor rise can trip the 5-minute projection
   // with no tagged klass, so the refusal is unconditional, not a heuristic.
-  // Urgency still applies through the ramp (cadence, pause target, budget
-  // boost, 100% liveness admission) once a real candidate justifies the search.
+  // Urgency drives the ramp and the admission boost on every iteration, but
+  // never authorizes a search.
   TEST_LOG_SUMMARY("ReferenceChainTracker::hasLeakSignal -> %s (secondsToOOM=%.1f, "
            "candidates=%d, urgent=%d)",
            n > 0 ? "true" : "false", seconds_to_oom, n, urgent);

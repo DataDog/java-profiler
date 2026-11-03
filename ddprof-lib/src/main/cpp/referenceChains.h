@@ -333,8 +333,12 @@ private:
   // failure must NOT be treated as "released".
   bool _tags_released;
 
-  // Whether threadLoop()'s urgency ramp currently holds the multiplied _budget (see the urgency
-  // block there and _configured_budget's own comment).
+  // Whether the urgency episode (applyOomRamp()) currently holds the multiplied _budget. The
+  // episode has two closers, both restoring _budget = _configured_budget and
+  // _effective_cadence_ns = PASS_CADENCE_NS together with this flag: applyOomRamp()'s first
+  // non-urgent iteration (BFS thread), and stop() after stopThread() has joined the BFS thread
+  // (recording boundary). start() reseeds all three. BFS-thread-only otherwise; no atomics
+  // (see _configured_budget's own comment).
   bool _urgency_budget_boosted;
 
   // Hysteresis state behind isUrgent().
@@ -372,8 +376,10 @@ private:
   // same no-atomics argument (BFS thread; reset only with no BFS thread live).
   // _admission_sample_seq is the LivenessTracker heap-floor sequence number
   // (newestHeapFloorSample(&seq)) of the sample the ramp-band gate last
-  // evaluated (0 = none this episode); _admission_decision is that
-  // evaluation's result. threadLoop() runs far more often than GCs record
+  // evaluated (0 = none this episode; an unstable read reports
+  // HEAP_FLOOR_SEQ_UNSTABLE, which is held on, never stored here);
+  // _admission_decision is that evaluation's result. threadLoop() runs far
+  // more often than GCs record
   // samples, so updateUrgentAdmission() re-evaluates only when a NEW sample
   // arrives and otherwise returns the retained decision - re-comparing the
   // same sample against the baseline it just raised would turn every admitted
@@ -662,8 +668,8 @@ private:
   // Heap-wide time-to-OOM urgency threshold (LivenessTracker::secondsToOOM()). It has two uses:
   // (a) isUrgent()'s latch threshold (released via OOM_URGENT_RELEASE_S below); the latch is
   //     consumed by runPass()'s no-progress abandonment branch, which it suppresses while latched;
-  // (b) updateUrgentAdmission()'s emergency band, where tracking admission goes to 100% without
-  //     heap-growth evidence.
+  // (b) updateUrgentAdmission()'s emergency band - a real (non-negative) projection below it -
+  //     where tracking admission goes to 100% without heap-growth evidence.
   // It never authorizes starting a search - urgency never stands in for
   // selectLeakCandidates()'s per-klass gate (see hasLeakSignal()).
   static constexpr double OOM_URGENT_THRESHOLD_S = 300.0; // 5 minutes
@@ -840,6 +846,11 @@ private:
   // (setUrgentTracking()) follows updateUrgentAdmission()'s growth-gated decision, never raw
   // `urgent`. Extracted from threadLoop() so the wiring is testable without a BFS thread.
   void publishUrgencyState(double seconds_to_oom, bool urgent);
+
+  // threadLoop()'s per-iteration OOM ramp: pause target, cadence and the urgency budget
+  // boost/restore, keyed on the raw band comparison (never the latch). Returns that raw `urgent`
+  // so the caller needs no second evaluation.
+  bool applyOomRamp(double seconds_to_oom);
 
   // Search restart gate: true once _safepoint_pain_budget has
   // drained back to zero (canStartNow()) *and* hasLeakSignal() above reports at least one leak

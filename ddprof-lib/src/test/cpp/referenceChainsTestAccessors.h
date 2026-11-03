@@ -191,6 +191,15 @@ public:
         return ReferenceChainTracker::instance()->updateUrgentAdmission(seconds_to_oom,
                                                                         urgent);
     }
+    // updateUrgentAdmission()'s freshness pair (referenceChains.h): the
+    // heap-floor seq the ramp-band gate last evaluated, and that evaluation's
+    // retained result.
+    static u64 admissionSampleSeqForTest() {
+        return ReferenceChainTracker::instance()->_admission_sample_seq;
+    }
+    static bool admissionDecisionForTest() {
+        return ReferenceChainTracker::instance()->_admission_decision;
+    }
     // True while the BFS thread (startThread()/threadLoop()) is live. start() never spawns it
     // (only startThread() does - profiler.cpp and the JNI-only resetSearchStateForTest()), so
     // gtests may drive BFS-thread-only seams after start(); tests that rely on that assert this
@@ -576,6 +585,75 @@ public:
     }
 
     static u64 baselineCadenceNs() { return ReferenceChainTracker::PASS_CADENCE_NS; }
+
+    static u64 urgentCadenceNsForTest() {
+        return ReferenceChainTracker::URGENT_CADENCE_NS;
+    }
+
+    // threadLoop()'s OOM ramp (applyOomRamp()), drivable without the BFS thread.
+    static bool applyOomRampForTest(double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->applyOomRamp(seconds_to_oom);
+    }
+
+    // Every scheduling field an urgency episode (applyOomRamp()) mutates or a test seeds to drive
+    // it - cadence, budget + boost flag, configured budget, configured/effective pause target and
+    // the pause PidController - so a test can restore the singleton exactly as it found it.
+    // Field order is fixed for aggregate init.
+    struct OomRampState {
+        u64 cadence_ns;
+        int budget;
+        bool budget_boosted;
+        int configured_budget;
+        long pause_target_ms;
+        long effective_pause_target_ms;
+        PidController pause_pid;
+    };
+    static OomRampState saveOomRampStateForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        return {t->_effective_cadence_ns, t->_budget, t->_urgency_budget_boosted,
+                t->_configured_budget, t->_pause_target_ms, t->_effective_pause_target_ms,
+                t->_pause_pid};
+    }
+    static void restoreOomRampStateForTest(const OomRampState &state) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_effective_cadence_ns = state.cadence_ns;
+        t->_budget = state.budget;
+        t->_urgency_budget_boosted = state.budget_boosted;
+        t->_configured_budget = state.configured_budget;
+        t->_pause_target_ms = state.pause_target_ms;
+        t->_effective_pause_target_ms = state.effective_pause_target_ms;
+        t->_pause_pid = state.pause_pid;
+    }
+
+    // Urgency-episode budget state (applyOomRamp()'s boost/restore, stop()'s closer).
+    static int budgetForTest() { return ReferenceChainTracker::instance()->_budget; }
+    static int configuredBudgetForTest() {
+        return ReferenceChainTracker::instance()->_configured_budget;
+    }
+    static bool urgencyBudgetBoostedForTest() {
+        return ReferenceChainTracker::instance()->_urgency_budget_boosted;
+    }
+    // Seeds a closed episode with a known budget ceiling (the singleton may never have been
+    // start()ed); callers wanting equal values pass the same value twice.
+    static void setBudgetsForTest(int budget, int configured) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_budget = budget;
+        t->_configured_budget = configured;
+        t->_urgency_budget_boosted = false;
+    }
+
+    // applyOomRamp()'s pause-target ramp.
+    static long effectivePauseTargetMsForTest() {
+        return ReferenceChainTracker::instance()->_effective_pause_target_ms;
+    }
+    static long urgentPauseTargetMsForTest() {
+        return ReferenceChainTracker::URGENT_PAUSE_TARGET_MS;
+    }
+    static void setPauseTargetsForTest(long configured_ms) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_pause_target_ms = configured_ms;
+        t->_effective_pause_target_ms = configured_ms;
+    }
 
     // Start the controller from a chosen below-ceiling/above-baseline point with a fresh
     // _pause_pid, so a prior sequence's integral windup cannot leak into per-step assertions.

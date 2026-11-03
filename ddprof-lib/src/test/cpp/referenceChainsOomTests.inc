@@ -492,6 +492,38 @@ TEST_F(OomUrgencyTest, EmergencyBandAdmitsWithoutGrowthEvidence) {
     EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(299.0, true));
 }
 
+// A latched urgent episode reading "no projection" (-1, secondsToOOM()'s
+// burn-in/not-rising/underfilled encoding) is not an emergency: the
+// emergency band carries the same >= 0 lower bound as isUrgent(double), so
+// updateUrgentAdmission() takes the growth-gated path instead of the
+// evidence-free 100% admission boost.
+TEST_F(OomUrgencyTest, NoProjectionInLatchedEpisodeDoesNotArmEmergencyAdmission) {
+    ASSERT_NEAR(project(299.0), 299.0, 1.0);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::isUrgentWithProjectionForTest(299.0));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::urgentLatchedForTest());
+    // Real emergency-band entry: admitted, and the growth baseline is seeded
+    // at the newest sample; the freshness pair stays untouched.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(299.0, true));
+    ASSERT_EQ(0u, ReferenceChainsTestAccessor::admissionSampleSeqForTest());
+
+    // One no-projection reading: the latch holds (release needs consecutive
+    // clear observations), so the episode is still urgent.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::isUrgentWithProjectionForTest(-1.0));
+    u64 newest_seq = 0;
+    ASSERT_NE(0u, LivenessTracker::instance()->newestHeapFloorSample(&newest_seq));
+    ASSERT_NE(LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE, newest_seq);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(-1.0, true))
+        << "a negative projection is 'no projection', not the emergency band";
+    // The growth-gated path evaluated the sample (the emergency branch never
+    // touches the freshness pair): no growth past the seeded baseline.
+    EXPECT_EQ(newest_seq, ReferenceChainsTestAccessor::admissionSampleSeqForTest());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::admissionDecisionForTest());
+
+    // No new sample: the non-admitting decision is held, not re-armed.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(-1.0, true));
+    EXPECT_EQ(newest_seq, ReferenceChainsTestAccessor::admissionSampleSeqForTest());
+}
+
 // The emergency band seeds the growth baseline at entry: the burn-in can hide
 // the projection until it is already short, and without a seed the first
 // ramp-band observation would re-snapshot and drop the boost mid-growth.
@@ -864,6 +896,329 @@ TEST_F(OomUrgencyTest, HeapFloorSequenceIsMonotonicAcrossResets) {
     lt->heapFloorResetForTest();
 }
 
+#ifdef DEBUG
+// Context for the heap-floor read hook (setHeapFloorReadHookForTest()): each
+// invocation records one full ring wrap of samples between the reader's
+// payload load and its validating seq re-load; fire_once limits that to the
+// first invocation.
+struct HeapFloorReadHookCtx {
+    int calls = 0;     // hook invocations (one per reader attempt)
+    int records = 0;   // invocations that actually recorded a ring wrap
+    bool fire_once = false;
+    u64 clock = 0;
+};
+
+static void heapFloorReadHookThunk(void *arg) {
+    HeapFloorReadHookCtx *ctx = static_cast<HeapFloorReadHookCtx *>(arg);
+    int n = ctx->calls++;
+    if (ctx->fire_once && n > 0) {
+        return;
+    }
+    ctx->records++;
+    LivenessTracker *lt = LivenessTracker::instance();
+    // A full wrap returns the head to the slot the reader is holding - the
+    // torn-read interleaving the gate must survive.
+    constexpr int RING_SIZE = LivenessTracker::heapFloorRingSizeForTest();
+    constexpr u64 WRAP_BASE = 1100ULL << 20;
+    for (int i = 0; i < RING_SIZE; i++) {
+        lt->heapFloorRecordForTest(WRAP_BASE + ((u64)i << 20), ctx->clock, 0);
+        ctx->clock += 1;
+    }
+}
+#endif
+
+// When the read hook interleaves a full ring wrap inside newestHeapFloorSample()
+// (the torn-read window), the admission gate must evaluate - and consume the
+// seq of - only a coherent pair. A torn read would pair sample 1's payload
+// with a newer sample's seq; consuming that seq would hide the true newest
+// sample from every later call with an unchanged ring.
+TEST_F(OomUrgencyTest, AdmissionNeverConsumesSeqOfUnevaluatedSample) {
+#ifdef DEBUG
+    LivenessTracker *lt = LivenessTracker::instance();
+    lt->heapFloorResetForTest();
+    // The hook must never outlive this test, on any exit path.
+    struct ClearHook {
+        ~ClearHook() { LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr); }
+    } clear_hook;
+
+    lt->heapFloorRecordForTest(1000 * MiB, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    u64 baseline_seq = 0;
+    ASSERT_EQ(1000 * MiB, lt->newestHeapFloorSample(&baseline_seq));
+
+    // First ramp-band observation: sets the entry baseline, consumes its seq.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    ASSERT_EQ(baseline_seq, ReferenceChainsTestAccessor::admissionSampleSeqForTest());
+
+    HeapFloorReadHookCtx ctx;
+    ctx.fire_once = true;
+    LivenessTracker::setHeapFloorReadHookForTest(heapFloorReadHookThunk, &ctx);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
+        << "the gate must evaluate the coherent newest sample (1129 MiB), not the torn payload";
+    ASSERT_EQ(1, ctx.records) << "the interleaving must have happened exactly once";
+
+    // The consumed seq must be the true newest sample's seq - read here with
+    // the hook cleared - never one whose value the gate did not compare.
+    LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr);
+    u64 newest_seq = 0;
+    ASSERT_EQ(1129 * MiB, lt->newestHeapFloorSample(&newest_seq));
+    ASSERT_NE(baseline_seq, newest_seq) << "the hook must have wrapped the ring";
+    EXPECT_EQ(newest_seq, ReferenceChainsTestAccessor::admissionSampleSeqForTest());
+
+    // Unchanged ring afterwards: the evaluated decision is held.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+
+    lt->heapFloorResetForTest();
+#else
+    GTEST_SKIP() << "the heap-floor read hook is DEBUG-only";
+#endif
+}
+
+// A read that exhausts the reader's retry bound returns (0,
+// HEAP_FLOOR_SEQ_UNSTABLE) - "no sample evaluated": the previous decision
+// holds and the sentinel never lands in _admission_sample_seq, for both
+// decision values (a dropped true would pulse the boost off for one
+// iteration; a re-admitted false would revive a dead boost). The retained
+// _admission_decision is checked directly through admissionDecisionForTest()
+// after every call, not only via the returned value.
+TEST_F(OomUrgencyTest, AdmissionHeldOnUnstableHeapFloorRead) {
+#ifdef DEBUG
+    LivenessTracker *lt = LivenessTracker::instance();
+    lt->heapFloorResetForTest();
+    struct ClearHook {
+        ~ClearHook() { LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr); }
+    } clear_hook;
+
+    // Establish a held true decision: entry snapshot, then growth past it.
+    lt->heapFloorRecordForTest(1000 * MiB, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    lt->heapFloorRecordForTest(1100 * MiB, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    u64 true_seq = ReferenceChainsTestAccessor::admissionSampleSeqForTest();
+    ASSERT_NE(0u, true_seq);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::admissionDecisionForTest())
+        << "the growth evaluation must retain a true decision";
+
+    // Every reader attempt fires the hook and wraps the ring, so the retry
+    // bound exhausts and the read reports no consistent sample.
+    HeapFloorReadHookCtx ctx;
+    LivenessTracker::setHeapFloorReadHookForTest(heapFloorReadHookThunk, &ctx);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
+        << "an unstable read must hold the true decision, not drop the boost";
+    ASSERT_EQ(LivenessTracker::HEAP_FLOOR_READ_ATTEMPTS, ctx.records)
+        << "the reader retry bound must have been exhausted";
+    u64 sentinel_seq = 0;
+    EXPECT_EQ(0u, lt->newestHeapFloorSample(&sentinel_seq));
+    EXPECT_EQ(LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE, sentinel_seq);
+    ASSERT_EQ(2 * LivenessTracker::HEAP_FLOOR_READ_ATTEMPTS, ctx.records)
+        << "the direct reader check must also have exhausted the bound";
+    EXPECT_EQ(true_seq, ReferenceChainsTestAccessor::admissionSampleSeqForTest())
+        << "the sentinel seq must never be consumed";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::admissionDecisionForTest())
+        << "an unstable read must leave the retained true decision untouched";
+
+    // Same hold for a false decision: evaluate one flat sample with the hook
+    // cleared, then make the ring unreadable again.
+    LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr);
+    lt->heapFloorRecordForTest(1050 * MiB, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+    u64 false_seq = ReferenceChainsTestAccessor::admissionSampleSeqForTest();
+    ASSERT_NE(false_seq, true_seq);
+    ASSERT_FALSE(ReferenceChainsTestAccessor::admissionDecisionForTest())
+        << "the flat-sample evaluation must retain a false decision";
+
+    LivenessTracker::setHeapFloorReadHookForTest(heapFloorReadHookThunk, &ctx);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true))
+        << "an unstable read must hold the false decision, not re-admit";
+    ASSERT_EQ(3 * LivenessTracker::HEAP_FLOOR_READ_ATTEMPTS, ctx.records)
+        << "the second unstable read must also have exhausted the bound";
+    EXPECT_EQ(false_seq, ReferenceChainsTestAccessor::admissionSampleSeqForTest());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::admissionDecisionForTest())
+        << "an unstable read must leave the retained false decision untouched";
+
+    LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr);
+    lt->heapFloorResetForTest();
+#else
+    GTEST_SKIP() << "the heap-floor read hook is DEBUG-only";
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// The urgency episode's cadence half (applyOomRamp()): an episode owns
+// _effective_cadence_ns while it runs; its end must hand the field back at
+// the fallback cadence in the same iteration, or the idle loop keeps waking
+// at the ramped rate for the rest of the recording.
+// ---------------------------------------------------------------------------
+
+// Drives one urgency episode end-to-end: urgent iterations pin the ramped
+// cadence (10ms at OOM, ~21.5ms at 300s out), and the first non-urgent
+// iteration restores the 1s fallback - not just the first one after boost,
+// but on every later iteration too.
+TEST_F(OomUrgencyTest, UrgencyExitRestoresFallbackCadence) {
+    ASSERT_FALSE(ReferenceChainsTestAccessor::bfsThreadRunning())
+        << "applyOomRampForTest() would race threadLoop()";
+    const u64 pass_ns = ReferenceChainsTestAccessor::baselineCadenceNs();
+    const u64 urgent_ns = ReferenceChainsTestAccessor::urgentCadenceNsForTest();
+    struct Restore {
+        ReferenceChainsTestAccessor::OomRampState saved;
+        ~Restore() {
+            // Close any still-open episode first so the budget restore runs,
+            // then put the saved scheduling state back.
+            ReferenceChainsTestAccessor::applyOomRampForTest(-1.0);
+            ReferenceChainsTestAccessor::setEffectiveCadenceNs(
+                ReferenceChainsTestAccessor::baselineCadenceNs());
+            ReferenceChainsTestAccessor::restoreOomRampStateForTest(saved);
+        }
+    } restore{ReferenceChainsTestAccessor::saveOomRampStateForTest()};
+
+    // Seed a known budget ceiling and pause target: the singleton may never
+    // have been start()ed (zeros would make the boost and the ramp vacuous).
+    // The 7-field Restore above puts the singleton's own values back.
+    const int configured_budget = 1000;
+    const int boosted_budget = std::min(configured_budget * 4, MAX_REFERENCE_CHAINS_BUDGET);
+    const long configured_pause_ms = 20;
+    ReferenceChainsTestAccessor::setBudgetsForTest(configured_budget, configured_budget);
+    ReferenceChainsTestAccessor::setPauseTargetsForTest(configured_pause_ms);
+
+    // No episode open: the non-urgent iteration leaves the fallback cadence,
+    // the budget ceiling and the pause target alone.
+    ReferenceChainsTestAccessor::setEffectiveCadenceNs(pass_ns);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::applyOomRampForTest(-1.0));
+    EXPECT_EQ(pass_ns, ReferenceChainsTestAccessor::effectiveCadenceNs());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgencyBudgetBoostedForTest());
+    EXPECT_EQ(configured_budget, ReferenceChainsTestAccessor::budgetForTest());
+    EXPECT_EQ(configured_pause_ms, ReferenceChainsTestAccessor::effectivePauseTargetMsForTest());
+
+    // At OOM the ramp reaches its urgent ceiling (scenario reached).
+    EXPECT_TRUE(ReferenceChainsTestAccessor::applyOomRampForTest(0.0));
+    EXPECT_EQ(urgent_ns, ReferenceChainsTestAccessor::effectiveCadenceNs())
+        << "a 0s projection must pin the urgent cadence floor";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::urgencyBudgetBoostedForTest())
+        << "the first urgent iteration must open the episode";
+    EXPECT_EQ(boosted_budget, ReferenceChainsTestAccessor::budgetForTest())
+        << "episode entry boosts the budget ceiling 4x (clamped to MAX)";
+    EXPECT_EQ(ReferenceChainsTestAccessor::urgentPauseTargetMsForTest(),
+              ReferenceChainsTestAccessor::effectivePauseTargetMsForTest())
+        << "a 0s projection must ramp the pause target to its urgent ceiling";
+
+    // Mid-ramp: 300s out of the 1800s horizon lands at 21.54ms (+/- 1ms) - a
+    // fixed constant, not the formula, so a drifted exponent fails here.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::applyOomRampForTest(300.0));
+    EXPECT_NEAR((double)ReferenceChainsTestAccessor::effectiveCadenceNs(),
+                21.54e6, 1.0e6)
+        << "300s out of the 1800s ramp horizon";
+    EXPECT_EQ(boosted_budget, ReferenceChainsTestAccessor::budgetForTest())
+        << "the boost applies once per episode, never compounded";
+    EXPECT_EQ(76L, ReferenceChainsTestAccessor::effectivePauseTargetMsForTest())
+        << "20ms * 5^(1 - 300/1800) = 76.47ms: the pause target tracks the ramp";
+
+    // Episode end: the first non-urgent iteration restores the fallback, and
+    // repeated non-urgent iterations keep it there (not a one-shot edge).
+    for (int i = 0; i < 100; i++) {
+        EXPECT_FALSE(ReferenceChainsTestAccessor::applyOomRampForTest(-1.0));
+    }
+    EXPECT_EQ(pass_ns, ReferenceChainsTestAccessor::effectiveCadenceNs())
+        << "the urgency episode's end must restore the fallback cadence";
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgencyBudgetBoostedForTest())
+        << "the episode end must clear the boost flag";
+    EXPECT_EQ(ReferenceChainsTestAccessor::configuredBudgetForTest(),
+              ReferenceChainsTestAccessor::budgetForTest())
+        << "the episode end must restore the configured budget";
+    EXPECT_EQ(configured_budget, ReferenceChainsTestAccessor::budgetForTest());
+    EXPECT_EQ(configured_pause_ms, ReferenceChainsTestAccessor::effectivePauseTargetMsForTest())
+        << "the episode end must restore the configured pause target";
+}
+
+// Outside an episode, a non-urgent iteration must not touch a cadence that
+// updatePacing() has adapted (2s here, past the fallback, to prove the write
+// path is not merely "leave PASS_CADENCE_NS alone"). Closing an episode is
+// the only non-urgent iteration that writes the field.
+TEST_F(OomUrgencyTest, NonUrgentIterationKeepsPacedCadence) {
+    ASSERT_FALSE(ReferenceChainsTestAccessor::bfsThreadRunning())
+        << "applyOomRampForTest() would race threadLoop()";
+    const u64 pass_ns = ReferenceChainsTestAccessor::baselineCadenceNs();
+    const u64 paced_ns = 2 * pass_ns;
+    struct Restore {
+        ReferenceChainsTestAccessor::OomRampState saved;
+        ~Restore() {
+            ReferenceChainsTestAccessor::applyOomRampForTest(-1.0);
+            ReferenceChainsTestAccessor::setEffectiveCadenceNs(
+                ReferenceChainsTestAccessor::baselineCadenceNs());
+            ReferenceChainsTestAccessor::restoreOomRampStateForTest(saved);
+        }
+    } restore{ReferenceChainsTestAccessor::saveOomRampStateForTest()};
+
+    ReferenceChainsTestAccessor::setEffectiveCadenceNs(paced_ns);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::applyOomRampForTest(-1.0));
+    EXPECT_EQ(paced_ns, ReferenceChainsTestAccessor::effectiveCadenceNs())
+        << "no episode open: a non-urgent iteration must not rewrite the cadence";
+    EXPECT_FALSE(ReferenceChainsTestAccessor::applyOomRampForTest(3600.0))
+        << "a projection past the ramp horizon is not urgent";
+    EXPECT_EQ(paced_ns, ReferenceChainsTestAccessor::effectiveCadenceNs());
+
+    // Open and close one episode: the closing iteration restores the fallback.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::applyOomRampForTest(0.0));
+    EXPECT_EQ(ReferenceChainsTestAccessor::urgentCadenceNsForTest(),
+              ReferenceChainsTestAccessor::effectiveCadenceNs());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::applyOomRampForTest(-1.0));
+    EXPECT_EQ(pass_ns, ReferenceChainsTestAccessor::effectiveCadenceNs())
+        << "closing the episode must return the cadence to the fallback, not to "
+           "the pre-episode adapted value";
+}
+
+// Flapping across the ramp horizon's edge: each far-side (1801s) iteration
+// restores the fallback, and each near-side (1799s) iteration recomputes
+// the ramp value from scratch - identical every time, since the ramp anchors
+// on PASS_CADENCE_NS, never on the live (previously restored) cadence.
+TEST_F(OomUrgencyTest, RampEdgeFlapRestoresAndRecomputesCadence) {
+    ASSERT_FALSE(ReferenceChainsTestAccessor::bfsThreadRunning())
+        << "applyOomRampForTest() would race threadLoop()";
+    const u64 pass_ns = ReferenceChainsTestAccessor::baselineCadenceNs();
+    const u64 urgent_ns = ReferenceChainsTestAccessor::urgentCadenceNsForTest();
+    struct Restore {
+        ReferenceChainsTestAccessor::OomRampState saved;
+        ~Restore() {
+            ReferenceChainsTestAccessor::applyOomRampForTest(-1.0);
+            ReferenceChainsTestAccessor::setEffectiveCadenceNs(
+                ReferenceChainsTestAccessor::baselineCadenceNs());
+            ReferenceChainsTestAccessor::restoreOomRampStateForTest(saved);
+        }
+    } restore{ReferenceChainsTestAccessor::saveOomRampStateForTest()};
+
+    // Half the ceiling: the 4x boost must clamp at MAX_REFERENCE_CHAINS_BUDGET
+    // on every episode open and restore the configured value on every close.
+    const int configured_budget = MAX_REFERENCE_CHAINS_BUDGET / 2;
+    ReferenceChainsTestAccessor::setBudgetsForTest(configured_budget, configured_budget);
+
+    u64 first_ramp_ns = 0;
+    for (int i = 0; i < 3; i++) {
+        EXPECT_TRUE(ReferenceChainsTestAccessor::applyOomRampForTest(1799.0))
+            << "flap " << i << ": 1799s is inside the ramp horizon";
+        EXPECT_EQ(MAX_REFERENCE_CHAINS_BUDGET, ReferenceChainsTestAccessor::budgetForTest())
+            << "flap " << i << ": the 4x boost must clamp at the budget ceiling";
+        u64 ramp_ns = ReferenceChainsTestAccessor::effectiveCadenceNs();
+        EXPECT_GT(ramp_ns, urgent_ns) << "flap " << i;
+        EXPECT_LT(ramp_ns, pass_ns)
+            << "flap " << i << ": 1799s must not reach the fallback";
+        if (i == 0) {
+            first_ramp_ns = ramp_ns;
+        } else {
+            EXPECT_EQ(first_ramp_ns, ramp_ns)
+                << "flap " << i << ": the ramp must recompute, not compound";
+        }
+
+        EXPECT_FALSE(ReferenceChainsTestAccessor::applyOomRampForTest(1801.0))
+            << "flap " << i << ": 1801s is outside the ramp horizon";
+        EXPECT_EQ(pass_ns, ReferenceChainsTestAccessor::effectiveCadenceNs())
+            << "flap " << i << ": the episode end must restore the fallback";
+        EXPECT_EQ(configured_budget, ReferenceChainsTestAccessor::budgetForTest())
+            << "flap " << i << ": the episode end must restore the configured budget";
+    }
+}
+
 // The canary-refill half: shouldRunPass() raises the CPU pain budget's
 // refill rate CANARY_PAIN_BUDGET_REFILL_MULTIPLIER-fold exactly while a
 // canary chase is open (candidates exist and not all are found), and puts it
@@ -1074,6 +1429,73 @@ TEST_F(ReferenceChainsCanaryRefillTest, StopClearsRetainedAdmission) {
     // Positive control: growth past the seeded baseline admits.
     lt->heapFloorRecordForTest(700 * MiB, 3, 0);
     EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(1500.0, true));
+}
+
+// stop() is the urgency episode's second closer: an episode still open at the
+// recording boundary must not leak its boosted budget ceiling or its ramped
+// cadence past it. The closer is guarded on the boost flag, exactly like
+// applyOomRamp()'s episode-end branch - outside an episode updatePacing() owns
+// the cadence, so stop() must leave a paced cadence alone. Two recordings,
+// because stop() returns early once the tracker is disabled. Same BFS-thread
+// precondition as StopClearsAdmissionGrowthBaseline.
+TEST_F(ReferenceChainsCanaryRefillTest, StopClosesOpenUrgencyEpisode) {
+    ReferenceChainsTestAccessor::reset(); // also resetUrgencyForTest()
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    const ReferenceChainsTestAccessor::OomRampState saved =
+        ReferenceChainsTestAccessor::saveOomRampStateForTest();
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ASSERT_FALSE(tracker->start(args));
+
+    struct Cleanup {
+        ReferenceChainTracker *tracker;
+        ReferenceChainsTestAccessor::OomRampState saved;
+        ~Cleanup() {
+            tracker->stop();
+            ReferenceChainsTestAccessor::resetUrgencyForTest();
+            ReferenceChainsTestAccessor::restoreOomRampStateForTest(saved);
+            ReferenceChainsTestAccessor::reset();
+        }
+    } cleanup{tracker, saved};
+    ASSERT_FALSE(ReferenceChainsTestAccessor::bfsThreadRunning())
+        << "applyOomRampForTest() would race threadLoop()";
+    const u64 pass_ns = ReferenceChainsTestAccessor::baselineCadenceNs();
+    const int configured = ReferenceChainsTestAccessor::configuredBudgetForTest();
+    ASSERT_GT(configured, 0) << "start() must record a positive configured budget";
+
+    // Recording 1, no episode open: a paced (non-fallback) cadence survives
+    // stop() - the closer must not fire without the boost flag.
+    ASSERT_FALSE(ReferenceChainsTestAccessor::urgencyBudgetBoostedForTest());
+    ReferenceChainsTestAccessor::setEffectiveCadenceNs(2 * pass_ns);
+    tracker->stop();
+    ASSERT_FALSE(ReferenceChainsTestAccessor::bfsThreadRunning());
+    EXPECT_EQ(2 * pass_ns, ReferenceChainsTestAccessor::effectiveCadenceNs())
+        << "stop() must not rewrite a cadence updatePacing() owns outside an episode";
+    EXPECT_EQ(configured, ReferenceChainsTestAccessor::budgetForTest());
+
+    // Recording 2: start() reseeds the cadence, then an episode opens.
+    ASSERT_FALSE(tracker->start(args));
+    ASSERT_FALSE(ReferenceChainsTestAccessor::bfsThreadRunning())
+        << "applyOomRampForTest() would race threadLoop()";
+    EXPECT_EQ(pass_ns, ReferenceChainsTestAccessor::effectiveCadenceNs())
+        << "start() reseeds the cadence";
+    ASSERT_TRUE(ReferenceChainsTestAccessor::applyOomRampForTest(0.0));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::urgencyBudgetBoostedForTest());
+    ASSERT_EQ(std::min(configured * 4, MAX_REFERENCE_CHAINS_BUDGET),
+              ReferenceChainsTestAccessor::budgetForTest());
+    ASSERT_EQ(ReferenceChainsTestAccessor::urgentCadenceNsForTest(),
+              ReferenceChainsTestAccessor::effectiveCadenceNs());
+
+    tracker->stop();
+    ASSERT_FALSE(ReferenceChainsTestAccessor::bfsThreadRunning());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::urgencyBudgetBoostedForTest())
+        << "stop() must close the open urgency episode";
+    EXPECT_EQ(ReferenceChainsTestAccessor::configuredBudgetForTest(),
+              ReferenceChainsTestAccessor::budgetForTest())
+        << "stop() must restore the configured budget ceiling";
+    EXPECT_EQ(configured, ReferenceChainsTestAccessor::budgetForTest());
+    EXPECT_EQ(pass_ns, ReferenceChainsTestAccessor::effectiveCadenceNs())
+        << "stop() must restore the fallback cadence";
 }
 
 TEST_F(ReferenceChainsCanaryRefillTest, BackoffGateHoldsUnlessOomRampActive) {
