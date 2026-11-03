@@ -28,6 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class PrecheckTest extends AbstractProfilerTest {
     private static final int OSTHREAD_STATE_SLEEPING = 7;
+    private static final int POOL_WORKERS = 4;
+    private static final long POOL_SLEEP_MILLIS = 300;
     private static final String TAIL_WEIGHT_THREAD = "precheck-tail-weight";
     private static final int TAIL_WEIGHT_ITERATIONS = 50;
     private static final int TAIL_WEIGHT_SLEEP_MILLIS = 6;
@@ -63,6 +65,57 @@ public class PrecheckTest extends AbstractProfilerTest {
             assertTrue(counters.get("wc_signals_suppressed_sampled_run") > 0,
                     "wc_signals_suppressed_sampled_run should be > 0 for a 300 ms Thread.sleep()");
         }
+    }
+
+    /**
+     * Verifies that {@code samplePoolSize} in {@code datadog.WallClockSamplingEpoch} still counts
+     * threads whose owned blocked run is already suppressed. The timer drops those threads before
+     * reservoir sampling, but the pool size must be taken before that step so it keeps counting
+     * every candidate, as it does in unfiltered recordings.
+     *
+     * @throws InterruptedException if a worker is interrupted
+     */
+    @Test
+    public void samplePoolSizeCountsSuppressedThreads() throws InterruptedException {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
+
+        // Fewer workers than the default reservoir (16 threads per tick), so every
+        // unsuppressed worker is signaled and armed on its first tick.
+        Thread[] workers = new Thread[POOL_WORKERS];
+        for (int i = 0; i < POOL_WORKERS; i++) {
+            workers[i] = new Thread(() -> {
+                registerCurrentThreadForWallClockProfiling();
+                long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
+                try {
+                    Thread.sleep(POOL_SLEEP_MILLIS);
+                } catch (InterruptedException ignored) {
+                } finally {
+                    ProfilerOwnedBlockHooks.blockExit(profiler, token);
+                    profiler.removeThread();
+                }
+            }, "precheck-pool-" + i);
+            workers[i].start();
+        }
+        for (Thread worker : workers) {
+            worker.join();
+        }
+
+        stopProfiler();
+
+        // While all workers sit in suppressed runs, each tick suppresses every one of them.
+        // Before the fix those ticks reported a pool size of 0.
+        boolean sawFullPoolWhileSuppressing = false;
+        for (JfrEvent epoch : verifyEvents("datadog.WallClockSamplingEpoch")) {
+            if (epoch.getLong("numSuppressedSampledRun", 0) >= POOL_WORKERS
+                    && epoch.getLong("samplePoolSize", 0) >= POOL_WORKERS) {
+                sawFullPoolWhileSuppressing = true;
+                break;
+            }
+        }
+        assertTrue(sawFullPoolWhileSuppressing,
+                "Expected an epoch that suppressed all " + POOL_WORKERS
+                        + " workers while still counting them in samplePoolSize");
     }
 
     @Test
@@ -124,6 +177,7 @@ public class PrecheckTest extends AbstractProfilerTest {
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
         registerCurrentThreadForWallClockProfiling();
 
+        Map<String, Long> countersBefore = profiler.getDebugCounters();
         profiler.setTraceContext(0x5100L, 0x5101L, 0L, 0x5101L, -1, null, -1, null);
         try {
             Thread.sleep(300);
@@ -138,9 +192,11 @@ public class PrecheckTest extends AbstractProfilerTest {
         assertTrue(sampleCount >= 10,
                 "Expected normal MethodSample volume for traced sleep, got: " + sampleCount);
 
-        Map<String, Long> counters = profiler.getDebugCounters();
-        if (counters.containsKey("wc_signals_suppressed_sampled_run")) {
-            assertEquals(0L, counters.get("wc_signals_suppressed_sampled_run"),
+        if (countersBefore.containsKey("wc_signals_suppressed_sampled_run")) {
+            long suppressedBefore = countersBefore.get("wc_signals_suppressed_sampled_run");
+            long suppressedAfter = profiler.getDebugCounters()
+                    .getOrDefault("wc_signals_suppressed_sampled_run", 0L);
+            assertEquals(suppressedBefore, suppressedAfter,
                     "wc_signals_suppressed_sampled_run must not increment for traced sleep");
         }
     }
@@ -187,11 +243,15 @@ public class PrecheckTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
+        // This suite verifies sampling and suppression for threads outside a
+        // tracing-context window. It relies on the default context-filter
+        // scope (filter="0") plus each worker thread explicitly registering
+        // itself via registerCurrentThreadForWallClockProfiling()/addThread().
         return "wall=1ms,wallprecheck=true";
     }
 
     protected String getPrecheckDisabledProfilerCommand() {
-        return "wall=1ms,wallprecheck=false,filter=0";
+        return "wall=1ms,wallprecheck=false";
     }
 
     private WeightedSamples weightedSamplesForThread(String threadName) {

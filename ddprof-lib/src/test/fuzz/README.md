@@ -172,6 +172,26 @@ running the wrong number of times (double free or leak across `clear()`, an over
 the next `get()`, and non-bit-exact round-trips for the `double` specialization (NaN,
 infinities, subnormals, -0.0).
 
+### fuzz_threadFilter.cpp
+**Target**: `ThreadFilter` / `WallClockBlockTracker` - the wall-clock thread
+identity registry and its block-run suppression sidecar (see
+`threadFilter.h` / `wallClockBlockTracker.h`).
+
+Drives `registerThread` / `unregisterThread` / `add` / `remove` /
+`enterBlockedRun` / `exitBlockedRun` / `init` (registry restart) over a small,
+fixed tid domain so slot reuse and registration collisions are frequent. A
+shadow model tracks which tid should currently own which slot and traps on
+any divergence.
+
+**Expected bugs**: a still-live tid handed a second slot, two live tids
+sharing one slot (the single-owner invariant reviewers flagged as at risk
+from `add()`'s unchecked lazy-index fallback), a registry restart
+(`init()`) failing to clear a slot's block-run state via
+`WallClockBlockTracker::resetAll()`, a stale or forged generation token
+incorrectly clearing a newer block run, and any out-of-bounds/use-after-free
+in the lazy chunk allocation paths that slot reuse and registry resets
+exercise.
+
 ## Corpus
 
 Seed corpus files are in `corpus/<target_name>/`. These provide starting points
