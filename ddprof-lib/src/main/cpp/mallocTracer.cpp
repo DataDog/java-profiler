@@ -236,17 +236,17 @@ void MallocHooker::patchLibrary(CodeCache* cc) {
              cc->name(), cc->findImport(im_malloc) != nullptr);
     // Use patchImport() to record each slot for unpatchLibraries() restoration
     if (_orig_malloc)
-        patchImport(cc, im_malloc, (void*)malloc_hook, (void*)_orig_malloc);
+        patchImport(cc, im_malloc, reinterpret_cast<void*>(malloc_hook), reinterpret_cast<void*>(_orig_malloc));
     if (_orig_realloc)
-        patchImport(cc, im_realloc, (void*)realloc_hook, (void*)_orig_realloc);
+        patchImport(cc, im_realloc, reinterpret_cast<void*>(realloc_hook), reinterpret_cast<void*>(_orig_realloc));
     if (_orig_aligned_alloc)
-        patchImport(cc, im_aligned_alloc, (void*)aligned_alloc_hook, (void*)_orig_aligned_alloc);
+        patchImport(cc, im_aligned_alloc, reinterpret_cast<void*>(aligned_alloc_hook), reinterpret_cast<void*>(_orig_aligned_alloc));
     // On musl, calloc/posix_memalign delegate to malloc/aligned_alloc internally;
     // hooking them too would double-count. Leave the GOT entry untouched instead.
     if (_orig_calloc && !_nested_malloc)
-        patchImport(cc, im_calloc, (void*)calloc_hook, (void*)_orig_calloc);
+        patchImport(cc, im_calloc, reinterpret_cast<void*>(calloc_hook), reinterpret_cast<void*>(_orig_calloc));
     if (_orig_posix_memalign && !_nested_posix_memalign)
-        patchImport(cc, im_posix_memalign, (void*)posix_memalign_hook, (void*)_orig_posix_memalign);
+        patchImport(cc, im_posix_memalign, reinterpret_cast<void*>(posix_memalign_hook), reinterpret_cast<void*>(_orig_posix_memalign));
 }
 
 void MallocHooker::installHooks() {
@@ -257,7 +257,7 @@ void MallocHooker::installHooks() {
 // SECONDARY), like CodeCache::patchImport(), recording each for restoration.
 void MallocHooker::patchImport(CodeCache* cc, ImportId id, void* hook_fn, void* orig_fn) {
     for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
-        patchSlot(cc, cc->findImport(id, (ImportType)ty), hook_fn, orig_fn);
+        patchSlot(cc, cc->findImport(id, static_cast<ImportType>(ty)), hook_fn, orig_fn);
     }
 }
 

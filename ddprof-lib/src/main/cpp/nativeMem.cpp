@@ -133,12 +133,12 @@ void NativeMem::logLive(const char *when) {
   buf[0] = '\0';
   for (int c = 0; c < NM_NUM_CATEGORIES && pos < sizeof(buf); c++) {
     int n = snprintf(buf + pos, sizeof(buf) - pos, " %s=%lld",
-                     categoryName((NativeMemCategory)c),
-                     live((NativeMemCategory)c));
+                     categoryName(static_cast<NativeMemCategory>(c)),
+                     live(static_cast<NativeMemCategory>(c)));
     if (n < 0) {
       break;
     }
-    pos += (size_t)n;
+    pos += static_cast<size_t>(n);
   }
   double total_kb = liveTotal() / 1024.0;
   TEST_LOG("NativeMem live %s (total %.1f KB):%s", when, total_kb, buf);

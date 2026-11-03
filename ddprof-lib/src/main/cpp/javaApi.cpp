@@ -56,14 +56,19 @@ private:
   int _length;
 
 public:
+  // A null java_string gives c_str() == nullptr and length() == 0.
   JniString(JNIEnv *env, jstring java_string) {
     _env = env;
-    _c_string = _env->GetStringUTFChars(java_string, NULL);
-    _length = _env->GetStringUTFLength(java_string);
     _java_string = java_string;
+    _c_string = java_string != NULL ? _env->GetStringUTFChars(java_string, NULL) : nullptr;
+    _length = java_string != NULL ? _env->GetStringUTFLength(java_string) : 0;
   }
   JniString(JniString &jniString) = delete;
-  ~JniString() { _env->ReleaseStringUTFChars(_java_string, _c_string); }
+  ~JniString() {
+    if (_c_string != nullptr) {
+      _env->ReleaseStringUTFChars(_java_string, _c_string);
+    }
+  }
   const char *c_str() const { return _c_string; }
   int length() const { return _length; }
 };
@@ -243,32 +248,38 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
     JNIEnv *env, jclass unused, jlong rootSpanId, jstring endpoint,
     jstring operation, jint sizeLimit) {
-  if (!Profiler::instance()->isRunning()) {
-    // Nothing records the event while idle (no JFR recording), and interning
-    // the endpoint would allocate the string-label dictionary stop() just
-    // released. Answer what an empty dictionary would: accepted if the limit
-    // admits any entry.
-    return sizeLimit > 0 ? JNI_TRUE : JNI_FALSE;
+  Profiler *profiler = Profiler::instance();
+  // Nothing records the event while idle (no JFR recording), and interning
+  // the endpoint would allocate the string-label dictionary stop() released.
+  // Answer what an empty dictionary would: accepted if the limit admits any
+  // entry.
+  const jboolean idle_answer = sizeLimit > 0 ? JNI_TRUE : JNI_FALSE;
+  if (!profiler->tracerApiOpen()) {
+    return idle_answer;
   }
+  // JNI work stays outside the locked region (it can block for a safepoint).
   JniString endpoint_str(env, endpoint);
-
-  // Initialize thread TLS if it has not yet done
+  JniString operation_str(env, operation);
   ProfiledThread::initCurrentThreadSignalSafe();
+  int tid = ProfiledThread::currentTid();
 
-  u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
+  // See Profiler::_tracer_api_lock: re-checked under the lock.
+  OptionalSharedLockGuard api(profiler->tracerApiLock(), SpinLock::NO_SPIN_BUDGET);
+  if (!api.ownsLock() || !profiler->tracerApiOpen()) {
+    return idle_answer;
+  }
+  u32 endpointLabel = profiler->stringLabelMap()->bounded_lookup(
       endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
   // StringDictionary reserves 0 as "no entry"; valid IDs start at 1.
   bool acceptValue = endpointLabel != 0;
   if (acceptValue) {
     u32 operationLabel = 0;
-    if (operation != NULL) {
-      JniString operation_str(env, operation);
-      operationLabel = Profiler::instance()->contextValueMap()->bounded_lookup(
+    if (operation_str.c_str() != nullptr) {
+      operationLabel = profiler->contextValueMap()->bounded_lookup(
           operation_str.c_str(), operation_str.length(), 1 << 16);
     }
     TraceRootEvent event(rootSpanId, endpointLabel, operationLabel);
-    int tid = ProfiledThread::currentTid();
-    Profiler::instance()->recordTraceRoot(tid, &event);
+    profiler->recordTraceRoot(tid, &event);
   }
   return acceptValue;
 }
@@ -307,7 +318,7 @@ Java_com_datadoghq_profiler_JavaProfiler_describeNativeMemCategories0(
   }
   for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
     env->SetObjectArrayElement(
-        array, c, env->NewStringUTF(NativeMem::categoryName((NativeMemCategory)c)));
+        array, c, env->NewStringUTF(NativeMem::categoryName(static_cast<NativeMemCategory>(c))));
   }
   return array;
 }
@@ -317,7 +328,7 @@ Java_com_datadoghq_profiler_JavaProfiler_getNativeMemLive0(JNIEnv *env,
                                                            jclass unused) {
   jlong values[NM_NUM_CATEGORIES];
   for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
-    values[c] = (jlong)NativeMem::live((NativeMemCategory)c);
+    values[c] = static_cast<jlong>(NativeMem::live(static_cast<NativeMemCategory>(c)));
   }
   jlongArray array = env->NewLongArray(NM_NUM_CATEGORIES);
   if (array != nullptr) {
@@ -368,18 +379,14 @@ Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
       tid, length, name_str.c_str(), value_str.c_str(), unit_str.c_str());
 }
 
-static int dictionarizeClassName(JNIEnv* env, jstring className) {
-    JniString str(env, className);
-    return Profiler::instance()->lookupClass(str.c_str(), str.length());
-}
-
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     JNIEnv *env, jclass unused, jlong startTime, jlong endTime, jstring task,
     jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
-  if (!Profiler::instance()->isRunning()) {
-    // Nothing records the event while idle; interning the names would
-    // allocate the class-name dictionary stop() just released.
+  Profiler *profiler = Profiler::instance();
+  // Nothing records the event while idle; interning the names would allocate
+  // the class-name dictionary stop() released.
+  if (!profiler->tracerApiOpen()) {
     return;
   }
 
@@ -395,16 +402,27 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   if (origin_tid < 0) {
     return;
   }
+  // JNI work stays outside the locked region (it can block for a safepoint).
+  JniString task_str(env, task);
+  JniString scheduler_str(env, scheduler);
   JniString queue_type_str(env, queueType);
-  int task_offset = dictionarizeClassName(env, task);
+
+  // See Profiler::_tracer_api_lock: re-checked under the lock.
+  OptionalSharedLockGuard api(profiler->tracerApiLock(), SpinLock::NO_SPIN_BUDGET);
+  if (!api.ownsLock() || !profiler->tracerApiOpen()) {
+    return;
+  }
+  int task_offset = profiler->lookupClass(task_str.c_str(), task_str.length());
   if (task_offset < 0) {
     return;
   }
-  int scheduler_offset = dictionarizeClassName(env, scheduler);
+  int scheduler_offset =
+      profiler->lookupClass(scheduler_str.c_str(), scheduler_str.length());
   if (scheduler_offset < 0) {
     return;
   }
-  int queue_type_offset = dictionarizeClassName(env, queueType);
+  int queue_type_offset =
+      profiler->lookupClass(queue_type_str.c_str(), queue_type_str.length());
   if (queue_type_offset < 0) {
     return;
   }
@@ -416,7 +434,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   event._origin = origin_tid;
   event._queueType = queue_type_offset;
   event._queueLength = queueLength;
-  Profiler::instance()->recordQueueTime(tid, &event);
+  profiler->recordQueueTime(tid, &event);
 }
 
 extern "C" DLLEXPORT void JNICALL

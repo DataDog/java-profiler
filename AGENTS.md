@@ -336,8 +336,10 @@ discards them.
 **Persistent hooks.** The `pthread_create` and `sigaction` GOT hooks are installed once
 (`LibraryPatcher::initialize_persistent()`, from `Profiler::init()` or the first
 `start()`) and never unpatched, so they run before the first `start()` and between
-recordings. Code they reach must tolerate an idle profiler: `Profiler::registerThread()`
-registers with engines only while `_thread_registration_open` is set (opened just
+recordings. They must stay transparent: the `pthread_create` wrapper passes the
+routine's return value to `pthread_exit()`. Code they reach must tolerate an idle
+profiler: `Profiler::registerThread()` registers with engines only while
+`_thread_registration_open` is set (opened just
 before the engines start, closed first thing in `stop()`, with a fence and a re-check
 that undoes a racing registration); `unregisterThread()` is ungated and tolerates no
 engine being selected.

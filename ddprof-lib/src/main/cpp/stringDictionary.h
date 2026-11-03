@@ -329,10 +329,10 @@ private:
             free(fresh);  // another insert published one first; t holds it
             return t;
         }
-        NativeMem::record(NM_DICTIONARY, (long long)sizeof(SBTable));
+        NativeMem::record(NM_DICTIONARY, static_cast<long long>(sizeof(SBTable)));
         if (_counter_offset != 0) {
             Counters::increment(DICTIONARY_PAGES, 1, _counter_offset);
-            Counters::increment(DICTIONARY_BYTES, (long long)sizeof(SBTable), _counter_offset);
+            Counters::increment(DICTIONARY_BYTES, static_cast<long long>(sizeof(SBTable)), _counter_offset);
         }
         return fresh;
     }
@@ -548,11 +548,11 @@ public:
         clear();
         if (_table != nullptr) {
             free(_table);
-            NativeMem::record(NM_DICTIONARY, -(long long)sizeof(SBTable));
+            NativeMem::record(NM_DICTIONARY, -static_cast<long long>(sizeof(SBTable)));
             _table = nullptr;
             if (_counter_offset != 0) {
                 Counters::decrement(DICTIONARY_PAGES, 1, _counter_offset);
-                Counters::decrement(DICTIONARY_BYTES, (long long)sizeof(SBTable), _counter_offset);
+                Counters::decrement(DICTIONARY_BYTES, static_cast<long long>(sizeof(SBTable)), _counter_offset);
             }
         }
         _arena.release();

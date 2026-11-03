@@ -620,8 +620,12 @@ private:
     }
     _leak_tag_free_count = LEAK_TAG_POOL_SIZE;
   }
-  // Clears the JVMTI tag of every object still carrying a pool tag.
-  void clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env);
+  // Clears the JVMTI tag of every object still carrying a pool tag. Returns
+  // false if the objects could not be enumerated (some may keep their tag).
+  bool clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env);
+  // A clearLeakTagsOnObjects() failed: the next release() retries even when
+  // the pool shows no tag out. Only release() touches it.
+  bool _leak_tag_clear_pending = false;
   // Deletes the population representatives' weak refs and empties the
   // population and its scratch. Caller holds the exclusive _table_lock.
   void resetKlassPopulationLocked(JNIEnv *env);

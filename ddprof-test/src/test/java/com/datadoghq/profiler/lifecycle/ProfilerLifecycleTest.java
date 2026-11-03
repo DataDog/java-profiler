@@ -101,6 +101,7 @@ public class ProfilerLifecycleTest {
         // Step 2: First start() via execute()
         Path jfr1 = Files.createTempFile(recordings, "lifecycle_session1_", ".jfr");
         try {
+            nativeMem("before first start");
             profiler.execute("start,wall=1ms,cpu=10ms,jfr,file=" + jfr1.toAbsolutePath());
             System.out.println("[Lifecycle] Step 2: First start() - profiler running");
             assertRecording(nativeMem("after first start"), "after first start");
@@ -126,6 +127,7 @@ public class ProfilerLifecycleTest {
         // Step 4: Second start() via execute() - tests restart after stop
         Path jfr2 = Files.createTempFile(recordings, "lifecycle_session2_", ".jfr");
         try {
+            nativeMem("before second start");
             profiler.execute("start,wall=1ms,cpu=10ms,jfr,file=" + jfr2.toAbsolutePath());
             System.out.println("[Lifecycle] Step 4: Second start() - profiler restarted");
             assertRecording(nativeMem("after second start"), "after second start");
@@ -174,7 +176,9 @@ public class ProfilerLifecycleTest {
             Path jfr = Files.createTempFile(recordings, "lifecycle_cycle" + cycle + "_", ".jfr");
             try {
                 // Start
+                nativeMem("cycle " + cycle + " before start");
                 profiler.execute("start,cpu=10ms,jfr,file=" + jfr.toAbsolutePath());
+                nativeMem("cycle " + cycle + " after start");
 
                 // Generate work
                 generateCpuWork();
@@ -248,7 +252,9 @@ public class ProfilerLifecycleTest {
             for (int cycle = 1; cycle <= 3; cycle++) {
                 Path jfr = Files.createTempFile(recordings, "concurrent_cycle" + cycle + "_", ".jfr");
                 try {
+                    nativeMem("concurrent cycle " + cycle + " before start");
                     profiler.execute("start,wall=1ms,cpu=10ms,jfr,file=" + jfr.toAbsolutePath());
+                    nativeMem("concurrent cycle " + cycle + " after start");
 
                     // Let profiler run while workers are active
                     Thread.sleep(100);
@@ -296,8 +302,9 @@ public class ProfilerLifecycleTest {
         for (int cycle = 1; cycle <= CYCLES; cycle++) {
             Path jfr = Files.createTempFile(recordings, "liveness_cycle" + cycle + "_", ".jfr");
             try {
-                profiler.execute("start,memory=256:L,jfr,file=" + jfr.toAbsolutePath());
                 String when = "liveness cycle " + cycle;
+                nativeMem(when + " before start");
+                profiler.execute("start,memory=256:L,jfr,file=" + jfr.toAbsolutePath());
                 assertTrue(category(nativeMem(when + " after start"), "liveness") > 0,
                         "no liveness table " + when + " after start");
 
@@ -338,7 +345,9 @@ public class ProfilerLifecycleTest {
             assertNotNull(statusBefore, "Status should be available before start");
 
             // Start profiler
+            nativeMem("status test before start");
             profiler.execute("start,cpu=10ms,jfr,file=" + jfr.toAbsolutePath());
+            nativeMem("status test after start");
             String statusRunning = profiler.getStatus();
             assertTrue(statusRunning.contains("Running          : true"),
                     "Status should show running=true after start");

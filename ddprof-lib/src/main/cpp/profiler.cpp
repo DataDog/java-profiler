@@ -1610,10 +1610,10 @@ Error Profiler::start(Arguments &args, bool reset) {
     size_t nelem = (size_t)args._jstackdepth + RESERVED_FRAMES;
 
     // Phase 1: allocate all replacements up front. If any allocation fails,
-    // roll back the ones already made and leave the profiler unchanged — old
-    // buffers, _max_stack_depth, and all accounting stay consistent. (The old
-    // code swapped shard-by-shard and reset _max_stack_depth to 0 on failure,
-    // leaving a partially-swapped, mis-accounted state.)
+    // free the ones already made and fail the start with no partial swap:
+    // _max_stack_depth and the accounting stay consistent. The failure path
+    // also releases the recording memory (old buffers included), leaving the
+    // idle state stop() leaves; a later start() reallocates everything.
     CallTraceBuffer *fresh[CONCURRENCY_LEVEL];
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       fresh[i] = (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
@@ -1621,7 +1621,8 @@ Error Profiler::start(Arguments &args, bool reset) {
         for (int j = 0; j < i; j++) {
           free(fresh[j]);
         }
-        // Give back what acquireRecordingMemory() allocated above.
+        // Back to the idle state: frees what acquireRecordingMemory()
+        // allocated above and the old buffers.
         releaseRecordingMemory();
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
@@ -1881,9 +1882,12 @@ Error Profiler::start(Arguments &args, bool reset) {
     // Paired with drainInflight() on the stop side.
     _cpu_engine->enableEvents(true);
 
+    _tracer_api_open.store(true, std::memory_order_release);
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
+    // What the recording allocated on top of "before start".
+    NativeMem::logLive("after start");
     return Error::OK;
   }
   // no engine was activated; perform cleanup
@@ -2346,6 +2350,17 @@ void Profiler::shutdown(Arguments &args) {
 }
 
 void Profiler::releaseRecordingMemory() {
+  // Close the tracer API first (_state is still RUNNING here during stop(),
+  // so isRunning() could not gate it). Clearing the flag turns new
+  // recordTrace0/recordQueueEnd0 calls away before they take the lock; taking
+  // it exclusively once then waits for the calls already holding it, and a
+  // call that takes it afterwards sees the flag cleared. So nothing
+  // re-allocates the dictionaries released below.
+  _tracer_api_open.store(false, std::memory_order_seq_cst);
+  {
+    ExclusiveLockGuard drain(&_tracer_api_lock);
+  }
+
   // First, while getLiveTraceIds() is no longer consulted (the final chunk is
   // written) and the reference-chain BFS thread is joined; a no-op on the
   // start() error paths, which run before the tracker is set up.
@@ -2356,13 +2371,13 @@ void Profiler::releaseRecordingMemory() {
   // CallTraceStorage::clear(), against any other writer.
   lockAll();
   _call_trace_storage.release();
-  size_t nelem = (size_t)_max_stack_depth + RESERVED_FRAMES;
+  size_t nelem = static_cast<size_t>(_max_stack_depth) + RESERVED_FRAMES;
   for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
     CallTraceBuffer *buf = _calltrace_buffer[i];
     _calltrace_buffer[i] = NULL;
     if (buf != NULL) {
       free(buf);
-      NativeMem::record(NM_CALLTRACE, -(long long)(nelem * sizeof(CallTraceBuffer)));
+      NativeMem::record(NM_CALLTRACE, -static_cast<long long>(nelem * sizeof(CallTraceBuffer)));
     }
   }
   unlockAll();

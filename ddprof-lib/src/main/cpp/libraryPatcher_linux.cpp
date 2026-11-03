@@ -296,9 +296,11 @@ extern "C" {
 }
 #endif
 
+// Returns routine's result, which the wrappers hand to pthread_exit() so that a
+// pthread_join() on the thread still sees what the original routine returned.
 __attribute__((visibility("hidden"), noinline, no_stack_protector))
-void run_with_cleanup(func_start_routine routine, void* params,
-                      void (*cleanup_fn)(void*), void* cleanup_arg) {
+void* run_with_cleanup(func_start_routine routine, void* params,
+                       void (*cleanup_fn)(void*), void* cleanup_arg) {
 #ifdef __GLIBC__
     __pthread_unwind_buf_t cancel_buf = {};
     // With savemask=0, __sigsetjmp only writes __jmp_buf + int __mask_was_saved;
@@ -335,14 +337,19 @@ void run_with_cleanup(func_start_routine routine, void* params,
     // cancel_buf is registered, silently skipping cleanup_fn.  All current
     // callers are JVM/native start routines with no pending cancellation.
     __pthread_register_cancel(&cancel_buf);
-    routine(params);
+    void* result = routine(params);
     __pthread_unregister_cancel(&cancel_buf);
     cleanup_fn(cleanup_arg);
+    return result;
 #else
     // musl / non-glibc: pthread_cleanup_push uses the C/sigsetjmp form, no RAII.
+    // result is declared outside the push/pop block, which the macros open and
+    // close.
+    void* result;
     pthread_cleanup_push(cleanup_fn, cleanup_arg);
-    routine(params);
+    result = routine(params);
     pthread_cleanup_pop(1);
+    return result;
 #endif
 }
 
@@ -359,7 +366,7 @@ void run_with_cleanup(func_start_routine routine, void* params,
 //   pthread_create_wrapped_for_test → start_routine_for_test
 //     → ProfiledThread::initCurrentThread()
 //     → run_with_cleanup(routine, params, cleanup_fn, cleanup_arg)
-//     → pthread_exit(nullptr)
+//     → pthread_exit(routine's result)
 struct WrapperTestCtx {
     func_start_routine routine;
     void* params;
@@ -379,8 +386,7 @@ static void* start_routine_for_test(void* raw) {
         delete ctx;
         ProfiledThread::initCurrentThread();
     }
-    run_with_cleanup(routine, params, cleanup_fn, cleanup_arg);
-    pthread_exit(nullptr);
+    pthread_exit(run_with_cleanup(routine, params, cleanup_fn, cleanup_arg));
     __builtin_unreachable();
 }
 
@@ -491,9 +497,11 @@ static void* start_routine_wrapper_spec(void* args) {
     // routine(params).  The push/pop pair lives inside run_with_cleanup so
     // that __pthread_unwind_buf_t (glibc) / struct __ptcb (musl) does not land
     // in this frame's DEOPT-corruption zone.
-    run_with_cleanup(routine, params, cleanup_unregister, nullptr);
     // pthread_exit instead of 'return': the saved LR in this frame is corrupted
-    // by DEOPT PACKING; returning would jump to a garbage address.
+    // by DEOPT PACKING; returning would jump to a garbage address. The
+    // routine's result goes straight from run_with_cleanup's return register
+    // into pthread_exit, never through this frame's (corruptible) stack slots,
+    // so pthread_join() still sees it.
     // cleanup_unregister has already run via run_with_cleanup's normal return
     // path, so there is no registered cancel handler left.  The forced unwind
     // raised by pthread_exit walks this frame, but it is safe because no
@@ -502,7 +510,7 @@ static void* start_routine_wrapper_spec(void* args) {
     // without ever calling _Unwind_SetGR, avoiding the static-libgcc abort.
     // WARNING: adding any RAII local with a destructor between run_with_cleanup
     // and pthread_exit would reintroduce that crash.
-    pthread_exit(nullptr);
+    pthread_exit(run_with_cleanup(routine, params, cleanup_unregister, nullptr));
     __builtin_unreachable();
 }
 
@@ -559,8 +567,8 @@ static void* start_routine_wrapper(void* args) {
     // The pthread_exit forced unwind is safe here for the same reason as in
     // start_routine_wrapper_spec: no destructor-bearing local is live at this
     // call site, so __gxx_personality_v0 never calls _Unwind_SetGR.
-    run_with_cleanup(routine, params, cleanup_unregister, nullptr);
-    pthread_exit(nullptr);
+    // Pass the routine's result on, so pthread_join() sees it.
+    pthread_exit(run_with_cleanup(routine, params, cleanup_unregister, nullptr));
     __builtin_unreachable();
 }
 
@@ -664,49 +672,65 @@ void LibraryPatcher::unpatch_libraries() {
   unpatch_socket_functions();
 }
 
-// The process-wide count of unloaded objects (dl_phdr_info::dlpi_subs), or
-// false if the loader does not report it. Must not be called with _lock held
-// (dl_iterate_phdr() takes dl_load_write_lock; see the lock order above).
-static bool loader_unload_count(unsigned long long* subs) {
-  struct Result { bool known; unsigned long long subs; } result = {false, 0};
+// The process-wide counts of loaded and unloaded objects
+// (dl_phdr_info::dlpi_adds/dlpi_subs), or false if the loader does not report
+// them. Must not be called with _lock held (dl_iterate_phdr() takes
+// dl_load_write_lock; see the lock order above).
+struct LoaderCounts {
+  unsigned long long adds;
+  unsigned long long subs;
+};
+
+static bool loader_counts(LoaderCounts* counts) {
+  struct Result { bool known; LoaderCounts counts; } result = {false, {0, 0}};
   dl_iterate_phdr(
       [](struct dl_phdr_info* info, size_t size, void* data) -> int {
-        Result* r = (Result*)data;
+        Result* r = static_cast<Result*>(data);
         if (size >= offsetof(struct dl_phdr_info, dlpi_subs) + sizeof(info->dlpi_subs)) {
           r->known = true;
-          r->subs = info->dlpi_subs;
+          r->counts.adds = info->dlpi_adds;
+          r->counts.subs = info->dlpi_subs;
         }
         return 1;  // the counters are global; the first object is enough
       },
       &result);
-  *subs = result.subs;
+  *counts = result.counts;
   return result.known;
 }
 
-// The unload count as of the last pass that re-checked every already patched
-// library, or ~0 before the first one.
+// The loader counts as of the last pass that re-checked every already patched
+// library; ~0 before the first one. Read and written without _lock.
+static std::atomic<unsigned long long> pthread_create_checked_adds{~0ULL};
 static std::atomic<unsigned long long> pthread_create_checked_subs{~0ULL};
 
 void LibraryPatcher::patch_pthread_create() {
   // An already patched library only needs another look when it was reloaded
   // at the same base, whose fresh GOT holds the real pthread_create again (see
-  // patch_library_unlocked()). That takes an unload first, so while no object
-  // has been unloaded since the last full pass they are left out of the walk,
-  // sparing every refresh an identity check (fingerprint or stat()) per
-  // patched library. musl never unmaps, so nothing is ever reloaded there.
-  // Racing refreshes may each do a full pass, or store an older count; either
-  // only costs a redundant re-check later.
-  unsigned long long subs = 0;
-  bool subs_known = !OS::isMusl() && loader_unload_count(&subs);
-  bool recheck_patched = !OS::isMusl() &&
-      (!subs_known || subs != pthread_create_checked_subs.load(std::memory_order_acquire));
+  // patch_library_unlocked()). A reload is an unload followed by a load, and
+  // the two can straddle a pass: the unload can be seen (and its library not
+  // visited, being unmapped) by one pass and the load happen after it. So the
+  // patched libraries are re-checked when an object was unloaded since the
+  // last full pass, or loaded since then while any unload has ever happened;
+  // otherwise only unpatched libraries enter the walk, sparing every refresh
+  // an identity check (fingerprint or stat()) per patched library. musl never
+  // unmaps, so nothing is ever reloaded there. Racing refreshes may each do a
+  // full pass, or store older counts; either only costs a redundant re-check.
+  LoaderCounts counts = {0, 0};
+  bool counts_known = !OS::isMusl() && loader_counts(&counts);
+  bool recheck_patched = false;
+  if (!OS::isMusl()) {
+    recheck_patched = !counts_known ||
+        counts.subs != pthread_create_checked_subs.load(std::memory_order_acquire) ||
+        (counts.subs != 0 &&
+         counts.adds != pthread_create_checked_adds.load(std::memory_order_acquire));
+  }
 
   struct Context { const CodeCacheArray* native_libs; bool recheck_patched; };
   Context ctx = {&Libraries::instance()->native_libs(), recheck_patched};
   {
     LiveLibraryWalk walk(
         [](void* data) {
-          const Context& c = *(const Context*)data;
+          const Context& c = *static_cast<const Context*>(data);
           int num_of_libs = c.native_libs->count();
           for (int index = 0; index < num_of_libs; index++) {
             CodeCache* lib = c.native_libs->at(index);
@@ -723,8 +747,9 @@ void LibraryPatcher::patch_pthread_create() {
         &ctx,
         [](CodeCache* lib, int) { patch_library_unlocked(lib); });
   }
-  if (recheck_patched && subs_known) {
-    pthread_create_checked_subs.store(subs, std::memory_order_release);
+  if (recheck_patched && counts_known) {
+    pthread_create_checked_adds.store(counts.adds, std::memory_order_release);
+    pthread_create_checked_subs.store(counts.subs, std::memory_order_release);
   }
 }
 

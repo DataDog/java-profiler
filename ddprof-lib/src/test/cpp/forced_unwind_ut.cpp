@@ -53,7 +53,7 @@
 // Production function under test — defined in libraryPatcher_linux.cpp.
 // Declared here (outside any platform guard) because run_with_cleanup is built
 // on both glibc and musl; each platform's tests call it directly.
-extern "C++" void run_with_cleanup(void* (*)(void*), void*, void(*)(void*), void*);
+extern "C++" void* run_with_cleanup(void* (*)(void*), void*, void(*)(void*), void*);
 
 // ===========================================================================
 // glibc path: __pthread_register_cancel / __pthread_unregister_cancel tests
@@ -516,6 +516,38 @@ TEST(ForcedUnwindTest, WrapperReleasesProfiledThreadOnPthreadExit) {
     EXPECT_TRUE(g_int_exit_released.load())
         << "ProfiledThread::release() must complete inside the wrapper cleanup";
     EXPECT_EQ(reinterpret_cast<void*>(99), retval);
+}
+
+// ---------------------------------------------------------------------------
+
+static std::atomic<int> g_int_return_cleanups{0};
+
+static void int_return_cleanup(void*) {
+    g_int_return_cleanups.fetch_add(1, std::memory_order_relaxed);
+    ProfiledThread::release();
+}
+
+static void* int_return_fn(void*) {
+    return reinterpret_cast<void*>(0x5eed);
+}
+
+// Integration: a wrapped routine that returns normally keeps its return value.
+// The pthread_create hook is never unpatched, so a wrapper that dropped it would
+// break every pthread_join() caller of a patched library for the process's life.
+TEST(ForcedUnwindTest, WrapperPreservesRoutineReturnValue) {
+    g_int_return_cleanups.store(0, std::memory_order_relaxed);
+
+    pthread_t t;
+    ASSERT_EQ(0, pthread_create_wrapped_for_test(
+        &t, int_return_fn, nullptr, int_return_cleanup, nullptr));
+
+    void* retval;
+    ASSERT_EQ(0, pthread_join(t, &retval));
+
+    EXPECT_EQ(1, g_int_return_cleanups.load())
+        << "cleanup must run exactly once on the normal-return path";
+    EXPECT_EQ(reinterpret_cast<void*>(0x5eed), retval)
+        << "pthread_join() must see the routine's own return value";
 }
 
 // ---------------------------------------------------------------------------

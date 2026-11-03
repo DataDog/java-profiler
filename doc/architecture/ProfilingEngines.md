@@ -120,9 +120,13 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
    `LibraryPatcher::initialize_persistent()`, and never unpatched, so it also
    runs before the first `start()` and between recordings. A refresh re-checks
    already patched libraries (one reloaded at the same base needs its fresh GOT
-   re-hooked) only when glibc's process-wide unload count (`dlpi_subs`) changed
-   since the last full pass; otherwise only unpatched libraries enter the
-   identity-checking walk. Registration is
+   re-hooked) only when glibc's process-wide counters show one may have
+   happened: an unload (`dlpi_subs`) since the last full pass, or a load
+   (`dlpi_adds`) since then while any unload has ever happened (the unload of a
+   reload can fall in an earlier pass than its load). Otherwise only unpatched
+   libraries enter the identity-checking walk. The wrapper passes the routine's
+   return value to `pthread_exit()`, so `pthread_join()` still sees it even
+   though the hook outlives every recording. Registration is
    therefore gated: `Profiler::registerThread()` returns without touching an
    engine unless `_thread_registration_open` is set, which `start()` opens
    just before the engines start and `stop()` closes before disabling them.
