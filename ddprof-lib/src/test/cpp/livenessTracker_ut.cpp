@@ -1253,11 +1253,6 @@ public:
         return true;
     }
 
-    // The heap-floor ring size, for tests that wrap it a full lap.
-    static constexpr int heapFloorRingSizeForTest() {
-        return LivenessTracker::KLASS_POPULATION_RING_SIZE;
-    }
-
     // Swaps the head slot's seqlock word for `value` (e.g. the busy
     // sentinel) and returns the previous value so the caller can restore it.
     static u64 swapHeapFloorHeadSeqForTest(LivenessTracker *t, u64 value) {
@@ -1826,7 +1821,7 @@ struct HeapFloorWrapHook {
         if (h->fire_once) {
             LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr);
         }
-        for (int i = 0; i < LivenessTrackerTestAccessor::heapFloorRingSizeForTest();
+        for (int i = 0; i < LivenessTracker::heapFloorRingSizeForTest();
              i++) {
             h->lt->heapFloorRecordForTest(2000 + (u64)i, 0);
         }
@@ -1871,7 +1866,7 @@ TEST_F(HeapFloorSeqlockTest, NewestSampleCoherentAcrossRingWrap) {
                                                   &hook);
     u64 seq = 0;
     u64 used = lt->newestHeapFloorSample(&seq);
-    constexpr int ring = LivenessTrackerTestAccessor::heapFloorRingSizeForTest();
+    constexpr int ring = LivenessTracker::heapFloorRingSizeForTest();
     // The interleaving really happened: the writer advanced a full ring (30
     // samples) past the read slot while the reader was between its two loads.
     EXPECT_EQ(1, hook.calls) << "the read hook never fired - no interleaving";
