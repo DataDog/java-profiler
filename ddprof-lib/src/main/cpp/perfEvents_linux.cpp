@@ -1074,8 +1074,7 @@ void PerfEvents::stop() {
 // Profiler::replaceCpuEngine() calls this under a ThreadTablesFreeze once
 // another CPU engine replaces this one, and start() calls it before it frees
 // the table on a pid_max change. The start() call runs without a freeze, so a
-// concurrent unregisterThread() of the same tid is still possible there
-// (PROF-16359).
+// concurrent unregisterThread() of the same tid is still possible there.
 void PerfEvents::releaseThreads() {
   for (int tid = 0; tid < _max_events; tid++) {
     unregisterThread(tid);

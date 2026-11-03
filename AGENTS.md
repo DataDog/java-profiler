@@ -294,41 +294,13 @@ Otherwise a signal can sample a half-torn-down thread, or re-acquire a
 thread that keeps running silently stops profiling that thread — use `SignalBlocker`
 for a temporary window.
 
-**Thread registration.** The `pthread_create` hook and the JVMTI `ThreadStart`/
-`ThreadEnd` callbacks run without `_state_lock` and can overlap `Profiler::start()`/
-`stop()`, while engines size, replace or tear down their per-thread tables (`CTimer`'s
-`_timers`, `PerfEvents`' `_events`). So:
-- reach the engines only through `Profiler::registerThread()`/`unregisterThread()`,
-  never `_cpu_engine->registerThread()` directly. These calls check a gate
-  (`_engines_ready` / `_thread_tables_stable`), count themselves in flight
-  (`HookCallScope`), and run with thread cancellation disabled;
-- an engine with a per-thread table sizes it first, then calls
-  `Profiler::openThreadRegistration()`, then lists the existing threads. Free or
-  replace a table only while its gate is closed: closing a gate
-  (`closeThreadRegistration()`, `ThreadTablesFreeze`) waits until no call is inside an
-  engine. Each gate counts its calls separately: `closeThreadRegistration()` waits only
-  for registration calls, because unregistration stays open during `stop()`;
-  `ThreadTablesFreeze` waits for both. The wait is bounded; when it reports failure,
-  free or replace no table. A `ThreadTablesFreeze` timeout fails the operation; a
-  `closeThreadRegistration()` timeout puts the profiler in `ERROR` (`stop()` still
-  completes, since it frees no table), so no later `start()` replaces a table under
-  the stuck call. Engine
-  resources kept across `stop()` are released (`Engine::releaseThreads()`) when another
-  engine replaces the CPU engine. Known exception: `PerfEvents::start()` still
-  replaces `_events` without a gate (PROF-16359). `Profiler::startCpuEngine()` opens the
-  registration gate once any CPU engine started, so the gate is open iff it did, and it
-  admits only the CPU engine. A wall engine that needs `registerThread()` needs its own
-  gate: opening this one would also admit a CPU engine that failed;
-- an engine's `stop()` must tolerate a concurrent `unregisterThread()`: `stop()` closes
-  only the registration gate, and unregistration stays open while the engines stop;
-- close unregistration (`ThreadTablesFreeze`) only around an actual table replacement
-  or a CPU engine change, never for a whole `start()`: an exit dropped while it is closed leaves a stale slot
-  that a thread reusing the tid cannot claim, and `start()`/`stop()` cycles repeat;
-- restore the cancellation state outside every destructor-bearing scope, never from a
-  destructor: current glibc acts on a pending asynchronous cancellation as soon as it
-  is re-enabled, and unwinding out of an implicitly `noexcept` destructor terminates.
-
-Details: [ProfilingEngines.md](doc/architecture/ProfilingEngines.md#thread-registration).
+**Thread registration.** Thread hooks (`pthread_create`, JVMTI `ThreadStart`/`ThreadEnd`)
+run without `_state_lock` and overlap `start()`/`stop()`. Reach engines only through
+`Profiler::registerThread()`/`unregisterThread()`, never `_cpu_engine->…` directly. An
+engine with a per-thread table sizes it before `openThreadRegistration()` and frees or
+replaces it only under `ThreadTablesFreeze`; that freeze closes unregistration only around
+the replacement, never for a whole `start()`. Details:
+[ProfilingEngines.md](doc/architecture/ProfilingEngines.md#thread-registration).
 
 **JVMTI callbacks.** Callbacks run on whichever JVM thread triggers the event —
 including compiler, VM and GC threads that never went through our `pthread_create`

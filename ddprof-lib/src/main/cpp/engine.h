@@ -58,6 +58,9 @@ public:
   // when another engine replaces it in its Profiler slot: thread exits no
   // longer reach it after that, so nothing else would release them.
   virtual void releaseThreads() {}
+  // True when the per-thread state outlives stop(), so a registration call
+  // still inside the engine may use it after stop() returns.
+  virtual bool keepsThreadStateAcrossStop() const { return false; }
 
   virtual void enableEvents(bool enabled) {
     // do nothing

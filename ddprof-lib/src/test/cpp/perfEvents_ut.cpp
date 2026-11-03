@@ -58,8 +58,7 @@ TEST(PerfEventsCompareTidsTest, SortsCreationOrderedTidsWithReuse) {
 // recording keep delivering SIGPROF, and the handler calls resetBuffer() on
 // every exit, so resetBuffer() must not index the missing table. This checks
 // only that no crash happens. Checking that releaseThreads() closes real fds
-// needs slot setters in perfEvents_linux.cpp, which this binary does not have
-// (PROF-16359).
+// needs slot setters in perfEvents_linux.cpp, which this binary does not have.
 TEST(PerfEventsTableTest, MissingTableIsNotIndexed) {
   PerfEvents::resetBuffer(5);
 }

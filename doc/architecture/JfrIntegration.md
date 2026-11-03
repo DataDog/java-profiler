@@ -383,7 +383,7 @@ turns this off; it is on by default (`flightRecorder.cpp:1244-1291`,
 `writeStackTraces()` (`flightRecorder.cpp:1925-1979`) is the only consumer of
 stored traces. It calls `Profiler::processCallTraces()`, which hands the lambda
 to `CallTraceStorage::processTraces()`, or an empty set when stack traces are
-omitted (`profiler.h:377-385`). Rotation, liveness preservation and the reserved
+omitted. Rotation, liveness preservation and the reserved
 trace IDs are covered in [CallTraceStorage](CallTraceStorage.md). The callback
 runs inside `processTraces()`, so the `CallTrace` pointers stay valid while it
 runs.

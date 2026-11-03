@@ -47,6 +47,9 @@
 
 class ProfilerTestAccessor {
 public:
+  static void clearSkipped() { Profiler::clearSkippedUnregistrations(); }
+  static int skippedCount() { return Profiler::skippedUnregistrationCount(); }
+  static int skippedTid(int index) { return Profiler::skippedUnregistration(index); }
   static bool enginesReady(Profiler *p) {
     return p->_engines_ready.load(std::memory_order_acquire);
   }
@@ -725,7 +728,9 @@ TEST(ProfilerEnginesGateTest, ThreadTablesFreezeReportsUndrainedOnStuckHookCall)
 // registerThread() calls.
 class FakeCpuEngine : public Engine {
 public:
-  FakeCpuEngine(bool fail, bool open_gate) : _fail(fail), _open_gate(open_gate) {}
+  FakeCpuEngine(bool fail, bool open_gate, bool keeps_state = false)
+      : _fail(fail), _open_gate(open_gate), _keeps_state(keeps_state) {}
+  bool keepsThreadStateAcrossStop() const override { return _keeps_state; }
   std::atomic<bool> gate_open_in_start{false};
   std::atomic<int> enable_true_calls{0};
   std::atomic<int> register_calls{0};
@@ -751,6 +756,7 @@ public:
 private:
   bool _fail;
   bool _open_gate;
+  bool _keeps_state;
 };
 
 // A CPU engine that opened the gate and then failed leaves it closed, so the
@@ -781,14 +787,14 @@ TEST(ProfilerEnginesGateTest, FailedCpuEngineStartClosesThreadRegistration) {
   EXPECT_EQ(state_before, ProfilerTestAccessor::state(profiler));
 }
 
-// If the gate cannot be closed after the CPU engine failed, a hook call may
-// still be inside that engine's table, and only start() replaces tables. The
-// profiler goes to ERROR, which rejects every later start().
-TEST(ProfilerEnginesGateTest, StuckGateAfterCpuEngineFailurePutsProfilerInError) {
+// If the gate cannot be closed after a CPU engine that keeps its table across
+// stop() failed, a hook call may still be using that table, and only start()
+// replaces tables. The profiler goes to ERROR, which rejects every later start().
+TEST(ProfilerEnginesGateTest, StuckGateAfterKeepingEngineFailurePutsProfilerInError) {
   Profiler *profiler = Profiler::instance();
   ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
   ProfilerTestAccessor::StateRestore restore(profiler);
-  FakeCpuEngine cpu(/*fail=*/true, /*open_gate=*/true);
+  FakeCpuEngine cpu(/*fail=*/true, /*open_gate=*/true, /*keeps_state=*/true);
   Engine wall;
   ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
   ProfilerTestAccessor::DrainBudget budget(100000000LL);
@@ -802,6 +808,33 @@ TEST(ProfilerEnginesGateTest, StuckGateAfterCpuEngineFailurePutsProfilerInError)
 
   EXPECT_FALSE(started);
   EXPECT_EQ(ERROR, ProfilerTestAccessor::state(profiler));
+  EXPECT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
+}
+
+// A stuck registration after a CPU engine failure does not put the profiler in
+// ERROR when the engine drops its state at stop(): CTimer's table is replaced
+// only under a freeze, which waits for the call and fails retryably, so the
+// profiler stays usable.
+TEST(ProfilerEnginesGateTest, StuckGateAfterDroppingEngineFailureKeepsProfilerUsable) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
+  ProfilerTestAccessor::StateRestore restore(profiler);
+  FakeCpuEngine cpu(/*fail=*/true, /*open_gate=*/true, /*keeps_state=*/false);
+  Engine wall;
+  ProfilerTestAccessor::EngineSwap swap(profiler, &cpu, &wall);
+  ProfilerTestAccessor::DrainBudget budget(100000000LL);
+  Arguments args;
+  State before = ProfilerTestAccessor::state(profiler);
+
+  bool started;
+  {
+    ProfilerTestAccessor::HookCallHold hold(profiler);
+    started = ProfilerTestAccessor::startCpuEngine(profiler, args);
+  }
+
+  EXPECT_FALSE(started);
+  EXPECT_EQ(before, ProfilerTestAccessor::state(profiler));
   EXPECT_FALSE(ProfilerTestAccessor::enginesReady(profiler));
   EXPECT_EQ(0, ProfilerTestAccessor::hookCallsInflight(profiler));
 }
@@ -1025,18 +1058,18 @@ TEST(CTimerTableTest, SkippedUnregistrationIsReplayed) {
     ASSERT_EQ(0, CTimerTestAccessor::registerThread(engine, tid));
     ASSERT_NE(0, table[tid]);
 
-    Profiler::clearSkippedUnregistrations();
+    ProfilerTestAccessor::clearSkipped();
     ProfilerTestAccessor::withThreadTablesFreeze(profiler, [&](bool drained) {
       EXPECT_TRUE(drained);
       Profiler::unregisterThread(tid);
     });
-    EXPECT_EQ(1, Profiler::skippedUnregistrationCount());
-    EXPECT_EQ(tid, Profiler::skippedUnregistration(0));
+    EXPECT_EQ(1, ProfilerTestAccessor::skippedCount());
+    EXPECT_EQ(tid, ProfilerTestAccessor::skippedTid(0));
     EXPECT_NE(0, table[tid]) << "the skipped unregistration must not run yet";
 
     CTimerTestAccessor::replaySkippedUnregistrations(engine);
     EXPECT_EQ(0, table[tid]);
-    Profiler::clearSkippedUnregistrations();
+    ProfilerTestAccessor::clearSkipped();
   }
   sigaction(SIGPROF, &saved_sigprof, nullptr);
   free(table);

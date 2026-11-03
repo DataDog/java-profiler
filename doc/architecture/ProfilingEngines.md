@@ -78,11 +78,12 @@ Profiler::start()
     _cpu_engine->start()
       CTimer:            ThreadTablesFreeze only if the table size changes;
                          on a wait timeout (1 s) it fails and keeps its
-                         table (ERROR below if a registration call is stuck)
+                         table (a stuck registration call: see `stop()`)
       PerfEvents:        replaces its table without the freeze (PROF-16359);
                          allocation failure -> error, engine stays off
       CTimer/PerfEvents: openThreadRegistration() after sizing, before listing threads
-    on failure: closeThreadRegistration(); timeout -> ERROR, start() undoes
+    on failure: closeThreadRegistration(); timeout -> ERROR only if the engine
+                keeps its table across stop() (PerfEvents), and start() undoes
                 its setup and fails
     on success: openThreadRegistration()       no-op for CTimer/PerfEvents
   _wall_engine->enableEvents(true)             BEFORE start(): see below
@@ -117,13 +118,15 @@ Profiler::start()
    No `registerThread()` call (pthread hook or JVMTI `ThreadStart`) can then arm
    a timer or open an fd after the engines stop, or still be using a table when
    the next `start()` resizes it. The wait is bounded (1 s). On timeout `stop()`
-   logs an error, still completes every step below, and ends in `ERROR` instead
-   of `IDLE`. That is safe because no step frees a per-thread table, and
-   `ERROR` rejects every later `start()`, the only place a table is replaced,
-   so the stuck call can never reach freed memory. The cost: if the stuck call
-   is inside `CTimer::registerThread()` and finishes after `CTimer::stop()`,
-   its timer stays armed for good; its `SIGPROF` is dropped by the disabled
-   handler.
+   logs an error, still completes every step below, and returns an error. The
+   state is `IDLE`, unless the CPU engine keeps its table across `stop()`
+   (`Engine::keepsThreadStateAcrossStop()`, PerfEvents): then it is `ERROR`,
+   because a later `start()` would replace that table, and `ERROR` rejects it.
+   For CTimer the next table replacement freezes and waits for the stuck call,
+   so it fails retryably while the call is in flight. The cost: if the stuck
+   call is inside `CTimer::registerThread()` and finishes after `CTimer::stop()`,
+   its timer stays armed until the process exits; its `SIGPROF` is dropped by
+   the disabled handler.
    Unregistration is not closed here: JVMTI `ThreadEnd` and native thread exits
    may still reach `unregisterThread()` while the engines stop. `CTimer::stop()`
    and `CTimer::unregisterThread()` each release a slot with a per-slot CAS and
@@ -203,7 +206,8 @@ none is stuck. `ThreadTablesFreeze` closes both gates and waits for both counts,
 so no call at all is inside an engine while a table is replaced or a replaced
 CPU engine releases its threads. On a freeze timeout the operation fails and
 replaces nothing; on a `closeThreadRegistration()` timeout the profiler goes to
-`ERROR` (see `stop()` above and `Profiler::startCpuEngine()`). The gate flags and
+`ERROR` only for an engine that keeps its table across `stop()` (see `stop()`
+above and `Profiler::startCpuEngine()`). The gate flags and
 the counters use `seq_cst` on both sides: either a call sees the gate closed, or
 the closer sees the call and waits.
 

@@ -205,15 +205,9 @@ void Profiler::clearSkippedUnregistrations() {
   g_skipped_count.store(0, std::memory_order_relaxed);
 }
 
-// Marks a native-thread hook call as in flight for the duration of a
-// Profiler::registerThread()/unregisterThread() call, so a gate can be closed
-// and the calls that already passed it waited for. Each gate has its own
-// counter (_register_calls_inflight, _unregister_calls_inflight). The
-// increment and the gate
-// load in the caller are seq_cst, pairing with the seq_cst gate store and
-// counter load on the closing side: either the hook sees the gate closed, or
-// the closer sees the call in flight and waits for it. Registration and
-// unregistration both raise the counter on every call.
+// Marks a hook call as in flight on its gate's counter. Either the call sees the
+// gate closed, or the closer sees the call and waits for it; both sides are
+// seq_cst.
 class HookCallScope {
 public:
   explicit HookCallScope(std::atomic<int> &inflight) : _inflight(inflight) {
@@ -284,21 +278,11 @@ bool Profiler::waitForHookCalls(bool include_unregistration) {
   return true;
 }
 
-// Thread cancellation is disabled for the whole hook call. The engine calls
-// reach cancellation points (close() in PerfEvents::unregisterThread(), stdio
-// in Log::warn()); acting on a cancellation there would unwind through
-// ~HookCallScope(), which aborts with the statically linked libgcc (see
-// run_with_cleanup() in libraryPatcher_linux.cpp), or skip it on musl and
-// leave the in-flight count raised. Every later closeThreadRegistration() and
-// ThreadTablesFreeze would then time out, so stop() and every start() that
-// replaces a table would fail.
-//
-// This is a manual disable/restore pair rather than a guard on purpose: with
-// asynchronous cancellation, current glibc's pthread_setcancelstate() acts on a
-// pending request as soon as cancellation is re-enabled, so the restore must
-// not run inside a destructor, which is implicitly noexcept and would
-// terminate. It runs here, after every destructor-bearing scope of the call
-// has ended.
+// Cancellation is disabled for the whole hook call: the engine calls reach
+// cancellation points, and acting on one there would unwind through
+// ~HookCallScope() or leave the in-flight count raised. The restore is a plain
+// call, not a guard: glibc acts on a pending request as soon as it is
+// re-enabled, and a destructor is implicitly noexcept.
 int Profiler::registerThread(int tid) {
   int cancel_state;
   pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
@@ -1185,15 +1169,15 @@ bool Profiler::startCpuEngine(Arguments &args) {
   if (error) {
     Log::warn("%s", error.message());
     // The engine may have opened the gate before failing. If a registration
-    // call is still inside it after the wait budget, that call may keep using
-    // the engine's table, and only start() replaces tables. ERROR rejects
-    // every later start(); the caller undoes what its start() set up. A
-    // failed table freeze in the engine's start() ends here too when the
-    // stuck call is a registration call; otherwise the failure is retryable.
+    // call is still inside it after the wait budget, only an engine whose
+    // table outlives stop() can have that table replaced under the call, so
+    // only that engine puts the profiler in ERROR.
     if (!closeThreadRegistration()) {
       Log::error("Profiler: a thread registration call did not leave the CPU "
-                 "engine; the profiler is disabled");
-      _state.store(ERROR, std::memory_order_release);
+                 "engine");
+      if (_cpu_engine->keepsThreadStateAcrossStop()) {
+        _state.store(ERROR, std::memory_order_release);
+      }
     }
     return false;
   }
@@ -2081,9 +2065,10 @@ Error Profiler::stop() {
   // a per-thread table: CTimer releases slots with a per-slot CAS, and
   // PerfEvents::stop() is a no-op. For the same reason the stop still
   // completes if a registration call is stuck inside an engine after the wait
-  // budget; the profiler then ends in ERROR, which rejects every later
-  // start(), the only place a table is replaced. Unregistration calls are not
-  // waited for here: they may keep arriving during stop() under thread churn.
+  // budget. Only an engine whose table outlives stop() can have that table
+  // replaced under the call, so the profiler goes to ERROR for it alone (see
+  // the end of stop()). Unregistration calls are not waited for here: they may
+  // keep arriving during stop() under thread churn.
   bool hooks_drained = closeThreadRegistration();
 
   if (_event_mask & EM_ALLOC)
@@ -2206,11 +2191,14 @@ Error Profiler::stop() {
   // owned by library metadata, so we must keep library patches active until after serialization
   LibraryPatcher::unpatch_libraries();
 
-  if (!hooks_drained) {
+  if (!hooks_drained && _cpu_engine->keepsThreadStateAcrossStop()) {
     _state.store(ERROR, std::memory_order_release);
-    return Error("thread hook calls did not drain; the profiler is stopped and disabled");
+  } else {
+    _state.store(IDLE, std::memory_order_release);
   }
-  _state.store(IDLE, std::memory_order_release);
+  if (!hooks_drained) {
+    return Error("thread hook calls did not drain; the profiler is stopped");
+  }
   return Error::OK;
 }
 

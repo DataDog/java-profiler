@@ -53,6 +53,7 @@ public:
   virtual int registerThread(int tid);
   virtual void unregisterThread(int tid);
   void releaseThreads();
+  bool keepsThreadStateAcrossStop() const override { return true; }
   long interval() const { return _interval; }
 
   const char *name() { return "PerfEvents"; }

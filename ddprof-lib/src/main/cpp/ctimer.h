@@ -53,11 +53,8 @@ protected:
   Error startWithTableSize(Arguments &args, int max_timers);
   int registerThread(int tid);
   void unregisterThread(int tid);
-  // Unregisters the tids recorded by Profiler::recordSkippedUnregistration().
-  // A tid whose thread exited during a freeze may still have been listed, and
-  // the listing armed a timer for it. A tid reused and alive since then would
-  // lose its timer here as well; that needs the pid space to wrap within one
-  // freeze.
+  // Unregisters the tids recorded by Profiler::recordSkippedUnregistration(),
+  // after the listing may have armed a timer for an exited thread.
   void replaySkippedUnregistrations();
 
 public:
