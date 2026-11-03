@@ -1478,31 +1478,56 @@ void LivenessTracker::recordTidTrendSamplesLocked(
 }
 
 u64 LivenessTracker::newestHeapFloorSample(u64 *seq_out) const {
-  // Matches recordHeapFloorSampleUnchecked()'s storeRelease() on both index
-  // fields - loadAcquire() here is what makes the payload read below visible.
-  u8 fill = loadAcquire(_heap_floor_ring_fill);
-  u8 head = loadAcquire(_heap_floor_ring_head);
-  if (fill == 0) {
-    if (seq_out != nullptr) {
-      *seq_out = 0;
+  // Per-slot seqlock read: the slot's seq validates the payload below it
+  // (writer: recordHeapFloorSampleUnchecked()). Bounded retry, never a torn
+  // (used, seq) pair.
+  for (int attempt = 0; attempt < HEAP_FLOOR_READ_ATTEMPTS; attempt++) {
+    // Acquire pairs with the writer's head/fill release stores; it makes the
+    // payload of every slot the indices name visible.
+    u8 fill = loadAcquire(_heap_floor_ring_fill);
+    u8 head = loadAcquire(_heap_floor_ring_head);
+    if (fill == 0) {
+      if (seq_out != nullptr) {
+        *seq_out = 0;
+      }
+      return 0;
     }
-    return 0;
+    // head points one past the newest slot (the writer stores then advances)
+    // - step back one, wrapping over the ring size.
+    u8 newest = (u8)((head + KLASS_POPULATION_RING_SIZE - 1) %
+                    KLASS_POPULATION_RING_SIZE);
+    u64 seq_before = loadAcquire(_heap_floor_seq_ring[newest]);
+    if (seq_before == HEAP_FLOOR_SEQ_UNSTABLE) {
+      continue;  // a writer holds the slot; retry on a later attempt
+    }
+    u64 used = load(_heap_floor_ring[newest]);
+#ifdef DEBUG
+    if (_heap_floor_read_hook_for_test != nullptr) {
+      _heap_floor_read_hook_for_test(_heap_floor_read_hook_arg_for_test);
+    }
+#endif
+    // The acquire fence orders the relaxed seq re-load below after the
+    // payload load above; an unchanged re-load rules out an overwrite only
+    // on x86-TSO (store order) and arm64 (other-multi-copy atomicity plus
+    // the writer's release fence), not from the C++ abstract model alone.
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    u64 seq_after = load(_heap_floor_seq_ring[newest]);
+    if (seq_before == seq_after) {
+      if (seq_out != nullptr) {
+        *seq_out = seq_before;
+      }
+      return used;
+    }
   }
-  // head points one past the newest slot (recordHeapFloorSampleUnchecked()
-  // stores then advances) - step back one, wrapping over the ring size.
-  u8 newest = (u8)((head + KLASS_POPULATION_RING_SIZE - 1) %
-                   KLASS_POPULATION_RING_SIZE);
-  u64 used = load(_heap_floor_ring[newest]);
+  // No consistent pair within the bound: the sentinel tells the admission
+  // gate "no new sample this pass" - it must not consume an unevaluated seq.
+  // Counted once per exhausted read (lock-free, no logging) so a persistently
+  // frozen admission gate is diagnosable.
+  Counters::increment(HEAP_FLOOR_READ_UNSTABLE);
   if (seq_out != nullptr) {
-    // Read from the SAME slot as `used`, never from _heap_floor_sample_seq: a
-    // global counter read could tear against the slot (the seq of sample N+1
-    // paired with the value of sample N) and make the urgent-admission gate
-    // treat a re-read as a new sample. The newest slot is not rewritten until
-    // KLASS_POPULATION_RING_SIZE further samples are recorded, so the pair is
-    // consistent.
-    *seq_out = load(_heap_floor_seq_ring[newest]);
+    *seq_out = HEAP_FLOOR_SEQ_UNSTABLE;
   }
-  return used;
+  return 0;
 }
 
 void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns, u64 container_used) {
@@ -1525,37 +1550,33 @@ void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns,
   // Lock-free, single-writer-at-a-time - see _heap_floor_ring's own comment
   // (livenessTracker.h) for why onGC() cannot take _table_lock here.
   //
-  // Standard SPSC publish order: the payload is a plain store, and the index
-  // that gates which slots are valid is what carries the release. A reader
-  // that loadAcquire()s the index is then guaranteed to see this payload
-  // write too, since it precedes the index's storeRelease() in program
-  // order and a release store cannot be reordered before an earlier store.
-  // (The previous version had this backwards - storeRelease() on the
-  // payload with a plain store on the index - which does not establish any
-  // ordering between "the index says this slot is valid" and "the payload
-  // for that slot is visible".) _heap_floor_time_ring's,
-  // _container_mem_ring's and _heap_floor_seq_ring's payload writes below are
-  // plain stores for the same reason - they precede the same storeRelease()
-  // in program order.
-  //
-  // _heap_floor_sample_seq is bumped with an atomic relaxed fetch-add, so two
-  // overlapping callers can never obtain the same seq; readers see it only via
-  // the slot ring. The head/slot writes themselves still assume one writer at
-  // a time: HotSpot never posts GarbageCollectionFinish concurrently, but
-  // JVMTI does not document that, so on other VMs (J9, Zing via the
-  // abstraction layer) two overlapping callbacks could overwrite the same
-  // slot. Overlap can lose a sample but never produces a duplicate seq, so the
-  // urgent-admission freshness gate cannot mistake a new sample for an
-  // already-consumed one.
+  // Per-slot seqlock claim: CAS the target slot's seq word to
+  // HEAP_FLOOR_SEQ_UNSTABLE. The explicit sentinel check stops a
+  // sentinel-over-sentinel CAS from admitting a second writer into a slot
+  // the first writer still claims; a failed CAS means another writer
+  // overlaps (mid-claim, or already finished with a newer seq) - drop this
+  // sample, counted as HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP (lock-free relaxed
+  // counter; no logging - GC-callback context).
   u8 head = load(_heap_floor_ring_head);
+  u64 prev = load(_heap_floor_seq_ring[head]);
+  if (prev == HEAP_FLOOR_SEQ_UNSTABLE ||
+      !__atomic_compare_exchange_n(&_heap_floor_seq_ring[head], &prev,
+                                    HEAP_FLOOR_SEQ_UNSTABLE, false,
+                                    __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+    Counters::increment(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP);
+    return;
+  }
+  // Release fence: orders the sentinel claim before the payload stores (the
+  // release seq store alone orders the payloads before the seq), pairing
+  // with the reader's acquire fence - its seq re-load is relaxed.
+  __atomic_thread_fence(__ATOMIC_RELEASE);
   store(_heap_floor_ring[head], used);
   store(_heap_floor_time_ring[head], timestamp_ns);
   store(_container_mem_ring[head], container_used);
-  // Atomic bump: seq uniqueness must not depend on the single-writer
-  // assumption (see above). Relaxed suffices - readers only see seq via the
-  // slot store below, published by the head storeRelease().
+  // Atomic bump: seq uniqueness holds even under overlapping writers.
+  // Relaxed suffices - the seq is published only by the release store below.
   u64 seq = __atomic_add_fetch(&_heap_floor_sample_seq, (u64)1, __ATOMIC_RELAXED);
-  store(_heap_floor_seq_ring[head], seq);
+  storeRelease(_heap_floor_seq_ring[head], seq);
   storeRelease(_heap_floor_ring_head, (u8)((head + 1) % KLASS_POPULATION_RING_SIZE));
   u8 fill = load(_heap_floor_ring_fill);
   if (fill < KLASS_POPULATION_RING_SIZE) {

@@ -293,9 +293,25 @@
   /* hasLeakSignal() gate evaluations refused while the OOM urgency latch is \
    * set and selectLeakCandidates() found zero candidates - a heap-wide leak \
    * no single klass explains, so no reference-chain search may start. \
-   * Counts evaluations (about 1/s while latched and idle), not urgency \
-   * episodes: read it as a rate. */ \
+   * One increment per refused evaluation, not per urgency episode: evaluation \
+   * runs only after canAffordNewSearch()'s safepoint budget check and follows \
+   * the ramped cadence. */ \
   X(REFERENCE_CHAIN_URGENT_NO_CANDIDATE, "reference_chain_urgent_no_candidate") \
+  /* Heap-floor seqlock: samples DROPPED by a writer that lost the per-slot \
+   * claim (head slot already at HEAP_FLOOR_SEQ_UNSTABLE, or the claim CAS \
+   * lost to an overlapping writer). One increment per dropped sample, in \
+   * GC-callback context - no logging there, so this counter is the only \
+   * observability for overlap-driven sample loss. Never fires while GC \
+   * callbacks are serialized (HotSpot). */ \
+  X(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP, "heap_floor_sample_dropped_overlap") \
+  /* Heap-floor seqlock: reads that exhausted HEAP_FLOOR_READ_ATTEMPTS \
+   * without a consistent (used, seq) pair ("unstable read", not strictly \
+   * "frozen admission evaluation" - it also counts the emergency-band \
+   * baseline seed's seq_out==nullptr read). One increment per exhausted \
+   * read, never per attempt; the fill==0 empty-ring return does not count. \
+   * A steadily rising value means the urgent admission gate is holding its \
+   * previous decision because overlapping writers pin the newest slot. */ \
+  X(HEAP_FLOOR_READ_UNSTABLE, "heap_floor_read_unstable") \
   /* admitStaticFieldRoots() per-class non-static quota: non-STATIC_FIELD \
    * edges (CONSTANT_POOL, INTERFACE, SUPERCLASS, CLASS_LOADER, ...) that \
    * were dropped because the class already hit \

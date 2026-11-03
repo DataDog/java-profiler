@@ -394,22 +394,18 @@ private:
   // libraries) - see secondsToOOM()'s own comment for how this ring and
   // _heap_floor_ring are used as two independent OOM boundaries.
   u64 _container_mem_ring[KLASS_POPULATION_RING_SIZE];
-  // Per-sample identity, paired index-for-index with _heap_floor_ring (same
-  // head/fill, pushed by the same recordHeapFloorSampleUnchecked() call before
-  // the head storeRelease). Values come from _heap_floor_sample_seq below, so a
-  // slot's seq names exactly one recorded sample for the process lifetime -
-  // the urgent-admission gate (ReferenceChainTracker::updateUrgentAdmission())
-  // uses it to tell "a new GC sample arrived" from "re-reading the same one".
+  // Per-slot seqlock word and sample identity: HEAP_FLOOR_SEQ_UNSTABLE
+  // marks a write in progress; any other value names the one recorded sample
+  // in that slot (from _heap_floor_sample_seq below) for the process
+  // lifetime. The static singleton's zero-initialization guarantees no slot
+  // starts at the sentinel - a slot stuck there would stall the ring
+  // forever.
   u64 _heap_floor_seq_ring[KLASS_POPULATION_RING_SIZE];
   volatile u8 _heap_floor_ring_head;
   volatile u8 _heap_floor_ring_fill;
-  // Monotonic heap-floor sample counter (first sample = 1, 0 = "no sample").
-  // Bumped only by recordHeapFloorSampleUnchecked() via an atomic relaxed
-  // fetch-add (__atomic_add_fetch), so values stay unique even if the
-  // single-writer assumption on _heap_floor_ring does not hold on a given VM,
-  // and published through the slot ring above; never reset - not by
-  // heapFloorResetForTest(), not by klassPopulationResetForTest(), not by
-  // stop()/start() - so a sequence value can never alias an earlier sample.
+  // Monotonic sample counter (first sample = 1, 0 = "no sample"): the
+  // atomic fetch-add keeps a seq unique per sample even under overlapping
+  // writers; never reset by any seam or stop()/start(), so seqs never alias.
   u64 _heap_floor_sample_seq;
 
   // Debug-only test seam: when true, onGC() skips recordHeapFloorSample()
@@ -425,6 +421,10 @@ private:
   // at the actual write point, not just in onGC(), so a GC already past the
   // onGC() gate when the test sets this flag still cannot corrupt the ring.
   std::atomic<bool> _heap_floor_recording_disabled_for_test{false};
+
+  // Plain pointers, not atomic: tests set them only while no reader runs.
+  static inline void (*_heap_floor_read_hook_for_test)(void *) = nullptr;
+  static inline void *_heap_floor_read_hook_arg_for_test = nullptr;
 #endif
 
   // Runtime.maxMemory(), resolved once by initialize_table() (the same call
@@ -850,7 +850,12 @@ private:
   // _heap_floor_recording_disabled_for_test. Called by
   // recordHeapFloorSample() (after the debug-only flag check) and by
   // heapFloorRecordForTest() (which bypasses the check so a test can
-  // seed the rings even while real GC recording is disabled).
+  // seed the rings even while real GC recording is disabled). Claims the
+  // target slot via its seqlock word; an overlapping writer's claim drops
+  // this sample instead of tearing the slot. The seqlock covers each
+  // slot's payload+seq word only; head/fill index writes still assume one
+  // writer at a time - HotSpot never posts GarbageCollectionFinish
+  // concurrently, but JVMTI does not document that.
   void recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns, u64 container_used);
 
   // Reads whether the aggregate post-GC live heap has itself shown a
@@ -870,16 +875,22 @@ public:
   // and secondsToOOM(). See _max_heap_bytes's own comment above.
   jlong maxHeapBytes() const { return _max_heap_bytes; }
 
-  // Reads the used-bytes value of the newest _heap_floor_ring sample (0 when
-  // the ring is empty) - the urgent-admission gate's freshest physical growth
-  // evidence. When seq_out is non-null it is ALWAYS written: the newest slot's
-  // _heap_floor_seq_ring value, read from the same slot as the returned used
-  // value (0 when the ring is empty), so a caller can tell a new sample from a
-  // re-read of the one it already consumed. See the definition for the SPSC
-  // acquire pairing.
+  // Coherent (used, seq) snapshot of the newest heap-floor sample, validated
+  // by the slot's seqlock word (see the definition); 0/0 for an empty ring.
+  // No consistent pair within HEAP_FLOOR_READ_ATTEMPTS: returns 0 and writes
+  // HEAP_FLOOR_SEQ_UNSTABLE to seq_out (and increments the
+  // HEAP_FLOOR_READ_UNSTABLE counter once). The reader's initial acquire seq
+  // load pairs with the writer's release seq store, making that sample's
+  // payload visible before the payload load.
   u64 newestHeapFloorSample(u64 *seq_out = nullptr) const;
 
   constexpr static int MAX_LEAK_CANDIDATES = 5;
+
+  // Heap-floor seqlock sentinel + reader retry bound (see
+  // newestHeapFloorSample()). In a slot: write in progress; in seq_out: no
+  // consistent pair within the bound. _heap_floor_sample_seq never reaches it.
+  static constexpr u64 HEAP_FLOOR_SEQ_UNSTABLE = ~0ULL;
+  static constexpr int HEAP_FLOOR_READ_ATTEMPTS = 4;
   // Delete copy constructor and assignment operator to prevent copies
   LivenessTracker(const LivenessTracker&) = delete;
   LivenessTracker& operator=(const LivenessTracker&) = delete;
@@ -1701,6 +1712,18 @@ public:
   // own comment above.
   void setHeapFloorRecordingForTest(bool enabled) {
     _heap_floor_recording_disabled_for_test.store(!enabled, std::memory_order_release);
+  }
+
+  // Reader-interleaving hook: fires inside newestHeapFloorSample() between
+  // its payload load and its seq validation; nullptr clears it.
+  static void setHeapFloorReadHookForTest(void (*hook)(void *), void *arg) {
+    _heap_floor_read_hook_for_test = hook;
+    _heap_floor_read_hook_arg_for_test = arg;
+  }
+  // The private ring size, for tests that must record a full ring wrap
+  // (KLASS_POPULATION_RING_SIZE itself is private).
+  static constexpr int heapFloorRingSizeForTest() {
+    return KLASS_POPULATION_RING_SIZE;
   }
 #endif
 

@@ -1252,6 +1252,43 @@ public:
         *admission_epoch = t->_table[idx].admission_epoch;
         return true;
     }
+
+    // The heap-floor ring size, for tests that wrap it a full lap.
+    static constexpr int heapFloorRingSizeForTest() {
+        return LivenessTracker::KLASS_POPULATION_RING_SIZE;
+    }
+
+    // Swaps the head slot's seqlock word for `value` (e.g. the busy
+    // sentinel) and returns the previous value so the caller can restore it.
+    static u64 swapHeapFloorHeadSeqForTest(LivenessTracker *t, u64 value) {
+        u8 head = t->_heap_floor_ring_head;
+        u64 prev = t->_heap_floor_seq_ring[head];
+        t->_heap_floor_seq_ring[head] = value;
+        return prev;
+    }
+
+    // Swaps the newest slot's ((head + ring - 1) % ring) seqlock word for
+    // `value` and returns the previous value - the same slot the reader
+    // validates in newestHeapFloorSample().
+    static u64 swapHeapFloorNewestSeqForTest(LivenessTracker *t, u64 value) {
+        constexpr int ring = LivenessTracker::KLASS_POPULATION_RING_SIZE;
+        u8 newest = (u8)((t->_heap_floor_ring_head + ring - 1) % ring);
+        u64 prev = t->_heap_floor_seq_ring[newest];
+        t->_heap_floor_seq_ring[newest] = value;
+        return prev;
+    }
+
+    static u8 heapFloorRingHeadForTest(LivenessTracker *t) {
+        return t->_heap_floor_ring_head;
+    }
+
+    static u8 heapFloorRingFillForTest(LivenessTracker *t) {
+        return t->_heap_floor_ring_fill;
+    }
+
+    static u64 heapFloorSampleSeqForTest(LivenessTracker *t) {
+        return t->_heap_floor_sample_seq;
+    }
 };
 
 TEST(LivenessTrackerSessionTest, ResetSessionClearsOnlyRecordingGates) {
@@ -1770,6 +1807,251 @@ TEST_F(SecondsToOOMTest, OnGCRecordsHeapFloorWithLiveheapOnlySource) {
     (void)LivenessTrackerTestAccessor::containerUsageRecordedByOnGC(tracker,
                                                                     /*limit_resolved=*/false);
 }
+
+#ifdef DEBUG
+// ---------------------------------------------------------------------------
+// Heap-floor seqlock: newestHeapFloorSample() coherence
+// ---------------------------------------------------------------------------
+// The read hook fires inside the production reader between its payload
+// load and its seq validation, reproducing the writer-wraps-the-ring race
+// deterministically (a probabilistic stress loop cannot).
+struct HeapFloorWrapHook {
+    LivenessTracker *lt;
+    int calls;
+    bool fire_once;
+
+    static void invoke(void *p) {
+        HeapFloorWrapHook *h = static_cast<HeapFloorWrapHook *>(p);
+        h->calls++;
+        if (h->fire_once) {
+            LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr);
+        }
+        for (int i = 0; i < LivenessTrackerTestAccessor::heapFloorRingSizeForTest();
+             i++) {
+            h->lt->heapFloorRecordForTest(2000 + (u64)i, 0);
+        }
+    }
+};
+
+// Clears the read hook on every exit path, including ASSERT/EXPECT failures.
+struct HeapFloorReadHookGuard {
+    ~HeapFloorReadHookGuard() {
+        LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr);
+    }
+};
+
+class HeapFloorSeqlockTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
+        LivenessTracker::instance()->setHeapFloorRecordingForTest(false);
+        LivenessTracker::instance()->heapFloorResetForTest();
+    }
+
+    void TearDown() override {
+        LivenessTracker::instance()->heapFloorResetForTest();
+        LivenessTracker::instance()->setHeapFloorRecordingForTest(true);
+        restoreDefaultSignalHandlers();
+    }
+};
+
+// The reader must never pair one sample's used value with another sample's
+// seq, even when the writer wraps the whole 30-slot ring while the reader is
+// between its two slot loads.
+TEST_F(HeapFloorSeqlockTest, NewestSampleCoherentAcrossRingWrap) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    HeapFloorReadHookGuard hook_guard;
+    lt->heapFloorRecordForTest(1000, 1);
+    u64 s0 = 0;
+    ASSERT_EQ(1000u, lt->newestHeapFloorSample(&s0));
+    ASSERT_NE(0u, s0);
+
+    HeapFloorWrapHook hook{lt, 0, /*fire_once=*/true};
+    LivenessTracker::setHeapFloorReadHookForTest(&HeapFloorWrapHook::invoke,
+                                                  &hook);
+    u64 seq = 0;
+    u64 used = lt->newestHeapFloorSample(&seq);
+    constexpr int ring = LivenessTrackerTestAccessor::heapFloorRingSizeForTest();
+    // The interleaving really happened: the writer advanced a full ring (30
+    // samples) past the read slot while the reader was between its two loads.
+    EXPECT_EQ(1, hook.calls) << "the read hook never fired - no interleaving";
+    EXPECT_EQ((u64)ring, seq - s0) << "the writer's ring wrap never reached the read slot";
+    // Coherent pair: used must be the seq's own recorded value.
+    EXPECT_EQ(2000u + (seq - s0 - 1), used)
+        << "used and seq belong to different recorded samples";
+}
+
+// When every attempt finds the slot rewritten mid-read, the reader gives up
+// after HEAP_FLOOR_READ_ATTEMPTS tries and reports "no consistent sample"
+// (0 + HEAP_FLOOR_SEQ_UNSTABLE) instead of a torn pair. Each exhausted read
+// - and only an exhausted read - bumps HEAP_FLOOR_READ_UNSTABLE exactly once,
+// whether or not the caller asked for the seq.
+TEST_F(HeapFloorSeqlockTest, NewestSampleReportsUnstableAfterRetryBound) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    HeapFloorReadHookGuard hook_guard;
+
+    // Empty ring (SetUp reset it): 0/0, not an unstable read.
+    long long unstable = Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE);
+    u64 empty_seq = 1;
+    EXPECT_EQ(0u, lt->newestHeapFloorSample(&empty_seq));
+    EXPECT_EQ(0u, empty_seq);
+    EXPECT_EQ(unstable, Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE))
+        << "the empty-ring return must not count as an unstable read";
+
+    lt->heapFloorRecordForTest(1000, 1);
+    u64 ok_seq = 0;
+    EXPECT_EQ(1000u, lt->newestHeapFloorSample(&ok_seq));
+    EXPECT_EQ(unstable, Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE))
+        << "a successful read must not count as an unstable read";
+
+    HeapFloorWrapHook hook{lt, 0, /*fire_once=*/false};
+    LivenessTracker::setHeapFloorReadHookForTest(&HeapFloorWrapHook::invoke,
+                                                  &hook);
+    u64 seq = 0;
+    EXPECT_EQ(0u, lt->newestHeapFloorSample(&seq));
+    EXPECT_EQ(LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE, seq);
+    EXPECT_EQ(LivenessTracker::HEAP_FLOOR_READ_ATTEMPTS, hook.calls);
+    EXPECT_EQ(unstable + 1, Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE))
+        << "an exhausted read must be counted once, not per attempt";
+
+    // Same exhaustion without a seq_out (the emergency-band baseline seed's
+    // call shape) must count too.
+    unstable = Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE);
+    EXPECT_EQ(0u, lt->newestHeapFloorSample(nullptr));
+    EXPECT_EQ(unstable + 1, Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE))
+        << "an exhausted read with seq_out == nullptr must be counted";
+}
+
+// A slot pinned at the sentinel models an overlapping writer mid-claim:
+// the writer drops its sample (head, fill and the sample counter unchanged)
+// and the next accepted sample takes the very next seq - no gap, no duplicate.
+TEST_F(HeapFloorSeqlockTest, OverlappingWriterDropsSampleWithoutDuplicateSeq) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    HeapFloorReadHookGuard hook_guard;
+    lt->heapFloorRecordForTest(1000, 1);
+    u64 prev_seq = 0;
+    ASSERT_EQ(1000u, lt->newestHeapFloorSample(&prev_seq));
+
+    u8 head = LivenessTrackerTestAccessor::heapFloorRingHeadForTest(lt);
+    u8 fill = LivenessTrackerTestAccessor::heapFloorRingFillForTest(lt);
+    u64 sample_seq = LivenessTrackerTestAccessor::heapFloorSampleSeqForTest(lt);
+    u64 saved = LivenessTrackerTestAccessor::swapHeapFloorHeadSeqForTest(
+        lt, LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE);
+
+    long long dropped = Counters::getCounter(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP);
+    lt->heapFloorRecordForTest(1100, 2);
+    EXPECT_EQ(dropped + 1, Counters::getCounter(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP))
+        << "a dropped sample must be counted";
+    EXPECT_EQ(head, LivenessTrackerTestAccessor::heapFloorRingHeadForTest(lt))
+        << "a dropped sample must not advance the ring";
+    EXPECT_EQ(fill, LivenessTrackerTestAccessor::heapFloorRingFillForTest(lt))
+        << "a dropped sample must not change the fill";
+    EXPECT_EQ(sample_seq, LivenessTrackerTestAccessor::heapFloorSampleSeqForTest(lt))
+        << "a dropped sample must not consume a sequence number";
+
+    LivenessTrackerTestAccessor::swapHeapFloorHeadSeqForTest(lt, saved);
+    lt->heapFloorRecordForTest(1100, 2);
+    EXPECT_EQ(dropped + 1, Counters::getCounter(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP))
+        << "an accepted sample must not be counted as dropped";
+    u64 seq = 0;
+    EXPECT_EQ(1100u, lt->newestHeapFloorSample(&seq));
+    EXPECT_EQ(prev_seq + 1, seq)
+        << "the dropped writer must leave neither a gap nor a duplicate";
+}
+
+// Counting-only hook: observes whether the reader reached its payload/hook
+// path without perturbing the ring.
+struct HeapFloorCountHook {
+    int calls;
+    static void invoke(void *p) { static_cast<HeapFloorCountHook *>(p)->calls++; }
+};
+
+// Restores the newest slot's seq word pinned by the enclosing scope, on
+// every exit path including ASSERT failures.
+struct HeapFloorNewestPinGuard {
+    LivenessTracker *lt;
+    u64 saved;
+    explicit HeapFloorNewestPinGuard(LivenessTracker *t)
+        : lt(t),
+          saved(LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(
+              t, LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE)) {}
+    ~HeapFloorNewestPinGuard() {
+        LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(lt, saved);
+    }
+};
+
+// Fire-once hook that pins the newest slot's seq word to the sentinel
+// between the reader's payload load and its validating re-load, forcing the
+// next attempt into the reader's sentinel short-circuit. saved/pinned let
+// the test restore the slot after the read returns.
+struct HeapFloorPinNewestHook {
+    LivenessTracker *lt;
+    int calls;
+    u64 saved;
+    bool pinned;
+
+    static void invoke(void *p) {
+        HeapFloorPinNewestHook *h = static_cast<HeapFloorPinNewestHook *>(p);
+        h->calls++;
+        LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr);
+        h->saved = LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(
+            h->lt, LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE);
+        h->pinned = true;
+    }
+};
+
+// A newest slot already at the sentinel (a writer mid-claim) must never be
+// consumed as a sample seq: the reader retries past it and, with no writer
+// to finish the claim, reports the documented unstable pair. hook.calls ==
+// 0 pins the sentinel short-circuit to happen before the payload read and
+// the validation hook.
+TEST_F(HeapFloorSeqlockTest, NewestSlotPinnedAtSentinelShortCircuitsPayloadAndHook) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    HeapFloorReadHookGuard hook_guard;
+    lt->heapFloorRecordForTest(1000, 1);
+    HeapFloorCountHook hook{0};
+    LivenessTracker::setHeapFloorReadHookForTest(&HeapFloorCountHook::invoke,
+                                                  &hook);
+    u64 seq = 0;
+    u64 used = 0;
+    {
+        HeapFloorNewestPinGuard pin_guard(lt);
+        used = lt->newestHeapFloorSample(&seq);
+    }
+    EXPECT_EQ(0u, used);
+    EXPECT_EQ(LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE, seq)
+        << "the pinned slot must be retried past, not consumed as a seq";
+    EXPECT_EQ(0, hook.calls)
+        << "the sentinel short-circuit must skip the payload read and the hook";
+}
+
+// A sentinel pinned only mid-retry (between the reader's payload load and
+// its validating re-load) forces the retry; the next attempt then sees the
+// sentinel at seq_before and takes the short-circuit. hook.calls == 1 is
+// deterministic: the hook uninstalls itself after its first call, and
+// attempt 1 always reaches it because the slot is valid until that call
+// pins it - no writer runs to unpublish or rewrite the slot in between.
+TEST_F(HeapFloorSeqlockTest, SentinelPinnedMidRetryTakesShortCircuitNextAttempt) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    HeapFloorReadHookGuard hook_guard;
+    lt->heapFloorRecordForTest(1000, 1);
+    HeapFloorPinNewestHook hook{lt, 0, 0, false};
+    LivenessTracker::setHeapFloorReadHookForTest(&HeapFloorPinNewestHook::invoke,
+                                                  &hook);
+    u64 seq = 0;
+    u64 used = lt->newestHeapFloorSample(&seq);
+    // Restore before any ASSERT: an early exit must never leak the sentinel.
+    if (hook.pinned) {
+        LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(lt,
+                                                                    hook.saved);
+    }
+    ASSERT_EQ(1, hook.calls) << "attempt 1 never reached the mid-read hook";
+    // Never a torn pair: the pinned slot yields the documented unstable
+    // pair, not (payload, sentinel) or (payload, stale seq).
+    EXPECT_EQ(0u, used);
+    EXPECT_EQ(LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE, seq);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Leak tag pool (design A: direct tagging of leaking objects)
