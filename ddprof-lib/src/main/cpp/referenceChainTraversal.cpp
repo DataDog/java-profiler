@@ -228,6 +228,9 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     _last_root_enum_safepoint_ms = root_enum_safepoint_ns / 1000000;
 
     if (root_err != JVMTI_ERROR_NONE) {
+      // The enumeration attempt errored out - the root picture is incomplete, so record it (spec
+      // R4): runPass()'s termination ladder must not treat the search as settled.
+      _root_enum_incomplete = true;
       *truncated = true;
       *frontier_cap_hit = false;
       return;
@@ -236,10 +239,18 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       // A truncated attempt ends this pass - an incomplete enumeration leaves the frontier's root
       // picture inconsistent with the expansion phases below, so the next pass expands on the
       // roots already admitted. Retry timing is shouldRunRootEnum()'s (ROOT_ENUM_MIN_INTERVAL_NS).
+      // Record the incompleteness (spec R4) so the ladder neither completes nor no-progress-
+      // abandons while unenumerated roots may remain. The FRONTIER_CAP_HIT sub-case also lands
+      // here; that is deliberately harmless - runPass()'s frontier-cap abandon precedes any read
+      // of the flag and restartSearch() clears it.
+      _root_enum_incomplete = true;
       *truncated = true;
       *frontier_cap_hit = ctx.frontier_cap_hit;
       return;
     }
+    // Completed attempt (no error, no truncation): the root picture is now consistent, so the
+    // ladder may treat the frontier as the only pending work (spec R2/R4 clear condition).
+    _root_enum_incomplete = false;
   }
 
   int expand_phase_edges_admitted = 0;
@@ -1071,7 +1082,6 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   err = JVMTI_ERROR_NONE;
 
   store(_passes_run, load(_passes_run) + 1);
-  _last_pass_gc_finish_epoch = gcFinishEpoch();
   store(_last_pass_ns, OS::nanotime());
   if (!run_root_enum) {
     // Only non-root-enum passes feed the budget/cadence controller - root-enum passes are
@@ -1095,7 +1105,11 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   _cpu_pain_budget.spend(non_safepoint_ns / 1000000);
 
   // Apply terminal conditions in priority order.
-  bool has_pending_frontier = truncated;
+  // _root_enum_incomplete counts as pending frontier: a pass whose root enumeration was truncated
+  // or errored (or which waited out shouldRunRootEnum()'s interval floor while a previous attempt
+  // is still incomplete) must not let the search terminate while roots remain unenumerated
+  // (spec R4/R5).
+  bool has_pending_frontier = truncated || _root_enum_incomplete;
   int frontier_size_after = _frontier->size();
   if (frontier_cap_hit) {
     // Frontier table is full -- no new entries can ever be admitted, so frontier_size_after can
@@ -1126,17 +1140,22 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
              (unsigned long long)((OS::nanotime() -
                                    load(_search_start_ns)) / 1000000));
   } else if (_passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT &&
-             !urgencyLatched()) {
+             !urgencyLatched() && !_root_enum_incomplete) {
     // The frontier hasn't grown for NO_PROGRESS_PASS_LIMIT consecutive passes — the search is
     // genuinely stuck (not just slow), so abandon. Reads the published latch; calling isUrgent()
     // here would advance the machine from a second, freshly-read projection.
+    // Belt-and-braces _root_enum_incomplete guard (spec R5): the progress block below already
+    // holds the counter during floor-wait passes; this guard makes the abandon impossible even if
+    // a pass both runs an enum chunk and stays frontier-flat.
     store(_abandon_reason, (u8)SearchAbandonReason::TTL);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
     enqueuePendingAbandonedEvent();
-  } else if (_candidate_count > 0 &&
+  } else if (_candidate_count > 0 && !_root_enum_incomplete &&
              __builtin_popcountll(_candidate_found_bits) ==
                  (u64)_candidate_count) {
     // Canary early termination: all leaked candidates have been found -- the search is complete.
+    // Gated on !_root_enum_incomplete (spec R4): an unenumerated root region may still admit
+    // further candidates, so "all found" is only honest once an enumeration completed.
     storeRelease(_search_state, (u8)SearchState::COMPLETED);
     Counters::increment(REFERENCE_CHAIN_CANDIDATES_FOUND,
                              __builtin_popcountll(_candidate_found_bits));
@@ -1154,9 +1173,15 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     }
   }
 
-  // Track progress: if the frontier grew this pass, reset the no-progress counter.
+  // Track progress: if the frontier grew this pass, reset the no-progress counter. A pass that
+  // only waited out shouldRunRootEnum()'s interval floor while enumeration is still incomplete
+  // holds the counter: it is not evidence the search is stuck (spec R4). Note this also protects
+  // the canary-stuck abandon above, which is keyed on the same counter; do NOT hold
+  // _passes_since_last_candidate_progress (separate law, canary-specific).
   if (frontier_size_after > frontier_size_before_pass) {
     _passes_since_last_progress = 0;
+  } else if (_root_enum_incomplete && !run_root_enum) {
+    // Held: enumeration still owes chunks; this pass only waited out the interval floor.
   } else {
     _passes_since_last_progress++;
   }
@@ -1221,7 +1246,7 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   TEST_LOG_SUMMARY("ReferenceChainTracker::runPass done: err=%d edges_admitted=%d truncated=%d "
            "frontier_cap_hit=%d searchState=%d abandonReason=%d frontierSize=%d "
            "effectiveBudget=%d effectiveCadenceNs=%llu pendingExpand=%zu priorityExpand=%zu "
-           "candidateFound=%d/%d discoveredCounts=[%d,%d,%d,%d,%d]",
+           "candidateFound=%d/%d discoveredCounts=[%d,%d,%d,%d,%d] rootEnumIncomplete=%d",
            (int)err, edges_admitted, truncated, frontier_cap_hit, (int)load(_search_state),
            (int)_abandon_reason, _frontier->size(), _effective_budget,
            (unsigned long long)load(_effective_cadence_ns),
@@ -1231,7 +1256,8 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
            _candidate_count > 1 ? _candidate_discovered_count[1] : 0,
            _candidate_count > 2 ? _candidate_discovered_count[2] : 0,
            _candidate_count > 3 ? _candidate_discovered_count[3] : 0,
-           _candidate_count > 4 ? _candidate_discovered_count[4] : 0);
+           _candidate_count > 4 ? _candidate_discovered_count[4] : 0,
+           (int)_root_enum_incomplete);
 
   return err == JVMTI_ERROR_NONE;
 }

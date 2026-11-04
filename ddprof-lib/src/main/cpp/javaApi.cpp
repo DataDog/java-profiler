@@ -1483,15 +1483,6 @@ Java_com_datadoghq_profiler_JavaProfiler_setReferenceChainPassSpacingForTest0(
       (u64)ms_since_last_pass, (u64)cadence_ms);
 }
 
-// Shifts the tracker's last-pass GC-epoch snapshot relative to the live epoch counter - see
-// shiftLastPassGcEpochForTest().
-extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_shiftReferenceChainLastGcEpochForTest0(
-    JNIEnv *env, jclass unused, jlong delta) {
-  ProfiledThread::initCurrentThreadSignalSafe();
-  ReferenceChainTracker::instance()->shiftLastPassGcEpochForTest((long)delta);
-}
-
 // Sets the root-enumeration scheduling state (last attempt's time and measured in-safepoint
 // cost) - see setRootEnumStateForTest().
 extern "C" DLLEXPORT void JNICALL
@@ -1676,10 +1667,6 @@ Java_com_datadoghq_profiler_JavaProfiler_backdateLeakSignalActivationForTest0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setReferenceChainPassSpacingForTest0(
     JNIEnv *env, jclass unused, jlong ms_since_last_pass, jlong cadence_ms) {}
-
-extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_shiftReferenceChainLastGcEpochForTest0(
-    JNIEnv *env, jclass unused, jlong delta) {}
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setReferenceChainRootEnumStateForTest0(

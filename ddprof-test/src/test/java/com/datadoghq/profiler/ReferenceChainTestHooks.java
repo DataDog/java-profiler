@@ -54,10 +54,6 @@ public final class ReferenceChainTestHooks {
         JavaProfiler.setReferenceChainPassSpacingForTest0(msSinceLastPass, cadenceMs);
     }
 
-    public static void shiftReferenceChainLastGcEpochForTest0(long delta) {
-        JavaProfiler.shiftReferenceChainLastGcEpochForTest0(delta);
-    }
-
     public static void setReferenceChainRootEnumStateForTest0(long msSinceLastEnum, long lastEnumCostMs) {
         JavaProfiler.setReferenceChainRootEnumStateForTest0(msSinceLastEnum, lastEnumCostMs);
     }

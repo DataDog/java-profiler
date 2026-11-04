@@ -1431,14 +1431,15 @@ TEST_F(ReferenceChainsCanaryRefillTest, RefillRaiseTracksOpenChaseExactly) {
     // The refill logic lives past shouldRunPass()'s first-pass branch, so
     // mark the search started the way a first runPass() would have.
     ReferenceChainsTestAccessor::setSearchStartedForTest(true);
-    // Synthetic now values below start at 1000ns; shrink the cadence so the minimum-spacing gate
-    // (now_ns - _last_pass_ns >= _effective_cadence_ns, with _last_pass_ns = 0 after reset) stays
-    // open and the refill assertions exercise the canary lane, not the spacing gate.
+    // Synthetic now values below start just past the fixed MIN_PASS_SPACING_NS floor; shrink the
+    // cadence too, so the minimum-spacing gate (now_ns - _last_pass_ns >= max(_effective_cadence_ns,
+    // MIN_PASS_SPACING_NS), with _last_pass_ns = 0 after reset) stays open and the refill
+    // assertions exercise the canary lane, not the spacing gate.
     ReferenceChainsTestAccessor::setEffectiveCadenceNs(100);
     double base = ReferenceChainsTestAccessor::basePainBudgetRefillRateForTest();
     EXPECT_DOUBLE_EQ(0.01, base); // default painbudget=1 percent
 
-    u64 now = 1000;
+    u64 now = ReferenceChainsTestAccessor::minPassSpacingNs() + 1000;
     // No candidates: the applied rate is the configured one. The return
     // value here is cadence-dependent, not part of the invariant - only the
     // applied refill rate is.

@@ -808,14 +808,6 @@ public final class JavaProfiler {
                                                             long cadenceMs);
 
     /**
-     * Test seam (debug native builds only): shifts ReferenceChainTracker's last-pass GC-epoch
-     * snapshot by {@code delta} relative to the live epoch counter, so a test can make the epoch
-     * look advanced (negative delta - "a GC happened since the last pass") or stale (positive
-     * delta) for {@link #shouldRunPassForTest0()} without racing the real GC callbacks.
-     */
-    static native void shiftReferenceChainLastGcEpochForTest0(long delta);
-
-    /**
      * Test seam (debug native builds only): sets ReferenceChainTracker's root-enumeration
      * scheduling state - the last attempt {@code msSinceLastEnum} milliseconds in the past
      * (negative means "never ran") and its measured in-safepoint cost
@@ -844,8 +836,7 @@ public final class JavaProfiler {
     /**
      * Test seam (debug native builds only): the live GC-finish epoch ({@code gcFinishEpoch()},
      * advanced by every JVMTI GarbageCollectionFinish), so a test can verify a real GC was
-     * observed before relying on {@link #shiftReferenceChainLastGcEpochForTest0(long)}. Zero in
-     * release builds.
+     * observed. Zero in release builds.
      */
     static native long referenceChainGcFinishEpochForTest0();
 

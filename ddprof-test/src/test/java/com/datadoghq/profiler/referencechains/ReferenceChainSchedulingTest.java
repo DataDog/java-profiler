@@ -23,7 +23,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * frequency on services with a high young-GC rate:
  * <ul>
  *   <li><b>Minimum pass spacing</b> ({@code shouldRunPass()}): every authorization lane waits out
- *   {@code _effective_cadence_ns} since the previous pass.</li>
+ *   {@code max(_effective_cadence_ns, MIN_PASS_SPACING_NS)} since the previous pass - a fixed
+ *   floor independent of the pacing controller's output, with the OOM ramp as the only
+ *   exemption. Passes run on a pure cadence; a completed GC neither bypasses the spacing nor
+ *   earns an earlier pass.</li>
  *   <li><b>Adaptive root-enumeration interval</b> ({@code shouldRunRootEnum()}): re-enumeration
  *   waits out {@code ROOT_ENUM_MIN_INTERVAL_NS} extended by the last attempt's measured
  *   in-safepoint cost.</li>
@@ -77,8 +80,8 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
 
   /**
    * Evaluates {@code probe} against re-seeded scheduling state, retrying while a concurrently
-   * passing BFS thread invalidates the seed: a real pass overwrites {@code _last_pass_ns},
-   * {@code _last_pass_gc_finish_epoch}, and the root-enumeration state with live values, and can
+   * passing BFS thread invalidates the seed: a real pass overwrites {@code _last_pass_ns}
+   * and the root-enumeration state with live values, and can
    * drive the real search terminal, which can only ever flip a seeded-open gate to the closed
    * reading - so a closed result is final and only an open/matching result needs the retry.
    * The same real pass also produces the closed reading on its own, so a closed-direction probe
@@ -146,81 +149,44 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
         "past-cap age must exceed the cap");
   }
 
-  /**
-   * Runs real GCs until the live GC-finish epoch is observed to advance (up to 5 attempts), so a
-   * {@code -1} epoch shift makes the epoch look advanced instead of clamping to the never-ran
-   * value. An epoch already &gt; 0 that did not advance during the loop is still sufficient (the
-   * shift lands below live). Skips the test - never passes it vacuously - if the epoch is still 0,
-   * e.g. a GC configuration that posts no GarbageCollectionFinish for System.gc().
-   */
-  private static void ensureGcEpochAdvanced() throws InterruptedException {
-    long before = ReferenceChainTestHooks.referenceChainGcFinishEpochForTest0();
-    for (int i = 0; i < 5; i++) {
-      System.gc();
-      if (ReferenceChainTestHooks.referenceChainGcFinishEpochForTest0() > before) {
-        return;
-      }
-      Thread.sleep(100);
-    }
-    if (ReferenceChainTestHooks.referenceChainGcFinishEpochForTest0() == 0) {
-      assumeTrue(false, "no GarbageCollectionFinish observed after 5 System.gc() calls - the "
-          + "-1 epoch shift would clamp to the live value and test nothing");
-    }
-  }
-
   private static void seedRunningSearch() {
     // forceRunningSearchForTest (not just "search started"): the live BFS thread may be running
     // its own real search (leftover leak signal from earlier tests in this shared JVM) and can
     // drive it terminal between this seed and the gate call - the forced RUNNING state with fresh
     // pain budgets keeps the gate evaluating the running-search lanes deterministically.
     ReferenceChainTestHooks.forceRunningReferenceChainSearchForTest0();
-    // Zero candidates: the canary lane is off and the epoch/cadence lanes are what run.
+    // Zero candidates: the canary lane is off and the plain cadence lane is what runs.
     ReferenceChainTestHooks.setReferenceChainCanaryStateForTest0(0, 0);
   }
 
   /**
-   * Kills the GC-epoch bypass: with the previous pass a moment ago, a freshly completed
-   * GC must NOT authorize a pass ahead of the minimum spacing - without the gate the epoch
-   * branch of {@code shouldRunPass()} returns true unconditionally, so pass rate tracks the
-   * young-GC rate.
+   * Pins the fixed 100ms pass-spacing floor (MIN_PASS_SPACING_NS): even when updatePacing()'s
+   * controller relaxes the effective cadence to 10ms, a pass less than 100ms after the previous
+   * one must stay held off - the controller paces each pass's pause LENGTH, not the pass rate.
+   * Once the fixed floor has elapsed (with the cadence still relaxed), the pass is authorized.
    */
   @Test
-  public void gcEpochPassWaitsForMinimumPassSpacing() throws InterruptedException {
+  public void passSpacingHoldsAtFixedFloorEvenWithRelaxedCadence() throws InterruptedException {
     assumeDebugBuild();
     ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     try {
-      ensureGcEpochAdvanced();
       seedRunningSearch();
-      // Quiesce first: the spacing seed blocks every BFS lane, so no pass can overwrite the
-      // epoch shift seeded below.
+      // Quiesce first with a wide cadence (same pattern as the canary test below): the live BFS
+      // thread - which sleeps for the seeded cadence - must be parked before the tight seeds land.
       ReferenceChainTestHooks.setReferenceChainPassSpacingForTest0(0, CADENCE_MS);
       Thread.sleep(QUIESCE_MS);
-      assertTrue(ReferenceChainTestHooks.referenceChainGcFinishEpochForTest0() > 0,
-          "the -1 epoch shift needs a live GC-finish epoch > 0 to land below live");
-      ReferenceChainTestHooks.shiftReferenceChainLastGcEpochForTest0(-1);
+      // Seed a relaxed 10ms cadence (what updatePacing() can reach on cheap passes) with the
+      // previous pass 50ms ago - inside the fixed floor but well past the relaxed cadence.
+      ReferenceChainTestHooks.setReferenceChainPassSpacingForTest0(50, 10);
       assertFalse(ReferenceChainTestHooks.shouldRunPassForTest0(),
-          "A new GC epoch must not authorize a pass sooner than the effective cadence after "
-              + "the previous pass");
-    } finally {
-      ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
-    }
-  }
+          "A pass inside the fixed 100ms floor must stay held off even though the relaxed "
+              + "10ms cadence has elapsed");
 
-  /** The epoch lane must only be deferred, not disabled: once the spacing has elapsed, the new
-   *  epoch authorizes the pass. */
-  @Test
-  public void gcEpochPassRunsOnceSpacingElapses() throws InterruptedException {
-    assumeDebugBuild();
-    ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
-    try {
-      ensureGcEpochAdvanced();
-      seedRunningSearch();
-      eventuallyTrue("A new GC epoch must authorize a pass once the minimum spacing has elapsed",
+      // Past the fixed floor (500ms, cadence still relaxed to 10ms): the pass is authorized.
+      eventuallyTrue("A pass past the fixed floor must be authorized even with a relaxed cadence",
           () -> {
             seedRunningSearch();
-            ReferenceChainTestHooks.setReferenceChainPassSpacingForTest0(
-                CADENCE_MS * 2, CADENCE_MS);
-            ReferenceChainTestHooks.shiftReferenceChainLastGcEpochForTest0(-1);
+            ReferenceChainTestHooks.setReferenceChainPassSpacingForTest0(500, 10);
           },
           ReferenceChainTestHooks::shouldRunPassForTest0);
     } finally {
@@ -231,8 +197,8 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
   /**
    * Kills the canary lane's unbounded back-to-back rate: a productive chase (backoff multiplier
    * 1) would otherwise skip its spacing gate entirely, chaining passes with no gap and making
-   * every pass pay its JVM VM-operation cost. The epoch is shifted stale so only the canary lane
-   * could open the gate - the assertion must fail on that lane specifically.
+   * every pass pay its JVM VM-operation cost. The minimum-pass-spacing gate must hold the chase
+   * off even on that lane.
    */
   @Test
   public void canaryBackToBackPassWaitsForMinimumPassSpacing() throws InterruptedException {
@@ -246,7 +212,6 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
       // Seeded after the quiesce so the BFS thread's per-iteration pollWatchedTargets() (which
       // overwrites the candidate set from real leak signals) cannot clobber it.
       ReferenceChainTestHooks.setReferenceChainCanaryStateForTest0(1, 0);
-      ReferenceChainTestHooks.shiftReferenceChainLastGcEpochForTest0(1_000);
       assertFalse(ReferenceChainTestHooks.shouldRunPassForTest0(),
           "A canary chase with fresh backoff (multiplier 1) must still wait out the minimum "
               + "pass spacing before starting the next pass");

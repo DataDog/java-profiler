@@ -605,9 +605,6 @@ private:
   // re-queues - see that method's own comment.
   static constexpr int LEAK_ACCUMULATION_ROTATION_BUDGET = 16;
 
-  // Snapshot of gcFinishEpoch() as of the end of the last pass.
-  u64 _last_pass_gc_finish_epoch;
-
   // OS::nanotime() as of the end of the last pass. Written by runPass() on the BFS thread; also
   // read cross-thread by buildAbandonedEvent()'s elapsed-time calculation, so
   // volatile/load()-accessed like _search_state above.
@@ -721,6 +718,14 @@ private:
   // Bounds for _effective_cadence_ns. The lower bound is not 0: threadLoop() sleeps for exactly
   // this many nanoseconds each loop iteration (below), so a true 0 would busy-loop the BFS thread.
   static constexpr u64 MIN_EFFECTIVE_CADENCE_NS = 10000000ULL;      // 10ms
+
+  // Fixed minimum spacing between passes, independent of updatePacing()'s output: the PID
+  // controller paces each pass's pause LENGTH, not the pass RATE - without this floor a cheap
+  // expansion pass relaxes _effective_cadence_ns to MIN_EFFECTIVE_CADENCE_NS and admits ~100
+  // safepointing passes/s. shouldRunPass() gates on max(_effective_cadence_ns,
+  // MIN_PASS_SPACING_NS); the OOM ramp is the only exemption (while urgent it owns the rate
+  // outright, down to URGENT_CADENCE_NS).
+  static constexpr u64 MIN_PASS_SPACING_NS = 100000000ULL; // 100ms - bounds non-urgent safepointing pass frequency; the OOM ramp is the only exemption
   static constexpr u64 MAX_EFFECTIVE_CADENCE_NS = PASS_CADENCE_NS * 4; // 4s
 
   // Conversion factor from "edges of budget signal updatePacing()'s clamp could not absorb" to a
@@ -776,6 +781,14 @@ private:
   // (rootEnumIntervalFloorNs()); 0 until the first attempt completes.
   u64 _last_root_enum_safepoint_ms = 0;
 
+  // Set by runPassManualWalk() when a root/stack-ref enumeration attempt ends truncated or
+  // errored: the root picture is incomplete, so unenumerated roots may still hold reachable
+  // chains. Cleared when an attempt completes without truncation/error, by restartSearch(), and
+  // by resetSearchStateForTest(). Read only by runPass()'s termination ladder, which treats it
+  // as pending frontier - the search may neither complete nor no-progress-abandon while roots
+  // remain unenumerated (spec R4/R5).
+  bool _root_enum_incomplete = false;
+
   ReferenceChainTracker()
       : _enabled(false),
         _frontier(nullptr), _configured_frontier_cap(0),
@@ -800,7 +813,7 @@ private:
         _admission_growth_baseline(0), _admission_sample_seq(0), _admission_decision(false),
         _search_state(SearchState::RUNNING),
         _abandon_reason(SearchAbandonReason::NONE), _search_start_ns(0),
-        _last_pass_gc_finish_epoch(0), _last_pass_ns(0),
+        _last_pass_ns(0),
         _passes_run(0),
         _root_kind_rotation_cursor(1),
         _stale_expanded_rotation_cursor(1),
@@ -888,7 +901,9 @@ private:
   bool applyOomRamp(double seconds_to_oom);
 
   // Search restart gate: true once _safepoint_pain_budget has
-  // drained back to zero (canStartNow()) *and* hasLeakSignal() above reports at least one leak
+  // drained back to zero (canStartNow()) *and* the root-enum interval floor
+  // (rootEnumIntervalFloorNs(), measured from _last_root_enum_ns; waived while it is still 0) has
+  // elapsed *and* hasLeakSignal() above reports at least one leak
   // candidate. The two-arg form consumes the caller's projection; the one-arg form reads
   // secondsToOOM() once and forwards.
   bool canAffordNewSearch(u64 now_ns);
@@ -1270,16 +1285,6 @@ public:
   void setLastPassNsForTest(u64 ns) {
     MutexLocker engine_guard(_engine_lock);
     store(_last_pass_ns, ns);
-  }
-  // Shifts _last_pass_gc_finish_epoch relative to the live gcFinishEpoch() counter: negative
-  // looks advanced, positive looks stale, without racing the real GC callbacks. A negative delta
-  // larger than the live counter clamps to 0 instead of wrapping - a wrap would look stale.
-  void shiftLastPassGcEpochForTest(long delta) {
-    MutexLocker engine_guard(_engine_lock);
-    u64 epoch = gcFinishEpoch();
-    store(_last_pass_gc_finish_epoch,
-          delta < 0 ? (epoch >= (u64)(-delta) ? epoch - (u64)(-delta) : 0)
-                    : epoch + (u64)delta);
   }
   // Seeds shouldRunRootEnum()'s inputs. Engine lock held: both fields are otherwise
   // BFS-thread-owned (runPassManualWalk()). Negative ms_since_last_enum clamps to 0 (never ran).

@@ -187,6 +187,91 @@ TEST_F(ReferenceChainsBfsTest, BudgetExhaustionTruncatesAndIsReported) {
     tracker->stop();
 }
 
+// A truncated root enumeration must keep the search alive until a later attempt COMPLETES: the
+// truncated attempt records _root_enum_incomplete, which runPass()'s termination ladder treats as
+// pending frontier, so neither the plain COMPLETED exit (frontier drained, no watched-leak
+// klasses) nor the no-progress abandon (frontier flat while the pass waits out
+// rootEnumIntervalFloorNs()) may fire while roots remain unenumerated. This FAILS on unfixed
+// code: expansion-only passes see truncated == false and drain/flatline the frontier, so the
+// search completes (or abandons after NO_PROGRESS_PASS_LIMIT flat passes) with roots lost.
+TEST_F(ReferenceChainsBfsTest, TruncatedRootEnumKeepsSearchAliveUntilEnumCompletes) {
+    Arguments args;
+    // firstpassbudget=1: the first enumeration admits one root (nodeA) and truncates. budget=1000:
+    // the later expansion-only passes drain the frontier quickly, so the flat passes below are
+    // pure floor-wait passes.
+    ASSERT_FALSE(args.parse(
+        "referencechains=true:hops=64:budget=1000:firstpassbudget=1:ttl=0"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int nodeA = addNode();
+    int nodeB = addNode();
+    int nodeC = addNode();
+    // A second root the 1-unit enum budget cannot reach: the first enumeration admits nodeA,
+    // truncates on nodeD, and records _root_enum_incomplete (a single-root graph would complete
+    // the enumeration even at budget 1 - ALREADY_ADMITTED roots are uncharged on retry).
+    int nodeD = addNode();
+
+    script = {
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeA, -1}, // admitted via root enum
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeD, -1}, // unenumerated - truncates the attempt
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeA, nodeB, -1},   // admitted via expansion
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeA, nodeC, -1},
+    };
+
+    // The fixture reset does not touch the root-enumeration state: clear any residue.
+    std::pair<u64, u64> saved = ReferenceChainsTestAccessor::setRootEnumRawStateForTest(0, 0);
+
+    // Pass 1 (manual first pass - enumeration runs): budget truncation ends the pass with the
+    // root picture incomplete.
+    bool truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+
+    // Freeze the enumeration clock inside the interval floor: every pass below is expansion-only
+    // (shouldRunRootEnum() holds the enum back) while the flag stays set.
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(OS::nanotime(), 0);
+
+    // Pass 2: expansion-only, admits nodeB/nodeC - the frontier grows, and the search must stay
+    // RUNNING even though this pass's own truncated flag is false (unfixed code: has_pending_
+    // frontier was pass-local, so a drained frontier could complete the search here).
+    truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+
+    // Passes 3+: expansion-only over a drained, then flat frontier. The no-progress counter must
+    // be HELD (neither reset nor incremented) on every floor-wait pass - 30+ of them would
+    // otherwise reach NO_PROGRESS_PASS_LIMIT and abandon the search before the next enumeration
+    // chunk could run (the second exit the flag closes).
+    const int kFloorWaitPasses = ReferenceChainTracker::NO_PROGRESS_PASS_LIMIT + 5;
+    for (int i = 0; i < kFloorWaitPasses; i++) {
+        ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+        EXPECT_FALSE(truncated);
+        EXPECT_EQ(SearchState::RUNNING, tracker->searchState())
+            << "pass " << i
+            << ": a floor-wait pass must not let the search complete or abandon";
+        EXPECT_EQ(0, tracker->passesSinceLastProgressForTest())
+            << "pass " << i
+            << ": the no-progress counter must be held while enumeration is incomplete";
+    }
+
+    // Let the interval floor elapse: the next pass runs the enumeration to completion (nodeA is
+    // already admitted and uncharged, so the 1-unit budget reaches nodeD).
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(
+        OS::nanotime() - ReferenceChainsTestAccessor::rootEnumMinIntervalNs() - 1, 0);
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_FALSE(truncated);
+    // The completed attempt clears the flag, so the ladder may now reach COMPLETED - and does,
+    // since the frontier was drained and no watched-leak klass remains.
+    EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
+
+    // Mandatory: the fixture reset does not restore the root-enumeration state.
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(saved.first, saved.second);
+    tracker->stop();
+}
+
 TEST_F(ReferenceChainsBfsTest, PreTaggedClassObjectsAreNeverExpandedOrAdmitted) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -477,8 +562,10 @@ TEST_F(ReferenceChainsBfsTest, MultiPassResumptionReconstructsChainAcrossPasses)
     Arguments args;
     // budget=1 forces each pass to admit at most one new frontier entry, so this 3-hop chain cannot
     // be discovered within a single pass - exercising expandFrontier() (resumed passes), not just
-    // the first pass's root walk.
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1:firstpassbudget=1"));
+    // the first pass's root walk. firstpassbudget is ample so the first enumeration completes
+    // (clearing _root_enum_incomplete): this test pins expansion resumption, not the truncated-
+    // enum hold (see TruncatedRootEnumKeepsSearchAliveUntilEnumCompletes).
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1:firstpassbudget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
@@ -816,6 +903,11 @@ TEST_F(ReferenceChainsBfsTest, CanaryStuckLimitDoublesPerRestartAndResetsOnClean
     LivenessTracker::instance()->setGcGenerationsForTest(false);
     // 0 = "never activated"; the next start() re-stamps it through the CAS from 0.
     LivenessTracker::instance()->setLeakSignalActivatedNsForTest(0);
+    // The seeded rising heap-floor trajectory must not leak into later tests: residual samples
+    // make heapFloorRising() true and suppress hasLeakSignal() for the next test that arms a
+    // leak signal (heapFloorResetForTest()'s documented purpose; recording was disabled above,
+    // the seam's required precondition).
+    LivenessTracker::instance()->heapFloorResetForTest();
     tracker->stop();
     ReferenceChainsTestAccessor::resetUrgencyForTest();
     // The per-iteration publish (publishUrgencyStateForTest above) set the ramp flag; the latch
@@ -1060,28 +1152,78 @@ TEST_F(ReferenceChainsBfsTest, RootEnumIntervalBoundaryIsInclusive) {
     ReferenceChainsTestAccessor::setRootEnumRawStateForTest(saved.first, saved.second);
 }
 
-// shiftLastPassGcEpochForTest() shifts the last-pass epoch snapshot relative to the live counter,
-// clamping a negative shift larger than the live counter to 0 (the never-ran value) instead of
-// wrapping. The `epoch >= n` -> `epoch > n` mutant is equivalent (at epoch == n both branches
-// yield 0), so no row can kill it.
-TEST_F(ReferenceChainsBfsTest, ShiftLastPassGcEpochClampsAtZero) {
+// canAffordNewSearch() must apply the root-enumeration interval floor to a restarted search's
+// first enumeration: restartSearch() deliberately does not reset _last_root_enum_ns, so a
+// restart inherits the finished search's last attempt timestamp and pays the same
+// rootEnumIntervalFloorNs() as any other IterateOverReachableObjects attempt - closing the
+// enumerate -> early-terminate -> restart -> enumerate loop the pain budget alone permitted.
+// The brand-new-tracker exemption (_last_root_enum_ns == 0) must survive: an agent starting
+// early in the JVM's lifetime must not have its only mandatory enumeration delayed.
+TEST_F(ReferenceChainsBfsTest, RestartGateHonorsRootEnumIntervalFloor) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    const u64 saved = tracker->gcFinishEpoch();
-    struct Row {
-        u64 live;
-        long shift;
-        u64 expected;
-    };
-    const Row rows[] = {
-        {0, -1, 0}, {5, -1, 4}, {5, -5, 0}, {5, -6, 0}, {5, 3, 8},
-    };
-    for (const Row &r : rows) {
-        ReferenceChainsTestAccessor::setGcFinishEpochForTest(r.live);
-        tracker->shiftLastPassGcEpochForTest(r.shift);
-        EXPECT_EQ(r.expected, ReferenceChainsTestAccessor::lastPassGcFinishEpoch())
-            << "live=" << r.live << " shift=" << r.shift;
+    ASSERT_FALSE(tracker->start(args));
+
+    // Arm a live leak signal (generations tracking + a growing klass population) so the gate
+    // reaches the floor check with the leak-signal source active; restored below. The seeded
+    // population belongs to the CURRENT class map: earlier suite tests mutate the class map and
+    // leave _last_class_map_generation stale, which makes selectLeakCandidates() select nothing
+    // (same seam SearchRestartTest::SetUp applies).
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    LivenessTracker::instance()->classMapGenerationSetForTest(
+        Profiler::instance()->classMap()->generation());
+    int fake_object_storage = 0;
+    {
+        int slot;
+        bool created;
+        for (u16 i = 1; i <= 20; i++) {
+            LivenessTracker::instance()->klassPopulationRecordForTest(
+                /*klass_id=*/1, i, i, &slot, &created);
+            LivenessTracker::instance()->tidTrendRecordForTest(
+                /*klass_id=*/1, /*tid=*/4242, (u32)i, (u64)i);
+        }
+        LivenessTracker::instance()->klassPopulationSetRepresentativeForTest(
+            nullptr, /*klass_id=*/1, (jweak)&fake_object_storage);
     }
-    ReferenceChainsTestAccessor::setGcFinishEpochForTest(saved);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::hasLeakSignalForTest(3600.0));
+
+    // The fixture reset does not touch the root-enumeration state, and the suite's earlier
+    // runPass-driven tests leave a real _last_root_enum_ns behind - clear it so the
+    // brand-new-tracker premise below actually holds (same seam
+    // TruncatedRootEnumKeepsSearchAliveUntilEnumCompletes uses).
+    std::pair<u64, u64> saved =
+        ReferenceChainsTestAccessor::setRootEnumRawStateForTest(0, 0);
+
+    const u64 now = OS::nanotime();
+
+    // Brand-new tracker (never enumerated, _last_root_enum_ns == 0): the floor is waived.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::canAffordNewSearch(now));
+
+    // A recent enumeration attempt inside the floor blocks the restart...
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(now, 0);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::canAffordNewSearch(now + 1));
+
+    // ...including at a cost-extended floor (a 150ms last attempt extends the 2s base).
+    const u64 kCostMs = 150;
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(now, kCostMs);
+    const u64 kExtendedFloor =
+        ReferenceChainsTestAccessor::rootEnumMinIntervalNs() >
+                kCostMs * ReferenceChainsTestAccessor::rootEnumNsPerCostMs()
+            ? ReferenceChainsTestAccessor::rootEnumMinIntervalNs()
+            : kCostMs * ReferenceChainsTestAccessor::rootEnumNsPerCostMs();
+    EXPECT_FALSE(ReferenceChainsTestAccessor::canAffordNewSearch(
+        now + kExtendedFloor - 1));
+
+    // Once the floor elapses, the gate opens again.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::canAffordNewSearch(
+        now + kExtendedFloor + 1));
+
+    // Restore the seeded root-enum state and the no-signal state.
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(saved.first, saved.second);
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+    tracker->stop();
 }
 
 // With no leak-signal source active (neither generations nor liveheap
@@ -1112,8 +1254,10 @@ TEST_F(ReferenceChainsBfsTest, NoSearchWithoutLeakSignalSource) {
 TEST_F(ReferenceChainsBfsTest, ChainCompletesWithoutAbandonment) {
     Arguments args;
     // budget=1 on a graph where each pass admits exactly one new edge until the chain is exhausted,
-    // then the frontier stops growing.
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1:ttl=0:firstpassbudget=1"));
+    // then the frontier stops growing. firstpassbudget is ample so the first enumeration completes
+    // (clearing _root_enum_incomplete): this test pins natural completion, not the truncated-enum
+    // hold (see TruncatedRootEnumKeepsSearchAliveUntilEnumCompletes).
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1:ttl=0:firstpassbudget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
@@ -1335,9 +1479,12 @@ TEST_F(ReferenceChainsBfsTest, ResolveOrDropPrunesDeadFrontierEntries) {
 
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated)); // pass 2: resolve-or-drop
     EXPECT_FALSE(truncated);
-    // The dead branch was pruned for free - with nothing else pending, the search completes rather
-    // than staying RUNNING or being ABANDONED.
-    EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
+    // The dead branch was pruned for free - but the search stays RUNNING, not COMPLETED: the
+    // first enumeration truncated (firstpassbudget=1 never reached decoyRoot), so
+    // _root_enum_incomplete is still set and the unenumerated root keeps the search alive until
+    // the next enumeration attempt completes. Completing here instead would silently drop every
+    // chain reachable only from decoyRoot - the premature-termination defect this flag closes.
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
     EXPECT_EQ(2, tracker->passesRun());
 
     FrontierEntry entry{};

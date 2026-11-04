@@ -54,6 +54,7 @@ public:
         ClassTagAllocator::resetForTest();
         t->_search_started = false;
         t->_tags_released = true;
+        t->_root_enum_incomplete = false;
         t->_search_state = SearchState::RUNNING;
         t->_abandon_reason = SearchAbandonReason::NONE;
         t->_search_start_ns = 0;
@@ -70,7 +71,6 @@ public:
         t->_static_anchor_fifo_set.clear();
         t->_static_anchor_fifo_klass_counts.clear();
         t->_static_anchor_fresh_queue.clear();
-        t->_last_pass_gc_finish_epoch = 0;
         t->_last_pass_ns = 0;
         t->_passes_run = 0;
         t->_passes_since_last_progress = 0;
@@ -692,6 +692,12 @@ public:
         return ReferenceChainTracker::MIN_EFFECTIVE_CADENCE_NS;
     }
 
+    // shouldRunPass()'s fixed minimum pass-spacing floor (referenceChains.h) - see the
+    // shouldRunPass pacing law comment there.
+    static u64 minPassSpacingNs() {
+        return ReferenceChainTracker::MIN_PASS_SPACING_NS;
+    }
+
     // Start the controller from a chosen below-ceiling/above-baseline point with a fresh
     // _pause_pid, so a prior sequence's integral windup cannot leak into per-step assertions.
     static void setEffectiveBudget(int v) {
@@ -731,13 +737,10 @@ public:
     }
     static u64 rootEnumMaxIntervalNs() { return ReferenceChainTracker::ROOT_ENUM_MAX_INTERVAL_NS; }
 
-    // Live GC-finish epoch (relaxed atomic), for the epoch-clamp test - save/restore it; the
-    // fixture reset zeroes _last_pass_gc_finish_epoch but not _gc_finish_epoch.
+    // Live GC-finish epoch (relaxed atomic) - save/restore it; the fixture reset does not touch
+    // _gc_finish_epoch (only GC callbacks advance it).
     static void setGcFinishEpochForTest(u64 v) {
         store(ReferenceChainTracker::instance()->_gc_finish_epoch, v);
-    }
-    static u64 lastPassGcFinishEpoch() {
-        return ReferenceChainTracker::instance()->_last_pass_gc_finish_epoch;
     }
 
     // Budget-borrowing (see _borrowed_budget in referenceChains.h).

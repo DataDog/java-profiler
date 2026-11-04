@@ -627,10 +627,10 @@ void ReferenceChainTracker::threadLoop() {
     if (should_run) {
       TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop iteration=%d shouldRunPass=%d searchState=%d "
                "passesRun=%d effectiveCadenceNs=%llu effectiveBudget=%d gcFinishEpoch=%llu "
-               "lastPassGcFinishEpoch=%llu nowMinusLastPassNs=%llu",
+               "nowMinusLastPassNs=%llu",
                ++iteration, should_run, (int)_search_state, _passes_run,
                (unsigned long long)load(_effective_cadence_ns), _effective_budget,
-               (unsigned long long)gcFinishEpoch(), (unsigned long long)load(_last_pass_gc_finish_epoch),
+               (unsigned long long)gcFinishEpoch(),
                (unsigned long long)(now_ns - load(_last_pass_ns)));
       runPassSerialized(jvmti, jni);
     }
@@ -734,16 +734,20 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns, double seconds_to_oom) {
   _cpu_pain_budget.setRefillRate(
       std::min(_pain_budget_refill_rate * multiplier, 1.0),
       now_ns);
-  // Minimum pass spacing on every authorization lane (GC epoch, canary back-to-back, fallback
-  // cadence): a completed GC must not bypass the pacing, and the canary lane's mult==1
-  // back-to-back spacing would otherwise run passes with no gap. No OOM-ramp exemption: while
-  // urgent the ramp owns _effective_cadence_ns outright (threadLoop()) and lowers this floor.
+  // Minimum pass spacing on every authorization lane (canary back-to-back, fallback cadence):
+  // bounds safepointing pass frequency via the FIXED floor MIN_PASS_SPACING_NS, not the
+  // controller's output - updatePacing() paces each pass's pause length, not the pass rate. The
+  // OOM ramp is the only exemption: while urgent it owns _effective_cadence_ns outright
+  // (threadLoop()) and may lawfully drive the spacing down to URGENT_CADENCE_NS.
   u64 cadence_ns = load(_effective_cadence_ns);
-  if (now_ns - load(_last_pass_ns) < cadence_ns) {
+  u64 min_spacing_ns =
+      _oom_ramp_active ? cadence_ns : std::max(cadence_ns, MIN_PASS_SPACING_NS);
+  if (now_ns - load(_last_pass_ns) < min_spacing_ns) {
     TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass held off by minimum pass spacing "
-             "since_last_pass_ms=%llu effective_cadence_ns=%llu",
+             "since_last_pass_ms=%llu effective_cadence_ns=%llu min_spacing_ns=%llu",
              (unsigned long long)((now_ns - load(_last_pass_ns)) / 1000000ULL),
-             (unsigned long long)cadence_ns);
+             (unsigned long long)cadence_ns,
+             (unsigned long long)min_spacing_ns);
     return false;
   }
   if (!_cpu_pain_budget.canStartNow(now_ns)) {
@@ -779,20 +783,10 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns, double seconds_to_oom) {
              (unsigned long long)_canary_pass_ema_ms);
     return true;
   }
-  u64 gc_finish_epoch = gcFinishEpoch();
-  if (gc_finish_epoch != _last_pass_gc_finish_epoch) {
-    // Triggering section: "a GC just happened, a pass may be worth running soon". Spacing is
-    // already enforced by the minimum-pass-spacing gate above - the epoch only selects this pass
-    // over waiting for the fallback cadence.
-    TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass -> true (gcFinishEpoch=%llu != "
-             "lastPassGcFinishEpoch=%llu)",
-             (unsigned long long)gc_finish_epoch,
-             (unsigned long long)_last_pass_gc_finish_epoch);
-    return true;
-  }
-  // The fallback cadence has elapsed - the minimum-spacing gate above guarantees the gap, and this
-  // branch authorizes a pass even with no new GC epoch. updatePacing() widens or relaxes
-  // _effective_cadence_ns from the measured pause-time signal - see its own comment.
+  // Passes run on a pure cadence: the spacing gate above (max of the controller's cadence and
+  // the fixed MIN_PASS_SPACING_NS floor) is the only pacing law - a completed GC neither bypasses
+  // it nor earns an earlier pass. updatePacing() widens or relaxes _effective_cadence_ns from the
+  // measured pause-time signal - see its own comment.
   TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass -> true (now_ns=%llu last_pass_ns=%llu "
            "delta=%llu effectiveCadenceNs=%llu)",
            (unsigned long long)now_ns, (unsigned long long)load(_last_pass_ns),
@@ -1044,6 +1038,20 @@ bool ReferenceChainTracker::canAffordNewSearch(u64 now_ns, double seconds_to_oom
              _pain_budget_refill_rate);
     return false; // still cooling down from the last search's own cost
   }
+  // Root-enum interval floor applies to a restarted search's first enumeration too (spec R8):
+  // restartSearch() deliberately does NOT reset _last_root_enum_ns, so a restart inherits the
+  // finished search's last enumeration timestamp and pays the same rootEnumIntervalFloorNs() as
+  // any other IterateOverReachableObjects attempt - closing the enumerate -> early-terminate ->
+  // restart -> enumerate loop the pain budget alone permitted. The explicit != 0 guard preserves
+  // the brand-new-tracker exemption shouldRunRootEnum()'s manual_first_pass comment documents.
+  if (_last_root_enum_ns != 0 &&
+      now_ns - _last_root_enum_ns < rootEnumIntervalFloorNs()) {
+    TEST_LOG_SUMMARY("ReferenceChainTracker::canAffordNewSearch blocked by "
+             "root_enum_interval_floor since_last_enum_ms=%llu floor_ns=%llu",
+             (unsigned long long)((now_ns - _last_root_enum_ns) / 1000000ULL),
+             (unsigned long long)rootEnumIntervalFloorNs());
+    return false;
+  }
   return hasLeakSignal(seconds_to_oom);
 }
 
@@ -1107,7 +1115,7 @@ void ReferenceChainTracker::restartSearch() {
   _leak_parent_fanout.clear();
   _leak_tags_assigned = 0;
   _leak_tags_resolved = 0;
-  _last_pass_gc_finish_epoch = 0;
+  _root_enum_incomplete = false;
   store(_last_pass_ns, (u64)0);
   store(_passes_run, 0);
   // Reset back to their just-constructed values (0 / -1) like every other per-search field this
@@ -1192,7 +1200,6 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _leak_parent_fanout.clear();
   _leak_tags_assigned = 0;
   _leak_tags_resolved = 0;
-  _last_pass_gc_finish_epoch = 0;
   store(_last_pass_ns, (u64)0);
   store(_passes_run, 0);
   _passes_since_last_progress = 0;
@@ -1217,6 +1224,7 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _effective_cadence_ns = PASS_CADENCE_NS;
   _last_root_enum_ns = 0;
   _last_root_enum_safepoint_ms = 0;
+  _root_enum_incomplete = false;
   _static_field_sweep_cycle_truncated = false;
   _candidate_count = 0;
   _candidate_found_bits = 0;
