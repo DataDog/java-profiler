@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 TRUSTED_REF = "refs/remotes/origin/main"  # qualified: a tag named origin/main must not win
+# git_out and the trusted-ref loading mirror require-fresh-review.py; change both together.
 
 
 def git_out(args, cwd):

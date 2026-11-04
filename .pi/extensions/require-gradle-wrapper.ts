@@ -9,9 +9,11 @@ import { join } from "node:path";
 export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "bash") return undefined;
+    const command = String(event.input.command ?? "");
+    if (!command.includes("gradlew")) return undefined; // most commands: skip the python3 spawn
     const hook = join(ctx.cwd, ".claude", "hooks", "require-gradle-wrapper.py");
     if (!existsSync(hook)) return undefined; // a checkout from before the hook
-    const payload = JSON.stringify({ cwd: ctx.cwd, tool_input: { command: String(event.input.command ?? "") } });
+    const payload = JSON.stringify({ cwd: ctx.cwd, tool_input: { command } });
     const res = spawnSync("python3", [hook], {
       input: payload,
       encoding: "utf8",

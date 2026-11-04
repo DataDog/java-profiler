@@ -15,18 +15,27 @@ PREFIX = (r"(?:\w+=\S*|env|exec|time|nohup|command|xargs|then|do|else|!"
           r"|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-\w+)*)")
 GRADLEW = re.compile(r"(?:^|[;&|(){}`\n\"']|\$\()\s*(?:" + PREFIX + r"\s+)*"
                      r"((?:[^\s;&|(){}'\"`]*/)?gradlew(?:\.bat)?)(?![\w.-])"
-                     r"([^;&|)}\n'\"`]*)", re.M)
+                     r"([^;&|)}\n]*)", re.M)
 # Daemon housekeeping that builds nothing, so the wrapper's log capture adds nothing.
 ALLOWED_ARGS = ({"--stop"}, {"--version"})
 REDIRECT = re.compile(r"^\d*[<>]")
+REDIRECT_OP = re.compile(r"^\d*[<>]+&?$")  # operator alone: its target is the next token
 
 
 def allowed(args):
+    """Args include any quoted text, so `--stop "build"` is denied; an unbalanced quote
+    (the end of `bash -c "./gradlew ..."`) makes shlex fail, which denies too."""
     try:
-        tokens = shlex.split(args)
+        tokens = iter(shlex.split(args))
     except ValueError:
         return False
-    return {t for t in tokens if not REDIRECT.match(t)} in ALLOWED_ARGS
+    kept = set()
+    for t in tokens:
+        if REDIRECT_OP.match(t):
+            next(tokens, None)
+        elif not REDIRECT.match(t):
+            kept.add(t)
+    return kept in ALLOWED_ARGS
 
 
 def main():
@@ -37,7 +46,7 @@ def main():
             print("Blocked `%s`: run Gradle through `./.claude/commands/build-and-summarize "
                   "<task...>`, which keeps the full log in build/logs/ (AGENTS.md, Operating "
                   "Rules). Only `gradlew --stop` and `gradlew --version` may run directly."
-                  % (m.group(1) + m.group(2)).strip(), file=sys.stderr)
+                  % (m.group(1) + m.group(2)).strip().rstrip("'\""), file=sys.stderr)
             return 2
     return 0
 
