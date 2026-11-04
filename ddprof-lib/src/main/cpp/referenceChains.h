@@ -719,13 +719,10 @@ private:
   // this many nanoseconds each loop iteration (below), so a true 0 would busy-loop the BFS thread.
   static constexpr u64 MIN_EFFECTIVE_CADENCE_NS = 10000000ULL;      // 10ms
 
-  // Fixed minimum spacing between passes, independent of updatePacing()'s output: the PID
-  // controller paces each pass's pause LENGTH, not the pass RATE - without this floor a cheap
-  // expansion pass relaxes _effective_cadence_ns to MIN_EFFECTIVE_CADENCE_NS and admits ~100
-  // safepointing passes/s. shouldRunPass() gates on max(_effective_cadence_ns,
-  // MIN_PASS_SPACING_NS); the OOM ramp is the only exemption (while urgent it owns the rate
-  // outright, down to URGENT_CADENCE_NS).
-  static constexpr u64 MIN_PASS_SPACING_NS = 100000000ULL; // 100ms - bounds non-urgent safepointing pass frequency; the OOM ramp is the only exemption
+  // Fixed minimum spacing between passes, independent of updatePacing()'s output: the controller
+  // paces each pass's pause LENGTH, not the pass RATE - without this floor a cheap expansion pass
+  // relaxes _effective_cadence_ns to MIN_EFFECTIVE_CADENCE_NS and admits ~100 safepointing passes/s.
+  static constexpr u64 MIN_PASS_SPACING_NS = 100000000ULL; // 100ms
   static constexpr u64 MAX_EFFECTIVE_CADENCE_NS = PASS_CADENCE_NS * 4; // 4s
 
   // Conversion factor from "edges of budget signal updatePacing()'s clamp could not absorb" to a
@@ -781,12 +778,9 @@ private:
   // (rootEnumIntervalFloorNs()); 0 until the first attempt completes.
   u64 _last_root_enum_safepoint_ms = 0;
 
-  // Set by runPassManualWalk() when a root/stack-ref enumeration attempt ends truncated or
-  // errored: the root picture is incomplete, so unenumerated roots may still hold reachable
-  // chains. Cleared when an attempt completes without truncation/error, by restartSearch(), and
-  // by resetSearchStateForTest(). Read only by runPass()'s termination ladder, which treats it
-  // as pending frontier - the search may neither complete nor no-progress-abandon while roots
-  // remain unenumerated (spec R4/R5).
+  // Set when a root/stack-ref enumeration attempt ends truncated or errored: unenumerated roots
+  // may still hold reachable chains. Cleared on a completed attempt, by restartSearch(), and by
+  // resetSearchStateForTest(); runPass()'s termination ladder treats it as pending frontier.
   bool _root_enum_incomplete = false;
 
   ReferenceChainTracker()

@@ -734,11 +734,9 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns, double seconds_to_oom) {
   _cpu_pain_budget.setRefillRate(
       std::min(_pain_budget_refill_rate * multiplier, 1.0),
       now_ns);
-  // Minimum pass spacing on every authorization lane (canary back-to-back, fallback cadence):
-  // bounds safepointing pass frequency via the FIXED floor MIN_PASS_SPACING_NS, not the
-  // controller's output - updatePacing() paces each pass's pause length, not the pass rate. The
-  // OOM ramp is the only exemption: while urgent it owns _effective_cadence_ns outright
-  // (threadLoop()) and may lawfully drive the spacing down to URGENT_CADENCE_NS.
+  // Minimum pass spacing on every authorization lane: bounds safepointing pass frequency via the
+  // FIXED floor MIN_PASS_SPACING_NS - updatePacing() paces each pass's pause length, not the pass
+  // rate. The OOM ramp is the only exemption (while urgent it owns _effective_cadence_ns outright).
   u64 cadence_ns = load(_effective_cadence_ns);
   u64 min_spacing_ns =
       _oom_ramp_active ? cadence_ns : std::max(cadence_ns, MIN_PASS_SPACING_NS);
@@ -1038,12 +1036,9 @@ bool ReferenceChainTracker::canAffordNewSearch(u64 now_ns, double seconds_to_oom
              _pain_budget_refill_rate);
     return false; // still cooling down from the last search's own cost
   }
-  // Root-enum interval floor applies to a restarted search's first enumeration too (spec R8):
-  // restartSearch() deliberately does NOT reset _last_root_enum_ns, so a restart inherits the
-  // finished search's last enumeration timestamp and pays the same rootEnumIntervalFloorNs() as
-  // any other IterateOverReachableObjects attempt - closing the enumerate -> early-terminate ->
-  // restart -> enumerate loop the pain budget alone permitted. The explicit != 0 guard preserves
-  // the brand-new-tracker exemption shouldRunRootEnum()'s manual_first_pass comment documents.
+  // Root-enum interval floor also gates a restarted search's first enumeration: restartSearch()
+  // deliberately keeps _last_root_enum_ns, closing the enumerate -> early-terminate -> restart ->
+  // enumerate loop. The != 0 guard preserves the brand-new-tracker exemption.
   if (_last_root_enum_ns != 0 &&
       now_ns - _last_root_enum_ns < rootEnumIntervalFloorNs()) {
     TEST_LOG_SUMMARY("ReferenceChainTracker::canAffordNewSearch blocked by "

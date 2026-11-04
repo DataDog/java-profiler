@@ -239,7 +239,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       // A truncated attempt ends this pass - an incomplete enumeration leaves the frontier's root
       // picture inconsistent with the expansion phases below, so the next pass expands on the
       // roots already admitted. Retry timing is shouldRunRootEnum()'s (ROOT_ENUM_MIN_INTERVAL_NS).
-      // Record the incompleteness (spec R4) so the ladder neither completes nor no-progress-
+      // Record the incompleteness so the ladder neither completes nor no-progress-
       // abandons while unenumerated roots may remain. The FRONTIER_CAP_HIT sub-case also lands
       // here; that is deliberately harmless - runPass()'s frontier-cap abandon precedes any read
       // of the flag and restartSearch() clears it.
@@ -249,7 +249,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       return;
     }
     // Completed attempt (no error, no truncation): the root picture is now consistent, so the
-    // ladder may treat the frontier as the only pending work (spec R2/R4 clear condition).
+    // ladder may treat the frontier as the only pending work.
     _root_enum_incomplete = false;
   }
 
@@ -1105,10 +1105,9 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   _cpu_pain_budget.spend(non_safepoint_ns / 1000000);
 
   // Apply terminal conditions in priority order.
-  // _root_enum_incomplete counts as pending frontier: a pass whose root enumeration was truncated
-  // or errored (or which waited out shouldRunRootEnum()'s interval floor while a previous attempt
-  // is still incomplete) must not let the search terminate while roots remain unenumerated
-  // (spec R4/R5).
+  // _root_enum_incomplete counts as pending frontier: while roots remain unenumerated (truncated
+  // or errored attempt, or a floor-wait with a previous attempt incomplete) the search must
+  // neither terminate nor no-progress-abandon.
   bool has_pending_frontier = truncated || _root_enum_incomplete;
   int frontier_size_after = _frontier->size();
   if (frontier_cap_hit) {
@@ -1144,9 +1143,8 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     // The frontier hasn't grown for NO_PROGRESS_PASS_LIMIT consecutive passes — the search is
     // genuinely stuck (not just slow), so abandon. Reads the published latch; calling isUrgent()
     // here would advance the machine from a second, freshly-read projection.
-    // Belt-and-braces _root_enum_incomplete guard (spec R5): the progress block below already
-    // holds the counter during floor-wait passes; this guard makes the abandon impossible even if
-    // a pass both runs an enum chunk and stays frontier-flat.
+    // Belt-and-braces: the progress block below already holds the counter during floor-wait
+    // passes; this guard also covers a pass that both runs an enum chunk and stays frontier-flat.
     store(_abandon_reason, (u8)SearchAbandonReason::TTL);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
     enqueuePendingAbandonedEvent();
@@ -1154,7 +1152,7 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
              __builtin_popcountll(_candidate_found_bits) ==
                  (u64)_candidate_count) {
     // Canary early termination: all leaked candidates have been found -- the search is complete.
-    // Gated on !_root_enum_incomplete (spec R4): an unenumerated root region may still admit
+    // Gated on !_root_enum_incomplete: an unenumerated root region may still admit
     // further candidates, so "all found" is only honest once an enumeration completed.
     storeRelease(_search_state, (u8)SearchState::COMPLETED);
     Counters::increment(REFERENCE_CHAIN_CANDIDATES_FOUND,
@@ -1173,11 +1171,9 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     }
   }
 
-  // Track progress: if the frontier grew this pass, reset the no-progress counter. A pass that
-  // only waited out shouldRunRootEnum()'s interval floor while enumeration is still incomplete
-  // holds the counter: it is not evidence the search is stuck (spec R4). Note this also protects
-  // the canary-stuck abandon above, which is keyed on the same counter; do NOT hold
-  // _passes_since_last_candidate_progress (separate law, canary-specific).
+  // Track progress: frontier growth resets the no-progress counter; a pass that only waited out
+  // the enumeration interval while _root_enum_incomplete holds it - no stuck signal (it also
+  // feeds the canary-stuck abandon). The canary-specific progress counter is never held.
   if (frontier_size_after > frontier_size_before_pass) {
     _passes_since_last_progress = 0;
   } else if (_root_enum_incomplete && !run_root_enum) {
