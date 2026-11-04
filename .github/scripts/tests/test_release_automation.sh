@@ -164,7 +164,7 @@ pass
 
 setup_remote() {
   local remote
-  remote=$(mktemp -d "$TEMP_DIR/remote-XXXXXX")
+  remote=$(mktemp -d "$TEMP_DIR/remote-XXXXXX") || return 1
   git init --bare --quiet "$remote"
   git --git-dir="$remote" config core.hooksPath /dev/null
   echo "$remote"
@@ -174,7 +174,7 @@ setup_work() {
   local remote=$1
   local branch=$2
   local work
-  work=$(mktemp -d "$TEMP_DIR/work-XXXXXX")
+  work=$(mktemp -d "$TEMP_DIR/work-XXXXXX") || return 1
   git init --quiet -b "$branch" "$work"
   git -C "$work" config user.name "Release Test"
   git -C "$work" config user.email "release-test@example.invalid"
