@@ -10,8 +10,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.reflect.Field;
-import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -72,6 +70,9 @@ final class RequestCacheTest {
     // callbacks: a non-zero value here means per-entry eviction crept into the flush.
     assertEquals(0, cache.removalsObserved());
     assertNull(cache.lastRemovedId());
+    // The listener registry is cleared together with the entries map, so a fired closure
+    // after the flush must come from a re-recorded entry, not a stale registry entry.
+    assertNull(cache.removalListener(PREFIX + 0), "flush must clear the listener registry");
     // Growth resumes from an empty cache, and ids from before the flush may be reused:
     // the duplicate check only spans retained entries.
     for (int i = 0; i < 500; i++) {
@@ -99,18 +100,27 @@ final class RequestCacheTest {
   }
 
   @Test
-  void recordedEntryCarriesCapturingRemovalListener() throws Exception {
+  void recordedEntryHasRegisteredRemovalListener() {
     RequestCache cache = new RequestCache();
     cache.record("listener-entry");
-    // RequestCache registers its per-entry closure on the RequestState it stores, and the
-    // cache exposes no accessor for it; the entries map is the only observation point.
-    Map<String, RequestState> entries = entriesOf(cache);
-    assertEquals(1, entries.size());
-    RequestState state = entries.get("listener-entry");
-    assertNotNull(state.removalListener(), "every recorded entry must register its listener");
-    // Firing the closure is what eviction would do: it must observe the entry it captures,
-    // which fails if the lambda is made non-capturing.
-    state.removalListener().run();
+    // The cache-owned listener registry is the observation point for the second retention
+    // path: every recorded entry must have a capturing closure registered there, and only
+    // flush() removes registrations.
+    assertNotNull(
+        cache.removalListener("listener-entry"),
+        "every recorded entry must have a registered listener");
+    assertNull(
+        cache.removalListener("never-recorded"),
+        "an id that was never recorded has no listener");
+  }
+
+  @Test
+  void recordedEntryCarriesCapturingRemovalListener() {
+    RequestCache cache = new RequestCache();
+    cache.record("listener-entry");
+    // Firing the registry's closure for the entry is what eviction would do: it must
+    // observe the entry it captures, which fails if the lambda is made non-capturing.
+    cache.removalListener("listener-entry").run();
     assertEquals(1, cache.removalsObserved());
     assertEquals("listener-entry", cache.lastRemovedId());
     // The callback is bookkeeping, not removal: retention is unchanged by a callback run.
@@ -118,7 +128,7 @@ final class RequestCacheTest {
   }
 
   @Test
-  void firedListenerReportsTheEntryItCaptured() throws Exception {
+  void firedListenerReportsTheEntryItCaptured() {
     RequestCache cache = new RequestCache();
     cache.record("listener-entry-a");
     cache.record("listener-entry-b");
@@ -126,9 +136,8 @@ final class RequestCacheTest {
     // entry's state from one that reports a constant (or another entry's) id, because
     // only one id would be in play. Firing ONLY entry A's listener pins which instance
     // the closure captured.
-    Map<String, RequestState> entries = entriesOf(cache);
-    assertEquals(2, entries.size());
-    entries.get("listener-entry-a").removalListener().run();
+    assertNotNull(cache.removalListener("listener-entry-b"));
+    cache.removalListener("listener-entry-a").run();
     assertEquals("listener-entry-a", cache.lastRemovedId());
     assertEquals(1, cache.removalsObserved());
     // The callback is bookkeeping, not removal: firing one listener must not evict
@@ -139,19 +148,6 @@ final class RequestCacheTest {
   @Test
   void requestStateContract() {
     assertEquals("id-1", new RequestState("id-1").id());
-    assertNull(new RequestState("id-2").removalListener(), "nothing registered yet");
     assertThrows(NullPointerException.class, () -> new RequestState(null));
-    RequestState state = new RequestState("id-3");
-    Runnable listener = () -> {};
-    state.registerRemovalListener(listener);
-    assertEquals(listener, state.removalListener(), "registration must keep the same closure");
-    assertThrows(NullPointerException.class, () -> state.registerRemovalListener(null));
-  }
-
-  @SuppressWarnings("unchecked")
-  private static Map<String, RequestState> entriesOf(RequestCache cache) throws Exception {
-    Field entries = RequestCache.class.getDeclaredField("entries");
-    entries.setAccessible(true);
-    return (Map<String, RequestState>) entries.get(cache);
   }
 }

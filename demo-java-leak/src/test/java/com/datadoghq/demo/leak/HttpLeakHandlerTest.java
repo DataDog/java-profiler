@@ -37,6 +37,14 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(value = 2, unit = TimeUnit.MINUTES)
 final class HttpLeakHandlerTest {
 
+  static {
+    // TCP_NODELAY on every accepted connection (sun.net.httpserver.nodelay, read once at
+    // jdk.httpserver's ServerConfig class load): the handler writes the headers and the
+    // 3-byte body separately, so with Nagle + delayed ACK each keep-alive response can
+    // stall ~40 ms. Must be set before the first HttpServer.create below.
+    System.setProperty("sun.net.httpserver.nodelay", "true");
+  }
+
   private RequestCache cache;
   private HttpServer server;
   private ExecutorService handlerPool;

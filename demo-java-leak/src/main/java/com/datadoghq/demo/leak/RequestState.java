@@ -12,10 +12,10 @@ import java.util.Objects;
  * <p>The field shape is deliberate and matches {@code ReferenceChainLeakDemo.CachedEntry} in
  * {@code ddprof-stresstest}: a key string plus plain {@code long} fields, not a nested array,
  * so a single instance clears the allocation sampler's real size floor on its own, without a
- * second, competing heap allocation per entry. Every instance also carries a registered
- * removal-listener closure that captures the instance ({@link #registerRemovalListener}), the
- * Java analog of a cache library whose per-entry eviction callbacks pin the entries they
- * observe.
+ * second, competing heap allocation per entry. The state itself carries no removal
+ * callback: the cache's own listener registry holds a closure capturing each state, which
+ * is the Java analog of a cache library whose per-entry eviction callbacks pin the entries
+ * they observe - the second retention path besides the entries map.
  *
  * <p>Leak-shape rationale: because the cache never evicts, every instance survives each GC,
  * so the retained population of this class grows monotonically across GC epochs. That rising
@@ -36,10 +36,6 @@ public final class RequestState {
 
   private final String id;
 
-  // Registered once by the cache on the server's handler thread and read back from other
-  // threads only for verification, hence volatile.
-  private volatile Runnable removalListener;
-
   /**
    * Creates the state for the request identified by {@code id}.
    *
@@ -52,25 +48,5 @@ public final class RequestState {
   /** The unique request-scoped key this state was recorded under. */
   public String id() {
     return id;
-  }
-
-  /**
-   * Registers the cache's removal callback for this entry. The closure handed in captures
-   * this instance, so the entry is retained through the listener as well as through the
-   * cache map - the second, closure-based retention path of the leak shape.
-   *
-   * @param listener removal callback capturing this instance
-   */
-  public void registerRemovalListener(Runnable listener) {
-    this.removalListener = Objects.requireNonNull(listener, "listener");
-  }
-
-  /**
-   * The registered removal callback, or {@code null} before registration. Verification
-   * accessor for the closure-based retention path: the returned closure must be capturing
-   * (non-null for every recorded entry) while the cache never evicts, so it never fires.
-   */
-  public Runnable removalListener() {
-    return removalListener;
   }
 }

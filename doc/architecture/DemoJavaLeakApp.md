@@ -26,16 +26,17 @@ The app is built from a small set of plain-JDK components:
 |---|---|
 | `com.datadoghq.demo.leak.Main` | Entry point: starts the HTTP server on an ephemeral port and runs the self-traffic loop; never exits on its own |
 | `HttpLeakHandler` | Serves each request by creating a request-scoped state object and handing it to the cache; always returns a small fixed response |
-| `RequestCache` | The leak: an unbounded `HashMap` that strongly retains every recorded request state; retention is removed only by `flush()` |
-| `RequestState` | Request-scoped object: a key string plus long fields sized to clear the allocation sampler's floor, plus a registered listener closure that captures the instance |
+| `RequestCache` | The leak: an unbounded cache that strongly retains every recorded request state two ways - the entries map and its own removal-listener registry whose closures capture the states; retention is removed only by `flush()` |
+| `RequestState` | Request-scoped object: a key string plus long fields sized to clear the allocation sampler's floor |
 | `HeapWatermark` | Samples post-GC heap usage (via `MemoryPoolMXBean`, falling back to `Runtime.maxMemory()` when the max is undefined) and reports when occupancy crosses the flush threshold |
 
 ### Leak shape
 
 Every handled HTTP request creates one request-scoped state object. The cache retains
-each object by a direct strong reference (the map entry) and additionally through a
-registered listener closure that captures the instance — a Java analog of a cache
-misconfiguration where per-request callbacks outlive the request. There is no eviction
+each object two ways: the direct strong reference in the entries map, and a closure in
+the cache-owned removal-listener registry that captures the instance — a Java analog of
+a cache misconfiguration where per-entry callbacks outlive the request and pin the
+entries they observe. There is no eviction
 and no size cap: the retained population only grows, so the per-klass population trend
 the reference-chain tracker relies on keeps rising across GC epochs.
 

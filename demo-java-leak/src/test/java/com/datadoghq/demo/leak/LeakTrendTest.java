@@ -51,6 +51,15 @@ import org.junit.jupiter.api.Timeout;
  */
 final class LeakTrendTest {
 
+  static {
+    // TCP_NODELAY on every accepted connection (sun.net.httpserver.nodelay, read once at
+    // jdk.httpserver's ServerConfig class load): the handler writes the headers and the
+    // 3-byte body separately, so with Nagle + delayed ACK each keep-alive response can
+    // stall ~40 ms - at this test's request volume that alone would blow the budget.
+    // Must be set before the first HttpServer.create below.
+    System.setProperty("sun.net.httpserver.nodelay", "true");
+  }
+
   // ~3.8 MiB of retained state per round at ~400 B per recorded request: large enough
   // that each round's growth dominates post-GC reporting noise, small enough that the
   // watermark is reached in minutes of loopback self-traffic. This mirrors Main's loop

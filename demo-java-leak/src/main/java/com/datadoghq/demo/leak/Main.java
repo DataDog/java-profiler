@@ -46,10 +46,11 @@ import java.util.concurrent.Executors;
  */
 public final class Main {
 
-  // Pacing: one retained entry costs roughly 376 bytes of heap (~272 B RequestState object,
-  // ~56 B id string, ~32 B HashMap node, ~16 B listener closure), so growing from a
-  // near-empty heap to the 75% high watermark of -Xmx512m (~384 MiB of retained entries)
-  // takes about 1.05M entries. At REQUESTS_PER_ROUND requests per ROUND_INTERVAL_MS round
+  // Pacing: one retained entry costs roughly 408 bytes of heap (~272 B RequestState object,
+  // ~56 B id string, ~32 B HashMap node per map - the entries map and the listener
+  // registry - ~16 B listener closure), so growing from a near-empty heap to the 75% high
+  // watermark of -Xmx512m (~384 MiB of retained entries) takes about 1M entries. At
+  // REQUESTS_PER_ROUND requests per ROUND_INTERVAL_MS round
   // (250 per second) a full growth phase lasts roughly 70 minutes - over the ~1 h target
   // and far longer than the ~15 s the trend qualification needs at this GC rate. The rate
   // also stays low relative to the target pod's 2 CPUs: each request is a tiny localhost
@@ -69,6 +70,14 @@ public final class Main {
    * crosses the high watermark.
    */
   public static void main(String[] args) throws IOException {
+    // sun.net.httpserver.nodelay (documented on the jdk.httpserver module) sets
+    // TCP_NODELAY on every accepted connection; the default (false) lets Nagle's
+    // algorithm hold the 3-byte response body back until the delayed-ACK timer fires,
+    // stalling each keep-alive response by ~40 ms. At the demo's 250 req/s self-traffic
+    // that is ~10 s of stalls per round - ten times the 1 s round interval. The server
+    // reads the property once at class load, so it must be set before the first
+    // HttpServer.create below.
+    System.setProperty("sun.net.httpserver.nodelay", "true");
     RequestCache cache = new RequestCache();
     HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
     server.createContext("/", new HttpLeakHandler(cache));
