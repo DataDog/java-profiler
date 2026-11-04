@@ -118,6 +118,25 @@ final class RequestCacheTest {
   }
 
   @Test
+  void firedListenerReportsTheEntryItCaptured() throws Exception {
+    RequestCache cache = new RequestCache();
+    cache.record("listener-entry-a");
+    cache.record("listener-entry-b");
+    // Two distinct ids: a single-entry test cannot tell a closure that captures its own
+    // entry's state from one that reports a constant (or another entry's) id, because
+    // only one id would be in play. Firing ONLY entry A's listener pins which instance
+    // the closure captured.
+    Map<String, RequestState> entries = entriesOf(cache);
+    assertEquals(2, entries.size());
+    entries.get("listener-entry-a").removalListener().run();
+    assertEquals("listener-entry-a", cache.lastRemovedId());
+    assertEquals(1, cache.removalsObserved());
+    // The callback is bookkeeping, not removal: firing one listener must not evict
+    // either entry (retention is only removed by flush()).
+    assertEquals(2, cache.retainedCount());
+  }
+
+  @Test
   void requestStateContract() {
     assertEquals("id-1", new RequestState("id-1").id());
     assertNull(new RequestState("id-2").removalListener(), "nothing registered yet");

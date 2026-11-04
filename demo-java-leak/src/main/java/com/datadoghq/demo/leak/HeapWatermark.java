@@ -36,9 +36,21 @@ public final class HeapWatermark {
 
   private final MemoryMXBean memoryBean;
   private final List<MemoryPoolMXBean> heapPools;
+  private final long runtimeMax;
 
   /** Creates a watermark reading the JVM's current heap memory beans. */
   public HeapWatermark() {
+    this(Runtime.getRuntime().maxMemory());
+  }
+
+  /**
+   * Creates a watermark with an injected runtime max instead of the JVM's {@code
+   * Runtime.maxMemory()}. Package-private so tests can force the unbounded-runtime-max
+   * fallback (a healthy {@code -Xmx}-bounded JVM never reports an unbounded max); it is
+   * deliberately not part of the public API.
+   */
+  HeapWatermark(long runtimeMax) {
+    this.runtimeMax = runtimeMax;
     this.memoryBean = ManagementFactory.getMemoryMXBean();
     this.heapPools =
         ManagementFactory.getMemoryPoolMXBeans().stream()
@@ -75,7 +87,7 @@ public final class HeapWatermark {
     }
     long max = memoryBean.getHeapMemoryUsage().getMax();
     if (max <= 0) {
-      long runtimeMax = Runtime.getRuntime().maxMemory();
+      long runtimeMax = this.runtimeMax;
       if (runtimeMax <= 0 || runtimeMax == Long.MAX_VALUE) {
         return HIGH_WATERMARK;
       }

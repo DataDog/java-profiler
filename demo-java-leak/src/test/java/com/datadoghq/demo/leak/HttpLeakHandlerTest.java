@@ -19,9 +19,11 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Drives {@link HttpLeakHandler} over a real in-process {@code jdk.httpserver}, the same
@@ -32,6 +34,7 @@ import org.junit.jupiter.api.Test;
  * reuses an id across a {@link RequestCache#flush()} cycle (which makes {@code record}
  * throw and fails the exchange) fails one of these assertions.
  */
+@Timeout(value = 2, unit = TimeUnit.MINUTES)
 final class HttpLeakHandlerTest {
 
   private RequestCache cache;
@@ -106,15 +109,16 @@ final class HttpLeakHandlerTest {
     }
     List<Future<Integer>> statuses;
     // Client-side threads overlap requests on the two handler threads, so the id counter
-    // and the cache are exercised under real interleaving.
+    // and the cache are exercised under real interleaving. The timed invokeAll is the
+    // authoritative hang bound: a wedged handler would otherwise block here forever.
     ExecutorService callers = Executors.newFixedThreadPool(8);
     try {
-      statuses = callers.invokeAll(calls);
+      statuses = callers.invokeAll(calls, 30, TimeUnit.SECONDS);
     } finally {
       callers.shutdown();
     }
     for (int i = 0; i < requests; i++) {
-      assertEquals(200, statuses.get(i).get(), "concurrent request " + i);
+      assertEquals(200, statuses.get(i).get(30, TimeUnit.SECONDS), "concurrent request " + i);
     }
     assertEquals(requests, cache.retainedCount());
   }

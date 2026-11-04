@@ -41,20 +41,32 @@ import org.junit.jupiter.api.Timeout;
  * HeapWatermark}'s {@code MemoryPoolMXBean} collection-usage path.
  *
  * <p>The assertions are the trend gates the demo exists to satisfy: post-GC occupancy
- * must rise monotonically across at least 10 consecutive GC cycles and must reach those
- * cycles well inside 5 minutes; the watermark flush must fire when post-GC occupancy
- * crosses {@link HeapWatermark#HIGH_WATERMARK} and drop every retained entry in one step;
- * and growth must resume after the flush. A weak-reference cache, a silent eviction path
- * or a broken watermark each fail a hard assertion here - nothing is printed.
+ * must rise across at least 10 consecutive GC cycles, dips within {@code
+ * TREND_TOLERANCE} forgiven (a young pool's collection usage can be refreshed by
+ * unrelated minor GCs), and must reach those cycles well inside 5 minutes; the watermark
+ * flush must fire when post-GC occupancy crosses {@link HeapWatermark#HIGH_WATERMARK}
+ * and drop every retained entry in one step; and growth must resume after the flush. A
+ * weak-reference cache, a silent eviction path or a broken watermark each fail a hard
+ * assertion here - nothing is printed.
  */
 final class LeakTrendTest {
 
-  // ~19 MiB of retained state per round at ~400 B per recorded request: large enough
+  // ~3.8 MiB of retained state per round at ~400 B per recorded request: large enough
   // that each round's growth dominates post-GC reporting noise, small enough that the
   // watermark is reached in minutes of loopback self-traffic. This mirrors Main's loop
   // shape with a round size scaled for a bounded test instead of an hour-long growth
-  // phase; Main's own loop constants are not injectable and pace for production.
-  private static final int REQUESTS_PER_ROUND = 50_000;
+  // phase; Main's own loop constants are not injectable and pace for production. At this
+  // round size the flush is expected around round ~90 (roughly 850k entries against the
+  // ~384 MiB watermark), well inside MAX_ROUNDS; the worst-case spin is 200 rounds x
+  // 10k = 2M requests, comfortably under the 10-minute @Timeout.
+  private static final int REQUESTS_PER_ROUND = 10_000;
+
+  // Post-GC samples may dip slightly between rounds when a young pool's collection usage
+  // is refreshed by unrelated minor GCs; a sample still counts as rising when it sits no
+  // more than this fraction of the heap max below its predecessor (0.2% is about 1 MiB
+  // at -Xmx512m, under a third of one round's ~3.8 MiB growth, so genuine growth still
+  // advances the run).
+  private static final double TREND_TOLERANCE = 0.002;
 
   // The trend qualification the tests must preserve: at least 10 consecutive GC cycles
   // with rising post-GC occupancy before the flush, and enough rounds after the flush to
@@ -233,6 +245,39 @@ final class LeakTrendTest {
   }
 
   @Test
+  void heapWatermarkReportsHighWatermarkWhenRuntimeMaxIsUnbounded() throws Exception {
+    // Heap max undefined (-1) AND a runtime max that is unbounded (Long.MAX_VALUE) or
+    // non-positive: the fraction must be exactly HIGH_WATERMARK (never an empty-heap
+    // zero), which by construction makes the flush decision fire.
+    MemoryMXBean memory = memoryBean(new MemoryUsage(-1, 64L << 20, 128L << 20, -1));
+    MemoryPoolMXBean eden =
+        pool("eden", MemoryType.HEAP, new MemoryUsage(-1, 32L << 20, 32L << 20, 32L << 20));
+    MemoryPoolMXBean old =
+        pool("old", MemoryType.HEAP, new MemoryUsage(-1, 32L << 20, 32L << 20, 32L << 20));
+    HeapWatermark unbounded = inject(Long.MAX_VALUE, memory, List.of(eden, old));
+    assertEquals(HeapWatermark.HIGH_WATERMARK, unbounded.heapUsedFraction(), 0.0);
+    assertTrue(unbounded.shouldFlush(), "an unbounded limit must pace against the watermark");
+    HeapWatermark nonPositive = inject(-1, memory, List.of(eden, old));
+    assertEquals(HeapWatermark.HIGH_WATERMARK, nonPositive.heapUsedFraction(), 0.0);
+    assertTrue(nonPositive.shouldFlush(), "a non-positive limit must pace against the watermark");
+  }
+
+  @Test
+  void heapWatermarkUsesInjectedRuntimeMaxWhenHeapMaxUndefined() throws Exception {
+    // Heap max undefined (-1) with a small positive injected runtime max: the fraction
+    // must be paced against the injected max (64 of 128 MiB = 0.5, strictly below the
+    // watermark), proving the injected value is consulted instead of the JVM's own.
+    MemoryMXBean memory = memoryBean(new MemoryUsage(-1, 64L << 20, 128L << 20, -1));
+    MemoryPoolMXBean eden =
+        pool("eden", MemoryType.HEAP, new MemoryUsage(-1, 32L << 20, 32L << 20, 32L << 20));
+    MemoryPoolMXBean old =
+        pool("old", MemoryType.HEAP, new MemoryUsage(-1, 32L << 20, 32L << 20, 32L << 20));
+    HeapWatermark watermark = inject(128L << 20, memory, List.of(eden, old));
+    assertEquals(0.5, watermark.heapUsedFraction(), 1e-9);
+    assertFalse(watermark.shouldFlush(), "0.5 is strictly below the watermark");
+  }
+
+  @Test
   void heapWatermarkFlushDecisionMatchesTheWatermarkBoundary() throws Exception {
     long max = 512L << 20;
     // Exactly at the watermark: the decision is >=, so this must flush.
@@ -273,12 +318,24 @@ final class LeakTrendTest {
     }
   }
 
-  /** Longest run of samples where each fraction is strictly greater than the previous. */
+  /**
+   * A sample counts as rising when it is no more than {@link #TREND_TOLERANCE} below its
+   * predecessor; strict monotonicity is not required, only a trend that survives young-gen
+   * collection-usage refresh noise.
+   */
+  private static boolean risesWithinTolerance(double previous, double current) {
+    return current > previous - TREND_TOLERANCE;
+  }
+
+  /** Longest run of samples where each fraction rises within tolerance over the previous. */
   private static int longestStrictlyIncreasingRun(List<Sample> samples) {
     int best = 0;
     int run = 0;
     for (int i = 0; i < samples.size(); i++) {
-      run = i > 0 && samples.get(i).fraction() > samples.get(i - 1).fraction() ? run + 1 : 1;
+      run =
+          i > 0 && risesWithinTolerance(samples.get(i - 1).fraction(), samples.get(i).fraction())
+              ? run + 1
+              : 1;
       best = Math.max(best, run);
     }
     return best;
@@ -293,7 +350,10 @@ final class LeakTrendTest {
   private static long millisWhenStrictlyIncreasingRunReached(List<Sample> samples, int target) {
     int run = 0;
     for (int i = 0; i < samples.size(); i++) {
-      run = i > 0 && samples.get(i).fraction() > samples.get(i - 1).fraction() ? run + 1 : 1;
+      run =
+          i > 0 && risesWithinTolerance(samples.get(i - 1).fraction(), samples.get(i).fraction())
+              ? run + 1
+              : 1;
       if (run == target) {
         return samples.get(i).elapsedMillis();
       }
@@ -317,6 +377,20 @@ final class LeakTrendTest {
   private static HeapWatermark inject(MemoryMXBean memory, List<MemoryPoolMXBean> pools)
       throws Exception {
     HeapWatermark watermark = new HeapWatermark();
+    setField(watermark, "memoryBean", memory);
+    setField(watermark, "heapPools", pools);
+    return watermark;
+  }
+
+  /**
+   * Like {@link #inject(MemoryMXBean, List)} but builds the watermark through the
+   * package-private {@code HeapWatermark(long)} constructor, so tests can force the
+   * unbounded-runtime-max fallback: the two-arg helper always leaves the instance's
+   * runtime max as the test JVM's real (bounded, positive) {@code Runtime.maxMemory()}.
+   */
+  private static HeapWatermark inject(
+      long runtimeMax, MemoryMXBean memory, List<MemoryPoolMXBean> pools) throws Exception {
+    HeapWatermark watermark = new HeapWatermark(runtimeMax);
     setField(watermark, "memoryBean", memory);
     setField(watermark, "heapPools", pools);
     return watermark;

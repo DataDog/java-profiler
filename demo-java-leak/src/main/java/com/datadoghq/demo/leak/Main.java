@@ -11,6 +11,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.Locale;
 import java.util.concurrent.Executors;
 
@@ -98,15 +99,36 @@ public final class Main {
   private static void selfTrafficLoop(RequestCache cache, int port) {
     HttpClient client = HttpClient.newHttpClient();
     HttpRequest request =
-        HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/")).GET().build();
+        HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/"))
+            .GET()
+            .timeout(Duration.ofSeconds(5))
+            .build();
     HeapWatermark watermark = new HeapWatermark();
     long round = 0;
+    // Persistent-failure escalation: a dead handler thread or a wedged executor must not
+    // keep burning a full round of failing requests without notice. One WARN per failure
+    // episode; a clean round ends the episode so a new one re-warns.
+    int consecutiveFailureRounds = 0;
+    boolean persistentFailureWarned = false;
     while (true) {
       long roundStartNanos = System.nanoTime();
       round++;
       int failures = issueRequests(client, request, REQUESTS_PER_ROUND);
       if (failures > 0) {
         System.out.println("[leak-demo] round=" + round + " self-request failures=" + failures);
+        consecutiveFailureRounds++;
+        if (consecutiveFailureRounds >= 2 && !persistentFailureWarned) {
+          System.out.println(
+              "[leak-demo] WARN round="
+                  + round
+                  + " self-request failures persist across consecutive rounds ("
+                  + failures
+                  + " in the latest round)");
+          persistentFailureWarned = true;
+        }
+      } else {
+        consecutiveFailureRounds = 0;
+        persistentFailureWarned = false;
       }
       System.gc();
       if (watermark.shouldFlush()) {
@@ -131,8 +153,10 @@ public final class Main {
   /**
    * Issues {@code count} sequential GETs to the app's own server, so every recorded state
    * goes through the real handler path. Returns the number of requests that did not
-   * complete with a 200. Failures never stop the loop: they are reported once per round they
-   * occur in, and the app has no exit path by design.
+   * complete with a 200. Failures never stop the loop: they are reported once per round
+   * they occur in, a round is abandoned early once more than ten of its requests fail
+   * (a round that degraded that far will not feed the trend anyway), and the app itself
+   * has no exit path by design.
    */
   private static int issueRequests(HttpClient client, HttpRequest request, int count) {
     int failures = 0;
@@ -142,14 +166,24 @@ public final class Main {
             client.send(request, HttpResponse.BodyHandlers.discarding());
         if (response.statusCode() != 200) {
           failures++;
+          if (failures > 10) {
+            // A round already degraded past ten failures will not feed the trend anyway;
+            // abandon it early instead of burning the rest of the round's requests.
+            break;
+          }
         }
       } catch (IOException e) {
         failures++;
+        if (failures > 10) {
+          // Same early abandonment for I/O failures: with the 5s request timeout this
+          // bounds a wedged-but-accepting server to at most ~11 timeouts (~55 s) a round.
+          break;
+        }
       } catch (InterruptedException e) {
         failures++;
-        // Interruption is not a shutdown signal for this app: clear the flag so the round's
-        // pacing sleep is not skipped too. Shutdown is by process kill.
-        Thread.interrupted();
+        // Interruption is not a shutdown signal for this app (shutdown is by process
+        // kill), and the InterruptedException already cleared the flag, so the loop
+        // simply continues with the round's remaining requests.
       }
     }
     return failures;
