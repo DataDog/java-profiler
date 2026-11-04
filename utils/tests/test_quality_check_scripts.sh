@@ -388,6 +388,7 @@ put src/upstream.cpp '// Copyright The async-profiler authors'
 put src/present.cpp '// Copyright 2016-Present Datadog, Inc.'
 put src/moved_from.cpp '// Copyright 2024, Datadog, Inc.'
 put src/gone.cpp '// Copyright 2024, Datadog, Inc.'
+put src/table.inc '{1, 2},'
 git add . && GIT_COMMITTER_DATE=2024-06-01T12:00:00 git commit -qm base --date=2024-06-01T12:00:00
 git checkout -qb feature
 put src/new_bare.cpp 'int x;'
@@ -395,6 +396,12 @@ put src/new_ok.cpp '// Copyright 2026, Datadog, Inc.'
 put utils/vendor/lib.py 'print(1)'
 put .gitlab/job.sh 'echo hi'
 put src/notes.md 'no header needed'
+put src/ext.ts 'export {};'
+put tools/hook '#!/usr/bin/env python3'
+put tools/NOTICE 'plain text, no shebang'
+put tools/run.txt '#!/bin/sh'
+put 'src/café.cpp' 'int y;'
+echo '{3, 4},' >> src/table.inc
 echo '// change' >> src/stale.cpp
 sed -i.bak 's/2024 Datadog/2024, 2026 Datadog/' src/ranged.cpp && rm src/ranged.cpp.bak
 echo '// change' >> src/Bare.java
@@ -411,15 +418,25 @@ git add . && GIT_COMMITTER_DATE=2025-12-15T12:00:00 git commit -qm december --da
 sed -i.bak 's/2024, Datadog/2025, Datadog/' src/dirty.cpp && rm src/dirty.cpp.bak
 
 rc=0; out=$(python3 "$CR" --root "$CR_ROOT" --base main 2>&1) || rc=$?
-expect "T5 copyright run" 1 "$rc" "$out" "copyright: 5 problem(s)"
+expect "T5 copyright run" 1 "$rc" "$out" "copyright: 9 problem(s)"
 for want in "src/new_bare.cpp: new file has no" "src/stale.cpp: Datadog copyright ends in 2024; changed in 2026" \
             "src/Bare.java: modified file has no copyright line" "src/moved_to.cpp: Datadog copyright ends in 2024" \
-            "src/dirty.cpp: Datadog copyright ends in 2025; changed in $(date +%Y)"; do
+            "src/dirty.cpp: Datadog copyright ends in 2025; changed in $(date +%Y)" \
+            "src/ext.ts: new file has no" "tools/hook: new file has no" "src/café.cpp: new file has no" \
+            "src/table.inc: modified file has no copyright line"; do
   expect "T5 reports $want" 1 "$rc" "$out" "$want"
 done
-for clean in new_ok.cpp utils/vendor .gitlab notes.md ranged.cpp bare.py upstream.cpp present.cpp december.cpp; do
+for clean in new_ok.cpp utils/vendor .gitlab notes.md ranged.cpp bare.py upstream.cpp present.cpp december.cpp \
+             NOTICE run.txt; do
   if [[ "$out" == *"$clean"* ]]; then fail "T5 flags $clean:"$'\n'"$out"; else pass; fi
 done
+# In a GitHub pull request the default base is origin/$GITHUB_BASE_REF.
+git update-ref refs/remotes/origin/rel HEAD
+rc=0; out=$(GITHUB_BASE_REF=rel python3 "$CR" --root "$CR_ROOT" 2>&1) || rc=$?
+expect "T5 GITHUB_BASE_REF selects the base" 1 "$rc" "$out" "copyright: 1 problem(s)"
+rc=0; out=$(GITHUB_BASE_REF= python3 "$CR" --root "$CR_ROOT" 2>&1) || rc=$?
+expect "T5 the default base is origin/main" 2 "$rc" "$out" "refs/remotes/origin/main"
+git update-ref -d refs/remotes/origin/rel
 git checkout -q src/dirty.cpp
 
 rc=0; out=$(python3 "$CR" --root "$CR_ROOT" --base no-such-branch 2>&1) || rc=$?
@@ -437,6 +454,10 @@ rc=0; out=$(python3 "$CM" --root "$CM_ROOT" --write 2>&1) || rc=$?
 expect "T6b --write" 0 "$rc" "$out" "CLAUDE.md: written"
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
 expect "T6c canonical CLAUDE.md" 0 "$rc" "$out" "CLAUDE.md: OK"
+CAIRN=$'<!-- cairn:knowledgebase begin (managed by cairn; do not edit manually) -->\n## Cairn\n\ntext\n<!-- cairn:knowledgebase end -->\n\n'
+{ head -2 "$CM_ROOT/CLAUDE.md"; printf '%s' "$CAIRN"; tail -n +3 "$CM_ROOT/CLAUDE.md"; } > "$CM_ROOT/c" && mv "$CM_ROOT/c" "$CM_ROOT/CLAUDE.md"
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6e cairn-managed block is ignored" 0 "$rc" "$out" "CLAUDE.md: OK"
 echo "## Build" >> "$CM_ROOT/CLAUDE.md"
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
 expect "T6d drifted CLAUDE.md" 1 "$rc" "$out" "differs from the canonical stub"

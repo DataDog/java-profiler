@@ -12,8 +12,11 @@ Exit codes: 0 canonical (or written), 1 missing or different, 2 environment erro
 import argparse
 import difflib
 import os
+import re
 import sys
 
+CAIRN_BLOCK = re.compile(r"<!-- cairn:knowledgebase begin.*?<!-- cairn:knowledgebase end -->\n\n?",
+                         re.S)
 CANONICAL = """\
 # CLAUDE.md
 
@@ -54,6 +57,9 @@ def main(argv):
     except OSError as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
+    # The cairn plugin's SessionStart hook injects its managed block into CLAUDE.md; ignore
+    # it so that sessions with cairn do not fail this check.
+    actual = CAIRN_BLOCK.sub("", actual)
     if actual == CANONICAL:
         print("CLAUDE.md: OK")
         return 0

@@ -229,8 +229,8 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 | `check-doc-index.py` | Every `doc/**/*.md` is linked from `doc/README.md` and has a PascalCase file name. |
 | `check-sigsetjmp-shape.py` | Every `sigsetjmp()` has a `JmpCtxScope` in effect, `savemask` 1, and a landing pad that starts with `SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();` then `<scope>.restore();` (the `guards.h` pattern). The glibc cancellation buffer in `libraryPatcher_linux.cpp` is the one exception. |
 | `check-tracked-artifacts.py` | No tracked path under `docs/sphinx/` or `.sphinx/`, and no `*.scratch*` path. |
-| `check-copyright.py` | The files the branch adds or modifies since its merge base with `--base` (default `origin/main`) follow the `AGENTS.md` copyright rule. The required end year is the year of the file's last commit, or the current year when it has uncommitted changes. Skips `utils/vendor/`, `ddprof-lib/build/` and `.gitlab/`. |
-| `check-claude-md.py` | `CLAUDE.md` is the canonical redirect stub to `AGENTS.md`; the script holds the canonical text, and `--write` restores it. |
+| `check-copyright.py` | The source files the branch adds or modifies since its merge base with `--base` follow the `AGENTS.md` copyright rule. The default base is `origin/$GITHUB_BASE_REF` in a GitHub pull request (so a backport is compared with its `release/*` branch), else `origin/main`. Source means the usual code extensions plus extensionless scripts that start with `#!`. The required end year is the year of the file's last commit, or the current year when it has uncommitted changes. Skips `utils/vendor/`, `ddprof-lib/build/` and `.gitlab/`. |
+| `check-claude-md.py` | `CLAUDE.md` is the canonical redirect stub to `AGENTS.md`; the script holds the canonical text, and `--write` restores it. The block the cairn plugin injects at session start is ignored. |
 
 **Usage:**
 ```bash
