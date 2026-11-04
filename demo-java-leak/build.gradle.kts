@@ -8,6 +8,16 @@ plugins {
   application
 }
 
+// Toolchain 21 lets this module compile even when the Gradle daemon runs on an older
+// JVM (e.g. CodeQL's default-setup autobuild on a JDK 17 runner) — Gradle selects the
+// installed JDK 21 for compilation instead of using the daemon's javac, where
+// `--release 21` would fail with "release version 21 not supported".
+java {
+  toolchain {
+    languageVersion.set(JavaLanguageVersion.of(21))
+  }
+}
+
 // This module deliberately does not apply `com.datadoghq.java-conventions`: that plugin
 // force-appends `--release 8` to every JavaCompile task (JavaConventionsPlugin.kt), while
 // this app targets `--release 21` so it builds under the repo's JDK 21 Gradle and runs on
