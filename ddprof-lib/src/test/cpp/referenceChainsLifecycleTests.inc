@@ -46,11 +46,16 @@ protected:
 
 TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent) {
     Arguments args;
-    // budget=2 with a first-pass budget of 2 keeps every search multi-pass
-    // (the graph does not fit in one pass's expand budget), so passes are
-    // actually in flight while the churn threads run.
+    // budget=2 keeps every search multi-pass (the graph does not fit in one
+    // pass's expand budget), so passes are actually in flight while the churn
+    // threads run. firstpassbudget must be ample so the root enumeration can
+    // COMPLETE: under the R4/R5 termination law a search may not terminate
+    // while roots remain unenumerated (_root_enum_incomplete), and with a
+    // 2-unit enum budget every attempt truncates - no terminal outcome could
+    // ever be reached (same adaptation as MultiPassResumptionReconstructsChain
+    // AcrossPasses / ChainCompletesWithoutAbandonment in referenceChainsBfsTests.inc).
     ASSERT_FALSE(args.parse(
-        "referencechains=true:hops=64:budget=2:firstpassbudget=2"));
+        "referencechains=true:hops=64:budget=2:firstpassbudget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
@@ -79,6 +84,11 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
     constexpr int kMaxPasses = 2000;
     constexpr int kGcCycles = 200;
     constexpr int kAbortCycles = 30;
+
+    // Consecutive RUNNING passes before the pass thread sleeps out the root-enumeration
+    // interval floor (see the RUNNING branch below for why).
+    constexpr int kRunningStreakBeforeEnumFloorWait = 200;
+    int running_streak = 0;
 
     std::atomic<bool> pass_done{false};
     std::atomic<int> restarts{0};
@@ -136,8 +146,22 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
             }
             u8 state = ReferenceChainsTestAccessor::searchStateForTest();
             if (state == SearchState::RUNNING) {
+                // R4/R5: while _root_enum_incomplete, a search may not terminate until a
+                // root-enumeration attempt completes. The floor is wall-clock
+                // (rootEnumMinIntervalNs()) and this loop drives runPass() back-to-back, so
+                // once pass 1's window-aborted enumeration set the flag, only a later pass
+                // run after the floor elapses can clear it. Sleep the floor out periodically
+                // (only while no abort window is open) so the search can reach the terminal
+                // outcome the restarts guard below requires; the abort windows exhaust after
+                // kAbortCycles, so the retries are bounded.
+                if (++running_streak >= kRunningStreakBeforeEnumFloorWait &&
+                    !ReferenceChainsTestAccessor::abortPassRequested()) {
+                    running_streak = 0;
+                    usleep(ReferenceChainsTestAccessor::rootEnumMinIntervalNs() / 1000 + 1000);
+                }
                 continue;
             }
+            running_streak = 0;
             // Terminal outcome. runPass()'s terminal branch retries the tag
             // release on the NEXT call - mirror threadLoop()/shouldRunPass():
             // only restart once the release is confirmed.

@@ -123,6 +123,15 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   private static final long ABANDON_DUMP_RETRY_SPACING_MS = 1_000;
   private static final long ABANDON_LAST_DUMP_MIN_DELAY_MS = 8_000;
 
+  // Seam-driven passes are front-loaded onto the first GRACE_DRIVE_ATTEMPTS grace-loop
+  // attempts (8 passes each, 24 total); the remaining grace-loop attempts are poll-only
+  // (organic BFS cadence + 1s sleep + dump + match), so CI load does not scale with the loop
+  // width. Each driven pass serializes against the BFS thread via _engine_lock and feeds the
+  // shared pause-controller cost model (_effective_cadence_ns, _canary_pass_ema_ms,
+  // _cpu_pain_budget), and the deterministic-frontier claim needs only cumulative progress,
+  // which the front-loaded burst far exceeds.
+  private static final int GRACE_DRIVE_ATTEMPTS = 3;
+
   /**
    * The {@code datadog.ReferenceChain} ActiveSetting's {@code id} (flightRecorder.cpp's
    * T_REFERENCE_CHAIN). ActiveSetting events from cpu/wall/memory/nativemem also read
@@ -467,10 +476,15 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // for why that is load-bearing; the seam stubs are no-ops in release builds). Ten attempts,
       // matching the cache-leak test's loop: this fixture's ArrayList resizes churn the walked
       // element path just like the cache's HashMap resizes, so late-round discovery needs the
-      // same scheduling-independent margin.
+      // same scheduling-independent margin. The seam burst is capped at the first
+      // GRACE_DRIVE_ATTEMPTS attempts to bound synchronous heap-walk load on shared CI runners
+      // (each pass serializes against the BFS thread via _engine_lock and feeds the
+      // pause-controller cost model); the remaining attempts are poll-only on the organic cadence.
       JfrEvents lastEvents = null;
       for (int attempt = 0; match == null && attempt < 10; attempt++) {
-        driveReferenceChainPasses(8);
+        if (attempt < GRACE_DRIVE_ATTEMPTS) {
+          driveReferenceChainPasses(8);
+        }
         Thread.sleep(1000);
         dump(scratchDumpPath);
         lastEvents = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
@@ -691,10 +705,16 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // duration). Driving passes here makes discovery depend on cumulative frontier progress,
       // which is deterministic, instead of on that scheduling. pollReferenceChainTargets0() after
       // each pass is what tags the candidate's tracked instances and polls the representative -
-      // the same per-iteration tail the BFS thread runs.
+      // the same per-iteration tail the BFS thread runs. The burst is capped at the first
+      // GRACE_DRIVE_ATTEMPTS attempts to bound synchronous heap-walk load on shared CI runners
+      // (each pass serializes against the BFS thread via _engine_lock and feeds the
+      // pause-controller cost model); the remaining attempts are poll-only on the organic
+      // cadence, which keeps this loop's load within the pre-seam 5-attempt shape.
       JfrEvents lastEvents = null;
       for (int attempt = 0; match == null && attempt < 10; attempt++) {
-        driveReferenceChainPasses(8);
+        if (attempt < GRACE_DRIVE_ATTEMPTS) {
+          driveReferenceChainPasses(8);
+        }
         Thread.sleep(1000);
         dump(scratchDumpPath);
         lastEvents = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
@@ -764,7 +784,13 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
    * flakiness, observed in practice), the shared search can still be {@code RUNNING} with a large,
    * non-fresh frontier when this method starts - the fresh-search precondition is something this
    * method establishes, not something it presumes. Debug-only: the seam does not exist in a
-   * release build.
+   * release build, and the {@code assumeTrue} at the top of the method body skips this test
+   * there - a JUnit assumption failure is reported as SKIPPED, not passed, so coverage reports
+   * must not count it. By design, release-config runs (the {@code test:release} label)
+   * therefore exercise none of the {@code buildAbandonedEvent()} →
+   * {@code FlightRecorder::recordReferenceChainAbandoned()} write path; if the candidate-gate
+   * contract ever changes so a release build could reach {@code ABANDONED} without the debug
+   * population seams, this assumption must be revisited.
    *
    * <p><b>Why this method also seeds a klass population trend, despite requesting no
    * {@code generations=true} of its own:</b> {@code LivenessTracker::_gc_generations} is only ever
@@ -860,13 +886,17 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // the frontier cap/ttl cutoff inside whatever wall-clock time this shared JVM's scheduling
       // grants it. The abandoned event only reaches the recording through a dump(), so each check
       // needs a fresh dump - and each dump rewrites the whole shared recording. Dumps are
-      // therefore capped at ABANDON_MAX_DUMPS and paced so the last one lands at least
-      // ABANDON_LAST_DUMP_MIN_DELAY_MS after the grace period started; the passesRun probe above
-      // absorbs most of the scheduling slack without any I/O.
+      // therefore capped at ABANDON_MAX_DUMPS and paced so that, when the loop runs to
+      // completion, the last one lands at or after ABANDON_LAST_DUMP_MIN_DELAY_MS after the
+      // grace period started (on the final attempt attemptsLeft == 1, so the sleep is
+      // Math.max(SPACING, full remaining); an early success break can land earlier, which is
+      // fine because the event was already found and the floor is moot); the passesRun probe
+      // above absorbs most of the scheduling slack without any I/O.
       long lastDumpEarliestNs =
           graceStartNs + TimeUnit.MILLISECONDS.toNanos(ABANDON_LAST_DUMP_MIN_DELAY_MS);
       JfrEvents abandoned = null;
       int dumpsTaken = 0;
+      long lastDumpAtNs = 0;
       for (int attempt = 0; attempt < ABANDON_MAX_DUMPS; attempt++) {
         if (attempt > 0) {
           int attemptsLeft = ABANDON_MAX_DUMPS - attempt; // includes the dump about to be taken
@@ -874,6 +904,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
               TimeUnit.NANOSECONDS.toMillis(lastDumpEarliestNs - System.nanoTime());
           Thread.sleep(Math.max(ABANDON_DUMP_RETRY_SPACING_MS, remainingMs / attemptsLeft));
         }
+        lastDumpAtNs = System.nanoTime();
         dump(dumpPath);
         dumpsTaken++;
         abandoned = verifyEvents(dumpPath, "datadog.ReferenceChainAbandoned", false);
@@ -885,8 +916,9 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           "Expected a datadog.ReferenceChainAbandoned event within " + dumpsTaken + " of at most "
               + ABANDON_MAX_DUMPS + " dumps (after 3 GCs and a 1500ms grace period; the pass "
               + "probe waited up to " + ABANDON_PASS_WAIT_MS + "ms, passesRun="
-              + ReferenceChainTestHooks.referenceChainPassesRunForTest0() + "; last dump >= "
-              + ABANDON_LAST_DUMP_MIN_DELAY_MS + "ms after grace start)");
+              + ReferenceChainTestHooks.referenceChainPassesRunForTest0() + "; last dump "
+              + TimeUnit.NANOSECONDS.toMillis(lastDumpAtNs - graceStartNs)
+              + "ms after grace start, nominal floor " + ABANDON_LAST_DUMP_MIN_DELAY_MS + "ms)");
     } finally {
       Files.deleteIfExists(dumpPath);
     }

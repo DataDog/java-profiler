@@ -10,10 +10,10 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.junit.jupiter.api.Test;
 
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.assumeDebugBuild;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * PROF-15341 follow-up: {@code ReferenceChainTrackingTest} drives slope detection and chain
@@ -66,10 +66,6 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
   @Override
   protected boolean isPlatformSupported() {
     return !(Platform.isJavaVersion(8) || Platform.isJ9() || Platform.isZing());
-  }
-
-  private static void assumeDebugBuild() {
-    assumeTrue(ReferenceChainAssertions.isDebugInstrumentedBuild());
   }
 
   /** Seeds twenty epochs of strictly increasing population counts, then asserts

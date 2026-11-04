@@ -297,11 +297,8 @@
   X(REFERENCE_CHAIN_CANDIDATE_COUNT, "reference_chain_candidate_count") \
   X(REFERENCE_CHAIN_CANDIDATES_FOUND, "reference_chain_candidates_found") \
   /* hasLeakSignal() gate evaluations refused while the OOM urgency latch is \
-   * set and selectLeakCandidates() found zero candidates - a heap-wide leak \
-   * no single klass explains, so no reference-chain search may start. \
-   * One increment per refused evaluation, not per urgency episode: evaluation \
-   * runs only after canAffordNewSearch()'s safepoint budget check and follows \
-   * the ramped cadence. */ \
+   * set and selectLeakCandidates() found zero candidates (a heap-wide leak no \
+   * single klass explains). Counts evaluations (~1/s while latched), not episodes. */ \
   X(REFERENCE_CHAIN_URGENT_NO_CANDIDATE, "reference_chain_urgent_no_candidate") \
   /* Heap-floor seqlock: samples DROPPED when a writer claims a slot whose \
    * seq is still the sentinel - only possible if the ring lapped an \

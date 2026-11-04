@@ -40,7 +40,7 @@ Candidate selection uses sampled objects. It can miss a leak when sampling does 
 
 Each pass can perform these operations:
 
-1. Enumerate roots and stack references. The first pass always does this. Later passes retry a truncated enumeration or wait at least two seconds.
+1. Enumerate roots and stack references. The first pass always does this. Later passes wait at least two seconds since the last attempt - extended by the last attempt's measured in-safepoint cost - truncated attempts included; a pass whose enumeration truncated ends after the enumeration.
 2. Walk candidate thread objects when the candidate data identifies qualifying threads.
 3. Scan static fields in chunks when the loaded-class count changes.
 4. Expand a batch of frontier entries.

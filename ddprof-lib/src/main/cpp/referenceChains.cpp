@@ -304,7 +304,7 @@ Error ReferenceChainTracker::start(Arguments &args) {
   _pause_target_ms = args._reference_chains_pause_target_ms;
   _effective_pause_target_ms = _pause_target_ms;
   _effective_budget = _budget;
-  _effective_cadence_ns = PASS_CADENCE_NS;
+  _effective_cadence_ns = PASS_CADENCE_NS; // plain: the BFS thread is not running yet
   _candidate_count = 0;
   _candidate_found_bits = 0;
   memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
@@ -494,7 +494,7 @@ void ReferenceChainTracker::stopThread() {
 bool ReferenceChainTracker::applyOomRamp(double seconds_to_oom) {
   bool urgent = seconds_to_oom >= 0 && seconds_to_oom < OOM_RAMP_START_S;
   long target_ms = _pause_target_ms;
-  u64 cadence_ns = _effective_cadence_ns;
+  u64 cadence_ns = load(_effective_cadence_ns);
   if (urgent) {
     double x = 1.0 - seconds_to_oom / OOM_RAMP_START_S; // 0 at 30min out, 1 at OOM
     target_ms = std::lround(_pause_target_ms *
@@ -518,7 +518,7 @@ bool ReferenceChainTracker::applyOomRamp(double seconds_to_oom) {
     }
     // Cadence ownership on every branch: urgent iterations set it here, the episode's end (or
     // stop()) restores PASS_CADENCE_NS, and otherwise updatePacing() owns it.
-    _effective_cadence_ns = cadence_ns;
+    store(_effective_cadence_ns, cadence_ns);
   }
   if (target_ms != _effective_pause_target_ms) {
     _effective_pause_target_ms = target_ms;
@@ -537,6 +537,7 @@ bool ReferenceChainTracker::applyOomRamp(double seconds_to_oom) {
     closeUrgencyEpisode();
     // The episode owned the cadence while it ran; hand it back at the fallback in the same
     // iteration so the idle loop stops waking at the ramped rate.
+
     TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop urgency budget restore "
              "budget=%d", _budget);
   }
@@ -568,7 +569,7 @@ void ReferenceChainTracker::threadLoop() {
     return;
   }
   DEBUG_ONLY(rcDebugLevelRefresh(true)); // apply the override file before the first log line
-  TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop started, cadence=%lluns rc_debug_level=%d", (unsigned long long)_effective_cadence_ns, rcDebugLevel());
+  TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop started, cadence=%lluns rc_debug_level=%d", (unsigned long long)load(_effective_cadence_ns), rcDebugLevel());
 
   int iteration = 0;
   while (_running.load(std::memory_order_acquire)) {
@@ -580,7 +581,7 @@ void ReferenceChainTracker::threadLoop() {
     bool urgent = applyOomRamp(seconds_to_oom);
     // applyOomRamp() keeps _effective_cadence_ns current, so the sleep below and
     // shouldRunPass()'s cadence gate always agree on the same value.
-    u64 cadence_ns = _effective_cadence_ns;
+    u64 cadence_ns = load(_effective_cadence_ns);
     // Third trigger for LivenessTracker::cleanup_table() (see
     // LivenessTracker::maybeForceCleanup()'s own comment): track()'s table-overflow branch and
     // flush_table()'s JFR cadence can both starve under ObjectSampler's PID-controlled sampling
@@ -626,11 +627,11 @@ void ReferenceChainTracker::threadLoop() {
     if (should_run) {
       TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop iteration=%d shouldRunPass=%d searchState=%d "
                "passesRun=%d effectiveCadenceNs=%llu effectiveBudget=%d gcFinishEpoch=%llu "
-               "lastPassGcFinishEpoch=%llu nowMinusLastPassNs=%llu",
+               "nowMinusLastPassNs=%llu",
                ++iteration, should_run, (int)_search_state, _passes_run,
-               (unsigned long long)_effective_cadence_ns, _effective_budget,
-               (unsigned long long)gcFinishEpoch(), (unsigned long long)_last_pass_gc_finish_epoch,
-               (unsigned long long)(now_ns - _last_pass_ns));
+               (unsigned long long)load(_effective_cadence_ns), _effective_budget,
+               (unsigned long long)gcFinishEpoch(),
+               (unsigned long long)(now_ns - load(_last_pass_ns)));
       runPassSerialized(jvmti, jni);
     }
     finishLoopIterationSerialized(jvmti, jni);
@@ -725,12 +726,28 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns, double seconds_to_oom) {
   // Adaptive CPU budget: 100x refill while a canary chase is open - NOT a rate control (the canary
   // lane's rate is bounded by _canary_backoff_ns's progress-driven exponential backoff, see its own
   // comment) but a double-throttle guard: the base refill rate is tuned for the ordinary ~1 pass/s
-  // whole-graph cadence and would otherwise starve a chase the backoff has already paced.
+  // whole-graph cadence and would otherwise starve a chase the backoff has already paced. Applied
+  // before the minimum-pass-spacing gate so the wait it induces drains at the current rate, not
+  // the previous episode's.
   double multiplier =
       canary_active ? CANARY_PAIN_BUDGET_REFILL_MULTIPLIER : 1.0;
   _cpu_pain_budget.setRefillRate(
       std::min(_pain_budget_refill_rate * multiplier, 1.0),
       now_ns);
+  // Minimum pass spacing on every authorization lane: bounds safepointing pass frequency via the
+  // FIXED floor MIN_PASS_SPACING_NS - updatePacing() paces each pass's pause length, not the pass
+  // rate. The OOM ramp is the only exemption (while urgent it owns _effective_cadence_ns outright).
+  u64 cadence_ns = load(_effective_cadence_ns);
+  u64 min_spacing_ns =
+      _oom_ramp_active ? cadence_ns : std::max(cadence_ns, MIN_PASS_SPACING_NS);
+  if (now_ns - load(_last_pass_ns) < min_spacing_ns) {
+    TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass held off by minimum pass spacing "
+             "since_last_pass_ms=%llu effective_cadence_ns=%llu min_spacing_ns=%llu",
+             (unsigned long long)((now_ns - load(_last_pass_ns)) / 1000000ULL),
+             (unsigned long long)cadence_ns,
+             (unsigned long long)min_spacing_ns);
+    return false;
+  }
   if (!_cpu_pain_budget.canStartNow(now_ns)) {
     TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass blocked by cpu_pain_budget "
              "balance=%.1fms refill_rate=%.4f canary_active=%d "
@@ -764,28 +781,42 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns, double seconds_to_oom) {
              (unsigned long long)_canary_pass_ema_ms);
     return true;
   }
-  u64 gc_finish_epoch = gcFinishEpoch();
-  if (gc_finish_epoch != _last_pass_gc_finish_epoch) {
-    // Triggering section: "a GC just happened, a pass may be worth running soon".
-    TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass -> true (gcFinishEpoch=%llu != "
-             "lastPassGcFinishEpoch=%llu)",
-             (unsigned long long)gc_finish_epoch,
-             (unsigned long long)_last_pass_gc_finish_epoch);
+  // Passes run on a pure cadence: the spacing gate above (max of the controller's cadence and
+  // the fixed MIN_PASS_SPACING_NS floor) is the only pacing law - a completed GC neither bypasses
+  // it nor earns an earlier pass. updatePacing() widens or relaxes _effective_cadence_ns from the
+  // measured pause-time signal - see its own comment.
+  TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass -> true (now_ns=%llu last_pass_ns=%llu "
+           "delta=%llu effectiveCadenceNs=%llu)",
+           (unsigned long long)now_ns, (unsigned long long)load(_last_pass_ns),
+           (unsigned long long)(now_ns - load(_last_pass_ns)),
+           (unsigned long long)cadence_ns);
+  return true;
+}
+
+// Wall-clock interval the next root/stack-ref enumeration attempt must wait out - see the
+// ROOT_ENUM_* constants' comments (referenceChains.h) for why the floor extends with the last
+// attempt's measured in-safepoint cost and why it is capped.
+u64 ReferenceChainTracker::rootEnumIntervalFloorNs() const {
+  u64 interval_ns = ROOT_ENUM_MIN_INTERVAL_NS;
+  if (_last_root_enum_safepoint_ms > 0) {
+    u64 scaled_ns = std::min(
+        _last_root_enum_safepoint_ms * ROOT_ENUM_INTERVAL_NS_PER_COST_MS,
+        ROOT_ENUM_MAX_INTERVAL_NS);
+    interval_ns = std::max(interval_ns, scaled_ns);
+  }
+  return interval_ns;
+}
+
+// See the declaration's comment (referenceChains.h).
+bool ReferenceChainTracker::shouldRunRootEnum(u64 now_ns,
+                                              bool manual_first_pass) const {
+  // manual_first_pass is checked ahead of the interval: _last_root_enum_ns is 0 before the first
+  // attempt, and an agent starting early in the JVM's lifetime would otherwise see
+  // now_ns - 0 fall below the interval floor and skip the search's only mandatory enumeration.
+  if (manual_first_pass) {
     return true;
   }
-  // Pause-time pacing controller: compares against _effective_cadence_ns, not the fixed
-  // PASS_CADENCE_NS - see that field's own comment (referenceChains.h) for how updatePacing()
-  // widens or relaxes it from the measured pause-time signal.
-  bool cadence_elapsed = now_ns - _last_pass_ns >= _effective_cadence_ns;
-  // Only log when the cadence actually elapsed (a pass will run).
-  if (cadence_elapsed) {
-    TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass -> true (now_ns=%llu last_pass_ns=%llu "
-             "delta=%llu effectiveCadenceNs=%llu)",
-             (unsigned long long)now_ns, (unsigned long long)_last_pass_ns,
-             (unsigned long long)(now_ns - _last_pass_ns),
-             (unsigned long long)_effective_cadence_ns);
-  }
-  return cadence_elapsed;
+  return now_ns - _last_root_enum_ns >= rootEnumIntervalFloorNs();
 }
 
 // Search restart gate (this class's own header comment). Deliberately a probe (max=1) rather than
@@ -1005,6 +1036,17 @@ bool ReferenceChainTracker::canAffordNewSearch(u64 now_ns, double seconds_to_oom
              _pain_budget_refill_rate);
     return false; // still cooling down from the last search's own cost
   }
+  // Root-enum interval floor also gates a restarted search's first enumeration: restartSearch()
+  // deliberately keeps _last_root_enum_ns, closing the enumerate -> early-terminate -> restart ->
+  // enumerate loop. The != 0 guard preserves the brand-new-tracker exemption.
+  if (_last_root_enum_ns != 0 &&
+      now_ns - _last_root_enum_ns < rootEnumIntervalFloorNs()) {
+    TEST_LOG_SUMMARY("ReferenceChainTracker::canAffordNewSearch blocked by "
+             "root_enum_interval_floor since_last_enum_ms=%llu floor_ns=%llu",
+             (unsigned long long)((now_ns - _last_root_enum_ns) / 1000000ULL),
+             (unsigned long long)rootEnumIntervalFloorNs());
+    return false;
+  }
   return hasLeakSignal(seconds_to_oom);
 }
 
@@ -1068,7 +1110,8 @@ void ReferenceChainTracker::restartSearch() {
   _leak_parent_fanout.clear();
   _leak_tags_assigned = 0;
   _leak_tags_resolved = 0;
-  _last_pass_gc_finish_epoch = 0;
+  _root_enum_incomplete = false;
+  _consecutive_enum_errors = 0;
   store(_last_pass_ns, (u64)0);
   store(_passes_run, 0);
   // Reset back to their just-constructed values (0 / -1) like every other per-search field this
@@ -1153,7 +1196,6 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _leak_parent_fanout.clear();
   _leak_tags_assigned = 0;
   _leak_tags_resolved = 0;
-  _last_pass_gc_finish_epoch = 0;
   store(_last_pass_ns, (u64)0);
   store(_passes_run, 0);
   _passes_since_last_progress = 0;
@@ -1172,6 +1214,14 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _last_resolved_class_count = 0;
   _last_static_field_class_count = -1;
   _static_field_sweep_cursor = 0;
+  // Reset the pacing/enumeration state the scheduling gates read: an earlier test's seeded
+  // cadence or root-enum cost would otherwise throttle every later test's BFS thread; _last_pass_ns
+  // is already zeroed above, so the spacing gate is open. Plain write: the BFS thread is stopped.
+  _effective_cadence_ns = PASS_CADENCE_NS;
+  _last_root_enum_ns = 0;
+  _last_root_enum_safepoint_ms = 0;
+  _root_enum_incomplete = false;
+  _consecutive_enum_errors = 0;
   _static_field_sweep_cycle_truncated = false;
   _candidate_count = 0;
   _candidate_found_bits = 0;

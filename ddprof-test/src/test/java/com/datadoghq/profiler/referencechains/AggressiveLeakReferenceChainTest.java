@@ -15,6 +15,7 @@ import org.opentest4j.TestAbortedException;
 import java.util.Arrays;
 import java.util.function.Supplier;
 
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.assumeDebugBuild;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -85,12 +86,6 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
     return !(Platform.isJavaVersion(8) || Platform.isJ9() || Platform.isZing());
   }
 
-  private static void assumeDebugBuild() {
-    assumeTrue(ReferenceChainAssertions.isDebugInstrumentedBuild(),
-        "heapFloorRecordForTest0/setMaxHeapBytesForTest0/shouldRunPassForTest0 only exist in a "
-            + "-DDEBUG native build (debug/asan/tsan - javaApi.cpp's #ifdef DEBUG guard)");
-  }
-
   /**
    * Undoes this class's synthetic seeding so later tests in this shared, no-forkEvery JVM never
    * see it. This helper is the only place the cleanup ordering lives; every test's finally block
@@ -140,14 +135,21 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
     // candidateSeen bracket honest.
     int[] candidatesBefore = ReferenceChainTestHooks.selectLeakCandidateKlassIds0();
     ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
-    int passesBefore = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
+    // Sampled AFTER the reset, so not a pre-reset baseline: a value > 0 means a pass ENDED
+    // between the reset and this read (the reset zeroes the counter only at pass END, so a
+    // long in-flight pass is still invisible to this read - the candidate bracket plus
+    // checkNoCandidateFreeActivity's retry compensates for that blind spot).
+    int passesAfterReset = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
     GateEvaluation e = new GateEvaluation();
     e.gateOpen = ReferenceChainTestHooks.shouldRunPassForTest0();
     int[] candidatesAfter = ReferenceChainTestHooks.selectLeakCandidateKlassIds0();
+    // Sampled after the gate call: a BFS pass racing between the gate evaluation and this read
+    // is conservatively attributed to the evaluation window (safe direction: it only widens
+    // the observed activity window, never masks a gate violation).
     e.passesAfter = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
     e.candidateSeen = !isEmpty(candidatesBefore) || !isEmpty(candidatesAfter);
     e.detail = "candidatesBefore=" + Arrays.toString(candidatesBefore) + " candidatesAfter="
-        + Arrays.toString(candidatesAfter) + " passesBefore=" + passesBefore
+        + Arrays.toString(candidatesAfter) + " passesAfterReset=" + passesAfterReset
         + " passesAfter=" + e.passesAfter;
     return e;
   }

@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Shared {@code datadog.ReferenceChain} JFR-parsing helpers.
@@ -32,6 +33,17 @@ import java.util.Map;
  * via JMC's {@code JfrLoaderToolkit} ({@link #findMatchForClass(IItemCollection, Class)}).
  */
 public final class ReferenceChainAssertions {
+
+  /**
+   * Skips the calling test unless the native library is a debug-instrumented build - the
+   * reference-chain {@code *ForTest0} seams exist only under javaApi.cpp's {@code #ifdef DEBUG}.
+   */
+  public static void assumeDebugBuild() {
+    assumeTrue(isDebugInstrumentedBuild(),
+        "reference-chain test seams only exist in a -DDEBUG native build (debug/asan/tsan - "
+            + "javaApi.cpp's #ifdef DEBUG guard)");
+  }
+
   private ReferenceChainAssertions() {}
 
   /**

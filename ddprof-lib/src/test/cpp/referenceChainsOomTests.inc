@@ -579,6 +579,111 @@ TEST_F(OomUrgencyTest, EmergencyBandEntrySeedsGrowthBaseline) {
     EXPECT_FALSE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(400.0, true));
 }
 
+#ifdef DEBUG
+// Context for the heap-floor read hook (setHeapFloorReadHookForTest()): each
+// invocation records one full ring wrap of samples between the reader's
+// payload load and its validating seq re-load; fire_once limits that to the
+// first invocation.
+struct HeapFloorReadHookCtx {
+    int calls = 0;     // hook invocations (one per reader attempt)
+    int records = 0;   // invocations that actually recorded a ring wrap
+    bool fire_once = false;
+    u64 clock = 0;
+};
+
+static void heapFloorReadHookThunk(void *arg) {
+    HeapFloorReadHookCtx *ctx = static_cast<HeapFloorReadHookCtx *>(arg);
+    int n = ctx->calls++;
+    if (ctx->fire_once && n > 0) {
+        return;
+    }
+    ctx->records++;
+    LivenessTracker *lt = LivenessTracker::instance();
+    // A full wrap returns the head to the slot the reader is holding - the
+    // torn-read interleaving the gate must survive.
+    constexpr int RING_SIZE = LivenessTracker::heapFloorRingSizeForTest();
+    constexpr u64 WRAP_BASE = 1100ULL << 20;
+    for (int i = 0; i < RING_SIZE; i++) {
+        lt->heapFloorRecordForTest(WRAP_BASE + ((u64)i << 20), ctx->clock, 0);
+        ctx->clock += 1;
+    }
+}
+#endif
+
+// Emergency-band entry while newestHeapFloorSample() exhausts its retry bound
+// (an unstable read returns 0): the exhausted read's 0 must NOT be consumed as
+// a seed - the baseline stays the unseeded sentinel 0, so the next
+// emergency-band iteration retries and seeds from a good read. The emergency
+// path additionally never touches the freshness pair
+// (_admission_sample_seq / _admission_decision).
+TEST_F(OomUrgencyTest, EmergencyBandEntryWithUnstableReadLeavesBaselineUnseeded) {
+#ifdef DEBUG
+    LivenessTracker *lt = LivenessTracker::instance();
+    // The fixture's SetUp does NOT clear the heap-floor ring: residual samples
+    // would poison this scenario's trajectory and leak into later ones.
+    lt->heapFloorResetForTest();
+    // The hook must never outlive this test, on any exit path.
+    struct ClearHook {
+        ~ClearHook() { LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr); }
+    } clear_hook;
+
+    // Record one good sample BEFORE installing the hook: with fill == 0
+    // newestHeapFloorSample() returns 0 on attempt 0 before the DEBUG hook
+    // fires (an empty-ring early return consumes no retry attempts), so an
+    // empty ring would silently exercise the empty-ring path instead of the
+    // retry-bound exhaustion this test pins.
+    lt->heapFloorRecordForTest(1000 * MiB, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+
+    // Every reader attempt now wraps the ring, so the seed read exhausts
+    // HEAP_FLOOR_READ_ATTEMPTS and reports no consistent sample.
+    HeapFloorReadHookCtx ctx;
+    LivenessTracker::setHeapFloorReadHookForTest(heapFloorReadHookThunk, &ctx);
+
+    // The counter is global and monotone within the binary: always capture a
+    // local baseline, never assume 0.
+    long long unstable0 = Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE);
+
+    // The emergency band must admit without growth evidence even when the
+    // seed read fails.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(299.0, true));
+    ASSERT_EQ(LivenessTracker::HEAP_FLOOR_READ_ATTEMPTS, ctx.records)
+        << "the seed read must have been attempted and exhausted its retry bound";
+    EXPECT_EQ(unstable0 + 1, Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE))
+        << "the exhausted read must be counted exactly once, even with seq_out == nullptr";
+    // The exhausted read's 0 is not seeded: a readable 1000 * MiB sample sits
+    // in the ring while the baseline stays the unseeded sentinel 0, so the
+    // observed 0 cannot be the seed of any readable sample.
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::admissionGrowthBaselineForTest())
+        << "the exhausted read's 0 must not be seeded: the baseline stays the unseeded "
+           "sentinel so the next emergency iteration retries";
+    // Emergency admission is not growth evidence: the freshness pair stays untouched.
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::admissionSampleSeqForTest());
+
+    // Next emergency-band iteration retries: with a coherent sample available,
+    // the seed succeeds - proving the earlier 0 read was never counted as a seed.
+    LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr);
+    lt->heapFloorResetForTest();
+    lt->heapFloorRecordForTest(1000 * MiB, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(299.0, true));
+    EXPECT_EQ(1000 * MiB, ReferenceChainsTestAccessor::admissionGrowthBaselineForTest())
+        << "the retry must seed from the good read, proving the earlier 0 was never a seed";
+
+    // The seed drives the ramp-band gate: growth past it admits, comparing
+    // against the seeded baseline rather than re-snapshotting (same semantics
+    // EmergencyBandEntrySeedsGrowthBaseline pins).
+    LivenessTracker::instance()->heapFloorRecordForTest(1000 * MiB + RATE, _clock_ns, 0);
+    _clock_ns += SAMPLE_SPACING_S * SEC_NS;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::updateUrgentAdmissionForTest(400.0, true))
+        << "ramp-band observation must compare against the seeded baseline, not re-snapshot";
+
+    lt->heapFloorResetForTest();
+#else
+    GTEST_SKIP() << "the heap-floor read hook is DEBUG-only";
+#endif
+}
+
 // Boundary of the emergency band: a projection of exactly OOM_URGENT_THRESHOLD_S
 // (300s) is ramp band, not emergency. updateUrgentAdmission() keeps the
 // growth-evidence hold (first observation snapshots and does not admit; only a
@@ -924,37 +1029,6 @@ TEST_F(OomUrgencyTest, HeapFloorSequenceIsMonotonicAcrossResets) {
 
     lt->heapFloorResetForTest();
 }
-
-#ifdef DEBUG
-// Context for the heap-floor read hook (setHeapFloorReadHookForTest()): each
-// invocation records one full ring wrap of samples between the reader's
-// payload load and its validating seq re-load; fire_once limits that to the
-// first invocation.
-struct HeapFloorReadHookCtx {
-    int calls = 0;     // hook invocations (one per reader attempt)
-    int records = 0;   // invocations that actually recorded a ring wrap
-    bool fire_once = false;
-    u64 clock = 0;
-};
-
-static void heapFloorReadHookThunk(void *arg) {
-    HeapFloorReadHookCtx *ctx = static_cast<HeapFloorReadHookCtx *>(arg);
-    int n = ctx->calls++;
-    if (ctx->fire_once && n > 0) {
-        return;
-    }
-    ctx->records++;
-    LivenessTracker *lt = LivenessTracker::instance();
-    // A full wrap returns the head to the slot the reader is holding - the
-    // torn-read interleaving the gate must survive.
-    constexpr int RING_SIZE = LivenessTracker::heapFloorRingSizeForTest();
-    constexpr u64 WRAP_BASE = 1100ULL << 20;
-    for (int i = 0; i < RING_SIZE; i++) {
-        lt->heapFloorRecordForTest(WRAP_BASE + ((u64)i << 20), ctx->clock, 0);
-        ctx->clock += 1;
-    }
-}
-#endif
 
 // When the read hook interleaves a full ring wrap inside newestHeapFloorSample()
 // (the torn-read window), the admission gate must evaluate - and consume the
@@ -1357,10 +1431,15 @@ TEST_F(ReferenceChainsCanaryRefillTest, RefillRaiseTracksOpenChaseExactly) {
     // The refill logic lives past shouldRunPass()'s first-pass branch, so
     // mark the search started the way a first runPass() would have.
     ReferenceChainsTestAccessor::setSearchStartedForTest(true);
+    // Synthetic now values below start just past the fixed MIN_PASS_SPACING_NS floor; shrink the
+    // cadence too, so the minimum-spacing gate (now_ns - _last_pass_ns >= max(_effective_cadence_ns,
+    // MIN_PASS_SPACING_NS), with _last_pass_ns = 0 after reset) stays open and the refill
+    // assertions exercise the canary lane, not the spacing gate.
+    ReferenceChainsTestAccessor::setEffectiveCadenceNs(100);
     double base = ReferenceChainsTestAccessor::basePainBudgetRefillRateForTest();
     EXPECT_DOUBLE_EQ(0.01, base); // default painbudget=1 percent
 
-    u64 now = 1000;
+    u64 now = ReferenceChainsTestAccessor::minPassSpacingNs() + 1000;
     // No candidates: the applied rate is the configured one. The return
     // value here is cadence-dependent, not part of the invariant - only the
     // applied refill rate is.
@@ -1386,6 +1465,41 @@ TEST_F(ReferenceChainsCanaryRefillTest, RefillRaiseTracksOpenChaseExactly) {
     ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(0x3);
     ReferenceChainsTestAccessor::shouldRunPass(now);
     EXPECT_DOUBLE_EQ(base, ReferenceChainsTestAccessor::cpuPainBudgetRefillRateForTest());
+
+    tracker->stop();
+    ReferenceChainsTestAccessor::reset();
+}
+
+// The refill raise must be applied BEFORE the minimum-pass-spacing gate
+// returns: the gate's induced wait drains _cpu_pain_budget, so a spacing-closed
+// evaluation with a chase open must still apply the chase's rate (reverting the
+// ordering leaves the rate at its base here).
+TEST_F(ReferenceChainsCanaryRefillTest, RefillRaiseAppliesBeforeSpacingGate) {
+    ReferenceChainsTestAccessor::reset();
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ASSERT_FALSE(tracker->start(args));
+
+    ReferenceChainsTestAccessor::setSearchStartedForTest(true);
+    double base = ReferenceChainsTestAccessor::basePainBudgetRefillRateForTest();
+
+    // Chase open, spacing gate closed: the gate holds the pass, but the rate
+    // must already be raised - the wait it induces drains at the current rate.
+    ReferenceChainsTestAccessor::setCandidateCountForTest(2);
+    ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(0x1);
+    u64 now = 1000;
+    ReferenceChainsTestAccessor::setLastPassNsForTest(now); // now - last = 0 < cadence
+    EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(now))
+        << "the spacing gate must hold this pass";
+    EXPECT_DOUBLE_EQ(std::min(base * ReferenceChainTracker::CANARY_PAIN_BUDGET_REFILL_MULTIPLIER, 1.0),
+                     ReferenceChainsTestAccessor::cpuPainBudgetRefillRateForTest());
+
+    // Sanity: with the gate reopened the chase lane authorizes and the rate stays raised.
+    now += 1000000000ULL;
+    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(now));
+    EXPECT_DOUBLE_EQ(std::min(base * ReferenceChainTracker::CANARY_PAIN_BUDGET_REFILL_MULTIPLIER, 1.0),
+                     ReferenceChainsTestAccessor::cpuPainBudgetRefillRateForTest());
 
     tracker->stop();
     ReferenceChainsTestAccessor::reset();

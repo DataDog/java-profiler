@@ -14,6 +14,7 @@
 
 #include <deque>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 #include "classTagAllocator.h"
@@ -53,6 +54,8 @@ public:
         ClassTagAllocator::resetForTest();
         t->_search_started = false;
         t->_tags_released = true;
+        t->_root_enum_incomplete = false;
+        t->_consecutive_enum_errors = 0;
         t->_search_state = SearchState::RUNNING;
         t->_abandon_reason = SearchAbandonReason::NONE;
         t->_search_start_ns = 0;
@@ -69,7 +72,6 @@ public:
         t->_static_anchor_fifo_set.clear();
         t->_static_anchor_fifo_klass_counts.clear();
         t->_static_anchor_fresh_queue.clear();
-        t->_last_pass_gc_finish_epoch = 0;
         t->_last_pass_ns = 0;
         t->_passes_run = 0;
         t->_passes_since_last_progress = 0;
@@ -200,6 +202,12 @@ public:
     static bool admissionDecisionForTest() {
         return ReferenceChainTracker::instance()->_admission_decision;
     }
+    // updateUrgentAdmission()'s emergency-band seed anchor: the newest heap-floor
+    // sample captured at emergency-band entry (referenceChains.cpp), or 0 (the
+    // unseeded sentinel) while no seed has been taken.
+    static u64 admissionGrowthBaselineForTest() {
+        return ReferenceChainTracker::instance()->_admission_growth_baseline;
+    }
     // True while the BFS thread (startThread()/threadLoop()) is live. start() never spawns it
     // (only startThread() does - profiler.cpp and the JNI-only resetSearchStateForTest()), so
     // gtests may drive BFS-thread-only seams after start(); tests that rely on that assert this
@@ -235,6 +243,14 @@ public:
     }
     static void setSearchStartedForTest(bool v) {
         ReferenceChainTracker::instance()->setSearchStartedForTest(v);
+    }
+
+    // Backdates the previous pass's end so the minimum-spacing gate stays open while a test
+    // exercises one authorization lane (canary backoff, GC epoch) in isolation. Goes through the
+    // tracker seam (engine lock + store(), ordered with any pass); a real pass can still overwrite
+    // the seed between seed and assert - tests retry, same as forceRunningSearchForTest().
+    static void setLastPassNsForTest(u64 ns) {
+        ReferenceChainTracker::instance()->setLastPassNsForTest(ns);
     }
 
     static u64 searchPainMs() {
@@ -415,6 +431,10 @@ public:
 
     static u64 searchStartNsForTest() {
         return ReferenceChainTracker::instance()->_search_start_ns;
+    }
+
+    static void setConsecutiveEnumErrorsForTest(u32 n) {
+        ReferenceChainTracker::instance()->_consecutive_enum_errors = n;
     }
 
     static size_t pendingAbandonedEventCountForTest() {
@@ -673,6 +693,16 @@ public:
         t->_effective_pause_target_ms = configured_ms;
     }
 
+    static u64 minEffectiveCadenceNs() {
+        return ReferenceChainTracker::MIN_EFFECTIVE_CADENCE_NS;
+    }
+
+    // shouldRunPass()'s fixed minimum pass-spacing floor (referenceChains.h) - see the
+    // shouldRunPass pacing law comment there.
+    static u64 minPassSpacingNs() {
+        return ReferenceChainTracker::MIN_PASS_SPACING_NS;
+    }
+
     // Start the controller from a chosen below-ceiling/above-baseline point with a fresh
     // _pause_pid, so a prior sequence's integral windup cannot leak into per-step assertions.
     static void setEffectiveBudget(int v) {
@@ -685,6 +715,37 @@ public:
 
     static void resetPacingController() {
         ReferenceChainTracker::instance()->_pause_pid.reset();
+    }
+
+    // Root-enumeration raw state (shouldRunRootEnum()'s inputs) at exact values - unlike the
+    // tracker's setRootEnumStateForTest(), which derives the timestamp from OS::nanotime() and
+    // so cannot pin a boundary. Engine lock held (static accessor: take it explicitly). Returns
+    // the previous pair so the caller can restore it - the fixture reset does not zero these.
+    static std::pair<u64, u64> setRootEnumRawStateForTest(u64 last_enum_ns, u64 cost_ms) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        MutexLocker engine_guard(t->_engine_lock);
+        std::pair<u64, u64> prev(t->_last_root_enum_ns, t->_last_root_enum_safepoint_ms);
+        t->_last_root_enum_ns = last_enum_ns;
+        t->_last_root_enum_safepoint_ms = cost_ms;
+        return prev;
+    }
+
+    static std::pair<u64, u64> rootEnumRawStateForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        MutexLocker engine_guard(t->_engine_lock);
+        return std::pair<u64, u64>(t->_last_root_enum_ns, t->_last_root_enum_safepoint_ms);
+    }
+
+    static u64 rootEnumMinIntervalNs() { return ReferenceChainTracker::ROOT_ENUM_MIN_INTERVAL_NS; }
+    static u64 rootEnumNsPerCostMs() {
+        return ReferenceChainTracker::ROOT_ENUM_INTERVAL_NS_PER_COST_MS;
+    }
+    static u64 rootEnumMaxIntervalNs() { return ReferenceChainTracker::ROOT_ENUM_MAX_INTERVAL_NS; }
+
+    // Live GC-finish epoch (relaxed atomic) - save/restore it; the fixture reset does not touch
+    // _gc_finish_epoch (only GC callbacks advance it).
+    static void setGcFinishEpochForTest(u64 v) {
+        store(ReferenceChainTracker::instance()->_gc_finish_epoch, v);
     }
 
     // Budget-borrowing (see _borrowed_budget in referenceChains.h).
