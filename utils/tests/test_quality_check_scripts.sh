@@ -493,6 +493,12 @@ python3 "$CM" --root "$CM_ROOT/sub" --write >/dev/null
 CM_TOP=$CM_ROOT; CM_ROOT=$CM_ROOT/sub; add_cairn 1
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
 expect "T6i committed file is read relative to --root" 0 "$rc" "$out" "uncommitted cairn block ignored"
+rc=0; out=$(PATH=/nonexistent "$(command -v python3)" "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6j without git the cairn block is not ignored" 1 "$rc" "$out" "differs from the canonical stub"
+printf 'stub\xff\n' > "$CM_ROOT/CLAUDE.md" && (cd "$CM_TOP" && git commit -qam "non-UTF-8 stub")
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null && add_cairn 1
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6k non-UTF-8 committed file is a clean mismatch" 1 "$rc" "$out" "differs from the canonical stub"
 CM_ROOT=$CM_TOP
 python3 "$CM" --root "$CM_ROOT" --write >/dev/null && echo "## Build" >> "$CM_ROOT/CLAUDE.md"
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
