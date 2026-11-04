@@ -58,12 +58,14 @@ index).
 
 **What stays inline vs. what moves to `doc/`** — apply this test when updating this
 file. Inline (this file): rules that must shape behavior at unpredictable moments —
-invariants whose violation causes crashes/leaks/lockups, gates and checklists
-(review before PR, marker validation), writing rules for high-visibility artifacts
+invariants whose violation causes crashes/leaks/lockups, the obligations that trigger
+a procedure (review before PR), writing rules for high-visibility artifacts
 (PRs, comments, commits). Externalized (`doc/`): reference material read only when
 working on a specific subsystem — architecture pages, build/task references,
-analyses. Rules stay inline even when needed only once per task if that moment is
-end-of-task, when context is most exhausted and a linked page would be skipped.
+analyses. Procedures run at a known moment go in skills (`.agents/skills/`, which
+load fresh when invoked); enforcement goes in scripts, hooks and CI — text here is
+advisory and cannot gate anything. Rules stay inline even when needed only once per
+task if that moment is end-of-task and no skill carries them.
 Skipping a linked page silently is forbidden: if you touched code covered by a
 `doc/` page you did not read (context pressure, time), you MUST disclose it in the
 task summary with an explicit `SUBSYSTEM DOC NOT READ: <path>` line — the user,
@@ -450,15 +452,13 @@ exception list.
   to an adjacent check is dead; remove it, or keep it only as a deliberate defensive guard
   whose comment does not claim it catches a distinct case; add duplicated fast-path variants
   (e.g. `JavaCritical_*`) only for demonstrably performance-critical methods.
-- **Comment budget (mechanical gate).** Before finishing any change, run a prune pass
-  over every comment and javadoc you wrote: each comment ≤3 lines, and each line must
-  state a distinct constraint (a non-obvious mechanism, invariant, or consequence) that
-  the reader could not get from the code. A comment that needs more than 3 lines
-  requires per-line justification in the task summary. Prefer spending the effort on
-  cutting — a verbose comment is review surface, not safety. The same cut applies to
-  paragraphs in `doc/` pages and PR descriptions: fewer sentences that each carry a
-  fact beat more sentences that carry emphasis. This gate complements the comment
-  rules above; it does not replace them.
+- **Comment budget.** Before finishing any change, prune every comment and javadoc you
+  wrote: each comment ≤3 lines, each line a distinct constraint (a non-obvious
+  mechanism, invariant, or consequence) the reader could not get from the code. A
+  longer comment needs a reason a reviewer would accept; prefer cutting — a verbose
+  comment is review surface, not safety. The same cut applies to `doc/` paragraphs and
+  PR descriptions. No tool enforces this, because it takes judgment; the agentic review
+  checks it (see Agentic Code Review).
 - Comments: "why" comments must reference concrete mechanisms (e.g. "ASAN's allocator
   lock is reentrant"), never speculative claims about HotSpot/glibc/ASAN/ISA internals — if
   unsure, describe the observable symptom. Describe current behavior, not history; cite no
@@ -542,34 +542,17 @@ tracking rules add requirements on top, they replace nothing.
 
 ## Agentic Code Review (mandatory before opening a PR)
 
-No pull request is opened until an agentic code review — run over the full change
-set intended for the PR — has completed and its findings have been fixed or
-explicitly waived by the user. Use whatever review capability the current harness
-provides; if several options exist, prefer the `sphinx` skill (`/sphinx review`).
-If the harness has none, say so plainly and get explicit user sign-off before
-opening the PR without a review — never silently skip it.
-
-Whether a review ran for the *current* change set is tracked by a marker file,
-because review state does not survive into a fresh session.
-1. **Marker.** After a completed review, write a marker file —
-   `<worktree>/.sphinx/review-state.json` in this setup (`.sphinx/` is gitignored;
-   if your harness's ignored paths differ, use any gitignored location) — so the
-   marker is worktree-local and never committed. Record in it: the review tool
-   used, the base ref
-   the diff was reviewed against, the head commit SHA, the review session id
-   (`slr…`/handle), the diff digest, and the date. Diff digest =
-   `git diff <base> | git hash-object --stdin` combined with
-   `git ls-files --others --exclude-standard | git hash-object --stdin` (untracked
-   files count too). Whoever drives the review writes the marker — including when
-   the user ran `/sphinx review` manually and reports it back; in that case record
-   it before proceeding.
-2. **Validation.** Before opening a PR, recompute both digests and compare with the
-   marker. Missing marker, different base, different head SHA, or different digests
-   → the review is stale: re-run `/sphinx review` over the current change set. Do
-   not silently skip the re-check.
-3. **Findings.** Critical/High findings are fixed (or user-waived) before the PR is
-   opened; the review tool's fix/addressing flow handles the loop when it has one.
-   Mention the review outcome in the PR description.
+No pull request is opened, marked ready, or updated with fixes until an agentic code
+review of the full change set has completed and its Critical/High findings are fixed
+or explicitly waived by the user. Run the `pre-pr-review` skill
+([.agents/skills/pre-pr-review/SKILL.md](.agents/skills/pre-pr-review/SKILL.md)): it
+picks the reviewer, adds the judgment checks no tool can make (comment budget, no
+plan/spec references), and records the result with `utils/review-marker.py`. If the
+harness has no review capability, say so and get explicit user sign-off — never
+silently skip it. While the marker is stale, `.githooks/pre-push` refuses pushes to
+a branch with an open PR (install with `utils/review-marker.py install-hook`, never
+via `core.hooksPath`), and in Claude Code the `require-fresh-review` hook blocks
+`gh pr create`/`gh pr ready`.
 
 ## Pull Request Descriptions and Comments
 
