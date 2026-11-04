@@ -112,7 +112,7 @@ jobs:
       - name: Run the hermetic script tests
         run: |
           sudo apt-get update
-          sudo apt-get install -y binutils g++
+          sudo apt-get install -y binutils g++ jq
           status=0
           for t in utils/tests/*.sh .github/scripts/tests/test_check_pr_ticket.sh; do
             echo "::group::$t"
