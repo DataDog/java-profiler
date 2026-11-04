@@ -299,7 +299,8 @@ run without `_state_lock` and overlap `start()`/`stop()`. Reach engines only thr
 `Profiler::registerThread()`/`unregisterThread()`, never `_cpu_engine->…` directly. An
 engine with a per-thread table sizes it before `openThreadRegistration()` and frees or
 replaces it only under `ThreadTablesFreeze`; that freeze closes unregistration only around
-the replacement, never for a whole `start()`. Details:
+the replacement or release, never for a whole `start()` or `stop()` (CTimer frees its
+table at the end of `stop()`). Details:
 [ProfilingEngines.md](doc/architecture/ProfilingEngines.md#thread-registration).
 
 **JVMTI callbacks.** Callbacks run on whichever JVM thread triggers the event —

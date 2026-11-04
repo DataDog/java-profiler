@@ -157,10 +157,11 @@ bool CTimer::resizeTimers(int max_timers) {
   return true;
 }
 
-// A restart with an unchanged pid_max keeps the table and never closes thread
-// unregistration, so an exit during start() still releases its timer. Only an
-// actual replacement freezes the hook calls. If one is still inside the table
-// after the wait budget, start() fails and keeps the old table; whether a
+// stop() frees the table (releaseTimerTable()), so a start() normally
+// allocates it again under a freeze; exits during that freeze are recorded and
+// replayed after the thread listing. A table stop() had to keep is reused when
+// pid_max is unchanged, without a freeze. If a hook call is still inside the
+// table after the wait budget, start() fails and keeps the old table; whether a
 // later start() can succeed depends on the stuck call (see
 // Profiler::startCpuEngine()).
 Error CTimer::sizeTimerTable(int max_timers) {
@@ -238,10 +239,33 @@ void CTimer::replaySkippedUnregistrations() {
   }
 }
 
+bool CTimer::releaseTimerTable() {
+  if (_timers == NULL) {
+    return true;
+  }
+  // Hook calls index the table without a lock; unregistration stays open while
+  // idle. Only a drained freeze guarantees none is inside it.
+  Profiler::ThreadTablesFreeze freeze(Profiler::instance());
+  if (!freeze.drained()) {
+    Log::warn("CTimer: thread hook calls did not drain; keeping the timer table");
+    return false;
+  }
+  free(_timers);
+  NativeMem::record(NM_CTIMER,
+                    -static_cast<long long>(static_cast<size_t>(_max_timers) * sizeof(int)));
+  _timers = NULL;
+  _max_timers = 0;
+  return true;
+}
+
 void CTimer::stop() {
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);
   }
+  // Every timer is deleted; give the table back too. Exits recorded during the
+  // freeze need no replay (their timers are gone), and the next start() clears
+  // the record.
+  releaseTimerTable();
   // Note: SignalInflight::drain() is called by Profiler::stop() after
   // disableEngines(); see signalInflight.h.
 }

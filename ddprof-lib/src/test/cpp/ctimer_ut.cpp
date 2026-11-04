@@ -484,6 +484,47 @@ TEST_F(CTimerNativeMemTest, ResizeFreesOldTable) {
 #endif
 }
 
+// stop() deletes every timer and then frees the table under a freeze, so the
+// idle profiler holds none of it and the gauge drops to zero; the next start()
+// allocates it again (sizeTimerTable() sees an empty table).
+TEST_F(CTimerNativeMemTest, StopFreesTableWhenHookCallsDrain) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));
+  CTimer engine;
+
+  engine.stop();
+
+  EXPECT_EQ(nullptr, CTimerTestAccessor::timers());
+  EXPECT_EQ(0, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+
+  EXPECT_FALSE((bool)CTimerTestAccessor::sizeTimerTable(64));
+  EXPECT_NE(nullptr, CTimerTestAccessor::timers());
+  EXPECT_EQ(bytes(64), NativeMem::live(NM_CTIMER));
+}
+
+// A hook call still inside the table after the wait budget may index it at any
+// time, so stop() keeps the table rather than freeing it under the call, and
+// unregistration is open again afterwards.
+TEST_F(CTimerNativeMemTest, StopKeepsTableWhenHookCallsDoNotDrain) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));
+  int *table = CTimerTestAccessor::timers();
+  CTimer engine;
+  ProfilerTestAccessor::DrainBudget budget(100000000LL);
+
+  {
+    ProfilerTestAccessor::UnregisterCallHold hold(profiler);
+    engine.stop();
+  }
+
+  EXPECT_EQ(table, CTimerTestAccessor::timers());
+  EXPECT_EQ(64, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(bytes(64), NativeMem::live(NM_CTIMER));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+}
+
 // Profiler::registerThread() is reached from the pthread hook without
 // _state_lock. Until start() has sized the engines' per-thread structures
 // (CTimer::resizeTimers()) and set the engines-ready flag, it must return

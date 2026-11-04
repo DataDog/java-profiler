@@ -48,6 +48,10 @@ protected:
   // Sizes the timer table for start(), replacing it under a
   // Profiler::ThreadTablesFreeze only when the size changes.
   static Error sizeTimerTable(int max_timers);
+  // Frees the timer table under a Profiler::ThreadTablesFreeze, so the idle
+  // profiler holds none of it; the next start() allocates it again. Keeps it,
+  // returning false, if hook calls do not drain within the wait budget.
+  static bool releaseTimerTable();
   // start() with the timer table size passed in rather than read from
   // pid_max, so a test can drive the allocation-failure path.
   Error startWithTableSize(Arguments &args, int max_timers);

@@ -189,10 +189,13 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      registered after the thread list was taken, and such a thread is then not
      sampled for the recording (PROF-16359).
    - `unregisterThread()` needs `_thread_tables_stable`, which is cleared only
-     while `CTimer::sizeTimerTable()` replaces the timer table
-     (`ThreadTablesFreeze`), that is, when the table size changes: the first
-     start, or `pid_max` changed. A restart that keeps the table never clears
-     it. `PerfEvents::start()` replaces its table without clearing it
+     while CTimer allocates, replaces or frees its timer table
+     (`ThreadTablesFreeze`): `CTimer::sizeTimerTable()` in `start()` when the
+     table is missing or its size changed, and `CTimer::releaseTimerTable()`
+     at the end of `CTimer::stop()`. Since `stop()` frees the table, every
+     `start()` with the CPU timer normally takes the freeze; only a table that
+     `stop()` had to keep (hook calls did not drain) is reused at an unchanged
+     `pid_max` without one. `PerfEvents::start()` replaces its table without clearing it
      (PROF-16359). An exit that arrives while the gate is closed is recorded
      by `Profiler::recordSkippedUnregistration()`. `CTimer::start()` replays
      the record after it lists threads, which removes the timer the listing
@@ -321,7 +324,11 @@ resolved through `Arguments::cpuSamplerInterval()`.
   at or above
   `_max_timers` logs a warning and is not profiled. The table is accounted
   under `NM_CTIMER` at its full allocated size (see Profiler Self-Accounting).
-- **`stop()`** unregisters every slot.
+- **`stop()`** unregisters every slot, then frees the table under a
+  `ThreadTablesFreeze` (`releaseTimerTable()`), so the idle profiler holds none
+  of it. If hook calls do not drain within the wait budget, it keeps the table
+  (logged); the next `start()` reuses it. Exits recorded during that freeze
+  need no replay, since their timers are already gone.
 - **`CTimerJvmti`**: runs `CTimer::start()` and then replaces the `SIGPROF`
   handler with one that calls `recordSampleDelegated(ucontext, ...)`
   (`CTimerJvmti::start()`, `CTimerJvmti::signalHandler()`). It has no ASGCT
@@ -668,7 +675,9 @@ space, not resident memory: each is `calloc`ed at `pid_max` slots, but only the
 pages holding live tids are ever touched. With a `pid_max` of 4194304 the
 `ctimer` gauge reads about 16 MiB and the table part of the `perf` gauge about
 512 MiB, while the resident share is usually far lower. Read both as upper
-bounds. Only `NM_PERF`'s ring pages are resident.
+bounds. Only `NM_PERF`'s ring pages are resident. The `ctimer` table exists only
+while a CTimer recording runs (`CTimer::stop()` frees it); the `perf` table
+outlives `stop()`.
 
 Each category is exported per chunk as
 `native_mem_{live,avg,max,chunk_overhead,post_flush_live,post_flush_max}_bytes.<category>`

@@ -56,7 +56,8 @@ public class ProfilerLifecycleTest {
     /**
      * NativeMem categories owned by a recording: released by stop(), so they must read 0
      * whenever the profiler is idle. {@code calltrace} covers the call-trace storage and
-     * per-thread call-trace buffers, {@code liveness} the liveness tracker's tracking table.
+     * per-thread call-trace buffers, {@code liveness} the liveness tracker's tracking table,
+     * {@code ctimer} the CPU timer table (CTimer::stop() frees it).
      * Not listed: {@code perf}, because PerfEvents::stop() deliberately keeps per-thread
      * events registered across recordings, and {@code dictionary}, which also counts the
      * context-value dictionary that deliberately survives stop() (threads cache its
@@ -64,7 +65,8 @@ public class ProfilerLifecycleTest {
      * dictionaries are checked one by one through {@link #RECORDING_SCOPED_DICTIONARIES}.
      */
     private static final String[] RECORDING_SCOPED = {
-            "calltrace", "jfr_buffers", "wallclock", "line_tables", "method_map", "liveness"};
+            "calltrace", "jfr_buffers", "wallclock", "line_tables", "method_map", "liveness",
+            "ctimer"};
 
     /**
      * Per-dictionary storage gauges (debug counters, compiled into every build) of the
