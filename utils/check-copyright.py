@@ -36,7 +36,9 @@ class EnvError(Exception):
 
 
 def git(root, *args):
-    res = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
+    # surrogateescape: a file name that is not valid UTF-8 must not abort the check.
+    res = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True,
+                         errors="surrogateescape")
     if res.returncode != 0:
         raise EnvError("git %s failed: %s" % (" ".join(args), res.stderr.strip()))
     return res.stdout
@@ -76,13 +78,16 @@ def datadog_end_year(header):
 
 
 def problem(root, added, path):
-    if path.startswith(EXCLUDED):
-        return None
     full = os.path.join(root, path)
+    # Only regular files with a code extension or none are read: no symlinks, directories or
+    # submodule entries.
+    if (path.startswith(EXCLUDED) or os.path.islink(full) or not os.path.isfile(full)
+            or not path.endswith(SOURCE) and os.path.splitext(path)[1]):
+        return None
     with open(full, errors="replace") as f:
         header = [next(f, "") for _ in range(HEADER_LINES)]
     # Extensionless scripts (git hooks, .claude/commands) count as source by their shebang.
-    if not path.endswith(SOURCE) and (os.path.splitext(path)[1] or not header[0].startswith("#!")):
+    if not path.endswith(SOURCE) and not header[0].startswith("#!"):
         return None
     end = datadog_end_year(header)
     if added and end is None:
@@ -104,6 +109,7 @@ def main(argv):
     ap.add_argument("--base", help="base branch (default: origin/$GITHUB_BASE_REF in a pull "
                                    "request, else origin/main)")
     args = ap.parse_args(argv)
+    sys.stdout.reconfigure(errors="backslashreplace")  # non-UTF-8 file names print escaped
     args.base = args.base or "origin/" + (os.environ.get("GITHUB_BASE_REF") or "main")
     try:
         errors = ["%s: %s" % (path, p) for added, path in changed_files(args.root, args.base)

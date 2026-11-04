@@ -13,6 +13,7 @@ import argparse
 import difflib
 import os
 import re
+import subprocess
 import sys
 
 CAIRN_BLOCK = re.compile(r"<!-- cairn:knowledgebase begin.*?<!-- cairn:knowledgebase end -->\n\n?",
@@ -36,6 +37,13 @@ one-line pointer (what was read/run and the conclusion) instead of retaining the
 """
 
 
+def committed(root):
+    """CLAUDE.md as of HEAD, or None (no commit, file not tracked, not a git checkout)."""
+    res = subprocess.run(["git", "-C", root, "show", "HEAD:CLAUDE.md"], capture_output=True,
+                         text=True)
+    return res.stdout if res.returncode == 0 else None
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--root", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -57,11 +65,15 @@ def main(argv):
     except OSError as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
-    # The cairn plugin's SessionStart hook injects its managed block into CLAUDE.md; ignore
-    # it so that sessions with cairn do not fail this check.
-    actual = CAIRN_BLOCK.sub("", actual)
     if actual == CANONICAL:
         print("CLAUDE.md: OK")
+        return 0
+    # The cairn plugin's SessionStart hook injects one managed block into the working copy.
+    # Accept that only while the committed file is canonical, so CI (a clean checkout)
+    # never lets a committed block, or anything placed inside one, through.
+    if len(CAIRN_BLOCK.findall(actual)) == 1 and CAIRN_BLOCK.sub("", actual) == CANONICAL \
+            and committed(args.root) == CANONICAL:
+        print("CLAUDE.md: OK (uncommitted cairn block ignored)")
         return 0
     sys.stdout.writelines(difflib.unified_diff(actual.splitlines(True), CANONICAL.splitlines(True),
                                                "CLAUDE.md", "canonical"))

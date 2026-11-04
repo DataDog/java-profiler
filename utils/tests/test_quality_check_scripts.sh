@@ -400,6 +400,13 @@ put src/ext.ts 'export {};'
 put tools/hook '#!/usr/bin/env python3'
 put tools/NOTICE 'plain text, no shebang'
 put tools/run.txt '#!/bin/sh'
+ln -s /etc/hostname src/linked.cpp
+ln -s /etc tools/linkdir
+printf '\xff\xfe\x00binary' > src/blob.bin
+put tools/comment '# a comment, not a shebang'
+mkdir -p tools/submodule  # a submodule entry: a directory in the tree, a gitlink in the index
+git update-index --add --cacheinfo "160000,$(git rev-parse HEAD),tools/submodule"
+put $'src/bad\xff.cpp' 'int z;'
 put 'src/café.cpp' 'int y;'
 echo '{3, 4},' >> src/table.inc
 echo '// change' >> src/stale.cpp
@@ -418,16 +425,16 @@ git add . && GIT_COMMITTER_DATE=2025-12-15T12:00:00 git commit -qm december --da
 sed -i.bak 's/2024, Datadog/2025, Datadog/' src/dirty.cpp && rm src/dirty.cpp.bak
 
 rc=0; out=$(python3 "$CR" --root "$CR_ROOT" --base main 2>&1) || rc=$?
-expect "T5 copyright run" 1 "$rc" "$out" "copyright: 9 problem(s)"
+expect "T5 copyright run" 1 "$rc" "$out" "copyright: 10 problem(s)"
 for want in "src/new_bare.cpp: new file has no" "src/stale.cpp: Datadog copyright ends in 2024; changed in 2026" \
             "src/Bare.java: modified file has no copyright line" "src/moved_to.cpp: Datadog copyright ends in 2024" \
             "src/dirty.cpp: Datadog copyright ends in 2025; changed in $(date +%Y)" \
             "src/ext.ts: new file has no" "tools/hook: new file has no" "src/café.cpp: new file has no" \
-            "src/table.inc: modified file has no copyright line"; do
+            "src/table.inc: modified file has no copyright line" "new file has no"; do
   expect "T5 reports $want" 1 "$rc" "$out" "$want"
 done
 for clean in new_ok.cpp utils/vendor .gitlab notes.md ranged.cpp bare.py upstream.cpp present.cpp december.cpp \
-             NOTICE run.txt; do
+             NOTICE run.txt linked.cpp blob.bin linkdir tools/comment submodule; do
   if [[ "$out" == *"$clean"* ]]; then fail "T5 flags $clean:"$'\n'"$out"; else pass; fi
 done
 # In a GitHub pull request the default base is origin/$GITHUB_BASE_REF.
@@ -436,6 +443,8 @@ rc=0; out=$(GITHUB_BASE_REF=rel python3 "$CR" --root "$CR_ROOT" 2>&1) || rc=$?
 expect "T5 GITHUB_BASE_REF selects the base" 1 "$rc" "$out" "copyright: 1 problem(s)"
 rc=0; out=$(GITHUB_BASE_REF= python3 "$CR" --root "$CR_ROOT" 2>&1) || rc=$?
 expect "T5 the default base is origin/main" 2 "$rc" "$out" "refs/remotes/origin/main"
+rc=0; out=$(GITHUB_BASE_REF=rel python3 "$CR" --root "$CR_ROOT" --base main 2>&1) || rc=$?
+expect "T5 an explicit --base wins over GITHUB_BASE_REF" 1 "$rc" "$out" "copyright: 10 problem(s)"
 git update-ref -d refs/remotes/origin/rel
 git checkout -q src/dirty.cpp
 
@@ -455,12 +464,28 @@ expect "T6b --write" 0 "$rc" "$out" "CLAUDE.md: written"
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
 expect "T6c canonical CLAUDE.md" 0 "$rc" "$out" "CLAUDE.md: OK"
 CAIRN=$'<!-- cairn:knowledgebase begin (managed by cairn; do not edit manually) -->\n## Cairn\n\ntext\n<!-- cairn:knowledgebase end -->\n\n'
-{ head -2 "$CM_ROOT/CLAUDE.md"; printf '%s' "$CAIRN"; tail -n +3 "$CM_ROOT/CLAUDE.md"; } > "$CM_ROOT/c" && mv "$CM_ROOT/c" "$CM_ROOT/CLAUDE.md"
+add_cairn() {  # inserts $CAIRN after the heading, $1 times
+  local i; { head -2 "$CM_ROOT/CLAUDE.md"; for ((i = 0; i < $1; i++)); do printf '%s' "$CAIRN"; done
+             tail -n +3 "$CM_ROOT/CLAUDE.md"; } > "$CM_ROOT/c" && mv "$CM_ROOT/c" "$CM_ROOT/CLAUDE.md"
+}
+add_cairn 1
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
-expect "T6e cairn-managed block is ignored" 0 "$rc" "$out" "CLAUDE.md: OK"
-echo "## Build" >> "$CM_ROOT/CLAUDE.md"
+expect "T6d cairn block without a committed canonical file" 1 "$rc" "$out" "differs from the canonical stub"
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null
+(cd "$CM_ROOT" && git init -q && git config user.email t@example.com && git config user.name t && git add CLAUDE.md && git commit -qm canonical)
+add_cairn 1
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
-expect "T6d drifted CLAUDE.md" 1 "$rc" "$out" "differs from the canonical stub"
+expect "T6e uncommitted cairn block is ignored" 0 "$rc" "$out" "uncommitted cairn block ignored"
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null && add_cairn 2
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6f two cairn blocks are not ignored" 1 "$rc" "$out" "differs from the canonical stub"
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null && add_cairn 1
+(cd "$CM_ROOT" && git commit -qam "commit the block")
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6g committed cairn block fails (CI view)" 1 "$rc" "$out" "differs from the canonical stub"
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null && echo "## Build" >> "$CM_ROOT/CLAUDE.md"
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6h drifted CLAUDE.md" 1 "$rc" "$out" "differs from the canonical stub"
 
 # --- Summary -----------------------------------------------------------------
 
