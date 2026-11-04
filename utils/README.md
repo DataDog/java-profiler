@@ -278,7 +278,7 @@ Core diff analysis and report generation for contribution candidate detection.
 
 ### `review-marker.py`
 
-Records that the agentic pre-PR review covered a branch, and checks it. Used by the `pre-pr-review` skill, `.githooks/pre-push` and the Claude Code `require-fresh-review` hook.
+Records that the agentic pre-PR review covered a branch, and checks it. Used by the `pre-pr-review` skill, `.githooks/pre-push` and the `require-fresh-review` hook, which runs in Claude Code (`.claude/hooks/`) and, through the thin adapter `.pi/extensions/require-fresh-review.ts`, in Pi. Pi loads project extensions only after project trust is granted.
 
 - The marker certifies commits: `write` refuses uncommitted tracked changes and records the `git patch-id --verbatim` (git 2.39+) of the diff from the merge base to `HEAD`. An advancing base or a clean rebase keeps it fresh, unless the base changed lines next to the branch's hunks (context lines anchor each hunk's position, so this errs toward stale). Any change to the branch's diff, whitespace or position included, makes it stale. Untracked files are ignored.
 - Markers live in `<git-common-dir>/review-markers/` (one file per branch, named by hash), shared by all worktrees and never committed.

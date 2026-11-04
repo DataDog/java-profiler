@@ -551,8 +551,8 @@ plan/spec references), and records the result with `utils/review-marker.py`. If 
 harness has no review capability, say so and get explicit user sign-off — never
 silently skip it. While the marker is stale, `.githooks/pre-push` refuses pushes to
 a branch with an open PR (install with `utils/review-marker.py install-hook`, never
-via `core.hooksPath`), and in Claude Code the `require-fresh-review` hook blocks
-`gh pr create`/`gh pr ready`.
+via `core.hooksPath`), and in Claude Code and Pi (`.pi/extensions/`) the
+`require-fresh-review` hook blocks `gh pr create`/`gh pr ready`.
 
 ## Pull Request Descriptions and Comments
 

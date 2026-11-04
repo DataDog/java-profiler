@@ -24,7 +24,8 @@ fail() { TESTS=$((TESTS + 1)); FAILED=$((FAILED + 1)); echo "FAIL: $*" >&2; }
 
 # gh stub, logging each call to $GH_LOG: `pr list --head B` reports an open PR when
 # B is in $OPEN_PRS; `pr view <sel>` prints "$VIEW_HEAD $VIEW_OID $VIEW_BASE" unless
-# <sel> looks like a repo; `repo view` prints $DEFAULT_BRANCH; $GH_FAIL fails all.
+# <sel> looks like a repo (or $VIEW_REPO is set and not passed as -R); `repo view`
+# prints $DEFAULT_BRANCH; $GH_FAIL fails all.
 mkdir -p "$TEMP_DIR/bin" "$TEMP_DIR/oldgit" "$TEMP_DIR/nogh"
 cat > "$TEMP_DIR/bin/gh" <<'EOF'
 #!/bin/sh
@@ -34,6 +35,7 @@ case "$1 $2" in
   "pr list") for b in $OPEN_PRS; do [ "$b" = "$4" ] && { echo 1; exit 0; }; done
              echo 0; exit 0 ;;
   "pr view") case "$3" in */*) exit 1 ;; esac
+             [ -z "$VIEW_REPO" ] || case " $* " in *" -R $VIEW_REPO "*) ;; *) exit 1 ;; esac
              [ -n "$VIEW_HEAD" ] && echo "$VIEW_HEAD $VIEW_OID $VIEW_BASE" && exit 0; exit 1 ;;
   "repo view") [ -n "$DEFAULT_BRANCH" ] && echo "$DEFAULT_BRANCH" && exit 0; exit 1 ;;
 esac
@@ -43,10 +45,15 @@ chmod +x "$TEMP_DIR/bin/gh"
 # git that reports an old version, for the version gate.
 printf '#!/bin/sh\n[ "$1" = version ] && { echo "git version 2.34.1"; exit 0; }\nexec "%s" "$@"\n' \
   "$REAL_GIT" > "$TEMP_DIR/oldgit/git" && chmod +x "$TEMP_DIR/oldgit/git"
+for v in 2.38.9 2.39.0; do
+  mkdir -p "$TEMP_DIR/git-$v"
+  printf '#!/bin/sh\n[ "$1" = version ] && { echo "git version %s"; exit 0; }\nexec "%s" "$@"\n' \
+    "$v" "$REAL_GIT" > "$TEMP_DIR/git-$v/git" && chmod +x "$TEMP_DIR/git-$v/git"
+done
 # gh that cannot be executed, for the pre-push OSError fail-open path.
 printf '#!/bin/sh\n' > "$TEMP_DIR/nogh/gh" && chmod -x "$TEMP_DIR/nogh/gh"
 export PATH="$TEMP_DIR/bin:$PATH" GH_LOG="$TEMP_DIR/gh.log"
-export OPEN_PRS="" VIEW_HEAD="" VIEW_OID="" VIEW_BASE="" GH_FAIL="" DEFAULT_BRANCH=""
+export OPEN_PRS="" VIEW_HEAD="" VIEW_OID="" VIEW_BASE="" VIEW_REPO="" GH_FAIL="" DEFAULT_BRANCH=""
 
 # Repo whose origin/main carries the gate scripts (in a second commit, $PRE_GATE being
 # the first) and a feature branch holding one commit.
@@ -64,7 +71,8 @@ new_repo() {
   cp "$ROOT/utils/review-marker.py" utils/
   cp "$ROOT/.githooks/pre-push" .githooks/
   cp "$ROOT/.claude/hooks/require-fresh-review.py" .claude/hooks/
-  git add utils .githooks .claude && git commit -qm gate
+  mkdir -p .pi/extensions && cp "$ROOT/.pi/extensions/require-fresh-review.ts" .pi/extensions/
+  git add utils .githooks .claude .pi && git commit -qm gate
   git remote add origin "$dir-origin.git" && git push -q origin main
   git checkout -qb feature
   sed -i.bak 's/line 2/line 2 changed/' a.txt && rm a.txt.bak && git commit -qam change
@@ -165,6 +173,9 @@ git checkout -q feature
 expect "write with unknown base" 2 "git merge-base" marker write --tool t --base origin/nope
 PATH="$TEMP_DIR/oldgit:$PATH" expect "git older than 2.39 is reported" 2 "git 2.39 or newer is required" \
   marker check
+marker write --tool t >/dev/null
+PATH="$TEMP_DIR/git-2.38.9:$PATH" expect "git 2.38.9 is rejected" 2 "git 2.39 or newer is required" marker check
+PATH="$TEMP_DIR/git-2.39.0:$PATH" expect "git 2.39.0 is accepted" 0 "" marker check
 MF=.git/review-markers/$(printf feature | shasum -a 256 | cut -c1-32).json
 cp "$MF" "$TEMP_DIR/feature.json"
 echo '{' > "$MF"
@@ -200,7 +211,9 @@ expect "pre-push blocks open-PR branch without marker" 1 "Run the pre-pr-review 
 expect "pre-push allows deletion" 0 "" prepush "(delete) $Z refs/heads/feature $TIP"
 expect "pre-push allows a SHA-256 deletion" 0 "" \
   prepush "(delete) ${Z}${Z:0:24} refs/heads/feature $TIP"
+: > "$GH_LOG"
 expect "pre-push allows tags" 0 "" prepush "refs/tags/v1 $TIP refs/tags/v1 $Z"
+if grep -q "pr list" "$GH_LOG"; then fail "pre-push gated a tag push (asked gh about it)"; else pass; fi
 OPEN_PRS="" expect "pre-push allows branch without open PR" 0 "" \
   prepush "refs/heads/feature $TIP refs/heads/feature $Z"
 GH_FAIL=1 expect "pre-push fails open when gh fails" 0 "" \
@@ -323,6 +336,7 @@ expect "hook allows other repositories" 0 "" hook "gh pr create --fill" "$TEMP_D
 expect "hook allows non-git directories" 0 "" hook "gh pr create --fill" "$TEMP_DIR/nogit"
 expect "hook uses payload cwd" 0 "" hook "gh pr create --fill" "$TEMP_DIR/h-wt"
 expect "hook blocks --head" 2 "--head names a branch" hook "gh pr create --head wt"
+expect "hook blocks -H" 2 "--head names a branch" hook "gh pr create -H wt"
 expect "hook blocks --head on a continuation line" 2 "--head names a branch" \
   hook "$(printf 'gh pr create --fill \\\n  --head wt')"
 expect "hook checks every gh pr command on a line" 2 "$STALE_MSG" hook "gh pr ready --undo && gh pr create --fill"
@@ -353,8 +367,10 @@ VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook allows ready of a revi
   hook "gh pr ready 12"
 VIEW_HEAD=wt VIEW_OID=$WT_STALE VIEW_BASE=main expect "hook checks the PR's remote head" 2 "is stale" \
   hook "gh pr ready 12"
-VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past -R" 0 "" \
+VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past -R" 0 "" \
   hook "gh pr ready -R DataDog/java-profiler 12"
+VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past --repo" 0 "" \
+  hook "gh pr ready --repo DataDog/java-profiler 12"
 VIEW_HEAD=wt VIEW_OID=1234567890123456789012345678901234567890 VIEW_BASE=main \
   expect "hook reports an unfetched PR head" 2 "Rerunning the review will not help" hook "gh pr ready 12"
 GH_FAIL=1 expect "hook blocks ready of a PR it cannot resolve" 2 "cannot resolve the PR" \
@@ -381,10 +397,37 @@ expect "hook blocks conflicting bases" 2 "several bases" hook "gh pr create --ba
 DEFAULT_BRANCH=other expect "hook uses the repo default base without -B" 2 "not origin/other" \
   hook "gh pr create --fill"
 DEFAULT_BRANCH=main expect "hook allows the matching default base" 0 "" hook "gh pr create --fill"
+DEFAULT_BRANCH=other expect "hook prefers an explicit --base over the default" 0 "" \
+  hook "gh pr create --base main"
 git update-ref refs/remotes/origin/tmp origin/main && marker write --tool t --base origin/tmp >/dev/null
 git update-ref -d refs/remotes/origin/tmp
 expect "hook env error does not advise rerunning the review" 2 "Rerunning the review will not help" \
   hook "gh pr create"
+
+# --- .pi/extensions/require-fresh-review.ts (driven through a stub Pi API) ---
+if command -v node >/dev/null 2>&1; then
+  cat > "$TEMP_DIR/pi-driver.mjs" <<'EOF'
+const [ext, cwd, toolName, command] = process.argv.slice(2);
+const mod = await import(ext);
+let handler;
+mod.default({ on: (name, fn) => { if (name === "tool_call") handler = fn; } });
+const result = await handler({ toolName, input: { command } }, { cwd });
+if (result?.block) { console.error(result.reason); process.exit(2); }
+EOF
+  pi_hook() {
+    node --experimental-strip-types --no-warnings "$TEMP_DIR/pi-driver.mjs" \
+      "$PWD/.pi/extensions/require-fresh-review.ts" "${3:-$PWD}" "$1" "$2"
+  }
+  new_repo pi
+  expect "pi adapter ignores other tools" 0 "" pi_hook read "gh pr create"
+  expect "pi adapter ignores unrelated bash" 0 "" pi_hook bash "ls -la"
+  expect "pi adapter blocks pr create without marker" 2 "Run the pre-pr-review skill" pi_hook bash "gh pr create --fill"
+  expect "pi adapter allows a checkout without the hook" 0 "" pi_hook bash "gh pr create" "$TEMP_DIR/nogit"
+  marker write --tool t >/dev/null
+  expect "pi adapter allows pr create when fresh" 0 "" pi_hook bash "gh pr create --fill"
+else
+  echo "SKIP: pi adapter tests (node not found)"
+fi
 
 echo "$TESTS tests, $FAILED failed"
 [ "$FAILED" -eq 0 ]

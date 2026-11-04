@@ -46,8 +46,8 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    the review manually and reports it back:
    `RM write --tool <reviewer> --session <id> --base <base>`.
    Any later change to the branch's diff makes it stale. Then `.githooks/pre-push`
-   refuses pushes to an open PR, and in Claude Code the `require-fresh-review` hook
-   blocks `gh pr create`/`gh pr ready`, until this skill runs again. A rebase keeps
+   refuses pushes to an open PR, and in Claude Code and Pi the `require-fresh-review`
+   hook blocks `gh pr create`/`gh pr ready`, until this skill runs again. A rebase keeps
    the marker fresh unless the base changed lines next to the branch's hunks.
 
 6. **Report.** State the reviewer, the outcome and any waived findings in the PR
