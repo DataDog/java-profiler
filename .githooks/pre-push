@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+# Copyright 2026, Datadog, Inc.
+"""git pre-push hook: refuse to update a branch that has an open PR unless the
+pushed commits match its review marker (utils/review-marker.py as of origin/main)."""
+
+import subprocess
+import sys
+
+HEADS = "refs/heads/"
+TRUSTED_REF = "refs/remotes/origin/main"  # qualified: a tag named origin/main must not win
+
+
+def has_open_pr(branch):
+    # Fails open: without gh, network or auth the push is not gated.
+    try:
+        res = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open",
+                              "--json", "number", "-q", "length"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return res.returncode == 0 and res.stdout.decode().strip() not in ("", "0")
+
+
+def marker_branch(local_ref, remote_branch):
+    """Branch whose marker covers the push: the local branch, the checked-out one for
+    `git push origin HEAD`, else the remote name (`git push origin <sha>:<branch>`)."""
+    if local_ref.startswith(HEADS):
+        return local_ref[len(HEADS):]
+    if local_ref == "HEAD":
+        res = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if res.returncode == 0:  # full ref: --short yields "heads/<b>" beside a same-named tag
+            return res.stdout.decode().strip()[len(HEADS):]
+    return remote_branch
+
+
+def trusted_source(path):
+    """`path` as of TRUSTED_REF, or None: checked-out files may come from an untrusted
+    branch, and git hooks must not run them."""
+    res = subprocess.run(["git", "show", "%s:%s" % (TRUSTED_REF, path)],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return res.stdout.decode() if res.returncode == 0 else None
+
+
+def main():
+    source = trusted_source("utils/review-marker.py")
+    if source is None:
+        sys.stdin.read()
+        return 0  # the gate is not on the default branch yet
+    blocked = False
+    for line in sys.stdin:
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        local_ref, local_sha, remote_ref, _ = parts
+        if set(local_sha) == {"0"} or not remote_ref.startswith(HEADS):
+            continue  # deletions (all-zero id, SHA-1 or SHA-256) and tags are not gated
+        remote_branch = remote_ref[len(HEADS):]
+        branch = marker_branch(local_ref, remote_branch)
+        res = subprocess.run([sys.executable, "-I", "-c", source, "check", "--branch", branch,
+                              "--commit", local_sha], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        # The local check runs first so a fresh marker costs no network call.
+        if res.returncode == 0 or not has_open_pr(remote_branch):
+            continue
+        reason = res.stderr.decode(errors="replace").strip()
+        if res.returncode == 1:
+            print("pre-push: %s has an open PR and %s.\nRun the pre-pr-review skill "
+                  "(.agents/skills/pre-pr-review), then push again." % (remote_branch, reason),
+                  file=sys.stderr)
+        else:
+            print("pre-push: cannot check the review marker of %s: %s\nFix that, or "
+                  "after a manual review push with --no-verify." % (branch, reason),
+                  file=sys.stderr)
+        blocked = True
+    return 1 if blocked else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

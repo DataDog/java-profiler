@@ -274,6 +274,32 @@ Core diff analysis and report generation for contribution candidate detection.
 
 ---
 
+## Review
+
+### `review-marker.py`
+
+Records that the agentic pre-PR review covered a branch, and checks it. Used by the `pre-pr-review` skill, `.githooks/pre-push` and the `require-fresh-review` hook, which runs in Claude Code (`.claude/hooks/`) and, through the thin adapter `.pi/extensions/require-fresh-review.ts`, in Pi. Pi loads project extensions only after project trust is granted.
+
+- The marker certifies commits: `write` refuses uncommitted tracked changes and records the `git patch-id --verbatim` (git 2.39+) of the diff from the merge base to `HEAD`. An advancing base or a clean rebase keeps it fresh, unless the base changed lines next to the branch's hunks (context lines anchor each hunk's position, so this errs toward stale). Any change to the branch's diff, whitespace or position included, makes it stale. Untracked files are ignored.
+- Markers live in `<git-common-dir>/review-markers/` (one file per branch, named by hash), shared by all worktrees and never committed.
+- `install-hook` writes a shim to `<git-common-dir>/hooks/pre-push` that runs `.githooks/pre-push` as of `refs/remotes/origin/main`, which loads `review-marker.py` from the same ref; the Claude Code hook loads it from there too. All run with `python3 -I`, so files in the checkout, which may be an untrusted branch (e.g. a fork PR), are not executed or imported. When that ref lacks the scripts (the gate is not merged yet, or there is no `origin` remote), both hooks allow everything. Out of scope: Claude Code runs `.claude/` hooks from the session's own checkout under its workspace-trust model. It never sets `core.hooksPath`, which would replace global hooks such as Datadog's secret scanner; those chain to `.git/hooks`.
+- Exit codes: 0 fresh, written or installed; 1 missing or stale; 2 usage or environment error (e.g. missing base ref, git older than 2.39).
+- Known limits, all accepted:
+  - An edit moved between two places whose surrounding lines are identical keeps the same digest, because hunk positions are left out so that rebases stay fresh.
+  - A fresh marker skips the network, so `pre-push` does not notice an open PR retargeted to a base other than the marker's.
+  - A branch pushed under another name (`git push origin fix:topic`) is found by `pre-push` but not by `gh pr ready`, which blocks rather than allows.
+
+**Usage:**
+```bash
+git show refs/remotes/origin/main:utils/review-marker.py | python3 -I - install-hook   # once per clone
+./utils/review-marker.py write --tool sphinx --session <id> --base origin/main
+./utils/review-marker.py check                                   # current branch
+./utils/review-marker.py check --branch <b> --commit <sha>       # as pre-push does
+bash utils/tests/test_review_marker.sh                           # tests
+```
+
+---
+
 ## CI / Ops
 
 ### `update-sonatype-credentials.sh`

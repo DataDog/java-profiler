@@ -21,6 +21,17 @@
     ]
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "h=\"$CLAUDE_PROJECT_DIR/.claude/hooks/require-fresh-review.py\"; [ -f \"$h\" ] || exit 0; exec python3 \"$h\""
+          }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [
