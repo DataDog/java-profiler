@@ -163,7 +163,8 @@ pass
 # --- Release script integration tests (hermetic, local bare remote) ----------
 
 setup_remote() {
-  local remote="$TEMP_DIR/remote-$RANDOM.git"
+  local remote
+  remote=$(mktemp -d "$TEMP_DIR/remote-XXXXXX")
   git init --bare --quiet "$remote"
   git --git-dir="$remote" config core.hooksPath /dev/null
   echo "$remote"
@@ -172,7 +173,8 @@ setup_remote() {
 setup_work() {
   local remote=$1
   local branch=$2
-  local work="$TEMP_DIR/work-$RANDOM"
+  local work
+  work=$(mktemp -d "$TEMP_DIR/work-XXXXXX")
   git init --quiet -b "$branch" "$work"
   git -C "$work" config user.name "Release Test"
   git -C "$work" config user.email "release-test@example.invalid"
