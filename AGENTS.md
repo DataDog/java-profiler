@@ -84,7 +84,8 @@ JNI integration, Google Test for C++ units.
 **Modules** (`settings.gradle.kts`): `ddprof-lib` (main library, plus `:ddprof-lib:fuzz`
 and `:ddprof-lib:benchmarks`), `ddprof-test` (Java integration tests), `ddprof-test-tracer`
 (tracing-context tests), `ddprof-test-native`, `ddprof-stresstest` (JMH + chaos),
-`malloc-shim` (Linux allocation interceptor).
+`malloc-shim` (Linux allocation interceptor), `demo-java-leak` (deployable
+dependency-free leak-demo app; not published).
 
 **Supported JVMs:** HotSpot, J9, Zing — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
 **Platforms:** Linux x64/arm64 (primary), macOS arm64/x64; musl libc handled automatically.
@@ -181,6 +182,7 @@ before working on a subsystem.
 | Remote symbolication (+frame types) | [doc/reference/RemoteSymbolication.md](doc/reference/RemoteSymbolication.md), [doc/reference/RemoteSymbolicationFrameTypes.md](doc/reference/RemoteSymbolicationFrameTypes.md) |
 | Per-sampler perf counters (`-PenableSamplerPerf`) | [doc/reference/SamplerPerfCounters.md](doc/reference/SamplerPerfCounters.md) |
 | Test flakiness analysis | [doc/reference/TestFlakinessAnalysis.md](doc/reference/TestFlakinessAnalysis.md) |
+| Demo leak app (`demo-java-leak`: self-driven HTTP server with a strong-ref leak cache and post-GC watermark flush; no profiler dependency) | [doc/architecture/DemoJavaLeakApp.md](doc/architecture/DemoJavaLeakApp.md) |
 
 Key source locations: Java API `ddprof-lib/src/main/java/com/datadoghq/profiler/JavaProfiler.java`;
 C++ engine `ddprof-lib/src/main/cpp/` (implementation-specific code under `hotspot/`, `j9/`,
