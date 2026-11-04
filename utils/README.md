@@ -232,6 +232,8 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 | `check-copyright.py` | Source files the branch adds or modifies since `--base` (default: the PR base in CI, else `origin/main`) follow the `AGENTS.md` copyright rule. |
 | `check-claude-md.py` | `CLAUDE.md` is the canonical redirect stub to `AGENTS.md`; `--write` restores it. |
 
+`.githooks/pre-push` runs `check-copyright.py` and `check-claude-md.py` on every pushed branch commit, so a violation stops the push before CI sees it (see `review-marker.py` below for the trust model).
+
 **Usage:**
 ```bash
 ./utils/check-doc-index.py                 # any one check
@@ -287,6 +289,8 @@ Records that the agentic pre-PR review covered a branch, and checks it. Used by 
 - The marker certifies commits: `write` refuses uncommitted tracked changes and records the `git patch-id --verbatim` (git 2.39+) of the diff from the merge base to `HEAD`. An advancing base or a clean rebase keeps it fresh, unless the base changed lines next to the branch's hunks (context lines anchor each hunk's position, so this errs toward stale). Any change to the branch's diff, whitespace or position included, makes it stale. Untracked files are ignored.
 - Markers live in `<git-common-dir>/review-markers/` (one file per branch, named by hash), shared by all worktrees and never committed.
 - `install-hook` writes a shim to `<git-common-dir>/hooks/pre-push` that runs `.githooks/pre-push` as of `refs/remotes/origin/main`, which loads `review-marker.py` from the same ref; the Claude Code hook loads it from there too. All run with `python3 -I`, so files in the checkout, which may be an untrusted branch (e.g. a fork PR), are not executed or imported. When that ref lacks the scripts (the gate is not merged yet, or there is no `origin` remote), both hooks allow everything. Out of scope: Claude Code runs `.claude/` hooks from the session's own checkout under its workspace-trust model. It never sets `core.hooksPath`, which would replace global hooks such as Datadog's secret scanner; those chain to `.git/hooks`.
+- The same shim also runs `check-copyright.py` and `check-claude-md.py` from that ref on each pushed branch commit, open PR or not. A check missing from the ref is skipped; an environment error is reported but does not block, since CI runs the check too.
+- For `gh pr create`, the Claude Code hook also runs `.github/scripts/check_pr_ticket.py` from that ref on the title and body taken from `--title`, `--body`, `--body-file` or, with `--fill`, the branch's commits. It cannot see an interactive, stdin or `$(...)` body; those pass, and the CI `PR ticket reference` workflow checks them.
 - Exit codes: 0 fresh, written or installed; 1 missing or stale; 2 usage or environment error (e.g. missing base ref, git older than 2.39).
 - Known limits, all accepted:
   - An edit moved between two places whose surrounding lines are identical keeps the same digest, because hunk positions are left out so that rebases stay fresh.

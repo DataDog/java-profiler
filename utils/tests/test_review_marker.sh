@@ -427,6 +427,56 @@ git update-ref -d refs/remotes/origin/tmp
 expect "hook env error does not advise rerunning the review" 2 "Rerunning the review will not help" \
   hook "gh pr create"
 
+# --- source checks in .githooks/pre-push, ticket check in the Claude Code hook ---
+new_repo s
+export OPEN_PRS=""
+printf 'int x;\n' > bad.cpp && git add bad.cpp && git commit -qm bad
+expect "pre-push skips source checks while origin/main lacks them" 0 "" \
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+git checkout -q main
+mkdir -p .github/scripts
+cp "$ROOT/utils/check-copyright.py" "$ROOT/utils/check-claude-md.py" utils/
+cp "$ROOT/.github/scripts/check_pr_ticket.py" .github/scripts/
+python3 utils/check-claude-md.py --root . --write >/dev/null
+git add . && git commit -qm "source checks" && git push -q origin main
+git checkout -q feature && git rebase -q main
+expect "pre-push blocks a new file without a copyright line" 1 "bad.cpp: new file has no" \
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+printf '// Copyright 2026, Datadog, Inc.\nint x;\n' > bad.cpp && git commit -qam header
+expect "pre-push allows a clean push" 0 "" \
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+echo "## Build" >> CLAUDE.md && git commit -qam drift
+expect "pre-push blocks a drifted CLAUDE.md" 1 "differs from the canonical stub" \
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+git reset -q --hard HEAD~1
+printf 'int y;\n' > dirty.cpp
+expect "pre-push checks the pushed commit, not untracked files" 0 "" \
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+rm dirty.cpp
+
+marker write --tool t >/dev/null
+TICKET_MSG="reference no ticket"
+expect "hook blocks pr create without a ticket" 2 "$TICKET_MSG" hook 'gh pr create --title "Fix" --body "Details"'
+expect "hook allows a Jira key in the title" 0 "" hook 'gh pr create --title "Fix (PROF-1)" --body "Details"'
+expect "hook allows short flags with a key" 0 "" hook 'gh pr create -t Fix -b "Refs PROF-3"'
+expect "hook reads --flag=value forms" 2 "$TICKET_MSG" hook 'gh pr create --title=Fix --body=Details'
+expect "hook reads attached short flags" 2 "$TICKET_MSG" hook 'gh pr create -tFix -bDetails'
+expect "hook reads a body spanning lines" 0 "" hook $'gh pr create --title Fix --body "line one\nJIRA: PROF-5"'
+printf 'Fixes #12\n' > body.md
+expect "hook reads --body-file" 0 "" hook 'gh pr create --title Fix --body-file body.md'
+printf 'no reference\n' > body.md
+expect "hook blocks a --body-file without a ticket" 2 "$TICKET_MSG" hook 'gh pr create --title Fix -F body.md'
+rm body.md
+expect "hook blocks --fill when the commits have no ticket" 2 "$TICKET_MSG" hook 'gh pr create --fill'
+expect "hook allows interactive pr create (CI checks it)" 0 "" hook 'gh pr create'
+expect "hook allows a stdin body (CI checks it)" 0 "" hook 'gh pr create --title Fix --body-file -'
+expect "hook allows a substituted body (CI checks it)" 0 "" hook 'gh pr create --title Fix --body "$(cat x)"'
+expect "hook stops at the command separator" 2 "$TICKET_MSG" \
+  hook 'gh pr create --title Fix --body x && gh issue create --title PROF-6'
+git commit -q --allow-empty -m "Wire it up (PROF-7)" && marker write --tool t >/dev/null
+expect "hook allows --fill when a commit has a ticket" 0 "" hook 'gh pr create --fill'
+cd "$TEMP_DIR"
+
 # --- .pi/extensions/require-fresh-review.ts (driven through a stub Pi API) ---
 if node --experimental-strip-types --no-warnings -e "" >/dev/null 2>&1; then
   cat > "$TEMP_DIR/pi-driver.mjs" <<'EOF'

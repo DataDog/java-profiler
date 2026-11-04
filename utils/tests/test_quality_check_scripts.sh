@@ -404,6 +404,7 @@ ln -s ../tools/NOTICE src/linked.cpp
 ln -s /etc tools/linkdir
 printf '\xff\xfe\x00binary' > src/blob.bin
 put tools/comment '# a comment, not a shebang'
+: > tools/empty
 mkdir -p tools/submodule  # a submodule entry: a directory in the tree, a gitlink in the index
 git update-index --add --cacheinfo "160000,$(git rev-parse HEAD),tools/submodule"
 put $'src/bad\xff.cpp' 'int z;'
@@ -446,6 +447,28 @@ expect "T5 the default base is origin/main" 2 "$rc" "$out" "refs/remotes/origin/
 rc=0; out=$(GITHUB_BASE_REF=rel python3 "$CR" --root "$CR_ROOT" --base main 2>&1) || rc=$?
 expect "T5 an explicit --base wins over GITHUB_BASE_REF" 1 "$rc" "$out" "copyright: 10 problem(s)"
 git update-ref -d refs/remotes/origin/rel
+# Working tree at odds with HEAD: december.cpp's year reverted but uncommitted, a staged new
+# file, a deleted stale.cpp.
+sed -i.bak 's/2024, 2025, Datadog/2024, Datadog/' src/december.cpp && rm src/december.cpp.bak
+printf 'int s;\n' > src/staged.cpp && git add src/staged.cpp && rm src/stale.cpp
+rc=0; out=$(python3 "$CR" --root "$CR_ROOT" --base main --head HEAD 2>&1) || rc=$?
+expect "T5 --head checks the commit" 1 "$rc" "$out" "copyright: 9 problem(s)"
+for want in "tools/hook: new file has no" "src/stale.cpp: Datadog copyright ends in 2024"; do
+  expect "T5 --head reports $want" 1 "$rc" "$out" "$want"
+done
+for wt in dirty.cpp december.cpp staged.cpp linked.cpp linkdir tools/comment tools/empty submodule; do
+  if [[ "$out" == *"$wt"* ]]; then fail "T5 --head flags $wt:"$'\n'"$out"; else pass; fi
+done
+git rm -q --cached src/staged.cpp && rm src/staged.cpp && git checkout -q src/december.cpp src/stale.cpp
+rc=0; out=$(python3 "$CR" --root "$CR_ROOT" --base main --head HEAD~1 2>&1) || rc=$?
+expect "T5 --head on an earlier commit" 1 "$rc" "$out" "copyright: 9 problem(s)"
+if [[ "$out" == *december.cpp* ]]; then fail "T5 --head includes a later commit:"$'\n'"$out"; else pass; fi
+# A 2027 commit on ranged.cpp: --head on its parent takes the year from the parent's history.
+echo '// later' >> src/ranged.cpp
+GIT_COMMITTER_DATE=2027-01-10T12:00:00 git commit -qm later --date=2027-01-10T12:00:00 src/ranged.cpp
+rc=0; out=$(python3 "$CR" --root "$CR_ROOT" --base main --head HEAD~1 2>&1) || rc=$?
+expect "T5 --head takes the change year from the commit" 1 "$rc" "$out" "copyright: 9 problem(s)"
+git reset -q HEAD~1 && git checkout -q src/ranged.cpp
 git checkout -q src/dirty.cpp
 
 rc=0; out=$(python3 "$CR" --root "$CR_ROOT" --base no-such-branch 2>&1) || rc=$?
@@ -503,6 +526,18 @@ CM_ROOT=$CM_TOP
 python3 "$CM" --root "$CM_ROOT" --write >/dev/null && echo "## Build" >> "$CM_ROOT/CLAUDE.md"
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
 expect "T6h drifted CLAUDE.md" 1 "$rc" "$out" "differs from the canonical stub"
+# --head reads the committed file; `python3 -I -c` is how the git hooks run this script.
+(cd "$CM_ROOT" && git commit -qam drift)
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null
+rc=0; out=$(python3 -I -c "$(cat "$CM")" --root "$CM_ROOT" --head HEAD 2>&1) || rc=$?
+expect "T6l --head checks the commit, not the fixed working tree" 1 "$rc" "$out" "differs from the canonical stub"
+first=$(cd "$CM_ROOT" && git rev-list --max-parents=0 HEAD)
+rc=0; out=$(python3 -I -c "$(cat "$CM")" --root "$CM_ROOT/sub" --head "$first" 2>&1) || rc=$?
+expect "T6m --head on a commit without CLAUDE.md" 1 "$rc" "$out" "CLAUDE.md: missing"
+add_cairn 1 && (cd "$CM_ROOT" && git commit -qam "cairn block")
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null && (cd "$CM_ROOT" && git commit -qam canonical)
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" --head HEAD~1 2>&1) || rc=$?
+expect "T6n --head never ignores a committed cairn block" 1 "$rc" "$out" "differs from the canonical stub"
 
 # --- Summary -----------------------------------------------------------------
 

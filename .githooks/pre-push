@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Copyright 2026, Datadog, Inc.
 """git pre-push hook: refuse to update a branch that has an open PR unless the
-pushed commits match its review marker (utils/review-marker.py as of origin/main)."""
+pushed commits match its review marker (utils/review-marker.py as of origin/main),
+and refuse any branch push whose commit fails the copyright or CLAUDE.md check."""
 
 import subprocess
 import sys
@@ -42,6 +43,27 @@ def trusted_source(path):
     return res.stdout.decode() if res.returncode == 0 else None
 
 
+def source_checks_pass(local_sha):
+    """Run the CI source checks that are cheap enough for every push on the pushed commit;
+    False when one reports violations. Checks not on TRUSTED_REF yet are skipped."""
+    ok = True
+    checks = (("check-copyright.py", ["--base", "origin/main"]), ("check-claude-md.py", []))
+    for script, extra in checks:
+        source = trusted_source("utils/" + script)
+        if source is None:
+            continue
+        res = subprocess.run([sys.executable, "-I", "-c", source, "--root", ".", "--head",
+                              local_sha, *extra], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if res.returncode == 1:
+            print("pre-push: %s:\n%s" % (script, res.stdout.decode(errors="replace").strip()),
+                  file=sys.stderr)
+            ok = False
+        elif res.returncode != 0:  # environment error: CI still runs the check
+            print("pre-push: %s skipped: %s" % (script, res.stdout.decode(errors="replace").strip()),
+                  file=sys.stderr)
+    return ok
+
+
 def main():
     source = trusted_source("utils/review-marker.py")
     if source is None:
@@ -55,6 +77,11 @@ def main():
         local_ref, local_sha, remote_ref, _ = parts
         if set(local_sha) == {"0"} or not remote_ref.startswith(HEADS):
             continue  # deletions (all-zero id, SHA-1 or SHA-256) and tags are not gated
+        if not source_checks_pass(local_sha):
+            print("pre-push: fix the files above (CI runs the same checks), then push again.",
+                  file=sys.stderr)
+            blocked = True
+            continue
         remote_branch = remote_ref[len(HEADS):]
         branch = marker_branch(local_ref, remote_branch)
         res = subprocess.run([sys.executable, "-I", "-c", source, "check", "--branch", branch,

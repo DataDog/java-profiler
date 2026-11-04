@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Copyright 2026, Datadog, Inc.
 """Claude Code PreToolUse hook: block commands that mention `gh pr create|new|ready`
-while the branch's review marker is stale. Pushes are gated by .githooks/pre-push."""
+while the branch's review marker is stale, and `gh pr create` whose title and body
+reference no ticket. Pushes are gated by .githooks/pre-push."""
 
 import json
 import os
@@ -77,6 +78,63 @@ def ready_target(args, repo, cwd):
         return None if selector else []
     head, oid, base = out.split()
     return ["--branch", head, "--commit", oid, "--base", origin(base)]
+
+
+def flag_values(tokens, long, short):
+    """Values of `--long x`, `--long=x`, `-s x` and `-sx` in tokens."""
+    values = []
+    for i, t in enumerate(tokens):
+        if t in (long, short):
+            values.append(tokens[i + 1] if i + 1 < len(tokens) else "")
+        elif t.startswith(long + "="):
+            values.append(t[len(long) + 1:])
+        elif t.startswith(short) and not t.startswith("--") and len(t) > len(short):
+            values.append(t[len(short):])
+    return values
+
+
+def pr_text(rest, cwd):
+    """The title and body `gh pr create` will use, or None when the command does not fix
+    them (interactive, stdin body, command substitution, unparsable quoting)."""
+    try:
+        lexer = shlex.shlex(rest, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    for i, t in enumerate(tokens):
+        if t in (";", "&&", "||", "|", "&", "(", ")"):
+            tokens = tokens[:i]
+            break
+    parts = flag_values(tokens, "--title", "-t") + flag_values(tokens, "--body", "-b")
+    for path in flag_values(tokens, "--body-file", "-F"):
+        try:  # also `-` (stdin): no such file, so the text is unknown
+            with open(os.path.join(cwd, path), errors="replace") as f:
+                parts.append(f.read())
+        except OSError:
+            return None
+    if any(t in ("-f", "--fill", "--fill-first", "--fill-verbose") for t in tokens):
+        parts.append(git_out(["log", "--format=%B", TRUSTED_REF + "..HEAD"], cwd) or "")
+    elif not parts:
+        return None
+    text = "\n".join(parts)
+    return None if "$(" in text or "`" in text else text
+
+
+def ticket_reason(top, cwd, rest):
+    """None when the PR text references a ticket or cannot be known, else the block reason.
+    Uses origin/main's .github/scripts/check_pr_ticket.py, the script CI runs."""
+    source = git_out(["show", TRUSTED_REF + ":.github/scripts/check_pr_ticket.py"], top)
+    text = pr_text(rest, cwd)
+    if source is None or text is None:
+        return None
+    env = {**os.environ, "PR_TITLE": text, "PR_BODY": "", "PR_AUTHOR": ""}
+    res = subprocess.run([sys.executable, "-I", "-c", source], cwd=top, env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if res.returncode != 1:
+        return None
+    return "the PR title and body reference no ticket. Add a Jira key (PROF-<n>) or a " \
+           "GitHub issue (#<n>), e.g. in the template's JIRA line; CI checks the same."
 
 
 def run_check(source, cwd, extra):
@@ -158,6 +216,9 @@ def main():
                      "command." % sub
         else:
             reason = evaluate(source, top, sub, args, command, m.group(0))
+            if not reason and sub == "create":
+                # From the flags to the end: a quoted body may span lines.
+                reason = ticket_reason(top, payload.get("cwd") or os.getcwd(), command[m.start(2):])
         if reason:
             print("Blocked `gh pr %s`: %s" % (sub, reason), file=sys.stderr)
             return 2
