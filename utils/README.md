@@ -298,6 +298,20 @@ git show refs/remotes/origin/main:utils/review-marker.py | python3 -I - install-
 bash utils/tests/test_review_marker.sh                           # tests
 ```
 
+### `gradle-command-policy.py`
+
+Denies shell commands that run `gradlew` directly instead of through `.claude/commands/build-and-summarize`, except `gradlew --stop` and `gradlew --version`. Reads the command on stdin; exit 2 with the reason on stderr denies it. The `require-gradle-wrapper` hook runs it in Claude Code (`.claude/hooks/`) and, through `.pi/extensions/require-gradle-wrapper.ts`, in Pi.
+
+- The hook loads the policy from `refs/remotes/origin/main` with `python3 -I`, like `review-marker.py`, and allows everything when that ref lacks it.
+- `gradlew` counts only in command position: at the start, after a separator or an opening quote, or behind prefixes such as `env`, `timeout 60` or `sh`. `cat gradlew` passes; `echo "./gradlew build"` is a false block, accepted.
+- Not covered: indirection such as `G=./gradlew; $G build`, and a system `gradle`.
+
+**Usage:**
+```bash
+echo './gradlew build' | python3 utils/gradle-command-policy.py   # exit 2
+bash utils/tests/test_gradle_hook.sh                              # tests
+```
+
 ---
 
 ## CI / Ops

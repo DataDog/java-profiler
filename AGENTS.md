@@ -97,7 +97,9 @@ dependency-free leak-demo app; not published).
   `--console=plain -i`, captures the full output into `build/logs/<timestamp>-<task>.log`,
   and prints only the status line. On failure, read the wrapper's extracted
   "What went wrong" section and the failing task/test lines; grep the log for anything
-  rarer. If no log path is given, use the newest `build/logs/*.log`.
+  rarer. If no log path is given, use the newest `build/logs/*.log`. In Claude Code and
+  Pi the `require-gradle-wrapper` hook denies direct `gradlew` calls, except
+  `--stop` and `--version`.
 - Never paste large log chunks into chat. If more than ~30 lines are needed, write to a
   file and point at it.
 - If a step fails, print the failing command and a one-line hint, then stop.
