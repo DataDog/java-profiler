@@ -228,9 +228,11 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     _last_root_enum_safepoint_ms = root_enum_safepoint_ns / 1000000;
 
     if (root_err != JVMTI_ERROR_NONE) {
-      // The enumeration attempt errored out - the root picture is incomplete, so record it (spec
-      // R4): runPass()'s termination ladder must not treat the search as settled.
+      // The enumeration attempt errored out - the root picture is incomplete, so record it:
+      // runPass()'s termination ladder must not treat the search as settled. The consecutive-error
+      // count feeds the ladder's ROOT_ENUM_ERROR abandon; any successful attempt resets it.
       _root_enum_incomplete = true;
+      _consecutive_enum_errors++;
       *truncated = true;
       *frontier_cap_hit = false;
       return;
@@ -244,6 +246,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       // here; that is deliberately harmless - runPass()'s frontier-cap abandon precedes any read
       // of the flag and restartSearch() clears it.
       _root_enum_incomplete = true;
+      _consecutive_enum_errors = 0;
       *truncated = true;
       *frontier_cap_hit = ctx.frontier_cap_hit;
       return;
@@ -251,6 +254,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     // Completed attempt (no error, no truncation): the root picture is now consistent, so the
     // ladder may treat the frontier as the only pending work.
     _root_enum_incomplete = false;
+    _consecutive_enum_errors = 0;
   }
 
   int expand_phase_edges_admitted = 0;
@@ -1121,15 +1125,14 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
              frontier_size_after);
   } else if (!has_pending_frontier && _watched_leak_klass_count == 0) {
     storeRelease(_search_state, (u8)SearchState::COMPLETED);
-  } else if (_ttl_ms > 0 &&
+  } else if (_ttl_ms > 0 && !_root_enum_incomplete &&
              (OS::nanotime() - load(_search_start_ns)) / 1000000 >=
                  (u64)_ttl_ms) {
-    // TTL bounds stop-the-world work independently of frontier progress.
-    // _search_start_ns is a plain OS::nanotime() timestamp (see its assignment
-    // above), not a TSC tick count, so the elapsed time must be converted with
-    // a straight ns-to-ms division rather than TSC::ticks_to_millis() (which
-    // divides by TSC::frequency() and would misconvert whenever that
-    // frequency differs from 1 GHz).
+    // Deferred while _root_enum_incomplete: abandoning mid-enumeration loses the unenumerated
+    // roots - the clock keeps running, so the abandon fires on the first pass after the
+    // enumeration completes. _search_start_ns is a plain OS::nanotime() timestamp, not a TSC tick
+    // count: elapsed time is converted with a straight ns-to-ms division, never TSC::ticks_to_
+    // millis() (which divides by TSC::frequency()).
     store(_abandon_reason, (u8)SearchAbandonReason::TTL);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
     enqueuePendingAbandonedEvent();
@@ -1138,6 +1141,15 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
              _ttl_ms,
              (unsigned long long)((OS::nanotime() -
                                    load(_search_start_ns)) / 1000000));
+  } else if (_consecutive_enum_errors >= MAX_CONSECUTIVE_ENUM_ERRORS) {
+    // The enumerator has errored on MAX_CONSECUTIVE_ENUM_ERRORS consecutive attempts (any
+    // successful attempt resets the counter) - bound the retries even with ttl=0.
+    store(_abandon_reason, (u8)SearchAbandonReason::ROOT_ENUM_ERROR);
+    storeRelease(_search_state, (u8)SearchState::ABANDONED);
+    enqueuePendingAbandonedEvent();
+    TEST_LOG_SUMMARY("ReferenceChainTracker::runPass root-enum errors -- abandoning search "
+             "(consecutive_errors=%u)",
+             _consecutive_enum_errors);
   } else if (_passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT &&
              !urgencyLatched() && !_root_enum_incomplete) {
     // The frontier hasn't grown for NO_PROGRESS_PASS_LIMIT consecutive passes — the search is

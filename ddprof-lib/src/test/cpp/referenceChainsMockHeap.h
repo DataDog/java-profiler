@@ -102,6 +102,10 @@ public:
     // by runPassManualWalk() into _last_root_enum_safepoint_ms.
     u64 ior_delay_ns = 0;
 
+    // When set to a JVMTI error, mock_IterateOverReachableObjects() returns it instead of running
+    // the script - drives runPassManualWalk()'s root_err != JVMTI_ERROR_NONE path.
+    jvmtiError ior_error = JVMTI_ERROR_NONE;
+
     // Synthetic frontier-holder arrays for expandFrontier()'s array-holder walk:
     // mock_NewObjectArray() hands back an opaque handle, mock_SetObjectArrayElement() records its
     // elements here, and mock_FollowReferences() treats every recorded element as an expansion seed
@@ -438,6 +442,9 @@ public:
             while (OS::nanotime() < until) {
                 // busy-wait (see gotw_delay_ns): the measured duration must not undershoot.
             }
+        }
+        if (active_fixture->ior_error != JVMTI_ERROR_NONE) {
+            return active_fixture->ior_error;
         }
         for (auto &e : active_fixture->script) {
             if (e.referrer_idx != -1) {

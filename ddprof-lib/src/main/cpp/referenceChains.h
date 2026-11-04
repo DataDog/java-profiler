@@ -783,6 +783,11 @@ private:
   // resetSearchStateForTest(); runPass()'s termination ladder treats it as pending frontier.
   bool _root_enum_incomplete = false;
 
+  // Consecutive root-enumeration attempts ended by a JVMTI error; reset by any successful
+  // attempt, restartSearch(), and resetSearchStateForTest(). At MAX_CONSECUTIVE_ENUM_ERRORS the
+  // ladder abandons the search (ROOT_ENUM_ERROR) - the only bound when ttl=0.
+  u32 _consecutive_enum_errors = 0;
+
   ReferenceChainTracker()
       : _enabled(false),
         _frontier(nullptr), _configured_frontier_cap(0),
@@ -1192,6 +1197,10 @@ public:
   // Abandon the search after this many consecutive passes with zero new frontier entries admitted
   // (genuinely stuck, not just slow).
   static constexpr int NO_PROGRESS_PASS_LIMIT = 30;
+
+  // Consecutive errored root-enum attempts the ladder tolerates before abandoning (ROOT_ENUM_ERROR)
+  // - bounds a persistently failing IterateOverReachableObjects even with ttl=0.
+  static constexpr u32 MAX_CONSECUTIVE_ENUM_ERRORS = 3;
 
   // Base limit for the canary-specific stuck detector: candidate-discovery must show no progress
   // (no change to _candidate_found_bits, no new candidate admitted into a slot) for this many

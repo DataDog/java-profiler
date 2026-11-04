@@ -272,6 +272,160 @@ TEST_F(ReferenceChainsBfsTest, TruncatedRootEnumKeepsSearchAliveUntilEnumComplet
     tracker->stop();
 }
 
+// An expired TTL must not abandon a search whose root enumeration is still incomplete: abandoning
+// mid-enumeration loses the unenumerated roots, so the ladder defers the TTL abandon until the
+// enumeration completes (the clock keeps running - no free window after completion). This FAILS on
+// unfixed code: the TTL branch ran first and abandoned while nodeD was still unenumerated.
+TEST_F(ReferenceChainsBfsTest, TtlDeferredUntilRootEnumCompletes) {
+    Arguments args;
+    ASSERT_FALSE(args.parse(
+        "referencechains=true:hops=64:budget=1000:firstpassbudget=1:ttl=50"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int nodeA = addNode();
+    int nodeB = addNode();
+    int nodeC = addNode();
+    int nodeD = addNode();
+
+    script = {
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeA, -1}, // admitted via root enum
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeD, -1}, // unenumerated - truncates the attempt
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeA, nodeB, -1},   // admitted via expansion
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeA, nodeC, -1},
+    };
+
+    std::pair<u64, u64> saved = ReferenceChainsTestAccessor::setRootEnumRawStateForTest(0, 0);
+
+    // Pass 1 (manual first pass): the 1-unit budget truncates on nodeD - _root_enum_incomplete
+    // set, search RUNNING.
+    bool truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+
+    // Expire the TTL and freeze the enumeration clock: every pass below is expansion-only
+    // floor-wait with the TTL long past.
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(OS::nanotime() - 100000000ULL);
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(OS::nanotime(), 0);
+
+    const int kDeferredPasses = ReferenceChainTracker::NO_PROGRESS_PASS_LIMIT + 5;
+    for (int i = 0; i < kDeferredPasses; i++) {
+        truncated = false;
+        ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+        EXPECT_EQ(SearchState::RUNNING, tracker->searchState())
+            << "pass " << i
+            << ": an expired TTL must not abandon a search with incomplete enumeration";
+    }
+
+    // Unfreeze the enumeration clock: the next pass completes the enumeration, the deferral ends
+    // (no unbounded extension), and the search settles - COMPLETED here, since the frontier was
+    // drained during the floor-wait passes and no watched-leak klass remains.
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(
+        OS::nanotime() - ReferenceChainsTestAccessor::rootEnumMinIntervalNs() - 1, 0);
+    truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
+    EXPECT_EQ(SearchAbandonReason::NONE, ReferenceChainsTestAccessor::searchAbandonReasonForTest());
+
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(saved.first, saved.second);
+    tracker->stop();
+}
+
+// A persistently failing enumerator must not run forever when ttl=0: the ladder abandons with
+// ROOT_ENUM_ERROR once MAX_CONSECUTIVE_ENUM_ERRORS consecutive attempts return a JVMTI error.
+// This FAILS on unfixed code: the errored attempts only set _root_enum_incomplete, so with ttl=0
+// no termination path ever fires.
+TEST_F(ReferenceChainsBfsTest, ConsecutiveEnumErrorsAbandonSearch) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000:ttl=0"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int nodeA = addNode();
+    script = {
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeA, -1},
+    };
+
+    std::pair<u64, u64> saved = ReferenceChainsTestAccessor::setRootEnumRawStateForTest(0, 0);
+    active_fixture->ior_error = JVMTI_ERROR_OUT_OF_MEMORY;
+
+    // Pass 1 (manual): the enumeration attempt errors - incomplete, counter 1, still RUNNING.
+    bool truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+
+    // Passes 2..MAX: backdate the floor so each pass runs a real enumeration attempt that errors
+    // again; the ladder must abandon when the counter reaches MAX_CONSECUTIVE_ENUM_ERRORS.
+    for (u32 i = 2; i < ReferenceChainTracker::MAX_CONSECUTIVE_ENUM_ERRORS; i++) {
+        ReferenceChainsTestAccessor::setRootEnumRawStateForTest(
+            OS::nanotime() - ReferenceChainsTestAccessor::rootEnumMinIntervalNs() - 1, 0);
+        truncated = false;
+        ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+        EXPECT_EQ(SearchState::RUNNING, tracker->searchState())
+            << "error " << i << ": below the cap the search must keep running";
+    }
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(
+        OS::nanotime() - ReferenceChainsTestAccessor::rootEnumMinIntervalNs() - 1, 0);
+    truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_EQ(SearchState::ABANDONED, tracker->searchState());
+    EXPECT_EQ(SearchAbandonReason::ROOT_ENUM_ERROR, ReferenceChainsTestAccessor::searchAbandonReasonForTest());
+
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(saved.first, saved.second);
+    tracker->stop();
+}
+
+// A successful enumeration attempt - truncated or complete - must reset the consecutive-error
+// counter: the cap bounds consecutive FAILURES, not total failures over the search's life.
+TEST_F(ReferenceChainsBfsTest, SuccessfulEnumAttemptResetsErrorCounter) {
+    Arguments args;
+    ASSERT_FALSE(args.parse(
+        "referencechains=true:hops=64:budget=1000:firstpassbudget=1:ttl=0"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int nodeA = addNode();
+    int nodeB = addNode();
+    int nodeC = addNode();
+    int nodeD = addNode();
+
+    script = {
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeA, -1}, // admitted; truncates on nodeD
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeD, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeA, nodeB, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeA, nodeC, -1},
+    };
+
+    std::pair<u64, u64> saved = ReferenceChainsTestAccessor::setRootEnumRawStateForTest(0, 0);
+
+    // Seed the counter to one below the cap, then let a successful (truncated) attempt run: it
+    // resets the counter, so the next single error must NOT abandon (unfixed-on-reset code: the
+    // seeded 2 + this error would reach the cap).
+    ReferenceChainsTestAccessor::setConsecutiveEnumErrorsForTest(
+        ReferenceChainTracker::MAX_CONSECUTIVE_ENUM_ERRORS - 1);
+    bool truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_TRUE(truncated); // successful JVMTI call, budget truncation - resets the counter
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+
+    // One errored attempt after the reset: counter back to 1 - below the cap, still RUNNING.
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(
+        OS::nanotime() - ReferenceChainsTestAccessor::rootEnumMinIntervalNs() - 1, 0);
+    active_fixture->ior_error = JVMTI_ERROR_OUT_OF_MEMORY;
+    truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState())
+        << "one error after a successful reset attempt must not abandon";
+
+    active_fixture->ior_error = JVMTI_ERROR_NONE;
+    ReferenceChainsTestAccessor::setRootEnumRawStateForTest(saved.first, saved.second);
+    tracker->stop();
+}
+
 TEST_F(ReferenceChainsBfsTest, PreTaggedClassObjectsAreNeverExpandedOrAdmitted) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));

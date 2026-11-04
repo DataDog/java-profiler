@@ -55,6 +55,7 @@ public:
         t->_search_started = false;
         t->_tags_released = true;
         t->_root_enum_incomplete = false;
+        t->_consecutive_enum_errors = 0;
         t->_search_state = SearchState::RUNNING;
         t->_abandon_reason = SearchAbandonReason::NONE;
         t->_search_start_ns = 0;
@@ -430,6 +431,10 @@ public:
 
     static u64 searchStartNsForTest() {
         return ReferenceChainTracker::instance()->_search_start_ns;
+    }
+
+    static void setConsecutiveEnumErrorsForTest(u32 n) {
+        ReferenceChainTracker::instance()->_consecutive_enum_errors = n;
     }
 
     static size_t pendingAbandonedEventCountForTest() {
