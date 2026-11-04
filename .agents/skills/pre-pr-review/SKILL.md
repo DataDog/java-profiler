@@ -22,8 +22,9 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    commits, so uncommitted work is not covered.
 
 2. **Review.** Review exactly the range the marker will certify,
-   `MB=$(git merge-base <base> HEAD)` to `HEAD`, named explicitly — without a range,
-   reviewers default to unpushed or last-commit changes. Use the strongest reviewer the
+   `MB=$(git merge-base refs/remotes/<base> HEAD)` to `HEAD`, named explicitly — without
+   a range, reviewers default to unpushed or last-commit changes; the full ref keeps a
+   tag named like the base from changing the range. Use the strongest reviewer the
    harness provides: `/sphinx review range $MB..$(git rev-parse HEAD) --report-json
    <path>`, else `/code-review` with that range as its target. Report only — run no
    reviewer fix flow; steps 3 and 4 do the triage and fixes. If no reviewer is

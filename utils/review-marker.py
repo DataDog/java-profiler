@@ -45,7 +45,8 @@ def marker_path(branch):
 
 def current_branch():
     try:
-        return git("symbolic-ref", "--quiet", "--short", "HEAD")
+        # Not --short: with a tag of the same name it yields "heads/<branch>".
+        return git("symbolic-ref", "--quiet", "HEAD")[len("refs/heads/"):]
     except EnvError:
         raise EnvError("HEAD is detached; check out the branch under review")
 
@@ -68,7 +69,9 @@ def resolve_commit(commit):
 def change_digest(base, commit):
     # patch-id drops line numbers, so context lines are what anchor each hunk's position;
     # a base change next to a hunk therefore errs toward stale. --verbatim keeps whitespace.
-    mb = git("merge-base", base, commit)
+    # Qualified, so a tag named origin/<branch> cannot stand in for the remote branch.
+    ref = "refs/remotes/" + base if base.startswith("origin/") else base
+    mb = git("merge-base", ref, commit)
     diff = git_bytes("diff", "--no-relative", "--no-ext-diff", "--no-color", mb, commit)
     pid = git("patch-id", "--verbatim", input_bytes=diff)
     return pid.split()[0] if pid else "empty"

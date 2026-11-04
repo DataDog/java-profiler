@@ -53,10 +53,21 @@ def origin(name):
     return name if name.startswith("origin/") else "origin/" + name
 
 
-def ready_target(args, cwd):
+def repo_flag(tokens):
+    """Value of -R/--repo in any of gh's spellings (`-R x`, `-Rx`, `--repo x`, `--repo=x`)."""
+    for i, t in enumerate(tokens):
+        if t in ("-R", "--repo"):
+            return tokens[i + 1] if i + 1 < len(tokens) else None
+        if t.startswith("--repo="):
+            return t[len("--repo="):]
+        if t.startswith("-R") and len(t) > 2:
+            return t[2:]
+    return None
+
+
+def ready_target(args, repo, cwd):
     """Check arguments for the PR `gh pr ready` targets, from GitHub so the commits the
     PR holds are checked; [] means the current branch, None that it cannot be resolved."""
-    repo = next((args[i + 1] for i, a in enumerate(args[:-1]) if a in ("-R", "--repo")), None)
     selector = [a for i, a in enumerate(args)
                 if not a.startswith("-") and (i == 0 or args[i - 1] not in ("-R", "--repo"))]
     out = gh_query(["pr", "view", *selector[:1], *(["-R", repo] if repo else []), "--json",
@@ -74,10 +85,19 @@ def run_check(source, cwd, extra):
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
-def evaluate(source, cwd, sub, args, command):
+def configured_base(cwd):
+    """`branch.<current>.gh-merge-base`, which bare `gh pr create` prefers to the repo default."""
+    ref = git_out(["symbolic-ref", "--quiet", "HEAD"], cwd)
+    if not ref:
+        return None
+    return git_out(["config", "--get", "branch.%s.gh-merge-base" % ref[len("refs/heads/"):]], cwd)
+
+
+def evaluate(source, cwd, sub, args, command, match_text):
     """Return None to allow, else the reason to block."""
     if sub == "ready":
-        extra = ready_target(args, cwd)
+        # The repo flag may sit before `pr` (`gh -R o/r pr ready`), so read it from the whole match.
+        extra = ready_target(args, repo_flag(words(match_text)), cwd)
         if extra is None:
             return "cannot resolve the PR's head commit (gh failed); retry when gh works."
     else:
@@ -87,7 +107,8 @@ def evaluate(source, cwd, sub, args, command):
         bases = {origin(m.group(2)) for m in BASE_FLAG.finditer(command)}
         if len(bases) > 1:
             return "the command names several bases (%s)." % ", ".join(sorted(bases))
-        extra = ["--base", bases.pop()] if bases else []
+        base = bases.pop() if bases else configured_base(cwd)
+        extra = ["--base", origin(base)] if base else []
     res = run_check(source, cwd, extra)
     if res.returncode == 0 and sub == "create" and not extra:
         # Only a passing check pays for the default-branch lookup.
@@ -136,7 +157,7 @@ def main():
                      "which the check cannot see beforehand.\nRun `gh pr %s` as its own " \
                      "command." % sub
         else:
-            reason = evaluate(source, top, sub, args, command)
+            reason = evaluate(source, top, sub, args, command, m.group(0))
         if reason:
             print("Blocked `gh pr %s`: %s" % (sub, reason), file=sys.stderr)
             return 2

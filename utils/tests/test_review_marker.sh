@@ -183,6 +183,13 @@ expect "corrupt marker" 1 "not valid JSON" marker check
 sed 's/"branch": "feature"/"branch": "other-name"/' "$TEMP_DIR/feature.json" > "$MF"
 expect "marker recorded for another branch name" 1 "no review marker for branch feature" marker check
 cp "$TEMP_DIR/feature.json" "$MF"
+git tag origin/main "$PRE_GATE"
+expect "digest ignores a tag named origin/main" 0 "" marker check
+git tag -d origin/main >/dev/null
+git tag feature HEAD
+expect "write beside a same-named tag" 0 "written for feature " marker write --tool t
+expect "check beside a same-named tag" 0 "" marker check --branch feature
+git tag -d feature >/dev/null
 mkdir -p "$TEMP_DIR/nogit" && cd "$TEMP_DIR/nogit"
 expect "outside a git repo" 2 "review-marker:" python3 "$ROOT/utils/review-marker.py" check
 
@@ -248,6 +255,10 @@ expect "pre-push ignores a tag named origin/main" 1 "is stale" \
 git tag -d origin/main >/dev/null
 expect "pre-push gates \`git push origin HEAD\`" 1 "is stale" \
   prepush "HEAD $STALE refs/heads/feature $Z"
+git tag feature HEAD
+expect "pre-push HEAD refspec beside a same-named tag" 1 "is stale" \
+  prepush "HEAD $STALE refs/heads/feature $Z"
+git tag -d feature >/dev/null
 expect "pre-push gates \`git push origin <sha>:feature\`" 1 "is stale" \
   prepush "$STALE $STALE refs/heads/feature $Z"
 git checkout -q --detach "$TIP"
@@ -371,6 +382,10 @@ VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main exp
   hook "gh pr ready -R DataDog/java-profiler 12"
 VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past --repo" 0 "" \
   hook "gh pr ready --repo DataDog/java-profiler 12"
+VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook keeps -R given before pr" 0 "" \
+  hook "gh -R DataDog/java-profiler pr ready 12"
+VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook keeps --repo=" 0 "" \
+  hook "gh pr ready 12 --repo=DataDog/java-profiler"
 VIEW_HEAD=wt VIEW_OID=1234567890123456789012345678901234567890 VIEW_BASE=main \
   expect "hook reports an unfetched PR head" 2 "Rerunning the review will not help" hook "gh pr ready 12"
 GH_FAIL=1 expect "hook blocks ready of a PR it cannot resolve" 2 "cannot resolve the PR" \
@@ -399,6 +414,14 @@ DEFAULT_BRANCH=other expect "hook uses the repo default base without -B" 2 "not 
 DEFAULT_BRANCH=main expect "hook allows the matching default base" 0 "" hook "gh pr create --fill"
 DEFAULT_BRANCH=other expect "hook prefers an explicit --base over the default" 0 "" \
   hook "gh pr create --base main"
+git config branch.feature.gh-merge-base other
+: > "$GH_LOG"
+expect "hook honors branch gh-merge-base" 2 "not origin/other" hook "gh pr create --fill"
+if grep -q "repo view" "$GH_LOG"; then fail "hook looked up the repo default despite gh-merge-base"; else pass; fi
+git config branch.feature.gh-merge-base main
+DEFAULT_BRANCH=other expect "gh-merge-base wins over the repo default" 0 "" hook "gh pr create --fill"
+expect "explicit --base wins over gh-merge-base" 2 "not origin/other" hook "gh pr create --base other"
+git config --unset branch.feature.gh-merge-base
 git update-ref refs/remotes/origin/tmp origin/main && marker write --tool t --base origin/tmp >/dev/null
 git update-ref -d refs/remotes/origin/tmp
 expect "hook env error does not advise rerunning the review" 2 "Rerunning the review will not help" \

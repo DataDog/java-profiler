@@ -27,10 +27,10 @@ def marker_branch(local_ref, remote_branch):
     if local_ref.startswith(HEADS):
         return local_ref[len(HEADS):]
     if local_ref == "HEAD":
-        res = subprocess.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+        res = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        if res.returncode == 0:
-            return res.stdout.decode().strip()
+        if res.returncode == 0:  # full ref: --short yields "heads/<b>" beside a same-named tag
+            return res.stdout.decode().strip()[len(HEADS):]
     return remote_branch
 
 
