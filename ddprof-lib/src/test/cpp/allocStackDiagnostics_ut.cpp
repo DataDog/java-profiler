@@ -206,6 +206,24 @@ TEST_F(AllocStackDiagnosticsTest, ZeroFramePlatformWalkCountsJvmtiFallback) {
     EXPECT_FALSE(ProfiledThread::current()->isProtected());
 }
 
+// An allocation callback reads the recording generation before it resolves its
+// class id. If a stop() moved it meanwhile, recordJVMTISample() must drop the
+// sample before capturing a stack or emitting anything, and a sample carrying
+// the current generation must still be recorded afterwards.
+TEST_F(AllocStackDiagnosticsTest, StaleRecordingGenerationIsRejected) {
+    u64 current = Profiler::instance()->recordingGeneration();
+
+    u64 stale = Profiler::instance()->recordJVMTISample(
+        1, 1, reinterpret_cast<jthread>(1), BCI_ALLOC, nullptr, true, current - 1);
+    EXPECT_EQ(0u, stale);
+    EXPECT_EQ(0, stack_calls) << "a stale sample must be dropped before the stack walk";
+
+    u64 fresh = Profiler::instance()->recordJVMTISample(
+        1, 1, reinterpret_cast<jthread>(1), BCI_ALLOC, nullptr, true, current);
+    EXPECT_NE(0u, fresh);
+    EXPECT_EQ(1, stack_calls);
+}
+
 TEST_F(AllocStackDiagnosticsTest, JvmtiTruncationRequiresAFrameBeyondTheLimit) {
     for (int count : {8, 9}) {
         expected.resize(count, expected[0]);
