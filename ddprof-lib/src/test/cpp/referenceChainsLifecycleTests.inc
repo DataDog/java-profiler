@@ -1,3 +1,7 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 // ---------------------------------------------------------------------------
 // Lifecycle churn (C4): stop/restart-shaped interleavings against an in-flight
@@ -76,7 +80,6 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
     constexpr int kGcCycles = 200;
     constexpr int kAbortCycles = 30;
 
-    std::atomic<bool> stop_flag{false};
     std::atomic<bool> pass_done{false};
     std::atomic<int> restarts{0};
     std::atomic<int> aborted_passes{0};
@@ -95,6 +98,10 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
     // construction.
     std::atomic<bool> first_window_open{false};
 
+    // No stop_flag: the pass loop's only exits are its own bounds (kMaxSearches/kMaxPasses) and
+    // the !ok early-exit. The abort thread must not stop it - its 30 windows can complete faster
+    // than the first search terminates (the abort flag's duty cycle truncates every walk in
+    // between), and stopping then would end the churn with zero terminal outcomes.
     std::thread pass_thread([&] {
         // Deterministic window 1: do not start passes until the abort thread's first store is
         // visible (see first_window_open's comment). Bounded so a dead abort thread cannot hang
@@ -106,8 +113,7 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
         }
         for (int searches = 0;
              searches < kMaxSearches &&
-             total_passes.load(std::memory_order_relaxed) < kMaxPasses &&
-             !stop_flag.load(std::memory_order_relaxed);
+             total_passes.load(std::memory_order_relaxed) < kMaxPasses;
              /* advanced by the restart below */) {
             total_passes.fetch_add(1, std::memory_order_relaxed);
             bool truncated = true;
@@ -119,7 +125,6 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
             if (!ok) {
                 // Disabled/no-frontier early exit - nothing sensible is
                 // running anymore; stop churning.
-                stop_flag.store(true, std::memory_order_relaxed);
                 break;
             }
             // The request is held far longer than one pass, so a read here is
@@ -157,7 +162,6 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
             restarts.fetch_add(1, std::memory_order_relaxed);
             searches++;
         }
-        stop_flag.store(true, std::memory_order_relaxed);
         pass_done.store(true, std::memory_order_relaxed);
     });
 
@@ -204,7 +208,6 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
             usleep(100);
         }
         ReferenceChainsTestAccessor::setAbortPassRequestedForTest(false);
-        stop_flag.store(true, std::memory_order_relaxed);
     });
 
     pass_thread.join();
@@ -316,8 +319,7 @@ TEST_F(ReferenceChainsRecordingBoundaryTest,
     // A search still in flight when the profiler stops: started, RUNNING, a TTL clock that
     // predates the stop, a latched urgency episode, and live canary candidate state.
     ReferenceChainsTestAccessor::setInFlightSearchForTest(1ULL << 40);
-    ReferenceChainsTestAccessor::setUrgencyEpisodeForTest(/*latched=*/true, /*ticks=*/2,
-                                                          /*spent=*/true);
+    ReferenceChainsTestAccessor::setUrgencyEpisodeForTest(/*latched=*/true, /*ticks=*/2);
     ReferenceChainsTestAccessor::setCandidateCountForTest(2);
     ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(0x1);
     ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 42);
@@ -337,7 +339,6 @@ TEST_F(ReferenceChainsRecordingBoundaryTest,
     // The urgency episode does not carry over into the next recording.
     EXPECT_FALSE(ReferenceChainsTestAccessor::urgentLatchedForTest());
     EXPECT_EQ(0, ReferenceChainsTestAccessor::urgentReleaseTicksForTest());
-    EXPECT_FALSE(ReferenceChainsTestAccessor::urgentSearchSpentForTest());
     // The canary/discovered candidate state is cleared with the search that owned it.
     EXPECT_EQ(0, ReferenceChainsTestAccessor::candidateCountForTest());
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::candidateFoundBitsForTest());
@@ -375,8 +376,25 @@ TEST_F(ReferenceChainsRecordingBoundaryTest,
     // The release pass was the terminal no-op: no walk ran.
     EXPECT_EQ(0, tracker->passesRun());
 
-    // With generations disabled (this fixture's SetUp), canAffordNewSearch() is unconditional,
-    // so the next shouldRunPass() restarts the search - exactly like a brand-new tracker.
+    // With no leak-signal source (this fixture's SetUp), canAffordNewSearch() always refuses, so
+    // the terminal search stays terminal. Arm the signal (generations tracking alone is a
+    // sufficient source) AND seed a growing candidate: the restart gate requires both the signal
+    // source and a live leak indication (hasLeakSignal()'s selectLeakCandidates() probe);
+    // TearDown restores the no-signal state.
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    int fake_object_storage = 0;
+    {
+        int slot;
+        bool created;
+        for (u16 i = 1; i <= 20; i++) {
+            LivenessTracker::instance()->klassPopulationRecordForTest(
+                /*klass_id=*/1, i, i, &slot, &created);
+            LivenessTracker::instance()->tidTrendRecordForTest(
+                /*klass_id=*/1, /*tid=*/4242, (u32)i, (u64)i);
+        }
+        LivenessTracker::instance()->klassPopulationSetRepresentativeForTest(
+            nullptr, /*klass_id=*/1, (jweak)&fake_object_storage);
+    }
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2000));
     EXPECT_EQ(SearchState::RUNNING,
               ReferenceChainsTestAccessor::searchStateForTest());
@@ -419,7 +437,24 @@ TEST_F(ReferenceChainsRecordingBoundaryTest, NoStaleFrontierIdsAfterRecordingBou
     EXPECT_TRUE(ReferenceChainsTestAccessor::tagsReleased());
     // ... and the restart that follows resets the frontier content, so no chain can ever be
     // built from the previous _class_map generation's ids (which cannot be remapped: the
-    // dictionary contents are gone and its id namespace restarts at 1).
+    // dictionary contents are gone and its id namespace restarts at 1). Arm the leak signal AND
+    // seed a growing candidate for the restart step only - the restart gate requires both the
+    // signal source (generations or liveheap) and a live leak indication; the no-signal state
+    // this fixture runs in would keep the search terminal. TearDown restores it.
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    {
+        int fake_object_storage = 0;
+        int slot;
+        bool created;
+        for (u16 i = 1; i <= 20; i++) {
+            LivenessTracker::instance()->klassPopulationRecordForTest(
+                /*klass_id=*/1, i, i, &slot, &created);
+            LivenessTracker::instance()->tidTrendRecordForTest(
+                /*klass_id=*/1, /*tid=*/4242, (u32)i, (u64)i);
+        }
+        LivenessTracker::instance()->klassPopulationSetRepresentativeForTest(
+            nullptr, /*klass_id=*/1, (jweak)&fake_object_storage);
+    }
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2000));
     EXPECT_EQ(SearchState::RUNNING,
               ReferenceChainsTestAccessor::searchStateForTest());

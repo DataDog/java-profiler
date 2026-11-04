@@ -1404,6 +1404,75 @@ Java_com_datadoghq_profiler_JavaProfiler_referenceChainPassesRunForTest0(
   return (jint)ReferenceChainTracker::instance()->passesRun();
 }
 
+// Moves the leak-signal burn-in stamp one second past OOM_PROJECTION_BURN_IN_NS so secondsToOOM()
+// projects from seeded samples however long this JVM has been profiling. Returns the previous stamp
+// (0 = never activated) so setLeakSignalActivatedNsForTest0() can restore it.
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_backdateLeakSignalActivationForTest0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  LivenessTracker *lt = LivenessTracker::instance();
+  u64 previous = lt->leakSignalActivatedNsForTest();
+  // One second past the burn-in (modular u64), mirroring the gtest fixtures' backdated stamp.
+  // Clamped to 1: on a freshly booted CI VM the clock can be under the burn-in horizon, and the
+  // u64 underflow would read back as a negative jlong that setLeakSignalActivatedNsForTest0()
+  // rejects, throwing out of a test's finally block.
+  u64 now = OS::nanotime();
+  u64 stamp = now > (u64)LivenessTracker::OOM_PROJECTION_BURN_IN_NS + 1000000000ULL
+                  ? now - LivenessTracker::OOM_PROJECTION_BURN_IN_NS - 1000000000ULL
+                  : 1;
+  lt->setLeakSignalActivatedNsForTest(stamp);
+  return (jlong)previous;
+}
+
+// Restores a burn-in stamp saved by backdateLeakSignalActivationForTest0().
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setLeakSignalActivatedNsForTest0(
+    JNIEnv *env, jclass unused, jlong activatedNs) {
+  if (activatedNs < 0) {
+    // A raw jlong->u64 cast would turn a negative argument into a stamp near UINT64_MAX,
+    // which secondsToOOM() reads as burn-in-never-passed - a mis-wired test would then look
+    // like a dormant projection instead of an invalid input.
+    throwNew(env, "java/lang/IllegalArgumentException",
+             "activatedNs must be >= 0 (0 = never activated)");
+    return;
+  }
+  ProfiledThread::initCurrentThreadSignalSafe();
+  LivenessTracker::instance()->setLeakSignalActivatedNsForTest((u64)activatedNs);
+}
+
+// The current LivenessTracker::secondsToOOM() projection; negative means no projection.
+extern "C" DLLEXPORT jdouble JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_secondsToOOMForTest0(JNIEnv *env,
+                                                               jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return (jdouble)LivenessTracker::instance()->secondsToOOM();
+}
+
+// isUrgent()'s latch. It is mutated under _engine_lock (threadLoop()/shouldRunPassForTest()), so
+// read it under the same lock.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_urgentLatchedForTest0(JNIEnv *env,
+                                                                jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+  MutexLocker engine_guard(tracker->_engine_lock);
+  return tracker->urgentLatchedForTest() ? JNI_TRUE : JNI_FALSE;
+}
+
+// Drives the latch machine once on the live projection - what threadLoop()'s
+// publishUrgencyState() does per iteration. The gate (hasLeakSignal()) no
+// longer advances the machine, so tests that need a latched episode drive it
+// here. Mutated under _engine_lock, same as the read above.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_isUrgentForTest0(JNIEnv *env,
+                                                           jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+  MutexLocker engine_guard(tracker->_engine_lock);
+  return tracker->isUrgentForTest() ? JNI_TRUE : JNI_FALSE;
+}
+
 #else // !DEBUG
 
 // Release builds: no-op stubs so the Java natives still link.
@@ -1518,6 +1587,34 @@ extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_referenceChainPassesRunForTest0(
     JNIEnv *env, jclass unused) {
   return 0;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_backdateLeakSignalActivationForTest0(
+    JNIEnv *env, jclass unused) {
+  return 0;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setLeakSignalActivatedNsForTest0(
+    JNIEnv *env, jclass unused, jlong activatedNs) {}
+
+extern "C" DLLEXPORT jdouble JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_secondsToOOMForTest0(JNIEnv *env,
+                                                               jclass unused) {
+  return -1.0;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_urgentLatchedForTest0(JNIEnv *env,
+                                                                jclass unused) {
+  return JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_isUrgentForTest0(JNIEnv *env,
+                                                           jclass unused) {
+  return JNI_FALSE;
 }
 
 #endif // DEBUG

@@ -6,9 +6,11 @@
 
 Reference-chain collection helps explain why a sampled object remains live. It records a bounded chain of referrer classes from a GC root to a sampled object. It does not replace a heap dump or compute an exact retained set.
 
-The profiler disables this feature by default. Enable generation tracking and reference-chain
-collection with `generations=true,referencechains=true`. The bare `referencechains=true` option
-does not activate the allocation engine that supplies candidates.
+The profiler disables this feature by default. Enable generation tracking or liveheap tracking
+(either supplies the leak signal; liveheap requires `referencechains=true` in the same command)
+together with reference-chain collection, e.g. `generations=true,referencechains=true`. The bare
+`referencechains=true` option does not activate the allocation engine that supplies candidates,
+and without a signal source the collector stays idle: it never starts a search.
 
 ## Data flow
 

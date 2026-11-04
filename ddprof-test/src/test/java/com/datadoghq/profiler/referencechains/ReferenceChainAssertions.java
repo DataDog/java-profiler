@@ -8,6 +8,7 @@ package com.datadoghq.profiler.referencechains;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.NativeBuildConfig;
+import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IAccessorKey;
 import org.openjdk.jmc.common.item.IItem;
@@ -18,6 +19,7 @@ import org.openjdk.jmc.common.item.IType;
 import org.openjdk.jmc.common.unit.IQuantity;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -41,6 +43,9 @@ public final class ReferenceChainAssertions {
   public static final long LEAK_TAG_BASE = 0x40000000L;
 
   public static final long LEAK_TAG_POOL_SIZE = 256;
+
+  /** {@link #observedChainHeads} entry for a {@code datadog.ReferenceChain} event with an empty chain. */
+  private static final String EMPTY_CHAIN_SENTINEL = "<empty-chain>";
 
   /**
    * True on every native build that compiles javaApi.cpp's {@code #ifdef DEBUG} test seams: debug,
@@ -152,6 +157,60 @@ public final class ReferenceChainAssertions {
       }
     }
     return null;
+  }
+
+  /**
+   * One entry per observed {@code datadog.ReferenceChain} event in {@code events}, in file order:
+   * {@code chain[0]} (full name, same notation as {@link JfrChainMatch#chain}), or the sentinel
+   * {@code "<empty-chain>"} for an event with an empty {@code chain} array (or
+   * {@code "<non-array-chain:...>"} if the field did not resolve to an array). Diagnostic helper for
+   * failure messages: an empty result means no chain event was ever emitted; only sentinels means
+   * events were emitted but carried no chain; real heads that all differ from the target class mean
+   * the candidate mechanism fired for OTHER klasses. Never throws on malformed events, unlike
+   * {@link #findMatchForClass(JfrEvents, Class)}.
+   */
+  public static List<String> observedChainHeads(JfrEvents events) {
+    List<String> heads = new ArrayList<>();
+    if (events == null || !events.hasItems()) {
+      return heads;
+    }
+    for (JfrEvent item : events) {
+      Object chainValue = item.get("chain");
+      if (!(chainValue instanceof Object[])) {
+        heads.add("<non-array-chain:" + chainValue + ">");
+        continue;
+      }
+      Object[] rawChain = (Object[]) chainValue;
+      if (rawChain.length == 0) {
+        heads.add(EMPTY_CHAIN_SENTINEL);
+        continue;
+      }
+      heads.add(classFullName(rawChain[0]));
+    }
+    return heads;
+  }
+
+  /**
+   * Canonical debug-build failure fingerprint for a reference-chain discovery test that came up
+   * empty: empty leak-signal candidates mean the trend gate never opened; a non-empty list with
+   * representative frontier state -1 means the walk never admitted the representative;
+   * observedChain0s with real (non-sentinel) heads that all differ from the target mean chains
+   * fired for a DIFFERENT klass, while observedChain0s holding only sentinels means events were
+   * emitted but carried no chain (see {@link #observedChainHeads}). Returns "" on release builds -
+   * the seam stubs cannot report any of these states. Callers invoke it only when the match is
+   * missing, so the seam queries run on failure only.
+   */
+  public static String referenceChainFailureDiagnostics(Object representative, JfrEvents lastEvents) {
+    if (!isDebugInstrumentedBuild()) {
+      return "";
+    }
+    return " [leak-signal candidates="
+        + Arrays.toString(ReferenceChainTestHooks.selectLeakCandidateKlassIds0())
+        + ", bfsPassesRun=" + ReferenceChainTestHooks.referenceChainPassesRunForTest0()
+        + ", representativeFrontierState="
+        + ReferenceChainTestHooks.getReferenceChainFrontierStateForTest0(representative)
+        + " (-1=never admitted, 0=admitted pending expansion, 1=expanded, 3=abandoned)"
+        + ", observedChain0s=" + observedChainHeads(lastEvents) + "]";
   }
 
   /**
