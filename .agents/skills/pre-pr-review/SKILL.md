@@ -21,8 +21,12 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    when the work is stacked. Commit the change set first — the marker certifies
    commits, so uncommitted work is not covered.
 
-2. **Review.** Use the strongest reviewer the harness provides: `/sphinx review`,
-   else `/code-review`, over the diff from the merge base to `HEAD`. If none is
+2. **Review.** Review exactly the range the marker will certify,
+   `MB=$(git merge-base <base> HEAD)` to `HEAD`, named explicitly — without a range,
+   reviewers default to unpushed or last-commit changes. Use the strongest reviewer the
+   harness provides: `/sphinx review range $MB..$(git rev-parse HEAD) --report-json
+   <path>`, else `/code-review` with that range as its target. Report only — run no
+   reviewer fix flow; steps 3 and 4 do the triage and fixes. If no reviewer is
    available, say so and get explicit user sign-off; do not write a marker then.
 
 3. **Judgment checks.** In addition to correctness, check every comment, javadoc
