@@ -2527,7 +2527,8 @@ protected:
         AllocEvent event;
         event._size = 16;
         LivenessTracker::instance()->track(&jvm.jni, event, tid, obj,
-                                           /*call_trace_id=*/1);
+                                           /*call_trace_id=*/1,
+                                           LivenessTracker::instance()->tableGeneration());
     }
 
     // Read-only probe of the class map: the id `name` has, or 0 if absent.
@@ -2593,6 +2594,25 @@ TEST_F(LivenessTrackerMockJvmTest, SurvivorAgingStartsAtAdmissionEpoch) {
     EXPECT_EQ(3u, new_admission);
     EXPECT_EQ(2, new_age) << "entry must not age for epochs before admission";
     EXPECT_EQ(5u, LivenessTrackerTestAccessor::lastGcEpochForTest(tracker));
+}
+
+// An allocation callback reads the table generation before it captures its
+// stack. If release() or initialize() moved the generation meanwhile, its
+// call_trace_id may belong to a call-trace storage that is gone, so track()
+// must drop the sample instead of inserting it into the current table.
+TEST_F(LivenessTrackerMockJvmTest, StaleTableGenerationIsDropped) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    ASSERT_EQ(0u, tracker->tableSizeForTest());
+    u64 stale = tracker->tableGeneration() - 1;
+
+    jobject obj = jvm.newObject(&jvm.retained_class);
+    AllocEvent event;
+    event._size = 16;
+    tracker->track(&jvm.jni, event, /*tid=*/1, obj, /*call_trace_id=*/1, stale);
+    EXPECT_EQ(0u, tracker->tableSizeForTest());
+
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    EXPECT_EQ(1u, tracker->tableSizeForTest());
 }
 
 // Each sweep resolves the class of at most RESOLVE_BUDGET_PER_SWEEP (256,

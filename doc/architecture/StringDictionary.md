@@ -230,15 +230,18 @@ calls `release()` on each buffer, freeing the root tables and every arena chunk,
 it **skips step 5**: the id counter is not restarted, so an id handed out before the
 release can never alias a key inserted after it. The dictionary stays open; a caller
 racing the release, or one that looks keys up while the profiler is idle, gets ids from
-freshly allocated storage. The tracer-facing JNI paths that intern into the class-name
-and string-label maps (`recordTrace0` for endpoints, `recordQueueEnd0` for queue-time
-class names) do nothing while the profiler is not recording, since no recording would
-take their events, so in practice the released maps stay empty until the next start.
-They check the atomic `Profiler::_tracer_api_open` first (one load while idle), copy
-their JNI strings, then hold a shared lock on `_tracer_api_lock` only around the inserts
-and re-check the flag under it. `start()` sets the flag just before `RUNNING`.
-`releaseRecordingMemory()` clears it and then takes the lock exclusively once, which
-waits only for calls already holding it: a call that takes it afterwards sees the flag
+freshly allocated storage. Callers outside the recording's engines that intern into
+the class-name and string-label maps go through the profiler's intern gate:
+`recordTrace0` (endpoints), `recordQueueEnd0` (queue-time class names) and
+`ObjectSampler::recordAllocation()` (allocated class names; a JVMTI callback can still
+be running after the allocation engine stopped). While the gate is closed they intern
+nothing, so the released maps stay empty until the next start. They check the atomic
+`Profiler::_intern_open` first (one load while closed), do their JNI/JVMTI work, then
+hold a shared lock on `_intern_lock` only around the inserts and re-check the flag under
+it. `start()` opens the gate right after `acquireRecordingMemory()`, before any engine
+starts. `releaseRecordingMemory()` (end of `stop()`, and every failed `start()` through
+a scope guard) clears the flag and then takes the lock exclusively once, which waits
+only for calls already holding it: a call that takes it afterwards sees the flag
 cleared, and new calls are turned away before they lock, so they cannot starve the
 drain. `_state` is still `RUNNING` there, so `isRunning()` could not do this.
 On a drain timeout nothing is freed and the caller reports it.

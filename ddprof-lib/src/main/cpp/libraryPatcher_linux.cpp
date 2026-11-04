@@ -651,7 +651,15 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
       break;
     }
   }
-  if (entry == nullptr) {
+  if (entry != nullptr) {
+    // A reload's fresh GOT holds the real pthread_create or, with lazy
+    // binding, the library's own PLT stub. Anything else was hooked by someone
+    // after us: leave it rather than take their interception away.
+    void* real = reinterpret_cast<void*>(&pthread_create);
+    if (current != real && !lib->contains(current)) {
+      return;
+    }
+  } else {
     if (_size >= MAX_NATIVE_LIBS) return;
     entry = &_patched_entries[_size++];
     entry->_lib = lib;

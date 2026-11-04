@@ -174,15 +174,11 @@ private:
   // the Java layer to drop its process-wide ContextValueCache so no stale encoding is reused. See
   // JavaProfiler.execute / ContextValueCache.
   std::atomic<bool> _context_value_dict_reset{false};
-  // Gates the tracer-facing JNI calls that intern into the dictionaries
-  // (recordTrace0, recordQueueEnd0). start() opens the flag just before
-  // RUNNING. releaseRecordingMemory() clears it, then drains the calls already
-  // inside by taking the lock exclusively once; callers check the flag first
-  // (one load while idle), hold the lock only around the inserts, and re-check
-  // the flag under it, so none re-allocates a released dictionary and late
-  // callers cannot starve the drain.
-  SpinLock _tracer_api_lock;
-  std::atomic<bool> _tracer_api_open{false};
+  // Intern gate for callers outside the recording's engines (recordTrace0,
+  // recordQueueEnd0, allocation callbacks): open while recording, so none
+  // re-allocates a dictionary releaseRecordingMemory() released.
+  SpinLock _intern_lock;
+  std::atomic<bool> _intern_open{false};
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
@@ -457,12 +453,12 @@ public:
     return _state.load(std::memory_order_acquire) == RUNNING;
   }
 
-  // Check tracerApiOpen(), do the JNI work, then hold a shared lock on
-  // tracerApiLock() (OptionalSharedLockGuard, SpinLock::NO_SPIN_BUDGET) around
-  // the inserts and re-check tracerApiOpen() under it. See _tracer_api_lock.
-  SpinLock *tracerApiLock() { return &_tracer_api_lock; }
-  bool tracerApiOpen() const {
-    return _tracer_api_open.load(std::memory_order_acquire);
+  // Check internOpen(), do the JNI work, then hold a shared lock on
+  // internLock() (OptionalSharedLockGuard, SpinLock::NO_SPIN_BUDGET) around
+  // the inserts and re-check internOpen() under it. See _intern_lock.
+  SpinLock *internLock() { return &_intern_lock; }
+  bool internOpen() const {
+    return _intern_open.load(std::memory_order_acquire);
   }
 
   u64 total_samples() { return _total_samples; }

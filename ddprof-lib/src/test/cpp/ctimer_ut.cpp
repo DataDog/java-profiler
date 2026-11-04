@@ -505,12 +505,15 @@ TEST_F(CTimerNativeMemTest, StopFreesTableWhenHookCallsDrain) {
 }
 
 // A hook call still inside the table after the wait budget may index it at any
-// time, so stop() keeps the table rather than freeing it under the call, and
-// unregistration is open again afterwards.
+// time, so stop() keeps the table rather than freeing it under the call, still
+// deletes the timers in it, and reopens unregistration afterwards.
 TEST_F(CTimerNativeMemTest, StopKeepsTableWhenHookCallsDoNotDrain) {
   Profiler *profiler = Profiler::instance();
   ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));
   int *table = CTimerTestAccessor::timers();
+  // A slot holding a timer id (timer_id + 1). The id is never a live timer, so
+  // the sweep's timer_delete() fails harmlessly; the slot must still clear.
+  table[5] = 0x7ffffff0;
   CTimer engine;
   ProfilerTestAccessor::DrainBudget budget(100000000LL);
 
@@ -521,6 +524,7 @@ TEST_F(CTimerNativeMemTest, StopKeepsTableWhenHookCallsDoNotDrain) {
 
   EXPECT_EQ(table, CTimerTestAccessor::timers());
   EXPECT_EQ(64, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(0, table[5]) << "the timers must be deleted even when the table is kept";
   EXPECT_EQ(bytes(64), NativeMem::live(NM_CTIMER));
   EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
 }

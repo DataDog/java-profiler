@@ -326,6 +326,9 @@ private:
   Error _stored_error;
 
   SpinLock _table_lock;
+  // See tableGeneration(). Changed only under the exclusive _table_lock, so
+  // track() compares it under the shared lock against a stable value.
+  std::atomic<u64> _table_generation{0};
   volatile int _table_size;
   int _table_cap;
   int _table_max_cap;
@@ -624,7 +627,8 @@ private:
   // false if the objects could not be enumerated (some may keep their tag).
   bool clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env);
   // A clearLeakTagsOnObjects() failed: the next release() retries even when
-  // the pool shows no tag out. Only release() touches it.
+  // the pool shows no tag out, and start() retries before rebuilding the pool.
+  // Both run on the start/stop control thread, under Profiler::_state_lock.
   bool _leak_tag_clear_pending = false;
   // Deletes the population representatives' weak refs and empties the
   // population and its scratch. Caller holds the exclusive _table_lock.
@@ -913,7 +917,14 @@ public:
   // only an allocation callback still in flight can reach the tracker; it
   // finds no capacity and drops its sample. No-op when nothing was allocated.
   void release(JNIEnv *env);
-  void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id);
+  // The table generation, bumped whenever release() frees the table or
+  // initialize() publishes a new one. An allocation callback reads it before it
+  // captures its stack and passes it to track(), which drops the sample if the
+  // generation moved meanwhile: its call_trace_id belongs to a call-trace
+  // storage that was released, and the table to another recording.
+  u64 tableGeneration() const { return _table_generation.load(std::memory_order_acquire); }
+  void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id,
+             u64 table_generation);
 
   // track()'s admission gate: a chase-phase raise of the live-samples
   // tracking probability over the configured _subsample ratio (default 10% -

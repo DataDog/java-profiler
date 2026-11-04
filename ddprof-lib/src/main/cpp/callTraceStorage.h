@@ -125,13 +125,10 @@ public:
     // Requires put() to be excluded for the duration (see the class comment).
     void clear();
 
-    // Frees all three tables and the processTraces() collections, so the
-    // storage holds no memory while the profiler is idle.  put() drops its
-    // trace (DROPPED_TRACE_ID) until acquire().  Requires put() to be
-    // excluded, like clear(); processTraces() until acquire() hands its
-    // processor only the dropped-trace placeholder.  Nothing is preserved for the liveness checkers: the
-    // LivenessTracker is released at the same recording boundary, so no
-    // tracked object refers to a trace from before it.
+    // Frees all three tables and the processTraces() collections. Tolerates a
+    // concurrent put() (each table is unpublished, then drained, then deleted);
+    // not concurrent with processTraces() or acquire(). put() then drops its
+    // trace until acquire(); processTraces() sees only the dropped placeholder.
     void release();
 
     // Allocates the tables again after release(); no-op if allocated.

@@ -313,8 +313,6 @@ private:
     // the vector — no silent truncation.
     static constexpr int RESERVED_TRAVERSAL_DEPTH = 34;
 
-    // Free only overflow SBTable chain nodes (not key strings — arena-owned).
-    // Returns the number of overflow nodes freed (excludes the root table).
     SBTable* table() const { return __atomic_load_n(&_table, __ATOMIC_ACQUIRE); }
 
     // Returns the root table, allocating and publishing it if there is none.
@@ -337,6 +335,8 @@ private:
         return fresh;
     }
 
+    // Free only overflow SBTable chain nodes (not key strings — arena-owned).
+    // Returns the number of overflow nodes freed (excludes the root table).
     static int freeOverflowNodes(SBTable* table) {
         struct Frame { SBTable* t; int row; };
         std::vector<Frame> stk;

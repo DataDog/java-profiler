@@ -165,7 +165,10 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
    happened: an unload (`dlpi_subs`) since the last full pass, or a load
    (`dlpi_adds`) since then while any unload has ever happened (the unload of a
    reload can fall in an earlier pass than its load). Otherwise only unpatched
-   libraries enter the identity-checking walk. The wrapper passes the routine's
+   libraries enter the identity-checking walk. A re-check re-hooks a patched
+   library only if its slot holds the real `pthread_create` or the library's own
+   lazy-binding stub, as a reload's fresh GOT does; a slot someone else hooked
+   after us is left alone. The wrapper passes the routine's
    return value to `pthread_exit()`, so `pthread_join()` still sees it even
    though the hook outlives every recording. The hook runs without
    `_state_lock`, so both calls are gated:
@@ -324,11 +327,15 @@ resolved through `Arguments::cpuSamplerInterval()`.
   at or above
   `_max_timers` logs a warning and is not profiled. The table is accounted
   under `NM_CTIMER` at its full allocated size (see Profiler Self-Accounting).
-- **`stop()`** unregisters every slot, then frees the table under a
-  `ThreadTablesFreeze` (`releaseTimerTable()`), so the idle profiler holds none
-  of it. If hook calls do not drain within the wait budget, it keeps the table
-  (logged); the next `start()` reuses it. Exits recorded during that freeze
-  need no replay, since their timers are already gone.
+- **`stop()`** takes a `ThreadTablesFreeze` (`releaseTimerTable()`) and, once
+  it drains, unregisters every slot and frees the table, so the idle profiler
+  holds none of it. The sweep runs inside the freeze because a registration
+  that outlived `stop()`'s registration drain may publish its timer late; a
+  sweep before the freeze would miss it and the free would lose its id. If
+  hook calls do not drain within the wait budget, it keeps the table (logged)
+  and sweeps without the freeze; a timer published later stays in the kept
+  table for the next `stop()`, and the next `start()` reuses the table. Exits
+  recorded during the freeze need no replay, since their timers are gone.
 - **`CTimerJvmti`**: runs `CTimer::start()` and then replaces the `SIGPROF`
   handler with one that calls `recordSampleDelegated(ucontext, ...)`
   (`CTimerJvmti::start()`, `CTimerJvmti::signalHandler()`). It has no ASGCT
@@ -567,7 +574,13 @@ chains are described in
      allocations accumulates in a thread-local `skipped` value.
   2. `NewWeakGlobalRef(object)`.
   3. `_table_lock.tryLockShared()`. If the lock is not available, the weak ref
-     is deleted and the sample is dropped (`livenessTracker.cpp:2381`).
+     is deleted and the sample is dropped. Under the lock it compares the
+     table generation the callback read before capturing its stack
+     (`tableGeneration()`, passed by `ObjectSampler::recordAllocation()`)
+     with the current one, which `release()` and `initialize()` bump under the
+     exclusive lock. A mismatch means the callback straddled a stop: its
+     `call_trace_id` may name a trace in call-trace storage that was released,
+     so the sample is dropped.
   4. Reserves a slot by CASing `_table_size` against a `_table_cap` snapshot
      taken under the shared lock, fills it, and publishes it with a release
      store to `ready`. Whether the insert succeeded is decided there: once

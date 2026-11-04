@@ -782,9 +782,8 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
   }
   u64 call_trace_id = 0;
   if (!_omit_stacktraces) {
-    // Defensive: the buffer slot can be observed as nullptr in pathological
-    // start sequences (e.g. a calloc failure path in Profiler::start before
-    // engines are enabled). Drop the sample rather than dereferencing.
+    // Null while idle: stop() frees the buffers, and an allocation callback can
+    // still be running after the engine stopped. Drop the sample.
     CallTraceBuffer *buf = _calltrace_buffer[lock_index];
     if (buf == nullptr) {
       atomicIncRelaxed(_failures[-ticks_skipped]);
@@ -1861,6 +1860,19 @@ Error Profiler::start(Arguments &args, bool reset) {
   // count exactly what this allocates; a resume, which skips the reset, gets
   // back what stop() released, which stop() had uncounted.
   acquireRecordingMemory();
+  // Every failed start() from here on gives the recording memory back (and
+  // closes the intern gate); disarmed once the recording runs.
+  struct RecordingMemoryScope {
+    Profiler *profiler;
+    bool armed;
+    ~RecordingMemoryScope() {
+      if (armed) {
+        profiler->releaseRecordingMemory();
+      }
+    }
+  } recording_memory{this, true};
+  // Open before any engine starts, so early allocation callbacks can intern.
+  _intern_open.store(true, std::memory_order_release);
 
   // (Re-)allocate calltrace buffers, also after stop() freed them
   size_t nelem = CallTraceBuffer::capacity(args._jstackdepth, args._alloc_stack);
@@ -1880,9 +1892,8 @@ Error Profiler::start(Arguments &args, bool reset) {
         for (int j = 0; j < i; j++) {
           free(fresh[j]);
         }
-        // Back to the idle state: frees what acquireRecordingMemory()
-        // allocated above and the old buffers.
-        releaseRecordingMemory();
+        // recording_memory frees what acquireRecordingMemory() allocated
+        // above and the old buffers, back to the idle state.
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
@@ -2030,7 +2041,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (error) {
     switchLibraryTrap(false);
     _libs->stopRefresher();
-    releaseRecordingMemory();
     return error;
   }
 
@@ -2052,7 +2062,6 @@ Error Profiler::start(Arguments &args, bool reset) {
     // startCpuEngine() could not close the registration gate after the CPU
     // engine failed. Nothing else has started; undo the setup above.
     rollBackStart();
-    releaseRecordingMemory();
     return Error("thread hook calls did not drain; the profiler is disabled");
   }
   if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine) {
@@ -2106,7 +2115,6 @@ Error Profiler::start(Arguments &args, bool reset) {
       if (_event_mask == EM_NATIVEMEM) {
         // nativemem is the only requested mode: propagate the real error
         rollBackStart();
-        releaseRecordingMemory();
         return error;
       }
       error = Error::OK; // recoverable when other modes are also active
@@ -2155,17 +2163,16 @@ Error Profiler::start(Arguments &args, bool reset) {
     // it only if the CPU engine itself started.
     enableCpuEngine(activated);
 
-    _tracer_api_open.store(true, std::memory_order_release);
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
     // What the recording allocated on top of "before start".
+    recording_memory.armed = false;
     NativeMem::logLive("after start");
     return Error::OK;
   }
   // no engine was activated; perform cleanup
   rollBackStart();
-  releaseRecordingMemory();
 
   return Error(
       "Neither CPU, wallclock nor allocation profiling could be started");
@@ -2196,8 +2203,8 @@ Error Profiler::stop() {
   // Close the registration gate and wait for the calls already past it, so no
   // thread arms a timer or opens an fd after the engines below stop.
   // Unregistration stays open (see _thread_tables_stable). The engine stops
-  // below tolerate a concurrent unregisterThread() because none of them frees
-  // a per-thread table: CTimer releases slots with a per-slot CAS, and
+  // below tolerate a concurrent unregisterThread(): CTimer releases slots with a
+  // per-slot CAS and frees its table only under its own ThreadTablesFreeze, and
   // PerfEvents::stop() is a no-op. For the same reason the stop still
   // completes if a registration call is stuck inside an engine after the wait
   // budget. Only an engine whose table outlives stop() can have that table
@@ -2639,15 +2646,12 @@ void Profiler::shutdown(Arguments &args) {
 }
 
 void Profiler::releaseRecordingMemory() {
-  // Close the tracer API first (_state is still RUNNING here during stop(),
-  // so isRunning() could not gate it). Clearing the flag turns new
-  // recordTrace0/recordQueueEnd0 calls away before they take the lock; taking
-  // it exclusively once then waits for the calls already holding it, and a
-  // call that takes it afterwards sees the flag cleared. So nothing
-  // re-allocates the dictionaries released below.
-  _tracer_api_open.store(false, std::memory_order_seq_cst);
+  // Close the intern gate first (_state is still RUNNING during stop()): new
+  // callers see the flag; the exclusive acquire waits for those holding the
+  // lock, and a later acquirer re-checks the flag under it.
+  _intern_open.store(false, std::memory_order_seq_cst);
   {
-    ExclusiveLockGuard drain(&_tracer_api_lock);
+    ExclusiveLockGuard drain(&_intern_lock);
   }
 
   // First, while getLiveTraceIds() is no longer consulted (the final chunk is
@@ -2655,28 +2659,32 @@ void Profiler::releaseRecordingMemory() {
   // start() error paths, which run before the tracker is set up.
   LivenessTracker::instance()->release(VM::jni());
 
-  // No put() can run: every engine that records call traces is stopped (or
-  // was never started) and its signal handlers drained. lockAll() as for
-  // CallTraceStorage::clear(), against any other writer.
+  // Detach the stripe buffers under the stripe locks (readers check for NULL
+  // under them) and free them after: signal handlers share these locks.
+  CallTraceBuffer *buffers[CONCURRENCY_LEVEL];
+  size_t capacities[CONCURRENCY_LEVEL];
   lockAll();
-  _call_trace_storage.release();
   for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-    CallTraceBuffer *buf = _calltrace_buffer[i];
-    size_t nelem = _calltrace_buffer_capacity[i];
+    buffers[i] = _calltrace_buffer[i];
+    capacities[i] = _calltrace_buffer_capacity[i];
     _calltrace_buffer[i] = NULL;
     _calltrace_buffer_capacity[i] = 0;
-    if (buf != NULL) {
-      free(buf);
-      NativeMem::record(NM_CALLTRACE, -static_cast<long long>(nelem * sizeof(CallTraceBuffer)));
-    }
   }
   unlockAll();
+  // Outside the locks too: release() unpublishes each table and drains its
+  // guards before deleting it, so a late put() just drops its trace.
+  _call_trace_storage.release();
+  for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+    if (buffers[i] != NULL) {
+      free(buffers[i]);
+      NativeMem::record(NM_CALLTRACE,
+                        -static_cast<long long>(capacities[i] * sizeof(CallTraceBuffer)));
+    }
+  }
 
-  // StringDictionary::release() drains its accessors itself, like clearAll().
-  // The dictionaries stay open and allocate again on demand, but nothing
-  // should insert while idle: the JNI paths that intern on the tracer's behalf
-  // (recordTrace0, recordQueueEnd0) skip their work unless the profiler runs.
-  // A dictionary whose drain times out keeps its storage until the next stop().
+  // StringDictionary::release() drains its accessors itself; callers outside
+  // the engines intern only through the intern gate closed above. A dictionary
+  // whose drain times out keeps its storage until the next stop().
   if (!_class_map.release()) {
     reportDrainTimeout("Class map not released");
   }
@@ -2716,10 +2724,8 @@ int Profiler::resetRecordingState() {
   // Counters::reset(): it would otherwise stay counted by nothing, and
   // freeing it at the next stop() would drive LINEAR_ALLOCATOR_BYTES /
   // CALLTRACE_STORAGE_* negative. start() allocates fresh tables after the
-  // reset (acquireRecordingMemory()).
-  lockAll();
+  // reset (acquireRecordingMemory()). No lockAll(): see releaseRecordingMemory().
   _call_trace_storage.release();
-  unlockAll();
 
   Counters::reset();
   // Counters::reset() zeroes the dictionary memory gauges, but the dictionaries

@@ -2093,8 +2093,8 @@ bool LivenessTracker::clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env) {
   // ReferenceChainTracker::releaseSearchTags() clears only its own search
   // tags. A tag left on a live object would collide with the same pool slot
   // once the next recording hands it to another object.
-  if (jvmti == nullptr || jvmti->functions->GetObjectsWithTags == nullptr) {
-    return true;  // no tagging capability, so nothing can carry a tag
+  if (jvmti == nullptr) {
+    return true;
   }
   jlong tags[LEAK_TAG_POOL_SIZE];
   for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
@@ -2103,8 +2103,12 @@ bool LivenessTracker::clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env) {
   jint count = 0;
   jobject *objects = nullptr;
   jlong *found_tags = nullptr;
-  if (jvmti->GetObjectsWithTags(LEAK_TAG_POOL_SIZE, tags, &count, &objects,
-                                &found_tags) != JVMTI_ERROR_NONE) {
+  jvmtiError err = jvmti->GetObjectsWithTags(LEAK_TAG_POOL_SIZE, tags, &count,
+                                             &objects, &found_tags);
+  if (err == JVMTI_ERROR_MUST_POSSESS_CAPABILITY) {
+    return true;  // no can_tag_objects: SetTag failed too, no object carries a tag
+  }
+  if (err != JVMTI_ERROR_NONE) {
     Log::warn("LivenessTracker: GetObjectsWithTags failed while releasing "
               "leak tags");
     return false;
@@ -2183,6 +2187,7 @@ void LivenessTracker::release(JNIEnv *env) {
     _table_max_cap = 0;
     _enabled = false;
     _gc_generations.store(false, std::memory_order_relaxed);
+    _table_generation.fetch_add(1, std::memory_order_release);
   }
 
   {
@@ -2311,6 +2316,7 @@ Error LivenessTracker::initialize(Arguments &args) {
     _table_size = 0;
     _table_cap = cap;
     _table_max_cap = table != NULL ? max_cap : 0;
+    _table_generation.fetch_add(1, std::memory_order_release);
   }
   if (table == NULL) {
     // Unlike the permanent conditions above, an allocation failure may pass:
@@ -2472,7 +2478,8 @@ void LivenessTracker::releaseThreadLocalState() {
 }
 
 void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
-                            jobject object, u64 call_trace_id) {
+                            jobject object, u64 call_trace_id,
+                            u64 table_generation) {
   if (!_enabled) {
     // disabled
     return;
@@ -2501,6 +2508,14 @@ retry:
   if (!_table_lock.tryLockShared()) {
     // we failed to add the weak reference to the table so it won't get cleaned
     // up otherwise
+    env->DeleteWeakGlobalRef(ref);
+    return;
+  }
+  if (_table_generation.load(std::memory_order_relaxed) != table_generation) {
+    // The table was released (and maybe republished) since this callback
+    // captured its stack: call_trace_id may name a trace in a call-trace
+    // storage that is gone. See tableGeneration().
+    _table_lock.unlockShared();
     env->DeleteWeakGlobalRef(ref);
     return;
   }

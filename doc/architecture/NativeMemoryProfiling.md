@@ -135,7 +135,9 @@ platform implementations of `patchLibraries()` / `unpatchLibraries()` live in
    `LibraryPatcher::LiveLibraryWalk`: a library is visited only while the loader keeps
    it mapped and only if it is still the image its `CodeCache` describes, so a slot
    address saved in a stale cache is never written through. On macOS each library is
-   pinned with `UnloadProtection` under `_patch_lock`. Either way the walk re-checks
+   pinned with `UnloadProtection` under `_patch_lock`, and is used only while dyld
+   lists its path at the cache's slide (`isCurrentImage()`): the pin resolves a library
+   by name, so it also succeeds after the same path was reloaded elsewhere. Either way the walk re-checks
    `MallocTracer::running()` under its lock, so a refresh that raced `stop()` does not
    re-hook after the restore.
 
@@ -152,7 +154,8 @@ GOT load records nothing, then calls **`MallocHooker::unpatchLibraries()`**:
 - On Linux, in a `LiveLibraryWalk` (one visit per library, entries sorted by library),
   each recorded slot is restored with a compare-and-swap from the hook back to the
   saved original, so a slot something else has re-patched since is left alone.
-  On macOS each library is pinned with `UnloadProtection` for the restore.
+  On macOS each library is pinned with `UnloadProtection` and checked with
+  `isCurrentImage()` for the restore.
 - Entries of a library the walk did not visit (unloaded, or no longer verifiably the
   image they were saved from) are dropped without being written: they can never be
   written through again.

@@ -241,7 +241,7 @@ void CTimer::replaySkippedUnregistrations() {
 
 bool CTimer::releaseTimerTable() {
   if (_timers == NULL) {
-    return true;
+    return false;
   }
   // Hook calls index the table without a lock; unregistration stays open while
   // idle. Only a drained freeze guarantees none is inside it.
@@ -249,6 +249,12 @@ bool CTimer::releaseTimerTable() {
   if (!freeze.drained()) {
     Log::warn("CTimer: thread hook calls did not drain; keeping the timer table");
     return false;
+  }
+  // Sweep here, after the drain, not before the freeze: a registration that
+  // outlived stop()'s registration drain may have published its timer after
+  // an earlier sweep, and freeing the table would lose that timer's id.
+  for (int i = 0; i < _max_timers; i++) {
+    unregisterThread(i);
   }
   free(_timers);
   NativeMem::record(NM_CTIMER,
@@ -259,13 +265,17 @@ bool CTimer::releaseTimerTable() {
 }
 
 void CTimer::stop() {
-  for (int i = 0; i < _max_timers; i++) {
-    unregisterThread(i);
-  }
-  // Every timer is deleted; give the table back too. Exits recorded during the
+  // Deletes every timer and gives the table back. Exits recorded during its
   // freeze need no replay (their timers are gone), and the next start() clears
   // the record.
-  releaseTimerTable();
+  if (!releaseTimerTable()) {
+    // No table, or hook calls still inside it: keep it and delete the timers
+    // without a freeze. A timer a stuck registration publishes later stays in
+    // the kept table, so the next stop() deletes it.
+    for (int i = 0; i < _max_timers; i++) {
+      unregisterThread(i);
+    }
+  }
   // Note: SignalInflight::drain() is called by Profiler::stop() after
   // disableEngines(); see signalInflight.h.
 }

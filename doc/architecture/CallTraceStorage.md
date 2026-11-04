@@ -121,13 +121,16 @@ in [RefCountGuard](RefCountGuard.md).
   `CallTraceStorage` object itself freed; the table-level drains only cover a
   straggler that already holds a guard.
 
-Today `Profiler` excludes `put()` from `processTraces()`, `release()` and
-`acquire()`, and never destroys its `CallTraceStorage`: every `put()` runs under
-one of the stripe locks, and every `processTraces()` / `release()` / `acquire()`
-caller (`FlightRecorder::stop()` / `dump()` via `rotateDictsAndRun()`, and
-`Profiler::start()` / `stop()` through `resetRecordingState()`,
-`acquireRecordingMemory()` and `releaseRecordingMemory()`) holds `lockAll()`,
-which the dump needs anyway for the per-stripe JFR buffers. `clear()` has no
+Today `Profiler` excludes `put()` from `processTraces()` and `acquire()`, and never
+destroys its `CallTraceStorage`: every `put()` runs under one of the stripe locks,
+and every `processTraces()` / `acquire()` caller (`FlightRecorder::stop()` / `dump()`
+via `rotateDictsAndRun()`, and `Profiler::start()` through
+`acquireRecordingMemory()`) holds `lockAll()`, which the dump needs anyway for the
+per-stripe JFR buffers. `release()` runs without `lockAll()`
+(`releaseRecordingMemory()`, `resetRecordingState()`): like the rotation, it
+unpublishes each table before draining and deleting it, so a concurrent `put()`
+drops its trace; the stripe locks, which signal handlers share, are never held
+while it frees. `clear()` has no
 production caller left. The drains therefore
 find no guard on the table. If a drain does time out, debug builds abort and
 release builds leak instead of freeing memory a `put()` may still be writing
@@ -143,7 +146,8 @@ tables (`Profiler`'s member is constructed when the library loads, possibly long
 before the first `start()`); `acquire()` is the only place they are allocated.
 
 - **`release()`** frees all three tables (through `freeTables()`, which swaps each
-  pointer to `nullptr` and deletes the table once drained, like the destructor) and
+  pointer to `nullptr` and deletes the table once drained, so it tolerates a
+  concurrent `put()`) and
   swaps both `processTraces()` collections with empty ones so their bucket arrays
   are freed too. `Profiler::releaseRecordingMemory()` calls it at the end of
   `stop()`, once the final chunk is written, and on every `start()` error path after
@@ -160,7 +164,8 @@ before the first `start()`); `acquire()` is the only place they are allocated.
   reset block.
 
 `Profiler` also frees the per-stripe `CallTraceBuffer`s (the frame scratch buffers
-`recordSample()` unwinds into) in `releaseRecordingMemory()`, under `lockAll()`.
+`recordSample()` unwinds into) in `releaseRecordingMemory()`: it detaches them under
+`lockAll()` and frees them after unlocking.
 `start()` reallocates them when `_calltrace_buffer[0]` is `NULL`. Every reader takes
 its stripe lock and drops the sample when its buffer is `NULL`.
 

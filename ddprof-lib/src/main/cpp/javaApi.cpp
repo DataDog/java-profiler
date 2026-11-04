@@ -254,7 +254,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
   // Answer what an empty dictionary would: accepted if the limit admits any
   // entry.
   const jboolean idle_answer = sizeLimit > 0 ? JNI_TRUE : JNI_FALSE;
-  if (!profiler->tracerApiOpen()) {
+  if (!profiler->internOpen()) {
     return idle_answer;
   }
   // JNI work stays outside the locked region (it can block for a safepoint).
@@ -263,9 +263,9 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
   ProfiledThread::initCurrentThreadSignalSafe();
   int tid = ProfiledThread::currentTid();
 
-  // See Profiler::_tracer_api_lock: re-checked under the lock.
-  OptionalSharedLockGuard api(profiler->tracerApiLock(), SpinLock::NO_SPIN_BUDGET);
-  if (!api.ownsLock() || !profiler->tracerApiOpen()) {
+  // See Profiler::_intern_lock: re-checked under the lock.
+  OptionalSharedLockGuard api(profiler->internLock(), SpinLock::NO_SPIN_BUDGET);
+  if (!api.ownsLock() || !profiler->internOpen()) {
     return idle_answer;
   }
   u32 endpointLabel = profiler->stringLabelMap()->bounded_lookup(
@@ -385,8 +385,8 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
   Profiler *profiler = Profiler::instance();
   // Nothing records the event while idle; interning the names would allocate
-  // the class-name dictionary stop() released.
-  if (!profiler->tracerApiOpen()) {
+  // the class-name dictionary stop() released. Null names would intern "".
+  if (!profiler->internOpen() || task == NULL || scheduler == NULL || queueType == NULL) {
     return;
   }
 
@@ -407,9 +407,9 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   JniString scheduler_str(env, scheduler);
   JniString queue_type_str(env, queueType);
 
-  // See Profiler::_tracer_api_lock: re-checked under the lock.
-  OptionalSharedLockGuard api(profiler->tracerApiLock(), SpinLock::NO_SPIN_BUDGET);
-  if (!api.ownsLock() || !profiler->tracerApiOpen()) {
+  // See Profiler::_intern_lock: re-checked under the lock.
+  OptionalSharedLockGuard api(profiler->internLock(), SpinLock::NO_SPIN_BUDGET);
+  if (!api.ownsLock() || !profiler->internOpen()) {
     return;
   }
   int task_offset = profiler->lookupClass(task_str.c_str(), task_str.length());
