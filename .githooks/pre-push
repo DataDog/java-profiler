@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # Copyright 2026, Datadog, Inc.
 """git pre-push hook: refuse to update a branch that has an open PR unless the
-pushed commits match its review marker (utils/review-marker.py)."""
+pushed commits match its review marker (utils/review-marker.py as of origin/main)."""
 
-import os
 import subprocess
 import sys
 
 HEADS = "refs/heads/"
+TRUSTED_REF = "refs/remotes/origin/main"  # qualified: a tag named origin/main must not win
 
 
 def has_open_pr(branch):
@@ -34,12 +34,19 @@ def marker_branch(local_ref, remote_branch):
     return remote_branch
 
 
+def trusted_source(path):
+    """`path` as of TRUSTED_REF, or None: checked-out files may come from an untrusted
+    branch, and git hooks must not run them."""
+    res = subprocess.run(["git", "show", "%s:%s" % (TRUSTED_REF, path)],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return res.stdout.decode() if res.returncode == 0 else None
+
+
 def main():
-    root = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                          stdout=subprocess.PIPE, check=True).stdout.decode().strip()
-    script = os.path.join(root, "utils", "review-marker.py")
-    if not os.path.exists(script):
-        return 0
+    source = trusted_source("utils/review-marker.py")
+    if source is None:
+        sys.stdin.read()
+        return 0  # the gate is not on the default branch yet
     blocked = False
     for line in sys.stdin:
         parts = line.split()
@@ -50,7 +57,7 @@ def main():
             continue  # deletions (all-zero id, SHA-1 or SHA-256) and tags are not gated
         remote_branch = remote_ref[len(HEADS):]
         branch = marker_branch(local_ref, remote_branch)
-        res = subprocess.run([sys.executable, script, "check", "--branch", branch,
+        res = subprocess.run([sys.executable, "-I", "-c", source, "check", "--branch", branch,
                               "--commit", local_sha], stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE)
         # The local check runs first so a fresh marker costs no network call.

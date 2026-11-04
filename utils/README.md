@@ -282,12 +282,12 @@ Records that the agentic pre-PR review covered a branch, and checks it. Used by 
 
 - The marker certifies commits: `write` refuses uncommitted tracked changes and records the `git patch-id --verbatim` (git 2.39+) of the diff from the merge base to `HEAD`. An advancing base or a clean rebase keeps it fresh, unless the base changed lines next to the branch's hunks (context lines anchor each hunk's position, so this errs toward stale). Any change to the branch's diff, whitespace or position included, makes it stale. Untracked files are ignored.
 - Markers live in `<git-common-dir>/review-markers/` (one file per branch, named by hash), shared by all worktrees and never committed.
-- `install-hook` writes a shim to `<git-common-dir>/hooks/pre-push` that runs the checkout's `.githooks/pre-push`. It never sets `core.hooksPath`, which would replace global hooks such as Datadog's secret scanner; those chain to `.git/hooks`.
+- `install-hook` writes a shim to `<git-common-dir>/hooks/pre-push` that runs `.githooks/pre-push` as of `refs/remotes/origin/main`, which loads `review-marker.py` from the same ref; the Claude Code hook loads it from there too. All run with `python3 -I`, so files in the checkout, which may be an untrusted branch (e.g. a fork PR), are not executed or imported. When that ref lacks the scripts (the gate is not merged yet, or there is no `origin` remote), both hooks allow everything. Out of scope: Claude Code runs `.claude/` hooks from the session's own checkout under its workspace-trust model. It never sets `core.hooksPath`, which would replace global hooks such as Datadog's secret scanner; those chain to `.git/hooks`.
 - Exit codes: 0 fresh, written or installed; 1 missing or stale; 2 usage or environment error (e.g. missing base ref, git older than 2.39).
 
 **Usage:**
 ```bash
-./utils/review-marker.py install-hook                            # once per clone
+git show refs/remotes/origin/main:utils/review-marker.py | python3 -I - install-hook   # once per clone
 ./utils/review-marker.py write --tool sphinx --session <id> --base origin/main
 ./utils/review-marker.py check                                   # current branch
 ./utils/review-marker.py check --branch <b> --commit <sha>       # as pre-push does

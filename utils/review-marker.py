@@ -132,10 +132,11 @@ def cmd_check(args):
 
 
 SHIM_TAG = "# Installed by utils/review-marker.py install-hook"
-HOOK_SHIM = "#!/bin/sh\n" + SHIM_TAG + """; runs the checkout's own hook.
-hook="$(git rev-parse --show-toplevel)/.githooks/pre-push"
-[ -x "$hook" ] || { cat >/dev/null; exit 0; }
-exec "$hook" "$@"
+# Runs origin/main's hook, never the checkout's: a checked-out branch may be untrusted
+# (e.g. a fork PR). -I keeps the worktree root, where git runs hooks, off sys.path.
+HOOK_SHIM = "#!/bin/sh\n" + SHIM_TAG + """.
+src=$(git show refs/remotes/origin/main:.githooks/pre-push 2>/dev/null) || { cat >/dev/null; exit 0; }
+exec python3 -I -c "$src" "$@"
 """
 
 

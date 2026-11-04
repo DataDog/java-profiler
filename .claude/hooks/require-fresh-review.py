@@ -20,6 +20,7 @@ DIR_CHANGE = re.compile(r"(^|[\s;&|(){}])(cd|pushd|popd)(\s|$)|\bGIT_(DIR|WORK_T
 # would be judged on the pre-command state.
 GIT_STATE_CHANGE = re.compile(r"\bgit\b[^\n;&|]*?\s(commit|switch|checkout|rebase|reset|"
                               r"merge|cherry-pick|am|pull|revert|stash|restore)\b")
+TRUSTED_REF = "refs/remotes/origin/main"  # qualified: a tag named origin/main must not win
 HEAD_FLAG = re.compile(r"(^|\s)(--head\b|-H)")
 BASE_FLAG = re.compile(r"(?:^|\s)(?:--base[= ]\s*|-B\s*)(['\"]?)([^\s'\"]+)\1")
 
@@ -67,12 +68,13 @@ def ready_target(args, cwd):
     return ["--branch", head, "--commit", oid, "--base", origin(base)]
 
 
-def run_check(script, cwd, extra):
-    return subprocess.run([sys.executable, script, "check", *extra], cwd=cwd,
+def run_check(source, cwd, extra):
+    # -I keeps the checkout root off sys.path, so planted stdlib-named files are not imported.
+    return subprocess.run([sys.executable, "-I", "-c", source, "check", *extra], cwd=cwd,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
-def evaluate(script, cwd, sub, args, command):
+def evaluate(source, cwd, sub, args, command):
     """Return None to allow, else the reason to block."""
     if sub == "ready":
         extra = ready_target(args, cwd)
@@ -86,13 +88,13 @@ def evaluate(script, cwd, sub, args, command):
         if len(bases) > 1:
             return "the command names several bases (%s)." % ", ".join(sorted(bases))
         extra = ["--base", bases.pop()] if bases else []
-    res = run_check(script, cwd, extra)
+    res = run_check(source, cwd, extra)
     if res.returncode == 0 and sub == "create" and not extra:
         # Only a passing check pays for the default-branch lookup.
         default = gh_query(["repo", "view", "--json", "defaultBranchRef", "-q",
                             ".defaultBranchRef.name"], cwd)
         if default:
-            res = run_check(script, cwd, ["--base", origin(default)])
+            res = run_check(source, cwd, ["--base", origin(default)])
     if res.returncode == 0:
         return None
     reason = res.stderr.decode(errors="replace").strip()
@@ -117,12 +119,10 @@ def main():
     if not common or common != git_out(["rev-parse", "--path-format=absolute",
                                         "--git-common-dir"], project):
         return 0  # another repository, or not a git checkout: not this repo's policy
-    # Prefer the checkout's own script: the session's checkout may be on an older branch.
-    script = next((s for s in (os.path.join(top, "utils", "review-marker.py"),
-                               os.path.join(project, "utils", "review-marker.py"))
-                   if os.path.exists(s)), None)
-    if script is None:
-        return 0
+    # origin/main's script, never the checkout's: the branch may be untrusted (a fork PR).
+    source = git_out(["show", TRUSTED_REF + ":utils/review-marker.py"], top)
+    if source is None:
+        return 0  # the gate is not on the default branch yet
     for m in matches:
         sub = "create" if m.group(1) == "new" else m.group(1)
         args = words(m.group(2))
@@ -136,7 +136,7 @@ def main():
                      "which the check cannot see beforehand.\nRun `gh pr %s` as its own " \
                      "command." % sub
         else:
-            reason = evaluate(script, top, sub, args, command)
+            reason = evaluate(source, top, sub, args, command)
         if reason:
             print("Blocked `gh pr %s`: %s" % (sub, reason), file=sys.stderr)
             return 2

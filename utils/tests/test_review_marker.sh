@@ -48,7 +48,8 @@ printf '#!/bin/sh\n' > "$TEMP_DIR/nogh/gh" && chmod -x "$TEMP_DIR/nogh/gh"
 export PATH="$TEMP_DIR/bin:$PATH" GH_LOG="$TEMP_DIR/gh.log"
 export OPEN_PRS="" VIEW_HEAD="" VIEW_OID="" VIEW_BASE="" GH_FAIL="" DEFAULT_BRANCH=""
 
-# Repo with origin/main and a feature branch holding one commit.
+# Repo whose origin/main carries the gate scripts (in a second commit, $PRE_GATE being
+# the first) and a feature branch holding one commit.
 new_repo() {
   local dir="$TEMP_DIR/$1"
   git init -q --bare "$dir-origin.git"
@@ -58,15 +59,25 @@ new_repo() {
   for i in 1 2 3 4 5 6 7 8; do echo "line $i"; done > a.txt
   echo other > b.txt
   git add . && git commit -qm base
-  git remote add origin "$dir-origin.git" && git push -q origin main
-  git checkout -qb feature
-  sed -i.bak 's/line 2/line 2 changed/' a.txt && rm a.txt.bak && git commit -qam change
+  PRE_GATE=$(git rev-parse HEAD)
   mkdir -p utils .githooks .claude/hooks
   cp "$ROOT/utils/review-marker.py" utils/
   cp "$ROOT/.githooks/pre-push" .githooks/
   cp "$ROOT/.claude/hooks/require-fresh-review.py" .claude/hooks/
-  printf 'utils/\n.githooks/\n.claude/\n' >> .git/info/exclude
+  git add utils .githooks .claude && git commit -qm gate
+  git remote add origin "$dir-origin.git" && git push -q origin main
+  git checkout -qb feature
+  sed -i.bak 's/line 2/line 2 changed/' a.txt && rm a.txt.bak && git commit -qam change
 }
+
+# A stand-in for tampered checkout code: it leaves $TEMP_DIR/pwned behind if it ever runs.
+PAYLOAD=$(printf 'import sys\nopen("%s/pwned", "w").close()\nsys.exit(0)\n' "$TEMP_DIR")
+not_run() {
+  if [ -e "$TEMP_DIR/pwned" ]; then fail "$1: checkout code ran"; rm "$TEMP_DIR/pwned"; else pass; fi
+}
+# Stdlib-named payloads at the checkout root, where git runs hooks.
+plant() { for m in argparse subprocess; do printf '%s' "$PAYLOAD" > "$m.py"; done; }
+unplant() { rm -f argparse.py subprocess.py; }
 
 marker() { python3 utils/review-marker.py "$@"; }
 
@@ -92,6 +103,9 @@ expect "write refuses uncommitted changes" 2 "uncommitted changes" marker write 
 git checkout -q b.txt
 expect "write" 0 "" marker write --tool t --session s1
 expect "check fresh" 0 "" marker check
+expect "write through the trusted runner" 0 "review marker written" \
+  sh -c 'git show refs/remotes/origin/main:utils/review-marker.py | python3 -I - write --tool t'
+expect "check fresh after the trusted runner" 0 "" marker check
 echo scratch > scratch.txt
 expect "untracked scratch is ignored" 0 "" marker check
 REVIEWED=$(git rev-parse HEAD)
@@ -201,6 +215,24 @@ echo more >> b.txt && git commit -qam more
 STALE=$(git rev-parse HEAD)
 expect "pre-push blocks unreviewed tip" 1 "is stale" \
   prepush "refs/heads/feature $STALE refs/heads/feature $Z"
+printf '%s' "$PAYLOAD" > utils/review-marker.py
+expect "pre-push uses origin/main's marker script" 1 "is stale" \
+  prepush "refs/heads/feature $STALE refs/heads/feature $Z"
+not_run "pre-push with a tampered utils/review-marker.py"
+git checkout -q utils/review-marker.py
+GATE=$(git rev-parse origin/main) && git update-ref refs/remotes/origin/main "$PRE_GATE"
+expect "pre-push allows while origin/main has no gate" 0 "" \
+  prepush "refs/heads/feature $STALE refs/heads/feature $Z"
+git update-ref refs/remotes/origin/main "$GATE"
+plant
+expect "pre-push ignores stdlib-named files in the checkout" 1 "is stale" \
+  prepush "refs/heads/feature $STALE refs/heads/feature $Z"
+not_run "pre-push with planted argparse.py/subprocess.py"
+unplant
+git tag origin/main "$PRE_GATE"
+expect "pre-push ignores a tag named origin/main" 1 "is stale" \
+  prepush "refs/heads/feature $STALE refs/heads/feature $Z"
+git tag -d origin/main >/dev/null
 expect "pre-push gates \`git push origin HEAD\`" 1 "is stale" \
   prepush "HEAD $STALE refs/heads/feature $Z"
 expect "pre-push gates \`git push origin <sha>:feature\`" 1 "is stale" \
@@ -226,9 +258,21 @@ marker write --tool t >/dev/null
 marker install-hook >/dev/null
 echo more >> b.txt && git commit -qam more
 expect "real git push through the shim refuses unreviewed commits" 1 "is stale" git push -q origin feature
-mv .githooks/pre-push "$TEMP_DIR/pre-push.moved"
-expect "shim allows the push when the checkout has no hook" 0 "" git push -q origin feature
-mv "$TEMP_DIR/pre-push.moved" .githooks/pre-push
+printf '%s' "$PAYLOAD" > .githooks/pre-push
+expect "shim runs origin/main's hook, not the checkout's" 1 "is stale" git push -q origin feature
+not_run "shim with a tampered .githooks/pre-push"
+git checkout -q .githooks/pre-push
+GATE=$(git rev-parse origin/main) && git update-ref refs/remotes/origin/main "$PRE_GATE"
+expect "shim allows the push while origin/main has no gate" 0 "" git push -q origin feature
+git update-ref refs/remotes/origin/main "$GATE"
+echo again >> b.txt && git commit -qam again
+plant
+expect "shim ignores stdlib-named files in the checkout" 1 "is stale" git push -q origin feature
+not_run "shim with planted argparse.py/subprocess.py"
+unplant
+git tag origin/main "$PRE_GATE"
+expect "shim ignores a tag named origin/main" 1 "is stale" git push -q origin feature
+git tag -d origin/main >/dev/null
 git reset -q --hard "$TIP"
 expect "real git push of reviewed commits succeeds" 0 "" git push -q -f origin feature
 export OPEN_PRS=""
@@ -290,10 +334,20 @@ expect "hook joins continuation inside gh pr" 2 "$STALE_MSG" hook "$(printf 'gh 
 expect "hook joins continuation after gh" 2 "$STALE_MSG" hook "$(printf 'gh \\\n  pr create --fill')"
 mkdir -p ../h-wt/sub
 expect "hook resolves the checkout from a subdirectory" 0 "" hook "gh pr create --fill" "$TEMP_DIR/h-wt/sub"
-mkdir -p ../h-wt/utils && printf 'import sys\nprint("checkout script ran", file=sys.stderr)\nsys.exit(1)\n' > ../h-wt/utils/review-marker.py
-expect "hook runs the checkout's own script from a subdirectory" 2 "checkout script ran" \
-  hook "gh pr create --fill" "$TEMP_DIR/h-wt/sub"
-rm -r ../h-wt/utils
+printf '%s' "$PAYLOAD" > utils/review-marker.py
+expect "hook uses origin/main's marker script" 2 "$STALE_MSG" hook "gh pr create --fill"
+not_run "hook with a tampered utils/review-marker.py"
+git checkout -q utils/review-marker.py
+GATE=$(git rev-parse origin/main) && git update-ref refs/remotes/origin/main "$PRE_GATE"
+expect "hook allows while origin/main has no gate" 0 "" hook "gh pr create --fill"
+git update-ref refs/remotes/origin/main "$GATE"
+plant
+expect "hook ignores stdlib-named files in the checkout" 2 "$STALE_MSG" hook "gh pr create --fill"
+not_run "hook with planted argparse.py/subprocess.py"
+unplant
+git tag origin/main "$PRE_GATE"
+expect "hook ignores a tag named origin/main" 2 "$STALE_MSG" hook "gh pr create --fill"
+git tag -d origin/main >/dev/null
 
 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook allows ready of a reviewed PR head" 0 "" \
   hook "gh pr ready 12"
