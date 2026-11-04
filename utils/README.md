@@ -305,7 +305,7 @@ Denies shell commands that run `gradlew` directly instead of through `.claude/co
 - The hook loads the policy from `refs/remotes/origin/main` with `python3 -I`, like `review-marker.py`, and allows everything when that ref lacks it.
 - Deny by default: the command is split into simple commands at `;`, `&`, `|`, parentheses, braces, backticks and newlines, and any simple command that names `gradlew` is denied unless it starts with a read-only tool (`cat`, `grep`, `git`, `ls`, `find`, `echo`, ...). Quoted scripts such as `bash -c '...'` are checked the same way. So `if ./gradlew test`, `env -u X ./gradlew build` and `> log ./gradlew build` are denied without listing each prefix.
 - Accepted false blocks: a non-reader command that only names the file, such as `mv gradlew gradlew.old`, and heredoc lines that start with `./gradlew`.
-- Not covered: indirection such as `G=./gradlew; $G build`, and a system `gradle`.
+- Not covered: indirection such as `G=./gradlew; $G build`, a system `gradle`, and allowed tools that run their arguments, such as `find . -exec ./gradlew build \;`, an `awk -f` script that calls `system()`, or a git alias. The hook stops accidental direct runs, not deliberate ones.
 
 **Usage:**
 ```bash
