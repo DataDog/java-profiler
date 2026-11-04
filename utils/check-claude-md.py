@@ -39,8 +39,11 @@ one-line pointer (what was read/run and the conclusion) instead of retaining the
 
 def committed(root):
     """CLAUDE.md as of HEAD, or None (no commit, file not tracked, not a git checkout)."""
-    res = subprocess.run(["git", "-C", root, "show", "HEAD:CLAUDE.md"], capture_output=True,
-                         text=True)
+    try:
+        res = subprocess.run(["git", "-C", root, "show", "HEAD:./CLAUDE.md"], capture_output=True,
+                             text=True, errors="surrogateescape")
+    except OSError:  # no git: the exception for an uncommitted block does not apply
+        return None
     return res.stdout if res.returncode == 0 else None
 
 

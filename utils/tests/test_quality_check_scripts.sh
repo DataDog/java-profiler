@@ -400,7 +400,7 @@ put src/ext.ts 'export {};'
 put tools/hook '#!/usr/bin/env python3'
 put tools/NOTICE 'plain text, no shebang'
 put tools/run.txt '#!/bin/sh'
-ln -s /etc/hostname src/linked.cpp
+ln -s ../tools/NOTICE src/linked.cpp
 ln -s /etc tools/linkdir
 printf '\xff\xfe\x00binary' > src/blob.bin
 put tools/comment '# a comment, not a shebang'
@@ -430,7 +430,7 @@ for want in "src/new_bare.cpp: new file has no" "src/stale.cpp: Datadog copyrigh
             "src/Bare.java: modified file has no copyright line" "src/moved_to.cpp: Datadog copyright ends in 2024" \
             "src/dirty.cpp: Datadog copyright ends in 2025; changed in $(date +%Y)" \
             "src/ext.ts: new file has no" "tools/hook: new file has no" "src/café.cpp: new file has no" \
-            "src/table.inc: modified file has no copyright line" "new file has no"; do
+            "src/table.inc: modified file has no copyright line" "src/bad"; do
   expect "T5 reports $want" 1 "$rc" "$out" "$want"
 done
 for clean in new_ok.cpp utils/vendor .gitlab notes.md ranged.cpp bare.py upstream.cpp present.cpp december.cpp \
@@ -476,6 +476,9 @@ python3 "$CM" --root "$CM_ROOT" --write >/dev/null
 add_cairn 1
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
 expect "T6e uncommitted cairn block is ignored" 0 "$rc" "$out" "uncommitted cairn block ignored"
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null && add_cairn 1 && echo "## Extra" >> "$CM_ROOT/CLAUDE.md"
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6e2 cairn block plus other drift fails" 1 "$rc" "$out" "differs from the canonical stub"
 python3 "$CM" --root "$CM_ROOT" --write >/dev/null && add_cairn 2
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
 expect "T6f two cairn blocks are not ignored" 1 "$rc" "$out" "differs from the canonical stub"
@@ -483,6 +486,14 @@ python3 "$CM" --root "$CM_ROOT" --write >/dev/null && add_cairn 1
 (cd "$CM_ROOT" && git commit -qam "commit the block")
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
 expect "T6g committed cairn block fails (CI view)" 1 "$rc" "$out" "differs from the canonical stub"
+# --root below the repository top: HEAD's CLAUDE.md must be read relative to --root.
+mkdir -p "$CM_ROOT/sub" && echo "not the stub" > "$CM_ROOT/CLAUDE.md"
+python3 "$CM" --root "$CM_ROOT/sub" --write >/dev/null
+(cd "$CM_ROOT" && git add -A && git commit -qm "stub in sub, other file at top")
+CM_TOP=$CM_ROOT; CM_ROOT=$CM_ROOT/sub; add_cairn 1
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6i committed file is read relative to --root" 0 "$rc" "$out" "uncommitted cairn block ignored"
+CM_ROOT=$CM_TOP
 python3 "$CM" --root "$CM_ROOT" --write >/dev/null && echo "## Build" >> "$CM_ROOT/CLAUDE.md"
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
 expect "T6h drifted CLAUDE.md" 1 "$rc" "$out" "differs from the canonical stub"
