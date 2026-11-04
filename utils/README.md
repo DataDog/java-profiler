@@ -303,7 +303,8 @@ bash utils/tests/test_review_marker.sh                           # tests
 Denies shell commands that run `gradlew` directly instead of through `.claude/commands/build-and-summarize`, except `gradlew --stop` and `gradlew --version`. Reads the command on stdin; exit 2 with the reason on stderr denies it. The `require-gradle-wrapper` hook runs it in Claude Code (`.claude/hooks/`) and, through `.pi/extensions/require-gradle-wrapper.ts`, in Pi.
 
 - The hook loads the policy from `refs/remotes/origin/main` with `python3 -I`, like `review-marker.py`, and allows everything when that ref lacks it.
-- `gradlew` counts only in command position: at the start, after a separator or an opening quote, or behind prefixes such as `env`, `timeout 60` or `sh`. `cat gradlew` passes; `echo "./gradlew build"` is a false block, accepted.
+- Deny by default: the command is split into simple commands at `;`, `&`, `|`, parentheses, braces, backticks and newlines, and any simple command that names `gradlew` is denied unless it starts with a read-only tool (`cat`, `grep`, `git`, `ls`, `find`, `echo`, ...). Quoted scripts such as `bash -c '...'` are checked the same way. So `if ./gradlew test`, `env -u X ./gradlew build` and `> log ./gradlew build` are denied without listing each prefix.
+- Accepted false blocks: a non-reader command that only names the file, such as `mv gradlew gradlew.old`, and heredoc lines that start with `./gradlew`.
 - Not covered: indirection such as `G=./gradlew; $G build`, and a system `gradle`.
 
 **Usage:**

@@ -47,19 +47,28 @@ for c in './gradlew build' 'gradlew build' '/abs/path/gradlew build' './gradlew.
          'FOO=1 ./gradlew build' 'env JAVA_HOME=/x ./gradlew build' 'timeout 60 ./gradlew test' \
          'nohup ./gradlew build' $'./gradlew \\\nbuild' './gradlew --stop && ./gradlew build' \
          './gradlew --stop build' $'ls\n./gradlew build' './gradlew --stop "build"' \
-         "./gradlew --version 'build'" './gradlew build \'; do
+         "./gradlew --version 'build'" './gradlew build \' 'if ./gradlew test; then :; fi' \
+         'while ./gradlew test; do :; done' 'until ./gradlew test; do :; done' \
+         'if false; then :; elif ./gradlew test; then :; fi' 'env -u JAVA_TOOL_OPTIONS ./gradlew build' \
+         '> /tmp/log ./gradlew build' '2>&1 ./gradlew build' 'nice -n 5 ./gradlew build' \
+         '! ./gradlew build' 'bash -c "cd x; ./gradlew build"' 'xargs ./gradlew' \
+         'cat x && ./gradlew build' 'bash -c "gradlew build; ls"'; do
   expect "policy denies: $c" 2 "$BLOCK_MSG" policy "$c"
 done
 for c in './.claude/commands/build-and-summarize buildDebug' './gradlew --stop' \
          './gradlew --version' './gradlew --stop 2>/dev/null' './gradlew --stop > /dev/null' \
          './gradlew --version >/dev/null' \
          $'./gradlew --stop \\\n' './gradlewx build' 'cat gradlew' \
-         'git diff -- gradlew gradlew.bat' 'grep -n gradlew AGENTS.md' 'ls gradle/wrapper' ''; do
+         'git diff -- gradlew gradlew.bat' 'grep -n gradlew AGENTS.md' 'ls gradle/wrapper' '' \
+         'echo "./gradlew build"' 'git commit -m "run ./gradlew build"' "bash -c './gradlew --stop'" \
+         '`./gradlew --version`' 'find . -name gradlew' '/usr/bin/grep gradlew x' \
+         'LC_ALL=C grep gradlew x'; do
   expect "policy allows: $c" 0 "" policy "$c"
 done
-expect "policy blocks a quoted mention (accepted false positive)" 2 "$BLOCK_MSG" \
-  policy 'echo "./gradlew build"'
+expect "policy blocks a non-reader naming gradlew (accepted false positive)" 2 "$BLOCK_MSG" \
+  policy 'mv gradlew gradlew.old'
 expect "policy names the blocked command" 2 'Blocked `./gradlew build`' policy 'cd x && ./gradlew build'
+expect "policy names a nested blocked command" 2 'Blocked `./gradlew build`' policy "sh -c './gradlew build'"
 
 # --- agent configuration (no direct gradlew grant or call) ---
 if python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["permissions"]["allow"]; sys.exit(any("gradlew" in r for r in a))' \

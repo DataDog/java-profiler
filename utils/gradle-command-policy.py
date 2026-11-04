@@ -4,50 +4,68 @@
 .claude/commands/build-and-summarize. Reads the command text on stdin; exit 2 with the
 reason on stderr denies the command, exit 0 allows it."""
 
+import itertools
+import os
 import re
 import shlex
 import sys
 
-# gradlew in command position: at the start, after a separator or an opening quote
-# (`bash -c "./gradlew ..."`), behind optional prefixes such as `env`, `timeout 60` or `sh`.
-# Matched on raw text like require-fresh-review.py, so a quoted mention is a false block.
-PREFIX = (r"(?:\w+=\S*|env|exec|time|nohup|command|xargs|then|do|else|!"
-          r"|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-\w+)*)")
-GRADLEW = re.compile(r"(?:^|[;&|(){}`\n\"']|\$\()\s*(?:" + PREFIX + r"\s+)*"
-                     r"((?:[^\s;&|(){}'\"`]*/)?gradlew(?:\.bat)?)(?![\w.-])"
-                     r"([^;&|)}\n]*)", re.M)
+# Deny by default: every simple command that names gradlew is denied unless it starts
+# with a read-only tool, so new prefixes (`if`, `env -u X`, `> log`) cannot slip through.
+SEPARATOR = re.compile(r"[;&|(){}`\n]")
+READERS = frozenset({"cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg",
+                     "ls", "find", "file", "stat", "wc", "diff", "git", "sed", "awk", "echo",
+                     "printf", "chmod", "which", "type"})
 # Daemon housekeeping that builds nothing, so the wrapper's log capture adds nothing.
 ALLOWED_ARGS = ({"--stop"}, {"--version"})
 REDIRECT = re.compile(r"^\d*[<>]")
-REDIRECT_OP = re.compile(r"^\d*[<>]+&?$")  # operator alone: its target is the next token
+REDIRECT_OP = re.compile(r"^\d*[<>]+$")  # operator alone: its target is the next word
+ASSIGNMENT = re.compile(r"^\w+=")
 
 
-def allowed(args):
-    """Args include any quoted text, so `--stop "build"` is denied; an unbalanced quote
-    (the end of `bash -c "./gradlew ..."`) makes shlex fail, which denies too."""
+def words(segment):
+    """Words of one simple command, redirections dropped. A quote that the separator split
+    left open (`bash -c "cd x; ./gradlew build"`) falls back to whitespace splitting."""
     try:
-        tokens = iter(shlex.split(args))
+        raw = iter(shlex.split(segment))
     except ValueError:
-        return False
-    kept = set()
-    for t in tokens:
-        if REDIRECT_OP.match(t):
-            next(tokens, None)
-        elif not REDIRECT.match(t):
-            kept.add(t)
-    return kept in ALLOWED_ARGS
+        raw = iter(segment.split())
+    kept = []
+    for w in raw:
+        if REDIRECT_OP.match(w):
+            next(raw, None)
+        elif not REDIRECT.match(w):
+            kept.append(w)
+    return kept
+
+
+def direct_call(command):
+    """The first denied gradlew call in command, or None."""
+    for segment in SEPARATOR.split(command):
+        ws = list(itertools.dropwhile(ASSIGNMENT.match, words(segment)))
+        if not ws or os.path.basename(ws[0]) in READERS:
+            continue
+        for i, w in enumerate(ws):
+            if os.path.basename(w.strip("'\"")) in ("gradlew", "gradlew.bat"):
+                if set(ws[i + 1:]) in ALLOWED_ARGS:
+                    break
+                return " ".join(ws[i:]).strip("'\"")
+            if any(c.isspace() for c in w):  # a quoted script, as in `bash -c '...'`
+                nested = direct_call(w)
+                if nested:
+                    return nested
+    return None
 
 
 def main():
-    # Join backslash-continued lines so `./gradlew \<newline> build` is one line to the regex.
-    command = sys.stdin.read().replace("\\\n", " ")
-    for m in GRADLEW.finditer(command):
-        if not allowed(m.group(2)):
-            print("Blocked `%s`: run Gradle through `./.claude/commands/build-and-summarize "
-                  "<task...>`, which keeps the full log in build/logs/ (AGENTS.md, Operating "
-                  "Rules). Only `gradlew --stop` and `gradlew --version` may run directly."
-                  % (m.group(1) + m.group(2)).strip().rstrip("'\""), file=sys.stderr)
-            return 2
+    # Join backslash-continued lines so `./gradlew \<newline> build` is one command.
+    call = direct_call(sys.stdin.read().replace("\\\n", " "))
+    if call:
+        print("Blocked `%s`: run Gradle through `./.claude/commands/build-and-summarize "
+              "<task...>`, which keeps the full log in build/logs/ (AGENTS.md, Operating "
+              "Rules). Only `gradlew --stop` and `gradlew --version` may run directly."
+              % call, file=sys.stderr)
+        return 2
     return 0
 
 
