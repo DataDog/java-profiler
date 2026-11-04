@@ -197,7 +197,8 @@ TEST_F(AllocStackDiagnosticsTest, FailedJvmtiCallDoesNotCountAsChecked) {
 
 TEST_F(AllocStackDiagnosticsTest, ZeroFramePlatformWalkCountsJvmtiFallback) {
     u64 trace = Profiler::instance()->recordJVMTISample(1, 1, reinterpret_cast<jthread>(1),
-                                                     BCI_ALLOC, nullptr, true);
+                                                     BCI_ALLOC, nullptr, true,
+                                                     Profiler::instance()->recordingGeneration());
     EXPECT_NE(0u, trace);
     EXPECT_EQ(1, stack_calls);
     EXPECT_EQ(1, Counters::getCounter(ALLOC_STACK_VM_FALLBACK));
@@ -212,7 +213,8 @@ TEST_F(AllocStackDiagnosticsTest, JvmtiTruncationRequiresAFrameBeyondTheLimit) {
         state.mode = ALLOCSTACK_JVMTI;
         ProfilerTestAccessor::state(state);
         u64 id = Profiler::instance()->recordJVMTISample(1, 1, reinterpret_cast<jthread>(1),
-                                                        BCI_ALLOC, nullptr, true);
+                                                        BCI_ALLOC, nullptr, true,
+                                                     Profiler::instance()->recordingGeneration());
         bool found = false;
         ProfilerTestAccessor::processTraces([&](const CallTraceSet& traces) {
             for (const CallTrace* trace : traces) {

@@ -247,7 +247,6 @@ public:
   }
 
   void setTextBase(const char *text_base) { _text_base = text_base; }
-  const char *textBase() const { return _text_base; }
 
   void setPlt(unsigned int plt_offset, unsigned int plt_size) {
     _plt_offset = plt_offset;

@@ -91,13 +91,17 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
     // in practice and observed to crash with SIGSEGV.
     return;
   }
+  // Before the class id is resolved and the stack captured: a callback paused
+  // across a stop must not emit (or track) ids from the previous recording.
+  Profiler *profiler = Profiler::instance();
+  u64 recording_generation = profiler->recordingGeneration();
+  u64 liveness_generation = LivenessTracker::instance()->tableGeneration();
   const char *name_slice = NULL;
   size_t name_len = 0;
   int id = -1;
   if (normalizeClassSignature(class_name, &name_slice, &name_len)) {
     // A callback that passed _active before stop() must not re-allocate the
     // class map stop() released: intern only through the open intern gate.
-    Profiler *profiler = Profiler::instance();
     OptionalSharedLockGuard intern(profiler->internLock(), SpinLock::NO_SPIN_BUDGET);
     if (intern.ownsLock() && profiler->internOpen()) {
       id = profiler->lookupClass(name_slice, name_len);
@@ -109,9 +113,6 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   }
   event._id = id;
 
-  // Before the stack is captured, so track() can tell a call_trace_id from
-  // the storage of a recording that has since stopped.
-  u64 liveness_generation = LivenessTracker::instance()->tableGeneration();
   u64 call_trace_id = 0;
   // we do record the details and stacktraces only for when recording
   // allocations or liveness
@@ -121,7 +122,8 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
                                 ? 1
                                 : 1 / (1 - exp(-size / (double)_interval)));
 
-    call_trace_id = Profiler::instance()->recordJVMTISample(size, tid, thread, BCI_ALLOC, &event, !_record_allocations);
+    call_trace_id = profiler->recordJVMTISample(size, tid, thread, BCI_ALLOC, &event,
+                                                !_record_allocations, recording_generation);
 
     if (call_trace_id == 0) {
       return;

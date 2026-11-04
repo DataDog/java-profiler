@@ -501,12 +501,19 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
 - **Callback** `SampledObjectAlloc()` → `recordAllocation()`
   (`objectSampler.cpp:51-154`), on the allocating Java thread, outside any
   signal handler:
-  1. Resolves the class with `GetClassSignature` and `lookupClass()`. An
-     unresolvable class drops the sample.
+  1. Resolves the class with `GetClassSignature` and `lookupClass()` (through
+     the profiler's intern gate). An unresolvable class drops the sample. Just
+     before the lookup it reads `Profiler::recordingGeneration()` and
+     `LivenessTracker::tableGeneration()`: disabling the JVMTI event does not
+     wait for callbacks already running, so one can resume after a stop/start
+     holding a class id from the previous recording.
   2. If allocations or liveness are being recorded, computes
      `weight = 1 / (1 - exp(-size / interval))` and calls
      `recordJVMTISample()`. When only liveness is recorded, the sample is
-     deferred (`deferred = !_record_allocations`).
+     deferred (`deferred = !_record_allocations`). Under its stripe lock,
+     `recordJVMTISample()` drops the sample if the recording generation moved;
+     `releaseRecordingMemory()` bumps it under `lockAll()`, so the check and
+     the emission cannot straddle a stop.
      `recordJVMTISample()` captures the stack according to `allocstack`: by
      default (HotSpot with `cstack=vm`/`vmx`) with the VM stack walker,
      seeded from the thread's last Java frame
@@ -575,7 +582,7 @@ chains are described in
   2. `NewWeakGlobalRef(object)`.
   3. `_table_lock.tryLockShared()`. If the lock is not available, the weak ref
      is deleted and the sample is dropped. Under the lock it compares the
-     table generation the callback read before capturing its stack
+     table generation the callback read before resolving the class id
      (`tableGeneration()`, passed by `ObjectSampler::recordAllocation()`)
      with the current one, which `release()` and `initialize()` bump under the
      exclusive lock. A mismatch means the callback straddled a stop: its

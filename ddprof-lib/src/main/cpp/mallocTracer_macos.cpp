@@ -11,28 +11,25 @@
 #include "mutex.h"
 #include "symbols.h"
 
-#include <mach-o/dyld.h>
+#include <dlfcn.h>
 #include <string.h>
 
 // UnloadProtection pins a library by name only, so it also succeeds for a
-// cache whose library was unloaded and the same path loaded at another
-// address. Accept the cache only while dyld lists its path at its slide (the
-// cache's text base). Call it while the library is pinned.
+// cache whose library was unloaded and the same path loaded elsewhere. Accept
+// the cache only if the image containing its start (the Mach-O header the
+// parser recorded as minAddress()) starts there and has the cache's path.
+// dladdr() resolves under dyld's lock; iterating dyld's image indexes would
+// not, as concurrent unloads shift them. Call it while the library is pinned.
 static bool isCurrentImage(const CodeCache* cc) {
-    uint32_t images = _dyld_image_count();
-    for (uint32_t i = 0; i < images; i++) {
-        const char* name = _dyld_get_image_name(i);
-        if (name != nullptr && strcmp(name, cc->name()) == 0 &&
-            reinterpret_cast<const char*>(_dyld_get_image_vmaddr_slide(i)) == cc->textBase()) {
-            return true;
-        }
-    }
-    return false;
+    Dl_info info;
+    return cc->minAddress() != NO_MIN_ADDRESS && dladdr(cc->minAddress(), &info) != 0 &&
+           info.dli_fbase == cc->minAddress() && info.dli_fname != NULL &&
+           strcmp(info.dli_fname, cc->name()) == 0;
 }
 
 // No loader walk on macOS: each library is pinned with UnloadProtection while
 // it is patched or restored, and _patch_lock guards the bookkeeping. A library
-// that is no longer loaded at its cache's slide is skipped (isCurrentImage()).
+// that is no longer loaded where its cache describes is skipped (isCurrentImage()).
 void MallocHooker::patchLibraries() {
     // See mallocTracer_linux.cpp.
     if (!symbolsResolved()) return;

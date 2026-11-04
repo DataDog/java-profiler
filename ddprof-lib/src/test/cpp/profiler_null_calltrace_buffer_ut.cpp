@@ -32,7 +32,8 @@ static ProfilerNullBufferGlobalSetup profiler_null_buffer_global_setup;
 TEST(ProfilerNullCalltraceBufferTest, RecordJvmtiSampleNullBufferDoesNotCrash) {
     Profiler::instance()->recordJVMTISample(
         /*counter=*/1, /*tid=*/1, /*thread=*/nullptr,
-        BCI_ALLOC, /*event=*/nullptr, /*deferred=*/false);
+        BCI_ALLOC, /*event=*/nullptr, /*deferred=*/false,
+        Profiler::instance()->recordingGeneration());
 }
 
 TEST(ProfilerNullCalltraceBufferTest, RecordExternalSampleNullBufferDoesNotCrash) {

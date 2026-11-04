@@ -759,7 +759,8 @@ void Profiler::verifyAllocStack(const ASGCT_CallFrame* frames, int num_frames, j
   }
 }
 
-u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
+u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event,
+                                bool deferred, u64 recording_generation) {
   // Called from non-signal based sampler
   ProfiledThread* prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
   if (prof_thread == nullptr) {
@@ -778,6 +779,14 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
     // Too many concurrent signals already
     atomicIncRelaxed(_failures[-ticks_skipped]);
 
+    return 0;
+  }
+  // The caller resolved event's ids before a stop: they may be stale in the
+  // current recording. Checked and emitted under the same stripe lock, which
+  // the bump in releaseRecordingMemory() excludes.
+  if (_recording_generation.load(std::memory_order_relaxed) != recording_generation) {
+    atomicIncRelaxed(_failures[-ticks_skipped]);
+    _locks[lock_index].unlock();
     return 0;
   }
   u64 call_trace_id = 0;
@@ -2664,6 +2673,8 @@ void Profiler::releaseRecordingMemory() {
   CallTraceBuffer *buffers[CONCURRENCY_LEVEL];
   size_t capacities[CONCURRENCY_LEVEL];
   lockAll();
+  // After this, recordJVMTISample() drops samples resolved against this recording.
+  _recording_generation.fetch_add(1, std::memory_order_relaxed);
   for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
     buffers[i] = _calltrace_buffer[i];
     capacities[i] = _calltrace_buffer_capacity[i];

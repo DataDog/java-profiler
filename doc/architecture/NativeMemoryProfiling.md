@@ -135,9 +135,11 @@ platform implementations of `patchLibraries()` / `unpatchLibraries()` live in
    `LibraryPatcher::LiveLibraryWalk`: a library is visited only while the loader keeps
    it mapped and only if it is still the image its `CodeCache` describes, so a slot
    address saved in a stale cache is never written through. On macOS each library is
-   pinned with `UnloadProtection` under `_patch_lock`, and is used only while dyld
-   lists its path at the cache's slide (`isCurrentImage()`): the pin resolves a library
-   by name, so it also succeeds after the same path was reloaded elsewhere. Either way the walk re-checks
+   pinned with `UnloadProtection` under `_patch_lock`, and is used only if `dladdr()`
+   on the cache's start (its Mach-O header) reports an image that starts there with the
+   cache's path (`isCurrentImage()`): the pin resolves a library by name, so it also
+   succeeds after the same path was reloaded elsewhere. `dladdr()` resolves under dyld's
+   lock; dyld's image indexes shift under concurrent unloads. Either way the walk re-checks
    `MallocTracer::running()` under its lock, so a refresh that raced `stop()` does not
    re-hook after the restore.
 

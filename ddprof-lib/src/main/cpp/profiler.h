@@ -179,6 +179,7 @@ private:
   // re-allocates a dictionary releaseRecordingMemory() released.
   SpinLock _intern_lock;
   std::atomic<bool> _intern_open{false};
+  std::atomic<u64> _recording_generation{0};
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
@@ -453,6 +454,12 @@ public:
     return _state.load(std::memory_order_acquire) == RUNNING;
   }
 
+  // Bumped by releaseRecordingMemory() under lockAll(), once a recording's
+  // dictionaries and storage are released. See recordJVMTISample().
+  u64 recordingGeneration() const {
+    return _recording_generation.load(std::memory_order_acquire);
+  }
+
   // Check internOpen(), do the JNI work, then hold a shared lock on
   // internLock() (OptionalSharedLockGuard, SpinLock::NO_SPIN_BUDGET) around
   // the inserts and re-check internOpen() under it. See _intern_lock.
@@ -642,7 +649,10 @@ public:
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event);
-  u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
+  // recording_generation: recordingGeneration() read before the caller resolved
+  // anything recording-scoped in event (a class id); a moved one drops the sample.
+  u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event,
+                        bool deferred, u64 recording_generation);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,
                             ASGCT_CallFrame *frames, bool truncated,
