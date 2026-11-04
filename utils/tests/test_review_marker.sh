@@ -428,7 +428,7 @@ expect "hook env error does not advise rerunning the review" 2 "Rerunning the re
   hook "gh pr create"
 
 # --- .pi/extensions/require-fresh-review.ts (driven through a stub Pi API) ---
-if command -v node >/dev/null 2>&1; then
+if node --experimental-strip-types --no-warnings -e "" >/dev/null 2>&1; then
   cat > "$TEMP_DIR/pi-driver.mjs" <<'EOF'
 const [ext, cwd, toolName, command] = process.argv.slice(2);
 const mod = await import(ext);
@@ -449,7 +449,7 @@ EOF
   marker write --tool t >/dev/null
   expect "pi adapter allows pr create when fresh" 0 "" pi_hook bash "gh pr create --fill"
 else
-  echo "SKIP: pi adapter tests (node not found)"
+  echo "SKIP: pi adapter tests (node with --experimental-strip-types not found)"
 fi
 
 echo "$TESTS tests, $FAILED failed"

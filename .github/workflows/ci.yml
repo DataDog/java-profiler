@@ -95,6 +95,32 @@ jobs:
           .github/scripts/tests/test_generate_test_summary.sh
           .github/scripts/tests/test_prepare_reports.sh
 
+  # Hermetic tests for the utils/ scripts, agent hooks and CI helper scripts.
+  # Node.js 22 runs the Pi adapter cases (--experimental-strip-types needs 22.6+).
+  script-tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Run the hermetic script tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils g++
+          status=0
+          for t in utils/tests/*.sh .github/scripts/tests/test_check_pr_ticket.sh; do
+            echo "::group::$t"
+            bash "$t" || { echo "::error::$t failed"; status=1; }
+            echo "::endgroup::"
+          done
+          exit $status
+
   check-for-pr:
     runs-on: ubuntu-latest
     outputs:
