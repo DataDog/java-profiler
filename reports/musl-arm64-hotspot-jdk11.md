@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk11
 
 ## musl-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-11-05 08:25:39 EST
+**Date:** 2026-11-05 09:37:19 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-arm64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 150 |
-| Sample Rate | 2.50/sec |
-| Health Score | 156% |
+| CPU Samples | 106 |
+| Sample Rate | 1.77/sec |
+| Health Score | 111% |
 | Threads | 8 |
 | Allocations | 66 |
 
@@ -38,36 +38,36 @@ title: musl-arm64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 414 |
-| Sample Rate | 6.90/sec |
-| Health Score | 431% |
-| Threads | 14 |
-| Allocations | 145 |
+| CPU Samples | 89 |
+| Sample Rate | 1.48/sec |
+| Health Score | 92% |
+| Threads | 9 |
+| Allocations | 49 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1793884807 48
-1793884812 48
-1793884817 48
-1793884822 48
-1793884827 48
-1793884832 48
-1793884837 48
-1793884842 48
-1793884847 48
-1793884852 48
-1793884857 48
-1793884862 48
-1793884867 48
-1793884872 48
-1793884877 48
-1793884882 48
-1793884887 48
-1793884892 48
-1793884897 48
-1793884902 48
+1793889102 48
+1793889107 48
+1793889112 48
+1793889117 48
+1793889122 48
+1793889127 48
+1793889132 48
+1793889137 48
+1793889142 48
+1793889147 48
+1793889152 48
+1793889157 48
+1793889162 48
+1793889167 48
+1793889172 48
+1793889177 48
+1793889182 48
+1793889187 48
+1793889192 48
+1793889197 48
 ```
 </details>
 
