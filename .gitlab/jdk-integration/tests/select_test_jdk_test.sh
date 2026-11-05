@@ -60,13 +60,14 @@ fi
 
 # Several JDKs with no JDK_VERSION match must fail loudly instead of
 # silently testing the wrong JDK — this is the guard the CI job relies on.
+# The message assertion pins the diagnostic, not just the exit code.
 make_jdk "${WORK}/root2/jdk-25.0.1"
 out=$(JDK_VERSION=17 "$SCRIPT_UNDER_TEST" "${WORK}/root2" 2>&1)
 rc=$?
-if [ "${rc}" -ne 0 ]; then
+if [ "${rc}" -ne 0 ] && [[ "${out}" == *"none matches JDK_VERSION='17'"* ]]; then
   pass "no JDK_VERSION match among several JDKs fails"
 else
-  fail "no JDK_VERSION match among several JDKs fails (out=${out})"
+  fail "no JDK_VERSION match among several JDKs fails (rc=${rc}, out=${out})"
 fi
 
 # Several JDKs whose paths all contain JDK_VERSION is ambiguous: the selector

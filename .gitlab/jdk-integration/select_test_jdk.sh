@@ -24,7 +24,7 @@ while IFS= read -r java_bin; do
   if [ -x "${java_bin}" ]; then
     homes+=("${java_bin%/bin/java}")
   fi
-done < <(find "${root}" -name java -path '*/bin/java' 2>/dev/null | sort -u)
+done < <(find "${root}" -name java -path '*/bin/java' | sort -u)
 
 if [ "${#homes[@]}" -eq 0 ]; then
   echo "select_test_jdk: no JDK with an executable bin/java found under ${root}" >&2
