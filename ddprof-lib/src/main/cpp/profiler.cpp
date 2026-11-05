@@ -1258,6 +1258,14 @@ bool Profiler::startCpuEngine(Arguments &args) {
 // restored after JFR stops, as in stop(); a later start() patches again from
 // Libraries::updateSymbols(). Without this, a start() that left the profiler
 // in ERROR would leave the hooks patched for the rest of the process.
+//
+// Unlike stop(), this runs _jfr.stop() WITHOUT SignalInflight::drain(). That
+// is safe only because both call sites precede every enableEvents(true) in
+// start(): engine _enabled is set solely by enableEvents(), so no signal
+// handler can be past its _enabled gate writing JFR here. Stale signals from
+// timers armed by startCpuEngine() bail at the _enabled check without
+// touching JFR. A call site moved after enableCpuEngine()/the wall
+// enableEvents(true) MUST add SignalInflight::drain() before _jfr.stop().
 void Profiler::rollBackStart() {
   disableEngines();
   switchLibraryTrap(false);
@@ -2110,7 +2118,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     // ever sees finds the engine fully wired. Unlike wall clock, CPU handlers
     // re-check _enabled on every signal, so enabling here (rather than before
     // start()) does not lose samples.
-    // Paired with drainInflight() on the stop side. enableCpuEngine() enables
+    // Paired with SignalInflight::drain() on the stop side. enableCpuEngine() enables
     // it only if the CPU engine itself started.
     enableCpuEngine(activated);
 
