@@ -7,10 +7,9 @@ Shims Shims::_instance;
 
 Shims::Shims() : _tid_setter_ref(nullptr) {
 #ifdef DEBUG
-  // Library init, long before any sampling thread: dlsym is illegal in
-  // signal context, so the lookup must happen here. Unresolved (shim not
-  // preloaded) leaves the no-op nullptr; RELEASE pairs the ACQUIRE load in
-  // setSighandlerTid.
+  // Library init precedes any sampling thread and dlsym is illegal in signal
+  // context, so the lookup must happen here; unresolved (shim not preloaded)
+  // leaves the no-op nullptr. RELEASE pairs the ACQUIRE load in setSighandlerTid.
   __atomic_store_n(&_tid_setter_ref,
                    reinterpret_cast<SetSigHandlerTidRef>(dlsym(RTLD_DEFAULT, "set_sighandler_tid")),
                    __ATOMIC_RELEASE);

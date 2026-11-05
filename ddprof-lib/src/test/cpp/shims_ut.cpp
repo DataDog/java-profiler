@@ -14,16 +14,11 @@
  * limitations under the License.
  */
 
-// Unit tests for the malloc-shim wiring contract (debugSupport.{h,cpp}).
-//
-// The malloc-shim (libdebug.so, LD_PRELOAD) exports set_sighandler_tid; the
-// debug build of the profiler resolves it once at static initialization and
-// calls it from SighandlerTidScope around every sampling window. Without the
-// shim preloaded the resolved pointer stays NULL and setSighandlerTid must be
-// a silent no-op: these tests pin that contract. The full detection matrix
-// (shim preloaded, malloc on the registered tid) lives in
-// malloc-shim/src/test/cpp/malloc_shim_validate.cpp, which cannot be a gtest
-// because the gtest binaries are sanitizer-instrumented and must not get
+// Unit tests for the malloc-shim wiring contract (debugSupport.{h,cpp}):
+// without libdebug.so preloaded the dlsym'd pointer stays NULL and
+// setSighandlerTid must be a silent no-op. The preloaded detection matrix
+// lives in malloc-shim/src/test/cpp/malloc_shim_validate.cpp and cannot be a
+// gtest: the gtest binaries are sanitizer-instrumented and must not get
 // malloc interposed.
 
 #include <gtest/gtest.h>

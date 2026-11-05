@@ -14,12 +14,9 @@ static int sighandler_tid = -1;
 extern "C" void *__libc_malloc(size_t size);
 
 /*
- * malloc and set_sighandler_tid must keep C linkage and default visibility:
- * malloc is interposed only when the dynamic linker resolves the unmangled
- * "malloc" name against this preloaded library, and Shims (debugSupport.cpp)
- * looks up "set_sighandler_tid" by the same unmangled name. The build compiles
- * with -fvisibility=hidden, so C++ mangling or hidden visibility silently
- * defeats both.
+ * C linkage and default visibility are load-bearing: LD_PRELOAD interposes
+ * malloc and Shims dlsym-resolves set_sighandler_tid by the unmangled names,
+ * and the build compiles with -fvisibility=hidden.
  */
 extern "C" __attribute__((visibility("default"))) void *malloc(size_t size) {
     void *result = NULL;
