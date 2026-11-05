@@ -41,7 +41,9 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    cite the tool's own working artifacts.
 
 4. **Findings.** Fix Critical/High findings, or get the user's explicit waiver.
-   Commit the fixes and re-review what they touched.
+   Commit the fixes and re-review what they touched. Also fix every violation of
+   `python3 utils/check-copyright.py --base <base>` and `python3 utils/check-claude-md.py`:
+   CI and `.githooks/pre-push` run the same checks, so a marker over them cannot merge.
 
 5. **Marker.** On the final commits, write the marker — also when the user ran
    the review manually and reports it back:

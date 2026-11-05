@@ -6,7 +6,8 @@ Claude Code reads CLAUDE.md for its Compact Instructions; everything else lives 
 AGENTS.md so that every coding agent reads the same instructions. This script holds
 the canonical text; `--write` restores it. One block injected by the cairn plugin is
 ignored while it is uncommitted and the committed file is canonical, so CI, which
-checks a clean checkout, never accepts it.
+checks a clean checkout, never accepts it. `--head <commit>` (pre-push) checks that
+commit's CLAUDE.md, where the exception never applies.
 
 Exit codes: 0 canonical (or written), 1 missing or different, 2 environment error.
 """
@@ -39,10 +40,10 @@ one-line pointer (what was read/run and the conclusion) instead of retaining the
 """
 
 
-def committed(root):
-    """CLAUDE.md as of HEAD, or None (no commit, file not tracked, not a git checkout)."""
+def committed(root, rev="HEAD"):
+    """CLAUDE.md as of commit rev, or None (no commit, file not tracked, not a git checkout)."""
     try:
-        res = subprocess.run(["git", "-C", root, "show", "HEAD:./CLAUDE.md"], capture_output=True,
+        res = subprocess.run(["git", "-C", root, "show", rev + ":./CLAUDE.md"], capture_output=True,
                              text=True, errors="surrogateescape")
     except OSError:  # no git: the exception for an uncommitted block does not apply
         return None
@@ -51,10 +52,12 @@ def committed(root):
 
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--root", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    help="repository root (default: the checkout containing this script)")
+    # No eager __file__ default: the git hooks run this source with `python3 -I -c`.
+    ap.add_argument("--root", help="repository root (default: the checkout containing this script)")
     ap.add_argument("--write", action="store_true", help="write the canonical CLAUDE.md")
+    ap.add_argument("--head", help="check CLAUDE.md in this commit instead of the working tree")
     args = ap.parse_args(argv)
+    args.root = args.root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     path = os.path.join(args.root, "CLAUDE.md")
     try:
         if args.write:
@@ -62,11 +65,16 @@ def main(argv):
                 f.write(CANONICAL)
             print("CLAUDE.md: written")
             return 0
-        if not os.path.exists(path):
+        if args.head:
+            actual = committed(args.root, args.head)
+        elif os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                actual = f.read()
+        else:
+            actual = None
+        if actual is None:
             print("CLAUDE.md: missing; run utils/check-claude-md.py --write")
             return 1
-        with open(path, encoding="utf-8") as f:
-            actual = f.read()
     except OSError as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
@@ -76,7 +84,7 @@ def main(argv):
     # The cairn plugin's SessionStart hook injects one managed block into the working copy.
     # Accept that only while the committed file is canonical, so CI (a clean checkout)
     # never lets a committed block, or anything placed inside one, through.
-    if len(CAIRN_BLOCK.findall(actual)) == 1 and CAIRN_BLOCK.sub("", actual) == CANONICAL \
+    if not args.head and len(CAIRN_BLOCK.findall(actual)) == 1 and CAIRN_BLOCK.sub("", actual) == CANONICAL \
             and committed(args.root) == CANONICAL:
         print("CLAUDE.md: OK (uncommitted cairn block ignored)")
         return 0

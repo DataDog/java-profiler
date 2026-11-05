@@ -427,6 +427,180 @@ git update-ref -d refs/remotes/origin/tmp
 expect "hook env error does not advise rerunning the review" 2 "Rerunning the review will not help" \
   hook "gh pr create"
 
+# --- source checks in .githooks/pre-push, ticket check in the Claude Code hook ---
+# The fixtures' copyright years are literals, so pin the commit dates they are judged by.
+export GIT_AUTHOR_DATE=2026-03-01T12:00:00+00:00 GIT_COMMITTER_DATE=2026-03-01T12:00:00+00:00
+new_repo s
+export OPEN_PRS=""
+printf 'int x;\n' > bad.cpp && git add bad.cpp && git commit -qm bad
+expect "pre-push skips source checks while origin/main lacks them" 0 "" \
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+git checkout -q main
+mkdir -p .github/scripts
+cp "$ROOT/utils/check-copyright.py" "$ROOT/utils/check-claude-md.py" utils/
+cp "$ROOT/.github/scripts/check_pr_ticket.py" .github/scripts/
+python3 utils/check-claude-md.py --root . --write >/dev/null
+git add . && git commit -qm "source checks" && git push -q origin main
+git checkout -q feature && git rebase -q main
+expect "pre-push blocks a new file without a copyright line" 1 "bad.cpp: new file has no" \
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+printf '// Copyright 2026, Datadog, Inc.\nint x;\n' > bad.cpp && git commit -qam header
+expect "pre-push allows a clean push" 0 "" \
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+echo "## Build" >> CLAUDE.md && git commit -qam drift
+expect "pre-push blocks a drifted CLAUDE.md" 1 "differs from the canonical stub" \
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+git reset -q --hard HEAD~1
+printf 'int y;\n' > dirty.cpp
+expect "pre-push checks the pushed commit, not untracked files" 0 "" \
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+rm dirty.cpp
+
+# The copyright base follows the branch the push forks from, as CI follows the PR base.
+git checkout -qb release/1.0 main
+printf '// Copyright 2025, Datadog, Inc.\nint s;\n' > stale.cpp
+git add stale.cpp && git commit -qm "earlier cherry-pick, stale header" && git push -q origin release/1.0
+git checkout -qb backport release/1.0
+printf '// Copyright 2026, Datadog, Inc.\nint b;\n' > backport.cpp && git add . && git commit -qm backport
+expect "pre-push compares a backport with its release branch" 0 "" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+printf 'int n;\n' > nohdr.cpp && git add . && git commit -qm "no header"
+expect "pre-push still blocks a violation in a backport's own commit" 1 "nohdr.cpp: new file has no" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+expect "pre-push names the detected base and its override" 1 \
+  "against origin/release/1.0 (set branch.backport.gh-merge-base to change)" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+git config branch.backport.gh-merge-base release/9.9
+expect "pre-push ignores an unfetched gh-merge-base and says so" 1 \
+  "against origin/release/1.0 (gh-merge-base origin/release/9.9 is not fetched" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+git reset -q --hard HEAD~1
+git config branch.backport.gh-merge-base main
+expect "pre-push honours the branch's gh-merge-base" 1 "stale.cpp: Datadog copyright ends in 2025" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+git config branch.backport.gh-merge-base origin/main
+expect "pre-push names a configured base" 1 "against origin/main (from branch.backport.gh-merge-base)" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+git update-ref refs/remotes/origin/orphan "$(git commit-tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904 -m orphan)"
+git config branch.backport.gh-merge-base orphan
+expect "pre-push names the base when the check is skipped" 0 \
+  "check-copyright.py against origin/orphan (from branch.backport.gh-merge-base) skipped" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+git update-ref -d refs/remotes/origin/orphan
+git config --unset branch.backport.gh-merge-base
+git checkout -q main
+printf '// Copyright 2025, Datadog, Inc.\nint m;\n' > mainstale.cpp
+git add mainstale.cpp && git commit -qm "stale header on main" && git push -q origin main
+git checkout -qb feature2 main
+printf '// Copyright 2026, Datadog, Inc.\nint f;\n' > f2.cpp && git add . && git commit -qm f2
+expect "pre-push compares a branch off main with main, not a release branch" 0 "" \
+  prepush "refs/heads/feature2 $(git rev-parse HEAD) refs/heads/feature2 $Z"
+# Forward port: release/1.1 has more own commits than main gained since its cut.
+git checkout -qb release/1.1 main
+for i in 1 2; do echo "fix $i" >> b.txt && git commit -qam "release fix $i"; done
+git push -q origin release/1.1
+git checkout -q main
+printf '// Copyright 2025, Datadog, Inc.\nint m2;\n' > mainstale2.cpp
+git add mainstale2.cpp && git commit -qm "stale header after the cut" && git push -q origin main
+git checkout -qb forward main && git merge -q --no-ff -m "forward-port release/1.1" origin/release/1.1
+expect "pre-push compares a forward port with main" 0 "" \
+  prepush "refs/heads/forward $(git rev-parse HEAD) refs/heads/forward $Z"
+git checkout -q feature
+
+marker write --tool t >/dev/null
+TICKET_MSG="reference no ticket"
+export DEFAULT_BRANCH=main  # fill text is judged only when the base is known
+expect "hook blocks pr create without a ticket" 2 "$TICKET_MSG" hook 'gh pr create --title "Fix" --body "Details"'
+expect "hook allows a Jira key in the title" 0 "" hook 'gh pr create --title "Fix (PROF-1)" --body "Details"'
+expect "hook allows short flags with a key" 0 "" hook 'gh pr create -t Fix -b "Refs PROF-3"'
+expect "hook reads --flag=value forms" 2 "$TICKET_MSG" hook 'gh pr create --title=Fix --body=Details'
+expect "hook reads attached short flags" 2 "$TICKET_MSG" hook 'gh pr create -tFix -bDetails'
+expect "hook reads a body spanning lines" 0 "" hook $'gh pr create --title Fix --body "line one\nJIRA: PROF-5"'
+printf 'Fixes #12\n' > body.md
+expect "hook reads --body-file" 0 "" hook 'gh pr create --title Fix --body-file body.md'
+printf 'no reference\n' > body.md
+expect "hook blocks a --body-file without a ticket" 2 "$TICKET_MSG" hook 'gh pr create --title Fix -F body.md'
+expect "hook lets --body-file override --body" 2 "$TICKET_MSG" \
+  hook 'gh pr create --title Fix --body PROF-1 -F body.md'
+rm body.md
+expect "hook uses the last --body, as gh does" 2 "$TICKET_MSG" \
+  hook 'gh pr create --title Fix --body PROF-1 --body Details'
+expect "hook blocks --fill when the commits have no ticket" 2 "$TICKET_MSG" hook 'gh pr create --fill'
+expect "hook leaves other fill spellings to CI" 0 "" hook 'gh pr create -df'
+expect "hook leaves two fill flags to CI" 0 "" hook 'gh pr create --fill --fill-verbose'
+DEFAULT_BRANCH="" expect "hook leaves --fill to CI when the base is unknown" 0 "" hook 'gh pr create --fill'
+git commit -q --allow-empty -m "Rename foo" -m 'Calls `bar()` now.' && marker write --tool t >/dev/null
+expect "hook checks commit text that contains backticks" 2 "$TICKET_MSG" hook 'gh pr create --fill-verbose'
+git checkout -qb side && git commit -q --allow-empty -m "Side work" && git checkout -q feature
+git merge -q --no-ff -m "Merge side (PROF-11)" side && git branch -qD side && marker write --tool t >/dev/null
+expect "hook skips merge commits, as gh does" 2 "$TICKET_MSG" hook 'gh pr create --fill'
+expect "hook stops at a comment" 2 "$TICKET_MSG" hook 'gh pr create --title Fix --body x # --title PROF-1'
+expect "hook allows a quoted body that starts with #" 0 "" \
+  hook $'gh pr create --title "Add X" --body "## What\nJira: PROF-1"'
+expect "hook never reads a value as a flag" 0 "" hook 'gh pr create --title "PROF-1 fix" --body "-the details"'
+expect "hook leaves --dry-run to CI" 0 "" hook 'gh pr create --dry-run --title Fix --body x'
+expect "hook leaves --web to CI" 0 "" hook 'gh pr create --web --title Fix --body x'
+expect "hook leaves --dry-run=true to CI" 0 "" hook 'gh pr create --dry-run=true --title Fix --body x'
+expect "hook leaves --editor=true to CI" 0 "" hook 'gh pr create --editor=true --title Fix --body x'
+expect "hook leaves combined -de to CI" 0 "" hook 'gh pr create -de --title Fix --body x'
+expect "hook judges a --draft PR" 2 "$TICKET_MSG" hook 'gh pr create --draft --title Fix --body x'
+expect "hook judges a -d PR" 2 "$TICKET_MSG" hook 'gh pr create -d --title Fix --body x'
+expect "hook judges a command with 2>&1" 2 "$TICKET_MSG" hook 'gh pr create --title Fix --body x 2>&1'
+expect "hook judges a command with 2>/dev/null" 2 "$TICKET_MSG" hook 'gh pr create --title Fix --body x 2>/dev/null'
+expect "hook leaves --recover to CI" 0 "" hook 'gh pr create --recover f.json --title Fix --body x'
+git commit -q --allow-empty -m "Café work" && marker write --tool t >/dev/null
+git config i18n.logOutputEncoding ISO-8859-1
+expect "hook reads non-UTF-8 commit text" 2 "$TICKET_MSG" hook 'gh pr create --fill-verbose'
+git config --unset i18n.logOutputEncoding
+expect "hook stops at merged operators" 2 "$TICKET_MSG" hook 'gh pr create --title Fix --body x);gh x --title PROF-6'
+expect "hook does not cut at a # inside a word" 0 "" \
+  hook 'gh pr create --title Fix --body wip#1 --title PROF-13'
+expect "hook allows interactive pr create (CI checks it)" 0 "" hook 'gh pr create'
+expect "hook allows a prompted body (CI checks it)" 0 "" hook 'gh pr create --title Fix'
+expect "hook allows a prompted title (CI checks it)" 0 "" hook 'gh pr create --body Details'
+expect "hook allows a stdin body (CI checks it)" 0 "" hook 'gh pr create --title Fix --body-file -'
+expect "hook allows a substituted body (CI checks it)" 0 "" hook 'gh pr create --title Fix --body "$(cat x)"'
+expect "hook allows shell variables (CI checks them)" 0 "" hook 'gh pr create --title "$TITLE" --body "$BODY"'
+printf 'no reference\n' > body.md
+expect "hook ignores a substituted --body that --body-file overrides" 2 "$TICKET_MSG" \
+  hook 'gh pr create --title Fix --body "$(cat x)" -F body.md'
+rm body.md
+expect "hook stops at the command separator" 2 "$TICKET_MSG" \
+  hook 'gh pr create --title Fix --body x && gh issue create --title PROF-6'
+expect "hook stops at an unquoted newline" 2 "$TICKET_MSG" \
+  hook $'gh pr create --title Fix --body x\ngh pr create --title PROF-6 --body y'
+expect "hook stops at ; before a newline" 2 "$TICKET_MSG" \
+  hook $'gh pr create --title Fix --body x;\ngh pr create --title PROF-6 --body y'
+expect "hook stops at && before a newline" 2 "$TICKET_MSG" \
+  hook $'gh pr create --title Fix --body x &&\ngh pr create --title PROF-6 --body y'
+expect "hook stops at a blank line" 2 "$TICKET_MSG" \
+  hook $'gh pr create --title Fix --body x\n\ngh pr create --title PROF-6 --body y'
+expect "hook stops at a trailing comment" 2 "$TICKET_MSG" \
+  hook $'gh pr create --title Fix --body x # note\ngh pr create --title PROF-6 --body y'
+git commit -q --allow-empty -m "Body-only ticket" -m "Refs PROF-8" && marker write --tool t >/dev/null
+expect "hook reads only subjects for a multi-commit --fill" 2 "$TICKET_MSG" hook 'gh pr create --fill'
+expect "hook reads bodies for --fill-verbose" 0 "" hook 'gh pr create --fill-verbose'
+git branch -m feature PROF-9-fix && marker write --tool t >/dev/null
+expect "hook humanizes the branch name for a multi-commit --fill title" 2 "$TICKET_MSG" \
+  hook 'gh pr create --fill'
+git branch -m PROF-9-fix feature
+git commit -q --allow-empty -m "Wire it up (PROF-7)" && marker write --tool t >/dev/null
+expect "hook allows --fill when a commit has a ticket" 0 "" hook 'gh pr create --fill'
+expect "hook lets explicit --title and --body override --fill" 2 "$TICKET_MSG" \
+  hook 'gh pr create --fill --title Fix --body Details'
+expect "hook reads only the first commit for --fill-first" 2 "$TICKET_MSG" hook 'gh pr create --fill-first'
+git update-ref refs/remotes/origin/tbase HEAD~1 && marker write --tool t --base origin/tbase >/dev/null
+expect "hook reads commits since --base for --fill-first" 0 "" \
+  hook 'gh pr create --fill-first --base tbase'
+git update-ref -d refs/remotes/origin/tbase
+git update-ref refs/remotes/origin/tbase HEAD~1 && marker write --tool t --base origin/tbase >/dev/null
+DEFAULT_BRANCH=tbase expect "hook uses the repo default branch as the fill base" 0 "" \
+  hook 'gh pr create --fill-first'
+git update-ref -d refs/remotes/origin/tbase
+export DEFAULT_BRANCH=""
+unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
+cd "$TEMP_DIR"
+
 # --- .pi/extensions/require-fresh-review.ts (driven through a stub Pi API) ---
 if node --experimental-strip-types --no-warnings -e "" >/dev/null 2>&1; then
   cat > "$TEMP_DIR/pi-driver.mjs" <<'EOF'
