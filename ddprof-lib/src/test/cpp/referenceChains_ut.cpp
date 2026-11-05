@@ -54,6 +54,8 @@ static ReferenceChainsGlobalSetup global_setup;
 #include "referenceChainsTrackerTests.inc"
 #include "referenceChainsRotationTests.inc"
 #include "referenceChainsTraversalTests.inc"
+#include "referenceChainsBatchTests.inc"
+#include "referenceChainsBatchFailureTests.inc"
 #include "referenceChainsAnchorTests.inc"
 #include "referenceChainsEventTests.inc"
 #include "referenceChainsPesTests.inc"

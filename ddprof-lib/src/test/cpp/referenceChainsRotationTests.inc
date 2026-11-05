@@ -875,6 +875,87 @@ TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationSiblingsShareRecordedAncesto
     tracker->stop();
 }
 
+// AC1.3 at full entry granularity: the three ancestor-walk outcomes each fail at a named
+// assertion if their branch is removed. The early stop keys on ancestors_recorded, never mere
+// presence.
+TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationAncestorOutcomesKeepFanoutAndSignature) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr u32 kLeafKlass = 987, kParentKlass = 100, kMidKlass = 200, kRootKlass = 300;
+    // root(1) <- mid(2) <- parent(3); leaf(4) hangs directly off mid.
+    jlong rootTag = 1, midTag = 2, parentTag = 3, leafUnderMidTag = 4;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, rootTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kRootKlass));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, midTag, rootTag, 1, FrontierEntryState::EXPANDED,
+        /*root_kind=*/0, /*referrer_klass=*/0, kMidKlass));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, parentTag, midTag, 2, FrontierEntryState::EXPANDED,
+        /*root_kind=*/0, /*referrer_klass=*/0, kParentKlass));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, leafUnderMidTag, midTag, 2, FrontierEntryState::EXPANDED,
+        /*root_kind=*/0, /*referrer_klass=*/0, kLeafKlass));
+
+    // Seed makes mid a fanout parent without recording its ancestors.
+    ReferenceChainsTestAccessor::seedLeakAccumulationForNewlyWatchedKlass(kLeafKlass);
+    u64 seededKey = 0;
+    u32 seededFanout = 0;
+    bool seededRecorded = true;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::leakParentFanoutEntry(
+        midTag, &seededKey, &seededFanout, &seededRecorded));
+    EXPECT_EQ(ReferenceChainsTestAccessor::leakSignatureKeyForTest(kLeafKlass, kMidKlass),
+              seededKey);
+    EXPECT_EQ(1u, seededFanout);
+    EXPECT_FALSE(seededRecorded);
+
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parentTag, 10);
+
+    // (a) Missing ancestor root: inserted with the walked child's signature, fanout 1,
+    // ancestors recorded.
+    u64 rootKey = 0;
+    u32 rootFanout = 0;
+    bool rootRecorded = false;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::leakParentFanoutEntry(
+        rootTag, &rootKey, &rootFanout, &rootRecorded))
+        << "(b) the walk must continue past the seeded mid entry";
+    EXPECT_EQ(ReferenceChainsTestAccessor::leakSignatureKeyForTest(kLeafKlass, kParentKlass),
+              rootKey);
+    EXPECT_EQ(1u, rootFanout);
+    EXPECT_TRUE(rootRecorded);
+
+    // (b) Existing unrecorded ancestor mid: only ancestors_recorded flips; its seeded fanout
+    // and signature survive the walk.
+    u64 midKey = 0;
+    u32 midFanout = 0;
+    bool midRecorded = false;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::leakParentFanoutEntry(
+        midTag, &midKey, &midFanout, &midRecorded));
+    EXPECT_EQ(ReferenceChainsTestAccessor::leakSignatureKeyForTest(kLeafKlass, kMidKlass),
+              midKey) << "the ancestor walk must not overwrite an existing entry's signature_key";
+    EXPECT_EQ(1u, midFanout) << "the ancestor walk must not bump an existing entry's fanout";
+    EXPECT_TRUE(midRecorded);
+
+    // (c) A later walk stops at the flagged mid entry: erased root stays absent and mid keeps
+    // its fanout.
+    ReferenceChainsTestAccessor::eraseLeakParentFanout(rootTag);
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parentTag, 11);
+    u64 absentKey = 0;
+    u32 absentFanout = 0;
+    bool absentRecorded = false;
+    EXPECT_FALSE(ReferenceChainsTestAccessor::leakParentFanoutEntry(
+        rootTag, &absentKey, &absentFanout, &absentRecorded))
+        << "the walk must stop at mid, whose ancestors were already recorded";
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(midTag));
+
+    tracker->stop();
+}
+
 TEST_F(ReferenceChainsBfsTest, SeedLeakAccumulationComposesWithOngoingIncrementalUpdates) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
