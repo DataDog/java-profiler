@@ -20,11 +20,19 @@ if [ ! -d "${root}" ]; then
 fi
 
 homes=()
+# The scan must fail loudly on a partial traversal (e.g. permission denied):
+# silently dropping candidates could degenerate to a wrong single pick.
+scan=$(mktemp)
+trap 'rm -f "${scan}"' EXIT
+find "${root}" -name java -path '*/bin/java' | sort -u > "${scan}" || {
+  echo "select_test_jdk: candidate scan under ${root} failed" >&2
+  exit 1
+}
 while IFS= read -r java_bin; do
   if [ -x "${java_bin}" ]; then
     homes+=("${java_bin%/bin/java}")
   fi
-done < <(find "${root}" -name java -path '*/bin/java' | sort -u)
+done < "${scan}"
 
 if [ "${#homes[@]}" -eq 0 ]; then
   echo "select_test_jdk: no JDK with an executable bin/java found under ${root}" >&2
