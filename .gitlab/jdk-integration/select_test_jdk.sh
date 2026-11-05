@@ -36,15 +36,24 @@ if [ "${#homes[@]}" -eq 1 ]; then
   exit 0
 fi
 
+matches=()
 if [ -n "${JDK_VERSION:-}" ]; then
   for home in "${homes[@]}"; do
     case "${home}" in
       *"${JDK_VERSION}"*)
-        echo "${home}"
-        exit 0
+        matches+=("${home}")
         ;;
     esac
   done
+  if [ "${#matches[@]}" -eq 1 ]; then
+    echo "${matches[0]}"
+    exit 0
+  fi
+  if [ "${#matches[@]}" -gt 1 ]; then
+    echo "select_test_jdk: ${#matches[@]} JDKs under ${root} match JDK_VERSION='${JDK_VERSION}':" >&2
+    printf '  %s\n' "${matches[@]}" >&2
+    exit 1
+  fi
 fi
 
 echo "select_test_jdk: ${#homes[@]} JDKs under ${root} and none matches JDK_VERSION='${JDK_VERSION:-}':" >&2
