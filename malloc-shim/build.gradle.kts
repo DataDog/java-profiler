@@ -1,4 +1,7 @@
 /*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
  * Memory allocation interceptor for malloc debugging (Linux only).
  */
 

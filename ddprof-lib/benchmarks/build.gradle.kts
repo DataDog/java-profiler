@@ -1,4 +1,6 @@
 /*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
  * Benchmark for testing unwinding failures.
  * Uses NativeCompileTask/NativeLinkExecutableTask from build-logic.
  */

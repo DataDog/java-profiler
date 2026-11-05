@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #ifndef _DEBUGSUPPORT_H
 #define _DEBUGSUPPORT_H
 
