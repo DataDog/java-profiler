@@ -29,6 +29,9 @@ find "${root}" -name java -path '*/bin/java' | sort -u > "${scan}" || {
   exit 1
 }
 while IFS= read -r java_bin; do
+  if [[ "${java_bin}" == */jre/bin/java ]] && [ -x "${java_bin%/jre/bin/java}/bin/java" ]; then
+    continue
+  fi
   if [ -x "${java_bin}" ]; then
     homes+=("${java_bin%/bin/java}")
   fi
