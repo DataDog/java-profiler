@@ -30,12 +30,19 @@ test-with-jdk:
   tags: [ "arch:amd64" ]
   script:
     - apt update && DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends curl git moreutils awscli amazon-ecr-credential-helper gnupg2 build-essential g++ zip unzip cmake
+    # Gradle 9 needs a JDK 17+ build JVM independent of the JDK under test,
+    # which can be any version — same two-JDK split as functional-tests.sh
     - curl -s "https://get.sdkman.io" | bash
     - source "$HOME/.sdkman/bin/sdkman-init.sh"
-    - sdk install java 11.0.18-tem
-    - export TEST_JAVA_HOME=/usr/lib/jvm
-    - export JAVA_HOME=/root/.sdkman/candidates/java/11.0.18-tem
-    - export JDK_TOOL_OPTIONS="-XX:ErrorFile=/tmp/hs_err_pid_%p.log"
+    - sdk install java 21.0.3-tem
+    - export JAVA_HOME=/root/.sdkman/candidates/java/21.0.3-tem
+    # The JDK under test is the custom build shipped in the image; the Gradle
+    # test plugin runs the test JVM from JAVA_TEST_HOME when it is set
+    - export JAVA_TEST_HOME="$(.gitlab/jdk-integration/select_test_jdk.sh)"
+    - echo "Using Java (build) @ ${JAVA_HOME}"; "${JAVA_HOME}/bin/java" -version
+    - echo "Using Java (test) @ ${JAVA_TEST_HOME}"; "${JAVA_TEST_HOME}/bin/java" -version
+    # JAVA_TOOL_OPTIONS (not JDK_TOOL_OPTIONS) is the env var every JVM reads
+    - export JAVA_TOOL_OPTIONS="-XX:ErrorFile=/tmp/hs_err_pid_%p.log"
     - ./gradlew :ddprof-test:testDebug --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
   artifacts:
     when: always
