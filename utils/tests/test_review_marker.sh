@@ -465,16 +465,26 @@ expect "pre-push compares a backport with its release branch" 0 "" \
 printf 'int n;\n' > nohdr.cpp && git add . && git commit -qm "no header"
 expect "pre-push still blocks a violation in a backport's own commit" 1 "nohdr.cpp: new file has no" \
   prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+expect "pre-push names the detected base and its override" 1 \
+  "against origin/release/1.0 (set branch.backport.gh-merge-base to change)" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
 git config branch.backport.gh-merge-base release/9.9
-expect "pre-push ignores an unfetched gh-merge-base" 1 "against origin/release/1.0" \
+expect "pre-push ignores an unfetched gh-merge-base and says so" 1 \
+  "against origin/release/1.0 (gh-merge-base origin/release/9.9 is not fetched" \
   prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
 git reset -q --hard HEAD~1
 git config branch.backport.gh-merge-base main
 expect "pre-push honours the branch's gh-merge-base" 1 "stale.cpp: Datadog copyright ends in 2025" \
   prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
 git config branch.backport.gh-merge-base origin/main
-expect "pre-push names the base it compared with" 1 "against origin/main (set branch.backport.gh-merge-base" \
+expect "pre-push names a configured base" 1 "against origin/main (from branch.backport.gh-merge-base)" \
   prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+git update-ref refs/remotes/origin/orphan "$(git commit-tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904 -m orphan)"
+git config branch.backport.gh-merge-base orphan
+expect "pre-push names the base when the check is skipped" 0 \
+  "check-copyright.py against origin/orphan (from branch.backport.gh-merge-base) skipped" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+git update-ref -d refs/remotes/origin/orphan
 git config --unset branch.backport.gh-merge-base
 git checkout -q main
 printf '// Copyright 2025, Datadog, Inc.\nint m;\n' > mainstale.cpp

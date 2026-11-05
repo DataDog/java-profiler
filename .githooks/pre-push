@@ -49,14 +49,16 @@ def git_lines(*args):
 
 
 def copyright_base(branch, local_sha):
-    """Base for the copyright check, as the PR will be compared in CI: the branch's
+    """(base, how to change it) for the copyright check, as CI compares the PR: the branch's
     `gh-merge-base` if fetched, else whichever of origin/main and origin/release/* the
     commit's first-parent chain adds the fewest commits to; main on a tie."""
+    hint = "set branch.%s.gh-merge-base to change" % branch
     configured = git_lines("config", "--get", "branch.%s.gh-merge-base" % branch)
     if configured:
         name = configured[0] if configured[0].startswith("origin/") else "origin/" + configured[0]
         if git_lines("rev-parse", "--verify", "--quiet", "refs/remotes/%s^{commit}" % name):
-            return name
+            return name, "from branch.%s.gh-merge-base" % branch
+        hint = "gh-merge-base %s is not fetched; fetch it to use it" % name
     # First parent: a backport off release/X is closest to X, while a branch off main that
     # merges release/X is still closest to main.
     best, best_count = "origin/main", None
@@ -65,7 +67,7 @@ def copyright_base(branch, local_sha):
         count = git_lines("rev-list", "--count", "--first-parent", "%s..%s" % (ref, local_sha))
         if count and (best_count is None or int(count[0]) < best_count):
             best, best_count = ref[len("refs/remotes/"):], int(count[0])
-    return best
+    return best, hint
 
 
 def source_checks_pass(branch, local_sha):
@@ -78,9 +80,9 @@ def source_checks_pass(branch, local_sha):
             continue
         extra, label = [], script
         if script == "check-copyright.py":
-            base = copyright_base(branch, local_sha)
+            base, hint = copyright_base(branch, local_sha)
             extra = ["--base", base]
-            label = "%s against %s (set branch.%s.gh-merge-base to change)" % (script, base, branch)
+            label = "%s against %s (%s)" % (script, base, hint)
         res = subprocess.run([sys.executable, "-I", "-c", source, "--root", ".", "--head",
                               local_sha, *extra], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if res.returncode == 1:
@@ -88,7 +90,7 @@ def source_checks_pass(branch, local_sha):
                   file=sys.stderr)
             ok = False
         elif res.returncode != 0:  # environment error: CI still runs the check
-            print("pre-push: %s skipped: %s" % (script, res.stdout.decode(errors="replace").strip()),
+            print("pre-push: %s skipped: %s" % (label, res.stdout.decode(errors="replace").strip()),
                   file=sys.stderr)
     return ok
 
