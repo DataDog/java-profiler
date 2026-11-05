@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk8
 
 ## musl-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-11-05 07:17:18 EST
+**Date:** 2026-11-05 07:42:25 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 9 |
-| CPU Cores (end) | 9 |
+| CPU Cores (start) | 41 |
+| CPU Cores (end) | 41 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 109 |
-| Sample Rate | 1.82/sec |
-| Health Score | 114% |
-| Threads | 12 |
+| CPU Samples | 131 |
+| Sample Rate | 2.18/sec |
+| Health Score | 136% |
+| Threads | 11 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 9-9 cores)</summary>
+<summary>CPU Timeline (1 unique values: 41-41 cores)</summary>
 
 ```
-1793880783 9
-1793880788 9
-1793880793 9
-1793880798 9
-1793880803 9
-1793880808 9
-1793880813 9
-1793880818 9
-1793880823 9
-1793880828 9
-1793880833 9
-1793880838 9
-1793880844 9
-1793880849 9
-1793880854 9
-1793880859 9
-1793880864 9
-1793880869 9
-1793880874 9
-1793880879 9
+1793882268 41
+1793882273 41
+1793882278 41
+1793882283 41
+1793882288 41
+1793882293 41
+1793882298 41
+1793882303 41
+1793882308 41
+1793882313 41
+1793882318 41
+1793882323 41
+1793882328 41
+1793882333 41
+1793882338 41
+1793882343 41
+1793882348 41
+1793882353 41
+1793882358 41
+1793882363 41
 ```
 </details>
 
