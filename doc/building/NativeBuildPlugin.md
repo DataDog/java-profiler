@@ -426,8 +426,12 @@ ddprof-lib/build/
 ```
 
 The final artifact structure for deployment is `META-INF/native-libs/{os}-{arch}/libjavaProfiler.{so|dylib}`,
-with separate debug symbol packages for production debugging support. The manifest of each
-library jar (`assemble<Config>Jar`) records its version (`Implementation-Version`) and the commit it was built from (`Git-Commit`).
+with separate debug symbol packages for production debugging support.
+
+The `manifest {}` block in `ddprof-lib/build.gradle.kts` (not the plugin) gives every
+packaged configuration's jar (`assemble<Config>Jar`) an `Implementation-Version`, the
+`ddprof_version` (see [Versioning.md](Versioning.md)), and a `Git-Commit`: `CI_COMMIT_SHA` when
+set, otherwise `git rev-parse HEAD` with no dirty marker, or `unknown` when git fails.
 
 ## Future Considerations
 
