@@ -6,12 +6,17 @@ typedef void (*SetSigHandlerTidRef)(int tid);
 class Shims {
 private:
   static Shims _instance;
-  volatile SetSigHandlerTidRef _tid_setter_ref;
+  // Written once in the constructor during single-threaded static init; read
+  // cross-thread via __atomic_load_n(..., __ATOMIC_ACQUIRE) in setSighandlerTid.
+  SetSigHandlerTidRef _tid_setter_ref;
   Shims();
 
 public:
   void setSighandlerTid(int tid);
-  inline static Shims instance() { return _instance; }
+  // Returns the singleton by reference: setSighandlerTid is called from the
+  // sampling handlers' SighandlerTidScope, and a by-value return would copy
+  // the object on every call.
+  inline static Shims& instance() { return _instance; }
 };
 
 #endif //_DEBUGSUPPORT_H
