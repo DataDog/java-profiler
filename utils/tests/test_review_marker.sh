@@ -545,6 +545,8 @@ expect "hook leaves --editor=true to CI" 0 "" hook 'gh pr create --editor=true -
 expect "hook leaves combined -de to CI" 0 "" hook 'gh pr create -de --title Fix --body x'
 expect "hook judges a --draft PR" 2 "$TICKET_MSG" hook 'gh pr create --draft --title Fix --body x'
 expect "hook judges a -d PR" 2 "$TICKET_MSG" hook 'gh pr create -d --title Fix --body x'
+expect "hook judges a command with 2>&1" 2 "$TICKET_MSG" hook 'gh pr create --title Fix --body x 2>&1'
+expect "hook judges a command with 2>/dev/null" 2 "$TICKET_MSG" hook 'gh pr create --title Fix --body x 2>/dev/null'
 expect "hook leaves --recover to CI" 0 "" hook 'gh pr create --recover f.json --title Fix --body x'
 git commit -q --allow-empty -m "Café work" && marker write --tool t >/dev/null
 git config i18n.logOutputEncoding ISO-8859-1

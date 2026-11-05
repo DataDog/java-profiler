@@ -158,7 +158,9 @@ def pr_text(rest, cwd):
     # value that looks like one also ends it, and parse_flags then reports the missing value.
     for i, t in enumerate(tokens):
         if set(t) <= set("();<>|&\n") or t.startswith("#"):
-            tokens = tokens[:i]
+            # shlex splits `2>&1` into "2", ">&", "1": the fd number is not an argument.
+            fd = i > 0 and t[:1] in "<>" and tokens[i - 1].isdigit()
+            tokens = tokens[:i - 1 if fd else i]
             break
     parsed = parse_flags(tokens)
     if parsed is None:
