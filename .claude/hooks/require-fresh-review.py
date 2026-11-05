@@ -86,9 +86,9 @@ VALUE_FLAGS = {"-t": "--title", "-b": "--body", "-F": "--body-file", "-B": "--ba
                "-p": "--project", "-m": "--milestone", "-T": "--template", "-R": "--repo",
                "--recover": "--recover"}
 FILL_FLAGS = ("-f", "--fill", "--fill-first", "--fill-verbose")
-# The PR text stays editable (browser, editor) or is not used to create a PR (dry run);
-# --recover, checked separately, replaces it with saved input.
-OPEN_TEXT = ("-w", "--web", "-e", "--editor", "--dry-run")
+# The only valueless tokens the text is judged with. Anything else (--web, --editor,
+# --dry-run in any spelling, a combined short flag, a stray word) makes the text unknown.
+JUDGED_FLAGS = FILL_FLAGS + ("-d", "--draft")
 
 
 def parse_flags(tokens):
@@ -164,7 +164,7 @@ def pr_text(rest, cwd):
     if parsed is None:
         return None
     values, others = parsed
-    if others & set(OPEN_TEXT) or "--recover" in values:
+    if others - set(JUDGED_FLAGS) or "--recover" in values:
         return None
     title = last(values.get("--title"))
     body = last(values.get("--body"))

@@ -428,6 +428,8 @@ expect "hook env error does not advise rerunning the review" 2 "Rerunning the re
   hook "gh pr create"
 
 # --- source checks in .githooks/pre-push, ticket check in the Claude Code hook ---
+# The fixtures' copyright years are literals, so pin the commit dates they are judged by.
+export GIT_AUTHOR_DATE=2026-03-01T12:00:00+00:00 GIT_COMMITTER_DATE=2026-03-01T12:00:00+00:00
 new_repo s
 export OPEN_PRS=""
 printf 'int x;\n' > bad.cpp && git add bad.cpp && git commit -qm bad
@@ -538,6 +540,11 @@ expect "hook allows a quoted body that starts with #" 0 "" \
 expect "hook never reads a value as a flag" 0 "" hook 'gh pr create --title "PROF-1 fix" --body "-the details"'
 expect "hook leaves --dry-run to CI" 0 "" hook 'gh pr create --dry-run --title Fix --body x'
 expect "hook leaves --web to CI" 0 "" hook 'gh pr create --web --title Fix --body x'
+expect "hook leaves --dry-run=true to CI" 0 "" hook 'gh pr create --dry-run=true --title Fix --body x'
+expect "hook leaves --editor=true to CI" 0 "" hook 'gh pr create --editor=true --title Fix --body x'
+expect "hook leaves combined -de to CI" 0 "" hook 'gh pr create -de --title Fix --body x'
+expect "hook judges a --draft PR" 2 "$TICKET_MSG" hook 'gh pr create --draft --title Fix --body x'
+expect "hook judges a -d PR" 2 "$TICKET_MSG" hook 'gh pr create -d --title Fix --body x'
 expect "hook leaves --recover to CI" 0 "" hook 'gh pr create --recover f.json --title Fix --body x'
 git commit -q --allow-empty -m "Café work" && marker write --tool t >/dev/null
 git config i18n.logOutputEncoding ISO-8859-1
@@ -589,6 +596,7 @@ DEFAULT_BRANCH=tbase expect "hook uses the repo default branch as the fill base"
   hook 'gh pr create --fill-first'
 git update-ref -d refs/remotes/origin/tbase
 export DEFAULT_BRANCH=""
+unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
 cd "$TEMP_DIR"
 
 # --- .pi/extensions/require-fresh-review.ts (driven through a stub Pi API) ---
