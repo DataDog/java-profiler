@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "referenceChainFrontier.h"
+#include "referenceChainBatchSet.h"
 
 // Incremental reference-chain search driven by a dedicated JVMTI agent thread.
 class ReferenceChainTracker {
@@ -325,6 +326,13 @@ private:
   // from resolving a single object.
   static constexpr size_t GOTW_MAX_BATCH = 512;
   static constexpr size_t GOTW_MIN_BATCH = 8;
+
+  // The per-batch membership/resolution/completion descriptor is a tracker member, not an
+  // expandFrontier() local: its ~9 KiB must not sit on the BFS thread's default stack. Used only
+  // under _engine_lock (runPassSerialized()) or by single-threaded test seams.
+  static_assert(ReferenceChainBatchSet::CAPACITY == GOTW_MAX_BATCH,
+                "batch descriptor capacity must track the batch upper bound");
+  ReferenceChainBatchSet _batch_set;
 
   // Search lifecycle state. _search_started distinguishes a search's first pass (seed
   // FollowReferences from the heap roots) from a resumed pass (expand the persisted frontier, see
