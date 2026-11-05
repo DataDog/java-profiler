@@ -4,7 +4,9 @@
 
 Claude Code reads CLAUDE.md for its Compact Instructions; everything else lives in
 AGENTS.md so that every coding agent reads the same instructions. This script holds
-the canonical text; `--write` restores it.
+the canonical text; `--write` restores it. One block injected by the cairn plugin is
+ignored while it is uncommitted and the committed file is canonical, so CI, which
+checks a clean checkout, never accepts it.
 
 Exit codes: 0 canonical (or written), 1 missing or different, 2 environment error.
 """
