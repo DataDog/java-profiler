@@ -48,8 +48,9 @@ else
   fail "JDK_VERSION match wins among several JDKs (rc=${rc}, out=${out})"
 fi
 
-# Non-executable bin/java (e.g. a half-installed JVM) is not a candidate.
-rm -f "${WORK}/root2/jdk-25.0.1/bin/java"
+# A present-but-non-executable bin/java (e.g. a half-installed JVM) is not a
+# candidate: this pins the -x guard, which an absent file would not exercise.
+chmod -x "${WORK}/root2/jdk-25.0.1/bin/java"
 out=$(JDK_VERSION=25.0.1 "$SCRIPT_UNDER_TEST" "${WORK}/root2" 2>"${WORK}/err3")
 rc=$?
 if [ "${rc}" -eq 0 ] && [ "${out}" = "${WORK}/root2/jdk-11.0.28" ] && [ ! -s "${WORK}/err3" ]; then
@@ -76,20 +77,22 @@ make_jdk "${WORK}/root3/jdk-25.0.1"
 make_jdk "${WORK}/root3/jdk-25.0.2"
 out=$(JDK_VERSION=25 "$SCRIPT_UNDER_TEST" "${WORK}/root3" 2>&1)
 rc=$?
-if [ "${rc}" -ne 0 ]; then
+if [ "${rc}" -ne 0 ] && [[ "${out}" == *"match JDK_VERSION='25'"* ]]; then
   pass "ambiguous JDK_VERSION match among several JDKs fails"
 else
-  fail "ambiguous JDK_VERSION match among several JDKs fails (out=${out})"
+  fail "ambiguous JDK_VERSION match among several JDKs fails (rc=${rc}, out=${out})"
 fi
 
 # Several JDKs with JDK_VERSION unset must fail too: the job always sets it,
-# but an empty value must never silently pick an arbitrary candidate.
+# but an empty value must never silently pick an arbitrary candidate. The
+# message pins the JDK_VERSION non-empty guard — with it removed, an unset
+# value matches every home and lands in the ambiguous-match branch instead.
 out=$("$SCRIPT_UNDER_TEST" "${WORK}/root2" 2>&1)
 rc=$?
-if [ "${rc}" -ne 0 ]; then
+if [ "${rc}" -ne 0 ] && [[ "${out}" == *"none matches JDK_VERSION=''"* ]]; then
   pass "several JDKs with JDK_VERSION unset fail"
 else
-  fail "several JDKs with JDK_VERSION unset fail (out=${out})"
+  fail "several JDKs with JDK_VERSION unset fail (rc=${rc}, out=${out})"
 fi
 
 # A nonexistent root fails with the root-guard message: asserting the message
