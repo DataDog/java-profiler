@@ -507,6 +507,7 @@ git checkout -q feature
 
 marker write --tool t >/dev/null
 TICKET_MSG="reference no ticket"
+export DEFAULT_BRANCH=main  # fill text is judged only when the base is known
 expect "hook blocks pr create without a ticket" 2 "$TICKET_MSG" hook 'gh pr create --title "Fix" --body "Details"'
 expect "hook allows a Jira key in the title" 0 "" hook 'gh pr create --title "Fix (PROF-1)" --body "Details"'
 expect "hook allows short flags with a key" 0 "" hook 'gh pr create -t Fix -b "Refs PROF-3"'
@@ -517,15 +518,77 @@ printf 'Fixes #12\n' > body.md
 expect "hook reads --body-file" 0 "" hook 'gh pr create --title Fix --body-file body.md'
 printf 'no reference\n' > body.md
 expect "hook blocks a --body-file without a ticket" 2 "$TICKET_MSG" hook 'gh pr create --title Fix -F body.md'
+expect "hook lets --body-file override --body" 2 "$TICKET_MSG" \
+  hook 'gh pr create --title Fix --body PROF-1 -F body.md'
 rm body.md
+expect "hook uses the last --body, as gh does" 2 "$TICKET_MSG" \
+  hook 'gh pr create --title Fix --body PROF-1 --body Details'
 expect "hook blocks --fill when the commits have no ticket" 2 "$TICKET_MSG" hook 'gh pr create --fill'
+expect "hook leaves other fill spellings to CI" 0 "" hook 'gh pr create -df'
+expect "hook leaves two fill flags to CI" 0 "" hook 'gh pr create --fill --fill-verbose'
+DEFAULT_BRANCH="" expect "hook leaves --fill to CI when the base is unknown" 0 "" hook 'gh pr create --fill'
+git commit -q --allow-empty -m "Rename foo" -m 'Calls `bar()` now.' && marker write --tool t >/dev/null
+expect "hook checks commit text that contains backticks" 2 "$TICKET_MSG" hook 'gh pr create --fill-verbose'
+git checkout -qb side && git commit -q --allow-empty -m "Side work" && git checkout -q feature
+git merge -q --no-ff -m "Merge side (PROF-11)" side && git branch -qD side && marker write --tool t >/dev/null
+expect "hook skips merge commits, as gh does" 2 "$TICKET_MSG" hook 'gh pr create --fill'
+expect "hook stops at a comment" 2 "$TICKET_MSG" hook 'gh pr create --title Fix --body x # --title PROF-1'
+expect "hook allows a quoted body that starts with #" 0 "" \
+  hook $'gh pr create --title "Add X" --body "## What\nJira: PROF-1"'
+expect "hook never reads a value as a flag" 0 "" hook 'gh pr create --title "PROF-1 fix" --body "-the details"'
+expect "hook leaves --dry-run to CI" 0 "" hook 'gh pr create --dry-run --title Fix --body x'
+expect "hook leaves --web to CI" 0 "" hook 'gh pr create --web --title Fix --body x'
+expect "hook leaves --recover to CI" 0 "" hook 'gh pr create --recover f.json --title Fix --body x'
+git commit -q --allow-empty -m "Café work" && marker write --tool t >/dev/null
+git config i18n.logOutputEncoding ISO-8859-1
+expect "hook reads non-UTF-8 commit text" 2 "$TICKET_MSG" hook 'gh pr create --fill-verbose'
+git config --unset i18n.logOutputEncoding
+expect "hook stops at merged operators" 2 "$TICKET_MSG" hook 'gh pr create --title Fix --body x);gh x --title PROF-6'
+expect "hook does not cut at a # inside a word" 0 "" \
+  hook 'gh pr create --title Fix --body wip#1 --title PROF-13'
 expect "hook allows interactive pr create (CI checks it)" 0 "" hook 'gh pr create'
+expect "hook allows a prompted body (CI checks it)" 0 "" hook 'gh pr create --title Fix'
+expect "hook allows a prompted title (CI checks it)" 0 "" hook 'gh pr create --body Details'
 expect "hook allows a stdin body (CI checks it)" 0 "" hook 'gh pr create --title Fix --body-file -'
 expect "hook allows a substituted body (CI checks it)" 0 "" hook 'gh pr create --title Fix --body "$(cat x)"'
+expect "hook allows shell variables (CI checks them)" 0 "" hook 'gh pr create --title "$TITLE" --body "$BODY"'
+printf 'no reference\n' > body.md
+expect "hook ignores a substituted --body that --body-file overrides" 2 "$TICKET_MSG" \
+  hook 'gh pr create --title Fix --body "$(cat x)" -F body.md'
+rm body.md
 expect "hook stops at the command separator" 2 "$TICKET_MSG" \
   hook 'gh pr create --title Fix --body x && gh issue create --title PROF-6'
+expect "hook stops at an unquoted newline" 2 "$TICKET_MSG" \
+  hook $'gh pr create --title Fix --body x\ngh pr create --title PROF-6 --body y'
+expect "hook stops at ; before a newline" 2 "$TICKET_MSG" \
+  hook $'gh pr create --title Fix --body x;\ngh pr create --title PROF-6 --body y'
+expect "hook stops at && before a newline" 2 "$TICKET_MSG" \
+  hook $'gh pr create --title Fix --body x &&\ngh pr create --title PROF-6 --body y'
+expect "hook stops at a blank line" 2 "$TICKET_MSG" \
+  hook $'gh pr create --title Fix --body x\n\ngh pr create --title PROF-6 --body y'
+expect "hook stops at a trailing comment" 2 "$TICKET_MSG" \
+  hook $'gh pr create --title Fix --body x # note\ngh pr create --title PROF-6 --body y'
+git commit -q --allow-empty -m "Body-only ticket" -m "Refs PROF-8" && marker write --tool t >/dev/null
+expect "hook reads only subjects for a multi-commit --fill" 2 "$TICKET_MSG" hook 'gh pr create --fill'
+expect "hook reads bodies for --fill-verbose" 0 "" hook 'gh pr create --fill-verbose'
+git branch -m feature PROF-9-fix && marker write --tool t >/dev/null
+expect "hook humanizes the branch name for a multi-commit --fill title" 2 "$TICKET_MSG" \
+  hook 'gh pr create --fill'
+git branch -m PROF-9-fix feature
 git commit -q --allow-empty -m "Wire it up (PROF-7)" && marker write --tool t >/dev/null
 expect "hook allows --fill when a commit has a ticket" 0 "" hook 'gh pr create --fill'
+expect "hook lets explicit --title and --body override --fill" 2 "$TICKET_MSG" \
+  hook 'gh pr create --fill --title Fix --body Details'
+expect "hook reads only the first commit for --fill-first" 2 "$TICKET_MSG" hook 'gh pr create --fill-first'
+git update-ref refs/remotes/origin/tbase HEAD~1 && marker write --tool t --base origin/tbase >/dev/null
+expect "hook reads commits since --base for --fill-first" 0 "" \
+  hook 'gh pr create --fill-first --base tbase'
+git update-ref -d refs/remotes/origin/tbase
+git update-ref refs/remotes/origin/tbase HEAD~1 && marker write --tool t --base origin/tbase >/dev/null
+DEFAULT_BRANCH=tbase expect "hook uses the repo default branch as the fill base" 0 "" \
+  hook 'gh pr create --fill-first'
+git update-ref -d refs/remotes/origin/tbase
+export DEFAULT_BRANCH=""
 cd "$TEMP_DIR"
 
 # --- .pi/extensions/require-fresh-review.ts (driven through a stub Pi API) ---

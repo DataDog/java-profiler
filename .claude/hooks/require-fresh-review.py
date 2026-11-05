@@ -29,7 +29,7 @@ BASE_FLAG = re.compile(r"(?:^|\s)(?:--base[= ]\s*|-B\s*)(['\"]?)([^\s'\"]+)\1")
 def git_out(args, cwd):
     res = subprocess.run(["git", *args], cwd=cwd, stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL)
-    return res.stdout.decode().strip() if res.returncode == 0 else None
+    return res.stdout.decode(errors="replace").strip() if res.returncode == 0 else None
 
 
 def words(text):
@@ -80,45 +80,120 @@ def ready_target(args, repo, cwd):
     return ["--branch", head, "--commit", oid, "--base", origin(base)]
 
 
-def flag_values(tokens, long, short):
-    """Values of `--long x`, `--long=x`, `-s x` and `-sx` in tokens."""
-    values = []
-    for i, t in enumerate(tokens):
-        if t in (long, short):
-            values.append(tokens[i + 1] if i + 1 < len(tokens) else "")
-        elif t.startswith(long + "="):
-            values.append(t[len(long) + 1:])
-        elif t.startswith(short) and not t.startswith("--") and len(t) > len(short):
-            values.append(t[len(short):])
-    return values
+# `gh pr create` flags that take a value, plus the global -R; short form -> long form.
+VALUE_FLAGS = {"-t": "--title", "-b": "--body", "-F": "--body-file", "-B": "--base",
+               "-H": "--head", "-r": "--reviewer", "-a": "--assignee", "-l": "--label",
+               "-p": "--project", "-m": "--milestone", "-T": "--template", "-R": "--repo",
+               "--recover": "--recover"}
+FILL_FLAGS = ("-f", "--fill", "--fill-first", "--fill-verbose")
+# The PR text stays editable (browser, editor) or is not used to create a PR (dry run);
+# --recover, checked separately, replaces it with saved input.
+OPEN_TEXT = ("-w", "--web", "-e", "--editor", "--dry-run")
+
+
+def parse_flags(tokens):
+    """({long flag: [values]}, {other flags}) in pflag syntax (`--x v`, `--x=v`, `-x v`,
+    `-xv`); a value is never read as a flag. None when a value flag has no value."""
+    values, others, i = {}, set(), 0
+    while i < len(tokens) and tokens[i] != "--":
+        t = tokens[i]
+        long = None
+        if t.startswith("--"):
+            name, attached, value = t.partition("=")
+            if name in VALUE_FLAGS.values():
+                long = name
+        elif t[:2] in VALUE_FLAGS:
+            long, value = VALUE_FLAGS[t[:2]], t[2:]
+            attached = value
+        if long is None:
+            others.add(t)
+        else:
+            if not attached:
+                i += 1
+                if i == len(tokens):
+                    return None
+                value = tokens[i]
+            values.setdefault(long, []).append(value)
+        i += 1
+    return values, others
+
+
+def last(values):
+    return values[-1] if values else None
+
+
+def autofill(cwd, base, mode):
+    """(title, body) that gh's `mode` fill flag derives from the commits since `base`: one
+    commit or --fill-first gives the first commit's subject and body; several give the
+    branch name with `-`/`_` as spaces and the subjects, plus bodies for --fill-verbose."""
+    # gh lists `log --cherry base...head`: no merges, patch-equivalent commits kept.
+    log = git_out(["log", "--reverse", "--right-only", "--no-merges", "--format=%s%x00%b%x01",
+                   "refs/remotes/%s...HEAD" % base], cwd)
+    commits = [c.lstrip("\n").split("\0", 1) for c in (log or "").split("\1") if c.strip()]
+    if not commits:
+        return None
+    if len(commits) == 1 or mode == "--fill-first":
+        return commits[0][0], commits[0][1]
+    branch = git_out(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
+    if branch is None:
+        return None
+    verbose = mode == "--fill-verbose"
+    return re.sub("[-_]", " ", branch), "\n".join(s + ("\n" + b if verbose else "")
+                                                  for s, b in commits)
 
 
 def pr_text(rest, cwd):
-    """The title and body `gh pr create` will use, or None when the command does not fix
-    them (interactive, stdin body, command substitution, unparsable quoting)."""
+    """The title and body `gh pr create` will use, or None when unsure (CI checks those).
+    Only a simple command with literal values is judged; as in gh, the last flag wins,
+    --body-file beats --body, and explicit values beat a fill flag."""
     try:
-        lexer = shlex.shlex(rest, posix=True, punctuation_chars=True)
+        lexer = shlex.shlex(rest, posix=True, punctuation_chars="();<>|&\n")
+        lexer.whitespace = " \t\r"
+        lexer.commenters = ""
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
         return None
+    # The command ends at any unquoted operator, redirection, newline or comment. A quoted
+    # value that looks like one also ends it, and parse_flags then reports the missing value.
     for i, t in enumerate(tokens):
-        if t in (";", "&&", "||", "|", "&", "(", ")"):
+        if set(t) <= set("();<>|&\n") or t.startswith("#"):
             tokens = tokens[:i]
             break
-    parts = flag_values(tokens, "--title", "-t") + flag_values(tokens, "--body", "-b")
-    for path in flag_values(tokens, "--body-file", "-F"):
+    parsed = parse_flags(tokens)
+    if parsed is None:
+        return None
+    values, others = parsed
+    if others & set(OPEN_TEXT) or "--recover" in values:
+        return None
+    title = last(values.get("--title"))
+    body = last(values.get("--body"))
+    body_file = last(values.get("--body-file"))
+    if body_file is not None:
         try:  # also `-` (stdin): no such file, so the text is unknown
-            with open(os.path.join(cwd, path), errors="replace") as f:
-                parts.append(f.read())
+            with open(os.path.join(cwd, body_file), errors="replace") as f:
+                body_text = f.read()
         except OSError:
             return None
-    if any(t in ("-f", "--fill", "--fill-first", "--fill-verbose") for t in tokens):
-        parts.append(git_out(["log", "--format=%B", TRUSTED_REF + "..HEAD"], cwd) or "")
-    elif not parts:
+    # The shell expands `$`/backticks before gh runs; file and commit text is literal.
+    if any("$" in v or "`" in v for v in (title or "", "" if body_file else body or "")):
         return None
-    text = "\n".join(parts)
-    return None if "$(" in text or "`" in text else text
+    if body_file is not None:
+        body = body_text
+    fills = others & set(FILL_FLAGS)
+    if len(fills) > 1:
+        return None
+    if fills and (title is None or body is None):
+        base = last(values.get("--base")) or configured_base(cwd)
+        base = origin(base) if base else default_base(cwd)
+        filled = autofill(cwd, base, fills.pop()) if base else None
+        if filled is None:
+            return None
+        title = filled[0] if title is None else title
+        body = filled[1] if body is None else body
+    if title is None or body is None:
+        return None
+    return title + "\n" + body
 
 
 def ticket_reason(top, cwd, rest):
@@ -151,6 +226,23 @@ def configured_base(cwd):
     return git_out(["config", "--get", "branch.%s.gh-merge-base" % ref[len("refs/heads/"):]], cwd)
 
 
+def create_base(command, cwd):
+    """(base, error) for `gh pr create`: its --base, else the branch's gh-merge-base, else
+    None for the repo default; error when the command names several bases."""
+    bases = {origin(m.group(2)) for m in BASE_FLAG.finditer(command)}
+    if len(bases) > 1:
+        return None, "the command names several bases (%s)." % ", ".join(sorted(bases))
+    base = bases.pop() if bases else configured_base(cwd)
+    return (origin(base) if base else None), None
+
+
+def default_base(cwd):
+    """origin/<the repo's default branch> from GitHub, or None when gh fails."""
+    default = gh_query(["repo", "view", "--json", "defaultBranchRef", "-q",
+                        ".defaultBranchRef.name"], cwd)
+    return origin(default) if default else None
+
+
 def evaluate(source, cwd, sub, args, command, match_text):
     """Return None to allow, else the reason to block."""
     if sub == "ready":
@@ -162,18 +254,16 @@ def evaluate(source, cwd, sub, args, command, match_text):
         if HEAD_FLAG.search(command):
             return "--head names a branch other than the checkout's.\n" \
                    "Run `gh pr create` from that branch's worktree without --head."
-        bases = {origin(m.group(2)) for m in BASE_FLAG.finditer(command)}
-        if len(bases) > 1:
-            return "the command names several bases (%s)." % ", ".join(sorted(bases))
-        base = bases.pop() if bases else configured_base(cwd)
-        extra = ["--base", origin(base)] if base else []
+        base, error = create_base(command, cwd)
+        if error:
+            return error
+        extra = ["--base", base] if base else []
     res = run_check(source, cwd, extra)
     if res.returncode == 0 and sub == "create" and not extra:
         # Only a passing check pays for the default-branch lookup.
-        default = gh_query(["repo", "view", "--json", "defaultBranchRef", "-q",
-                            ".defaultBranchRef.name"], cwd)
+        default = default_base(cwd)
         if default:
-            res = run_check(source, cwd, ["--base", origin(default)])
+            res = run_check(source, cwd, ["--base", default])
     if res.returncode == 0:
         return None
     reason = res.stderr.decode(errors="replace").strip()
