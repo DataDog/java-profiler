@@ -426,7 +426,8 @@ ddprof-lib/build/
 ```
 
 The final artifact structure for deployment is `META-INF/native-libs/{os}-{arch}/libjavaProfiler.{so|dylib}`,
-with separate debug symbol packages for production debugging support.
+with separate debug symbol packages for production debugging support. The manifest of each
+library jar (`assemble<Config>Jar`) records its version (`Implementation-Version`) and the commit it was built from (`Git-Commit`).
 
 ## Future Considerations
 
