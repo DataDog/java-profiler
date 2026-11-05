@@ -232,7 +232,7 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 | `check-copyright.py` | Source files the branch adds or modifies since `--base` (default: the PR base in CI, else `origin/main`) follow the `AGENTS.md` copyright rule. |
 | `check-claude-md.py` | `CLAUDE.md` is the canonical redirect stub to `AGENTS.md`; `--write` restores it. |
 
-`.githooks/pre-push` runs `check-copyright.py` and `check-claude-md.py` on every pushed branch commit, so a violation stops the push before CI sees it (see `review-marker.py` below for the trust model). The copyright base is the branch's `gh-merge-base` if set. Otherwise it is whichever of `origin/main` and `origin/release/*` the commit adds the fewest commits to, so a backport is compared with its release branch, as in CI.
+`.githooks/pre-push` runs `check-copyright.py` and `check-claude-md.py` on every pushed branch commit, so a violation stops the push before CI sees it (see `review-marker.py` below for the trust model). The copyright base is the branch's `gh-merge-base` if that ref is fetched. Otherwise it is whichever of `origin/main` and `origin/release/*` the commit's first-parent chain adds the fewest commits to, so a backport is compared with its release branch, as in CI. A PR stacked on another feature branch is compared with `main` unless its `gh-merge-base` names the parent.
 
 **Usage:**
 ```bash

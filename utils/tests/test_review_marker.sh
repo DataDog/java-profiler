@@ -463,11 +463,17 @@ printf '// Copyright 2026, Datadog, Inc.\nint b;\n' > backport.cpp && git add . 
 expect "pre-push compares a backport with its release branch" 0 "" \
   prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
 printf 'int n;\n' > nohdr.cpp && git add . && git commit -qm "no header"
-expect "pre-push still checks a backport's own commits" 1 "nohdr.cpp: new file has no" \
+expect "pre-push still blocks a violation in a backport's own commit" 1 "nohdr.cpp: new file has no" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+git config branch.backport.gh-merge-base release/9.9
+expect "pre-push ignores an unfetched gh-merge-base" 1 "against origin/release/1.0" \
   prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
 git reset -q --hard HEAD~1
 git config branch.backport.gh-merge-base main
 expect "pre-push honours the branch's gh-merge-base" 1 "stale.cpp: Datadog copyright ends in 2025" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+git config branch.backport.gh-merge-base origin/main
+expect "pre-push names the base it compared with" 1 "against origin/main (set branch.backport.gh-merge-base" \
   prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
 git config --unset branch.backport.gh-merge-base
 git checkout -q main
@@ -477,6 +483,16 @@ git checkout -qb feature2 main
 printf '// Copyright 2026, Datadog, Inc.\nint f;\n' > f2.cpp && git add . && git commit -qm f2
 expect "pre-push compares a branch off main with main, not a release branch" 0 "" \
   prepush "refs/heads/feature2 $(git rev-parse HEAD) refs/heads/feature2 $Z"
+# Forward port: release/1.1 has more own commits than main gained since its cut.
+git checkout -qb release/1.1 main
+for i in 1 2; do echo "fix $i" >> b.txt && git commit -qam "release fix $i"; done
+git push -q origin release/1.1
+git checkout -q main
+printf '// Copyright 2025, Datadog, Inc.\nint m2;\n' > mainstale2.cpp
+git add mainstale2.cpp && git commit -qm "stale header after the cut" && git push -q origin main
+git checkout -qb forward main && git merge -q --no-ff -m "forward-port release/1.1" origin/release/1.1
+expect "pre-push compares a forward port with main" 0 "" \
+  prepush "refs/heads/forward $(git rev-parse HEAD) refs/heads/forward $Z"
 git checkout -q feature
 
 marker write --tool t >/dev/null
