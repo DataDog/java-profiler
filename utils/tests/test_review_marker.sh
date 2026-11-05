@@ -454,6 +454,31 @@ expect "pre-push checks the pushed commit, not untracked files" 0 "" \
   prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
 rm dirty.cpp
 
+# The copyright base follows the branch the push forks from, as CI follows the PR base.
+git checkout -qb release/1.0 main
+printf '// Copyright 2025, Datadog, Inc.\nint s;\n' > stale.cpp
+git add stale.cpp && git commit -qm "earlier cherry-pick, stale header" && git push -q origin release/1.0
+git checkout -qb backport release/1.0
+printf '// Copyright 2026, Datadog, Inc.\nint b;\n' > backport.cpp && git add . && git commit -qm backport
+expect "pre-push compares a backport with its release branch" 0 "" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+printf 'int n;\n' > nohdr.cpp && git add . && git commit -qm "no header"
+expect "pre-push still checks a backport's own commits" 1 "nohdr.cpp: new file has no" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+git reset -q --hard HEAD~1
+git config branch.backport.gh-merge-base main
+expect "pre-push honours the branch's gh-merge-base" 1 "stale.cpp: Datadog copyright ends in 2025" \
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+git config --unset branch.backport.gh-merge-base
+git checkout -q main
+printf '// Copyright 2025, Datadog, Inc.\nint m;\n' > mainstale.cpp
+git add mainstale.cpp && git commit -qm "stale header on main" && git push -q origin main
+git checkout -qb feature2 main
+printf '// Copyright 2026, Datadog, Inc.\nint f;\n' > f2.cpp && git add . && git commit -qm f2
+expect "pre-push compares a branch off main with main, not a release branch" 0 "" \
+  prepush "refs/heads/feature2 $(git rev-parse HEAD) refs/heads/feature2 $Z"
+git checkout -q feature
+
 marker write --tool t >/dev/null
 TICKET_MSG="reference no ticket"
 expect "hook blocks pr create without a ticket" 2 "$TICKET_MSG" hook 'gh pr create --title "Fix" --body "Details"'

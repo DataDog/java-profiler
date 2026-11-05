@@ -43,11 +43,34 @@ def trusted_source(path):
     return res.stdout.decode() if res.returncode == 0 else None
 
 
-def source_checks_pass(local_sha):
+def git_lines(*args):
+    res = subprocess.run(["git", *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return res.stdout.decode().split() if res.returncode == 0 else None
+
+
+def copyright_base(branch, local_sha):
+    """Base for the copyright check, as the PR will be compared in CI: the branch's
+    `gh-merge-base` if set, else whichever of origin/main and origin/release/* the commit
+    adds the fewest commits to (a backport forks from its release branch); main on a tie."""
+    configured = git_lines("config", "--get", "branch.%s.gh-merge-base" % branch)
+    if configured:
+        name = configured[0]
+        return name if name.startswith("origin/") else "origin/" + name
+    best, best_count = "origin/main", None
+    for ref in [TRUSTED_REF] + (git_lines("for-each-ref", "--format=%(refname)",
+                                          "refs/remotes/origin/release/*") or []):
+        count = git_lines("rev-list", "--count", "%s..%s" % (ref, local_sha))
+        if count and (best_count is None or int(count[0]) < best_count):
+            best, best_count = ref[len("refs/remotes/"):], int(count[0])
+    return best
+
+
+def source_checks_pass(branch, local_sha):
     """Run the CI source checks that are cheap enough for every push on the pushed commit;
     False when one reports violations. Checks not on TRUSTED_REF yet are skipped."""
     ok = True
-    checks = (("check-copyright.py", ["--base", "origin/main"]), ("check-claude-md.py", []))
+    checks = (("check-copyright.py", ["--base", copyright_base(branch, local_sha)]),
+              ("check-claude-md.py", []))
     for script, extra in checks:
         source = trusted_source("utils/" + script)
         if source is None:
@@ -77,13 +100,13 @@ def main():
         local_ref, local_sha, remote_ref, _ = parts
         if set(local_sha) == {"0"} or not remote_ref.startswith(HEADS):
             continue  # deletions (all-zero id, SHA-1 or SHA-256) and tags are not gated
-        if not source_checks_pass(local_sha):
+        remote_branch = remote_ref[len(HEADS):]
+        branch = marker_branch(local_ref, remote_branch)
+        if not source_checks_pass(branch, local_sha):
             print("pre-push: fix the files above (CI runs the same checks), then push again.",
                   file=sys.stderr)
             blocked = True
             continue
-        remote_branch = remote_ref[len(HEADS):]
-        branch = marker_branch(local_ref, remote_branch)
         res = subprocess.run([sys.executable, "-I", "-c", source, "check", "--branch", branch,
                               "--commit", local_sha], stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE)
