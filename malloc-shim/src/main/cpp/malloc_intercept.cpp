@@ -11,12 +11,21 @@
 #ifdef __linux__
 static int sighandler_tid = -1;
 
-extern void *__libc_malloc(size_t size);
+extern "C" void *__libc_malloc(size_t size);
 
-void *malloc(size_t size) {
+/*
+ * malloc and set_sighandler_tid must keep C linkage and default visibility:
+ * malloc is interposed only when the dynamic linker resolves the unmangled
+ * "malloc" name against this preloaded library, and Shims (debugSupport.cpp)
+ * looks up "set_sighandler_tid" by the same unmangled name. The build compiles
+ * with -fvisibility=hidden, so C++ mangling or hidden visibility silently
+ * defeats both.
+ */
+extern "C" __attribute__((visibility("default"))) void *malloc(size_t size) {
     void *result = NULL;
-    int tid = sighandler_tid != -1 ? syscall(__NR_gettid) : -2;
-    if (tid == sighandler_tid) {
+    int handler_tid = __atomic_load_n(&sighandler_tid, __ATOMIC_ACQUIRE);
+    int tid = handler_tid != -1 ? syscall(__NR_gettid) : -2;
+    if (tid == handler_tid) {
         fprintf(stderr, "!!!! MALLOC in signal handler !!!\n");
         raise(SIGSEGV);
     } else {
@@ -26,7 +35,7 @@ void *malloc(size_t size) {
     return result;
 }
 
-void set_sighandler_tid(int tid) {
-    sighandler_tid = tid;
+extern "C" __attribute__((visibility("default"))) void set_sighandler_tid(int tid) {
+    __atomic_store_n(&sighandler_tid, tid, __ATOMIC_RELEASE);
 }
 #endif // __linux__
