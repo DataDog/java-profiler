@@ -57,6 +57,10 @@ static void *alignedAlloc(std::size_t size, std::size_t alignment, bool nothrow)
     return ptr;
 }
 
+// TSan's runtime (libclang_rt.tsan_cxx, linked --whole-archive) defines strong
+// operator new/delete symbols; interposing here fails the TSan link. Without
+// the interposition the counting is inert, so SetUp() skips the fixture under TSan.
+#ifndef TSAN_ENABLED
 void *operator new(std::size_t size) { return plainAlloc(size, false); }
 void *operator new[](std::size_t size) { return plainAlloc(size, false); }
 void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
@@ -94,6 +98,7 @@ void operator delete(void *ptr, const std::nothrow_t &) noexcept { free(ptr); }
 void operator delete[](void *ptr, const std::nothrow_t &) noexcept { free(ptr); }
 void operator delete(void *ptr, std::align_val_t, const std::nothrow_t &) noexcept { free(ptr); }
 void operator delete[](void *ptr, std::align_val_t, const std::nothrow_t &) noexcept { free(ptr); }
+#endif  // !TSAN_ENABLED
 
 // RAII owner of one counting interval: construction zeroes the count and
 // publishes counting, destruction closes it. All callers are serial scopes on
@@ -118,6 +123,9 @@ class ReferenceChainsAllocationTest : public ::testing::Test,
                                       public ReferenceChainsMockHeap {
 protected:
     void SetUp() override {
+#if defined(TSAN_ENABLED)
+        GTEST_SKIP() << "operator new/delete interposition is compiled out under TSan (runtime owns them); counting is inert";
+#endif
         setUp();
         alloc_accounting_hook = &accountingHook;
     }
