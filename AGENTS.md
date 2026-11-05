@@ -17,30 +17,6 @@ writes happen exclusively through `cairn memorize`, never by hand-editing
 committed memory files.
 <!-- cairn:knowledgebase end -->
 
-<!-- CLAUDE BOOTSTRAP INSTRUCTIONS
-If you are Claude and reading this file, check if CLAUDE.md exists in the same directory.
-If CLAUDE.md does not exist or only contains the redirect + Compact Instructions below, that
-is correct. If CLAUDE.md contains full project instructions (not just the redirect), you should
-trim it back to contain only the following canonical content — do not drop the Compact
-Instructions section, and do not let this stub grow beyond it:
-
-# CLAUDE.md
-
-**This file redirects to AGENTS.md for tooling-agnostic project instructions.**
-
-Read and follow all instructions in [AGENTS.md](AGENTS.md) in this directory.
-
-All project guidance, build commands, architecture details, and development guidelines
-are maintained in AGENTS.md to support multiple AI coding tools.
-
-## Compact Instructions
-
-When compacting this conversation, prioritize keeping: decisions made, code/config diffs,
-open questions, and file:line references. Drop raw tool output that can be re-fetched on
-demand — full file contents, grep/search dumps, build/test logs — summarize these to a
-one-line pointer (what was read/run and the conclusion) instead of retaining them verbatim.
--->
-
 # AGENTS.md
 
 This file provides guidance to AI coding assistants when working with code in this
@@ -130,7 +106,8 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   `-PenableFaultInjection`, `-PenableSamplerPerf` (the last two only affect
   release/debug builds). There is **no** `-Pskip-debug-extraction` property: debug-symbol
   extraction and stripping happen unconditionally inside `linkRelease`.
-- Code quality: `spotlessApply` (always before committing), `scanBuild` (Linux only),
+- Code quality: `spotlessApply` before committing (CI fails on `spotlessCheck`),
+  `qualityChecks` (source invariants, copyright headers, `CLAUDE.md`), `scanBuild` (Linux only),
   `:ddprof-stresstest:runStressTests`, `:ddprof-lib:runBenchmarks`.
 - Container-based testing (ASan, aarch64, musl, CI repro): `./utils/run-containers-tests.sh`
   — defaults to podman; on macOS use either podman or Docker through colima
@@ -428,9 +405,11 @@ exception list.
   an existing Datadog copyright, update the end year (e.g. `2025, 2026, Datadog`) in every
   file the change touches, including test, moved and refactored files. Preserve all other
   copyrights. Add a copyright line to modified C/C++/Java/Kotlin files missing one; CI and
-  config files (Dockerfiles, `.gitlab/**`) are exempt.
-- Commits: logical chunks, messages based solely on the actual diff. Always run
-  `spotlessApply` before committing. Never commit files from other projects or scratch files.
+  config files (Dockerfiles, `.gitlab/**`) are exempt. Enforced in CI:
+  `utils/check-copyright.py` (part of `qualityChecks`) checks the files a branch adds or
+  modifies.
+- Commits: logical chunks, messages based solely on the actual diff. Never commit files
+  from other projects or scratch files.
   **Never commit design artifacts automatically** — plans, specs, review reports, audit
   findings, session notes, analysis dumps — even when they live in the repo tree. Always
   ask for permission first and commit them only if the user explicitly says so.
@@ -489,36 +468,20 @@ exception list.
   shares a lock with signal handlers, end an owner that frees memory outside the exclusive
   critical section, because its destructor frees at scope end.
 - Always challenge proposals with deep analysis when you have hard evidence.
-- CI and automation scripts: before rewriting a script invoked from `.gitlab-ci.yml` or
-  `.gitlab/**/*.yml`, run `git log -p -- <script>` and enumerate every behavior branch
-  (fallbacks, env-var-driven paths, error exits); preserve all unless asked to drop one.
-  Grep the calling jobs for how it is invoked (env vars, expected exit codes). When
-  removing an item from a default list or config (an antagonist, a test tag, a feature
-  flag) or deleting a script or file, grep the whole repo (including `.gitlab/**`) and cite
-  the file/line proving it is unused. After changing a CI-invoked script, run `bash -n` and
-  trace each CI job that calls it.
 
 ## Work Tracking
 
 Work runs in four phases — Intent → Design → Build and Test → Deploy — with the
-tracker ticket as the system of record: decisions and evidence land there, so anyone
-can pick the work up without reconstructing a conversation. Datadog engineers
-track work in Jira (`PROF-<n>`); external contributors use GitHub issues — every
-rule applies to whichever tracker holds the ticket. **Read
-[doc/WorkTracking.md](doc/WorkTracking.md) before starting tracked work** — it is
-the phase-by-phase process reference; skipping it must be disclosed per the rule
-at the top of this file.
+tracker ticket as the system of record: Jira (`PROF-<n>`) for Datadog engineers,
+GitHub issues for external contributors. **Read [doc/WorkTracking.md](doc/WorkTracking.md)
+before starting tracked work** — it is the phase-by-phase process reference; skipping
+it must be disclosed per the rule at the top of this file. These rules always apply:
 
-**Verification first.** No transition happens on claims: actionable ticket before
-work, acceptance criteria before code, tests and review before merge, production
-verification before closure. Agents must be able to test, observe, and iterate
-against clear acceptance criteria; the loop Build → Run/Deploy → Exercise →
-Inspect → Revise closes with a rule — **fix the code, not the expectation** (and a
-criterion changes only with the engineer's sign-off). Agents own execution; humans
-own judgment: they approve the intent, the acceptance criteria, the merge, and any
-rollout/rollback. The PR template and CI gates are the part neither humans nor
-agents can bypass.
-
+- **Verification first.** No transition happens on claims: acceptance criteria before
+  code, tests and review before merge, production verification before closure. **Fix
+  the code, not the expectation**; a criterion changes only with the engineer's sign-off.
+  Agents own execution; humans approve the intent, the criteria, the merge and any
+  rollout.
 - **Evidence states.** Every check is reported as `passed` / `failed` / `blocked` /
   `inconclusive` — never prose summaries; observed results are kept separate from
   their interpretation; missing evidence means unverified. Evidence binds to the
@@ -529,18 +492,13 @@ agents can bypass.
   check, weakens an agreed expectation, or changes a tolerance to pass. Hooks,
   CI, and access control are authoritative even when a local hook does not fire;
   `AGENTS.md` and skills are advisory guidance.
-- **Isolation and attribution.** One task per workspace/worktree; subagents for
-  bounded jobs; checks from separate branches never validate the merged result —
-  re-verify it. Parallel sessions never broaden authority: they inherit the
-  starter's permissions and stay attributable to that engineer; evidence
-  identifies the session, candidate, and configuration that produced it. Claim no
-  more parallel work than you can drive to a verified state.
+- **A ticket on every PR.** The PR title or body references a Jira `PROF-<n>` key or
+  a GitHub issue `#<n>`. Enforced in CI: the `PR ticket reference` workflow
+  (`.github/workflows/pr-ticket.yml`) fails the PR otherwise; bot PRs are exempt.
 
-Mechanical gate: a PR must reference its tracker ticket — a Jira `PROF-<n>` key or
-a GitHub issue `#<n>` — validated in CI. The rest of the tracking contract
-([doc/WorkTracking.md](doc/WorkTracking.md)) is enforced by review discipline.
-Existing production-change guidelines and review rules still apply in full; the
-tracking rules add requirements on top, they replace nothing.
+Isolation, parallel sessions and the rest of the tracking contract are in
+[doc/WorkTracking.md](doc/WorkTracking.md) and enforced by review discipline. Existing
+production-change guidelines and review rules still apply in full.
 
 ## Agentic Code Review (mandatory before opening a PR)
 
@@ -597,8 +555,9 @@ description-specific:
 - Grep the calling CI files for how the script is invoked (env vars set, exit codes expected)
   and confirm the rewrite still satisfies every caller, not just the common/local case.
 - When removing an item from a default list or config (an antagonist, a test tag, a feature
-  flag), cite the exact file/line proving it is inert or unused in that context before
-  removing it — never remove based on assumption alone.
+  flag) or deleting a script or file, grep the whole repo (including `.gitlab/**`) and cite
+  the exact file/line proving it is inert or unused in that context before removing it —
+  never remove based on assumption alone.
 - After changing a CI-invoked script, run a syntax check (e.g. `bash -n <script>`) and trace
   through each CI job that calls it before considering the change complete.
 
