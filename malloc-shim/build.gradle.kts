@@ -38,8 +38,10 @@ simpleNativeLib {
 // Validation harness for the signal-allocation detector. The harness compiles
 // in the production debugSupport.cpp so the Shims wiring chain (dlsym lookup
 // and pointer store) is exercised exactly as the profiler builds it.
+// Gated to glibc Linux: libdebug.so resolves __libc_malloc, which musl does
+// not export, so the preloaded run cannot work there.
 val harnessBinary = layout.buildDirectory.file("validate/malloc_shim_validate")
-val validateOnlyIf = PlatformUtils.currentPlatform == Platform.LINUX && !PlatformUtils.isNativeSkipped(project)
+val validateOnlyIf = PlatformUtils.currentPlatform == Platform.LINUX && !PlatformUtils.isMusl() && !PlatformUtils.isNativeSkipped(project)
 
 val compileValidateHarness = tasks.register("compileValidateHarness") {
   group = "verification"
@@ -88,7 +90,7 @@ val compileValidateHarness = tasks.register("compileValidateHarness") {
   }
 
   if (!validateOnlyIf) {
-    // Non-Linux or skip-native: never executed (onlyIf { validateOnlyIf });
+    // Non-glibc-Linux or skip-native: never executed (onlyIf { validateOnlyIf });
     // skip the compiler probe so configuration cannot fail.
     enabled = false
   }
