@@ -38,7 +38,7 @@ simpleNativeLib {
 val harnessBinary = layout.buildDirectory.file("validate/malloc_shim_validate")
 val validateOnlyIf = PlatformUtils.currentPlatform == Platform.LINUX && !PlatformUtils.isNativeSkipped(project)
 
-val compileValidateHarness by tasks.registering(Exec::class) {
+val compileValidateHarness = tasks.register("compileValidateHarness") {
   group = "verification"
   description = "Compile the malloc-shim signal-allocation validation harness"
   onlyIf { validateOnlyIf }
@@ -51,19 +51,21 @@ val compileValidateHarness by tasks.registering(Exec::class) {
   inputs.file(file("src/main/public/debug.h"))
   outputs.file(harnessBinary)
 
-  if (validateOnlyIf) {
-    val validateCompiler = PlatformUtils.findCompiler(project)
+  doLast {
+    // Resolved at execution, not configuration: the probe must not run for
+    // e.g. 'help' on a Linux host without a C++ toolchain.
+    val compiler = PlatformUtils.findCompiler(project)
     // The harness and debugSupport.cpp use no C++ runtime features, so the
     // C++ standard library is not linked: some minimal toolchains ship clang++
     // without usable libstdc++ link-time paths.
     val args = mutableListOf(
-      validateCompiler,
+      compiler,
       "-O0",
       "-g",
       "-std=c++17",
       "-DDEBUG",
     )
-    if (validateCompiler.contains("clang")) {
+    if (compiler.contains("clang")) {
       args.add("-nostdlib++")
     }
     args.addAll(
@@ -76,15 +78,20 @@ val compileValidateHarness by tasks.registering(Exec::class) {
         "-o", harnessBinary.get().asFile.absolutePath,
       ),
     )
-    commandLine(args)
-  } else {
+    val proc = ProcessBuilder(args).inheritIO().start()
+    if (proc.waitFor() != 0) {
+      throw org.gradle.api.GradleException("malloc-shim validate harness compilation failed")
+    }
+  }
+
+  if (!validateOnlyIf) {
     // Non-Linux or skip-native: never executed (onlyIf { validateOnlyIf });
     // skip the compiler probe so configuration cannot fail.
     enabled = false
   }
 }
 
-val validateControl by tasks.registering(Exec::class) {
+val validateControl = tasks.register("validateControl", Exec::class) {
   group = "verification"
   description = "Run the malloc-shim harness without LD_PRELOAD (silent-noop control)"
   onlyIf { validateOnlyIf }
@@ -93,7 +100,7 @@ val validateControl by tasks.registering(Exec::class) {
   commandLine(harnessBinary.get().asFile.absolutePath, "--control")
 }
 
-val validateFull by tasks.registering(Exec::class) {
+val validateFull = tasks.register("validateFull", Exec::class) {
   group = "verification"
   description = "Run the malloc-shim detection matrix with libdebug.so preloaded"
   onlyIf { validateOnlyIf }
