@@ -87,7 +87,7 @@ fi
 # but an empty value must never silently pick an arbitrary candidate. The
 # message pins the JDK_VERSION non-empty guard — with it removed, an unset
 # value matches every home and lands in the ambiguous-match branch instead.
-out=$("$SCRIPT_UNDER_TEST" "${WORK}/root2" 2>&1)
+out=$(unset JDK_VERSION; "$SCRIPT_UNDER_TEST" "${WORK}/root2" 2>&1)
 rc=$?
 if [ "${rc}" -ne 0 ] && [[ "${out}" == *"none matches JDK_VERSION=''"* ]]; then
   pass "several JDKs with JDK_VERSION unset fail"
