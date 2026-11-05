@@ -132,7 +132,7 @@ Two-JDK pattern: `JAVA_HOME` (build, JDK 17+, Gradle runs on 21 LTS) runs Gradle
 Details and troubleshooting:
 [build-logic/README.md](build-logic/README.md),
 [doc/building/NativeBuildPlugin.md](doc/building/NativeBuildPlugin.md) (task DSL, debug-symbol
-extraction, artifact layout),
+extraction, artifact layout and jar manifest),
 [doc/building/BuildSystemGuide.md](doc/building/BuildSystemGuide.md),
 [doc/building/Versioning.md](doc/building/Versioning.md) (version from git tags),
 [doc/building/JdkUpgrades.md](doc/building/JdkUpgrades.md) (JDK upgrade touchpoints).
