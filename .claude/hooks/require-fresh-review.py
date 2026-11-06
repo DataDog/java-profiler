@@ -22,6 +22,8 @@ DIR_CHANGE = re.compile(r"(^|[\s;&|(){}])(cd|pushd|popd)(\s|$)|\bGIT_(DIR|WORK_T
 GIT_STATE_CHANGE = re.compile(r"\bgit\b[^\n;&|]*?\s(commit|switch|checkout|rebase|reset|"
                               r"merge|cherry-pick|am|pull|revert|stash|restore)\b")
 TRUSTED_REF = "refs/remotes/origin/main"  # qualified: a tag named origin/main must not win
+# git_out and the trusted-ref loading are copied in require-fresh-review.py,
+# require-gradle-wrapper.py and protect-knowledgebase.py; change all three together.
 HEAD_FLAG = re.compile(r"(^|\s)(--head\b|-H)")
 BASE_FLAG = re.compile(r"(?:^|\s)(?:--base[= ]\s*|-B\s*)(['\"]?)([^\s'\"]+)\1")
 

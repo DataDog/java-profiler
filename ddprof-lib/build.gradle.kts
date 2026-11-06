@@ -517,6 +517,7 @@ tasks.register("qualityChecks") {
     "check-tracked-artifacts.py",
     "check-copyright.py",
     "check-claude-md.py",
+    "check-knowledgebase.py",
   ).map { File(root, "utils/$it") }
 
   doLast {
