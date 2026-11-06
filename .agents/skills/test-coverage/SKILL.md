@@ -17,7 +17,7 @@ matrix. Optional arguments: `ref=<git ref>` (default `origin/main`) and
 Stop and report on the first failure:
 - A container runtime answers: `podman info`, else `docker info`. Use it as `RT` for
   every cell. Docker on macOS needs `colima start` first.
-- The host has `java` on `PATH` and a gcovr at least as new as the one in the base
+- The host has `java`, `python3` and `curl` on `PATH`, and a gcovr at least as new as the one in the base
   images (checked below): an older gcovr rejects the cells' tracefiles ("Wrong format
   version"). If the host's is older or missing, do not change the user's Python;
   after step 2 create `python3 -m venv "$RUN/tools/venv"`, install
@@ -52,8 +52,9 @@ for c in glibc-x64 glibc-aarch64 musl-x64 musl-aarch64; do
 done
 ```
 
-Keep `RUN` under `$HOME`: colima shares only `$HOME` with its VM. Check that the
-worktree's `utils/run-containers-tests.sh` accepts `--coverage-out`
+With Docker on macOS (colima), check that `RUN` starts with `$HOME/` and stop if it
+does not: colima shares only `$HOME` with its VM, so every cell would be `blocked`.
+Check that the worktree's `utils/run-containers-tests.sh` accepts `--coverage-out`
 (`grep -q -- --coverage-out`); if it does not, the ref predates coverage mode — stop.
 
 ## 3. Subagents
@@ -79,7 +80,9 @@ Give each agent this brief, filled in:
 > in worktree `<RUN>/wt-<libc>-<arch>`. JDKs, in order: `<list>`. Runtime: `<RT>`.
 > For each JDK `<jdk>`, let `<cell>` be `<RUN>/cells/<libc>-<arch>-<jdk>` and `<log>`
 > be `<RUN>/logs/<libc>-<arch>-<jdk>.log` (absolute paths; `mkdir -p <RUN>/logs`).
-> Start the cell detached so no tool timeout kills it:
+> Before every start, retries included, run `rm -rf <cell> <cell>.exit` so the wait
+> below cannot end on an earlier attempt's result. Start the cell detached so no tool
+> timeout kills it:
 > `cd <wt> && nohup bash -c './utils/run-containers-tests.sh --container=<RT>
 > --libc=<libc> --arch=<arch> --jdk=<jdk> --coverage-out=<cell> [--tests=<pattern>];
 > echo $? > <cell>.exit' > <log> 2>&1 &`.
@@ -90,11 +93,14 @@ Give each agent this brief, filled in:
 > `passed` (exit 0); `failed` (a task failed on its own terms: compile error, test
 > failures, gtest failure — name the task and tests); `blocked` (no
 > `cell.properties`: image build, download or container failure; or Gradle was
-> killed: "Gradle build daemon disappeared unexpectedly", exit 137, `Killed`). If
+> killed: "Gradle build daemon disappeared unexpectedly", exit 137, `Killed`; or exit
+> 70: the export to `<cell>` failed). If
 > the log says a coverage tool is missing (`checkCoverageTools`), the cached base
 > image predates it: rerun that cell once with `--rebuild-base`. Retry any other
-> `blocked` cell once. Do not edit code, change tests or retry `failed` cells. Never print more than 30 log lines. Never put the word "gradlew" in a shell
-> command: a hook blocks it — search logs for `What went wrong` or `FAILED` instead.
+> `blocked` cell once. Do not edit code, change tests or retry `failed` cells. Never
+> print more than 30 log lines. Never put the word "gradlew" in a shell command, not
+> even in a grep pattern: a hook blocks it — search logs for `What went wrong` or
+> `FAILED` instead.
 > Report one line per cell: jdk, status, gradle_exit, failing task/tests or the
 > blocking error, log path.
 
@@ -103,13 +109,15 @@ progress, list which `$RUN/cells/*.exit` files exist.
 
 ## 4. Merge
 
-After all four agents send their final reports, merge every cell that has `cell.properties` (a
-`failed` cell still holds the coverage of the tests that ran):
+After all four agents send their final reports, merge every cell that has
+`cell.properties`. A `failed` cell still holds the Java coverage of the tests that ran,
+but a failed gtest stops the build before the C++ report, so such a cell has no C++
+tracefile. `summary.md` marks, per cell, whether it is in each report. Use any of the
+run's worktrees as `WT`:
 
 ```bash
 cells=(); for p in "$RUN"/cells/*/cell.properties; do cells+=("${p%/cell.properties}"); done
-"$RUN/wt-glibc-x64/utils/merge-coverage.sh" --source-root="$RUN/wt-glibc-x64" \
-  --out="$RUN/merged" "${cells[@]}"
+"$WT/utils/merge-coverage.sh" --source-root="$WT" --out="$RUN/merged" "${cells[@]}"
 ```
 
 If gcovr rejects a tracefile, report the gcovr error and the cell; do not drop the
@@ -121,8 +129,10 @@ cell silently.
   failing tests or blocking error.
 - The merged totals from `$RUN/merged/summary.md`, and paths to
   `merged/cpp/index.html` and `merged/java/html/index.html`.
-- Which cells are missing from the merge and why, and that every `failed` or missing
-  cell lowers the numbers. The C++ report is the debug build only.
+- Which cells are missing from the merge or from one of its reports (the C++ and
+  Java columns of `summary.md`) and why, and that every `failed` or missing cell
+  lowers the numbers. Say so when `tests=` filtered the run. The C++ report is the
+  debug build only.
 
 Leave `$RUN` in place. Offer to remove the worktrees
 (`git worktree remove "$RUN"/wt-*`); `cells/`, `logs/` and `merged/` stay until the

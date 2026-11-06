@@ -35,19 +35,28 @@ expect_not_contains() {
 # ---- Stubs ----
 STUB_BIN="$TEMP_DIR/bin"
 mkdir -p "$STUB_BIN"
-# podman: every image exists; the base image ID is "base-1" and a JDK image's base-id
-# label is $STUB_LABEL. `run` records one argument per line, `build` appends its tags.
+# podman: every image exists; the base image ID is ${STUB_BASE_ID-base-1} and a JDK image's
+# base-id label is $STUB_LABEL. `run` records one argument per line; with $STUB_EXEC it runs
+# the container command on the host, /source, /workspace, /coverage-out mapped to $STUB_*.
 cat > "$STUB_BIN/podman" <<'EOF'
 #!/usr/bin/env bash
 case "$1 $2" in
   "run "*)
     printf '%s\n' "$@" > "$STUB_LOG"
+    if [[ -n "${STUB_EXEC:-}" ]]; then
+      cmd=${*: -1}
+      cmd=${cmd//file:\/\/\/source/file://$STUB_SRC}
+      cmd=${cmd//\/workspace/$STUB_WS}
+      cmd=${cmd//\/coverage-out/$STUB_OUT}
+      HOME="$STUB_HOME" bash -c "$cmd"
+      exit $?
+    fi
     exit "${STUB_RUN_RC:-0}" ;;
   "build "*)
     echo "$*" >> "$STUB_LOG.build" ;;
   "image inspect")
     case "$*" in
-      *'{{.Id}}'*) echo "base-1" ;;
+      *'{{.Id}}'*) echo "${STUB_BASE_ID-base-1}" ;;
       *java-profiler.base-id*) echo "${STUB_LABEL:-}" ;;
     esac ;;
 esac
@@ -65,7 +74,7 @@ printf '%s\n' "$@" >> "$STUB_LOG.java"
 if [[ "$3" == "report" ]]; then
   while [[ $# -gt 0 ]]; do
     if [[ "$1" == "--xml" ]]; then
-      printf '<report name="r"><counter type="LINE" missed="1" covered="3"/></report>\n' > "$2"
+      printf '%s\n' "${STUB_XML:-<report name=\"r\"><counter type=\"LINE\" missed=\"1\" covered=\"3\"/></report>}" > "$2"
     fi
     shift
   done
@@ -80,7 +89,16 @@ export STUB_LOG="$TEMP_DIR/stub.log"
 REPO="$TEMP_DIR/repo"
 mkdir -p "$REPO/utils" "$REPO/gradle"
 cp "$UTILS_DIR/run-containers-tests.sh" "$REPO/utils/"
-touch "$REPO/gradlew" "$REPO/gradle/wrapper.properties"
+touch "$REPO/gradle/wrapper.properties"
+# Gradle stand-in for executed container commands: writes the outputs the export copies.
+cat > "$REPO/gradlew" <<'EOF'
+#!/usr/bin/env bash
+mkdir -p ddprof-lib/build/reports/coverage/cpp ddprof-test/build/jacoco ddprof-lib/build/classes/java/main
+echo '{}' > ddprof-lib/build/reports/coverage/cpp/coverage.json
+touch ddprof-test/build/jacoco/testCoverage.exec ddprof-lib/build/classes/java/main/A.class
+exit "${STUB_GRADLE_RC:-0}"
+EOF
+chmod +x "$REPO/gradlew"
 git init --quiet "$REPO"
 git -C "$REPO" -c user.name=T -c user.email=t@t.invalid -c commit.gpgsign=false \
   commit --quiet --allow-empty -m init
@@ -110,7 +128,7 @@ expect_contains "export reports" "$log" "cp -r ddprof-lib/build/reports/coverage
 expect_contains "export jacoco" "$log" "cp -r ddprof-test/build/jacoco /coverage-out/jacoco"
 expect_contains "export classes" "$log" "cp -r ddprof-lib/build/classes/java/main /coverage-out/classes"
 expect_contains "gradle exit preserved" "$log" "|| rc=\$?;"
-expect_contains "cell properties" "$log" "glibc aarch64 21 \$(git rev-parse HEAD) \$rc > /coverage-out/cell.properties"
+expect_contains "export clears previous data" "$log" "rm -rf /coverage-out/reports /coverage-out/jacoco /coverage-out/classes /coverage-out/cell.properties"
 expect_not_contains "plain repo has no common-dir mount" "$log" "$COMMON_DIR:$COMMON_DIR"
 expect_contains "plain repo keeps narrow safe.directory" "$log" "safe.directory /source/.git"
 [[ -d "$out_dir" ]] && pass || fail "--coverage-out directory was not created"
@@ -123,6 +141,37 @@ if STUB_RUN_RC=7 run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$out_d
 else
   pass
 fi
+
+# ---- run-containers-tests.sh: the container command itself ----
+export STUB_SRC="$REPO" STUB_HOME="$TEMP_DIR/home"
+mkdir -p "$STUB_HOME"
+exec_out="$TEMP_DIR/exec-out"
+exec_cell() {
+  rm -rf "$TEMP_DIR/ws"
+  STUB_EXEC=1 STUB_WS="$TEMP_DIR/ws" STUB_OUT="$exec_out" run_script "$REPO" --libc=glibc --jdk=21 \
+    --coverage-out="$exec_out" "$@" >/dev/null
+}
+mkdir -p "$exec_out/reports/stale"
+rc=0
+STUB_GRADLE_RC=3 exec_cell --tests=FooTest || rc=$?
+[[ $rc -eq 3 ]] && pass || fail "cell exit code $rc is not Gradle's 3"
+props=$(cat "$exec_out/cell.properties" 2>/dev/null || true)
+expect_contains "properties fields" "$props" $'libc=glibc\narch=aarch64\njdk=21\ntests=FooTest\n'
+expect_contains "properties commit" "$props" "commit=$(git -C "$REPO" rev-parse HEAD)"
+expect_contains "properties gradle exit" "$props" "gradle_exit=3"
+[[ -f "$exec_out/reports/cpp/coverage.json" && -f "$exec_out/jacoco/testCoverage.exec" && -f "$exec_out/classes/A.class" ]] \
+  && pass || fail "export did not copy reports, jacoco and classes: $(find "$exec_out" | sort)"
+[[ ! -e "$exec_out/reports/stale" && ! -e "$exec_out/reports/coverage" ]] \
+  && pass || fail "export kept or nested the previous export: $(find "$exec_out" | sort)"
+rc=0
+exec_cell || rc=$?
+[[ $rc -eq 0 ]] && pass || fail "clean cell exited $rc"
+expect_contains "unfiltered tests" "$(cat "$exec_out/cell.properties")" $'tests=\n'
+chmod a-w "$exec_out"
+rc=0
+exec_cell || rc=$?
+chmod u+w "$exec_out"
+[[ $rc -eq 70 ]] && pass || fail "failed export exited $rc, expected 70"
 
 # The non-coverage command is unchanged.
 output=$(run_script "$REPO" --libc=glibc --jdk=21)
@@ -144,6 +193,16 @@ for bad in "--shell" "--mount" "--matrix" "--config=debug" "--gtest-task=foo_ut"
     expect_contains "--coverage-out with $bad" "$output" "--coverage-out cannot be combined"
   fi
 done
+if output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out=); then
+  fail "empty --coverage-out was accepted"
+else
+  expect_contains "empty --coverage-out" "$output" "--coverage-out needs a directory"
+fi
+if run_script "$REPO" --libc=glibc,musl --jdk=21 --coverage-out="$TEMP_DIR/never" >/dev/null; then
+  fail "--coverage-out with two cells was accepted"
+else
+  [[ ! -e "$TEMP_DIR/never" ]] && pass || fail "rejected run created its --coverage-out directory"
+fi
 if output=$(run_script "$REPO" --libc=glibc,musl --jdk=21 --coverage-out="$out_dir"); then
   fail "--coverage-out with two cells was accepted"
 else
@@ -169,6 +228,13 @@ expect_contains "stale JDK image message" "$output" "was not built on the curren
 rm -f "$STUB_LOG.build"
 STUB_LABEL= run_script "$REPO" --libc=glibc --jdk=21 >/dev/null
 expect_contains "unlabeled JDK image rebuilt" "$(cat "$STUB_LOG.build")" "-t java-profiler-test:glibc-jdk21-aarch64"
+
+rm -f "$STUB_LOG.build"
+STUB_LABEL=base-1 run_script "$REPO" --libc=glibc --jdk=21 --rebuild-base >/dev/null
+expect_contains "--rebuild-base rebuilds the JDK image" "$(cat "$STUB_LOG.build" 2>/dev/null)" "-t java-profiler-test:glibc-jdk21-aarch64"
+rm -f "$STUB_LOG.build"
+STUB_BASE_ID= STUB_LABEL= run_script "$REPO" --libc=glibc --jdk=21 >/dev/null
+expect_contains "unknown base ID rebuilds the JDK image" "$(cat "$STUB_LOG.build" 2>/dev/null)" "-t java-profiler-test:glibc-jdk21-aarch64"
 
 # ---- run-containers-tests.sh: CI-matched cells the test-coverage skill runs ----
 output=$(run_script "$REPO" --libc=glibc --jdk=21-graal --coverage-out="$out_dir")
@@ -213,7 +279,8 @@ expect_contains "jacoco merges child exec" "$java_args" "$TEMP_DIR/c2/jacoco/chi
 expect_contains "jacoco merges task exec" "$java_args" "$TEMP_DIR/c1/jacoco/testCoverage.exec"
 expect_contains "jacoco report classes" "$java_args" "$TEMP_DIR/c1/classes"
 summary=$(cat "$TEMP_DIR/merged/summary.md")
-expect_contains "summary cells" "$summary" "| glibc | aarch64 | 25-graal | 0 |"
+expect_contains "summary cells" "$summary" "| glibc | aarch64 | 25-graal |  | 0 | yes | yes |"
+expect_not_contains "unfiltered run has no banner" "$summary" "Filtered run"
 expect_contains "summary cpp" "$summary" "lines: 50.0% (1 out of 2)"
 expect_contains "summary java" "$summary" "line: 75.0% (3 out of 4)"
 expect_not_contains "identical classes do not warn" "$output" "differ from"
@@ -221,10 +288,12 @@ expect_not_contains "identical classes do not warn" "$output" "differ from"
 make_cell "$TEMP_DIR/c3" "$SRC_COMMIT" 17 other
 output=$("$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged3" "$TEMP_DIR/c1" "$TEMP_DIR/c3" 2>&1)
 expect_contains "differing classes warn" "$output" "classes in $TEMP_DIR/c3 differ"
+expect_contains "differing classes in summary" "$(cat "$TEMP_DIR/merged3/summary.md")" "| 17 |  | 0 | yes | partial (classes differ) |"
 
 rm -f "$TEMP_DIR/c3/reports/cpp/coverage.json"
 output=$("$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged4" "$TEMP_DIR/c1" "$TEMP_DIR/c3" 2>&1)
 expect_contains "missing tracefile warns" "$output" "$TEMP_DIR/c3 has no C++ tracefile"
+expect_contains "missing tracefile in summary" "$(cat "$TEMP_DIR/merged4/summary.md")" "| 0 | no (no tracefile) |"
 
 make_cell "$TEMP_DIR/c4" "0000000000000000000000000000000000000000" 11
 if output=$("$MERGE" --source-root="$SRC" --out="$TEMP_DIR/m" "$TEMP_DIR/c1" "$TEMP_DIR/c4" 2>&1); then
@@ -248,6 +317,56 @@ if output=$("$MERGE" --source-root="$TEMP_DIR" --out="$TEMP_DIR/m" "$TEMP_DIR/c1
 else
   expect_contains "bad source root" "$output" "is not a java-profiler checkout"
 fi
+
+# Filtered cells, stale output, empty commit, zero counters, zero cells.
+make_cell "$TEMP_DIR/c5" "$SRC_COMMIT" 21
+echo "tests=FooTest" >> "$TEMP_DIR/c5/cell.properties"
+mkdir -p "$TEMP_DIR/merged5/cpp"
+touch "$TEMP_DIR/merged5/cpp/stale.html"
+"$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged5" "$TEMP_DIR/c5" >/dev/null 2>&1
+summary=$(cat "$TEMP_DIR/merged5/summary.md")
+expect_contains "filtered banner" "$summary" "Filtered run"
+expect_contains "filter column" "$summary" "| 21 | FooTest |"
+[[ ! -e "$TEMP_DIR/merged5/cpp/stale.html" ]] && pass || fail "--out kept an earlier merge's report"
+
+make_cell "$TEMP_DIR/c6" "" 21
+if output=$("$MERGE" --source-root="$SRC" --out="$TEMP_DIR/m" "$TEMP_DIR/c6" "$TEMP_DIR/c1" 2>&1); then
+  fail "cell without a commit was merged"
+else
+  expect_contains "empty commit" "$output" "$TEMP_DIR/c6 has no commit in cell.properties"
+fi
+
+if output=$("$MERGE" --source-root="$SRC" --out="$TEMP_DIR/m" 2>&1); then
+  fail "merge without cells was accepted"
+else
+  expect_contains "no cells" "$output" "no cell directories given"
+fi
+
+STUB_XML='<report name="r"><counter type="BRANCH" missed="0" covered="0"/></report>' \
+  "$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged7" "$TEMP_DIR/c1" >/dev/null 2>&1
+expect_contains "zero-total counter" "$(cat "$TEMP_DIR/merged7/summary.md")" "branch: 0.0% (0 out of 0)"
+
+# JaCoCo CLI download: the jar must match the pinned SHA-256.
+cat > "$STUB_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "-o" ]]; then printf '%s' "${STUB_JAR:-jar}" > "$2"; fi
+  shift
+done
+EOF
+chmod +x "$STUB_BIN/curl"
+pinned=$(sed -n 's/^JACOCO_CLI_SHA256="\(.*\)"$/\1/p' "$MERGE")
+if output=$(env -u JACOCO_CLI "$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged8" "$TEMP_DIR/c1" 2>&1); then
+  fail "JaCoCo CLI with a wrong checksum was used"
+else
+  expect_contains "checksum mismatch" "$output" "SHA-256 mismatch"
+  [[ ! -e "$TEMP_DIR/merged8/tools/org.jacoco.cli-0.8.14-nodeps.jar" ]] && pass || fail "mismatched jar was kept"
+fi
+[[ ${#pinned} -eq 64 ]] && pass || fail "merge-coverage.sh has no pinned SHA-256"
+merge_version=$(sed -n 's/^JACOCO_VERSION="\(.*\)"$/\1/p' "$MERGE")
+build_version=$(sed -n 's/^ *toolVersion = "\(.*\)"$/\1/p' "$UTILS_DIR/../ddprof-test/build.gradle.kts")
+[[ -n "$merge_version" && "$merge_version" == "$build_version" ]] \
+  && pass || fail "JACOCO_VERSION $merge_version differs from ddprof-test toolVersion $build_version"
 
 echo "$TESTS tests, $FAILED failed"
 [[ $FAILED -eq 0 ]]

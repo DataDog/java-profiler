@@ -40,6 +40,7 @@ CONFIG="debug"
 TESTS=""
 GTEST_TASK=""
 COVERAGE_OUT=""
+COVERAGE_OUT_SET=false
 SHELL_MODE=false
 MOUNT_MODE=false
 GTEST_ENABLED=false
@@ -839,6 +840,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --coverage-out=*)
             COVERAGE_OUT="${1#*=}"
+            COVERAGE_OUT_SET=true
             shift
             ;;
         --matrix)
@@ -893,13 +895,15 @@ if [[ -n "$GTEST_TASK" && -n "$TESTS" ]]; then
     exit 1
 fi
 
-if [[ -n "$COVERAGE_OUT" ]]; then
+if $COVERAGE_OUT_SET; then
+    if [[ -z "$COVERAGE_OUT" ]]; then
+        echo "Error: --coverage-out needs a directory"
+        exit 1
+    fi
     if $SHELL_MODE || $MOUNT_MODE || $MATRIX_MODE || $CONFIG_SET || [[ -n "$GTEST_TASK" ]]; then
         echo "Error: --coverage-out cannot be combined with --shell, --mount, --matrix, --config or --gtest-task"
         exit 1
     fi
-    mkdir -p "$COVERAGE_OUT"
-    COVERAGE_OUT="$(cd "$COVERAGE_OUT" && pwd)"
     # coverageReport depends on gtestCoverage.
     GTEST_ENABLED=true
 fi
@@ -959,6 +963,8 @@ JDK_VERSION="${MATRIX_CELL_JDKS[0]}"
 CONFIG="${MATRIX_CELL_CONFIGS[0]}"
 if [[ -n "$COVERAGE_OUT" ]]; then
     CONFIG="coverage"
+    mkdir -p "$COVERAGE_OUT"
+    COVERAGE_OUT="$(cd "$COVERAGE_OUT" && pwd)"
 fi
 
 # Parse JDK version and variant (e.g., "21-j9" -> version="21", variant="j9")
@@ -1141,10 +1147,10 @@ fi
 # ========== Build JDK Image (if needed) ==========
 IMAGE_EXISTS=false
 # A JDK image cached on top of an older base image would hide the rebuilt base's packages
-# (e.g. gcovr), so it is reused only when its label names the current base image ID.
-# Images built before the label existed carry none and are rebuilt once.
+# (e.g. gcovr), so it is reused only when its label names the current base image ID;
+# an image without the label is rebuilt.
 BASE_IMAGE_ID=$("$CONTAINER_RUNTIME" image inspect --format '{{.Id}}' "$BASE_IMAGE_NAME")
-if [[ "$REBUILD" == "false" ]]; then
+if [[ "$REBUILD" == "false" && "$REBUILD_BASE" == "false" ]]; then
     IMAGE_BASE_ID=$("$CONTAINER_RUNTIME" image inspect \
         --format '{{index .Config.Labels "java-profiler.base-id"}}' "$IMAGE_NAME" 2>/dev/null || true)
     if [[ -n "$BASE_IMAGE_ID" && "$IMAGE_BASE_ID" == "$BASE_IMAGE_ID" ]]; then
@@ -1269,17 +1275,17 @@ if [[ "$CONFIG" == "tsan" ]] && [[ "$ARCH" == "aarch64" ]] && [[ "$LIBC" == "gli
 fi
 GRADLE_CMD="$GRADLE_CMD --no-daemon --parallel --build-cache --no-watch-fs"
 
-# Coverage mode: export the reports plus the raw data needed to merge cells (JaCoCo
-# .exec files and the classes they were recorded against), even when Gradle failed,
-# because coverageReport writes both reports before failing on deferred test failures.
-# Must not contain single quotes: the command is passed through eval inside '...'.
+# Coverage mode: replace DIR's previous export with this run's reports, JaCoCo .exec files
+# and their classes, also after a Gradle failure (coverageReport writes both reports
+# first). No single quotes: the command runs through eval inside '...'.
 if [[ -n "$COVERAGE_OUT" ]]; then
-    COVERAGE_EXPORT="mkdir -p /coverage-out && cd /workspace"
+    COVERAGE_EXPORT="cd /workspace && rm -rf /coverage-out/reports /coverage-out/jacoco /coverage-out/classes /coverage-out/cell.properties"
     COVERAGE_EXPORT="$COVERAGE_EXPORT && { [ ! -d ddprof-lib/build/reports/coverage ] || cp -r ddprof-lib/build/reports/coverage /coverage-out/reports; }"
     COVERAGE_EXPORT="$COVERAGE_EXPORT && { [ ! -d ddprof-test/build/jacoco ] || cp -r ddprof-test/build/jacoco /coverage-out/jacoco; }"
     COVERAGE_EXPORT="$COVERAGE_EXPORT && { [ ! -d ddprof-lib/build/classes/java/main ] || cp -r ddprof-lib/build/classes/java/main /coverage-out/classes; }"
-    COVERAGE_EXPORT="$COVERAGE_EXPORT && printf \"libc=%s\\narch=%s\\njdk=%s\\ncommit=%s\\ngradle_exit=%s\\n\" $LIBC $ARCH $JDK_VERSION \$(git rev-parse HEAD) \$rc > /coverage-out/cell.properties"
-    GRADLE_CMD="{ rc=0; $GRADLE_CMD || rc=\$?; $COVERAGE_EXPORT; exit \$rc; }"
+    COVERAGE_EXPORT="$COVERAGE_EXPORT && printf \"libc=%s\\narch=%s\\njdk=%s\\ntests=%s\\ncommit=%s\\ngradle_exit=%s\\n\" $LIBC $ARCH $JDK_VERSION \"$TESTS\" \"\$(git rev-parse HEAD)\" \$rc > /coverage-out/cell.properties"
+    # A failed export must not pass as a clean cell.
+    GRADLE_CMD="{ rc=0; $GRADLE_CMD || rc=\$?; { $COVERAGE_EXPORT; } || { [ \$rc -ne 0 ] || rc=70; }; exit \$rc; }"
 fi
 
 # On aarch64 glibc TSan: reduce ASLR entropy so TSan's shadow doesn't conflict with

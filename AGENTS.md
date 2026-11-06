@@ -88,7 +88,7 @@ Configurations: `release`, `debug`, plus `asan`/`tsan`/`fuzzer` when the sanitiz
 is found for the selected compiler (inactive on macOS and musl), plus opt-in `coverage`
 with `-PenableCoverage` (`:ddprof-lib:coverageReport`; the C++ report covers only the
 `-O0 -DDEBUG` build — see [doc/building/CodeCoverage.md](doc/building/CodeCoverage.md);
-merged coverage across all Linux platforms and JVMs: the `test-coverage` skill).
+merged coverage across the CI-tested Linux platforms and JVMs: the `test-coverage` skill).
 
 ```bash
 ./.claude/commands/build-and-summarize buildRelease      # release library + JAR

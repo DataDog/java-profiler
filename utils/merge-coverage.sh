@@ -6,15 +6,17 @@
 #
 # Usage: ./utils/merge-coverage.sh --source-root=DIR --out=DIR CELL_DIR...
 #   --source-root=DIR  checkout of the commit every cell was built from (report sources)
-#   --out=DIR          output directory (cpp/, java/, summary.md)
+#   --out=DIR          output directory (cpp/, java/, summary.md); replaced on each run
 #   CELL_DIR           a --coverage-out directory; needs cell.properties
 #
-# Requires gcovr 8.3+ and java. The JaCoCo CLI is taken from $JACOCO_CLI, else
-# downloaded from Maven Central into DIR/tools.
+# Requires java, python3 and a gcovr at least as new as the containers' (older ones
+# reject their tracefiles). The JaCoCo CLI is $JACOCO_CLI, else downloaded with curl.
 
 set -euo pipefail
 
+# Must match jacoco.toolVersion in ddprof-test/build.gradle.kts.
 JACOCO_VERSION="0.8.14"
+JACOCO_CLI_SHA256="811c7f8c6b358c5d68a8973cfa867f6892be7a671b697a4b13c4b447e6daf75c"
 SOURCE_ROOT=""
 OUT=""
 CELLS=()
@@ -56,6 +58,7 @@ COMMIT=""
 for cell in "${CELLS[@]}"; do
     [[ -f "$cell/cell.properties" ]] || die "$cell has no cell.properties"
     cell_commit=$(prop "$cell" commit)
+    [[ -n "$cell_commit" ]] || die "$cell has no commit in cell.properties"
     if [[ -z "$COMMIT" ]]; then
         COMMIT=$cell_commit
     elif [[ "$cell_commit" != "$COMMIT" ]]; then
@@ -67,16 +70,27 @@ if [[ "$source_commit" != "$COMMIT" ]]; then
     die "--source-root is at ${source_commit:-<not a git checkout>}, cells were built from $COMMIT"
 fi
 
-mkdir -p "$OUT/cpp" "$OUT/java"
+mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
+# Keep tools/ (the downloaded CLI); a report left from an earlier merge would be linked
+# from this run's summary.
+rm -rf "$OUT/cpp" "$OUT/java" "$OUT/summary.md"
+mkdir -p "$OUT/cpp" "$OUT/java"
+
+# Per-cell inclusion, indexed like CELLS (bash 3.2 has no associative arrays).
+CELL_CPP=()
+CELL_JAVA=()
 
 # ---- C++ ----
 tracefiles=()
-for cell in "${CELLS[@]}"; do
+for i in "${!CELLS[@]}"; do
+    cell=${CELLS[$i]}
     if [[ -f "$cell/reports/cpp/coverage.json" ]]; then
         tracefiles+=(--add-tracefile "$cell/reports/cpp/coverage.json")
+        CELL_CPP[$i]=yes
     else
         echo "Warning: $cell has no C++ tracefile; it is left out of the C++ report" >&2
+        CELL_CPP[$i]="no (no tracefile)"
     fi
 done
 CPP_SUMMARY="(no C++ tracefiles)"
@@ -94,18 +108,25 @@ fi
 # ---- Java ----
 execs=()
 CLASSES=""
-for cell in "${CELLS[@]}"; do
+for i in "${!CELLS[@]}"; do
+    cell=${CELLS[$i]}
     if [[ -d "$cell/jacoco" ]]; then
         while IFS= read -r f; do
             execs+=("$f")
         done < <(find "$cell/jacoco" -name '*.exec' -type f | sort)
     fi
-    if [[ -d "$cell/classes" ]]; then
-        if [[ -z "$CLASSES" ]]; then
-            CLASSES="$cell/classes"
-        elif ! diff -rq "$CLASSES" "$cell/classes" >/dev/null; then
-            echo "Warning: classes in $cell differ from $CLASSES; JaCoCo drops its data for the differing classes" >&2
-        fi
+    if [[ ! -d "$cell/jacoco" ]]; then
+        CELL_JAVA[$i]="no (no JaCoCo data)"
+    elif [[ ! -d "$cell/classes" ]]; then
+        CELL_JAVA[$i]=yes
+    elif [[ -z "$CLASSES" ]]; then
+        CLASSES="$cell/classes"
+        CELL_JAVA[$i]=yes
+    elif diff -rq "$CLASSES" "$cell/classes" >/dev/null; then
+        CELL_JAVA[$i]=yes
+    else
+        echo "Warning: classes in $cell differ from $CLASSES; JaCoCo drops its data for the differing classes" >&2
+        CELL_JAVA[$i]="partial (classes differ)"
     fi
 done
 JAVA_SUMMARY="(no JaCoCo execution data)"
@@ -117,9 +138,11 @@ if (( ${#execs[@]} > 0 )) && [[ -n "$CLASSES" ]]; then
             mkdir -p "$OUT/tools"
             url="https://repo1.maven.org/maven2/org/jacoco/org.jacoco.cli/$JACOCO_VERSION/org.jacoco.cli-$JACOCO_VERSION-nodeps.jar"
             curl -fsSL -o "$cli.tmp" "$url"
-            expected=$(curl -fsSL "$url.sha1" | cut -c1-40)
-            actual=$( (shasum -a 1 "$cli.tmp" 2>/dev/null || sha1sum "$cli.tmp") | cut -c1-40)
-            [[ "$expected" == "$actual" ]] || die "SHA-1 mismatch for $url"
+            actual=$( (shasum -a 256 "$cli.tmp" 2>/dev/null || sha256sum "$cli.tmp") | cut -c1-64)
+            if [[ "$actual" != "$JACOCO_CLI_SHA256" ]]; then
+                rm -f "$cli.tmp"
+                die "SHA-256 mismatch for $url"
+            fi
             mv "$cli.tmp" "$cli"
         fi
     fi
@@ -142,26 +165,34 @@ EOF
 fi
 
 # ---- Summary ----
+FILTERED=false
+for cell in "${CELLS[@]}"; do
+    [[ -z "$(prop "$cell" tests)" ]] || FILTERED=true
+done
 {
     echo "# Merged coverage"
     echo
     echo "- Commit: \`$COMMIT\`"
     echo "- C++ report: \`cpp/index.html\`"
     echo "- Java report: \`java/html/index.html\`"
+    if $FILTERED; then
+        echo "- Filtered run: some cells ran only the tests matching their \`tests\` pattern"
+    fi
     echo
-    echo "| libc | arch | jdk | gradle exit |"
-    echo "|---|---|---|---|"
-    for cell in "${CELLS[@]}"; do
-        echo "| $(prop "$cell" libc) | $(prop "$cell" arch) | $(prop "$cell" jdk) | $(prop "$cell" gradle_exit) |"
+    echo "| libc | arch | jdk | tests | gradle exit | in C++ report | in Java report |"
+    echo "|---|---|---|---|---|---|---|"
+    for i in "${!CELLS[@]}"; do
+        cell=${CELLS[$i]}
+        echo "| $(prop "$cell" libc) | $(prop "$cell" arch) | $(prop "$cell" jdk) | $(prop "$cell" tests) | $(prop "$cell" gradle_exit) | ${CELL_CPP[$i]} | ${CELL_JAVA[$i]} |"
     done
     echo
-    echo "## C++ (debug build, all cells)"
+    echo "## C++ (debug build, cells marked in the C++ column)"
     echo
     echo '```text'
     echo "$CPP_SUMMARY"
     echo '```'
     echo
-    echo "## Java (all cells)"
+    echo "## Java (cells marked in the Java column)"
     echo
     echo '```text'
     echo "$JAVA_SUMMARY"
