@@ -72,6 +72,10 @@ fi
 
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
+# --out is replaced, so it must be empty or an earlier merge's output (summary.md).
+if [[ -n "$(ls -A "$OUT")" && ! -f "$OUT/summary.md" ]]; then
+    die "--out $OUT is neither empty nor an earlier merge output"
+fi
 # Keep tools/ (the downloaded CLI); a report left from an earlier merge would be linked
 # from this run's summary.
 rm -rf "$OUT/cpp" "$OUT/java" "$OUT/summary.md"
@@ -110,12 +114,14 @@ execs=()
 CLASSES=""
 for i in "${!CELLS[@]}"; do
     cell=${CELLS[$i]}
+    cell_execs=0
     if [[ -d "$cell/jacoco" ]]; then
         while IFS= read -r f; do
             execs+=("$f")
+            cell_execs=$((cell_execs + 1))
         done < <(find "$cell/jacoco" -name '*.exec' -type f | sort)
     fi
-    if [[ ! -d "$cell/jacoco" ]]; then
+    if (( cell_execs == 0 )); then
         CELL_JAVA[$i]="no (no JaCoCo data)"
     elif [[ ! -d "$cell/classes" ]]; then
         CELL_JAVA[$i]=yes
@@ -130,6 +136,12 @@ for i in "${!CELLS[@]}"; do
     fi
 done
 JAVA_SUMMARY="(no JaCoCo execution data)"
+if (( ${#execs[@]} > 0 )) && [[ -z "$CLASSES" ]]; then
+    JAVA_SUMMARY="(no cell exported classes)"
+    for i in "${!CELLS[@]}"; do
+        [[ "${CELL_JAVA[$i]}" != yes ]] || CELL_JAVA[$i]="no (no classes in any cell)"
+    done
+fi
 if (( ${#execs[@]} > 0 )) && [[ -n "$CLASSES" ]]; then
     cli="${JACOCO_CLI:-}"
     if [[ -z "$cli" ]]; then

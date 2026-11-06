@@ -167,11 +167,23 @@ rc=0
 exec_cell || rc=$?
 [[ $rc -eq 0 ]] && pass || fail "clean cell exited $rc"
 expect_contains "unfiltered tests" "$(cat "$exec_out/cell.properties")" $'tests=\n'
-chmod a-w "$exec_out"
+# The export fails when its target vanished (a missing parent fails for root too).
 rc=0
-exec_cell || rc=$?
-chmod u+w "$exec_out"
+rm -rf "$TEMP_DIR/ws"
+STUB_EXEC=1 STUB_WS="$TEMP_DIR/ws" STUB_OUT="$TEMP_DIR/missing/out" run_script "$REPO" \
+  --libc=glibc --jdk=21 --coverage-out="$exec_out" >/dev/null || rc=$?
 [[ $rc -eq 70 ]] && pass || fail "failed export exited $rc, expected 70"
+# A run that fails before the export leaves no earlier export behind.
+STUB_RUN_RC=125 run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$exec_out" >/dev/null || true
+[[ ! -e "$exec_out/cell.properties" && ! -e "$exec_out/reports" ]] \
+  && pass || fail "a failed run left the previous export: $(find "$exec_out" | sort)"
+for bad in 'A$B' 'A"B' "A'B" 'A`B' 'A\B'; do
+  if output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$exec_out" --tests="$bad"); then
+    fail "--tests=$bad was accepted with --coverage-out"
+  else
+    expect_contains "--tests=$bad rejected" "$output" "must not contain quotes"
+  fi
+done
 
 # The non-coverage command is unchanged.
 output=$(run_script "$REPO" --libc=glibc --jdk=21)
@@ -322,12 +334,35 @@ fi
 make_cell "$TEMP_DIR/c5" "$SRC_COMMIT" 21
 echo "tests=FooTest" >> "$TEMP_DIR/c5/cell.properties"
 mkdir -p "$TEMP_DIR/merged5/cpp"
-touch "$TEMP_DIR/merged5/cpp/stale.html"
+touch "$TEMP_DIR/merged5/cpp/stale.html" "$TEMP_DIR/merged5/summary.md"
 "$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged5" "$TEMP_DIR/c5" >/dev/null 2>&1
 summary=$(cat "$TEMP_DIR/merged5/summary.md")
 expect_contains "filtered banner" "$summary" "Filtered run"
 expect_contains "filter column" "$summary" "| 21 | FooTest |"
 [[ ! -e "$TEMP_DIR/merged5/cpp/stale.html" ]] && pass || fail "--out kept an earlier merge's report"
+
+# Java column: no .exec files, and .exec files but no classes in any cell.
+make_cell "$TEMP_DIR/c9" "$SRC_COMMIT" 11
+rm -f "$TEMP_DIR/c9/jacoco/testCoverage.exec" "$TEMP_DIR/c9/jacoco/children/child-1.exec"
+"$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged9" "$TEMP_DIR/c1" "$TEMP_DIR/c9" >/dev/null 2>&1
+expect_contains "no exec column" "$(cat "$TEMP_DIR/merged9/summary.md")" "| 11 |  | 0 | yes | no (no JaCoCo data) |"
+rm -rf "$TEMP_DIR/c10"
+make_cell "$TEMP_DIR/c10" "$SRC_COMMIT" 8
+rm -rf "$TEMP_DIR/c10/classes"
+"$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged10" "$TEMP_DIR/c10" >/dev/null 2>&1
+summary=$(cat "$TEMP_DIR/merged10/summary.md")
+expect_contains "no classes column" "$summary" "| 8 |  | 0 | yes | no (no classes in any cell) |"
+expect_contains "no classes summary" "$summary" "(no cell exported classes)"
+
+# --out must be empty or an earlier merge output.
+mkdir -p "$TEMP_DIR/notmerge/cpp"
+touch "$TEMP_DIR/notmerge/cpp/keep.cpp"
+if output=$("$MERGE" --source-root="$SRC" --out="$TEMP_DIR/notmerge" "$TEMP_DIR/c1" 2>&1); then
+  fail "a non-merge --out was accepted"
+else
+  expect_contains "non-merge out" "$output" "neither empty nor an earlier merge output"
+fi
+[[ -f "$TEMP_DIR/notmerge/cpp/keep.cpp" ]] && pass || fail "a rejected --out lost its files"
 
 make_cell "$TEMP_DIR/c6" "" 21
 if output=$("$MERGE" --source-root="$SRC" --out="$TEMP_DIR/m" "$TEMP_DIR/c6" "$TEMP_DIR/c1" 2>&1); then

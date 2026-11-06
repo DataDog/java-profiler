@@ -52,8 +52,9 @@ for c in glibc-x64 glibc-aarch64 musl-x64 musl-aarch64; do
 done
 ```
 
-With Docker on macOS (colima), check that `RUN` starts with `$HOME/` and stop if it
-does not: colima shares only `$HOME` with its VM, so every cell would be `blocked`.
+On macOS, check that `RUN` starts with `$HOME/` and stop if it does not: colima and
+podman machine share `$HOME` with their VM by default, and a cell directory the VM
+cannot see makes every cell `blocked`.
 Check that the worktree's `utils/run-containers-tests.sh` accepts `--coverage-out`
 (`grep -q -- --coverage-out`); if it does not, the ref predates coverage mode — stop.
 
@@ -112,10 +113,10 @@ progress, list which `$RUN/cells/*.exit` files exist.
 After all four agents send their final reports, merge every cell that has
 `cell.properties`. A `failed` cell still holds the Java coverage of the tests that ran,
 but a failed gtest stops the build before the C++ report, so such a cell has no C++
-tracefile. `summary.md` marks, per cell, whether it is in each report. Use any of the
-run's worktrees as `WT`:
+tracefile. `summary.md` marks, per cell, whether it is in each report.
 
 ```bash
+WT=$(ls -d "$RUN"/wt-* | head -1)   # any of the run's worktrees
 cells=(); for p in "$RUN"/cells/*/cell.properties; do cells+=("${p%/cell.properties}"); done
 "$WT/utils/merge-coverage.sh" --source-root="$WT" --out="$RUN/merged" "${cells[@]}"
 ```

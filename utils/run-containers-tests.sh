@@ -900,6 +900,11 @@ if $COVERAGE_OUT_SET; then
         echo "Error: --coverage-out needs a directory"
         exit 1
     fi
+    # The filter is spliced into the eval'd container command and into cell.properties.
+    if [[ "$TESTS" == *[\"\'\$\`\\]* ]]; then
+        echo "Error: --tests with --coverage-out must not contain quotes, \$, backticks or backslashes"
+        exit 1
+    fi
     if $SHELL_MODE || $MOUNT_MODE || $MATRIX_MODE || $CONFIG_SET || [[ -n "$GTEST_TASK" ]]; then
         echo "Error: --coverage-out cannot be combined with --shell, --mount, --matrix, --config or --gtest-task"
         exit 1
@@ -965,6 +970,8 @@ if [[ -n "$COVERAGE_OUT" ]]; then
     CONFIG="coverage"
     mkdir -p "$COVERAGE_OUT"
     COVERAGE_OUT="$(cd "$COVERAGE_OUT" && pwd)"
+    # A run that dies before the in-container export must not leave the previous one.
+    rm -rf "$COVERAGE_OUT/reports" "$COVERAGE_OUT/jacoco" "$COVERAGE_OUT/classes" "$COVERAGE_OUT/cell.properties"
 fi
 
 # Parse JDK version and variant (e.g., "21-j9" -> version="21", variant="j9")
