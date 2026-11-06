@@ -2253,6 +2253,8 @@ bool LivenessTracker::clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env) {
         if (!pushed) env->ExceptionClear();
       }
     }
+    LocalFrame(const LocalFrame &) = delete;
+    LocalFrame &operator=(const LocalFrame &) = delete;
     ~LocalFrame() { if (pushed) env->PopLocalFrame(nullptr); }
   } frame(env);
   jvmtiError err = jvmti->GetObjectsWithTags(LEAK_TAG_POOL_SIZE, tags, &count,

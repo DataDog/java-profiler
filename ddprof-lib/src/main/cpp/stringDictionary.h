@@ -125,14 +125,19 @@ class StringArena {
     // allocates (a failure is retried by the next alloc()), or a growth OOM
     // latched until reset(). Returns the active chunk, or nullptr on OOM.
     Chunk* acquireFirstChunk() {
+        // Without the growth lock once a first chunk exists: _active, published
+        // before _first, is then the racing first chunk or a latched OOM (null).
+        if (__atomic_load_n(&_first, __ATOMIC_ACQUIRE) != nullptr) {
+            return _active.load(std::memory_order_acquire);
+        }
         lockGrowing();
         Chunk* c = _active.load(std::memory_order_relaxed);
         if (c == nullptr && _first == nullptr) {
             c = make_chunk();
             if (c != nullptr) {
-                _first = c;
                 countChunkAlloc();
                 _active.store(c, std::memory_order_release);
+                __atomic_store_n(&_first, c, __ATOMIC_RELEASE);
             } else if (!_oom_logged) {
                 _oom_logged = true;
                 Log::warn("StringArena: first chunk allocation failed; insert "

@@ -99,9 +99,10 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   const char *name_slice = NULL;
   size_t name_len = 0;
   int id = -1;
-  if (normalizeClassSignature(class_name, &name_slice, &name_len)) {
-    // A callback that passed _active before stop() must not re-allocate the
-    // class map stop() released: intern only through the open intern gate.
+  // A callback that passed _active before stop() must not re-allocate the
+  // class map stop() released: intern only through the open intern gate. The
+  // unlocked check keeps callbacks off the lock while it is closed.
+  if (profiler->internOpen() && normalizeClassSignature(class_name, &name_slice, &name_len)) {
     OptionalSharedLockGuard intern(profiler->internLock(), SpinLock::NO_SPIN_BUDGET);
     if (intern.ownsLock() && profiler->internOpen()) {
       id = profiler->lookupClass(name_slice, name_len);

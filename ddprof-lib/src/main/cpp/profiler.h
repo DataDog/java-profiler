@@ -226,7 +226,6 @@ private:
   // Tracks whether persistent JVMTI events (CLASS_LOAD, CLASS_PREPARE,
   // DYNAMIC_CODE_GENERATED, COMPILED_METHOD_LOAD) have been enabled. These are enabled once on first start() and never disabled,
   // surviving stop/start cycles for the lifetime of the process.
-  bool _jvmti_events_enabled;
   // enablePersistentJvmtiEvents() steps that succeeded, one bit per event.
   u8 _persistent_jvmti_events = 0;
 
@@ -391,7 +390,7 @@ public:
         _total_samples(0), _sample_seq(0), _failures(),
         _max_stack_depth(0), _calltrace_buffer_capacity(), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _force_jmethodID(true),
-        _thread_events_state(JVMTI_DISABLE), _jvmti_events_enabled(false),
+        _thread_events_state(JVMTI_DISABLE),
         _libs(Libraries::instance()),
         _num_context_attributes(0), _omit_stacktraces(false), _alloc_stack(ALLOCSTACK_JVMTI),
         _remote_symbolication(false), _sanity_check_failed(false),
@@ -523,7 +522,7 @@ public:
   void switchThreadEvents(jvmtiEventMode mode);
   // Enables the JVMTI events that track JVM metadata (CLASS_LOAD, CLASS_PREPARE,
   // DYNAMIC_CODE_GENERATED, COMPILED_METHOD_LOAD) until all succeed; never disabled.
-  bool enablePersistentJvmtiEvents();
+  void enablePersistentJvmtiEvents();
   // Frees the call-trace storage and buffers, the liveness state and the class
   // and string-label dictionaries once a recording is over (not the
   // context-value one). acquireRecordingMemory() reallocates the storage.

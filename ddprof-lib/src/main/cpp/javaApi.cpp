@@ -253,15 +253,18 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
   // Idle: nothing records the event, and interning would re-allocate the
   // dictionary stop() released. Answer as an empty dictionary would.
   const jboolean idle_answer = sizeLimit > 0 ? JNI_TRUE : JNI_FALSE;
-  // JNI work stays outside the locked region (it can block for a safepoint).
-  // A null endpoint (would intern "") or a failed copy (exception pending)
-  // rejects the call, before the idle check so the answer is state-independent.
-  JniString endpoint_str(env, endpoint);
-  if (endpoint_str.c_str() == nullptr) {
+  // A null endpoint would intern "": rejected in every state. The copy is JNI
+  // work, outside the locked region (it can block for a safepoint), and is
+  // skipped while idle.
+  if (endpoint == NULL) {
     return JNI_FALSE;
   }
   if (!profiler->internOpen()) {
     return idle_answer;
+  }
+  JniString endpoint_str(env, endpoint);
+  if (endpoint_str.c_str() == nullptr) {
+    return JNI_FALSE; // GetStringUTFChars failed; the exception is pending
   }
   JniString operation_str(env, operation);
   if (operation != NULL && operation_str.c_str() == nullptr) {

@@ -1879,12 +1879,15 @@ Error Profiler::start(Arguments &args, bool reset) {
   struct RecordingMemoryScope {
     Profiler *profiler;
     bool armed;
+    explicit RecordingMemoryScope(Profiler *p) : profiler(p), armed(true) {}
+    RecordingMemoryScope(const RecordingMemoryScope &) = delete;
+    RecordingMemoryScope &operator=(const RecordingMemoryScope &) = delete;
     ~RecordingMemoryScope() {
       if (armed) {
         profiler->releaseRecordingMemory();
       }
     }
-  } recording_memory{this, true};
+  } recording_memory(this);
   // Open before any engine starts, so early allocation callbacks can intern.
   _intern_open.store(true, std::memory_order_release);
 
@@ -1997,9 +2000,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Before initExecution(): its jmethodID preload snapshots the loaded
   // classes, so CLASS_PREPARE must be on by then. Events before it sets the
   // load state are ignored; the snapshot covers those classes.
-  if (!_jvmti_events_enabled) {
-    enablePersistentJvmtiEvents();
-  }
+  enablePersistentJvmtiEvents();
 
   // Allocation/live-heap stacks: the VM walker needs the VMStructs stack walking
   // cstack=vm uses, so by default it follows cstack.
@@ -2529,7 +2530,7 @@ void Profiler::switchThreadEvents(jvmtiEventMode mode) {
   }
 }
 
-bool Profiler::enablePersistentJvmtiEvents() {
+void Profiler::enablePersistentJvmtiEvents() {
   // Never disabled once on. Each event is enabled, then replayed, on its own,
   // so one failure blocks no other; a failed step is retried by the next start().
   struct PersistentEvent {
@@ -2554,7 +2555,6 @@ bool Profiler::enablePersistentJvmtiEvents() {
   static_assert(sizeof(events) / sizeof(events[0]) <= 8, "one bit per event");
 
   jvmtiEnv *jvmti = VM::jvmti();
-  bool ok = true;
   for (size_t i = 0; i < sizeof(events) / sizeof(events[0]); i++) {
     const PersistentEvent &e = events[i];
     const u8 bit = static_cast<u8>(1u << i);
@@ -2570,7 +2570,6 @@ bool Profiler::enablePersistentJvmtiEvents() {
     if (err != JVMTI_ERROR_NONE) {
       Log::warn("Persistent JVMTI events: %s %s failed (error %d); will retry on next start",
                 step, e.name, static_cast<int>(err));
-      ok = false;
       continue;
     }
     _persistent_jvmti_events |= bit;
@@ -2578,8 +2577,6 @@ bool Profiler::enablePersistentJvmtiEvents() {
       TEST_LOG("Persistent JVMTI events: CLASS_PREPARE enabled");
     }
   }
-  _jvmti_events_enabled = ok;
-  return ok;
 }
 
 Error Profiler::runInternal(Arguments &args, std::ostream &out) {
@@ -2688,8 +2685,8 @@ void Profiler::releaseRecordingMemory() {
   }
 
   // First, while getLiveTraceIds() is no longer consulted (the final chunk is
-  // written) and the reference-chain BFS thread is joined; a no-op on the
-  // start() error paths, which run before the tracker is set up.
+  // written) and the reference-chain BFS thread is joined. A no-op if nothing
+  // was allocated (a start() that failed before LivenessTracker::start()).
   LivenessTracker::instance()->release(VM::jni());
 
   // Detach the stripe buffers under the stripe locks (readers check for NULL
