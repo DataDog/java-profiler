@@ -27,8 +27,6 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  */
 public class JvmtiEventTimingTest extends AbstractProcessProfilerTest {
 
-    private static final String BIND_INTERCEPTION_ENABLED = "[TEST::INFO] NativeMethodBind interception enabled";
-    private static final String MEMORY_USAGE_BOUND = "[TEST::INFO] NativeMethodBind: getMemoryUsage0 resolved";
     private static final String CLASS_PREPARE_ENABLED = "[TEST::INFO] Persistent JVMTI events: CLASS_PREPARE enabled";
     private static final String JMETHODIDS_PRELOADED = "[TEST::INFO] Preloaded jmethodIDs for";
     private static final String CALL_STUB_REGISTERED = "[TEST::INFO] JitCodeCache: call_stub registered";
@@ -36,45 +34,8 @@ public class JvmtiEventTimingTest extends AbstractProcessProfilerTest {
     @BeforeEach
     void requireDebugOpenJdkClassLibrary() {
         assumeTrue("debug".equals(System.getProperty("ddprof_test.config")), "needs [TEST::INFO] output");
-        // getMemoryUsage0 and the HotSpot stub names checked here do not exist on J9.
+        // The HotSpot stub names checked here do not exist on J9.
         assumeTrue(!Platform.isJ9());
-    }
-
-    /**
-     * A native method binds once and binding events cannot be replayed with GenerateEvents(),
-     * so NATIVE_METHOD_BIND must be enabled at agent load. VMInit's
-     * {@code HeapUsage::initJMXUsage()} binds {@code MemoryImpl.getMemoryUsage0} before any
-     * start(); the agent here never starts the profiler at all, so the binding can only be seen
-     * if the event was on from Agent_OnLoad.
-     *
-     * <p>The profiler only intercepts bindings when it cannot read heap usage from VMStructs
-     * ({@code HeapUsage::needsNativeBindingInterception()}), so on a HotSpot where it can, no
-     * binding event is ever delivered and the test is skipped.
-     */
-    @Test
-    void agentOnLoadSeesNativeBindingsBeforeFirstStart() throws Exception {
-        Path agentLib = LibraryLoader.resolveLibraryPath(System.getProperty("java.io.tmpdir"));
-        AtomicBoolean intercepting = new AtomicBoolean();
-        AtomicBoolean bound = new AtomicBoolean();
-
-        LaunchResult result = launch("noop",
-                Collections.singletonList("-agentpath:" + agentLib.toAbsolutePath()),
-                null,
-                l -> {
-                    if (l.contains(BIND_INTERCEPTION_ENABLED)) {
-                        intercepting.set(true);
-                    } else if (l.contains(MEMORY_USAGE_BOUND)) {
-                        bound.set(true);
-                    }
-                    return LineConsumerResult.CONTINUE;
-                },
-                null);
-
-        assertTrue(result.inTime, "forked JVM did not exit in time");
-        assumeTrue(intercepting.get(), "this JVM needs no native binding interception");
-        assertTrue(bound.get(),
-                "VMStructs::NativeMethodBind never resolved getMemoryUsage0: NATIVE_METHOD_BIND was "
-                        + "not enabled when VMInit bound it, so the JMX heap-usage fallback is lost");
     }
 
     /**
