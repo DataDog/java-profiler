@@ -22,6 +22,18 @@ public:
         HeapUsage::is_jmx_supported = saved_supported;
         return supported;
     }
+
+    // Whether initJMXUsage(nullptr) consumed the once-only attempt.
+    static bool nullEnvMarksAttempted() {
+        bool saved_attempted = HeapUsage::is_jmx_attempted;
+        bool saved_supported = HeapUsage::is_jmx_supported;
+        HeapUsage::is_jmx_attempted = false;
+        HeapUsage::initJMXUsage(nullptr);
+        bool attempted = HeapUsage::is_jmx_attempted;
+        HeapUsage::is_jmx_attempted = saved_attempted;
+        HeapUsage::is_jmx_supported = saved_supported;
+        return attempted;
+    }
 };
 
 namespace {
@@ -129,6 +141,11 @@ TEST_F(HeapUsageJmxTest, UnsupportedWhenAHandleIsNull) {
         EXPECT_EQ(step, g_step);
         EXPECT_EQ(0, g_live_refs);
     }
+}
+
+// No JNIEnv: nothing is called and the attempt stays available for later.
+TEST(HeapUsageJmxNullEnvTest, NullEnvLeavesAttemptAvailable) {
+    EXPECT_FALSE(HeapUsageTestAccessor::nullEnvMarksAttempted());
 }
 
 } // namespace

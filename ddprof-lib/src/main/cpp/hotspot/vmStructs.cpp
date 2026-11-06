@@ -1044,11 +1044,14 @@ bool HeapUsage::is_jmx_supported = false; // default to not-supported
 namespace {
 // Deletes the JNI local references it was handed when it goes out of scope.
 class LocalRefs {
+    static const int CAPACITY = 4;
     JNIEnv *_env;
-    jobject _refs[4] = {};
+    jobject _refs[CAPACITY] = {};
     int _count = 0;
 public:
     explicit LocalRefs(JNIEnv *env) : _env(env) {}
+    LocalRefs(const LocalRefs &) = delete;
+    LocalRefs &operator=(const LocalRefs &) = delete;
     ~LocalRefs() {
         for (int i = 0; i < _count; i++) {
             _env->DeleteLocalRef(_refs[i]);
@@ -1056,8 +1059,11 @@ public:
     }
     template <typename T>
     T add(T ref) {
-        if (ref != nullptr && _count < 4) {
-            _refs[_count++] = ref;
+        if (ref != nullptr) {
+            assert(_count < CAPACITY);
+            if (_count < CAPACITY) {
+                _refs[_count++] = ref;
+            }
         }
         return ref;
     }
@@ -1065,7 +1071,8 @@ public:
 } // namespace
 
 void HeapUsage::initJMXUsage(JNIEnv *env) {
-    if (is_jmx_attempted) {
+    // Without a JNIEnv nothing is attempted, so a later call can still try.
+    if (env == nullptr || is_jmx_attempted) {
         // do not re-run the initialization
         return;
     }
