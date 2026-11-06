@@ -29,7 +29,7 @@ Stop and report on the first failure:
 - Other containers: list `RT ps`. Running containers share that memory; ask the
   user before stopping any.
 - Base images: for each `java-profiler-base:<libc>-<arch>` that exists, run
-  `RT run --rm <image> gcovr --version`. If it fails, that agent's first cell must
+  `RT run --rm --platform linux/<amd64|arm64> <image> gcovr --version`. If it fails, that agent's first cell must
   pass `--rebuild-base`; the script then rebuilds the JDK images on top of it.
 
 The non-native architecture runs emulated (QEMU or Rosetta) and takes several times
