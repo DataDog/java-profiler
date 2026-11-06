@@ -69,7 +69,7 @@ The tracker measures total pass time and in-safepoint time separately. It charge
 
 `IterateOverReachableObjects()` calls `heapRootCallback()` and `stackRefCallback()`. These callbacks admit root-attached objects. They do not traverse all children of each root.
 
-The first pass always performs root enumeration. A later pass performs it after a truncated enumeration or an interval of at least two seconds.
+The first pass always performs root enumeration. A later pass performs it after an interval of at least two seconds since the last attempt, extended by the last attempt's measured in-safepoint cost (20 milliseconds of interval per millisecond of cost, capped at 30 seconds). Each enumeration deoptimizes, on every thread, every compiled frame whose scope holds a scalar-replaced (escape-analysis-eliminated) object (one `VM_DeoptimizeFrame` operation per frame), and the JIT re-creates those frames continuously on a busy service, so the interval grows with the cost that recurs per attempt. A truncated attempt retries after the same interval as a completed one: with a first-pass budget too small for the live heap, every attempt truncates, and a next-pass retry would turn every pass into a deopt-all enumeration. A truncated pass ends after the enumeration - the next pass's expansion phases proceed on the roots already admitted.
 
 Root enumeration uses `firstpassbudget`. The name is historical: the implementation can use this budget again during later root-enumeration attempts.
 
@@ -173,9 +173,11 @@ The base candidate-stall limit is 30 passes. Consecutive `CANARY_STUCK` restarts
 
 The implementation controls different costs separately:
 
+- The minimum pass spacing (the effective cadence) applies to every pass authorization - GC epoch, canary back-to-back, and fallback cadence alike.
+- The root-enumeration interval floor extends with the last attempt's measured in-safepoint cost.
 - `_effective_budget` limits edge admission for ordinary work.
 - `_pause_pid` adjusts that budget from measured in-safepoint time.
-- `_effective_cadence_ns` changes when the budget controller reaches a limit.
+- `_effective_cadence_ns` changes when the budget controller reaches a limit and while the OOM urgency ramp is active. When an urgency episode ends, the ramp restores the one-second fallback in the same iteration.
 - `_safepoint_pain_budget` gates a later search.
 - `_cpu_pain_budget` gates passes in the current search.
 - `_configured_frontier_cap` limits native metadata.
@@ -202,14 +204,22 @@ These values are tuning inputs. They do not state guaranteed overhead.
 
 ## Configuration
 
-Reference-chain collection requires the allocation engine and generation tracking. Enable them in
-the same command:
+Reference-chain collection requires the allocation engine and a leak-signal source. The signal
+source is generations tracking OR liveheap tracking with reference chains enabled (the two drive
+the same liveness mechanisms; liveheap additionally preserves stack traces for its samples). The
+reference-chain collector is the signal's only consumer, so a plain liveheap session
+(`memory=<interval>b:l` without `referencechains`) keeps the signal disarmed: the per-epoch
+klass folding, the heap-floor ring and the forced sweeps stay off. With no signal source, the
+leak-signal gate can never pass and the collector stays idle. Enable one of them in the same
+command:
 
 ```text
 generations=true,referencechains=true:hops=N:budget=N:ttl=N:framecap=N:pausetarget=N:painbudget=N:firstpassbudget=N
 ```
 
-- `generations=true` activates the allocation engine and supplies leak candidates.
+- `generations=true` activates the allocation engine and supplies leak candidates. Liveheap
+  tracking (`memory=<interval>b:l|L`) is an equivalent signal source when combined with
+  `referencechains=true`.
 - `hops` limits chain depth.
 - `budget` supplies the base edge-admission budget.
 - `ttl` sets search lifetime in milliseconds. A value at or below zero disables this time check.

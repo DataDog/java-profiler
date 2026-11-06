@@ -50,6 +50,34 @@ public final class ReferenceChainTestHooks {
         return JavaProfiler.runReferenceChainPass0();
     }
 
+    public static void setReferenceChainPassSpacingForTest0(long msSinceLastPass, long cadenceMs) {
+        JavaProfiler.setReferenceChainPassSpacingForTest0(msSinceLastPass, cadenceMs);
+    }
+
+    public static void setReferenceChainRootEnumStateForTest0(long msSinceLastEnum, long lastEnumCostMs) {
+        JavaProfiler.setReferenceChainRootEnumStateForTest0(msSinceLastEnum, lastEnumCostMs);
+    }
+
+    public static boolean shouldRunRootEnumForTest0(boolean manualFirstPass) {
+        return JavaProfiler.shouldRunRootEnumForTest0(manualFirstPass);
+    }
+
+    public static long rootEnumIntervalFloorNsForTest0() {
+        return JavaProfiler.rootEnumIntervalFloorNsForTest0();
+    }
+
+    public static long referenceChainGcFinishEpochForTest0() {
+        return JavaProfiler.referenceChainGcFinishEpochForTest0();
+    }
+
+    public static void forceRunningReferenceChainSearchForTest0() {
+        JavaProfiler.forceRunningReferenceChainSearchForTest0();
+    }
+
+    public static void setReferenceChainCanaryStateForTest0(int candidateCount, long foundBits) {
+        JavaProfiler.setReferenceChainCanaryStateForTest0(candidateCount, foundBits);
+    }
+
     public static void pollReferenceChainTargets0() {
         JavaProfiler.pollReferenceChainTargets0();
     }
@@ -116,5 +144,33 @@ public final class ReferenceChainTestHooks {
 
     public static int referenceChainPassesRunForTest0() {
         return JavaProfiler.referenceChainPassesRunForTest0();
+    }
+
+    /**
+     * Backdates the leak-signal burn-in stamp (debug native builds only; see JavaProfiler).
+     * Returns the previous stamp for {@link #setLeakSignalActivatedNsForTest0(long)}.
+     */
+    public static long backdateLeakSignalActivationForTest0() {
+        return JavaProfiler.backdateLeakSignalActivationForTest0();
+    }
+
+    /** Restores a saved leak-signal burn-in stamp (debug native builds only; see JavaProfiler). */
+    public static void setLeakSignalActivatedNsForTest0(long activatedNs) {
+        JavaProfiler.setLeakSignalActivatedNsForTest0(activatedNs);
+    }
+
+    /** The current {@code secondsToOOM()} projection (debug native builds only; see JavaProfiler). */
+    public static double secondsToOOMForTest0() {
+        return JavaProfiler.secondsToOOMForTest0();
+    }
+
+    /** The OOM-urgency latch (debug native builds only; see JavaProfiler). */
+    public static boolean urgentLatchedForTest0() {
+        return JavaProfiler.urgentLatchedForTest0();
+    }
+
+    /** Drives the urgency latch machine once on the live projection (debug native builds only). */
+    public static boolean isUrgentForTest0() {
+        return JavaProfiler.isUrgentForTest0();
     }
 }

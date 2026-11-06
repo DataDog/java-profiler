@@ -296,6 +296,19 @@
   X(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY, "reference_chain_frontier_table_capacity") \
   X(REFERENCE_CHAIN_CANDIDATE_COUNT, "reference_chain_candidate_count") \
   X(REFERENCE_CHAIN_CANDIDATES_FOUND, "reference_chain_candidates_found") \
+  /* hasLeakSignal() gate evaluations refused while the OOM urgency latch is \
+   * set and selectLeakCandidates() found zero candidates (a heap-wide leak no \
+   * single klass explains). Counts evaluations (~1/s while latched), not episodes. */ \
+  X(REFERENCE_CHAIN_URGENT_NO_CANDIDATE, "reference_chain_urgent_no_candidate") \
+  /* Heap-floor seqlock: samples DROPPED when a writer claims a slot whose \
+   * seq is still the sentinel - only possible if the ring lapped an \
+   * in-flight writer (RING_SIZE concurrent writers; never under the \
+   * single-writer onGC() contract). Defensive observability only. */ \
+  X(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP, "heap_floor_sample_dropped_overlap") \
+  /* Heap-floor seqlock: reads that exhausted HEAP_FLOOR_READ_ATTEMPTS without a consistent \
+   * (used, seq) pair (also the emergency-band seed's seq_out==nullptr read; per exhausted read, \
+   * never per attempt). Rising: overlapping writers pin the newest slot. */ \
+  X(HEAP_FLOOR_READ_UNSTABLE, "heap_floor_read_unstable") \
   /* admitStaticFieldRoots() per-class non-static quota: non-STATIC_FIELD \
    * edges (CONSTANT_POOL, INTERFACE, SUPERCLASS, CLASS_LOADER, ...) that \
    * were dropped because the class already hit \

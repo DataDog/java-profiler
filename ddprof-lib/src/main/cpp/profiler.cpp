@@ -1280,6 +1280,14 @@ bool Profiler::startCpuEngine(Arguments &args) {
 // restored after JFR stops, as in stop(); a later start() patches again from
 // Libraries::updateSymbols(). Without this, a start() that left the profiler
 // in ERROR would leave the hooks patched for the rest of the process.
+//
+// Unlike stop(), this runs _jfr.stop() WITHOUT SignalInflight::drain().
+// The registration-failure and nativemem-only paths precede every
+// enableEvents(true). The no-activated-engine path can follow the wall
+// enable cycle, but wall start() fails only before creating its timer
+// thread, so no SIGVTALRM can be in flight; CPU events enable only on
+// the success path, which never rolls back. A new call site that can
+// leave signal handlers in flight MUST drain before _jfr.stop().
 void Profiler::rollBackStart() {
   disableEngines();
   switchLibraryTrap(false);
@@ -2101,20 +2109,31 @@ Error Profiler::start(Arguments &args, bool reset) {
       }
     }
   }
-  if ((activated & EM_ALLOC) && args._reference_chains) {
+  if (args._reference_chains) {
     // Reference-chain tracking chases LivenessTracker's leak-tagged
     // candidates, so it only runs when allocation sampling actually
     // activated. Must run AFTER ObjectSampler::start() ->
     // LivenessTracker::start() (ordering noted in referenceChains.cpp) -
     // the block above is that ordering point.
-    error = ReferenceChainTracker::instance()->start(args);
-    if (error) {
-      Log::warn("%s", error.message());
-      error = Error::OK; // recoverable - recording continues without chains
-    } else {
-      ReferenceChainTracker::instance()->startThread();
-      // Pre-existing threads are registered below, once thread events are on.
-      _reference_chains_active = true;
+    bool chains_active = false;
+    if (activated & EM_ALLOC) {
+      error = ReferenceChainTracker::instance()->start(args);
+      if (error) {
+        Log::warn("%s", error.message());
+        error = Error::OK; // recoverable - recording continues without chains
+      } else {
+        ReferenceChainTracker::instance()->startThread();
+        // Pre-existing threads are registered below, once thread events are on.
+        _reference_chains_active = true;
+        chains_active = true;
+      }
+    }
+    if (!chains_active) {
+      // initialize() may have armed the leak signal (and stamped burn-in) for the
+      // (liveness && reference_chains) leg; with chains not active - alloc engine did not
+      // activate, or the tracker failed to start - that leg has no consumer. Clear it
+      // (generations keeps its own leg).
+      LivenessTracker::instance()->disableChainOnlyLeakSignal();
     }
   }
   if (_event_mask & EM_NATIVEMEM) {
@@ -2168,7 +2187,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     // ever sees finds the engine fully wired. Unlike wall clock, CPU handlers
     // re-check _enabled on every signal, so enabling here (rather than before
     // start()) does not lose samples.
-    // Paired with drainInflight() on the stop side. enableCpuEngine() enables
+    // Paired with SignalInflight::drain() on the stop side. enableCpuEngine() enables
     // it only if the CPU engine itself started.
     enableCpuEngine(activated);
 
