@@ -17,8 +17,12 @@ matrix. Optional arguments: `ref=<git ref>` (default `origin/main`) and
 Stop and report on the first failure:
 - A container runtime answers: `podman info`, else `docker info`. Use it as `RT` for
   every cell. Docker on macOS needs `colima start` first.
-- The host has gcovr 8.3+ (`gcovr --version`; install with `pip install gcovr`) and
-  `java` on `PATH`. They are needed only for step 4, but check now.
+- The host has `java` on `PATH` and a gcovr at least as new as the one in the base
+  images (checked below): an older gcovr rejects the cells' tracefiles ("Wrong format
+  version"). If the host's is older or missing, do not change the user's Python;
+  after step 2 create `python3 -m venv "$RUN/tools/venv"`, install
+  `gcovr==<base image version>` into it, and put `$RUN/tools/venv/bin` first on `PATH`
+  in step 4. Both are needed only for step 4, but check now.
 - Free disk: about 3 GB per worktree plus the container images.
 - Memory: `RT info --format '{{.Host.MemTotal}}'` (podman) or `'{{.MemTotal}}'`
   (docker), in bytes. Gradle, the `-O0` compile and the test JVMs of one cell need
@@ -29,7 +33,8 @@ Stop and report on the first failure:
 - Other containers: list `RT ps`. Running containers share that memory; ask the
   user before stopping any.
 - Base images: for each `java-profiler-base:<libc>-<arch>` that exists, run
-  `RT run --rm --platform linux/<amd64|arm64> <image> gcovr --version`. If it fails, that agent's first cell must
+  `RT run --rm --platform linux/<amd64|arm64> <image> gcovr --version`; note the
+  newest version for the host check above. If it fails, that agent's first cell must
   pass `--rebuild-base`; the script then rebuilds the JDK images on top of it.
 
 The non-native architecture runs emulated (QEMU or Rosetta) and takes several times
