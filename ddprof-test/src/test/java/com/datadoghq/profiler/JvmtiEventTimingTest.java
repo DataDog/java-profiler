@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 public class JvmtiEventTimingTest extends AbstractProcessProfilerTest {
 
     private static final String BIND_INTERCEPTION_ENABLED = "[TEST::INFO] NativeMethodBind interception enabled";
+    private static final String BIND_INTERCEPTION_DISABLED = "[TEST::INFO] NativeMethodBind interception disabled";
     private static final String MEMORY_USAGE_BOUND = "[TEST::INFO] NativeMethodBind: getMemoryUsage0 resolved";
 
     @BeforeEach
@@ -47,6 +48,7 @@ public class JvmtiEventTimingTest extends AbstractProcessProfilerTest {
     void agentOnLoadSeesNativeBindingsBeforeFirstStart() throws Exception {
         Path agentLib = LibraryLoader.resolveLibraryPath(System.getProperty("java.io.tmpdir"));
         AtomicBoolean intercepting = new AtomicBoolean();
+        AtomicBoolean notIntercepting = new AtomicBoolean();
         AtomicBoolean bound = new AtomicBoolean();
 
         LaunchResult result = launch("noop",
@@ -55,6 +57,8 @@ public class JvmtiEventTimingTest extends AbstractProcessProfilerTest {
                 l -> {
                     if (l.contains(BIND_INTERCEPTION_ENABLED)) {
                         intercepting.set(true);
+                    } else if (l.contains(BIND_INTERCEPTION_DISABLED)) {
+                        notIntercepting.set(true);
                     } else if (l.contains(MEMORY_USAGE_BOUND)) {
                         bound.set(true);
                     }
@@ -63,7 +67,11 @@ public class JvmtiEventTimingTest extends AbstractProcessProfilerTest {
                 null);
 
         assertTrue(result.inTime, "forked JVM did not exit in time");
-        assumeTrue(intercepting.get(), "this JVM needs no native binding interception");
+        assertEquals(0, result.exitCode, "forked JVM exited with an error");
+        // An agent that failed before deciding prints neither marker: fail rather than skip.
+        assertTrue(intercepting.get() || notIntercepting.get(),
+                "the agent never reported whether it intercepts native bindings");
+        assumeTrue(!notIntercepting.get(), "this JVM needs no native binding interception");
         assertTrue(bound.get(),
                 "VMStructs::NativeMethodBind never resolved getMemoryUsage0: either NATIVE_METHOD_BIND "
                         + "was not enabled when VMInit bound it, or initJMXUsage() returned before the "
