@@ -69,15 +69,15 @@ struct SBTable {
 class StringArena {
     static constexpr size_t CHUNK_SIZE = 512 * 1024;
 
-    // Plain struct allocated via calloc (zero-initialised); pos accessed via
-    // __atomic builtins, consistent with the rest of the file.
+    // Plain struct allocated via calloc (zero-initialised), so pos is accessed
+    // via __atomic builtins rather than std::atomic.
     struct Chunk {
         Chunk* next;        // singly-linked for traversal in reset() / ~StringArena()
         size_t pos;         // bump pointer within data[]
         char   data[CHUNK_SIZE];
     };
 
-    std::atomic<Chunk*> _first;            // head of chain; kept across resets; set under _growing
+    std::atomic<Chunk*> _first;            // head of chain; kept across resets; published under _growing
     std::atomic<Chunk*> _active;           // current allocation target
     std::atomic<bool>   _growing{false};   // serialises new-chunk creation
     std::atomic<int>    _extra_chunks{0};  // chunks linked after _first
@@ -254,9 +254,9 @@ public:
     // a first chunk again.  Same precondition as reset().
     void release() {
         reset();
-        // _active first: acquireFirstChunk() reads it once it sees _first.
-        _active.store(nullptr, std::memory_order_release);
-        Chunk* first = _first.exchange(nullptr, std::memory_order_acq_rel);
+        Chunk* first = _first.load(std::memory_order_relaxed);
+        _first.store(nullptr, std::memory_order_relaxed);
+        _active.store(nullptr, std::memory_order_relaxed);
         if (first != nullptr) {
             // Before free(): the overhead is read back off the live chunk.
             NativeMem::recordFreeBefore(NM_DICTIONARY, first, sizeof(Chunk));
