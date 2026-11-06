@@ -61,6 +61,10 @@ set -x
 mkdir -p "${REPO_ROOT}/libs"
 cp -r "${REPO_ROOT}/ddprof-lib/build/native/release/META-INF/native-libs/"* "${REPO_ROOT}/libs/"
 
+# Refuse to ship a build made with the opt-in debug/perf flags: applies to
+# every target, unlike the ABI floor check below.
+"${HERE}/check-release-flags.sh" "${REPO_ROOT}/libs/${TARGET}/libjavaProfiler.so"
+
 # Assert what the artifact requires from the host that will load it. musl
 # targets carry no glibc symbol versions, so the check does not apply to them.
 case "${TARGET}" in
