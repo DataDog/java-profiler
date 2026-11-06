@@ -1071,9 +1071,9 @@ public:
 } // namespace
 
 void HeapUsage::initJMXUsage(JNIEnv *env) {
-    // Without a JNIEnv nothing is attempted, so a later call can still try.
+    // Runs once. Without a JNIEnv the attempt is not used up, so a later call
+    // can still try.
     if (env == nullptr || is_jmx_attempted) {
-        // do not re-run the initialization
         return;
     }
     is_jmx_attempted = true;
