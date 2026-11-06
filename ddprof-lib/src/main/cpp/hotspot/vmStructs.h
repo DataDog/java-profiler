@@ -580,6 +580,7 @@ class VMStructs {
 };
 
 class HeapUsage : VMStructs {
+    friend class HeapUsageTestAccessor; // test-only: heapUsage_ut.cpp
 private:
     static bool is_jmx_attempted;
     static bool is_jmx_supported; // default to not-supported
