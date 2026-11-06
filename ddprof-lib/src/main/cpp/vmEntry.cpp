@@ -574,7 +574,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   functions->RetransformClasses = RetransformClassesHook;
 
   // Code generated before the persistent events are enabled is replayed by
-  // Profiler::enablePersistentJvmtiEvents() (called on first start).
+  // Profiler::enablePersistentJvmtiEvents(), which each start() retries until it succeeds.
   if (!attach) {
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, NULL);
   }

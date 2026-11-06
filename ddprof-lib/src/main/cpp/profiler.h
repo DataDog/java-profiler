@@ -223,9 +223,6 @@ private:
   bool _force_jmethodID;
 
   volatile jvmtiEventMode _thread_events_state;
-  // Tracks whether persistent JVMTI events (CLASS_LOAD, CLASS_PREPARE,
-  // DYNAMIC_CODE_GENERATED, COMPILED_METHOD_LOAD) have been enabled. These are enabled once on first start() and never disabled,
-  // surviving stop/start cycles for the lifetime of the process.
   // enablePersistentJvmtiEvents() steps that succeeded, one bit per event.
   u8 _persistent_jvmti_events = 0;
 

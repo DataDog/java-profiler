@@ -77,7 +77,7 @@ class StringArena {
         char   data[CHUNK_SIZE];
     };
 
-    Chunk*              _first;            // head of chain; kept across resets; set under _growing
+    std::atomic<Chunk*> _first;            // head of chain; kept across resets; set under _growing
     std::atomic<Chunk*> _active;           // current allocation target
     std::atomic<bool>   _growing{false};   // serialises new-chunk creation
     std::atomic<int>    _extra_chunks{0};  // chunks linked after _first
@@ -127,17 +127,17 @@ class StringArena {
     Chunk* acquireFirstChunk() {
         // Without the growth lock once a first chunk exists: _active, published
         // before _first, is then the racing first chunk or a latched OOM (null).
-        if (__atomic_load_n(&_first, __ATOMIC_ACQUIRE) != nullptr) {
+        if (_first.load(std::memory_order_acquire) != nullptr) {
             return _active.load(std::memory_order_acquire);
         }
         lockGrowing();
         Chunk* c = _active.load(std::memory_order_relaxed);
-        if (c == nullptr && _first == nullptr) {
+        if (c == nullptr && _first.load(std::memory_order_relaxed) == nullptr) {
             c = make_chunk();
             if (c != nullptr) {
                 countChunkAlloc();
                 _active.store(c, std::memory_order_release);
-                __atomic_store_n(&_first, c, __ATOMIC_RELEASE);
+                _first.store(c, std::memory_order_release);
             } else if (!_oom_logged) {
                 _oom_logged = true;
                 Log::warn("StringArena: first chunk allocation failed; insert "
@@ -187,7 +187,7 @@ public:
     StringArena() : _first(nullptr), _active(nullptr) {}
 
     ~StringArena() {
-        Chunk* c = _first;
+        Chunk* c = _first.load(std::memory_order_relaxed);
         while (c) {
             Chunk* n = c->next;
             // Before free(): the overhead is read back off the live chunk.
@@ -205,7 +205,7 @@ public:
     // before any chunk exists; counts the first chunk if there is one.
     void initCounters(int offset) {
         _counter_offset = offset;
-        if (offset != 0 && _first != nullptr) {
+        if (offset != 0 && _first.load(std::memory_order_relaxed) != nullptr) {
             Counters::increment(DICTIONARY_BYTES, (long long)sizeof(Chunk), offset);
         }
     }
@@ -229,7 +229,8 @@ public:
     // nullptr after a failed make_chunk(), the next alloc() after reset()
     // will succeed again (up to one chunk's worth).
     void reset() {
-        Chunk* c = _first ? _first->next : nullptr;
+        Chunk* first = _first.load(std::memory_order_relaxed);
+        Chunk* c = first ? first->next : nullptr;
         int freed = 0;
         while (c) {
             Chunk* n = c->next;
@@ -239,11 +240,11 @@ public:
             c = n;
             ++freed;
         }
-        if (_first) {
-            _first->next = nullptr;
-            __atomic_store_n(&_first->pos, (size_t)0, __ATOMIC_RELAXED);
+        if (first) {
+            first->next = nullptr;
+            __atomic_store_n(&first->pos, (size_t)0, __ATOMIC_RELAXED);
         }
-        _active.store(_first, std::memory_order_release);
+        _active.store(first, std::memory_order_release);
         _extra_chunks.store(0, std::memory_order_relaxed);
         countChunkFree(freed);
         _oom_logged = false;
@@ -253,21 +254,23 @@ public:
     // a first chunk again.  Same precondition as reset().
     void release() {
         reset();
-        if (_first != nullptr) {
+        // _active first: acquireFirstChunk() reads it once it sees _first.
+        _active.store(nullptr, std::memory_order_release);
+        Chunk* first = _first.exchange(nullptr, std::memory_order_acq_rel);
+        if (first != nullptr) {
             // Before free(): the overhead is read back off the live chunk.
-            NativeMem::recordFreeBefore(NM_DICTIONARY, _first, sizeof(Chunk));
-            free(_first);
-            _first = nullptr;
+            NativeMem::recordFreeBefore(NM_DICTIONARY, first, sizeof(Chunk));
+            free(first);
             countChunkFree(1);
         }
-        _active.store(nullptr, std::memory_order_release);
     }
 
     // Re-adds every live chunk to DICTIONARY_BYTES, for use after a global
     // Counters::reset() zeroed the gauge while the chunks stayed allocated.
     void reseedCounters() {
         if (_counter_offset == 0) return;
-        int chunks = (_first != nullptr ? 1 : 0) + _extra_chunks.load(std::memory_order_relaxed);
+        int chunks = (_first.load(std::memory_order_relaxed) != nullptr ? 1 : 0) +
+                     _extra_chunks.load(std::memory_order_relaxed);
         Counters::increment(DICTIONARY_BYTES, (long long)chunks * (long long)sizeof(Chunk), _counter_offset);
     }
 };
