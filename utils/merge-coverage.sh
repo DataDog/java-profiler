@@ -72,10 +72,12 @@ fi
 
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
-# --out is replaced, so it must be empty or an earlier merge's output (summary.md).
-if [[ -n "$(ls -A "$OUT")" && ! -f "$OUT/summary.md" ]]; then
+# --out is replaced, so it must be empty or carry the marker an earlier merge wrote.
+MARKER=".merge-coverage-output"
+if [[ -n "$(ls -A "$OUT")" && ! -f "$OUT/$MARKER" ]]; then
     die "--out $OUT is neither empty nor an earlier merge output"
 fi
+touch "$OUT/$MARKER"
 # Keep tools/ (the downloaded CLI); a report left from an earlier merge would be linked
 # from this run's summary.
 rm -rf "$OUT/cpp" "$OUT/java" "$OUT/summary.md"
@@ -185,8 +187,12 @@ done
     echo "# Merged coverage"
     echo
     echo "- Commit: \`$COMMIT\`"
-    echo "- C++ report: \`cpp/index.html\`"
-    echo "- Java report: \`java/html/index.html\`"
+    if [[ -f "$OUT/cpp/index.html" ]]; then
+        echo "- C++ report: \`cpp/index.html\`"
+    fi
+    if [[ -f "$OUT/java/html/index.html" ]]; then
+        echo "- Java report: \`java/html/index.html\`"
+    fi
     if $FILTERED; then
         echo "- Filtered run: some cells ran only the tests matching their \`tests\` pattern"
     fi

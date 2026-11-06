@@ -66,6 +66,10 @@ EOF
 cat > "$STUB_BIN/gcovr" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$STUB_LOG.gcovr"
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "-o" ]]; then touch "$2"; fi
+  shift
+done
 echo "lines: 50.0% (1 out of 2)"
 EOF
 cat > "$STUB_BIN/java" <<'EOF'
@@ -73,6 +77,7 @@ cat > "$STUB_BIN/java" <<'EOF'
 printf '%s\n' "$@" >> "$STUB_LOG.java"
 if [[ "$3" == "report" ]]; then
   while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--html" ]]; then mkdir -p "$2"; touch "$2/index.html"; fi
     if [[ "$1" == "--xml" ]]; then
       printf '%s\n' "${STUB_XML:-<report name=\"r\"><counter type=\"LINE\" missed=\"1\" covered=\"3\"/></report>}" > "$2"
     fi
@@ -177,13 +182,17 @@ STUB_EXEC=1 STUB_WS="$TEMP_DIR/ws" STUB_OUT="$TEMP_DIR/missing/out" run_script "
 STUB_RUN_RC=125 run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$exec_out" >/dev/null || true
 [[ ! -e "$exec_out/cell.properties" && ! -e "$exec_out/reports" ]] \
   && pass || fail "a failed run left the previous export: $(find "$exec_out" | sort)"
-for bad in 'A$B' 'A"B' "A'B" 'A`B' 'A\B'; do
-  if output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$exec_out" --tests="$bad"); then
-    fail "--tests=$bad was accepted with --coverage-out"
-  else
-    expect_contains "--tests=$bad rejected" "$output" "must not contain quotes"
-  fi
+for bad in 'A$B' 'A"B' "A'B" 'A`B' 'A\B' 'A;B' 'A B' 'A|B' $'A\nB'; do
+  for mode in --coverage-out="$exec_out" --gtest; do
+    if output=$(run_script "$REPO" --libc=glibc --jdk=21 "$mode" --tests="$bad"); then
+      fail "--tests=$bad was accepted ($mode)"
+    else
+      expect_contains "--tests=$bad rejected ($mode)" "$output" "--tests may contain only"
+    fi
+  done
 done
+output=$(run_script "$REPO" --libc=glibc --jdk=21 --tests='com.Foo*Test#run,Bar-1_x')
+expect_contains "test pattern characters accepted" "$(cat "$STUB_LOG")" "-Ptests=com.Foo*Test#run,Bar-1_x"
 
 # The non-coverage command is unchanged.
 output=$(run_script "$REPO" --libc=glibc --jdk=21)
@@ -334,7 +343,7 @@ fi
 make_cell "$TEMP_DIR/c5" "$SRC_COMMIT" 21
 echo "tests=FooTest" >> "$TEMP_DIR/c5/cell.properties"
 mkdir -p "$TEMP_DIR/merged5/cpp"
-touch "$TEMP_DIR/merged5/cpp/stale.html" "$TEMP_DIR/merged5/summary.md"
+touch "$TEMP_DIR/merged5/cpp/stale.html" "$TEMP_DIR/merged5/.merge-coverage-output"
 "$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged5" "$TEMP_DIR/c5" >/dev/null 2>&1
 summary=$(cat "$TEMP_DIR/merged5/summary.md")
 expect_contains "filtered banner" "$summary" "Filtered run"
@@ -398,6 +407,16 @@ else
   [[ ! -e "$TEMP_DIR/merged8/tools/org.jacoco.cli-0.8.14-nodeps.jar" ]] && pass || fail "mismatched jar was kept"
 fi
 [[ ${#pinned} -eq 64 ]] && pass || fail "merge-coverage.sh has no pinned SHA-256"
+# A merge that failed midway (merged8, checksum mismatch) can be rerun into the same --out.
+if "$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged8" "$TEMP_DIR/c1" >/dev/null 2>&1; then
+  pass
+else
+  fail "rerun into a failed merge's --out was rejected"
+fi
+summary=$(cat "$TEMP_DIR/merged8/summary.md" 2>/dev/null || true)
+expect_contains "cpp link when written" "$summary" "- C++ report:"
+expect_contains "java link when written" "$summary" "- Java report:"
+expect_not_contains "no java link without report" "$(cat "$TEMP_DIR/merged10/summary.md")" "- Java report:"
 merge_version=$(sed -n 's/^JACOCO_VERSION="\(.*\)"$/\1/p' "$MERGE")
 build_version=$(sed -n 's/^ *toolVersion = "\(.*\)"$/\1/p' "$UTILS_DIR/../ddprof-test/build.gradle.kts")
 [[ -n "$merge_version" && "$merge_version" == "$build_version" ]] \
