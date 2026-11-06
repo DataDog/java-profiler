@@ -84,7 +84,8 @@ dependency-free leak-demo app; not published).
 Configurations: `release`, `debug`, plus `asan`/`tsan`/`fuzzer` when the sanitizer runtime
 is found for the selected compiler (inactive on macOS and musl), plus opt-in `coverage`
 with `-PenableCoverage` (`:ddprof-lib:coverageReport`; the C++ report covers only the
-`-O0 -DDEBUG` build — see [doc/building/CodeCoverage.md](doc/building/CodeCoverage.md)).
+`-O0 -DDEBUG` build — see [doc/building/CodeCoverage.md](doc/building/CodeCoverage.md);
+merged coverage across the CI-tested Linux platforms and JVMs: the `test-coverage` skill).
 
 ```bash
 ./.claude/commands/build-and-summarize buildRelease      # release library + JAR

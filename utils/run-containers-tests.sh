@@ -21,6 +21,8 @@
 #   --mount                  (mount local repo instead of cloning - faster but may have stale artifacts)
 #   --rebuild                (force rebuild of container images)
 #   --rebuild-base           (force rebuild of the base image, and of the JDK image built on it)
+#   --coverage-out=DIR       (single cell: run :ddprof-lib:coverageReport -PenableCoverage and
+#                             export reports, raw JaCoCo data and classes to DIR)
 #   --matrix                 (preview a full matrix; unset dimensions expand to all)
 #   --run                    (execute an inferred matrix without prompting)
 #   --fail-fast              (stop matrix execution on first failure)
@@ -37,6 +39,8 @@ ARCH=""
 CONFIG="debug"
 TESTS=""
 GTEST_TASK=""
+COVERAGE_OUT=""
+COVERAGE_OUT_SET=false
 SHELL_MODE=false
 MOUNT_MODE=false
 GTEST_ENABLED=false
@@ -767,7 +771,7 @@ run_matrix() {
 }
 
 usage() {
-    awk 'NR >= 4 && NR <= 27 { sub(/^# ?/, ""); print }' "$0"
+    awk 'NR >= 4 && NR <= 29 { sub(/^# ?/, ""); print }' "$0"
     exit 0
 }
 
@@ -834,6 +838,11 @@ while [[ $# -gt 0 ]]; do
             PASS_THROUGH_ARGS+=("$1")
             shift
             ;;
+        --coverage-out=*)
+            COVERAGE_OUT="${1#*=}"
+            COVERAGE_OUT_SET=true
+            shift
+            ;;
         --matrix)
             MATRIX_MODE=true
             shift
@@ -886,6 +895,26 @@ if [[ -n "$GTEST_TASK" && -n "$TESTS" ]]; then
     exit 1
 fi
 
+# The pattern is spliced unquoted into a command that the host evals and the container
+# shell runs again (and into cell.properties), so only test-pattern characters are safe.
+if [[ "$TESTS" =~ [^A-Za-z0-9_.*#,-] ]]; then
+    echo "Error: --tests may contain only letters, digits and _ . * # , -"
+    exit 1
+fi
+
+if $COVERAGE_OUT_SET; then
+    if [[ -z "$COVERAGE_OUT" ]]; then
+        echo "Error: --coverage-out needs a directory"
+        exit 1
+    fi
+    if $SHELL_MODE || $MOUNT_MODE || $MATRIX_MODE || $CONFIG_SET || [[ -n "$GTEST_TASK" ]]; then
+        echo "Error: --coverage-out cannot be combined with --shell, --mount, --matrix, --config or --gtest-task"
+        exit 1
+    fi
+    # coverageReport depends on gtestCoverage.
+    GTEST_ENABLED=true
+fi
+
 MATRIX_LIBCS_TEXT=$(expand_dimension "$LIBC" "libc" glibc musl)
 MATRIX_ARCHES_TEXT=$(expand_dimension "$ARCH" "arch" x64 aarch64)
 MATRIX_JDKS_TEXT=$(expand_jdk_dimension "$JDK_VERSION")
@@ -909,6 +938,10 @@ if (( MATRIX_RUNNABLE == 0 )); then
 fi
 
 if (( MATRIX_TOTAL > 1 || MATRIX_RUNNABLE > 1 )) || $MATRIX_MODE; then
+    if [[ -n "$COVERAGE_OUT" ]]; then
+        echo "Error: --coverage-out runs a single cell; select one libc, arch and jdk"
+        exit 1
+    fi
     if $SHELL_MODE; then
         echo "Error: --shell is interactive and is not supported with matrix runs. Run a single cell without matrix dimensions instead."
         exit 1
@@ -935,6 +968,16 @@ LIBC="${MATRIX_CELL_LIBCS[0]}"
 ARCH="${MATRIX_CELL_ARCHES[0]}"
 JDK_VERSION="${MATRIX_CELL_JDKS[0]}"
 CONFIG="${MATRIX_CELL_CONFIGS[0]}"
+if [[ -n "$COVERAGE_OUT" ]]; then
+    CONFIG="coverage"
+    mkdir -p "$COVERAGE_OUT"
+    COVERAGE_OUT="$(cd "$COVERAGE_OUT" && pwd)"
+    # A run that dies before the in-container export must not leave the previous one.
+    # Best effort: a rootful container's files are root-owned, and its export, which
+    # runs as root, clears them again.
+    rm -rf "$COVERAGE_OUT/reports" "$COVERAGE_OUT/jacoco" "$COVERAGE_OUT/classes" \
+        "$COVERAGE_OUT/cell.properties" 2>/dev/null || true
+fi
 
 # Parse JDK version and variant (e.g., "21-j9" -> version="21", variant="j9")
 JDK_BASE_VERSION="${JDK_VERSION%%-*}"
@@ -1116,11 +1159,17 @@ fi
 # ========== Build JDK Image (if needed) ==========
 IMAGE_EXISTS=false
 # A JDK image cached on top of an older base image would hide the rebuilt base's packages
-# (e.g. gcovr), so it is reused only when the base image was reused too.
-if [[ "$REBUILD" == "false" && "$BASE_IMAGE_EXISTS" == "true" ]]; then
-    if "$CONTAINER_RUNTIME" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+# (e.g. gcovr), so it is reused only when its label names the current base image ID;
+# an image without the label is rebuilt.
+BASE_IMAGE_ID=$("$CONTAINER_RUNTIME" image inspect --format '{{.Id}}' "$BASE_IMAGE_NAME")
+if [[ "$REBUILD" == "false" && "$REBUILD_BASE" == "false" ]]; then
+    IMAGE_BASE_ID=$("$CONTAINER_RUNTIME" image inspect \
+        --format '{{index .Config.Labels "java-profiler.base-id"}}' "$IMAGE_NAME" 2>/dev/null || true)
+    if [[ -n "$BASE_IMAGE_ID" && "$IMAGE_BASE_ID" == "$BASE_IMAGE_ID" ]]; then
         IMAGE_EXISTS=true
         echo ">>> Using cached image: $IMAGE_NAME"
+    elif [[ -n "$IMAGE_BASE_ID" ]] || "$CONTAINER_RUNTIME" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+        echo ">>> Cached image $IMAGE_NAME was not built on the current $BASE_IMAGE_NAME; rebuilding"
     fi
 fi
 
@@ -1199,7 +1248,8 @@ WORKDIR /workspace
 EOF
     fi
 
-    "$CONTAINER_RUNTIME" build $CONTAINER_PLATFORM -t "$IMAGE_NAME" -f "$DOCKERFILE_DIR/Dockerfile" "$DOCKERFILE_DIR"
+    "$CONTAINER_RUNTIME" build $CONTAINER_PLATFORM --label "java-profiler.base-id=$BASE_IMAGE_ID" \
+        -t "$IMAGE_NAME" -f "$DOCKERFILE_DIR/Dockerfile" "$DOCKERFILE_DIR"
     echo ">>> JDK image built: $IMAGE_NAME"
 fi
 
@@ -1209,7 +1259,12 @@ fi
 # Capitalize first letter for gradle task names (testDebug, testAsan, etc.)
 # Note: -Ptests property works uniformly across all platforms (glibc, musl, macOS)
 CONFIG_CAPITALIZED="$(tr '[:lower:]' '[:upper:]' <<< ${CONFIG:0:1})${CONFIG:1}"
-if [[ -n "$GTEST_TASK" ]]; then
+if [[ -n "$COVERAGE_OUT" ]]; then
+    GRADLE_CMD="./gradlew -PCI -PenableCoverage :ddprof-lib:coverageReport"
+    if [[ -n "$TESTS" ]]; then
+        GRADLE_CMD="$GRADLE_CMD -Ptests=$TESTS"
+    fi
+elif [[ -n "$GTEST_TASK" ]]; then
     if [[ "$GTEST_TASK" == :* ]]; then
         GRADLE_CMD="./gradlew -PCI -PkeepJFRs $GTEST_TASK"
     else
@@ -1231,6 +1286,19 @@ if [[ "$CONFIG" == "tsan" ]] && [[ "$ARCH" == "aarch64" ]] && [[ "$LIBC" == "gli
     GRADLE_CMD="$GRADLE_CMD -Pnative.forceCompiler=clang++-17"
 fi
 GRADLE_CMD="$GRADLE_CMD --no-daemon --parallel --build-cache --no-watch-fs"
+
+# Coverage mode: replace DIR's previous export with this run's reports, JaCoCo .exec files
+# and their classes, also after a Gradle failure (coverageReport writes both reports
+# first). No single quotes: the command runs through eval inside '...'.
+if [[ -n "$COVERAGE_OUT" ]]; then
+    COVERAGE_EXPORT="cd /workspace && rm -rf /coverage-out/reports /coverage-out/jacoco /coverage-out/classes /coverage-out/cell.properties"
+    COVERAGE_EXPORT="$COVERAGE_EXPORT && { [ ! -d ddprof-lib/build/reports/coverage ] || cp -r ddprof-lib/build/reports/coverage /coverage-out/reports; }"
+    COVERAGE_EXPORT="$COVERAGE_EXPORT && { [ ! -d ddprof-test/build/jacoco ] || cp -r ddprof-test/build/jacoco /coverage-out/jacoco; }"
+    COVERAGE_EXPORT="$COVERAGE_EXPORT && { [ ! -d ddprof-lib/build/classes/java/main ] || cp -r ddprof-lib/build/classes/java/main /coverage-out/classes; }"
+    COVERAGE_EXPORT="$COVERAGE_EXPORT && printf \"libc=%s\\narch=%s\\njdk=%s\\ntests=%s\\ncommit=%s\\ngradle_exit=%s\\n\" $LIBC $ARCH $JDK_VERSION \"$TESTS\" \"\$(git rev-parse HEAD)\" \$rc > /coverage-out/cell.properties"
+    # A failed export must not pass as a clean cell.
+    GRADLE_CMD="{ rc=0; $GRADLE_CMD || rc=\$?; { $COVERAGE_EXPORT; } || { [ \$rc -ne 0 ] || rc=70; }; exit \$rc; }"
+fi
 
 # On aarch64 glibc TSan: reduce ASLR entropy so TSan's shadow doesn't conflict with
 # initial library load addresses. Requires --privileged for sysctl in the container.
@@ -1262,6 +1330,9 @@ CONTAINER_CMD="$CONTAINER_CMD -e LIBC=$LIBC"
 CONTAINER_CMD="$CONTAINER_CMD -e SANITIZER=$CONFIG"
 CONTAINER_CMD="$CONTAINER_CMD -e TEST_CONFIGURATION=$LIBC/${JDK_VERSION}-$CONFIG-$ARCH"
 CONTAINER_CMD="$CONTAINER_CMD -e GRADLE_USER_HOME=/gradle-cache"
+if [[ -n "$COVERAGE_OUT" ]]; then
+    CONTAINER_CMD="$CONTAINER_CMD -v \"$COVERAGE_OUT\":/coverage-out${CONTAINER_VOLUME_RW_OPTIONS}"
+fi
 
 if $MOUNT_MODE; then
     # Mount mode: use local repo directly (faster, but may have stale artifacts)
@@ -1282,6 +1353,13 @@ else
     # Clone mode: shallow clone from mounted local repo for clean builds (default)
     # Mount the local repo as source, then clone from it to /workspace
     CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/source${CONTAINER_VOLUME_RO_OPTIONS}"
+    # A git worktree's .git is a file naming an absolute gitdir inside the main
+    # repository; mount that repository's git dir at the same path so the clone resolves.
+    GIT_COMMON_DIR=""
+    if [[ -f "$PROJECT_ROOT/.git" ]]; then
+        GIT_COMMON_DIR=$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir)
+        CONTAINER_CMD="$CONTAINER_CMD -v \"$GIT_COMMON_DIR\":\"$GIT_COMMON_DIR\"${CONTAINER_VOLUME_RO_OPTIONS}"
+    fi
     CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
 
     # Build clone and test command - clone from local mounted source.
@@ -1291,6 +1369,10 @@ else
     # "-c safe.directory=..." to git clone is not enough (tested with git 2.34.1
     # in the glibc image), unlike for the commands in utils/compute-version.sh.
     SAFE_DIR_CMD="git config --global --add safe.directory /source/.git && "
+    if [[ -n "$GIT_COMMON_DIR" ]]; then
+        # The worktree's checkout and its gitdir both fail git's ownership check.
+        SAFE_DIR_CMD="git config --global --add safe.directory \"*\" && "
+    fi
     if $SHELL_MODE; then
         CLONE_CMD="${SAFE_DIR_CMD}git clone --depth 1 file:///source /workspace && cd /workspace && /bin/bash"
     else

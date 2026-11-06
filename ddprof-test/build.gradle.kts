@@ -148,6 +148,11 @@ tasks.withType<Test>().named { it in coverageTaskNames }.configureEach {
     environment("JACOCO_CHILD_DIR", childJacocoDir.get().asFile.absolutePath)
     environment("JACOCO_INCLUDES", jacocoIncludes)
   }
+  // -Ptests filters both coverage tasks, and a pattern usually matches tests of only one
+  // (slow or not); an empty match must not stop the build before the reports.
+  if (project.hasProperty("tests")) {
+    filter.isFailOnNoMatchingTests = false
+  }
 }
 
 // On musl the profiler-test plugin creates the test tasks as Exec tasks (running its own

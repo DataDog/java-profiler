@@ -6,7 +6,7 @@
 
 | Report | Tool | Sources | Output |
 |--------|------|---------|--------|
-| C++ | gcovr | gtest binaries + Java integration tests | `ddprof-lib/build/reports/coverage/cpp/index.html` |
+| C++ | gcovr | gtest binaries + Java integration tests | `ddprof-lib/build/reports/coverage/cpp/index.html`, tracefile `.../cpp/coverage.json` |
 | Java | JaCoCo | Java integration tests (incl. child JVMs) | `ddprof-lib/build/reports/coverage/java/html/index.html`, `.../java/jacoco.xml` |
 
 Coverage is opt-in. Pass `-PenableCoverage`, or none of the coverage tasks exist.
@@ -105,15 +105,27 @@ failing gtest stops the build before the report.
 
 `utils/run-containers-tests.sh` base images include gcovr from PyPI, and `llvm` on
 glibc for the unversioned `llvm-cov`. The script reuses cached images, so a base image
-cached before these packages were added lacks them, and so does every JDK test image
-built on it. Pass `--rebuild-base` once: it rebuilds the base image and the JDK image
-on top of it.
+cached before these packages were added lacks them. Pass `--rebuild-base` once per
+libc and architecture. Each JDK image records the ID of the base image it was built
+on, and the script rebuilds it when that base image changes.
 
-The script's `--config` does not accept `coverage`. Open a shell in the container and
-run the task there:
+`--coverage-out=DIR` runs the report for one cell and copies the reports, the JaCoCo
+`.exec` files, the classes they were recorded against and a `cell.properties` file to
+`DIR` (see [utils/README.md](../../utils/README.md)). A failing gtest stops the build
+before the report, so that cell exports no C++ tracefile.
 
 ```bash
-./utils/run-containers-tests.sh --libc=glibc --jdk=21 --rebuild-base --shell
-# inside the container:
-./gradlew :ddprof-lib:coverageReport -PenableCoverage
+./utils/run-containers-tests.sh --libc=musl --arch=aarch64 --jdk=21 --coverage-out=build/cov/musl-aarch64-21
 ```
+
+## Merging Platforms
+
+One run covers one libc, architecture and test JVM. Code that only runs on another
+platform (aarch64 stack walking, musl paths, J9 support) shows as not covered.
+`utils/merge-coverage.sh` merges `--coverage-out` directories built from one commit:
+gcovr merges the `coverage.json` tracefiles, and the JaCoCo CLI merges the `.exec`
+files and reports against one cell's classes. Every container builds with JDK 21, so
+the class files match across cells; the script warns when they differ. The host's
+gcovr must be at least as new as the containers': an older one rejects their
+tracefiles with "Wrong format version". The
+`test-coverage` skill runs the full Linux matrix and merges it.

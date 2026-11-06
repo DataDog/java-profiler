@@ -427,6 +427,8 @@ if (project.hasProperty("enableCoverage")) {
         "--gcov-executable", gcovExecutable,
         "--html", "--html-details",
         "-o", "${outDir.absolutePath}/index.html",
+        // Tracefile for merging runs from several platforms (gcovr --add-tracefile).
+        "--json", "${outDir.absolutePath}/coverage.json",
         "--print-summary",
         // Safety net only: -fprofile-update=atomic (see configureCoverage) should keep
         // counters consistent, but a stray negative count must not discard a

@@ -335,8 +335,9 @@ The C++ report covers only the `-O0 -DDEBUG` build. Prerequisites and limits are
 (ddtool) fails outside the CI network and aborts container commands. Run `./utils/run-containers-tests.sh --help` for the full flag list
 (`--tests`, `--gtest`, `--gtest-task`, `--mount`, `--rebuild`, `--matrix`, ...).
 Cached images are reused until `--rebuild-base` (or `--rebuild`) is passed. Use it
-after the base image's package list changes, e.g. to pick up gcovr for coverage runs:
-it rebuilds the base image and the JDK image built on it.
+after the base image's package list changes, e.g. to pick up gcovr for coverage runs.
+A JDK image is also rebuilt when it was built on another base image than the current
+one (the `java-profiler.base-id` label), so every JDK picks up the rebuilt base.
 
 ```bash
 # Matches the nightly configuration
