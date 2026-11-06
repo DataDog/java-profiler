@@ -303,34 +303,25 @@ the helper matching the clock that produced the timestamp (`OS::nanotime()` valu
 nanoseconds; `TSC::ticks_to_millis()` takes TSC ticks). Never mix the two.
 
 **Recording lifecycle (stop/start/restart).** State that outlives `Profiler::stop()`
-(caches, frontier/tracking tables, cached class-map ids, clocks and deadlines, JNI global
-refs) must either be cleared in `stop()`/`start()` or be tagged with a generation and
-re-validated on use. Recording-scoped memory is freed at the end of `stop()` by
-`Profiler::releaseRecordingMemory()` — call-trace storage and per-stripe frame buffers,
-the `_class_map` and `_string_label_map` storage (`StringDictionary::release()`, ids
-kept), and the `LivenessTracker` state (`LivenessTracker::release()`) — and malloc
-hooks are restored; see [ProfilerMemoryRequirements](doc/reference/ProfilerMemoryRequirements.md#idle-profiler-after-stop).
-Anything a late writer can still reach after `stop()` (an allocation callback, a
-malloc/socket hook already past its GOT load, a tracer thread) must find the freed
-state null or zero-capacity under the same lock it writes under, and must decide
-ownership of what it inserted while holding that lock, never by re-reading shared
-state after unlocking. `_context_value_map` is deliberately kept across `stop()`:
-threads cache its encodings in their `ProfiledThread` sidecar. `Profiler::start()`
-clears the dictionaries only on a reset start (`ACTION_START` or the first start);
-`ACTION_RESUME` keeps their ids. A released or cleared dictionary bumps its generation,
-so state that caches ids must re-validate against `generation()`. If the
-`RefCountGuard` drain times out, `clearAll()`/`release()` leave the dictionary
-unchanged. Events queued since the last `dump()` must be written before `stop()`
-discards them.
+(caches, tracking tables, cached class-map ids, clocks and deadlines, JNI global refs)
+must be cleared in `stop()`/`start()` or be tagged with a generation and re-validated
+on use; a released or cleared dictionary bumps its `generation()`. Recording-scoped
+memory is freed at the end of `stop()` by `Profiler::releaseRecordingMemory()`. Anything
+a late writer can still reach after `stop()` must find it null or zero-capacity under
+the same lock it writes under, and must decide ownership of what it inserted while
+holding that lock, never by re-reading shared state after unlocking. Write queued events
+before `stop()` discards them. `_context_value_map` is deliberately kept across
+`stop()`, and `ACTION_RESUME` keeps dictionary ids. Details:
+[ProfilingEngines.md](doc/architecture/ProfilingEngines.md#recording-scoped-state).
 
 **Persistent hooks.** The `pthread_create` and `sigaction` GOT hooks are installed once
-(`LibraryPatcher::initialize_persistent()`, from `Profiler::init()` or the first
-`start()`) and never unpatched, so they run before the first `start()` and between
-recordings. They must stay transparent: the `pthread_create` wrapper passes the
-routine's return value to `pthread_exit()`. Code they reach must tolerate an idle
-profiler, including one that never started: registration goes through the gates in
-**Thread registration** above, and `unregisterThread()` skips an engine slot that is
-still `NULL` before the first `start()`.
+(`LibraryPatcher::initialize_persistent()`) and never unpatched, so they run before the
+first `start()` and between recordings. They must stay transparent (the `pthread_create`
+wrapper passes the routine's return value to `pthread_exit()`), and code they reach must
+tolerate an idle profiler, including one that never started: go through the registration
+gates and skip a `NULL` engine slot. Details:
+[ProfilingEngines.md](doc/architecture/ProfilingEngines.md#thread-registration),
+[SigsegvPatching.md](doc/architecture/SigsegvPatching.md#initialization-flow).
 
 **Atomic memory ordering (arm64).** arm64 is weakly ordered (x86 is TSO); relaxed-ordering
 bugs are silent arm64-only lockups. Cross-thread reads: acquire ordering

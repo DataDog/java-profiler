@@ -143,6 +143,40 @@ without starting anything. It runs only while the profiler is `IDLE`
 (`checkState()` rejects a `RUNNING` profiler) and selects into locals, so it
 never replaces the engine slots that thread exits still route to.
 
+### Recording-scoped state
+
+State that outlives `Profiler::stop()` (caches, frontier/tracking tables, cached
+class-map ids, clocks and deadlines, JNI global refs) must either be cleared in
+`stop()`/`start()` or be tagged with a generation and re-validated on use.
+
+Recording-scoped memory is freed at the end of `stop()` by
+`Profiler::releaseRecordingMemory()`:
+- call-trace storage and the per-stripe frame buffers;
+- the `_class_map` and `_string_label_map` storage (`StringDictionary::release()`,
+  which keeps the id counter, so an old id cannot alias a new key);
+- the `LivenessTracker` state (`LivenessTracker::release()`).
+
+Malloc hooks are restored as well. What an idle profiler holds afterwards is listed in
+[ProfilerMemoryRequirements](../reference/ProfilerMemoryRequirements.md#idle-profiler-after-stop).
+
+Late writers. Anything that can still reach the freed state after `stop()` (an
+allocation callback, a malloc or socket hook already past its GOT load, a tracer
+thread) must find it null or zero-capacity under the same lock it writes under. It must
+decide ownership of what it inserted while holding that lock, never by re-reading
+shared state after unlocking.
+
+Dictionaries:
+- `_context_value_map` is deliberately kept across `stop()`: threads cache its
+  encodings in their `ProfiledThread` sidecar.
+- `Profiler::start()` clears the dictionaries only on a reset start (`ACTION_START` or
+  the first start). `ACTION_RESUME` keeps their ids.
+- A released or cleared dictionary bumps its `generation()`, so state that caches ids
+  must re-validate against it (`LivenessTracker`, `ReferenceChainTracker`).
+- If the `RefCountGuard` drain times out, `clearAll()`/`release()` leave the dictionary
+  unchanged; see [StringDictionary.md](StringDictionary.md#release-protocol).
+
+Events queued since the last `dump()` must be written before `stop()` discards them.
+
 ### Thread registration
 
 Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
