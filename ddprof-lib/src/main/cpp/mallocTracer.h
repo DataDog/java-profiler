@@ -39,6 +39,10 @@ class MallocHooker {
     // Up to 5 imports per library (malloc, calloc, realloc, posix_memalign,
     // aligned_alloc), each with up to NUM_IMPORT_TYPES relocation slots
     static const int MAX_MALLOC_ENTRIES = 5 * NUM_IMPORT_TYPES * MAX_NATIVE_LIBS;
+    // Entries of libraries a restore pass could not visit stay at the front of
+    // _entries (see keepUnrestoredEntries()); never written through, only
+    // consulted by patchSlot() for the original of a slot still holding our hook.
+    static const int MAX_ORPHAN_ENTRIES = MAX_MALLOC_ENTRIES / 8;
     static MallocPatchEntry _entries[MAX_MALLOC_ENTRIES];
     static int _entry_count;
 
@@ -51,6 +55,12 @@ class MallocHooker {
     static bool symbolsResolved();
     static void restoreSlot(const MallocPatchEntry& entry);
     static void sortEntriesByLibrary();
+    // After a restore pass in which restored entries were marked (_lib set to
+    // nullptr): keeps the entries that were NOT restored (library unloaded or
+    // no longer verifiably the saved image), so patchSlot() can recover the
+    // true original of a slot that still holds our hook. Bounded by
+    // MAX_ORPHAN_ENTRIES; the excess is dropped.
+    static void keepUnrestoredEntries();
 
   public:
     // Returns true if symbols were successfully resolved.

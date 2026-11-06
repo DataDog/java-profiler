@@ -527,7 +527,7 @@ public:
   // Enable persistent JVMTI events that track JVM metadata (CLASS_LOAD,
   // CLASS_PREPARE, DYNAMIC_CODE_GENERATED, COMPILED_METHOD_LOAD). Called once
   // on first start(), never disabled.
-  void enablePersistentJvmtiEvents();
+  bool enablePersistentJvmtiEvents();
   // Frees the call-trace storage, the per-thread call-trace buffers, the
   // liveness tracker's state and the class and string-label dictionaries'
   // storage once a recording is over, so the idle profiler holds none of it.

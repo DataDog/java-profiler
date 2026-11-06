@@ -28,6 +28,12 @@ public:
   // Forgets the entries without restoring them: the tests patch slots in their
   // own frame, which are dead by the time a later test could restore them.
   static void setEntryCount(int count) { MallocHooker::_entry_count = count; }
+  // Also zeroes the table: a stale entry whose dead stack slot address a later
+  // test reuses would otherwise be taken for that test's slot.
+  static void clearEntries() {
+    memset(MallocHooker::_entries, 0, sizeof(MallocHooker::_entries));
+    MallocHooker::_entry_count = 0;
+  }
   static int maxEntries() { return MallocHooker::MAX_MALLOC_ENTRIES; }
   static int patchedLibs() { return MallocHooker::_patched_libs; }
   static void setPatchedLibs(int count) { MallocHooker::_patched_libs = count; }
@@ -61,11 +67,11 @@ protected:
   int saved_patched_libs = 0;
 
   void SetUp() override {
-    MallocHookerTestAccessor::setEntryCount(0);
+    MallocHookerTestAccessor::clearEntries();
     saved_patched_libs = MallocHookerTestAccessor::patchedLibs();
   }
   void TearDown() override {
-    MallocHookerTestAccessor::setEntryCount(0);
+    MallocHookerTestAccessor::clearEntries();
     MallocHookerTestAccessor::setPatchedLibs(saved_patched_libs);
   }
 };
@@ -157,19 +163,38 @@ TEST_F(MallocHookerSlots, RestoreLeavesSlotRepatchedBySomeoneElse) {
 }
 
 #ifdef __linux__
-// unpatchLibraries() writes only through slots of libraries the walk visits, and
-// then drops every entry, visited or not. A cache without an image base (never
-// parsed) is not even a candidate, so its slot is not written on any libc.
-TEST_F(MallocHookerSlots, UnpatchDropsEntriesOfLibraryItCannotVerify) {
+// unpatchLibraries() writes only through slots of libraries the walk visits. The
+// entries of one it cannot verify are kept, not written through, so a later
+// patchSlot() still knows the slot's true original. A cache without an image
+// base (never parsed) is not even a candidate, so its slot is not written on
+// any libc.
+TEST_F(MallocHookerSlots, UnpatchKeepsEntriesOfLibraryItCannotVerify) {
   void* slot = original();
   MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
   MallocHookerTestAccessor::setPatchedLibs(3);
 
   MallocHookerTestAccessor::unpatchLibraries();
 
-  EXPECT_EQ(0, MallocHookerTestAccessor::entryCount());
+  EXPECT_EQ(1, MallocHookerTestAccessor::entryCount());
   EXPECT_EQ(0, MallocHookerTestAccessor::patchedLibs());
   EXPECT_EQ(hook(), slot);
+}
+
+// A slot whose entry survived stop() is not re-recorded against the resolved
+// original: its true original (here a PLT stub) is what a later restore needs.
+TEST_F(MallocHookerSlots, RehookOfKeptEntryKeepsTrueOriginal) {
+  void* slot = pltStub();
+  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  MallocHookerTestAccessor::setPatchedLibs(3);
+  MallocHookerTestAccessor::unpatchLibraries();
+  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
+
+  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+
+  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
+  EXPECT_EQ(pltStub(), MallocHookerTestAccessor::entry(0)._orig);
+  MallocHookerTestAccessor::restoreSlot(0);
+  EXPECT_EQ(pltStub(), slot);
 }
 #endif // __linux__
 

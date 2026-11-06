@@ -81,10 +81,14 @@ void MallocHooker::unpatchLibraries() {
             for (int j = i; j < run_end; j++) {
                 restoreSlot(_entries[j]);
             }
+            for (int j = i; j < run_end; j++) {
+                _entries[j]._lib = nullptr;  // restored
+            }
         }
         i = run_end;
     }
-    _entry_count = 0;
+    // Entries of an unvisited library are kept: see keepUnrestoredEntries().
+    keepUnrestoredEntries();
     _patched_libs = 0;
 }
 

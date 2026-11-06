@@ -272,11 +272,21 @@ void MallocHooker::patchSlot(CodeCache* cc, void** location, void* hook_fn, void
 
     void* current = __atomic_load_n(location, __ATOMIC_ACQUIRE);
     // A slot still holding our hook was patched by an earlier recording whose
-    // record was dropped at stop() (its library could not be identified). It is
-    // seen once per recording (each library is patched once per start()), so no
-    // duplicate scan is needed; record it with the known original.
+    // restore could not reach it (its library was not verifiably live at
+    // stop()). Such entries are kept (keepUnrestoredEntries()): if this slot is
+    // one of them, it is already tracked with its true original, which is not
+    // always the resolved malloc (a lazy-binding PLT stub, or another
+    // interposer's wrapper).
     const bool rehook = current == hook_fn;
     if (rehook) {
+        for (int i = 0; i < _entry_count; i++) {
+            if (_entries[i]._location == location && _entries[i]._hook == hook_fn) {
+                _entries[i]._lib = cc;  // current image: restorable by this recording's stop()
+                return;
+            }
+        }
+        // Not tracked (the orphan table overflowed): the original is unknown;
+        // the resolved one is the best remaining answer.
         current = orig_fn;
     }
 
@@ -317,6 +327,16 @@ void MallocHooker::restoreSlot(const MallocPatchEntry& entry) {
     void* expected = entry._hook;
     __atomic_compare_exchange_n(entry._location, &expected, entry._orig, false,
                                 __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+}
+
+void MallocHooker::keepUnrestoredEntries() {
+    int kept = 0;
+    for (int i = 0; i < _entry_count && kept < MAX_ORPHAN_ENTRIES; i++) {
+        if (_entries[i]._lib != nullptr) {
+            _entries[kept++] = _entries[i];
+        }
+    }
+    _entry_count = kept;
 }
 
 // Groups each library's entries into a single run, so that a library is

@@ -2540,20 +2540,32 @@ void Profiler::switchThreadEvents(jvmtiEventMode mode) {
   }
 }
 
-void Profiler::enablePersistentJvmtiEvents() {
+bool Profiler::enablePersistentJvmtiEvents() {
   // Enable persistent JVMTI events for JVM metadata tracking.
-  // These are enabled once on first start() and never disabled, surviving
-  // stop/start cycles for the lifetime of the process.
+  // Enabled on the first successful start() and never disabled, surviving
+  // stop/start cycles for the lifetime of the process. Returns false (and
+  // leaves _jvmti_events_enabled unset, so the next start() retries) if any
+  // step failed; every step is idempotent.
   jvmtiEnv *jvmti = VM::jvmti();
+  bool ok = true;
+  auto check = [&ok](jvmtiError err, const char *what) {
+    if (err != JVMTI_ERROR_NONE) {
+      Log::warn("Persistent JVMTI events: %s failed (error %d); will retry on next start",
+                what, (int)err);
+      ok = false;
+    }
+  };
 
   // CLASS_LOAD/CLASS_PREPARE: Required for jmethodID preloading.
   // AsyncGetCallTrace needs pre-allocated jmethodIDs (see JVMSupport::loadMethodIDsIfNeeded).
-  jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_LOAD, NULL);
-  jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_PREPARE, NULL);
-  TEST_LOG("Persistent JVMTI events: CLASS_PREPARE enabled");
+  check(jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_LOAD, NULL),
+        "enabling CLASS_LOAD");
+  check(jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_PREPARE, NULL),
+        "enabling CLASS_PREPARE");
 
   // DYNAMIC_CODE_GENERATED: Tracks JIT-generated code (stubs, adapters).
-  jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL);
+  check(jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL),
+        "enabling DYNAMIC_CODE_GENERATED");
 
   // NATIVE_METHOD_BIND is not here: bindings cannot be replayed, so it is
   // enabled at agent load (VM::initProfilerBridge()).
@@ -2562,19 +2574,28 @@ void Profiler::enablePersistentJvmtiEvents() {
   // available; JDK-8173361 workaround otherwise).
   bool compiled_method_load = VM::hotspot_version() == 0 || !CodeHeap::available();
   if (compiled_method_load) {
-    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL);
+    check(jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL),
+          "enabling COMPILED_METHOD_LOAD");
   }
+
+  if (!ok) {
+    return false;
+  }
+  TEST_LOG("Persistent JVMTI events: CLASS_PREPARE enabled");
 
   // Replay code generated before the events were enabled. Needed in every
   // loading mode, not just attach: an -agentpath session also enables them
   // only here, after HotSpot has generated its bootstrap runtime stubs
   // (call_stub bounds and stub unwind info come from these events).
-  jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
+  check(jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED),
+        "replaying DYNAMIC_CODE_GENERATED");
   if (compiled_method_load) {
-    jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
+    check(jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD),
+          "replaying COMPILED_METHOD_LOAD");
   }
 
-  _jvmti_events_enabled = true;
+  _jvmti_events_enabled = ok;
+  return ok;
 }
 
 Error Profiler::runInternal(Arguments &args, std::ostream &out) {

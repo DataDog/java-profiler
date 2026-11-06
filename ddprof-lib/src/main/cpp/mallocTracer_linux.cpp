@@ -68,13 +68,16 @@ void MallocHooker::unpatchLibraries() {
             for (int i = first; i < _entry_count && _entries[i]._lib == lib; i++) {
                 restoreSlot(_entries[i]);
             }
+            // Mark them restored only after the run, which is keyed on _lib.
+            for (int i = first; i < _entry_count && _entries[i]._lib == lib; i++) {
+                _entries[i]._lib = nullptr;
+            }
         });
     // Still under the walk's lock. Entries of a library the walk did not visit
-    // are dropped too: it is unloaded, or no longer verifiably the image they
-    // were saved from, so they are never written through here. A slot of a
-    // still-loaded library keeps our hook; patchSlot() records it again on the
-    // next start(). Keeping the entries would only fill the table.
-    _entry_count = 0;
+    // (unloaded, or no longer verifiably the image they were saved from) are
+    // never written through here, but they are kept: their slot may still hold
+    // our hook, and patchSlot() needs the true original to track it again.
+    keepUnrestoredEntries();
     // Every library is patched again, identity-checked, on the next start().
     _patched_libs = 0;
 }
