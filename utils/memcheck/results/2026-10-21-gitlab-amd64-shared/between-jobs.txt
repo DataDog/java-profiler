@@ -1,0 +1,23 @@
+== runner shape
+memcheck-1: nproc=66 | cpu.max=max 100000 | cpu_model=Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz | memory.max=6442450944
+memcheck-2: nproc=68 | cpu.max=max 100000 | cpu_model=Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz | memory.max=6442450944
+memcheck-3: nproc=93 | cpu.max=max 100000 | cpu_model=Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz | memory.max=6442450944
+memcheck-4: nproc=72 | cpu.max=max 100000 | cpu_model=Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz | memory.max=6442450944
+memcheck-5: nproc=52 | cpu.max=max 100000 | cpu_model=Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz | memory.max=6442450944
+  DIFFERS across jobs: nproc: ['52', '66', '68', '72', '93']
+
+== per-job mean vs the other jobs (gated metrics); TRIP if |shift| > max(256 KiB, 4*SD_within)
+TRIP memcheck-3 classesM nmt      code                                          shift   -5724.3 KiB  thr  4945.8 KiB
+trips: 1
+
+== largest shift/threshold ratios
+ 1.16 memcheck-3 classesM nmt      code                                          shift  -5724.3 KiB  SD_within 1236.4 KiB
+ 0.37 memcheck-5 classesM nmt      code                                          shift  +1847.8 KiB  SD_within 1236.4 KiB
+ 0.36 memcheck-3 classesM counters native_mem_post_flush_max_bytes.calltrace     shift   +261.9 KiB  SD_within  181.3 KiB
+ 0.36 memcheck-3 classesM counters native_mem_max_bytes.calltrace                shift   +261.9 KiB  SD_within  181.3 KiB
+ 0.36 memcheck-2 classesM nmt      code                                          shift  +1765.8 KiB  SD_within 1236.4 KiB
+ 0.33 memcheck-4 classesM nmt      code                                          shift  +1613.2 KiB  SD_within 1236.4 KiB
+ 0.32 memcheck-3 classesM counters native_mem_max_bytes                          shift   +372.6 KiB  SD_within  292.4 KiB
+ 0.31 memcheck-1 mixed    nmt      code                                          shift  -1430.4 KiB  SD_within 1137.6 KiB
+ 0.26 memcheck-2 mixed    nmt      code                                          shift  +1197.1 KiB  SD_within 1137.6 KiB
+ 0.25 memcheck-1 allocs   nmt      code                                          shift  -1476.5 KiB  SD_within 1496.6 KiB
