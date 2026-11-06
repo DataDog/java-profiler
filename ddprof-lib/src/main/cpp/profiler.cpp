@@ -2594,8 +2594,11 @@ bool Profiler::enablePersistentJvmtiEvents() {
           "replaying COMPILED_METHOD_LOAD");
   }
 
-  _jvmti_events_enabled = ok;
-  return ok;
+  if (!ok) {
+    return false;
+  }
+  _jvmti_events_enabled = true;
+  return true;
 }
 
 Error Profiler::runInternal(Arguments &args, std::ostream &out) {

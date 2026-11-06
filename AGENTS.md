@@ -286,14 +286,12 @@ the replacement or release, never for a whole `start()` or `stop()` (CTimer free
 table at the end of `stop()`). Details:
 [ProfilingEngines.md](doc/architecture/ProfilingEngines.md#thread-registration).
 
-**JVMTI callbacks.** Callbacks run on whichever JVM thread triggers the event —
-including compiler, VM and GC threads that never went through our `pthread_create`
-hook — so call `ProfiledThread::initCurrentThreadSignalSafe()` first.
-`GarbageCollectionStart`/`Finish` run while the VM is stopped: no JNI, and no JVMTI
-beyond the raw-monitor, memory-management and environment-local-storage functions
-(JVMTI spec). Keep them to lock-free bookkeeping and defer work to a profiler thread
-(see `ReferenceChainTracker::onGCStart()`). Profiler threads that need JNI attach with
-`VM::attachThread()` and call `VM::detachThread()` before they exit.
+**JVMTI callbacks.** They run on any JVM thread, including ones that never went through
+our `pthread_create` hook: call `ProfiledThread::initCurrentThreadSignalSafe()` first.
+`GarbageCollectionStart`/`Finish` run with the VM stopped: no JNI and almost no JVMTI,
+so keep them to lock-free bookkeeping and defer the rest to a profiler thread.
+Profiler threads that need JNI use `VM::attachThread()`/`detachThread()`. Details:
+[ProfilingEngines.md](doc/architecture/ProfilingEngines.md#jvmti-callbacks).
 
 **JNI/JVMTI resource cleanup.** Release every JNI local reference and JVMTI-allocated
 buffer (e.g. the `GetAllThreads()` array, freed with `Deallocate`) on every exit path —

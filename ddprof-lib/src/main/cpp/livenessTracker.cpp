@@ -2246,35 +2246,35 @@ bool LivenessTracker::clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env) {
   jlong *found_tags = nullptr;
   // GetObjectsWithTags returns one local ref per tagged object, up to one per
   // pool slot, all created inside the call. Hold them in their own frame so
-  // the calling thread's local-ref capacity is not exceeded.
-  bool frame_pushed = false;
-  if (env != nullptr) {
-    frame_pushed = env->PushLocalFrame(LEAK_TAG_POOL_SIZE + 8) == JNI_OK;
-    if (!frame_pushed) {
-      env->ExceptionClear();  // OutOfMemoryError; proceed without a frame
+  // the calling thread's local-ref capacity is not exceeded; the frame's pop
+  // frees them all. If no frame can be pushed (OutOfMemoryError), free each
+  // ref as we go instead.
+  struct LocalFrame {
+    JNIEnv *env;
+    bool pushed;
+    explicit LocalFrame(JNIEnv *e) : env(e), pushed(false) {
+      if (env != nullptr) {
+        pushed = env->PushLocalFrame(LEAK_TAG_POOL_SIZE + 8) == JNI_OK;
+        if (!pushed) env->ExceptionClear();
+      }
     }
-  }
+    ~LocalFrame() { if (pushed) env->PopLocalFrame(nullptr); }
+  } frame(env);
   jvmtiError err = jvmti->GetObjectsWithTags(LEAK_TAG_POOL_SIZE, tags, &count,
                                              &objects, &found_tags);
   if (err == JVMTI_ERROR_MUST_POSSESS_CAPABILITY) {
-    if (frame_pushed) env->PopLocalFrame(nullptr);
     return true;  // no can_tag_objects: SetTag failed too, no object carries a tag
   }
   if (err != JVMTI_ERROR_NONE) {
-    if (frame_pushed) env->PopLocalFrame(nullptr);
     Log::warn("LivenessTracker: GetObjectsWithTags failed while releasing "
               "leak tags");
     return false;
   }
   for (jint i = 0; i < count; i++) {
     jvmti->SetTag(objects[i], 0);
-    // Without a frame, free each ref as we go; with one, PopLocalFrame frees all.
-    if (env != nullptr && !frame_pushed) {
+    if (env != nullptr && !frame.pushed) {
       env->DeleteLocalRef(objects[i]);
     }
-  }
-  if (frame_pushed) {
-    env->PopLocalFrame(nullptr);
   }
   if (objects != nullptr) {
     jvmti->Deallocate(reinterpret_cast<unsigned char *>(objects));

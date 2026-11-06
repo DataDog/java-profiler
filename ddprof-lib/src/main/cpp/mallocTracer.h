@@ -19,8 +19,8 @@ struct MallocPatchEntry {
   CodeCache* _lib;      // Library containing the patched slot
   void** _location;     // Address of the GOT slot
   void* _hook;          // Hook written to the slot
-  void* _orig;          // Slot content before patching (original, PLT stub or other interposer), or the
-                        // resolved original if hooked by an earlier recording whose entry was dropped
+  void* _orig;          // Slot content before patching (original, PLT stub or other interposer); the
+                        // resolved original only if the entry of a stale hook was lost (orphan table full)
 };
 
 // Manages GOT-patching for malloc interception across all loaded native libraries.

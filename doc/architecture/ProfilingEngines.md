@@ -243,6 +243,25 @@ terminates the process.
 
 Each engine's `start()` also registers every thread that already exists.
 
+### JVMTI callbacks
+
+JVMTI callbacks run on whichever JVM thread triggers the event. That includes
+compiler, VM and GC threads that never went through our `pthread_create` hook, so
+such a thread has no `ProfiledThread` yet. A callback that touches per-thread state
+calls `ProfiledThread::initCurrentThreadSignalSafe()` first (see "ProfiledThread
+acquisition" in [AGENTS.md](../../AGENTS.md)).
+
+`GarbageCollectionStart`/`GarbageCollectionFinish` run while the VM is stopped. The
+JVMTI spec allows no JNI there, and no JVMTI beyond the raw-monitor,
+memory-management and environment-local-storage functions. Keep them to lock-free
+bookkeeping (epoch counters) and defer the real work to a profiler thread; see
+`ReferenceChainTracker::onGCStart()` and
+[ReferenceChainsSignalsExplained.md](ReferenceChainsSignalsExplained.md).
+
+A profiler thread that needs JNI attaches with `VM::attachThread()` and calls
+`VM::detachThread()` before it exits. Local references created on such a thread are
+not freed until it detaches.
+
 ## Common Signal-Handler Contract
 
 The CPU and wall-clock signal handlers share one skeleton. Each engine's
