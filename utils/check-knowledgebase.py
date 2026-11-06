@@ -2,13 +2,8 @@
 # Copyright 2026, Datadog, Inc.
 """Check that every tracked .knowledgebase/memories file carries cairn's memory frontmatter.
 
-Only the cairn skills write .knowledgebase/ (`cairn memorize` validates the full memory
-contract). An agent hook blocks file-tool edits there, but not shell writes; this check is
-the backstop. It mirrors cairn's stable required subset, not the whole contract:
-- the file is `<id>.md` and starts with a `---` frontmatter block;
-- `id`, `title`, `kind`, `tags` and `source` are present and non-empty;
-- `id` is a lowercase slug equal to the file name; `kind` is `finding` or `dead-end`, and
-  not `finding` for a `dead-*` id; `source` has the form `<investigation>/<node-id>`.
+The backstop for shell writes, which the file-tool hook cannot see. It checks the stable
+subset of cairn's memory contract listed in problems(); `cairn memorize` checks the rest.
 
 Exit codes: 0 clean, 1 violations, 2 environment error.
 """
@@ -39,9 +34,9 @@ def tracked_memories(root):
 
 
 def frontmatter(text):
-    """The leading `---` block's fields, or None without one. The delimiters must be whole
-    `---` lines, as cairn writes them; keys parse as in cairn's _parse_frontmatter_text."""
-    lines = text.splitlines()
+    """The leading `---` block's fields, or None without one. The delimiters must be `---`
+    lines, as cairn writes them; keys parse as in cairn's _parse_frontmatter_text."""
+    lines = [l.rstrip() for l in text.splitlines()]
     if not lines or lines[0] != "---" or "---" not in lines[1:]:
         return None
     fields = {}
@@ -54,11 +49,14 @@ def frontmatter(text):
 
 
 def problems(root, path):
+    """The file's departures from cairn's stable required subset, never stricter than cairn:
+    `<id>.md` with a `---` block; id, title, kind, tags and source set; a slug id equal to
+    the file name; kind finding or dead-end, not finding for a dead-* id; source inv/node."""
     name = os.path.basename(path)
     if not name.endswith(".md"):
         return ["not a memory file (`<id>.md`)"]
     try:
-        with open(os.path.join(root, path), errors="replace") as f:
+        with open(os.path.join(root, path), encoding="utf-8", errors="replace") as f:
             fm = frontmatter(f.read())
     except OSError as e:
         return ["cannot read: %s" % e.strerror]

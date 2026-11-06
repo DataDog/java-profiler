@@ -585,6 +585,19 @@ rm "$KB_ROOT/.knowledgebase/memories/spaced.md"
 kb; expect "T7l tracked memory missing from the working tree" 1 "$rc" "$out" "spaced.md: cannot read"
 kb_reset; memory dead-x.md "id: dead-x" "title: T" "kind: finding" "tags: [a]" "source: inv/n"
 kb; expect "T7m dead-* id with kind finding" 1 "$rc" "$out" "dead-* id but kind is 'finding'"
+# Never stricter than cairn's contract: what cairn accepts passes here too.
+kb_reset; memory deadend-y.md "id: deadend-y" "title: T" "kind: finding" "tags: [a]" "source: inv/n"
+kb; expect "T7m deadend-* id with kind finding (cairn accepts it)" 0 "$rc" "$out" "knowledgebase: OK"
+kb_reset; memory empty-title.md "id: empty-title" 'title: ""' "kind: finding" "tags: [a]" "source: inv/n"
+kb; expect "T7p quoted empty title (cairn accepts it)" 0 "$rc" "$out" "knowledgebase: OK"
+kb_reset; memory no-tags.md "id: no-tags" "title: T" "kind: finding" "tags: []" "source: inv/n"
+kb; expect "T7q empty tag list, as cairn writes it" 0 "$rc" "$out" "knowledgebase: OK (1 memories)"
+kb_reset
+{ printf -- '--- \n'; printf '%s\n' "${GOOD[@]}"; printf -- '---\t\n'; } > "$KB_ROOT/.knowledgebase/memories/good-one.md"
+git -C "$KB_ROOT" add -f .knowledgebase
+kb; expect "T7r trailing whitespace on the delimiters (cairn accepts it)" 0 "$rc" "$out" "knowledgebase: OK (1 memories)"
+{ printf '\xef\xbb\xbf---\n'; printf '%s\n' "${GOOD[@]}"; echo ---; } > "$KB_ROOT/.knowledgebase/memories/good-one.md"
+kb; expect "T7s leading BOM (cairn finds no frontmatter)" 1 "$rc" "$out" "no \`---\` frontmatter block"
 kb_reset; memory src.md "id: src" "title: T" "kind: finding" "tags: [a]" "source: notes"
 kb; expect "T7n source not in <investigation>/<node-id> form" 1 "$rc" "$out" "source 'notes' is not in"
 for opener in '---garbage' '----'; do

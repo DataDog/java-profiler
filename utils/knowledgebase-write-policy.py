@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # Copyright 2026, Datadog, Inc.
-"""Agent-hook policy: deny file-tool writes into .knowledgebase/, which only the cairn
-skills write (through `cairn memorize`, not the agent's file tools). Reads the target
-path, relative to its checkout's top level, on stdin; exit 2 with the reason on stderr
-denies the write, exit 0 allows it."""
+"""Agent-hook policy: deny file-tool writes into .knowledgebase/, which only cairn writes.
+Reads the target path, relative to its checkout's top level, on stdin; exit 2 with the
+reason on stderr denies the write, exit 0 allows it."""
 
 import posixpath
 import sys

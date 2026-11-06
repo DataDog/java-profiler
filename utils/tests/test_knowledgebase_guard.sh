@@ -95,11 +95,20 @@ hook() {
                                                      "tool_input": {sys.argv[4]: sys.argv[2]}}))' \
     "$1" "$2" "${3:-$PWD}" "${4:-file_path}" | CLAUDE_PROJECT_DIR=$REPO python3 "$REPO/.claude/hooks/protect-knowledgebase.py"
 }
-expect "hook allows everything while origin/main lacks the policy" 0 "" \
+expect "hook allows everything while neither origin/main nor the checkout has the policy" 0 "" \
+  hook Edit "$REPO/.knowledgebase/memories/m.md"
+printf '\xff\xfe\n' > utils/knowledgebase-write-policy.py
+expect "hook does not crash on an undecodable checkout policy" 0 "" \
+  hook Edit "$REPO/.knowledgebase/memories/m.md"
+cp "$ROOT/utils/knowledgebase-write-policy.py" utils/
+expect "hook falls back to the checkout's policy when origin/main lacks it (stale fork)" 2 "$BLOCK_MSG" \
   hook Edit "$REPO/.knowledgebase/memories/m.md"
 
-cp "$ROOT/utils/knowledgebase-write-policy.py" utils/
 git add utils && git commit -qm policy && git push -q origin main
+# Python's timeout, not GNU timeout(1), which macOS lacks.
+export -f hook && export REPO
+expect "hook handles a relative cwd without looping" 0 "" python3 -c 'import subprocess, sys
+sys.exit(subprocess.run(["bash", "-c", "hook Edit x/.knowledgebase/y.md no-such-dir"], timeout=10).returncode)'
 expect "hook ignores bad payload" 0 "" sh -c "echo nope | python3 $REPO/.claude/hooks/protect-knowledgebase.py"
 expect "hook ignores a payload without a path" 0 "" hook Edit "" "$REPO" command
 expect "hook denies Edit of a memory" 2 "$BLOCK_MSG" hook Edit "$REPO/.knowledgebase/memories/m.md"

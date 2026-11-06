@@ -324,7 +324,7 @@ bash utils/tests/test_gradle_hook.sh                              # tests
 
 ### `knowledgebase-write-policy.py`
 
-Denies agent file-tool writes into `.knowledgebase/`, which only the cairn skills write. The `protect-knowledgebase` hook runs it in Claude Code (`.claude/hooks/`, for Edit, MultiEdit, Write and NotebookEdit) and, through `.pi/extensions/protect-knowledgebase.ts`, in Pi (edit and write). It loads from `refs/remotes/origin/main` like the gradlew policy. Shell writes are not covered; `check-knowledgebase.py` is the backstop.
+Denies agent file-tool writes into `.knowledgebase/`, which only the cairn skills write. The `protect-knowledgebase` hook runs it in Claude Code (`.claude/hooks/`, for Edit, MultiEdit, Write and NotebookEdit) and, through `.pi/extensions/protect-knowledgebase.ts`, in Pi (edit and write). It loads from `refs/remotes/origin/main`, or from the checkout when that ref lacks it (a stale fork as `origin`). The hook itself runs from the checkout, so it guards against accidental agent writes, not a hostile branch. Shell writes are not covered; `check-knowledgebase.py` is the backstop.
 
 **Usage:**
 ```bash
