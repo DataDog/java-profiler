@@ -3,7 +3,7 @@
 # Copyright 2026, Datadog, Inc
 
 # Hermetic tests for the coverage paths of utils/run-containers-tests.sh
-# (--coverage-out, worktree sources) and for utils/merge-coverage.sh.
+# (--coverage-out, worktree sources, JDK image reuse) and for utils/merge-coverage.sh.
 # The container runtime, gcovr and java are stubs that record their arguments.
 # Run with: bash utils/tests/test_coverage_scripts.sh
 
@@ -35,13 +35,22 @@ expect_not_contains() {
 # ---- Stubs ----
 STUB_BIN="$TEMP_DIR/bin"
 mkdir -p "$STUB_BIN"
-# podman: `image inspect` succeeds (cached images), `run` records one argument per line.
+# podman: every image exists; the base image ID is "base-1" and a JDK image's base-id
+# label is $STUB_LABEL. `run` records one argument per line, `build` appends its tags.
 cat > "$STUB_BIN/podman" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$1" == "run" ]]; then
-  printf '%s\n' "$@" > "$STUB_LOG"
-  exit "${STUB_RUN_RC:-0}"
-fi
+case "$1 $2" in
+  "run "*)
+    printf '%s\n' "$@" > "$STUB_LOG"
+    exit "${STUB_RUN_RC:-0}" ;;
+  "build "*)
+    echo "$*" >> "$STUB_LOG.build" ;;
+  "image inspect")
+    case "$*" in
+      *'{{.Id}}'*) echo "base-1" ;;
+      *java-profiler.base-id*) echo "${STUB_LABEL:-}" ;;
+    esac ;;
+esac
 exit 0
 EOF
 # gcovr and java record their arguments; java's `report` writes a minimal jacoco.xml.
@@ -145,6 +154,21 @@ if output=$(run_script "$REPO" --libc=musl --jdk=21-j9 --coverage-out="$out_dir"
 else
   expect_contains "musl J9 skipped" "$output" "no runnable cells"
 fi
+
+# ---- run-containers-tests.sh: JDK image reuse follows the base image ID ----
+rm -f "$STUB_LOG.build"
+STUB_LABEL=base-1 run_script "$REPO" --libc=glibc --jdk=21 >/dev/null
+if [[ -f "$STUB_LOG.build" ]]; then
+  fail "JDK image built on the current base was rebuilt: $(cat "$STUB_LOG.build")"
+else
+  pass
+fi
+output=$(STUB_LABEL=base-0 run_script "$REPO" --libc=glibc --jdk=21)
+expect_contains "stale JDK image rebuilt" "$(cat "$STUB_LOG.build")" "--label java-profiler.base-id=base-1 -t java-profiler-test:glibc-jdk21-aarch64"
+expect_contains "stale JDK image message" "$output" "was not built on the current java-profiler-base:glibc-aarch64"
+rm -f "$STUB_LOG.build"
+STUB_LABEL= run_script "$REPO" --libc=glibc --jdk=21 >/dev/null
+expect_contains "unlabeled JDK image rebuilt" "$(cat "$STUB_LOG.build")" "-t java-profiler-test:glibc-jdk21-aarch64"
 
 # ---- run-containers-tests.sh: CI-matched cells the test-coverage skill runs ----
 output=$(run_script "$REPO" --libc=glibc --jdk=21-graal --coverage-out="$out_dir")

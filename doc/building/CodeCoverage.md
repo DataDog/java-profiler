@@ -105,9 +105,9 @@ failing gtest stops the build before the report.
 
 `utils/run-containers-tests.sh` base images include gcovr from PyPI, and `llvm` on
 glibc for the unversioned `llvm-cov`. The script reuses cached images, so a base image
-cached before these packages were added lacks them, and so does every JDK test image
-built on it. Pass `--rebuild-base` once: it rebuilds the base image and the JDK image
-on top of it.
+cached before these packages were added lacks them. Pass `--rebuild-base` once per
+libc and architecture. Each JDK image records the ID of the base image it was built
+on, and the script rebuilds it when that base image changes.
 
 `--coverage-out=DIR` runs the report for one cell and copies the reports, the JaCoCo
 `.exec` files, the classes they were recorded against and a `cell.properties` file to

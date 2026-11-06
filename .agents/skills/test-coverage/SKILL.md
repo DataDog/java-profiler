@@ -20,9 +20,21 @@ Stop and report on the first failure:
 - The host has gcovr 8.3+ (`gcovr --version`; install with `pip install gcovr`) and
   `java` on `PATH`. They are needed only for step 4, but check now.
 - Free disk: about 3 GB per worktree plus the container images.
+- Memory: `RT info --format '{{.Host.MemTotal}}'` (podman) or `'{{.MemTotal}}'`
+  (docker), in bytes. Gradle, the `-O0` compile and the test JVMs of one cell need
+  about 8 GB; with less, the Gradle daemon is killed ("Gradle build daemon
+  disappeared unexpectedly"). Set `SLOTS` = memory / 8 GB, at most 4. If it is 0,
+  stop and ask the user to give the VM more memory (`podman machine set --memory`,
+  `colima start --memory`).
+- Other containers: list `RT ps`. Running containers share that memory; ask the
+  user before stopping any.
+- Base images: for each `java-profiler-base:<libc>-<arch>` that exists, run
+  `RT run --rm <image> gcovr --version`. If it fails, that agent's first cell must
+  pass `--rebuild-base`; the script then rebuilds the JDK images on top of it.
 
 The non-native architecture runs emulated (QEMU or Rosetta) and takes several times
-longer than the ~30 minutes of a native cell. Tell the user before starting.
+longer than the ~30 minutes of a native cell. Tell the user the slot count and that
+estimate before starting.
 
 ## 2. Worktrees
 
@@ -41,7 +53,10 @@ worktree's `utils/run-containers-tests.sh` accepts `--coverage-out`
 
 ## 3. Subagents
 
-Launch the four subagents **in one message**, in the background (general-purpose).
+Run at most `SLOTS` subagents at a time, in the background (general-purpose): launch
+the first `SLOTS` in one message, and launch the next one when an agent sends its
+final per-cell report (interim "waiting" notifications do not free a slot). Start
+with the emulated architecture's agents: they take longest.
 Cells per agent: the JVMs CI tests on each platform (`test_workflow.yml` matrices).
 CI's `8-orcl` and `8-ibm` (glibc x64) have no container image and are not covered;
 say so in the report. Keep this table in sync when the CI matrices change.
@@ -67,12 +82,13 @@ Give each agent this brief, filled in:
 > `while [ ! -f <cell>.exit ]; do sleep 60; done`, re-armed if it times out). Do not
 > start the next cell before the current one finishes.
 > Classify each cell from the exit code, `<cell>/cell.properties` and the log:
-> `passed` (exit 0); `failed` (Gradle ran and failed: name the failing task and
-> tests); `blocked` (no `cell.properties`: image build, download or container
-> failure). If the log says a coverage tool is missing (`checkCoverageTools`), the
-> cached base image predates it: rerun that cell once with `--rebuild-base`. Retry
-> any other `blocked` cell once. Do not edit code, change tests or retry `failed`
-> cells. Never print more than 30 log lines. Never put the word "gradlew" in a shell
+> `passed` (exit 0); `failed` (a task failed on its own terms: compile error, test
+> failures, gtest failure — name the task and tests); `blocked` (no
+> `cell.properties`: image build, download or container failure; or Gradle was
+> killed: "Gradle build daemon disappeared unexpectedly", exit 137, `Killed`). If
+> the log says a coverage tool is missing (`checkCoverageTools`), the cached base
+> image predates it: rerun that cell once with `--rebuild-base`. Retry any other
+> `blocked` cell once. Do not edit code, change tests or retry `failed` cells. Never print more than 30 log lines. Never put the word "gradlew" in a shell
 > command: a hook blocks it — search logs for `What went wrong` or `FAILED` instead.
 > Report one line per cell: jdk, status, gradle_exit, failing task/tests or the
 > blocking error, log path.
@@ -82,7 +98,7 @@ progress, list which `$RUN/cells/*.exit` files exist.
 
 ## 4. Merge
 
-After all four agents report, merge every cell that has `cell.properties` (a
+After all four agents send their final reports, merge every cell that has `cell.properties` (a
 `failed` cell still holds the coverage of the tests that ran):
 
 ```bash

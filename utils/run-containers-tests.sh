@@ -1141,11 +1141,17 @@ fi
 # ========== Build JDK Image (if needed) ==========
 IMAGE_EXISTS=false
 # A JDK image cached on top of an older base image would hide the rebuilt base's packages
-# (e.g. gcovr), so it is reused only when the base image was reused too.
-if [[ "$REBUILD" == "false" && "$BASE_IMAGE_EXISTS" == "true" ]]; then
-    if "$CONTAINER_RUNTIME" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+# (e.g. gcovr), so it is reused only when its label names the current base image ID.
+# Images built before the label existed carry none and are rebuilt once.
+BASE_IMAGE_ID=$("$CONTAINER_RUNTIME" image inspect --format '{{.Id}}' "$BASE_IMAGE_NAME")
+if [[ "$REBUILD" == "false" ]]; then
+    IMAGE_BASE_ID=$("$CONTAINER_RUNTIME" image inspect \
+        --format '{{index .Config.Labels "java-profiler.base-id"}}' "$IMAGE_NAME" 2>/dev/null || true)
+    if [[ -n "$BASE_IMAGE_ID" && "$IMAGE_BASE_ID" == "$BASE_IMAGE_ID" ]]; then
         IMAGE_EXISTS=true
         echo ">>> Using cached image: $IMAGE_NAME"
+    elif [[ -n "$IMAGE_BASE_ID" ]] || "$CONTAINER_RUNTIME" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+        echo ">>> Cached image $IMAGE_NAME was not built on the current $BASE_IMAGE_NAME; rebuilding"
     fi
 fi
 
@@ -1224,7 +1230,8 @@ WORKDIR /workspace
 EOF
     fi
 
-    "$CONTAINER_RUNTIME" build $CONTAINER_PLATFORM -t "$IMAGE_NAME" -f "$DOCKERFILE_DIR/Dockerfile" "$DOCKERFILE_DIR"
+    "$CONTAINER_RUNTIME" build $CONTAINER_PLATFORM --label "java-profiler.base-id=$BASE_IMAGE_ID" \
+        -t "$IMAGE_NAME" -f "$DOCKERFILE_DIR/Dockerfile" "$DOCKERFILE_DIR"
     echo ">>> JDK image built: $IMAGE_NAME"
 fi
 
