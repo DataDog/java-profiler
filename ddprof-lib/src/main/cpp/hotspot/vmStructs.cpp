@@ -625,8 +625,7 @@ void JNICALL VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread t
             }
         } else {
             _lock.lock();
-            // Past the capacity a binding is dropped: getMemoryUsage0 binds
-            // at VMInit, when a JNIEnv is available.
+            // Past the capacity a binding is dropped rather than overflowing.
             if (delayed != NULL && delayedCounter < MAX_DELAYED * 2) {
                 delayed[delayedCounter] = method;
                 delayed[delayedCounter + 1] = address;
@@ -1042,6 +1041,29 @@ JVMJavaThreadState VMThread::state() {
 bool HeapUsage::is_jmx_attempted = false;
 bool HeapUsage::is_jmx_supported = false; // default to not-supported
 
+namespace {
+// Deletes the JNI local references it was handed when it goes out of scope.
+class LocalRefs {
+    JNIEnv *_env;
+    jobject _refs[4] = {};
+    int _count = 0;
+public:
+    explicit LocalRefs(JNIEnv *env) : _env(env) {}
+    ~LocalRefs() {
+        for (int i = 0; i < _count; i++) {
+            _env->DeleteLocalRef(_refs[i]);
+        }
+    }
+    template <typename T>
+    T add(T ref) {
+        if (ref != nullptr && _count < 4) {
+            _refs[_count++] = ref;
+        }
+        return ref;
+    }
+};
+} // namespace
+
 void HeapUsage::initJMXUsage(JNIEnv *env) {
     if (is_jmx_attempted) {
         // do not re-run the initialization
@@ -1050,11 +1072,12 @@ void HeapUsage::initJMXUsage(JNIEnv *env) {
     is_jmx_attempted = true;
     // jniExceptionCheck() is true when a call threw (and clears it): each step
     // bails out on an exception or a null result.
-    jclass factory = env->FindClass("java/lang/management/ManagementFactory");
+    LocalRefs refs(env);
+    jclass factory = refs.add(env->FindClass("java/lang/management/ManagementFactory"));
     if (jniExceptionCheck(env) || factory == nullptr) {
         return;
     }
-    jclass memoryBeanClass = env->FindClass("java/lang/management/MemoryMXBean");
+    jclass memoryBeanClass = refs.add(env->FindClass("java/lang/management/MemoryMXBean"));
     if (jniExceptionCheck(env) || memoryBeanClass == nullptr) {
         return;
     }
@@ -1063,7 +1086,7 @@ void HeapUsage::initJMXUsage(JNIEnv *env) {
     if (jniExceptionCheck(env) || get_memory == nullptr) {
         return;
     }
-    jobject memoryBean = env->CallStaticObjectMethod(factory, get_memory);
+    jobject memoryBean = refs.add(env->CallStaticObjectMethod(factory, get_memory));
     if (jniExceptionCheck(env) || memoryBean == nullptr) {
         return;
     }
@@ -1072,7 +1095,7 @@ void HeapUsage::initJMXUsage(JNIEnv *env) {
     if (jniExceptionCheck(env) || get_heap == nullptr) {
         return;
     }
-    env->CallObjectMethod(memoryBean, get_heap);
+    refs.add(env->CallObjectMethod(memoryBean, get_heap));
     if (jniExceptionCheck(env)) {
         return;
     }

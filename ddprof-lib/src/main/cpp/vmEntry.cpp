@@ -657,12 +657,6 @@ void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
 
     ProfiledThread::initCurrentThreadSignalSafe();
 
-    // Only where VMStructs cannot read the heap usage: the JMX call is what
-    // binds getMemoryUsage0, and every other JVM is spared loading JMX here.
-    if (HeapUsage::needsNativeBindingInterception()) {
-      HeapUsage::initJMXUsage(VM::jni());
-    }
-
     // Delayed start of profiler if agent has been loaded at VM bootstrap
     Error error = Profiler::instance()->run(_agent_args);
     if (error) {

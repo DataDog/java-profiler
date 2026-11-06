@@ -33,6 +33,7 @@ int g_step;
 int g_scripted_step;
 Outcome g_outcome;
 bool g_pending;
+int g_live_refs; // local references handed out and not yet deleted
 
 template <typename T>
 T next() {
@@ -44,7 +45,16 @@ T next() {
     return reinterpret_cast<T>(static_cast<uintptr_t>(0x1000 + g_step));
 }
 
-jclass JNICALL findClass(JNIEnv *, const char *) { return next<jclass>(); }
+template <typename T>
+T nextRef() {
+    T ref = next<T>();
+    if (ref != nullptr) {
+        g_live_refs++;
+    }
+    return ref;
+}
+
+jclass JNICALL findClass(JNIEnv *, const char *) { return nextRef<jclass>(); }
 jmethodID JNICALL getStaticMethodID(JNIEnv *, jclass, const char *, const char *) {
     return next<jmethodID>();
 }
@@ -52,13 +62,14 @@ jmethodID JNICALL getMethodID(JNIEnv *, jclass, const char *, const char *) {
     return next<jmethodID>();
 }
 jobject JNICALL callStaticObjectMethodV(JNIEnv *, jclass, jmethodID, va_list) {
-    return next<jobject>();
+    return nextRef<jobject>();
 }
 jobject JNICALL callObjectMethodV(JNIEnv *, jobject, jmethodID, va_list) {
-    return next<jobject>();
+    return nextRef<jobject>();
 }
 jboolean JNICALL exceptionCheck(JNIEnv *) { return g_pending ? JNI_TRUE : JNI_FALSE; }
 void JNICALL exceptionClear(JNIEnv *) { g_pending = false; }
+void JNICALL deleteLocalRef(JNIEnv *, jobject) { g_live_refs--; }
 
 class HeapUsageJmxTest : public ::testing::Test {
 protected:
@@ -73,6 +84,7 @@ protected:
         table.CallObjectMethodV = callObjectMethodV;
         table.ExceptionCheck = exceptionCheck;
         table.ExceptionClear = exceptionClear;
+        table.DeleteLocalRef = deleteLocalRef;
         env.functions = &table;
     }
 
@@ -81,6 +93,7 @@ protected:
         g_scripted_step = scripted_step;
         g_outcome = outcome;
         g_pending = false;
+        g_live_refs = 0;
         return HeapUsageTestAccessor::initJMXUsage(&env);
     }
 };
@@ -92,16 +105,18 @@ constexpr int JNI_STEPS = 6;
 TEST_F(HeapUsageJmxTest, SupportedWhenEveryCallSucceeds) {
     EXPECT_TRUE(run(0, SUCCEED));
     EXPECT_EQ(JNI_STEPS, g_step);
+    EXPECT_EQ(0, g_live_refs);
 }
 
 // A call that throws ends the initialization unsupported, with the exception
-// cleared and no further JNI call made with it pending.
+// cleared, no further JNI call made with it pending and no local ref leaked.
 TEST_F(HeapUsageJmxTest, UnsupportedAndClearedWhenAnyCallThrows) {
     for (int step = 1; step <= JNI_STEPS; step++) {
         SCOPED_TRACE(step);
         EXPECT_FALSE(run(step, THROW));
         EXPECT_EQ(step, g_step);
         EXPECT_FALSE(g_pending);
+        EXPECT_EQ(0, g_live_refs);
     }
 }
 
@@ -112,6 +127,7 @@ TEST_F(HeapUsageJmxTest, UnsupportedWhenAHandleIsNull) {
         SCOPED_TRACE(step);
         EXPECT_FALSE(run(step, RETURN_NULL));
         EXPECT_EQ(step, g_step);
+        EXPECT_EQ(0, g_live_refs);
     }
 }
 

@@ -34,18 +34,11 @@ public class JvmtiEventTimingTest extends AbstractProcessProfilerTest {
     }
 
     /**
-     * A native method binds once and binding events cannot be replayed with GenerateEvents(),
-     * so NATIVE_METHOD_BIND must be enabled at agent load. VMInit's
-     * {@code HeapUsage::initJMXUsage()} binds {@code MemoryImpl.getMemoryUsage0} before any
-     * start(); the agent here never starts the profiler at all, so the binding can only be seen
-     * if the event was on from Agent_OnLoad and initJMXUsage() got as far as the JMX call.
-     *
-     * <p>The profiler only intercepts bindings when it cannot read heap usage from VMStructs
-     * ({@code HeapUsage::needsNativeBindingInterception()}), so on a HotSpot where it can, no
-     * binding event is ever delivered and the test is skipped.
+     * Agent load and VMInit must not bootstrap JMX: nothing reads the JMX heap usage, so the
+     * {@code getMemoryUsage0} binding seen at startup would be pure startup cost.
      */
     @Test
-    void agentOnLoadSeesNativeBindingsBeforeFirstStart() throws Exception {
+    void agentStartupDoesNotBootstrapJmx() throws Exception {
         Path agentLib = LibraryLoader.resolveLibraryPath(System.getProperty("java.io.tmpdir"));
         AtomicBoolean intercepting = new AtomicBoolean();
         AtomicBoolean notIntercepting = new AtomicBoolean();
@@ -71,10 +64,8 @@ public class JvmtiEventTimingTest extends AbstractProcessProfilerTest {
         // An agent that failed before deciding prints neither marker: fail rather than skip.
         assertTrue(intercepting.get() || notIntercepting.get(),
                 "the agent never reported whether it intercepts native bindings");
+        // Without interception no binding is ever reported, so there is nothing to check.
         assumeTrue(!notIntercepting.get(), "this JVM needs no native binding interception");
-        assertTrue(bound.get(),
-                "VMStructs::NativeMethodBind never resolved getMemoryUsage0: either NATIVE_METHOD_BIND "
-                        + "was not enabled when VMInit bound it, or initJMXUsage() returned before the "
-                        + "JMX call, so the JMX heap-usage fallback is lost");
+        assertFalse(bound.get(), "getMemoryUsage0 was bound at startup: the agent initialized JMX");
     }
 }
