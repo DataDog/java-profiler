@@ -181,6 +181,7 @@ Runs tests in containers across various OS/libc/JDK combinations, mirroring the 
   --shell                         (drop to shell instead of running tests)
   --mount                         (mount local repo instead of cloning)
   --rebuild                       (force rebuild of container images)
+  --coverage-out=DIR              (single cell: coverageReport, exported to DIR)
   --matrix                        (preview a full matrix)
   --run                           (execute an inferred matrix without prompting)
   --fail-fast                     (stop matrix execution on first failure)
@@ -205,6 +206,16 @@ Examples:
 ```
 
 Single-value commands run one container test configuration immediately. When any dimension expands to multiple cells, the script prints a compact status table first; interactive terminals ask for confirmation, while non-interactive runs require `--run` to execute. Matrix execution prints the status table again after all cells finish and writes summaries to `build/reports/container-matrix/summary.md` and `build/reports/container-matrix/summary.json`. Matrix gtest runs require a short `--gtest-task` name so the task follows each cell's configuration. Cells not run because of `--fail-fast` are reported as cancelled separately from unsupported cells that are skipped.
+
+`--coverage-out=DIR` runs `:ddprof-lib:coverageReport -PenableCoverage` for one cell and copies to `DIR` the reports (`reports/`, including the gcovr tracefile `reports/cpp/coverage.json`), the JaCoCo `.exec` files (`jacoco/`), the classes they were recorded against (`classes/`) and `cell.properties` (libc, arch, jdk, commit, Gradle exit code). The export also runs when Gradle fails; the script still exits with Gradle's code. The script can run from a git worktree: it also mounts the main repository's git dir, read-only.
+
+### `merge-coverage.sh`
+
+Merges `--coverage-out` directories from several cells into one C++ report (gcovr `--add-tracefile`) and one Java report (JaCoCo CLI `merge` + `report`), plus `summary.md`. All cells and `--source-root` must be at the same commit. Needs gcovr 8.3+ and `java`; the JaCoCo CLI comes from `$JACOCO_CLI` or is downloaded from Maven Central and checked against its SHA-1. The `test-coverage` skill drives the full Linux matrix and this merge.
+
+```bash
+./utils/merge-coverage.sh --source-root=. --out=build/coverage-merged cells/glibc-x64-21 cells/musl-aarch64-17
+```
 
 ### `check-signal-reachability.py`
 
