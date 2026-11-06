@@ -16,6 +16,8 @@ import org.junit.jupiter.api.Timeout;
 import org.junitpioneer.jupiter.RetryingTest;
 
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -51,7 +53,8 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class ProfilerLifecycleTest {
 
-    private static final int WORK_ITERATIONS = 500_000;
+    private static final long CPU_WORK_NANOS = TimeUnit.MILLISECONDS.toNanos(200);
+    private static final long CPU_WORK_MAX_WALL_NANOS = TimeUnit.SECONDS.toNanos(5);
 
     /**
      * NativeMem categories owned by a recording: released by stop(), so they must read 0
@@ -220,6 +223,10 @@ public class ProfilerLifecycleTest {
 
         Path recordings = Files.createDirectories(Paths.get("/tmp/recordings/lifecycle"));
         JavaProfiler profiler = JavaProfiler.getInstance();
+        // The workers start while the profiler is idle; without the priming pool (macOS) their
+        // CPU samples are dropped as samples_dropped_thread_local.
+        // Only the sample-presence assertion needs it; the lifecycle churn runs regardless.
+        final boolean tlsPrimed = JavaProfiler.testTlsPrimingAvailable();
 
         // Start background threads that will be active during profiler lifecycle changes
         final int NUM_THREADS = 4;
@@ -266,8 +273,11 @@ public class ProfilerLifecycleTest {
                     assertIdle(nativeMem(when), when);
 
                     JfrEvents events = JfrEvents.load(jfr, "datadog.ExecutionSample"::equals);
-                    assertTrue(events.hasItems(),
-                            "Cycle " + cycle + " must record samples with concurrent work");
+                    // Threads started while idle have no ProfiledThread without the priming pool.
+                    if (tlsPrimed) {
+                        assertTrue(events.hasItems(),
+                                "Cycle " + cycle + " must record samples with concurrent work");
+                    }
                     System.out.println("[Lifecycle] Concurrent cycle " + cycle +
                             " recorded " + events.count() + " samples");
 
@@ -367,6 +377,40 @@ public class ProfilerLifecycleTest {
     }
 
     /**
+     * A tracer keeps calling the trace-root and queue-time APIs after stop(). They must not
+     * re-allocate the endpoint or class dictionaries stop() released, and recordTraceRoot
+     * answers as an empty dictionary would: accepted only if the size limit admits an entry.
+     */
+    @Timeout(60)
+    @Test
+    public void testIdleTracerCallsDoNotReallocateDictionaries() throws Exception {
+        JavaProfiler profiler = JavaProfiler.getInstance();
+        Path recordings = Files.createDirectories(Paths.get("/tmp/recordings/lifecycle"));
+        Path jfr = Files.createTempFile(recordings, "idle_calls_", ".jfr");
+        try {
+            profiler.execute("start,cpu=10ms,jfr,file=" + jfr.toAbsolutePath());
+            assertFalse(profiler.recordTraceRoot(4, null, "recording-operation", 10),
+                    "a null endpoint is rejected while recording");
+            profiler.stop();
+            assertIdle(nativeMem("idle calls before"), "before idle tracer calls");
+
+            assertTrue(profiler.recordTraceRoot(1, "idle-endpoint", "idle-operation", 10),
+                    "an idle profiler accepts an endpoint the size limit admits");
+            assertFalse(profiler.recordTraceRoot(2, "idle-endpoint", "idle-operation", 0),
+                    "an idle profiler rejects an endpoint a zero size limit excludes");
+            assertFalse(profiler.recordTraceRoot(3, null, "idle-operation", 10),
+                    "a null endpoint is rejected while idle, as it is while recording");
+            long now = profiler.getCurrentTicks();
+            profiler.recordQueueTime(now - 1000, now, Runnable.class, ProfilerLifecycleTest.class,
+                    ArrayList.class, 1, Thread.currentThread());
+
+            assertIdle(nativeMem("idle calls after"), "after idle tracer calls");
+        } finally {
+            Files.deleteIfExists(jfr);
+        }
+    }
+
+    /**
      * Reads and prints the profiler's live native memory per NativeMem category, as of the
      * moment of the call (not a mirror refreshed at JFR chunk boundaries). Categories are
      * printed in bytes, the total in KB.
@@ -434,12 +478,26 @@ public class ProfilerLifecycleTest {
     }
 
     /**
-     * Generates CPU-intensive work to produce profiling samples.
+     * Burns {@link #CPU_WORK_NANOS} of this thread's CPU time, so that a {@code cpu=10ms}
+     * recording collects about 20 samples. A fixed iteration count finishes in a few ms once
+     * JIT-compiled, leaving a recording with zero samples. Capped by {@link #CPU_WORK_MAX_WALL_NANOS}.
      */
     private void generateCpuWork() {
+        ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+        boolean cpuClock = threads.isCurrentThreadCpuTimeSupported();
+        long wallStart = System.nanoTime();
+        long start = cpuClock ? threads.getCurrentThreadCpuTime() : wallStart;
         double sum = 0;
-        for (int i = 0; i < WORK_ITERATIONS; i++) {
+        int i = 0;
+        while (true) {
             sum += Math.sin(i) * Math.cos(i) * Math.tan(i % 100 + 1);
+            if (++i % 10_000 == 0) {
+                long now = System.nanoTime();
+                long used = (cpuClock ? threads.getCurrentThreadCpuTime() : now) - start;
+                if (used >= CPU_WORK_NANOS || now - wallStart >= CPU_WORK_MAX_WALL_NANOS) {
+                    break;
+                }
+            }
         }
         // Prevent dead code elimination
         if (sum == Double.MAX_VALUE) {
