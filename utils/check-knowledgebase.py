@@ -7,7 +7,8 @@ contract). An agent hook blocks file-tool edits there, but not shell writes; thi
 the backstop. It mirrors cairn's stable required subset, not the whole contract:
 - the file is `<id>.md` and starts with a `---` frontmatter block;
 - `id`, `title`, `kind`, `tags` and `source` are present and non-empty;
-- `id` is a lowercase slug equal to the file name; `kind` is `finding` or `dead-end`.
+- `id` is a lowercase slug equal to the file name; `kind` is `finding` or `dead-end`, and
+  not `finding` for a `dead-*` id; `source` has the form `<investigation>/<node-id>`.
 
 Exit codes: 0 clean, 1 violations, 2 environment error.
 """
@@ -22,7 +23,7 @@ MEMORIES = ".knowledgebase/memories/"
 REQUIRED = ("id", "title", "kind", "tags", "source")
 KINDS = ("finding", "dead-end")
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]*")
-FIELD = re.compile(r"([A-Za-z_]+):(.*)")
+SOURCE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_-]+")  # <investigation>/<node-id>
 
 
 class EnvError(Exception):
@@ -38,36 +39,45 @@ def tracked_memories(root):
 
 
 def frontmatter(text):
-    """Top-level `key: value` fields of the leading `---` block, or None without one."""
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
+    """The leading `---` block's fields, or None without one. Parsed exactly as cairn's
+    _parse_frontmatter_text does, so this check never rejects what cairn accepts."""
+    if not text.startswith("---"):
+        return None
+    parts = text.split("---", 2)
+    if len(parts) < 3:
         return None
     fields = {}
-    for line in lines[1:]:
-        if line.strip() == "---":
-            return fields
-        m = FIELD.match(line)
-        if m:
-            fields[m.group(1)] = m.group(2).strip()
-    return None  # no closing marker
+    for line in parts[1].splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and ":" in line:
+            key, _, value = line.partition(":")
+            fields[key.strip()] = value.strip()
+    return fields
 
 
 def problems(root, path):
     name = os.path.basename(path)
     if not name.endswith(".md"):
         return ["not a memory file (`<id>.md`)"]
-    with open(os.path.join(root, path), errors="replace") as f:
-        fm = frontmatter(f.read())
+    try:
+        with open(os.path.join(root, path), errors="replace") as f:
+            fm = frontmatter(f.read())
+    except OSError as e:
+        return ["cannot read: %s" % e.strerror]
     if fm is None:
         return ["no `---` frontmatter block; write memories with `cairn memorize`"]
     found = ["frontmatter '%s' is required" % k for k in REQUIRED if not fm.get(k)]
-    mid, kind = fm.get("id", ""), fm.get("kind", "")
+    mid, kind, source = fm.get("id", ""), fm.get("kind", ""), fm.get("source", "")
     if mid and not SLUG.fullmatch(mid):
         found.append("id '%s' is not a lowercase slug" % mid)
     if mid and mid != name[:-3]:
         found.append("id '%s' does not match the file name" % mid)
     if kind and kind not in KINDS:
         found.append("kind '%s' is not one of %s" % (kind, ", ".join(KINDS)))
+    if mid.startswith("dead-") and kind == "finding":
+        found.append("dead-* id but kind is 'finding'")
+    if source and not SOURCE.fullmatch(source):
+        found.append("source '%s' is not in <investigation>/<node-id> form" % source)
     return found
 
 

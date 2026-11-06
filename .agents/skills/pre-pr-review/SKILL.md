@@ -29,6 +29,8 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    <path>`, else `/code-review` with that range as its target. Report only — run no
    reviewer fix flow; steps 3 and 4 do the triage and fixes. If no reviewer is
    available, say so and get explicit user sign-off; do not write a marker then.
+   Tell the reviewer to skip `.knowledgebase/`: its content is cairn's, and step 4
+   checks only its frontmatter. The marker still covers it.
 
 3. **Judgment checks.** In addition to correctness, check every comment, javadoc
    and doc paragraph the change adds or modifies against the AGENTS.md
@@ -44,6 +46,8 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    Commit the fixes and re-review what they touched. Also fix every violation of
    `python3 utils/check-copyright.py --base <base>` and `python3 utils/check-claude-md.py`:
    CI and `.githooks/pre-push` run the same checks, so a marker over them cannot merge.
+   Likewise for `python3 utils/check-knowledgebase.py`, which CI runs: fix a bad
+   memory with cairn, never by hand.
 
 5. **Marker.** On the final commits, write the marker — also when the user ran
    the review manually and reports it back:

@@ -11,7 +11,8 @@ nothing else in this file depends on it.
 
 **`.knowledgebase/` is written only by the cairn skills** (a hook blocks file-tool edits;
 `qualityChecks` checks the memory frontmatter). New memories travel with the change they
-came from, in its PR or a stacked one; reviews skip their content.
+came from, in its PR or a stacked one. Reviews skip their content: no threads, findings
+or suggested edits on memory files.
 
 # AGENTS.md
 

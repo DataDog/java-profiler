@@ -13,7 +13,10 @@ KB_DIR = ".knowledgebase"
 
 def main():
     rel = posixpath.normpath(sys.stdin.read().strip())
-    if rel != KB_DIR and not rel.startswith(KB_DIR + "/"):
+    # Case-blind, as on macOS's default file system; on Linux this also blocks a distinct
+    # `.KnowledgeBase/`, an accepted false block.
+    folded = rel.lower()
+    if folded != KB_DIR and not folded.startswith(KB_DIR + "/"):
         return 0
     print("Blocked write to `%s`: .knowledgebase/ is written only by the cairn skills.\n"
           "Record findings with cairn (`cairn memorize`); never edit memory files by hand."

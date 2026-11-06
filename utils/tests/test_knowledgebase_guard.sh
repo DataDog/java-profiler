@@ -40,7 +40,7 @@ BLOCK_MSG="written only by the cairn skills"
 # --- utils/knowledgebase-write-policy.py ---
 policy() { printf '%s' "$1" | python3 -I "$ROOT/utils/knowledgebase-write-policy.py"; }
 for p in .knowledgebase/memories/x.md .knowledgebase .knowledgebase/.cairn \
-         src/../.knowledgebase/memories/x.md ./.knowledgebase/x; do
+         src/../.knowledgebase/memories/x.md ./.knowledgebase/x .KnowledgeBase/memories/x.md; do
   expect "policy denies: $p" 2 "$BLOCK_MSG" policy "$p"
 done
 for p in src/x.cpp .knowledgebase-notes/x.md docs/.knowledgebase.md memories/x.md ''; do
@@ -54,9 +54,9 @@ HOOK_CMD=$(python3 -c 'import json,sys
 for e in json.load(open(sys.argv[1]))["hooks"]["PreToolUse"]:
     tools = set(e.get("matcher", "").split("|"))
     for h in e["hooks"]:
-        if {"Edit", "Write", "NotebookEdit"} <= tools and "protect-knowledgebase.py" in h["command"]:
+        if {"Edit", "MultiEdit", "Write", "NotebookEdit"} <= tools and "protect-knowledgebase.py" in h["command"]:
             print(h["command"])' "$ROOT/.claude/settings.json")
-if [ -n "$HOOK_CMD" ]; then pass; else fail "settings.json does not register the hook for Edit/Write/NotebookEdit"; fi
+if [ -n "$HOOK_CMD" ]; then pass; else fail "settings.json does not register the hook for Edit/MultiEdit/Write/NotebookEdit"; fi
 mkdir -p "$TEMP_DIR/nohook"
 expect "settings hook command allows everything when the hook file is missing" 0 "" \
   sh -c "echo '{\"tool_input\":{\"file_path\":\".knowledgebase/x.md\"}}' | CLAUDE_PROJECT_DIR=$TEMP_DIR/nohook sh -c '$HOOK_CMD'"
@@ -98,10 +98,12 @@ ln -s .knowledgebase kb && ln -s ../.knowledgebase/memories/m.md src/link.md
 expect "hook denies a path through a symlinked directory" 2 "$BLOCK_MSG" hook Edit "$REPO/kb/memories/m.md"
 expect "hook denies a symlink to a memory" 2 "$BLOCK_MSG" hook Edit "$REPO/src/link.md"
 rm kb src/link.md
+HOME="$TEMP_DIR" expect "hook expands ~" 2 "$BLOCK_MSG" hook Edit "~/repo/.knowledgebase/memories/m.md"
+expect "hook matches the directory case-blind" 2 "$BLOCK_MSG" hook Write "$REPO/.KnowledgeBase/memories/x.md"
 expect "hook allows a write elsewhere" 0 "" hook Edit "$REPO/src/a.cpp"
 expect "hook allows a name that only resembles the directory" 0 "" hook Write "$REPO/src/.knowledgebase-notes.md"
 # A separate clone is another repository even with the policy on its origin/main.
-git clone -q "$TEMP_DIR/origin.git" "$TEMP_DIR/elsewhere"
+git clone -q -b main "$TEMP_DIR/origin.git" "$TEMP_DIR/elsewhere"
 expect "hook ignores another repository's knowledgebase" 0 "" \
   hook Edit "$TEMP_DIR/elsewhere/.knowledgebase/memories/m.md"
 expect "hook ignores a path outside any checkout" 0 "" hook Write /nonexistent/.knowledgebase/x.md
@@ -137,6 +139,9 @@ EOF
   expect "pi adapter denies edit of a memory" 2 "$BLOCK_MSG" pi_hook edit ".knowledgebase/memories/m.md"
   expect "pi adapter denies write of a memory" 2 "$BLOCK_MSG" pi_hook write ".knowledgebase/memories/new.md"
   expect "pi adapter allows a write elsewhere" 0 "" pi_hook write "src/a.cpp"
+  expect "pi adapter drops Pi's @ prefix" 2 "$BLOCK_MSG" pi_hook write "@.knowledgebase/memories/new.md"
+  expect "pi adapter finds the hook from a subdirectory" 2 "$BLOCK_MSG" \
+    pi_hook edit "../.knowledgebase/memories/m.md" "$REPO/src"
   expect "pi adapter allows a checkout without the hook" 0 "" \
     pi_hook edit ".knowledgebase/memories/m.md" "$TEMP_DIR/nohook"
 else

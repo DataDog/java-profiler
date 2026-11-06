@@ -43,10 +43,11 @@ def main():
     target = next((tool_input[f] for f in PATH_FIELDS if isinstance(tool_input.get(f), str)), "")
     if not target:
         return 0
-    path = os.path.join(payload.get("cwd") or os.getcwd(), target)
+    path = os.path.join(payload.get("cwd") or os.getcwd(), os.path.expanduser(target))
     # The literal path and the one behind any symlink: either may lead into .knowledgebase/.
     candidates = {os.path.normpath(path), os.path.realpath(path)}
-    if not any(".knowledgebase" in c for c in candidates):
+    # Case-blind: on macOS's default file system `.KnowledgeBase/` is the same directory.
+    if not any(".knowledgebase" in c.lower() for c in candidates):
         return 0  # most writes: skip the git calls below
     project = common_dir(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
     for candidate in sorted(candidates):
