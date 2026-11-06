@@ -34,6 +34,17 @@ def checkout_of(path):
     return git_out(["rev-parse", "--show-toplevel"], d)
 
 
+def repo_relative(path, top):
+    """`path` relative to checkout `top`. On a case-insensitive file system `path` may spell
+    the checkout root in another case than git reports; compare case-blind then."""
+    rel = os.path.relpath(path, top)
+    if rel.startswith(os.pardir):
+        folded = os.path.relpath(path.lower(), top.lower())
+        if not folded.startswith(os.pardir):
+            return folded
+    return rel
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -60,7 +71,7 @@ def main():
             return 0  # the policy is not on the default branch yet
         # -I keeps the checkout root off sys.path, so planted stdlib-named files are not imported.
         res = subprocess.run([sys.executable, "-I", "-c", source], cwd=top,
-                             input=os.path.relpath(candidate, top).encode(),
+                             input=repo_relative(candidate, top).encode(),
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if res.returncode == 2:
             print(res.stderr.decode(errors="replace").strip(), file=sys.stderr)

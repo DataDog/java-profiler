@@ -49,6 +49,21 @@ done
 expect "policy names the blocked path" 2 'Blocked write to `.knowledgebase/memories/x.md`' \
   policy .knowledgebase/memories/x.md
 
+# --- repo_relative(): the checkout root may be spelled in another case (macOS) ---
+rel() {
+  python3 -I -c 'import importlib.util as u, sys
+s = u.spec_from_file_location("h", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
+print(m.repo_relative(sys.argv[2], sys.argv[3]))' "$ROOT/.claude/hooks/protect-knowledgebase.py" "$1" "$2"
+}
+for args in "/x/REPO/.knowledgebase/m.md|/x/repo|.knowledgebase/m.md" \
+            "/x/repo/.knowledgebase/m.md|/x/repo|.knowledgebase/m.md" \
+            "/x/Other/.knowledgebase/m.md|/x/repo|../Other/.knowledgebase/m.md" \
+            "/x/repo/..Cache/f|/x/repo|..Cache/f"; do
+  IFS='|' read -r path top want <<<"$args"
+  got=$(rel "$path" "$top")
+  if [ "$got" = "$want" ]; then pass; else fail "repo_relative($path, $top) = $got, want $want"; fi
+done
+
 # --- settings.json wiring ---
 HOOK_CMD=$(python3 -c 'import json,sys
 for e in json.load(open(sys.argv[1]))["hooks"]["PreToolUse"]:

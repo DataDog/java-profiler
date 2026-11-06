@@ -587,6 +587,12 @@ kb_reset; memory dead-x.md "id: dead-x" "title: T" "kind: finding" "tags: [a]" "
 kb; expect "T7m dead-* id with kind finding" 1 "$rc" "$out" "dead-* id but kind is 'finding'"
 kb_reset; memory src.md "id: src" "title: T" "kind: finding" "tags: [a]" "source: notes"
 kb; expect "T7n source not in <investigation>/<node-id> form" 1 "$rc" "$out" "source 'notes' is not in"
+for opener in '---garbage' '----'; do
+  kb_reset
+  { echo "$opener"; printf '%s\n' "${GOOD[@]}"; echo ---; } > "$KB_ROOT/.knowledgebase/memories/good-one.md"
+  git -C "$KB_ROOT" add -f .knowledgebase
+  kb; expect "T7o delimiter '$opener' is not a frontmatter line" 1 "$rc" "$out" "no \`---\` frontmatter block"
+done
 
 # --- Summary -----------------------------------------------------------------
 

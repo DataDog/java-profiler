@@ -39,15 +39,13 @@ def tracked_memories(root):
 
 
 def frontmatter(text):
-    """The leading `---` block's fields, or None without one. Parsed exactly as cairn's
-    _parse_frontmatter_text does, so this check never rejects what cairn accepts."""
-    if not text.startswith("---"):
-        return None
-    parts = text.split("---", 2)
-    if len(parts) < 3:
+    """The leading `---` block's fields, or None without one. The delimiters must be whole
+    `---` lines, as cairn writes them; keys parse as in cairn's _parse_frontmatter_text."""
+    lines = text.splitlines()
+    if not lines or lines[0] != "---" or "---" not in lines[1:]:
         return None
     fields = {}
-    for line in parts[1].splitlines():
+    for line in lines[1:lines.index("---", 1)]:
         line = line.strip()
         if line and not line.startswith("#") and ":" in line:
             key, _, value = line.partition(":")
