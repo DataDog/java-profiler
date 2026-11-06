@@ -124,8 +124,8 @@ class StringArena {
 
     // alloc() found no active chunk: either none was allocated yet (fresh or
     // released arena), or growing failed (OOM, latched until reset()).  In the
-    // former case allocate the first chunk.  Returns the active chunk, or
-    // nullptr on OOM.
+    // former case allocate the first chunk; a failure there is retried by the
+    // next alloc().  Returns the active chunk, or nullptr on OOM.
     Chunk* acquireFirstChunk() {
         lockGrowing();
         Chunk* c = _active.load(std::memory_order_relaxed);
@@ -137,8 +137,8 @@ class StringArena {
                 _active.store(c, std::memory_order_release);
             } else if (!_oom_logged) {
                 _oom_logged = true;
-                Log::warn("StringArena: chunk allocation failed; new inserts will "
-                          "be dropped on this buffer until the next clearAll/reset");
+                Log::warn("StringArena: first chunk allocation failed; insert "
+                          "dropped, will retry on next insert");
             }
         }
         _growing.store(false, std::memory_order_release);
@@ -172,8 +172,9 @@ class StringArena {
             // logs; reset() clears the latch.
             if (!_oom_logged) {
                 _oom_logged = true;
-                Log::warn("StringArena: chunk allocation failed; new inserts will "
-                          "be dropped on this buffer until the next clearAll/reset");
+                Log::warn("StringArena: chunk allocation failed; new inserts "
+                          "will be dropped on this buffer until the next "
+                          "clearAll/reset");
             }
         }
         _growing.store(false, std::memory_order_release);

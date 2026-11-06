@@ -14,7 +14,8 @@
 
 struct dl_phdr_info;
 
-// Patch libraries' @plt entries
+// Patch libraries' @plt entries. pthread_create entries (_patched_entries) use
+// only _lib; _location and _func are meaningful for the other entry tables.
 typedef struct _patchEntry {
   CodeCache* _lib;
   // library's @plt location
@@ -42,8 +43,8 @@ class LibraryPatcher {
 
 private:
   static SpinLock    _lock;
-  // Set by initialize_persistent(), which Profiler::init() calls during
-  // one-time initialization. Enables pthread_create patching. Read from the
+  // Set by initialize_persistent(), which Profiler::init() and start() call
+  // (idempotent). Enables pthread_create patching. Read from the
   // Libraries refresher thread, hence atomic with release/acquire.
   // Unlike socket patches, pthread_create patches are persistent across
   // stop/start cycles - they are never unpatched once installed.
@@ -105,8 +106,9 @@ public:
   // which calls install_socket_hooks() to patch them if _socket_active is true.
   // Low-probability race: stop() is called only on JVM exit; atomic<bool> is zero-cost insurance.
   static std::atomic<bool> _socket_active;
-  // Initialize persistent patches (pthread_create). Called once from Profiler::init().
-  // These patches survive stop/start cycles and are never unpatched.
+  // Enables the persistent patches (pthread_create, sigaction). Idempotent;
+  // called from Profiler::init() and from start(), which -agentpath sessions
+  // reach without init(). They survive stop/start cycles and are never unpatched.
   static void initialize_persistent();
   static void patch_libraries();
   static void unpatch_libraries();

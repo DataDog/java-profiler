@@ -158,7 +158,8 @@ before the first `start()`); `acquire()` is the only place they are allocated.
 - While released, `put()` finds `_active_storage == nullptr` and returns
   `DROPPED_TRACE_ID`, and `processTraces()` hands its processor a local set holding
   only the dropped-trace placeholder (a chunk written without a recording, as gtests
-  do, then contains no stack traces) without allocating anything.
+  do, then contains no stack traces) without re-allocating the storage's tables or
+  collections (the local set is freed when `processTraces()` returns).
 - **`acquire()`** allocates fresh tables (fresh instance IDs) and is a no-op if they
   exist. `Profiler::start()` calls it through `acquireRecordingMemory()`, after the
   reset block.

@@ -56,12 +56,13 @@ private:
   int _length;
 
 public:
-  // A null java_string gives c_str() == nullptr and length() == 0.
+  // A null java_string, or a failed copy, gives c_str() == nullptr and
+  // length() == 0; the length is only queried after a successful copy.
   JniString(JNIEnv *env, jstring java_string) {
     _env = env;
     _java_string = java_string;
     _c_string = java_string != NULL ? _env->GetStringUTFChars(java_string, NULL) : nullptr;
-    _length = java_string != NULL ? _env->GetStringUTFLength(java_string) : 0;
+    _length = _c_string != nullptr ? _env->GetStringUTFLength(java_string) : 0;
   }
   JniString(JniString &jniString) = delete;
   ~JniString() {
@@ -254,12 +255,21 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
   // Answer what an empty dictionary would: accepted if the limit admits any
   // entry.
   const jboolean idle_answer = sizeLimit > 0 ? JNI_TRUE : JNI_FALSE;
+  // JNI work stays outside the locked region (it can block for a safepoint).
+  // A null endpoint (no JNI call, nothing pending) would intern "" as the
+  // label; a failed copy leaves an exception pending. Both reject the call,
+  // before the idle check so the answer does not depend on the state.
+  JniString endpoint_str(env, endpoint);
+  if (endpoint_str.c_str() == nullptr) {
+    return JNI_FALSE;
+  }
   if (!profiler->internOpen()) {
     return idle_answer;
   }
-  // JNI work stays outside the locked region (it can block for a safepoint).
-  JniString endpoint_str(env, endpoint);
   JniString operation_str(env, operation);
+  if (operation != NULL && operation_str.c_str() == nullptr) {
+    return JNI_FALSE; // GetStringUTFChars failed; the exception is pending
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
   int tid = ProfiledThread::currentTid();
 
@@ -403,9 +413,21 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     return;
   }
   // JNI work stays outside the locked region (it can block for a safepoint).
+  // A failed GetStringUTFChars leaves an exception pending, and JNI forbids
+  // further calls, so each copy is checked before the next one. Names are
+  // non-null here, so a null c_str() always means a failed copy.
   JniString task_str(env, task);
+  if (task_str.c_str() == nullptr) {
+    return;
+  }
   JniString scheduler_str(env, scheduler);
+  if (scheduler_str.c_str() == nullptr) {
+    return;
+  }
   JniString queue_type_str(env, queueType);
+  if (queue_type_str.c_str() == nullptr) {
+    return;
+  }
 
   // See Profiler::_intern_lock: re-checked under the lock.
   OptionalSharedLockGuard api(profiler->internLock(), SpinLock::NO_SPIN_BUDGET);

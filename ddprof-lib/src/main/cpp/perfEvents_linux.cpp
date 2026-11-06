@@ -717,9 +717,6 @@ void PerfEvents::unregisterThread(int tid) {
   }
 
   PerfEvent *event = &_events[tid];
-  if (event == NULL) {
-    return;
-  }
   int fd = event->_fd;
   if (fd > 0 && __sync_bool_compare_and_swap(&event->_fd, fd, 0)) {
     ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);

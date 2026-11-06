@@ -2685,6 +2685,8 @@ void Profiler::releaseRecordingMemory() {
   // Outside the locks too: release() unpublishes each table and drains its
   // guards before deleting it, so a late put() just drops its trace.
   _call_trace_storage.release();
+  // A cached tail id would otherwise be flushed into the next recording.
+  _thread_filter.resetUnownedBlockedTails();
   for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
     if (buffers[i] != NULL) {
       free(buffers[i]);

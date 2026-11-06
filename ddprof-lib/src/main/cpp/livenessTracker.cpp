@@ -2014,15 +2014,10 @@ Error LivenessTracker::start(Arguments &args) {
   if (err) {
     return err;
   }
-  // Initialize leak tag free list. release() leaves the table empty and every
-  // tag free at each stop(), so this normally rebuilds an all-free pool; it
-  // still reclaims tags owned by table entries first, so that no path that
-  // keeps a table (initialize()'s early return) can hand out an owned tag. Blindly marking every tag free would let a new object
-  // receive a tag another live object still owns (corrupting leak-tag
-  // correlation for both), and the eventual second releaseLeakTag() of the
-  // duplicate would push the same index twice and write past
-  // _leak_tag_free_list. Both locks are held across the scan and the rebuild
-  // so no table entry can gain or drop a tag in between.
+  // Rebuild the pool from the tags table entries still own (only initialize()'s
+  // early return keeps a table); a tag marked free while owned is handed out
+  // twice and overflows _leak_tag_free_list on the second release.
+  // Both locks span scan and rebuild.
   if (_leak_tag_clear_pending) {
     // The last release() could not clear the leak tags on objects; the pool
     // rebuilt below would hand them out again, so retry before it.

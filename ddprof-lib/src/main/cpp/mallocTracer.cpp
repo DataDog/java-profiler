@@ -235,18 +235,23 @@ void MallocHooker::patchLibrary(CodeCache* cc) {
     TEST_LOG("MallocHooker::patchLibraries: patching %s has_malloc=%d",
              cc->name(), cc->findImport(im_malloc) != nullptr);
     // Use patchImport() to record each slot for unpatchLibraries() restoration
-    if (_orig_malloc)
+    if (_orig_malloc) {
         patchImport(cc, im_malloc, reinterpret_cast<void*>(malloc_hook), reinterpret_cast<void*>(_orig_malloc));
-    if (_orig_realloc)
+    }
+    if (_orig_realloc) {
         patchImport(cc, im_realloc, reinterpret_cast<void*>(realloc_hook), reinterpret_cast<void*>(_orig_realloc));
-    if (_orig_aligned_alloc)
+    }
+    if (_orig_aligned_alloc) {
         patchImport(cc, im_aligned_alloc, reinterpret_cast<void*>(aligned_alloc_hook), reinterpret_cast<void*>(_orig_aligned_alloc));
+    }
     // On musl, calloc/posix_memalign delegate to malloc/aligned_alloc internally;
     // hooking them too would double-count. Leave the GOT entry untouched instead.
-    if (_orig_calloc && !_nested_malloc)
+    if (_orig_calloc && !_nested_malloc) {
         patchImport(cc, im_calloc, reinterpret_cast<void*>(calloc_hook), reinterpret_cast<void*>(_orig_calloc));
-    if (_orig_posix_memalign && !_nested_posix_memalign)
+    }
+    if (_orig_posix_memalign && !_nested_posix_memalign) {
         patchImport(cc, im_posix_memalign, reinterpret_cast<void*>(posix_memalign_hook), reinterpret_cast<void*>(_orig_posix_memalign));
+    }
 }
 
 void MallocHooker::installHooks() {
@@ -266,11 +271,24 @@ void MallocHooker::patchSlot(CodeCache* cc, void** location, void* hook_fn, void
     if (cc == nullptr || location == nullptr || orig_fn == nullptr) return;
 
     void* current = __atomic_load_n(location, __ATOMIC_ACQUIRE);
-    if (current == hook_fn) return;  // Already patched
+    // A slot still holding our hook was patched by an earlier recording whose
+    // record was dropped at stop() (its library could not be identified). It is
+    // seen once per recording (each library is patched once per start()), so no
+    // duplicate scan is needed; record it with the known original.
+    const bool rehook = current == hook_fn;
+    if (rehook) {
+        current = orig_fn;
+    }
 
     // A slot that cannot be recorded is left alone rather than hooked for good:
     // every hook must be restorable on stop().
     if (_entry_count >= MAX_MALLOC_ENTRIES) {
+        if (rehook) {
+            // No stop() would restore this stale hook; unhook it now.
+            void* expected = hook_fn;
+            __atomic_compare_exchange_n(location, &expected, orig_fn, false,
+                                        __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+        }
         static bool warned = false;
         if (!warned) {
             warned = true;

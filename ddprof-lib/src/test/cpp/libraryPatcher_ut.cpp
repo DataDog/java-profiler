@@ -11,6 +11,7 @@
 #include "libraryPatcher.h"
 
 #include <dlfcn.h>
+#include <pthread.h>
 
 // LibraryPatcherTestAccessor — friend of LibraryPatcher, exposes the internals
 // the self-identification tests need.
@@ -27,6 +28,7 @@ public:
   }
 
   static int patchedCount() { return LibraryPatcher::_size; }
+  static void setPatchedCount(int count) { LibraryPatcher::_size = count; }
 
   // Drops the patch table without writing the saved originals back, unlike
   // unpatch_libraries(). Tests patch GOT slots that live in the test body's
@@ -171,6 +173,93 @@ TEST_F(LibraryPatcherPatching, StillPatchesForeignPthreadCreateSlot) {
   // pthread_create patches are persistent - slot stays hooked and count unchanged
   EXPECT_EQ(hooked, slot);
   EXPECT_EQ(before + 1, LibraryPatcherTestAccessor::patchedCount());
+}
+
+// With the entry table full, a further library is not recorded, so it is left
+// unhooked rather than patched without a way to recheck it.
+TEST_F(LibraryPatcherPatching, LeavesSlotUnhookedWhenEntryTableIsFull) {
+  void* const original = (void*)&fake_original_pthread_create;
+  void* slot = original;
+  CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                /* imports_patchable */ true);
+  lib.addImport(&slot, "pthread_create");
+  LibraryPatcherTestAccessor::setPatchedCount(MAX_NATIVE_LIBS);
+
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_EQ(original, slot);
+  EXPECT_EQ(MAX_NATIVE_LIBS, LibraryPatcherTestAccessor::patchedCount());
+}
+
+// A library with an entry is checked again on every patch pass. These cases
+// patch once, then put a value back into the slot and patch again.
+class LibraryPatcherRehook : public LibraryPatcherPatching {
+protected:
+  void* slot = (void*)&fake_original_pthread_create;
+  CodeCache lib{kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                /* imports_patchable */ true};
+  void* hooked = nullptr;
+
+  void SetUp() override {
+    LibraryPatcherPatching::SetUp();
+    lib.addImport(&slot, "pthread_create");
+    LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+    hooked = slot;
+    ASSERT_NE((void*)&fake_original_pthread_create, hooked);
+  }
+};
+
+// Someone hooked the slot after us: taking it back would silently remove their
+// interception on every recheck pass.
+TEST_F(LibraryPatcherRehook, LeavesForeignHookInPlace) {
+  void* foreign = (void*)&fake_original_pthread_create;
+  ASSERT_FALSE(lib.contains(foreign));
+  slot = foreign;
+
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_EQ(foreign, slot);
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::patchedCount());
+}
+
+// A reload with lazy binding: the fresh GOT points at the library's own PLT stub.
+TEST_F(LibraryPatcherRehook, RehooksSlotHoldingOwnPltStub) {
+  slot = (void*)((const char*)kForeignMin + 0x10);
+
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_EQ(hooked, slot);
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::patchedCount());
+}
+
+// A reload with eager binding: the fresh GOT holds the real pthread_create.
+TEST_F(LibraryPatcherRehook, RehooksSlotHoldingRealPthreadCreate) {
+  slot = (void*)&pthread_create;
+
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_EQ(hooked, slot);
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::patchedCount());
+}
+
+namespace {
+typedef int (*create_fn)(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*);
+
+void* return_argument(void* arg) { return arg; }
+} // namespace
+
+// The patched slot holds the production hook, whose wrapper ends the thread with
+// pthread_exit(): it must pass the routine's result on to pthread_join().
+TEST_F(LibraryPatcherRehook, HookedThreadJoinsWithRoutineResult) {
+  create_fn create = reinterpret_cast<create_fn>(hooked);
+  int sentinel = 0;
+  pthread_t thread;
+
+  ASSERT_EQ(0, create(&thread, nullptr, return_argument, &sentinel));
+  void* result = nullptr;
+  ASSERT_EQ(0, pthread_join(thread, &result));
+
+  EXPECT_EQ(&sentinel, result);
 }
 
 #endif // __linux__

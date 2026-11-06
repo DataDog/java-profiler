@@ -71,8 +71,9 @@ void MallocHooker::unpatchLibraries() {
         });
     // Still under the walk's lock. Entries of a library the walk did not visit
     // are dropped too: it is unloaded, or no longer verifiably the image they
-    // were saved from, so they can never be written through again. Keeping
-    // them would only fill the table over start/stop cycles.
+    // were saved from, so they are never written through here. A slot of a
+    // still-loaded library keeps our hook; patchSlot() records it again on the
+    // next start(). Keeping the entries would only fill the table.
     _entry_count = 0;
     // Every library is patched again, identity-checked, on the next start().
     _patched_libs = 0;

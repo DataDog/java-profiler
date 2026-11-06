@@ -35,11 +35,9 @@
   #include <sanitizer/tsan_interface.h>
 #endif
 
-// clear() poisons a chunk's used bytes, and OS::safeFree() unmaps with a raw
-// syscall ASan does not intercept, so the poison would outlive the mapping.
-// The kernel reuses freed address ranges - for a new thread's stack, say,
-// where glibc keeps errno - and ASan would then report every access there as
-// use-after-poison. So a chunk's whole range is unpoisoned as it is given back.
+// clear() poisons a chunk's used bytes, and on Linux OS::safeFree() unmaps via
+// syscall(__NR_munmap), which ASan does not intercept. Without unpoisoning, a
+// later mapping at the same address reports use-after-poison under ASan.
 static inline void unpoisonBeforeUnmap(void* chunk, size_t size) {
 #ifdef ASAN_ENABLED
   ASAN_UNPOISON_MEMORY_REGION(chunk, size);

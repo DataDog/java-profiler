@@ -498,6 +498,10 @@ TEST_F(CallTraceStorageTest, ReleaseFreesAllMemoryAndAcquireRestoresIt) {
         EXPECT_GT(NativeMem::live(NM_CALLTRACE), baseline);
         u64 trace_id = local.put(1, &frame, false, 1);
         ASSERT_NE(CallTraceStorage::DROPPED_TRACE_ID, trace_id);
+        // A redundant acquire() keeps the tables (and the stored trace) as is.
+        long long live_before_redundant = NativeMem::live(NM_CALLTRACE);
+        local.acquire();
+        EXPECT_EQ(live_before_redundant, NativeMem::live(NM_CALLTRACE));
         CallTrace* found = nullptr;
         local.processTraces([&](const CallTraceSet& traces) {
             found = findTraceById(traces, trace_id);
@@ -508,6 +512,23 @@ TEST_F(CallTraceStorageTest, ReleaseFreesAllMemoryAndAcquireRestoresIt) {
         EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));
     }
     EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));  // destroying it released is balanced
+}
+
+// A released (or never acquired) storage hands the processor only the
+// dropped-trace placeholder and allocates no tables.
+TEST_F(CallTraceStorageTest, ProcessTracesOnReleasedStorageYieldsOnlyPlaceholder) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    long long baseline = NativeMem::live(NM_CALLTRACE);
+    CallTraceStorage local;
+    int calls = 0;
+    size_t size = 0;
+    local.processTraces([&](const CallTraceSet& traces) {
+        calls++;
+        size = traces.size();
+    });
+    EXPECT_EQ(1, calls);
+    EXPECT_EQ(1u, size);
+    EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));
 }
 
 TEST_F(CallTraceStorageTest, ConcurrentClearAndPut) {

@@ -19,13 +19,16 @@ struct MallocPatchEntry {
   CodeCache* _lib;      // Library containing the patched slot
   void** _location;     // Address of the GOT slot
   void* _hook;          // Hook written to the slot
-  void* _orig;          // Original function pointer before patching
+  void* _orig;          // Slot content before patching (original, PLT stub or other interposer), or the
+                        // resolved original if hooked by an earlier recording whose entry was dropped
 };
 
 // Manages GOT-patching for malloc interception across all loaded native libraries.
 // Unlike pthread_create hooks (persistent), malloc hooks are recording-specific
 // and are unpatched on stop() to minimize overhead when not profiling.
 class MallocHooker {
+  friend class MallocHookerTestAccessor;
+
   private:
     // Guards the patching bookkeeping below off Linux. On Linux patching and
     // restoring run in LibraryPatcher walks, whose lock guards it instead.

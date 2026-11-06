@@ -643,15 +643,8 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   // was dlclose()d and loaded again at the same base keeps its CodeCache (the
   // reload is not re-parsed) and its entry, but the new mapping's GOT holds the
   // real pthread_create again. The walk verified it is the same image, so its
-  // saved slot is valid: re-hook it and refresh the saved original.
-  PatchEntry* entry = nullptr;
-  for (int index = 0; index < _size; index++) {
-    if (_patched_entries[index]._lib == lib) {
-      entry = &_patched_entries[index];
-      break;
-    }
-  }
-  if (entry != nullptr) {
+  // saved slot is valid: re-hook it.
+  if (has_entry_for(_patched_entries, _size, lib)) {
     // A reload's fresh GOT holds the real pthread_create or, with lazy
     // binding, the library's own PLT stub. Anything else was hooked by someone
     // after us: leave it rather than take their interception away.
@@ -660,13 +653,15 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
       return;
     }
   } else {
-    if (_size >= MAX_NATIVE_LIBS) return;
-    entry = &_patched_entries[_size++];
-    entry->_lib = lib;
-    entry->_location = pthread_create_location;
+    if (_size >= MAX_NATIVE_LIBS) {
+      TEST_LOG("Patching: entry table full, %s is not routed through the hook", lib->name());
+      return;
+    }
+    // Only _lib is meaningful for pthread_create entries: the slot is found
+    // again through lib->findImport().
+    _patched_entries[_size++]._lib = lib;
   }
   TEST_LOG("Patching: %s", lib->name());
-  entry->_func = current;
   __atomic_store_n(pthread_create_location, func, __ATOMIC_RELAXED);
 }
 

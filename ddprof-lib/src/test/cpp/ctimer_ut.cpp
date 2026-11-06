@@ -16,13 +16,17 @@
 #include "profiler.h"
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <malloc.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <thread>
+#include <time.h>
 #include <unistd.h>
 
 // mallinfo2() reports the bytes in use only with glibc's own allocator: it is
@@ -502,6 +506,27 @@ TEST_F(CTimerNativeMemTest, StopFreesTableWhenHookCallsDrain) {
   EXPECT_FALSE((bool)CTimerTestAccessor::sizeTimerTable(64));
   EXPECT_NE(nullptr, CTimerTestAccessor::timers());
   EXPECT_EQ(bytes(64), NativeMem::live(NM_CTIMER));
+}
+
+// A freed table cannot be inspected, so a live kernel timer shows the sweep:
+// stop() must delete it before freeing the slot that holds its id.
+TEST_F(CTimerNativeMemTest, StopDeletesTimersBeforeFreeingTable) {
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));
+  struct sigevent sev;
+  memset(&sev, 0, sizeof(sev));
+  sev.sigev_notify = SIGEV_NONE;
+  int timer = -1;
+  ASSERT_EQ(0, syscall(__NR_timer_create, CLOCK_MONOTONIC, &sev, &timer));
+  CTimerTestAccessor::timers()[5] = timer + 1;
+  CTimer engine;
+
+  engine.stop();
+
+  ASSERT_EQ(nullptr, CTimerTestAccessor::timers());
+  long deleted_again = syscall(__NR_timer_delete, timer);
+  int delete_errno = errno;
+  EXPECT_EQ(-1, deleted_again) << "stop() freed the table without deleting its timer";
+  EXPECT_EQ(EINVAL, delete_errno);
 }
 
 // A hook call still inside the table after the wait budget may index it at any

@@ -14,17 +14,26 @@
 #include <dlfcn.h>
 #include <string.h>
 
-// UnloadProtection pins a library by name only, so it also succeeds for a
-// cache whose library was unloaded and the same path loaded elsewhere. Accept
-// the cache only if the image containing its start (the Mach-O header the
-// parser recorded as minAddress()) starts there and has the cache's path.
-// dladdr() resolves under dyld's lock; iterating dyld's image indexes would
-// not, as concurrent unloads shift them. Call it while the library is pinned.
+// UnloadProtection pins by name only, so it also succeeds after the path was
+// reloaded elsewhere, or as another build at the same base. dladdr() (under
+// dyld's lock, unlike image indexes) must find an image starting at minAddress()
+// with the cache's path and, if recorded, LC_UUID. Call it while pinned.
+// Symbols::parseLibraries() keeps one cache per base, so a rebuilt library
+// reloaded at the same base and path fails the UUID check and is left unhooked.
 static bool isCurrentImage(const CodeCache* cc) {
     Dl_info info;
-    return cc->minAddress() != NO_MIN_ADDRESS && dladdr(cc->minAddress(), &info) != 0 &&
-           info.dli_fbase == cc->minAddress() && info.dli_fname != NULL &&
-           strcmp(info.dli_fname, cc->name()) == 0;
+    if (cc->minAddress() == NO_MIN_ADDRESS || dladdr(cc->minAddress(), &info) == 0 ||
+        info.dli_fbase != cc->minAddress() || info.dli_fname == NULL ||
+        strcmp(info.dli_fname, cc->name()) != 0) {
+        return false;
+    }
+    if (cc->imageFingerprint() != 0 &&
+        Symbols::imageFingerprint(info.dli_fbase) != cc->imageFingerprint()) {
+        TEST_LOG("MallocHooker: %s was reloaded at the same base as another build; left unhooked",
+                 cc->name());
+        return false;
+    }
+    return true;
 }
 
 // No loader walk on macOS: each library is pinned with UnloadProtection while
