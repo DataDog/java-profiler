@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include "common.h"
 #include "hotspot/vmStructs.inline.h"
 #include "vmEntry.h"
 #include "jniHelper.h"
@@ -589,8 +590,10 @@ void JNICALL VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread t
                                          jmethodID method, void *address,
                                          void **new_address_ptr) {
     static SpinLock _lock;
+    // (method, address) pairs bound before a JNIEnv was available.
+    static const int MAX_DELAYED = 512;
     static int delayedCounter = 0;
-    static void **delayed = (void **)malloc(512 * sizeof(void *) * 2);
+    static void **delayed = (void **)malloc(MAX_DELAYED * sizeof(void *) * 2);
 
     ProfiledThread::initCurrentThreadSignalSafe();
 
@@ -622,7 +625,9 @@ void JNICALL VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread t
             }
         } else {
             _lock.lock();
-            if (delayed != NULL) {
+            // Past the capacity a binding is dropped: getMemoryUsage0 binds
+            // at VMInit, when a JNIEnv is available.
+            if (delayed != NULL && delayedCounter < MAX_DELAYED * 2) {
                 delayed[delayedCounter] = method;
                 delayed[delayedCounter + 1] = address;
                 delayedCounter += 2;
@@ -641,6 +646,7 @@ void VMStructs::checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni,
         if (strcmp(method_name, "getMemoryUsage0") == 0 &&
             strcmp(method_sig, "(Z)Ljava/lang/management/MemoryUsage;") == 0) {
             _memory_usage_func = (MemoryUsageFunc)address;
+            TEST_LOG("NativeMethodBind: getMemoryUsage0 resolved");
         }
     }
     jvmti->Deallocate((unsigned char *)method_sig);
@@ -1042,30 +1048,32 @@ void HeapUsage::initJMXUsage(JNIEnv *env) {
         return;
     }
     is_jmx_attempted = true;
+    // jniExceptionCheck() is true when a call threw (and clears it): each step
+    // bails out on an exception or a null result.
     jclass factory = env->FindClass("java/lang/management/ManagementFactory");
-    if (!jniExceptionCheck(env) || factory == nullptr) {
+    if (jniExceptionCheck(env) || factory == nullptr) {
         return;
     }
     jclass memoryBeanClass = env->FindClass("java/lang/management/MemoryMXBean");
-    if (!jniExceptionCheck(env) || memoryBeanClass == nullptr) {
+    if (jniExceptionCheck(env) || memoryBeanClass == nullptr) {
         return;
     }
     jmethodID get_memory = env->GetStaticMethodID(
         factory, "getMemoryMXBean", "()Ljava/lang/management/MemoryMXBean;");
-    if (!jniExceptionCheck(env) || get_memory == nullptr) {
+    if (jniExceptionCheck(env) || get_memory == nullptr) {
         return;
     }
     jobject memoryBean = env->CallStaticObjectMethod(factory, get_memory);
-    if (!jniExceptionCheck(env) || memoryBean == nullptr) {
+    if (jniExceptionCheck(env) || memoryBean == nullptr) {
         return;
     }
     jmethodID get_heap = env->GetMethodID(memoryBeanClass, "getHeapMemoryUsage",
                                           "()Ljava/lang/management/MemoryUsage;");
-    if (!jniExceptionCheck(env) || get_heap == nullptr) {
+    if (jniExceptionCheck(env) || get_heap == nullptr) {
         return;
     }
     env->CallObjectMethod(memoryBean, get_heap);
-    if (!jniExceptionCheck(env)) {
+    if (jniExceptionCheck(env)) {
         return;
     }
     // mark JMX as supported only after we were able to retrieve the memory usage

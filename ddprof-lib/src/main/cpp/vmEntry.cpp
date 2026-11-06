@@ -495,6 +495,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   _can_intercept_binding =
       potential_capabilities.can_generate_native_method_bind_events &&
       HeapUsage::needsNativeBindingInterception();
+  TEST_LOG("NativeMethodBind interception %s", _can_intercept_binding ? "enabled" : "disabled");
 
   jvmtiCapabilities capabilities = {0};
   capabilities.can_generate_all_class_hook_events = 1;
@@ -656,8 +657,11 @@ void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
 
     ProfiledThread::initCurrentThreadSignalSafe();
 
-  // initialize the heap usage tracking only after the VM is ready
-    HeapUsage::initJMXUsage(VM::jni());
+    // Only where VMStructs cannot read the heap usage: the JMX call is what
+    // binds getMemoryUsage0, and every other JVM is spared loading JMX here.
+    if (HeapUsage::needsNativeBindingInterception()) {
+      HeapUsage::initJMXUsage(VM::jni());
+    }
 
     // Delayed start of profiler if agent has been loaded at VM bootstrap
     Error error = Profiler::instance()->run(_agent_args);
