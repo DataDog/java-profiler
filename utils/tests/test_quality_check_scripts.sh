@@ -363,9 +363,12 @@ if [ "$n" -lt 2 ]; then fail "T4 RefCountGuard.md mentions REFCOUNT_NESTED_OVERF
 rc=0; out=$(python3 "$ROOT/utils/check-claude-md.py" 2>&1) || rc=$?
 expect "T4 tracked CLAUDE.md is canonical" 0 "$rc" "$out" "CLAUDE.md: OK"
 
-for s in check-copyright.py check-claude-md.py; do
+for s in check-copyright.py check-claude-md.py check-knowledgebase.py; do
   if grep -q "\"$s\"" "$GRADLE"; then pass; else fail "T4 qualityChecks does not run $s"; fi
 done
+
+rc=0; out=$(python3 "$ROOT/utils/check-knowledgebase.py" 2>&1) || rc=$?
+expect "T4 tracked memories carry cairn frontmatter" 0 "$rc" "$out" "knowledgebase: OK"
 
 # --- T5: check-copyright.py over a branch's added and modified files ---------
 
@@ -538,6 +541,71 @@ add_cairn 1 && (cd "$CM_ROOT" && git commit -qam "cairn block")
 python3 "$CM" --root "$CM_ROOT" --write >/dev/null && (cd "$CM_ROOT" && git commit -qam canonical)
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" --head HEAD~1 2>&1) || rc=$?
 expect "T6n --head never ignores a committed cairn block" 1 "$rc" "$out" "differs from the canonical stub"
+
+# --- T7: check-knowledgebase.py ------------------------------------------------
+
+KB="$ROOT/utils/check-knowledgebase.py"
+KB_ROOT="$TEMP_DIR/kb"
+mkdir -p "$KB_ROOT/.knowledgebase/memories" && (cd "$KB_ROOT" && git init -q)
+memory() {  # memory <file> <frontmatter lines...>: writes and tracks one memory file
+  local f="$KB_ROOT/.knowledgebase/memories/$1"; shift
+  { echo ---; printf '%s\n' "$@"; echo ---; echo; echo body; } > "$f"
+  git -C "$KB_ROOT" add -f "$f"
+}
+GOOD=("id: good-one" "title: T" "kind: finding" "tags: [a]" "source: inv/node-1")
+kb() { rc=0; out=$(python3 "$KB" --root "$KB_ROOT" 2>&1) || rc=$?; }
+kb_reset() { git -C "$KB_ROOT" rm -rqf --cached .knowledgebase >/dev/null 2>&1 || true
+             rm -rf "$KB_ROOT/.knowledgebase/memories"/*; }
+memory good-one.md "${GOOD[@]}"
+kb; expect "T7a valid memory" 0 "$rc" "$out" "knowledgebase: OK (1 memories)"
+printf 'no frontmatter\n' > "$KB_ROOT/.knowledgebase/memories/bare.md" && git -C "$KB_ROOT" add -f .knowledgebase
+kb; expect "T7b memory without frontmatter" 1 "$rc" "$out" "bare.md: no \`---\` frontmatter block"
+printf -- '---\nid: open\n' > "$KB_ROOT/.knowledgebase/memories/bare.md" && git -C "$KB_ROOT" add -f .knowledgebase
+kb; expect "T7c unclosed frontmatter" 1 "$rc" "$out" "bare.md: no \`---\` frontmatter block"
+kb_reset; memory no-source.md "id: no-source" "title: T" "kind: finding" "tags: [a]"
+kb; expect "T7d missing required field" 1 "$rc" "$out" "frontmatter 'source' is required"
+kb_reset; memory renamed.md "${GOOD[@]}"
+kb; expect "T7e id differs from the file name" 1 "$rc" "$out" "id 'good-one' does not match the file name"
+kb_reset; memory Bad_Id.md "id: Bad_Id" "title: T" "kind: finding" "tags: [a]" "source: inv/n"
+kb; expect "T7f id is not a slug" 1 "$rc" "$out" "id 'Bad_Id' is not a lowercase slug"
+kb_reset; memory note.md "id: note" "title: T" "kind: note" "tags: [a]" "source: inv/n"
+kb; expect "T7g unknown kind" 1 "$rc" "$out" "kind 'note' is not one of finding, dead-end"
+kb_reset; memory good-one.md "${GOOD[@]}"
+echo x > "$KB_ROOT/.knowledgebase/memories/stray.txt" && git -C "$KB_ROOT" add -f .knowledgebase
+kb; expect "T7h non-memory file under memories/" 1 "$rc" "$out" "stray.txt: not a memory file"
+kb_reset; memory good-one.md "${GOOD[@]}"
+echo x > "$KB_ROOT/.knowledgebase/.cairn" && echo x > "$KB_ROOT/notes.md" && git -C "$KB_ROOT" add -f .knowledgebase notes.md
+echo x > "$KB_ROOT/.knowledgebase/memories/untracked.md"
+kb; expect "T7i files outside memories/ and untracked files are ignored" 0 "$rc" "$out" "knowledgebase: OK (1 memories)"
+rc=0; out=$(python3 "$KB" --root "$TEMP_DIR/nonexistent" 2>&1) || rc=$?
+expect "T7j environment error outside a checkout" 2 "$rc" "$out" "error: git ls-files failed"
+kb_reset; memory spaced.md "id : spaced" "  title: T" "kind: finding" "tags: [a]" "source: inv/n" "# note"
+kb; expect "T7k spacing cairn accepts" 0 "$rc" "$out" "knowledgebase: OK (1 memories)"
+rm "$KB_ROOT/.knowledgebase/memories/spaced.md"
+kb; expect "T7l tracked memory missing from the working tree" 1 "$rc" "$out" "spaced.md: cannot read"
+kb_reset; memory dead-x.md "id: dead-x" "title: T" "kind: finding" "tags: [a]" "source: inv/n"
+kb; expect "T7m dead-* id with kind finding" 1 "$rc" "$out" "dead-* id but kind is 'finding'"
+# Never stricter than cairn's contract: what cairn accepts passes here too.
+kb_reset; memory deadend-y.md "id: deadend-y" "title: T" "kind: finding" "tags: [a]" "source: inv/n"
+kb; expect "T7m deadend-* id with kind finding (cairn accepts it)" 0 "$rc" "$out" "knowledgebase: OK"
+kb_reset; memory empty-title.md "id: empty-title" 'title: ""' "kind: finding" "tags: [a]" "source: inv/n"
+kb; expect "T7p quoted empty title (cairn accepts it)" 0 "$rc" "$out" "knowledgebase: OK"
+kb_reset; memory no-tags.md "id: no-tags" "title: T" "kind: finding" "tags: []" "source: inv/n"
+kb; expect "T7q empty tag list, as cairn writes it" 0 "$rc" "$out" "knowledgebase: OK (1 memories)"
+kb_reset
+{ printf -- '--- \n'; printf '%s\n' "${GOOD[@]}"; printf -- '---\t\n'; } > "$KB_ROOT/.knowledgebase/memories/good-one.md"
+git -C "$KB_ROOT" add -f .knowledgebase
+kb; expect "T7r trailing whitespace on the delimiters (cairn accepts it)" 0 "$rc" "$out" "knowledgebase: OK (1 memories)"
+{ printf '\xef\xbb\xbf---\n'; printf '%s\n' "${GOOD[@]}"; echo ---; } > "$KB_ROOT/.knowledgebase/memories/good-one.md"
+kb; expect "T7s leading BOM (cairn finds no frontmatter)" 1 "$rc" "$out" "no \`---\` frontmatter block"
+kb_reset; memory src.md "id: src" "title: T" "kind: finding" "tags: [a]" "source: notes"
+kb; expect "T7n source not in <investigation>/<node-id> form" 1 "$rc" "$out" "source 'notes' is not in"
+for opener in '---garbage' '----'; do
+  kb_reset
+  { echo "$opener"; printf '%s\n' "${GOOD[@]}"; echo ---; } > "$KB_ROOT/.knowledgebase/memories/good-one.md"
+  git -C "$KB_ROOT" add -f .knowledgebase
+  kb; expect "T7o delimiter '$opener' is not a frontmatter line" 1 "$rc" "$out" "no \`---\` frontmatter block"
+done
 
 # --- Summary -----------------------------------------------------------------
 

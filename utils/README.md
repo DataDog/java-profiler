@@ -231,13 +231,14 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 | `check-tracked-artifacts.py` | No tracked path under `docs/sphinx/` or `.sphinx/`, and no `*.scratch*` path. |
 | `check-copyright.py` | Source files the branch adds or modifies since `--base` (default: the PR base in CI, else `origin/main`) follow the `AGENTS.md` copyright rule. |
 | `check-claude-md.py` | `CLAUDE.md` is the canonical redirect stub to `AGENTS.md`; `--write` restores it. |
+| `check-knowledgebase.py` | Every tracked `.knowledgebase/memories/` file carries cairn's required memory frontmatter. |
 
 `.githooks/pre-push` runs `check-copyright.py` and `check-claude-md.py` on every pushed branch commit, so a violation stops the push before CI sees it (see `review-marker.py` below for the trust model). Set `branch.<name>.gh-merge-base` for a branch stacked on another feature branch.
 
 **Usage:**
 ```bash
 ./utils/check-doc-index.py                 # any one check
-./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all six; run by CI (ci.yml source-invariant-checks job)
+./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all seven; run by CI (ci.yml source-invariant-checks job)
 ```
 
 CI runs every `utils/tests/*.sh` suite in the `script-tests` job of `.github/workflows/ci.yml`, with Node.js 22 for the Pi adapter cases.
@@ -319,6 +320,16 @@ Denies shell commands that run `gradlew` directly instead of through `.claude/co
 ```bash
 echo './gradlew build' | python3 utils/gradle-command-policy.py   # exit 2
 bash utils/tests/test_gradle_hook.sh                              # tests
+```
+
+### `knowledgebase-write-policy.py`
+
+Denies agent file-tool writes into `.knowledgebase/`, which only the cairn skills write. The `protect-knowledgebase` hook runs it in Claude Code (`.claude/hooks/`, for Edit, MultiEdit, Write and NotebookEdit) and, through `.pi/extensions/protect-knowledgebase.ts`, in Pi (edit and write). It loads from `refs/remotes/origin/main`, or from the checkout when that ref lacks it (a stale fork as `origin`). The hook itself runs from the checkout, so it guards against accidental agent writes, not a hostile branch. Shell writes are not covered; `check-knowledgebase.py` is the backstop.
+
+**Usage:**
+```bash
+echo .knowledgebase/memories/x.md | python3 utils/knowledgebase-write-policy.py   # exit 2
+bash utils/tests/test_knowledgebase_guard.sh                                     # tests
 ```
 
 ---
