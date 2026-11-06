@@ -1125,12 +1125,10 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_seedKlassPopulationSample0(
     JNIEnv *env, jclass unused, jint klassId, jint count, jlong epoch) {
   ProfiledThread::initCurrentThreadSignalSafe();
-  int slot;
-  bool created;
   jweak evicted[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
   int evicted_count = 0;
-  LivenessTracker::instance()->klassPopulationRecordForTest(
-      (u32)klassId, (u32)count, (u64)epoch, &slot, &created, evicted,
+  LivenessTracker::instance()->seedKlassPopulationSampleForTest(
+      (u32)klassId, (u32)count, (u64)epoch, evicted,
       &evicted_count, KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
   for (int i = 0; i < evicted_count; i++) {
     if (evicted[i] != nullptr) {
