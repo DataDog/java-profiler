@@ -179,7 +179,6 @@ private:
   // re-allocates a dictionary releaseRecordingMemory() released.
   SpinLock _intern_lock;
   std::atomic<bool> _intern_open{false};
-  std::atomic<u64> _recording_generation{0};
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
@@ -228,6 +227,8 @@ private:
   // DYNAMIC_CODE_GENERATED, COMPILED_METHOD_LOAD) have been enabled. These are enabled once on first start() and never disabled,
   // surviving stop/start cycles for the lifetime of the process.
   bool _jvmti_events_enabled;
+  // enablePersistentJvmtiEvents() steps that succeeded, one bit per event.
+  u8 _persistent_jvmti_events = 0;
 
   Libraries* _libs;
   u32 _num_context_attributes;
@@ -454,12 +455,6 @@ public:
     return _state.load(std::memory_order_acquire) == RUNNING;
   }
 
-  // Bumped by releaseRecordingMemory() under lockAll(), once a recording's
-  // dictionaries and storage are released. See recordJVMTISample().
-  u64 recordingGeneration() const {
-    return _recording_generation.load(std::memory_order_acquire);
-  }
-
   // Check internOpen(), do the JNI work, then hold a shared lock on
   // internLock() (OptionalSharedLockGuard, SpinLock::NO_SPIN_BUDGET) around
   // the inserts and re-check internOpen() under it. See _intern_lock.
@@ -507,9 +502,11 @@ public:
     _call_trace_storage.clearLivenessCheckers();
   }
 
+  // Bumped under lockAll() by dump() and releaseRecordingMemory(), and at the
+  // end of start(): ids cached or resolved under an older value are stale.
+  // Acquire: recordJVMTISample() callers read it before resolving class ids.
   inline u32 recordingEpoch() {
-    // no thread reordering constraints
-    return __atomic_load_n(&_epoch, __ATOMIC_RELAXED);
+    return __atomic_load_n(&_epoch, __ATOMIC_ACQUIRE);
   }
 
   Error init();
@@ -524,16 +521,12 @@ public:
   Error checkState();
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);
-  // Enable persistent JVMTI events that track JVM metadata (CLASS_LOAD,
-  // CLASS_PREPARE, DYNAMIC_CODE_GENERATED, COMPILED_METHOD_LOAD). Called once
-  // on first start(), never disabled.
+  // Enables the JVMTI events that track JVM metadata (CLASS_LOAD, CLASS_PREPARE,
+  // DYNAMIC_CODE_GENERATED, COMPILED_METHOD_LOAD) until all succeed; never disabled.
   bool enablePersistentJvmtiEvents();
-  // Frees the call-trace storage, the per-thread call-trace buffers, the
-  // liveness tracker's state and the class and string-label dictionaries'
-  // storage once a recording is over, so the idle profiler holds none of it.
-  // The context-value dictionary is kept (see the definition).
-  // acquireRecordingMemory() allocates the call-trace storage again on
-  // start(); the dictionaries allocate on demand.
+  // Frees the call-trace storage and buffers, the liveness state and the class
+  // and string-label dictionaries once a recording is over (not the
+  // context-value one). acquireRecordingMemory() reallocates the storage.
   void releaseRecordingMemory();
   void acquireRecordingMemory();
   /**
@@ -649,10 +642,10 @@ public:
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event);
-  // recording_generation: recordingGeneration() read before the caller resolved
-  // anything recording-scoped in event (a class id); a moved one drops the sample.
+  // recording_epoch: recordingEpoch() read before the caller resolved anything
+  // recording-scoped in event (a class id); a moved one drops the sample.
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event,
-                        bool deferred, u64 recording_generation);
+                        bool deferred, u32 recording_epoch);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,
                             ASGCT_CallFrame *frames, bool truncated,

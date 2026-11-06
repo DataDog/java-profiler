@@ -210,11 +210,9 @@ public:
 
   static const char *categoryName(NativeMemCategory category);
 
-  // Prints the live bytes of every category, and their total in KB, on one
-  // line tagged with `when` (e.g. "after init", "before start"):
-  // through TEST_LOG (debug builds) and Log::debug (when the profiler log is
-  // configured at debug level - it is not before the first start(), which
-  // opens it). Formats with snprintf: not async-signal-safe.
+  // Logs every category's live KB and the total, tagged with `when`, through
+  // TEST_LOG and Log::debug (not open before the first start()). Uses
+  // snprintf: not async-signal-safe.
   static void logLive(const char *when);
 };
 

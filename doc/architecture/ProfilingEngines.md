@@ -226,13 +226,15 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      registered after the thread list was taken, and such a thread is then not
      sampled for the recording (PROF-16359).
    - `unregisterThread()` needs `_thread_tables_stable`, which is cleared only
-     while CTimer allocates, replaces or frees its timer table
-     (`ThreadTablesFreeze`): `CTimer::sizeTimerTable()` in `start()` when the
-     table is missing or its size changed, and `CTimer::releaseTimerTable()`
-     at the end of `CTimer::stop()`. Since `stop()` frees the table, every
-     `start()` with the CPU timer normally takes the freeze; only a table that
-     `stop()` had to keep (hook calls did not drain) is reused at an unchanged
-     `pid_max` without one. `PerfEvents::start()` replaces its table without clearing it
+     while CTimer replaces or frees its timer table (`ThreadTablesFreeze`):
+     `CTimer::sizeTimerTable()` in `start()` when a kept table's size changed,
+     and `CTimer::releaseTimerTable()` at the end of `CTimer::stop()`. Since
+     `stop()` frees the table, a `start()` normally allocates into none, which
+     needs no freeze: hook calls see `_max_timers == 0` until the table is
+     published, `_max_timers` last with release. So a start does not fail on
+     thread churn the freeze could not drain. A table that `stop()` had to keep
+     (hook calls did not drain) is reused at an unchanged `pid_max`.
+     `PerfEvents::start()` replaces its table without clearing it
      (PROF-16359). An exit that arrives while the gate is closed is recorded
      by `Profiler::recordSkippedUnregistration()`. `CTimer::start()` replays
      the record after it lists threads, which removes the timer the listing
@@ -556,7 +558,7 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
   signal handler:
   1. Resolves the class with `GetClassSignature` and `lookupClass()` (through
      the profiler's intern gate). An unresolvable class drops the sample. Just
-     before the lookup it reads `Profiler::recordingGeneration()` and
+     before the lookup it reads `Profiler::recordingEpoch()` and
      `LivenessTracker::tableGeneration()`: disabling the JVMTI event does not
      wait for callbacks already running, so one can resume after a stop/start
      holding a class id from the previous recording.
@@ -564,7 +566,7 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
      `weight = 1 / (1 - exp(-size / interval))` and calls
      `recordJVMTISample()`. When only liveness is recorded, the sample is
      deferred (`deferred = !_record_allocations`). Under its stripe lock,
-     `recordJVMTISample()` drops the sample if the recording generation moved;
+     `recordJVMTISample()` drops the sample if the recording epoch moved;
      `releaseRecordingMemory()` bumps it under `lockAll()`, so the check and
      the emission cannot straddle a stop.
      `recordJVMTISample()` captures the stack according to `allocstack`: by

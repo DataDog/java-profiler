@@ -198,7 +198,7 @@ TEST_F(AllocStackDiagnosticsTest, FailedJvmtiCallDoesNotCountAsChecked) {
 TEST_F(AllocStackDiagnosticsTest, ZeroFramePlatformWalkCountsJvmtiFallback) {
     u64 trace = Profiler::instance()->recordJVMTISample(1, 1, reinterpret_cast<jthread>(1),
                                                      BCI_ALLOC, nullptr, true,
-                                                     Profiler::instance()->recordingGeneration());
+                                                     Profiler::instance()->recordingEpoch());
     EXPECT_NE(0u, trace);
     EXPECT_EQ(1, stack_calls);
     EXPECT_EQ(1, Counters::getCounter(ALLOC_STACK_VM_FALLBACK));
@@ -206,12 +206,12 @@ TEST_F(AllocStackDiagnosticsTest, ZeroFramePlatformWalkCountsJvmtiFallback) {
     EXPECT_FALSE(ProfiledThread::current()->isProtected());
 }
 
-// An allocation callback reads the recording generation before it resolves its
+// An allocation callback reads the recording epoch before it resolves its
 // class id. If a stop() moved it meanwhile, recordJVMTISample() must drop the
 // sample before capturing a stack or emitting anything, and a sample carrying
-// the current generation must still be recorded afterwards.
-TEST_F(AllocStackDiagnosticsTest, StaleRecordingGenerationIsRejected) {
-    u64 current = Profiler::instance()->recordingGeneration();
+// the current epoch must still be recorded afterwards.
+TEST_F(AllocStackDiagnosticsTest, StaleRecordingEpochIsRejected) {
+    u32 current = Profiler::instance()->recordingEpoch();
 
     u64 stale = Profiler::instance()->recordJVMTISample(
         1, 1, reinterpret_cast<jthread>(1), BCI_ALLOC, nullptr, true, current - 1);
@@ -232,7 +232,7 @@ TEST_F(AllocStackDiagnosticsTest, JvmtiTruncationRequiresAFrameBeyondTheLimit) {
         ProfilerTestAccessor::state(state);
         u64 id = Profiler::instance()->recordJVMTISample(1, 1, reinterpret_cast<jthread>(1),
                                                         BCI_ALLOC, nullptr, true,
-                                                     Profiler::instance()->recordingGeneration());
+                                                     Profiler::instance()->recordingEpoch());
         bool found = false;
         ProfilerTestAccessor::processTraces([&](const CallTraceSet& traces) {
             for (const CallTrace* trace : traces) {

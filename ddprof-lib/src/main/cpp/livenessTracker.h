@@ -972,19 +972,13 @@ public:
   void resetSession();
   Error start(Arguments &args);
   void stop();
-  // Frees everything a recording built up - the tracking table and its weak
-  // refs, the leak tags on objects, the per-klass population - so the idle
-  // profiler holds none of it; the next start() initializes from scratch and
-  // re-reads that recording's arguments. Called by Profiler::stop() once the
-  // final chunk is written and the reference-chain BFS thread is joined, so
-  // only an allocation callback still in flight can reach the tracker; it
-  // finds no capacity and drops its sample. No-op when nothing was allocated.
+  // Frees what a recording built: the table and its weak refs, leak tags, the
+  // per-klass population. Called by Profiler::stop() after the final chunk and
+  // the BFS join: only an in-flight allocation callback can race, and drops.
   void release(JNIEnv *env);
-  // The table generation, bumped whenever release() frees the table or
-  // initialize() publishes a new one. An allocation callback reads it before it
-  // captures its stack and passes it to track(), which drops the sample if the
-  // generation moved meanwhile: its call_trace_id belongs to a call-trace
-  // storage that was released, and the table to another recording.
+  // Bumped when release() frees the table or initialize() publishes one. Read
+  // before the stack capture and passed to track(), which drops the sample if
+  // it moved: the call_trace_id and table belong to another recording.
   u64 tableGeneration() const { return _table_generation.load(std::memory_order_acquire); }
   void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id,
              u64 table_generation);

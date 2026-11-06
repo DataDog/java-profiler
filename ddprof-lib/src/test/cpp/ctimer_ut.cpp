@@ -423,6 +423,27 @@ TEST_F(CTimerNativeMemTest, SameSizeRestartDoesNotFreezeUnregistration) {
   EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
 }
 
+// stop() frees the table, so a start() normally allocates into none. No hook
+// call can be inside a missing table, so that takes no freeze: with a hook call
+// held in flight, a freeze would time out, so success shows that none ran.
+TEST_F(CTimerNativeMemTest, AllocatingIntoEmptyTableDoesNotFreeze) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_EQ(nullptr, CTimerTestAccessor::timers());
+  ProfilerTestAccessor::DrainBudget budget(100000000LL);
+
+  Error error = Error::OK;
+  {
+    ProfilerTestAccessor::HookCallHold hold(profiler);
+    error = CTimerTestAccessor::sizeTimerTable(64);
+  }
+
+  EXPECT_FALSE((bool)error);
+  EXPECT_NE(nullptr, CTimerTestAccessor::timers());
+  EXPECT_EQ(64, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(bytes(64), NativeMem::live(NM_CTIMER));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+}
+
 // A size change replaces the table only under a freeze. While a hook call is
 // still in flight after the wait budget, start() fails retryably and keeps the
 // old table, and unregistration is open again afterwards.

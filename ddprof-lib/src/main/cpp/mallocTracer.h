@@ -55,11 +55,9 @@ class MallocHooker {
     static bool symbolsResolved();
     static void restoreSlot(const MallocPatchEntry& entry);
     static void sortEntriesByLibrary();
-    // After a restore pass in which restored entries were marked (_lib set to
-    // nullptr): keeps the entries that were NOT restored (library unloaded or
-    // no longer verifiably the saved image), so patchSlot() can recover the
-    // true original of a slot that still holds our hook. Bounded by
-    // MAX_ORPHAN_ENTRIES; the excess is dropped.
+    // After a restore pass (restored entries have _lib == nullptr): keeps the
+    // unrestored ones, up to MAX_ORPHAN_ENTRIES, so patchSlot() can recover the
+    // true original of a slot that still holds our hook.
     static void keepUnrestoredEntries();
 
   public:

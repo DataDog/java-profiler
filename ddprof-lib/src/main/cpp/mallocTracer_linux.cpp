@@ -10,18 +10,9 @@
 #include "libraryPatcher.h"
 #include "mallocTracer.h"
 
-// Patching and restoring both run inside a LibraryPatcher::LiveLibraryWalk.
-// Patched libraries are not pinned and can be dlclose()d at any time, and a
-// CodeCache outlives its library: a reload of the same file is not re-parsed,
-// and a different build can later occupy the same base. The walk visits a
-// library only while the loader keeps it mapped and only if it is still the
-// image its CodeCache describes (base plus fingerprint, or file id), so slot
-// addresses saved in a stale cache are never written through. It also makes
-// the visited library's imports writable again.
-//
-// The walk holds LibraryPatcher::_lock throughout, which is what guards
-// _entries, _entry_count and _patched_libs on Linux; _patch_lock is not used.
-// Nothing here may call dlopen() & co. (see libraryPatcher_linux.cpp).
+// Patching and restoring run inside a LibraryPatcher::LiveLibraryWalk, which
+// writes only through libraries still mapped as the image their CodeCache saw.
+// Its _lock guards _entries/_entry_count/_patched_libs here: no dlopen() & co.
 void MallocHooker::patchLibraries() {
     // Defensive guard: the malloc symbols are resolved by initialize(), which runs in
     // MallocTracer::start() before _running is set and this path is reached.
@@ -73,10 +64,8 @@ void MallocHooker::unpatchLibraries() {
                 _entries[i]._lib = nullptr;
             }
         });
-    // Still under the walk's lock. Entries of a library the walk did not visit
-    // (unloaded, or no longer verifiably the image they were saved from) are
-    // never written through here, but they are kept: their slot may still hold
-    // our hook, and patchSlot() needs the true original to track it again.
+    // Still under the walk's lock. Entries the walk did not visit are kept: a
+    // slot may still hold our hook, and patchSlot() needs its true original.
     keepUnrestoredEntries();
     // Every library is patched again, identity-checked, on the next start().
     _patched_libs = 0;

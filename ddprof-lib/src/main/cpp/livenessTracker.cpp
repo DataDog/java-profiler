@@ -2160,10 +2160,9 @@ Error LivenessTracker::start(Arguments &args) {
   if (err) {
     return err;
   }
-  // Rebuild the pool from the tags table entries still own (only initialize()'s
-  // early return keeps a table); a tag marked free while owned is handed out
-  // twice and overflows _leak_tag_free_list on the second release.
-  // Both locks span scan and rebuild.
+  // Rebuild the pool from the tags entries still own (both locks span scan and
+  // rebuild): a tag marked free while owned is handed out twice and overflows
+  // _leak_tag_free_list on the second release.
   if (_leak_tag_clear_pending) {
     // The last release() could not clear the leak tags on objects; the pool
     // rebuilt below would hand them out again, so retry before it.
@@ -2223,17 +2222,15 @@ void LivenessTracker::stop() {
   cleanup_table();
   flush_table(nullptr);
 
-  // The table itself is freed later, by release(): the final chunk still
-  // asks getLiveTraceIds() which call traces to keep, and the BFS thread may
-  // be tagging until ReferenceChainTracker::stopThread() joins it.
+  // release() frees the table later: the final chunk still asks
+  // getLiveTraceIds(), and the BFS thread tags until stopThread() joins it.
   // GC notifications stay enabled; onGC() ignores them while released.
 }
 
 bool LivenessTracker::clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env) {
-  // tagLeakInstances() puts pool tags on the objects themselves, and
-  // ReferenceChainTracker::releaseSearchTags() clears only its own search
-  // tags. A tag left on a live object would collide with the same pool slot
-  // once the next recording hands it to another object.
+  // releaseSearchTags() clears only search tags; a pool tag that
+  // tagLeakInstances() left on a live object would collide with the next
+  // recording's owner of that slot.
   if (jvmti == nullptr) {
     return true;
   }
@@ -2244,11 +2241,9 @@ bool LivenessTracker::clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env) {
   jint count = 0;
   jobject *objects = nullptr;
   jlong *found_tags = nullptr;
-  // GetObjectsWithTags returns one local ref per tagged object, up to one per
-  // pool slot, all created inside the call. Hold them in their own frame so
-  // the calling thread's local-ref capacity is not exceeded; the frame's pop
-  // frees them all. If no frame can be pushed (OutOfMemoryError), free each
-  // ref as we go instead.
+  // GetObjectsWithTags returns up to one local ref per pool slot: hold them in
+  // their own frame so the caller's local-ref capacity is not exceeded. With
+  // no frame (OutOfMemoryError), free each ref as we go.
   struct LocalFrame {
     JNIEnv *env;
     bool pushed;
@@ -2307,10 +2302,9 @@ void LivenessTracker::release(JNIEnv *env) {
     return;
   }
 
-  // Before taking the table lock: GetObjectsWithTags walks the tag map, and
-  // the only other tagger (tagLeakInstances(), BFS thread) is joined. Skipped
-  // when no tag is out (none handed out, or every owner died) and the last
-  // clear succeeded: no object can carry one then.
+  // Before the table lock: GetObjectsWithTags walks the tag map, and the BFS
+  // thread (the other tagger) is joined. Skipped when no tag is out and the
+  // last clear succeeded: no object can carry one.
   bool tags_out;
   {
     ExclusiveLockGuard guard(&_leak_tag_pool_lock);
@@ -2337,10 +2331,9 @@ void LivenessTracker::release(JNIEnv *env) {
     _table = nullptr;
     _table_size = 0;
     _table_cap = 0;
-    // An allocation callback still in flight sees no capacity: track() bails
-    // out before reserving a slot, or, past that check, its growth path
-    // computes min(0 * 2, 0) == _table_cap under this lock and never
-    // reallocates - it just deletes its weak ref.
+    // A callback still in track() sees no capacity: it bails out, or its
+    // growth path computes min(0 * 2, 0) == _table_cap under this lock and
+    // just deletes its weak ref.
     _table_max_cap = 0;
     _enabled = false;
     _gc_generations.store(false, std::memory_order_relaxed);
@@ -2698,11 +2691,9 @@ retry:
   // Increment _table_size in a thread-safe manner (CAS) and store the new value
   // in idx It bails out if _table_size would overflow _table_cap
   //
-  // Whether the insert succeeded is decided here, under the lock, and never
-  // re-derived from _table_cap after unlocking: once inserted, the ref belongs
-  // to the table, and release() can delete it and drop _table_cap to 0 as soon
-  // as this shared lock is gone - an idx == _table_cap check then would take
-  // the overflow path and delete the ref a second time.
+  // Success is decided under the lock, never re-derived from _table_cap after:
+  // release() may then delete the inserted ref and zero _table_cap, and an
+  // idx == _table_cap check would delete the ref a second time.
   const int cap = _table_cap;
   int idx;
   do {

@@ -760,7 +760,7 @@ void Profiler::verifyAllocStack(const ASGCT_CallFrame* frames, int num_frames, j
 }
 
 u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event,
-                                bool deferred, u64 recording_generation) {
+                                bool deferred, u32 recording_epoch) {
   // Called from non-signal based sampler
   ProfiledThread* prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
   if (prof_thread == nullptr) {
@@ -784,7 +784,7 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
   // The caller resolved event's ids before a stop: they may be stale in the
   // current recording. Checked and emitted under the same stripe lock, which
   // the bump in releaseRecordingMemory() excludes.
-  if (_recording_generation.load(std::memory_order_relaxed) != recording_generation) {
+  if (__atomic_load_n(&_epoch, __ATOMIC_RELAXED) != recording_epoch) {
     atomicIncRelaxed(_failures[-ticks_skipped]);
     _locks[lock_index].unlock();
     return 0;
@@ -910,20 +910,22 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
                             jint event_type, u64 call_trace_id, Event *event,
                             u64 *recorded_call_trace_id) {
   atomicIncRelaxed(_total_samples);
-
-  u32 lock_index = getLockIndex(tid);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
-    // Too many concurrent signals already
+  auto drop = [&]() {
     atomicIncRelaxed(_failures[-ticks_skipped]);
-
     if (event_type == BCI_CPU && _cpu_engine == &perf_events) {
       // Need to reset PerfEvents ring buffer, even though we discard the
       // collected trace
       PerfEvents::resetBuffer(tid);
     }
     return false;
+  };
+
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    // Too many concurrent signals already
+    return drop();
   }
 
   bool truncated = false;
@@ -937,9 +939,8 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
     // other readers, drop the sample rather than dereference it.
     CallTraceBuffer *buf = _calltrace_buffer[lock_index];
     if (buf == nullptr) {
-      atomicIncRelaxed(_failures[-ticks_skipped]);
       _locks[lock_index].unlock();
-      return false;
+      return drop();
     }
 #ifdef COUNTERS
     u64 startTime = TSC::ticks();
@@ -1761,10 +1762,8 @@ Error Profiler::init() {
       return Error("Profiler encountered fatal error");
     }
 
-    // Initialize persistent library patches (pthread_create).
-    // These patches survive stop/start cycles and are never unpatched.
-    // Must be done after JVMSupport::initialize() as the pthread_create hook
-    // calls Profiler::registerThread() which needs ProfiledThread TLS to exist.
+    // Persistent pthread_create patch. After JVMSupport::initialize(): the hook
+    // calls Profiler::registerThread(), which needs ProfiledThread TLS.
     LibraryPatcher::initialize_persistent();
 
     // The idle footprint before the first start().
@@ -1872,10 +1871,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_info.clearAll();
   }
 
-  // Call-trace storage the previous stop() (or the reset above) released.
-  // After resetRecordingState()'s Counters::reset(), so the storage counters
-  // count exactly what this allocates; a resume, which skips the reset, gets
-  // back what stop() released, which stop() had uncounted.
+  // Storage stop() or the reset above released. After Counters::reset(), so
+  // the storage counters count exactly this allocation.
   acquireRecordingMemory();
   // Every failed start() from here on gives the recording memory back (and
   // closes the intern gate); disarmed once the recording runs.
@@ -1897,11 +1894,9 @@ Error Profiler::start(Arguments &args, bool reset) {
       _calltrace_buffer[0] == NULL) {
     size_t prev_nelem = _calltrace_buffer_capacity[0];
 
-    // Phase 1: allocate all replacements up front. If any allocation fails,
-    // free the ones already made and fail the start with no partial swap:
-    // _max_stack_depth and the accounting stay consistent. The failure path
-    // also releases the recording memory (old buffers included), leaving the
-    // idle state stop() leaves; a later start() reallocates everything.
+    // Phase 1: allocate all replacements up front; on a failure free them and
+    // fail with no partial swap. recording_memory then releases the old
+    // buffers too, leaving the idle state stop() leaves.
     CallTraceBuffer *fresh[CONCURRENCY_LEVEL];
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       fresh[i] = (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
@@ -1999,13 +1994,9 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   args._cstack = _cstack;
 
-  // Enable persistent JVMTI events on first start - these track JVM metadata
-  // (classes, JIT compilations) needed for accurate profiling. Once enabled,
-  // they stay enabled across stop/start cycles. Must precede initExecution():
-  // its jmethodID preload snapshots the loaded classes, and CLASS_PREPARE has
-  // to be on by then so a class prepared after the snapshot is not missed.
-  // ClassPrepare events that arrive before initExecution() sets the load
-  // state are ignored; the snapshot covers those classes.
+  // Before initExecution(): its jmethodID preload snapshots the loaded
+  // classes, so CLASS_PREPARE must be on by then. Events before it sets the
+  // load state are ignored; the snapshot covers those classes.
   if (!_jvmti_events_enabled) {
     enablePersistentJvmtiEvents();
   }
@@ -2024,10 +2015,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   // above: initExecution() picks the jmethodID mode from cstackMode().
   JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
 
-  // Also called from init() for the Java API path, but an -agentpath session
-  // starts through VMInit -> run() and never calls init(). Idempotent, and must
-  // precede the first updateSymbols() so that scan installs the persistent
-  // pthread_create/sigaction patches.
+  // An -agentpath session never calls init(). Idempotent; before the first
+  // updateSymbols(), so its scan installs the persistent patches.
   LibraryPatcher::initialize_persistent();
 
   // Kernel symbols are useful only for perf_events without --all-user
@@ -2541,64 +2530,56 @@ void Profiler::switchThreadEvents(jvmtiEventMode mode) {
 }
 
 bool Profiler::enablePersistentJvmtiEvents() {
-  // Enable persistent JVMTI events for JVM metadata tracking.
-  // Enabled on the first successful start() and never disabled, surviving
-  // stop/start cycles for the lifetime of the process. Returns false (and
-  // leaves _jvmti_events_enabled unset, so the next start() retries) if any
-  // step failed; every step is idempotent.
+  // Never disabled once on. Each event is enabled, then replayed, on its own,
+  // so one failure blocks no other; a failed step is retried by the next start().
+  struct PersistentEvent {
+    jvmtiEvent event;
+    const char *name;
+    bool needed;
+    bool replay;
+  };
+  // NATIVE_METHOD_BIND is enabled at agent load instead (VM::initProfilerBridge()):
+  // bindings cannot be replayed.
+  const PersistentEvent events[] = {
+      // jmethodID preloading for AsyncGetCallTrace (JVMSupport::loadMethodIDsIfNeeded).
+      {JVMTI_EVENT_CLASS_LOAD, "CLASS_LOAD", true, false},
+      {JVMTI_EVENT_CLASS_PREPARE, "CLASS_PREPARE", true, false},
+      // Stubs and adapters, including HotSpot's bootstrap stubs generated before
+      // any loading mode gets here: call_stub bounds and stub unwind info.
+      {JVMTI_EVENT_DYNAMIC_CODE_GENERATED, "DYNAMIC_CODE_GENERATED", true, true},
+      // JIT-compiled methods, only without CodeHeap (JDK-8173361 workaround).
+      {JVMTI_EVENT_COMPILED_METHOD_LOAD, "COMPILED_METHOD_LOAD",
+       VM::hotspot_version() == 0 || !CodeHeap::available(), true},
+  };
+  static_assert(sizeof(events) / sizeof(events[0]) <= 8, "one bit per event");
+
   jvmtiEnv *jvmti = VM::jvmti();
   bool ok = true;
-  auto check = [&ok](jvmtiError err, const char *what) {
-    if (err != JVMTI_ERROR_NONE) {
-      Log::warn("Persistent JVMTI events: %s failed (error %d); will retry on next start",
-                what, (int)err);
-      ok = false;
+  for (size_t i = 0; i < sizeof(events) / sizeof(events[0]); i++) {
+    const PersistentEvent &e = events[i];
+    const u8 bit = static_cast<u8>(1u << i);
+    if (!e.needed || (_persistent_jvmti_events & bit) != 0) {
+      continue;
     }
-  };
-
-  // CLASS_LOAD/CLASS_PREPARE: Required for jmethodID preloading.
-  // AsyncGetCallTrace needs pre-allocated jmethodIDs (see JVMSupport::loadMethodIDsIfNeeded).
-  check(jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_LOAD, NULL),
-        "enabling CLASS_LOAD");
-  check(jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_PREPARE, NULL),
-        "enabling CLASS_PREPARE");
-
-  // DYNAMIC_CODE_GENERATED: Tracks JIT-generated code (stubs, adapters).
-  check(jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL),
-        "enabling DYNAMIC_CODE_GENERATED");
-
-  // NATIVE_METHOD_BIND is not here: bindings cannot be replayed, so it is
-  // enabled at agent load (VM::initProfilerBridge()).
-
-  // COMPILED_METHOD_LOAD: Tracks JIT-compiled methods (when CodeHeap is not
-  // available; JDK-8173361 workaround otherwise).
-  bool compiled_method_load = VM::hotspot_version() == 0 || !CodeHeap::available();
-  if (compiled_method_load) {
-    check(jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL),
-          "enabling COMPILED_METHOD_LOAD");
+    jvmtiError err = jvmti->SetEventNotificationMode(JVMTI_ENABLE, e.event, NULL);
+    const char *step = "enabling";
+    if (err == JVMTI_ERROR_NONE && e.replay) {
+      err = jvmti->GenerateEvents(e.event);
+      step = "replaying";
+    }
+    if (err != JVMTI_ERROR_NONE) {
+      Log::warn("Persistent JVMTI events: %s %s failed (error %d); will retry on next start",
+                step, e.name, static_cast<int>(err));
+      ok = false;
+      continue;
+    }
+    _persistent_jvmti_events |= bit;
+    if (e.event == JVMTI_EVENT_CLASS_PREPARE) {
+      TEST_LOG("Persistent JVMTI events: CLASS_PREPARE enabled");
+    }
   }
-
-  if (!ok) {
-    return false;
-  }
-  TEST_LOG("Persistent JVMTI events: CLASS_PREPARE enabled");
-
-  // Replay code generated before the events were enabled. Needed in every
-  // loading mode, not just attach: an -agentpath session also enables them
-  // only here, after HotSpot has generated its bootstrap runtime stubs
-  // (call_stub bounds and stub unwind info come from these events).
-  check(jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED),
-        "replaying DYNAMIC_CODE_GENERATED");
-  if (compiled_method_load) {
-    check(jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD),
-          "replaying COMPILED_METHOD_LOAD");
-  }
-
-  if (!ok) {
-    return false;
-  }
-  _jvmti_events_enabled = true;
-  return true;
+  _jvmti_events_enabled = ok;
+  return ok;
 }
 
 Error Profiler::runInternal(Arguments &args, std::ostream &out) {
@@ -2716,8 +2697,9 @@ void Profiler::releaseRecordingMemory() {
   CallTraceBuffer *buffers[CONCURRENCY_LEVEL];
   size_t capacities[CONCURRENCY_LEVEL];
   lockAll();
-  // After this, recordJVMTISample() drops samples resolved against this recording.
-  _recording_generation.fetch_add(1, std::memory_order_relaxed);
+  // Invalidates ids resolved or cached (wall-clock call_trace_id) against the
+  // storage freed below; start() bumps again only once its engines run.
+  __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
   for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
     buffers[i] = _calltrace_buffer[i];
     capacities[i] = _calltrace_buffer_capacity[i];
@@ -2747,11 +2729,9 @@ void Profiler::releaseRecordingMemory() {
   if (!_string_label_map.release()) {
     reportDrainTimeout("String label map not released");
   }
-  // Not _context_value_map: its encodings are cached per thread (the
-  // ProfiledThread tag-encoding sidecar), and a span that stays active across
-  // stop()/start() keeps sampling them until it rewrites its context. Kept,
-  // they stay resolvable: rotate() carries every entry into the next
-  // recording's constant pool. Only a fresh start's clearAll() resets it.
+  // Not _context_value_map: threads cache its encodings (the tag-encoding
+  // sidecar) across stop()/start(); rotate() carries every entry into the next
+  // constant pool, and only a fresh start's clearAll() resets it.
 }
 
 void Profiler::acquireRecordingMemory() {
@@ -2775,12 +2755,9 @@ int Profiler::resetRecordingState() {
     _context_value_dict_reset.store(true, std::memory_order_release);
   }
 
-  // Normally a no-op - stop() and every failed start() release the tables -
-  // but any table still allocated here must be released before
-  // Counters::reset(): it would otherwise stay counted by nothing, and
-  // freeing it at the next stop() would drive LINEAR_ALLOCATOR_BYTES /
-  // CALLTRACE_STORAGE_* negative. start() allocates fresh tables after the
-  // reset (acquireRecordingMemory()). No lockAll(): see releaseRecordingMemory().
+  // Normally a no-op. A table still allocated must go before Counters::reset(),
+  // or freeing it later drives the CALLTRACE_STORAGE_* counters negative.
+  // No lockAll(): see releaseRecordingMemory().
   _call_trace_storage.release();
 
   Counters::reset();

@@ -43,11 +43,9 @@ class LibraryPatcher {
 
 private:
   static SpinLock    _lock;
-  // Set by initialize_persistent(), which Profiler::init() and start() call
-  // (idempotent). Enables pthread_create patching. Read from the
-  // Libraries refresher thread, hence atomic with release/acquire.
-  // Unlike socket patches, pthread_create patches are persistent across
-  // stop/start cycles - they are never unpatched once installed.
+  // Set by initialize_persistent() (Profiler::init() and start()); enables the
+  // pthread_create patching, which is never unpatched. Read by the Libraries
+  // refresher thread, hence release/acquire.
   static std::atomic<bool> _initialized;
   static PatchEntry  _patched_entries[MAX_NATIVE_LIBS];
   static int         _size;

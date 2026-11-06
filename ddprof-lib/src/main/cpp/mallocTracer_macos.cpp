@@ -14,12 +14,9 @@
 #include <dlfcn.h>
 #include <string.h>
 
-// UnloadProtection pins by name only, so it also succeeds after the path was
-// reloaded elsewhere, or as another build at the same base. dladdr() (under
-// dyld's lock, unlike image indexes) must find an image starting at minAddress()
-// with the cache's path and, if recorded, LC_UUID. Call it while pinned.
-// Symbols::parseLibraries() keeps one cache per base, so a rebuilt library
-// reloaded at the same base and path fails the UUID check and is left unhooked.
+// UnloadProtection pins by name only. dladdr() (under dyld's lock) must find an
+// image at minAddress() with the cache's path and, if recorded, LC_UUID, so a
+// rebuild reloaded at the same base is left unhooked. Call it while pinned.
 static bool isCurrentImage(const CodeCache* cc) {
     Dl_info info;
     if (cc->minAddress() == NO_MIN_ADDRESS || dladdr(cc->minAddress(), &info) == 0 ||

@@ -250,15 +250,12 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
     JNIEnv *env, jclass unused, jlong rootSpanId, jstring endpoint,
     jstring operation, jint sizeLimit) {
   Profiler *profiler = Profiler::instance();
-  // Nothing records the event while idle (no JFR recording), and interning
-  // the endpoint would allocate the string-label dictionary stop() released.
-  // Answer what an empty dictionary would: accepted if the limit admits any
-  // entry.
+  // Idle: nothing records the event, and interning would re-allocate the
+  // dictionary stop() released. Answer as an empty dictionary would.
   const jboolean idle_answer = sizeLimit > 0 ? JNI_TRUE : JNI_FALSE;
   // JNI work stays outside the locked region (it can block for a safepoint).
-  // A null endpoint (no JNI call, nothing pending) would intern "" as the
-  // label; a failed copy leaves an exception pending. Both reject the call,
-  // before the idle check so the answer does not depend on the state.
+  // A null endpoint (would intern "") or a failed copy (exception pending)
+  // rejects the call, before the idle check so the answer is state-independent.
   JniString endpoint_str(env, endpoint);
   if (endpoint_str.c_str() == nullptr) {
     return JNI_FALSE;
@@ -321,14 +318,22 @@ Java_com_datadoghq_profiler_JavaProfiler_getDebugCounters0(JNIEnv *env,
 extern "C" DLLEXPORT jobjectArray JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_describeNativeMemCategories0(
     JNIEnv *env, jclass unused) {
-  jobjectArray array = env->NewObjectArray(
-      NM_NUM_CATEGORIES, env->FindClass("java/lang/String"), nullptr);
+  // Each failure returns with its exception pending, for the Java caller.
+  jclass string_class = env->FindClass("java/lang/String");
+  if (string_class == nullptr) {
+    return nullptr;
+  }
+  jobjectArray array = env->NewObjectArray(NM_NUM_CATEGORIES, string_class, nullptr);
   if (array == nullptr) {
     return nullptr;
   }
   for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
-    env->SetObjectArrayElement(
-        array, c, env->NewStringUTF(NativeMem::categoryName(static_cast<NativeMemCategory>(c))));
+    jstring name = env->NewStringUTF(NativeMem::categoryName(static_cast<NativeMemCategory>(c)));
+    if (name == nullptr) {
+      return nullptr;
+    }
+    env->SetObjectArrayElement(array, c, name);
+    env->DeleteLocalRef(name);
   }
   return array;
 }
@@ -413,9 +418,8 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     return;
   }
   // JNI work stays outside the locked region (it can block for a safepoint).
-  // A failed GetStringUTFChars leaves an exception pending, and JNI forbids
-  // further calls, so each copy is checked before the next one. Names are
-  // non-null here, so a null c_str() always means a failed copy.
+  // A failed copy leaves an exception pending, which forbids further JNI
+  // calls: check each before the next. Names are non-null here.
   JniString task_str(env, task);
   if (task_str.c_str() == nullptr) {
     return;

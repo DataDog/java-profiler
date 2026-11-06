@@ -55,9 +55,11 @@ bool CTimer::_enabled = false;
 int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
-  if (tid < 0 || tid >= _max_timers) {
+  // Acquire: sizeTimerTable() may publish a table without a freeze.
+  int max_timers = __atomic_load_n(&_max_timers, __ATOMIC_ACQUIRE);
+  if (tid < 0 || tid >= max_timers) {
     Log::warn("tid[%d] > pid_max[%d]. Restart profiler after changing pid_max",
-              tid, _max_timers);
+              tid, max_timers);
     return -1;
   }
 
@@ -120,7 +122,7 @@ int CTimer::registerThread(int tid) {
 }
 
 void CTimer::unregisterThread(int tid) {
-  if (tid < 0 || tid >= _max_timers) {
+  if (tid < 0 || tid >= __atomic_load_n(&_max_timers, __ATOMIC_ACQUIRE)) {
     return;
   }
   // Atomic acquire to avoid possible leak when unregistering
@@ -133,9 +135,9 @@ void CTimer::unregisterThread(int tid) {
 }
 
 // Sizes the tid-indexed timer table and accounts it under NM_CTIMER. Called
-// from sizeTimerTable() under a Profiler::ThreadTablesFreeze, so no
-// thread-hook call (pthread hook or JVMTI ThreadStart/ThreadEnd) can be inside
-// the table while it is replaced.
+// from sizeTimerTable(), under a Profiler::ThreadTablesFreeze when it replaces
+// a table. The size is stored last, with release, so a hook call that sees it
+// also sees the table.
 //
 // On allocation failure the table is left empty (_max_timers == 0), so the tid
 // bound checks reject every tid instead of indexing a NULL table, and the next
@@ -147,25 +149,29 @@ bool CTimer::resizeTimers(int max_timers) {
   }
   free(_timers);
   NativeMem::record(NM_CTIMER, -(long long)((size_t)_max_timers * sizeof(int)));
+  _max_timers = 0;
   _timers = (int *)calloc(max_timers, sizeof(int));
   if (_timers == NULL) {
-    _max_timers = 0;
     return false;
   }
-  _max_timers = max_timers;
+  __atomic_store_n(&_max_timers, max_timers, __ATOMIC_RELEASE);
   NativeMem::record(NM_CTIMER, (long long)((size_t)max_timers * sizeof(int)));
   return true;
 }
 
-// stop() frees the table (releaseTimerTable()), so a start() normally
-// allocates it again under a freeze; exits during that freeze are recorded and
-// replayed after the thread listing. A table stop() had to keep is reused when
-// pid_max is unchanged, without a freeze. If a hook call is still inside the
-// table after the wait budget, start() fails and keeps the old table; whether a
-// later start() can succeed depends on the stuck call (see
-// Profiler::startCpuEngine()).
+// Only replacing a table needs a freeze; a kept table with an unchanged
+// pid_max is reused. If a hook call is still inside the table after the wait
+// budget, start() fails and keeps it (see Profiler::startCpuEngine()).
 Error CTimer::sizeTimerTable(int max_timers) {
   if (max_timers == _max_timers) {
+    return Error::OK;
+  }
+  if (_timers == NULL) {
+    // stop() freed it: hook calls see _max_timers == 0 and touch nothing, so
+    // allocating needs no freeze, which a thread-churning app could stall.
+    if (!resizeTimers(max_timers)) {
+      return Error("Failed to allocate CPU timer table");
+    }
     return Error::OK;
   }
   Profiler::ThreadTablesFreeze freeze(Profiler::instance());

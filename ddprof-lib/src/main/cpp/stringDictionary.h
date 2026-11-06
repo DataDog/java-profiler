@@ -64,9 +64,8 @@ struct SBTable {
 // use.  release() frees it too.  Either must only be called when no
 // concurrent alloc() calls are in flight.
 //
-// The first chunk is allocated on the first alloc(), not at construction, and
-// again on the first alloc() after release(), so an arena nothing writes to
-// holds no memory.
+// The first chunk is allocated by the first alloc() (after construction or
+// release()), so an arena nothing writes to holds no memory.
 class StringArena {
     static constexpr size_t CHUNK_SIZE = 512 * 1024;
 
@@ -122,10 +121,9 @@ class StringArena {
         }
     }
 
-    // alloc() found no active chunk: either none was allocated yet (fresh or
-    // released arena), or growing failed (OOM, latched until reset()).  In the
-    // former case allocate the first chunk; a failure there is retried by the
-    // next alloc().  Returns the active chunk, or nullptr on OOM.
+    // No active chunk: none yet (fresh or released arena), which this
+    // allocates (a failure is retried by the next alloc()), or a growth OOM
+    // latched until reset(). Returns the active chunk, or nullptr on OOM.
     Chunk* acquireFirstChunk() {
         lockGrowing();
         Chunk* c = _active.load(std::memory_order_relaxed);
@@ -278,9 +276,8 @@ public:
 // clear() and destruction.  This makes clear() O(number-of-overflow-nodes)
 // rather than O(number-of-entries), and eliminates per-key malloc/free.
 //
-// The root table is allocated by the first insert, not at construction, and
-// again by the first insert after release(), so a buffer nothing writes to
-// holds no memory.  Concurrent first inserts race a CAS to publish it.
+// The root table is allocated by the first insert (after construction or
+// release()); concurrent first inserts race a CAS to publish it.
 //
 // Concurrency model:
 //   - Inserts (insert_with_id, copyFrom): CAS on keys[c] to claim a slot.
@@ -1028,14 +1025,9 @@ public:
         return resetBuffers(false);
     }
 
-    // Like clearAll(), but frees all storage - root tables and arena chunks
-    // included - so the dictionary holds no memory until something inserts
-    // again, which allocates on demand.  It stays open: a caller racing the
-    // release, or one that looks keys up while the profiler is idle, still
-    // gets ids.  Unlike clearAll() the id counter is NOT
-    // restarted, so an id handed out before the release cannot alias a key
-    // inserted after it.  Returns false, leaving the dictionary unchanged, if
-    // the drain times out; the caller reports it.
+    // Like clearAll() but frees all storage, and keeps the id counter so an
+    // id from before cannot alias a later key; it stays open for inserts.
+    // Returns false, leaving it unchanged, if the drain times out.
     [[nodiscard]] bool release() {
         return resetBuffers(true);
     }

@@ -539,22 +539,16 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // VM_DEATH: Always needed for cleanup
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
 
-  // NATIVE_METHOD_BIND: must be on from agent load. A native binds once, and
-  // binding events cannot be replayed with GenerateEvents(), so a binding made
-  // before the first start() (VMInit's HeapUsage::initJMXUsage() binds
-  // getMemoryUsage0) would otherwise never reach VMStructs::NativeMethodBind.
+  // NATIVE_METHOD_BIND from agent load: a native binds once and bindings
+  // cannot be replayed, so one made before the first start() (getMemoryUsage0)
+  // would never reach VMStructs::NativeMethodBind.
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, NULL);
 
-  // The other persistent JVMTI events (CLASS_LOAD, CLASS_PREPARE,
-  // DYNAMIC_CODE_GENERATED, COMPILED_METHOD_LOAD) are enabled on first start()
-  // via Profiler::enablePersistentJvmtiEvents(), which replays the code
-  // generated before then.
+  // The other persistent events are enabled, and replayed, by start()
+  // (Profiler::enablePersistentJvmtiEvents()).
 
-  // DebugNonSafepoints: set at agent load on every HotSpot, so methods compiled
-  // before the first start() get non-safepoint debug info too. Enabling
-  // COMPILED_METHOD_LOAD would also turn it on, but that event is only enabled
-  // on the first start() (and only where CodeHeap is unavailable), and its
-  // GenerateEvents() replay cannot add debug info to code compiled before then.
+  // DebugNonSafepoints at agent load, so code compiled before the first start()
+  // has the debug info too: COMPILED_METHOD_LOAD's replay cannot add it later.
   // VMFlag::find() returns NULL when the flag table was not resolved.
   if (isHotspot()) {
     VMFlag* f = VMFlag::find("DebugNonSafepoints", {VMFlag::Type::Bool});

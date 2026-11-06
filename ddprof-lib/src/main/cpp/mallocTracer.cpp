@@ -271,12 +271,9 @@ void MallocHooker::patchSlot(CodeCache* cc, void** location, void* hook_fn, void
     if (cc == nullptr || location == nullptr || orig_fn == nullptr) return;
 
     void* current = __atomic_load_n(location, __ATOMIC_ACQUIRE);
-    // A slot still holding our hook was patched by an earlier recording whose
-    // restore could not reach it (its library was not verifiably live at
-    // stop()). Such entries are kept (keepUnrestoredEntries()): if this slot is
-    // one of them, it is already tracked with its true original, which is not
-    // always the resolved malloc (a lazy-binding PLT stub, or another
-    // interposer's wrapper).
+    // Still our hook: an earlier restore could not reach it. Its kept entry
+    // (keepUnrestoredEntries()) has the true original, which may be a PLT stub
+    // or another interposer's wrapper rather than the resolved malloc.
     const bool rehook = current == hook_fn;
     if (rehook) {
         for (int i = 0; i < _entry_count; i++) {

@@ -175,6 +175,28 @@ TEST_F(LibraryPatcherPatching, StillPatchesForeignPthreadCreateSlot) {
   EXPECT_EQ(before + 1, LibraryPatcherTestAccessor::patchedCount());
 }
 
+// A library that both calls pthread_create through its PLT (JUMP_SLOT) and takes
+// its address (GLOB_DAT) has two slots; a thread created through either must go
+// through the hook, under a single entry.
+TEST_F(LibraryPatcherPatching, PatchesBothPthreadCreateSlots) {
+  void* const original = (void*)&fake_original_pthread_create;
+  void* jump_slot = original;
+  void* glob_dat = original;
+
+  CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                /* imports_patchable */ true);
+  lib.addImport(&jump_slot, "pthread_create");
+  lib.addImport(&glob_dat, "pthread_create");
+  ASSERT_EQ(&glob_dat, lib.findImport(im_pthread_create, SECONDARY));
+
+  int before = LibraryPatcherTestAccessor::patchedCount();
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_NE(original, jump_slot);
+  EXPECT_EQ(jump_slot, glob_dat);
+  EXPECT_EQ(before + 1, LibraryPatcherTestAccessor::patchedCount());
+}
+
 // With the entry table full, a further library is not recorded, so it is left
 // unhooked rather than patched without a way to recheck it.
 TEST_F(LibraryPatcherPatching, LeavesSlotUnhookedWhenEntryTableIsFull) {

@@ -125,10 +125,9 @@ public:
     // Requires put() to be excluded for the duration (see the class comment).
     void clear();
 
-    // Frees all three tables and the processTraces() collections. Tolerates a
-    // concurrent put() (each table is unpublished, then drained, then deleted);
-    // not concurrent with processTraces() or acquire(). put() then drops its
-    // trace until acquire(); processTraces() sees only the dropped placeholder.
+    // Frees all three tables and the processTraces() collections. A concurrent
+    // put() drops its trace (each table is unpublished, drained, deleted); not
+    // concurrent with processTraces() or acquire().
     void release();
 
     // Allocates the tables again after release(); no-op if allocated.

@@ -200,10 +200,9 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
  * It is not designed to be called concurrently with itself.
  */
 void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> processor) {
-    // Released (or never acquired): nothing to rotate. Hand the processor the
-    // dropped-trace placeholder alone, in a local set, so a chunk written
-    // without a recording (tests write standalone chunks) neither crashes nor
-    // makes the idle storage allocate its collections again.
+    // Released or never acquired: hand the processor only the dropped-trace
+    // placeholder, in a local set, so a chunk written while idle does not
+    // re-allocate the collections.
     if (__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE) == nullptr) {
         CallTraceSet traces;
         traces.insert(getDroppedTrace());
