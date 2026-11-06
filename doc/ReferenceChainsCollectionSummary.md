@@ -6,9 +6,11 @@
 
 Reference-chain collection helps explain why a sampled object remains live. It records a bounded chain of referrer classes from a GC root to a sampled object. It does not replace a heap dump or compute an exact retained set.
 
-The profiler disables this feature by default. Enable generation tracking and reference-chain
-collection with `generations=true,referencechains=true`. The bare `referencechains=true` option
-does not activate the allocation engine that supplies candidates.
+The profiler disables this feature by default. Enable generation tracking or liveheap tracking
+(either supplies the leak signal; liveheap requires `referencechains=true` in the same command)
+together with reference-chain collection, e.g. `generations=true,referencechains=true`. The bare
+`referencechains=true` option does not activate the allocation engine that supplies candidates,
+and without a signal source the collector stays idle: it never starts a search.
 
 ## Data flow
 
@@ -38,7 +40,7 @@ Candidate selection uses sampled objects. It can miss a leak when sampling does 
 
 Each pass can perform these operations:
 
-1. Enumerate roots and stack references. The first pass always does this. Later passes retry a truncated enumeration or wait at least two seconds.
+1. Enumerate roots and stack references. The first pass always does this. Later passes wait at least two seconds since the last attempt - extended by the last attempt's measured in-safepoint cost - truncated attempts included; a pass whose enumeration truncated ends after the enumeration.
 2. Walk candidate thread objects when the candidate data identifies qualifying threads.
 3. Scan static fields in chunks when the loaded-class count changes.
 4. Expand a batch of frontier entries.

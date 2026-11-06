@@ -11,6 +11,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 
+import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfiler;
 
 import static org.junit.jupiter.api.Assertions.fail;
@@ -41,6 +42,10 @@ public class ShutdownTest {
     runTest(profiler, "start,cpu=10us,wall=~10us,filter=0");
   }
 
+  /**
+   * Stops the profiler, retrying the documented-retryable "did not drain" outcome per
+   * {@link AbstractProfilerTest#stopRetryingOnDrainTimeout}.
+   */
   private static void runTest(JavaProfiler profiler, String command) throws IOException {
     Path rootDir = Paths.get("/tmp/recordings");
     Files.createDirectories(rootDir);
@@ -60,7 +65,7 @@ public class ShutdownTest {
               } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
               } finally {
-                profiler.stop();
+                AbstractProfilerTest.stopRetryingOnDrainTimeout(profiler);
               }
             } catch (Throwable error) {
               errors.offer(error);

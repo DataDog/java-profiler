@@ -14,6 +14,7 @@
 
 #include <deque>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 #include "classTagAllocator.h"
@@ -53,6 +54,8 @@ public:
         ClassTagAllocator::resetForTest();
         t->_search_started = false;
         t->_tags_released = true;
+        t->_root_enum_incomplete = false;
+        t->_consecutive_enum_errors = 0;
         t->_search_state = SearchState::RUNNING;
         t->_abandon_reason = SearchAbandonReason::NONE;
         t->_search_start_ns = 0;
@@ -69,7 +72,6 @@ public:
         t->_static_anchor_fifo_set.clear();
         t->_static_anchor_fifo_klass_counts.clear();
         t->_static_anchor_fresh_queue.clear();
-        t->_last_pass_gc_finish_epoch = 0;
         t->_last_pass_ns = 0;
         t->_passes_run = 0;
         t->_passes_since_last_progress = 0;
@@ -129,6 +131,16 @@ public:
         return ReferenceChainTracker::instance()->shouldRunPass(now_ns);
     }
 
+    // Projection-taking overloads: threadLoop()'s single per-iteration secondsToOOM() read is
+    // passed through instead of re-read.
+    static bool canAffordNewSearch(u64 now_ns, double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->canAffordNewSearch(now_ns, seconds_to_oom);
+    }
+
+    static bool shouldRunPass(u64 now_ns, double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->shouldRunPass(now_ns, seconds_to_oom);
+    }
+
     static void setSearchPainMs(u64 ms) {
         ReferenceChainTracker::instance()->_search_pain_ms = ms;
     }
@@ -175,11 +187,53 @@ public:
     static int urgentReleaseTicksForTest() {
         return ReferenceChainTracker::instance()->urgentReleaseTicksForTest();
     }
-    static bool urgentSearchSpentForTest() {
-        return ReferenceChainTracker::instance()->urgentSearchSpentForTest();
-    }
     static void resetUrgencyForTest() {
         ReferenceChainTracker::instance()->resetUrgencyForTest();
+    }
+    // Urgent-admission growth gate: updateUrgentAdmission()'s urgent admission
+    // decision (referenceChains.cpp; re-evaluated only when a new heap-floor
+    // sample arrives, retained between samples) - the admission half of threadLoop()'s
+    // ramp handling, testable without the BFS thread.
+    static bool updateUrgentAdmissionForTest(double seconds_to_oom, bool urgent) {
+        return ReferenceChainTracker::instance()->updateUrgentAdmission(seconds_to_oom,
+                                                                        urgent);
+    }
+    // updateUrgentAdmission()'s freshness pair (referenceChains.h): the
+    // heap-floor seq the ramp-band gate last evaluated, and that evaluation's
+    // retained result.
+    static u64 admissionSampleSeqForTest() {
+        return ReferenceChainTracker::instance()->_admission_sample_seq;
+    }
+    static bool admissionDecisionForTest() {
+        return ReferenceChainTracker::instance()->_admission_decision;
+    }
+    // updateUrgentAdmission()'s emergency-band seed anchor: the newest heap-floor
+    // sample captured at emergency-band entry (referenceChains.cpp), or 0 (the
+    // unseeded sentinel) while no seed has been taken.
+    static u64 admissionGrowthBaselineForTest() {
+        return ReferenceChainTracker::instance()->_admission_growth_baseline;
+    }
+    // True while the BFS thread (startThread()/threadLoop()) is live. start() never spawns it
+    // (only startThread() does - profiler.cpp and the JNI-only resetSearchStateForTest()), so
+    // gtests may drive BFS-thread-only seams after start(); tests that rely on that assert this
+    // is false.
+    static bool bfsThreadRunning() {
+        return ReferenceChainTracker::instance()->_running.load(std::memory_order_acquire);
+    }
+    // threadLoop()'s publish step: ramp flag + the latch machine (once per
+    // iteration on the caller's projection) + growth-gated tracking boost.
+    static void publishUrgencyStateForTest(double seconds_to_oom, bool urgent) {
+        ReferenceChainTracker::instance()->publishUrgencyState(seconds_to_oom, urgent);
+    }
+    static bool oomRampActiveForTest() {
+        return ReferenceChainTracker::instance()->_oom_ramp_active;
+    }
+    // Projection-taking urgency decisions (consume the passed value, never re-read).
+    static bool isUrgentWithProjectionForTest(double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->isUrgent(seconds_to_oom);
+    }
+    static bool hasLeakSignalForTest(double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->hasLeakSignal(seconds_to_oom);
     }
     // Applied vs configured CPU pain-budget refill rate (shouldRunPass()'s
     // canary-refill raise).
@@ -194,6 +248,14 @@ public:
     }
     static void setSearchStartedForTest(bool v) {
         ReferenceChainTracker::instance()->setSearchStartedForTest(v);
+    }
+
+    // Backdates the previous pass's end so the minimum-spacing gate stays open while a test
+    // exercises one authorization lane (canary backoff, GC epoch) in isolation. Goes through the
+    // tracker seam (engine lock + store(), ordered with any pass); a real pass can still overwrite
+    // the seed between seed and assert - tests retry, same as forceRunningSearchForTest().
+    static void setLastPassNsForTest(u64 ns) {
+        ReferenceChainTracker::instance()->setLastPassNsForTest(ns);
     }
 
     static u64 searchPainMs() {
@@ -370,15 +432,18 @@ public:
 
     // Recording-boundary tests: seed a latched urgency episode (the state the OOM-projection
     // machine leaves behind) without driving LivenessTracker's heap-floor history.
-    static void setUrgencyEpisodeForTest(bool latched, int ticks, bool spent) {
+    static void setUrgencyEpisodeForTest(bool latched, int ticks) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         t->_urgent_latched = latched;
         t->_urgent_release_ticks = ticks;
-        t->_urgent_search_spent = spent;
     }
 
     static u64 searchStartNsForTest() {
         return ReferenceChainTracker::instance()->_search_start_ns;
+    }
+
+    static void setConsecutiveEnumErrorsForTest(u32 n) {
+        ReferenceChainTracker::instance()->_consecutive_enum_errors = n;
     }
 
     static size_t pendingAbandonedEventCountForTest() {
@@ -604,6 +669,102 @@ public:
 
     static u64 baselineCadenceNs() { return ReferenceChainTracker::PASS_CADENCE_NS; }
 
+    static u64 urgentCadenceNsForTest() {
+        return ReferenceChainTracker::URGENT_CADENCE_NS;
+    }
+
+    // threadLoop()'s OOM ramp (applyOomRamp()), drivable without the BFS thread.
+    static bool applyOomRampForTest(double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->applyOomRamp(seconds_to_oom);
+    }
+
+    // Every scheduling field an urgency episode (applyOomRamp()) mutates or a test seeds to drive
+    // it - cadence, budget + boost flag, configured budget, configured/effective pause target, the
+    // pause PidController and the search-running state the cadence ramp keys on - so a test can
+    // restore the singleton exactly as it found it. Field order is fixed for aggregate init.
+    struct OomRampState {
+        u64 cadence_ns;
+        int budget;
+        bool budget_boosted;
+        int configured_budget;
+        long pause_target_ms;
+        long effective_pause_target_ms;
+        PidController pause_pid;
+        bool search_started;
+        u8 search_state;
+    };
+    static OomRampState saveOomRampStateForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        return {t->_effective_cadence_ns, t->_budget, t->_urgency_budget_boosted,
+                t->_configured_budget, t->_pause_target_ms, t->_effective_pause_target_ms,
+                t->_pause_pid, t->_search_started, t->_search_state};
+    }
+    static void restoreOomRampStateForTest(const OomRampState &state) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_effective_cadence_ns = state.cadence_ns;
+        t->_budget = state.budget;
+        t->_urgency_budget_boosted = state.budget_boosted;
+        t->_configured_budget = state.configured_budget;
+        t->_pause_target_ms = state.pause_target_ms;
+        t->_effective_pause_target_ms = state.effective_pause_target_ms;
+        t->_pause_pid = state.pause_pid;
+        t->_search_started = state.search_started;
+        t->_search_state = state.search_state;
+    }
+    // applyOomRamp() ramps the cadence only while a search is running: seeds a started RUNNING
+    // search (running) or a started COMPLETED one awaiting a restart (!running).
+    static void setSearchRunningForTest(bool running) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_search_started = true;
+        t->_search_state = running ? SearchState::RUNNING : SearchState::COMPLETED;
+    }
+    // The state restartSearch() and a fresh tracker leave: not started, RUNNING.
+    static void setSearchNotStartedForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_search_started = false;
+        t->_search_state = SearchState::RUNNING;
+    }
+
+    // Urgency-episode budget state (applyOomRamp()'s boost/restore, stop()'s closer).
+    static int budgetForTest() { return ReferenceChainTracker::instance()->_budget; }
+    static int configuredBudgetForTest() {
+        return ReferenceChainTracker::instance()->_configured_budget;
+    }
+    static bool urgencyBudgetBoostedForTest() {
+        return ReferenceChainTracker::instance()->_urgency_budget_boosted;
+    }
+    // Seeds a closed episode with a known budget ceiling (the singleton may never have been
+    // start()ed); callers wanting equal values pass the same value twice.
+    static void setBudgetsForTest(int budget, int configured) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_budget = budget;
+        t->_configured_budget = configured;
+        t->_urgency_budget_boosted = false;
+    }
+
+    // applyOomRamp()'s pause-target ramp.
+    static long effectivePauseTargetMsForTest() {
+        return ReferenceChainTracker::instance()->_effective_pause_target_ms;
+    }
+    static long urgentPauseTargetMsForTest() {
+        return ReferenceChainTracker::URGENT_PAUSE_TARGET_MS;
+    }
+    static void setPauseTargetsForTest(long configured_ms) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_pause_target_ms = configured_ms;
+        t->_effective_pause_target_ms = configured_ms;
+    }
+
+    static u64 minEffectiveCadenceNs() {
+        return ReferenceChainTracker::MIN_EFFECTIVE_CADENCE_NS;
+    }
+
+    // shouldRunPass()'s fixed minimum pass-spacing floor (referenceChains.h) - see the
+    // shouldRunPass pacing law comment there.
+    static u64 minPassSpacingNs() {
+        return ReferenceChainTracker::MIN_PASS_SPACING_NS;
+    }
+
     // Start the controller from a chosen below-ceiling/above-baseline point with a fresh
     // _pause_pid, so a prior sequence's integral windup cannot leak into per-step assertions.
     static void setEffectiveBudget(int v) {
@@ -616,6 +777,37 @@ public:
 
     static void resetPacingController() {
         ReferenceChainTracker::instance()->_pause_pid.reset();
+    }
+
+    // Root-enumeration raw state (shouldRunRootEnum()'s inputs) at exact values - unlike the
+    // tracker's setRootEnumStateForTest(), which derives the timestamp from OS::nanotime() and
+    // so cannot pin a boundary. Engine lock held (static accessor: take it explicitly). Returns
+    // the previous pair so the caller can restore it - the fixture reset does not zero these.
+    static std::pair<u64, u64> setRootEnumRawStateForTest(u64 last_enum_ns, u64 cost_ms) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        MutexLocker engine_guard(t->_engine_lock);
+        std::pair<u64, u64> prev(t->_last_root_enum_ns, t->_last_root_enum_safepoint_ms);
+        t->_last_root_enum_ns = last_enum_ns;
+        t->_last_root_enum_safepoint_ms = cost_ms;
+        return prev;
+    }
+
+    static std::pair<u64, u64> rootEnumRawStateForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        MutexLocker engine_guard(t->_engine_lock);
+        return std::pair<u64, u64>(t->_last_root_enum_ns, t->_last_root_enum_safepoint_ms);
+    }
+
+    static u64 rootEnumMinIntervalNs() { return ReferenceChainTracker::ROOT_ENUM_MIN_INTERVAL_NS; }
+    static u64 rootEnumNsPerCostMs() {
+        return ReferenceChainTracker::ROOT_ENUM_INTERVAL_NS_PER_COST_MS;
+    }
+    static u64 rootEnumMaxIntervalNs() { return ReferenceChainTracker::ROOT_ENUM_MAX_INTERVAL_NS; }
+
+    // Live GC-finish epoch (relaxed atomic) - save/restore it; the fixture reset does not touch
+    // _gc_finish_epoch (only GC callbacks advance it).
+    static void setGcFinishEpochForTest(u64 v) {
+        store(ReferenceChainTracker::instance()->_gc_finish_epoch, v);
     }
 
     // Budget-borrowing (see _borrowed_budget in referenceChains.h).

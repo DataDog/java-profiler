@@ -145,8 +145,12 @@ void ReferenceChainTracker::appendStaticFieldRootType(
 
 void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
   if (!enabled() || jvmti == nullptr || jni == nullptr ||
-      !LivenessTracker::instance()->gcGenerationsEnabled()) {
-    // Avoid candidate-table work when generation tracking is disabled.
+      !LivenessTracker::instance()->leakSignalEnabled()) {
+    // Avoid candidate-table work when no leak-signal source (generations or
+    // liveheap tracking) is active: the population table stays empty, so
+    // selectLeakCandidates() below would always return 0 anyway. Must match
+    // hasLeakSignal()'s gate - a search legitimately started on a liveheap
+    // source still needs its candidates polled here.
     return;
   }
 

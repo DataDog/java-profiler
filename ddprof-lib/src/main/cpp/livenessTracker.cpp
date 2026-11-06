@@ -162,9 +162,10 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
                                     bool account_epoch) {
   u64 current = load(_last_gc_epoch);
   u64 target_gc_epoch = load(_gc_epoch);
-  TEST_LOG_SUMMARY("LivenessTracker::cleanup_table forced=%d gc_generations=%d current_epoch=%llu "
+  TEST_LOG_SUMMARY("LivenessTracker::cleanup_table forced=%d leak_signal=%d gc_generations=%d current_epoch=%llu "
            "target_epoch=%llu table_size=%d",
-           forced, _gc_generations.load(std::memory_order_relaxed), (unsigned long long)current,
+           forced, _leak_signal_enabled.load(std::memory_order_acquire),
+           _gc_generations.load(std::memory_order_relaxed), (unsigned long long)current,
            (unsigned long long)target_gc_epoch, _table_size);
 
   // is_epoch_owner is true iff this call is the one that moves _last_gc_epoch
@@ -275,12 +276,14 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
           }
         }
 
-        if (_gc_generations.load(std::memory_order_relaxed) && is_epoch_owner) {
+        if (_leak_signal_enabled.load(std::memory_order_acquire) && is_epoch_owner) {
           // Per-klass population tracking (design doc's Open Question 3) -
-          // gated on _gc_generations so this new cost is paid only when the
-          // caller actually asked for generation/survival-shaped data
-          // (Arguments::_gc_generations), not for every liveness-tracking
-          // session. Gated on is_epoch_owner (not !forced) so a forced
+          // gated on the effective leak-signal availability: generations
+          // tracking and liveheap tracking drive the same mechanisms, so the
+          // cost is paid whenever either option is on. With both off there is
+          // no consumer for the data (the reference-chain collector stays
+          // idle, hasLeakSignal() -> false), and paying it would be pure
+          // overhead. Gated on is_epoch_owner (not !forced) so a forced
           // (table-overflow) sweep still contributes one population sample
           // per genuinely new GC epoch instead of silently dropping it.
           // Reuse an already-resolved id first so the per-sweep budget is
@@ -359,7 +362,7 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve,
                1.0f * (end - start) / 1000 / 1000,
                1.0f * (end - start) / 1000 / sz);
   }
-  if (_gc_generations.load(std::memory_order_relaxed) && is_epoch_owner) {
+  if (_leak_signal_enabled.load(std::memory_order_acquire) && is_epoch_owner) {
     // Outside the `sz > 0` block: a sweep that finds the table already empty
     // still owns this epoch. foldKlassCountsLocked() records zero population
     // samples for klasses whose every tracked instance died (they never
@@ -1489,6 +1492,62 @@ void LivenessTracker::recordTidTrendSamplesLocked(
   }
 }
 
+u64 LivenessTracker::newestHeapFloorSample(u64 *seq_out) const {
+  // Per-slot seqlock read: the slot's seq validates the payload below it
+  // (writer: recordHeapFloorSampleUnchecked()). Bounded retry, never a torn
+  // (used, seq) pair.
+  for (int attempt = 0; attempt < HEAP_FLOOR_READ_ATTEMPTS; attempt++) {
+    // Acquire pairs with the writer's head/fill release stores; it makes the
+    // payload of every slot the indices name visible.
+    u8 fill = loadAcquire(_heap_floor_ring_fill);
+    u8 head = loadAcquire(_heap_floor_ring_head);
+    if (fill == 0) {
+      if (seq_out != nullptr) {
+        *seq_out = 0;
+      }
+      return 0;
+    }
+    // head points one past the newest slot: the claim-first writer advances
+    // head when it claims the index, before the payload/seq publish, so the
+    // newest slot can transiently hold the sentinel (retry) and otherwise
+    // carries the newest published sample - step back one, wrapping over the
+    // ring size.
+    u8 newest = (u8)((head + KLASS_POPULATION_RING_SIZE - 1) %
+                    KLASS_POPULATION_RING_SIZE);
+    u64 seq_before = loadAcquire(_heap_floor_seq_ring[newest]);
+    if (seq_before == HEAP_FLOOR_SEQ_UNSTABLE) {
+      continue;  // a writer holds the slot; retry on a later attempt
+    }
+    u64 used = load(_heap_floor_ring[newest]);
+#ifdef DEBUG
+    if (_heap_floor_read_hook_for_test != nullptr) {
+      _heap_floor_read_hook_for_test(_heap_floor_read_hook_arg_for_test);
+    }
+#endif
+    // The acquire fence orders the relaxed seq re-load below after the
+    // payload load above; an unchanged re-load rules out an overwrite only
+    // on x86-TSO (store order) and arm64 (other-multi-copy atomicity plus
+    // the writer's release fence), not from the C++ abstract model alone.
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    u64 seq_after = load(_heap_floor_seq_ring[newest]);
+    if (seq_before == seq_after) {
+      if (seq_out != nullptr) {
+        *seq_out = seq_before;
+      }
+      return used;
+    }
+  }
+  // No consistent pair within the bound: the sentinel tells the admission
+  // gate "no new sample this pass" - it must not consume an unevaluated seq.
+  // Counted once per exhausted read (lock-free, no logging) so a persistently
+  // frozen admission gate is diagnosable.
+  Counters::increment(HEAP_FLOOR_READ_UNSTABLE);
+  if (seq_out != nullptr) {
+    *seq_out = HEAP_FLOOR_SEQ_UNSTABLE;
+  }
+  return 0;
+}
+
 void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns, u64 container_used) {
   TEST_LOG("LivenessTracker::recordHeapFloorSample called used=%llu disabled=%d",
            (unsigned long long)used,
@@ -1509,26 +1568,92 @@ void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns,
   // Lock-free, single-writer-at-a-time - see _heap_floor_ring's own comment
   // (livenessTracker.h) for why onGC() cannot take _table_lock here.
   //
-  // Standard SPSC publish order: the payload is a plain store, and the index
-  // that gates which slots are valid is what carries the release. A reader
-  // that loadAcquire()s the index is then guaranteed to see this payload
-  // write too, since it precedes the index's storeRelease() in program
-  // order and a release store cannot be reordered before an earlier store.
-  // (The previous version had this backwards - storeRelease() on the
-  // payload with a plain store on the index - which does not establish any
-  // ordering between "the index says this slot is valid" and "the payload
-  // for that slot is visible".) _heap_floor_time_ring's and
-  // _container_mem_ring's payload writes below are plain stores for the
-  // same reason - they precede the same storeRelease() in program order.
-  u8 head = load(_heap_floor_ring_head);
+  // Claim the slot index through head FIRST: winning the CAS on
+  // _heap_floor_ring_head (h -> h+1) hands this writer slot h exclusively -
+  // no other writer can target it until the ring wraps RING_SIZE claims
+  // later - and advances head BEFORE any payload byte moves. Advancing head
+  // after the seq publish instead would let a second writer, loading the
+  // not-yet-advanced head, take the just-published seq as its claim
+  // baseline and overwrite the completed sample.
+  u8 head;
+  for (;;) {
+    head = loadAcquire(_heap_floor_ring_head);
+    if (__atomic_compare_exchange_n(&_heap_floor_ring_head, &head,
+                                    (u8)((head + 1) % KLASS_POPULATION_RING_SIZE),
+                                    false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+      break;
+    }
+    // Lost the head race - another writer claimed slot `head`; retry with
+    // the new head (GC-callback context: bounded contention, no blocking).
+  }
+  // We own slot `head`. Its seq holds the previous occupant's sample (a
+  // stale valid value, written RING_SIZE samples ago) - or the sentinel if
+  // a lapped writer is still mid-write on it, which requires RING_SIZE
+  // concurrent in-flight writers and is impossible while the single-writer
+  // contract holds (GC callbacks are serialized). Claim the seq word for
+  // the payload stores: the sentinel marks the write in progress for
+  // concurrent readers - newestHeapFloorSample() retries on it, and the
+  // window readers (heapFloorRising()/secondsToOOM()) end their window
+  // before it (heapFloorWindowHead()). The window readers check only the
+  // newest slot, so they rely on the single-writer contract's "at most one
+  // slot in flight". Keep the drop as the lap's defensive
+  // guard - counted, silent (GC-callback context) - but do not build on it:
+  // the dropped sample leaves this slot at the sentinel until the ring wraps
+  // back around, degrading the newest read in the meantime.
+  u64 prev = load(_heap_floor_seq_ring[head]);
+  if (prev == HEAP_FLOOR_SEQ_UNSTABLE ||
+      !__atomic_compare_exchange_n(&_heap_floor_seq_ring[head], &prev,
+                                    HEAP_FLOOR_SEQ_UNSTABLE, false,
+                                    __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+    Counters::increment(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP);
+    return;
+  }
+  // Release fence: orders the sentinel claim before the payload stores (the
+  // release seq store alone orders the payloads before the seq), pairing
+  // with the reader's acquire fence - its seq re-load is relaxed.
+  __atomic_thread_fence(__ATOMIC_RELEASE);
   store(_heap_floor_ring[head], used);
   store(_heap_floor_time_ring[head], timestamp_ns);
   store(_container_mem_ring[head], container_used);
-  storeRelease(_heap_floor_ring_head, (u8)((head + 1) % KLASS_POPULATION_RING_SIZE));
-  u8 fill = load(_heap_floor_ring_fill);
-  if (fill < KLASS_POPULATION_RING_SIZE) {
-    storeRelease(_heap_floor_ring_fill, (u8)(fill + 1));
+  // Atomic bump: seq uniqueness holds even under overlapping writers.
+  // Relaxed suffices - the seq is published only by the release store below.
+  u64 seq = __atomic_add_fetch(&_heap_floor_sample_seq, (u64)1, __ATOMIC_RELAXED);
+  storeRelease(_heap_floor_seq_ring[head], seq);
+  // Saturating CAS increment: a plain load/store pair would lose an
+  // increment to an overlapping writer, leaving fill below the number of
+  // published samples. Release on success publishes this sample's payload
+  // to readers that acquire-load fill.
+  u8 fill = loadAcquire(_heap_floor_ring_fill);
+  while (fill < KLASS_POPULATION_RING_SIZE &&
+         !__atomic_compare_exchange_n(&_heap_floor_ring_fill, &fill,
+                                      (u8)(fill + 1), false,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
   }
+}
+
+// The heap-floor window's exclusive end for ringWindowStats(): head, stepped
+// back one slot when the newest slot is still in-flight (seq sentinel). The
+// claim-first writer (recordHeapFloorSampleUnchecked()) advances head before
+// the payload/seq publish, so the newest slot can be in-flight; the window
+// must end at the last published sample. Benign race with the publish: the
+// window then just excludes the freshest sample (stale-but-consistent values)
+// instead of spanning the in-flight slot. Single-writer contract: at most one
+// slot can be in-flight, and it is always head-1.
+// On a step-back *fill is clamped to RING_SIZE-1: a full ring's window would
+// otherwise start at (newest - RING_SIZE) == newest and read the in-flight
+// slot as its oldest sample. A non-full fill needs no clamp - the writer
+// increments fill only after the seq publish, so it never counts the
+// in-flight slot.
+u8 LivenessTracker::heapFloorWindowHead(u8 head, u8 *fill) const {
+  u8 newest = (u8)((head + KLASS_POPULATION_RING_SIZE - 1) %
+                   KLASS_POPULATION_RING_SIZE);
+  if (loadAcquire(_heap_floor_seq_ring[newest]) == HEAP_FLOOR_SEQ_UNSTABLE) {
+    if (*fill > KLASS_POPULATION_RING_SIZE - 1) {
+      *fill = (u8)(KLASS_POPULATION_RING_SIZE - 1);
+    }
+    return newest;
+  }
+  return head;
 }
 
 bool LivenessTracker::heapFloorRising() const {
@@ -1536,9 +1661,15 @@ bool LivenessTracker::heapFloorRising() const {
   // loadAcquire() here is what makes the payload writes below visible.
   u8 fill = loadAcquire(_heap_floor_ring_fill);
   u8 head = loadAcquire(_heap_floor_ring_head);
+  // The claim-first writer advances head before the payload/seq publish, so
+  // the newest slot can be in-flight (seq sentinel); end the window at the
+  // last published sample instead. Benign race: the writer may publish right
+  // after the check - the window then just excludes the freshest sample
+  // (stale-but-consistent values) rather than spanning the in-flight slot.
+  u8 window_head = heapFloorWindowHead(head, &fill);
   RingWindowStats stats;
   if (!ringWindowStats(
-          head, fill, KLASS_POPULATION_RING_SIZE,
+          window_head, fill, KLASS_POPULATION_RING_SIZE,
           KLASS_POPULATION_MIN_FILL_FOR_TREND,
           [this](int i) { return (double)load(_heap_floor_ring[i]); },
           &stats)) {
@@ -1586,9 +1717,20 @@ double LivenessTracker::secondsToOOM() const {
   jlong max_heap = _max_heap_bytes;
   jlong container_limit = _container_memory_limit;
 #endif
-  if (!_gc_generations.load(std::memory_order_relaxed) || max_heap <= 0) {
-    TEST_LOG("LivenessTracker::secondsToOOM -> -1 (gc_generations=%d max_heap=%lld)",
-             (int)_gc_generations.load(std::memory_order_relaxed), (long long)max_heap);
+  if (!_leak_signal_enabled.load(std::memory_order_acquire) || max_heap <= 0) {
+    TEST_LOG("LivenessTracker::secondsToOOM -> -1 (leak_signal=%d max_heap=%lld)",
+             (int)_leak_signal_enabled.load(std::memory_order_acquire), (long long)max_heap);
+    return -1;
+  }
+  // Age-based burn-in (see OOM_PROJECTION_BURN_IN_NS): no projection until the
+  // leak signal has been active for the full burn-in, independent of how much
+  // wall-clock time the heap-floor ring happens to span. The subtraction is
+  // modular; production stamps are always <= now.
+  u64 activated_ns = _leak_signal_activated_ns.load(std::memory_order_acquire);
+  u64 since_ns = OS::nanotime() - activated_ns;
+  if (activated_ns == 0 || since_ns < OOM_PROJECTION_BURN_IN_NS) {
+    TEST_LOG("LivenessTracker::secondsToOOM -> -1 (BURN_IN activated_ns=%llu since_ns=%llu)",
+             (unsigned long long)activated_ns, (unsigned long long)since_ns);
     return -1;
   }
 
@@ -1604,6 +1746,9 @@ double LivenessTracker::secondsToOOM() const {
   // its projection simply does not fire.
   u8 fill = loadAcquire(_heap_floor_ring_fill);
   u8 head = loadAcquire(_heap_floor_ring_head);
+  // Same in-flight-slot step-back as heapFloorRising(): the claim-first writer
+  // can have head one past an unpublished slot.
+  u8 window_head = heapFloorWindowHead(head, &fill);
   if (fill < KLASS_POPULATION_MIN_FILL_FOR_TREND) {
     TEST_LOG("LivenessTracker::secondsToOOM -> -1 (INSUFFICIENT_FILL fill=%d need=%d)",
              (int)fill, KLASS_POPULATION_MIN_FILL_FOR_TREND);
@@ -1611,7 +1756,7 @@ double LivenessTracker::secondsToOOM() const {
   }
   RingWindowStats time_stats;
   if (!ringWindowStats(
-          head, fill, KLASS_POPULATION_RING_SIZE,
+          window_head, fill, KLASS_POPULATION_RING_SIZE,
           KLASS_POPULATION_MIN_FILL_FOR_TREND,
           [this](int i) { return (double)load(_heap_floor_time_ring[i]); },
           &time_stats)) {
@@ -1630,11 +1775,11 @@ double LivenessTracker::secondsToOOM() const {
 
   RingWindowStats heap_bytes;
   if (max_heap > 0 &&
-      ringWindowStats(head, fill, KLASS_POPULATION_RING_SIZE,
+      ringWindowStats(window_head, fill, KLASS_POPULATION_RING_SIZE,
                       KLASS_POPULATION_MIN_FILL_FOR_TREND,
                       [this](int i) { return (double)load(_heap_floor_ring[i]); },
                       &heap_bytes) &&
-      corroborateRecentHalf(head, fill, KLASS_POPULATION_RING_SIZE,
+      corroborateRecentHalf(window_head, fill, KLASS_POPULATION_RING_SIZE,
                             HEAP_FLOOR_RECENT_HALF_MIN_FILL,
                             [this](int i) { return (double)load(_heap_floor_ring[i]); })) {
     // A dip-then-recover window passes corroborateRecentHalf() but can have a
@@ -1655,11 +1800,11 @@ double LivenessTracker::secondsToOOM() const {
 
   RingWindowStats container_bytes;
   if (container_limit > 0 &&
-      ringWindowStats(head, fill, KLASS_POPULATION_RING_SIZE,
+      ringWindowStats(window_head, fill, KLASS_POPULATION_RING_SIZE,
                       KLASS_POPULATION_MIN_FILL_FOR_TREND,
                       [this](int i) { return (double)load(_container_mem_ring[i]); },
                       &container_bytes) &&
-      corroborateRecentHalf(head, fill, KLASS_POPULATION_RING_SIZE,
+      corroborateRecentHalf(window_head, fill, KLASS_POPULATION_RING_SIZE,
                             HEAP_FLOOR_RECENT_HALF_MIN_FILL,
                             [this](int i) { return (double)load(_container_mem_ring[i]); })) {
     // Same guard as for the heap.
@@ -1951,7 +2096,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
       int class_id = 0;
       if (_table[i].cached_klass_id != 0 && class_map_generation_matches) {
         // Already resolved by cleanup_table()'s survivor loop this epoch
-        // (resolveKlassId(), only when _gc_generations is enabled) - reuse
+        // (resolveKlassId(), only when leak-signal tracking is enabled) - reuse
         // it instead of repeating the resolution JNI round-trip for the same
         // object.
         class_id = _table[i].cached_klass_id;
@@ -2036,6 +2181,7 @@ Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
 void LivenessTracker::resetSession() {
   _enabled = false;
   _gc_generations.store(false, std::memory_order_relaxed);
+  _leak_signal_enabled.store(false, std::memory_order_release);
 }
 
 Error LivenessTracker::start(Arguments &args) {
@@ -2110,13 +2256,17 @@ void LivenessTracker::stop() {
 Error LivenessTracker::initialize(Arguments &args) {
   _enabled = args._gc_generations || args._record_liveness;
 
-  // Gates per-klass population tracking (see the _gc_generations member's
-  // own comment in livenessTracker.h). Updated unconditionally alongside
-  // _record_heap_usage below, ahead of the _initialized guard, for the same
-  // reason: each profiler start should observe the flag it was actually
-  // started with, even though the tracking table itself persists across
-  // recordings.
+  // Gates per-klass population tracking (see the _gc_generations and
+  // _leak_signal_enabled members' own comments in livenessTracker.h). Updated
+  // unconditionally alongside _record_heap_usage below, ahead of the
+  // _initialized guard, for the same reason: each profiler start should
+  // observe the flag it was actually started with, even though the tracking
+  // table itself persists across recordings.
   _gc_generations.store(args._gc_generations, std::memory_order_relaxed);
+  // See _leak_signal_enabled's comment for the derivation and the ordering rationale.
+  _leak_signal_enabled.store(args._gc_generations
+                                 || (args._record_liveness && args._reference_chains),
+                             std::memory_order_release);
 
   if (!_enabled) {
     return Error::OK;
@@ -2135,6 +2285,20 @@ Error LivenessTracker::initialize(Arguments &args) {
   // recording's unrelated allocations at 100 percent.
   __atomic_store_n(&_watched_tid_count, 0, __ATOMIC_RELEASE);
   __atomic_store_n(&_urgent_tracking, false, __ATOMIC_RELEASE);
+
+  // First effective leak-signal activation stamps the burn-in clock (see
+  // _leak_signal_activated_ns). _enabled (generations || liveness) is coarser
+  // than the leak signal (generations || (liveness && referencechains)): a
+  // plain liveheap start must not stamp, or a later recording that enables
+  // reference chains would inherit an already-expired burn-in. CAS from 0:
+  // later starts never re-stamp it. Stays ahead of the _initialized early
+  // return so the first signal-on start after earlier non-signal starts can
+  // still stamp.
+  if (_leak_signal_enabled.load(std::memory_order_acquire)) {
+    u64 never_activated = 0;
+    _leak_signal_activated_ns.compare_exchange_strong(
+        never_activated, OS::nanotime(), std::memory_order_release, std::memory_order_relaxed);
+  }
 
   if (_initialized) {
     // if the tracker was previously initialized return the stored result for
@@ -2494,7 +2658,7 @@ retry:
 }
 
 void LivenessTracker::maybeForceCleanup(u64 now_ns) {
-  if (!_enabled || !_gc_generations.load(std::memory_order_relaxed)) {
+  if (!_enabled || !_leak_signal_enabled.load(std::memory_order_acquire)) {
     return;
   }
   constexpr u64 FORCE_CLEANUP_INTERVAL_NS = 30ULL * 1000 * 1000 * 1000;
@@ -2550,10 +2714,11 @@ void LivenessTracker::onGC() {
     store(_used_after_last_gc, HeapUsage::get(false)._used);
   }
 
-  if (_gc_generations.load(std::memory_order_relaxed)) {
+  if (_leak_signal_enabled.load(std::memory_order_acquire)) {
     // Feeds heapFloorRising()'s corroboration check (selectLeakCandidates())
-    // - gated on _gc_generations, same as the per-klass population table
-    // itself, since this ring exists purely to support that feature.
+    // - gated on the effective leak-signal availability, same as the
+    // per-klass population table itself, since this ring exists purely to
+    // support that feature.
     // recordHeapFloorSample() itself checks _heap_floor_recording_disabled_for_test
     // (debug-only) so a test can seed the ring exclusively.
     size_t used = resolvePostGcHeapUsage(nullptr);

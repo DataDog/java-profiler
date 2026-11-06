@@ -7,7 +7,7 @@
       "Bash(awk:*)",
       "Bash(sed:*)",
       "Bash(python3:*)",
-      "Bash(./gradlew:*)",
+      "Bash(./.claude/commands/build-and-summarize:*)",
       "Bash(sh:*)",
       "Bash(ls:*)",
       "Bash(date:*)",
@@ -21,6 +21,21 @@
     ]
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "h=\"$CLAUDE_PROJECT_DIR/.claude/hooks/require-fresh-review.py\"; [ -f \"$h\" ] || exit 0; exec python3 \"$h\""
+          },
+          {
+            "type": "command",
+            "command": "h=\"$CLAUDE_PROJECT_DIR/.claude/hooks/require-gradle-wrapper.py\"; [ -f \"$h\" ] || exit 0; exec python3 \"$h\""
+          }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [

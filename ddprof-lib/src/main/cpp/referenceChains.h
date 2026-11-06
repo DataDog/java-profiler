@@ -147,8 +147,10 @@ private:
   // End-of-pass timestamp of the last pass that ran with a canary chase still open (the reference
   // point for the spacing above).
   u64 _last_canary_pass_ns;
-  // Whether threadLoop()'s OOM urgency ramp is currently active, set each loop iteration BEFORE
-  // shouldRunPass() (same thread, no atomics needed).
+  // Whether threadLoop()'s OOM urgency ramp is currently active, set each loop iteration by
+  // publishUrgencyState() BEFORE shouldRunPass() (same BFS thread), and otherwise only by test
+  // seams (setOomRampActiveForTest(), publishUrgencyStateForTest()) while no BFS thread is live -
+  // no atomics needed.
   bool _oom_ramp_active;
 
   // How many consecutive times in a row runPass()'s canary-stuck check
@@ -270,7 +272,11 @@ private:
   // against, replacing the fixed PASS_CADENCE_NS constant below in that role once updatePacing()
   // starts adjusting it - see PASS_CADENCE_NS's own comment for why that constant survives as this
   // field's starting value rather than being deleted outright.
-  u64 _effective_cadence_ns;
+  // Written by the BFS thread (threadLoop()'s urgency ramp, outside _engine_lock) and by
+  // runPass()/updatePacing() and test seams on other threads: every access that can overlap
+  // another thread's goes through arch.h load()/store(). Plain access only where the BFS thread
+  // is not running (start(), resetSearchStateForTest()).
+  volatile u64 _effective_cadence_ns;
 
   // Budget-borrowing: extra headroom updatePacing() has temporarily granted above _budget's own
   // ceiling, earned by a sustained run of comfortably- under-target passes (see
@@ -331,19 +337,59 @@ private:
   // failure must NOT be treated as "released".
   bool _tags_released;
 
-  // Whether threadLoop()'s urgency ramp currently holds the multiplied _budget (see the urgency
-  // block there and _configured_budget's own comment).
+  // Whether the urgency episode (applyOomRamp()) currently holds the multiplied _budget. The
+  // episode has two closers, both restoring _budget = _configured_budget and
+  // _effective_cadence_ns = PASS_CADENCE_NS together with this flag: applyOomRamp()'s first
+  // non-urgent iteration (BFS thread), and stop() after stopThread() has joined the BFS thread
+  // (recording boundary). start() reseeds all three. BFS-thread-only otherwise; no atomics
+  // (see _configured_budget's own comment).
   bool _urgency_budget_boosted;
 
   // Hysteresis state behind isUrgent().
   mutable bool _urgent_latched;
   mutable int _urgent_release_ticks;
-  mutable bool _urgent_search_spent;
 
   // Set (once) at the same point runPass() moves _search_state to ABANDONED - see
   // SearchAbandonReason's own comment for why this exists and buildAbandonedEvent()/abandonReason()
   // below for how it is read.
   volatile u8 _abandon_reason;
+
+  // CONSTRAINT (urgent-admission growth gate): the heap-floor projection is a
+  // least-squares regression over a 30-sample window, so a single spike sample
+  // keeps the projection inside the ramp band for ~6-7 recovery GCs AFTER the
+  // heap has physically stopped growing - band residence alone does not
+  // establish growth. updateUrgentAdmission() therefore admits the 100%
+  // tracking boost only while a newer heap-floor sample grows past the
+  // running baseline: every admitted sample raises it (a plateau loses the
+  // boost, a recovered spike never passes it), and the emergency band seeds
+  // the same baseline at entry so the ramp-band comparison stays continuous.
+  // The ramp-band comparison is evaluated once per NEW heap-floor sample (one
+  // per GC); the decision is retained until the next sample arrives (see
+  // _admission_sample_seq/_admission_decision below).
+  // Written and read by updateUrgentAdmission() on the BFS thread (threadLoop()
+  // via publishUrgencyState()); also reset - together with
+  // _admission_sample_seq/_admission_decision - by stop() and resetSearchStateForTest()
+  // (both only after stopThread() has joined the BFS thread) and by test seams
+  // (resetUrgencyForTest(), updateUrgentAdmissionForTest(),
+  // publishUrgencyStateForTest()) that run only while no BFS thread is live -
+  // so there is no concurrent access and no atomics are needed.
+  // 0 = no baseline for the current episode (a used value of 0 cannot be a
+  // real sample: onGC() only records used > 0).
+  u64 _admission_growth_baseline;
+  // Sample-freshness companions of _admission_growth_baseline, same owner and
+  // same no-atomics argument (BFS thread; reset only with no BFS thread live).
+  // _admission_sample_seq is the LivenessTracker heap-floor sequence number
+  // (newestHeapFloorSample(&seq)) of the sample the ramp-band gate last
+  // evaluated (0 = none this episode; an unstable read reports
+  // HEAP_FLOOR_SEQ_UNSTABLE, which is held on, never stored here);
+  // _admission_decision is that evaluation's result. threadLoop() runs far
+  // more often than GCs record
+  // samples, so updateUrgentAdmission() re-evaluates only when a NEW sample
+  // arrives and otherwise returns the retained decision - re-comparing the
+  // same sample against the baseline it just raised would turn every admitted
+  // growth sample into a one-iteration pulse.
+  u64 _admission_sample_seq;
+  bool _admission_decision;
 
   // Wall-clock timestamp (OS::nanotime()) of the search's first pass - baseline for the TTL cutoff
   // above.
@@ -599,9 +645,6 @@ private:
   // re-queues - see that method's own comment.
   static constexpr int LEAK_ACCUMULATION_ROTATION_BUDGET = 16;
 
-  // Snapshot of gcFinishEpoch() as of the end of the last pass.
-  u64 _last_pass_gc_finish_epoch;
-
   // OS::nanotime() as of the end of the last pass. Written by runPass() on the BFS thread; also
   // read cross-thread by buildAbandonedEvent()'s elapsed-time calculation, so
   // volatile/load()-accessed like _search_state above.
@@ -666,11 +709,13 @@ private:
   // Fallback cadence between passes.
   static constexpr u64 PASS_CADENCE_NS = 1000000000ULL; // 1s
 
-  // Heap-wide time-to-OOM urgency threshold (LivenessTracker::secondsToOOM()) - hasLeakSignal()
-  // below forces a search to start immediately once the projection drops under this, rather than
-  // waiting for a klass to clear selectLeakCandidates()'s own per-klass ring-fill/hysteresis gate
-  // (KLASS_POPULATION_MIN_FILL_FOR_TREND plus LEAK_TREND_HYSTERESIS_BASE/ CORROBORATED epochs,
-  // livenessTracker.h).
+  // Heap-wide time-to-OOM urgency threshold (LivenessTracker::secondsToOOM()). It has two uses:
+  // (a) isUrgent()'s latch threshold (released via OOM_URGENT_RELEASE_S below); the latch is
+  //     consumed by runPass()'s no-progress abandonment branch, which it suppresses while latched;
+  // (b) updateUrgentAdmission()'s emergency band - a real (non-negative) projection below it -
+  //     where tracking admission goes to 100% without heap-growth evidence.
+  // It never authorizes starting a search - urgency never stands in for
+  // selectLeakCandidates()'s per-klass gate (see hasLeakSignal()).
   static constexpr double OOM_URGENT_THRESHOLD_S = 300.0; // 5 minutes
 
   // Release side of OOM_URGENT_THRESHOLD_S's hysteresis (see _urgent_latched).
@@ -696,8 +741,18 @@ private:
   static constexpr int AUTO_FIRST_PASS_BUDGET_CAP = 200000;
 
   // Minimum wall-clock gap between root/stack-ref enumeration attempts (runPassManualWalk()'s
-  // IterateOverReachableObjects call) after the search's own first pass.
+  // IterateOverReachableObjects call). Every attempt deoptimizes every compiled frame holding a
+  // scalar-replaced object (one VM_DeoptimizeFrame each, re-created by the JIT between attempts),
+  // so a truncated attempt must never retry on the very next pass.
   static constexpr u64 ROOT_ENUM_MIN_INTERVAL_NS = 2000000000ULL; // 2s
+
+  // Interval extension per millisecond of measured in-safepoint cost of the last attempt: an
+  // attempt that held the VM for 100ms pushes the next one out by a further 2s; the cap bounds it.
+  static constexpr u64 ROOT_ENUM_INTERVAL_NS_PER_COST_MS = 20000000ULL; // 20ms per cost ms
+
+  // Upper bound: only enumeration admits new threads and JNI globals, so an expensive attempt
+  // stretches the interval but never disables it.
+  static constexpr u64 ROOT_ENUM_MAX_INTERVAL_NS = 30000000000ULL; // 30s
 
   // Pause-time pacing controller: bounds and conversion constants for updatePacing()'s
   // budget/cadence adjustment - see that method's own comment for the full mechanism.
@@ -706,6 +761,11 @@ private:
   // Bounds for _effective_cadence_ns. The lower bound is not 0: threadLoop() sleeps for exactly
   // this many nanoseconds each loop iteration (below), so a true 0 would busy-loop the BFS thread.
   static constexpr u64 MIN_EFFECTIVE_CADENCE_NS = 10000000ULL;      // 10ms
+
+  // Fixed minimum spacing between passes, independent of updatePacing()'s output: the controller
+  // paces each pass's pause LENGTH, not the pass RATE - without this floor a cheap expansion pass
+  // relaxes _effective_cadence_ns to MIN_EFFECTIVE_CADENCE_NS and admits ~100 safepointing passes/s.
+  static constexpr u64 MIN_PASS_SPACING_NS = 100000000ULL; // 100ms
   static constexpr u64 MAX_EFFECTIVE_CADENCE_NS = PASS_CADENCE_NS * 4; // 4s
 
   // Conversion factor from "edges of budget signal updatePacing()'s clamp could not absorb" to a
@@ -755,12 +815,21 @@ private:
   // first pass).
   u64 _last_root_enum_ns = 0;
 
-  // Set true when the most recent root/stack-ref enumeration attempt ended via BUDGET_EXHAUSTED
-  // (not FRONTIER_CAP_HIT, which stops admitting new frontier entries but leaves the search RUNNING
-  // - see runPass()'s frontier_cap_hit handling) - runPass() treats this as grounds to retry root
-  // enumeration on the very next pass regardless of ROOT_ENUM_MIN_INTERVAL_NS, so a
-  // still-incomplete attempt is not left waiting out the full interval before continuing.
-  bool _root_enum_truncated_last_time = false;
+  // In-safepoint milliseconds spent inside the most recent root/stack-ref enumeration attempt,
+  // including the unconditional all-thread EA deoptimization the JVM performs before its heap
+  // walk (see ROOT_ENUM_MIN_INTERVAL_NS's comment). Extends the next attempt's interval floor
+  // (rootEnumIntervalFloorNs()); 0 until the first attempt completes.
+  u64 _last_root_enum_safepoint_ms = 0;
+
+  // Set when a root/stack-ref enumeration attempt ends truncated or errored: unenumerated roots
+  // may still hold reachable chains. Cleared on a completed attempt, by restartSearch(), and by
+  // resetSearchStateForTest(); runPass()'s termination ladder treats it as pending frontier.
+  bool _root_enum_incomplete = false;
+
+  // Consecutive root-enumeration attempts ended by a JVMTI error; reset by any successful
+  // attempt, restartSearch(), and resetSearchStateForTest(). At MAX_CONSECUTIVE_ENUM_ERRORS the
+  // ladder abandons the search (ROOT_ENUM_ERROR) - the only bound when ttl=0.
+  u32 _consecutive_enum_errors = 0;
 
   ReferenceChainTracker()
       : _enabled(false),
@@ -781,11 +850,12 @@ private:
         _effective_budget(0), _effective_cadence_ns(PASS_CADENCE_NS),
         _pause_pid(1, 1.0, 1.0, 1.0, 1, 1.0), _search_started(false),
         _tags_released(true), _urgent_latched(false),
-        _urgent_release_ticks(0), _urgent_search_spent(false),
+        _urgent_release_ticks(0),
         _urgency_budget_boosted(false), _configured_budget(0),
+        _admission_growth_baseline(0), _admission_sample_seq(0), _admission_decision(false),
         _search_state(SearchState::RUNNING),
         _abandon_reason(SearchAbandonReason::NONE), _search_start_ns(0),
-        _last_pass_gc_finish_epoch(0), _last_pass_ns(0),
+        _last_pass_ns(0),
         _passes_run(0),
         _root_kind_rotation_cursor(1),
         _stale_expanded_rotation_cursor(1),
@@ -805,22 +875,81 @@ private:
   }
   void threadLoop();
 
-  // Runs a pass when the GC-finish epoch advanced or the cadence elapsed.
+  // Runs a pass when the GC-finish epoch advanced or the cadence elapsed. The two-arg form
+  // consumes the caller's per-iteration OOM projection (threadLoop()'s single secondsToOOM()
+  // read, passed down to the restart gate and the urgency latch so every decision of one
+  // iteration sees the same sample); the one-arg form reads secondsToOOM() once and forwards
+  // (JNI shouldRunPassForTest(), gtest accessors). Both authorizations are subject to the
+  // minimum pass spacing in shouldRunPass() - see its own comment.
   bool shouldRunPass(u64 now_ns);
+  bool shouldRunPass(u64 now_ns, double seconds_to_oom);
+
+  // Wall-clock interval the next root/stack-ref enumeration attempt must wait out since
+  // _last_root_enum_ns: ROOT_ENUM_MIN_INTERVAL_NS extended by the measured in-safepoint cost of
+  // the last attempt (ROOT_ENUM_INTERVAL_NS_PER_COST_MS), capped at ROOT_ENUM_MAX_INTERVAL_NS.
+  u64 rootEnumIntervalFloorNs() const;
+
+  // Whether runPassManualWalk() should run root/stack-ref enumeration this pass: always on the
+  // search's first pass, otherwise only once rootEnumIntervalFloorNs() above has elapsed since
+  // _last_root_enum_ns, the last attempt (truncated attempts included - see
+  // ROOT_ENUM_MIN_INTERVAL_NS's comment for why retries get no fast lane).
+  bool shouldRunRootEnum(u64 now_ns, bool manual_first_pass) const;
 
   // Cheap probe (max=1, not the real poll pollWatchedTargets() makes) into LivenessTracker's
   // population-trend table: true if at least one klass shows a positive population slope worth
-  // chasing.
-  bool hasLeakSignal();
+  // chasing. Always false when no leak-signal source (generations or liveheap tracking) is
+  // active - the population table and heap-floor ring never fill without one, and a search
+  // would run whole-heap BFS passes with zero candidates for zero diagnostic value.
+  // seconds_to_oom is the caller's projection: used only for the gate's debug/test log
+  // (TEST_LOG_SUMMARY); it does not affect the decision - the urgency latch was already
+  // advanced once per iteration in publishUrgencyState(), and hasLeakSignal() reads it
+  // (_urgent_latched) read-only, never re-reading secondsToOOM().
+  bool hasLeakSignal(double seconds_to_oom);
 
   // Latched, hysteretic view of LivenessTracker::secondsToOOM() crossing OOM_URGENT_THRESHOLD_S -
-  // see _urgent_latched for the latch/release rules and why the raw comparison flaps.
-  bool isUrgent() const;
+  // see _urgent_latched for the latch/release rules and why the raw comparison flaps. The machine
+  // runs once per iteration in publishUrgencyState() on the caller's projection; runPass() and
+  // hasLeakSignal() consume it read-only via urgencyLatched().
+  bool isUrgent(double seconds_to_oom) const;
+  // Read-only view of the latch (see isUrgent()).
+  bool urgencyLatched() const { return _urgent_latched; }
+
+  // Computes the 100% tracking-admission decision. Outside the emergency band
+  // the decision is re-evaluated only when a new heap-floor sample arrives and
+  // is retained between samples (threadLoop() iterates far more often than GCs
+  // record samples); maintains _admission_growth_baseline,
+  // _admission_sample_seq and _admission_decision. Raw `urgent` still
+  // drives the budget/cadence ramp; admission alone is additionally gated on
+  // heap growth evidence outside the emergency band - see
+  // _admission_growth_baseline's comment for why band residence is not
+  // sufficient, and OOM_URGENT_THRESHOLD_S for the emergency split.
+  bool updateUrgentAdmission(double seconds_to_oom, bool urgent);
+
+  // Shared urgency/admission reset (stop()/resetSearchStateForTest()/resetUrgencyForTest()) and
+  // episode close - see the definitions in referenceChains.cpp.
+  void resetUrgencyState();
+  void closeUrgencyEpisode();
+
+  // Publishes one threadLoop() iteration's urgency: _oom_ramp_active follows the raw band
+  // (`urgent`) for shouldRunPass()'s canary-backoff bypass; LivenessTracker's 100% tracking boost
+  // (setUrgentTracking()) follows updateUrgentAdmission()'s growth-gated decision, never raw
+  // `urgent`. Extracted from threadLoop() so the wiring is testable without a BFS thread.
+  void publishUrgencyState(double seconds_to_oom, bool urgent);
+
+  // threadLoop()'s per-iteration OOM ramp: pause target, cadence and the urgency budget
+  // boost/restore, keyed on the raw band comparison (never the latch). The cadence ramps only while
+  // a search is running; an urgent iteration with no search running holds PASS_CADENCE_NS. Returns
+  // that raw `urgent` so the caller needs no second evaluation.
+  bool applyOomRamp(double seconds_to_oom);
 
   // Search restart gate: true once _safepoint_pain_budget has
-  // drained back to zero (canStartNow()) *and* hasLeakSignal() above reports at least one leak
-  // candidate.
+  // drained back to zero (canStartNow()) *and* the root-enum interval floor
+  // (rootEnumIntervalFloorNs(), measured from _last_root_enum_ns; waived while it is still 0) has
+  // elapsed *and* hasLeakSignal() above reports at least one leak
+  // candidate. The two-arg form consumes the caller's projection; the one-arg form reads
+  // secondsToOOM() once and forwards.
   bool canAffordNewSearch(u64 now_ns);
+  bool canAffordNewSearch(u64 now_ns, double seconds_to_oom);
 
   // Resets every per-search field back to its just-constructed value so the next runPass() call
   // takes the "first pass of a search" branch again, exactly like a fresh ReferenceChainTracker
@@ -1162,6 +1291,10 @@ public:
   // (genuinely stuck, not just slow).
   static constexpr int NO_PROGRESS_PASS_LIMIT = 30;
 
+  // Consecutive errored root-enum attempts the ladder tolerates before abandoning (ROOT_ENUM_ERROR)
+  // - bounds a persistently failing IterateOverReachableObjects even with ttl=0.
+  static constexpr u32 MAX_CONSECUTIVE_ENUM_ERRORS = 3;
+
   // Base limit for the canary-specific stuck detector: candidate-discovery must show no progress
   // (no change to _candidate_found_bits, no new candidate admitted into a slot) for this many
   // consecutive passes AND the whole-graph frontier must also have stalled for
@@ -1234,19 +1367,70 @@ public:
   int passesSinceLastCandidateProgressForTest() const { return _passes_since_last_candidate_progress; }
   int canaryStuckRestartCountForTest() const { return _canary_stuck_restart_count; }
   void setCandidateFoundBitsForTest(u64 bits) { _candidate_found_bits = bits; }
-  void setSearchStartedForTest(bool v) { _search_started = v; }
+  // Engine lock serializes with shouldRunPass()/runPass(); the BFS thread also touches
+  // _effective_cadence_ns outside the lock (threadLoop()'s urgency ramp and logs), so both fields
+  // use store()/load() everywhere they can overlap. While urgent the ramp overwrites a seeded
+  // cadence, which is why tests retry their seeds.
+  void setPassSpacingForTest(u64 ms_since_last_pass, u64 cadence_ms) {
+    MutexLocker engine_guard(_engine_lock);
+    store(_last_pass_ns, OS::nanotime() - ms_since_last_pass * 1000000ULL);
+    store(_effective_cadence_ns, cadence_ms * 1000000ULL);
+  }
+  // Raw-value sibling of setPassSpacingForTest() (same lock/store discipline - see its comment):
+  // places the previous pass's end at an absolute OS::nanotime() value.
+  void setLastPassNsForTest(u64 ns) {
+    MutexLocker engine_guard(_engine_lock);
+    store(_last_pass_ns, ns);
+  }
+  // Seeds shouldRunRootEnum()'s inputs. Engine lock held: both fields are otherwise
+  // BFS-thread-owned (runPassManualWalk()). Negative ms_since_last_enum clamps to 0 (never ran).
+  void setRootEnumStateForTest(long ms_since_last_enum, u64 last_enum_cost_ms) {
+    MutexLocker engine_guard(_engine_lock);
+    _last_root_enum_ns = ms_since_last_enum < 0
+        ? 0
+        : OS::nanotime() - (u64)ms_since_last_enum * 1000000ULL;
+    _last_root_enum_safepoint_ms = last_enum_cost_ms;
+  }
+  bool shouldRunRootEnumForTest(u64 now_ns, bool manual_first_pass) const {
+    MutexLocker engine_guard(_engine_lock);
+    return shouldRunRootEnum(now_ns, manual_first_pass);
+  }
+  u64 rootEnumIntervalFloorNsForTest() const {
+    MutexLocker engine_guard(_engine_lock);
+    return rootEnumIntervalFloorNs();
+  }
+  // Engine lock is the happens-before edge: every reader of _candidate_count/_candidate_found_bits
+  // runs under _engine_lock (shouldRunPass(), runPass()/runPassSerialized(), pollWatchedTargets()),
+  // so the plain writes need no atomics.
+  void setCanaryChaseStateForTest(int candidate_count, u64 found_bits) {
+    MutexLocker engine_guard(_engine_lock);
+    _candidate_count = candidate_count;
+    _candidate_found_bits = found_bits;
+  }
+  void setSearchStartedForTest(bool v) {
+    MutexLocker engine_guard(_engine_lock);
+    _search_started = v;
+  }
+  // Forces a started, RUNNING search with fresh pain budgets so shouldRunPassForTest() evaluates
+  // the running-search gates deterministically; a concurrently passing BFS thread can still drive
+  // the real search terminal in the seed-to-call window - tests retry the seed.
+  // _tags_released stays untouched: the terminal transition recomputes it from releaseSearchTags();
+  // forcing it true could let restartSearch() rewind _next_tag over live tags.
+  void forceRunningSearchForTest() {
+    MutexLocker engine_guard(_engine_lock);
+    _search_started = true;
+    store(_search_state, (u8)SearchState::RUNNING);
+    store(_abandon_reason, (u8)SearchAbandonReason::NONE);
+    _cpu_pain_budget = PainBudget(_pain_budget_refill_rate);
+    _search_pain_ms = 0;
+  }
   // OOM-urgency hysteresis state (isUrgent()'s latch/release machine,
   // referenceChains.cpp): tests drive it via isUrgentForTest() and assert on
-  // the raw latch/tick/entitlement reads.
-  bool isUrgentForTest() const { return isUrgent(); }
+  // the raw latch/tick reads.
+  bool isUrgentForTest() const;
   bool urgentLatchedForTest() const { return _urgent_latched; }
   int urgentReleaseTicksForTest() const { return _urgent_release_ticks; }
-  bool urgentSearchSpentForTest() const { return _urgent_search_spent; }
-  void resetUrgencyForTest() {
-    _urgent_latched = false;
-    _urgent_release_ticks = 0;
-    _urgent_search_spent = false;
-  }
+  void resetUrgencyForTest() { resetUrgencyState(); }
   // Applied vs configured CPU pain-budget refill rate: shouldRunPass() raises
   // the applied rate CANARY_PAIN_BUDGET_REFILL_MULTIPLIER-fold only while a
   // canary chase is open - the engage/disengage pair the refill test asserts.
@@ -1485,10 +1669,10 @@ public:
 
   // Test seam - not part of the production API. Evaluates the real private scheduling gate without
   // executing a BFS pass. This is not read-only: while holding _engine_lock like threadLoop(), the
-  // gate may account a completed search's pain and restart/reset terminal search state. It also
-  // exposes whether LivenessTracker::secondsToOOM()'s urgent-OOM bypass opens the gate even with no
-  // per-klass candidate; runReferenceChainPass0() cannot show that because it calls runPass()
-  // directly and never consults the gate.
+  // gate may account a completed search's pain and restart/reset terminal search state. It lets a
+  // test confirm the gate stays closed with no per-klass candidate, urgency latched or not;
+  // runReferenceChainPass0() cannot show that because it calls runPass() directly and never
+  // consults the gate.
   bool shouldRunPassForTest(u64 now_ns) {
     MutexLocker engine_guard(_engine_lock);
     return shouldRunPass(now_ns);

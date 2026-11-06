@@ -63,13 +63,31 @@ can be cancelled at any time with `q` or Ctrl-C.
 
 A dry run never creates a tag, pushes a branch, or triggers GitLab.
 
+If workflow monitoring loses its API connection, the script checks the run's
+status and reconnects to the same run, making up to three monitoring attempts
+per monitoring window. All attempts share a one-hour deadline. When the deadline
+is reached, the script allows up to ten seconds for a final status query, including
+when it must retry a query interrupted by the shared deadline. If the result remains
+unconfirmed, an interactive session asks whether to watch the same run for another
+hour. Answering `y` or `yes` renews the deadline and monitoring attempts. Answering
+`n`, pressing Enter, or reaching EOF stops monitoring with
+`WORKFLOW STATUS UNKNOWN` and a nonzero exit. Unattended sessions stop without
+prompting. The remote workflow keeps running when local monitoring stops.
+`RELEASE_MONITOR_TIMEOUT_SECONDS` overrides the default 3600-second deadline.
+Check the existing run before starting another release.
+Recognized completed outcomes retain GitHub's exact conclusion in the output.
+Only a confirmed `success` exits zero; other recognized conclusions exit nonzero.
+Only `failure` and `startup_failure` are labelled as workflow failures.
+
 ### Testing release automation
 
 `.github/scripts/tests/test_release_automation.sh` is a single hermetic shell
-test. It validates release tag/branch creation, version computation, and
-trivial-PR authorization using temporary local git fixtures. It does not
-load credentials or invoke `gh`, so it cannot publish, tag, push, or merge
+test. It validates release tag/branch creation, version computation,
+trivial-PR authorization, and recovery from workflow monitoring errors using
+temporary local Git repositories and a GitHub CLI fixture. It does not load
+credentials or contact GitHub, so it cannot publish, tag, push, or merge
 anything remotely.
+The terminal interaction tests require Python 3.
 
 ```bash
 .github/scripts/tests/test_release_automation.sh
@@ -211,12 +229,18 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 | `check-doc-index.py` | Every `doc/**/*.md` is linked from `doc/README.md` and has a PascalCase file name. |
 | `check-sigsetjmp-shape.py` | Every `sigsetjmp()` has a `JmpCtxScope` in effect, `savemask` 1, and a landing pad that starts with `SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();` then `<scope>.restore();` (the `guards.h` pattern). The glibc cancellation buffer in `libraryPatcher_linux.cpp` is the one exception. |
 | `check-tracked-artifacts.py` | No tracked path under `docs/sphinx/` or `.sphinx/`, and no `*.scratch*` path. |
+| `check-copyright.py` | Source files the branch adds or modifies since `--base` (default: the PR base in CI, else `origin/main`) follow the `AGENTS.md` copyright rule. |
+| `check-claude-md.py` | `CLAUDE.md` is the canonical redirect stub to `AGENTS.md`; `--write` restores it. |
+
+`.githooks/pre-push` runs `check-copyright.py` and `check-claude-md.py` on every pushed branch commit, so a violation stops the push before CI sees it (see `review-marker.py` below for the trust model). Set `branch.<name>.gh-merge-base` for a branch stacked on another feature branch.
 
 **Usage:**
 ```bash
 ./utils/check-doc-index.py                 # any one check
-./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all four; run by CI (ci.yml source-invariant-checks job)
+./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all six; run by CI (ci.yml source-invariant-checks job)
 ```
+
+CI runs every `utils/tests/*.sh` suite in the `script-tests` job of `.github/workflows/ci.yml`, with Node.js 22 for the Pi adapter cases.
 
 ### `patch-dd-java-agent.sh`
 
@@ -253,6 +277,49 @@ Identifies divergences from upstream async-profiler that could be contributed ba
 ### `find_contribution_candidates.sh`
 
 Core diff analysis and report generation for contribution candidate detection.
+
+---
+
+## Review
+
+### `review-marker.py`
+
+Records that the agentic pre-PR review covered a branch, and checks it. Used by the `pre-pr-review` skill, `.githooks/pre-push` and the `require-fresh-review` hook, which runs in Claude Code (`.claude/hooks/`) and, through the thin adapter `.pi/extensions/require-fresh-review.ts`, in Pi. Pi loads project extensions only after project trust is granted.
+
+- The marker certifies commits: `write` refuses uncommitted tracked changes and records the `git patch-id --verbatim` (git 2.39+) of the diff from the merge base to `HEAD`. An advancing base or a clean rebase keeps it fresh, unless the base changed lines next to the branch's hunks (context lines anchor each hunk's position, so this errs toward stale). Any change to the branch's diff, whitespace or position included, makes it stale. Untracked files are ignored.
+- Markers live in `<git-common-dir>/review-markers/` (one file per branch, named by hash), shared by all worktrees and never committed.
+- `install-hook` writes a shim to `<git-common-dir>/hooks/pre-push` that runs `.githooks/pre-push` as of `refs/remotes/origin/main`, which loads `review-marker.py` from the same ref; the Claude Code hook loads it from there too. All run with `python3 -I`, so files in the checkout, which may be an untrusted branch (e.g. a fork PR), are not executed or imported. When that ref lacks the scripts (the gate is not merged yet, or there is no `origin` remote), both hooks allow everything. Out of scope: Claude Code runs `.claude/` hooks from the session's own checkout under its workspace-trust model. It never sets `core.hooksPath`, which would replace global hooks such as Datadog's secret scanner; those chain to `.git/hooks`.
+- The same shim also runs `check-copyright.py` and `check-claude-md.py` from that ref (see Source quality checks).
+- For `gh pr create`, the Claude Code hook also runs `.github/scripts/check_pr_ticket.py` from that ref on the PR title and body; a command it cannot judge passes, and the CI `PR ticket reference` workflow checks it.
+- Exit codes: 0 fresh, written or installed; 1 missing or stale; 2 usage or environment error (e.g. missing base ref, git older than 2.39).
+- Known limits, all accepted:
+  - An edit moved between two places whose surrounding lines are identical keeps the same digest, because hunk positions are left out so that rebases stay fresh.
+  - A fresh marker skips the network, so `pre-push` does not notice an open PR retargeted to a base other than the marker's.
+  - A branch pushed under another name (`git push origin fix:topic`) is found by `pre-push` but not by `gh pr ready`, which blocks rather than allows.
+
+**Usage:**
+```bash
+git show refs/remotes/origin/main:utils/review-marker.py | python3 -I - install-hook   # once per clone
+./utils/review-marker.py write --tool sphinx --session <id> --base origin/main
+./utils/review-marker.py check                                   # current branch
+./utils/review-marker.py check --branch <b> --commit <sha>       # as pre-push does
+bash utils/tests/test_review_marker.sh                           # tests
+```
+
+### `gradle-command-policy.py`
+
+Denies shell commands that run `gradlew` directly instead of through `.claude/commands/build-and-summarize`, except `gradlew --stop` and `gradlew --version`. Reads the command on stdin; exit 2 with the reason on stderr denies it. The `require-gradle-wrapper` hook runs it in Claude Code (`.claude/hooks/`) and, through `.pi/extensions/require-gradle-wrapper.ts`, in Pi.
+
+- The hook loads the policy from `refs/remotes/origin/main` with `python3 -I`, like `review-marker.py`, and allows everything when that ref lacks it.
+- Deny by default: the command is split into simple commands at `;`, `&`, `|`, parentheses, braces, backticks and newlines, and any simple command that names `gradlew` is denied unless it starts with a read-only tool (`cat`, `grep`, `git`, `ls`, `find`, `echo`, ...). Quoted scripts such as `bash -c '...'` are checked the same way. So `if ./gradlew test`, `env -u X ./gradlew build` and `> log ./gradlew build` are denied without listing each prefix.
+- Accepted false blocks: a non-reader command that only names the file, such as `mv gradlew gradlew.old`, and heredoc lines that start with `./gradlew`.
+- Not covered: indirection such as `G=./gradlew; $G build`, a system `gradle`, and allowed tools that run their arguments, such as `find . -exec ./gradlew build \;`, an `awk -f` script that calls `system()`, or a git alias. The hook stops accidental direct runs, not deliberate ones.
+
+**Usage:**
+```bash
+echo './gradlew build' | python3 utils/gradle-command-policy.py   # exit 2
+bash utils/tests/test_gradle_hook.sh                              # tests
+```
 
 ---
 
