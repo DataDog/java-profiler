@@ -224,7 +224,8 @@ jobs:
       - name: Source invariant checks
         run: |
           # Signal-reachability check (ELF debug objects + fixture self-test) and the utils/check-*.py source checks
-          ./gradlew :ddprof-lib:qualityChecks --no-daemon --build-cache --no-watch-fs
+          # :malloc-shim:validate runs the preloaded signal-allocation detection matrix (glibc-only by its own gate).
+          ./gradlew :ddprof-lib:qualityChecks :malloc-shim:validate --no-daemon --build-cache --no-watch-fs
 
   check-javadoc:
     runs-on: ubuntu-22.04
