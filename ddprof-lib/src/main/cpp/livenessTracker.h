@@ -667,6 +667,8 @@ private:
   // Marks the slots table entries own as in use and frees the rest; frees none
   // when stale_tags_may_remain (leak tagging off until a later rebuild).
   void rebuildLeakTagPool(bool stale_tags_may_remain);
+  // start()'s pool setup: retries a failed clear, then rebuilds the pool.
+  void prepareLeakTagPool(jvmtiEnv *jvmti, JNIEnv *jni);
   // A clearLeakTagsOnObjects() failed: the next release() retries even when
   // the pool shows no tag out, and start() retries before rebuilding the pool.
   // Both run on the start/stop control thread, under Profiler::_state_lock.
@@ -1278,9 +1280,11 @@ public:
 
   int leakTagFreeCountForTest() const { return _leak_tag_free_count; }
 
-  void rebuildLeakTagPoolForTest(bool stale_tags_may_remain) {
-    rebuildLeakTagPool(stale_tags_may_remain);
+  void prepareLeakTagPoolForTest(jvmtiEnv *jvmti, bool clear_pending) {
+    _leak_tag_clear_pending = clear_pending;
+    prepareLeakTagPool(jvmti, nullptr);
   }
+  bool leakTagClearPendingForTest() const { return _leak_tag_clear_pending; }
 
   u32 tableSizeForTest() const { return _table_size; }
 

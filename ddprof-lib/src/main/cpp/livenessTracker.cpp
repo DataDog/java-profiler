@@ -2177,15 +2177,28 @@ void LivenessTracker::rebuildLeakTagPool(bool stale_tags_may_remain) {
       bumpLeakTagIncarnationLocked(i);
     }
     _leak_tag_in_use[i] = tag_owned[i];
-    if (!tag_owned[i]) {
+    // Objects may still carry the tags of unowned slots: free none, or a new
+    // owner would inherit an old object's chain. Owned slots come back on release.
+    if (!tag_owned[i] && !stale_tags_may_remain) {
       _leak_tag_free_list[free_w++] = i;
     }
   }
-  // Objects may still carry tags of free slots: hand none out, or a new owner
-  // would inherit an old object's chain.
-  _leak_tag_free_count = stale_tags_may_remain ? 0 : free_w;
+  _leak_tag_free_count = free_w;
   _leak_tag_pool_lock.unlock();
   _table_lock.unlock();
+}
+
+void LivenessTracker::prepareLeakTagPool(jvmtiEnv *jvmti, JNIEnv *jni) {
+  if (_leak_tag_clear_pending) {
+    // The last release() could not clear the leak tags on objects; the pool
+    // rebuilt below would hand them out again, so retry before it.
+    _leak_tag_clear_pending = !clearLeakTagsOnObjects(jvmti, jni);
+    if (_leak_tag_clear_pending) {
+      Log::warn("LivenessTracker: stale leak tags may remain on live objects; "
+                "leak tagging is disabled for this recording");
+    }
+  }
+  rebuildLeakTagPool(_leak_tag_clear_pending);
 }
 
 Error LivenessTracker::start(Arguments &args) {
@@ -2193,16 +2206,7 @@ Error LivenessTracker::start(Arguments &args) {
   if (err) {
     return err;
   }
-  if (_leak_tag_clear_pending) {
-    // The last release() could not clear the leak tags on objects; the pool
-    // rebuilt below would hand them out again, so retry before it.
-    _leak_tag_clear_pending = !clearLeakTagsOnObjects(VM::jvmti(), VM::jni());
-    if (_leak_tag_clear_pending) {
-      Log::warn("LivenessTracker: stale leak tags may remain on live objects; "
-                "leak tagging is disabled for this recording");
-    }
-  }
-  rebuildLeakTagPool(_leak_tag_clear_pending);
+  prepareLeakTagPool(VM::jvmti(), VM::jni());
   if (!_enabled || _table == nullptr) {
     // disabled, or liveness tracking unavailable (no table)
     return Error::OK;
@@ -2537,8 +2541,9 @@ bool LivenessTracker::admitForTracking(jint tid) {
     // forces a sweep on the allocation callback, so fall back to the
     // watched-tid boost and the subsample ratio. Heuristic only; a stale
     // relaxed read while cleanup_table() runs is acceptable.
-    bool back_off = _table_max_cap > 0 &&
-                    __atomic_load_n(&_table_size, __ATOMIC_RELAXED) >= _table_max_cap;
+    int max_cap = _table_max_cap.load(std::memory_order_relaxed);
+    bool back_off = max_cap > 0 &&
+                    __atomic_load_n(&_table_size, __ATOMIC_RELAXED) >= max_cap;
     if (back_off) {
       Counters::increment(LIVENESS_URGENT_BOOST_BACKED_OFF);
     } else {
@@ -2657,6 +2662,8 @@ void LivenessTracker::releaseThreadLocalState() {
 void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
                             jobject object, u64 call_trace_id,
                             u64 table_generation) {
+  // Relaxed: these gates only skip work. What an insert writes is checked
+  // under _table_lock against table_generation, which start() and release() bump.
   if (!_enabled.load(std::memory_order_relaxed)) {
     // disabled
     return;

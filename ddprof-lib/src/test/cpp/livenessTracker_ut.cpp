@@ -2285,17 +2285,29 @@ TEST_F(LeakTagPoolTest, AcquireReturnsTagsInLeakRange) {
     EXPECT_EQ(0, tracker->leakTagFreeCountForTest());
 }
 
-// If the leak tags on objects could not be cleared, any free slot's tag may
-// still sit on an old object: the rebuilt pool hands out none, so a new owner
-// cannot inherit that object's chain. A clean rebuild frees them again.
-TEST_F(LeakTagPoolTest, RebuildWithStaleTagsHandsOutNone) {
-    LivenessTracker *tracker = LivenessTracker::instance();
+static jvmtiError JNICALL failingGetObjectsWithTags(jvmtiEnv *, jint, const jlong *, jint *,
+                                                    jobject **, jlong **) {
+    return JVMTI_ERROR_OUT_OF_MEMORY;
+}
 
-    tracker->rebuildLeakTagPoolForTest(/*stale_tags_may_remain=*/true);
+// A clear that failed at stop() is retried at start(). If it fails again, any
+// unowned slot's tag may still sit on an old object, so the pool hands out
+// none; once a retry succeeds, the pool is full again.
+TEST_F(LeakTagPoolTest, FailedLeakTagClearAtStartHandsOutNoTag) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jvmtiInterface_1_ functions{};
+    functions.GetObjectsWithTags = failingGetObjectsWithTags;
+    jvmtiEnv failing{};
+    failing.functions = &functions;
+
+    tracker->prepareLeakTagPoolForTest(&failing, /*clear_pending=*/true);
+    EXPECT_TRUE(tracker->leakTagClearPendingForTest());
     EXPECT_EQ(0, tracker->leakTagFreeCountForTest());
     EXPECT_EQ(0, tracker->acquireLeakTagForTest());
 
-    tracker->rebuildLeakTagPoolForTest(/*stale_tags_may_remain=*/false);
+    // No JVMTI: nothing can carry a tag, so the retry succeeds.
+    tracker->prepareLeakTagPoolForTest(nullptr, /*clear_pending=*/true);
+    EXPECT_FALSE(tracker->leakTagClearPendingForTest());
     EXPECT_GT(tracker->leakTagFreeCountForTest(), 0);
     EXPECT_NE(0, tracker->acquireLeakTagForTest());
 }

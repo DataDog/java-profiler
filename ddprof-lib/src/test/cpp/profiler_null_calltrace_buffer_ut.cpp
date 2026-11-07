@@ -101,7 +101,7 @@ TEST(ProfilerNullCalltraceBufferTest, ReleaseRecordingMemoryInvalidatesEarlierEp
     ProfiledThread* parked = ProfiledThread::forTid(1);
     parked->lookupWallclockCallTraceId(0x1000, 0x2000, before, true, 0, 0);
     parked->recordCallTraceId(42);
-    ASSERT_EQ(42u, parked->lookupWallclockCallTraceId(0x1000, 0x2000, before, true, 0, 0));
+    EXPECT_EQ(42u, parked->lookupWallclockCallTraceId(0x1000, 0x2000, before, true, 0, 0));
 
     ProfilerTestAccessor::releaseRecordingMemory();
     u32 after = profiler->recordingEpoch();
