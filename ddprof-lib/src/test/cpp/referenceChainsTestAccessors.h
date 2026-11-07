@@ -96,6 +96,11 @@ public:
         t->_static_anchor_index.clear();
         t->_static_anchor_own_class_tags.clear();
         t->_static_anchor_index_tags.clear();
+        t->_local_anchor_tags.clear();
+        t->_pending_local_anchors.clear();
+        t->_pending_local_anchor_tags.clear();
+        t->_local_compact_backoff = 0;
+        t->_pending_local_evict_cursor = 0;
         t->_anchor_container_cursor = 0;
         t->_anchor_other_cursor = 0;
         t->_class_shape_cache.clear();
@@ -302,10 +307,14 @@ public:
         return std::vector<jlong>(tags, tags + count);
     }
 
+    // Defaults to EVICT (noise-eviction semantics); pass rebuild=true for the improveChain/
+    // reparent/root-kind-upgrade REBUILD kind.
     static void deferResolvedChainInvalidation(
-        jlong tag, const std::vector<jlong> &snapshot) {
+        jlong tag, const std::vector<jlong> &snapshot, bool rebuild = false) {
         ReferenceChainTracker::instance()->deferResolvedChainInvalidation(
-            tag, snapshot.data(), (int)snapshot.size());
+            tag, snapshot.data(), (int)snapshot.size(),
+            rebuild ? ReferenceChainTracker::ChainInvalidationKind::REBUILD
+                    : ReferenceChainTracker::ChainInvalidationKind::EVICT);
     }
 
     static size_t pendingChainInvalidationCount() {
@@ -529,7 +538,60 @@ public:
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         return t->_static_anchor_index.empty() &&
                t->_static_anchor_own_class_tags.empty() &&
-               t->_static_anchor_index_tags.empty();
+               t->_static_anchor_index_tags.empty() &&
+               t->_local_anchor_tags.empty() &&
+               t->_pending_local_anchors.empty() &&
+               t->_pending_local_anchor_tags.empty() &&
+               t->_local_compact_backoff == 0 &&
+               t->_pending_local_evict_cursor == 0;
+    }
+
+    // Local-root anchor seams (see noteLocalRootHolder()/resolvePendingLocalAnchors()).
+    static void noteLocalRootHolderForTest(jlong tag, jlong class_tag) {
+        ReferenceChainTracker::instance()->noteLocalRootHolder(tag, class_tag);
+    }
+    static void resolvePendingLocalAnchorsForTest() {
+        ReferenceChainTracker::instance()->resolvePendingLocalAnchors();
+    }
+    static size_t anchorIndexSizeForTest() {
+        return ReferenceChainTracker::instance()->_static_anchor_index.size();
+    }
+    static size_t localAnchorCountForTest() {
+        return ReferenceChainTracker::instance()->_local_anchor_tags.size();
+    }
+    static size_t pendingLocalAnchorCountForTest() {
+        return ReferenceChainTracker::instance()->_pending_local_anchors.size();
+    }
+    static size_t freshAnchorQueueSizeForTest() {
+        return ReferenceChainTracker::instance()->_static_anchor_fresh_queue.size();
+    }
+    static constexpr size_t kLocalAnchorIndexCap =
+        ReferenceChainTracker::LOCAL_ANCHOR_INDEX_CAP;
+    static constexpr size_t kPendingLocalAnchorCap =
+        ReferenceChainTracker::PENDING_LOCAL_ANCHOR_CAP;
+    static constexpr int kLocalCompactBackoff =
+        ReferenceChainTracker::LOCAL_ANCHOR_COMPACT_BACKOFF;
+    static int localCompactBackoffForTest() {
+        return ReferenceChainTracker::instance()->_local_compact_backoff;
+    }
+    static size_t pendingLocalEvictCursorForTest() {
+        return ReferenceChainTracker::instance()->_pending_local_evict_cursor;
+    }
+    // Caller keeps idx < pendingLocalAnchorCountForTest().
+    static jlong pendingLocalAnchorTagForTest(size_t idx) {
+        return ReferenceChainTracker::instance()->_pending_local_anchors[idx].tag;
+    }
+    static bool pendingLocalAnchorContainsForTest(jlong tag) {
+        return ReferenceChainTracker::instance()
+                   ->_pending_local_anchor_tags.count(tag) > 0;
+    }
+
+    // Reconcile collection step (see collectUnclassifiedAnchorClassTags()).
+    static constexpr int kAnchorShapeReconcileBudget =
+        ReferenceChainTracker::ANCHOR_SHAPE_RECONCILE_BUDGET;
+    static std::vector<jlong> unclassifiedAnchorClassTagsForTest() {
+        return ReferenceChainTracker::instance()
+            ->collectUnclassifiedAnchorClassTags();
     }
 
     static jlong discoveredTagForTest(int slot, int idx) {
@@ -989,6 +1051,14 @@ public:
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         return std::vector<jlong>(t->_priority_expand.begin(),
                                    t->_priority_expand.end());
+    }
+
+    // Report a root without running a whole pass, so its scheduling effect can
+    // be checked independently of the ordinary rotation collectors.
+    static jvmtiIterationControl reportHeapRootForTest(
+        jvmtiHeapRootKind kind, jlong class_tag, jlong *tag, void *context) {
+        return ReferenceChainTracker::heapRootCallback(kind, class_tag, 0, tag,
+                                                       context);
     }
 
     // Simulates a tag left in _priority_expand by a prior pass's truncated expandFrontier()

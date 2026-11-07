@@ -67,7 +67,7 @@ The tracker addresses this case with bounded rotation:
 - Leak-accumulation rotation selects parent objects that receive instances of watched classes.
 - Stale-entry rotation revisits older expanded entries.
 - Root-kind rotation revisits entries with transient root attribution.
-- Static-anchor rotation descends from selected objects held by static fields.
+- Anchor rotation descends from selected objects held by static fields or JNI globals, and from a capped set of confirmed collection/map holders first seen as stack or JNI locals.
 
 Rotation improves coverage. It does not guarantee that the tracker observes every mutation.
 

@@ -446,9 +446,9 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       // This new path is deeper - replace the shallow root-attached entry with the deeper
       // chain-attached entry.
       u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
-      // Pre-read the CURRENT shape: if improveChain() below succeeds, this root-attached durable
-      // entry is about to be replaced with a deeper chain-attached one - i.e. it is leaving the
-      // population collectStaticFieldAnchorsForRotation() can select, at exactly this moment.
+      // Pre-read the CURRENT shape: improveChain() can remove this entry's
+      // durable-root eligibility. A known collection remains in the container
+      // tier; other holders need the FIFO's first look below.
       FrontierEntry pre_improve_entry{};
       bool was_root_attached_durable =
           ctx->frontier->lookup(*tag_ptr, &pre_improve_entry) &&
@@ -457,15 +457,16 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       if (ctx->frontier->improveChain(*tag_ptr, parent_tag, referrer_klass,
                                        depth, 0, edge_field_index,
                                        (u8)reference_kind)) {
-        // Chain was improved — invalidate any cached chain for this tag so pollWatchedTargets
-        // rebuilds it with the deeper path.
+        // Chain was improved — queue a REBUILD so pollWatchedTargets replaces any cached chain for
+        // this tag with the deeper path (never erased: the source is still live).
         // Deferred: we're inside the FollowReferences pause (see deferResolvedChainInvalidation()).
         ctx->tracker->deferResolvedChainInvalidation(
             *tag_ptr, ctx->resolved_chain_tags,
-            ctx->resolved_chain_tag_count);
+            ctx->resolved_chain_tag_count,
+            ReferenceChainTracker::ChainInvalidationKind::REBUILD);
         if (was_root_attached_durable) {
-          // Demotion push: the replaced entry's static/JNI-global attribution was its only
-          // anchor-tier eligibility, and it is gone now.
+          // Ensure a first look even when class-shape reconciliation has not
+          // yet classified this reparented holder as a collection.
           ctx->tracker->pushAtRiskStaticAnchor(
               *tag_ptr, ctx->tracker->classTags()->resolve(class_tag));
         }
@@ -477,7 +478,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         // durable root.
         ctx->tracker->deferResolvedChainInvalidation(
             *tag_ptr, ctx->resolved_chain_tags,
-            ctx->resolved_chain_tag_count);
+            ctx->resolved_chain_tag_count,
+            ReferenceChainTracker::ChainInvalidationKind::REBUILD);
       }
     } else {
       // Already-admitted entry reached via a NEW root-like edge (parent_tag == 0): the static-field
@@ -489,7 +491,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                                                           (u8)reference_kind)) {
         ctx->tracker->deferResolvedChainInvalidation(
             *tag_ptr, ctx->resolved_chain_tags,
-            ctx->resolved_chain_tag_count);
+            ctx->resolved_chain_tag_count,
+            ReferenceChainTracker::ChainInvalidationKind::REBUILD);
       } else if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
         // The upgrade refused (maybeUpgradeRootAttachedRootKind returns false for parent_tag != 0
         // by design), so this STATIC_FIELD edge just proved an at-risk static attachment the anchor

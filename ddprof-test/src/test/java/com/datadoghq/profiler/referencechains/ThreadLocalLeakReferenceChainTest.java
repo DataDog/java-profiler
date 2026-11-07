@@ -52,8 +52,11 @@ public class ThreadLocalLeakReferenceChainTest extends AbstractProcessProfilerTe
     Deque<String> testLogTail = new ArrayDeque<>();
     try {
       // Same raised budget/ratio rationale as
-      // LeakTagCorrelationReferenceChainTest (cold external JVM, ~100k filler,
-      // memory=64:l:1.0 keeping every chunk allocation tracked).
+      // LeakTagCorrelationReferenceChainTest (cold external JVM,
+      // memory=64:l:1.0 keeping every chunk allocation tracked). This
+      // scenario's filler is ~24k nodes, not ~100k (ThreadLocalLeakScenario.FILLER's
+      // own comment: it bounds the first pass's CPU pain-budget debt), so the
+      // budget still leaves that first pass untruncated with headroom.
       String startCommand = "start,memory=64:l:1.0,generations=true,"
           + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:"
           + "pausetarget=60000"

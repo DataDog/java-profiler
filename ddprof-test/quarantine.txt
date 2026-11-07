@@ -73,16 +73,10 @@ com.datadoghq.profiler.nativesocket.NativeSocketSendRecvSeparateTest.* | PROF-16
 com.datadoghq.profiler.nativesocket.NativeSocketStackTraceTest.* | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | @TestTemplate invocations (cstack=vm/vmx/dwarf/fp) have no method name in the XML; same root cause as the rest of the package
 com.datadoghq.profiler.cpu.TlsPrimingTest.* | PROF-16281 | 2026-10-20 | 2027-01-18 | el7-8-release-amd64 | samples_dropped_thread_local exceeds this test's sample count across all RetryingTest attempts (79/195, 50/645, 272/137); counter is shared with every SIGNAL_HANDLER_GUARD_OR_DROP path, so co-located runner load can trip the max(10, samples/20) bound
 
-# PROF-16305 -- the reference-chain slow e2e family is intermittently red in
-# the nightly sanitized run 39893765385. The dominant failure never observes a
-# CachedPayload chain[0] (only HashMap$Node grace chains): 20 of ~32 eligible
-# HotSpot 11+ debug/asan slow jobs. Three sibling tests fail the same run --
-# the two loose child-JVM variants report an out-of-pool correlation tag, and
-# the gc-root variant never observes a ChainLink chain[0] on musl-aarch64
-# JDK 11. Scoped to *-slow so a failure in the regular suite still gates.
-# These lines go away with the PROF-16305 fix PR (PR #800) once the tests
-# are made reliable again.
-com.datadoghq.profiler.referencechains.ReferenceChainTrackingTest.shouldReconstructReferrerChainThroughUnboundedCacheLeak | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Never observes a CachedPayload chain[0] (only HashMap$Node chains); failed 20 of ~32 eligible HotSpot 11+ debug/asan slow jobs in nightly run 39893765385
-com.datadoghq.profiler.referencechains.ReferenceChainTrackingTest.shouldReconstructReferrerChainToGcRoot | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Never observes a ChainLink chain[0]; 1 failing job (musl-11-debug-aarch64-slow) in nightly run 39893765385
-com.datadoghq.profiler.referencechains.ThreadLocalLeakReferenceChainTest.shouldCorrelateThreadLocalHeldLeakChain | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Child reports [tl-correlation-tag-out-of-pool]; 3 failing jobs in nightly run 39893765385
-com.datadoghq.profiler.referencechains.LeakTagCorrelationReferenceChainTest.shouldCorrelateLeakChainTargetTagWithLiveObjectLeakTag | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Child reports [correlation-tag-out-of-pool]; 1 failing job in nightly run 39893765385
+# PROF-16305 -- the reference-chain slow e2e family was intermittently red in
+# the nightly sanitized run 39893765385. Fixed by the pr-889 regime (cache-leak
+# rate 0.80 -> ~0.11 on 21.0.3-tem), the W5 test-side pacing fixes, and the
+# PROF-16316 improveChain cache-invalidation fix (PR #898). All four quarantined
+# tests were removed from quarantine; the gc-root musl-aarch64 line was dropped
+# after the T14 musl-aarch64 JDK11 container check passed. Scoped to *-slow so
+# a failure in the regular suite still gates.

@@ -52,6 +52,21 @@ import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.LE
  * own class comment (the one-shot root-seeded walk is a per-process
  * resource, and a one-shot seeded ramp ages out of LivenessTracker's
  * hysteresis once real fold samples interleave).
+ *
+ * <p>Schedule shape (see {@link #FILLER}): every round appends one chunk to
+ * the leak thread's ThreadLocal sink — the chunk supply must span the whole
+ * window because the correlation needs the walk to intercept a leak-tagged
+ * chunk inside the thread's ThreadLocalMap, and starving the tail rounds
+ * starves that interception surface (observed as {@code tl-correlation-not-found}
+ * on JDK 11 for the late-thread variant). The scale filler, in contrast, is
+ * kept small: the first (root-enumeration) pass charges its whole
+ * non-safepoint walk time to the tracker's CPU pain budget, and no further
+ * pass runs until that debt is repaid; until then the only {@code byte[]}
+ * chains are that first pass's out-of-pool discovered instances. A smaller
+ * walked heap shortens the debt so the second pass - the one that builds the
+ * in-pool chain - lands well inside the 25-round + 5-grace window on slow CI
+ * cells (an ~8.5 s debt at 96,000 nodes was repaid only at about dump 25 of
+ * 30 locally).
  */
 public final class ThreadLocalLeakScenario {
   private ThreadLocalLeakScenario() {}
@@ -64,8 +79,18 @@ public final class ThreadLocalLeakScenario {
   private static final ThreadLocal<List<byte[]>> SINK =
       ThreadLocal.withInitial(() -> new ArrayList<>());
 
-  /** Scale ingredient - same rationale as LeakTagCorrelationScenario.FILLER. */
-  static final Object[][] FILLER = new Object[1500][];
+  /**
+   * Scale ingredient - same rationale as LeakTagCorrelationScenario.FILLER,
+   * but a quarter of its size (375 x 64 = 24,000 nodes, not 96,000).
+   * Invariant: the filler is the bulk of the heap the first pass walks (the
+   * byte[] chunks are reference-free leaves), and that pass's non-safepoint
+   * time is the CPU pain-budget debt the second pass waits out - the one
+   * that builds the in-pool chain. The filler must stay small enough that the
+   * debt is repaid well inside the 25-round + 5-grace window on slow CI
+   * cells (an ~8.5 s debt at 96,000 nodes repaid only at about dump 25 of 30
+   * locally); it still gives the frontier and the tag map real depth.
+   */
+  static final Object[][] FILLER = new Object[375][];
 
   // Distinct from the other scenarios' ids (987301-987304) - each scenario
   // runs in its own child JVM, but a distinct id keeps logs unambiguous.
@@ -181,7 +206,8 @@ public final class ThreadLocalLeakScenario {
     // One round = the main thread offers a token; the leak thread takes it and
     // appends one chunk to ITS OWN ThreadLocal sink (same persistent-allocator
     // shape as ReferenceChainTrackingTest's togcroot fixture, so the chunks are
-    // always allocated on the same qualifying tid).
+    // always allocated on the same qualifying tid). Every round of the window
+    // offers a token - see the class comment's schedule-shape paragraph.
     BlockingQueue<Integer> rounds = new ArrayBlockingQueue<>(32);
     Thread leakThread = new Thread(() -> {
       // No local ever holds the sink: re-fetch it via SINK on every use so
@@ -259,6 +285,8 @@ public final class ThreadLocalLeakScenario {
     ScanResult best = null;
     int totalRounds = 25;
     for (int round = 1; round <= totalRounds; round++) {
+      // Every round appends one chunk - the interception-surface invariant in the
+      // class comment; do not front-load this growth away.
       if (!rounds.offer(round)) {
         throw new IllegalStateException("rounds queue rejected round " + round);
       }
@@ -292,10 +320,8 @@ public final class ThreadLocalLeakScenario {
             LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
         ReferenceChainTestHooks.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
       }
-      if (!rounds.offer(attempt)) {
-        throw new IllegalStateException(
-            "rounds queue rejected attempt " + attempt);
-      }
+      // No chunk is appended in the grace attempts; the trend maintenance
+      // above is what keeps the candidate alive.
       Thread.sleep(1000);
       System.gc();
       profiler.dump(scratchDumpPath);
