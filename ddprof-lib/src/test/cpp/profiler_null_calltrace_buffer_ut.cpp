@@ -108,6 +108,7 @@ TEST(ProfilerNullCalltraceBufferTest, ReleaseRecordingMemoryInvalidatesEarlierEp
     EXPECT_NE(before, after);
     // The storage holding trace 42 is gone: the next start() must not reuse it.
     EXPECT_EQ(0u, parked->lookupWallclockCallTraceId(0x1000, 0x2000, after, true, 0, 0));
+    ProfiledThread::deleteForTest(parked);
 
     profiler->recordJVMTISample(1, 1, nullptr, BCI_ALLOC, nullptr, /*deferred=*/true, before);
     EXPECT_EQ(skipped + 1, ProfilerTestAccessor::skipped()) << "a stale epoch must be dropped";

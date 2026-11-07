@@ -2285,6 +2285,21 @@ TEST_F(LeakTagPoolTest, AcquireReturnsTagsInLeakRange) {
     EXPECT_EQ(0, tracker->leakTagFreeCountForTest());
 }
 
+// If the leak tags on objects could not be cleared, any free slot's tag may
+// still sit on an old object: the rebuilt pool hands out none, so a new owner
+// cannot inherit that object's chain. A clean rebuild frees them again.
+TEST_F(LeakTagPoolTest, RebuildWithStaleTagsHandsOutNone) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    tracker->rebuildLeakTagPoolForTest(/*stale_tags_may_remain=*/true);
+    EXPECT_EQ(0, tracker->leakTagFreeCountForTest());
+    EXPECT_EQ(0, tracker->acquireLeakTagForTest());
+
+    tracker->rebuildLeakTagPoolForTest(/*stale_tags_may_remain=*/false);
+    EXPECT_GT(tracker->leakTagFreeCountForTest(), 0);
+    EXPECT_NE(0, tracker->acquireLeakTagForTest());
+}
+
 TEST_F(LeakTagPoolTest, ReleaseReturnsTagToPoolAndClearsOwnership) {
     LivenessTracker *tracker = LivenessTracker::instance();
     int pool_size = tracker->leakTagPoolSizeForTest();

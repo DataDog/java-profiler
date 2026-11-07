@@ -322,7 +322,10 @@ private:
   constexpr static u64 HEAP_FLOOR_FLOOR_ABS_MIN = 1ULL << 19;    // 512KiB
 
   bool _initialized;
-  bool _enabled;
+  // Atomic: allocation callbacks (track() and its admission and growth paths)
+  // read _enabled and _table_max_cap outside the table lock, while start() and
+  // release() change them.
+  std::atomic<bool> _enabled;
   Error _stored_error;
 
   SpinLock _table_lock;
@@ -331,7 +334,7 @@ private:
   std::atomic<u64> _table_generation{0};
   volatile int _table_size;
   int _table_cap;
-  int _table_max_cap;
+  std::atomic<int> _table_max_cap;
   TrackingEntry *_table;
 
   SubsampleRate _subsample;
@@ -661,6 +664,9 @@ private:
   // Clears the JVMTI tag of every object still carrying a pool tag. Returns
   // false if the objects could not be enumerated (some may keep their tag).
   bool clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env);
+  // Marks the slots table entries own as in use and frees the rest; frees none
+  // when stale_tags_may_remain (leak tagging off until a later rebuild).
+  void rebuildLeakTagPool(bool stale_tags_may_remain);
   // A clearLeakTagsOnObjects() failed: the next release() retries even when
   // the pool shows no tag out, and start() retries before rebuilding the pool.
   // Both run on the start/stop control thread, under Profiler::_state_lock.
@@ -1271,6 +1277,10 @@ public:
   void releaseLeakTagForTest(jlong tag) { releaseLeakTag(tag); }
 
   int leakTagFreeCountForTest() const { return _leak_tag_free_count; }
+
+  void rebuildLeakTagPoolForTest(bool stale_tags_may_remain) {
+    rebuildLeakTagPool(stale_tags_may_remain);
+  }
 
   u32 tableSizeForTest() const { return _table_size; }
 

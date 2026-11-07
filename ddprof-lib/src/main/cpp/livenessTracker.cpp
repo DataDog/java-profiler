@@ -2155,22 +2155,10 @@ void LivenessTracker::resetSession() {
   _leak_signal_enabled.store(false, std::memory_order_release);
 }
 
-Error LivenessTracker::start(Arguments &args) {
-  Error err = initialize(args);
-  if (err) {
-    return err;
-  }
-  // Rebuild the pool from the tags entries still own (both locks span scan and
-  // rebuild): a tag marked free while owned is handed out twice and overflows
+void LivenessTracker::rebuildLeakTagPool(bool stale_tags_may_remain) {
+  // From the tags entries still own (both locks span scan and rebuild): a tag
+  // marked free while owned is handed out twice and overflows
   // _leak_tag_free_list on the second release.
-  if (_leak_tag_clear_pending) {
-    // The last release() could not clear the leak tags on objects; the pool
-    // rebuilt below would hand them out again, so retry before it.
-    _leak_tag_clear_pending = !clearLeakTagsOnObjects(VM::jvmti(), VM::jni());
-    if (_leak_tag_clear_pending) {
-      Log::warn("LivenessTracker: stale leak tags may remain on live objects");
-    }
-  }
   bool tag_owned[LEAK_TAG_POOL_SIZE];
   memset(tag_owned, 0, sizeof(tag_owned));
   _table_lock.lock();
@@ -2193,9 +2181,28 @@ Error LivenessTracker::start(Arguments &args) {
       _leak_tag_free_list[free_w++] = i;
     }
   }
-  _leak_tag_free_count = free_w;
+  // Objects may still carry tags of free slots: hand none out, or a new owner
+  // would inherit an old object's chain.
+  _leak_tag_free_count = stale_tags_may_remain ? 0 : free_w;
   _leak_tag_pool_lock.unlock();
   _table_lock.unlock();
+}
+
+Error LivenessTracker::start(Arguments &args) {
+  Error err = initialize(args);
+  if (err) {
+    return err;
+  }
+  if (_leak_tag_clear_pending) {
+    // The last release() could not clear the leak tags on objects; the pool
+    // rebuilt below would hand them out again, so retry before it.
+    _leak_tag_clear_pending = !clearLeakTagsOnObjects(VM::jvmti(), VM::jni());
+    if (_leak_tag_clear_pending) {
+      Log::warn("LivenessTracker: stale leak tags may remain on live objects; "
+                "leak tagging is disabled for this recording");
+    }
+  }
+  rebuildLeakTagPool(_leak_tag_clear_pending);
   if (!_enabled || _table == nullptr) {
     // disabled, or liveness tracking unavailable (no table)
     return Error::OK;
@@ -2650,11 +2657,11 @@ void LivenessTracker::releaseThreadLocalState() {
 void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
                             jobject object, u64 call_trace_id,
                             u64 table_generation) {
-  if (!_enabled) {
+  if (!_enabled.load(std::memory_order_relaxed)) {
     // disabled
     return;
   }
-  if (_table_max_cap == 0) {
+  if (_table_max_cap.load(std::memory_order_relaxed) == 0) {
     // we are not to store any objects
     return;
   }
@@ -2749,7 +2756,7 @@ retry:
         _table_lock.lock();
 
         // Only increase the size of the table to _table_max_cap elements
-        int newcap = std::min(_table_cap * 2, _table_max_cap);
+        int newcap = std::min(_table_cap * 2, _table_max_cap.load(std::memory_order_relaxed));
         if (_table_cap != newcap) {
           TrackingEntry *tmp = (TrackingEntry *)realloc(
                 _table, sizeof(TrackingEntry) * newcap);
