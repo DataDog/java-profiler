@@ -2206,11 +2206,12 @@ Error LivenessTracker::start(Arguments &args) {
   if (err) {
     return err;
   }
-  prepareLeakTagPool(VM::jvmti(), VM::jni());
   if (!_enabled || _table == nullptr) {
     // disabled, or liveness tracking unavailable (no table)
     return Error::OK;
   }
+  // Nothing tags objects while disabled, so a pending clear waits for this.
+  prepareLeakTagPool(VM::jvmti(), VM::jni());
   
   // Self-register with the profiler for liveness checking
   Profiler::instance()->registerLivenessChecker([this](CallTraceIdSet& buffer) {

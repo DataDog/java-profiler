@@ -1262,6 +1262,7 @@ public:
   void leakTagPoolResetForTest() {
     ExclusiveLockGuard guard(&_leak_tag_pool_lock);
     resetLeakTagPoolLocked();
+    _leak_tag_clear_pending = false;
   }
 
   jlong acquireLeakTagForTest() { return acquireLeakTag(); }
