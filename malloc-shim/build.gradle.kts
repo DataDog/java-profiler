@@ -60,6 +60,9 @@ val compileValidateHarness = tasks.register("compileValidateHarness") {
     // Resolved at execution, not configuration: the probe must not run for
     // e.g. 'help' on a Linux host without a C++ toolchain.
     val compiler = PlatformUtils.findCompiler(project)
+    // outputs.file does not create parent directories; the compiler needs the
+    // target dir to exist on a clean checkout.
+    harnessBinary.get().asFile.parentFile.mkdirs()
     // The harness and debugSupport.cpp use no C++ runtime features, so the
     // C++ standard library is not linked: some minimal toolchains ship clang++
     // without usable libstdc++ link-time paths.

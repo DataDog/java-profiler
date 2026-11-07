@@ -1,25 +1,8 @@
 // Copyright 2026, Datadog, Inc.
 
-// Standalone validation harness for the malloc-shim signal-allocation
-// detector (libdebug.so). Runs as two modes:
-//
-//   malloc_shim_validate --control   # without LD_PRELOAD: pins the contract
-//                                    # that nothing is resolvable and Shims
-//                                    # stays a silent no-op
-//   LD_PRELOAD=.../libdebug.so malloc_shim_validate   # full detection matrix
-//   malloc_shim_validate --full       # same as no-args: explicit full mode
-//
-// Any other argument is a usage error (exit 2). Exit codes: 0 = pass,
-// 1 = failures, 2 = usage error.
-//
-// The full mode forks one child per detection case: the child registers a tid
-// (raw dlsym'd setter, or Shims::setSighandlerTid - the production wiring
-// chain), allocates, and the parent asserts the child died with SIGSEGV and
-// that the shim's stderr marker was emitted.
-//
-// The Shims variant compiles in the production debugSupport.cpp, so a broken
-// dlsym lookup or CAS in Shims fails this harness even when the shim itself
-// is sound.
+// Validation harness for the malloc-shim signal-allocation detector: --control
+// pins the no-shim silent-noop contract, full mode forks one child per case and
+// asserts SIGSEGV plus the shim's stderr marker. Exit codes: 0/1/2 pass/fail/usage.
 
 #include <stddef.h>
 #include <dlfcn.h>
@@ -43,7 +26,7 @@ static const char *const kMarker = "!!!! MALLOC in signal handler !!!";
 static const int kBogusTid = 1 << 30;
 
 static pid_t my_tid() {
-  return (pid_t)syscall(__NR_gettid);
+  return static_cast<pid_t>(syscall(__NR_gettid));
 }
 
 static SetSighandlerTidFn find_setter() {
@@ -62,7 +45,7 @@ static void report(int ok, const char *what) {
 // Allocates a pattern-filled block and verifies it reads back. Returns NULL
 // on any mismatch so callers can treat "allocated but corrupt" as a failure.
 static void *alloc_and_check(size_t size) {
-  unsigned char *p = (unsigned char *)malloc(size);
+  unsigned char *p = static_cast<unsigned char *>(malloc(size));
   if (p == NULL) {
     return NULL;
   }
@@ -76,10 +59,9 @@ static void *alloc_and_check(size_t size) {
   return p;
 }
 
-// Runs `body` in a forked child. The child's stderr is redirected to a fresh
-// temp file whose path is stored in `marker_path` (truncated to empty first).
-// The fd must stay open in the parent across the fork: the child dups it onto
-// stderr. Returns the raw wait status.
+// Runs `body` in a forked child whose stderr is redirected to a fresh temp
+// file (path stored in `marker_path`). The fd must stay open in the parent:
+// the child dups it onto stderr. Returns the raw wait status.
 static int run_in_child(char *marker_path, size_t marker_path_size, void (*body)()) {
   marker_path[0] = '\0';
   char tmpl[] = "/tmp/malloc_shim_validate_XXXXXX";
@@ -302,7 +284,7 @@ int main(int argc, char **argv) {
 
     int pass = 1;
     for (int i = 0; i < 100; i++) {
-      void *p = alloc_and_check((size_t)(i + 1) * 128);
+      void *p = alloc_and_check(static_cast<size_t>(i + 1) * 128);
       if (p == NULL) {
         pass = 0;
         break;

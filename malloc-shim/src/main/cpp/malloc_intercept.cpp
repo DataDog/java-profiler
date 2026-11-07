@@ -7,7 +7,6 @@
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -28,7 +27,11 @@ extern "C" __attribute__((visibility("default"))) void *malloc(size_t size) {
     int handler_tid = __atomic_load_n(&sighandler_tid, __ATOMIC_ACQUIRE);
     int tid = handler_tid != -1 ? syscall(__NR_gettid) : -2;
     if (tid == handler_tid) {
-        fprintf(stderr, "!!!! MALLOC in signal handler !!!\n");
+        // Async-signal-safe by contract: a thread interrupted while holding a
+        // stdio lock must still reach raise(SIGSEGV) instead of deadlocking.
+        static const char marker[] = "!!!! MALLOC in signal handler !!!\n";
+        ssize_t written = write(STDERR_FILENO, marker, sizeof(marker) - 1);
+        (void)written;
         raise(SIGSEGV);
     } else {
         result = __libc_malloc(size);
