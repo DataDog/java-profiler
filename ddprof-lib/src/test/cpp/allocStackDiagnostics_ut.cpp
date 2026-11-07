@@ -58,6 +58,10 @@ public:
     static void processTraces(std::function<void(const CallTraceSet&)> processor) {
         Profiler::instance()->_call_trace_storage.processTraces(processor);
     }
+    // The storage holds no tables until a recording starts (acquire()); these
+    // tests record samples without starting the profiler.
+    static void acquireStorage() { Profiler::instance()->_call_trace_storage.acquire(); }
+    static void releaseStorage() { Profiler::instance()->_call_trace_storage.release(); }
     static void verify(const ASGCT_CallFrame* frames, int count, int max_depth) {
         std::vector<jvmtiFrameInfo> scratch(CallTraceBuffer::verificationDepth(max_depth));
         Profiler::verifyAllocStack(frames, count, reinterpret_cast<jthread>(1), max_depth, scratch.data());
@@ -126,6 +130,7 @@ protected:
         state.depth = 8; state.mode = ALLOCSTACK_VM; state.omit = false;
         state.buffers.fill(buffer.data()); state.capacity.fill(buffer.size());
         ProfilerTestAccessor::state(state);
+        ProfilerTestAccessor::acquireStorage();
         Counters::set(ALLOC_STACK_VERIFIED, 0); Counters::set(ALLOC_STACK_MISMATCH, 0);
         Counters::set(ALLOC_STACK_VM_FALLBACK, 0); Counters::set(ALLOC_STACK_VM, 0);
         stack_error = JVMTI_ERROR_NONE; stack_calls = 0;
@@ -133,6 +138,7 @@ protected:
     }
 
     void TearDown() override {
+        ProfilerTestAccessor::releaseStorage();
         ProfilerTestAccessor::state(old_profiler);
         _thread_anchor_offset = old_anchor_offset; _anchor_sp_offset = old_sp_offset;
         TYPE_SIZE_NAME(VMThread) = old_thread_size; TYPE_SIZE_NAME(VMJavaFrameAnchor) = old_anchor_size;
@@ -191,12 +197,31 @@ TEST_F(AllocStackDiagnosticsTest, FailedJvmtiCallDoesNotCountAsChecked) {
 
 TEST_F(AllocStackDiagnosticsTest, ZeroFramePlatformWalkCountsJvmtiFallback) {
     u64 trace = Profiler::instance()->recordJVMTISample(1, 1, reinterpret_cast<jthread>(1),
-                                                     BCI_ALLOC, nullptr, true);
+                                                     BCI_ALLOC, nullptr, true,
+                                                     Profiler::instance()->recordingEpoch());
     EXPECT_NE(0u, trace);
     EXPECT_EQ(1, stack_calls);
     EXPECT_EQ(1, Counters::getCounter(ALLOC_STACK_VM_FALLBACK));
     EXPECT_EQ(0, Counters::getCounter(ALLOC_STACK_VM));
     EXPECT_FALSE(ProfiledThread::current()->isProtected());
+}
+
+// An allocation callback reads the recording epoch before it resolves its
+// class id. If a stop() moved it meanwhile, recordJVMTISample() must drop the
+// sample before capturing a stack or emitting anything, and a sample carrying
+// the current epoch must still be recorded afterwards.
+TEST_F(AllocStackDiagnosticsTest, StaleRecordingEpochIsRejected) {
+    u32 current = Profiler::instance()->recordingEpoch();
+
+    u64 stale = Profiler::instance()->recordJVMTISample(
+        1, 1, reinterpret_cast<jthread>(1), BCI_ALLOC, nullptr, true, current - 1);
+    EXPECT_EQ(0u, stale);
+    EXPECT_EQ(0, stack_calls) << "a stale sample must be dropped before the stack walk";
+
+    u64 fresh = Profiler::instance()->recordJVMTISample(
+        1, 1, reinterpret_cast<jthread>(1), BCI_ALLOC, nullptr, true, current);
+    EXPECT_NE(0u, fresh);
+    EXPECT_EQ(1, stack_calls);
 }
 
 TEST_F(AllocStackDiagnosticsTest, JvmtiTruncationRequiresAFrameBeyondTheLimit) {
@@ -206,7 +231,8 @@ TEST_F(AllocStackDiagnosticsTest, JvmtiTruncationRequiresAFrameBeyondTheLimit) {
         state.mode = ALLOCSTACK_JVMTI;
         ProfilerTestAccessor::state(state);
         u64 id = Profiler::instance()->recordJVMTISample(1, 1, reinterpret_cast<jthread>(1),
-                                                        BCI_ALLOC, nullptr, true);
+                                                        BCI_ALLOC, nullptr, true,
+                                                     Profiler::instance()->recordingEpoch());
         bool found = false;
         ProfilerTestAccessor::processTraces([&](const CallTraceSet& traces) {
             for (const CallTrace* trace : traces) {

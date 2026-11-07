@@ -8,24 +8,63 @@
 #define _MALLOCTRACER_H
 
 #include <stdint.h>
+#include "codeCache.h"
 #include "engine.h"
 #include "event.h"
 #include "mutex.h"
 #include "pidController.h"
 
+// Tracks a patched GOT slot for malloc hooks, enabling safe restoration.
+struct MallocPatchEntry {
+  CodeCache* _lib;      // Library containing the patched slot
+  void** _location;     // Address of the GOT slot
+  void* _hook;          // Hook written to the slot
+  void* _orig;          // Slot content before patching (original, PLT stub or other interposer); the
+                        // resolved original only if the entry of a stale hook was lost (orphan table full)
+};
+
 // Manages GOT-patching for malloc interception across all loaded native libraries.
+// Unlike pthread_create hooks (persistent), malloc hooks are recording-specific
+// and are unpatched on stop() to minimize overhead when not profiling.
 class MallocHooker {
+  friend class MallocHookerTestAccessor;
+
   private:
+    // Guards the patching bookkeeping below off Linux. On Linux patching and
+    // restoring run in LibraryPatcher walks, whose lock guards it instead.
     static Mutex _patch_lock;
     static int _patched_libs;
     static bool _initialized;
 
+    // Up to 5 imports per library (malloc, calloc, realloc, posix_memalign,
+    // aligned_alloc), each with up to NUM_IMPORT_TYPES relocation slots
+    static const int MAX_MALLOC_ENTRIES = 5 * NUM_IMPORT_TYPES * MAX_NATIVE_LIBS;
+    // Entries of libraries a restore pass could not visit stay at the front of
+    // _entries (see keepUnrestoredEntries()); never written through, only
+    // consulted by patchSlot() for the original of a slot still holding our hook.
+    static const int MAX_ORPHAN_ENTRIES = MAX_MALLOC_ENTRIES / 8;
+    static MallocPatchEntry _entries[MAX_MALLOC_ENTRIES];
+    static int _entry_count;
+
     static void detectNestedMalloc();
+    static void patchImport(CodeCache* cc, ImportId id, void* hook_fn, void* orig_fn);
+    static void patchSlot(CodeCache* cc, void** location, void* hook_fn, void* orig_fn);
+    static void patchLibrary(CodeCache* cc);
+    // Shared by the per-platform patchLibraries()/unpatchLibraries()
+    // (mallocTracer_linux.cpp, mallocTracer_macos.cpp).
+    static bool symbolsResolved();
+    static void restoreSlot(const MallocPatchEntry& entry);
+    static void sortEntriesByLibrary();
+    // After a restore pass (restored entries have _lib == nullptr): keeps the
+    // unrestored ones, up to MAX_ORPHAN_ENTRIES, so patchSlot() can recover the
+    // true original of a slot that still holds our hook.
+    static void keepUnrestoredEntries();
 
   public:
     // Returns true if symbols were successfully resolved.
     static bool initialize();
     static void patchLibraries();
+    static void unpatchLibraries();
     static void installHooks();
 };
 

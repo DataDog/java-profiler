@@ -20,7 +20,7 @@
 // ── StringDictionaryBuffer ─────────────────────────────────────────────────
 
 // Native-memory accounting must balance across the arena lifecycle: the root
-// SBTable and initial chunk are counted at construction, growth adds overflow
+// SBTable and initial chunk are counted at the first insert, growth adds overflow
 // SBTables and arena chunks, clear() returns to the construction baseline, and
 // destruction releases everything. 50k keys force at least one extra 512 KiB
 // arena chunk so chunk alloc/free pairing is exercised too.
@@ -28,6 +28,8 @@ TEST(StringDictionaryBufferTest, NativeMemAccountingBalancesAcrossLifecycle) {
     long long before = NativeMem::live(NM_DICTIONARY);
     {
         StringDictionaryBuffer buf;
+        EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY));  // allocated on first insert
+        buf.insert_with_id("first", 5, 1);
         long long after_ctor = NativeMem::live(NM_DICTIONARY);
         EXPECT_GT(after_ctor, before);  // root SBTable + initial arena chunk
 
@@ -242,6 +244,64 @@ TEST_F(StringDictionaryTest, BoundedLookupFindsActiveEntry) {
 
 TEST_F(StringDictionaryTest, BoundedLookupReturnsZeroOnMiss) {
     EXPECT_EQ(0u, dict.bounded_lookup("Absent", 6));
+}
+
+// ── StringDictionary release() (idle footprint) ──────────────────────────
+
+// A dictionary nothing has written to holds no memory: buffers allocate their
+// root table and first arena chunk on the first insert.
+TEST(StringDictionaryReleaseTest, ConstructionAllocatesNothing) {
+    long long before = NativeMem::live(NM_DICTIONARY);
+    StringDictionary dict;
+    EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY));
+    EXPECT_EQ(0u, dict.bounded_lookup("absent", 6));  // read-only probe allocates nothing
+    EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY));
+    EXPECT_GT(dict.lookup("key", 3), 0u);
+    EXPECT_GT(NativeMem::live(NM_DICTIONARY), before);
+}
+
+// release() frees every root table and arena chunk, invalidates the ids handed
+// out (generation bump), and leaves the dictionary open: the next lookup
+// inserts and allocates again.  The id counter keeps counting, so a new id
+// cannot alias one handed out before the release.
+TEST(StringDictionaryReleaseTest, ReleaseFreesAllStorageAndStaysOpen) {
+    long long before = NativeMem::live(NM_DICTIONARY);
+    {
+        StringDictionary dict;
+        u32 old_id = dict.lookup("java/lang/String", 16);
+        ASSERT_GT(old_id, 0u);
+        ASSERT_GT(NativeMem::live(NM_DICTIONARY), before);
+        u64 generation = dict.generation();
+
+        ASSERT_TRUE(dict.release());
+        EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY));
+        EXPECT_GT(dict.generation(), generation);
+        EXPECT_EQ(0, dict.activeSize());
+        EXPECT_EQ(0u, dict.bounded_lookup("java/lang/String", 16));  // gone, nothing allocated
+        EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY));
+
+        u32 new_id = dict.lookup("Other", 5);
+        EXPECT_GT(new_id, old_id);
+        EXPECT_GT(NativeMem::live(NM_DICTIONARY), before);
+        EXPECT_EQ(new_id, dict.lookup("Other", 5));
+        EXPECT_TRUE(dict.rotate());
+        EXPECT_EQ(new_id, dict.lookup("Other", 5));
+        EXPECT_TRUE(dict.clearStandby());
+
+        ASSERT_TRUE(dict.release());
+        ASSERT_TRUE(dict.release());  // releasing twice is harmless
+        EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY));
+    }
+    EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY));  // destroying it released is balanced
+}
+
+// clearAll() after release() still restarts the ids, as a fresh start() does.
+TEST(StringDictionaryReleaseTest, ClearAllAfterReleaseRestartsIds) {
+    StringDictionary dict;
+    ASSERT_EQ(1u, dict.lookup("first", 5));
+    ASSERT_TRUE(dict.release());
+    ASSERT_TRUE(dict.clearAll());
+    EXPECT_EQ(1u, dict.lookup("second", 6));
 }
 
 TEST_F(StringDictionaryTest, IdStableAcrossRotations) {
@@ -597,10 +657,24 @@ TEST(StringDictionaryReclamationTest, RotateGivesUpQuicklyOnBufferStillInUse) {
 
 namespace {
 constexpr int kEndpointsOffset = 2;  // the DICTIONARY_ENDPOINTS_* counter rows
+
+// Buffers allocate their root table and first arena chunk on first use; a
+// rotation copies the active entries into the next buffer, so two rotations
+// reach all three.  clearAll() then leaves each with just that storage - the
+// baseline the tests below measure against.
+void allocateAllBuffers(StringDictionary& dict) {
+    dict.lookup("prime", 5);
+    for (int i = 0; i < 2; i++) {
+        ASSERT_TRUE(dict.rotate());
+        ASSERT_TRUE(dict.clearStandby());
+    }
+    ASSERT_TRUE(dict.clearAll());
+}
 }
 
 TEST(StringDictionaryCountersTest, ReseedKeepsGaugesExactAcrossSkippedReset) {
     StringDictionary dict(kEndpointsOffset);
+    allocateAllBuffers(dict);
     Counters::reset();
     dict.reseedCounters();
     const long long base_pages = Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset);
@@ -631,6 +705,7 @@ TEST(StringDictionaryCountersTest, ReseedKeepsGaugesExactAcrossSkippedReset) {
 TEST(StringDictionaryCountersTest, ProfilerResetKeepsCountersAcrossSkippedReset) {
     Profiler* profiler = Profiler::instance();
     StringDictionary* labels = profiler->stringLabelMap();
+    allocateAllBuffers(*labels);
     ASSERT_EQ(0, profiler->resetRecordingStateForTest());
     const long long base_pages = Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset);
     const long long base_bytes = Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset);

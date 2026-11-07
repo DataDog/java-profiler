@@ -315,8 +315,9 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // population is guaranteed reachable by a real walk. Debug-only: the seam does not exist in
       // a release build.
       //
-      // resetKlassPopulationForTest0() first: LivenessTracker's _klass_population table survives
-      // stop()/start() cycles, so an earlier test class could leave a klass already past the
+      // resetKlassPopulationForTest0() first: LivenessTracker's _klass_population table is
+      // cleared only when a recording stops, and the test seams can seed it outside one, so an
+      // earlier test class could leave a klass already past the
       // consecutive_positive hysteresis gate sitting in that table - letting this test's first
       // pass start for a reason unrelated to the seeding below, masking whether that seeding is
       // actually sufficient on its own.

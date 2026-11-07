@@ -91,11 +91,22 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
     // in practice and observed to crash with SIGSEGV.
     return;
   }
+  // Before the class id is resolved and the stack captured: a callback paused
+  // across a stop must not emit (or track) ids from the previous recording.
+  Profiler *profiler = Profiler::instance();
+  u32 recording_epoch = profiler->recordingEpoch();
+  u64 liveness_generation = LivenessTracker::instance()->tableGeneration();
   const char *name_slice = NULL;
   size_t name_len = 0;
   int id = -1;
-  if (normalizeClassSignature(class_name, &name_slice, &name_len)) {
-    id = Profiler::instance()->lookupClass(name_slice, name_len);
+  // A callback that passed _active before stop() must not re-allocate the
+  // class map stop() released: intern only through the open intern gate. The
+  // unlocked check keeps callbacks off the lock while it is closed.
+  if (profiler->internOpen() && normalizeClassSignature(class_name, &name_slice, &name_len)) {
+    OptionalSharedLockGuard intern(profiler->internLock(), SpinLock::NO_SPIN_BUDGET);
+    if (intern.ownsLock() && profiler->internOpen()) {
+      id = profiler->lookupClass(name_slice, name_len);
+    }
   }
   jvmti->Deallocate((unsigned char *)class_name);
   if (id == -1) {
@@ -112,7 +123,8 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
                                 ? 1
                                 : 1 / (1 - exp(-size / (double)_interval)));
 
-    call_trace_id = Profiler::instance()->recordJVMTISample(size, tid, thread, BCI_ALLOC, &event, !_record_allocations);
+    call_trace_id = profiler->recordJVMTISample(size, tid, thread, BCI_ALLOC, &event,
+                                                !_record_allocations, recording_epoch);
 
     if (call_trace_id == 0) {
       return;
@@ -149,7 +161,8 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   // Either we are recording liveness or tracking GC generations (lightweight
   // liveness samples)
   if (_gc_generations || _record_liveness) {
-    LivenessTracker::instance()->track(jni, event, tid, object, call_trace_id);
+    LivenessTracker::instance()->track(jni, event, tid, object, call_trace_id,
+                                       liveness_generation);
   }
 }
 
@@ -189,9 +202,9 @@ Error ObjectSampler::start(Arguments &args) {
   }
   if (_interval > 0) {
     // LivenessTracker is started unconditionally (below) so it picks up this
-    // recording's flags instead of keeping the previous recording's.
-    // It must finish before callbacks are enabled: initialize_table()
-    // publishes _table_cap before _table is allocated.
+    // recording's flags instead of keeping the previous recording's. It must
+    // finish before callbacks are enabled, so that this recording's
+    // allocations find its tracking table in place.
     _alloc_event_count = 0;
     error = LivenessTracker::instance()->start(args);
     if (error) {

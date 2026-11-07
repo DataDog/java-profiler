@@ -37,6 +37,8 @@ static CallTraceStorage* g_storage = nullptr;
 
 extern "C" int LLVMFuzzerInitialize(int* /*argc*/, char*** /*argv*/) {
     g_storage = new CallTraceStorage();
+    // Without the tables every put() drops its trace.
+    g_storage->acquire();
     return 0;
 }
 

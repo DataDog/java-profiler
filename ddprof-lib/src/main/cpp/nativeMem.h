@@ -209,6 +209,11 @@ public:
   static void reset();
 
   static const char *categoryName(NativeMemCategory category);
+
+  // Logs every category's live KB and the total, tagged with `when`, through
+  // TEST_LOG and Log::debug (not open before the first start()). Uses
+  // snprintf: not async-signal-safe.
+  static void logLive(const char *when);
 };
 
 #endif // _NATIVEMEM_H

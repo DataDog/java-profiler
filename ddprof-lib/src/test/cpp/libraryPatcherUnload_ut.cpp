@@ -81,9 +81,12 @@ const PatchKind SOCKET = {
 const PatchKind PTHREAD_CREATE = {
   "pthread_create", im_pthread_create,
   []() {
-    LibraryPatcher::initialize();
+    LibraryPatcher::initialize_persistent();
     LibraryPatcher::patch_libraries();
   },
+  // Note: pthread_create patches are now persistent (never unpatched).
+  // For test cleanup, we use unpatch_libraries() which now only unpatches
+  // socket hooks, but the test still verifies the correct behavior.
   []() { LibraryPatcher::unpatch_libraries(); },
 };
 
@@ -142,8 +145,12 @@ bool unload(void* handle, void** slot, const char* path = g_lib_path) {
 }
 
 // For a DSO that stayed loaded: unpatching must restore the original binding.
+// Note: pthread_create patches are now persistent (never unpatched), so we
+// skip the restoration check for them.
 void unpatchAndVerifyRestored(const PatchKind& kind, const LoadedLib& lib) {
   kind.unpatch();
+  // pthread_create patches are persistent, so don't verify restoration
+  if (&kind == &PTHREAD_CREATE) return;
   if (*lib.slot != lib.orig) _exit(CHILD_NOT_RESTORED);
 }
 
@@ -298,6 +305,8 @@ TEST_P(LibraryPatcherUnloadTest, RepatchDoesNotWriteIntoReusedMapping) {
 // saved slots are valid for the identical layout, but the test DSO has full
 // RELRO, so the new mapping's GOT is read-only again. Re-installing the hooks
 // on the next start must make it writable rather than trust the old state.
+// For the persistent pthread_create patch the unpatch is a no-op, so this also
+// checks that its stale entry does not stop the reloaded GOT being re-hooked.
 TEST_P(LibraryPatcherUnloadTest, RepatchAfterReloadAtSameBase) {
   const PatchKind& kind = *GetParam();
   runInChild([&]() {

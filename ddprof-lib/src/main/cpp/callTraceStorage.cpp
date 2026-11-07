@@ -30,12 +30,22 @@ u64 CallTraceStorage::getNextInstanceId() {
 }
 
 CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storage(nullptr), _scratch_storage(nullptr), _generation_counter(1), _liveness_lock(0) {
-    
+    // No tables yet: acquire() allocates them when a recording starts, so the
+    // storage holds none while the profiler is idle - including before the
+    // first start(), as Profiler's member is constructed when the library loads.
+
+    // Pre-allocate containers to avoid malloc() during hot path operations
+    _liveness_checkers.reserve(4);      // Typical max: 1-2 checkers, avoid growth
+
+    // Initialize counters
+    Counters::set(CALLTRACE_STORAGE_BYTES, 0);
+    Counters::set(CALLTRACE_STORAGE_TRACES, 0);
+}
+
+void CallTraceStorage::allocateTables() {
     // Pre-allocate and pre-size collections with conservative load factor
     _traces_buffer.max_load_factor(0.75f);
     _traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
-
-
 
     _preserve_set_buffer.max_load_factor(0.75f);
     _preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
@@ -55,16 +65,30 @@ CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storag
     scratch_table->setParentStorage(this);
     scratch_table->setInstanceId(getNextInstanceId());
     __atomic_store_n(&_scratch_storage, scratch_table.release(), __ATOMIC_RELEASE);
+}
 
-    // Pre-allocate containers to avoid malloc() during hot path operations
-    _liveness_checkers.reserve(4);      // Typical max: 1-2 checkers, avoid growth
+void CallTraceStorage::acquire() {
+    if (__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE) != nullptr) {
+        return;
+    }
+    allocateTables();
+}
 
-    // Initialize counters
+void CallTraceStorage::release() {
+    freeTables();
+    // The processTraces() collections count under NM_CALLTRACE too; swapping
+    // with empty sets frees their bucket arrays (clear() would keep them).
+    CallTraceSet().swap(_traces_buffer);
+    CallTraceIdSet().swap(_preserve_set_buffer);
     Counters::set(CALLTRACE_STORAGE_BYTES, 0);
     Counters::set(CALLTRACE_STORAGE_TRACES, 0);
 }
 
 CallTraceStorage::~CallTraceStorage() {
+    freeTables();
+}
+
+void CallTraceStorage::freeTables() {
     // Atomically invalidate storage pointers to prevent new put() operations
     // ACQ_REL ordering: RELEASE ensures nullptr is visible to put()'s ACQUIRE load,
     // ACQUIRE ensures we see the latest pointer value for subsequent deletion
@@ -78,14 +102,16 @@ CallTraceStorage::~CallTraceStorage() {
     // a straggler that already holds a guard: a table one still holds after
     // the drain timeout is leaked rather than deleted under it
     // (waitForRefCountToClear() aborts debug builds first).
-    // Note: In triple-buffering, all three pointers should be unique, but check anyway
-    if (RefCountGuard::waitForRefCountToClear(active)) {
+    // Note: In triple-buffering, all three pointers should be unique, but check anyway.
+    // They are all null when the tables were already freed (release()).
+    if (active != nullptr && RefCountGuard::waitForRefCountToClear(active)) {
         delete active;
     }
-    if (standby != active && RefCountGuard::waitForRefCountToClear(standby)) {
+    if (standby != nullptr && standby != active && RefCountGuard::waitForRefCountToClear(standby)) {
         delete standby;
     }
-    if (scratch != active && scratch != standby && RefCountGuard::waitForRefCountToClear(scratch)) {
+    if (scratch != nullptr && scratch != active && scratch != standby &&
+        RefCountGuard::waitForRefCountToClear(scratch)) {
         delete scratch;
     }
 
@@ -122,7 +148,8 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     // MEMORY_ORDER_ACQUIRE: Critical - synchronizes with release stores in processTraces()
     CallTraceHashTable* active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
 
-    // Safety check - if null, system is shutting down
+    // Null while the tables are released (profiler idle, see release()) or
+    // the storage is being destroyed
     if (active == nullptr) {
         Counters::increment(CALLTRACE_STORAGE_DROPPED);
         return DROPPED_TRACE_ID;
@@ -173,6 +200,16 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
  * It is not designed to be called concurrently with itself.
  */
 void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> processor) {
+    // Released or never acquired: hand the processor only the dropped-trace
+    // placeholder, in a local set, so a chunk written while idle does not
+    // re-allocate the collections.
+    if (__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE) == nullptr) {
+        CallTraceSet traces;
+        traces.insert(getDroppedTrace());
+        processor(traces);
+        return;
+    }
+
     // PHASE 1: Collect liveness information with simple lock (rare operation)
     {
         SharedLockGuard lock(&_liveness_lock);

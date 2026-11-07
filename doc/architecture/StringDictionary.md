@@ -26,9 +26,16 @@ key strings are allocated from this arena instead of individual `malloc` calls. 
 
 Consequences:
 
+- **Storage is allocated on first use.** A buffer's root `SBTable` is allocated by its
+  first insert (`ensureTable()`, published by CAS; concurrent first inserts race and the
+  loser frees its copy), and the arena's first chunk by its first `alloc()`
+  (`acquireFirstChunk()`, under the arena's `_growing` lock). A buffer nothing writes to
+  holds no memory.
 - **`clear()` is O(overflow nodes + extra arena chunks)** rather than O(number-of-entries).
   It frees the overflow nodes, `memset`s the root table and resets the arena, which frees
   every chunk after the first and rewinds the first; no per-key `free()` is needed.
+  `release()` (buffer and arena) additionally frees the root table and the first chunk,
+  so the next insert allocates them again.
 - **A lost insert CAS wastes its arena allocation** until the next `clear()`; the waste is
   counted in `DICTIONARY_ARENA_WASTE_BYTES`.
 - **The arena does not make a stale reader safe.** `clear()` keeps only the root table
@@ -89,6 +96,9 @@ Different callers reach the dictionary under different locking contexts:
                         │                                        │
   Profiler::start() ────┼──→ clearAll()                         │
   (_state_lock held)    │    resets all three buffers            │
+                        │                                        │
+  Profiler::stop() ─────┼──→ release()  (class, string-label)    │
+  (_state_lock held)    │    frees all storage, keeps ids        │
                         └────────────────────────────────────────┘
 ```
 
@@ -212,6 +222,38 @@ start) without `lockAll()`, and for a dictionary that was not reset increments `
 logs a warning after `Counters::reset()`, then continues. An unreset dictionary stays
 consistent (ids valid, generation unchanged), and the Java `ContextValueCache` is only
 invalidated when the context-value dictionary was actually reset.
+
+## release() Protocol
+
+`release()` runs the same drain as `clearAll()` (steps 1, 2, 4, 6, 7), but in step 3
+calls `release()` on each buffer, freeing the root tables and every arena chunk, and
+it **skips step 5**: the id counter is not restarted, so an id handed out before the
+release can never alias a key inserted after it. The dictionary stays open; a caller
+racing the release, or one that looks keys up while the profiler is idle, gets ids from
+freshly allocated storage. Callers outside the recording's engines that intern into
+the class-name and string-label maps go through the profiler's intern gate:
+`recordTrace0` (endpoints), `recordQueueEnd0` (queue-time class names) and
+`ObjectSampler::recordAllocation()` (allocated class names; a JVMTI callback can still
+be running after the allocation engine stopped). While the gate is closed they intern
+nothing, so the released maps stay empty until the next start. They check the atomic
+`Profiler::_intern_open` first (one load while closed), do their JNI/JVMTI work, then
+hold a shared lock on `_intern_lock` only around the inserts and re-check the flag under
+it. `start()` opens the gate right after `acquireRecordingMemory()`, before any engine
+starts. `releaseRecordingMemory()` (end of `stop()`, and every failed `start()` through
+a scope guard) clears the flag and then takes the lock exclusively once, which waits
+only for calls already holding it: a call that takes it afterwards sees the flag
+cleared, and new calls are turned away before they lock, so they cannot starve the
+drain. `_state` is still `RUNNING` there, so `isRunning()` could not do this.
+On a drain timeout nothing is freed and the caller reports it.
+
+`Profiler::releaseRecordingMemory()` releases `_class_map` and `_string_label_map` at
+the end of `stop()`. It deliberately does **not** release `_context_value_map`: each
+thread caches the encodings of its context values in its `ProfiledThread` tag-encoding
+sidecar (see [TLSContext.md](TLSContext.md)), and a span that stays active across a
+stop/resume keeps sampling them until it rewrites its context. Kept, they stay
+resolvable, because `rotate()` carries every entry into the next recording's constant
+pool. Only a fresh start's `clearAll()` resets that dictionary; an encoding cached
+across a fresh start can then name a different value until the context is rewritten.
 
 ---
 
@@ -370,9 +412,9 @@ lossless; both require a thread stuck in a guarded insert for a whole dump cycle
 
 - Ids start at 1; 0 means "no entry" (miss, size limit reached, allocation failure,
   or `_accepting` false). `nextId()` skips 0 when the `u32` counter wraps.
-- `generation()` is bumped only by a successful `clearAll()`. Caches keyed by class-map
-  ids (`LivenessTracker`, `ReferenceChainTracker`) compare it to detect that the id
-  namespace was reset.
+- `generation()` is bumped by a successful `clearAll()` or `release()`. Caches keyed by
+  class-map ids (`LivenessTracker`, `ReferenceChainTracker`) compare it to detect that
+  the entries behind their ids are gone.
 - The constructor argument (1, 2, 3 for the class, string-label and context-value maps)
   is an offset into the per-dictionary `DICTIONARY_*` counter rows (`counters.h`):
   `DICTIONARY_BYTES` / `DICTIONARY_PAGES` track storage, `DICTIONARY_KEYS` /
@@ -387,7 +429,8 @@ lossless; both require a thread stuck in a guarded insert for a whole dump cycle
 
 | Invariant | Enforced by |
 |-----------|-------------|
-| No UAF during `clearAll()` reset | Per-dictionary drain + seq_cst `_accepting` recheck; on drain timeout nothing is reset |
+| No UAF during `clearAll()` / `release()` | Per-dictionary drain + seq_cst `_accepting` recheck; on drain timeout nothing is reset or freed |
+| No id aliasing across `release()` | `release()` keeps `_next_id` |
 | No UAF during `clearStandby()` | Drain of the clear target; on timeout the clear is skipped |
 | No entry lost during `rotate()`, unless its drain times out | Two-phase copy + `waitForRefCountToClear(old_active)` drains late JNI insertors; after a release-build timeout an insert by a straggler may miss the dump snapshot (it stays memory-safe: `clearStandby()` drains before clearing) |
 | One id per key across `rotate()`, unless its drain times out | Mid-rotation misses take their id from `old_active`, the id Phase 2 copies |

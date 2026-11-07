@@ -1,4 +1,10 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include "gtest/gtest.h"
+#include "common.h"
 #include "linearAllocator.h"
 #include "nativeMem.h"
 
@@ -99,3 +105,40 @@ TEST_F(LinearAllocatorNativeMemTest, FreeChunksReturnsLiveToZero) {
   EXPECT_EQ(0, NativeMem::live(NM_CALLTRACE))
       << "freeing the detached chunks un-records exactly what alloc() recorded";
 }
+
+#ifdef ASAN_ENABLED
+#include <sanitizer/asan_interface.h>
+
+// clear() poisons used chunk bytes, and chunks are unmapped with a raw syscall
+// ASan does not intercept, so a chunk must be unpoisoned as it is given back.
+// Otherwise the stale poison outlives the mapping, and once the kernel reuses
+// the range - e.g. for a new thread's stack, where errno lives - ASan reports
+// use-after-poison there. __asan_region_is_poisoned() reads only the shadow,
+// so it is safe on the unmapped range.
+TEST_F(LinearAllocatorNativeMemTest, DestroyedAllocatorLeavesNoAsanPoison) {
+  char* in_chunk;
+  {
+    LinearAllocator allocator(CHUNK_SIZE);
+    in_chunk = static_cast<char*>(allocator.alloc(256));
+    ASSERT_NE(nullptr, in_chunk);
+  }  // ~LinearAllocator(): clear() poisons, then the kept chunk is unmapped
+  EXPECT_EQ(nullptr, __asan_region_is_poisoned(in_chunk, 256));
+}
+
+TEST_F(LinearAllocatorNativeMemTest, ChunksFreedByClearLeaveNoAsanPoison) {
+  LinearAllocator allocator(CHUNK_SIZE);
+  char* first = static_cast<char*>(allocator.alloc(3000));
+  ASSERT_NE(nullptr, first);
+  // Fill past the first chunk so clear() has a newer chunk to free.
+  char* last = first;
+  for (int i = 0; i < (int)(CHUNK_SIZE / 3000) + 50; i++) {
+    char* p = static_cast<char*>(allocator.alloc(3000));
+    if (p != nullptr) last = p;
+  }
+  ASSERT_GE((size_t)(last > first ? last - first : first - last), CHUNK_SIZE / 2)
+      << "allocations should have crossed into a second chunk";
+
+  allocator.clear();  // frees every chunk but the oldest, which it keeps (poisoned)
+  EXPECT_EQ(nullptr, __asan_region_is_poisoned(last, 3000));
+}
+#endif // ASAN_ENABLED

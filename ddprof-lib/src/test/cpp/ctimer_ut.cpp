@@ -16,13 +16,17 @@
 #include "profiler.h"
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <malloc.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <thread>
+#include <time.h>
 #include <unistd.h>
 
 // mallinfo2() reports the bytes in use only with glibc's own allocator: it is
@@ -419,6 +423,27 @@ TEST_F(CTimerNativeMemTest, SameSizeRestartDoesNotFreezeUnregistration) {
   EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
 }
 
+// stop() frees the table, so a start() normally allocates into none. No hook
+// call can be inside a missing table, so that takes no freeze: with a hook call
+// held in flight, a freeze would time out, so success shows that none ran.
+TEST_F(CTimerNativeMemTest, AllocatingIntoEmptyTableDoesNotFreeze) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_EQ(nullptr, CTimerTestAccessor::timers());
+  ProfilerTestAccessor::DrainBudget budget(100000000LL);
+
+  Error error = Error::OK;
+  {
+    ProfilerTestAccessor::HookCallHold hold(profiler);
+    error = CTimerTestAccessor::sizeTimerTable(64);
+  }
+
+  EXPECT_FALSE((bool)error);
+  EXPECT_NE(nullptr, CTimerTestAccessor::timers());
+  EXPECT_EQ(64, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(bytes(64), NativeMem::live(NM_CTIMER));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+}
+
 // A size change replaces the table only under a freeze. While a hook call is
 // still in flight after the wait budget, start() fails retryably and keeps the
 // old table, and unregistration is open again afterwards.
@@ -482,6 +507,72 @@ TEST_F(CTimerNativeMemTest, ResizeFreesOldTable) {
   // Halfway between the freed (new - old) and leaked (new) outcomes.
   EXPECT_LT(grown, bytes(new_slots) - bytes(old_slots) / 2);
 #endif
+}
+
+// stop() deletes every timer and then frees the table under a freeze, so the
+// idle profiler holds none of it and the gauge drops to zero; the next start()
+// allocates it again (sizeTimerTable() sees an empty table).
+TEST_F(CTimerNativeMemTest, StopFreesTableWhenHookCallsDrain) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));
+  CTimer engine;
+
+  engine.stop();
+
+  EXPECT_EQ(nullptr, CTimerTestAccessor::timers());
+  EXPECT_EQ(0, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+
+  EXPECT_FALSE((bool)CTimerTestAccessor::sizeTimerTable(64));
+  EXPECT_NE(nullptr, CTimerTestAccessor::timers());
+  EXPECT_EQ(bytes(64), NativeMem::live(NM_CTIMER));
+}
+
+// A freed table cannot be inspected, so a live kernel timer shows the sweep:
+// stop() must delete it before freeing the slot that holds its id.
+TEST_F(CTimerNativeMemTest, StopDeletesTimersBeforeFreeingTable) {
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));
+  struct sigevent sev;
+  memset(&sev, 0, sizeof(sev));
+  sev.sigev_notify = SIGEV_NONE;
+  int timer = -1;
+  ASSERT_EQ(0, syscall(__NR_timer_create, CLOCK_MONOTONIC, &sev, &timer));
+  CTimerTestAccessor::timers()[5] = timer + 1;
+  CTimer engine;
+
+  engine.stop();
+
+  ASSERT_EQ(nullptr, CTimerTestAccessor::timers());
+  long deleted_again = syscall(__NR_timer_delete, timer);
+  int delete_errno = errno;
+  EXPECT_EQ(-1, deleted_again) << "stop() freed the table without deleting its timer";
+  EXPECT_EQ(EINVAL, delete_errno);
+}
+
+// A hook call still inside the table after the wait budget may index it at any
+// time, so stop() keeps the table rather than freeing it under the call, still
+// deletes the timers in it, and reopens unregistration afterwards.
+TEST_F(CTimerNativeMemTest, StopKeepsTableWhenHookCallsDoNotDrain) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));
+  int *table = CTimerTestAccessor::timers();
+  // A slot holding a timer id (timer_id + 1). The id is never a live timer, so
+  // the sweep's timer_delete() fails harmlessly; the slot must still clear.
+  table[5] = 0x7ffffff0;
+  CTimer engine;
+  ProfilerTestAccessor::DrainBudget budget(100000000LL);
+
+  {
+    ProfilerTestAccessor::UnregisterCallHold hold(profiler);
+    engine.stop();
+  }
+
+  EXPECT_EQ(table, CTimerTestAccessor::timers());
+  EXPECT_EQ(64, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(0, table[5]) << "the timers must be deleted even when the table is kept";
+  EXPECT_EQ(bytes(64), NativeMem::live(NM_CTIMER));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
 }
 
 // Profiler::registerThread() is reached from the pthread hook without

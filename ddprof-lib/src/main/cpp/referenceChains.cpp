@@ -442,9 +442,9 @@ void ReferenceChainTracker::stop() {
     _pending_abandoned_events.clear();
   }
 
-  // Do not disable GC notifications here - LivenessTracker follows the same rule since the JVMTI
-  // env and its tracker singletons are expected to survive across multiple start/stop recording
-  // cycles.
+  // Do not disable GC notifications here - LivenessTracker follows the same rule: the JVMTI env
+  // and its tracker singletons outlive start/stop recording cycles, even though LivenessTracker
+  // frees its tracking state on every stop (LivenessTracker::release()).
 }
 
 void ReferenceChainTracker::startThread() {

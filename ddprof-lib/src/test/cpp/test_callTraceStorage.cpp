@@ -41,6 +41,7 @@ protected:
         // Install crash handler for debugging potential issues
         installGtestCrashHandler<TEST_NAME>();
         storage = std::make_unique<CallTraceStorage>();
+        storage->acquire();
     }
 
     void TearDown() override {
@@ -465,6 +466,69 @@ TEST_F(CallTraceStorageTest, ClearMethod) {
         traces_after_clear = traces.size();
     });
     EXPECT_EQ(traces_after_clear, 1);
+}
+
+// release() frees the three tables and the processTraces() collections, so
+// the storage holds no NM_CALLTRACE memory; put() drops its trace meanwhile.
+// acquire() brings the tables back and traces are stored again.
+TEST_F(CallTraceStorageTest, ReleaseFreesAllMemoryAndAcquireRestoresIt) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    ASGCT_CallFrame frame;
+    frame.bci = 10;
+    frame.method_id = (jmethodID)0x1234;
+
+    // The fixture's storage is constant throughout; measure a local one.
+    long long baseline = NativeMem::live(NM_CALLTRACE);
+    {
+        CallTraceStorage local;
+        local.acquire();
+        ASSERT_NE(CallTraceStorage::DROPPED_TRACE_ID, local.put(1, &frame, false, 1));
+        ASSERT_GT(NativeMem::live(NM_CALLTRACE), baseline);
+
+        local.release();
+        EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));
+        EXPECT_EQ(CallTraceStorage::DROPPED_TRACE_ID, local.put(1, &frame, false, 1));
+        local.clear();  // what a fresh start() does; must tolerate released tables
+        EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));
+
+        local.release();  // releasing twice is harmless
+        EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));
+
+        local.acquire();
+        EXPECT_GT(NativeMem::live(NM_CALLTRACE), baseline);
+        u64 trace_id = local.put(1, &frame, false, 1);
+        ASSERT_NE(CallTraceStorage::DROPPED_TRACE_ID, trace_id);
+        // A redundant acquire() keeps the tables (and the stored trace) as is.
+        long long live_before_redundant = NativeMem::live(NM_CALLTRACE);
+        local.acquire();
+        EXPECT_EQ(live_before_redundant, NativeMem::live(NM_CALLTRACE));
+        CallTrace* found = nullptr;
+        local.processTraces([&](const CallTraceSet& traces) {
+            found = findTraceById(traces, trace_id);
+        });
+        EXPECT_NE(nullptr, found);
+
+        local.release();
+        EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));
+    }
+    EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));  // destroying it released is balanced
+}
+
+// A released (or never acquired) storage hands the processor only the
+// dropped-trace placeholder and allocates no tables.
+TEST_F(CallTraceStorageTest, ProcessTracesOnReleasedStorageYieldsOnlyPlaceholder) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    long long baseline = NativeMem::live(NM_CALLTRACE);
+    CallTraceStorage local;
+    int calls = 0;
+    size_t size = 0;
+    local.processTraces([&](const CallTraceSet& traces) {
+        calls++;
+        size = traces.size();
+    });
+    EXPECT_EQ(1, calls);
+    EXPECT_EQ(1u, size);
+    EXPECT_EQ(baseline, NativeMem::live(NM_CALLTRACE));
 }
 
 TEST_F(CallTraceStorageTest, ConcurrentClearAndPut) {
@@ -1437,6 +1501,7 @@ TEST(CallTraceStorageDrainTest, DestructorLeaksTableStillGuarded) {
     ProfiledThread::initCurrentThreadSignalSafe();
     const long long live_before = NativeMem::live(NM_CALLTRACE);
     CallTraceStorage* storage = new CallTraceStorage();
+    storage->acquire();
     u64 id;
     CallTrace* held = putAndFindTrace(storage, 4343, &id);
     ASSERT_NE(nullptr, held);
@@ -1464,6 +1529,7 @@ TEST(CallTraceStorageDrainTest, DestructorLeaksTableStillGuarded) {
 TEST(CallTraceStorageDrainTest, ProcessTracesAfterFailedDrainLeaksOnce) {
     ProfiledThread::initCurrentThreadSignalSafe();
     CallTraceStorage storage;
+    storage.acquire();
     u64 id;
     CallTrace* held = putAndFindTrace(&storage, 4444, &id);
     ASSERT_NE(nullptr, held);

@@ -174,6 +174,11 @@ private:
   // the Java layer to drop its process-wide ContextValueCache so no stale encoding is reused. See
   // JavaProfiler.execute / ContextValueCache.
   std::atomic<bool> _context_value_dict_reset{false};
+  // Intern gate for callers outside the recording's engines (recordTrace0,
+  // recordQueueEnd0, allocation callbacks): open while recording, so none
+  // re-allocates a dictionary releaseRecordingMemory() released.
+  SpinLock _intern_lock;
+  std::atomic<bool> _intern_open{false};
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
@@ -218,6 +223,8 @@ private:
   bool _force_jmethodID;
 
   volatile jvmtiEventMode _thread_events_state;
+  // enablePersistentJvmtiEvents() steps that succeeded, one bit per event.
+  u8 _persistent_jvmti_events = 0;
 
   Libraries* _libs;
   u32 _num_context_attributes;
@@ -380,7 +387,8 @@ public:
         _total_samples(0), _sample_seq(0), _failures(),
         _max_stack_depth(0), _calltrace_buffer_capacity(), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _force_jmethodID(true),
-        _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
+        _thread_events_state(JVMTI_DISABLE),
+        _libs(Libraries::instance()),
         _num_context_attributes(0), _omit_stacktraces(false), _alloc_stack(ALLOCSTACK_JVMTI),
         _remote_symbolication(false), _sanity_check_failed(false),
         _sanity_check_message(NULL), _dlopen_entry(NULL) {
@@ -443,6 +451,14 @@ public:
     return _state.load(std::memory_order_acquire) == RUNNING;
   }
 
+  // Check internOpen(), do the JNI work, then hold a shared lock on
+  // internLock() (OptionalSharedLockGuard, SpinLock::NO_SPIN_BUDGET) around
+  // the inserts and re-check internOpen() under it. See _intern_lock.
+  SpinLock *internLock() { return &_intern_lock; }
+  bool internOpen() const {
+    return _intern_open.load(std::memory_order_acquire);
+  }
+
   u64 total_samples() { return _total_samples; }
   int max_stack_depth() { return _max_stack_depth; }
   time_t uptime() { return time(NULL) - _start_time; }
@@ -478,10 +494,15 @@ public:
   void registerLivenessChecker(LivenessChecker checker) {
     _call_trace_storage.registerLivenessChecker(checker);
   }
+  void clearLivenessCheckers() {
+    _call_trace_storage.clearLivenessCheckers();
+  }
 
+  // Bumped under lockAll() by dump() and releaseRecordingMemory(), and at the
+  // end of start(): ids cached or resolved under an older value are stale.
+  // Acquire: recordJVMTISample() callers read it before resolving class ids.
   inline u32 recordingEpoch() {
-    // no thread reordering constraints
-    return __atomic_load_n(&_epoch, __ATOMIC_RELAXED);
+    return __atomic_load_n(&_epoch, __ATOMIC_ACQUIRE);
   }
 
   Error init();
@@ -496,6 +517,14 @@ public:
   Error checkState();
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);
+  // Enables the JVMTI events that track JVM metadata (CLASS_LOAD, CLASS_PREPARE,
+  // DYNAMIC_CODE_GENERATED, COMPILED_METHOD_LOAD) until all succeed; never disabled.
+  void enablePersistentJvmtiEvents();
+  // Frees the call-trace storage and buffers, the liveness state and the class
+  // and string-label dictionaries once a recording is over (not the
+  // context-value one). acquireRecordingMemory() reallocates the storage.
+  void releaseRecordingMemory();
+  void acquireRecordingMemory();
   /**
    * Opens both thread-registration gates (see _engines_ready). A CPU engine
    * with a per-thread table calls it from its start() once the table is sized
@@ -609,7 +638,10 @@ public:
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event);
-  u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
+  // recording_epoch: recordingEpoch() read before the caller resolved anything
+  // recording-scoped in event (a class id); a moved one drops the sample.
+  u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event,
+                        bool deferred, u32 recording_epoch);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,
                             ASGCT_CallFrame *frames, bool truncated,

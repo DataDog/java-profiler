@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include "common.h"
 #include "hotspot/vmStructs.inline.h"
 #include "vmEntry.h"
 #include "jniHelper.h"
@@ -641,6 +642,7 @@ void VMStructs::checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni,
         if (strcmp(method_name, "getMemoryUsage0") == 0 &&
             strcmp(method_sig, "(Z)Ljava/lang/management/MemoryUsage;") == 0) {
             _memory_usage_func = (MemoryUsageFunc)address;
+            TEST_LOG("NativeMethodBind: getMemoryUsage0 resolved");
         }
     }
     jvmti->Deallocate((unsigned char *)method_sig);
