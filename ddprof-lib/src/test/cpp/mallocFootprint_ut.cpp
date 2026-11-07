@@ -76,6 +76,12 @@ TEST_F(MallocFootprintTest, OverheadFractionCollapsesWithAllocationSize) {
   if (!allocatorExposesOverhead()) {
     GTEST_SKIP() << "allocator exposes no overhead (sanitizer build)";
   }
+  // The probe reports 0 when it cannot find a contiguous block layout (its own
+  // sanity bound), in which case the overhead fractions below would measure
+  // rounding alone and the magnitude assertions have nothing to stand on.
+  if (MallocFootprint::headerBytes() == 0) {
+    GTEST_SKIP() << "header probe found no contiguous layout; overhead not measurable";
+  }
   struct { size_t size; const char *what; } cases[] = {
       {96,               "MethodMap node"},
       {6 * 1024,         "SBTable"},
