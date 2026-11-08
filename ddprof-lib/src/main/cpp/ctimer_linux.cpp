@@ -249,7 +249,13 @@ Error CTimer::startWithTableSize(Arguments &args, int max_timers) {
 void CTimer::replaySkippedUnregistrations() {
   int count = Profiler::skippedUnregistrationCount();
   for (int i = 0; i < count; i++) {
-    unregisterThread(Profiler::skippedUnregistration(i));
+    deleteTimer(Profiler::skippedUnregistration(i));
+  }
+  // Recorded since this start() cleared the record: those exits' timers stay.
+  int dropped = Profiler::droppedSkippedUnregistrations();
+  if (dropped > 0) {
+    Log::warn("CTimer: %d thread exit(s) during start() did not fit the "
+              "record; their timers may stay until stop()", dropped);
   }
 }
 

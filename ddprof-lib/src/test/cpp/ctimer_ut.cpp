@@ -52,6 +52,8 @@
 class ProfilerTestAccessor {
 public:
   static void clearSkipped() { Profiler::clearSkippedUnregistrations(); }
+  static void recordSkipped(int tid) { Profiler::recordSkippedUnregistration(tid); }
+  static int droppedSkipped() { return Profiler::droppedSkippedUnregistrations(); }
   static int skippedCount() { return Profiler::skippedUnregistrationCount(); }
   static int skippedTid(int index) { return Profiler::skippedUnregistration(index); }
   static bool enginesReady(Profiler *p) {
@@ -1209,6 +1211,29 @@ TEST(CTimerTableTest, SkippedUnregistrationIsReplayed) {
   }
   sigaction(SIGPROF, &saved_sigprof, nullptr);
   free(table);
+}
+
+// Unregistrations past the record's capacity are counted for the replay to
+// report; the clear at the next start() resets both without reporting them.
+TEST(CTimerTableTest, SkippedUnregistrationOverflowIsCountedAndCleared) {
+  ProfilerTestAccessor::clearSkipped();
+  // Record until one does not fit: that one is the first drop.
+  int recorded = 0;
+  for (;;) {
+    ProfilerTestAccessor::recordSkipped(1000 + recorded);
+    if (ProfilerTestAccessor::skippedCount() == recorded) break;
+    recorded++;
+  }
+  EXPECT_EQ(1, ProfilerTestAccessor::droppedSkipped());
+  ProfilerTestAccessor::recordSkipped(1);
+  ProfilerTestAccessor::recordSkipped(2);
+  EXPECT_EQ(3, ProfilerTestAccessor::droppedSkipped());
+  EXPECT_EQ(recorded, ProfilerTestAccessor::skippedCount());
+
+  ProfilerTestAccessor::clearSkipped();
+
+  EXPECT_EQ(0, ProfilerTestAccessor::droppedSkipped());
+  EXPECT_EQ(0, ProfilerTestAccessor::skippedCount());
 }
 
 // A tid equal to the bound must not index one past CTimer's table. The table

@@ -198,12 +198,14 @@ int Profiler::skippedUnregistration(int index) {
   return g_skipped_tids[index].load(std::memory_order_acquire);
 }
 
+int Profiler::droppedSkippedUnregistrations() {
+  return g_skipped_dropped.load(std::memory_order_relaxed);
+}
+
 void Profiler::clearSkippedUnregistrations() {
-  int dropped = g_skipped_dropped.exchange(0, std::memory_order_relaxed);
-  if (dropped > 0) {
-    Log::warn("Profiler: %d skipped thread unregistration(s) did not fit the "
-              "record; their timers or fds may stay until stop()", dropped);
-  }
+  // Silent: records left by stop()'s freeze name timers it already deleted.
+  // The replay, the only consumer, warns about drops that matter.
+  g_skipped_dropped.store(0, std::memory_order_relaxed);
   g_skipped_count.store(0, std::memory_order_relaxed);
 }
 
@@ -1293,9 +1295,10 @@ void Profiler::rollBackStart() {
   disableEngines();
   switchLibraryTrap(false);
   _libs->stopRefresher();
-  lockAll();
-  _jfr.stop();
-  unlockAll();
+  {
+    AllStripesLock stripes(this);
+    _jfr.stop();
+  }
   LibraryPatcher::unpatch_libraries();
 }
 
@@ -2694,19 +2697,20 @@ void Profiler::releaseRecordingMemory() {
   // under them) and free them after: signal handlers share these locks.
   CallTraceBuffer *buffers[CONCURRENCY_LEVEL];
   size_t capacities[CONCURRENCY_LEVEL];
-  lockAll();
-  // Invalidates ids resolved or cached (wall-clock call_trace_id) against the
-  // storage freed below; start() bumps again before its engines start.
-  __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
-  // Release: a callback that acquires the new value sees the closed gate.
-  __atomic_add_fetch(&_session, 1, __ATOMIC_RELEASE);
-  for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-    buffers[i] = _calltrace_buffer[i];
-    capacities[i] = _calltrace_buffer_capacity[i];
-    _calltrace_buffer[i] = NULL;
-    _calltrace_buffer_capacity[i] = 0;
+  {
+    AllStripesLock stripes(this);
+    // Invalidates ids resolved or cached (wall-clock call_trace_id) against the
+    // storage freed below; start() bumps again before its engines start.
+    __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
+    // Release: a callback that acquires the new value sees the closed gate.
+    __atomic_add_fetch(&_session, 1, __ATOMIC_RELEASE);
+    for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+      buffers[i] = _calltrace_buffer[i];
+      capacities[i] = _calltrace_buffer_capacity[i];
+      _calltrace_buffer[i] = NULL;
+      _calltrace_buffer_capacity[i] = 0;
+    }
   }
-  unlockAll();
   // Outside the locks too: release() unpublishes each table and drains its
   // guards before deleting it, so a late put() just drops its trace.
   _call_trace_storage.release();
@@ -2736,9 +2740,8 @@ void Profiler::releaseRecordingMemory() {
 
 void Profiler::acquireRecordingMemory() {
   // The dictionaries need nothing here: they allocate on demand.
-  lockAll();
+  AllStripesLock stripes(this);
   _call_trace_storage.acquire();
-  unlockAll();
 }
 
 int Profiler::resetRecordingState() {

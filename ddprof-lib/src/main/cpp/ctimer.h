@@ -62,6 +62,7 @@ protected:
   // pid_max, so a test can drive the allocation-failure path.
   Error startWithTableSize(Arguments &args, int max_timers);
   int registerThread(int tid);
+  // The Engine hook; internal callers use deleteTimer() directly.
   void unregisterThread(int tid);
   // Unregisters the tids recorded by Profiler::recordSkippedUnregistration(),
   // after the listing may have armed a timer for an exited thread.

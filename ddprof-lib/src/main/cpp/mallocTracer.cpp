@@ -307,6 +307,7 @@ void MallocHooker::patchSlot(CodeCache* cc, void** location, void* hook_fn, void
     _entries[_entry_count]._location = location;
     _entries[_entry_count]._hook = hook_fn;
     _entries[_entry_count]._orig = current;
+    _entries[_entry_count]._orig_resolved = current == orig_fn;
     _entry_count++;
 
     // Write the hook function pointer directly to the GOT slot. The caller has
@@ -327,13 +328,23 @@ void MallocHooker::restoreSlot(const MallocPatchEntry& entry) {
 }
 
 void MallocHooker::keepUnrestoredEntries() {
-    int kept = 0;
-    for (int i = 0; i < _entry_count && kept < MAX_ORPHAN_ENTRIES; i++) {
-        if (_entries[i]._lib != nullptr) {
-            _entries[kept++] = _entries[i];
+    // In place, without allocating: this runs under the walk's lock.
+    MallocPatchEntry* end = std::remove_if(_entries, _entries + _entry_count,
+        [](const MallocPatchEntry& e) { return e._lib == nullptr; });
+    // Front: entries whose original only the entry knows (a PLT stub or another
+    // interposer's wrapper); patchSlot() rebuilds the rest without them.
+    MallocPatchEntry* rebuildable = std::partition(_entries, end,
+        [](const MallocPatchEntry& e) { return !e._orig_resolved; });
+    int count = static_cast<int>(end - _entries);
+    if (count > MAX_ORPHAN_ENTRIES) {
+        int lost = static_cast<int>(rebuildable - _entries) - MAX_ORPHAN_ENTRIES;
+        if (lost > 0) {
+            Log::warn("Malloc hook table: %d unrestored slot(s) lost their original; "
+                      "a later stop() restores the resolved allocator there", lost);
         }
+        count = MAX_ORPHAN_ENTRIES;
     }
-    _entry_count = kept;
+    _entry_count = count;
 }
 
 // Groups each library's entries into a single run, so that a library is

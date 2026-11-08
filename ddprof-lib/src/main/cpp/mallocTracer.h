@@ -21,6 +21,7 @@ struct MallocPatchEntry {
   void* _hook;          // Hook written to the slot
   void* _orig;          // Slot content before patching (original, PLT stub or other interposer); the
                         // resolved original only if the entry of a stale hook was lost (orphan table full)
+  bool _orig_resolved;  // _orig is the resolved original: patchSlot() can rebuild it without the entry
 };
 
 // Manages GOT-patching for malloc interception across all loaded native libraries.
@@ -57,7 +58,8 @@ class MallocHooker {
     static void sortEntriesByLibrary();
     // After a restore pass (restored entries have _lib == nullptr): keeps the
     // unrestored ones, up to MAX_ORPHAN_ENTRIES, so patchSlot() can recover the
-    // true original of a slot that still holds our hook.
+    // true original of a slot that still holds our hook. Over the cap it drops
+    // _orig_resolved entries first.
     static void keepUnrestoredEntries();
 
   public:

@@ -321,7 +321,9 @@ private:
   constexpr static double HEAP_FLOOR_FLOOR_REL_MIN = 0.01;
   constexpr static u64 HEAP_FLOOR_FLOOR_ABS_MIN = 1ULL << 19;    // 512KiB
 
-  bool _initialized;
+  // Atomic: onGC() reads it on a GC thread while release() and initialize()
+  // write it. It only gates scalar updates there, so that read is relaxed.
+  std::atomic<bool> _initialized;
   // Atomic: allocation callbacks (track() and its admission and growth paths)
   // read _enabled and _table_max_cap outside the table lock, while start() and
   // release() change them.

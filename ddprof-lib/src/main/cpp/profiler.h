@@ -108,6 +108,8 @@ private:
   static void recordSkippedUnregistration(int tid);
   static int skippedUnregistrationCount();
   static int skippedUnregistration(int index);
+  // Unregistrations that did not fit the record since the last clear.
+  static int droppedSkippedUnregistrations();
   static void clearSkippedUnregistrations();
   // signal handlers
   static volatile bool _signals_initialized;
@@ -294,6 +296,15 @@ private:
   // that turns it into DICTIONARY_DRAIN_TIMEOUTS and a warning.
   void reportDrainTimeout(const char *what);
   void unlockAll();
+  // Holds every stripe lock for its scope.
+  class AllStripesLock {
+    Profiler *_profiler;
+  public:
+    explicit AllStripesLock(Profiler *profiler) : _profiler(profiler) { _profiler->lockAll(); }
+    ~AllStripesLock() { _profiler->unlockAll(); }
+    AllStripesLock(const AllStripesLock &) = delete;
+    AllStripesLock &operator=(const AllStripesLock &) = delete;
+  };
 
   // Rotate all three dictionaries, then run jfr_op under lockAll().
   //
@@ -320,9 +331,10 @@ private:
     if (!_context_value_map.rotate()) {
       reportDrainTimeout("Context value map reused a standby buffer it could not clear");
     }
-    lockAll();
-    jfr_op();
-    unlockAll();
+    {
+      AllStripesLock stripes(this);
+      jfr_op();
+    }
     if (!_class_map.clearStandby()) {
       reportDrainTimeout("Class map standby buffer not cleared");
     }

@@ -35,6 +35,16 @@ public:
     MallocHooker::_entry_count = 0;
   }
   static int maxEntries() { return MallocHooker::MAX_MALLOC_ENTRIES; }
+  static int maxOrphanEntries() { return MallocHooker::MAX_ORPHAN_ENTRIES; }
+  static void setEntry(int index, CodeCache* lib, void* orig, bool orig_resolved) {
+    MallocPatchEntry& e = MallocHooker::_entries[index];
+    e._lib = lib;
+    e._location = reinterpret_cast<void**>(0x10000 + index * sizeof(void*));
+    e._hook = nullptr;
+    e._orig = orig;
+    e._orig_resolved = orig_resolved;
+  }
+  static void keepUnrestoredEntries() { MallocHooker::keepUnrestoredEntries(); }
   static int patchedLibs() { return MallocHooker::_patched_libs; }
   static void setPatchedLibs(int count) { MallocHooker::_patched_libs = count; }
   static void unpatchLibraries() { MallocHooker::unpatchLibraries(); }
@@ -103,6 +113,48 @@ TEST_F(MallocHookerSlots, PatchRecordsHookedSlotWithoutEntryAgainstKnownOriginal
   EXPECT_EQ(original(), MallocHookerTestAccessor::entry(0)._orig);
   MallocHookerTestAccessor::restoreSlot(0);
   EXPECT_EQ(original(), slot);
+}
+
+// Over the orphan cap, the entries dropped are those whose original patchSlot()
+// rebuilds anyway; another interposer's wrapper survives wherever it sits.
+TEST_F(MallocHookerSlots, KeepUnrestoredEntriesDropsRebuildableOnesFirst) {
+  const int cap = MallocHookerTestAccessor::maxOrphanEntries();
+  const int foreign_count = 10;
+  const int total = cap + foreign_count + 5;
+  for (int i = 0; i < total - foreign_count; i++) {
+    MallocHookerTestAccessor::setEntry(i, &lib, original(), true);
+  }
+  // Last, where a prefix cut would drop them.
+  for (int i = total - foreign_count; i < total; i++) {
+    MallocHookerTestAccessor::setEntry(i, &lib, foreign(), false);
+  }
+  MallocHookerTestAccessor::setEntry(0, nullptr, original(), true);  // restored
+  MallocHookerTestAccessor::setEntryCount(total);
+
+  MallocHookerTestAccessor::keepUnrestoredEntries();
+
+  ASSERT_EQ(cap, MallocHookerTestAccessor::entryCount());
+  int foreign_kept = 0;
+  for (int i = 0; i < cap; i++) {
+    EXPECT_NE(nullptr, MallocHookerTestAccessor::entry(i)._lib) << "restored entry kept at " << i;
+    foreign_kept += MallocHookerTestAccessor::entry(i)._orig == foreign();
+  }
+  EXPECT_EQ(foreign_count, foreign_kept);
+}
+
+// The entry notes whether its original is the resolved one.
+TEST_F(MallocHookerSlots, PatchNotesWhetherOriginalIsResolved) {
+  void* resolved_slot = original();
+  void* foreign_slot = foreign();
+
+  MallocHookerTestAccessor::patchSlot(&lib, &resolved_slot, hook(), original());
+  MallocHookerTestAccessor::patchSlot(&lib, &foreign_slot, hook(), original());
+
+  ASSERT_EQ(2, MallocHookerTestAccessor::entryCount());
+  EXPECT_TRUE(MallocHookerTestAccessor::entry(0)._orig_resolved);
+  EXPECT_FALSE(MallocHookerTestAccessor::entry(1)._orig_resolved);
+  MallocHookerTestAccessor::restoreSlot(0);
+  MallocHookerTestAccessor::restoreSlot(1);
 }
 
 // Every hook must be restorable, so a slot that cannot be recorded stays unhooked.

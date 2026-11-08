@@ -2161,14 +2161,14 @@ void LivenessTracker::rebuildLeakTagPool(bool stale_tags_may_remain) {
   // _leak_tag_free_list on the second release.
   bool tag_owned[LEAK_TAG_POOL_SIZE];
   memset(tag_owned, 0, sizeof(tag_owned));
-  _table_lock.lock();
+  ExclusiveLockGuard table_guard(&_table_lock);
   for (u32 i = 0; i < _table_size; i++) {
     if (_table[i].leak_tag >= LEAK_TAG_BASE &&
         _table[i].leak_tag < LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE) {
       tag_owned[_table[i].leak_tag - LEAK_TAG_BASE] = true;
     }
   }
-  _leak_tag_pool_lock.lock();
+  ExclusiveLockGuard pool_guard(&_leak_tag_pool_lock);
   int free_w = 0;
   for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
     if (_leak_tag_in_use[i] != tag_owned[i]) {
@@ -2184,8 +2184,6 @@ void LivenessTracker::rebuildLeakTagPool(bool stale_tags_may_remain) {
     }
   }
   _leak_tag_free_count = free_w;
-  _leak_tag_pool_lock.unlock();
-  _table_lock.unlock();
 }
 
 void LivenessTracker::prepareLeakTagPool(jvmtiEnv *jvmti, JNIEnv *jni) {
@@ -2858,7 +2856,7 @@ size_t LivenessTracker::resolvePostGcHeapUsage(bool *out_is_last_gc) {
 }
 
 void LivenessTracker::onGC() {
-  if (!_initialized) {
+  if (!_initialized.load(std::memory_order_relaxed)) {
     return;
   }
 
