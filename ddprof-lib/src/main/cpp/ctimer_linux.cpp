@@ -121,7 +121,15 @@ int CTimer::registerThread(int tid) {
   return 0;
 }
 
-void CTimer::unregisterThread(int tid) {
+void CTimer::unregisterThread(int tid) { deleteTimer(tid); }
+
+void CTimer::sweepTimers() {
+  for (int tid = 0; tid < _max_timers; tid++) {
+    deleteTimer(tid);
+  }
+}
+
+void CTimer::deleteTimer(int tid) {
   if (tid < 0 || tid >= __atomic_load_n(&_max_timers, __ATOMIC_ACQUIRE)) {
     return;
   }
@@ -159,13 +167,11 @@ bool CTimer::resizeTimers(int max_timers) {
   return true;
 }
 
-// Only replacing a table needs a freeze; a kept table with an unchanged
-// pid_max is reused. If a hook call is still inside the table after the wait
-// budget, start() fails and keeps it (see Profiler::startCpuEngine()).
+// A table is kept only when stop() could not drain hook calls, so a late
+// registration may have published a timer after its sweep: sweep it again
+// under a freeze before reuse. If a hook call is still inside the table after
+// the wait budget, start() fails and keeps it (see Profiler::startCpuEngine()).
 Error CTimer::sizeTimerTable(int max_timers) {
-  if (max_timers == _max_timers) {
-    return Error::OK;
-  }
   if (_timers == NULL) {
     // stop() freed it: hook calls see _max_timers == 0 and touch nothing, so
     // allocating needs no freeze, which a thread-churning app could stall.
@@ -178,6 +184,7 @@ Error CTimer::sizeTimerTable(int max_timers) {
   if (!freeze.drained()) {
     return Error("thread hook calls did not drain");
   }
+  sweepTimers();
   if (!resizeTimers(max_timers)) {
     return Error("Failed to allocate CPU timer table");
   }
@@ -259,9 +266,7 @@ bool CTimer::releaseTimerTable() {
   // Sweep here, after the drain, not before the freeze: a registration that
   // outlived stop()'s registration drain may have published its timer after
   // an earlier sweep, and freeing the table would lose that timer's id.
-  for (int i = 0; i < _max_timers; i++) {
-    unregisterThread(i);
-  }
+  sweepTimers();
   free(_timers);
   NativeMem::record(NM_CTIMER,
                     -static_cast<long long>(static_cast<size_t>(_max_timers) * sizeof(int)));
@@ -277,10 +282,8 @@ void CTimer::stop() {
   if (!releaseTimerTable()) {
     // No table, or hook calls still inside it: keep it and delete the timers
     // without a freeze. A timer a stuck registration publishes later stays in
-    // the kept table, so the next stop() deletes it.
-    for (int i = 0; i < _max_timers; i++) {
-      unregisterThread(i);
-    }
+    // the kept table; the next start() sweeps it under a freeze.
+    sweepTimers();
   }
   // Note: SignalInflight::drain() is called by Profiler::stop() after
   // disableEngines(); see signalInflight.h.

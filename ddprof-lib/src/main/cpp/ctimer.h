@@ -45,9 +45,12 @@ protected:
   static int *_timers;
 
   static bool resizeTimers(int max_timers);
-  // Sizes the timer table for start(). Replacing an existing table of another
-  // size takes a Profiler::ThreadTablesFreeze; allocating into none does not.
+  // Sizes the timer table for start(). Reusing or replacing a kept table
+  // sweeps it under a Profiler::ThreadTablesFreeze; allocating into none does not.
   static Error sizeTimerTable(int max_timers);
+  // Deletes every timer in the table; deleteTimer() deletes one.
+  static void sweepTimers();
+  static void deleteTimer(int tid);
   // Under a Profiler::ThreadTablesFreeze, deletes every timer and frees the
   // table. Returns false, deleting nothing, if there is no table or hook calls
   // do not drain within the wait budget.

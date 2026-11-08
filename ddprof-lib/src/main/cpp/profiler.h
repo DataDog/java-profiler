@@ -498,8 +498,8 @@ public:
     _call_trace_storage.clearLivenessCheckers();
   }
 
-  // Bumped under lockAll() by dump() and releaseRecordingMemory(), and at the
-  // end of start(): ids cached or resolved under an older value are stale.
+  // Bumped under lockAll() by dump() and releaseRecordingMemory(), and by
+  // start() before its engines: ids cached or resolved under an older value are stale.
   // Acquire: recordJVMTISample() callers read it before resolving class ids.
   inline u32 recordingEpoch() {
     return __atomic_load_n(&_epoch, __ATOMIC_ACQUIRE);

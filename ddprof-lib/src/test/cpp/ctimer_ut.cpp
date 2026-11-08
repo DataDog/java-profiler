@@ -401,14 +401,33 @@ TEST_F(CTimerNativeMemTest, StartFailsWhenTableAllocationFails) {
   EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
 }
 
-// A restart with an unchanged pid_max keeps the table without freezing thread
-// unregistration, so a thread that exits during start() still releases its
-// timer. A hook call is held in flight: a freeze would wait for it and time
-// out, so success shows that none ran.
-TEST_F(CTimerNativeMemTest, SameSizeRestartDoesNotFreezeUnregistration) {
+// A table survives to start() only when stop() could not drain hook calls, so
+// a late registration may have left a timer in it. A same-size restart reuses
+// the table but sweeps that slot first, or registerThread() could not replace it.
+TEST_F(CTimerNativeMemTest, SameSizeRestartSweepsKeptTable) {
   Profiler *profiler = Profiler::instance();
   ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));
   int *table = CTimerTestAccessor::timers();
+  // Never a live timer id: the sweep's timer_delete() fails harmlessly.
+  table[5] = 0x7ffffff0;
+
+  Error error = CTimerTestAccessor::sizeTimerTable(64);
+
+  EXPECT_FALSE((bool)error);
+  EXPECT_EQ(table, CTimerTestAccessor::timers());
+  EXPECT_EQ(64, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(0, table[5]) << "a late timer in the kept table must be swept";
+  EXPECT_EQ(bytes(64), NativeMem::live(NM_CTIMER));
+  EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+}
+
+// While a hook call is still in flight after the wait budget, a same-size
+// restart cannot sweep the kept table: start() fails retryably and leaves it.
+TEST_F(CTimerNativeMemTest, SameSizeRestartFailsWhenHookCallsDoNotDrain) {
+  Profiler *profiler = Profiler::instance();
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));
+  int *table = CTimerTestAccessor::timers();
+  table[5] = 0x7ffffff0;
   ProfilerTestAccessor::DrainBudget budget(100000000LL);
 
   Error error = Error::OK;
@@ -417,10 +436,12 @@ TEST_F(CTimerNativeMemTest, SameSizeRestartDoesNotFreezeUnregistration) {
     error = CTimerTestAccessor::sizeTimerTable(64);
   }
 
-  EXPECT_FALSE((bool)error);
+  EXPECT_TRUE((bool)error);
+  EXPECT_STREQ("thread hook calls did not drain", error.message());
   EXPECT_EQ(table, CTimerTestAccessor::timers());
-  EXPECT_EQ(64, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(0x7ffffff0, table[5]);
   EXPECT_TRUE(ProfilerTestAccessor::threadTablesStable(profiler));
+  table[5] = 0;
 }
 
 // stop() frees the table, so a start() normally allocates into none. No hook

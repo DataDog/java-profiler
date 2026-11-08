@@ -1888,6 +1888,9 @@ Error Profiler::start(Arguments &args, bool reset) {
       }
     }
   } recording_memory(this);
+  // Before any engine starts: a later bump would reject the samples of
+  // callbacks that read the epoch once allocation sampling was enabled.
+  __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
   // Open before any engine starts, so early allocation callbacks can intern.
   _intern_open.store(true, std::memory_order_release);
 
@@ -2183,7 +2186,6 @@ Error Profiler::start(Arguments &args, bool reset) {
 
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
-    __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
     // What the recording allocated on top of "before start".
     recording_memory.armed = false;
     NativeMem::logLive("after start");
@@ -2695,7 +2697,7 @@ void Profiler::releaseRecordingMemory() {
   size_t capacities[CONCURRENCY_LEVEL];
   lockAll();
   // Invalidates ids resolved or cached (wall-clock call_trace_id) against the
-  // storage freed below; start() bumps again only once its engines run.
+  // storage freed below; start() bumps again before its engines start.
   __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
   for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
     buffers[i] = _calltrace_buffer[i];
