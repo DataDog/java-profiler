@@ -94,7 +94,7 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   // Before the class id is resolved and the stack captured: a callback paused
   // across a stop must not emit (or track) ids from the previous recording.
   Profiler *profiler = Profiler::instance();
-  u32 recording_epoch = profiler->recordingEpoch();
+  u32 recording_session = profiler->recordingSession();
   u64 liveness_generation = LivenessTracker::instance()->tableGeneration();
   const char *name_slice = NULL;
   size_t name_len = 0;
@@ -124,7 +124,7 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
                                 : 1 / (1 - exp(-size / (double)_interval)));
 
     call_trace_id = profiler->recordJVMTISample(size, tid, thread, BCI_ALLOC, &event,
-                                                !_record_allocations, recording_epoch);
+                                                !_record_allocations, recording_session);
 
     if (call_trace_id == 0) {
       return;

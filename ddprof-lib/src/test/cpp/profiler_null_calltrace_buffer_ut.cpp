@@ -54,7 +54,7 @@ TEST(ProfilerNullCalltraceBufferTest, RecordJvmtiSampleNullBufferDoesNotCrash) {
     Profiler::instance()->recordJVMTISample(
         /*counter=*/1, /*tid=*/1, /*thread=*/nullptr,
         BCI_ALLOC, /*event=*/nullptr, /*deferred=*/false,
-        Profiler::instance()->recordingEpoch());
+        Profiler::instance()->recordingSession());
 }
 
 TEST(ProfilerNullCalltraceBufferTest, RecordExternalSampleNullBufferDoesNotCrash) {
@@ -102,10 +102,12 @@ TEST(ProfilerNullCalltraceBufferTest, ReleaseRecordingMemoryInvalidatesEarlierEp
     ProfilerTestAccessor::setOmitStacktraces(true);
     Profiler* profiler = Profiler::instance();
     u32 before = profiler->recordingEpoch();
+    u32 session_before = profiler->recordingSession();
     u64 skipped = ProfilerTestAccessor::skipped();
 
-    profiler->recordJVMTISample(1, 1, nullptr, BCI_ALLOC, nullptr, /*deferred=*/true, before);
-    EXPECT_EQ(skipped, ProfilerTestAccessor::skipped()) << "a current epoch must be accepted";
+    profiler->recordJVMTISample(1, 1, nullptr, BCI_ALLOC, nullptr, /*deferred=*/true,
+                                session_before);
+    EXPECT_EQ(skipped, ProfilerTestAccessor::skipped()) << "a current session must be accepted";
     // A parked thread's wall-clock trace id, cached in the recording being released.
     ProfiledThread* parked = restore.parked = ProfiledThread::forTid(1);
     parked->lookupWallclockCallTraceId(0x1000, 0x2000, before, true, 0, 0);
@@ -115,11 +117,15 @@ TEST(ProfilerNullCalltraceBufferTest, ReleaseRecordingMemoryInvalidatesEarlierEp
     ProfilerTestAccessor::releaseRecordingMemory();
     u32 after = profiler->recordingEpoch();
     EXPECT_NE(before, after);
+    u32 session_after = profiler->recordingSession();
+    EXPECT_NE(session_before, session_after);
     // The storage holding trace 42 is gone: the next start() must not reuse it.
     EXPECT_EQ(0u, parked->lookupWallclockCallTraceId(0x1000, 0x2000, after, true, 0, 0));
 
-    profiler->recordJVMTISample(1, 1, nullptr, BCI_ALLOC, nullptr, /*deferred=*/true, before);
-    EXPECT_EQ(skipped + 1, ProfilerTestAccessor::skipped()) << "a stale epoch must be dropped";
-    profiler->recordJVMTISample(1, 1, nullptr, BCI_ALLOC, nullptr, /*deferred=*/true, after);
+    profiler->recordJVMTISample(1, 1, nullptr, BCI_ALLOC, nullptr, /*deferred=*/true,
+                                session_before);
+    EXPECT_EQ(skipped + 1, ProfilerTestAccessor::skipped()) << "a stale session must be dropped";
+    profiler->recordJVMTISample(1, 1, nullptr, BCI_ALLOC, nullptr, /*deferred=*/true,
+                                session_after);
     EXPECT_EQ(skipped + 1, ProfilerTestAccessor::skipped());
 }

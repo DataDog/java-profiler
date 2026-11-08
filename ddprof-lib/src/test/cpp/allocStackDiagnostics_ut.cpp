@@ -33,6 +33,10 @@ public:
 
 class ProfilerTestAccessor {
 public:
+    // The bump dump() makes on every chunk.
+    static void bumpEpochAsDump() {
+        __atomic_add_fetch(&Profiler::instance()->_epoch, 1, __ATOMIC_SEQ_CST);
+    }
     struct State {
         int depth;
         AllocStack mode;
@@ -198,7 +202,7 @@ TEST_F(AllocStackDiagnosticsTest, FailedJvmtiCallDoesNotCountAsChecked) {
 TEST_F(AllocStackDiagnosticsTest, ZeroFramePlatformWalkCountsJvmtiFallback) {
     u64 trace = Profiler::instance()->recordJVMTISample(1, 1, reinterpret_cast<jthread>(1),
                                                      BCI_ALLOC, nullptr, true,
-                                                     Profiler::instance()->recordingEpoch());
+                                                     Profiler::instance()->recordingSession());
     EXPECT_NE(0u, trace);
     EXPECT_EQ(1, stack_calls);
     EXPECT_EQ(1, Counters::getCounter(ALLOC_STACK_VM_FALLBACK));
@@ -206,12 +210,12 @@ TEST_F(AllocStackDiagnosticsTest, ZeroFramePlatformWalkCountsJvmtiFallback) {
     EXPECT_FALSE(ProfiledThread::current()->isProtected());
 }
 
-// An allocation callback reads the recording epoch before it resolves its
+// An allocation callback reads the recording session before it resolves its
 // class id. If a stop() moved it meanwhile, recordJVMTISample() must drop the
 // sample before capturing a stack or emitting anything, and a sample carrying
-// the current epoch must still be recorded afterwards.
-TEST_F(AllocStackDiagnosticsTest, StaleRecordingEpochIsRejected) {
-    u32 current = Profiler::instance()->recordingEpoch();
+// the current session must still be recorded afterwards.
+TEST_F(AllocStackDiagnosticsTest, StaleRecordingSessionIsRejected) {
+    u32 current = Profiler::instance()->recordingSession();
 
     u64 stale = Profiler::instance()->recordJVMTISample(
         1, 1, reinterpret_cast<jthread>(1), BCI_ALLOC, nullptr, true, current - 1);
@@ -224,6 +228,18 @@ TEST_F(AllocStackDiagnosticsTest, StaleRecordingEpochIsRejected) {
     EXPECT_EQ(1, stack_calls);
 }
 
+// A dump rotates the dictionaries but keeps their ids, so a callback whose
+// class id straddles one must still be recorded.
+TEST_F(AllocStackDiagnosticsTest, DumpEpochBumpDoesNotRejectSample) {
+    u32 session = Profiler::instance()->recordingSession();
+    ProfilerTestAccessor::bumpEpochAsDump();
+
+    u64 trace = Profiler::instance()->recordJVMTISample(
+        1, 1, reinterpret_cast<jthread>(1), BCI_ALLOC, nullptr, true, session);
+    EXPECT_NE(0u, trace);
+    EXPECT_EQ(1, stack_calls);
+}
+
 TEST_F(AllocStackDiagnosticsTest, JvmtiTruncationRequiresAFrameBeyondTheLimit) {
     for (int count : {8, 9}) {
         expected.resize(count, expected[0]);
@@ -232,7 +248,7 @@ TEST_F(AllocStackDiagnosticsTest, JvmtiTruncationRequiresAFrameBeyondTheLimit) {
         ProfilerTestAccessor::state(state);
         u64 id = Profiler::instance()->recordJVMTISample(1, 1, reinterpret_cast<jthread>(1),
                                                         BCI_ALLOC, nullptr, true,
-                                                     Profiler::instance()->recordingEpoch());
+                                                     Profiler::instance()->recordingSession());
         bool found = false;
         ProfilerTestAccessor::processTraces([&](const CallTraceSet& traces) {
             for (const CallTrace* trace : traces) {

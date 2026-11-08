@@ -195,6 +195,7 @@ private:
   time_t _start_time;
   time_t _stop_time;
   u32 _epoch;
+  u32 _session;
   WaitableMutex _timer_lock;
   void *_timer_id;
 
@@ -383,7 +384,7 @@ public:
         _string_label_map(2), _context_value_map(3), _thread_filter(),
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
         _alloc_engine(NULL), _event_mask(0),
-        _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
+        _start_time(0), _stop_time(0), _epoch(0), _session(0), _timer_id(NULL),
         _total_samples(0), _sample_seq(0), _failures(),
         _max_stack_depth(0), _calltrace_buffer_capacity(), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _force_jmethodID(true),
@@ -499,10 +500,16 @@ public:
   }
 
   // Bumped under lockAll() by dump() and releaseRecordingMemory(), and by
-  // start() before its engines: ids cached or resolved under an older value are stale.
-  // Acquire: recordJVMTISample() callers read it before resolving class ids.
+  // start() before its engines: call trace ids cached under an older value are stale.
   inline u32 recordingEpoch() {
-    return __atomic_load_n(&_epoch, __ATOMIC_ACQUIRE);
+    return __atomic_load_n(&_epoch, __ATOMIC_RELAXED);
+  }
+
+  // Bumped only by releaseRecordingMemory(), after it closes the intern gate:
+  // class ids resolved under an older value may name freed dictionaries. A dump
+  // keeps them. Acquire pairs with the release bump, before the gate is read.
+  inline u32 recordingSession() {
+    return __atomic_load_n(&_session, __ATOMIC_ACQUIRE);
   }
 
   Error init();
@@ -638,10 +645,10 @@ public:
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event);
-  // recording_epoch: recordingEpoch() read before the caller resolved anything
-  // recording-scoped in event (a class id); a moved one drops the sample.
+  // recording_session: recordingSession() read before the caller resolved
+  // anything recording-scoped in event (a class id); a moved one drops the sample.
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event,
-                        bool deferred, u32 recording_epoch);
+                        bool deferred, u32 recording_session);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,
                             ASGCT_CallFrame *frames, bool truncated,

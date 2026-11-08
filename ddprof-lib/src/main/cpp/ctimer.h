@@ -55,6 +55,9 @@ protected:
   // table. Returns false, deleting nothing, if there is no table or hook calls
   // do not drain within the wait budget.
   bool releaseTimerTable();
+  // Deletes every timer and frees the table, if any. Requires a drained
+  // Profiler::ThreadTablesFreeze.
+  static void freeTimerTable();
   // start() with the timer table size passed in rather than read from
   // pid_max, so a test can drive the allocation-failure path.
   Error startWithTableSize(Arguments &args, int max_timers);
@@ -74,6 +77,8 @@ public:
   Error check(Arguments &args);
   Error start(Arguments &args);
   void stop();
+  // Runs under replaceCpuEngine()'s drained freeze.
+  void releaseThreads() override;
 
   inline void enableEvents(bool enabled) {
     __atomic_store_n(&_enabled, enabled, __ATOMIC_RELEASE);

@@ -760,7 +760,7 @@ void Profiler::verifyAllocStack(const ASGCT_CallFrame* frames, int num_frames, j
 }
 
 u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event,
-                                bool deferred, u32 recording_epoch) {
+                                bool deferred, u32 recording_session) {
   // Called from non-signal based sampler
   ProfiledThread* prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
   if (prof_thread == nullptr) {
@@ -784,7 +784,7 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
   // The caller resolved event's ids before a stop: they may be stale in the
   // current recording. Checked and emitted under the same stripe lock, which
   // the bump in releaseRecordingMemory() excludes.
-  if (__atomic_load_n(&_epoch, __ATOMIC_RELAXED) != recording_epoch) {
+  if (__atomic_load_n(&_session, __ATOMIC_RELAXED) != recording_session) {
     atomicIncRelaxed(_failures[-ticks_skipped]);
     _locks[lock_index].unlock();
     return 0;
@@ -1888,8 +1888,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       }
     }
   } recording_memory(this);
-  // Before any engine starts: a later bump would reject the samples of
-  // callbacks that read the epoch once allocation sampling was enabled.
+  // Before any engine starts, so no call trace id is cached under the old value.
   __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
   // Open before any engine starts, so early allocation callbacks can intern.
   _intern_open.store(true, std::memory_order_release);
@@ -2699,6 +2698,8 @@ void Profiler::releaseRecordingMemory() {
   // Invalidates ids resolved or cached (wall-clock call_trace_id) against the
   // storage freed below; start() bumps again before its engines start.
   __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
+  // Release: a callback that acquires the new value sees the closed gate.
+  __atomic_add_fetch(&_session, 1, __ATOMIC_RELEASE);
   for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
     buffers[i] = _calltrace_buffer[i];
     capacities[i] = _calltrace_buffer_capacity[i];

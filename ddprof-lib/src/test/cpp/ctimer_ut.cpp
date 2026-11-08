@@ -571,6 +571,30 @@ TEST_F(CTimerNativeMemTest, StopDeletesTimersBeforeFreeingTable) {
   EXPECT_EQ(EINVAL, delete_errno);
 }
 
+// A table stop() kept is swept by the next CTimer start() only. When another
+// CPU engine replaces CTimer, releaseThreads() must delete its late timers and
+// free it, or a timer would stay armed for the rest of the process.
+TEST_F(CTimerNativeMemTest, EngineSwitchFreesKeptTable) {
+  ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));
+  struct sigevent sev;
+  memset(&sev, 0, sizeof(sev));
+  sev.sigev_notify = SIGEV_NONE;
+  int timer = -1;
+  ASSERT_EQ(0, syscall(__NR_timer_create, CLOCK_MONOTONIC, &sev, &timer));
+  CTimerTestAccessor::timers()[5] = timer + 1;
+  CTimer engine;
+
+  engine.releaseThreads();
+
+  EXPECT_EQ(nullptr, CTimerTestAccessor::timers());
+  EXPECT_EQ(0, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
+  long deleted_again = syscall(__NR_timer_delete, timer);
+  int delete_errno = errno;
+  EXPECT_EQ(-1, deleted_again) << "releaseThreads() freed the table without deleting its timer";
+  EXPECT_EQ(EINVAL, delete_errno);
+}
+
 // A hook call still inside the table after the wait budget may index it at any
 // time, so stop() keeps the table rather than freeing it under the call, still
 // deletes the timers in it, and reopens unregistration afterwards.

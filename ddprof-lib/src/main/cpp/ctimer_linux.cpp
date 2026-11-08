@@ -263,6 +263,14 @@ bool CTimer::releaseTimerTable() {
     Log::warn("CTimer: thread hook calls did not drain; keeping the timer table");
     return false;
   }
+  freeTimerTable();
+  return true;
+}
+
+void CTimer::freeTimerTable() {
+  if (_timers == NULL) {
+    return;
+  }
   // Sweep here, after the drain, not before the freeze: a registration that
   // outlived stop()'s registration drain may have published its timer after
   // an earlier sweep, and freeing the table would lose that timer's id.
@@ -272,7 +280,12 @@ bool CTimer::releaseTimerTable() {
                     -static_cast<long long>(static_cast<size_t>(_max_timers) * sizeof(int)));
   _timers = NULL;
   _max_timers = 0;
-  return true;
+}
+
+void CTimer::releaseThreads() {
+  // A table here is one stop() kept; with another engine in the slot, no
+  // start() sweeps it, so a late timer would stay armed.
+  freeTimerTable();
 }
 
 void CTimer::stop() {
