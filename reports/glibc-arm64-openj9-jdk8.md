@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-08 06:01:07 EST
+**Date:** 2026-11-08 13:24:33 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 43 |
-| CPU Cores (end) | 48 |
+| CPU Cores (start) | 34 |
+| CPU Cores (end) | 34 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 54 |
-| Sample Rate | 0.90/sec |
-| Health Score | 56% |
-| Threads | 10 |
+| CPU Samples | 107 |
+| Sample Rate | 1.78/sec |
+| Health Score | 111% |
+| Threads | 11 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (3 unique values: 38-48 cores)</summary>
+<summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
 
 ```
-1794135141 43
-1794135146 43
-1794135151 43
-1794135156 43
-1794135161 43
-1794135166 43
-1794135171 43
-1794135176 43
-1794135181 43
-1794135186 43
-1794135191 43
-1794135196 43
-1794135201 38
-1794135206 38
-1794135211 38
-1794135216 38
-1794135221 43
-1794135226 43
-1794135231 43
-1794135236 43
+1794162056 34
+1794162061 34
+1794162066 34
+1794162071 34
+1794162076 34
+1794162081 34
+1794162086 34
+1794162091 34
+1794162096 34
+1794162101 34
+1794162106 34
+1794162111 34
+1794162116 34
+1794162121 34
+1794162126 34
+1794162131 34
+1794162136 34
+1794162141 34
+1794162146 34
+1794162151 34
 ```
 </details>
 
