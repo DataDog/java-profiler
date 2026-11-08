@@ -60,6 +60,11 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
                                      jthread thread, int event_type,
                                      jobject object, jclass object_klass,
                                      jlong size) {
+  // At entry, before any JVMTI call: the allocation belongs to the recording
+  // running now, so a stop() before this callback emits must drop its sample.
+  Profiler *profiler = Profiler::instance();
+  u32 recording_session = profiler->recordingSession();
+  u64 liveness_generation = LivenessTracker::instance()->tableGeneration();
   if (!__atomic_load_n(&_active, __ATOMIC_RELAXED)) {
     return;
   }
@@ -91,11 +96,6 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
     // in practice and observed to crash with SIGSEGV.
     return;
   }
-  // Before the class id is resolved and the stack captured: a callback paused
-  // across a stop must not emit (or track) ids from the previous recording.
-  Profiler *profiler = Profiler::instance();
-  u32 recording_session = profiler->recordingSession();
-  u64 liveness_generation = LivenessTracker::instance()->tableGeneration();
   const char *name_slice = NULL;
   size_t name_len = 0;
   int id = -1;

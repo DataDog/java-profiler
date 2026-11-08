@@ -157,7 +157,8 @@ bool CTimer::resizeTimers(int max_timers) {
   }
   free(_timers);
   NativeMem::record(NM_CTIMER, -(long long)((size_t)_max_timers * sizeof(int)));
-  _max_timers = 0;
+  // Atomic: without a freeze (empty table), exiting threads load it.
+  __atomic_store_n(&_max_timers, 0, __ATOMIC_RELEASE);
   _timers = (int *)calloc(max_timers, sizeof(int));
   if (_timers == NULL) {
     return false;
