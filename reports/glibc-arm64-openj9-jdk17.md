@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk17
 
 ## glibc-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-11-07 18:05:06 EST
+**Date:** 2026-11-08 06:01:07 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 91 |
-| Sample Rate | 1.52/sec |
-| Health Score | 95% |
-| Threads | 11 |
-| Allocations | 68 |
+| CPU Samples | 187 |
+| Sample Rate | 3.12/sec |
+| Health Score | 195% |
+| Threads | 10 |
+| Allocations | 137 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 79 |
-| Sample Rate | 1.32/sec |
-| Health Score | 82% |
+| CPU Samples | 57 |
+| Sample Rate | 0.95/sec |
+| Health Score | 59% |
 | Threads | 13 |
-| Allocations | 52 |
+| Allocations | 28 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 18-18 cores)</summary>
 
 ```
-1794092476 18
-1794092481 18
-1794092486 18
-1794092491 18
-1794092496 18
-1794092501 18
-1794092506 18
-1794092511 18
-1794092516 18
-1794092521 18
-1794092526 18
-1794092531 18
-1794092536 18
-1794092541 18
-1794092546 18
-1794092551 18
-1794092556 18
-1794092561 18
-1794092566 18
-1794092571 18
+1794135078 18
+1794135083 18
+1794135088 18
+1794135093 18
+1794135098 18
+1794135103 18
+1794135108 18
+1794135113 18
+1794135118 18
+1794135123 18
+1794135128 18
+1794135133 18
+1794135138 18
+1794135143 18
+1794135148 18
+1794135153 18
+1794135158 18
+1794135163 18
+1794135168 18
+1794135173 18
 ```
 </details>
 
