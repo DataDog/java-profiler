@@ -2312,6 +2312,46 @@ TEST_F(LeakTagPoolTest, FailedLeakTagClearAtStartHandsOutNoTag) {
     EXPECT_NE(0, tracker->acquireLeakTagForTest());
 }
 
+static jobject g_tagged_objects[2] = {reinterpret_cast<jobject>(0x1000),
+                                      reinterpret_cast<jobject>(0x2000)};
+static jlong g_found_tags[2];
+
+static jvmtiError JNICALL twoObjectsGetObjectsWithTags(jvmtiEnv *, jint, const jlong *tags,
+                                                       jint *count, jobject **objects,
+                                                       jlong **found) {
+    g_found_tags[0] = tags[0];
+    g_found_tags[1] = tags[1];
+    *count = 2;
+    *objects = g_tagged_objects;
+    *found = g_found_tags;
+    return JVMTI_ERROR_NONE;
+}
+
+static jvmtiError JNICALL secondSetTagFails(jvmtiEnv *, jobject obj, jlong) {
+    return obj == g_tagged_objects[1] ? JVMTI_ERROR_INVALID_OBJECT : JVMTI_ERROR_NONE;
+}
+
+static jvmtiError JNICALL noopDeallocate(jvmtiEnv *, unsigned char *) {
+    return JVMTI_ERROR_NONE;
+}
+
+// GetObjectsWithTags succeeds but one SetTag(obj, 0) fails: that object still
+// carries its tag, so the clear stays pending and the pool hands out no tag.
+TEST_F(LeakTagPoolTest, FailedSetTagDuringClearKeepsClearPending) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jvmtiInterface_1_ functions{};
+    functions.GetObjectsWithTags = twoObjectsGetObjectsWithTags;
+    functions.SetTag = secondSetTagFails;
+    functions.Deallocate = noopDeallocate;
+    jvmtiEnv partial{};
+    partial.functions = &functions;
+
+    tracker->prepareLeakTagPoolForTest(&partial, /*clear_pending=*/true);
+    EXPECT_TRUE(tracker->leakTagClearPendingForTest());
+    EXPECT_EQ(0, tracker->leakTagFreeCountForTest());
+    EXPECT_EQ(0, tracker->acquireLeakTagForTest());
+}
+
 TEST_F(LeakTagPoolTest, ReleaseReturnsTagToPoolAndClearsOwnership) {
     LivenessTracker *tracker = LivenessTracker::instance();
     int pool_size = tracker->leakTagPoolSizeForTest();

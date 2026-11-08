@@ -2279,8 +2279,13 @@ bool LivenessTracker::clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env) {
               "leak tags");
     return false;
   }
+  // One failed clear leaves that object carrying its tag: report failure so
+  // the slot stays withheld until a retry clears it.
+  bool all_cleared = true;
   for (jint i = 0; i < count; i++) {
-    jvmti->SetTag(objects[i], 0);
+    if (jvmti->SetTag(objects[i], 0) != JVMTI_ERROR_NONE) {
+      all_cleared = false;
+    }
     if (env != nullptr && !frame.pushed) {
       env->DeleteLocalRef(objects[i]);
     }
@@ -2291,7 +2296,10 @@ bool LivenessTracker::clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env) {
   if (found_tags != nullptr) {
     jvmti->Deallocate(reinterpret_cast<unsigned char *>(found_tags));
   }
-  return true;
+  if (!all_cleared) {
+    Log::warn("LivenessTracker: SetTag failed while releasing leak tags");
+  }
+  return all_cleared;
 }
 
 void LivenessTracker::resetKlassPopulationLocked(JNIEnv *env) {
