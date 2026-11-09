@@ -55,13 +55,14 @@ public class ContendedCallTraceStorageTest extends AbstractProfilerTest {
       assertTrue(currentResult.totalAttempts > 0, "Should measure total attempts");
       assertTrue(
           currentResult.droppedSamples / (double) currentResult.totalAttempts < 0.1f,
-          "Should drop fewer than 10% of samples");
+          "Drop rate should be below the configured threshold");
     }
 
     // The key insight: this test framework can be used to validate
     // that increasing retry counts reduces dropped samples
   }
 
+  /** Verifies the load checksum with products beyond the signed-int range. */
   @Test
   public void burnCyclesUsesLongProducts() {
     // This id makes products exceed Integer.MAX_VALUE within the burn loop.
