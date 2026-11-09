@@ -420,10 +420,6 @@ exception list.
   not add code with no production caller (stage it in the PR that needs it), and do not
   delete passing tests without stating why. When a change alters behavior described in
   `doc/` or in comments, update those in the same PR.
-- Before requesting review, self-check the diff for unused variables, unused or duplicated
-  macros, dead code (methods, JNI entry points, fields, no-op functions, empty files left
-  without callers; test-only helpers stay only if marked as such) and misspelled
-  identifiers/comments.
 - C/C++ style: match the surrounding indentation and spacing exactly; don't split inline
   logic into helpers unless reused or genuinely hard to follow; extract code that appears a
   second time (e.g. in copy constructors, assignment operators) into one shared helper; use

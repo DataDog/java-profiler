@@ -24,13 +24,25 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
 2. **Review.** Review exactly the range the marker will certify,
    `MB=$(git merge-base refs/remotes/<base> HEAD)` to `HEAD`, named explicitly — without
    a range, reviewers default to unpushed or last-commit changes; the full ref keeps a
-   tag named like the base from changing the range. Use the strongest reviewer the
-   harness provides: `/sphinx review range $MB..$(git rev-parse HEAD) --report-json
-   <path>`, else `/code-review` with that range as its target. Report only — run no
+   tag named like the base from changing the range. Pick the reviewer by what the range
+   changes:
+
+   | The range changes | Reviewer |
+   | --- | --- |
+   | Gates and trust boundaries: hooks, `review-marker.py`, the `utils/*-policy.py` files, CI checks | Sphinx (`/sphinx review range $MB..$(git rev-parse HEAD) --report-json <path>`); at most one `--effort=deep` run per PR, on the final candidate |
+   | Other production code | Sphinx, standard effort |
+   | Only fixes to a range already reviewed | `/code-review` medium, on the fix range only |
+   | Only docs, skills or tests | `/code-review` medium; low effort skips test files |
+
+   Without Sphinx, use `/code-review` with the range as its target. Report only — run no
    reviewer fix flow; steps 3 and 4 do the triage and fixes. If no reviewer is
    available, say so and get explicit user sign-off; do not write a marker then.
    Tell the reviewer to skip `.knowledgebase/`: its content is cairn's, and step 4
    checks only its frontmatter. The marker still covers it.
+
+   **Cost.** Plan for about $20–30 of agentic review per PR; before a run that is likely
+   to exceed it, ask the user. A long orchestrating session re-reads its own context on
+   every turn, so start large reviews from a fresh session where the harness allows.
 
 3. **Judgment checks.** In addition to correctness, check every comment, javadoc
    and doc paragraph the change adds or modifies against the AGENTS.md
@@ -40,7 +52,10 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    - current behavior only — no history, and no references to plans, specs,
      review reports or findings, requirement IDs, tickets or line numbers.
    Code written by a review tool's fix flow gets the same check: it must not
-   cite the tool's own working artifacts.
+   cite the tool's own working artifacts. Also check the diff for unused variables,
+   unused or duplicated macros, dead code (methods, JNI entry points, fields, no-op
+   functions, files left without callers; test-only helpers stay only if marked as
+   such) and misspelled identifiers or comments.
 
 4. **Findings.** Fix Critical/High findings, or get the user's explicit waiver.
    Commit the fixes and re-review what they touched. Also fix every violation of
@@ -48,6 +63,11 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    CI and `.githooks/pre-push` run the same checks, so a marker over them cannot merge.
    Likewise for `python3 utils/check-knowledgebase.py`, which CI runs: fix a bad
    memory with cairn, never by hand.
+   - A gate or trust-boundary bypass is never downgraded below High in triage.
+   - When a re-review finds new cases of a defect class it already reported, fix the
+     class (a stricter rule, a closed grammar), not the next case.
+   - Stop re-review rounds when they find only Low findings in the fixes themselves;
+     report those instead.
 
 5. **Marker.** On the final commits, write the marker — also when the user ran
    the review manually and reports it back:
@@ -59,3 +79,8 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
 
 6. **Report.** State the reviewer, the outcome and any waived findings in the PR
    description or the reply to the review.
+
+7. **Repeated failures.** Tell the user, in the session, each mistake you made twice
+   during this change and each point the user had to explain twice. Give each a
+   proposed home: `AGENTS.md`, a `doc/` page, a skill, a hook or a CI check. Do not
+   edit those files for it in this change; the user decides whether it becomes a ticket.
