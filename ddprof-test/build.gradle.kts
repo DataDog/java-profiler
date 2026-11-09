@@ -86,21 +86,23 @@ tasks.register("checkCoverageTestFailures") {
   val filtered = project.hasProperty("tests")
   val testsPattern = project.findProperty("tests")
   doLast {
+    val failed = markers.get().asFile.list()?.sorted().orEmpty()
+    if (failed.isNotEmpty()) {
+      throw GradleException("Coverage report generated, but tests failed in: ${failed.joinToString()}")
+    }
     // -Ptests lets either coverage task match nothing, but not both: a typo'd pattern
     // would otherwise end in a green run with no Java coverage. Counted from the result
     // XML, since jacocoTestReport is skipped (not failed) when no .exec file exists.
     if (filtered) {
-      val executed = coverageTaskNames.sumOf { task ->
+      fun attr(xml: String, name: String) =
+        Regex("""<testsuite [^>]*\b$name="(\d+)"""").find(xml)?.groupValues?.get(1)?.toInt() ?: 0
+      val ran = coverageTaskNames.sumOf { task ->
         resultsDir.get().dir(task).asFile.listFiles { f -> f.name.startsWith("TEST-") && f.name.endsWith(".xml") }
-          .orEmpty().sumOf { Regex("""<testsuite [^>]*\btests="(\d+)"""").find(it.readText())?.groupValues?.get(1)?.toInt() ?: 0 }
+          .orEmpty().sumOf { val xml = it.readText(); attr(xml, "tests") - attr(xml, "skipped") }
       }
-      if (executed == 0) {
-        throw GradleException("-Ptests=$testsPattern matched no tests in testCoverage or testSlowCoverage")
+      if (ran == 0) {
+        throw GradleException("-Ptests=$testsPattern ran no tests in testCoverage or testSlowCoverage")
       }
-    }
-    val failed = markers.get().asFile.list()?.sorted().orEmpty()
-    if (failed.isNotEmpty()) {
-      throw GradleException("Coverage report generated, but tests failed in: ${failed.joinToString()}")
     }
   }
 }
@@ -204,6 +206,8 @@ val cleanLibCoverageData = tasks.register<Delete>("cleanLibCoverageData") {
   // Also clear child JVM JaCoCo data and deferred-failure markers from the previous run.
   delete(fileTree(childJacocoDir) { include("*.exec") })
   delete(deferredFailuresDir)
+  // The musl runner never removes old result XML, which checkCoverageTestFailures counts.
+  coverageTaskNames.forEach { delete(fileTree(layout.buildDirectory.dir("test-results/$it")) { include("TEST-*.xml") }) }
   // Fail on missing coverage tools before wiping the previous run's counts.
   if (enableCoverage) {
     dependsOn(":ddprof-lib:checkCoverageTools")
