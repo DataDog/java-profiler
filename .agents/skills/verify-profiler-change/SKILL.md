@@ -14,7 +14,7 @@ tiers that run later are in `doc/building/TestingGuide.md`.
 | --- | --- |
 | C++ under `ddprof-lib/src/main/cpp/` | `:ddprof-lib:gtestDebug`; add `:ddprof-test:testDebug` when Java-visible behavior can change |
 | Signal-handler paths, atomics, crash protection, thread lifecycle | The C++ row, plus `gtestAsan`, `gtestTsan` and `testAsan` where the sanitizers are available (Linux glibc), plus the aarch64 container (`./utils/run-containers-tests.sh --arch=aarch64 ...`) when there is no arm64 host: memory-ordering bugs show only there |
-| JVM-implementation code (`hotspot/`, `j9/`, `zing/`) | `testDebug` against that JVM: `JAVA_TEST_HOME` set to it, or the container with the matching `--jdk` (for example `17-j9`). The containers have no Zing JDK: without a local Zing, report Zing as `blocked` and name the CI job that covers it |
+| JVM-implementation code (`hotspot/`, `j9/`, `zing/`) | `testDebug` against that JVM: `JAVA_TEST_HOME` set to it, or the container with the matching `--jdk` (for example `17-j9`). Neither the containers nor CI have a Zing JDK (its downloads are disabled in `.github/workflows/cache_java.yml`): without a local Zing, report Zing as `blocked` with no CI coverage, and say so in the PR |
 | libc-sensitive code (allocation hooks, `dlopen`, symbol lookup, TLS) | The matching row, plus the musl container (`--libc=musl`) |
 | Java code or the Java API | `:ddprof-test:testDebug`, or the narrowest `-Ptests=` filter that covers the change, then the full suite before review |
 | `build-logic/` or Gradle files | `assembleAll`, and the tasks the change affects |
@@ -24,5 +24,5 @@ tiers that run later are in `doc/building/TestingGuide.md`.
 - **Flaky failures:** re-run once. If the retry passes, record the first failure and the
   retry. If it fails again, treat it as a real failure until shown otherwise.
 - **When a check cannot run here** (no sanitizer runtime, no container runtime, no arm64
-  host, no Zing), report it as `blocked` with the reason, and name the CI job that covers
-  it. Never report it as passed.
+  host, no Zing), report it as `blocked` with the reason. Name the CI job that covers it,
+  or state that none does. Never report it as passed.
