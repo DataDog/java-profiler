@@ -94,11 +94,13 @@ tasks.register("checkCoverageTestFailures") {
     // would otherwise end in a green run with no Java coverage. Counted from the result
     // XML, since jacocoTestReport is skipped (not failed) when no .exec file exists.
     if (filtered) {
-      fun attr(xml: String, name: String) =
-        Regex("""<testsuite [^>]*\b$name="(\d+)"""").find(xml)?.groupValues?.get(1)?.toInt() ?: 0
+      fun attr(xml: String, name: String) = Regex("""<testsuite [^>]*\b$name="(\d+)"""").find(xml)?.groupValues?.get(1)?.toInt() ?: 0
       val ran = coverageTaskNames.sumOf { task ->
         resultsDir.get().dir(task).asFile.listFiles { f -> f.name.startsWith("TEST-") && f.name.endsWith(".xml") }
-          .orEmpty().sumOf { val xml = it.readText(); attr(xml, "tests") - attr(xml, "skipped") }
+          .orEmpty().sumOf {
+            val xml = it.readText()
+            attr(xml, "tests") - attr(xml, "skipped")
+          }
       }
       if (ran == 0) {
         throw GradleException("-Ptests=$testsPattern ran no tests in testCoverage or testSlowCoverage")
