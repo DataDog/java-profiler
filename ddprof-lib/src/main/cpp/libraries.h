@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #ifndef _LIBRARIES_H
 #define _LIBRARIES_H
 
@@ -89,6 +94,10 @@ class Libraries {
   // outlive every later lookup. The real population path is updateSymbols()
   // reading the loaded libraries; compiled only into gtest binaries.
   bool addLibraryForTest(CodeCache *lib) { return _native_libs.add(lib); }
+
+  // Frees every CodeCache published into the process-wide array by
+  // updateSymbols(). Test teardown only (see CodeCacheArray::freeForTest).
+  void freeNativeLibsForTest() { _native_libs.freeForTest(); }
 #endif
 
   // Delete copy constructor and assignment operator to prevent copies

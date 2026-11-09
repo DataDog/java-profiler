@@ -481,6 +481,19 @@ public:
     }
     return total;
   }
+
+#ifdef UNIT_TEST
+  // Deletes every registered CodeCache and resets the array to empty. Test
+  // teardown only: production arrays are append-only for process lifetime.
+  void freeForTest() {
+    for (int i = 0; i < count(); i++) {
+      delete at(i);
+    }
+    memset(_libs, 0, sizeof(_libs));
+    _reserved = 0;
+    _count = 0;
+  }
+#endif
 };
 
 #endif // _CODECACHE_H

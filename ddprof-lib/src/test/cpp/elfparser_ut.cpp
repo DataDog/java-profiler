@@ -40,6 +40,14 @@ public:
     static bool parseFile(CodeCache* cc, const char* base, const char* file_name, bool use_debug);
 };
 
+// parseLibraries() hands one heap CodeCache per library to the array and
+// nothing frees it (production arrays live for the process lifetime).
+static void freeCodeCacheArray(CodeCacheArray& libs) {
+    for (int i = 0; i < libs.count(); i++) {
+        delete libs[i];
+    }
+}
+
 // Test name for crash handler
 static constexpr char ELF_TEST_NAME[] = "ElfParserTest";
 
@@ -60,13 +68,12 @@ static ElfParserGlobalSetup global_setup;
 TEST(Elf, readSymTable) {
     char cwd[PATH_MAX - 64];
     if (getcwd(cwd, sizeof(cwd)) == nullptr) {
-        exit(1);    
+        FAIL() << "getcwd() failed";
     }
     char path[PATH_MAX];
     snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/native-libs/unresolved-functions/main", cwd);
     if (access(path, R_OK) != 0) {
-        fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
-        exit(0);
+        GTEST_SKIP() << "missing test resource " << path;
     }
     CodeCache cc("test");
     ElfParser::parseFile(&cc, nullptr, path, false);
@@ -81,13 +88,12 @@ class ElfReladyn : public ::testing::Test {
     void SetUp() override {
         char cwd[PATH_MAX - 64];
         if (getcwd(cwd, sizeof(cwd)) == nullptr) {
-            exit(1);
+            FAIL() << "getcwd() failed";
         }
         char path[PATH_MAX];
         snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/native-libs/reladyn-lib/libreladyn.so", cwd);
         if (access(path, R_OK) != 0) {
-            fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
-            exit(0);
+            GTEST_SKIP() << "missing test resource " << path;
         }
         void* handle = dlopen(path, RTLD_NOW);
         ASSERT_THAT(handle, ::testing::NotNull());
@@ -100,7 +106,13 @@ class ElfReladyn : public ::testing::Test {
 
     // This method is called after each test.
     void TearDown() override {
-        // Clean up resources.
+        if (_libs == nullptr) {
+            return;  // SetUp skipped (missing resource): nothing was parsed
+        }
+        // parseLibraries skips libraries already in _parsed_inodes, so the
+        // next SetUp can only reparse after clearing them.
+        Symbols::clearParsingCaches();
+        _libs->freeNativeLibsForTest();
     }
 
     CodeCache* libreladyn() {
@@ -128,10 +140,6 @@ protected:
     void SetUp() override {
         // Reset global or static state
         Symbols::clearParsingCaches();
-    }
-
-    void TearDown() override {
-        // probably some free of the array cache to be done
     }
 };
 
@@ -175,6 +183,10 @@ TEST_F(ElfTest, invalidElf) {
     // Call the parsing function with the invalid ELF mapping
     Symbols::parseLibraries(&cc_array, false);
 
+    // The binary's own mapping is always collected and parsed.
+    ASSERT_GT(cc_array.count(), 0);
+    freeCodeCacheArray(cc_array);
+
     munmap(addr, 4096);
     unlink("/tmp/invalid_elf");
 }
@@ -202,6 +214,9 @@ TEST_F(ElfTest, nonElfFile) {
 
     // Call the parsing function with the non-ELF mapping
     Symbols::parseLibraries(&cc_array, false);
+
+    ASSERT_GT(cc_array.count(), 0);
+    freeCodeCacheArray(cc_array);
 
     // we could add checks here, though I am mainly relying on asan to crash
     // if something is wrong
@@ -231,6 +246,9 @@ TEST_F(ElfTest, invalidElfSmallMapping) {
     // Call the parsing function with the small invalid ELF mapping
     Symbols::parseLibraries(&cc_array, false);
 
+    ASSERT_GT(cc_array.count(), 0);
+    freeCodeCacheArray(cc_array);
+
     munmap(addr, 16);
     unlink("/tmp/invalid_elf_small");
 }
@@ -257,6 +275,8 @@ TEST_F(ElfTest, nonElfFileSmallMapping) {
 
     // Call the parsing function with the small non-ELF mapping
     Symbols::parseLibraries(&cc_array, false);
+    ASSERT_GT(cc_array.count(), 0);
+    freeCodeCacheArray(cc_array);
     munmap(addr, contentSize);
     unlink("/tmp/non_elf_small");
 }
@@ -266,10 +286,6 @@ protected:
     void SetUp() override {
         // Reset global or static state
         Symbols::clearParsingCaches();
-    }
-
-    void TearDown() override {
-        // probably some free of the array cache to be done
     }
 };
 
@@ -314,6 +330,9 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
 
     // Join the unmapper thread to ensure it has finished
     unmapper.join();
+
+    ASSERT_GT(cc_array.count(), 0);
+    freeCodeCacheArray(cc_array);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -326,7 +345,7 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
     char cwd[PATH_MAX - 64];
     if (getcwd(cwd, sizeof(cwd)) == nullptr) {
-        exit(1);
+        FAIL() << "getcwd() failed";
     }
 
     // Configure logging (assuming Log is defined elsewhere)
@@ -336,13 +355,11 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
     char path[PATH_MAX];
     snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/native-libs/small-lib/libsmall-lib.so", cwd);
     if (access(path, R_OK) != 0) {
-        fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
-        exit(1);
+        GTEST_SKIP() << "missing test resource " << path;
     }
     void* handle = dlopen(path, RTLD_NOW);
     if (!handle) {
-        fprintf(stderr, "dlopen failed: %s\n", dlerror());
-        exit(1);
+        FAIL() << "dlopen failed: " << dlerror();
     }
 
     CodeCacheArray cc_array;
@@ -359,6 +376,9 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
     // Call the parsing function in the main thread, this is where we can crash
     Symbols::parseLibraries(&cc_array, false);
     unmapper.join();
+
+    ASSERT_GT(cc_array.count(), 0);
+    freeCodeCacheArray(cc_array);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -583,11 +603,9 @@ TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
     parseElfBytes(b);  // must not crash: strAt() rejects st_name == strtab_size
 }
 
-// A .symtab whose sh_offset is not a multiple of alignof(Elf64_Sym) (the
-// 42-byte section-header string table lands it at 490) drives the misaligned
-// entries through loadSymbolTable() and addRelocationSymbols(): both symbols
-// and the PLT relocation name must still resolve. Before the alignment fix
-// UBSan aborted here at the first ElfSymbol member access.
+// A .symtab misaligned by the 42-byte section-header string table (sh_offset
+// 490, not a multiple of alignof(Elf64_Sym)) must still resolve both symbols
+// and the PLT relocation name through loadSymbolTable()/addRelocationSymbols().
 TEST_F(ElfTest, symbolTableMisalignedEntries) {
     const uint16_t NSEC = 6;
     const uint64_t shoff = sizeof(Elf64_Ehdr);
