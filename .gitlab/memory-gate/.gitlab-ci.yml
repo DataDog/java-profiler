@@ -1,37 +1,26 @@
 # Memory gate: speedlab (DataDog/apm-reliability/speedlab, docs/memory-gate.md)
 # compares spring-petclinic's memory with this branch's java-profiler build against
 # main's, and posts a warn-only verdict on the PR. Manual: play `memory-gate`.
-
-.memory-gate-rules:
-  rules:
-    - !reference [.skip-on-release, rules]
-    - if: '$CI_COMMIT_TAG || $CI_COMMIT_BRANCH == "main"'
-      when: never  # main against itself measures nothing
-
-# Pins the snapshot deploy-artifact published, for the trigger job's variables.
-memory-gate:resolve:
+# The candidate is the snapshot build deploy-artifact published and verified
+# (MEMORY_GATE_CANDIDATE, its dotenv report), so a later push cannot change it.
+memory-gate:
   stage: benchmarks
   needs:
     - job: deploy-artifact
       artifacts: true
-  image: ${PREPARE_IMAGE}
-  tags: ["arch:amd64"]
+  # Where deploy-artifact publishes nothing (no open PR, merge queue, release
+  # branches) or the gate measures nothing (main against itself), as for the
+  # benchmarks jobs in .gitlab/benchmarks/.gitlab-ci.yml.
   rules:
-    - !reference [.memory-gate-rules, rules]
-    - when: on_success
-  script:
-    - bash .gitlab/memory-gate/resolve-candidate.sh version.txt memory-gate.env
-  artifacts:
-    reports:
-      dotenv: memory-gate.env
-
-memory-gate:
-  stage: benchmarks
-  needs:
-    - job: memory-gate:resolve
-      artifacts: true
-  rules:
-    - !reference [.memory-gate-rules, rules]
+    - !reference [.skip-on-release, rules]
+    - if: '$CI_COMMIT_TAG || $CI_COMMIT_BRANCH == "main"'
+      when: never
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH =~ /^mq-working-branch-/'
+      when: never
     - when: manual
       allow_failure: true
   # Only the variables below reach speedlab: its jobs read ours, and upstream

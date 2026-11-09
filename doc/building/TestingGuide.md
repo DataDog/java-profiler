@@ -269,15 +269,16 @@ run in the `shell-unit-tests` job.
 
 **Pipeline:** `.gitlab/memory-gate/.gitlab-ci.yml`, `benchmarks` stage
 
-`memory-gate:resolve` pins the snapshot `deploy-artifact` just published
-(`resolve-candidate.sh`). The manual `memory-gate` job then triggers speedlab
-(`DataDog/apm-reliability/speedlab`). There, spring-petclinic runs six interleaved
+`deploy-artifact` records the snapshot build it published and verified
+(`MEMORY_GATE_CANDIDATE`, a dotenv report written by `deploy.sh`). The manual
+`memory-gate` job then triggers speedlab (`DataDog/apm-reliability/speedlab`)
+with that build, so a later push cannot change what is measured. There, spring-petclinic runs six interleaved
 pairs with this build and `main`'s, in a low-noise allocator setting. Speedlab
 posts a warn-only verdict on the PR: a regression is a 95% interval above zero
 with a mean of at least 3 MiB. It catches about 5 MiB reliably; changes in
 retained free memory show only in part. Setting, calibration and limits are in
-speedlab's `docs/memory-gate.md`. The jobs do not run on `main`, tags or
-`release/*`.
+speedlab's `docs/memory-gate.md`. The job does not run on `main`, tags,
+`release/*`, merge-queue branches or scheduled pipelines.
 
 ## Why the Split
 
