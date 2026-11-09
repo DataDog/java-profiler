@@ -41,5 +41,4 @@ descriptions only.
 
 ## Commits
 
-- Commit in logical chunks. Base each message solely on the actual diff.
-- The ticket reference (`PROF-<n>` or `#<n>`) goes in the PR title or body; CI checks it.
+- Base each commit message solely on the actual diff.

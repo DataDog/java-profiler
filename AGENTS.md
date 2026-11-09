@@ -411,7 +411,7 @@ exception list.
   config files (Dockerfiles, `.gitlab/**`) are exempt. Enforced in CI:
   `utils/check-copyright.py` (part of `qualityChecks`) checks the files a branch adds or
   modifies.
-- Commits: never commit files from other projects or scratch files.
+- Commits: logical chunks. Never commit files from other projects or scratch files.
   **Never commit design artifacts automatically** — plans, specs, review reports, audit
   findings, session notes, analysis dumps — even when they live in the repo tree. Always
   ask for permission first and commit them only if the user explicitly says so.
