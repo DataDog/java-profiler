@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-11-09 06:39:10 EST
+**Date:** 2026-11-09 07:22:30 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 276 |
-| Sample Rate | 4.60/sec |
-| Health Score | 287% |
-| Threads | 7 |
+| CPU Samples | 192 |
+| Sample Rate | 3.20/sec |
+| Health Score | 200% |
+| Threads | 6 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 160 |
-| Sample Rate | 2.67/sec |
-| Health Score | 167% |
-| Threads | 7 |
+| CPU Samples | 223 |
+| Sample Rate | 3.72/sec |
+| Health Score | 233% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 10-10 cores)</summary>
 
 ```
-1794224071 10
-1794224076 10
-1794224081 10
-1794224086 10
-1794224091 10
-1794224096 10
-1794224101 10
-1794224106 10
-1794224111 10
-1794224116 10
-1794224121 10
-1794224126 10
-1794224131 10
-1794224136 10
-1794224141 10
-1794224146 10
-1794224151 10
-1794224156 10
-1794224161 10
-1794224166 10
+1794226720 10
+1794226725 10
+1794226730 10
+1794226735 10
+1794226740 10
+1794226745 10
+1794226750 10
+1794226755 10
+1794226760 10
+1794226765 10
+1794226770 10
+1794226775 10
+1794226780 10
+1794226785 10
+1794226790 10
+1794226795 10
+1794226800 10
+1794226805 10
+1794226810 10
+1794226815 10
 ```
 </details>
 
