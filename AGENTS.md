@@ -113,9 +113,7 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   — defaults to podman; on macOS use either podman or Docker through colima
   (`--container=docker` after `colima start` — check availability with
   `podman info` / `docker info` and pick the runtime whose daemon answers).
-  Glibc images retain Ubuntu 22.04 and default to Clang 17 with matching compiler-rt
-  on x64/aarch64; both cache tags end in `-clang17`. Musl remains Alpine 3.21.
-  `--rebuild-base` rebuilds only the base; use `--rebuild` to refresh both layers.
+  Glibc uses Clang 17/compiler-rt 17 and `-clang17` cache tags on both architectures.
   Full flags and toolchain checks in
   [doc/building/TestingGuide.md](doc/building/TestingGuide.md).
 

@@ -148,8 +148,6 @@ bash utils/tests/test_prepare_patch.sh
 
 Runs tests in containers across various OS/libc/JDK combinations, mirroring the CI matrix locally. Defaults to Podman; on macOS use Docker via colima (`--container=docker`) — podman's credential-helper lookup for the Datadog registries (ddtool) fails outside the CI network and aborts container commands.
 
-The glibc base is Ubuntu 22.04 with Clang/Clang++ 17 selected as defaults and matching `libclang-rt-17-dev` on x64 and aarch64. Its cache tags are `java-profiler-base:glibc-<arch>-clang17` and `java-profiler-test:glibc-jdk<version>-<arch>-clang17`, so both levels bypass older toolchain caches. Musl retains Alpine 3.21 and its Clang/compiler-rt packages, with tags `java-profiler-base:musl-<arch>` and `java-profiler-test:musl-jdk<version>-<arch>`. `--rebuild-base` refreshes only the base and can reuse a cached JDK image; `--rebuild` refreshes both layers.
-
 **Usage:**
 ```bash
 ./utils/run-containers-tests.sh [options]
@@ -165,7 +163,6 @@ The glibc base is Ubuntu 22.04 with Clang/Clang++ 17 selected as defaults and ma
   --shell                         (drop to shell instead of running tests)
   --mount                         (mount local repo instead of cloning)
   --rebuild                       (force rebuild of container images)
-  --rebuild-base                  (force rebuild of base image only)
   --matrix                        (preview a full matrix)
   --run                           (execute an inferred matrix without prompting)
   --fail-fast                     (stop matrix execution on first failure)
@@ -190,20 +187,6 @@ Examples:
 ```
 
 Single-value commands run one container test configuration immediately. When any dimension expands to multiple cells, the script prints a compact status table first; interactive terminals ask for confirmation, while non-interactive runs require `--run` to execute. Matrix execution prints the status table again after all cells finish and writes summaries to `build/reports/container-matrix/summary.md` and `build/reports/container-matrix/summary.json`. Matrix gtest runs require a short `--gtest-task` name so the task follows each cell's configuration. Cells not run because of `--fail-fast` are reported as cancelled separately from unsupported cells that are skipped.
-
-Runner regression checks require no container runtime or network:
-
-```bash
-bash utils/tests/test_run_containers_tests.sh
-```
-
-The Linux compiler smoke is separate and requires an installed Clang and matching compiler-rt. Run it inside a glibc image; it exercises all 2048 valid masked slots, pointer/content and publication expectations, disabled snapshots, and invalid boundaries under the full project ASan/UBSan flag set:
-
-```bash
-bash utils/tests/test_masked_index_compiler.sh clang++
-```
-
-See [TestingGuide](../doc/building/TestingGuide.md#container-toolchain-checks) for comparison and verification limits.
 
 ### `check-signal-reachability.py`
 

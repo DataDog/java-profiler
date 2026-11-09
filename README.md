@@ -161,8 +161,6 @@ Run tests in containers to test on different libc implementations. The script de
 1. **Base image** - OS with build tools + sanitizers: `java-profiler-base:glibc-<arch>-clang17` or `java-profiler-base:musl-<arch>`
 2. **JDK image** - Adds JDK + Gradle: `java-profiler-test:glibc-jdk<version>-<arch>-clang17` or `java-profiler-test:musl-jdk<version>-<arch>`
 
-Glibc images use Ubuntu 22.04 with Clang/Clang++ 17 selected as defaults and matching `libclang-rt-17-dev` on both x64 and aarch64. The `-clang17` tags bypass older toolchain caches at both levels. Musl images retain Alpine 3.21 and its Clang/compiler-rt packages. `--rebuild-base` refreshes only the base and may reuse the cached JDK image; use `--rebuild` to refresh both layers.
-
 By default, the script clones the repository at the current commit for clean builds. Use `--mount` to mount the local directory instead (faster but may have stale artifacts).
 
 ```bash
