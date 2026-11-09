@@ -82,7 +82,22 @@ tasks.register("checkCoverageTestFailures") {
   group = "verification"
   description = "Fails if a coverage test task deferred its failures to :ddprof-lib:coverageReport"
   val markers = deferredFailuresDir
+  val resultsDir = layout.buildDirectory.dir("test-results")
+  val filtered = project.hasProperty("tests")
+  val testsPattern = project.findProperty("tests")
   doLast {
+    // -Ptests lets either coverage task match nothing, but not both: a typo'd pattern
+    // would otherwise end in a green run with no Java coverage. Counted from the result
+    // XML, since jacocoTestReport is skipped (not failed) when no .exec file exists.
+    if (filtered) {
+      val executed = coverageTaskNames.sumOf { task ->
+        resultsDir.get().dir(task).asFile.listFiles { f -> f.name.startsWith("TEST-") && f.name.endsWith(".xml") }
+          .orEmpty().sumOf { Regex("""<testsuite [^>]*\btests="(\d+)"""").find(it.readText())?.groupValues?.get(1)?.toInt() ?: 0 }
+      }
+      if (executed == 0) {
+        throw GradleException("-Ptests=$testsPattern matched no tests in testCoverage or testSlowCoverage")
+      }
+    }
     val failed = markers.get().asFile.list()?.sorted().orEmpty()
     if (failed.isNotEmpty()) {
       throw GradleException("Coverage report generated, but tests failed in: ${failed.joinToString()}")
@@ -221,14 +236,6 @@ tasks.named<JacocoReport>("jacocoTestReport") {
   description = "Java half of :ddprof-lib:coverageReport (run that instead; requires -PenableCoverage)"
 
   dependsOn(tasks.named { it in coverageTaskNames })
-  // -Ptests lets either coverage task match nothing (see above), but not both: a typo'd
-  // pattern would otherwise end in a green run with no Java coverage.
-  doFirst {
-    if (project.hasProperty("tests") &&
-      coverageTaskNames.none { layout.buildDirectory.file("jacoco/$it.exec").get().asFile.exists() }) {
-      throw GradleException("-Ptests=${project.property("tests")} matched no tests in testCoverage or testSlowCoverage")
-    }
-  }
   // The .exec files from: (1) the main test tasks (Test via jacoco plugin, musl Exec via agent
   // attached above), and (2) child JVMs spawned by AbstractProcessProfilerTest.launch().
   // Only existing files: a task that ran no tests writes none.
