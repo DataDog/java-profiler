@@ -67,26 +67,32 @@ public final class JVMAccess {
   }
 
   private class FlagsImpl implements Flags {
+    @Override
     public String getStringFlag(String name) {
       return findStringJVMFlag0(name);
     }
 
+    @Override
     public void setStringFlag(String name, String value) {
       setStringJVMFlag0(name, value);
     }
 
+    @Override
     public boolean getBooleanFlag(String name) {
       return findBooleanJVMFlag0(name);
     }
 
+    @Override
     public void setBooleanFlag(String name, boolean value) {
       setBooleanJVMFlag0(name, value);
     }
 
+    @Override
     public long getIntFlag(String name) {
       return findIntJVMFlag0(name);
     }
 
+    @Override
     public double getFloatFlag(String name) {
       return findFloatJVMFlag0(name);
     }

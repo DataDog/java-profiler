@@ -54,13 +54,19 @@ public class ContendedCallTraceStorageTest extends AbstractProfilerTest {
       // For this test, we verify that contention measurement works
       assertTrue(currentResult.totalAttempts > 0, "Should measure total attempts");
       assertTrue(
-          currentResult.totalAttempts > 0
-              && currentResult.droppedSamples / (double) currentResult.totalAttempts < 0.1f,
-          "Should measure total attempts and not drop more than 10% of samples");
+          currentResult.droppedSamples / (double) currentResult.totalAttempts < 0.1f,
+          "Should drop fewer than 10% of samples");
     }
 
     // The key insight: this test framework can be used to validate
     // that increasing retry counts reduces dropped samples
+  }
+
+  @Test
+  public void burnCyclesUsesLongProducts() {
+    // This id makes products exceed Integer.MAX_VALUE within the burn loop.
+    burnCycles(1 << 16);
+    assertEquals(-6210362850099529279L, volatileResult);
   }
 
   private List<ContentionResult> measureContention() throws Exception {
@@ -222,7 +228,7 @@ public class ContendedCallTraceStorageTest extends AbstractProfilerTest {
     // CPU burning pattern that ensures we get profiling samples
     long sink = 0;
     for (int i = 0; i < 100000; i++) {
-      sink += i * threadId;
+      sink += (long) i * threadId;
       sink ^= threadId;
       if (i % 1000 == 0) {
         // Add some method calls to create interesting stack traces
