@@ -1210,8 +1210,7 @@ else
         GRADLE_CMD="$GRADLE_CMD -Pskip-gtest"
     fi
 fi
-# On aarch64 glibc, TSan needs clang-17's embedded runtime (supports 48-bit VMA).
-# GCC 11's libtsan is linked by default but only knows 39-bit VMA, causing a crash.
+# Keep aarch64 glibc TSan on Clang 17's runtime for 48-bit VMA support.
 if [[ "$CONFIG" == "tsan" ]] && [[ "$ARCH" == "aarch64" ]] && [[ "$LIBC" == "glibc" ]]; then
     GRADLE_CMD="$GRADLE_CMD -Pnative.forceCompiler=clang++-17"
 fi
