@@ -17,6 +17,7 @@
 #include "faultInjection.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
+#include "spinLock.h"
 #include "threadState.h"
 #include "vmEntry.h"
 
@@ -341,6 +342,57 @@ typedef void* address;
 #define DECLARE_LONG_CONSTANTS_DO(constant, constant_with_version)  \
     constant_with_version(markWord, klass_shift, 24, MAX_VERSION)   \
     constant_with_version(markWord, monitor_value, 24, MAX_VERSION)
+
+// (method, address) pairs that VMStructs::NativeMethodBind() sees before a
+// JNIEnv is available, replayed by the first call that has one.
+class DelayedNativeBindings {
+  public:
+    static const int CAPACITY = 512;
+
+    constexpr DelayedNativeBindings() : _lock(), _bindings(), _count(0), _drained(false) {}
+
+    // Records a binding. Returns false, dropping it, when the list is full or
+    // closed by a drain.
+    bool add(jmethodID method, void* address) {
+        _lock.lock();
+        bool added = !_drained && _count < CAPACITY;
+        if (added) {
+            _bindings[_count].method = method;
+            _bindings[_count].address = address;
+            _count++;
+        }
+        _lock.unlock();
+        return added;
+    }
+
+    // Calls f(method, address) for each recorded binding, outside the lock.
+    // A drain that finds bindings closes the list: no later drain sees them
+    // and add() drops from then on. Once closed, add() no longer writes to
+    // the list, so reading it needs no lock.
+    template <typename F>
+    void drain(F f) {
+        _lock.lock();
+        int count = _drained ? 0 : _count;
+        if (count > 0) {
+            _drained = true;
+        }
+        _lock.unlock();
+        for (int i = 0; i < count; i++) {
+            f(_bindings[i].method, _bindings[i].address);
+        }
+    }
+
+  private:
+    struct Binding {
+        jmethodID method;
+        void* address;
+    };
+
+    SpinLock _lock;
+    Binding _bindings[CAPACITY];
+    int _count;
+    bool _drained;
+};
 
 class VMStructs {
   public:

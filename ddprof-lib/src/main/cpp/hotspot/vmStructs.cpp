@@ -589,49 +589,19 @@ bool VMStructs::isSafeToWalk(uintptr_t pc) {
 void JNICALL VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                          jmethodID method, void *address,
                                          void **new_address_ptr) {
-    static SpinLock _lock;
-    // (method, address) pairs bound before a JNIEnv was available.
-    static const int MAX_DELAYED = 512;
-    static int delayedCounter = 0;
-    static void **delayed = (void **)malloc(MAX_DELAYED * sizeof(void *) * 2);
+    static DelayedNativeBindings delayed;
 
     ProfiledThread::initCurrentThreadSignalSafe();
 
     if (_memory_usage_func == NULL) {
         if (jvmti != NULL && jni != NULL) {
             checkNativeBinding(jvmti, jni, method, address);
-            void **tmpDelayed = NULL;
-            int tmpCounter = 0;
-            _lock.lock();
-            if (delayed != NULL && delayedCounter > 0) {
-                // in order to minimize the lock time, we copy the delayed list, free it
-                // and release the lock
-                tmpCounter = delayedCounter;
-                tmpDelayed = (void **)malloc(tmpCounter * sizeof(void *) * 2);
-                memcpy(tmpDelayed, delayed, tmpCounter * sizeof(void *) * 2);
-                delayedCounter = 0;
-                free(delayed);
-                delayed = NULL;
-            }
-            _lock.unlock();
-            // if there was a delayed list, we check it now, not blocking on the lock
-            if (tmpDelayed != NULL) {
-                for (int i = 0; i < tmpCounter; i += 2) {
-                    checkNativeBinding(jvmti, jni, (jmethodID)tmpDelayed[i],
-                                      tmpDelayed[i + 1]);
-                }
-                // don't forget to free the tmp list
-                free(tmpDelayed);
-            }
+            delayed.drain([&](jmethodID m, void *a) {
+                checkNativeBinding(jvmti, jni, m, a);
+            });
         } else {
-            _lock.lock();
             // Past the capacity a binding is dropped rather than overflowing.
-            if (delayed != NULL && delayedCounter < MAX_DELAYED * 2) {
-                delayed[delayedCounter] = method;
-                delayed[delayedCounter + 1] = address;
-                delayedCounter += 2;
-            }
-            _lock.unlock();
+            delayed.add(method, address);
         }
     }
 }
