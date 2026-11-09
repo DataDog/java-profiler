@@ -32,6 +32,7 @@ honors `spotless:off` / `spotless:on` markers. `spotlessJavaCheck` feeds
 Run the convention's TestKit regressions with
 `./.claude/commands/build-and-summarize -p build-logic :conventions:test --max-workers=2`.
 Set `JAVA_HOME` to the build JDK to qualify; use `--rerun-tasks` when switching JDKs.
+
 The fixtures verify the test worker and nested build JVMs and compile formatted Java
 to class-file version 52 using `com.datadoghq.java-conventions`.
 
