@@ -324,14 +324,14 @@ static char _debuginfod_cache_buf[PATH_MAX] = {0};
 
 // Symbol-table addresses (file sh_offset or DT_SYMTAB) carry no alignment
 // guarantee; these copies avoid member access through a misaligned ElfSymbol*,
-// which is undefined behavior under -fsanitize=alignment.
+// which is undefined behavior; UBSan's alignment check detects it.
 static uint32_t symbolNameAt(const void* sym) {
     uint32_t name;
     memcpy(&name, sym, sizeof(name));  // st_name sits at offset 0 of Elf64_Sym
     return name;
 }
 
-static ElfSymbol readSymbol(const void* sym) {
+static ElfSymbol readSymbolEntry(const void* sym) {
     ElfSymbol copy;
     memcpy(&copy, sym, sizeof(copy));
     return copy;
@@ -985,7 +985,7 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
     // to a small pointer that still compares <= end, walking off the image. The
     // `ent_size <= total_size - off` form keeps off <= total_size with no overflow.
     for (size_t off = 0; ent_size <= total_size - off; off += ent_size) {
-        ElfSymbol sym = readSymbol(symbols + off);
+        ElfSymbol sym = readSymbolEntry(symbols + off);
         if (sym.st_name != 0 && sym.st_value != 0) {
             // Resolve the name through the bounded string table; a bad st_name
             // offset (or unterminated string) drops the symbol instead of reading
@@ -1058,7 +1058,7 @@ void ElfParser::addRelocationSymbols(ElfSection* reltab, const char* plt) {
         if (ELF_R_SYM(r->r_info) > max_sym_index) {
             continue;
         }
-        ElfSymbol sym = readSymbol(symbols + (size_t)ELF_R_SYM(r->r_info) * sym_ent);
+        ElfSymbol sym = readSymbolEntry(symbols + (size_t)ELF_R_SYM(r->r_info) * sym_ent);
 
         char name[256];
         if (sym.st_name == 0) {
@@ -1363,7 +1363,7 @@ bool hashSymbolRelocations(const LoadedImage& image, uintptr_t rel, size_t size,
         if (index == 0) continue;  // e.g. R_*_RELATIVE: no import
         uintptr_t sym = symtab + index * syment;
         if (!image.readable(sym, sizeof(ElfSymbol))) return false;
-        size_t name = symbolNameAt((const void*)sym);
+        size_t name = symbolNameAt(reinterpret_cast<const void*>(sym));
         if (name >= strsz) return false;
         const char* str = (const char*)(strtab + name);
         hash = fnv1a(&r->r_offset, sizeof(r->r_offset), hash);
