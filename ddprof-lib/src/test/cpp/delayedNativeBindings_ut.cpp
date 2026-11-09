@@ -42,7 +42,7 @@ TEST(DelayedNativeBindingsTest, ReplaysBindingsInOrder) {
     }
 }
 
-TEST(DelayedNativeBindingsTest, DropsFirstPairPastCapacity) {
+TEST(DelayedNativeBindingsTest, DropsPairsPastCapacity) {
     DelayedNativeBindings delayed;
     const int capacity = DelayedNativeBindings::CAPACITY;
     for (int i = 0; i < capacity; i++) {

@@ -366,9 +366,8 @@ class DelayedNativeBindings {
     }
 
     // Calls f(method, address) for each recorded binding, outside the lock.
-    // A drain that finds bindings closes the list: no later drain sees them
-    // and add() drops from then on. Once closed, add() no longer writes to
-    // the list, so reading it needs no lock.
+    // A drain that finds bindings closes the list for good, so later add()
+    // calls never write to it and reading it needs no lock.
     template <typename F>
     void drain(F f) {
         _lock.lock();
