@@ -35,6 +35,20 @@ description = "Datadog Java Profiler Library"
 
 val componentVersion = findProperty("ddprof_version") as? String ?: version.toString()
 
+// Recorded in the jar manifests, as a snapshot version such as 1.54.0-SNAPSHOT does not
+// identify the source. GitLab, which publishes, sets CI_COMMIT_SHA.
+val gitCommit: String = providers.environmentVariable("CI_COMMIT_SHA")
+  .filter { it.isNotBlank() }
+  .orNull ?: try {
+  providers.exec {
+    commandLine("git", "rev-parse", "HEAD")
+    workingDir = rootDir
+  }.standardOutput.asText.get().trim()
+} catch (e: Exception) {
+  logger.warn("git rev-parse HEAD failed, recording Git-Commit: unknown in the jar manifests: ${e.message}")
+  "unknown"
+}
+
 // Configure native build with the new plugin
 nativeBuild {
   version.set(componentVersion)
@@ -164,8 +178,14 @@ afterEvaluate {
         dependsOn(copyTask)
       }
 
-      if (name == "debug") {
-        manifest {
+      manifest {
+        attributes(
+          "Implementation-Title" to libraryName,
+          "Implementation-Version" to componentVersion,
+          "Implementation-Vendor" to "Datadog",
+          "Git-Commit" to gitCommit,
+        )
+        if (name == "debug") {
           attributes("Premain-Class" to "com.datadoghq.profiler.Main")
         }
       }

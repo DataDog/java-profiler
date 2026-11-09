@@ -55,6 +55,10 @@ sourcesJar               # Sources JAR for publishing
 javadocJar               # Javadoc JAR for publishing
 ```
 
+Each packaged configuration's jar (`assemble<Config>Jar`) records its version and commit in
+its manifest; `jar`, `sourcesJar` and `javadocJar` do not. See
+[NativeBuildPlugin.md](NativeBuildPlugin.md#publishing-and-artifacts).
+
 ## Test Tasks
 
 ### Java Tests (ddprof-test)
