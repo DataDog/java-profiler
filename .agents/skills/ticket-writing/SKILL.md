@@ -48,8 +48,8 @@ The `pr-writing` skill's style rules apply to every ticket text and comment.
   what produced it: the candidate commit and the configuration (build type, platform,
   harness and version); for a production check, the deployed revision, environment and
   observation window. Put the interpretation in its own paragraph, after the table.
-- **After the candidate changes,** re-run each check, or state why the change cannot
-  affect it.
+- **After the candidate changes,** re-run each check on the new candidate before you
+  report it as passed. Results from an earlier commit are reported as such.
 - **Links, not bare names.** Every commit, PR and branch is a link. A link to an
   unpushed commit does not resolve, so push first, or add the links after the push.
 - **No line numbers.** Refer to files and symbols; line numbers go stale.

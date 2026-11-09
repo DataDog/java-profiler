@@ -6,9 +6,11 @@ description: Conventions for the Design, acceptance criteria and Build plan of a
 # Work planning
 
 The phases and their exit criteria are in `doc/WorkTracking.md`. This skill covers how
-to write the two planning artifacts. Both live in the ticket description, which is
-their one declared source of truth (see the `ticket-writing` skill), and the engineer
-accepts each before the next phase starts.
+to write the two planning artifacts. Keep each in one declared source of truth: the
+design in the ticket description or a draft PR, the Build plan in the ticket
+description or a versioned `plan.md` linked from the ticket. The ticket description
+is the default (see the `ticket-writing` skill). The engineer accepts each artifact
+before the next phase starts.
 
 ## Effort
 
@@ -51,4 +53,5 @@ accepts each before the next phase starts.
   (how to run it, what to compare against).
 - Do not restate the intent or the design, and do not write a step-by-step blueprint
   of the implementation: that detail belongs in the PRs.
-- When reality diverges, amend the plan on the ticket and get the change accepted.
+- When reality diverges, amend the plan in its source of truth and get the change
+  accepted.
