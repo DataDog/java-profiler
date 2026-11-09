@@ -2761,16 +2761,19 @@ retry:
       // Reap only; the population fold is too heavy for the allocation callback.
       cleanup_table(true, false, false);
 
-      if (_table_cap < _table_max_cap) {
+      // _table_cap is written under the exclusive _table_lock (here and in
+      // release()), so the "can it still grow" decision is made under it too.
+      _table_lock.lock();
+      const int max_cap = _table_max_cap.load(std::memory_order_relaxed);
+      if (_table_cap < max_cap) {
 
         // Let's increase the size of the table
         // This should only ever happen when sampling interval * size of table
         // is smaller than maximum heap size. So we only support increasing
         // the size of the table, not decreasing it.
-        _table_lock.lock();
 
-        // Only increase the size of the table to _table_max_cap elements
-        int newcap = std::min(_table_cap * 2, _table_max_cap.load(std::memory_order_relaxed));
+        // Only increase the size of the table to max_cap elements
+        int newcap = std::min(_table_cap * 2, max_cap);
         if (_table_cap != newcap) {
           TrackingEntry *tmp = (TrackingEntry *)realloc(
                 _table, sizeof(TrackingEntry) * newcap);
@@ -2799,6 +2802,7 @@ retry:
 
         goto retry;
       } else {
+        _table_lock.unlock();
         Log::debug("Cannot add sampled object to Liveness tracking table, it's "
                    "overflowing");
         env->DeleteWeakGlobalRef(ref);

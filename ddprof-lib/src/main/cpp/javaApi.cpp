@@ -259,6 +259,10 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
   if (endpoint == NULL) {
     return JNI_FALSE;
   }
+  // Read the session before the JNI copies below: a stop()/start() that
+  // completes during them leaves this call belonging to the old recording,
+  // and it is dropped under the lock rather than recorded into the new one.
+  const u32 session = profiler->recordingSession();
   if (!profiler->internOpen()) {
     return idle_answer;
   }
@@ -275,7 +279,8 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
 
   // See Profiler::_intern_lock: re-checked under the lock.
   OptionalSharedLockGuard api(profiler->internLock(), SpinLock::NO_SPIN_BUDGET);
-  if (!api.ownsLock() || !profiler->internOpen()) {
+  if (!api.ownsLock() || !profiler->internOpen() ||
+      profiler->recordingSession() != session) {
     return idle_answer;
   }
   u32 endpointLabel = profiler->stringLabelMap()->bounded_lookup(
@@ -402,6 +407,9 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     JNIEnv *env, jclass unused, jlong startTime, jlong endTime, jstring task,
     jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
   Profiler *profiler = Profiler::instance();
+  // Read before the JNI work below; compared under _intern_lock (see
+  // recordTrace0) so a call straddling stop()/start() is dropped.
+  const u32 session = profiler->recordingSession();
   // Nothing records the event while idle; interning the names would allocate
   // the class-name dictionary stop() released. Null names would intern "".
   if (!profiler->internOpen() || task == NULL || scheduler == NULL || queueType == NULL) {
@@ -438,7 +446,8 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
 
   // See Profiler::_intern_lock: re-checked under the lock.
   OptionalSharedLockGuard api(profiler->internLock(), SpinLock::NO_SPIN_BUDGET);
-  if (!api.ownsLock() || !profiler->internOpen()) {
+  if (!api.ownsLock() || !profiler->internOpen() ||
+      profiler->recordingSession() != session) {
     return;
   }
   int task_offset = profiler->lookupClass(task_str.c_str(), task_str.length());
