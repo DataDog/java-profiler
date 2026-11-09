@@ -3,14 +3,18 @@
 """Check that every agent skill under .agents/skills/ loads, and that AGENTS.md names only
 existing skills.
 
-Pi silently skips a SKILL.md with malformed frontmatter or without a description, so a
-broken skill would otherwise go unnoticed. Rules, per tracked `.agents/skills/<dir>/`:
-a SKILL.md with a leading `---` block; a single-line `name` equal to <dir>, made of
-lowercase letters, digits and single hyphens, at most 64 characters; a non-empty
-single-line `description` of at most 1024 characters. Block scalars (`>`, `|`) are
-rejected because the line parser here cannot read them. `.claude/skills` must be the
-symlink to `../.agents/skills` that Claude Code reads them through. Every "`<name>` skill"
-mention in AGENTS.md must name a skill directory.
+Pi silently skips a SKILL.md whose frontmatter does not parse as YAML or has no
+description, so a broken skill would otherwise go unnoticed. Rules, per tracked
+`.agents/skills/<dir>/`:
+- SKILL.md starts with a `---` block;
+- every line in the block is blank, a column-0 `#` comment, or `key: value` with a unique
+  key, and every value is empty or a one-line string accepted by scalar(). This subset
+  needs no YAML library and is stricter than YAML: it has no nested mappings, lists or
+  multi-line values;
+- `name` equals <dir> and uses lowercase letters, digits and single hyphens, at most 64
+  characters; `description` is non-empty, at most 1024 characters.
+`.claude/skills` must be the symlink to `../.agents/skills` that Claude Code reads the
+skills through. Every "`<name>` skill" mention in AGENTS.md must name a skill directory.
 
 Exit codes: 0 clean, 1 violations, 2 environment error.
 """
@@ -26,6 +30,17 @@ LINK, LINK_TARGET = ".claude/skills", "../.agents/skills"
 NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 MAX_NAME, MAX_DESCRIPTION = 64, 1024
 POINTER = re.compile(r"`([^`\s]+)` skill\b")
+KEY_LINE = re.compile(r"([A-Za-z][A-Za-z0-9_-]*):(?: (.*))?")
+# YAML's printable non-ASCII range, minus U+2028/U+2029 (line breaks to some tools), the
+# byte-order mark and U+FFFD (the decode-error replacement character).
+TEXT = "\u00a0-\u2027\u202a-\ud7ff\ue000-\ufefe\uff00-\ufffc\U00010000-\U0010ffff"
+PLAIN_PUNCTUATION = ".,;:()'\"/_+=?!#*&%@<>~^$`-"
+PLAIN = re.compile("[A-Za-z%s][A-Za-z0-9 %s%s]*" % (TEXT, TEXT, re.escape(PLAIN_PUNCTUATION)))
+PRINTABLE = re.compile("[\t\x20-\x7e%s]*" % TEXT)
+TAB_AFTER_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]*:\t")
+DOUBLE_QUOTED = re.compile(r'"((?:[^"\\]|\\["\\])*)"(?:\s+#.*)?')
+SINGLE_QUOTED = re.compile(r"'((?:[^']|'')*)'(?:\s+#.*)?")
+NON_STRING_WORDS = {"null", "true", "false", "yes", "no", "on", "off", "y", "n"}
 
 
 class EnvError(Exception):
@@ -50,20 +65,84 @@ def skill_dirs(root):
     return dirs
 
 
+def scalar(raw):
+    """(value, None) for a non-empty raw value in the accepted one-line string subset, else
+    (None, reason). Accepted: a plain value that starts with a letter, uses only letters,
+    digits, spaces, non-ASCII text and PLAIN_PUNCTUATION, has no `: `, ` #` or trailing
+    `:` and is not a YAML null or boolean word; or a double-quoted string whose only
+    escapes are \\" and \\\\, or a single-quoted string with '' doubling, either optionally
+    followed by a comment."""
+    if raw[:1] in ("|", ">"):
+        return None, "block scalars are not supported; put the value on one line"
+    double, single = DOUBLE_QUOTED.fullmatch(raw), SINGLE_QUOTED.fullmatch(raw)
+    if double or single:
+        value = (re.sub(r'\\(["\\])', r"\1", double.group(1)) if double
+                 else single.group(1).replace("''", "'"))
+        if not PRINTABLE.fullmatch(value):
+            return None, "it contains a control or non-printable character"
+        return value, None
+    if raw[:1] in ("'", '"'):
+        return None, ("the quoted string is unterminated, has an unescaped quote, or uses "
+                      "an escape other than \\\" and \\\\")
+    if not PLAIN.fullmatch(raw):
+        return None, ("a plain value must start with a letter and contain only letters, "
+                      "digits, spaces, non-ASCII text and %s; quote it" % PLAIN_PUNCTUATION)
+    if ": " in raw or " #" in raw or raw.endswith(":"):
+        return None, "it contains ': ' or ' #' or ends with ':', which YAML parses differently; quote it"
+    if raw.lower() in NON_STRING_WORDS:
+        return None, "YAML reads it as a null or boolean, not a string; quote it"
+    return raw, None
+
+
 def frontmatter(text):
-    """The leading `---` block's `key: value` lines, or None without a closed block."""
-    lines = [l.rstrip() for l in text.splitlines()]
+    """(fields, problems) for the leading `---` block, or None without a closed block.
+
+    fields maps each key to its decoded value, "" when empty, or None when the value was
+    rejected; problems lists every line outside the accepted subset."""
+    lines = [l.rstrip() for l in text.split("\n")]
     if not lines or lines[0] != "---" or "---" not in lines[1:]:
         return None
-    fields = {}
-    for line in lines[1:lines.index("---", 1)]:
-        if line and not line[0].isspace() and not line.startswith("#") and ":" in line:
-            key, _, value = line.partition(":")
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-                value = value[1:-1]
-            fields[key.strip()] = value
-    return fields
+    fields, problems = {}, []
+    for number, line in enumerate(lines[1:lines.index("---", 1)], start=2):
+        if not line or line.startswith("#"):
+            continue
+        match = KEY_LINE.fullmatch(line)
+        if not match and TAB_AFTER_KEY.match(line):
+            problems.append("line %d: use a space, not a tab, after the colon" % number)
+            continue
+        if not match:
+            problems.append("line %d: expected `key: value` at column 0; indented, list and "
+                            "continuation lines are not supported" % number)
+            continue
+        key, raw = match.group(1), (match.group(2) or "").strip()
+        if key in fields:
+            problems.append("line %d: duplicate key '%s'" % (number, key))
+        value, why = scalar(raw) if raw else ("", None)
+        if why:
+            problems.append("line %d: '%s' must be a one-line string: %s" % (number, key, why))
+        fields[key] = value
+    return fields, problems
+
+
+def name_problems(path, directory, declared):
+    if not declared:
+        return ["%s: frontmatter 'name' is required" % path]
+    if declared != directory:
+        return ["%s: name '%s' differs from its directory '%s'" % (path, declared, directory)]
+    if not NAME.fullmatch(declared) or len(declared) > MAX_NAME:
+        return ["%s: name '%s' must be lowercase letters, digits and single hyphens, "
+                "at most %d characters" % (path, declared, MAX_NAME)]
+    return []
+
+
+def description_problems(path, description):
+    if not description:
+        return ["%s: frontmatter 'description' is required; without one the skill never "
+                "loads" % path]
+    if len(description) > MAX_DESCRIPTION:
+        return ["%s: description has %d characters, at most %d load"
+                % (path, len(description), MAX_DESCRIPTION)]
+    return []
 
 
 def skill_problems(root, name, files):
@@ -71,29 +150,22 @@ def skill_problems(root, name, files):
     if "SKILL.md" not in files:
         return ["%s: missing" % path]
     try:
-        with open(os.path.join(root, path), encoding="utf-8", errors="replace") as f:
-            fm = frontmatter(f.read())
+        with open(os.path.join(root, path), encoding="utf-8") as f:
+            parsed = frontmatter(f.read())
     except OSError as e:
         return ["%s: cannot read: %s" % (path, e.strerror)]
-    if fm is None:
+    except UnicodeDecodeError as e:
+        return ["%s: not valid UTF-8 at byte %d" % (path, e.start)]
+    if parsed is None:
         return ["%s: no `---` frontmatter block" % path]
-    found = []
-    declared, description = fm.get("name", ""), fm.get("description", "")
-    if declared in (">", "|", ">-", "|-") or description[:1] in (">", "|"):
-        found.append("%s: use single-line values, not YAML block scalars" % path)
-    elif not declared:
-        found.append("%s: frontmatter 'name' is required" % path)
-    elif declared != name:
-        found.append("%s: name '%s' differs from its directory '%s'" % (path, declared, name))
-    elif not NAME.fullmatch(declared) or len(declared) > MAX_NAME:
-        found.append("%s: name '%s' must be lowercase letters, digits and single hyphens, "
-                     "at most %d characters" % (path, declared, MAX_NAME))
-    if not description:
-        found.append("%s: frontmatter 'description' is required; without one the skill "
-                     "never loads" % path)
-    elif len(description) > MAX_DESCRIPTION:
-        found.append("%s: description has %d characters, at most %d load"
-                     % (path, len(description), MAX_DESCRIPTION))
+    fields, problems = parsed
+    found = ["%s: %s" % (path, p) for p in problems]
+    # A None value was rejected by scalar() and is already in problems.
+    declared, description = fields.get("name", ""), fields.get("description", "")
+    if declared is not None:
+        found += name_problems(path, name, declared)
+    if description is not None:
+        found += description_problems(path, description)
     return found
 
 

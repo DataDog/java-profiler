@@ -647,7 +647,7 @@ sk; expect "T8g missing name" 1 "$rc" "$out" "frontmatter 'name' is required"
 sk_reset; skill good-one "name: other-one" "description: x"
 sk; expect "T8h name differs from directory" 1 "$rc" "$out" "name 'other-one' differs from its directory 'good-one'"
 for bad in Bad_Name bad--name -bad bad-; do
-  sk_reset; skill "$bad" "name: $bad" "description: x"
+  sk_reset; skill "$bad" "name: \"$bad\"" "description: x"  # quoted, so only the name rule applies
   sk; expect "T8i invalid name '$bad'" 1 "$rc" "$out" "name '$bad' must be lowercase letters"
 done
 long=$(printf 'a%.0s' $(seq 65))
@@ -661,7 +661,7 @@ sk_reset; skill good-one "name: good-one" "description: $(printf 'd%.0s' $(seq 1
 sk; expect "T8k description of 1024 characters" 0 "$rc" "$out" "skills: OK (1 skills)"
 for scalar in '>' '|-'; do
   sk_reset; skill good-one "name: good-one" "description: $scalar" "  Folded text."
-  sk; expect "T8l block-scalar description '$scalar'" 1 "$rc" "$out" "use single-line values"
+  sk; expect "T8l block-scalar description '$scalar'" 1 "$rc" "$out" "block scalars are not supported"
 done
 sk_reset; mkdir -p "$SK_ROOT/.agents/skills/no-skill" && echo x > "$SK_ROOT/.agents/skills/no-skill/notes.md"
 git -C "$SK_ROOT" add -f .agents/skills/no-skill/notes.md
@@ -691,16 +691,63 @@ sk_reset; printf 'intro\n---\nname: good-one\ndescription: x\n---\n' > "$SK_ROOT
 sk; expect "T8x frontmatter must start on the first line" 1 "$rc" "$out" "no \`---\` frontmatter block"
 sk_reset; printf -- '---\nname: good-one\n---\ndescription: in the body\n' > "$SK_ROOT/.agents/skills/good-one/SKILL.md"
 sk; expect "T8y body lines are not frontmatter" 1 "$rc" "$out" "frontmatter 'description' is required"
-sk_reset; skill good-one "name: good-one" "metadata:" "  description: nested"
-sk; expect "T8z indented lines are not top-level fields" 1 "$rc" "$out" "frontmatter 'description' is required"
-sk_reset; skill good-one "name: good-one" "description: Use when: a colon is in the value"
-sk; expect "T8aa a colon inside the value" 0 "$rc" "$out" "skills: OK (1 skills)"
-sk_reset; skill good-one "name: >" "  good-one" "description: x"
-sk; expect "T8ab block-scalar name" 1 "$rc" "$out" "use single-line values"
+sk_reset; skill good-one "name: good-one" "description: x" "metadata:" "  nested: value"
+sk; expect "T8z nested mapping" 1 "$rc" "$out" "line 5: expected \`key: value\` at column 0"
 sk_reset; echo x > "$SK_ROOT/.agents/skills/README.md" && git -C "$SK_ROOT" add -f .agents/skills/README.md
-sk; expect "T8ac files directly under .agents/skills/ are not skills" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk; expect "T8aa files directly under .agents/skills/ are not skills" 0 "$rc" "$out" "skills: OK (1 skills)"
 sk_reset; skill skill2 "name: skill2" "description: x"
-sk; expect "T8ad digits in a name" 0 "$rc" "$out" "skills: OK (2 skills)"
+sk; expect "T8ab digits in a name" 0 "$rc" "$out" "skills: OK (2 skills)"
+sk_reset; skill good-one "name: >" "  good-one" "description: x"
+sk; expect "T8ac block-scalar name" 1 "$rc" "$out" "'name' must be a one-line string: block scalars are not supported"
+sk_reset; skill good-one "name: good-one: x" "description: x"
+sk; expect "T8ad name outside the string subset" 1 "$rc" "$out" "'name' must be a one-line string"
+sk_reset; skill good-one "name: good-one" "description: '''$(printf 'd%.0s' $(seq 1023))'"
+sk; expect "T8ae a doubled single quote counts as one character" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill good-one "name: good-one" "description: \"\\\"$(printf 'd%.0s' $(seq 1023))\""
+sk; expect "T8af an escaped double quote counts as one character" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill good-one "name: good-one" "description: short" "  more text"
+sk; expect "T8ag value continued on an indented line" 1 "$rc" "$out" "line 4: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name: good-one" "description: short" "more text"
+sk; expect "T8ah stray unindented line" 1 "$rc" "$out" "line 4: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name: good-one" "description: x" "- item"
+sk; expect "T8ai list item" 1 "$rc" "$out" "line 4: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name:good-one" "description: x"
+sk; expect "T8aj key without a space after the colon" 1 "$rc" "$out" "line 2: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name: good-one" "description: x" "  # indented comment"
+sk; expect "T8ak indented comment" 1 "$rc" "$out" "line 4: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name: good-one" "description: x" "allowed-tools: [Read"
+sk; expect "T8al other keys are checked too" 1 "$rc" "$out" "line 4: 'allowed-tools' must be a one-line string"
+sk_reset; skill good-one "name: wrong" "name: good-one" "description: x"
+sk; expect "T8am duplicate key" 1 "$rc" "$out" "line 3: duplicate key 'name'"
+sk_reset; skill good-one "# a comment" "name: good-one" "" "description: x" "metadata:"
+sk; expect "T8an comments, blank lines and empty values of other keys" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill good-one "name: good-one" 'description: "bad \p escape"'
+sk; expect "T8ao malformed quoted value names the quoting problem" 1 "$rc" "$out" "the quoted string is unterminated"
+sk_reset; skill good-one "name: good-one" "description: Café notes"
+sk; expect "T8ap non-ASCII text in a plain value" 0 "$rc" "$out" "skills: OK (1 skills)"
+# Values YAML rejects or reads as non-strings, and values outside the accepted subset.
+for bad in 'Use when: a colon' 'x # comment' 'ends with:' '[list]' '{map}' '*alias' '&anchor' '!tag' \
+           '%pct' '@at' '`tick' '|pipe' '- dash' '-' '? q' ': x' '0x1F' '123' '.Inf' '1:30' 'back\slash' \
+           "$(printf 'a\tb')" "$(printf '\xef\xbb\xbfbom')" '"unterminated' '"inner " quote"' \
+           "'unterminated" "'it's'" true No null '~' y OFF \
+           "$(printf 'c1\xc2\x85char')" "$(printf 'non\xef\xbf\xbechar')" "$(printf 'line\xe2\x80\xa8sep')" \
+           "$(printf '"ctrl\x01char"')" "$(printf '"c1\xc2\x85char"')"; do
+  sk_reset; skill good-one "name: good-one" "description: $bad"
+  sk; expect "T8aq rejected description <$bad>" 1 "$rc" "$out" "'description' must be a one-line string"
+done
+for good in '"Use when: quoted"' '"escaped \" quote"' '"escaped \\ backslash"' "'doubled '' quote'" \
+            'a#hash without a space before it' 'time 10:30 is fine' '"true"' 'trueish' 'v1.2 notes' \
+            '"quoted" # trailing comment' "'single' # trailing comment" 'Plain words, with (parens) and a comma.' \
+            'Use when — writing' 'Über alles' "$(printf 'nbsp\xc2\xa0ok')" "$(printf '"tab\tin quotes"')"; do
+  sk_reset; skill good-one "name: good-one" "description: $good"
+  sk; expect "T8ar accepted description <$good>" 0 "$rc" "$out" "skills: OK (1 skills)"
+done
+sk_reset; skill good-one "name: good-one" "$(printf 'description:\tx')"
+sk; expect "T8as tab after the colon" 1 "$rc" "$out" "line 3: use a space, not a tab, after the colon"
+sk_reset; skill good-one "name: good-one" "$(printf 'description: caf\xe9')"
+sk; expect "T8at SKILL.md that is not valid UTF-8" 1 "$rc" "$out" "good-one/SKILL.md: not valid UTF-8 at byte"
+sk_reset; skill good-one "name: good-one" "$(printf '"description": x')"
+sk; expect "T8au quoted key" 1 "$rc" "$out" "line 3: expected \`key: value\` at column 0"
 
 # --- Summary -----------------------------------------------------------------
 
