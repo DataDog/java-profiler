@@ -5,73 +5,71 @@
 
 package com.datadoghq.profiler.referencechains;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.ReferenceChainTestHooks;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 
-import java.nio.file.Files;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
-
 /**
- * PROF-15341 (+ lifecycle-wiring follow-up): end-to-end coverage for
- * {@code ReferenceChainTracker} (ddprof-lib/src/main/cpp/referenceChains.h/.cpp).
+ * PROF-15341 (+ lifecycle-wiring follow-up): end-to-end coverage for {@code ReferenceChainTracker}
+ * (ddprof-lib/src/main/cpp/referenceChains.h/.cpp).
  *
  * <p>{@code ReferenceChainTracker::start()} is called from {@code Profiler::start()}, gated on
  * {@code args._reference_chains}, followed by {@code startThread()} which spawns its BFS thread;
- * {@code Profiler::stop()} calls the matching {@code stopThread()}/{@code stop()} pair. A
- * {@code datadog.ReferenceChainAbandoned} event reaches a live {@code Recording}: {@code
- * Profiler::dump()} calls {@code buildAbandonedEvent()} and writes its output whenever the search
- * ended in {@code SearchState::ABANDONED} - mirroring {@code LivenessTracker::flush()}'s call site
- * there. {@link #shouldReportAbandonedSearchOnTinyFrontierCap()} exercises that path end-to-end.
+ * {@code Profiler::stop()} calls the matching {@code stopThread()}/{@code stop()} pair. A {@code
+ * datadog.ReferenceChainAbandoned} event reaches a live {@code Recording}: {@code Profiler::dump()}
+ * calls {@code buildAbandonedEvent()} and writes its output whenever the search ended in {@code
+ * SearchState::ABANDONED} - mirroring {@code LivenessTracker::flush()}'s call site there. {@link
+ * #shouldReportAbandonedSearchOnTinyFrontierCap()} exercises that path end-to-end.
  *
  * <p><b>Target-selection bridging:</b> {@code pollWatchedTargets()} (referenceChains.cpp), called
- * from {@code threadLoop()} once per scheduling cycle after {@code runPass()}, polls
- * {@code LivenessTracker::selectLeakCandidates()} (positive population-slope ranking over a
- * rolling per-klass survivor-count window, gated on the effective leak signal - generations OR
- * liveheap tracking) and, for each ranked
- * klass whose representative instance an ordinary {@code runPass()} walk has *already* tagged
- * ({@code getTag() > 0} - a read, never a {@code SetTag} seed), reconstructs and caches its chain
- * ({@code buildChainEvent()}/{@code cacheResolvedChain()}); {@code Profiler::dump()} copies that
- * cache into the recording via {@code FlightRecorder::recordReferenceChain()}.
- * {@link #shouldReconstructReferrerChainToGcRoot()}
+ * from {@code threadLoop()} once per scheduling cycle after {@code runPass()}, polls {@code
+ * LivenessTracker::selectLeakCandidates()} (positive population-slope ranking over a rolling
+ * per-klass survivor-count window, gated on the effective leak signal - generations OR liveheap
+ * tracking) and, for each ranked klass whose representative instance an ordinary {@code runPass()}
+ * walk has *already* tagged ({@code getTag() > 0} - a read, never a {@code SetTag} seed),
+ * reconstructs and caches its chain ({@code buildChainEvent()}/{@code cacheResolvedChain()});
+ * {@code Profiler::dump()} copies that cache into the recording via {@code
+ * FlightRecorder::recordReferenceChain()}. {@link #shouldReconstructReferrerChainToGcRoot()}
  * exercises this end to end against a real JVM, real GCs, and a real JVMTI heap walk - the
- * synthetic-frontier reconstruction-correctness proof lives in
- * {@code referenceChainJfrRoundtrip_ut.cpp}/{@code ReferenceChainJfrParserTest}.
+ * synthetic-frontier reconstruction-correctness proof lives in {@code
+ * referenceChainJfrRoundtrip_ut.cpp}/{@code ReferenceChainJfrParserTest}.
  *
  * <p><b>Why {@code @TestMethodOrder}/{@code @Order(1)}:</b> {@code ReferenceChainTracker} is a
- * process-wide singleton whose single search never restarts once it leaves
- * {@code SearchState::RUNNING} - {@code shouldRunPass()} returns {@code false} forever after that
- * point, and the transition releases every tag the search ever assigned. Its {@code FrontierTable}
- * is sized once, the first time any test in this JVM calls {@code ReferenceChainTracker::start()}
- * (the {@code if (_frontier == nullptr)} guard), and never resized on later start()/stop() cycles
- * - so whichever test runs first also fixes that capacity for every test after it (no
- * {@code forkEvery} configured, so this whole class runs in one JVM). The abandonment test
- * deliberately drives that shared search to {@code ABANDONED}; both success-path tests need it
- * still {@code RUNNING} to find their own candidates' tags non-zero, so they are pinned first via
+ * process-wide singleton whose single search never restarts once it leaves {@code
+ * SearchState::RUNNING} - {@code shouldRunPass()} returns {@code false} forever after that point,
+ * and the transition releases every tag the search ever assigned. Its {@code FrontierTable} is
+ * sized once, the first time any test in this JVM calls {@code ReferenceChainTracker::start()} (the
+ * {@code if (_frontier == nullptr)} guard), and never resized on later start()/stop() cycles - so
+ * whichever test runs first also fixes that capacity for every test after it (no {@code forkEvery}
+ * configured, so this whole class runs in one JVM). The abandonment test deliberately drives that
+ * shared search to {@code ABANDONED}; both success-path tests need it still {@code RUNNING} to find
+ * their own candidates' tags non-zero, so they are pinned first via
  * {@code @Order(1)}/{@code @Order(2)}. Their relative order between themselves does not matter -
- * they target different klasses within the same shared search and neither exhausts it - only
- * both running before the abandonment test does.
+ * they target different klasses within the same shared search and neither exhausts it - only both
+ * running before the abandonment test does.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Tag("slow")
@@ -145,9 +143,10 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
 
   @Override
   protected String getProfilerCommand() {
-    String testName = testInfo != null
-        ? testInfo.getTestMethod().map(java.lang.reflect.Method::getName).orElse("")
-        : "";
+    String testName =
+        testInfo != null
+            ? testInfo.getTestMethod().map(java.lang.reflect.Method::getName).orElse("")
+            : "";
     if ("shouldReconstructReferrerChainToGcRoot".equals(testName)
         || "shouldReconstructReferrerChainThroughUnboundedCacheLeak".equals(testName)) {
       // generations=true + a small sampling interval: pollWatchedTargets() does nothing without
@@ -235,7 +234,8 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // method assumes a debug build.
       return "memory=64:l:1.0,referencechains=true:hops=32:budget=500:framecap=1:ttl=100:painbudget=100";
     }
-    // shouldExposeReferenceChainsSettingWhenEnabled: a referencechains-only command. Arguments::parse()
+    // shouldExposeReferenceChainsSettingWhenEnabled: a referencechains-only command.
+    // Arguments::parse()
     // implicitly falls back to cpu profiling, whose ActiveSetting is also "enabled"="true", so the
     // test also matches on the ActiveSetting "id" (T_REFERENCE_CHAIN, REFERENCE_CHAIN_EVENT_ID).
     return "referencechains=true:hops=32:budget=500:ttl=2000:framecap=256";
@@ -250,10 +250,10 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   }
 
   /**
-   * Verifies the {@code referencechains=...} flag round-trips through
-   * {@code Arguments} parsing (arguments.cpp's {@code CASE("referencechains")}) into the
-   * {@code datadog.ReferenceChain} JFR setting (flightRecorder.cpp:1143's
-   * {@code writeBoolSetting(buf, T_REFERENCE_CHAIN, "enabled", args._reference_chains)}).
+   * Verifies the {@code referencechains=...} flag round-trips through {@code Arguments} parsing
+   * (arguments.cpp's {@code CASE("referencechains")}) into the {@code datadog.ReferenceChain} JFR
+   * setting (flightRecorder.cpp:1143's {@code writeBoolSetting(buf, T_REFERENCE_CHAIN, "enabled",
+   * args._reference_chains)}).
    */
   @Test
   public void shouldExposeReferenceChainsSettingWhenEnabled() {
@@ -273,17 +273,17 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
 
   /**
    * Allocates a growing population of {@link ChainLink} instances, forcing GCs between rounds so
-   * LivenessTracker observes a rising per-klass survivor count each time, until
-   * {@code selectLeakCandidates()} trusts the trend - then waits for {@code pollWatchedTargets()}
-   * to notice that candidate has already been tagged by an ordinary walk and reconstruct + emit
-   * its chain, asserting on the resulting {@code datadog.ReferenceChain} event.
+   * LivenessTracker observes a rising per-klass survivor count each time, until {@code
+   * selectLeakCandidates()} trusts the trend - then waits for {@code pollWatchedTargets()} to
+   * notice that candidate has already been tagged by an ordinary walk and reconstruct + emit its
+   * chain, asserting on the resulting {@code datadog.ReferenceChain} event.
    *
    * <p>Each round pairs with an explicit {@link #dump(Path)}: LivenessTracker's per-klass
    * population accounting only runs (unforced) from {@code flush_table()}, which only runs from
    * {@code LivenessTracker::flush()}, called *only* from {@code Profiler::dump()} - there is no
-   * timer-driven flush. {@code System.gc()} bumps the GC epoch synchronously inside the
-   * {@code GarbageCollectionFinish} callback, so it is already visible by the time {@code gc()}
-   * returns - no sleep needed between the gc() and the dump() that observes it.
+   * timer-driven flush. {@code System.gc()} bumps the GC epoch synchronously inside the {@code
+   * GarbageCollectionFinish} callback, so it is already visible by the time {@code gc()} returns -
+   * no sleep needed between the gc() and the dump() that observes it.
    */
   @Test
   @Order(1)
@@ -323,36 +323,39 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       ReferenceChainTestHooks.resetKlassPopulationForTest0();
       ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     }
-      // One persistent allocator thread, reused by every round - NOT a fresh thread per round.
-      // SampledObjectAlloc never fires for this JUnit worker thread's own allocations, but
-      // reliably fires for threads created after Profiler::start() already ran; and per-tid, the
-      // per-(klass, tid) qualification trend accumulates REAL samples for this one thread's tid
-      // every round, so qualification is organic and cannot age out mid-test. Per-round spawns
-      // gave every round a different short-lived tid, so the seeded ramp was the only qualifying
-      // signal - and once its ring slots aged out the candidate dropped out of
-      // selectLeakCandidates() with the whole crawl still unfinished.
-      LinkedBlockingQueue<Integer> allocRequests = new LinkedBlockingQueue<>();
-      Semaphore roundDone = new Semaphore(0);
-      AtomicLong allocatorTid = new AtomicLong(-1);
-      AtomicReference<Throwable> allocatorFailure = new AtomicReference<>();
-      Thread allocator = new Thread(() -> {
-        try {
-          allocatorTid.set(ReferenceChainTestHooks.getTid());
-          Integer requested;
-          while ((requested = allocRequests.take()) != null) {
-            List<Object> batch = currentBatch;
-            for (int i = 0; i < requested; i++) {
-              batch.add(new ChainLink("leak-" + requested + "-" + i));
-            }
-            roundDone.release();
-          }
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt(); // test shutdown - see finally below
-        } catch (Throwable t) {
-          allocatorFailure.set(t); // surfaced by awaitAllocatorTid()/awaitAllocatorRound()
-        }
-      }, "togcroot-leak-allocator");
-      allocator.start();
+    // One persistent allocator thread, reused by every round - NOT a fresh thread per round.
+    // SampledObjectAlloc never fires for this JUnit worker thread's own allocations, but
+    // reliably fires for threads created after Profiler::start() already ran; and per-tid, the
+    // per-(klass, tid) qualification trend accumulates REAL samples for this one thread's tid
+    // every round, so qualification is organic and cannot age out mid-test. Per-round spawns
+    // gave every round a different short-lived tid, so the seeded ramp was the only qualifying
+    // signal - and once its ring slots aged out the candidate dropped out of
+    // selectLeakCandidates() with the whole crawl still unfinished.
+    LinkedBlockingQueue<Integer> allocRequests = new LinkedBlockingQueue<>();
+    Semaphore roundDone = new Semaphore(0);
+    AtomicLong allocatorTid = new AtomicLong(-1);
+    AtomicReference<Throwable> allocatorFailure = new AtomicReference<>();
+    Thread allocator =
+        new Thread(
+            () -> {
+              try {
+                allocatorTid.set(ReferenceChainTestHooks.getTid());
+                Integer requested;
+                while ((requested = allocRequests.take()) != null) {
+                  List<Object> batch = currentBatch;
+                  for (int i = 0; i < requested; i++) {
+                    batch.add(new ChainLink("leak-" + requested + "-" + i));
+                  }
+                  roundDone.release();
+                }
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt(); // test shutdown - see finally below
+              } catch (Throwable t) {
+                allocatorFailure.set(t); // surfaced by awaitAllocatorTid()/awaitAllocatorRound()
+              }
+            },
+            "togcroot-leak-allocator");
+    allocator.start();
 
     try {
       // The seeding block below needs the allocator's tid. Bounded and inside this try so a
@@ -398,7 +401,9 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
         gcRootHolder.addAll(newLinks);
         System.gc();
         dump(scratchDumpPath);
-        match = ReferenceChainAssertions.findMatchForClass(verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false), ChainLink.class);
+        match =
+            ReferenceChainAssertions.findMatchForClass(
+                verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false), ChainLink.class);
 
         if (match == null && ReferenceChainAssertions.isDebugInstrumentedBuild()) {
           // Debug-only native seams - a no-op in release builds, so release-build coverage of the
@@ -447,7 +452,9 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           }
           ReferenceChainTestHooks.pollReferenceChainTargets0();
           dump(scratchDumpPath);
-          match = ReferenceChainAssertions.findMatchForClass(verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false), ChainLink.class);
+          match =
+              ReferenceChainAssertions.findMatchForClass(
+                  verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false), ChainLink.class);
         }
 
         if (match == null) {
@@ -464,7 +471,9 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           driveReferenceChainPasses(2);
           Thread.sleep(300);
           dump(scratchDumpPath);
-          match = ReferenceChainAssertions.findMatchForClass(verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false), ChainLink.class);
+          match =
+              ReferenceChainAssertions.findMatchForClass(
+                  verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false), ChainLink.class);
         }
       }
 
@@ -499,13 +508,21 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // chains fired for a different klass, while only <empty-chain>/<non-array-chain:...>
       // sentinels mean events were emitted but carried no chain. Debug-only seams; release
       // failures keep the plain message.
-      String failureDiagnostics = match == null
-          ? ReferenceChainAssertions.referenceChainFailureDiagnostics(gcRootHolder.get(0), lastEvents)
-          : "";
-      assertNotNull(match,
-          "Never observed a datadog.ReferenceChain event whose chain[0] is " + ChainLink.class
-              + " after " + gcRootHolder.size() + " retained ChainLink instances across up to "
-              + totalRounds + " population-growth rounds plus a grace period" + failureDiagnostics);
+      String failureDiagnostics =
+          match == null
+              ? ReferenceChainAssertions.referenceChainFailureDiagnostics(
+                  gcRootHolder.get(0), lastEvents)
+              : "";
+      assertNotNull(
+          match,
+          "Never observed a datadog.ReferenceChain event whose chain[0] is "
+              + ChainLink.class
+              + " after "
+              + gcRootHolder.size()
+              + " retained ChainLink instances across up to "
+              + totalRounds
+              + " population-growth rounds plus a grace period"
+              + failureDiagnostics);
       // chain[0] is the *target* object's own class, not its holder's: reconstructChain() appends
       // each visited FrontierEntry's referrer_klass leaf-to-root, and referrer_klass is populated
       // from the *discovered object's own* GetClassSignature at insertion time. The target here is
@@ -532,18 +549,18 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   /**
    * A second, independent end-to-end scenario for the same target-selection mechanism, using a
    * shape much closer to a real-world leak than {@link ChainLink}'s hand-rolled list: an
-   * ever-growing, never-evicted {@link java.util.HashMap}-backed cache holding
-   * {@link CachedPayload} values. Also asserts the reconstructed chain actually threads back
-   * through {@code java.util.HashMap}'s own internal storage ({@code HashMap$Node}) - that the
-   * mechanism correctly walks a real JDK collection's internals, not only purpose-built fixtures.
+   * ever-growing, never-evicted {@link java.util.HashMap}-backed cache holding {@link
+   * CachedPayload} values. Also asserts the reconstructed chain actually threads back through
+   * {@code java.util.HashMap}'s own internal storage ({@code HashMap$Node}) - that the mechanism
+   * correctly walks a real JDK collection's internals, not only purpose-built fixtures.
    *
    * <p><b>Why {@code cache} is a local variable, not a {@code static} field:</b> a static field
    * becomes a root at class-load time and is likely expanded while still empty, so additions made
-   * afterward are discovered only when the bounded rotation revisit
-   * ({@code collectStaleExpandedEntriesForRotation()} in referenceChainWalk.cpp) re-queues that
-   * {@code EXPANDED} entry and re-walks its fields. A local variable created fresh at the top of
-   * this method, immediately followed by round-1 allocation, is first enumerated as a root only
-   * after it already holds live data.
+   * afterward are discovered only when the bounded rotation revisit ({@code
+   * collectStaleExpandedEntriesForRotation()} in referenceChainWalk.cpp) re-queues that {@code
+   * EXPANDED} entry and re-walks its fields. A local variable created fresh at the top of this
+   * method, immediately followed by round-1 allocation, is first enumerated as a root only after it
+   * already holds live data.
    */
   @Test
   @Order(2)
@@ -606,24 +623,28 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       Semaphore roundDone = new Semaphore(0);
       AtomicLong allocatorTid = new AtomicLong(-1);
       AtomicReference<Throwable> allocatorFailure = new AtomicReference<>();
-      allocator = new Thread(() -> {
-        try {
-          allocatorTid.set(ReferenceChainTestHooks.getTid());
-          int next = 0; // allocator-owned key cursor; keys[] was sized for every round up front
-          Integer requested;
-          while ((requested = allocRequests.take()) != null) {
-            for (int i = 0; i < requested; i++) {
-              String key = keys[next++];
-              cache.put(key, new CachedPayload(key));
-            }
-            roundDone.release();
-          }
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt(); // test shutdown - see finally below
-        } catch (Throwable t) {
-          allocatorFailure.set(t); // surfaced by awaitAllocatorTid()/awaitAllocatorRound()
-        }
-      }, "cacheleak-allocator");
+      allocator =
+          new Thread(
+              () -> {
+                try {
+                  allocatorTid.set(ReferenceChainTestHooks.getTid());
+                  int next =
+                      0; // allocator-owned key cursor; keys[] was sized for every round up front
+                  Integer requested;
+                  while ((requested = allocRequests.take()) != null) {
+                    for (int i = 0; i < requested; i++) {
+                      String key = keys[next++];
+                      cache.put(key, new CachedPayload(key));
+                    }
+                    roundDone.release();
+                  }
+                } catch (InterruptedException e) {
+                  Thread.currentThread().interrupt(); // test shutdown - see finally below
+                } catch (Throwable t) {
+                  allocatorFailure.set(t); // surfaced by awaitAllocatorTid()/awaitAllocatorRound()
+                }
+              },
+              "cacheleak-allocator");
       allocator.start();
       awaitAllocatorTid(allocator, allocatorTid, allocatorFailure);
 
@@ -733,13 +754,21 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // ReferenceChainAssertions.referenceChainFailureDiagnostics helper (same as the gc-root
       // test's). Debug-only seams: release-build stubs cannot report any of these states, so
       // release failures keep the plain message.
-      String failureDiagnostics = match == null
-          ? ReferenceChainAssertions.referenceChainFailureDiagnostics(cache.get(keys[0]), lastEvents)
-          : "";
-      assertNotNull(match,
-          "Never observed a datadog.ReferenceChain event whose chain[0] is " + CachedPayload.class
-              + " after " + cache.size() + " cached entries across up to " + totalRounds
-              + " population-growth rounds plus a grace period" + failureDiagnostics);
+      String failureDiagnostics =
+          match == null
+              ? ReferenceChainAssertions.referenceChainFailureDiagnostics(
+                  cache.get(keys[0]), lastEvents)
+              : "";
+      assertNotNull(
+          match,
+          "Never observed a datadog.ReferenceChain event whose chain[0] is "
+              + CachedPayload.class
+              + " after "
+              + cache.size()
+              + " cached entries across up to "
+              + totalRounds
+              + " population-growth rounds plus a grace period"
+              + failureDiagnostics);
       assertEquals(CachedPayload.class.getName(), match.chain.get(0));
       assertTrue(match.targetTag > 0, "targetTag should be a valid, non-zero JVMTI tag");
       assertTrue(match.depth >= 0, "depth should be a non-negative hop count");
@@ -754,9 +783,11 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           break;
         }
       }
-      assertTrue(sawHashMapInternals,
+      assertTrue(
+          sawHashMapInternals,
           "Expected the reconstructed chain to pass through java.util.HashMap's own internal "
-              + "storage (cache is a HashMap) - chain was: " + match.chain);
+              + "storage (cache is a HashMap) - chain was: "
+              + match.chain);
       assertTrue(!cache.isEmpty()); // keeps every cached CachedPayload reachable until here
     } finally {
       if (allocator != null) {
@@ -768,62 +799,62 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   }
 
   /**
-   * Abandonment-path scenario: an artificially tiny frontier cap ({@code framecap=1} for this
-   * test method) makes the very first BFS pass hit the frontier cap once a second root-referenced
-   * object is discovered, so {@code runPass()} abandons the search rather than silently
-   * truncating it - or, if this method lost the race to size the shared {@code FrontierTable},
-   * its {@code ttl=100} fallback abandons the search instead (by the time this method runs, that
-   * clock always has). Either path exercises the same {@code buildAbandonedEvent()} →
-   * {@code FlightRecorder::recordReferenceChainAbandoned()} write triggered by
-   * {@code Profiler::dump()} - this method only asserts that a
-   * {@code datadog.ReferenceChainAbandoned} event exists, not which reason produced it.
+   * Abandonment-path scenario: an artificially tiny frontier cap ({@code framecap=1} for this test
+   * method) makes the very first BFS pass hit the frontier cap once a second root-referenced object
+   * is discovered, so {@code runPass()} abandons the search rather than silently truncating it -
+   * or, if this method lost the race to size the shared {@code FrontierTable}, its {@code ttl=100}
+   * fallback abandons the search instead (by the time this method runs, that clock always has).
+   * Either path exercises the same {@code buildAbandonedEvent()} → {@code
+   * FlightRecorder::recordReferenceChainAbandoned()} write triggered by {@code Profiler::dump()} -
+   * this method only asserts that a {@code datadog.ReferenceChainAbandoned} event exists, not which
+   * reason produced it.
    *
-   * <p>{@code @Order(3)}: this permanently exhausts the singleton's one-and-only search, so it
-   * must run after both success-path tests. It also calls {@code resetReferenceChainSearchForTest0()}
-   * itself: if either earlier test's organic GC/sampling trend never fired in time (real
-   * flakiness, observed in practice), the shared search can still be {@code RUNNING} with a large,
-   * non-fresh frontier when this method starts - the fresh-search precondition is something this
-   * method establishes, not something it presumes. Debug-only: the seam does not exist in a
-   * release build, and the {@code assumeTrue} at the top of the method body skips this test
-   * there - a JUnit assumption failure is reported as SKIPPED, not passed, so coverage reports
-   * must not count it. By design, release-config runs (the {@code test:release} label)
-   * therefore exercise none of the {@code buildAbandonedEvent()} →
-   * {@code FlightRecorder::recordReferenceChainAbandoned()} write path; if the candidate-gate
-   * contract ever changes so a release build could reach {@code ABANDONED} without the debug
-   * population seams, this assumption must be revisited.
+   * <p>{@code @Order(3)}: this permanently exhausts the singleton's one-and-only search, so it must
+   * run after both success-path tests. It also calls {@code resetReferenceChainSearchForTest0()}
+   * itself: if either earlier test's organic GC/sampling trend never fired in time (real flakiness,
+   * observed in practice), the shared search can still be {@code RUNNING} with a large, non-fresh
+   * frontier when this method starts - the fresh-search precondition is something this method
+   * establishes, not something it presumes. Debug-only: the seam does not exist in a release build,
+   * and the {@code assumeTrue} at the top of the method body skips this test there - a JUnit
+   * assumption failure is reported as SKIPPED, not passed, so coverage reports must not count it.
+   * By design, release-config runs (the {@code test:release} label) therefore exercise none of the
+   * {@code buildAbandonedEvent()} → {@code FlightRecorder::recordReferenceChainAbandoned()} write
+   * path; if the candidate-gate contract ever changes so a release build could reach {@code
+   * ABANDONED} without the debug population seams, this assumption must be revisited.
    *
-   * <p><b>Why this method also seeds a klass population trend, despite requesting no
-   * {@code generations=true} of its own:</b> {@code LivenessTracker::_gc_generations} is only ever
-   * updated when a {@code start()} command actually requests liveness tracking - a bare
-   * {@code referencechains=true:...} command never calls {@code LivenessTracker::start()}, so
-   * {@code gcGenerationsEnabled()} stays stuck at whatever the two {@code generations=true} tests
-   * above last left it. {@code hasLeakSignal()}, which {@code shouldRunPass()} consults for even
-   * the search's first pass, therefore falls through to {@code selectLeakCandidates()} exactly as
-   * the tests above do - and with {@code _klass_population} freshly reset, nothing satisfies it.
+   * <p><b>Why this method also seeds a klass population trend, despite requesting no {@code
+   * generations=true} of its own:</b> {@code LivenessTracker::_gc_generations} is only ever updated
+   * when a {@code start()} command actually requests liveness tracking - a bare {@code
+   * referencechains=true:...} command never calls {@code LivenessTracker::start()}, so {@code
+   * gcGenerationsEnabled()} stays stuck at whatever the two {@code generations=true} tests above
+   * last left it. {@code hasLeakSignal()}, which {@code shouldRunPass()} consults for even the
+   * search's first pass, therefore falls through to {@code selectLeakCandidates()} exactly as the
+   * tests above do - and with {@code _klass_population} freshly reset, nothing satisfies it.
    * Seeding {@code SEED_EPOCHS_FOR_HYSTERESIS} epochs for a dedicated klass id clears that gate;
-   * this method never sets a representative or polls for it, since it has no reconstructed chain
-   * of its own to prove - a qualifying entry counts toward {@code hasLeakSignal()}'s candidate
-   * count regardless, and {@code resolveCandidateRepresentative()} is null-safe against one that
-   * was never set.
+   * this method never sets a representative or polls for it, since it has no reconstructed chain of
+   * its own to prove - a qualifying entry counts toward {@code hasLeakSignal()}'s candidate count
+   * regardless, and {@code resolveCandidateRepresentative()} is null-safe against one that was
+   * never set.
    *
    * <p><b>Why the seeding is preceded by a {@code System.gc()} and a throwaway {@code dump()}:</b>
    * {@code cleanup_table()} compares {@code Profiler::classMap()->generation()} against its own
    * cached copy and, on a mismatch - which this method's fresh {@code start()} causes, by clearing
    * that map - wipes {@code _klass_population} back to empty, exactly once per mismatch; but that
-   * comparison sits *after* an early-return guard a {@code dump()}-triggered call
-   * ({@code forced=false}) only clears when a genuinely new, not-yet-processed GC epoch is
-   * pending - a dump() with no GC since the last cleanup pass never reaches the mismatch check at
-   * all. The two tests above get this wipe-and-resync for free from their round-1
-   * {@code System.gc()}+{@code dump()} pair; seeding before any GC/dump here would leave the seed
-   * to be discarded by the next call that does clear the guard - this class's own
-   * {@code maybeForceCleanup()} tick (once per {@code threadLoop()} wake, {@code forced=true}
-   * unconditionally clears the guard), which fires on this method's own 3 {@code System.gc()}
-   * calls below. The explicit pair forces the resync to happen now, before seeding.
+   * comparison sits *after* an early-return guard a {@code dump()}-triggered call ({@code
+   * forced=false}) only clears when a genuinely new, not-yet-processed GC epoch is pending - a
+   * dump() with no GC since the last cleanup pass never reaches the mismatch check at all. The two
+   * tests above get this wipe-and-resync for free from their round-1 {@code System.gc()}+{@code
+   * dump()} pair; seeding before any GC/dump here would leave the seed to be discarded by the next
+   * call that does clear the guard - this class's own {@code maybeForceCleanup()} tick (once per
+   * {@code threadLoop()} wake, {@code forced=true} unconditionally clears the guard), which fires
+   * on this method's own 3 {@code System.gc()} calls below. The explicit pair forces the resync to
+   * happen now, before seeding.
    */
   @Test
   @Order(3)
   public void shouldReportAbandonedSearchOnTinyFrontierCap() throws Exception {
-    assumeTrue(ReferenceChainAssertions.isDebugInstrumentedBuild(),
+    assumeTrue(
+        ReferenceChainAssertions.isDebugInstrumentedBuild(),
         "The qualifying-candidate seeding below rides the debug-only population seams; in a "
             + "release build the search stays idle without a candidate (the candidate-gate "
             + "contract), so no abandonment event could ever be produced");
@@ -847,8 +878,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     // distinct tid would do.
     int abandonTid = ReferenceChainTestHooks.getTid();
     for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
-      ReferenceChainTestHooks.seedKlassPopulationSample0(
-          ABANDON_TEST_KLASS_ID, epoch * 10, epoch);
+      ReferenceChainTestHooks.seedKlassPopulationSample0(ABANDON_TEST_KLASS_ID, epoch * 10, epoch);
       ReferenceChainTestHooks.seedTidTrendSample0(
           ABANDON_TEST_KLASS_ID, abandonTid, epoch * 3, epoch);
     }
@@ -900,8 +930,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       for (int attempt = 0; attempt < ABANDON_MAX_DUMPS; attempt++) {
         if (attempt > 0) {
           int attemptsLeft = ABANDON_MAX_DUMPS - attempt; // includes the dump about to be taken
-          long remainingMs =
-              TimeUnit.NANOSECONDS.toMillis(lastDumpEarliestNs - System.nanoTime());
+          long remainingMs = TimeUnit.NANOSECONDS.toMillis(lastDumpEarliestNs - System.nanoTime());
           Thread.sleep(Math.max(ABANDON_DUMP_RETRY_SPACING_MS, remainingMs / attemptsLeft));
         }
         lastDumpAtNs = System.nanoTime();
@@ -912,13 +941,22 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           break;
         }
       }
-      assertTrue(abandoned != null && abandoned.hasItems(),
-          "Expected a datadog.ReferenceChainAbandoned event within " + dumpsTaken + " of at most "
-              + ABANDON_MAX_DUMPS + " dumps (after 3 GCs and a 1500ms grace period; the pass "
-              + "probe waited up to " + ABANDON_PASS_WAIT_MS + "ms, passesRun="
-              + ReferenceChainTestHooks.referenceChainPassesRunForTest0() + "; last dump "
+      assertTrue(
+          abandoned != null && abandoned.hasItems(),
+          "Expected a datadog.ReferenceChainAbandoned event within "
+              + dumpsTaken
+              + " of at most "
+              + ABANDON_MAX_DUMPS
+              + " dumps (after 3 GCs and a 1500ms grace period; the pass "
+              + "probe waited up to "
+              + ABANDON_PASS_WAIT_MS
+              + "ms, passesRun="
+              + ReferenceChainTestHooks.referenceChainPassesRunForTest0()
+              + "; last dump "
               + TimeUnit.NANOSECONDS.toMillis(lastDumpAtNs - graceStartNs)
-              + "ms after grace start, nominal floor " + ABANDON_LAST_DUMP_MIN_DELAY_MS + "ms)");
+              + "ms after grace start, nominal floor "
+              + ABANDON_LAST_DUMP_MIN_DELAY_MS
+              + "ms)");
     } finally {
       Files.deleteIfExists(dumpPath);
     }
@@ -926,12 +964,13 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   }
 
   /**
-   * Bounded wait for a persistent allocator thread to publish its profiler tid: fails fast with
-   * the allocator's own failure cause, or if it exited/stalled without publishing, instead of
-   * hanging the shared test fork.
+   * Bounded wait for a persistent allocator thread to publish its profiler tid: fails fast with the
+   * allocator's own failure cause, or if it exited/stalled without publishing, instead of hanging
+   * the shared test fork.
    */
-  private static void awaitAllocatorTid(Thread allocator, AtomicLong allocatorTid,
-      AtomicReference<Throwable> allocatorFailure) throws InterruptedException {
+  private static void awaitAllocatorTid(
+      Thread allocator, AtomicLong allocatorTid, AtomicReference<Throwable> allocatorFailure)
+      throws InterruptedException {
     long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ALLOCATOR_HANDOFF_TIMEOUT_MS);
     while (allocatorTid.get() == -1) {
       Throwable failure = allocatorFailure.get();
@@ -943,8 +982,11 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
         throw new AssertionError(allocator.getName() + " exited without publishing its tid");
       }
       if (System.nanoTime() - deadline > 0) {
-        throw new AssertionError(allocator.getName() + " did not publish its tid within "
-            + ALLOCATOR_HANDOFF_TIMEOUT_MS + "ms");
+        throw new AssertionError(
+            allocator.getName()
+                + " did not publish its tid within "
+                + ALLOCATOR_HANDOFF_TIMEOUT_MS
+                + "ms");
       }
       Thread.sleep(1);
     }
@@ -953,8 +995,8 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   /**
    * Runs up to {@code maxPasses} bounded reference-chain search passes synchronously via the
    * debug-only {@link ReferenceChainTestHooks#runReferenceChainPass0()} seam, each followed by the
-   * per-iteration target poll ({@link ReferenceChainTestHooks#pollReferenceChainTargets0()}) -
-   * the same pass + poll pair one BFS-thread loop iteration performs. A no-op in release builds
+   * per-iteration target poll ({@link ReferenceChainTestHooks#pollReferenceChainTargets0()}) - the
+   * same pass + poll pair one BFS-thread loop iteration performs. A no-op in release builds
    * (checked here, so callers need not gate it); release discovery falls back to the organic
    * BFS-thread cadence.
    *
@@ -977,8 +1019,9 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   }
 
   /** Bounded wait for one allocator round; same fail-fast policy as awaitAllocatorTid(). */
-  private static void awaitAllocatorRound(Semaphore roundDone, Thread allocator,
-      AtomicReference<Throwable> allocatorFailure) throws InterruptedException {
+  private static void awaitAllocatorRound(
+      Semaphore roundDone, Thread allocator, AtomicReference<Throwable> allocatorFailure)
+      throws InterruptedException {
     long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ALLOCATOR_HANDOFF_TIMEOUT_MS);
     while (!roundDone.tryAcquire(10, TimeUnit.MILLISECONDS)) {
       Throwable failure = allocatorFailure.get();
@@ -992,18 +1035,21 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
         throw new AssertionError(allocator.getName() + " exited mid-round");
       }
       if (System.nanoTime() - deadline > 0) {
-        throw new AssertionError(allocator.getName() + " did not finish its round within "
-            + ALLOCATOR_HANDOFF_TIMEOUT_MS + "ms");
+        throw new AssertionError(
+            allocator.getName()
+                + " did not finish its round within "
+                + ALLOCATOR_HANDOFF_TIMEOUT_MS
+                + "ms");
       }
     }
   }
 
   /**
-   * Referrer-type fixture shared by both success-path and abandonment-path tests. The 32
-   * {@code long} fields exist purely so a given number of megabytes of ChainLink needs far fewer
-   * instances - deliberately plain fields, not a nested array: an array field would be a second,
-   * separate heap allocation, and the size-weighted allocation sampler would take sampling
-   * attention away from ChainLink itself rather than adding to it.
+   * Referrer-type fixture shared by both success-path and abandonment-path tests. The 32 {@code
+   * long} fields exist purely so a given number of megabytes of ChainLink needs far fewer instances
+   * - deliberately plain fields, not a nested array: an array field would be a second, separate
+   * heap allocation, and the size-weighted allocation sampler would take sampling attention away
+   * from ChainLink itself rather than adding to it.
    */
   private static final class ChainLink {
     final String name;
@@ -1022,11 +1068,11 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   }
 
   /**
-   * Realistic-leak fixture for the cache test: an unbounded, never-evicted cache - the single
-   * most common real-world leak shape this mechanism is meant to catch. The 32 {@code long}
-   * fields are there for the same reason {@link ChainLink}'s are (an earlier version used a
-   * {@code byte[]} field and never observed a single CachedPayload sample - the sampler was
-   * catching the array instead).
+   * Realistic-leak fixture for the cache test: an unbounded, never-evicted cache - the single most
+   * common real-world leak shape this mechanism is meant to catch. The 32 {@code long} fields are
+   * there for the same reason {@link ChainLink}'s are (an earlier version used a {@code byte[]}
+   * field and never observed a single CachedPayload sample - the sampler was catching the array
+   * instead).
    */
   private static final class CachedPayload {
     final String key;

@@ -15,90 +15,87 @@
  */
 package com.datadoghq.profiler.nativethread;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
-
-import org.junitpioneer.jupiter.RetryingTest;
-import com.datadoghq.profiler.JfrEvent;
-import com.datadoghq.profiler.JfrEvents;
-
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
+import org.junitpioneer.jupiter.RetryingTest;
 
 /**
  * Test for thread entry point detection on native threads.
  *
- * Validates that when profiling native threads the profiler produces usable
- * samples and that non-Java thread samples are not misclassified as
- * break_no_anchor (which implies a missing JavaFrameAnchor, inapplicable
- * for pure pthreads).  break_no_symbol is acceptable — it indicates the
- * DWARF unwind could not resolve the next frame, which is expected when
- * the test library or libc lacks complete CFI.
+ * <p>Validates that when profiling native threads the profiler produces usable samples and that
+ * non-Java thread samples are not misclassified as break_no_anchor (which implies a missing
+ * JavaFrameAnchor, inapplicable for pure pthreads). break_no_symbol is acceptable — it indicates
+ * the DWARF unwind could not resolve the next frame, which is expected when the test library or
+ * libc lacks complete CFI.
  */
 public class ThreadEntryDetectionTest extends AbstractProfilerTest {
 
-    @Override
-    protected String getProfilerCommand() {
-        // Use fast sampling to capture more thread startup samples
-        return "cpu=1ms";
+  @Override
+  protected String getProfilerCommand() {
+    // Use fast sampling to capture more thread startup samples
+    return "cpu=1ms";
+  }
+
+  @RetryingTest(3)
+  public void testThreadEntryDetection() throws Exception {
+    // Create more threads than standard test to increase likelihood
+    // of capturing thread startup samples
+    int numThreads = 16;
+    long[] threads = new long[numThreads];
+
+    System.out.println("Creating " + numThreads + " native threads...");
+    for (int i = 0; i < numThreads; i++) {
+      threads[i] = NativeThreadCreator.createNativeThread();
     }
 
-    @RetryingTest(3)
-    public void testThreadEntryDetection() throws Exception {
-        // Create more threads than standard test to increase likelihood
-        // of capturing thread startup samples
-        int numThreads = 16;
-        long[] threads = new long[numThreads];
-
-        System.out.println("Creating " + numThreads + " native threads...");
-        for (int i = 0; i < numThreads; i++) {
-            threads[i] = NativeThreadCreator.createNativeThread();
-        }
-
-        // Wait for all threads to complete
-        for (long threadId : threads) {
-            NativeThreadCreator.waitNativeThread(threadId);
-        }
-
-        stopProfiler();
-
-        // Verify events
-        JfrEvents events = verifyEvents("datadog.ExecutionSample");
-        assertNoErrorFrames(events);
-
-        // Verify we captured some samples
-        int totalSamples = countTotalSamples(events);
-        System.out.println("Total samples captured: " + totalSamples);
-        assertTrue(totalSamples > 0, "Expected to capture at least some profiling samples");
+    // Wait for all threads to complete
+    for (long threadId : threads) {
+      NativeThreadCreator.waitNativeThread(threadId);
     }
 
-    /**
-     * Verifies that native thread samples do not contain break_no_anchor.
-     * break_no_anchor implies a missing JavaFrameAnchor which is inapplicable
-     * for pure pthreads.  break_no_symbol is acceptable — it means the DWARF
-     * unwind hit an unresolvable PC, expected when CFI is incomplete.
-     */
-    private void assertNoErrorFrames(JfrEvents events) {
-        int samplesChecked = 0;
+    stopProfiler();
 
-        for (JfrEvent sample : events) {
-            String stackTrace = sample.getStackTraceString();
-            samplesChecked++;
+    // Verify events
+    JfrEvents events = verifyEvents("datadog.ExecutionSample");
+    assertNoErrorFrames(events);
 
-            if (stackTrace != null && stackTrace.contains("do_primes()")) {
-                // Native thread sample: must not be misclassified as break_no_anchor
-                assertFalse(stackTrace.contains("break_no_anchor"),
-                    String.format("Found break_no_anchor in native thread sample %d:\n%s",
-                        samplesChecked, stackTrace));
-            }
-        }
+    // Verify we captured some samples
+    int totalSamples = countTotalSamples(events);
+    System.out.println("Total samples captured: " + totalSamples);
+    assertTrue(totalSamples > 0, "Expected to capture at least some profiling samples");
+  }
 
-        System.out.println("Verified " + samplesChecked + " samples");
+  /**
+   * Verifies that native thread samples do not contain break_no_anchor. break_no_anchor implies a
+   * missing JavaFrameAnchor which is inapplicable for pure pthreads. break_no_symbol is acceptable
+   * — it means the DWARF unwind hit an unresolvable PC, expected when CFI is incomplete.
+   */
+  private void assertNoErrorFrames(JfrEvents events) {
+    int samplesChecked = 0;
+
+    for (JfrEvent sample : events) {
+      String stackTrace = sample.getStackTraceString();
+      samplesChecked++;
+
+      if (stackTrace != null && stackTrace.contains("do_primes()")) {
+        // Native thread sample: must not be misclassified as break_no_anchor
+        assertFalse(
+            stackTrace.contains("break_no_anchor"),
+            String.format(
+                "Found break_no_anchor in native thread sample %d:\n%s",
+                samplesChecked, stackTrace));
+      }
     }
 
-    /**
-     * Counts total number of samples in the event collection.
-     */
-    private int countTotalSamples(JfrEvents events) {
-        return (int) events.count();
-    }
+    System.out.println("Verified " + samplesChecked + " samples");
+  }
+
+  /** Counts total number of samples in the event collection. */
+  private int countTotalSamples(JfrEvents events) {
+    return (int) events.count();
+  }
 }

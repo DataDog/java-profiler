@@ -5,89 +5,84 @@
 
 package com.datadoghq.profiler.memleak;
 
-import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.AbstractProfilerTest;
-import org.junit.jupiter.api.Disabled;
-import org.junit.jupiter.api.Test;
-import org.junitpioneer.jupiter.RetryingTest;
-
+import com.datadoghq.profiler.Platform;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
-
-import org.junit.jupiter.api.Assumptions;
+import org.junitpioneer.jupiter.RetryingTest;
 
 public class GCGenerationsTest extends AbstractProfilerTest {
-    @Override
-    protected String getProfilerCommand() {
-        return "memory=128,generations=true";
-    }
+  @Override
+  protected String getProfilerCommand() {
+    return "memory=128,generations=true";
+  }
+
+  @Override
+  protected boolean isPlatformSupported() {
+    return !(Platform.isJavaVersion(8) || Platform.isJ9() || Platform.isZing());
+  }
+
+  @RetryingTest(10)
+  public void shouldGetLiveObjectSamples() throws InterruptedException {
+    MemLeakTarget target1 = new MemLeakTarget();
+    MemLeakTarget target2 = new MemLeakTarget();
+    runTests(target1, target2);
+    // With "generations" tracking, every retained survivor is re-reported on each flush
+    // cycle for the rest of the run, which can drive the event count well past what's safe
+    // to hold fully resolved in memory, so only presence is checked, not materialized.
+    verifyEventPresent("datadog.HeapLiveObject");
+  }
+
+  public static class MemLeakTarget extends ClassValue<AtomicLong> implements Runnable {
+    private static byte[] leeway = new byte[32 * 1024 * 1024]; // 32MB to release on OOME
+    public static volatile List<Object> sink = new ArrayList<>();
 
     @Override
-    protected boolean isPlatformSupported() {
-        return !(Platform.isJavaVersion(8) || Platform.isJ9() || Platform.isZing());
+    public void run() {
+      ThreadLocalRandom random = ThreadLocalRandom.current();
+      try {
+        for (int i = 0; i < 100_000; i++) {
+          allocate(random, random.nextInt(256));
+        }
+      } catch (OutOfMemoryError e) {
+        leeway = null;
+        System.gc();
+      } finally {
+        sink.clear();
+      }
     }
 
-    @RetryingTest(10)
-    public void shouldGetLiveObjectSamples() throws InterruptedException {
-        MemLeakTarget target1 = new MemLeakTarget();
-        MemLeakTarget target2 = new MemLeakTarget();
-        runTests(target1, target2);
-        // With "generations" tracking, every retained survivor is re-reported on each flush
-        // cycle for the rest of the run, which can drive the event count well past what's safe
-        // to hold fully resolved in memory, so only presence is checked, not materialized.
-        verifyEventPresent("datadog.HeapLiveObject");
+    long getAllocated(Class<?> clazz) {
+      return get(clazz).get();
     }
 
-    public static class MemLeakTarget extends ClassValue<AtomicLong> implements Runnable {
-        private static byte[] leeway = new byte[32 * 1024 * 1024]; // 32MB to release on OOME
-        public static volatile List<Object> sink = new ArrayList<>();
+    private static void allocate(ThreadLocalRandom random, int depth) {
+      if (depth > 0) {
+        allocate(random, depth - 1);
+        return;
+      }
 
-        @Override
-        public void run() {
-            ThreadLocalRandom random = ThreadLocalRandom.current();
-            try {
-                for (int i = 0; i < 100_000; i++) {
-                    allocate(random, random.nextInt(256));
-                }
-            } catch (OutOfMemoryError e) {
-                leeway = null;
-                System.gc();
-            } finally {
-                sink.clear();
-            }
-        }
+      Object obj;
+      if (random.nextBoolean()) {
+        obj = new int[random.nextInt(64, 192) * 1000];
+      } else {
+        obj = new Integer[random.nextInt(64, 192) * 1000];
+      }
 
-        long getAllocated(Class<?> clazz) {
-            return get(clazz).get();
-        }
-
-        private static void allocate(ThreadLocalRandom random, int depth) {
-            if (depth > 0) {
-                allocate(random, depth - 1);
-                return;
-            }
-
-            Object obj;
-            if (random.nextBoolean()) {
-                obj = new int[random.nextInt(64, 192) * 1000];
-            } else {
-                obj = new Integer[random.nextInt(64, 192) * 1000];
-            }
-
-            if (random.nextInt(100) <= 30 && sink.size() < 100_000) {
-                sink.add(obj);
-            }
-            if (random.nextInt(10000) == 0) {
-                System.out.println("Triggering GC");
-                System.gc();
-            }
-        }
-
-        @Override
-        protected AtomicLong computeValue(Class<?> type) {
-            return new AtomicLong();
-        }
+      if (random.nextInt(100) <= 30 && sink.size() < 100_000) {
+        sink.add(obj);
+      }
+      if (random.nextInt(10000) == 0) {
+        System.out.println("Triggering GC");
+        System.gc();
+      }
     }
+
+    @Override
+    protected AtomicLong computeValue(Class<?> type) {
+      return new AtomicLong();
+    }
+  }
 }
