@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk21
 
 ## glibc-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-11-09 18:48:18 EST
+**Date:** 2026-11-09 18:56:10 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 544 |
-| Sample Rate | 9.07/sec |
-| Health Score | 567% |
+| CPU Samples | 427 |
+| Sample Rate | 7.12/sec |
+| Health Score | 445% |
 | Threads | 9 |
-| Allocations | 389 |
+| Allocations | 341 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 858 |
-| Sample Rate | 14.30/sec |
-| Health Score | 894% |
-| Threads | 11 |
-| Allocations | 469 |
+| CPU Samples | 603 |
+| Sample Rate | 10.05/sec |
+| Health Score | 628% |
+| Threads | 10 |
+| Allocations | 487 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 49-51 cores)</summary>
 
 ```
-1794267782 49
-1794267787 49
-1794267792 49
-1794267797 49
-1794267802 49
-1794267807 49
-1794267812 49
-1794267817 49
-1794267822 49
-1794267827 49
-1794267832 49
-1794267837 49
-1794267842 49
-1794267847 49
-1794267852 49
-1794267857 49
-1794267862 49
-1794267867 49
-1794267872 49
-1794267877 49
+1794268280 49
+1794268285 51
+1794268290 51
+1794268295 51
+1794268300 51
+1794268305 51
+1794268310 51
+1794268315 51
+1794268320 51
+1794268325 51
+1794268330 51
+1794268335 51
+1794268340 51
+1794268345 51
+1794268350 51
+1794268355 51
+1794268360 51
+1794268365 51
+1794268370 51
+1794268375 51
 ```
 </details>
 
