@@ -115,6 +115,12 @@ After all four agents send their final reports, merge every cell that has
 but a failed gtest stops the build before the C++ report, so such a cell has no C++
 tracefile. `summary.md` marks, per cell, whether it is in each report.
 
+Before merging, repeat step 1's gcovr version check on all resulting base images,
+including images created or rebuilt during step 3. Compare the newest version with
+`gcovr --version` on the host. If the host is older or missing, create or update
+`$RUN/tools/venv` with `gcovr==<newest base image version>` and put
+`$RUN/tools/venv/bin` first on `PATH` for the merge.
+
 ```bash
 WT=$(ls -d "$RUN"/wt-* | head -1)   # any of the run's worktrees
 cells=(); for p in "$RUN"/cells/*/cell.properties; do cells+=("${p%/cell.properties}"); done

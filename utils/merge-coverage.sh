@@ -70,6 +70,12 @@ if [[ "$source_commit" != "$COMMIT" ]]; then
     die "--source-root is at ${source_commit:-<not a git checkout>}, cells were built from $COMMIT"
 fi
 
+# HEAD only names the commit; edited sources would be reported against line numbers and
+# class contents the cells never built.
+if [[ -n "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=no -- ddprof-lib/src/main 2>/dev/null)" ]]; then
+    die "--source-root has uncommitted changes under ddprof-lib/src/main; the cells were built from $COMMIT"
+fi
+
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 # --out is replaced, so it must be empty or carry the marker an earlier merge wrote.

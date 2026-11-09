@@ -1331,12 +1331,13 @@ CONTAINER_CMD="$CONTAINER_CMD -e SANITIZER=$CONFIG"
 CONTAINER_CMD="$CONTAINER_CMD -e TEST_CONFIGURATION=$LIBC/${JDK_VERSION}-$CONFIG-$ARCH"
 CONTAINER_CMD="$CONTAINER_CMD -e GRADLE_USER_HOME=/gradle-cache"
 if [[ -n "$COVERAGE_OUT" ]]; then
-    CONTAINER_CMD="$CONTAINER_CMD -v \"$COVERAGE_OUT\":/coverage-out${CONTAINER_VOLUME_RW_OPTIONS}"
+    # %q: the command is eval'd below, so a path with $, ` or " must stay literal.
+    printf -v CONTAINER_CMD '%s -v %q' "$CONTAINER_CMD" "${COVERAGE_OUT}:/coverage-out${CONTAINER_VOLUME_RW_OPTIONS}"
 fi
 
 if $MOUNT_MODE; then
     # Mount mode: use local repo directly (faster, but may have stale artifacts)
-    CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/workspace${CONTAINER_VOLUME_RW_OPTIONS}"
+    printf -v CONTAINER_CMD '%s -v %q' "$CONTAINER_CMD" "${PROJECT_ROOT}:/workspace${CONTAINER_VOLUME_RW_OPTIONS}"
     CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
 
     if $SHELL_MODE; then
@@ -1352,13 +1353,23 @@ if $MOUNT_MODE; then
 else
     # Clone mode: shallow clone from mounted local repo for clean builds (default)
     # Mount the local repo as source, then clone from it to /workspace
-    CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/source${CONTAINER_VOLUME_RO_OPTIONS}"
+    printf -v CONTAINER_CMD '%s -v %q' "$CONTAINER_CMD" "${PROJECT_ROOT}:/source${CONTAINER_VOLUME_RO_OPTIONS}"
     # A git worktree's .git is a file naming an absolute gitdir inside the main
     # repository; mount that repository's git dir at the same path so the clone resolves.
     GIT_COMMON_DIR=""
     if [[ -f "$PROJECT_ROOT/.git" ]]; then
         GIT_COMMON_DIR=$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir)
-        CONTAINER_CMD="$CONTAINER_CMD -v \"$GIT_COMMON_DIR\":\"$GIT_COMMON_DIR\"${CONTAINER_VOLUME_RO_OPTIONS}"
+        # Mounted at its host path, so it must not sit under a path the container
+        # creates itself: /workspace is the clone destination and must stay empty,
+        # and the others are mount points.
+        case "$GIT_COMMON_DIR" in
+            /workspace|/workspace/*|/source|/source/*|/coverage-out|/coverage-out/*|/gradle-cache|/gradle-cache/*)
+                echo "Error: the git dir of this worktree's main checkout ($GIT_COMMON_DIR) overlaps a container path" >&2
+                echo "(/workspace, /source, /coverage-out, /gradle-cache); move the main checkout elsewhere." >&2
+                exit 1
+                ;;
+        esac
+        printf -v CONTAINER_CMD '%s -v %q' "$CONTAINER_CMD" "${GIT_COMMON_DIR}:${GIT_COMMON_DIR}${CONTAINER_VOLUME_RO_OPTIONS}"
     fi
     CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
 

@@ -221,6 +221,14 @@ tasks.named<JacocoReport>("jacocoTestReport") {
   description = "Java half of :ddprof-lib:coverageReport (run that instead; requires -PenableCoverage)"
 
   dependsOn(tasks.named { it in coverageTaskNames })
+  // -Ptests lets either coverage task match nothing (see above), but not both: a typo'd
+  // pattern would otherwise end in a green run with no Java coverage.
+  doFirst {
+    if (project.hasProperty("tests") &&
+      coverageTaskNames.none { layout.buildDirectory.file("jacoco/$it.exec").get().asFile.exists() }) {
+      throw GradleException("-Ptests=${project.property("tests")} matched no tests in testCoverage or testSlowCoverage")
+    }
+  }
   // The .exec files from: (1) the main test tasks (Test via jacoco plugin, musl Exec via agent
   // attached above), and (2) child JVMs spawned by AbstractProcessProfilerTest.launch().
   // Only existing files: a task that ran no tests writes none.
