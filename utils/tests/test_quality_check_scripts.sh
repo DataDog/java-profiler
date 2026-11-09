@@ -685,6 +685,22 @@ sk_reset; rm "$SK_ROOT/AGENTS.md"
 sk; expect "T8u AGENTS.md missing" 2 "$rc" "$out" "error: cannot read AGENTS.md"
 rc=0; out=$(python3 "$SK" --root "$TEMP_DIR/nonexistent" 2>&1) || rc=$?
 expect "T8v environment error outside a checkout" 2 "$rc" "$out" "error: git ls-files failed"
+sk_reset; skill good-one "name: good-one" "description: \"$(printf 'd%.0s' $(seq 1024))\""
+sk; expect "T8w double quotes do not count toward the description limit" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; printf 'intro\n---\nname: good-one\ndescription: x\n---\n' > "$SK_ROOT/.agents/skills/good-one/SKILL.md"
+sk; expect "T8x frontmatter must start on the first line" 1 "$rc" "$out" "no \`---\` frontmatter block"
+sk_reset; printf -- '---\nname: good-one\n---\ndescription: in the body\n' > "$SK_ROOT/.agents/skills/good-one/SKILL.md"
+sk; expect "T8y body lines are not frontmatter" 1 "$rc" "$out" "frontmatter 'description' is required"
+sk_reset; skill good-one "name: good-one" "metadata:" "  description: nested"
+sk; expect "T8z indented lines are not top-level fields" 1 "$rc" "$out" "frontmatter 'description' is required"
+sk_reset; skill good-one "name: good-one" "description: Use when: a colon is in the value"
+sk; expect "T8aa a colon inside the value" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill good-one "name: >" "  good-one" "description: x"
+sk; expect "T8ab block-scalar name" 1 "$rc" "$out" "use single-line values"
+sk_reset; echo x > "$SK_ROOT/.agents/skills/README.md" && git -C "$SK_ROOT" add -f .agents/skills/README.md
+sk; expect "T8ac files directly under .agents/skills/ are not skills" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill skill2 "name: skill2" "description: x"
+sk; expect "T8ad digits in a name" 0 "$rc" "$out" "skills: OK (2 skills)"
 
 # --- Summary -----------------------------------------------------------------
 
