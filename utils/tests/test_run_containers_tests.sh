@@ -59,7 +59,7 @@ has() {
 run_runner() {
   bash "$TEMP_DIR/repo/utils/run-containers-tests.sh" \
     --container=docker --libc="$libc" --arch="$arch" \
-    --jdk=21 --shell --mount > "$CAPTURE/output" 2>&1
+    --jdk=21 --shell --mount "$@" > "$CAPTURE/output" 2>&1
 }
 
 for arch in x64 aarch64; do
@@ -70,9 +70,11 @@ for arch in x64 aarch64; do
     : > "$CAPTURE/builds"
     suffix=""
     if [ "$libc" = glibc ]; then
-      suffix="-clang17"
+      suffix="-clang17-cov1"
       printf '%s\n' "java-profiler-base:glibc-$arch" \
-        "java-profiler-test:glibc-jdk21-$arch" > "$CAPTURE/cache"
+        "java-profiler-test:glibc-jdk21-$arch" \
+        "java-profiler-base:glibc-$arch-clang17" \
+        "java-profiler-test:glibc-jdk21-$arch-clang17" > "$CAPTURE/cache"
     fi
     base="java-profiler-base:$libc-$arch$suffix"
     image="java-profiler-test:$libc-jdk21-$arch$suffix"
@@ -86,9 +88,11 @@ for arch in x64 aarch64; do
     if [ "$libc" = glibc ]; then
       has "$recipe" 'FROM ubuntu:22.04'
       has "$recipe" 'llvm-toolchain-jammy-17 main'
-      has "$recipe" 'apt-get install -y --no-install-recommends clang-17 libclang-rt-17-dev'
+      has "$recipe" 'apt-get install -y --no-install-recommends clang-17 libclang-rt-17-dev llvm-17'
+      has "$recipe" 'pip3 install --no-cache-dir gcovr'
       has "$recipe" 'update-alternatives --install /usr/bin/clang clang /usr/bin/clang-17 170'
       has "$recipe" '--slave /usr/bin/clang++ clang++ /usr/bin/clang++-17'
+      has "$recipe" '--slave /usr/bin/llvm-cov llvm-cov /usr/bin/llvm-cov-17'
       has "$recipe" 'update-alternatives --set clang /usr/bin/clang-17'
       if grep -Eq 'g\+\+ clang git|libclang-dev' "$recipe"; then
         echo 'FAIL: legacy Clang packages remain in the glibc recipe' >&2
@@ -97,7 +101,8 @@ for arch in x64 aarch64; do
     else
       has "$recipe" 'FROM alpine:3.21'
       has "$recipe" 'g++ clang git jq cmake coreutils'
-      has "$recipe" 'compiler-rt llvm openssh-client gdb'
+      has "$recipe" 'compiler-rt llvm openssh-client gdb py3-pip'
+      has "$recipe" 'pip install --no-cache-dir --break-system-packages gcovr'
       if grep -Eq 'apt\.llvm\.org|update-alternatives|clang-17' "$recipe"; then
         echo 'FAIL: glibc toolchain leaked into the musl recipe' >&2
         exit 1
@@ -107,6 +112,12 @@ for arch in x64 aarch64; do
     test "$(wc -l < "$CAPTURE/builds" | tr -d ' ')" -eq 2
     has "$CAPTURE/output" 'Using cached base image:'
     has "$CAPTURE/output" 'Using cached image:'
+    run_runner --rebuild-base
+    if grep -Fq 'Using cached image:' "$CAPTURE/output"; then
+      echo 'FAIL: rebuilt base reused a stale JDK image' >&2
+      exit 1
+    fi
+    test "$(wc -l < "$CAPTURE/builds" | tr -d ' ')" -eq 4
   done
 done
 printf 'PASS: glibc toolchain/cache migration and unchanged musl defaults (4 configurations)\n'

@@ -252,6 +252,18 @@ specific `JDK_VERSION`, `DEBUG_LEVEL`, and `HASH` parameters and runs `testDebug
 against that JDK build. This is used to validate compatibility with unreleased JDK
 versions.
 
+The job uses the same two-JDK split as `functional-tests.sh`: Gradle runs on a
+JDK 17+ installed via SDKMAN (`21.0.3-tem`), because Gradle 9 cannot start on older
+JDKs and the JDK under test can be any version. The JDK under test is the custom
+build shipped in the `openjdk-build:${JDK_VERSION}-${DEBUG_LEVEL}-${HASH}` image;
+`.gitlab/jdk-integration/select_test_jdk.sh` locates it under `/usr/lib/jvm` and the
+job exports its home as `JAVA_TEST_HOME`, which is the variable the profiler-test
+Gradle plugin resolves the test JVM from (`PlatformUtils.testJavaHome()`). With
+several JDKs in the image the selector prefers the one whose path contains
+`JDK_VERSION` and fails instead of guessing. The job echoes `java -version` for both
+JVMs, so the selected JDK is visible in the job log; shell tests for the selector
+run in the `shell-unit-tests` job.
+
 ---
 
 ## Why the Split
@@ -308,12 +320,25 @@ catching races with per-second probability too low for any bounded CI window.
 ./gradlew :ddprof-test:testAsan -Pskip-gtest
 ```
 
+### Coverage
+
+```bash
+# C++ (gcovr) + Java (JaCoCo) reports; needs gcovr 8.3+, gtest, make (Linux)
+./gradlew :ddprof-lib:coverageReport -PenableCoverage
+```
+
+The C++ report covers only the `-O0 -DDEBUG` build. Prerequisites and limits are in
+[CodeCoverage](CodeCoverage.md).
+
 ### Using containers to approximate CI
 
 `utils/run-containers-tests.sh` defaults to Podman. On macOS use Docker through colima
 (`--container=docker`): podman's credential-helper lookup for the Datadog registries
 (ddtool) fails outside the CI network and aborts container commands. Run `./utils/run-containers-tests.sh --help` for the full flag list
 (`--tests`, `--gtest`, `--gtest-task`, `--mount`, `--rebuild`, `--matrix`, ...).
+Cached images are reused until `--rebuild-base` (or `--rebuild`) is passed. Use it
+after the base image's package list changes, e.g. to pick up gcovr for coverage runs:
+it rebuilds the base image and the JDK image built on it.
 
 ```bash
 # Matches the nightly configuration
@@ -337,10 +362,10 @@ catching races with per-second probability too low for any bounded CI window.
 
 ### Container toolchain checks
 
-Glibc images use Ubuntu 22.04 with Clang/Clang++ 17 and matching compiler-rt on
-x64/aarch64. Both image-cache tags end in `-clang17` to bypass older toolchains.
-Musl remains Alpine 3.21 with its distro Clang/compiler-rt. Use `--rebuild` to
-refresh both image layers; `--rebuild-base` alone can reuse a cached JDK image.
+Glibc images use Ubuntu 22.04 with matched Clang/Clang++ 17, compiler-rt and
+llvm-cov on x64/aarch64. Both cache tags end in `-clang17-cov1` to bypass older
+compiler/coverage recipes. Musl retains its distro toolchain. `--rebuild-base`
+rebuilds the base and selected dependent JDK image.
 
 Check generated recipes and cache selection without containers or downloads:
 
@@ -351,7 +376,7 @@ bash utils/tests/test_run_containers_tests.sh
 Inside a Linux glibc image, run the standalone masked-index sanitizer probe:
 
 ```bash
-bash utils/tests/test_masked_index_compiler.sh clang++
+bash utils/tests/manual/test_masked_index_compiler.sh clang++
 ```
 
 Clang 14.0.0 on aarch64 reports an invalid negative index; Clang 17 passes all

@@ -1922,6 +1922,17 @@ void Recording::writeThreads(Buffer *buf) {
   }
 }
 
+void Recording::writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
+                                     const MethodInfo *root) {
+  buf->putVar64(trace->trace_id);
+  if (root != nullptr) {
+    bool truncated = trace->truncated ||
+                     (root->_type < FRAME_NATIVE && !root->_is_entry);
+    buf->put8(truncated);
+  }
+  buf->putVar64(trace->num_frames);
+}
+
 int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
   // Reset all referenced flags before processing
   for (MethodMap::iterator it = _method_map.begin(); it != _method_map.end(); ++it) {
@@ -1942,18 +1953,12 @@ int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
     buf->putVar64(traces.size());
     for (auto it = traces.begin(); it != traces.end(); ++it) {
       CallTrace *trace = *it;
-      buf->putVar64(trace->trace_id);
+      MethodInfo *root = nullptr;
       if (trace->num_frames > 0) {
-        MethodInfo *mi =
-            lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
-        mi->_referenced = true;  // Mark method as referenced
-        if (mi->_type < FRAME_NATIVE) {
-          buf->put8(mi->_is_entry ? 0 : 1);
-        } else {
-          buf->put8(trace->truncated);
-        }
+        root = lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
+        root->_referenced = true;
       }
-      buf->putVar64(trace->num_frames);
+      writeStackTraceHeader(buf, trace, root);
       for (int i = 0; i < trace->num_frames; i++) {
         MethodInfo *mi = lookup->resolveMethod(trace->frames[i]);
         mi->_referenced = true;  // Mark method as referenced
@@ -2309,19 +2314,29 @@ void Recording::writeCounters(Buffer *buf) {
   }
 }
 
+#ifdef DEBUG
+void Recording::writeUnwindFailureEvent(Buffer *buf, u64 ticks, const char *kind,
+                                       const char *name, u64 count) {
+  // A 255-byte name plus the other fields needs a multi-byte event size.
+  int start = buf->skip(MAX_VAR32_LENGTH);
+  buf->putVar64(T_UNWIND_FAILURE);
+  buf->putVar64(ticks);
+  buf->putUtf8(kind);
+  buf->putUtf8(name);
+  buf->putVar64(count);
+  buf->putVar32(start, buf->offset() - start);
+}
+#endif
+
 void Recording::writeUnwindFailures(Buffer *buf) {
 #ifdef DEBUG
   static UnwindFailures failures;
   UnwindStats::collectAndReset(failures);
 
   failures.forEach([&](UnwindFailureKind kind, const char *name, u64 count) {
-    int start = buf->skip(1);
-    buf->putVar64(T_UNWIND_FAILURE);
-    buf->putVar64(_start_ticks);
-    buf->putUtf8((kind & UNWIND_FAILURE_STUB) ? "stub" : "other");
-    buf->putUtf8(name);
-    buf->putVar64(count);
-    writeEventSizePrefix(buf, start);
+    writeUnwindFailureEvent(buf, _start_ticks,
+                            (kind & UNWIND_FAILURE_STUB) ? "stub" : "other",
+                            name, count);
     flushIfNeeded(buf);
   });
 #endif // DEBUG

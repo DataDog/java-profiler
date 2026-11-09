@@ -4,8 +4,8 @@
 # Run tests in containers with various OS/libc/JDK combinations (similar to CI)
 # Defaults to Podman; use --container=docker to use Docker.
 # Uses two-level container image caching:
-#   1. Base: java-profiler-base:<libc>-<arch>[-clang17] (suffix for glibc)
-#   2. JDK: java-profiler-test:<libc>-jdk<version>-<arch>[-clang17]
+#   1. Base: java-profiler-base:<libc>-<arch>[-clang17-cov1] (suffix for glibc)
+#   2. JDK: java-profiler-test:<libc>-jdk<version>-<arch>[-clang17-cov1]
 #
 # Usage: ./utils/run-containers-tests.sh [options]
 #   --libc=glibc|musl|all[,..]    (default: glibc)
@@ -20,7 +20,7 @@
 #   --shell                  (drop to shell instead of running tests; enables SYS_PTRACE for gdb)
 #   --mount                  (mount local repo instead of cloning - faster but may have stale artifacts)
 #   --rebuild                (force rebuild of container images)
-#   --rebuild-base           (force rebuild of base image only)
+#   --rebuild-base           (force rebuild of the base image, and of the JDK image built on it)
 #   --matrix                 (preview a full matrix; unset dimensions expand to all)
 #   --run                    (execute an inferred matrix without prompting)
 #   --fail-fast              (stop matrix execution on first failure)
@@ -967,10 +967,10 @@ if [[ -z "$JDK_URL" ]]; then
     exit 1
 fi
 
-# Version both glibc cache levels so pre-Clang-17 images are not reused.
+# Version both glibc cache levels for matched compiler/runtime/coverage tools.
 IMAGE_TAG_SUFFIX=""
 if [[ "$LIBC" == "glibc" ]]; then
-    IMAGE_TAG_SUFFIX="-clang17"
+    IMAGE_TAG_SUFFIX="-clang17-cov1"
 fi
 BASE_IMAGE_NAME="${BASE_IMAGE_PREFIX}:${LIBC}-${ARCH}${IMAGE_TAG_SUFFIX}"
 IMAGE_NAME="${IMAGE_PREFIX}:${LIBC}-jdk${JDK_VERSION}-${ARCH}${IMAGE_TAG_SUFFIX}"
@@ -1030,11 +1030,14 @@ FROM alpine:3.21
 # - compiler-rt provides sanitizer runtimes (ASan, TSan) for clang
 # - llvm provides libFuzzer
 # - openssh-client for git clone over SSH
+# - py3-pip + gcovr for :ddprof-lib:coverageReport (-PenableCoverage); Alpine
+#   doesn't package gcovr, so it comes from PyPI
 RUN apk update && \
     apk add --no-cache \
         curl wget bash make g++ clang git jq cmake coreutils \
         gtest-dev gmock tar binutils musl-dbg linux-headers \
-        compiler-rt llvm openssh-client gdb
+        compiler-rt llvm openssh-client gdb py3-pip && \
+    pip install --no-cache-dir --break-system-packages gcovr
 
 # Set up Gradle cache directory
 ENV GRADLE_USER_HOME=/gradle-cache
@@ -1049,29 +1052,28 @@ FROM ubuntu:22.04
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install build dependencies
-# - libasan/libtsan for GCC sanitizers
-# - gnupg for LLVM apt key import
-# - openssh-client for git clone over SSH
+# Retain GCC sanitizers and use PyPI gcovr: Jammy's gcovr lacks report flags.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl wget gnupg bash make g++ git jq cmake \
         libgtest-dev libgmock-dev tar binutils libc6-dbg \
         ca-certificates linux-libc-dev \
-        libasan6 libtsan0 openssh-client build-essential gdb && \
-    rm -rf /var/lib/apt/lists/*
+        libasan6 libtsan0 openssh-client build-essential gdb python3-pip && \
+    rm -rf /var/lib/apt/lists/* && \
+    pip3 install --no-cache-dir gcovr
 
-# Use Clang 17 on both architectures to avoid Clang 14's masked-index UBSan failure.
-# Matching compiler-rt supplies sanitizers and libFuzzer, including aarch64 TSan
-# support for the 48-bit VMA used by linuxkit kernels.
+# Clang 17 avoids the Clang 14.0.0 aarch64 masked-index UBSan diagnostic.
+# Matching compiler-rt supplies sanitizer/profile runtimes; llvm-cov must match
+# unversioned clang++ because coverageReport selects `llvm-cov gcov` for it.
 RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
         | gpg --dearmor -o /etc/apt/trusted.gpg.d/llvm.gpg \
     && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" \
         > /etc/apt/sources.list.d/llvm.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends clang-17 libclang-rt-17-dev \
+    && apt-get install -y --no-install-recommends clang-17 libclang-rt-17-dev llvm-17 \
     && update-alternatives --install /usr/bin/clang clang /usr/bin/clang-17 170 \
         --slave /usr/bin/clang++ clang++ /usr/bin/clang++-17 \
+        --slave /usr/bin/llvm-cov llvm-cov /usr/bin/llvm-cov-17 \
     && update-alternatives --set clang /usr/bin/clang-17 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -1098,7 +1100,9 @@ fi
 
 # ========== Build JDK Image (if needed) ==========
 IMAGE_EXISTS=false
-if [[ "$REBUILD" == "false" ]]; then
+# A JDK image cached on top of an older base image would hide the rebuilt base's packages
+# (e.g. gcovr), so it is reused only when the base image was reused too.
+if [[ "$REBUILD" == "false" && "$BASE_IMAGE_EXISTS" == "true" ]]; then
     if "$CONTAINER_RUNTIME" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         IMAGE_EXISTS=true
         echo ">>> Using cached image: $IMAGE_NAME"

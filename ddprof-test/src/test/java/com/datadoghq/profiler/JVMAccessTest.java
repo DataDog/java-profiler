@@ -27,8 +27,7 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
 
     @Test
     void sanityInitailizationTest() throws Exception {
-        String config = System.getProperty("ddprof_test.config");
-        assumeTrue("debug".equals(config));
+        assumeTrue(NativeBuildConfig.isDebug());
 
         AtomicBoolean initLibraryFound = new AtomicBoolean(false);
         AtomicBoolean initProfilerFound = new AtomicBoolean(false);
@@ -66,8 +65,7 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
      */
     @Test
     void agentOnLoadVMFlagDetectionTest() throws Exception {
-        String config = System.getProperty("ddprof_test.config");
-        assumeTrue("debug".equals(config));
+        assumeTrue(NativeBuildConfig.isDebug());
 
         Path agentLib = LibraryLoader.resolveLibraryPath(System.getProperty("java.io.tmpdir"));
 
@@ -104,8 +102,7 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
 
     @Test
     void jvmVersionTest() throws Exception {
-        String config = System.getProperty("ddprof_test.config");
-        assumeTrue("debug".equals(config));
+        assumeTrue(NativeBuildConfig.isDebug());
 
         String javaVersion = System.getenv("JAVA_VERSION");
         assumeTrue(javaVersion != null);

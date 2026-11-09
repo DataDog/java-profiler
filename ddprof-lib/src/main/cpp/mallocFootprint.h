@@ -28,19 +28,54 @@
 // pays 16.7 %.
 //
 // This measures it instead: usable size comes from the allocator, and the
-// per-chunk header is probed once at first use rather than assumed.
+// per-chunk header is determined once at first use for the allocator in force.
 class MallocFootprint {
-private:
-  // Determined empirically: allocate several same-size blocks and take the
-  // smallest positive address stride between any two. That stride is
-  // usable + header, so header = stride - usable.
-  //
-  // Probed rather than hardcoded because the allocator in force at runtime is
-  // not knowable at compile time -- an LD_PRELOAD'd tcmalloc or jemalloc leaves
-  // __GLIBC__ defined while adding no per-object header at all (their metadata
-  // is out of band). Assuming glibc's 8 bytes would then invent overhead that
-  // does not exist, at one allocation's worth per allocation.
+public:
+  // probeHeaderBytes() and its helpers are public only so tests can call them
+  // in a prepared heap state; production code uses headerBytes().
+
+  // An LD_PRELOAD'd jemalloc or tcmalloc keeps __GLIBC__ defined but adds no
+  // per-object header, so glibc is recognised at run time by its chunk layout;
+  // any other allocator falls back to the stride probe.
   static size_t probeHeaderBytes() {
+    return glibcChunks() ? sizeof(size_t) : strideHeaderBytes();
+  }
+
+  // Whether `usable` fits a glibc chunk for `request`: usable + one size_t header
+  // is a multiple of 2 * size_t and holds the request. A free chunk too small to
+  // split is handed out whole, so usable may exceed the minimum.
+  static bool glibcUsable(size_t request, size_t usable) {
+    const size_t header = sizeof(size_t);
+    return usable >= request && usable % (2 * header) == header;
+  }
+
+  // True when the allocator in force lays out chunks as glibc does, in any heap
+  // state. Size-class allocators, sanitizers and glibc's debug modes (malloc
+  // checking, memory tagging) fail it and use the stride probe.
+  static bool glibcChunks() {
+#if defined(__GLIBC__) && defined(DD_HAVE_MALLOC_USABLE_SIZE)
+    const size_t sizes[] = {48, 96, 112};
+    for (size_t r : sizes) {
+      void *p = malloc(r);
+      if (p == NULL) {
+        return false;
+      }
+      size_t usable = malloc_usable_size(p);
+      free(p);
+      if (!glibcUsable(r, usable)) {
+        return false;
+      }
+    }
+    return true;
+#else
+    return false;
+#endif
+  }
+
+  // The smallest address stride between same-size blocks, minus their usable
+  // size. Exact only if two blocks are adjacent; with freed chunks scattered in
+  // the heap the result is 0 or a wrong header, which is why glibc is recognised.
+  static size_t strideHeaderBytes() {
 #ifdef DD_HAVE_MALLOC_USABLE_SIZE
     const int N = 16;
     const size_t SZ = 48;
@@ -77,7 +112,6 @@ private:
 #endif
   }
 
-public:
   // Per-chunk header size for the allocator actually in force. Probed once;
   // the C++11 function-local static makes initialisation thread-safe. NOT
   // async-signal-safe (it allocates), so first use must not be from a signal
