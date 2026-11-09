@@ -6,7 +6,7 @@ description: Rules for java-profiler documentation under doc/ (naming, index, ac
 # Documentation writing
 
 - **Naming.** Files in `doc/` use PascalCase (e.g. `BuildSystemGuide.md`);
-  `doc/README.md` is the only lowercase exception. New subsystem docs go in
+  `doc/README.md` is the only name that is not PascalCase. New subsystem docs go in
   `doc/architecture/` or `doc/reference/`; build docs in `doc/building/`.
 - **Index.** Every doc page is indexed in `doc/README.md`. CI (`qualityChecks`)
   enforces naming and indexing; design artifacts under `docs/sphinx/`, `.sphinx/` and
