@@ -364,11 +364,10 @@ exception list.
 ## Development Guidelines
 
 - Never replace the code you work on with stubs. Never "fix" tests by testing constants
-  against constants. Never claim success until all affected tests pass: `testDebug` for
-  Java-visible behaviour, `:ddprof-lib:gtestDebug` for C++. For changes to
-  signal-handler paths, atomics, crash protection or thread lifecycle, also run the ASan
-  configuration where available (`gtestAsan`, `testAsan`) and, without arm64 hardware,
-  the aarch64 container (`./utils/run-containers-tests.sh --arch=aarch64`).
+  against constants. Never claim success until all affected tests pass; before claiming
+  it, load the `verify-profiler-change` skill
+  ([.agents/skills/verify-profiler-change/SKILL.md](.agents/skills/verify-profiler-change/SKILL.md)),
+  which says which builds and tests each kind of change needs.
   `assert()` is compiled out of release builds (`-DNDEBUG`): never rely on it for safety
   and never put side effects in it.
 - Platform-specific code goes in per-OS implementation files (`os_linux.cpp`,
@@ -523,19 +522,10 @@ Jira comment or a commit message, load the `pr-writing` skill
 
 ## CI / Automation Script Changes
 
-- Before rewriting or replacing a script invoked from `.gitlab-ci.yml`, `.gitlab/**/*.yml`,
-  `.github/workflows/*.yml`, or any CI job, run `git log -p -- <script>` (or diff against the
-  version being replaced) and enumerate every behavior branch it has — fallbacks,
-  env-var-driven paths, error exits. Preserve all of them unless explicitly asked to drop
-  one; do not silently narrow behavior while refactoring.
-- Grep the calling CI files for how the script is invoked (env vars set, exit codes expected)
-  and confirm the rewrite still satisfies every caller, not just the common/local case.
-- When removing an item from a default list or config (an antagonist, a test tag, a feature
-  flag) or deleting a script or file, grep the whole repo (including `.gitlab/**`) and cite
-  the exact file/line proving it is inert or unused in that context before removing it —
-  never remove based on assumption alone.
-- After changing a CI-invoked script, run a syntax check (e.g. `bash -n <script>`) and trace
-  through each CI job that calls it before considering the change complete.
+Before editing CI configuration (`.gitlab-ci.yml`, `.gitlab/**`, `.github/workflows/**`) or
+a script a CI job runs, and before deleting a script or removing an entry from a default
+list or config, load the `ci-script-change` skill
+([.agents/skills/ci-script-change/SKILL.md](.agents/skills/ci-script-change/SKILL.md)).
 
 ## Documentation Rules
 
