@@ -9,8 +9,9 @@ The phases and their exit criteria are in `doc/WorkTracking.md`. This skill cove
 to write the two planning artifacts and the acceptance criteria. Keep each in one
 source of truth: the ticket description by default (see the `ticket-writing` skill).
 `doc/WorkTracking.md` also allows the design in a draft PR and the Build plan in a
-`plan.md`; use those only when the engineer chooses them, link them from the ticket
-description and the PR, and commit a `plan.md` only with the engineer's permission.
+`plan.md`; use those only when the engineer chooses them, and link them from the
+ticket description. A `plan.md` must be committed, which needs the engineer's
+permission; without it, keep the plan in the ticket.
 The engineer accepts each artifact before the next phase starts.
 
 ## Effort
