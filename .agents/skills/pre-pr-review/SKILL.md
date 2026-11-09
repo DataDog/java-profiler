@@ -24,17 +24,18 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
 2. **Review.** Review exactly the range the marker will certify,
    `MB=$(git merge-base refs/remotes/<base> HEAD)` to `HEAD`, named explicitly — without
    a range, reviewers default to unpushed or last-commit changes; the full ref keeps a
-   tag named like the base from changing the range. Pick the reviewer by what the range
-   changes:
+   tag named like the base from changing the range. Pick the reviewer from the first row
+   that matches the range, top to bottom:
 
    | The range changes | Reviewer |
    | --- | --- |
-   | Gates and trust boundaries: hooks, `review-marker.py`, the `utils/*-policy.py` files, CI checks | Sphinx (`/sphinx review range $MB..$(git rev-parse HEAD) --report-json <path>`); at most one `--effort=deep` run per PR, on the final candidate |
+   | Gates and trust boundaries, including fixes to them: hooks, `review-marker.py`, the `utils/*-policy.py` files, CI checks, this skill, the AGENTS.md review rules | Sphinx (`/sphinx review range $MB..$(git rev-parse HEAD) --report-json <path>`), standard effort; at most one `--effort=deep` run per PR, on the final candidate |
    | Other production code | Sphinx, standard effort |
    | Only fixes to a range already reviewed | `/code-review` medium, on the fix range only |
-   | Only docs, skills or tests | `/code-review` medium; low effort skips test files |
+   | Only docs, skills or tests | `/code-review` medium; not low, which skips test files |
 
-   Without Sphinx, use `/code-review` with the range as its target. Report only — run no
+   Without Sphinx, use `/code-review` with the range as its target, at high effort for
+   the first row and medium otherwise. Report only — run no
    reviewer fix flow; steps 3 and 4 do the triage and fixes. If no reviewer is
    available, say so and get explicit user sign-off; do not write a marker then.
    Tell the reviewer to skip `.knowledgebase/`: its content is cairn's, and step 4
@@ -42,20 +43,21 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
 
    **Cost.** Plan for about $20–30 of agentic review per PR; before a run that is likely
    to exceed it, ask the user. A long orchestrating session re-reads its own context on
-   every turn, so start large reviews from a fresh session where the harness allows.
+   every turn, so run this skill for large reviews from a fresh session where the harness
+   allows; that session writes the marker.
 
-3. **Judgment checks.** In addition to correctness, check every comment, javadoc
+3. **Self-checks.** In addition to the reviewer, check the diff for unused variables,
+   unused or duplicated macros, dead code (methods, JNI entry points, fields, no-op
+   functions, empty files left without callers; test-only helpers stay only if marked
+   as such) and misspelled identifiers or comments. Then check every comment, javadoc
    and doc paragraph the change adds or modifies against the AGENTS.md
    **Comment budget** and **Comments** rules:
    - each comment ≤3 lines, each line a distinct non-obvious constraint; a longer
      comment needs a reason a reviewer would accept;
    - current behavior only — no history, and no references to plans, specs,
      review reports or findings, requirement IDs, tickets or line numbers.
-   Code written by a review tool's fix flow gets the same check: it must not
-   cite the tool's own working artifacts. Also check the diff for unused variables,
-   unused or duplicated macros, dead code (methods, JNI entry points, fields, no-op
-   functions, files left without callers; test-only helpers stay only if marked as
-   such) and misspelled identifiers or comments.
+   Code written by a review tool's fix flow gets the same checks: it must not
+   cite the tool's own working artifacts.
 
 4. **Findings.** Fix Critical/High findings, or get the user's explicit waiver.
    Commit the fixes and re-review what they touched. Also fix every violation of
@@ -66,19 +68,20 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    - A gate or trust-boundary bypass is never downgraded below High in triage.
    - When a re-review finds new cases of a defect class it already reported, fix the
      class (a stricter rule, a closed grammar), not the next case.
-   - Stop re-review rounds when they find only Low findings in the fixes themselves;
-     report those instead.
+   - Stop re-review rounds when they find only Medium or Low findings in the fixes
+     themselves. Fix those that are cheap to fix; list the rest in the report (step 6).
 
 5. **Marker.** On the final commits, write the marker — also when the user ran
    the review manually and reports it back:
-   `RM write --tool <reviewer> --session <id> --base <base>`.
+   `RM write --tool <reviewer> --session <id> --base <base>`, where `--session` names
+   the session that ran the review.
    Any later change to the branch's diff makes it stale. Then `.githooks/pre-push`
    refuses pushes to an open PR, and in Claude Code and Pi the `require-fresh-review`
    hook blocks `gh pr create`/`gh pr ready`, until this skill runs again. A rebase keeps
    the marker fresh unless the base changed lines next to the branch's hunks.
 
-6. **Report.** State the reviewer, the outcome and any waived findings in the PR
-   description or the reply to the review.
+6. **Report.** State the reviewer, the outcome, and any waived or unfixed findings in
+   the PR description or the reply to the review.
 
 7. **Repeated failures.** Tell the user, in the session, each mistake you made twice
    during this change and each point the user had to explain twice. Give each a

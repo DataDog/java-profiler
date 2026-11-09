@@ -503,8 +503,9 @@ No pull request is opened, marked ready, or updated with fixes until an agentic 
 review of the full change set has completed and its Critical/High findings are fixed
 or explicitly waived by the user. Run the `pre-pr-review` skill
 ([.agents/skills/pre-pr-review/SKILL.md](.agents/skills/pre-pr-review/SKILL.md)): it
-picks the reviewer, adds the judgment checks no tool can make (comment budget, no
-plan/spec references), and records the result with `utils/review-marker.py`. If the
+picks the reviewer and effort within a review budget, adds the self-checks (dead code,
+misspellings, comment budget, no plan/spec references), and records the result with
+`utils/review-marker.py`. If the
 harness has no review capability, say so and get explicit user sign-off — never
 silently skip it. While the marker is stale, `.githooks/pre-push` refuses pushes to
 a branch with an open PR (install with `utils/review-marker.py install-hook`, never
