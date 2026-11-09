@@ -367,6 +367,7 @@ deploy-artifact:
     paths:
       - version.txt
     # MEMORY_GATE_CANDIDATE, the build just published, for the memory-gate trigger.
+    # Absent, with an upload warning, where no snapshot is published (tags, no PR).
     reports:
       dotenv: memory-gate.env
     expire_in: 7 days
