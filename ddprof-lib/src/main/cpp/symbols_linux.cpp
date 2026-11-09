@@ -322,6 +322,21 @@ typedef Elf64_Dyn  ElfDyn;
 
 static char _debuginfod_cache_buf[PATH_MAX] = {0};
 
+// Symbol-table addresses (file sh_offset or DT_SYMTAB) carry no alignment
+// guarantee; these copies avoid member access through a misaligned ElfSymbol*,
+// which is undefined behavior under -fsanitize=alignment.
+static uint32_t symbolNameAt(const void* sym) {
+    uint32_t name;
+    memcpy(&name, sym, sizeof(name));  // st_name sits at offset 0 of Elf64_Sym
+    return name;
+}
+
+static ElfSymbol readSymbol(const void* sym) {
+    ElfSymbol copy;
+    memcpy(&copy, sym, sizeof(copy));
+    return copy;
+}
+
 class ElfParser {
   private:
     CodeCache* _cc;
@@ -684,9 +699,9 @@ void ElfParser::parseDynamicSection() {
             // Parse .rela.plt table
             for (size_t offs = 0; offs < pltrelsz; offs += relent) {
                 ElfRelocation* r = (ElfRelocation*)(jmprel + offs);
-                ElfSymbol* sym = (ElfSymbol*)(symtab + ELF_R_SYM(r->r_info) * syment);
-                if (sym->st_name != 0) {
-                    const char* sym_name = strAt(strtab, strsz, sym->st_name);
+                uint32_t st_name = symbolNameAt(symtab + ELF_R_SYM(r->r_info) * syment);
+                if (st_name != 0) {
+                    const char* sym_name = strAt(strtab, strsz, st_name);
                     if (sym_name != NULL) {
                         _cc->addImport((void**)(base_addr + r->r_offset), sym_name);
                     }
@@ -701,9 +716,9 @@ void ElfParser::parseDynamicSection() {
             for (size_t offs = relcount * relent; offs < relsz; offs += relent) {
                 ElfRelocation* r = (ElfRelocation*)(rel + offs);
                 if (ELF_R_TYPE(r->r_info) == R_GLOB_DAT || ELF_R_TYPE(r->r_info) == R_ABS64) {
-                    ElfSymbol* sym = (ElfSymbol*)(symtab + ELF_R_SYM(r->r_info) * syment);
-                    if (sym->st_name != 0) {
-                        const char* sym_name = strAt(strtab, strsz, sym->st_name);
+                    uint32_t st_name = symbolNameAt(symtab + ELF_R_SYM(r->r_info) * syment);
+                    if (st_name != 0) {
+                        const char* sym_name = strAt(strtab, strsz, st_name);
                         if (sym_name != NULL) {
                             _cc->addImport((void**)(base_addr + r->r_offset), sym_name);
                         }
@@ -970,22 +985,22 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
     // to a small pointer that still compares <= end, walking off the image. The
     // `ent_size <= total_size - off` form keeps off <= total_size with no overflow.
     for (size_t off = 0; ent_size <= total_size - off; off += ent_size) {
-        ElfSymbol* sym = (ElfSymbol*)(symbols + off);
-        if (sym->st_name != 0 && sym->st_value != 0) {
+        ElfSymbol sym = readSymbol(symbols + off);
+        if (sym.st_name != 0 && sym.st_value != 0) {
             // Resolve the name through the bounded string table; a bad st_name
             // offset (or unterminated string) drops the symbol instead of reading
             // out of bounds.
-            const char* sym_name = strAt(strings, strings_size, sym->st_name);
+            const char* sym_name = strAt(strings, strings_size, sym.st_name);
             if (sym_name == NULL) {
                 continue;
             }
             // Skip special AArch64 mapping symbols: $x and $d
-            if (sym->st_size != 0 || sym->st_info != 0 || sym_name[0] != '$') {
+            if (sym.st_size != 0 || sym.st_info != 0 || sym_name[0] != '$') {
                 const char* addr;
                 if (base != NULL) {
-                    // Check for overflow when adding sym->st_value to base
+                    // Check for overflow when adding sym.st_value to base
                     uintptr_t base_addr = (uintptr_t)base;
-                    uint64_t symbol_value = sym->st_value;
+                    uint64_t symbol_value = sym.st_value;
                     
                     // Skip this symbol if addition would overflow
                     // First check if symbol_value exceeds the address space
@@ -1000,9 +1015,9 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
                     // Perform addition using integer arithmetic to avoid pointer overflow
                     addr = (const char*)(base_addr + (uintptr_t)symbol_value);
                 } else {
-                    addr = (const char*)sym->st_value;
+                    addr = (const char*)sym.st_value;
                 }
-                _cc->add(addr, (int)sym->st_size, sym_name);
+                _cc->add(addr, (int)sym.st_size, sym_name);
             }
         }
     }
@@ -1043,13 +1058,13 @@ void ElfParser::addRelocationSymbols(ElfSection* reltab, const char* plt) {
         if (ELF_R_SYM(r->r_info) > max_sym_index) {
             continue;
         }
-        ElfSymbol* sym = (ElfSymbol*)(symbols + (size_t)ELF_R_SYM(r->r_info) * sym_ent);
+        ElfSymbol sym = readSymbol(symbols + (size_t)ELF_R_SYM(r->r_info) * sym_ent);
 
         char name[256];
-        if (sym->st_name == 0) {
+        if (sym.st_name == 0) {
             strcpy(name, "@plt");
         } else {
-            const char* sym_name = strAt(strings, strings_size, sym->st_name);
+            const char* sym_name = strAt(strings, strings_size, sym.st_name);
             if (sym_name == NULL) {
                 continue;  // plt advances via the for-increment
             }
@@ -1348,7 +1363,7 @@ bool hashSymbolRelocations(const LoadedImage& image, uintptr_t rel, size_t size,
         if (index == 0) continue;  // e.g. R_*_RELATIVE: no import
         uintptr_t sym = symtab + index * syment;
         if (!image.readable(sym, sizeof(ElfSymbol))) return false;
-        size_t name = ((const ElfSymbol*)sym)->st_name;
+        size_t name = symbolNameAt((const void*)sym);
         if (name >= strsz) return false;
         const char* str = (const char*)(strtab + name);
         hash = fnv1a(&r->r_offset, sizeof(r->r_offset), hash);

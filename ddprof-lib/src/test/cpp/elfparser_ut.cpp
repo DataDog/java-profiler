@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #ifdef __linux__
 
 #include <gmock/gmock.h>
@@ -396,8 +401,9 @@ Elf64_Ehdr validEhdr() {
 }
 
 // Write the bytes to a unique temp file and run ElfParser::parseFile over it,
-// mirroring how Symbols::parseLibraries() parses an on-disk library.
-void parseElfBytes(const std::vector<char>& bytes) {
+// mirroring how Symbols::parseLibraries() parses an on-disk library. The
+// caller-visible CodeCache lets tests assert what the parser resolved.
+void parseElfBytes(const std::vector<char>& bytes, CodeCache* cc, bool use_debug) {
     char path[] = "/tmp/elf_regress_XXXXXX";
     int fd = mkstemp(path);
     ASSERT_NE(fd, -1);
@@ -408,9 +414,13 @@ void parseElfBytes(const std::vector<char>& bytes) {
         FAIL() << "short write to " << path;
         return;
     }
-    CodeCache cc("regress");
-    ElfParser::parseFile(&cc, nullptr, path, /*use_debug=*/false);
+    ElfParser::parseFile(cc, nullptr, path, use_debug);
     unlink(path);
+}
+
+void parseElfBytes(const std::vector<char>& bytes) {
+    CodeCache cc("regress");
+    parseElfBytes(bytes, &cc, /*use_debug=*/false);
 }
 
 }  // namespace
@@ -571,6 +581,90 @@ TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
     app(strtab, sizeof(strtab));
     // strtab ends at image_size: also exercises inImage() equality case.
     parseElfBytes(b);  // must not crash: strAt() rejects st_name == strtab_size
+}
+
+// A .symtab whose sh_offset is not a multiple of alignof(Elf64_Sym) (the
+// 42-byte section-header string table lands it at 490) drives the misaligned
+// entries through loadSymbolTable() and addRelocationSymbols(): both symbols
+// and the PLT relocation name must still resolve. Before the alignment fix
+// UBSan aborted here at the first ElfSymbol member access.
+TEST_F(ElfTest, symbolTableMisalignedEntries) {
+    const uint16_t NSEC = 6;
+    const uint64_t shoff = sizeof(Elf64_Ehdr);
+    const uint64_t shstr_off = shoff + NSEC * sizeof(Elf64_Shdr);
+    const char shstrtab[] = "\0.symtab\0.strtab\0.shstrtab\0.plt\0.rela.plt";
+    const uint64_t sym_off = shstr_off + sizeof(shstrtab);
+    ASSERT_NE(sym_off % alignof(Elf64_Sym), 0u);  // layout must stay misaligned
+
+    Elf64_Sym sym[2];
+    memset(sym, 0, sizeof(sym));
+    sym[0].st_name = 1;   // "mis_main"
+    sym[0].st_value = 0x20000;
+    sym[0].st_size = 4;
+    sym[1].st_name = 10;  // "mis_helper"
+    sym[1].st_value = 0x21000;
+    sym[1].st_size = 4;
+    const uint64_t str_off = sym_off + sizeof(sym);
+    const char strtab[] = "\0mis_main\0mis_helper\0";  // 22 bytes: names at 1 and 10
+    const uint64_t rela_off = str_off + sizeof(strtab);
+    Elf64_Rela rela;
+    memset(&rela, 0, sizeof(rela));
+    rela.r_offset = 0x4000;
+    rela.r_info = ELF64_R_INFO(1, 1026);  // JUMP_SLOT-like; type is not interpreted
+
+    Elf64_Ehdr e = validEhdr();
+    e.e_shoff = shoff;
+    e.e_shentsize = sizeof(Elf64_Shdr);
+    e.e_shnum = NSEC;
+    e.e_shstrndx = 3;
+
+    Elf64_Shdr sh[6];
+    memset(sh, 0, sizeof(sh));
+    sh[1].sh_name = 1;   // ".symtab"
+    sh[1].sh_type = SHT_SYMTAB;
+    sh[1].sh_offset = sym_off;
+    sh[1].sh_size = sizeof(sym);
+    sh[1].sh_link = 2;
+    sh[1].sh_entsize = sizeof(Elf64_Sym);
+    sh[2].sh_name = 9;   // ".strtab"
+    sh[2].sh_type = SHT_STRTAB;
+    sh[2].sh_offset = str_off;
+    sh[2].sh_size = sizeof(strtab);
+    sh[3].sh_name = 17;  // ".shstrtab"
+    sh[3].sh_type = SHT_STRTAB;
+    sh[3].sh_offset = shstr_off;
+    sh[3].sh_size = sizeof(shstrtab);
+    sh[4].sh_name = 27;  // ".plt"
+    sh[4].sh_type = SHT_PROGBITS;
+    sh[4].sh_addr = 0x3000;
+    sh[4].sh_size = 32;
+    sh[5].sh_name = 32;  // ".rela.plt"
+    sh[5].sh_type = SHT_RELA;
+    sh[5].sh_offset = rela_off;
+    sh[5].sh_size = sizeof(rela);
+    sh[5].sh_link = 1;
+    sh[5].sh_entsize = sizeof(Elf64_Rela);
+
+    std::vector<char> b;
+    auto app = [&](const void* p, size_t n) {
+        const char* c = static_cast<const char*>(p);
+        b.insert(b.end(), c, c + n);
+    };
+    app(&e, sizeof(e));
+    app(sh, sizeof(sh));
+    app(shstrtab, sizeof(shstrtab));
+    app(sym, sizeof(sym));
+    app(strtab, sizeof(strtab));
+    app(&rela, sizeof(rela));
+
+    CodeCache cc("regress");
+    parseElfBytes(b, &cc, /*use_debug=*/true);
+    // Both misaligned .symtab entries resolved at their st_value addresses.
+    EXPECT_EQ(cc.findSymbol("mis_main"), (const void*)0x20000);
+    EXPECT_EQ(cc.findSymbol("mis_helper"), (const void*)0x21000);
+    // The PLT name came from the misaligned symbol-index lookup in
+    // addRelocationSymbols(): symbol 1 resolves to "mis_helper@plt".
+    EXPECT_NE(cc.findSymbol("mis_helper@plt"), nullptr);
 }
 
 #endif //__linux__
