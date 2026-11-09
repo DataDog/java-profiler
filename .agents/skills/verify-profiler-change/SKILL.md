@@ -13,19 +13,16 @@ tiers that run later are in `doc/building/TestingGuide.md`.
 | The change touches | Run locally before calling it done |
 | --- | --- |
 | C++ under `ddprof-lib/src/main/cpp/` | `:ddprof-lib:gtestDebug`; add `:ddprof-test:testDebug` when Java-visible behavior can change |
-| Signal-handler paths, atomics, crash protection, thread lifecycle | The C++ row, plus `gtestAsan` and `testAsan` where the sanitizer is available (Linux glibc), plus the aarch64 container (`./utils/run-containers-tests.sh --arch=aarch64 ...`) when there is no arm64 host: memory-ordering bugs show only there |
-| JVM-implementation code (`hotspot/`, `j9/`, `zing/`) | `testDebug` against that JVM: `JAVA_TEST_HOME` set to it, or the container with the matching `--jdk` (for example `17-j9`) |
+| Signal-handler paths, atomics, crash protection, thread lifecycle | The C++ row, plus `gtestAsan`, `gtestTsan` and `testAsan` where the sanitizers are available (Linux glibc), plus the aarch64 container (`./utils/run-containers-tests.sh --arch=aarch64 ...`) when there is no arm64 host: memory-ordering bugs show only there |
+| JVM-implementation code (`hotspot/`, `j9/`, `zing/`) | `testDebug` against that JVM: `JAVA_TEST_HOME` set to it, or the container with the matching `--jdk` (for example `17-j9`). The containers have no Zing JDK: without a local Zing, report Zing as `blocked` and name the CI job that covers it |
 | libc-sensitive code (allocation hooks, `dlopen`, symbol lookup, TLS) | The matching row, plus the musl container (`--libc=musl`) |
 | Java code or the Java API | `:ddprof-test:testDebug`, or the narrowest `-Ptests=` filter that covers the change, then the full suite before review |
 | `build-logic/` or Gradle files | `assembleAll`, and the tasks the change affects |
-| Scripts and hooks under `utils/`, `.claude/`, `.pi/`, `.githooks/` | The matching `utils/tests/*.sh` suites. Run the Pi adapter cases with Node.js 22 or newer: older Node.js skips them. CI scripts also follow the `ci-script-change` skill. |
-| Docs, skills, `AGENTS.md` | `:ddprof-lib:qualityChecks`, or its `utils/check-*.py` scripts directly |
+| Scripts and hooks (`utils/`, `.github/scripts/`, `.gitlab/**`, `.claude/`, `.pi/`, `.githooks/`) | The test suites in the `tests/` directories next to them (`git ls-files '*/tests/*'`). The Pi adapter cases need Node.js 22.6 or newer (`--experimental-strip-types`); older versions skip them, which is not a pass. Scripts that CI, Gradle or hooks run also follow the `ci-script-change` skill. |
+| Docs, skills, `AGENTS.md` | `:ddprof-lib:qualityChecks`. Running its `utils/check-*.py` scripts directly skips the signal-reachability check, which needs the debug build. |
 
-- **A test you add must fail without the change.** For a bug fix, show it fail before the
-  fix and pass after. Assert that the scenario was reached, not only that some result
-  exists.
 - **Flaky failures:** re-run once. If the retry passes, record the first failure and the
   retry. If it fails again, treat it as a real failure until shown otherwise.
-- **When a check cannot run here** (no sanitizer runtime, no container runtime, no arm64),
-  report it as `blocked` with the reason, and name the CI job that covers it. Never report
-  it as passed.
+- **When a check cannot run here** (no sanitizer runtime, no container runtime, no arm64
+  host, no Zing), report it as `blocked` with the reason, and name the CI job that covers
+  it. Never report it as passed.

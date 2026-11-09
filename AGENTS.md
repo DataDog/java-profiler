@@ -522,9 +522,9 @@ Jira comment or a commit message, load the `pr-writing` skill
 
 ## CI / Automation Script Changes
 
-Before editing CI configuration (`.gitlab-ci.yml`, `.gitlab/**`, `.github/workflows/**`) or
-a script a CI job runs, and before deleting a script or removing an entry from a default
-list or config, load the `ci-script-change` skill
+Before editing CI configuration (`.gitlab-ci.yml`, `.gitlab/**`, `.github/**`) or a
+script that CI, Gradle or a hook runs, and before deleting any tracked file or removing an
+entry from a default list or config, load the `ci-script-change` skill
 ([.agents/skills/ci-script-change/SKILL.md](.agents/skills/ci-script-change/SKILL.md)).
 
 ## Documentation Rules
