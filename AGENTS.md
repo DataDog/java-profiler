@@ -130,7 +130,9 @@ Custom Kotlin-based native build plugin (`build-logic/`) instead of Gradle's
 configurations are discovered dynamically from `ConfigurationPresets.kt`, never hardcoded.
 Two-JDK pattern: `JAVA_HOME` (build, JDK 17+, Gradle runs on 21 LTS) runs Gradle;
 `JAVA_TEST_HOME` runs tests against the target JDK; target bytecode is Java 8 via
-`--release 8`.
+`--release 8`. The Spotless convention configures Java formatting in either Java-plugin
+application order; formatter runtime and Java bytecode target are independent (see
+[BuildSystemGuide.md](doc/building/BuildSystemGuide.md#java-formatting)).
 
 Details and troubleshooting:
 [build-logic/README.md](build-logic/README.md),
