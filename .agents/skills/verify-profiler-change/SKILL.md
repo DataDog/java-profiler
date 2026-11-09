@@ -14,7 +14,7 @@ tiers that run later are in `doc/building/TestingGuide.md`.
 | --- | --- |
 | C++ under `ddprof-lib/src/main/cpp/` | `:ddprof-lib:gtestDebug`; add `:ddprof-test:testDebug` when Java-visible behavior can change |
 | Signal-handler paths, atomics, crash protection, thread lifecycle | The C++ row, plus `gtestAsan`, `gtestTsan` and `testAsan` where the sanitizers are available (Linux glibc), plus the aarch64 container (`./utils/run-containers-tests.sh --arch=aarch64 ...`) when there is no arm64 host: memory-ordering bugs show only there |
-| JVM-implementation code (`hotspot/`, `j9/`, `zing/`, or shared code that branches on `VM::isHotspot()`, `VM::isOpenJ9()` or `VM::isZing()`) | `testDebug` against each affected JVM: `JAVA_TEST_HOME` set to it, or the container with the matching `--jdk` (for example `17-j9`). The containers have no Zing JDK; check the JDK matrix in `.github/workflows/test_workflow.yml` for a `-zing` entry before claiming CI coverage |
+| JVM-implementation code (`hotspot/`, `j9/`, `zing/`, or shared code that branches on `VM::isHotspot()`, `VM::isOpenJ9()` or `VM::isZing()`) | `testDebug` against each affected JVM: `JAVA_TEST_HOME` set to it, or the container with the matching `--jdk` (for example `17-j9`). Neither the containers nor CI run Zing (`doc/architecture/JvmSupportLayer.md`): without a local Zing, report Zing as `blocked` with no CI coverage |
 | libc-sensitive code (allocation hooks, `dlopen`, symbol lookup, TLS) | The matching row, plus the musl container (`--libc=musl`) |
 | Java code or the Java API | `:ddprof-test:testDebug`, or the narrowest `-Ptests=` filter that covers the change, then the full suite before review |
 | `build-logic/` or Gradle files | `assembleAll`, and the tasks the change affects |
@@ -25,5 +25,6 @@ tiers that run later are in `doc/building/TestingGuide.md`.
   retry. If it fails again, treat it as a real failure until shown otherwise.
 - **When a check cannot run here** (no sanitizer runtime, no container runtime, no arm64
   host, no Zing), report it as `blocked` with the reason. Name the CI job that covers it,
-  found in `.github/workflows/` or `.gitlab-ci.yml`, or state that none does. Never
+  found in `.github/workflows/` or in `.gitlab-ci.yml` and the `.gitlab/` files it
+  includes, or state that none does. Never
   report it as passed.
