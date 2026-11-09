@@ -21,7 +21,8 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    when the work is stacked. Commit the change set first — the marker certifies
    commits, so uncommitted work is not covered.
 
-2. **Self-checks.** Before the review, check the diff for unused variables,
+2. **Self-checks.** Before the review, check the range the marker will certify
+   (`git diff $(git merge-base refs/remotes/<base> HEAD)`) for unused variables,
    unused or duplicated macros, dead code (methods, JNI entry points, fields, no-op
    functions, empty files left without callers; test-only helpers stay only if marked
    as such) and misspelled identifiers or comments. Then check every comment, javadoc
@@ -31,9 +32,7 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
      comment needs a reason a reviewer would accept;
    - current behavior only — no history, and no references to plans, specs,
      review reports or findings, requirement IDs, tickets or line numbers.
-   Code written by a review tool's fix flow gets the same checks: it must not
-   cite the tool's own working artifacts. Commit the corrections; the review in step 3
-   then covers them.
+   Commit the corrections; the review in step 3 then covers them.
 
 3. **Review.** Review exactly the range the marker will certify,
    `MB=$(git merge-base refs/remotes/<base> HEAD)` to `HEAD`, named explicitly — without
@@ -45,7 +44,7 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    | --- | --- |
    | Gates and trust boundaries, including fixes to them: hooks, `review-marker.py`, the `utils/*-policy.py` files, CI checks, this skill, the AGENTS.md review rules | Sphinx (`/sphinx review range $MB..$(git rev-parse HEAD) --report-json <path>`), standard effort; at most one `--effort=deep` run per PR, on the final candidate |
    | Other production code | Sphinx, standard effort |
-   | Only fixes to a range already reviewed | `/code-review` medium on the fix range, reading every file it touches in full; the marker's `--tool` names both reviews |
+   | Only fixes to a range already reviewed | `/code-review` medium on the fix range; the marker's `--tool` lists every review the final range had |
    | Only docs, skills or tests | `/code-review` medium; not low, which skips test files |
 
    Without Sphinx, use `/code-review` with the range as its target, at high effort for
@@ -58,11 +57,14 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    **Cost.** Plan for about $20–30 of agentic review per PR; before a run that is likely
    to exceed it, ask the user. A long orchestrating session re-reads its own context on
    every turn, so run this skill for large reviews from a fresh session where the harness
-   allows; that session writes the marker, and the implementing session still does step 7.
+   allows; that session writes the marker.
 
 4. **Findings.** Fix Critical/High findings, or get the user's explicit waiver.
-   Commit the fixes and re-review them as a fix range (step 3); this includes any
-   correction made after the review. Also fix every violation of
+   Commit the fixes, including any correction made after the review, run the step 2
+   self-checks on them, and re-review them with the first matching row in step 3: a fix
+   to a gate stays in the gate row. Code written by a review tool's fix flow gets the
+   same checks and must not cite the tool's own working artifacts. Also fix every
+   violation of
    `python3 utils/check-copyright.py --base <base>` and `python3 utils/check-claude-md.py`:
    CI and `.githooks/pre-push` run the same checks, so a marker over them cannot merge.
    Likewise for `python3 utils/check-knowledgebase.py`, which CI runs: fix a bad
@@ -72,7 +74,8 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
      class (a stricter rule, a closed grammar), not the next case.
    - Stop re-review rounds when they find only Medium or Low findings in the fixes
      themselves. Fix those that are cheap to fix, review that last fix once, and list
-     the rest in the report (step 6).
+     the rest in the report (step 6). A Critical or High finding from that review is
+     fixed like any other.
 
 5. **Marker.** On the final commits, write the marker — also when the user ran
    the review manually and reports it back:
@@ -86,7 +89,8 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
 6. **Report.** State the reviewer, the outcome, and any waived or unfixed findings in
    the PR description or the reply to the review.
 
-7. **Repeated failures.** Tell the user, in the session, each mistake you made twice
+7. **Repeated failures.** The session that implemented the change does this step; a
+   fresh review session skips it. Tell the user, in the session, each mistake you made twice
    during this change and each point the user had to explain twice. Give each a
    proposed home: `AGENTS.md`, a `doc/` page, a skill, a hook or a CI check. Do not
    edit those files for it in this change; the user decides whether it becomes a ticket.
