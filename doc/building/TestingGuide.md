@@ -250,6 +250,18 @@ specific `JDK_VERSION`, `DEBUG_LEVEL`, and `HASH` parameters and runs `testDebug
 against that JDK build. This is used to validate compatibility with unreleased JDK
 versions.
 
+The job uses the same two-JDK split as `functional-tests.sh`: Gradle runs on a
+JDK 17+ installed via SDKMAN (`21.0.3-tem`), because Gradle 9 cannot start on older
+JDKs and the JDK under test can be any version. The JDK under test is the custom
+build shipped in the `openjdk-build:${JDK_VERSION}-${DEBUG_LEVEL}-${HASH}` image;
+`.gitlab/jdk-integration/select_test_jdk.sh` locates it under `/usr/lib/jvm` and the
+job exports its home as `JAVA_TEST_HOME`, which is the variable the profiler-test
+Gradle plugin resolves the test JVM from (`PlatformUtils.testJavaHome()`). With
+several JDKs in the image the selector prefers the one whose path contains
+`JDK_VERSION` and fails instead of guessing. The job echoes `java -version` for both
+JVMs, so the selected JDK is visible in the job log; shell tests for the selector
+run in the `shell-unit-tests` job.
+
 ---
 
 ## Why the Split

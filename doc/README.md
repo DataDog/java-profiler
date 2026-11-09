@@ -19,13 +19,14 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 
 ### Architecture
 - [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer architecture for call traces
+- [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
 - [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: recordings, buffers, metadata, constant pools
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation
 - [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception and allocation sampling
-- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, wall-clock, allocation, native-memory and liveness engines
+- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, wall-clock, allocation, native-memory and liveness engines; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
-- [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing) and HotSpot leaf-stub receiver capture
+- [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing), continuation completeness and HotSpot leaf-stub receiver capture
 - [SanityChecks](architecture/SanityChecks.md) - Startup sanity checks
 - [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching
 - [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, and rotation protocols

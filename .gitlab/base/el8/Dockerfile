@@ -1,3 +1,5 @@
+# Copyright 2026, Datadog, Inc.
+
 # Build image for the shipped glibc binaries, both architectures.
 #
 # AlmaLinux 8 (glibc 2.28) with gcc-toolset-14. Release builds link
@@ -17,6 +19,7 @@ FROM ${BASE_IMAGE} as base
 ARG CI_JOB_TOKEN
 WORKDIR /root
 
+RUN dnf -y update ca-certificates && update-ca-trust extract
 # gcc-toolset-14 carries its own libstdc++.a/libgcc.a, which is what
 # -static-libstdc++ resolves against; no separate *-static package is needed.
 RUN dnf -y install gcc-toolset-14 \
@@ -33,5 +36,8 @@ ENV PATH="/opt/rh/gcc-toolset-14/root/usr/bin:${PATH}" \
 # current candidate (.gitlab/scripts/build.sh).
 RUN curl -s "https://get.sdkman.io" | bash && \
     bash -c "source /root/.sdkman/bin/sdkman-init.sh && sdk install java 21.0.3-tem && sdk install maven"
+RUN /root/.sdkman/candidates/java/current/bin/keytool -list -v -cacerts -storepass changeit \
+    | awk -F ': ' '/^Alias name:/{alias=$2} /Owner:.*(emSign ECC Root CA - G3|AAA Certificate Services)/{print alias}' \
+    | while IFS= read -r alias; do /root/.sdkman/candidates/java/current/bin/keytool -delete -cacerts -storepass changeit -alias "$alias"; done
 ENV JAVA_HOME=/root/.sdkman/candidates/java/current
 ENV PATH="/root/.sdkman/candidates/java/current/bin:/root/.sdkman/candidates/maven/current/bin:${PATH}"

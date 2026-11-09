@@ -38,7 +38,13 @@ public class JavaProfilerApiSurfaceTest {
             "getReferenceChainFrontierStateForTest0", "getReferenceChainResolvedTargetTagForTest0",
             "heapFloorRecordForTest0", "setMaxHeapBytesForTest0", "setHeapFloorRecordingForTest0",
             "heapFloorResetForTest0", "heapFloorRisingForTest0",
-            "shouldRunPassForTest0", "referenceChainPassesRunForTest0"));
+            "shouldRunPassForTest0", "referenceChainPassesRunForTest0",
+            "backdateLeakSignalActivationForTest0", "setLeakSignalActivatedNsForTest0",
+            "secondsToOOMForTest0", "urgentLatchedForTest0", "isUrgentForTest0",
+            "setReferenceChainPassSpacingForTest0",
+            "setReferenceChainRootEnumStateForTest0", "shouldRunRootEnumForTest0",
+            "rootEnumIntervalFloorNsForTest0", "referenceChainGcFinishEpochForTest0",
+            "setReferenceChainCanaryStateForTest0", "forceRunningReferenceChainSearchForTest0"));
 
     @Test
     public void referenceChainTestSeamsAreNotPublicApi() {

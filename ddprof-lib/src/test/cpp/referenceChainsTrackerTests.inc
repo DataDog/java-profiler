@@ -435,8 +435,8 @@ TEST_F(PollWatchedTargetsTest, NoOpWhenGcGenerationsDisabled) {
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // Overrides SetUp(): exercises pollWatchedTargets()'s LivenessTracker _gc_generations guard,
-    // not just the tracker's own _enabled.
+    // Overrides SetUp(): exercises pollWatchedTargets()'s LivenessTracker leak-signal gate (the
+    // effective generations-or-liveheap flag), not just the tracker's own _enabled.
     LivenessTracker::instance()->setGcGenerationsForTest(false);
 
     int fake_object_storage = 0;
@@ -449,6 +449,39 @@ TEST_F(PollWatchedTargetsTest, NoOpWhenGcGenerationsDisabled) {
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
 
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount());
+
+    tracker->stop();
+}
+
+// pollWatchedTargets() must gate on the effective leak-signal flag, not the raw generations option:
+// a search started on a liveheap-only source (hasLeakSignal() keys on leakSignalEnabled()) still
+// needs its candidates polled here.
+TEST_F(PollWatchedTargetsTest, PollsCandidatesWithLiveheapOnlySignalSource) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    // Overrides SetUp(): liveheap-only source - generations off, effective leak signal on.
+    LivenessTracker::instance()->setLeakSignalSourcesForTest(/*generations=*/false,
+                                                             /*liveness=*/true);
+    ASSERT_FALSE(LivenessTracker::instance()->gcGenerationsEnabled());
+    ASSERT_TRUE(LivenessTracker::instance()->leakSignalEnabled());
+
+    int fake_object_storage = 0;
+    jobject obj = reinterpret_cast<jobject>(&fake_object_storage);
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)obj);
+    ASSERT_TRUE(tracker->frontierTable()->insert(
+        /*tag=*/7, /*parent_tag=*/0, /*referrer_klass=*/1, /*depth=*/0,
+        FrontierEntryState::EDGE));
+    tags[obj] = 7;
+    ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 7);
+
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount())
+        << "a liveheap-only leak signal must still poll candidates";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(7));
 
     tracker->stop();
 }
@@ -1162,9 +1195,12 @@ protected:
         VMTestAccessor::setJvmti(orig_jvmti);
         LivenessTracker::instance()->klassPopulationResetForTest();
         LivenessTracker::instance()->setGcGenerationsForTest(false);
-        // Set by UrgentOOMProjectionBypassesCandidateGate; reset here so a failed ASSERT_* there
-        // can't leak a stale max heap into the next test.
+        // Max heap, leak-signal gates and burn-in stamp are set by individual tests (e.g.
+        // UrgentLatchWithoutCandidateDoesNotStartSearch); restored here so a failed ASSERT_* in
+        // one of them can't leak them into the next test.
         LivenessTracker::instance()->setMaxHeapBytesForTest(-1);
+        // 0 = "never activated"; the next start() re-stamps it through the CAS from 0.
+        LivenessTracker::instance()->setLeakSignalActivatedNsForTest(0);
     }
 
     // No loaded classes to resolve - resolveLoadedClasses() reports 0 and does nothing further.
@@ -1175,8 +1211,8 @@ protected:
         return JVMTI_ERROR_NONE;
     }
 
-    // start() -> autoTuneDefaults() queries this when max heap > 0
-    // (UrgentOOMProjectionBypassesCandidateGate).
+    // start() -> autoTuneDefaults() queries this when max heap > 0 (tests that set a fake max
+    // heap before start(), e.g. UrgentLatchWithoutCandidateDoesNotStartSearch).
     static jvmtiError JNICALL mock_GetAvailableProcessors(jvmtiEnv *,
                                                            jint *nprocs) {
         *nprocs = 1;
@@ -1214,9 +1250,12 @@ protected:
     }
 };
 
-TEST_F(SearchRestartTest, WithoutGenerationsSignalRestartStaysUnconditional) {
-    // gc_generations off (SetUp default): canAffordNewSearch() has no candidate signal, so a
-    // terminal search is immediately eligible to restart.
+TEST_F(SearchRestartTest, WithoutLeakSignalSourceRestartStaysIdle) {
+    // No leak-signal source (SetUp default: neither generations nor liveheap
+    // tracking): canAffordNewSearch() can never see a candidate signal, so a
+    // terminal search stays terminal - the tracker is idle until a signal
+    // source exists. Searching without a signal runs whole-heap BFS passes
+    // with zero candidates, which is the waste this gate exists to prevent.
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -1225,8 +1264,8 @@ TEST_F(SearchRestartTest, WithoutGenerationsSignalRestartStaysUnconditional) {
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, nullptr));
     ASSERT_EQ(SearchState::COMPLETED, tracker->searchState());
 
-    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(1));
-    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(1));
+    EXPECT_EQ(SearchState::COMPLETED, tracker->searchState());
 
     tracker->stop();
 }
@@ -1248,6 +1287,29 @@ TEST_F(SearchRestartTest, GenerationsEnabledButNoCandidateBlocksFirstSearch) {
     seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)&fake_object_storage);
 
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2));
+
+    tracker->stop();
+}
+
+// hasLeakSignal() must gate on the effective leak-signal flag, not the raw generations option: a
+// liveheap-only session (generations off) with a real candidate starts its first search.
+TEST_F(SearchRestartTest, LiveheapOnlySourceWithCandidateStartsFirstSearch) {
+    LivenessTracker::instance()->setLeakSignalSourcesForTest(/*generations=*/false,
+                                                             /*liveness=*/true);
+    ASSERT_FALSE(LivenessTracker::instance()->gcGenerationsEnabled());
+    ASSERT_TRUE(LivenessTracker::instance()->leakSignalEnabled());
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(1)) << "no candidate yet";
+
+    int fake_object_storage = 0;
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)&fake_object_storage);
+
+    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2))
+        << "a liveheap-only leak signal with a candidate must start the search";
 
     tracker->stop();
 }
@@ -1333,21 +1395,28 @@ TEST_F(SearchRestartTest, PainBudgetBlocksARestartUntilItDrains) {
     tracker->stop();
 }
 
-// hasLeakSignal()'s OOM_URGENT_THRESHOLD_S fast path (referenceChains.h/.cpp): a heap-wide leak
-// growing fast enough to project exhaustion sooner than the threshold must start a search
-// immediately, without waiting for any klass to clear selectLeakCandidates()'s per-klass
-// ring-fill/hysteresis gate.
-TEST_F(SearchRestartTest, UrgentOOMProjectionBypassesCandidateGate) {
+// hasLeakSignal()'s urgent latch does NOT authorize a candidate-less search: with
+// nothing tagged the search can never emit a chain, and while urgent the 30-pass
+// no-progress abandonment is suppressed, so it would run to the full TTL doing
+// whole-heap BFS. A warmup heap-floor rise can latch urgency with nothing
+// tagged, so the candidate requirement must be unconditional. A search starts
+// only when a klass clears selectLeakCandidates();
+// urgency then applies through the ramp. The burn-in stamp is backdated so
+// secondsToOOM()'s age-based burn-in does not mask the latch - this test
+// isolates the candidate requirement, not the burn-in.
+TEST_F(SearchRestartTest, UrgentLatchWithoutCandidateDoesNotStartSearch) {
     LivenessTracker::instance()->setGcGenerationsForTest(true);
     constexpr u64 SEC_NS = 1000000000ULL;
     constexpr u64 MiB = 1ULL << 20;
-    // Same worked example as livenessTracker_ut.cpp's
-    // SecondsToOOMTest.RisingFloorProjectsExpectedSeconds: 700MiB rise over 7s against a 2800MiB
-    // max heap projects to 10s - comfortably under OOM_URGENT_THRESHOLD_S (5 minutes).
-    LivenessTracker::instance()->setMaxHeapBytesForTest((jlong)(2800 * MiB));
-    for (int i = 0; i < 10; i++) {
+    LivenessTracker::instance()->setLeakSignalActivatedNsForTest(
+        OS::nanotime() - LivenessTracker::OOM_PROJECTION_BURN_IN_NS - SEC_NS);
+    // Rising floor against a 4000MiB max heap, 29 samples x 60s (the spacing
+    // is arbitrary): slope = 100MiB/60s, remaining = 280MiB -> projection =
+    // 280 * 60 / 100 = 168s - inside the urgent band.
+    LivenessTracker::instance()->setMaxHeapBytesForTest((jlong)(4000 * MiB));
+    for (int i = 0; i < 30; i++) {
         LivenessTracker::instance()->heapFloorRecordForTest(
-            1000 * MiB + (u64)i * 100 * MiB, (u64)i * SEC_NS);
+            820 * MiB + (u64)i * 100 * MiB, (u64)i * 60 * SEC_NS);
     }
 
     Arguments args;
@@ -1355,9 +1424,44 @@ TEST_F(SearchRestartTest, UrgentOOMProjectionBypassesCandidateGate) {
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(1));
-    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+    // Urgency latched, but no candidate has cleared the leak-signal probe.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::isUrgentForTest());
+#ifdef COUNTERS
+    long long urgent_no_cand = Counters::getCounter(REFERENCE_CHAIN_URGENT_NO_CANDIDATE);
+#endif
+    EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(1))
+        << "urgent without a candidate must not start a candidate-less search";
+    EXPECT_EQ(0, tracker->passesRun());
+#ifdef COUNTERS
+    // The refusal is observable in production diagnostics, not only in the
+    // debug-only TEST_LOG_SUMMARY.
+    EXPECT_EQ(urgent_no_cand + 1, Counters::getCounter(REFERENCE_CHAIN_URGENT_NO_CANDIDATE))
+        << "one refused latched/zero-candidate evaluation counts exactly once";
+    urgent_no_cand = Counters::getCounter(REFERENCE_CHAIN_URGENT_NO_CANDIDATE);
+#endif
 
+    // Disabled leak-signal source: hasLeakSignal() returns before isUrgent()
+    // and the counter, so nothing is counted.
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(1));
+#ifdef COUNTERS
+    EXPECT_EQ(urgent_no_cand, Counters::getCounter(REFERENCE_CHAIN_URGENT_NO_CANDIDATE))
+        << "a disabled leak-signal source must not count";
+#endif
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+
+    // Once a klass clears the probe, the search starts - and urgency applies
+    // through the ramp from that point on.
+    int fake_object_storage = 0;
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)&fake_object_storage);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2));
+#ifdef COUNTERS
+    EXPECT_EQ(urgent_no_cand, Counters::getCounter(REFERENCE_CHAIN_URGENT_NO_CANDIDATE))
+        << "a gate opened by a real candidate must not count";
+#endif
+
+    // 0 = "never activated"; the next start() re-stamps it through the CAS from 0.
+    LivenessTracker::instance()->setLeakSignalActivatedNsForTest(0);
     tracker->stop();
 }
 

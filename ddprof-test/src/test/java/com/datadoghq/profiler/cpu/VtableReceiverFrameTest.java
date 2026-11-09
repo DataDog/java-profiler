@@ -17,6 +17,7 @@ import com.datadoghq.profiler.JfrEvents;
 
 import java.util.concurrent.ThreadLocalRandom;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class VtableReceiverFrameTest extends AbstractProfilerTest {
@@ -89,15 +90,18 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
         int receivers = 0;
         boolean foundVtableWithReceiver = false;
         for (JfrEvent sample : events) {
+            assertNotNull(sample.get("stackTrace"), "CPU sample is missing its stackTrace field");
             List<JfrFrame> frames = sample.getStackTrace().frames();
             for (int i = 0; i < frames.size(); i++) {
                 JfrFrame frame = frames.get(i);
+                assertNotNull(frame.methodName(), "CPU stack frame is missing its method name");
                 if ("vtable stub".equals(frame.methodName())) {
                     stubs++;
                 }
                 if ("<vtable_receiver>".equals(frame.methodName())) {
                     receivers++;
                     String receiver = frame.className();
+                    assertNotNull(receiver, "Vtable receiver frame is missing its declaring class");
                     if ((Circle.class.getName().equals(receiver)
                             || Square.class.getName().equals(receiver)
                             || Triangle.class.getName().equals(receiver))

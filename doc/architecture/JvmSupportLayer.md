@@ -83,11 +83,11 @@ predicates. More detection-dependent setup:
 - `can_retransform_any_class` is disabled on J9 (`vmEntry.cpp:502`).
 - The JFR `RequestStackTrace` extension is probed only on HotSpot (`vmEntry.cpp:519-521`).
 - The profiler installs its SIGSEGV/SIGBUS handlers only on HotSpot and J9
-  (`profiler.cpp:1168`).
-- On Zing, `GC_TRACES | LAST_JAVA_PC` is forced into `_safe_mode` (`profiler.cpp:1587`).
+  (`Profiler::setupSignalHandlers()`).
+- On Zing, `GC_TRACES | LAST_JAVA_PC` is forced into `_safe_mode` (`Profiler::start()`).
 
 `JVMSupport::initialize()` (`jvmSupport.cpp:32-57`) runs after detection, from
-`Profiler::start()`/`Profiler::init()` (`profiler.cpp:1417`, `profiler.cpp:1437`).
+`Profiler::start()`/`Profiler::init()`.
 It calls `JVMThread::initialize()`, then checks the `ProfiledThread` TLS key.
 If either step fails, profiling is disabled.
 
@@ -101,6 +101,7 @@ If either step fails, profiling is disabled.
 | `initialize()` | shared (`JVMThread` + `ProfiledThread` TLS) | shared |
 | `initExecution(args, jvmti, jni)` | selects `Fully_loaded`, `Partial_loaded`, or `Lazy_loaded` via `HotspotSupport::shouldPreloadJmethodIDs` / `canResolveLazily` / `initLazyResolution` (`jvmSupport.cpp:79-94`) | always `Fully_loaded`. `fjmethodid=lazy` only logs a warning (`jvmSupport.cpp:95-97`) |
 | `walkJavaStack(request)` | `HotspotSupport::walkJavaStack` | ASGCT through `asyncGetCallTrace()`. Debug builds assert that the event is CPU, wall, native malloc, or native socket (`jvmSupport.cpp:112-117`) |
+| `walkCurrentJavaStack(request)` | anchor-seeded `walkVM`; returns 0 for failed or unsafe allocation stacks | returns 0 for JVMTI retry |
 | `canUnwind(frame, pc)` (inline) | `HotspotStackFrame::unwindAtomicStub` | `false` |
 | `isJitCode(pc)` (inline) | `JitCodeCache::isJitCode` | `false` |
 | `runtimeStubsMemoryUsage()` (inline) | `JitCodeCache::runtimeStubsMemoryUsage` | `0` |
@@ -116,7 +117,7 @@ gets HotSpot declarations, but it should still call only `JVMSupport::*`.
 
 Callers in shared code:
 
-- Stack walking calls `walkJavaStack` (`profiler.cpp:717`).
+- Stack walking calls `walkJavaStack` (`Profiler::recordSample()`).
 - `stackWalker.cpp:80-82` and `perfEvents_linux.cpp` call `isJitCode` and
   `canUnwind`. Both are signal-handler paths, and on non-HotSpot VMs they
   reduce to constant returns.
@@ -125,6 +126,11 @@ Callers in shared code:
 - The class hooks in `vmEntry.cpp` call the load and redefinition functions:
   `ClassPrepare` at `vmEntry.cpp:641-645`, and the
   `RedefineClasses`/`RetransformClasses` hooks at `vmEntry.cpp:687-731`.
+
+`jniHelper.h` calls `IsVirtualThread` through JNI slot 234 on JDK 21+,
+independently of the headers used to build the library. `vmEntry.h` defines the
+`JMETHODID_NOT_WALKABLE` frame sentinel; allocation capture retries with JVMTI
+rather than retaining unresolved Java frames.
 
 ## `jvmThread.h` / `jvmThread.cpp`: the `JVMThread` facade
 
@@ -183,30 +189,35 @@ Caveats:
   (for example, a build without JFR), `initLazyResolution()` fails, and
   `initExecution()` falls back to `Partial_loaded` (`jvmSupport.cpp:86-91`).
 - **`cstack=vm` needs `VMStructs`.** If `VMStructs::hasStackStructs()` is false,
-  `cstack=vm` is downgraded to DWARF or `no` (`profiler.cpp:1625-1629`).
+  `cstack=vm` is downgraded to DWARF or `no` (`Profiler::start()`).
+
+#### Continuation completeness
+
+HotSpot can leave older virtual-thread callers frozen in heap `StackChunk` objects
+after a partial thaw. `walkVM` classifies continuation boundaries with `ContBoundary`:
+a verified thawed boundary proves no callers remain frozen; return barriers and
+unverified crossings mark the trace truncated. This walker does not recover heap
+callers, so reaching a carrier does not clear that flag.
+
+`Recording::writeStackTraceHeader` preserves the walker flag even when the final
+Java frame is an entry method such as `Thread.run`. A verified thawed crossing also
+preserves truncation established earlier in the walk. The blocking virtual-thread
+wall-clock regression checks truthful truncation when carrier ancestry is missing;
+carrier recovery itself remains a separate correctness requirement.
 
 ### HotSpot vtable receiver frames
 
-With `vtable_target` enabled (`cpu` enables it) and class-name VMStructs
-available, the VM walker and ASGCT stub recovery can insert a
-`<vtable_receiver>` frame immediately before the sampled vtable stub (leaf
-first). ASGCT recovery supports this with FP/DWARF native walking; it does
-not require `cstack=vm` or change platform walker defaults. `cstack=no` does
-not emit the stub or its receiver.
+With `vtable_target` and class-name VMStructs available, VM walking and ASGCT stub recovery
+can insert `<vtable_receiver>` immediately before its vtable stub (leaf first).
+CPU profiling enables the feature; FP/DWARF support preserves defaults, and `cstack=no` omits both frames.
 
-`HotspotSupport::captureVtableReceiver()` shares the signal-safe oop-to-Klass-to-Symbol
-read between the walkers. The caller first identifies a vtable stub. Capture
-requires pc/sp/fp to match the interrupted leaf: a Java-context redirect or
-an unwind to a caller cannot reuse the leaf's argument registers as that
-caller's receiver. The reads run inside the existing walk/crash-recovery
-scope, before the stub is unwound. The frame budget must leave room for the
-stub; ASGCT also reserves a slot for its retry or error frame.
+`captureVtableReceiver()` shares oop-to-Klass-to-Symbol reads inside the existing crash-protection scopes.
+PC/SP/FP must still match the interrupted leaf, before unwinding, so caller redirects cannot reuse stale arguments.
+Capture leaves room for the stub and, with ASGCT, a retry or error frame.
 
-The synthetic frame stores a raw `VMSymbol*` with `BCI_VTABLE_RECEIVER`, not
-a `jmethodID`. Dump-time `Lookup::resolveVTableReceiver()` reads the symbol
-via `SafeAccess` and emits the receiver class as the declaring class of
-`<vtable_receiver>`. No class-name lookup, allocation, or JNI call is added
-to signal-time capture. Object-header decoding remains in `VMKlass::fromOop()`.
+`BCI_VTABLE_RECEIVER` stores a raw `VMSymbol*`, not a `jmethodID`; header decoding stays in `VMKlass::fromOop()`.
+Dump-time `Lookup::resolveVTableReceiver()` reads it with `SafeAccess` to supply the synthetic method's declaring class.
+Signal-time capture adds no class-name resolution, allocation or JNI calls.
 
 ### `j9/`
 
@@ -219,7 +230,7 @@ Caveats:
 
 - **The ASGCT-or-JVMTI choice is made per engine.** `Profiler::selectCpuEngine`
   and `selectWallEngine` choose `J9WallClock` (the JVMTI path) when any of these
-  holds (`profiler.cpp:1274-1285`, `profiler.cpp:1321-1333`):
+  holds:
   - `J9Support::shouldUseAsgct()` is false. The system property
     `dd.profiling.ddprof.j9.sampler` set to `jvmti` makes it false
     (`j9/j9Support.h:108-126`).
@@ -246,7 +257,7 @@ behavior is shared code that branches on `VM::isZing()`:
 
 - Java stacks are collected with ASGCT (`jvmSupport.cpp:112-117`).
 - Runtime entries are marked (`vmEntry.cpp:378-379`).
-- `_safe_mode` is forced (`profiler.cpp:1587`).
+- `_safe_mode` is forced (`Profiler::start()`).
 
 Caveat: `JVMThread::nativeThreadId()` sends Zing to
 `VMThread::nativeThreadId()`. That function returns -1 unless
