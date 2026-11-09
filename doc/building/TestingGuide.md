@@ -362,10 +362,9 @@ it rebuilds the base image and the JDK image built on it.
 
 ### Container toolchain checks
 
-Glibc images use Ubuntu 22.04 with matched Clang/Clang++ 17, compiler-rt and
-llvm-cov on x64/aarch64. Both cache tags end in `-clang17-cov1` to bypass older
-compiler/coverage recipes. Musl retains its distro toolchain. `--rebuild-base`
-rebuilds the base and selected dependent JDK image.
+Glibc uses Ubuntu 22.04 with matched Clang/Clang++ 17, compiler-rt and llvm-cov.
+Both architectures use `-clang17-cov1` tags to avoid older compiler/coverage recipes.
+Musl retains its distro toolchain.
 
 Check generated recipes and cache selection without containers or downloads:
 
