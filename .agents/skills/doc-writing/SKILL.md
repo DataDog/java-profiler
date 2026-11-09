@@ -20,5 +20,6 @@ description: Rules for java-profiler documentation under doc/ (naming, index, ac
 - **Link, do not copy.** Link to deeper sources instead of copying large documents.
 - The AGENTS.md **Comment budget** and **Comments** rules apply to doc paragraphs too:
   no references to plans, phases, review reports or tickets.
-- When a page changes a subsystem contract, update its row in the AGENTS.md subsystem
-  index in the same change.
+- When you add, rename or remove a subsystem page under `doc/architecture/` or
+  `doc/reference/`, update its row in the AGENTS.md "Architecture — Subsystem Index"
+  table. CI checks the `doc/README.md` index, not that table.
