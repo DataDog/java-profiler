@@ -120,6 +120,13 @@ int JVMSupport::walkJavaStack(StackWalkRequest& request) {
     return 0;
 }
 
+int JVMSupport::walkCurrentJavaStack(StackWalkRequest& request) {
+    if (VM::isHotspot()) {
+        return HotspotSupport::walkCurrentJavaStack(request);
+    }
+    return 0;
+}
+
 int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* ucontext) {
     JNIEnv *jni = VM::jni();
     if (jni == nullptr) {

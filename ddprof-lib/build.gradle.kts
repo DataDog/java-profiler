@@ -23,7 +23,7 @@ plugins {
   java
   `maven-publish`
   signing
-  id("com.github.ben-manes.versions") version "0.66.0"
+  id("com.github.ben-manes.versions") version "0.67.0"
   id("de.undercouch.download") version "5.7.0"
   id("com.datadoghq.native-build")
   id("com.datadoghq.gtest")
@@ -515,6 +515,9 @@ tasks.register("qualityChecks") {
     "check-doc-index.py",
     "check-sigsetjmp-shape.py",
     "check-tracked-artifacts.py",
+    "check-copyright.py",
+    "check-claude-md.py",
+    "check-knowledgebase.py",
   ).map { File(root, "utils/$it") }
 
   doLast {

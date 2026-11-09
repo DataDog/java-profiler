@@ -20,7 +20,6 @@
 #include "threadState.h"
 #include "vmEntry.h"
 
-#define JMETHODID_NOT_WALKABLE  (jmethodID)((uintptr_t)-1)
 inline bool isValidJMethodID(jmethodID method_id) {
   return method_id != JMETHODID_NOT_WALKABLE && method_id != nullptr;
 }

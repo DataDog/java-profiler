@@ -731,8 +731,9 @@ public final class JavaProfiler {
     /**
      * Test seam (debug native builds only): reports whether the seeded heap-floor ring
      * currently shows a sustained rise ({@code heapFloorRising()}) - the aggregate growth
-     * read {@code hasLeakSignal()}'s gate uses alongside {@code secondsToOOM()}'s urgent
-     * projection. Returns {@code false} both before any seeding and after
+     * read {@code selectLeakCandidates()} uses to pick the required per-klass hysteresis
+     * (corroborated vs base); neither {@code secondsToOOM()} nor {@code hasLeakSignal()} reads
+     * it directly. Returns {@code false} both before any seeding and after
      * {@link #heapFloorResetForTest0()} emptied the ring, which is how tests assert the
      * reset actually cleared the indices.
      */
@@ -741,14 +742,13 @@ public final class JavaProfiler {
     /**
      * Test seam (debug native builds only): reports whether ReferenceChainTracker's search-restart
      * gate ({@code canAffordNewSearch()} -&gt; {@code hasLeakSignal()}) would currently allow a
-     * fresh/terminal search to start - in particular, whether {@code secondsToOOM()}'s urgent-OOM
-     * bypass opens this gate even with zero per-klass leak candidate (confirmable in the same test
-     * via {@link #selectLeakCandidateKlassIds0()}). Unlike {@link #runReferenceChainPass0()}, which
-     * calls {@code runPass()} unconditionally, this evaluates the real gate without executing a
-     * BFS pass - but it is NOT a read-only query: under the native engine lock it may account a
-     * completed search's pain and restart/reset terminal search state, and opening the gate on
-     * the urgent-OOM bypass spends the episode's one-shot urgency entitlement. Do not treat it
-     * as a pure predicate (e.g. inside an assertion) when a scenario's search state matters.
+     * fresh/terminal search to start now. Opening it requires a per-klass leak candidate
+     * (confirmable in the same test via {@link #selectLeakCandidateKlassIds0()}), whether or not
+     * OOM urgency is latched. Unlike {@link #runReferenceChainPass0()}, which calls
+     * {@code runPass()} unconditionally, this evaluates the real gate without executing a BFS
+     * pass - but it is NOT a read-only query: under the native engine lock it may account a
+     * completed search's pain and restart/reset terminal search state. Do not treat it as a pure
+     * predicate (e.g. inside an assertion) when a scenario's search state matters.
      */
     static native boolean shouldRunPassForTest0();
 
@@ -761,6 +761,100 @@ public final class JavaProfiler {
      * than from the same pass racing the object's creation.
      */
     static native int referenceChainPassesRunForTest0();
+
+    /**
+     * Test seam (debug native builds only): backdates LivenessTracker's leak-signal burn-in stamp
+     * one second past {@code OOM_PROJECTION_BURN_IN_NS}, so {@code secondsToOOM()} projects from
+     * seeded heap-floor samples however long this JVM has been profiling. Returns the previous
+     * stamp, which the caller must hand back to {@link #setLeakSignalActivatedNsForTest0(long)}
+     * in a finally block. The release stub returns 0 and changes nothing.
+     */
+    static native long backdateLeakSignalActivationForTest0();
+
+    /**
+     * Test seam (debug native builds only): restores a leak-signal burn-in stamp saved by
+     * {@link #backdateLeakSignalActivationForTest0()} (0 means "never activated").
+     */
+    static native void setLeakSignalActivatedNsForTest0(long activatedNs);
+
+    /**
+     * Test seam (debug native builds only): the current {@code secondsToOOM()} projection. A
+     * negative value means "no projection" (burn-in, insufficient ring fill, not rising, or no
+     * resolved limit). The release stub returns -1.
+     */
+    static native double secondsToOOMForTest0();
+
+    /**
+     * Test seam (debug native builds only): ReferenceChainTracker's OOM-urgency latch
+     * ({@code _urgent_latched}), read under the native engine lock. The release stub returns
+     * {@code false}.
+     */
+    static native boolean urgentLatchedForTest0();
+
+    /**
+     * Test seam (debug native builds only): drives ReferenceChainTracker's urgency latch machine
+     * once on the live projection - what {@code publishUrgencyState()} does per iteration. The
+     * gate ({@code hasLeakSignal()}) only reads the latch, so tests that need a latched episode
+     * drive it here. The release stub returns {@code false}.
+     */
+    static native boolean isUrgentForTest0();
+
+    /**
+     * Test seam (debug native builds only): backdates the previous pass and sets the effective
+     * cadence so {@link #shouldRunPassForTest0()} evaluates its minimum-pass-spacing gate without
+     * sleeping. Values persist until the next call or the next real BFS pass overwrites them.
+     */
+    static native void setReferenceChainPassSpacingForTest0(long msSinceLastPass,
+                                                            long cadenceMs);
+
+    /**
+     * Test seam (debug native builds only): sets ReferenceChainTracker's root-enumeration
+     * scheduling state - the last attempt {@code msSinceLastEnum} milliseconds in the past
+     * (negative means "never ran") and its measured in-safepoint cost
+     * {@code lastEnumCostMs}, which the adaptive interval floor extends. Feeds
+     * {@link #shouldRunRootEnumForTest0(boolean)}.
+     */
+    static native void setReferenceChainRootEnumStateForTest0(long msSinceLastEnum,
+                                                              long lastEnumCostMs);
+
+    /**
+     * Test seam (debug native builds only): evaluates whether ReferenceChainTracker's next pass
+     * would run root/stack-ref enumeration ({@code shouldRunRootEnum()}) with the current
+     * scheduling state; {@code manualFirstPass} forces the search's always-enumerate first pass.
+     * Pure predicate - no JVMTI call is made.
+     */
+    static native boolean shouldRunRootEnumForTest0(boolean manualFirstPass);
+
+    /**
+     * Test seam (debug native builds only): the current adaptive root-enumeration interval floor
+     * in nanoseconds ({@code ROOT_ENUM_MIN_INTERVAL_NS} extended by the last attempt's measured
+     * in-safepoint cost, capped) - the value {@link #shouldRunRootEnumForTest0(boolean)} compares
+     * against. Zero in release builds.
+     */
+    static native long rootEnumIntervalFloorNsForTest0();
+
+    /**
+     * Test seam (debug native builds only): the live GC-finish epoch ({@code gcFinishEpoch()},
+     * advanced by every JVMTI GarbageCollectionFinish), so a test can verify a real GC was
+     * observed. Zero in release builds.
+     */
+    static native long referenceChainGcFinishEpochForTest0();
+
+    /**
+     * Test seam (debug native builds only): forces the tracker into a started, RUNNING search
+     * with fresh pain budgets, so {@link #shouldRunPassForTest0()} evaluates the running-search
+     * scheduling gates deterministically even when the live BFS thread is concurrently running
+     * (and possibly terminating) its own real search.
+     */
+    static native void forceRunningReferenceChainSearchForTest0();
+
+    /**
+     * Test seam (debug native builds only): sets the canary chase's candidate count and
+     * found-bits mask so {@link #shouldRunPassForTest0()} evaluates the canary lane - with at
+     * least one candidate and not all found, the gate takes the candidate-chase backoff path.
+     */
+    static native void setReferenceChainCanaryStateForTest0(int candidateCount,
+                                                            long foundBits);
 
     // ---- Test-only reads of the current thread's OTEP record ----------------------------------
     // Each resolves the current carrier's record directly (like the write primitives above) with
