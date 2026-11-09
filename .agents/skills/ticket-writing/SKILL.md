@@ -44,11 +44,12 @@ The `pr-writing` skill's style rules apply to every ticket text and comment.
 
 - **Sign-off.** When the engineer accepts the intent, a design or a plan, post a comment
   that names who accepted what, and the date.
-- **Evidence.** Report every check in a table: criterion, state (`passed` / `failed` /
-  `blocked` / `inconclusive`), observed result. Name the exact candidate commit. Put the
-  interpretation in its own paragraph, after the table.
-- **A changed candidate invalidates evidence.** Re-run the check, or state why the
-  change cannot affect it.
+- **Evidence.** Report every check in a table: criterion, state, observed result. Name
+  what produced it: the candidate commit and the configuration (build type, platform,
+  harness and version); for a production check, the deployed revision, environment and
+  observation window. Put the interpretation in its own paragraph, after the table.
+- **After the candidate changes,** re-run each check, or state why the change cannot
+  affect it.
 - **Links, not bare names.** Every commit, PR and branch is a link. A link to an
   unpushed commit does not resolve, so push first, or add the links after the push.
 - **No line numbers.** Refer to files and symbols; line numbers go stale.
@@ -60,13 +61,18 @@ The `pr-writing` skill's style rules apply to every ticket text and comment.
 | Committed | Intent recorded; no work started |
 | In Progress | From the start of Design through Build and Test |
 | In Review | Every planned PR is open and review is requested, after the pre-PR review gate |
-| Blocked | A decision or another owner stops all work on the ticket |
+| Blocked | A dependency outside the assignee's control, such as another team or an external decision, stops all work |
 | Done | Every acceptance criterion has recorded evidence, including the `production-check` criteria |
 
 - Move the status in the same session as the event that causes it, and say so in the
   comment.
+- While a planned PR is still to be written, the ticket stays In Progress, even if
+  earlier PRs, such as the first of a stack, are already in review.
+- Waiting for the engineer's sign-off on a design or a decision is not Blocked.
 - A blocked part, with other parts still moving, is recorded in a comment; the status
   does not change.
+- A parent Task is In Progress while any of its sub-tasks is, and Done when all of
+  them are Done.
 - A merged PR with production checks still pending stays In Review. Its comment lists
   the pending checks. Merging alone is never Done.
 - Before Done, post a closing comment that maps every criterion to its evidence.

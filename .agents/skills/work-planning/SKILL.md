@@ -6,8 +6,9 @@ description: Conventions for the Design, acceptance criteria and Build plan of a
 # Work planning
 
 The phases and their exit criteria are in `doc/WorkTracking.md`. This skill covers how
-to write the two planning artifacts. Both live on the ticket (see the `ticket-writing`
-skill) and are accepted by the engineer before the next phase starts.
+to write the two planning artifacts. Both live in the ticket description, which is
+their one declared source of truth (see the `ticket-writing` skill), and the engineer
+accepts each before the next phase starts.
 
 ## Effort
 
@@ -25,9 +26,11 @@ skill) and are accepted by the engineer before the next phase starts.
 - **Environments.** List every environment the change must work in: the CI image, a
   clean checkout versus a working copy, local tool versions, and each supported agent
   harness. An environment the design does not name is where findings come from.
-- **Critical areas.** Name any critical review area the change touches (public API,
-  security, shared-library behavior, signal handlers, perf-critical code) and the
-  review it needs.
+- **Critical areas.** Name each critical area from `doc/WorkTracking.md` the change
+  touches, and signal-handler code (the AGENTS.md Critical Invariants), with the review
+  each needs.
+- **Rollout and recovery.** State how the change reaches users, and how to stop or
+  revert it if a production check fails.
 
 ## Acceptance criteria
 
@@ -39,7 +42,6 @@ skill) and are accepted by the engineer before the next phase starts.
     observation window it needs.
 - Say which criteria are permanent tests, committed with the code, and which are
   one-time evidence recorded on the ticket.
-- A criterion changes only with the engineer's sign-off.
 
 ## Build plan
 
