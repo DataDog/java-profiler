@@ -1104,6 +1104,15 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
   TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);
 }
 
+// Read-only test seam, so unlike the seams below it also exists in
+// release builds.
+extern "C" DLLEXPORT jlongArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_compiledMethodReadsForTest0(
+    JNIEnv* env, jclass unused, jobject method) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return JVMSupport::compiledMethodReadsForTest(env, method);
+}
+
 // LivenessTracker/ReferenceChainTracker test seams. They mutate real tracker
 // state, so they are only implemented in DEBUG builds; release builds get the
 // no-op stubs below.

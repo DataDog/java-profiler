@@ -543,6 +543,22 @@ public final class JavaProfiler {
     public static native boolean testTlsPrimingAvailable();
 
     /**
+     * Test seam with no production caller. Present in release builds.
+     * <p>
+     * On HotSpot, reports, for each compiled body of {@code method} that JVMTI
+     * CompiledMethodLoad reports: the code address, the code-heap lookup status
+     * (0 = nmethod found, 1 = not found), and the jmethodID read from that nmethod's
+     * {@code _method} field. Element 0 is the target's jmethodID, followed by up to 16
+     * (code address, status, read) triples.
+     * <p>
+     * Returns {@code null} when the JVM is not HotSpot or the profiler has no code heap,
+     * throws {@link IllegalArgumentException} when {@code method} is not a
+     * {@link java.lang.reflect.Method}, and {@link IllegalStateException} when a JVMTI
+     * call fails.
+     */
+    static native long[] compiledMethodReadsForTest0(Method method);
+
+    /**
      * Test seam (debug native builds only - a no-op returning {@code false}/{@code 0}/an
      * empty array in release builds). This and every reference-chain/liveness seam below
      * (plus {@link #getTid()}) are deliberately package-private: they mutate state of the

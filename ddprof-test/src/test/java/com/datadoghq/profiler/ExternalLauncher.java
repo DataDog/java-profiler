@@ -44,6 +44,9 @@ import java.util.regex.Pattern;
  *     <li>lazy-trace-id &lt;comma delimited profiler command list, required&gt; - starts the profiler, spins
  *     in {@code com.datadoghq.profiler.generated.LazyTraceIdProbe} (defined by its own class loader, so it
  *     has no jmethodIDs until the profiler resolves its frames) and stops the profiler</li>
+ *     <li>nmethod-method &lt;comma delimited profiler command list, required&gt; - starts the profiler,
+ *     forces compilation of {@code nmethodMethodTarget} and prints the jmethodID the profiler reads
+ *     through each compiled body's {@code _method} field; see {@code NMethodMethodJvmtiValidationTest}</li>
  *     <li>entry-frames &lt;comma delimited profiler command list, required&gt; - starts the profiler, then burns
  *     CPU concurrently on the main thread, on a plain {@code new Thread(Runnable)} and on a
  *     two-level {@link Thread} subclass, and stops the profiler again. The resulting recording
@@ -168,6 +171,22 @@ public class ExternalLauncher {
         entryFrameSink = acc;
     }
 
+    private static volatile long nmethodMethodSink;
+
+    /**
+     * Xorshift state mixing, 64 rounds per call: enough work for its own compilation, cheap
+     * enough to call 20 000 times per round. Package-private so tests can name it reflectively.
+     */
+    static long nmethodMethodTarget(long x) {
+        long r = x;
+        for (int i = 0; i < 64; i++) {
+            r ^= r << 13;
+            r ^= r >>> 7;
+            r ^= r << 17;
+        }
+        return r;
+    }
+
     /**
      * Splits a scenario mode's single {@code "<start command>|||<scratch dump path>"} argument
      * (packed so launch()'s (target, commands) contract needs no extra argument).
@@ -265,6 +284,42 @@ public class ExternalLauncher {
                 Class<?> probe = SpinClasses.define("com/datadoghq/profiler/generated/LazyTraceIdProbe");
                 probe.getMethod("spin", long.class).invoke(null, 2_000_000_000L);
                 // Stopping dumps the recording, which resolves the probe's raw frames.
+                instance.stop();
+            } else if (args[0].equals("nmethod-method")) {
+                if (args.length < 2 || args[1].isEmpty()) {
+                    throw new IllegalArgumentException("nmethod-method requires a profiler command list");
+                }
+                JavaProfiler instance = JavaProfiler.getInstance();
+                // The profiler must be started: its SIGSEGV handler backs the safe reads the
+                // seam performs while resolving the target's nmethod.
+                instance.execute(args[1]);
+                Method target = ExternalLauncher.class.getDeclaredMethod("nmethodMethodTarget", long.class);
+                long[] reads = null;
+                long acc = 0;
+                for (int round = 0; round < 50 && (reads == null || reads.length <= 1); round++) {
+                    // Long arithmetic only: an allocation here would stop the loop and its
+                    // callee from being compiled as the steady state under test.
+                    for (int i = 0; i < 20_000; i++) {
+                        acc += nmethodMethodTarget(acc);
+                    }
+                    reads = JavaProfiler.compiledMethodReadsForTest0(target);
+                }
+                nmethodMethodSink = acc;
+                if (reads == null) {
+                    System.out.println("[nmethod-method] unsupported");
+                } else {
+                    StringBuilder sb = new StringBuilder("[nmethod-method] target=")
+                            .append(Long.toHexString(reads[0])).append(" reads=");
+                    for (int i = 1; i + 2 < reads.length; i += 3) {
+                        if (i > 1) {
+                            sb.append(',');
+                        }
+                        sb.append(Long.toHexString(reads[i])).append('/')
+                                .append(Long.toHexString(reads[i + 1])).append('/')
+                                .append(Long.toHexString(reads[i + 2]));
+                    }
+                    System.out.println(sb);
+                }
                 instance.stop();
             } else if (args[0].equals("lazy-calibration-preexisting-arrays")) {
                 if (args.length < 2 || args[1].isEmpty()) {
