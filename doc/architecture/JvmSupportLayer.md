@@ -209,11 +209,13 @@ carrier recovery itself remains a separate correctness requirement.
 
 With `vtable_target` and class-name VMStructs available, VM walking and ASGCT stub recovery
 can insert `<vtable_receiver>` immediately before its vtable stub (leaf first).
-CPU profiling enables the feature; FP/DWARF support preserves defaults, and `cstack=no` omits both frames.
+The `cpu` option enables the feature; `event=cpu` and implicit CPU defaults do not.
+FP/DWARF support preserves defaults, and `cstack=no` omits both frames.
 
 `captureVtableReceiver()` shares oop-to-Klass-to-Symbol reads inside the existing crash-protection scopes.
 PC/SP/FP must still match the interrupted leaf, before unwinding, so caller redirects cannot reuse stale arguments.
 Capture leaves room for the stub and, with ASGCT, a retry or error frame.
+If a recovery prefix fills the ASGCT budget after an unknown/not-walkable Java failure, it marks the trace truncated.
 
 `BCI_VTABLE_RECEIVER` stores a raw `VMSymbol*`, not a `jmethodID`; header decoding stays in `VMKlass::fromOop()`.
 Dump-time `Lookup::resolveVTableReceiver()` reads it with `SafeAccess` to supply the synthetic method's declaring class.

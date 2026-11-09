@@ -37,9 +37,9 @@ public:
     }
 
     static int getJavaTraceAsync(void* context, ASGCT_CallFrame* frames, int max_depth,
-                                 StackContext* java_ctx) {
+                                 StackContext* java_ctx, bool* truncated = nullptr) {
         HotspotStackFrame::RegisterSnapshot snapshot(context);
-        return HotspotSupport::getJavaTraceAsync(context, frames, max_depth, java_ctx, nullptr, snapshot);
+        return HotspotSupport::getJavaTraceAsync(context, frames, max_depth, java_ctx, truncated, snapshot);
     }
 
     static int getJavaTraceAsyncWithRecovery(void* context, ASGCT_CallFrame* frames, int max_depth,
@@ -425,9 +425,9 @@ protected:
 #endif
     }
 
-    int walk(int max_depth, StackContext java_ctx = {}) {
+    int walk(int max_depth, StackContext java_ctx = {}, bool* truncated = nullptr) {
         prepareWalk();
-        return HotspotSupportTestAccessor::getJavaTraceAsync(&_ctx, _frames, max_depth, &java_ctx);
+        return HotspotSupportTestAccessor::getJavaTraceAsync(&_ctx, _frames, max_depth, &java_ctx, truncated);
     }
 
     void expectCanary(int index) {
@@ -650,11 +650,20 @@ TEST_P(AsgctVtableReceiverTest, CompiledPrefixSaturationDoesNotRetryWithZeroBudg
     StackContext java_ctx{};
     java_ctx.pc = _blocks[1].blob.code;
     java_ctx.sp = reinterpret_cast<uintptr_t>(_stack);
+    for (bool initial : {false, true}) {
+        SCOPED_TRACE(initial);
+        bool truncated = initial;
+        ASSERT_EQ(1, walk(1, java_ctx, &truncated));
+        EXPECT_TRUE(truncated);
+        EXPECT_EQ(0, _frames[0].bci);
+        EXPECT_EQ(ids[1], _frames[0].method_id);
+        EXPECT_EQ(std::vector<int>({1}), asgct_budgets);
+        EXPECT_EQ(std::vector<uintptr_t>({reinterpret_cast<uintptr_t>(java_ctx.pc)}), asgct_pcs);
+        expectCanary(1);
+    }
     ASSERT_EQ(1, walk(1, java_ctx));
-    EXPECT_EQ(0, _frames[0].bci);
     EXPECT_EQ(ids[1], _frames[0].method_id);
     EXPECT_EQ(std::vector<int>({1}), asgct_budgets);
-    EXPECT_EQ(std::vector<uintptr_t>({reinterpret_cast<uintptr_t>(java_ctx.pc)}), asgct_pcs);
     expectCanary(1);
 }
 
@@ -743,6 +752,49 @@ TEST_P(AsgctVtableReceiverTest, DepthBudgetsDoNotWritePastThePrefixOrRetryLimit)
             EXPECT_EQ(BCI_NATIVE_FRAME, _frames[0].bci);
             EXPECT_STREQ("vtable chunks test", reinterpret_cast<const char*>(_frames[0].method_id));
             EXPECT_EQ(budget == 1 ? std::vector<int>({1}) : std::vector<int>({2, 1}), asgct_budgets);
+        }
+    }
+}
+
+TEST_P(AsgctVtableReceiverTest, CapacityStoppedStubPrefixReportsTruncation) {
+    for (int error : {ticks_unknown_Java, ticks_not_walkable_Java}) {
+        SCOPED_TRACE(error);
+        asgct_initial_error = error;
+        for (int safe_mode : {0, static_cast<int>(POP_STUB)}) {
+            SCOPED_TRACE(safe_mode);
+            ProfilerTestAccessor::safeMode() = safe_mode;
+            for (bool initial : {false, true}) {
+                SCOPED_TRACE(initial);
+                bool truncated = initial;
+                ASSERT_EQ(1, walk(1, {}, &truncated));
+                EXPECT_TRUE(truncated);
+                EXPECT_EQ(BCI_NATIVE_FRAME, _frames[0].bci);
+                EXPECT_STREQ("vtable chunks test", reinterpret_cast<const char*>(_frames[0].method_id));
+                EXPECT_EQ(std::vector<int>({1}), asgct_budgets);
+                EXPECT_EQ(std::vector<uintptr_t>({leafPC()}), asgct_pcs);
+                expectCanary(1);
+            }
+        }
+    }
+}
+
+TEST_P(AsgctVtableReceiverTest, SuccessfulRecoveryAndZeroBudgetPreserveTruncation) {
+    for (bool initial : {false, true}) {
+        SCOPED_TRACE(initial);
+        for (int budget : {0, 2, 3}) {
+            SCOPED_TRACE(budget);
+            bool truncated = initial;
+            ASSERT_EQ(budget, walk(budget, {}, &truncated));
+            EXPECT_EQ(initial, truncated);
+            if (budget == 0) {
+                EXPECT_TRUE(asgct_budgets.empty());
+            } else {
+                EXPECT_EQ(0, _frames[budget - 1].bci);
+                EXPECT_EQ(reinterpret_cast<jmethodID>(0x1230), _frames[budget - 1].method_id);
+                EXPECT_EQ(std::vector<int>({budget, 1}), asgct_budgets);
+                EXPECT_EQ(std::vector<uintptr_t>({leafPC(), retryPC()}), asgct_pcs);
+            }
+            expectCanary(budget);
         }
     }
 }

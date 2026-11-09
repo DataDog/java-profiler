@@ -1230,6 +1230,8 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
         }
         max_depth -= makeFrame(trace.frames++, BCI_NATIVE_FRAME, stub_name);
         if (max_depth == 0) {
+          // ASGCT failed and the prefix leaves no room for recovery or its error.
+          if (truncated != nullptr) *truncated = true;
           return trace.frames - frames;
         }
       }
@@ -1247,6 +1249,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
           if (isValidJMethodID(method_id)) {
             max_depth -= makeFrame(trace.frames++, 0, method_id);
             if (max_depth == 0) {
+              if (truncated != nullptr) *truncated = true;
               return trace.frames - frames;
             }
           }
@@ -1272,6 +1275,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
           max_depth -=
               makeFrame(trace.frames++, BCI_NATIVE_FRAME, nmethod->name());
           if (max_depth == 0) {
+            if (truncated != nullptr) *truncated = true;
             return trace.frames - frames;
           }
         }
