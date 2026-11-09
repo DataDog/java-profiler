@@ -146,6 +146,7 @@ shell-unit-tests:
     - bash .gitlab/scripts/tests/test_check_stack_top.sh
     - bash .gitlab/jdk-integration/tests/select_test_jdk_test.sh
     - bash .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh
+    - bash .gitlab/memory-gate/tests/resolve_candidate_test.sh
 
 # Shared version detection used by benchmarks and reliability pipelines
 get-versions:
@@ -257,3 +258,4 @@ include:
   - local: .gitlab/dd-trace-integration/.gitlab-ci.yml
   - local: .gitlab/sanitizer-tests/.gitlab-ci.yml
   - local: .gitlab/fuzzing/.gitlab-ci.yml
+  - local: .gitlab/memory-gate/.gitlab-ci.yml
