@@ -145,8 +145,17 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
             + sleepingWeight
             + " stackEvidence="
             + (delegated ? "native-request-only" : "resolved-local"));
-    if (profiler.getDebugCounters().getOrDefault("wc_unowned_blocked_recorded", 0L) > 0) {
+    if (!delegated) {
+      assertTrue(
+          profiler.getDebugCounters().getOrDefault("wc_unowned_blocked_recorded", 0L) > 0,
+          "ASGCT unowned fallback must record weighted observations");
       assertTrue(weight > samples, "Coalesced unowned observations must retain their weight");
+    } else {
+      assertEquals(samples, weight, "Delegated unowned samples must retain unit weight");
+      assertEquals(
+          Long.valueOf(0L), profiler.getDebugCounters().get("wc_unowned_blocked_recorded"));
+      assertEquals(
+          Long.valueOf(0L), profiler.getDebugCounters().get("wc_unowned_blocked_suppressed"));
     }
   }
 
