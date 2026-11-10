@@ -457,8 +457,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       if (ctx->frontier->improveChain(*tag_ptr, parent_tag, referrer_klass,
                                        depth, 0, edge_field_index,
                                        (u8)reference_kind)) {
-        // Chain was improved — queue a REBUILD so pollWatchedTargets replaces any cached chain for
-        // this tag with the deeper path (never erased: the source is still live).
+        // Chain was improved — queue a REBUILD so pollWatchedTargets replaces the current-generation
+        // cached chain for this tag with the deeper path (never erased: the source is still live).
         // Deferred: we're inside the FollowReferences pause (see deferResolvedChainInvalidation()).
         ctx->tracker->deferResolvedChainInvalidation(
             *tag_ptr, ctx->resolved_chain_tags,

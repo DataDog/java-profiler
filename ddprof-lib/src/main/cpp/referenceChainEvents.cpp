@@ -785,7 +785,9 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
       continue;
     }
     if (isLeakTag((jlong)event._target_tag) && !chainTargetsCurrentLeakOwner(event)) {
-      // Dead-owner rebuild: keep the old chain; the next dump evicts it if it is dead too.
+      // Dead-owner rebuild: keep the old chain. A dump evicts it only when the old event's own
+      // target is a leak tag whose owner died (chainTargetsCurrentLeakOwner); a frontier-tag
+      // target waits for a later rebuild, cache-pressure eviction, or start()/stop()'s cache clear.
       continue;
     }
     event._start_time = TSC::ticks();

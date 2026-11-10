@@ -632,10 +632,12 @@ private:
   // Chain invalidations deferred by heap callbacks. The ChainInvalidationKind is stored in-band
   // (see encodePendingChainInvalidation()): EVICT entries hold the source tag, REBUILD entries its
   // bitwise complement. At most one entry per tag (EVICT wins over REBUILD, duplicates dropped).
-  // Bound: new deferrals are limited to tags in the immutable pre-traversal resolved-cache
-  // snapshot (<= MAX_RESOLVED_CHAINS), and the REBUILD entries applyPendingChainInvalidations()
-  // requeues over its per-poll budget are a subset of the cache at apply time (another
-  // <= MAX_RESOLVED_CHAINS), so distinct pending tags stay <= 2 * MAX_RESOLVED_CHAINS.
+  // Producers are bounded per drain interval - snapshot-filtered heap-callback deferrals and
+  // correlation rebuilds (each a subset of the cache, <= MAX_RESOLVED_CHAINS) plus the apply
+  // requeue (a subset of the cache at the last apply, another <= MAX_RESOLVED_CHAINS) - but the
+  // three sets are sampled at different times and the cache churns between them, so the sum is
+  // not a strict provenance bound: the hard cap plus drop-on-overflow in
+  // queueChainInvalidation() is what keeps the buffer bounded.
   // Ownership:
   //  - _pending_chain_invalidations: every access (heap-callback producers, both drains, the apply
   //    requeue, clearPendingChainInvalidations()) is under _pending_chain_invalidations_lock

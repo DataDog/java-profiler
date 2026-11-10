@@ -1658,8 +1658,8 @@ TEST_F(ReferenceChainsBfsTest, ResolveOrDropPrunesDeadFrontierEntries) {
 // loop (shouldRunPass -> runPass -> pollWatchedTargets, the exact threadLoop body) driven over the
 // scripted mock heap, asserting SYSTEM INVARIANTS instead of unit symptoms.
 
-// PROF-16316: an improveChain() deeper-path invalidation must REPLACE a resolved leak chain, never
-// erase it. Sequence from the late-TL RCA: a leak-correlated chain is cached, a later pass re-reaches
+// An improveChain() deeper-path invalidation must REPLACE a resolved leak chain, never erase it.
+// Sequence: a leak-correlated chain is cached, a later pass re-reaches
 // its source through a strictly deeper path (improveChain() queues a deferred invalidation), the
 // search then terminates (candidate/discovered slots zeroed, so no poll path can rebuild from
 // them), and the next dump drains the pending invalidations. The source is still live, so the dump
@@ -1734,7 +1734,7 @@ TEST_F(ReferenceChainsBfsTest, ImprovedPathInvalidationKeepsLeakChainAcrossTermi
     tracker->stop();
 }
 
-// PROF-16316 split semantics: the dump path applies only EVICT (noise eviction still erases at
+// The dump path applies only EVICT (noise eviction still erases at
 // dump time, exactly as before), EVICT wins over a REBUILD queued for the same tag, and REBUILD is
 // left for the BFS-thread poll, which keeps the old chain when the frontier cannot rebuild it.
 TEST_F(ReferenceChainsBfsTest, DumpDrainAppliesEvictAndLeavesRebuildToPoll) {
@@ -1800,11 +1800,9 @@ static bool cachePlainChainForTest(jlong tag, u32 depth, u64 search_ns) {
     return ReferenceChainsTestAccessor::cacheChain(tag, std::move(event), tag, search_ns);
 }
 
-// Correlating a leak tag to a frontier entry whose chain is already cached (built while the entry
-// was uncorrelated) must queue a REBUILD: the cached event's _target_tag is the frontier tag, and
-// no refresh path revisits a current-generation cache entry. Until the next poll's rebuild
-// re-binds the target, dumps keep emitting the frontier-tagged event - one poll of bounded
-// staleness, then the leak tag.
+// Correlating a leak tag to a frontier entry whose chain was cached uncorrelated must queue a
+// REBUILD: the cached event's _target_tag is the frontier tag, and no refresh path revisits a
+// current-generation cache entry. Until the rebuild, dumps keep emitting the frontier-tagged event.
 TEST_F(ReferenceChainsBfsTest, CorrelationQueuesRebuildForUncorrelatedCachedChain) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
