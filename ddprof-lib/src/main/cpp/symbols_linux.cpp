@@ -323,18 +323,12 @@ typedef Elf64_Dyn  ElfDyn;
 static char _debuginfod_cache_buf[PATH_MAX] = {0};
 
 // Symbol-table addresses (file sh_offset or DT_SYMTAB) carry no alignment
-// guarantee; these copies avoid member access through a misaligned ElfSymbol*,
+// guarantee; this copy avoids member access through a misaligned ElfSymbol*,
 // which is undefined behavior.
 static uint32_t symbolNameAt(const void* sym) {
     uint32_t name;
     memcpy(&name, sym, sizeof(name));  // st_name sits at offset 0 of Elf64_Sym
     return name;
-}
-
-static ElfSymbol readSymbolEntry(const void* sym) {
-    ElfSymbol copy;
-    memcpy(&copy, sym, sizeof(copy));
-    return copy;
 }
 
 class ElfParser {
@@ -985,40 +979,60 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
     // to a small pointer that still compares <= end, walking off the image. The
     // `ent_size <= total_size - off` form keeps off <= total_size with no overflow.
     for (size_t off = 0; ent_size <= total_size - off; off += ent_size) {
-        ElfSymbol sym = readSymbolEntry(symbols + off);
-        if (sym.st_name != 0 && sym.st_value != 0) {
-            // Resolve the name through the bounded string table; a bad st_name
-            // offset (or unterminated string) drops the symbol instead of reading
-            // out of bounds.
-            const char* sym_name = strAt(strings, strings_size, sym.st_name);
-            if (sym_name == NULL) {
-                continue;
-            }
-            // Skip special AArch64 mapping symbols: $x and $d
-            if (sym.st_size != 0 || sym.st_info != 0 || sym_name[0] != '$') {
-                const char* addr;
-                if (base != NULL) {
-                    // Check for overflow when adding sym.st_value to base
-                    uintptr_t base_addr = (uintptr_t)base;
-                    uint64_t symbol_value = sym.st_value;
-                    
-                    // Skip this symbol if addition would overflow
-                    // First check if symbol_value exceeds the address space
-                    if (symbol_value > UINTPTR_MAX) {
-                        continue;
-                    }
-                    // Then check if addition would overflow
-                    if (base_addr > UINTPTR_MAX - (uintptr_t)symbol_value) {
-                        continue;
-                    }
-                    
-                    // Perform addition using integer arithmetic to avoid pointer overflow
-                    addr = (const char*)(base_addr + (uintptr_t)symbol_value);
-                } else {
-                    addr = (const char*)sym.st_value;
+        const char* sym = symbols + off;
+        // Field copies instead of dereferencing a misaligned ElfSymbol*;
+        // dynamic-table entries are not extent-validated, so reads stay
+        // conditional to avoid reading past the mapped region.
+        uint32_t st_name = symbolNameAt(sym);
+        if (st_name == 0) {
+            continue;
+        }
+        uint64_t st_value;
+        memcpy(&st_value, sym + offsetof(ElfSymbol, st_value), sizeof(st_value));
+        if (st_value == 0) {
+            continue;
+        }
+        // Resolve the name through the bounded string table; a bad st_name
+        // offset (or unterminated string) drops the symbol instead of reading
+        // out of bounds.
+        const char* sym_name = strAt(strings, strings_size, st_name);
+        if (sym_name == NULL) {
+            continue;
+        }
+        // Skip special AArch64 mapping symbols: $x and $d
+        uint64_t st_size;
+        memcpy(&st_size, sym + offsetof(ElfSymbol, st_size), sizeof(st_size));
+        bool keep = st_size != 0;
+        if (!keep) {
+            // st_info is read only when st_size is zero, keeping the read
+            // conditional; both must be zero before the name decides.
+            uint8_t st_info;
+            memcpy(&st_info, sym + offsetof(ElfSymbol, st_info), sizeof(st_info));
+            keep = st_info != 0 || sym_name[0] != '$';
+        }
+        if (keep) {
+            const char* addr;
+            if (base != NULL) {
+                // Check for overflow when adding st_value to base
+                uintptr_t base_addr = (uintptr_t)base;
+                uint64_t symbol_value = st_value;
+
+                // Skip this symbol if addition would overflow
+                // First check if symbol_value exceeds the address space
+                if (symbol_value > UINTPTR_MAX) {
+                    continue;
                 }
-                _cc->add(addr, (int)sym.st_size, sym_name);
+                // Then check if addition would overflow
+                if (base_addr > UINTPTR_MAX - (uintptr_t)symbol_value) {
+                    continue;
+                }
+
+                // Perform addition using integer arithmetic to avoid pointer overflow
+                addr = (const char*)(base_addr + (uintptr_t)symbol_value);
+            } else {
+                addr = (const char*)st_value;
             }
+            _cc->add(addr, (int)st_size, sym_name);
         }
     }
 }
@@ -1058,13 +1072,13 @@ void ElfParser::addRelocationSymbols(ElfSection* reltab, const char* plt) {
         if (ELF_R_SYM(r->r_info) > max_sym_index) {
             continue;
         }
-        ElfSymbol sym = readSymbolEntry(symbols + (size_t)ELF_R_SYM(r->r_info) * sym_ent);
+        uint32_t st_name = symbolNameAt(symbols + (size_t)ELF_R_SYM(r->r_info) * sym_ent);
 
         char name[256];
-        if (sym.st_name == 0) {
+        if (st_name == 0) {
             strcpy(name, "@plt");
         } else {
-            const char* sym_name = strAt(strings, strings_size, sym.st_name);
+            const char* sym_name = strAt(strings, strings_size, st_name);
             if (sym_name == NULL) {
                 continue;  // plt advances via the for-increment
             }

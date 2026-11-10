@@ -38,6 +38,7 @@
 class ElfParser {
 public:
     static bool parseFile(CodeCache* cc, const char* base, const char* file_name, bool use_debug);
+    static void parseProgramHeaders(CodeCache* cc, const char* base, const char* end, bool relocate_dyn);
 };
 
 // parseLibraries() hands one heap CodeCache per library to the array and
@@ -443,6 +444,14 @@ void parseElfBytes(const std::vector<char>& bytes) {
     parseElfBytes(bytes, &cc, /*use_debug=*/false);
 }
 
+// Releases a test mapping on every exit path, including the early returns
+// that gtest ASSERT macros perform.
+struct MappingGuard {
+    void* addr;
+    size_t size;
+    ~MappingGuard() { munmap(addr, size); }
+};
+
 }  // namespace
 
 // Regression test for the build-id parser hardening (found by fuzz_elf).
@@ -683,6 +692,72 @@ TEST_F(ElfTest, symbolTableMisalignedEntries) {
     // The PLT name came from the misaligned symbol-index lookup in
     // addRelocationSymbols(): symbol 1 resolves to "mis_helper@plt".
     EXPECT_NE(cc.findSymbol("mis_helper@plt"), nullptr);
+}
+
+// A dynamic symbol table (DT_SYMTAB) points into live mapped memory whose
+// extent is not validated by contentAt(); an entry may straddle the end of the
+// readable region. The entry with st_name == 0 must be skipped after the
+// st_name read alone: an unconditional full-entry copy faults on the PROT_NONE
+// page that follows the readable region.
+TEST_F(ElfTest, dynamicSymtabStraddlesReadableEnd) {
+    const size_t page = sysconf(_SC_PAGESIZE);
+    const size_t readable = 2 * page;
+    uint8_t* img = (uint8_t*)mmap(NULL, 3 * page, PROT_READ | PROT_WRITE,
+                                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    ASSERT_NE(img, MAP_FAILED);
+    MappingGuard mapping{img, 3 * page};
+    memset(img, 0, readable);
+
+    const size_t dyn_off = 0x200, hash_off = 0x2a0, str_off = 0x2b0;
+    const size_t sym_off = readable - sizeof(Elf64_Sym) - 8;  // entry 1 straddles
+
+    Elf64_Ehdr e = validEhdr();
+    e.e_phoff = sizeof(Elf64_Ehdr);
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = 2;
+    memcpy(img, &e, sizeof(e));
+
+    Elf64_Phdr ph[2];
+    memset(ph, 0, sizeof(ph));
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_flags = PF_R | PF_X;
+    ph[0].p_memsz = readable;
+    ph[1].p_type = PT_DYNAMIC;
+    ph[1].p_vaddr = dyn_off;
+    ph[1].p_memsz = 7 * sizeof(Elf64_Dyn);
+    memcpy(img + sizeof(Elf64_Ehdr), ph, sizeof(ph));
+
+    // relent must be non-zero or parseDynamicSection() returns before the
+    // symbol-table loop; no relocation tables are present to consume it.
+    const Elf64_Dyn dyn[] = {
+        {DT_HASH, hash_off}, {DT_STRTAB, str_off}, {DT_SYMTAB, sym_off},
+        {DT_STRSZ, 14}, {DT_SYMENT, sizeof(Elf64_Sym)}, {DT_RELAENT, sizeof(Elf64_Rela)},
+        {DT_NULL, 0},
+    };
+    memcpy(img + dyn_off, dyn, sizeof(dyn));
+
+    const uint32_t hash[] = {1, 2};  // nbucket, nchain: two symbols
+    memcpy(img + hash_off, hash, sizeof(hash));
+
+    const char strtab[] = "\0strad_helper\0";
+    memcpy(img + str_off, strtab, sizeof(strtab));
+
+    Elf64_Sym sym[2];
+    memset(sym, 0, sizeof(sym));
+    sym[0].st_name = 1;  // "strad_helper"
+    sym[0].st_value = 0x1000;
+    sym[0].st_size = 4;
+    sym[1].st_name = 0;  // straddling entry: skipped after the st_name read
+    memcpy(img + sym_off, sym, sizeof(sym));
+
+    ASSERT_EQ(mprotect(img, readable, PROT_READ), 0);
+    ASSERT_EQ(mprotect(img + readable, page, PROT_NONE), 0);
+
+    CodeCache cc("regress");
+    ElfParser::parseProgramHeaders(&cc, (const char*)img, (const char*)img + readable, false);
+    // Entry 0 resolved through the dynamic table; entry 1 was skipped without
+    // reading past the readable end.
+    EXPECT_NE(cc.findSymbol("strad_helper"), nullptr);
 }
 
 #endif //__linux__
