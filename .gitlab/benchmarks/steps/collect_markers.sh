@@ -46,9 +46,9 @@ markers_nr_throttled() {
 
 # Prints the number of R-state stat entries under the proc root, skipping
 # the excluded pids and their direct children (the JVM, the sampler and
-# the sampler's ps/grep discovery pipeline). A single cat+awk pass reads
-# every entry per tick; cat skips pids that vanish between glob expansion
-# and open, which would kill the awk END rule with a fatal open error.
+# the sampler's ps/grep discovery pipeline). The cat|awk pipeline reads
+# every entry per tick: cat skips entries that vanish between glob
+# expansion and open, where a direct awk pass aborts fatally.
 markers_cotenant_runnable() {
     markers_root=$1
     shift

@@ -292,20 +292,26 @@ assert_eq "absent roots yield NA in every token" \
   "psi_cpu_some_avg10=NA psi_memory_some_avg10=NA loadavg_1m=NA cpu_nr_throttled=NA cotenant_runnable=NA" \
   "$absent"
 
-# A pid that vanishes or turns unreadable between glob expansion and open
-# must not kill the census: cat skips it and the count still covers the
-# readable entries. Read directly through the helper because the sampler
-# only replays it verbatim.
+# A pid whose stat entry cannot be opened must not kill the census: cat
+# skips it and the count still covers the readable entries. The unreadable
+# entry is a stat-shaped directory, so open fails with EISDIR for every uid,
+# root included. Read directly through the helper; the sampler replays it.
 UNREADABLE="$WORK/unreadable"
 mkdir -p "$UNREADABLE/801" "$UNREADABLE/802" "$UNREADABLE/803" "$UNREADABLE/804"
 printf '801 (cotenant) R 1 1 1 1 0 -1 0\n' > "$UNREADABLE/801/stat"
 printf '802 (idle) S 1 1 1 1 0 -1 0\n' > "$UNREADABLE/802/stat"
-printf '803 (cotenant) R 1 1 1 1 0 -1 0\n' > "$UNREADABLE/803/stat"
 printf '804 (cotenant) R 1 1 1 1 0 -1 0\n' > "$UNREADABLE/804/stat"
-chmod 000 "$UNREADABLE/803/stat"
+mkdir "$UNREADABLE/803/stat"
+UNRE_ERR="$WORK/unreadable.err"
+: > "$UNRE_ERR"
 # shellcheck disable=SC2016  # $1 is a sh -c positional arg, not an expansion
-unre=$(cd "$STEPS" && "$POSIX_SH" -c '. ./collect_markers.sh; markers_cotenant_runnable "$1" 999' sh "$UNREADABLE")
+unre=$(cd "$STEPS" && "$POSIX_SH" -c '. ./collect_markers.sh; markers_cotenant_runnable "$1" 999' sh "$UNREADABLE" 2> "$UNRE_ERR")
 assert_eq "an unreadable stat entry does not zero the census" "2" "$unre"
+if [ ! -s "$UNRE_ERR" ]; then
+  pass "the unreadable entry leaves the census stderr empty"
+else
+  fail "the census leaked stderr for the unreadable entry: $(cat "$UNRE_ERR")"
+fi
 
 if [ "$FAILED" -eq 0 ]; then
   echo "All mem_watch markers tests passed"
