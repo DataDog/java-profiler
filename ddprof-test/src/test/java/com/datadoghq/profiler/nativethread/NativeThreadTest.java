@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc
+ * Copyright 2025, 2026, Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,27 +15,19 @@
  */
 package com.datadoghq.profiler.nativethread;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.Platform;
-import com.datadoghq.profiler.nativethread.NativeThreadCreator;
-
-import org.junitpioneer.jupiter.RetryingTest;
-import com.datadoghq.profiler.JfrEvent;
-
-import java.util.HashMap;
-import java.util.Map;
-
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
+import org.junitpioneer.jupiter.RetryingTest;
+
 /**
- * Tests native thread profiling to ensure proper stack unwinding.
- * Validates that native threads produce usable samples with do_primes() and
- * that non-Java thread samples are not misclassified as break_no_anchor
- * (which implies a missing JavaFrameAnchor, inapplicable for pure pthreads).
+ * Tests native thread profiling to ensure proper stack unwinding. Validates that native threads
+ * produce usable samples with do_primes() and that non-Java thread samples are not misclassified as
+ * break_no_anchor (which implies a missing JavaFrameAnchor, inapplicable for pure pthreads).
  */
 public class NativeThreadTest extends AbstractProfilerTest {
-
 
   @Override
   protected String getProfilerCommand() {
@@ -44,42 +36,42 @@ public class NativeThreadTest extends AbstractProfilerTest {
 
   @RetryingTest(3)
   public void test() {
-      long[] threads = new long[8];
-      for (int index = 0; index < threads.length; index++) {
-          threads[index] = NativeThreadCreator.createNativeThread();
+    long[] threads = new long[8];
+    for (int index = 0; index < threads.length; index++) {
+      threads[index] = NativeThreadCreator.createNativeThread();
+    }
+
+    for (int index = 0; index < threads.length; index++) {
+      NativeThreadCreator.waitNativeThread(threads[index]);
+    }
+    stopProfiler();
+
+    int count = 0;
+    int totalSamples = 0;
+    boolean stacktrace_printed = false;
+
+    for (JfrEvent item : verifyEvents("datadog.ExecutionSample")) {
+      String stacktrace = item.getStackTraceString();
+      totalSamples++;
+
+      if (stacktrace != null && stacktrace.indexOf("do_primes()") != -1) {
+        // Native thread sample: must not contain break_no_anchor
+        // (non-Java threads have no JavaFrameAnchor — that error is inapplicable)
+        // break_no_symbol is expected when DWARF CFI is incomplete
+        assertFalse(
+            stacktrace.contains("break_no_anchor"),
+            "Found break_no_anchor in native thread sample: " + stacktrace);
+
+        if (!stacktrace_printed) {
+          stacktrace_printed = true;
+          System.out.println("Native thread stack:");
+          System.out.println(stacktrace);
+        }
+        count++;
       }
+    }
 
-      for (int index = 0; index < threads.length; index++) {
-          NativeThreadCreator.waitNativeThread(threads[index]);
-      }
-      stopProfiler();
-
-      int count = 0;
-      int totalSamples = 0;
-      boolean stacktrace_printed = false;
-
-      for (JfrEvent item : verifyEvents("datadog.ExecutionSample")) {
-          String stacktrace = item.getStackTraceString();
-          totalSamples++;
-
-          if (stacktrace != null && stacktrace.indexOf("do_primes()") != -1) {
-            // Native thread sample: must not contain break_no_anchor
-            // (non-Java threads have no JavaFrameAnchor — that error is inapplicable)
-            // break_no_symbol is expected when DWARF CFI is incomplete
-            assertFalse(stacktrace.contains("break_no_anchor"),
-                "Found break_no_anchor in native thread sample: " + stacktrace);
-
-            if (!stacktrace_printed) {
-                stacktrace_printed = true;
-                System.out.println("Native thread stack:");
-                System.out.println(stacktrace);
-            }
-            count++;
-          }
-      }
-
-      System.out.println("Total samples: " + totalSamples + ", samples with do_primes(): " + count);
-      assertTrue(count > 0, "no native thread sample");
+    System.out.println("Total samples: " + totalSamples + ", samples with do_primes(): " + count);
+    assertTrue(count > 0, "no native thread sample");
   }
-
 }
