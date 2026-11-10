@@ -39,6 +39,7 @@ get-versions:
     - .gitlab/reliability/run.sh "$RUNTIME" "$CONFIG" "$VARIANT" "$ALLOCATOR" "$ARCH" 2>err.log 1>out.log
     - REASON=$(grep -m1 'FAIL:' err.log | cut -f2- -d':' | tr -d '\n') || true
     - if [ -n "${REASON}" ]; then _key=$(printf 'REASON_%s_%s_%sX%s' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${VARIANT}" | tr '+' '_'); echo "${_key}=${REASON}" >> build.env; exit 1; fi
+    - .gitlab/reliability/record_inconclusive.sh
   after_script:
     - |
       if [[ "$CI_JOB_STATUS" == "failed" ]]; then
