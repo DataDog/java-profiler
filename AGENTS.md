@@ -132,16 +132,11 @@ Two-JDK pattern: `JAVA_HOME` (build, JDK 17+, Gradle runs on 21 LTS) runs Gradle
 `JAVA_TEST_HOME` runs tests against the target JDK; target bytecode is Java 8 via
 `--release 8`.
 
-The Spotless convention configures Java formatting in either Java-plugin application
-order; formatter runtime and Java bytecode target are independent. CI's `build-logic-tests`
-job runs the convention tests on JDK 21 independently of formatting checks (see
-[BuildSystemGuide.md](doc/building/BuildSystemGuide.md#java-formatting)).
-
 Details and troubleshooting:
 [build-logic/README.md](build-logic/README.md),
 [doc/building/NativeBuildPlugin.md](doc/building/NativeBuildPlugin.md) (task DSL, debug-symbol
 extraction, artifact layout),
-[doc/building/BuildSystemGuide.md](doc/building/BuildSystemGuide.md),
+[doc/building/BuildSystemGuide.md](doc/building/BuildSystemGuide.md) (Java formatting and convention-test CI),
 [doc/building/Versioning.md](doc/building/Versioning.md) (version from git tags),
 [doc/building/JdkUpgrades.md](doc/building/JdkUpgrades.md) (JDK upgrade touchpoints).
 
