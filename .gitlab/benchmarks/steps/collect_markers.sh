@@ -46,8 +46,9 @@ markers_nr_throttled() {
 
 # Prints the number of R-state stat entries under the proc root, skipping
 # the excluded pids and their direct children (the JVM, the sampler and
-# the sampler's ps/grep discovery pipeline). One awk pass keeps the
-# per-tick cost a single subprocess instead of a read per process entry.
+# the sampler's ps/grep discovery pipeline). A single cat+awk pass reads
+# every entry per tick; cat skips pids that vanish between glob expansion
+# and open, which would kill the awk END rule with a fatal open error.
 markers_cotenant_runnable() {
     markers_root=$1
     shift
@@ -57,7 +58,9 @@ markers_cotenant_runnable() {
         markers_exclude="${markers_exclude},${markers_excl}"
     done
     # shellcheck disable=SC2016  # the awk program quotes its own variables
-    markers_count=$(awk -v excl="$markers_exclude" '
+    # shellcheck disable=SC2002  # cat is deliberate: it tolerates unreadable
+    # stat entries instead of aborting the awk END rule
+    markers_count=$(cat "$markers_root"/[0-9]*/stat 2>/dev/null | awk -v excl="$markers_exclude" '
         BEGIN { n = split(excl, e, ","); for (i = 1; i <= n; i++) ex[e[i]] = 1 }
         {
             seen = 1
@@ -69,7 +72,7 @@ markers_cotenant_runnable() {
             if (f[1] == "R" && !ex[pid] && !ex[f[2]]) count++
         }
         END { if (seen) print count + 0; else print "NA" }
-    ' "$markers_root"/[0-9]*/stat 2>/dev/null)
+    ')
     if [ -n "$markers_count" ]; then
         printf '%s\n' "$markers_count"
     else

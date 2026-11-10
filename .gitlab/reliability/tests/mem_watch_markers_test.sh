@@ -292,6 +292,21 @@ assert_eq "absent roots yield NA in every token" \
   "psi_cpu_some_avg10=NA psi_memory_some_avg10=NA loadavg_1m=NA cpu_nr_throttled=NA cotenant_runnable=NA" \
   "$absent"
 
+# A pid that vanishes or turns unreadable between glob expansion and open
+# must not kill the census: cat skips it and the count still covers the
+# readable entries. Read directly through the helper because the sampler
+# only replays it verbatim.
+UNREADABLE="$WORK/unreadable"
+mkdir -p "$UNREADABLE/801" "$UNREADABLE/802" "$UNREADABLE/803" "$UNREADABLE/804"
+printf '801 (cotenant) R 1 1 1 1 0 -1 0\n' > "$UNREADABLE/801/stat"
+printf '802 (idle) S 1 1 1 1 0 -1 0\n' > "$UNREADABLE/802/stat"
+printf '803 (cotenant) R 1 1 1 1 0 -1 0\n' > "$UNREADABLE/803/stat"
+printf '804 (cotenant) R 1 1 1 1 0 -1 0\n' > "$UNREADABLE/804/stat"
+chmod 000 "$UNREADABLE/803/stat"
+# shellcheck disable=SC2016  # $1 is a sh -c positional arg, not an expansion
+unre=$(cd "$STEPS" && "$POSIX_SH" -c '. ./collect_markers.sh; markers_cotenant_runnable "$1" 999' sh "$UNREADABLE")
+assert_eq "an unreadable stat entry does not zero the census" "2" "$unre"
+
 if [ "$FAILED" -eq 0 ]; then
   echo "All mem_watch markers tests passed"
   exit 0

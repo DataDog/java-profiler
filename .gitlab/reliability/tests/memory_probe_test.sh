@@ -128,6 +128,36 @@ wiring_checks() {
 
 wiring_checks
 
+# --- executed gate: java must resolve before the artifact fetch ---------
+
+# The gate is executed (not sourced) with a PATH that cannot resolve
+# java: the sdkman bootstrap finds nothing and the guard must fail loudly
+# before the ddprof fetch loop. curl is stubbed so the run stays
+# network-free; bash and dirname come from the host via symlinks.
+GUARDBIN="${WORK}/guardbin"
+mkdir -p "${GUARDBIN}"
+for tool in bash dirname; do
+  ln -sf "$(command -v "$tool")" "${GUARDBIN}/$tool"
+done
+printf '#!/bin/sh\nexit 0\n' > "${GUARDBIN}/curl"
+chmod +x "${GUARDBIN}/curl"
+GUARD_ERR="${WORK}/guard.err"
+GUARD_OUT="${WORK}/guard.out"
+: > "${GUARD_ERR}"
+: > "${GUARD_OUT}"
+saved_guard_path="${PATH}"
+PATH="${GUARDBIN}" bash "${CHECK}" 1 > "${GUARD_OUT}" 2> "${GUARD_ERR}"
+guard_rc=$?
+PATH="${saved_guard_path}"
+if [ "${guard_rc}" -ne 0 ]; then
+  pass "a PATH without java fails the gate"
+else
+  fail_case "a PATH without java exits zero"
+fi
+assert_eq "a missing java emits the FAIL line" "FAIL:java not found" "$(grep -m1 '^FAIL:java not found' "${GUARD_ERR}")"
+assert_eq "the guard fires before the artifact fetch" "0" "$(grep -c 'mvn get attempt' "${GUARD_OUT}")"
+assert_eq "the guarded run writes no probe records" "0" "$(grep -c '^probe_' "${GUARD_OUT}")"
+
 # --- fake trees and stubs -----------------------------------------------------
 
 write_stat() { # $1 proc root, $2 pid, $3 comm, $4 state, $5 ppid
