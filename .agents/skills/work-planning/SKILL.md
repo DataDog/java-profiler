@@ -29,9 +29,9 @@ permission (AGENTS.md). The engineer accepts each artifact before the next phase
   harness. An environment the design does not name is where findings come from.
 - **Critical areas and human review.** Name each critical area from
   `doc/WorkTracking.md` the change touches, and signal-handler code (the AGENTS.md
-  Critical Invariants). State which human reviews are required (for example a second
-  profiling reviewer for `.claude/settings.json`) and which are recommended (for
-  example for `AGENTS.md` changes, which every session loads), each with its reason.
+  Critical Invariants). State which human reviews are required (for example for a
+  critical area) and which are recommended (for example for `AGENTS.md` changes, which
+  every session loads), each with its reason.
 - **Rollout and recovery.** State how the change reaches users, and how to stop or
   revert it if a production check fails.
 

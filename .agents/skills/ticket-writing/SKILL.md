@@ -16,7 +16,8 @@ The `pr-writing` skill's style rules apply to every ticket text and comment.
 - **Shape.** Fit the layout to the size of the work, by judgment. A small change may
   keep its Intent, Design, acceptance criteria and evidence in one ticket with one PR.
   A large one may use a parent ticket for the problem and direction, with sub-tickets
-  that each carry their own plan and one or more PRs. Epics are for program-level work,
+  that each carry their own Design, acceptance criteria and Build plan (or link them,
+  as the `work-planning` skill allows) and one or more PRs. Epics are for program-level work,
   not for one change.
 - **Component.** `library-java` for java-profiler work; `openjdk` for upstream OpenJDK
   work.
@@ -28,8 +29,8 @@ The `pr-writing` skill's style rules apply to every ticket text and comment.
 
 ## The description
 
-- **Header line.** Phase, size (S/M/L) with one sentence on why, parent, and the
-  pattern or previous step it follows.
+- **Header line.** Phase, size (S/M/L) with one sentence on why, the parent if any,
+  and the pattern or previous step it follows.
 - **Intent.** What and why, scoped to this ticket, with the owner and the observable
   outcome. Never the how.
 - **Out of scope.** Name what this ticket deliberately leaves out, and where it goes.
@@ -73,8 +74,8 @@ The `pr-writing` skill's style rules apply to every ticket text and comment.
 - Waiting for the engineer's sign-off on a design or a decision is not Blocked.
 - A blocked part, with other parts still moving, is recorded in a comment; the status
   does not change.
-- A parent Task is In Progress while any of its sub-tasks is, and Done when all of
-  them are Done.
+- A parent ticket is In Progress while any of its child tickets is, and Done when all
+  of them are Done.
 - A merged PR with production checks still pending stays In Review. Its comment lists
   the pending checks. Merging alone is never Done.
 - Before Done, post a closing comment that maps every criterion to its evidence.
