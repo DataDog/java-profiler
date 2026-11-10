@@ -557,6 +557,8 @@ tasks.register("qualityChecks") {
 // Add runBenchmarks task
 tasks.register("runBenchmarks") {
   dependsOn(":ddprof-lib:benchmarks:runBenchmark")
+  // Advisory Linux-gated estimator, skipped on other platforms by its onlyIf.
+  dependsOn(":ddprof-lib:benchmarks:runNativeMemEstimator")
   group = "verification"
   description = "Run all benchmarks"
 }
