@@ -5,9 +5,16 @@ description: Writing rules for java-profiler PR titles and descriptions, PR comm
 
 # PR, comment and commit writing
 
-These rules apply to PR descriptions and to every comment a session writes: PR
-comments, review replies, Jira work-item comments. The template rule applies to
-descriptions only.
+These rules apply to PR titles and descriptions, commit messages, and every comment a
+session writes: PR comments, review replies, Jira work-item comments. The template rule
+applies to descriptions only.
+
+## Measured numbers
+
+Take counts, sizes, test totals and timings from a command's output, a saved log or a
+CI result for the current candidate, never from memory, and name that source. Naming
+the source is not a tool-run narrative. When the candidate changes, update the numbers
+or say they are from an earlier commit.
 
 ## PR descriptions and comments
 
@@ -41,5 +48,4 @@ descriptions only.
 
 ## Commits
 
-- Commit in logical chunks. Base each message solely on the actual diff.
-- The ticket reference (`PROF-<n>` or `#<n>`) goes in the PR title or body; CI checks it.
+- Base each commit message solely on the actual diff.
