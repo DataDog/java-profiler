@@ -187,6 +187,21 @@ public final class OTelContext {
   }
 
   /**
+   * @deprecated Use {@link #initializeAllContext(String, String, String, String, String, String,
+   *     String[])} instead.
+   */
+  @Deprecated
+  public void setProcessContext(
+      String env,
+      String hostname,
+      String runtimeId,
+      String service,
+      String version,
+      String tracerVersion) {
+    initializeAllContext(env, hostname, runtimeId, service, version, tracerVersion, new String[0]);
+  }
+
+  /**
    * Initializes the OpenTelemetry context shared with external profilers: it publishes the
    * process-level context and, as part of the same call, sets up the custom thread-context
    * attribute names ({@code attributeKeys}) as the {@code attribute_key_map}. Callers must invoke
@@ -255,21 +270,6 @@ public final class OTelContext {
    *     href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/deployment/">OpenTelemetry
    *     Deployment Attributes</a>
    */
-  /**
-   * @deprecated Use {@link #initializeAllContext(String, String, String, String, String, String,
-   *     String[])} instead.
-   */
-  @Deprecated
-  public void setProcessContext(
-      String env,
-      String hostname,
-      String runtimeId,
-      String service,
-      String version,
-      String tracerVersion) {
-    initializeAllContext(env, hostname, runtimeId, service, version, tracerVersion, new String[0]);
-  }
-
   public void initializeAllContext(
       String env,
       String hostname,
