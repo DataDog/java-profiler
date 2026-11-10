@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.cpu;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProcessProfilerTest;
@@ -16,11 +17,11 @@ import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.Assumptions;
@@ -75,7 +76,9 @@ public class LazyTraceIdJfrValidationTest extends AbstractProcessProfilerTest {
             "  </event>",
             "</configuration>"));
     try {
-      AtomicLong loggedId = new AtomicLong(-1);
+      // The line consumer runs on the reader thread.
+      Set<Long> loggedIds = Collections.synchronizedSet(new HashSet<>());
+      AtomicBoolean malformed = new AtomicBoolean(false);
       AtomicBoolean traceIdTags = new AtomicBoolean(false);
       AtomicBoolean tagsLogged = new AtomicBoolean(false);
       LaunchResult result =
@@ -98,9 +101,11 @@ public class LazyTraceIdJfrValidationTest extends AbstractProcessProfilerTest {
                 Matcher m = LOGGED_ID.matcher(line);
                 if (m.find()) {
                   try {
-                    loggedId.set(Long.parseLong(m.group(1)));
-                  } catch (NumberFormatException ignored) {
-                    // Leaves loggedId unset; the assertion below reports it.
+                    // The log line prints the id unsigned (%llu); parse it
+                    // unsigned so ids at or above 2^63 keep JFR's getId bits.
+                    loggedIds.add(Long.parseUnsignedLong(m.group(1)));
+                  } catch (NumberFormatException e) {
+                    malformed.set(true);
                   }
                 }
                 return LineConsumerResult.CONTINUE;
@@ -113,15 +118,21 @@ public class LazyTraceIdJfrValidationTest extends AbstractProcessProfilerTest {
       // on every other JDK calibration must find it.
       Assumptions.assumeTrue(Platform.hasJfr(), "JDK without JFR");
       assertTrue(traceIdTags.get(), "calibration did not find the trace ID offset");
-      assertTrue(loggedId.get() > 0, "the profiler did not log the probe class's trace ID");
+      assertFalse(loggedIds.isEmpty(), "the profiler did not log the probe class's trace ID");
+      assertFalse(malformed.get(), "the profiler logged a malformed trace ID line");
 
       Set<Long> jfrIds = jfrClassIds(jfrRecording, PROBE_CLASS);
-      System.out.println("profiler trace id=" + loggedId.get() + ", JFR class ids=" + jfrIds);
+      System.out.println("profiler trace ids=" + loggedIds + ", JFR class ids=" + jfrIds);
       assertTrue(!jfrIds.isEmpty(), "JFR recorded no jdk.ClassDefine for " + PROBE_CLASS);
       assertEquals(
-          new HashSet<>(Arrays.asList(loggedId.get())),
           jfrIds,
-          "the calibrated Klass::_trace_id offset does not read JFR's class ID");
+          loggedIds,
+          "the calibrated Klass::_trace_id offset does not read JFR's class ID"
+              + " (profiler read "
+              + loggedIds
+              + ", JFR recorded "
+              + jfrIds
+              + ")");
     } finally {
       try {
         Files.deleteIfExists(jfrRecording);
