@@ -487,7 +487,10 @@ public:
   // teardown only: production arrays are append-only for process lifetime.
   void freeForTest() {
     for (int i = 0; i < count(); i++) {
-      delete at(i);
+      CodeCache *lib = at(i);
+      NativeMem::record(NM_NATIVE_SYMBOLS, -lib->memoryUsage());
+      NativeMem::recordOverhead(NM_NATIVE_SYMBOLS, -lib->nameOverhead());
+      delete lib;
     }
     memset(_libs, 0, sizeof(_libs));
     _reserved = 0;

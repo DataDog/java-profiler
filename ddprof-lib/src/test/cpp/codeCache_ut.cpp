@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 #include "codeCache.h"
 
+#include <memory>
 #include <stdio.h>
 
 // memoryUsage() must reflect the actual per-symbol name length, not a fixed
@@ -81,25 +82,74 @@ TEST(CodeCacheTest, CopyIsDeepAndDoesNotDoubleFree) {
     EXPECT_EQ(expected, src.memoryUsage());  // src's names still intact
 }  // src destroyed — no double free
 
+class CodeCacheArrayTest : public ::testing::Test {
+protected:
+    CodeCacheArray arr;
+
+    void TearDown() override {
+        arr.freeForTest();
+    }
+};
+
 // CodeCacheArray::memoryUsage() is the aggregation production actually consumes
 // (Profiler::dump()). Verify it sums the per-library values — guards the loop
 // bound and the accumulation against regressions the per-instance tests miss.
-TEST(CodeCacheTest, ArrayMemoryUsageSumsLibraries) {
-    CodeCacheArray arr;
-    CodeCache *a = new CodeCache("liba");
-    CodeCache *b = new CodeCache("libb");
+TEST_F(CodeCacheArrayTest, ArrayMemoryUsageSumsLibraries) {
+    auto a = std::make_unique<CodeCache>("liba");
+    auto b = std::make_unique<CodeCache>("libb");
     // Populate before registering: add() must run pre-publication.
     a->add(reinterpret_cast<const void *>(0x1000), 16, "alpha_symbol");
     b->add(reinterpret_cast<const void *>(0x2000), 16, "beta_symbol_longer_name");
 
     long long expected = (long long)a->memoryUsage() + (long long)b->memoryUsage();
-    ASSERT_TRUE(arr.add(a));
-    ASSERT_TRUE(arr.add(b));
+    ASSERT_TRUE(arr.add(a.get()));
+    a.release();
+    ASSERT_TRUE(arr.add(b.get()));
+    b.release();
     EXPECT_EQ(expected, (long long)arr.memoryUsage());
+}
 
-    // CodeCacheArray does not own the entries.
-    delete a;
-    delete b;
+TEST_F(CodeCacheArrayTest, FreeForTestRestoresAccountingAndAllowsReuse) {
+    const long long live_before = NativeMem::live(NM_NATIVE_SYMBOLS);
+    const long long overhead_before = NativeMem::overhead(NM_NATIVE_SYMBOLS);
+    arr.freeForTest();
+    EXPECT_EQ(live_before, NativeMem::live(NM_NATIVE_SYMBOLS));
+    EXPECT_EQ(overhead_before, NativeMem::overhead(NM_NATIVE_SYMBOLS));
+
+    for (int cycle = 0; cycle < 2; cycle++) {
+        auto a = std::make_unique<CodeCache>("cleanup_liba");
+        auto b = std::make_unique<CodeCache>("cleanup_libb_with_longer_name");
+        a->add(reinterpret_cast<const void *>(0x1000), 16, "alpha_symbol");
+        b->add(reinterpret_cast<const void *>(0x2000), 32, "beta_symbol_longer_name");
+        b->add(reinterpret_cast<const void *>(0x3000), 8, "gamma");
+        CodeCache *first = a.get();
+        CodeCache *second = b.get();
+        const long long live = a->memoryUsage() + b->memoryUsage();
+        const long long overhead = a->nameOverhead() + b->nameOverhead();
+        ASSERT_GT(live, 0);
+
+        ASSERT_TRUE(arr.add(a.get()));
+        a.release();
+        ASSERT_TRUE(arr.add(b.get()));
+        b.release();
+        ASSERT_EQ(2, arr.count());
+        EXPECT_EQ(first, arr[0]);
+        EXPECT_EQ(second, arr[1]);
+        EXPECT_EQ(live, static_cast<long long>(arr.memoryUsage()));
+        EXPECT_EQ(live_before + live, NativeMem::live(NM_NATIVE_SYMBOLS));
+        EXPECT_EQ(overhead_before + overhead, NativeMem::overhead(NM_NATIVE_SYMBOLS));
+
+        for (int cleanup = 0; cleanup < 2; cleanup++) {
+            arr.freeForTest();
+            EXPECT_EQ(live_before, NativeMem::live(NM_NATIVE_SYMBOLS));
+            EXPECT_EQ(overhead_before, NativeMem::overhead(NM_NATIVE_SYMBOLS));
+            EXPECT_EQ(0, arr.count());
+            EXPECT_EQ(0u, arr.memoryUsage());
+            for (int slot = 0; slot < MAX_NATIVE_LIBS; slot++) {
+                EXPECT_EQ(nullptr, arr.at(slot)) << slot;
+            }
+        }
+    }
 }
 
 // The two-phase add used under JitCodeCache's stubs lock: prepareAdd() hands
