@@ -58,9 +58,10 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    knowledge and assumptions hide defects, and a long context costs more on every turn.
    Sphinx's workers already get only their task material; run `/code-review` in a
    subagent that does not inherit the conversation, or in a fresh session. Give the
-   reviewer the range, the change's stated intent, the `.knowledgebase/` skip and, for
-   a fix range, the findings it addresses; never your own conclusions about its
-   correctness.
+   reviewer only the range, the change's stated intent, the `.knowledgebase/` skip and,
+   for a fix range, the findings it addresses; never your own conclusions about its
+   correctness. Sphinx takes no brief: after a Sphinx fix review, check its report
+   against the addressed findings yourself.
 
    **Cost.** Plan for about $20–30 of agentic review per PR; before a run that is likely
    to exceed it, ask the user.
@@ -85,7 +86,8 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    - After two re-review rounds in one run of this skill, stop whatever the severity:
      make no further fixes, report the open findings to the user, and let the user
      decide whether another round runs. The first review does not count; the review of
-     a last fix does. This limit takes precedence over the Medium/Low stop rule. No
+     a last fix does. Starting the skill again does not reset the count. This limit
+     takes precedence over every fix instruction in this step. No
      marker while a Critical or High finding is neither fixed nor waived by the user.
      Every fix is reviewed before the marker; the user can waive findings, not reviews.
 
