@@ -8,6 +8,7 @@
 #include "common.h"
 #include "libraries.h"
 #include "mallocTracer.h"
+#include "signalSafety.h"
 #include "mutex.h"
 #include "symbols.h"
 
@@ -37,6 +38,7 @@ static bool isCurrentImage(const CodeCache* cc) {
 // it is patched or restored, and _patch_lock guards the bookkeeping. A library
 // that is no longer loaded where its cache describes is skipped (isCurrentImage()).
 void MallocHooker::patchLibraries() {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
     // See mallocTracer_linux.cpp.
     if (!symbolsResolved()) return;
 
@@ -62,6 +64,7 @@ void MallocHooker::patchLibraries() {
 }
 
 void MallocHooker::unpatchLibraries() {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
     MutexLocker ml(_patch_lock);
 
     TEST_LOG("MallocHooker::unpatchLibraries: restoring %d slot(s)", _entry_count);
@@ -70,7 +73,9 @@ void MallocHooker::unpatchLibraries() {
     while (i < _entry_count) {
         CodeCache* lib = _entries[i]._lib;
         int run_end = i;
-        while (run_end < _entry_count && _entries[run_end]._lib == lib) run_end++;
+        while (run_end < _entry_count && _entries[run_end]._lib == lib) {
+            run_end++;
+        }
 
         UnloadProtection handle(lib);
         if (handle.isValid() && isCurrentImage(lib)) {

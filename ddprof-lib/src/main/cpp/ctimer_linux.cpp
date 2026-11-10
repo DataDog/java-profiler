@@ -21,6 +21,7 @@
 #include "guards.h"
 #include "ctimer.h"
 #include "signalInflight.h"
+#include "signalSafety.h"
 #include "debugSupport.h"
 #include "libraries.h"
 #include "log.h"
@@ -124,7 +125,8 @@ int CTimer::registerThread(int tid) {
 void CTimer::unregisterThread(int tid) { deleteTimer(tid); }
 
 void CTimer::sweepTimers() {
-  for (int tid = 0; tid < _max_timers; tid++) {
+  const int max_timers = __atomic_load_n(&_max_timers, __ATOMIC_ACQUIRE);
+  for (int tid = 0; tid < max_timers; tid++) {
     deleteTimer(tid);
   }
 }
@@ -275,6 +277,7 @@ bool CTimer::releaseTimerTable() {
 }
 
 void CTimer::freeTimerTable() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   if (_timers == NULL) {
     return;
   }
@@ -282,11 +285,12 @@ void CTimer::freeTimerTable() {
   // outlived stop()'s registration drain may have published its timer after
   // an earlier sweep, and freeing the table would lose that timer's id.
   sweepTimers();
+  const size_t bytes = static_cast<size_t>(_max_timers) * sizeof(int);
+  // Unpublish the size before the free, as resizeTimers() does.
+  __atomic_store_n(&_max_timers, 0, __ATOMIC_RELEASE);
   free(_timers);
-  NativeMem::record(NM_CTIMER,
-                    -static_cast<long long>(static_cast<size_t>(_max_timers) * sizeof(int)));
   _timers = NULL;
-  _max_timers = 0;
+  NativeMem::record(NM_CTIMER, -static_cast<long long>(bytes));
 }
 
 void CTimer::releaseThreads() {

@@ -19,6 +19,7 @@
 #include "incbin.h"
 #include "jniHelper.h"
 #include "livenessTracker.h"
+#include "signalSafety.h"
 #include "rcDebugLevel.h"
 #include "objectSampler.h"
 #include "vmEntry.h"
@@ -2212,9 +2213,8 @@ Error LivenessTracker::start(Arguments &args) {
   }
   
   // Self-register with the profiler for liveness checking
-  Profiler::instance()->registerLivenessChecker([this](CallTraceIdSet& buffer) {
-    this->getLiveTraceIds(buffer);
-  });
+  _liveness_checker_token = Profiler::instance()->registerLivenessChecker(
+      [this](CallTraceIdSet& buffer) { this->getLiveTraceIds(buffer); });
   
   // Enable Java Object Sample events
   jvmtiEnv *jvmti = VM::jvmti();
@@ -2260,7 +2260,9 @@ bool LivenessTracker::clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env) {
     explicit LocalFrame(JNIEnv *e) : env(e), pushed(false) {
       if (env != nullptr) {
         pushed = env->PushLocalFrame(LEAK_TAG_POOL_SIZE + 8) == JNI_OK;
-        if (!pushed) env->ExceptionClear();
+        if (!pushed) {
+          env->ExceptionClear();
+        }
       }
     }
     LocalFrame(const LocalFrame &) = delete;
@@ -2314,8 +2316,12 @@ void LivenessTracker::resetKlassPopulationLocked(JNIEnv *env) {
 }
 
 void LivenessTracker::release(JNIEnv *env) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   // On every path: start() registers a checker whenever liveness is enabled.
-  Profiler::instance()->clearLivenessCheckers();
+  if (_liveness_checker_token != 0) {
+    Profiler::instance()->unregisterLivenessChecker(_liveness_checker_token);
+    _liveness_checker_token = 0;
+  }
   if (!_initialized || _table == nullptr) {
     // Never set up, or set up with liveness tracking unavailable: nothing to
     // free, and keeping _initialized keeps that outcome cached.
@@ -2754,6 +2760,12 @@ retry:
       // guarantees we don't busy loop until memory exhaustion
       retried = true;
 
+      if (_table_generation.load(std::memory_order_relaxed) != table_generation) {
+        // Stale: do not reap or grow the next recording's table for it.
+        env->DeleteWeakGlobalRef(ref);
+        return;
+      }
+
       // try cleanup before resizing - there is a good chance it will free some
       // space. allow_resolve=false: this runs synchronously on the
       // allocation-sampling callback stack (see cleanup_table()'s own header
@@ -2770,6 +2782,13 @@ retry:
       _table_lock.unlockShared();
       if (can_grow) {
         _table_lock.lock();
+        if (_table_generation.load(std::memory_order_relaxed) != table_generation) {
+          // Released (and maybe republished) since this callback captured its
+          // stack: never grow the next recording's table on its behalf.
+          _table_lock.unlock();
+          env->DeleteWeakGlobalRef(ref);
+          return;
+        }
         const int max_cap = _table_max_cap.load(std::memory_order_relaxed);
 
         // Let's increase the size of the table
@@ -2777,8 +2796,7 @@ retry:
         // is smaller than maximum heap size. So we only support increasing
         // the size of the table, not decreasing it.
 
-        // Only increase the size of the table to max_cap elements; a release()
-        // since the check above leaves newcap == _table_cap, a no-op.
+        // Only increase the size of the table to max_cap elements.
         int newcap = std::min(_table_cap * 2, max_cap);
         if (_table_cap != newcap) {
           TrackingEntry *tmp = (TrackingEntry *)realloc(

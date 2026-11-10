@@ -235,23 +235,27 @@ bool MallocHooker::initialize() {
 void MallocHooker::patchLibrary(CodeCache* cc) {
     TEST_LOG("MallocHooker::patchLibraries: patching %s has_malloc=%d",
              cc->name(), cc->findImport(im_malloc) != nullptr);
-    // Use patchImport() to record each slot for unpatchLibraries() restoration
-    if (_orig_malloc) {
-        patchImport(cc, im_malloc, reinterpret_cast<void*>(malloc_hook), reinterpret_cast<void*>(_orig_malloc));
-    }
-    if (_orig_realloc) {
-        patchImport(cc, im_realloc, reinterpret_cast<void*>(realloc_hook), reinterpret_cast<void*>(_orig_realloc));
-    }
-    if (_orig_aligned_alloc) {
-        patchImport(cc, im_aligned_alloc, reinterpret_cast<void*>(aligned_alloc_hook), reinterpret_cast<void*>(_orig_aligned_alloc));
-    }
     // On musl, calloc/posix_memalign delegate to malloc/aligned_alloc internally;
     // hooking them too would double-count. Leave the GOT entry untouched instead.
-    if (_orig_calloc && !_nested_malloc) {
-        patchImport(cc, im_calloc, reinterpret_cast<void*>(calloc_hook), reinterpret_cast<void*>(_orig_calloc));
-    }
-    if (_orig_posix_memalign && !_nested_posix_memalign) {
-        patchImport(cc, im_posix_memalign, reinterpret_cast<void*>(posix_memalign_hook), reinterpret_cast<void*>(_orig_posix_memalign));
+    const struct {
+        ImportId id;
+        void* hook;
+        void* orig;
+        bool enabled;
+    } imports[] = {
+        {im_malloc, reinterpret_cast<void*>(malloc_hook), reinterpret_cast<void*>(_orig_malloc), true},
+        {im_realloc, reinterpret_cast<void*>(realloc_hook), reinterpret_cast<void*>(_orig_realloc), true},
+        {im_aligned_alloc, reinterpret_cast<void*>(aligned_alloc_hook), reinterpret_cast<void*>(_orig_aligned_alloc), true},
+        {im_calloc, reinterpret_cast<void*>(calloc_hook), reinterpret_cast<void*>(_orig_calloc), !_nested_malloc},
+        {im_posix_memalign, reinterpret_cast<void*>(posix_memalign_hook), reinterpret_cast<void*>(_orig_posix_memalign), !_nested_posix_memalign},
+    };
+    static_assert(sizeof(imports) / sizeof(imports[0]) == NUM_HOOKED_IMPORTS,
+                  "size the entry table (NUM_HOOKED_IMPORTS) for every hooked import");
+    // patchImport() records each slot for unpatchLibraries() restoration
+    for (const auto& imp : imports) {
+        if (imp.orig != nullptr && imp.enabled) {
+            patchImport(cc, imp.id, imp.hook, imp.orig);
+        }
     }
 }
 
@@ -278,11 +282,10 @@ void MallocHooker::patchSlot(CodeCache* cc, void** location, void* hook_fn, void
     const bool rehook = current == hook_fn;
     // At most one entry per slot: a second would restore a stale original on
     // stop(), as the sort that groups entries by library does not keep their order.
-    // A slot still holding our hook may be in an entry of this recording too (a
-    // second cache of the same image); otherwise only a kept entry can match.
-    const int scan = rehook ? _entry_count : _kept_count;
+    // The slot may be in a kept entry or one of this recording's (also when
+    // something else re-patched it since), so scan them all.
     int existing = -1;
-    for (int i = 0; i < scan; i++) {
+    for (int i = 0; i < _entry_count; i++) {
         if (_entries[i]._location == location && _entries[i]._hook == hook_fn) {
             existing = i;
             break;

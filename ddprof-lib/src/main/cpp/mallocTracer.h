@@ -37,9 +37,11 @@ class MallocHooker {
     static int _patched_libs;
     static bool _initialized;
 
-    // Up to 5 imports per library (malloc, calloc, realloc, posix_memalign,
-    // aligned_alloc), each with up to NUM_IMPORT_TYPES relocation slots
-    static const int MAX_MALLOC_ENTRIES = 5 * NUM_IMPORT_TYPES * MAX_NATIVE_LIBS;
+    // Imports patchLibrary() hooks (malloc, calloc, realloc, posix_memalign,
+    // aligned_alloc); a static_assert there keeps it equal to its table.
+    static const int NUM_HOOKED_IMPORTS = 5;
+    // Each import has up to NUM_IMPORT_TYPES relocation slots per library
+    static const int MAX_MALLOC_ENTRIES = NUM_HOOKED_IMPORTS * NUM_IMPORT_TYPES * MAX_NATIVE_LIBS;
     // Entries of libraries a restore pass could not visit stay at the front of
     // _entries (see keepUnrestoredEntries()). patchSlot() takes the original of a
     // slot still holding our hook from them; a later stop() restores one only if

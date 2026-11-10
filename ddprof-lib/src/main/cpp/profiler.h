@@ -504,12 +504,17 @@ public:
     }
   }
   
-  void registerLivenessChecker(LivenessChecker checker) {
-    _call_trace_storage.registerLivenessChecker(checker);
+  u64 registerLivenessChecker(LivenessChecker checker) {
+    return _call_trace_storage.registerLivenessChecker(std::move(checker));
   }
-  void clearLivenessCheckers() {
-    _call_trace_storage.clearLivenessCheckers();
+  void unregisterLivenessChecker(u64 token) {
+    _call_trace_storage.unregisterLivenessChecker(token);
   }
+#ifdef UNIT_TEST
+  size_t livenessCheckerCountForTest() {
+    return _call_trace_storage.livenessCheckerCountForTest();
+  }
+#endif
 
   // Bumped under lockAll() by dump() and releaseRecordingMemory(), and by
   // start() before its engines: call trace ids cached under an older value are stale.

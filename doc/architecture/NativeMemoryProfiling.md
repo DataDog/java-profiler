@@ -165,7 +165,9 @@ GOT load records nothing, then calls **`MallocHooker::unpatchLibraries()`**:
   `patchSlot()` of the same slot reuses the saved original. Over the cap, the entries
   whose original `patchSlot()` can rebuild are dropped first; one holding a PLT stub or
   another interposer's wrapper survives.
-- `_entries` and `_patched_libs` are reset; the next `start()` re-patches from scratch.
+- `_patched_libs` is reset and the restored entries are discarded; the kept orphans
+  move to the front (`[0, _kept_count)`), and the next `start()` re-patches the rest
+  from scratch.
 
 `Profiler::stop()` stops the libraries refresher **before** `malloc_tracer.stop()`,
 because the refresher re-installs malloc hooks (`Libraries::refresh()` →
@@ -425,7 +427,8 @@ blocks same-thread timer samples (SIGPROF/SIGVTALRM) for the short duration of
 
 **Hooks are uninstalled on `stop()`, but a restore can miss a library.** A library
 that was unloaded and reloaded, or replaced at the same base, is not verifiably the
-image its saved slots came from, so its entries are dropped instead of restored. In
+image its saved slots came from, so its entries are not restored. They are kept, up to `MAX_ORPHAN_ENTRIES`, for a
+later `patchSlot()`. In
 practice such a library has a fresh GOT that never held the hook. A thread already
 inside a hook when the restore runs finishes it normally (the hook code stays mapped).
 

@@ -77,7 +77,7 @@ Library Load (via dlopen) / refresher tick with dirty flag
         └── LibraryPatcher::patch_sigaction()        patch every loaded, not-yet-patched lib
 ```
 
-`LibraryPatcher::initialize_persistent()` is first called from `Profiler::init()` (Java API path) or `Profiler::start()` (`-agentpath` path), both of which normally run after `VM::ready()`. In that order the `patch_sigaction()` call in `setupSignalHandlers()` returns immediately, and libraries loaded before then are patched by the next `Libraries::refresh()` (triggered by a `dlopen`, by the refresher thread when the library set is marked dirty, or by `start()`'s first `updateSymbols()`). The `sigaction` and `pthread_create` GOT patches are persistent: `stop()` (`LibraryPatcher::unpatch_libraries()`) only undoes the socket hooks.
+`LibraryPatcher::initialize_persistent()` is first called from `Profiler::init()` (Java API path) or `Profiler::start()` (`-agentpath` path), both of which normally run after `VM::ready()`. In that order the `patch_sigaction()` call in `setupSignalHandlers()` returns immediately, and libraries loaded before then are patched by the next `Libraries::refresh()` (triggered by a `dlopen`, by the refresher thread when the library set is marked dirty, or by `start()`'s first `updateSymbols()`). The `sigaction` and `pthread_create` GOT patches are persistent: `stop()` (`LibraryPatcher::unpatch_recording_hooks()`) only undoes the socket hooks.
 
 ### Signal Handler Chain
 

@@ -109,7 +109,7 @@ public:
   // reach without init(). They survive stop/start cycles and are never unpatched.
   static void initialize_persistent();
   static void patch_libraries();
-  static void unpatch_libraries();
+  static void unpatch_recording_hooks();
   static void patch_sigaction();
   static bool patch_socket_functions();
   static void unpatch_socket_functions();
@@ -128,7 +128,7 @@ class LibraryPatcher {
 public:
   static void initialize_persistent() { }
   static void patch_libraries() { }
-  static void unpatch_libraries() { }
+  static void unpatch_recording_hooks() { }
   static void patch_sigaction() { }
   static bool patch_socket_functions() { return false; }
   static void unpatch_socket_functions() { }

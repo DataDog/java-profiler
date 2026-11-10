@@ -31,7 +31,7 @@ public:
   static void setPatchedCount(int count) { LibraryPatcher::_size = count; }
 
   // Drops the patch table without writing the saved originals back, unlike
-  // unpatch_libraries(). Tests patch GOT slots that live in the test body's
+  // unpatch_recording_hooks(). Tests patch GOT slots that live in the test body's
   // frame, so by the time a fixture could restore them the addresses are dead;
   // forgetting the entries is what keeps one test from reaching into the next.
   static void forgetPatchTable() { LibraryPatcher::_size = 0; }
@@ -151,7 +151,7 @@ TEST_F(LibraryPatcherPatching, LeavesItsOwnPthreadCreateSlotUntouched) {
 // redirected to the hook.
 //
 // pthread_create patches are persistent (never unpatched), so after calling
-// unpatch_libraries() the slot stays hooked and the entry count remains.
+// unpatch_recording_hooks() the slot stays hooked and the entry count remains.
 // This is by design: pthread_create patches survive stop/start cycles.
 TEST_F(LibraryPatcherPatching, StillPatchesForeignPthreadCreateSlot) {
   void* const original = (void*)&fake_original_pthread_create;
@@ -168,7 +168,7 @@ TEST_F(LibraryPatcherPatching, StillPatchesForeignPthreadCreateSlot) {
   EXPECT_EQ(before + 1, LibraryPatcherTestAccessor::patchedCount());
   void* const hooked = slot;
 
-  LibraryPatcher::unpatch_libraries();
+  LibraryPatcher::unpatch_recording_hooks();
 
   // pthread_create patches are persistent - slot stays hooked and count unchanged
   EXPECT_EQ(hooked, slot);

@@ -185,11 +185,11 @@ typedef std::function<void(CallTraceIdSet&)> LivenessChecker;
 ```
 
 Checkers are registered with `registerLivenessChecker()` (exposed as
-`Profiler::registerLivenessChecker()`) and removed with
-`clearLivenessCheckers()`. The live-heap tracker (`livenessTracker.cpp`)
+`Profiler::registerLivenessChecker()`), which returns a token, and removed with
+`unregisterLivenessChecker(token)`. The live-heap tracker (`livenessTracker.cpp`)
 registers one per recording that adds the trace IDs of tracked allocations that
 are still live, so their stacks are written again in later chunks; its
-`release()` clears the checkers again when the recording stops.
+`release()` unregisters that checker again when the recording stops.
 
 A preserved trace is reinserted by ID (`putWithExistingId()`), not by stack
 hash, so identical stacks from different tenures keep their distinct IDs. The

@@ -5,6 +5,7 @@
 #include "nativeMem.h"
 #include "common.h"
 #include "log.h"
+#include "signalSafety.h"
 
 #include <stdio.h>
 
@@ -126,6 +127,7 @@ const char *NativeMem::categoryName(NativeMemCategory category) {
 }
 
 void NativeMem::logLive(const char *when) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   // One line, within TEST_LOG's 512-byte limit: ~13 categories of
   // " name=bytes" fit comfortably.
   char buf[400];

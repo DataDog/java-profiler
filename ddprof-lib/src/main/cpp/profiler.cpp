@@ -7,6 +7,7 @@
 #include <cassert>
 #include <climits>
 #include "profiler.h"
+#include "signalSafety.h"
 #include "asyncSampleMutex.h"
 #include "mallocTracer.h"
 #include "nativeSocketSampler.h"
@@ -346,8 +347,8 @@ void Profiler::unregisterThreadInEngines(int tid) {
 #endif
   // start() may replace the engine slots concurrently. Either engine is safe
   // to call: unregisterThread() releases only the exiting thread's own slot.
-  // The persistent pthread_create hook also reaches here before the first
-  // start(), when no engine has been selected yet.
+  // A NULL slot is skipped defensively: the persistent hook is installed by
+  // the first start(), after the engine slots are set.
   Engine *cpu = __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE);
   Engine *wall = __atomic_load_n(&_instance->_wall_engine, __ATOMIC_ACQUIRE);
   if (cpu != NULL) {
@@ -1299,7 +1300,7 @@ void Profiler::rollBackStart() {
     AllStripesLock stripes(this);
     _jfr.stop();
   }
-  LibraryPatcher::unpatch_libraries();
+  LibraryPatcher::unpatch_recording_hooks();
 }
 
 // stop() leaves an engine's per-thread resources in place (PerfEvents keeps
@@ -1765,8 +1766,8 @@ Error Profiler::init() {
       return Error("Profiler encountered fatal error");
     }
 
-    // Persistent pthread_create patch. After JVMSupport::initialize(): the hook
-    // calls Profiler::registerThread(), which needs ProfiledThread TLS.
+    // Arms the persistent pthread_create patch (the first start() installs it).
+    // After JVMSupport::initialize(): the hook needs ProfiledThread TLS.
     LibraryPatcher::initialize_persistent();
 
     // The idle footprint before the first start().
@@ -1893,8 +1894,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   } recording_memory(this);
   // Before any engine starts, so no call trace id is cached under the old value.
   __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
-  // A wall-clock handler that outlived stop()'s scan may have cached a tail id
-  // since; drop it before an engine can flush it into this recording.
+  // Defensive: a cached tail id names call-trace storage released at stop();
+  // drop it before an engine can flush it into this recording.
   _thread_filter.resetUnownedBlockedTails();
   // Open before any engine starts, so early allocation callbacks can intern.
   _intern_open.store(true, std::memory_order_release);
@@ -2287,8 +2288,9 @@ Error Profiler::stop() {
   // that unpatch just restored.  Stopping the refresher here closes that window.
   _libs->stopRefresher();
   // The refresher also re-installs malloc hooks (MallocTracer::installHooks()).
-  if (_event_mask & EM_NATIVEMEM)
+  if (_event_mask & EM_NATIVEMEM) {
     malloc_tracer.stop();
+  }
   if (_event_mask & EM_NATIVESOCKET)
     NativeSocketSampler::instance()->stop();
   if (_event_mask & EM_WALL)
@@ -2360,7 +2362,7 @@ Error Profiler::stop() {
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
   // owned by library metadata, so we must keep library patches active until after serialization
-  LibraryPatcher::unpatch_libraries();
+  LibraryPatcher::unpatch_recording_hooks();
 
   if (!hooks_drained && _cpu_engine->keepsThreadStateAcrossStop()) {
     _state.store(ERROR, std::memory_order_release);
@@ -2687,6 +2689,7 @@ void Profiler::shutdown(Arguments &args) {
 }
 
 void Profiler::releaseRecordingMemory() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   // Close the intern gate first (_state is still RUNNING during stop()): new
   // callers see the flag; the exclusive acquire waits for those holding the
   // lock, and a later acquirer re-checks the flag under it.
@@ -2721,8 +2724,7 @@ void Profiler::releaseRecordingMemory() {
   // Outside the locks too: release() unpublishes each table and drains its
   // guards before deleting it, so a late put() just drops its trace.
   _call_trace_storage.release();
-  // A cached tail id would otherwise be flushed into the next recording; a
-  // handler still running here caches after this, so start() resets again.
+  // A cached tail id names the call-trace storage released just above.
   _thread_filter.resetUnownedBlockedTails();
   for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
     if (buffers[i] != NULL) {
@@ -2747,6 +2749,7 @@ void Profiler::releaseRecordingMemory() {
 }
 
 void Profiler::acquireRecordingMemory() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   // The dictionaries need nothing here: they allocate on demand.
   AllStripesLock stripes(this);
   _call_trace_storage.acquire();
@@ -2768,7 +2771,7 @@ int Profiler::resetRecordingState() {
 
   // Normally a no-op. A table still allocated must go before Counters::reset(),
   // or freeing it later drives the CALLTRACE_STORAGE_* counters negative.
-  // No lockAll(): see releaseRecordingMemory().
+  // No lockAll(): the storage is already released here, so this is a no-op.
   _call_trace_storage.release();
 
   Counters::reset();

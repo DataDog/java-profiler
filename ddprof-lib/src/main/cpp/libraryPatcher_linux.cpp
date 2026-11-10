@@ -695,7 +695,7 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   }
 }
 
-void LibraryPatcher::unpatch_libraries() {
+void LibraryPatcher::unpatch_recording_hooks() {
   // Only the socket patches are per recording; pthread_create and sigaction
   // stay installed for the process lifetime.
   TEST_LOG("Unpatch libraries: only socket hooks");

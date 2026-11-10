@@ -334,6 +334,8 @@ private:
   // See tableGeneration(). Changed only under the exclusive _table_lock, so
   // track() compares it under the shared lock against a stable value.
   std::atomic<u64> _table_generation{0};
+  // Token of the checker start() registered with the call-trace storage; 0 if none.
+  u64 _liveness_checker_token{0};
   volatile int _table_size;
   int _table_cap;
   std::atomic<int> _table_max_cap;

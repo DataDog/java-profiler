@@ -308,7 +308,9 @@ a late writer can still reach after `stop()` must find it null or zero-capacity 
 the same lock it writes under, and must decide ownership of what it inserted while
 holding that lock, never by re-reading shared state after unlocking. Write queued events
 before `stop()` discards them. `_context_value_map` is deliberately kept across
-`stop()`, and `ACTION_RESUME` keeps dictionary ids. Details:
+`stop()` (its ids survive `ACTION_RESUME`); the class and string-label maps are
+released at every stop and keep only their id counter, so ids are never reused but
+entries are re-interned. Details:
 [ProfilingEngines.md](doc/architecture/ProfilingEngines.md#recording-scoped-state).
 
 **Persistent hooks.** The `pthread_create` and `sigaction` GOT hooks are installed once

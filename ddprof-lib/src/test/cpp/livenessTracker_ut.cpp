@@ -3125,6 +3125,7 @@ struct MockJvm {
     // Reserved up front and never grown, so object addresses stay stable.
     std::vector<MockJvmObject> objects;
     std::unordered_map<const void *, jlong> tags;
+    int weak_refs_deleted = 0;
     // Fake jclass -> JVMTI class signature.
     std::unordered_map<const void *, const char *> class_signatures;
 
@@ -3190,7 +3191,9 @@ void JNICALL mockExceptionDescribe(JNIEnv *) {}
 jweak JNICALL mockNewWeakGlobalRef(JNIEnv *, jobject obj) {
     return reinterpret_cast<jweak>(obj);
 }
-void JNICALL mockDeleteWeakGlobalRef(JNIEnv *, jweak) {}
+void JNICALL mockDeleteWeakGlobalRef(JNIEnv *, jweak) {
+    g_mock_jvm->weak_refs_deleted++;
+}
 
 jobject JNICALL mockNewLocalRef(JNIEnv *, jobject ref) {
     MockJvmObject *o = g_mock_jvm->asObject(ref);
@@ -3474,6 +3477,70 @@ TEST_F(LivenessTrackerMockJvmTest, StaleTableGenerationIsDropped) {
 
     trackNew(&jvm.retained_class, /*tid=*/1);
     EXPECT_EQ(1u, tracker->tableSizeForTest());
+}
+
+// release() is the per-stop teardown: it frees the table, deletes every entry's
+// weak ref exactly once, unregisters the tracker's own liveness checker and
+// bumps the table generation, so a callback that captured the old generation is
+// dropped against the table the next start() publishes.
+TEST_F(LivenessTrackerMockJvmTest, ReleaseTearsDownAndInvalidatesTheGeneration) {
+    constexpr int kTracked = 5;
+    LivenessTracker *tracker = LivenessTracker::instance();
+    Profiler *profiler = Profiler::instance();
+    for (int i = 0; i < kTracked; i++) {
+        trackNew(&jvm.retained_class, /*tid=*/1);
+    }
+    ASSERT_EQ((u32)kTracked, tracker->tableSizeForTest());
+    // Relative: earlier tests of this fixture started the tracker without a
+    // release(), so other checkers may be registered.
+    const size_t checkers = profiler->livenessCheckerCountForTest();
+    ASSERT_GE(checkers, 1u);
+    u64 generation = tracker->tableGeneration();
+    int deleted_before = jvm.weak_refs_deleted;
+
+    tracker->release(&jvm.jni);
+
+    EXPECT_EQ(0u, tracker->tableSizeForTest());
+    EXPECT_EQ(kTracked, jvm.weak_refs_deleted - deleted_before);
+    EXPECT_NE(generation, tracker->tableGeneration());
+    EXPECT_EQ(checkers - 1, profiler->livenessCheckerCountForTest());
+
+    // A callback holding the pre-release generation inserts nothing.
+    jobject stale_obj = jvm.newObject(&jvm.retained_class);
+    AllocEvent event;
+    event._size = 16;
+    tracker->track(&jvm.jni, event, /*tid=*/1, stale_obj, /*call_trace_id=*/1, generation);
+    EXPECT_EQ(0u, tracker->tableSizeForTest());
+
+    // release() -> start() round trip: one checker per recording again, and
+    // the old generation is still dropped against the new table.
+    Arguments args;
+    ASSERT_FALSE(args.parse("generations=true"));
+    ASSERT_FALSE(tracker->start(args));
+    tracker->setSubsampleRatioForTest(1.0);
+    EXPECT_EQ(checkers, profiler->livenessCheckerCountForTest());
+    tracker->track(&jvm.jni, event, /*tid=*/1, stale_obj, /*call_trace_id=*/1, generation);
+    EXPECT_EQ(0u, tracker->tableSizeForTest());
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    EXPECT_EQ(1u, tracker->tableSizeForTest());
+}
+
+// Without a JNIEnv release() cannot delete weak refs, but it must still free
+// the table and not crash.
+TEST_F(LivenessTrackerMockJvmTest, ReleaseWithoutAJniEnvDoesNotCrash) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    ASSERT_EQ(2u, tracker->tableSizeForTest());
+
+    tracker->release(nullptr);
+    EXPECT_EQ(0u, tracker->tableSizeForTest());
+
+    // Leave the tracker started, as the fixture's TearDown expects.
+    Arguments args;
+    ASSERT_FALSE(args.parse("generations=true"));
+    ASSERT_FALSE(tracker->start(args));
+    tracker->setSubsampleRatioForTest(1.0);
 }
 
 // Each sweep resolves the class of at most RESOLVE_BUDGET_PER_SWEEP (256,

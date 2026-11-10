@@ -5,11 +5,13 @@
 
 package com.datadoghq.profiler.lifecycle;
 
+import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.NativeMemTestHooks;
 import com.datadoghq.profiler.Platform;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -87,6 +89,19 @@ public class ProfilerLifecycleTest {
 
     /** Slack for small, legitimate fluctuations (e.g. a trace recorded during teardown). */
     private static final long GROWTH_TOLERANCE_BYTES = 64 * 1024;
+
+    /**
+     * The profiler is a process-wide singleton and the tests below start it without a
+     * stop on their failure paths. Leave it idle, so a retry or the next test does not
+     * fail with "already started" and hide the original failure.
+     */
+    @AfterEach
+    public void stopIfRunning() {
+        JavaProfiler profiler = JavaProfiler.getInstance();
+        if (profiler.getStatus().contains("Running          : true")) {
+            AbstractProfilerTest.stopRetryingOnDrainTimeout(profiler);
+        }
+    }
 
     @Timeout(120)
     @RetryingTest(3)

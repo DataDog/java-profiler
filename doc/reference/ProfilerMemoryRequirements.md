@@ -285,16 +285,17 @@ Typical overhead:
 
 Recording-scoped memory is freed when a recording stops: the call-trace tables and
 per-stripe frame buffers (`calltrace`), the class-name and string-label dictionaries
-(`dictionary`), the JFR buffers (`jfr_buffers`), and the liveness tracker's tracking
+(the `dictionary_classes_bytes` and `dictionary_endpoints_bytes` debug counters), the JFR buffers (`jfr_buffers`), and the liveness tracker's tracking
 table and its weak refs (`liveness`; up to 262,144 × 256 bytes = 64 MB while
 recording), and the CPU timer table (`ctimer`; `pid_max × 4` bytes, 16 MiB at a
 `pid_max` of 4194304, mostly untouched address space). Native malloc hooks are restored, except in a library that was unloaded or replaced
 since it was patched (see [Stopping](../architecture/NativeMemoryProfiling.md#stopping)).
-What stays: the context-value dictionary,
+What stays: the context-value dictionary (so the `dictionary` gauge stays non-zero),
 per-thread state (`thread_local`), parsed native symbols (`native_symbols`), the thread
 filter, the persistent `pthread_create`/`sigaction` GOT hooks, and `PerfEvents`'
-per-thread events. `ProfilerLifecycleTest` asserts the recording-scoped categories read
-0 after every `stop()`.
+per-thread events. `ProfilerLifecycleTest` asserts that `calltrace`, `jfr_buffers`, `wallclock`,
+`line_tables`, `method_map`, `liveness` and `ctimer`, and the two per-dictionary
+counters, read 0 after every `stop()`.
 
 ### Summary: Total Memory Overhead
 

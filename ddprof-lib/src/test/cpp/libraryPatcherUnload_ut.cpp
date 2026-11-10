@@ -58,6 +58,7 @@ enum ChildExit {
   CHILD_SAME_FINGERPRINT = 17,  // two different builds got the same fingerprint
   CHILD_DEADLOCK = 18,          // patching threads still blocked when the alarm fired
   CHILD_THREAD_FAILED = 19,
+  CHILD_UNHOOKED_BY_STOP = 21,  // a persistent hook was undone by the recording unpatch
 };
 
 const unsigned char SENTINEL = 0xA5;
@@ -70,12 +71,15 @@ struct PatchKind {
   ImportId import;  // the test DSO's import that gets patched
   void (*patch)();
   void (*unpatch)();
+  // The hook outlives the recording unpatch: the slot must stay hooked after it.
+  bool persistent;
 };
 
 const PatchKind SOCKET = {
   "socket", im_write,
   []() { LibraryPatcher::patch_socket_functions(); },
   []() { LibraryPatcher::unpatch_socket_functions(); },
+  false,
 };
 
 const PatchKind PTHREAD_CREATE = {
@@ -84,10 +88,10 @@ const PatchKind PTHREAD_CREATE = {
     LibraryPatcher::initialize_persistent();
     LibraryPatcher::patch_libraries();
   },
-  // Note: pthread_create patches are now persistent (never unpatched).
-  // For test cleanup, we use unpatch_libraries() which now only unpatches
-  // socket hooks, but the test still verifies the correct behavior.
-  []() { LibraryPatcher::unpatch_libraries(); },
+  // The pthread_create hook is persistent: unpatch_recording_hooks() only undoes
+  // the socket hooks, and the tests check that the slot stays hooked.
+  []() { LibraryPatcher::unpatch_recording_hooks(); },
+  true,
 };
 
 struct LoadedLib {
@@ -144,13 +148,14 @@ bool unload(void* handle, void** slot, const char* path = g_lib_path) {
   return true;
 }
 
-// For a DSO that stayed loaded: unpatching must restore the original binding.
-// Note: pthread_create patches are now persistent (never unpatched), so we
-// skip the restoration check for them.
+// For a DSO that stayed loaded: unpatching must restore the original binding,
+// except for a persistent hook, which must stay in place.
 void unpatchAndVerifyRestored(const PatchKind& kind, const LoadedLib& lib) {
   kind.unpatch();
-  // pthread_create patches are persistent, so don't verify restoration
-  if (&kind == &PTHREAD_CREATE) return;
+  if (kind.persistent) {
+    if (*lib.slot == lib.orig) _exit(CHILD_UNHOOKED_BY_STOP);
+    return;
+  }
   if (*lib.slot != lib.orig) _exit(CHILD_NOT_RESTORED);
 }
 
@@ -219,6 +224,7 @@ void runInChild(Scenario scenario) {
   ASSERT_NE(code, CHILD_CORRUPTED) << "stale GOT write corrupted the mapping that reused the address";
   ASSERT_NE(code, CHILD_NOT_RESTORED) << "DSO is still mapped but its slot was not restored";
   ASSERT_NE(code, CHILD_SLOT_NOT_HOOKED) << "patching did not hook the loaded DSO";
+  ASSERT_NE(code, CHILD_UNHOOKED_BY_STOP) << "a persistent hook was undone by the recording unpatch";
   ASSERT_NE(code, CHILD_NO_FINGERPRINT) << "the test DSO's CodeCache has no image fingerprint";
   ASSERT_NE(code, CHILD_SAME_FINGERPRINT) << "two different builds have the same fingerprint";
   ASSERT_NE(code, CHILD_DEADLOCK) << "patching deadlocked against the loader's dl_load_write_lock";

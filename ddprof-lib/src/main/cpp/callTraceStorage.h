@@ -75,7 +75,8 @@ private:
     
     // Liveness checkers - protected by simple spinlock during registration/clear
     // Using vector instead of unordered_set since std::function cannot be hashed
-    std::vector<LivenessChecker> _liveness_checkers;
+    std::vector<std::pair<u64, LivenessChecker>> _liveness_checkers;
+    u64 _next_liveness_token = 1;
     SpinLock _liveness_lock;  // Simple atomic lock for rare liveness operations
     
     // Static atomic for instance ID generation - avoids function-local static initialization issues
@@ -99,11 +100,19 @@ public:
     CallTraceStorage();
     ~CallTraceStorage();
 
-    // Register a liveness checker (rare operation - uses simple lock)
-    void registerLivenessChecker(LivenessChecker checker);
+    // Register a liveness checker (rare operation - uses simple lock).
+    // Returns a token for unregisterLivenessChecker().
+    u64 registerLivenessChecker(LivenessChecker checker);
 
-    // Clear liveness checkers (rare operation - uses simple lock)
-    void clearLivenessCheckers();
+    // Remove the checker registered under token (no-op if already gone)
+    void unregisterLivenessChecker(u64 token);
+
+#ifdef UNIT_TEST
+    size_t livenessCheckerCountForTest() {
+        ExclusiveLockGuard lock(&_liveness_lock);
+        return _liveness_checkers.size();
+    }
+#endif
 
     // Lock-free put operation for signal handler safety
     // Uses RefCountGuard and generation counter for ABA protection
@@ -121,13 +130,18 @@ public:
     }
 #endif
 
+#if defined(UNIT_TEST) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
+    // Test-only: production resets with release()/acquire().
     // Clears the active and standby tables.
     // Requires put() to be excluded for the duration (see the class comment).
     void clear();
+#endif
 
-    // Frees all three tables and the processTraces() collections. A concurrent
-    // put() drops its trace (each table is unpublished, drained, deleted); not
-    // concurrent with processTraces() or acquire().
+    // Frees all three tables and the processTraces() collections. Callers must
+    // exclude put(): every put() runs under a stripe lock that
+    // releaseRecordingMemory() takes (and bumps _session under) first. The guard
+    // drain is defense in depth, not ABA protection. Not concurrent with
+    // processTraces() or acquire().
     void release();
 
     // Allocates the tables again after release(); no-op if allocated.

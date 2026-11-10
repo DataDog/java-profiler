@@ -9,11 +9,13 @@
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "mallocTracer.h"
+#include "signalSafety.h"
 
 // Patching and restoring run inside a LibraryPatcher::LiveLibraryWalk, which
 // writes only through libraries still mapped as the image their CodeCache saw.
 // Its _lock guards _entries/_entry_count/_patched_libs here: no dlopen() & co.
 void MallocHooker::patchLibraries() {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
     // Defensive guard: the malloc symbols are resolved by initialize(), which runs in
     // MallocTracer::start() before _running is set and this path is reached.
     // Guards against stale or unexpected direct calls.
@@ -43,6 +45,7 @@ void MallocHooker::patchLibraries() {
 }
 
 void MallocHooker::unpatchLibraries() {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
     LibraryPatcher::LiveLibraryWalk walk(
         [](void*) {
             TEST_LOG("MallocHooker::unpatchLibraries: restoring %d slot(s)", _entry_count);

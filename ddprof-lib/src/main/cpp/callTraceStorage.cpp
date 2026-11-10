@@ -14,7 +14,9 @@
 #include "guards.h" // For table swap critical sections
 #include "threadLocalData.h"
 #include <string.h>
+#include <algorithm>
 #include <atomic>
+#include <utility>
 
 static const u64 OVERFLOW_TRACE_ID = 0x7fffffffffffffffULL;  // Max 64-bit signed value
 
@@ -132,14 +134,19 @@ CallTrace* CallTraceStorage::getDroppedTrace() {
     return &dropped_trace;
 }
 
-void CallTraceStorage::registerLivenessChecker(LivenessChecker checker) {
+u64 CallTraceStorage::registerLivenessChecker(LivenessChecker checker) {
     ExclusiveLockGuard lock(&_liveness_lock);
-    _liveness_checkers.push_back(checker);
+    const u64 token = _next_liveness_token++;
+    _liveness_checkers.emplace_back(token, std::move(checker));
+    return token;
 }
 
-void CallTraceStorage::clearLivenessCheckers() {
+void CallTraceStorage::unregisterLivenessChecker(u64 token) {
     ExclusiveLockGuard lock(&_liveness_lock);
-    _liveness_checkers.clear();
+    _liveness_checkers.erase(
+        std::remove_if(_liveness_checkers.begin(), _liveness_checkers.end(),
+                       [token](const std::pair<u64, LivenessChecker>& c) { return c.first == token; }),
+        _liveness_checkers.end());
 }
 
 
@@ -218,7 +225,7 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
         _preserve_set_buffer.clear();
 
         for (const auto& checker : _liveness_checkers) {
-            checker(_preserve_set_buffer);
+            checker.second(_preserve_set_buffer);
         }
     }
 
@@ -307,6 +314,7 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
     // - New standby (old scratch) stores preserved traces for next cycle
 }
 
+#if defined(UNIT_TEST) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
 void CallTraceStorage::clear() {
     // Mark critical section during clear operation for consistency
     CriticalSection cs;
@@ -328,3 +336,4 @@ void CallTraceStorage::clear() {
     Counters::set(CALLTRACE_STORAGE_BYTES, 0);
     Counters::set(CALLTRACE_STORAGE_TRACES, 0);
 }
+#endif

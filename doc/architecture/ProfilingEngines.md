@@ -76,7 +76,7 @@ Profiler::start()
   SamplerPerf::primeClock()                    before any handler can fire
   Profiler::startCpuEngine()    (EM_CPU)       failure -> warning, continue
     _cpu_engine->start()
-      CTimer:            ThreadTablesFreeze only if the table size changes;
+      CTimer:            ThreadTablesFreeze whenever stop() kept a table;
                          on a wait timeout (1 s) it fails and keeps its
                          table (a stuck registration call: see `stop()`)
       PerfEvents:        replaces its table without the freeze (PROF-16359);
@@ -190,10 +190,11 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
 2. **Native threads**: on Linux, `LibraryPatcher`'s `pthread_create` GOT hook
    wraps the start routine (`start_routine_wrapper()`) and calls
    `Profiler::registerThread()`. On exit, `unregister_and_release()` calls
-   `Profiler::unregisterThread()`. The hook is **persistent**: installed once
+   `Profiler::unregisterThread()`. The hook is **persistent**:
    `Profiler::init()` (or the first `start()`) calls
-   `LibraryPatcher::initialize_persistent()`, and never unpatched, so it also
-   runs before the first `start()` and between recordings. A refresh re-checks
+   `LibraryPatcher::initialize_persistent()`, which arms the patcher; the first
+   `start()`'s `updateSymbols()` installs the hook, and it is never unpatched, so it
+   also runs between recordings. A refresh re-checks
    already patched libraries (one reloaded at the same base needs its fresh GOT
    re-hooked) only when glibc's process-wide counters show one may have
    happened: an unload (`dlpi_subs`) since the last full pass, or a load
@@ -227,13 +228,15 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      sampled for the recording (PROF-16359).
    - `unregisterThread()` needs `_thread_tables_stable`, which is cleared only
      while CTimer replaces or frees its timer table (`ThreadTablesFreeze`):
-     `CTimer::sizeTimerTable()` in `start()` when a kept table's size changed,
+     `CTimer::sizeTimerTable()` in `start()` whenever `stop()` kept a table
+     (to sweep it, and to replace it if `pid_max` changed),
      and `CTimer::releaseTimerTable()` at the end of `CTimer::stop()`. Since
      `stop()` frees the table, a `start()` normally allocates into none, which
      needs no freeze: hook calls see `_max_timers == 0` until the table is
      published, `_max_timers` last with release. So a start does not fail on
      thread churn the freeze could not drain. A table that `stop()` had to keep
-     (hook calls did not drain) is reused at an unchanged `pid_max`.
+     (hook calls did not drain) is swept under the freeze before it is reused
+     at an unchanged `pid_max`.
      `PerfEvents::start()` replaces its table without clearing it
      (PROF-16359). An exit that arrives while the gate is closed is recorded
      by `Profiler::recordSkippedUnregistration()`. `CTimer::start()` replays
@@ -242,9 +245,8 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      a thread listed after its exit keeps its fd (PROF-16359). The gate
      stays set while idle, because `PerfEvents::stop()` keeps per-thread fds
      open and this call closes the fd of a thread that exits after `stop()`.
-     Since the hook is persistent, an exit can also arrive before the first
-     `start()`, while both engine slots are still `NULL`: the call skips a
-     `NULL` slot.
+     The call also skips a `NULL` engine slot, as a defensive check: the hook is
+     installed by the first `start()`, after the engine slots are set.
    - `start()` replaces `_cpu_engine`/`_wall_engine` while unregistration is
      open, so it stores the pointers with release and the hook paths load them
      with acquire. An unregistration that reaches the previous engine only
@@ -557,8 +559,8 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
   (`objectSampler.cpp:51-154`), on the allocating Java thread, outside any
   signal handler:
   1. Resolves the class with `GetClassSignature` and `lookupClass()` (through
-     the profiler's intern gate). An unresolvable class drops the sample. Just
-     before the lookup it reads `Profiler::recordingSession()` and
+     the profiler's intern gate). An unresolvable class drops the sample. At
+     callback entry, before any JVMTI call, it reads `Profiler::recordingSession()` and
      `LivenessTracker::tableGeneration()`: disabling the JVMTI event does not
      wait for callbacks already running, so one can resume after a stop/start
      holding a class id from the previous recording.
@@ -673,19 +675,20 @@ chains are described in
   deliberately leaves GC notifications enabled (`onGC()` ignores them while the
   tracker is released).
 - **`release()`** runs from `Profiler::releaseRecordingMemory()`, after the final
-  chunk is written and the reference-chain BFS thread is joined. It clears the
+  chunk is written and the reference-chain BFS thread is joined. It first unregisters
+  its own liveness checker, on every path. It then clears the
   JVMTI tag of every object still carrying a leak-pool tag (one
   `GetObjectsWithTags` over the pool; `releaseSearchTags()` clears only search
   tags), then under the exclusive lock deletes every entry's weak ref and the
   population representatives' weak refs, frees the table, and zeroes
   `_table_cap`/`_table_max_cap`/`_enabled`. It then rebuilds the leak-tag pool as
-  all free, clears the liveness checkers, and resets `_initialized` so the next
+  all free, and resets `_initialized` so the next
   `start()` initializes from scratch. If the leak tags cannot be cleared here and
   again at the next `start()`, that recording hands out no leak tags: leak reference
   chains are missing for it, allocation and liveness sampling continue, and each
   `start()` retries the clear. An allocation callback still in flight
-  finds no capacity and deletes only its own, never-inserted weak ref. It is a
-  no-op when no table was allocated.
+  finds no capacity and deletes only its own, never-inserted weak ref. Apart from unregistering
+  the checker, it is a no-op when no table was allocated.
 
 ## Native Malloc Sampling (`MallocTracer`, `mallocTracer.{h,cpp}`)
 
@@ -704,7 +707,7 @@ In summary:
   implements them on top of `malloc`/`aligned_alloc`
   (`detectNestedMalloc()`). Every patched slot is recorded, and `stop()`
   restores them and resets `_patched_libs`, so hooks exist only while a
-  recording runs. Libraries loaded later are patched by `Libraries::refresh()`
+  recording runs, except in a library the restore walk could not verify. Libraries loaded later are patched by `Libraries::refresh()`
   (`libraries.cpp:90-91`).
 - **Signals**: none. Hooks run synchronously on the allocating thread.
 - **Sampling**: `maybeRecord()` (`mallocTracer.cpp:312`) acquires the

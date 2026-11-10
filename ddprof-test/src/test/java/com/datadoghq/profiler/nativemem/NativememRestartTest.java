@@ -21,15 +21,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Verifies that native memory (malloc) profiling survives a stop/restart cycle.
  *
- * <p>This test exercises the malloc hook lifecycle:
- * <ol>
- *   <li>First session: profiler starts, malloc hooks are patched, allocations are sampled</li>
- *   <li>Stop: malloc hooks are unpatched (GOT slots restored to original functions)</li>
- *   <li>Second session: profiler restarts, malloc hooks are re-patched, allocations are sampled</li>
- * </ol>
- *
- * <p>Events must be recorded in the second profiling session, confirming that the
- * stop/start lifecycle management (hook unpatch/repatch) is working correctly.
+ * <p>Each of two sessions starts the profiler, allocates, and stops. The test only
+ * asserts that malloc events are recorded in every session. That the hooks are
+ * restored on stop is covered by the MallocHooker gtests (restoreSlot/unpatch).
  */
 public class NativememRestartTest extends AbstractProfilerTest {
 
