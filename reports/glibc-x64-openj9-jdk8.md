@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-10 06:59:41 EST
+**Date:** 2026-11-10 08:11:35 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 28 |
-| CPU Cores (end) | 24 |
+| CPU Cores (start) | 76 |
+| CPU Cores (end) | 74 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,9 +28,9 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 180 |
-| Sample Rate | 3.00/sec |
-| Health Score | 188% |
+| CPU Samples | 199 |
+| Sample Rate | 3.32/sec |
+| Health Score | 207% |
 | Threads | 5 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 164 |
-| Sample Rate | 2.73/sec |
-| Health Score | 171% |
-| Threads | 7 |
+| CPU Samples | 162 |
+| Sample Rate | 2.70/sec |
+| Health Score | 169% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (4 unique values: 24-32 cores)</summary>
+<summary>CPU Timeline (4 unique values: 74-93 cores)</summary>
 
 ```
-1794311750 28
-1794311755 28
-1794311760 32
-1794311765 32
-1794311770 32
-1794311775 32
-1794311780 32
-1794311785 32
-1794311790 32
-1794311795 32
-1794311800 26
-1794311805 26
-1794311810 26
-1794311815 26
-1794311820 26
-1794311825 26
-1794311830 26
-1794311835 26
-1794311840 24
-1794311845 24
+1794316043 76
+1794316048 76
+1794316053 78
+1794316058 78
+1794316063 78
+1794316068 78
+1794316073 78
+1794316078 78
+1794316083 78
+1794316088 78
+1794316093 78
+1794316098 78
+1794316103 78
+1794316108 78
+1794316113 93
+1794316118 93
+1794316123 93
+1794316128 93
+1794316133 93
+1794316138 93
 ```
 </details>
 
