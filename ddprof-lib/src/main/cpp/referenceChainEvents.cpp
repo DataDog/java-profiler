@@ -528,7 +528,6 @@ bool ReferenceChainTracker::replaceResolvedChain(jlong source_tag, ReferenceChai
     return false;
   }
   it->second.event = std::move(event);
-  it->second.source_tag = source_tag;
   TEST_LOG("ReferenceChainTracker::replaceResolvedChain rebuilt "
            "source_tag=%lld depth=%u",
            (long long)source_tag, it->second.event._depth);
@@ -754,7 +753,8 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
             MAX_PENDING_CHAIN_INVALIDATIONS) {
           _pending_chain_invalidations.push_back(pending);
         } else {
-          // Unreachable under the 2 * MAX_RESOLVED_CHAINS bound; the cached chain is kept.
+          // Reachable when producers outpace the drain (the cap, not arithmetic, bounds the
+          // buffer); the cached chain is kept and a later correlation or path change re-queues it.
           TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations requeue overflow, "
                    "keeping cached chain source_tag=%lld",
                    (long long)tag);
