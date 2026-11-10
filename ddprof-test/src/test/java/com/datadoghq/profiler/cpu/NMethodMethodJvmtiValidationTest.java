@@ -77,9 +77,13 @@ public class NMethodMethodJvmtiValidationTest extends AbstractProcessProfilerTes
             Assumptions.assumeFalse(line.equals(UNSUPPORTED), "the profiler has no code heap on this JVM");
             long[] values = parseReport(line);
             long target = values[0];
+            // A null target or code address makes the read == target check below
+            // degenerate: an all-zero report must fail, not pass as a match.
+            assertTrue(target != 0, "the seam resolved no jmethodID for " + TARGET);
             assertTrue(values.length > 1, "JVMTI reported no compiled code for " + TARGET);
             for (int i = 1; i + 2 < values.length; i += 3) {
                 long addr = values[i];
+                assertTrue(addr != 0, "a reported read has no code address");
                 long status = values[i + 1];
                 long read = values[i + 2];
                 assertEquals(0, status,
