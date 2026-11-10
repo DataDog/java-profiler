@@ -74,7 +74,9 @@ public class NMethodMethodJvmtiValidationTest extends AbstractProcessProfilerTes
             assertEquals(0, result.exitCode, "child JVM failed");
             String line = report.get();
             assertTrue(line != null, "the child did not report nmethod reads");
-            Assumptions.assumeFalse(line.equals(UNSUPPORTED), "the profiler has no code heap on this JVM");
+            Assumptions.assumeFalse(line.equals(UNSUPPORTED),
+                    "the compiled-method-read seam is unavailable (no code heap on this JVM, "
+                            + "or a release native build where the debug-only seam returns null)");
             long[] values = parseReport(line);
             long target = values[0];
             // A null target or code address makes the read == target check below
