@@ -827,6 +827,177 @@ protected:
         EXPECT_TRUE(truncated);
     }
 
+    enum class JavaBarrierCase {
+        Valid, MissingOffset, UnrecognizedBarrier, NullEntry, MisalignedEntry, EntryBelowSp,
+        EntryAboveStack, InvalidFrameSize, BadCarrierFp, BadCarrierPc, ConsumedEntry,
+        ExportedParent, ExportedNullParent
+    };
+
+    // The four-word Java frame returns to the barrier with an unreliable FP.
+    // Expected save pairs are literal slots: old OSR padding puts them at 16/17,
+    // while zero extension puts them at 12/13; no recovery helper positions them.
+    void assertCarrierFromJavaReturnBarrier(bool osr, unsigned short arg_slots, bool old_layout,
+                                           JavaBarrierCase test_case = JavaBarrierCase::Valid) {
+        SCOPED_TRACE(static_cast<int>(test_case));
+        alignas(16) uintptr_t stack[64]{};
+        uintptr_t method_token = 0;
+        jmethodID expected_method = reinterpret_cast<jmethodID>(&method_token);
+        struct MethodIds { uintptr_t length; jmethodID id; } ids{1, expected_method};
+        struct Holder { MethodIds* ids; } holder{&ids};
+        struct Pool { Holder* holder; } pool{&holder};
+        struct ConstMethod { Pool* constants; unsigned short idnum; unsigned short slots; } const_method{&pool, 0, arg_slots};
+        struct Method { ConstMethod* const_method; } method{&const_method};
+        struct NMethod {
+            const char* name = "nmethod";
+            int frame_size = 4;
+            int size = sizeof(NMethod);
+            short frame_complete = 0;
+            const void* code_begin;
+            const void* entry;
+            Method* method;
+            signed char level = 4;
+            int entry_bci;
+            int scopes[2] = {offsetof(NMethod, code), offsetof(NMethod, code)};
+            uint32_t code[16]{};
+        } wrapper;
+        struct Blob { uintptr_t used = 1; NMethod nm; };
+        static_assert(offsetof(Blob, nm) == sizeof(uintptr_t), "CodeHeap header precedes the blob");
+        static_assert(sizeof(Blob) <= 512, "Java blob occupies one CodeHeap segment");
+        alignas(16) unsigned char heap_memory[1024]{};
+        Blob& blob = *new (heap_memory) Blob;
+        blob.nm.code_begin = blob.nm.entry = blob.nm.code;
+        blob.nm.method = &method;
+        blob.nm.entry_bci = osr ? 0 : -1;
+#ifdef __aarch64__
+        for (uint32_t& instruction : blob.nm.code) instruction = 0xd503201f;
+#else
+        memset(blob.nm.code, 0x90, sizeof(blob.nm.code));
+#endif
+        const void* java_pc = reinterpret_cast<const char*>(blob.nm.code) + 16;
+        auto prefix = barrierInstructions();
+        if (test_case == JavaBarrierCase::UnrecognizedBarrier) prefix[0] = 0;
+        unsigned char* barrier_pc = heap_memory + 512;
+        memcpy(barrier_pc, prefix.data(), prefix.size());
+        struct Heap { const void* low; const void* high; unsigned char* map; };
+        unsigned char map[] = {0, 0xff}; // The barrier has no nmethod.
+        Heap heap{heap_memory, heap_memory + sizeof(heap_memory), map};
+        wrapper.frame_size = test_case == JavaBarrierCase::InvalidFrameSize ? 11 : 10;
+        ScopedValue<int> memory(_code_heap_memory_offset, 0);
+        ScopedValue<int> segmap(_code_heap_segmap_offset, offsetof(Heap, map));
+        ScopedValue<int> low(_vs_low_offset, offsetof(Heap, low));
+        ScopedValue<int> high(_vs_high_offset, offsetof(Heap, high));
+        ScopedValue<int> shift(_code_heap_segment_shift, 9);
+        ScopedValue<int> used(_heap_block_used_offset, 0);
+        ScopedValue<int> name(_nmethod_name_offset, offsetof(NMethod, name));
+        ScopedValue<int> frame_size(_frame_size_offset, offsetof(NMethod, frame_size));
+        ScopedValue<int> size(_blob_size_offset, offsetof(NMethod, size));
+        ScopedValue<int> complete(_frame_complete_offset, offsetof(NMethod, frame_complete));
+        ScopedValue<int> code_offset(_code_offset, -1);
+        ScopedValue<int> code_address(_code_address, offsetof(NMethod, code_begin));
+        ScopedValue<int> entry_offset(_nmethod_entry_offset, -1);
+        ScopedValue<int> entry_address(_nmethod_entry_address, offsetof(NMethod, entry));
+        ScopedValue<int> method_offset(_nmethod_method_offset, offsetof(NMethod, method));
+        ScopedValue<int> level(_nmethod_level_offset, offsetof(NMethod, level));
+        ScopedValue<int> entry_bci(_nmethod_entry_bci_offset, offsetof(NMethod, entry_bci));
+        ScopedValue<int> scopes(_scopes_pcs_offset, offsetof(NMethod, scopes));
+        ScopedValue<int> immutable(_nmethod_immutable_offset, -1);
+        ScopedValue<int> constmethod(_method_constmethod_offset, offsetof(Method, const_method));
+        ScopedValue<int> constants(_constmethod_constants_offset, offsetof(ConstMethod, constants));
+        ScopedValue<int> idnum(_constmethod_idnum_offset, offsetof(ConstMethod, idnum));
+        ScopedValue<int> slots(_constmethod_stack_arg_slots_offset, offsetof(ConstMethod, slots));
+        ScopedValue<int> pool_holder(_pool_holder_offset, offsetof(Pool, holder));
+        ScopedValue<int> method_ids(_jmethod_ids_offset, offsetof(Holder, ids));
+        bool exported = test_case == JavaBarrierCase::ExportedParent || test_case == JavaBarrierCase::ExportedNullParent;
+        ScopedValue<int> cont_offset(_cont_entry_offset, exported ? 0 : -1);
+        ScopedValue<int> parent_offset(_cont_entry_parent_offset, 0);
+        ScopedValue<uint64_t> entry_size(TYPE_SIZE_NAME(VMContinuationEntry), exported ? 64 : 0);
+        ScopedValue<uint64_t> type_size(TYPE_SIZE_NAME(VMNMethod), sizeof(NMethod));
+        ScopedValue<uint64_t> method_size(TYPE_SIZE_NAME(VMMethod), sizeof(Method));
+        ScopedValue<uint64_t> constmethod_size(TYPE_SIZE_NAME(VMConstMethod), sizeof(ConstMethod));
+        ScopedValue<char*> heap0(_code_heap[0], reinterpret_cast<char*>(&heap));
+        ScopedValue<char*> heap1(_code_heap[1], nullptr);
+        ScopedValue<char*> heap2(_code_heap[2], nullptr);
+        ScopedValue<const void*> heap_low(_code_heap_low, heap.low);
+        ScopedValue<const void*> heap_high(_code_heap_high, heap.high);
+        ScopedValue<VMNMethod*> entry_nm(_enter_special_nm, reinterpret_cast<VMNMethod*>(&wrapper));
+        ScopedValue<const void*> barrier(_cont_return_barrier, barrier_pc);
+        VMTestAccessor::install(true, exported ? 27 : 21);
+        initContEntryThreadOffset();
+        ASSERT_EQ(test_case == JavaBarrierCase::UnrecognizedBarrier ? -1 : 0, contEntryThreadOffset());
+        if (test_case == JavaBarrierCase::MissingOffset) _cont_entry_thread_offset = -1;
+
+        int entry_slot = old_layout ? 8 : 4;
+        int saved_slot = old_layout ? 16 : 12;
+        thread.entry = &stack[entry_slot];
+        stack[2] = 1;
+        stack[3] = reinterpret_cast<uintptr_t>(barrier_pc);
+        stack[saved_slot] = reinterpret_cast<uintptr_t>(&stack[48]);
+        stack[saved_slot + 1] = reinterpret_cast<uintptr_t>(CARRIER_PC);
+        stack[saved_slot + 2] = reinterpret_cast<uintptr_t>(&stack[50]);
+        stack[saved_slot + 3] = reinterpret_cast<uintptr_t>(THREAD_ENTRY_PC);
+        if (test_case == JavaBarrierCase::NullEntry) thread.entry = nullptr;
+        if (test_case == JavaBarrierCase::MisalignedEntry) thread.entry = &stack[entry_slot + 1];
+        if (test_case == JavaBarrierCase::EntryBelowSp) thread.entry = &stack[2];
+        if (test_case == JavaBarrierCase::EntryAboveStack) thread.entry = reinterpret_cast<void*>(UINTPTR_MAX & ~uintptr_t(15));
+        if (test_case == JavaBarrierCase::BadCarrierFp) stack[saved_slot] = 1;
+        if (test_case == JavaBarrierCase::BadCarrierPc) stack[saved_slot + 1] = 1;
+        if (test_case == JavaBarrierCase::MissingOffset) thread.entry = nullptr;
+        bool nested = test_case == JavaBarrierCase::ConsumedEntry || exported;
+        if (nested) {
+            ASSERT_TRUE(old_layout);
+            stack[17] = reinterpret_cast<uintptr_t>(java_pc);
+            stack[20] = 1;
+            stack[21] = reinterpret_cast<uintptr_t>(barrier_pc);
+            // Child entry 8 returns to Java SP 18, then barrier SP 22.
+            // Only exported parent traversal can reach entry 26 and pair 34/35.
+            stack[8] = test_case == JavaBarrierCase::ExportedParent ? reinterpret_cast<uintptr_t>(&stack[26]) : 0;
+            stack[34] = reinterpret_cast<uintptr_t>(&stack[48]);
+            stack[35] = reinterpret_cast<uintptr_t>(CARRIER_PC);
+            stack[36] = reinterpret_cast<uintptr_t>(&stack[50]);
+            stack[37] = reinterpret_cast<uintptr_t>(THREAD_ENTRY_PC);
+        }
+        ucontext_t context{};
+#ifdef __APPLE__
+        _STRUCT_MCONTEXT64 machine_context{};
+        context.uc_mcontext = &machine_context;
+#endif
+        StackFrame frame(&context);
+        frame.pc() = reinterpret_cast<uintptr_t>(java_pc);
+        frame.sp() = reinterpret_cast<uintptr_t>(stack);
+        frame.fp() = reinterpret_cast<uintptr_t>(&stack[2]);
+        StackWalkFeatures features{};
+        features.carrier_frames = true;
+        auto java_before = Counters::getCounter(WALKVM_JAVA_FRAME_OK);
+        auto barrier_before = Counters::getCounter(WALKVM_CONT_BARRIER_HIT);
+        auto anchor_before = Counters::getCounter(WALKVM_ANCHOR_FALLBACK);
+        bool truncated = false;
+        int depth = HotspotSupportTestAccessor::walk(&context, frames, features, MAX_DEPTH, &truncated);
+        int java_frames = nested ? 2 : 1;
+        EXPECT_EQ(java_before + java_frames, Counters::getCounter(WALKVM_JAVA_FRAME_OK));
+        EXPECT_EQ(barrier_before + java_frames, Counters::getCounter(WALKVM_CONT_BARRIER_HIT));
+        EXPECT_EQ(anchor_before, Counters::getCounter(WALKVM_ANCHOR_FALLBACK));
+        ASSERT_EQ(java_frames + 1, depth);
+        for (int i = 0; i < java_frames; i++) {
+            EXPECT_EQ(FrameType::encode(FRAME_JIT_COMPILED, 0), frames[i].bci);
+            EXPECT_EQ(expected_method, frames[i].method_id);
+        }
+        EXPECT_TRUE(truncated);
+        const char* error = nullptr;
+        if (test_case == JavaBarrierCase::BadCarrierFp || test_case == JavaBarrierCase::BadCarrierPc) error = "break_cont_carrier_sp";
+        else if (test_case == JavaBarrierCase::ExportedNullParent) error = "break_cont_entry_null";
+        else if (test_case == JavaBarrierCase::MissingOffset) {
+            if (osr && arg_slots > 0) error = "break_cont_entry_fp";
+        } else if (test_case != JavaBarrierCase::Valid && test_case != JavaBarrierCase::ExportedParent) error = "break_cont_entry_fp";
+        if (error != nullptr) {
+            ASSERT_EQ(BCI_ERROR, frames[java_frames].bci);
+            EXPECT_STREQ(error, reinterpret_cast<const char*>(frames[java_frames].method_id));
+        } else {
+            ASSERT_EQ(BCI_NATIVE_FRAME, frames[java_frames].bci)
+                    << (frames[java_frames].bci == BCI_ERROR ? reinterpret_cast<const char*>(frames[java_frames].method_id) : "unexpected frame type");
+            EXPECT_STREQ("continuation_carrier", reinterpret_cast<const char*>(frames[java_frames].method_id));
+        }
+    }
+
     bool old_hotspot;
     int old_version;
     pthread_key_t old_key;
@@ -926,6 +1097,49 @@ TEST_F(ContinuationWalkTest, SampledReturnBarrierWithoutCarrierFramesKeepsTrunca
     for (bool native_prefix : {false, true}) {
         for (int stack_args : {0, 3}) assertCarrierFromSampledReturnBarrier(stack_args, false, false, native_prefix);
     }
+}
+
+TEST_F(ContinuationWalkTest, PositiveArgumentOsrOldLayoutRetainsCarrierThroughReturnBarrier) {
+    assertCarrierFromJavaReturnBarrier(true, 6, true);
+}
+
+TEST_F(ContinuationWalkTest, PositiveArgumentOsrZeroExtensionRetainsCarrierThroughReturnBarrier) {
+    assertCarrierFromJavaReturnBarrier(true, 6, false);
+}
+
+TEST_F(ContinuationWalkTest, InvocationArgumentsReachReturnBarrierWithoutInferredEntry) {
+    assertCarrierFromJavaReturnBarrier(false, 6, true, JavaBarrierCase::MissingOffset);
+}
+
+TEST_F(ContinuationWalkTest, ZeroArgumentJavaFramesReachReturnBarrierWithoutInferredEntry) {
+    for (bool osr : {false, true}) assertCarrierFromJavaReturnBarrier(osr, 0, false, JavaBarrierCase::MissingOffset);
+}
+
+TEST_F(ContinuationWalkTest, PositiveArgumentOsrRejectsUnavailableOrInvalidInferredEntry) {
+    for (JavaBarrierCase test_case : {
+            JavaBarrierCase::MissingOffset, JavaBarrierCase::UnrecognizedBarrier, JavaBarrierCase::NullEntry,
+            JavaBarrierCase::MisalignedEntry, JavaBarrierCase::EntryBelowSp, JavaBarrierCase::EntryAboveStack,
+            JavaBarrierCase::InvalidFrameSize}) {
+        for (bool old_layout : {false, true}) assertCarrierFromJavaReturnBarrier(true, 6, old_layout, test_case);
+    }
+}
+
+TEST_F(ContinuationWalkTest, PositiveArgumentOsrRejectsInvalidSavedCarrier) {
+    for (JavaBarrierCase test_case : {JavaBarrierCase::BadCarrierFp, JavaBarrierCase::BadCarrierPc}) {
+        for (bool old_layout : {false, true}) assertCarrierFromJavaReturnBarrier(true, 6, old_layout, test_case);
+    }
+}
+
+TEST_F(ContinuationWalkTest, PositiveArgumentOsrDoesNotReplayConsumedInferredEntry) {
+    assertCarrierFromJavaReturnBarrier(true, 6, true, JavaBarrierCase::ConsumedEntry);
+}
+
+TEST_F(ContinuationWalkTest, PositiveArgumentOsrFollowsExportedParentAtSecondReturnBarrier) {
+    assertCarrierFromJavaReturnBarrier(true, 6, true, JavaBarrierCase::ExportedParent);
+}
+
+TEST_F(ContinuationWalkTest, PositiveArgumentOsrRejectsNullExportedParentAtSecondReturnBarrier) {
+    assertCarrierFromJavaReturnBarrier(true, 6, true, JavaBarrierCase::ExportedNullParent);
 }
 
 TEST_F(ContinuationWalkTest, ReturnBarrierDecoderAcceptsGeneratedThreadLoad) {

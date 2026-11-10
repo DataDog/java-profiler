@@ -33,8 +33,6 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
 
     @Override
     protected boolean isPlatformSupported() {
-        // CStackInjector falls back to the first mode when every mode is excluded.
-        // Keep that fallback from re-enabling VM walking on musl x64 in CI.
         return Platform.isJavaVersionAtLeast(21) && !Platform.isJ9() && !Platform.isZing()
                 && !(isInCI() && Platform.isMusl() && !Platform.isAarch64());
     }

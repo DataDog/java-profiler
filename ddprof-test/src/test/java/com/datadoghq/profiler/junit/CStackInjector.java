@@ -1,3 +1,5 @@
+// Copyright 2026, Datadog, Inc.
+
 package com.datadoghq.profiler.junit;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -6,9 +8,10 @@ import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.extension.ConditionEvaluationResult;
+import org.junit.jupiter.api.extension.ExecutionCondition;
 import org.junit.jupiter.api.extension.Extension;
 import org.junit.jupiter.api.extension.ExtensionContext;
-import org.junit.jupiter.api.extension.InvocationInterceptor;
 import org.junit.jupiter.api.extension.ParameterContext;
 import org.junit.jupiter.api.extension.ParameterResolutionException;
 import org.junit.jupiter.api.extension.ParameterResolver;
@@ -26,10 +29,12 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+/** Selects platform-safe cstack invocations and supplies their parameters and retry handling. */
 public class CStackInjector implements TestTemplateInvocationContextProvider {
 
     @Override
@@ -46,38 +51,50 @@ public class CStackInjector implements TestTemplateInvocationContextProvider {
                 .flatMap(method -> Optional.ofNullable(method.getAnnotation(RetryTest.class)))
                 .map(RetryTest::value)
                 .orElse(0);
-        if (Platform.isZing()) {
+        return selectContexts(valueSource.strings(), retryCount, Platform.isZing(), CStackInjector::isModeSafe);
+    }
+
+    /** Keeps Zing separate from filtering and preserves declared order and duplicates. */
+    static Stream<TestTemplateInvocationContext> selectContexts(
+            String[] declaredModes, int retryCount, boolean zing, Predicate<String> modeSafe) {
+        if (zing) {
             // zing is a bit iffy when using anything but 'no' for cstack
             return Stream.of(new ParameterizedTestContext("no", retryCount));
         } else {
-            List<String> safeValues = Stream.of(valueSource.strings())
-                    .filter(CStackInjector::isModeSafe)
+            List<String> safeValues = Stream.of(declaredModes)
+                    .filter(modeSafe)
                     .collect(Collectors.toList());
             if (safeValues.isEmpty()) {
-                // No mode passed the filter (e.g. J9 with a {"vm","vmx"} @ValueSource).
-                // Fall back to the first declared value so the test can reach
-                // isPlatformSupported() and skip cleanly rather than failing with
-                // PreconditionViolationException (JUnit 5 requires ≥1 invocation context).
-                safeValues = Collections.singletonList(valueSource.strings()[0]);
+                // JUnit requires a context and resolves constructor parameters before skip evaluation.
+                // The declared value is injection metadata, not an executable fallback.
+                return Stream.of(new ParameterizedTestContext(declaredModes[0], retryCount,
+                        "No declared cstack mode is safe on this platform"));
             }
             return safeValues.stream().map(param -> new ParameterizedTestContext(param, retryCount));
         }
     }
 
     private static boolean isModeSafe(String mode) {
-        if (Platform.isJ9()) {
+        return isModeSafe(mode, Platform.isJ9(), Platform.isAarch64(),
+                Platform.isJavaVersionAtLeast(17), AbstractProfilerTest.isInCI(), Platform::isMusl);
+    }
+
+    /** Evaluates the existing exclusions without probing libc on the early-return paths. */
+    static boolean isModeSafe(String mode, boolean j9, boolean aarch64,
+            boolean java17, boolean ci, BooleanSupplier musl) {
+        if (j9) {
             return "dwarf".equals(mode);
         }
-        if (Platform.isAarch64() && !Platform.isJavaVersionAtLeast(17)) {
+        if (aarch64 && !java17) {
             return mode.startsWith("vm");
         }
-        if (AbstractProfilerTest.isInCI()) {
-            if (Platform.isMusl() && !Platform.isAarch64()) {
+        if (ci) {
+            if (musl.getAsBoolean() && !aarch64) {
                 // our CI runner for musl on x64 is iffy and inexplicably locks up
                 //   randomly when doing vm stackwalking
                 return !mode.startsWith("vm");
             }
-            if (Platform.isMusl() && Platform.isAarch64() && "vmx".equals(mode)) {
+            if (musl.getAsBoolean() && aarch64 && "vmx".equals(mode)) {
                 // vmx mode has intermittent initialization timing issues on musl aarch64
                 // causing 0 events in intermediate JFR dumps
                 return false;
@@ -123,20 +140,30 @@ public class CStackInjector implements TestTemplateInvocationContextProvider {
     private static class ParameterizedTestContext implements TestTemplateInvocationContext {
         private final String parameter;
         private final int retryCount;
+        private final String disabledReason;
 
         ParameterizedTestContext(String parameter, int retryCount) {
+            this(parameter, retryCount, null);
+        }
+
+        ParameterizedTestContext(String parameter, int retryCount, String disabledReason) {
             this.parameter = parameter;
             this.retryCount = retryCount;
+            this.disabledReason = disabledReason;
         }
 
         @Override
         public String getDisplayName(int invocationIndex) {
-            return "cstack=" + parameter;
+            return "cstack=" + parameter + (disabledReason == null ? "" : " (disabled: no safe mode)");
         }
 
         @Override
         public List<Extension> getAdditionalExtensions() {
             List<Extension> extensions = new ArrayList<>(TestTemplateInvocationContext.super.getAdditionalExtensions());
+            if (disabledReason != null) {
+                // Invocation conditions run before BeforeEach callbacks and inherited profiler setup.
+                extensions.add((ExecutionCondition) context -> ConditionEvaluationResult.disabled(disabledReason));
+            }
             extensions.add(
                     new ParameterResolver() {
                         @Override

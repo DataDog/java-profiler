@@ -558,9 +558,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 int entry_offset = VMStructs::contEntryThreadOffset();
                 if (entry_nm != nullptr && kind == ContBoundary::Frozen &&
                         (continuation_stack_args < 0 || use_thread_entry)) {
-                    // A sample at the barrier (also through a signal trampoline)
-                    // has no Java frame supplying stack arguments. Read the entry
-                    // that the JVM's validated barrier prefix itself loads.
+                    // Sampled barriers and positive-argument OSR frames lack a
+                    // reliable argument extension. Use the entry loaded by the
+                    // JVM's validated barrier prefix instead of guessing padding.
                     uintptr_t entry_sp = entry_offset < 0 ? 0 :
                             (uintptr_t)SafeAccess::loadPtr((void**)((char*)vm_thread + entry_offset), nullptr);
                     entry_fp = entry_sp >= sp && entry_sp < bottom ? entry_nm->continuationEntryFP(entry_sp, 0) : 0;
@@ -799,8 +799,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 if (features.carrier_frames && VMContinuationEntry::type_size() == 0) {
                     VMConstMethod* const_method = method->constMethod_or_null();
                     continuation_stack_args = const_method != nullptr ? const_method->stackArgWords() : -1;
-                    // nmethod sets its stack-argument count to zero for OSR entries.
-                    if (continuation_stack_args > 0 && nm->isOsr()) continuation_stack_args = 0;
+                    // ConstMethod arguments do not determine an OSR frame's extension.
+                    // Unknown selects validated thread-entry recovery at a frozen boundary.
+                    if (continuation_stack_args > 0 && nm->isOsr()) continuation_stack_args = -1;
                 }
 
                 if (nm->isFrameCompleteAt(walk_pc.raw())) {

@@ -236,14 +236,23 @@ type used by `VMThread` casts. Walkers acquire-load the offset. Unknown prefixes
 unavailable. This inferred offset stays separate from the JDK 27 exported
 fields and does not change anchor redirection or nested-entry handling.
 
-A sample at the return barrier, including one reached through a native signal
-trampoline, may have no decoded Java frame providing its stack-argument count.
-When exported entry metadata is unavailable, that verified frozen boundary can
-use the inferred offset to read the current entry pointer. The `enterSpecial`
-nmethod's validated frame size locates its saved FP/PC pair; stack range,
-alignment and carrier admission checks apply before proceeding. Walks with a
-known argument count retain SP-based recovery. Missing or invalid metadata
-still rejects the walk, and frozen boundaries remain marked truncated.
+Sampled return barriers, including those reached through native signal trampolines,
+may lack Java stack-argument metadata. Without exported entries, they read the current
+entry through the inferred thread offset.
+
+The `enterSpecial` nmethod's validated frame size locates its saved FP/PC pair.
+Stack range, alignment and carrier admission checks apply before proceeding.
+Frozen boundaries remain marked truncated even when carrier recovery succeeds.
+
+Positive ConstMethod argument counts do not determine an OSR frame's extension.
+Such OSR frames mark the count unknown (`-1`) and use validated thread-entry recovery
+for both nonzero and zero-extension layouts, rather than guessing padding.
+
+Ordinary invocation counts and zero-argument frames retain SP-based recovery.
+Missing or invalid inferred metadata rejects unknown-count recovery.
+
+A consumed top entry below the current SP cannot be reused at a later nested crossing.
+Exported entries retain parent-cursor traversal.
 
 Recognized arm64 VM-leaf spills also recover an entry that exception cleanup has
 already unlinked from the thread. Exported layouts must agree with the entry FP
@@ -294,9 +303,14 @@ callers, so reaching a carrier does not clear that flag.
 
 `Recording::writeStackTraceHeader` preserves the walker flag even when the final
 Java frame is an entry method such as `Thread.run`. A verified thawed crossing also
-preserves truncation established earlier in the walk. The blocking virtual-thread
-wall-clock regression requires carrier ancestry. `FrozenVirtualThreadStackTest`
-separately compares logical callers and verifies truthful completeness reporting.
+preserves truncation established earlier in the walk.
+
+The blocking wall-clock oracle requires positive carrier visibility and exact
+blocking-workload lambda samples. Every selected sample must retain carrier ancestry
+or report truncation.
+
+`FrozenVirtualThreadStackTest` separately compares logical callers and verifies truthful
+completeness reporting. Deterministic oracle tests reject mixed good/bad and CPU-only data.
 
 ### `j9/`
 
