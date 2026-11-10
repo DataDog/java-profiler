@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euxo pipefail
 
+# shellcheck disable=SC2236  # pre-existing style; ! -z and -n are equivalent here
 if [ ! -z "${CANCELLED:-}" ]; then
   exit 0
 fi
