@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.lang.management.ManagementFactory;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
@@ -54,14 +55,15 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
      * {@code -agentpath:} JVM argument makes {@code Agent_OnLoad} -> {@code VM::initProfilerBridge}
      * the *first* native entry point invoked, with no prior call to {@code VM::ready()}.
      * {@code initProfilerBridge()} looks up the {@code DebugNonSafepoints} VM flag via
-     * {@code VMFlag::find()}, gated on {@code CodeHeap::available()} -- both depend on
-     * {@code VMStructs} offsets/addresses populated by {@code VMStructs::init()}. If that
-     * initialization has been deferred to the asynchronous {@code VMInit} callback without also
-     * covering this call site, {@code CodeHeap::available()} reads {@code false} (its backing
-     * address is still unset) and the code takes the JDK-8173361 workaround path instead of ever
-     * calling {@code VMFlag::find()} -- silently disabling {@code CompiledMethodLoad} events and
-     * skipping the {@code DebugNonSafepoints} detection, even on a JVM where both should have
-     * succeeded.
+     * {@code VMFlag::find()}, and the first {@code start()} reads {@code CodeHeap::available()}
+     * to decide whether {@code CompiledMethodLoad} events are needed (the JDK-8173361
+     * workaround) -- both depend on {@code VMStructs} offsets/addresses populated by
+     * {@code VMStructs::init()}. If that initialization has been deferred to the asynchronous
+     * {@code VMInit} callback without also covering these call sites, {@code CodeHeap::available()}
+     * reads {@code false} (its backing address is still unset), the profiler enables the
+     * workaround and logs it, and {@code VMFlag::find()} returns {@code NULL} -- even on a JVM
+     * where both should have succeeded. The profiler is started from the agent arguments so
+     * that the {@code start()} decision is made.
      */
     @Test
     void agentOnLoadVMFlagDetectionTest() throws Exception {
@@ -69,25 +71,32 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
 
         Path agentLib = LibraryLoader.resolveLibraryPath(System.getProperty("java.io.tmpdir"));
 
+        Path jfr = Files.createTempFile("agent-onload-", ".jfr");
         AtomicReference<String> workaroundLine = new AtomicReference<>(null);
         AtomicReference<String> flagLine = new AtomicReference<>(null);
 
-        boolean rslt = launch("noop",
-            Collections.singletonList("-agentpath:" + agentLib.toAbsolutePath()),
-            null,
-            l -> {
-                if (l.contains("[TEST::INFO] CompiledMethodLoad workaround:")) {
-                    workaroundLine.set(l);
-                    return LineConsumerResult.STOP;
-                }
-                if (l.contains("[TEST::INFO] DebugNonSafepoints flag")) {
-                    flagLine.set(l);
+        boolean rslt;
+        try {
+            rslt = launch("noop",
+                Collections.singletonList("-agentpath:" + agentLib.toAbsolutePath()
+                    + "=start,cpu=10ms,jfr,file=" + jfr.toAbsolutePath()),
+                null,
+                l -> {
+                    if (l.contains("[TEST::INFO] CompiledMethodLoad workaround:")) {
+                        workaroundLine.set(l);
+                        return LineConsumerResult.STOP;
+                    }
+                    if (l.contains("[TEST::INFO] DebugNonSafepoints flag")) {
+                        flagLine.set(l);
+                        return LineConsumerResult.CONTINUE;
+                    }
                     return LineConsumerResult.CONTINUE;
-                }
-                return LineConsumerResult.CONTINUE;
-            },
-            null
-        ).inTime;
+                },
+                null
+            ).inTime;
+        } finally {
+            Files.deleteIfExists(jfr);
+        }
 
         assertTrue(rslt);
         assertNull(workaroundLine.get(),

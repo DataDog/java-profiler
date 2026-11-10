@@ -16,6 +16,10 @@ public final class NativeMemTestHooks {
     public static Map<String, Long> liveBytesByCategory() {
         String[] names = JavaProfiler.describeNativeMemCategories0();
         long[] values = JavaProfiler.getNativeMemLive0();
+        if (names.length != values.length) {
+            throw new IllegalStateException("NativeMem reports " + names.length
+                    + " category names but " + values.length + " live values");
+        }
         Map<String, Long> live = new LinkedHashMap<>();
         for (int i = 0; i < names.length; i++) {
             live.put(names[i], values[i]);

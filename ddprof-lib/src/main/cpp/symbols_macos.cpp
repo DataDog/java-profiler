@@ -261,9 +261,18 @@ u64 Symbols::imageFingerprint(const void* mach_header) {
     if (header == NULL || header->magic != MH_MAGIC_64) {
         return 0;
     }
-    const load_command* lc = reinterpret_cast<const load_command*>(header + 1);
+    const char* cmds = reinterpret_cast<const char*>(header + 1);
+    const char* cmds_end = cmds + header->sizeofcmds;
+    const load_command* lc = reinterpret_cast<const load_command*>(cmds);
     for (uint32_t i = 0; i < header->ncmds; i++) {
-        if (lc->cmd == LC_UUID) {
+        // Stay inside the load commands: a cmdsize of 0 would never advance.
+        const char* at = reinterpret_cast<const char*>(lc);
+        if (cmds_end - at < static_cast<ptrdiff_t>(sizeof(load_command)) ||
+            lc->cmdsize < sizeof(load_command) ||
+            static_cast<size_t>(cmds_end - at) < lc->cmdsize) {
+            return 0;
+        }
+        if (lc->cmd == LC_UUID && lc->cmdsize >= sizeof(uuid_command)) {
             const uint8_t* uuid = reinterpret_cast<const uuid_command*>(lc)->uuid;
             u64 hi, lo;
             memcpy(&hi, uuid, sizeof(hi));

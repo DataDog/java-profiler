@@ -288,7 +288,9 @@ per-stripe frame buffers (`calltrace`), the class-name and string-label dictiona
 (`dictionary`), the JFR buffers (`jfr_buffers`), and the liveness tracker's tracking
 table and its weak refs (`liveness`; up to 262,144 × 256 bytes = 64 MB while
 recording), and the CPU timer table (`ctimer`; `pid_max × 4` bytes, 16 MiB at a
-`pid_max` of 4194304, mostly untouched address space). Native malloc hooks are restored. What stays: the context-value dictionary,
+`pid_max` of 4194304, mostly untouched address space). Native malloc hooks are restored, except in a library that was unloaded or replaced
+since it was patched (see [Stopping](../architecture/NativeMemoryProfiling.md#stopping)).
+What stays: the context-value dictionary,
 per-thread state (`thread_local`), parsed native symbols (`native_symbols`), the thread
 filter, the persistent `pthread_create`/`sigaction` GOT hooks, and `PerfEvents`'
 per-thread events. `ProfilerLifecycleTest` asserts the recording-scoped categories read

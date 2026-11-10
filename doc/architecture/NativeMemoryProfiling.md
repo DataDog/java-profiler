@@ -161,8 +161,10 @@ GOT load records nothing, then calls **`MallocHooker::unpatchLibraries()`**:
   On macOS each library is pinned with `UnloadProtection` and checked with
   `isCurrentImage()` for the restore.
 - Entries of a library the walk did not visit (unloaded, or no longer verifiably the
-  image they were saved from) are dropped without being written: they can never be
-  written through again.
+  image they were saved from) are not written. They are kept, up to a cap, so a later
+  `patchSlot()` of the same slot reuses the saved original. Over the cap, the entries
+  whose original `patchSlot()` can rebuild are dropped first; one holding a PLT stub or
+  another interposer's wrapper survives.
 - `_entries` and `_patched_libs` are reset; the next `start()` re-patches from scratch.
 
 `Profiler::stop()` stops the libraries refresher **before** `malloc_tracer.stop()`,

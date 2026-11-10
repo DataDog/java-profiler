@@ -25,6 +25,7 @@ public:
   static void restoreSlot(int index) { MallocHooker::restoreSlot(MallocHooker::_entries[index]); }
   static const MallocPatchEntry& entry(int index) { return MallocHooker::_entries[index]; }
   static int entryCount() { return MallocHooker::_entry_count; }
+  static void setOrig(int index, void* orig) { MallocHooker::_entries[index]._orig = orig; }
   // Forgets the entries without restoring them: the tests patch slots in their
   // own frame, which are dead by the time a later test could restore them.
   static void setEntryCount(int count) { MallocHooker::_entry_count = count; }
@@ -113,6 +114,24 @@ TEST_F(MallocHookerSlots, PatchRecordsHookedSlotWithoutEntryAgainstKnownOriginal
   EXPECT_EQ(original(), MallocHookerTestAccessor::entry(0)._orig);
   MallocHookerTestAccessor::restoreSlot(0);
   EXPECT_EQ(original(), slot);
+}
+
+// A kept entry whose slot no longer holds our hook (the library reloaded and the
+// interposer left) is replaced, not joined by a second entry: both would restore
+// on stop(), and the stale original could win.
+TEST_F(MallocHookerSlots, PatchReplacesKeptEntryOfSlotThatNoLongerHoldsHook) {
+  void* slot = hook();
+  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
+  MallocHookerTestAccessor::setOrig(0, foreign());  // the original the kept entry saved
+  slot = pltStub();                                 // the reloaded library's fresh slot
+
+  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+
+  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
+  EXPECT_EQ(pltStub(), MallocHookerTestAccessor::entry(0)._orig);
+  MallocHookerTestAccessor::restoreSlot(0);
+  EXPECT_EQ(pltStub(), slot);
 }
 
 // Over the orphan cap, the entries dropped are those whose original patchSlot()
@@ -264,6 +283,7 @@ FakeImage fakeImage(uint8_t uuid_seed, bool with_uuid) {
   memset(&image, 0, sizeof(image));
   image.header.magic = MH_MAGIC_64;
   image.header.ncmds = with_uuid ? 1 : 0;
+  image.header.sizeofcmds = with_uuid ? sizeof(uuid_command) : 0;
   image.uuid.cmd = LC_UUID;
   image.uuid.cmdsize = sizeof(uuid_command);
   for (int i = 0; i < 16; i++) {
@@ -382,12 +402,33 @@ TEST(MachOImageFingerprint, SkipsLoadCommandsBeforeUuid) {
   memset(&padded, 0, sizeof(padded));
   padded.header = plain.header;
   padded.header.ncmds = 2;
+  padded.header.sizeofcmds = sizeof(load_command) + sizeof(uuid_command);
   padded.other.cmd = LC_SEGMENT_64;
   padded.other.cmdsize = sizeof(load_command);
   padded.uuid = plain.uuid;
 
   EXPECT_NE(0u, Symbols::imageFingerprint(&padded));
   EXPECT_EQ(Symbols::imageFingerprint(&plain), Symbols::imageFingerprint(&padded));
+}
+
+// A load command that cannot be stepped over safely ends the walk without a
+// fingerprint, instead of hanging (cmdsize 0) or reading past the commands.
+TEST(MachOImageFingerprint, UnknownForMalformedLoadCommands) {
+  FakeImage zero_size = fakeImage(5, true);
+  zero_size.header.ncmds = 2;
+  zero_size.uuid.cmd = LC_SEGMENT_64;
+  zero_size.uuid.cmdsize = 0;
+  EXPECT_EQ(0u, Symbols::imageFingerprint(&zero_size));
+
+  FakeImage oversized = fakeImage(5, true);
+  oversized.uuid.cmd = LC_SEGMENT_64;
+  oversized.uuid.cmdsize = sizeof(uuid_command) + 8;
+  EXPECT_EQ(0u, Symbols::imageFingerprint(&oversized));
+
+  FakeImage truncated_uuid = fakeImage(5, true);
+  truncated_uuid.uuid.cmdsize = sizeof(load_command);
+  truncated_uuid.header.sizeofcmds = sizeof(load_command);
+  EXPECT_EQ(0u, Symbols::imageFingerprint(&truncated_uuid));
 }
 
 // A UUID hashing to zero must not look like "unknown fingerprint" (0).

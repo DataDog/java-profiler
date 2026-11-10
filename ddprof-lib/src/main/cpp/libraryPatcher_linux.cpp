@@ -727,7 +727,9 @@ static bool loader_counts(LoaderCounts* counts) {
 }
 
 // The loader counts as of the last pass that re-checked the unmapped (adds) or
-// all (subs) patched libraries; ~0 before the first. Written without _lock.
+// all (subs) patched libraries; ~0 before the first. Written without _lock: each
+// store is a count read before its walk, so one that loses a race only causes a
+// re-check.
 static std::atomic<unsigned long long> pthread_create_checked_adds{~0ULL};
 static std::atomic<unsigned long long> pthread_create_checked_subs{~0ULL};
 

@@ -275,12 +275,19 @@ void MallocHooker::patchSlot(CodeCache* cc, void** location, void* hook_fn, void
     // (keepUnrestoredEntries()) has the true original, which may be a PLT stub
     // or another interposer's wrapper rather than the resolved malloc.
     const bool rehook = current == hook_fn;
+    // At most one entry per slot: a second would restore a stale original on
+    // stop(), as the sort that groups entries by library does not keep their order.
+    int existing = -1;
+    for (int i = 0; i < _entry_count; i++) {
+        if (_entries[i]._location == location && _entries[i]._hook == hook_fn) {
+            existing = i;
+            break;
+        }
+    }
     if (rehook) {
-        for (int i = 0; i < _entry_count; i++) {
-            if (_entries[i]._location == location && _entries[i]._hook == hook_fn) {
-                _entries[i]._lib = cc;  // current image: restorable by this recording's stop()
-                return;
-            }
+        if (existing >= 0) {
+            _entries[existing]._lib = cc;  // current image: restorable by this recording's stop()
+            return;
         }
         // Not tracked (the orphan table overflowed): the original is unknown;
         // the resolved one is the best remaining answer.
@@ -289,7 +296,7 @@ void MallocHooker::patchSlot(CodeCache* cc, void** location, void* hook_fn, void
 
     // A slot that cannot be recorded is left alone rather than hooked for good:
     // every hook must be restorable on stop().
-    if (_entry_count >= MAX_MALLOC_ENTRIES) {
+    if (existing < 0 && _entry_count >= MAX_MALLOC_ENTRIES) {
         if (rehook) {
             // No stop() would restore this stale hook; unhook it now.
             void* expected = hook_fn;
@@ -303,12 +310,13 @@ void MallocHooker::patchSlot(CodeCache* cc, void** location, void* hook_fn, void
         }
         return;
     }
-    _entries[_entry_count]._lib = cc;
-    _entries[_entry_count]._location = location;
-    _entries[_entry_count]._hook = hook_fn;
-    _entries[_entry_count]._orig = current;
-    _entries[_entry_count]._orig_resolved = current == orig_fn;
-    _entry_count++;
+    // Reuses the kept entry of this slot, replacing its stale original.
+    MallocPatchEntry& entry = _entries[existing >= 0 ? existing : _entry_count++];
+    entry._lib = cc;
+    entry._location = location;
+    entry._hook = hook_fn;
+    entry._orig = current;
+    entry._orig_resolved = current == orig_fn;
 
     // Write the hook function pointer directly to the GOT slot. The caller has
     // made the library's imports writable.

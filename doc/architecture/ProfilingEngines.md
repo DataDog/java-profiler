@@ -680,7 +680,10 @@ chains are described in
   population representatives' weak refs, frees the table, and zeroes
   `_table_cap`/`_table_max_cap`/`_enabled`. It then rebuilds the leak-tag pool as
   all free, clears the liveness checkers, and resets `_initialized` so the next
-  `start()` initializes from scratch. An allocation callback still in flight
+  `start()` initializes from scratch. If the leak tags cannot be cleared here and
+  again at the next `start()`, that recording hands out no leak tags: leak reference
+  chains are missing for it, allocation and liveness sampling continue, and each
+  `start()` retries the clear. An allocation callback still in flight
   finds no capacity and deletes only its own, never-inserted weak ref. It is a
   no-op when no table was allocated.
 

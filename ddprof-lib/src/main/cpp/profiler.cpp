@@ -1893,6 +1893,9 @@ Error Profiler::start(Arguments &args, bool reset) {
   } recording_memory(this);
   // Before any engine starts, so no call trace id is cached under the old value.
   __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
+  // A wall-clock handler that outlived stop()'s scan may have cached a tail id
+  // since; drop it before an engine can flush it into this recording.
+  _thread_filter.resetUnownedBlockedTails();
   // Open before any engine starts, so early allocation callbacks can intern.
   _intern_open.store(true, std::memory_order_release);
 
@@ -2565,6 +2568,10 @@ void Profiler::enablePersistentJvmtiEvents() {
     if (!e.needed || (_persistent_jvmti_events & bit) != 0) {
       continue;
     }
+    if (e.event == JVMTI_EVENT_COMPILED_METHOD_LOAD) {
+      TEST_LOG("CompiledMethodLoad workaround: hotspot_version=%d CodeHeap::available=%d",
+               VM::hotspot_version(), CodeHeap::available());
+    }
     jvmtiError err = jvmti->SetEventNotificationMode(JVMTI_ENABLE, e.event, NULL);
     const char *step = "enabling";
     if (err == JVMTI_ERROR_NONE && e.replay) {
@@ -2714,7 +2721,8 @@ void Profiler::releaseRecordingMemory() {
   // Outside the locks too: release() unpublishes each table and drains its
   // guards before deleting it, so a late put() just drops its trace.
   _call_trace_storage.release();
-  // A cached tail id would otherwise be flushed into the next recording.
+  // A cached tail id would otherwise be flushed into the next recording; a
+  // handler still running here caches after this, so start() resets again.
   _thread_filter.resetUnownedBlockedTails();
   for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
     if (buffers[i] != NULL) {

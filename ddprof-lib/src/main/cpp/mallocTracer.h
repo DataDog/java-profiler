@@ -41,8 +41,9 @@ class MallocHooker {
     // aligned_alloc), each with up to NUM_IMPORT_TYPES relocation slots
     static const int MAX_MALLOC_ENTRIES = 5 * NUM_IMPORT_TYPES * MAX_NATIVE_LIBS;
     // Entries of libraries a restore pass could not visit stay at the front of
-    // _entries (see keepUnrestoredEntries()); never written through, only
-    // consulted by patchSlot() for the original of a slot still holding our hook.
+    // _entries (see keepUnrestoredEntries()). patchSlot() takes the original of a
+    // slot still holding our hook from them; a later stop() restores one only if
+    // its walk visits the entry's library again.
     static const int MAX_ORPHAN_ENTRIES = MAX_MALLOC_ENTRIES / 8;
     static MallocPatchEntry _entries[MAX_MALLOC_ENTRIES];
     static int _entry_count;
