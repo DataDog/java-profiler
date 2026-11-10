@@ -96,7 +96,7 @@ public class ProfilerLifecycleTest {
      * fail with "already started" and hide the original failure.
      */
     @AfterEach
-    public void stopIfRunning() {
+    public void stopIfRunning() throws IOException {
         JavaProfiler profiler = JavaProfiler.getInstance();
         if (profiler.getStatus().contains("Running          : true")) {
             AbstractProfilerTest.stopRetryingOnDrainTimeout(profiler);
