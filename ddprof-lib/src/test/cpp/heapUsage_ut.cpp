@@ -46,10 +46,18 @@ int g_step;
 int g_scripted_step;
 Outcome g_outcome;
 bool g_pending;
+bool g_called_while_pending; // a JNI call other than ExceptionCheck/Clear saw g_pending
 int g_live_refs; // local references handed out and not yet deleted
+
+void notePendingCall() {
+    if (g_pending) {
+        g_called_while_pending = true;
+    }
+}
 
 template <typename T>
 T next() {
+    notePendingCall();
     g_step++;
     if (g_step == g_scripted_step && g_outcome != SUCCEED) {
         g_pending = g_outcome == THROW;
@@ -82,7 +90,10 @@ jobject JNICALL callObjectMethodV(JNIEnv *, jobject, jmethodID, va_list) {
 }
 jboolean JNICALL exceptionCheck(JNIEnv *) { return g_pending ? JNI_TRUE : JNI_FALSE; }
 void JNICALL exceptionClear(JNIEnv *) { g_pending = false; }
-void JNICALL deleteLocalRef(JNIEnv *, jobject) { g_live_refs--; }
+void JNICALL deleteLocalRef(JNIEnv *, jobject) {
+    notePendingCall();
+    g_live_refs--;
+}
 
 class HeapUsageJmxTest : public ::testing::Test {
 protected:
@@ -106,6 +117,7 @@ protected:
         g_scripted_step = scripted_step;
         g_outcome = outcome;
         g_pending = false;
+        g_called_while_pending = false;
         g_live_refs = 0;
         return HeapUsageTestAccessor::initJMXUsage(&env);
     }
@@ -114,7 +126,7 @@ protected:
 constexpr int JNI_STEPS = 6;
 
 // The calls succeed and the MemoryMXBean returns the heap usage: JMX is
-// supported. With the guards inverted, the first success returned early.
+// supported.
 TEST_F(HeapUsageJmxTest, SupportedWhenEveryCallSucceeds) {
     EXPECT_TRUE(run(0, SUCCEED));
     EXPECT_EQ(JNI_STEPS, g_step);
@@ -129,6 +141,7 @@ TEST_F(HeapUsageJmxTest, UnsupportedAndClearedWhenAnyCallThrows) {
         EXPECT_FALSE(run(step, THROW));
         EXPECT_EQ(step, g_step);
         EXPECT_FALSE(g_pending);
+        EXPECT_FALSE(g_called_while_pending);
         EXPECT_EQ(0, g_live_refs);
     }
 }

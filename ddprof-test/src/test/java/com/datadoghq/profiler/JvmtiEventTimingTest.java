@@ -16,9 +16,10 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Checks when the profiler's JVMTI events are enabled relative to the JVM work they must
- * observe. Each test runs a fresh JVM and reads the {@code [TEST::INFO]} lines the debug library
- * prints, so they only run against the debug build.
+ * Checks that agent startup does not bootstrap JMX, by watching for the {@code getMemoryUsage0}
+ * native binding while the agent is intercepting {@code NativeMethodBind}. It runs a fresh JVM
+ * and reads the {@code [TEST::INFO]} lines the debug library prints, so it only runs against the
+ * debug build.
  */
 public class JvmtiEventTimingTest extends AbstractProcessProfilerTest {
 
@@ -27,7 +28,7 @@ public class JvmtiEventTimingTest extends AbstractProcessProfilerTest {
     private static final String MEMORY_USAGE_BOUND = "[TEST::INFO] NativeMethodBind: getMemoryUsage0 resolved";
 
     @BeforeEach
-    void requireDebugOpenJdkClassLibrary() {
+    void requireDebugBuildOnNonJ9() {
         assumeTrue("debug".equals(System.getProperty("ddprof_test.config")), "needs [TEST::INFO] output");
         // getMemoryUsage0 does not exist on J9.
         assumeTrue(!Platform.isJ9());
