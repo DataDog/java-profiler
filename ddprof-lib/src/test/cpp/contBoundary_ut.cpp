@@ -24,7 +24,7 @@ static_assert(!contBoundaryProvesComplete(CONT_BOUNDARY_AT_RETURN_BARRIER),
 static_assert(!contBoundaryEntryFpIsCurrentFp(CONT_BOUNDARY_AT_RETURN_BARRIER),
               "return barrier crossing rejects the FP fallback");
 
-// R4: a return barrier marks truncation and requires entry metadata.
+// A return barrier marks truncation and requires entry metadata.
 TEST(ContBoundary, FrozenMarksTruncatedAndRejectsFpFallback) {
     EXPECT_FALSE(contBoundaryProvesComplete(ContBoundary::Frozen));
     EXPECT_FALSE(contBoundaryEntryFpIsCurrentFp(ContBoundary::Frozen));

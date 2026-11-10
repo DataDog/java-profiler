@@ -274,13 +274,13 @@ the carrier.
 Caveats:
 
 - **Architecture-specific unwinding.** `unwindAtomicStub` always returns
-  `false` on x86_64 (`hotspot/hotspotStackFrame_x64.cpp:213-215`). On aarch64 it
+  `false` on x86_64 (`hotspot/hotspotStackFrame_x64.cpp`). On aarch64 it
   unwinds through generated `Stub*` code when the link register points into
-  libjvm (`hotspot/hotspotStackFrame_aarch64.cpp:370-379`). The unwind helpers
+  libjvm (`hotspot/hotspotStackFrame_aarch64.cpp`). The unwind helpers
   return the raw return address on every architecture. When the result is
   written back into the ucontext for an ASGCT retry,
   `stepIntoCallForAsgct()` subtracts one only on x86_64
-  (`hotspot/hotspotStackFrame.h:133-139`).
+  (`hotspot/hotspotStackFrame.h`).
 - **Stub unwind tables.** `StubUnwindInfo` exists only on aarch64. On x64,
   `unwindStub()` ignores the `info` argument (`hotspot/hotspotStackFrame.h`,
   comment on `unwindStub`).
