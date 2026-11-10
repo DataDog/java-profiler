@@ -15,12 +15,14 @@
   #define DD_HAVE_MALLOC_SIZE 1
 #endif
 
-// Real resident cost of a heap allocation, as opposed to the size that was
-// requested.
+// Per-object allocator accounting for a heap allocation -- the usable size
+// the allocator reports plus the probed per-chunk header -- as opposed to the
+// size that was requested. It is accounting, not a measurement of resident
+// or attributable memory.
 //
 // The profiler's NM_* gauges record requested (logical) bytes, which is what
-// makes them comparable against sizeof() arithmetic. RSS, however, is paid in
-// allocator chunks: the request is rounded up to an alignment quantum and
+// makes them comparable against sizeof() arithmetic. The allocator, however,
+// hands out chunks: the request is rounded up to an alignment quantum and
 // carries a per-chunk header. Reconciliation previously multiplied logical bytes
 // by a single blanket factor measured on one workload, which is wrong whenever
 // the allocation-size mix differs -- overhead is a function of *per-allocation*
@@ -137,7 +139,8 @@ public:
 #endif
   }
 
-  // Overhead alone -- the part RSS pays for that the logical counters miss.
+  // Overhead alone -- the per-object allocator accounting (usable size plus
+  // probed header) that exceeds the requested size the logical counters record.
   static size_t overheadOf(void *p, size_t requested) {
     size_t total = of(p, requested);
     return total > requested ? total - requested : 0;
