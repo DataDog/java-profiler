@@ -6,6 +6,7 @@
 #include "nmethodMethodCheck.h"
 
 #include "hotspot/vmStructs.inline.h"
+#include "threadLocalData.h"
 
 #include <jvmti.h>
 
@@ -13,11 +14,12 @@ static constexpr int MAX_READS = 16;
 
 struct ReadContext {
     jmethodID target;
-    // Slots are claimed with a fetch_add on count; done counts the claims
-    // that wrote a triple (published with release, so the entries are
-    // visible to an acquire reader once done catches up with count).
+    // Slots are claimed with a fetch_add on count. live counts each poster
+    // from just before its claim to just after its last write, so the
+    // counters can only be reset for a new batch once no poster can still
+    // reach a slot.
     int count;
-    int done;
+    int live;
     jlong reads[MAX_READS * 3];
 };
 
@@ -55,6 +57,11 @@ static void throwIllegalState(JNIEnv* jni, const char* what) {
 static void JNICALL onCompiledMethodLoad(jvmtiEnv* jvmti, jmethodID method, jint code_size,
                                          const void* code_addr, jint map_length,
                                          const jvmtiAddrLocationMap* map, const void* compile_info) {
+    // The callback can land on a compiler or ServiceThread that never went
+    // through the profiler's thread hooks; the code-heap read below needs
+    // the profiler TLS those threads otherwise lack.
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     // Never touches the env after entry: a post that survives past the
     // env's disposal must not call back into freed JVMTI state.
     ReadContext* ctx = &readContext;
@@ -64,17 +71,27 @@ static void JNICALL onCompiledMethodLoad(jvmtiEnv* jvmti, jmethodID method, jint
         return;
     }
 
+    // The count precedes the claim so a reset that observes no live poster
+    // can never race one that is about to claim a slot it would reuse; a
+    // poster entering during a reset (live < 0) backs off instead.
+    if (__atomic_fetch_add(&ctx->live, 1, __ATOMIC_ACQ_REL) < 0) {
+        return;
+    }
+
     // While the event is enabled, the ServiceThread can also post to this env
     // for a compile on another thread; the atomic claim with rollback keeps
-    // concurrent posters on distinct, bounded slots. A reset racing an
-    // in-flight claim can drive count negative: such a slot is never written
-    // and must not be rolled back (that would push count lower still).
+    // concurrent posters on distinct, bounded slots.
     int slot = __atomic_fetch_add(&ctx->count, 1, __ATOMIC_RELAXED);
     if (slot < 0) {
+        // A rollback racing the reset's store of count can drive it negative:
+        // such a slot was never claimed, so it must be neither written nor
+        // rolled back (a rollback would push count lower still).
+        __atomic_fetch_sub(&ctx->live, 1, __ATOMIC_RELEASE);
         return;
     }
     if (slot >= MAX_READS) {
         __atomic_fetch_sub(&ctx->count, 1, __ATOMIC_RELAXED);
+        __atomic_fetch_sub(&ctx->live, 1, __ATOMIC_RELEASE);
         return;
     }
 
@@ -91,7 +108,9 @@ static void JNICALL onCompiledMethodLoad(jvmtiEnv* jvmti, jmethodID method, jint
     ctx->reads[slot * 3] = reinterpret_cast<jlong>(code_addr);
     ctx->reads[slot * 3 + 1] = status;
     ctx->reads[slot * 3 + 2] = read;
-    __atomic_fetch_add(&ctx->done, 1, __ATOMIC_RELEASE);
+    // Release publishes the writes above to the reset and to the reader that
+    // acquires live.
+    __atomic_fetch_sub(&ctx->live, 1, __ATOMIC_RELEASE);
 }
 
 // For CI only: NMethodMethodJvmtiValidationTest compares this with JVMTI's
@@ -137,10 +156,26 @@ jlongArray NMethodMethodCheck::readsForTest(JNIEnv* jni, jobject method) {
     }
 
     __atomic_store_n(&readContext.target, target, __ATOMIC_RELEASE);
-    // Atomic stores: a stalled poster from an earlier call can still be
-    // running; a plain reset racing its RMW on the same field is UB.
-    __atomic_store_n(&readContext.count, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&readContext.done, 0, __ATOMIC_RELAXED);
+    // Slots are reused only once no poster can still reach them: the CAS
+    // claims the reset exclusively, a poster racing in backs off on the
+    // negative live, and a call that finds survivors keeps claiming fresh
+    // slots past the undrained ones instead of reusing theirs.
+    int live = __atomic_load_n(&readContext.live, __ATOMIC_ACQUIRE);
+    if (live == 0 && __atomic_compare_exchange_n(&readContext.live, &live, -1, false,
+                                                 __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        __atomic_store_n(&readContext.count, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&readContext.live, 0, __ATOMIC_RELEASE);
+    }
+    // The batch owns the claims from here to the next reset; slots below the
+    // base belong to an earlier batch whose poster may still be writing.
+    int base = __atomic_load_n(&readContext.count, __ATOMIC_ACQUIRE);
+    // The slot<0 back-off leaves count at -1 until the next claim heals it;
+    // clamp so a transient negative count cannot reach the copy below.
+    if (base < 0) {
+        base = 0;
+    } else if (base > MAX_READS) {
+        base = MAX_READS;
+    }
 
     // HotSpot queues these events only while some env has them enabled, and
     // posts them per env: enabled here only around GenerateEvents and disabled
@@ -162,33 +197,34 @@ jlongArray NMethodMethodCheck::readsForTest(JNIEnv* jni, jobject method) {
     }
 
     // JVMTI's disable does not join a post that entered before it: the
-    // callback can still be claiming a slot, and transient claims exceed
-    // MAX_READS until their rollback lands. Wait for the claim and write
-    // phases to drain before reading count and the entries it bounds.
-    int count = __atomic_load_n(&readContext.count, __ATOMIC_ACQUIRE);
-    for (int spin = 0; spin < 1000000 &&
-                    __atomic_load_n(&readContext.done, __ATOMIC_ACQUIRE) < count; spin++) {
-        count = __atomic_load_n(&readContext.count, __ATOMIC_ACQUIRE);
+    // callback can still be claiming a slot. Snapshot the batch's claim bound
+    // first, so a poster claiming afterwards lands outside the copied range,
+    // then wait for every live poster to finish before reading the slots.
+    int claimed = __atomic_load_n(&readContext.count, __ATOMIC_ACQUIRE) - base;
+    int spin = 0;
+    while (spin < 1000000 && __atomic_load_n(&readContext.live, __ATOMIC_ACQUIRE) != 0) {
+        spin++;
     }
-    // Only reachable if a post wedged between its claim and its write;
-    // done bounds the completed writes, so an entry past a wedged writer
-    // can still be stale from an earlier call and the retry absorbs it.
-    int done = __atomic_load_n(&readContext.done, __ATOMIC_ACQUIRE);
-    if (done < 0 || done > MAX_READS) {
-        done = done < 0 ? 0 : MAX_READS;
-    }
-    if (count < 0 || count > done) {
-        count = count < 0 ? 0 : done;
+    // A completion bound does not identify a completed prefix: a timeout
+    // leaves a claimed slot unfinished, so discard the batch and let the
+    // caller retry instead of copying a slot that can still be written.
+    if (__atomic_load_n(&readContext.live, __ATOMIC_ACQUIRE) != 0) {
+        claimed = 0;
+    } else if (claimed < 0) {
+        claimed = 0;
+    } else if (claimed > MAX_READS - base) {
+        // Claims past the capacity rolled back and never wrote a slot.
+        claimed = MAX_READS - base;
     }
 
-    jlongArray result = jni->NewLongArray(1 + count * 3);
+    jlongArray result = jni->NewLongArray(1 + claimed * 3);
     if (result == nullptr) {
         return nullptr;  // pending OutOfMemoryError
     }
     jlong targetValue = reinterpret_cast<jlong>(target);
     jni->SetLongArrayRegion(result, 0, 1, &targetValue);
-    if (count > 0) {
-        jni->SetLongArrayRegion(result, 1, count * 3, readContext.reads);
+    if (claimed > 0) {
+        jni->SetLongArrayRegion(result, 1, claimed * 3, readContext.reads + base * 3);
     }
     return result;
 }
