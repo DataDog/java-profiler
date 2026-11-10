@@ -303,6 +303,9 @@ public class ExternalLauncher {
                         acc += nmethodMethodTarget(acc);
                     }
                     reads = JavaProfiler.compiledMethodReadsForTest0(target);
+                    if (reads == null) {
+                        break;  // unsupported: a retry cannot change that
+                    }
                 }
                 nmethodMethodSink = acc;
                 if (reads == null) {

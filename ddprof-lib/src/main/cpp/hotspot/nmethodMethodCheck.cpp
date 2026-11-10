@@ -58,7 +58,9 @@ static void JNICALL onCompiledMethodLoad(jvmtiEnv* jvmti, jmethodID method, jint
     // Never touches the env after entry: a post that survives past the
     // env's disposal must not call back into freed JVMTI state.
     ReadContext* ctx = &readContext;
-    if (method != ctx->target) {
+    // Acquire pairs with readsForTest's release store of target, so a
+    // poster that entered the callback sees the current call's target.
+    if (method != __atomic_load_n(&ctx->target, __ATOMIC_ACQUIRE)) {
         return;
     }
 
@@ -134,7 +136,7 @@ jlongArray NMethodMethodCheck::readsForTest(JNIEnv* jni, jobject method) {
         return nullptr;
     }
 
-    __atomic_store_n(&readContext.target, target, __ATOMIC_RELAXED);
+    __atomic_store_n(&readContext.target, target, __ATOMIC_RELEASE);
     // Atomic stores: a stalled poster from an earlier call can still be
     // running; a plain reset racing its RMW on the same field is UB.
     __atomic_store_n(&readContext.count, 0, __ATOMIC_RELAXED);
@@ -168,10 +170,15 @@ jlongArray NMethodMethodCheck::readsForTest(JNIEnv* jni, jobject method) {
                     __atomic_load_n(&readContext.done, __ATOMIC_ACQUIRE) < count; spin++) {
         count = __atomic_load_n(&readContext.count, __ATOMIC_ACQUIRE);
     }
-    // Only reachable if a post wedged mid-callback; over-capacity slots
-    // were never written, so copy at most the drained prefix.
-    if (count < 0 || count > MAX_READS) {
-        count = count < 0 ? 0 : MAX_READS;
+    // Only reachable if a post wedged between its claim and its write;
+    // done bounds the completed writes, so an entry past a wedged writer
+    // can still be stale from an earlier call and the retry absorbs it.
+    int done = __atomic_load_n(&readContext.done, __ATOMIC_ACQUIRE);
+    if (done < 0 || done > MAX_READS) {
+        done = done < 0 ? 0 : MAX_READS;
+    }
+    if (count < 0 || count > done) {
+        count = count < 0 ? 0 : done;
     }
 
     jlongArray result = jni->NewLongArray(1 + count * 3);
