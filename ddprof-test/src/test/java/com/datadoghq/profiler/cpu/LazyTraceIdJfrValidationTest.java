@@ -88,7 +88,9 @@ public class LazyTraceIdJfrValidationTest extends AbstractProcessProfilerTest {
                         Matcher m = LOGGED_ID.matcher(line);
                         if (m.find()) {
                             try {
-                                loggedIds.add(Long.parseLong(m.group(1)));
+                                // The log line prints the id unsigned (%llu); parse it
+                                // unsigned so ids at or above 2^63 keep JFR's getId bits.
+                                loggedIds.add(Long.parseUnsignedLong(m.group(1)));
                             } catch (NumberFormatException e) {
                                 malformed.set(true);
                             }

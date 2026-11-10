@@ -296,6 +296,9 @@ public class ExternalLauncher {
                 Method target = ExternalLauncher.class.getDeclaredMethod("nmethodMethodTarget", long.class);
                 long[] reads = null;
                 long acc = 0;
+                // A seam failure must still stop the profiler: the child must not
+                // exit with profiling live and without its recording dumped.
+                try {
                 for (int round = 0; round < 50 && (reads == null || reads.length <= 1); round++) {
                     // Long arithmetic only: an allocation here would stop the loop and its
                     // callee from being compiled as the steady state under test.
@@ -323,7 +326,9 @@ public class ExternalLauncher {
                     }
                     System.out.println(sb);
                 }
-                instance.stop();
+                } finally {
+                    instance.stop();
+                }
             } else if (args[0].equals("lazy-calibration-preexisting-arrays")) {
                 if (args.length < 2 || args[1].isEmpty()) {
                     throw new IllegalArgumentException("lazy-calibration-preexisting-arrays requires a profiler command list");
