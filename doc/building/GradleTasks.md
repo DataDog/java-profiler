@@ -103,7 +103,37 @@ reproJar                 # Build the reference-chain leak demo app (refchains_re
 ```
 
 `./gradlew runBenchmarks` resolves to `:ddprof-lib:runBenchmarks`, which delegates to
-`:ddprof-lib:benchmarks:runBenchmark`.
+`:ddprof-lib:benchmarks:runBenchmark` (unwinding failures) and
+`:ddprof-lib:benchmarks:runNativeMemEstimator` (native memory accounting cost
+estimator, Linux-only — on other platforms its tasks are skipped and only the
+unwinding benchmark runs).
+
+### Native Memory Accounting Cost Estimator
+
+`compileNativeMemEstimator`, `linkNativeMemEstimator`, `runNativeMemEstimator` and
+`verifyNativeMemEstimator` under `:ddprof-lib:benchmarks` build and run a paired
+measurement of the per-op cost of the production `NativeMem::recordAlloc` /
+`recordFreeBefore` calls, replaying a seeded malloc/free trace in matched modes.
+
+- **Advisory**: there is no numeric threshold, the exit status never depends on
+  the size of an estimate, and the estimator is not wired into any blocking CI
+  job.
+- **Output**: `key=value` lines — the median paired delta (ns/op) with a seeded
+  bootstrap 95 % CI and an exact two-sided sign-test p; the A–A noise-floor
+  median and CI; the I–A median and CI; plus trace hash, seeds, pair counts,
+  libc name/version, build flags and per-window `markers:` records. The exit
+  status is non-zero only for a trace-hash mismatch, an accounting-call
+  mismatch, a self-test failure (I–A CI includes 0 or A–A CI excludes 0),
+  invalid usage, or an internal replay failure (e.g. an exhausted heap).
+  `ia_ci_contains_magnitude` reports whether the I–A CI contains the injected
+  magnitude — a calibration field, never an exit condition.
+- **Test-only fault options**: `--force-bad-hash` (wrong expected hash),
+  `--skip-accounting-call` (drop one accounting call), `--inject-zero`
+  (zero-cost spin, forcing the self-test to fail), `--demo` (shorter replay for
+  quick runs).
+- `verifyNativeMemEstimator` runs each fault option (asserting a non-zero exit)
+  and a `--demo` normal run (asserting exit 0 and the report fields above);
+  Linux-only and advisory like the estimator itself.
 
 ## Application Tasks
 
