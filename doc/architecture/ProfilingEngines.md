@@ -558,7 +558,7 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
   signal handler:
   1. Resolves the class with `GetClassSignature` and `lookupClass()` (through
      the profiler's intern gate). An unresolvable class drops the sample. Just
-     before the lookup it reads `Profiler::recordingEpoch()` and
+     before the lookup it reads `Profiler::recordingSession()` and
      `LivenessTracker::tableGeneration()`: disabling the JVMTI event does not
      wait for callbacks already running, so one can resume after a stop/start
      holding a class id from the previous recording.
@@ -566,9 +566,9 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
      `weight = 1 / (1 - exp(-size / interval))` and calls
      `recordJVMTISample()`. When only liveness is recorded, the sample is
      deferred (`deferred = !_record_allocations`). Under its stripe lock,
-     `recordJVMTISample()` drops the sample if the recording epoch moved;
-     `releaseRecordingMemory()` bumps it under `lockAll()`, so the check and
-     the emission cannot straddle a stop.
+     `recordJVMTISample()` drops the sample if the recording session moved;
+     only `releaseRecordingMemory()` bumps it, under `lockAll()`, so the check
+     and the emission cannot straddle a stop, and a `dump()` drops nothing.
      `recordJVMTISample()` captures the stack according to `allocstack`: by
      default (HotSpot with `cstack=vm`/`vmx`) with the VM stack walker,
      seeded from the thread's last Java frame
