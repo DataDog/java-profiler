@@ -477,7 +477,7 @@ tracker ticket as the system of record: Jira (`PROF-<n>`) for Datadog engineers,
 GitHub issues for external contributors. **Read [doc/WorkTracking.md](doc/WorkTracking.md)
 before starting tracked work** — it is the phase-by-phase process reference; skipping
 it must be disclosed per the rule at the top of this file. Before creating, updating or
-moving a Jira ticket or GitHub issue, load the `ticket-writing` skill
+moving a Jira ticket, load the `ticket-writing` skill
 ([.agents/skills/ticket-writing/SKILL.md](.agents/skills/ticket-writing/SKILL.md)); before
 writing a design, acceptance criteria or a Build plan, load the `work-planning` skill
 ([.agents/skills/work-planning/SKILL.md](.agents/skills/work-planning/SKILL.md)). These

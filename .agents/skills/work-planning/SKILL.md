@@ -27,9 +27,11 @@ permission (AGENTS.md). The engineer accepts each artifact before the next phase
 - **Environments.** List every environment the change must work in: the CI image, a
   clean checkout versus a working copy, local tool versions, and each supported agent
   harness. An environment the design does not name is where findings come from.
-- **Critical areas.** Name each critical area from `doc/WorkTracking.md` the change
-  touches, and signal-handler code (the AGENTS.md Critical Invariants), with the review
-  each needs.
+- **Critical areas and human review.** Name each critical area from
+  `doc/WorkTracking.md` the change touches, and signal-handler code (the AGENTS.md
+  Critical Invariants). State which human reviews are required (for example a second
+  profiling reviewer for `.claude/settings.json`) and which are recommended (for
+  example for `AGENTS.md` changes, which every session loads), each with its reason.
 - **Rollout and recovery.** State how the change reaches users, and how to stop or
   revert it if a production check fails.
 
