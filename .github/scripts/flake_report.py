@@ -71,7 +71,12 @@ def attempt_results(root_dir):
                 # proposing for quarantine.
                 continue
             test_id = "{}.{}".format(classname, name)
-            if case.find("skipped") is None:
+            # gtest writes status="notrun" (e.g. DISABLED_ tests, never run)
+            # with no result element; counting those as observed would claim a
+            # test ran and passed when it never started. Gradle's XML leaves
+            # the status attribute empty and marks skips with <skipped>, so
+            # this only bites gtest reports.
+            if case.find("skipped") is None and case.get("status") != "notrun":
                 observed.add(test_id)
             problem = case.find("failure")
             if problem is None:
