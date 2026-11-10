@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Testing Guide
 
 This document describes the complete test strategy for the java-profiler project:
@@ -156,6 +158,20 @@ debug build):
 # Run a single test
 ./gradlew :ddprof-test:testAsan -Ptests=AllocationProfilerTest -Pskip-gtest
 ```
+
+### CStack template lifecycle
+
+`CStackInjector` retains safe declared modes in order, including duplicates. J9 accepts
+only `dwarf`; pre-17 ARM64 accepts `vm*` before CI rules apply. In CI, musl x64 excludes
+`vm*` and musl ARM64 excludes `vmx`. Zing separately selects `no` without filtering.
+
+When every declared mode is excluded, one invocation is explicitly disabled with a
+reason before `BeforeEachCallback` and inherited profiler setup. JUnit still constructs
+the test instance; the cstack constructor value serves only as disabled-invocation metadata.
+
+Keep JUnit execution conditions active. Disabled invocations are unavailable coverage,
+not passing workload checks. `CStackInjectorPolicyTest` checks selection and real-engine
+lifecycle ordering without starting the profiler or changing host platform properties.
 
 On failure the workflow reports affected scenarios to Slack and uploads test reports
 as artifacts.

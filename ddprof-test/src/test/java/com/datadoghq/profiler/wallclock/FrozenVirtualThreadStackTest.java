@@ -33,8 +33,6 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
 
     @Override
     protected boolean isPlatformSupported() {
-        // CStackInjector falls back to the first mode when every mode is excluded.
-        // Keep that fallback from re-enabling VM walking on musl x64 in CI.
         return Platform.isJavaVersionAtLeast(21) && !Platform.isJ9() && !Platform.isZing()
                 && !(isInCI() && Platform.isMusl() && !Platform.isAarch64());
     }
@@ -63,6 +61,40 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
         assertEquals(0, counts[1], "Samples omitted a JVM-confirmed caller but reported a complete stack");
     }
 
+    /** A return barrier must retain carrier ancestry even while older Java callers remain frozen. */
+    @TestTemplate
+    @ValueSource(strings = {"vmx"})
+    public void keepsCarrierFramesAfterPartialThaw() throws Exception {
+        runWorkload(true, true);
+        assertCarrierFramesAfterPartialThaw("recursiveWorkload");
+    }
+
+    /** Stack-passed arguments extend and align the continuation entry frame during thaw. */
+    @TestTemplate
+    @ValueSource(strings = {"vmx"})
+    public void keepsCarrierFramesAfterPartialThawWithStackArguments() throws Exception {
+        runWorkload(true, true, true);
+        assertCarrierFramesAfterPartialThaw("recursiveWorkloadWithArguments");
+    }
+
+    /** Checks carrier recovery without requiring the separately implemented heap-caller recovery. */
+    private void assertCarrierFramesAfterPartialThaw(String workloadMethod) {
+        assertTrue(profiler.getDebugCounters().getOrDefault("walkvm_cont_barrier_hit", 0L) > 0,
+                "The workload must encounter a continuation return barrier");
+
+        int[] counts = reduceEvents("datadog.MethodSample", () -> new int[2], (count, sample) -> {
+            JfrStackTrace trace = sample.getStackTrace();
+            if (!containsMethod(trace, workloadMethod) || containsMethod(trace, "outerWorkload")) return;
+            for (JfrFrame frame : trace.frames()) {
+                if ("java.util.concurrent.ForkJoinWorkerThread".equals(frame.className())
+                        && "run".equals(frame.methodName())) count[0]++;
+                if (frame.methodName() != null && frame.methodName().startsWith("break_cont_")) count[1]++;
+            }
+        });
+        assertEquals(0, counts[1], "Carrier recovery rejected continuation frame pointers");
+        assertTrue(counts[0] > 0, "No partially thawed workload sample retained carrier ancestry");
+    }
+
     /** The same parked workload on a platform thread keeps its application callers on the stack. */
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx"})
@@ -71,9 +103,9 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
         assertCompleteCallers();
     }
 
-    /** A never-parked virtual thread retains its callers without freezing or thawing them. */
+    /** A never-parked virtual thread retains its callers in both VM walking modes. */
     @TestTemplate
-    @ValueSource(strings = {"vm"})
+    @ValueSource(strings = {"vm", "vmx"})
     public void keepsNeverParkedVirtualThreadComplete() throws Exception {
         runWorkload(true, false);
         assertCompleteCallers();
@@ -81,9 +113,14 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
 
     /** Runs the same recursion on either kind of thread and verifies that its callers really exist. */
     private void runWorkload(boolean virtual, boolean park) throws Exception {
+        runWorkload(virtual, park, false);
+    }
+
+    /** Selects recursive frames with either register-only or stack-passed arguments. */
+    private void runWorkload(boolean virtual, boolean park, boolean stackArguments) throws Exception {
         waitForProfilerReady(2_000);
         FutureTask<Void> task = new FutureTask<>(() -> {
-            outerWorkload(park);
+            outerWorkload(park, stackArguments);
             return null;
         });
         Thread worker;
@@ -104,7 +141,7 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
         boolean outer = false;
         for (StackTraceElement frame : logicalStack) {
             if (!getClass().getName().equals(frame.getClassName())) continue;
-            if (frame.getMethodName().equals("recursiveWorkload")) recursion++;
+            if (frame.getMethodName().equals(stackArguments ? "recursiveWorkloadWithArguments" : "recursiveWorkload")) recursion++;
             if (frame.getMethodName().equals("outerWorkload")) outer = true;
         }
         assertEquals(RECURSION_DEPTH + 1, recursion, "The JVM must preserve all recursive callers");
@@ -133,9 +170,15 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
         return false;
     }
 
-    private void outerWorkload(boolean park) {
+    private void outerWorkload(boolean park, boolean stackArguments) {
         long deadline = System.nanoTime() + 2_000_000_000L;
-        while (System.nanoTime() < deadline) recursiveWorkload(RECURSION_DEPTH, park);
+        while (System.nanoTime() < deadline) {
+            if (stackArguments) {
+                recursiveWorkloadWithArguments(RECURSION_DEPTH, park, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+            } else {
+                recursiveWorkload(RECURSION_DEPTH, park);
+            }
+        }
     }
 
     /** Work after the recursive call keeps callers alive; deep recursion exceeds partial-thaw sizes. */
@@ -149,5 +192,19 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
             while (System.nanoTime() < deadline) sink ^= System.nanoTime();
         }
         sink += depth;
+    }
+
+    /** Keeps stack-passed arguments live across the recursive call and the park/remount cycle. */
+    private void recursiveWorkloadWithArguments(int depth, boolean park,
+            long a, long b, long c, long d, long e, long f, long g, long h, long i) {
+        if (depth > 0) {
+            recursiveWorkloadWithArguments(depth - 1, park, a, b, c, d, e, f, g, h, i);
+        } else {
+            if (park) LockSupport.parkNanos(500_000L);
+            if (logicalStack == null) logicalStack = Thread.currentThread().getStackTrace();
+            long deadline = System.nanoTime() + 2_000_000L;
+            while (System.nanoTime() < deadline) sink ^= System.nanoTime();
+        }
+        sink += depth + a + b + c + d + e + f + g + h + i;
     }
 }
