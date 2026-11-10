@@ -341,6 +341,12 @@ TEST_P(LibraryPatcherUnloadTest, UnpatchAfterReloadAtSameBase) {
     // With -z now the reload resolves the slot to the same function, which is
     // also the value saved when patching.
     if (*lib.slot != lib.orig) _exit(CHILD_SKIP);
+    // A persistent hook is not re-applied to a reloaded image before the next
+    // patch pass, so its fresh slot is unhooked here: nothing to check.
+    if (kind.persistent) {
+      kind.unpatch();
+      return;
+    }
     unpatchAndVerifyRestored(kind, lib);
   });
 }
