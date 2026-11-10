@@ -480,11 +480,8 @@ it must be disclosed per the rule at the top of this file. Before creating, upda
 moving a Jira ticket or GitHub issue, load the `ticket-writing` skill
 ([.agents/skills/ticket-writing/SKILL.md](.agents/skills/ticket-writing/SKILL.md)); before
 writing a design, acceptance criteria or a Build plan, load the `work-planning` skill
-([.agents/skills/work-planning/SKILL.md](.agents/skills/work-planning/SKILL.md)).
-The process follows the [Datadog AI Native SDLC Playbook](https://datadoghq.atlassian.net/wiki/spaces/ENG/pages/7376601403/Datadog+AI+Native+SDLC+Playbook)
-(Datadog-internal link, kept on purpose; outside readers cannot open it). Open it only
-when planning tracked work, changing this process, or changing the agent configuration
-(this file, skills, hooks). These rules always apply:
+([.agents/skills/work-planning/SKILL.md](.agents/skills/work-planning/SKILL.md)). These
+rules always apply:
 
 - **Verification first.** No transition happens on claims: acceptance criteria before
   code, tests and review before merge, production verification before closure. **Fix
