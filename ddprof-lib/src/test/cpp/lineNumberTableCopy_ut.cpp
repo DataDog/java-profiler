@@ -61,7 +61,8 @@
 // fillJavaMethodInfo requires and which is impractical to fake in a plain
 // gtest) by exercising the exact validation shape above against buffers
 // standing in for whatever GetLineNumberTable() might hand back -- a valid
-// table, an unmapped one, a zero-size one, and corrupted size values --
+// table, an unreadable (PROT_NONE) one, one whose mapping has been replaced
+// at the same address, a zero-size one, and corrupted size values --
 // regardless of the precise reason the JVMTI call produced them.
 
 #include <gtest/gtest.h>
@@ -178,7 +179,11 @@ TEST(LineNumberTableCopyRawTest, UnguardedAccessCrashesWhenSourceUnmapped) {
 
 // Documents the fix: probing with SafeAccess::isReadableRange() before ever
 // trusting the pointer turns the crash into a clean, detectable rejection.
-TEST_F(LineNumberTableCopyTest, RejectsUnmappedSource) {
+// The source is made unreadable with mprotect(PROT_NONE), not munmap():
+// munmap releases the address process-wide, so a concurrent mmap may legally
+// reuse it before the probe, making this expectation flaky. A PROT_NONE page
+// still faults at safefetch32_impl, exercising the same redirect path.
+TEST_F(LineNumberTableCopyTest, RejectsUnreadableSource) {
   long page_size = sysconf(_SC_PAGESIZE);
   void *page = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -188,9 +193,32 @@ TEST_F(LineNumberTableCopyTest, RejectsUnmappedSource) {
   jvmtiLineNumberEntry *line_number_table =
       makeFakeLineNumberTable(page, line_number_table_size);
 
-  ASSERT_EQ(0, munmap(page, page_size));
+  ASSERT_EQ(0, mprotect(page, page_size, PROT_NONE));
 
   EXPECT_FALSE(
+      isLineNumberTableReadable(line_number_table, line_number_table_size));
+}
+
+// The validation reports current memory state, not the pointer's history:
+// mmap(MAP_FIXED) atomically replaces the page with a fresh mapping at the
+// same address, and the probe must report the source readable.
+TEST_F(LineNumberTableCopyTest, AcceptsReplacedSourceMapping) {
+  long page_size = sysconf(_SC_PAGESIZE);
+  void *page = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(page, MAP_FAILED);
+
+  jint line_number_table_size = 4;
+  jvmtiLineNumberEntry *line_number_table =
+      makeFakeLineNumberTable(page, line_number_table_size);
+
+  // One syscall replaces the live mapping, leaving no unowned-address
+  // window in which a concurrent mmap could be clobbered.
+  void *remapped = mmap(page, page_size, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+  ASSERT_EQ(page, remapped);
+
+  EXPECT_TRUE(
       isLineNumberTableReadable(line_number_table, line_number_table_size));
 }
 
