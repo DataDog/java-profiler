@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc
+ * Copyright 2025, 2026, Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 package com.datadoghq.profiler.nativethread;
 
 interface ThreadCreator {
-    long createThread();
-    void waitThread(long id);
+  long createThread();
+
+  void waitThread(long id);
 }

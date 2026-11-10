@@ -5,24 +5,23 @@
 
 package com.datadoghq.profiler.alloc;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.Platform;
-import org.junit.jupiter.api.Test;
-
-import java.util.Map;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.concurrent.atomic.AtomicLong;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.Platform;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+import org.junit.jupiter.api.Test;
+
 /**
- * allocstack=verify: allocation samples are walked by the VM stack walker and every walk is
- * checked against JVMTI GetStackTrace on the same thread. The walker reads the stack in place
- * instead of building a vframe per frame in the allocating thread's resource area, so it must
- * produce exactly the frames GetStackTrace does: same methods and bytecode indexes, for
- * interpreted, compiled and inlined frames.
+ * allocstack=verify: allocation samples are walked by the VM stack walker and every walk is checked
+ * against JVMTI GetStackTrace on the same thread. The walker reads the stack in place instead of
+ * building a vframe per frame in the allocating thread's resource area, so it must produce exactly
+ * the frames GetStackTrace does: same methods and bytecode indexes, for interpreted, compiled and
+ * inlined frames.
  */
 public class AllocStackVerifyTest extends AbstractProfilerTest {
 
@@ -45,33 +44,41 @@ public class AllocStackVerifyTest extends AbstractProfilerTest {
 
     AtomicLong blobs = new AtomicLong();
     AtomicLong expected = new AtomicLong();
-    streamEvents("datadog.ObjectSample", event -> {
-      if (AllocStackWorkload.isBlobSample(event) && !AllocStackWorkload.isDroppedSample(event)) {
-        blobs.incrementAndGet();
-        if (AllocStackWorkload.hasExpectedStack(event)) {
-          expected.incrementAndGet();
-        }
-      }
-    });
+    streamEvents(
+        "datadog.ObjectSample",
+        event -> {
+          if (AllocStackWorkload.isBlobSample(event)
+              && !AllocStackWorkload.isDroppedSample(event)) {
+            blobs.incrementAndGet();
+            if (AllocStackWorkload.hasExpectedStack(event)) {
+              expected.incrementAndGet();
+            }
+          }
+        });
     assertTrue(blobs.get() > 0, "no allocation samples of the workload");
     assertEquals(blobs.get(), expected.get(), "allocation samples with a lost or extra frame");
 
     // Counters are compiled into every Linux build; elsewhere they may be absent.
     if (counters.containsKey("alloc_stack_verified")) {
       assertTrue(counters.get("alloc_stack_vm") > 0, "the VM walker was not used: " + counters);
-      assertTrue(counters.get("alloc_stack_verified") >= 100, "too few verified samples: " + counters);
-      assertEquals(0L, counters.get("alloc_stack_mismatch"), "walks differing from GetStackTrace: " + counters);
+      assertTrue(
+          counters.get("alloc_stack_verified") >= 100, "too few verified samples: " + counters);
+      assertEquals(
+          0L,
+          counters.get("alloc_stack_mismatch"),
+          "walks differing from GetStackTrace: " + counters);
       // A walk that loses a frame falls back to GetStackTrace before it is verified, so a
       // walker regression would show up here rather than as a mismatch.
-      assertTrue(counters.get("alloc_stack_vm_fallback") <= counters.get("alloc_stack_vm") / 100,
+      assertTrue(
+          counters.get("alloc_stack_vm_fallback") <= counters.get("alloc_stack_vm") / 100,
           "too many fallbacks to GetStackTrace: " + counters);
     }
   }
 
   /**
-   * A mounted virtual thread keeps using GetStackTrace, which stops at the continuation
-   * boundary: the VM walker does not recognize that boundary on every JDK build and would
-   * walk on into the carrier's frames.
+   * A mounted virtual thread keeps using GetStackTrace, which stops at the continuation boundary:
+   * the VM walker does not recognize that boundary on every JDK build and would walk on into the
+   * carrier's frames.
    */
   @Test
   public void virtualThreadsUseGetStackTrace() throws Exception {
@@ -84,21 +91,27 @@ public class AllocStackVerifyTest extends AbstractProfilerTest {
 
     AtomicLong blobs = new AtomicLong();
     AtomicLong expected = new AtomicLong();
-    streamEvents("datadog.ObjectSample", event -> {
-      if (AllocStackWorkload.isBlobSample(event) && !AllocStackWorkload.isDroppedSample(event)) {
-        blobs.incrementAndGet();
-        if (AllocStackWorkload.hasExpectedStack(event)) {
-          expected.incrementAndGet();
-        }
-      }
-    });
+    streamEvents(
+        "datadog.ObjectSample",
+        event -> {
+          if (AllocStackWorkload.isBlobSample(event)
+              && !AllocStackWorkload.isDroppedSample(event)) {
+            blobs.incrementAndGet();
+            if (AllocStackWorkload.hasExpectedStack(event)) {
+              expected.incrementAndGet();
+            }
+          }
+        });
     assertTrue(blobs.get() > 0, "no allocation samples of the workload");
     assertEquals(blobs.get(), expected.get(), "allocation samples with a lost or extra frame");
     if (counters.containsKey("alloc_stack_virtual_thread")) {
-      assertTrue(counters.get("alloc_stack_virtual_thread") > 0, "virtual thread samples were not skipped: " + counters);
+      assertTrue(
+          counters.get("alloc_stack_virtual_thread") > 0,
+          "virtual thread samples were not skipped: " + counters);
       assertEquals(0L, counters.get("alloc_stack_mismatch"), counters.toString());
     }
   }
+
   @Test
   public void verifyScratchSurvivesModeChangesAtTheSameStackDepth() throws Exception {
     stopProfiler();
@@ -126,5 +139,4 @@ public class AllocStackVerifyTest extends AbstractProfilerTest {
       Files.deleteIfExists(recording);
     }
   }
-
 }

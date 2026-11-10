@@ -1,3 +1,5 @@
+// Copyright 2026, Datadog, Inc.
+
 package com.datadoghq.profiler.cpu;
 
 import java.io.InputStream;
@@ -7,91 +9,91 @@ import java.net.Socket;
 import java.util.concurrent.ThreadLocalRandom;
 
 public class IOBoundCode {
-    private static final class IdleClient extends Thread {
-        private final String host;
-        private final int port;
+  private static final class IdleClient extends Thread {
+    private final String host;
+    private final int port;
 
-        public IdleClient(String host, int port) {
-            this.host = host;
-            this.port = port;
-            setDaemon(true);
-        }
-
-        @Override
-        public void run() {
-            try {
-                byte[] buf = new byte[4096];
-
-                try (Socket s = new Socket(host, port)) {
-                    InputStream in = s.getInputStream();
-                    while (in.read(buf) >= 0) {
-                        // keep reading
-                    }
-                    System.out.println(Thread.currentThread().getName() + " stopped");
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
+    public IdleClient(String host, int port) {
+      this.host = host;
+      this.port = port;
+      setDaemon(true);
     }
 
-    private static final class BusyClient extends Thread {
-        private final String host;
-        private final int port;
+    @Override
+    public void run() {
+      try {
+        byte[] buf = new byte[4096];
 
-        public BusyClient(String host, int port) {
-            this.host = host;
-            this.port = port;
-            setDaemon(true);
+        try (Socket s = new Socket(host, port)) {
+          InputStream in = s.getInputStream();
+          while (in.read(buf) >= 0) {
+            // keep reading
+          }
+          System.out.println(Thread.currentThread().getName() + " stopped");
         }
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
+    }
+  }
 
-        @Override
-        public void run() {
-            try {
-                byte[] buf = new byte[4096];
+  private static final class BusyClient extends Thread {
+    private final String host;
+    private final int port;
 
-                try (Socket s = new Socket(host, port)) {
-
-                    InputStream in = s.getInputStream();
-                    while (in.read(buf) >= 0) {
-                        // keep reading
-                    }
-                    System.out.println(Thread.currentThread().getName() + " stopped");
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
+    public BusyClient(String host, int port) {
+      this.host = host;
+      this.port = port;
+      setDaemon(true);
     }
 
-    void run() throws Exception {
-        try (ServerSocket s = new ServerSocket(0)) {
-            String host = "localhost";
-            int port = s.getLocalPort();
-            Thread t1 = new IdleClient(host, port);
-            t1.start();
-            OutputStream idleClient = s.accept().getOutputStream();
+    @Override
+    public void run() {
+      try {
+        byte[] buf = new byte[4096];
 
-            Thread t2 = new BusyClient(host, port);
-            t2.start();
-            OutputStream busyClient = s.accept().getOutputStream();
+        try (Socket s = new Socket(host, port)) {
 
-            byte[] buf = new byte[4096];
-            ThreadLocalRandom.current().nextBytes(buf);
-
-            long target = System.nanoTime() + 3_000_000_000L;
-            for (int i = 0; ; i++) {
-                if ((i % 10_000_000) == 0) {
-                    idleClient.write(buf, 0, 1);
-                } else {
-                    busyClient.write(buf);
-                }
-                if (System.nanoTime() >= target) {
-                    t1.interrupt();
-                    t2.interrupt();
-                    break;
-                }
-            }
+          InputStream in = s.getInputStream();
+          while (in.read(buf) >= 0) {
+            // keep reading
+          }
+          System.out.println(Thread.currentThread().getName() + " stopped");
         }
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
     }
+  }
+
+  void run() throws Exception {
+    try (ServerSocket s = new ServerSocket(0)) {
+      String host = "localhost";
+      int port = s.getLocalPort();
+      Thread t1 = new IdleClient(host, port);
+      t1.start();
+      OutputStream idleClient = s.accept().getOutputStream();
+
+      Thread t2 = new BusyClient(host, port);
+      t2.start();
+      OutputStream busyClient = s.accept().getOutputStream();
+
+      byte[] buf = new byte[4096];
+      ThreadLocalRandom.current().nextBytes(buf);
+
+      long target = System.nanoTime() + 3_000_000_000L;
+      for (int i = 0; ; i++) {
+        if ((i % 10_000_000) == 0) {
+          idleClient.write(buf, 0, 1);
+        } else {
+          busyClient.write(buf);
+        }
+        if (System.nanoTime() >= target) {
+          t1.interrupt();
+          t2.interrupt();
+          break;
+        }
+      }
+    }
+  }
 }

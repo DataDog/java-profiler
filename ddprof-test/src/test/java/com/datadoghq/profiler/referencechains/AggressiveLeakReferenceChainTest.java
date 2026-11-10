@@ -5,16 +5,6 @@
 
 package com.datadoghq.profiler.referencechains;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.Platform;
-import com.datadoghq.profiler.ReferenceChainTestHooks;
-import org.junit.jupiter.api.Test;
-import org.opentest4j.AssertionFailedError;
-import org.opentest4j.TestAbortedException;
-
-import java.util.Arrays;
-import java.util.function.Supplier;
-
 import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.assumeDebugBuild;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -25,38 +15,46 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.ReferenceChainTestHooks;
+import java.util.Arrays;
+import java.util.function.Supplier;
+import org.junit.jupiter.api.Test;
+import org.opentest4j.AssertionFailedError;
+import org.opentest4j.TestAbortedException;
+
 /**
- * E2E coverage for the search-restart gate the reference-chain collector's pass loop polls
- * ({@code ReferenceChainTracker::hasLeakSignal()}, referenceChains.cpp). Complements
- * {@link ReferenceChainTrackingTest}'s organic coverage of a slow leak - a gradually-growing
- * population that clears {@code selectLeakCandidates()}'s per-klass hysteresis gate over many
- * rounds - with the aggregate heap-floor case: a heap-wide growth fast enough that a real
- * deployment would OOM before any single klass's own population history ever clears that same
- * hysteresis gate.
+ * E2E coverage for the search-restart gate the reference-chain collector's pass loop polls ({@code
+ * ReferenceChainTracker::hasLeakSignal()}, referenceChains.cpp). Complements {@link
+ * ReferenceChainTrackingTest}'s organic coverage of a slow leak - a gradually-growing population
+ * that clears {@code selectLeakCandidates()}'s per-klass hysteresis gate over many rounds - with
+ * the aggregate heap-floor case: a heap-wide growth fast enough that a real deployment would OOM
+ * before any single klass's own population history ever clears that same hysteresis gate.
  *
  * <p>This class is a regression guard for the candidate-gate contract: the aggregate urgent-OOM
- * projection alone must NEVER open the gate while the per-klass population table is provably
- * empty: a candidate-less search cannot exit early and would run whole-heap BFS passes to the
- * auto-tuned TTL with zero chains to show for it.
+ * projection alone must NEVER open the gate while the per-klass population table is provably empty:
+ * a candidate-less search cannot exit early and would run whole-heap BFS passes to the auto-tuned
+ * TTL with zero chains to show for it.
  *
  * <p>Reproducing a genuine near-OOM heap in this shared, no-{@code forkEvery} test JVM is
  * impractical (see {@link ReferenceChainTrackingTest}'s own header comment on the JVM this class
- * shares with every other {@code ddprof-test} class). The debug-only
- * {@code heapFloorRecordForTest0()}/{@code setMaxHeapBytesForTest0()} seams (javaApi.cpp) instead
- * seed {@code LivenessTracker}'s aggregate heap-floor-ring history and its max-heap-bytes cache
- * directly, so {@code secondsToOOM()}'s projection can be driven under
- * {@code OOM_URGENT_THRESHOLD_S} (referenceChains.h) deterministically, decoupled from this JVM's
- * real {@code -Xmx} and from real GC timing. {@code secondsToOOM()} withholds its projection for
- * {@code OOM_PROJECTION_BURN_IN_NS} (5 minutes) after the leak signal first activated, and this
- * class may run inside that window, so each gate test backdates the burn-in stamp with
- * {@code backdateLeakSignalActivationForTest0()} and restores it in its finally block. Positive
- * controls ({@code secondsToOOMForTest0()} for the projection, {@code isUrgentForTest0()}/{@code
+ * shares with every other {@code ddprof-test} class). The debug-only {@code
+ * heapFloorRecordForTest0()}/{@code setMaxHeapBytesForTest0()} seams (javaApi.cpp) instead seed
+ * {@code LivenessTracker}'s aggregate heap-floor-ring history and its max-heap-bytes cache
+ * directly, so {@code secondsToOOM()}'s projection can be driven under {@code
+ * OOM_URGENT_THRESHOLD_S} (referenceChains.h) deterministically, decoupled from this JVM's real
+ * {@code -Xmx} and from real GC timing. {@code secondsToOOM()} withholds its projection for {@code
+ * OOM_PROJECTION_BURN_IN_NS} (5 minutes) after the leak signal first activated, and this class may
+ * run inside that window, so each gate test backdates the burn-in stamp with {@code
+ * backdateLeakSignalActivationForTest0()} and restores it in its finally block. Positive controls
+ * ({@code secondsToOOMForTest0()} for the projection, {@code isUrgentForTest0()}/{@code
  * urgentLatchedForTest0()} for the urgency machine) prove the urgency machine is engaged (or
- * provably not, for the flat-floor control) before any negative gate assertion is trusted. {@code shouldRunPassForTest0()} then
- * evaluates {@code ReferenceChainTracker::shouldRunPass()} - the gate {@code hasLeakSignal()}
- * feeds - directly on a freshly reset search, rather than running a real pass or waiting on the
- * live BFS thread, so this class never depends on {@code selectLeakCandidates()} ranking
- * anything, a real JVMTI heap walk, or a JFR event.
+ * provably not, for the flat-floor control) before any negative gate assertion is trusted. {@code
+ * shouldRunPassForTest0()} then evaluates {@code ReferenceChainTracker::shouldRunPass()} - the gate
+ * {@code hasLeakSignal()} feeds - directly on a freshly reset search, rather than running a real
+ * pass or waiting on the live BFS thread, so this class never depends on {@code
+ * selectLeakCandidates()} ranking anything, a real JVMTI heap walk, or a JFR event.
  */
 public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
 
@@ -87,17 +85,17 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
   }
 
   /**
-   * Undoes this class's synthetic seeding so later tests in this shared, no-forkEvery JVM never
-   * see it. This helper is the only place the cleanup ordering lives; every test's finally block
-   * ends with it. {@code resetKlassPopulationForTest0()} also zeroes LivenessTracker's heap-floor
-   * ring (head/fill - {@code klassPopulationResetForTest()}, livenessTracker.h), so
-   * {@code secondsToOOM()} reports "insufficient fill" until real GC samples build up again; it
-   * runs while heap-floor recording is still disabled so no real sample can interleave. The
-   * burn-in stamp is restored next (unless {@code savedActivationNs} is
-   * {@link #ACTIVATION_STAMP_UNCHANGED}) - after the ring reset and before the search reset, so
-   * the restarted BFS thread can neither re-latch from a stale ring nor project against a
-   * backdated clock. {@code resetReferenceChainSearchForTest0()} then clears any urgency latch
-   * plus the search state an earlier evaluation started. Recording is re-enabled last.
+   * Undoes this class's synthetic seeding so later tests in this shared, no-forkEvery JVM never see
+   * it. This helper is the only place the cleanup ordering lives; every test's finally block ends
+   * with it. {@code resetKlassPopulationForTest0()} also zeroes LivenessTracker's heap-floor ring
+   * (head/fill - {@code klassPopulationResetForTest()}, livenessTracker.h), so {@code
+   * secondsToOOM()} reports "insufficient fill" until real GC samples build up again; it runs while
+   * heap-floor recording is still disabled so no real sample can interleave. The burn-in stamp is
+   * restored next (unless {@code savedActivationNs} is {@link #ACTIVATION_STAMP_UNCHANGED}) - after
+   * the ring reset and before the search reset, so the restarted BFS thread can neither re-latch
+   * from a stale ring nor project against a backdated clock. {@code
+   * resetReferenceChainSearchForTest0()} then clears any urgency latch plus the search state an
+   * earlier evaluation started. Recording is re-enabled last.
    */
   private static void restoreHeapFloorDefaults(long savedActivationNs) {
     ReferenceChainTestHooks.setMaxHeapBytesForTest0(-1);
@@ -119,11 +117,11 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
 
   /**
    * Evaluates the search gate directly on a freshly reset search. The reset clears the urgency
-   * latch and the pain budget and leaves {@code _search_started} false, so
-   * {@code canAffordNewSearch()} reaches {@code hasLeakSignal()}; the gate's answer does not
-   * depend on evaluation order relative to the BFS thread. The evaluation is bracketed by
-   * candidate and pass-count reads so organic activity from the rest of this shared JVM can be
-   * told apart from a contract violation (see {@link #checkNoCandidateFreeActivity}).
+   * latch and the pain budget and leaves {@code _search_started} false, so {@code
+   * canAffordNewSearch()} reaches {@code hasLeakSignal()}; the gate's answer does not depend on
+   * evaluation order relative to the BFS thread. The evaluation is bracketed by candidate and
+   * pass-count reads so organic activity from the rest of this shared JVM can be told apart from a
+   * contract violation (see {@link #checkNoCandidateFreeActivity}).
    */
   private static GateEvaluation evaluateGateAfterSearchReset() {
     // Sampled BEFORE the reset: a pass whose gate decision was made on an organic candidate
@@ -148,32 +146,41 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
     // the observed activity window, never masks a gate violation).
     e.passesAfter = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
     e.candidateSeen = !isEmpty(candidatesBefore) || !isEmpty(candidatesAfter);
-    e.detail = "candidatesBefore=" + Arrays.toString(candidatesBefore) + " candidatesAfter="
-        + Arrays.toString(candidatesAfter) + " passesAfterReset=" + passesAfterReset
-        + " passesAfter=" + e.passesAfter;
+    e.detail =
+        "candidatesBefore="
+            + Arrays.toString(candidatesBefore)
+            + " candidatesAfter="
+            + Arrays.toString(candidatesAfter)
+            + " passesAfterReset="
+            + passesAfterReset
+            + " passesAfter="
+            + e.passesAfter;
     return e;
   }
 
   /**
    * Aborts on an observed per-klass candidate: a candidate legitimately opens the gate, so the
-   * candidate-gate contract cannot be isolated in that run. A BFS pass since the search reset
-   * (the reset zeroes the pass count) with no candidate in either read is re-evaluated once on a
-   * fresh reset: it FAILS if the candidate-free pass reproduces - the gate opened without a
-   * candidate, e.g. a re-introduced urgency bypass on the restarted BFS thread - and ABORTS if it
-   * does not reproduce (or the retry sees a candidate), because the bracket alone cannot tell a
-   * transient organic candidate apart from a gate regression. Never a silent pass.
+   * candidate-gate contract cannot be isolated in that run. A BFS pass since the search reset (the
+   * reset zeroes the pass count) with no candidate in either read is re-evaluated once on a fresh
+   * reset: it FAILS if the candidate-free pass reproduces - the gate opened without a candidate,
+   * e.g. a re-introduced urgency bypass on the restarted BFS thread - and ABORTS if it does not
+   * reproduce (or the retry sees a candidate), because the bracket alone cannot tell a transient
+   * organic candidate apart from a gate regression. Never a silent pass.
    */
   private static void checkNoCandidateFreeActivity(GateEvaluation e) {
-    checkNoCandidateFreeActivity(e,
-        AggressiveLeakReferenceChainTest::evaluateGateAfterSearchReset);
+    checkNoCandidateFreeActivity(e, AggressiveLeakReferenceChainTest::evaluateGateAfterSearchReset);
   }
 
   /** Decision table of {@link #checkNoCandidateFreeActivity(GateEvaluation)}, retry injectable. */
-  private static void checkNoCandidateFreeActivity(GateEvaluation e,
-      Supplier<GateEvaluation> retry) {
-    assumeFalse(e.candidateSeen, "Aborting: organic per-klass candidate around the direct "
-        + "evaluation (" + e.detail + ") - the candidate-gate contract cannot be isolated in "
-        + "this run");
+  private static void checkNoCandidateFreeActivity(
+      GateEvaluation e, Supplier<GateEvaluation> retry) {
+    assumeFalse(
+        e.candidateSeen,
+        "Aborting: organic per-klass candidate around the direct "
+            + "evaluation ("
+            + e.detail
+            + ") - the candidate-gate contract cannot be isolated in "
+            + "this run");
     if (e.passesAfter == 0) {
       return;
     }
@@ -184,16 +191,27 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
     // candidate does. Re-evaluate once on a fresh reset and fail only if it reproduces.
     GateEvaluation r = retry.get();
     String both = "first: " + e.detail + "; retry: " + r.detail;
-    assumeFalse(r.candidateSeen, "Aborting: a BFS pass ran with no per-klass candidate seen, "
-        + "and the re-evaluation then saw an organic candidate (" + both + ") - the "
-        + "candidate-gate contract cannot be isolated in this run");
+    assumeFalse(
+        r.candidateSeen,
+        "Aborting: a BFS pass ran with no per-klass candidate seen, "
+            + "and the re-evaluation then saw an organic candidate ("
+            + both
+            + ") - the "
+            + "candidate-gate contract cannot be isolated in this run");
     if (r.passesAfter != 0) {
-      fail("A BFS pass ran after the search reset with no per-klass candidate in any read, on "
-          + "two independent evaluations - the gate opened without a candidate (" + both + ")");
+      fail(
+          "A BFS pass ran after the search reset with no per-klass candidate in any read, on "
+              + "two independent evaluations - the gate opened without a candidate ("
+              + both
+              + ")");
     }
-    assumeTrue(false, "Aborting: a candidate-free BFS pass after the search reset did not "
-        + "reproduce on a re-evaluation (" + both + ") - a transient organic candidate in this "
-        + "shared JVM cannot be ruled out, so the run cannot be isolated");
+    assumeTrue(
+        false,
+        "Aborting: a candidate-free BFS pass after the search reset did not "
+            + "reproduce on a re-evaluation ("
+            + both
+            + ") - a transient organic candidate in this "
+            + "shared JVM cannot be ruled out, so the run cannot be isolated");
   }
 
   private static GateEvaluation syntheticEvaluation(boolean candidateSeen, int passesAfter) {
@@ -205,30 +223,38 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
   }
 
   /**
-   * Pure-logic check of {@link #checkNoCandidateFreeActivity}'s abort/fail table (no native
-   * seams): a candidate aborts; a clean evaluation returns without consuming the retry; a
-   * candidate-free pass fails only when it reproduces on the retry and otherwise aborts - never
-   * a silent pass, and never a hard fail on a single unreproduced observation.
+   * Pure-logic check of {@link #checkNoCandidateFreeActivity}'s abort/fail table (no native seams):
+   * a candidate aborts; a clean evaluation returns without consuming the retry; a candidate-free
+   * pass fails only when it reproduces on the retry and otherwise aborts - never a silent pass, and
+   * never a hard fail on a single unreproduced observation.
    */
   @Test
   public void checkNoCandidateFreeActivityRequiresReproductionBeforeFailing() {
-    Supplier<GateEvaluation> noRetry = () -> {
-      throw new IllegalStateException("retry must not be consumed");
-    };
+    Supplier<GateEvaluation> noRetry =
+        () -> {
+          throw new IllegalStateException("retry must not be consumed");
+        };
     checkNoCandidateFreeActivity(syntheticEvaluation(false, 0), noRetry);
-    assertThrows(TestAbortedException.class,
+    assertThrows(
+        TestAbortedException.class,
         () -> checkNoCandidateFreeActivity(syntheticEvaluation(true, 0), noRetry));
-    assertThrows(AssertionFailedError.class,
-        () -> checkNoCandidateFreeActivity(syntheticEvaluation(false, 1),
-            () -> syntheticEvaluation(false, 1)),
+    assertThrows(
+        AssertionFailedError.class,
+        () ->
+            checkNoCandidateFreeActivity(
+                syntheticEvaluation(false, 1), () -> syntheticEvaluation(false, 1)),
         "a reproduced candidate-free pass must fail");
-    assertThrows(TestAbortedException.class,
-        () -> checkNoCandidateFreeActivity(syntheticEvaluation(false, 1),
-            () -> syntheticEvaluation(false, 0)),
+    assertThrows(
+        TestAbortedException.class,
+        () ->
+            checkNoCandidateFreeActivity(
+                syntheticEvaluation(false, 1), () -> syntheticEvaluation(false, 0)),
         "an unreproduced candidate-free pass must abort, not fail or pass");
-    assertThrows(TestAbortedException.class,
-        () -> checkNoCandidateFreeActivity(syntheticEvaluation(false, 1),
-            () -> syntheticEvaluation(true, 1)),
+    assertThrows(
+        TestAbortedException.class,
+        () ->
+            checkNoCandidateFreeActivity(
+                syntheticEvaluation(false, 1), () -> syntheticEvaluation(true, 1)),
         "a retry that sees a candidate must abort");
   }
 
@@ -239,19 +265,19 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
   /**
    * Seeds ten heap-floor-ring samples rising fast enough that {@code secondsToOOM()}'s projection
    * lands well under {@code OOM_URGENT_THRESHOLD_S} (300s), with LivenessTracker's per-klass
-   * population table left empty throughout. The burn-in stamp is backdated first, so the
-   * projection is live in this shared JVM regardless of class ordering. Two positive controls
-   * run before the negative assertion: the projection must be inside the urgent band, and the
-   * gate evaluation must latch urgency - otherwise a closed gate would prove nothing. Then the
-   * directly evaluated search gate must stay closed: the aggregate urgent-OOM projection must
-   * never start a candidate-less search.
+   * population table left empty throughout. The burn-in stamp is backdated first, so the projection
+   * is live in this shared JVM regardless of class ordering. Two positive controls run before the
+   * negative assertion: the projection must be inside the urgent band, and the gate evaluation must
+   * latch urgency - otherwise a closed gate would prove nothing. Then the directly evaluated search
+   * gate must stay closed: the aggregate urgent-OOM projection must never start a candidate-less
+   * search.
    *
    * <p>The live BFS thread is deliberately not watched over a wait window: its pass counter also
    * counts passes legitimately started by unrelated per-klass candidates in this shared JVM. The
-   * run is aborted (not passed) when an organic candidate appears around the direct evaluation,
-   * and fails when a BFS pass since the search reset, with no candidate in any read, reproduces on
-   * a second independent evaluation - the gate opened without one (a single unreproduced
-   * occurrence aborts the run).
+   * run is aborted (not passed) when an organic candidate appears around the direct evaluation, and
+   * fails when a BFS pass since the search reset, with no candidate in any read, reproduces on a
+   * second independent evaluation - the gate opened without one (a single unreproduced occurrence
+   * aborts the run).
    */
   @Test
   public void shouldNotOpenSearchGateOnAggressiveHeapWideGrowthWithNoLeakCandidate() {
@@ -270,7 +296,8 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
         long timestampNs = i * 1_000_000_000L;
         ReferenceChainTestHooks.heapFloorRecordForTest0(usedBytes, timestampNs);
       }
-      assertTrue(ReferenceChainTestHooks.heapFloorRisingForTest0(),
+      assertTrue(
+          ReferenceChainTestHooks.heapFloorRisingForTest0(),
           "Precondition: the seeded samples must read as a sustained rise, so the projection "
               + "below is a genuine urgent-band one - the gate must stay closed for the "
               + "candidate requirement, not because the projection is unknown");
@@ -278,9 +305,13 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
       // Positive control 1: past the backdated burn-in, the seeded rise must project inside the
       // urgent band. Fails fast, with the value, if the burn-in still masks the projection.
       double secondsToOom = ReferenceChainTestHooks.secondsToOOMForTest0();
-      assertTrue(secondsToOom >= 0 && secondsToOom < OOM_URGENT_THRESHOLD_S,
-          "Positive control: urgent band [0, " + OOM_URGENT_THRESHOLD_S + ")s required; got "
-              + secondsToOom + " - the burn-in backdate did not take effect or the seeds no "
+      assertTrue(
+          secondsToOom >= 0 && secondsToOom < OOM_URGENT_THRESHOLD_S,
+          "Positive control: urgent band [0, "
+              + OOM_URGENT_THRESHOLD_S
+              + ")s required; got "
+              + secondsToOom
+              + " - the burn-in backdate did not take effect or the seeds no "
               + "longer project, so the closed gate below would prove nothing");
 
       // Positive control 2: drive the urgency machine on the seeded projection - the same call
@@ -289,11 +320,13 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
       // search reset (which clears this latch again); under the candidate-gate contract the
       // gate's decision reads only selectLeakCandidates() - the latch suppresses no-progress
       // abandonment in a running search, it never opens the gate.
-      assertTrue(ReferenceChainTestHooks.isUrgentForTest0(),
+      assertTrue(
+          ReferenceChainTestHooks.isUrgentForTest0(),
           "The urgency machine must latch on the seeded urgent-band projection ("
-              + secondsToOom + "s)");
-      assertTrue(ReferenceChainTestHooks.urgentLatchedForTest0(),
-          "The drive must leave the latch held");
+              + secondsToOom
+              + "s)");
+      assertTrue(
+          ReferenceChainTestHooks.urgentLatchedForTest0(), "The drive must leave the latch held");
 
       GateEvaluation e = evaluateGateAfterSearchReset();
       checkNoCandidateFreeActivity(e);
@@ -301,31 +334,34 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
       // The gate must not have advanced the latch machine: after the reset's clear, an
       // evaluation on a candidate-less urgent-band projection leaves it cleared (the machine
       // advances only in publishUrgencyState()).
-      assertFalse(ReferenceChainTestHooks.urgentLatchedForTest0(),
+      assertFalse(
+          ReferenceChainTestHooks.urgentLatchedForTest0(),
           "The gate evaluation must not advance the latch machine");
 
-      assertFalse(e.gateOpen,
+      assertFalse(
+          e.gateOpen,
           "Expected the search gate to stay closed: urgency is latched but no per-klass "
               + "candidate exists - only selectLeakCandidates() is a leak indication ("
-              + e.detail + ")");
+              + e.detail
+              + ")");
     } finally {
       restoreHeapFloorDefaults(savedActivationNs);
     }
   }
 
   /**
-   * Control for the test above: same empty per-klass population table and same backdated
-   * burn-in, but a flat heap floor (no growth). {@code secondsToOOM()} has nothing to project
-   * from - asserted directly through {@code secondsToOOMForTest0()}, and because the burn-in is
-   * backdated the "no projection" comes from the flat ring, not from the burn-in - so urgency
-   * must not latch and the gate must stay closed. This complements the primary test's
-   * urgent-band case with the no-projection case.
+   * Control for the test above: same empty per-klass population table and same backdated burn-in,
+   * but a flat heap floor (no growth). {@code secondsToOOM()} has nothing to project from -
+   * asserted directly through {@code secondsToOOMForTest0()}, and because the burn-in is backdated
+   * the "no projection" comes from the flat ring, not from the burn-in - so urgency must not latch
+   * and the gate must stay closed. This complements the primary test's urgent-band case with the
+   * no-projection case.
    *
    * <p>The gate's closed answer alone cannot tell the two cases apart: under the candidate-gate
    * contract {@code hasLeakSignal()} answers only from {@code selectLeakCandidates()}, so with an
-   * empty population table the gate stays closed whatever the projection says. A stubbed or
-   * dormant {@code secondsToOOM()} is caught instead by the direct projection reads (urgent band
-   * above, none here) and by the urgency-latch reads after each gate evaluation.
+   * empty population table the gate stays closed whatever the projection says. A stubbed or dormant
+   * {@code secondsToOOM()} is caught instead by the direct projection reads (urgent band above,
+   * none here) and by the urgency-latch reads after each gate evaluation.
    */
   @Test
   public void shouldNotOpenSearchGateOnFlatHeapFloorWithNoLeakCandidate() {
@@ -341,9 +377,11 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
       }
 
       double secondsToOom = ReferenceChainTestHooks.secondsToOOMForTest0();
-      assertTrue(secondsToOom < 0,
+      assertTrue(
+          secondsToOom < 0,
           "Control precondition: past the backdated burn-in, a flat heap floor must yield no "
-              + "projection; got secondsToOOM=" + secondsToOom);
+              + "projection; got secondsToOOM="
+              + secondsToOom);
 
       // Only the search is reset right before the gate call (inside
       // evaluateGateAfterSearchReset()), not the population: resetKlassPopulationForTest0() also
@@ -351,27 +389,32 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
       // "insufficient fill" pass.
       // Control: driving the urgency machine on the flat projection must not latch - the
       // machine's own answer, independent of the gate.
-      assertFalse(ReferenceChainTestHooks.isUrgentForTest0(),
+      assertFalse(
+          ReferenceChainTestHooks.isUrgentForTest0(),
           "A flat heap floor gives no projection, so driving the urgency machine must not latch");
       GateEvaluation e = evaluateGateAfterSearchReset();
       checkNoCandidateFreeActivity(e);
 
-      assertFalse(ReferenceChainTestHooks.urgentLatchedForTest0(),
+      assertFalse(
+          ReferenceChainTestHooks.urgentLatchedForTest0(),
           "A flat heap floor gives no projection, so it must leave urgency unlatched - and the "
               + "gate evaluation must not advance the latch machine");
-      assertFalse(e.gateOpen,
+      assertFalse(
+          e.gateOpen,
           "Expected the search-restart gate to stay closed: no heap growth and no per-klass "
-              + "candidate give hasLeakSignal() nothing to trust (" + e.detail + ")");
+              + "candidate give hasLeakSignal() nothing to trust ("
+              + e.detail
+              + ")");
     } finally {
       restoreHeapFloorDefaults(savedActivationNs);
     }
   }
 
   /**
-   * Guards the burn-in stamp handling in {@link #restoreHeapFloorDefaults(long)}: the
-   * {@link #ACTIVATION_STAMP_UNCHANGED} sentinel must leave the stamp alone (and never be written
-   * as a stamp), and a saved stamp must be restored exactly. Fails if the helper drops the
-   * stamp-restore step, restores on the sentinel, or the JNI setter is a no-op.
+   * Guards the burn-in stamp handling in {@link #restoreHeapFloorDefaults(long)}: the {@link
+   * #ACTIVATION_STAMP_UNCHANGED} sentinel must leave the stamp alone (and never be written as a
+   * stamp), and a saved stamp must be restored exactly. Fails if the helper drops the stamp-restore
+   * step, restores on the sentinel, or the JNI setter is a no-op.
    */
   @Test
   public void shouldRestoreActivationStampOnlyWhenRequested() {
@@ -394,21 +437,21 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
     long afterRestore = ReferenceChainTestHooks.backdateLeakSignalActivationForTest0();
     // Undo the probe's own backdate.
     ReferenceChainTestHooks.setLeakSignalActivatedNsForTest0(afterRestore);
-    assertNotEquals(ACTIVATION_STAMP_UNCHANGED, afterSentinel,
-        "The sentinel must never be written as a stamp");
-    assertNotEquals(savedActivationNs, afterSentinel,
-        "The sentinel path must not restore the stamp");
-    assertEquals(savedActivationNs, afterRestore,
-        "restoreHeapFloorDefaults(saved) must restore the stamp");
+    assertNotEquals(
+        ACTIVATION_STAMP_UNCHANGED, afterSentinel, "The sentinel must never be written as a stamp");
+    assertNotEquals(
+        savedActivationNs, afterSentinel, "The sentinel path must not restore the stamp");
+    assertEquals(
+        savedActivationNs, afterRestore, "restoreHeapFloorDefaults(saved) must restore the stamp");
   }
 
   /**
-   * Kills a no-op'd {@code heapFloorResetForTest0()} mutation: every other call site resets in
-   * a finally block that no assertion observes, so without this test a reset whose body was
-   * dropped (or whose JNI entry was left as the release stub) would leave the whole suite
-   * green while leaking one test's seeded samples into the next test's JVM. The rising-then-
-   * empty pair is asserted directly through {@code heapFloorRising()}, the ring's trend read, so
-   * the reset's effect is checked, not assumed.
+   * Kills a no-op'd {@code heapFloorResetForTest0()} mutation: every other call site resets in a
+   * finally block that no assertion observes, so without this test a reset whose body was dropped
+   * (or whose JNI entry was left as the release stub) would leave the whole suite green while
+   * leaking one test's seeded samples into the next test's JVM. The rising-then- empty pair is
+   * asserted directly through {@code heapFloorRising()}, the ring's trend read, so the reset's
+   * effect is checked, not assumed.
    */
   @Test
   public void shouldEmptyHeapFloorRingOnReset() {
@@ -425,10 +468,12 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
         long timestampNs = i * 1_000_000_000L;
         ReferenceChainTestHooks.heapFloorRecordForTest0(usedBytes, timestampNs);
       }
-      assertTrue(ReferenceChainTestHooks.heapFloorRisingForTest0(),
+      assertTrue(
+          ReferenceChainTestHooks.heapFloorRisingForTest0(),
           "Precondition: the seeded samples must read as a sustained rise before the reset");
       ReferenceChainTestHooks.heapFloorResetForTest0();
-      assertFalse(ReferenceChainTestHooks.heapFloorRisingForTest0(),
+      assertFalse(
+          ReferenceChainTestHooks.heapFloorRisingForTest0(),
           "heapFloorResetForTest0() must empty the ring: fill = 0 falls below the min-fill "
               + "trend gate heapFloorRising() requires");
     } finally {
