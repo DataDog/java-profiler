@@ -2213,6 +2213,9 @@ Error LivenessTracker::start(Arguments &args) {
   }
   
   // Self-register with the profiler for liveness checking
+  if (_liveness_checker_token != 0) {
+    Profiler::instance()->unregisterLivenessChecker(_liveness_checker_token);
+  }
   _liveness_checker_token = Profiler::instance()->registerLivenessChecker(
       [this](CallTraceIdSet& buffer) { this->getLiveTraceIds(buffer); });
   
@@ -2714,6 +2717,7 @@ retry:
     // storage that is gone. See tableGeneration().
     _table_lock.unlockShared();
     env->DeleteWeakGlobalRef(ref);
+    skipped.set(0);
     return;
   }
 
@@ -2763,6 +2767,7 @@ retry:
       if (_table_generation.load(std::memory_order_relaxed) != table_generation) {
         // Stale: do not reap or grow the next recording's table for it.
         env->DeleteWeakGlobalRef(ref);
+        skipped.set(0);
         return;
       }
 
@@ -2787,6 +2792,7 @@ retry:
           // stack: never grow the next recording's table on its behalf.
           _table_lock.unlock();
           env->DeleteWeakGlobalRef(ref);
+          skipped.set(0);
           return;
         }
         const int max_cap = _table_max_cap.load(std::memory_order_relaxed);

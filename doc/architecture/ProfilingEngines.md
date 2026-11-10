@@ -245,8 +245,8 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      a thread listed after its exit keeps its fd (PROF-16359). The gate
      stays set while idle, because `PerfEvents::stop()` keeps per-thread fds
      open and this call closes the fd of a thread that exits after `stop()`.
-     The call also skips a `NULL` engine slot, as a defensive check: the hook is
-     installed by the first `start()`, after the engine slots are set.
+     The call skips a `NULL` engine slot: the hook is normally installed by the
+     first `start()`, but a refresh after `init()` may install it earlier.
    - `start()` replaces `_cpu_engine`/`_wall_engine` while unregistration is
      open, so it stores the pointers with release and the hook paths load them
      with acquire. An unregistration that reaches the previous engine only
