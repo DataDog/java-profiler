@@ -98,6 +98,10 @@ assert_wiring() { # $1 description, $2 fixed string that must appear in the gate
 wiring_checks() {
   assert_wiring "the JVM runs the window plus the probe tail" 'akka-uct -t $((RUNTIME + PROBE_TAIL_SECONDS)) &'
   assert_wiring "the JVM runs in the background" 'JVM_PID=$!'
+  assert_wiring "java is resolved once before the JVM launch" 'JAVA_BIN=$(command -v java)'
+  assert_wiring "the JVM runs the resolved java binary" '"$JAVA_BIN" -javaagent:'
+  assert_wiring "the launched JVM pid overrides the sampler discovery" 'export MEMWATCH_TARGET_PID="${JVM_PID}"'
+  assert_wiring "the sampler runs without the allocator preload" 'env -u LD_PRELOAD sh ${HERE}/../benchmarks/steps/mem_watch.sh'
   assert_wiring "the sampler pid is kept" 'SAMPLER_PID=$!'
   assert_wiring "the window closes before the probe" 'close_measurement_window "${RUNTIME}" "${JVM_PID}" "${SAMPLER_PID}" "${CONTROL_FILE}"'
   assert_wiring "the probe records go to memwatch.log" 'release_probe_records "$ALLOCATOR" "${JVM_PID}" "${HERE}/../../memwatch.log"'
@@ -105,13 +109,20 @@ wiring_checks() {
   assert_wiring "the crash failure is preserved" 'FAIL:Benchmark crashed'
   assert_wiring "the verdict runs through the allocator-aware check" 'run_trend_check "${HERE}/../../memwatch.log" "${HERE}/../../memwatch-trend.png" "$ALLOCATOR"'
 
-  local sampler_line preload_line
+  local resolve_line jvm_line override_line sampler_line preload_line
+  resolve_line=$(grep -nF 'JAVA_BIN=$(command -v java)' "${CHECK}" | head -1 | cut -d: -f1)
+  jvm_line=$(grep -nF '"$JAVA_BIN" -javaagent:' "${CHECK}" | head -1 | cut -d: -f1)
+  override_line=$(grep -nF 'export MEMWATCH_TARGET_PID="${JVM_PID}"' "${CHECK}" | head -1 | cut -d: -f1)
   sampler_line=$(grep -nF 'sh ${HERE}/../benchmarks/steps/mem_watch.sh' "${CHECK}" | head -1 | cut -d: -f1)
   preload_line=$(grep -nF 'case $ALLOCATOR in' "${CHECK}" | head -1 | cut -d: -f1)
-  if [ -n "${sampler_line}" ] && [ -n "${preload_line}" ] && [ "${sampler_line}" -lt "${preload_line}" ]; then
-    pass "the sampler starts before LD_PRELOAD is exported"
+  # The JVM launch must follow the LD_PRELOAD case and precede the pid
+  # export and the sampler, so the override carries the launched pid.
+  if [ -n "${resolve_line}" ] && [ -n "${jvm_line}" ] && [ -n "${override_line}" ] && [ -n "${sampler_line}" ] && [ -n "${preload_line}" ] && \
+     [ "${resolve_line}" -lt "${jvm_line}" ] && [ "${preload_line}" -lt "${jvm_line}" ] && \
+     [ "${jvm_line}" -lt "${override_line}" ] && [ "${override_line}" -lt "${sampler_line}" ]; then
+    pass "the sampler follows the launched JVM, which follows the preload case"
   else
-    fail_case "the sampler no longer starts before LD_PRELOAD is exported"
+    fail_case "the JVM launch, the pid export and the sampler are out of order"
   fi
 }
 
@@ -254,9 +265,9 @@ for allocator in jemalloc tcmalloc; do
   assert_eq "${allocator} writes exactly one record" "1" "$(sed -n '$=' "${LOG}")"
 done
 
-# Without MEM_TREND_JCMD the gate must pick the jcmd that sits next to the
-# resolved java binary; the stubs live only in that dir so a bare PATH
-# lookup cannot satisfy them.
+# Without MEM_TREND_JCMD the gate derives jcmd from JAVA_BIN, the java
+# binary resolved before the JVM launch. JDKFAIL sits earlier on PATH,
+# so a bare jcmd lookup would fail the probe instead.
 if [ -n "${MEM_TREND_JCMD:-}" ]; then
   fail_case "MEM_TREND_JCMD leaked out of a scoped case"
 else
@@ -280,10 +291,37 @@ exit 9
 EOF
 chmod +x "${JDKFAIL}/jcmd"
 PATH="${JDKFAIL}:${JDKBIN}:${PATH}"
+JAVA_BIN="${JDKBIN}/java"
 LOG="${WORK}/probe-default-jcmd.log"
 : > "${LOG}"
 release_probe_records gmalloc 4242 "${LOG}"
-assert_eq "jcmd resolves next to the resolved java by default" "release_probe=jcmd status=ok" "$(grep -m1 '^release_probe=' "${LOG}")"
+assert_eq "jcmd derives from the resolved java binary" "release_probe=jcmd status=ok" "$(grep -m1 '^release_probe=' "${LOG}")"
+
+# A JDK whose bin dir has no jcmd, or a non-executable one, fails the
+# probe; that status maps to inconclusive in the verdict rules.
+JDKNOBIN="${WORK}/jdknobin"
+mkdir -p "${JDKNOBIN}"
+printf '#!/bin/sh\n: # stub java without a sibling jcmd\n' > "${JDKNOBIN}/java"
+chmod +x "${JDKNOBIN}/java"
+JAVA_BIN="${JDKNOBIN}/java"
+LOG="${WORK}/probe-no-jcmd.log"
+: > "${LOG}"
+release_probe_records gmalloc 4242 "${LOG}"
+assert_eq "a missing sibling jcmd fails the probe" "release_probe=jcmd status=failed" "$(grep -m1 '^release_probe=' "${LOG}")"
+assert_eq "a missing jcmd still records both rss probes" "2" "$(grep -c '^probe_' "${LOG}")"
+
+JDKXBIN="${WORK}/jdkxbin"
+mkdir -p "${JDKXBIN}"
+printf '#!/bin/sh\n: # stub java\n' > "${JDKXBIN}/java"
+chmod +x "${JDKXBIN}/java"
+printf '#!/bin/sh\nexit 0\n' > "${JDKXBIN}/jcmd"  # left non-executable on purpose
+# shellcheck disable=SC2034  # read by the sourced release_probe_records
+JAVA_BIN="${JDKXBIN}/java"
+LOG="${WORK}/probe-noexec-jcmd.log"
+: > "${LOG}"
+release_probe_records gmalloc 4242 "${LOG}"
+assert_eq "a non-executable sibling jcmd fails the probe" "release_probe=jcmd status=failed" "$(grep -m1 '^release_probe=' "${LOG}")"
+unset JAVA_BIN
 
 # --- window close against the real sampler ------------------------------------
 
@@ -509,6 +547,27 @@ if "${PYTHON_BIN}" -c "import numpy, matplotlib" > /dev/null 2>&1; then
     "INCONCLUSIVE:trend check produced no verdict" \
     "$(grep -m1 '^INCONCLUSIVE:' "${ERR}")"
   assert_eq "a missing verdict is a single line" "1" "$(grep -cE '^(FAIL|INCONCLUSIVE):' "${ERR}")"
+
+  # The interpreter is resolved once from MEM_TREND_PYTHON; a stub that
+  # prints a verdict proves the override reaches the check.
+  STUB_PY="${WORK}/stub-python"
+  printf '#!/bin/sh\necho "VERDICT:fail"\necho "VERDICT_REASON:stub reason"\n' > "${STUB_PY}"
+  chmod +x "${STUB_PY}"
+  ERR="${WORK}/v-stub.err"
+  : > "${ERR}"
+  ( MEM_TREND_PYTHON="${STUB_PY}" run_trend_check "${WORK}/v-short.log" "${WORK}/stub.png" gmalloc 2> "${ERR}" )
+  assert_eq "the trend check runs on MEM_TREND_PYTHON" "FAIL:stub reason" "$(grep -m1 '^FAIL:' "${ERR}")"
+
+  # A non-zero interpreter exit fails the job loudly; no inconclusive
+  # line may degrade the row.
+  CRASH_PY="${WORK}/crash-python"
+  printf '#!/bin/sh\nexit 1\n' > "${CRASH_PY}"
+  chmod +x "${CRASH_PY}"
+  ERR="${WORK}/v-crash.err"
+  : > "${ERR}"
+  ( MEM_TREND_PYTHON="${CRASH_PY}" run_trend_check "${WORK}/v-short.log" "${WORK}/crash.png" gmalloc 2> "${ERR}" )
+  assert_eq "a crashed trend check fails loudly" "FAIL:Trend check crashed" "$(grep -m1 '^FAIL:' "${ERR}")"
+  assert_eq "a crashed trend check emits no inconclusive line" "0" "$(grep -c '^INCONCLUSIVE:' "${ERR}")"
 else
   fail_case "${PYTHON_BIN} cannot import numpy and matplotlib; the verdict mapping tests need both"
 fi

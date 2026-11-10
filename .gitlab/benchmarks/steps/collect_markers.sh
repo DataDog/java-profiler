@@ -44,47 +44,36 @@ markers_nr_throttled() {
     fi
 }
 
-# True when $1 (pid) or $2 (ppid) equals one of the remaining arguments.
-markers_excluded() {
-    markers_ex_pid=$1
-    markers_ex_ppid=$2
-    shift 2
-    for markers_excl in "$@"; do
-        [ "$markers_ex_pid" = "$markers_excl" ] && return 0
-        [ "$markers_ex_ppid" = "$markers_excl" ] && return 0
-    done
-    return 1
-}
-
 # Prints the number of R-state stat entries under the proc root, skipping
 # the excluded pids and their direct children (the JVM, the sampler and
-# the sampler's ps/grep discovery pipeline).
+# the sampler's ps/grep discovery pipeline). One awk pass keeps the
+# per-tick cost a single subprocess instead of a read per process entry.
 markers_cotenant_runnable() {
     markers_root=$1
     shift
-    markers_count=0
-    markers_seen=0
-    for markers_entry in "$markers_root"/[0-9]*; do
-        [ -f "$markers_entry/stat" ] || continue
-        markers_seen=1
-        read -r markers_line < "$markers_entry/stat" 2>/dev/null
-        [ -n "$markers_line" ] || continue
-        # comm may hold spaces and ')', so fields restart after the last ') '
-        markers_fields=${markers_line##*) }
-        markers_state=${markers_fields%% *}
-        [ "$markers_state" = "R" ] || continue
-        markers_pid=${markers_line%% *}
-        markers_after=${markers_fields#* }
-        markers_ppid=${markers_after%% *}
-        if markers_excluded "$markers_pid" "$markers_ppid" "$@"; then
-            continue
-        fi
-        markers_count=$((markers_count + 1))
+    markers_exclude=$1
+    shift
+    for markers_excl in "$@"; do
+        markers_exclude="${markers_exclude},${markers_excl}"
     done
-    if [ "$markers_seen" -eq 0 ]; then
-        printf 'NA\n'
-    else
+    # shellcheck disable=SC2016  # the awk program quotes its own variables
+    markers_count=$(awk -v excl="$markers_exclude" '
+        BEGIN { n = split(excl, e, ","); for (i = 1; i <= n; i++) ex[e[i]] = 1 }
+        {
+            seen = 1
+            pid = $0
+            sub(/ .*/, "", pid)
+            # comm may hold spaces and ), so fields restart after the last )
+            sub(/.*\)/, "", $0)
+            split($0, f, " ")
+            if (f[1] == "R" && !ex[pid] && !ex[f[2]]) count++
+        }
+        END { if (seen) print count + 0; else print "NA" }
+    ' "$markers_root"/[0-9]*/stat 2>/dev/null)
+    if [ -n "$markers_count" ]; then
         printf '%s\n' "$markers_count"
+    else
+        printf 'NA\n'
     fi
 }
 
