@@ -19,6 +19,10 @@
 #   --gtest-task=Task        (run one C++ gtest task; full task paths are single-cell only)
 #   --shell                  (drop to shell instead of running tests; enables SYS_PTRACE for gdb)
 #   --mount                  (mount local repo instead of cloning - faster but may have stale artifacts)
+#   --source-root=/path      (with --mount: use this exact local Git source and read-only metadata)
+#   --offline                (with --mount: cached images only, no pull/build/network, Gradle offline)
+#   --max-workers=N          (positive Gradle worker limit; disables parallel project execution)
+#   --artifacts-dir=/path    (with --mount: preserve per-cell gtest XML and JFR recordings)
 #   --rebuild                (force rebuild of container images)
 #   --rebuild-base           (force rebuild of base image only)
 #   --matrix                 (preview a full matrix; unset dimensions expand to all)
@@ -39,6 +43,13 @@ TESTS=""
 GTEST_TASK=""
 SHELL_MODE=false
 MOUNT_MODE=false
+SOURCE_ROOT=""
+SOURCE_ROOT_SET=false
+OFFLINE=false
+MAX_WORKERS=""
+ARTIFACTS_DIR=""
+ARTIFACTS_DIR_SET=false
+GIT_COMMON_DIR=""
 GTEST_ENABLED=false
 REBUILD=false
 REBUILD_BASE=false
@@ -767,7 +778,7 @@ run_matrix() {
 }
 
 usage() {
-    awk 'NR >= 4 && NR <= 27 { sub(/^# ?/, ""); print }' "$0"
+    awk 'NR >= 4 && /^#/ { sub(/^# ?/, ""); print; next } NR >= 4 { exit }' "$0"
     exit 0
 }
 
@@ -813,6 +824,32 @@ while [[ $# -gt 0 ]]; do
             PASS_THROUGH_ARGS+=("$1")
             shift
             ;;
+        --source-root=*)
+            SOURCE_ROOT="${1#*=}"
+            SOURCE_ROOT_SET=true
+            PASS_THROUGH_ARGS+=("$1")
+            shift
+            ;;
+        --offline)
+            OFFLINE=true
+            PASS_THROUGH_ARGS+=("$1")
+            shift
+            ;;
+        --max-workers=*)
+            MAX_WORKERS="${1#*=}"
+            if [[ ! "$MAX_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+                echo "Error: --max-workers must be a positive integer" >&2
+                exit 1
+            fi
+            PASS_THROUGH_ARGS+=("$1")
+            shift
+            ;;
+        --artifacts-dir=*)
+            ARTIFACTS_DIR="${1#*=}"
+            ARTIFACTS_DIR_SET=true
+            PASS_THROUGH_ARGS+=("$1")
+            shift
+            ;;
         --gtest)
             GTEST_ENABLED=true
             PASS_THROUGH_ARGS+=("$1")
@@ -855,6 +892,60 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if $SOURCE_ROOT_SET; then
+    if ! $MOUNT_MODE || [[ "$SOURCE_ROOT" != /* || ! -d "$SOURCE_ROOT" ]]; then
+        echo "Error: --source-root requires --mount and an existing absolute source directory" >&2
+        exit 1
+    fi
+    if [[ "$SOURCE_ROOT" == *:* || "$SOURCE_ROOT" == *$'\n'* ]]; then
+        echo "Error: source directory must not contain volume delimiters" >&2
+        exit 1
+    fi
+    # The slash preserves trailing newlines against command substitution trimming.
+    PROJECT_ROOT="$(cd -P "$SOURCE_ROOT" && printf '%s/' "$PWD")"
+    PROJECT_ROOT="${PROJECT_ROOT%/}"
+    if [[ "$PROJECT_ROOT" == *:* || "$PROJECT_ROOT" == *$'\n'* ]]; then
+        echo "Error: source directory must not contain volume delimiters" >&2
+        exit 1
+    fi
+fi
+if $ARTIFACTS_DIR_SET; then
+    if ! $MOUNT_MODE || $SHELL_MODE || [[ "$ARTIFACTS_DIR" != /* || ! -d "$ARTIFACTS_DIR" ]]; then
+        echo "Error: --artifacts-dir requires --mount, no --shell, and an existing absolute directory" >&2
+        exit 1
+    fi
+    if [[ "$ARTIFACTS_DIR" == *:* || "$ARTIFACTS_DIR" == *$'\n'* ]]; then
+        echo "Error: artifact directory must not contain volume delimiters" >&2
+        exit 1
+    fi
+    # The slash preserves trailing newlines against command substitution trimming.
+    ARTIFACTS_DIR="$(cd -P "$ARTIFACTS_DIR" && printf '%s/' "$PWD")"
+    ARTIFACTS_DIR="${ARTIFACTS_DIR%/}"
+    if [[ "$ARTIFACTS_DIR" == *:* || "$ARTIFACTS_DIR" == *$'\n'* ]]; then
+        echo "Error: artifact directory must not contain volume delimiters" >&2
+        exit 1
+    fi
+fi
+if $OFFLINE; then
+    if ! $MOUNT_MODE || $SHELL_MODE || $REBUILD || $REBUILD_BASE; then
+        echo "Error: --offline requires --mount and cannot be combined with --shell, --rebuild or --rebuild-base" >&2
+        exit 1
+    fi
+fi
+if $SOURCE_ROOT_SET || $OFFLINE; then
+    # Linked worktrees contain absolute .git pointers outside the source mount.
+    # Expose actual metadata read-only at that same path, without changing Git trust.
+    if [[ "$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel)" != "$PROJECT_ROOT" ]]; then
+        echo "Error: source must be the root of a Git working tree" >&2
+        exit 1
+    fi
+    GIT_COMMON_DIR="$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir)"
+    if [[ "$GIT_COMMON_DIR" != /* || ! -d "$GIT_COMMON_DIR" || "$PROJECT_ROOT$GIT_COMMON_DIR" == *:* || "$PROJECT_ROOT$GIT_COMMON_DIR" == *$'\n'* ]]; then
+        echo "Error: source and Git metadata must be existing absolute paths without volume delimiters" >&2
+        exit 1
+    fi
+fi
 
 if $MATRIX_MODE; then
     if ! $LIBC_SET; then
@@ -1015,6 +1106,10 @@ if [[ "$REBUILD" == "false" && "$REBUILD_BASE" == "false" ]]; then
 fi
 
 if [[ "$BASE_IMAGE_EXISTS" == "false" ]]; then
+    if $OFFLINE; then
+        echo "Error: offline mode requires cached base image: $BASE_IMAGE_NAME" >&2
+        exit 1
+    fi
     echo ">>> Building base image: $BASE_IMAGE_NAME"
 
     if [[ "$LIBC" == "musl" ]]; then
@@ -1115,6 +1210,10 @@ if [[ "$REBUILD" == "false" ]]; then
 fi
 
 if [[ "$IMAGE_EXISTS" == "false" ]]; then
+    if $OFFLINE; then
+        echo "Error: offline mode requires cached JDK image: $IMAGE_NAME" >&2
+        exit 1
+    fi
     echo ">>> Building JDK image: $IMAGE_NAME"
     echo ">>> Build JDK (for Gradle): $BUILD_JDK_VERSION"
     echo ">>> Test JDK: $JDK_VERSION"
@@ -1201,26 +1300,36 @@ fi
 CONFIG_CAPITALIZED="$(tr '[:lower:]' '[:upper:]' <<< ${CONFIG:0:1})${CONFIG:1}"
 if [[ -n "$GTEST_TASK" ]]; then
     if [[ "$GTEST_TASK" == :* ]]; then
-        GRADLE_CMD="./gradlew -PCI -PkeepJFRs $GTEST_TASK"
+        GRADLE_ARGS=(./gradlew -PCI -PkeepJFRs "$GTEST_TASK")
     else
-        GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-lib:gtest${CONFIG_CAPITALIZED}_${GTEST_TASK}"
+        GRADLE_ARGS=(./gradlew -PCI -PkeepJFRs ":ddprof-lib:gtest${CONFIG_CAPITALIZED}_${GTEST_TASK}")
     fi
 else
-    GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG_CAPITALIZED}"
+    GRADLE_ARGS=(./gradlew -PCI -PkeepJFRs ":ddprof-test:test${CONFIG_CAPITALIZED}")
     if [[ -n "$TESTS" ]]; then
-        # No need for quotes around $TESTS - Gradle property values don't require quoting
-        GRADLE_CMD="$GRADLE_CMD -Ptests=$TESTS"
+        GRADLE_ARGS+=("-Ptests=$TESTS")
     fi
     if ! $GTEST_ENABLED; then
-        GRADLE_CMD="$GRADLE_CMD -Pskip-gtest"
+        GRADLE_ARGS+=(-Pskip-gtest)
     fi
 fi
 # On aarch64 glibc, TSan needs clang-17's embedded runtime (supports 48-bit VMA).
 # GCC 11's libtsan is linked by default but only knows 39-bit VMA, causing a crash.
 if [[ "$CONFIG" == "tsan" ]] && [[ "$ARCH" == "aarch64" ]] && [[ "$LIBC" == "glibc" ]]; then
-    GRADLE_CMD="$GRADLE_CMD -Pnative.forceCompiler=clang++-17"
+    GRADLE_ARGS+=(-Pnative.forceCompiler=clang++-17)
 fi
-GRADLE_CMD="$GRADLE_CMD --no-daemon --parallel --build-cache --no-watch-fs"
+GRADLE_ARGS+=(--no-daemon)
+if [[ -n "$MAX_WORKERS" ]]; then
+    GRADLE_ARGS+=(--no-parallel "--max-workers=$MAX_WORKERS")
+else
+    GRADLE_ARGS+=(--parallel)
+fi
+GRADLE_ARGS+=(--build-cache --no-watch-fs)
+if $OFFLINE; then
+    GRADLE_ARGS+=(--offline)
+fi
+# bash -c is needed for clone/sysctl preparation; quote each Gradle argument once.
+printf -v GRADLE_CMD '%q ' "${GRADLE_ARGS[@]}"
 
 # On aarch64 glibc TSan: reduce ASLR entropy so TSan's shadow doesn't conflict with
 # initial library load addresses. Requires --privileged for sysctl in the container.
@@ -1234,7 +1343,10 @@ if [[ "$CONFIG" == "tsan" ]] && [[ "$ARCH" == "aarch64" ]] && [[ "$LIBC" == "gli
 fi
 
 # Build container run command base
-CONTAINER_CMD="$CONTAINER_RUNTIME run --rm"
+CONTAINER_CMD=("$CONTAINER_RUNTIME" run --rm)
+if $OFFLINE; then
+    CONTAINER_CMD+=(--pull=never --network=none)
+fi
 CONTAINER_VOLUME_RW_OPTIONS=""
 CONTAINER_VOLUME_RO_OPTIONS=":ro"
 if [[ "${CONTAINER_RUNTIME##*/}" == "podman" ]] && selinux_enforcing; then
@@ -1242,21 +1354,34 @@ if [[ "${CONTAINER_RUNTIME##*/}" == "podman" ]] && selinux_enforcing; then
     CONTAINER_VOLUME_RO_OPTIONS=":ro,z"
 fi
 if $SHELL_MODE; then
-    CONTAINER_CMD="$CONTAINER_CMD -it --init --ulimit core=-1 --cap-add=SYS_PTRACE"
+    CONTAINER_CMD+=(-it --init --ulimit core=-1 --cap-add=SYS_PTRACE)
 fi
 if $NEEDS_PRIVILEGED; then
-    CONTAINER_CMD="$CONTAINER_CMD --privileged"
+    CONTAINER_CMD+=(--privileged)
 fi
-CONTAINER_CMD="$CONTAINER_CMD $CONTAINER_PLATFORM"
-CONTAINER_CMD="$CONTAINER_CMD -e LIBC=$LIBC"
-CONTAINER_CMD="$CONTAINER_CMD -e SANITIZER=$CONFIG"
-CONTAINER_CMD="$CONTAINER_CMD -e TEST_CONFIGURATION=$LIBC/${JDK_VERSION}-$CONFIG-$ARCH"
-CONTAINER_CMD="$CONTAINER_CMD -e GRADLE_USER_HOME=/gradle-cache"
+if [[ "$ARCH" == "aarch64" ]]; then
+    CONTAINER_CMD+=(--platform linux/arm64)
+else
+    CONTAINER_CMD+=(--platform linux/amd64)
+fi
+CONTAINER_CMD+=(-e "LIBC=$LIBC" -e "SANITIZER=$CONFIG"
+    -e "TEST_CONFIGURATION=$LIBC/${JDK_VERSION}-$CONFIG-$ARCH"
+    -e GRADLE_USER_HOME=/gradle-cache)
+if $ARTIFACTS_DIR_SET; then
+    ARTIFACTS_CELL="$ARTIFACTS_DIR/${LIBC}-jdk${JDK_VERSION}-${ARCH}-${CONFIG}"
+    mkdir -p "$ARTIFACTS_CELL/gtest" "$ARTIFACTS_CELL/jfr"
+    CONTAINER_CMD+=(-e GTEST_OUTPUT=xml:/qualification-gtest/
+        -v "$ARTIFACTS_CELL/gtest:/qualification-gtest${CONTAINER_VOLUME_RW_OPTIONS}"
+        -v "$ARTIFACTS_CELL/jfr:/tmp/recordings${CONTAINER_VOLUME_RW_OPTIONS}")
+fi
+if [[ -n "$GIT_COMMON_DIR" ]]; then
+    # Do not apply SELinux relabeling to shared host Git metadata.
+    CONTAINER_CMD+=(-v "$GIT_COMMON_DIR:$GIT_COMMON_DIR:ro")
+fi
 
 if $MOUNT_MODE; then
     # Mount mode: use local repo directly (faster, but may have stale artifacts)
-    CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/workspace${CONTAINER_VOLUME_RW_OPTIONS}"
-    CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
+    CONTAINER_CMD+=(-v "$PROJECT_ROOT:/workspace${CONTAINER_VOLUME_RW_OPTIONS}" "$IMAGE_NAME")
 
     if $SHELL_MODE; then
         SHELL_CMD="/bin/bash"
@@ -1267,12 +1392,11 @@ if $MOUNT_MODE; then
     echo ""
     echo ">>> Running in container (mount mode)..."
     echo ">>> Command: $SHELL_CMD"
-    eval "$CONTAINER_CMD /bin/bash -c '$SHELL_CMD'"
+    "${CONTAINER_CMD[@]}" /bin/bash -c "$SHELL_CMD"
 else
     # Clone mode: shallow clone from mounted local repo for clean builds (default)
     # Mount the local repo as source, then clone from it to /workspace
-    CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/source${CONTAINER_VOLUME_RO_OPTIONS}"
-    CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
+    CONTAINER_CMD+=(-v "$PROJECT_ROOT:/source${CONTAINER_VOLUME_RO_OPTIONS}" "$IMAGE_NAME")
 
     # Build clone and test command - clone from local mounted source.
     # With a rootful runtime (e.g. Docker) the container's root doesn't own the
@@ -1290,5 +1414,5 @@ else
     echo ""
     echo ">>> Running in container (clone mode)..."
     echo ">>> Cloning from local source to /workspace"
-    eval "$CONTAINER_CMD /bin/bash -c '$CLONE_CMD'"
+    "${CONTAINER_CMD[@]}" /bin/bash -c "$CLONE_CMD"
 fi

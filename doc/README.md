@@ -2,6 +2,8 @@
 
 # Java Profiler Documentation
 
+<!-- Copyright 2026, Datadog, Inc -->
+
 ## Directory Structure
 
 | Directory | Purpose |
@@ -30,6 +32,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [GradleTasks](build/GradleTasks.md) - Available Gradle tasks reference
 - [NativeBuildPlugin](build/NativeBuildPlugin.md) - Native C++ compilation plugin
 - [TestingGuide](build/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, and local workflows
+  - [Bounded local container runs](build/TestingGuide.md#bounded-local-container-runs) - Exact Git worktrees, offline cache-only execution, worker limits, and retained test artifacts
 
 ### Reference
 - [ProfilerMemoryRequirements](reference/ProfilerMemoryRequirements.md) - Memory usage and limits

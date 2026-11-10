@@ -156,6 +156,10 @@ Runs tests in containers across various OS/libc/JDK combinations, mirroring the 
   --gtest-task=Task               (run one C++ gtest task)
   --shell                         (drop to shell instead of running tests)
   --mount                         (mount local repo instead of cloning)
+  --source-root=/absolute/path     (with --mount: exact local Git source + read-only metadata)
+  --offline                       (with --mount: cached images only, no pulls/builds/network)
+  --max-workers=N                 (positive Gradle worker limit; disables project parallelism)
+  --artifacts-dir=/absolute/path   (with --mount: existing root for per-cell gtest XML/JFR)
   --rebuild                       (force rebuild of container images)
   --matrix                        (preview a full matrix)
   --run                           (execute an inferred matrix without prompting)
@@ -178,9 +182,36 @@ Examples:
 
 # Run all OpenJ9 cells
 ./utils/run-containers-tests.sh --matrix --jdk=j9 --run
+
+# Use an exact dirty worktree, cached images/dependencies, one Gradle worker
+./utils/run-containers-tests.sh --mount --source-root=/absolute/path/to/worktree \
+  --offline --max-workers=1 --arch=aarch64 --jdk=17 \
+  --gtest-task=nativeSocketInterposer_ut
 ```
 
 Single-value commands run one container test configuration immediately. When any dimension expands to multiple cells, the script prints a compact status table first; interactive terminals ask for confirmation, while non-interactive runs require `--run` to execute. Matrix execution prints the status table again after all cells finish and writes summaries to `build/reports/container-matrix/summary.md` and `build/reports/container-matrix/summary.json`. Matrix gtest runs require a short `--gtest-task` name so the task follows each cell's configuration. Cells not run because of `--fail-fast` are reported as cancelled separately from unsupported cells that are skipped.
+
+`--offline` rejects clone mode, `--shell`, `--rebuild` and `--rebuild-base`.
+It requires cached base/JDK images, sets `--pull=never --network=none` and passes Gradle `--offline`.
+Wrapper distributions, plugins and dependencies must be cached; missing prerequisites fail.
+
+`--max-workers=N` replaces `--parallel` with `--no-parallel --max-workers=N`.
+It does not bound JVM heap or test threads. Execution and resource approval remain separate.
+
+`--source-root` mounts real Git common metadata read-only at its original absolute path.
+Source/build outputs remain read-write. Linked-worktree pointers resolve without Git trust changes.
+See [launcher restrictions](../doc/build/TestingGuide.md#bounded-local-container-runs).
+
+For retained Linux evidence, pass `--artifacts-dir=/absolute/existing/path` with `--mount`, not `--shell`.
+Allocate a fresh approved directory under the selected source's `build/logs/`.
+
+Each `<libc>-jdk<jdk>-<arch>-<config>` child mounts gtest XML at `/qualification-gtest` and JFRs at `/tmp/recordings`.
+`GTEST_OUTPUT=xml:/qualification-gtest/` requests native XML; Java fixtures write under `/tmp/recordings`.
+The option follows source-mount SELinux labeling and forwards through matrices with separate cell paths.
+
+Inspect actual cases, skips and recordings; Gradle success does not prove coverage.
+No daemon logs are exported. Archive artifacts before reusing a cell.
+Never mount personal, credential or cache directories as evidence roots.
 
 ### `patch-dd-java-agent.sh`
 

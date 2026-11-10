@@ -1,3 +1,4 @@
+// Copyright 2026, Datadog, Inc.
 package com.datadoghq.native.config
 
 import com.datadoghq.native.model.Architecture

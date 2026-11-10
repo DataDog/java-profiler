@@ -1,44 +1,6 @@
 #!/usr/bin/env bash
-# Runs Gradle with the full output captured to a timestamped log so an agent
-# session never ingests a multi-thousand-line build log. Prints the status
-# line; on failure, extracts the "What went wrong" blocks and failing-test
-# lines. The log file remains the source of truth for anything rarer.
-#
-# Usage: build-and-summarize [gradle-task...]  (default: build)
-#
-# No live tail and no summary artifacts: a harness tool result arrives
-# atomically after the run anyway, so streaming filters only added a
-# background process to manage, and the failures section below is everything
-# an agent needs before deciding to grep the full log.
-set -u
-
-ARGS=("$@")
-[ "${#ARGS[@]}" -eq 0 ] && ARGS=(build)
-
-STAMP="$(date +%Y%m%d-%H%M%S)"
-LABEL="$(printf '%s' "${ARGS[0]}" | tr '/:' '__')"
-LOG="build/logs/${STAMP}-${LABEL}.log"
-mkdir -p "$(dirname "$LOG")"
-
-# One log per build, hundreds of KB each, and agent sessions generate many:
-# prune to the newest 20 so the directory stays bounded.
-ls -t build/logs/*.log 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null || true
-
-echo "▶ ./gradlew ${ARGS[*]} -i --console=plain (full log: $LOG)"
-./gradlew "${ARGS[@]}" -i --console=plain >"$LOG" 2>&1
-status=$?
-
-if [ "$status" -eq 0 ]; then
-  echo "✔ Gradle completed. Full log at: $LOG"
-else
-  echo "✖ Gradle failed with status $status. Full log at: $LOG"
-  echo
-  echo "=== What went wrong ==="
-  sed -n '/^\* What went wrong:/,/^\* Try:/p' "$LOG" | head -40
-  echo
-  echo "=== Failing tasks/tests ==="
-  grep -E '^> Task .+FAILED$' "$LOG" | head -10
-  grep -E '[0-9]+ tests completed(, [0-9]+ failed)?' "$LOG" | head -5
-  grep -E '[a-zA-Z0-9_.$]+ > [A-Za-z0-9_.$()]+ FAILED$' "$LOG" | head -20
-fi
-exit "$status"
+# Copyright 2026, Datadog, Inc.
+# Capture Gradle and produce deterministic local reports; never invoke a coding agent.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+exec python3 "$ROOT/utils/gradle_summary.py" "$@"

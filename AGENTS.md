@@ -24,6 +24,8 @@ one-line pointer (what was read/run and the conclusion) instead of retaining the
 
 # AGENTS.md
 
+<!-- Copyright 2026, Datadog, Inc -->
+
 This file provides guidance to AI coding assistants when working with code in this repository.
 
 ## Project Overview
@@ -125,8 +127,16 @@ environment issues. Defaults to Podman; use `--container=docker` for Docker.
 ./utils/run-containers-tests.sh --shell   # drop to shell for debugging
 ```
 
-Full flag reference (`--tests`, `--gtest`, `--gtest-task`, `--libc`, `--jdk`, `--mount`,
-`--rebuild`, etc.): see [doc/build/TestingGuide.md](doc/build/TestingGuide.md).
+Full container flag reference: [TestingGuide](doc/build/TestingGuide.md#bounded-local-container-runs).
+Use `--mount --source-root=/absolute/path` for an exact local Git candidate.
+
+`--offline` forbids image builds, pulls and container network access; missing caches fail.
+`--max-workers=1` disables Gradle project parallelism, not test threads or JVM allocation.
+Resource checks and execution approval remain separate; shared Git metadata is read-only.
+
+`--mount --artifacts-dir=/absolute/existing/directory` retains per-cell gtest XML and JFRs.
+Use an approved evidence-only root under the selected source's `build/logs/`.
+The TestingGuide defines paths, restrictions and coverage boundaries.
 
 ### Build Options
 ```bash
