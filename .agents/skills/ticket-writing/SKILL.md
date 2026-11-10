@@ -15,8 +15,8 @@ The `pr-writing` skill's style rules apply to every ticket text and comment.
 ## Creating a ticket
 
 - **Shape.** A parent Task carries the problem and the direction only. Each step is a
-  Sub-task that carries its own Intent, Design, acceptance criteria and Build plan; the
-  Design and Build plan may instead be links, where the `work-planning` skill allows.
+  Sub-task that carries its own Intent, Design, acceptance criteria and Build plan,
+  unless the `work-planning` skill places them elsewhere.
   Epics are for program-level work, not for one change.
 - **Component.** `library-java` for java-profiler work; `openjdk` for upstream OpenJDK
   work.
@@ -50,9 +50,8 @@ The `pr-writing` skill's style rules apply to every ticket text and comment.
   harness and version); for a production check, the deployed revision, environment and
   observation window. Put the interpretation in its own paragraph, after the table.
 - **After the candidate changes,** re-run each check on the new candidate before you
-  report it as passed. Until then, a `passed` result from an earlier commit is
-  `inconclusive` for the new candidate, naming that commit; a `failed` result stays
-  `failed`.
+  report it as passed. Until then, report the check as `inconclusive` for the new
+  candidate, and name the earlier commit and its result.
 - **Links, not bare names.** Every commit, PR and branch is a link. A link to an
   unpushed commit does not resolve, so push first, or add the links after the push.
 - **No line numbers.** Refer to files and symbols; line numbers go stale.
