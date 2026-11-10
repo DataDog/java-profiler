@@ -1,6 +1,6 @@
 ---
 name: doc-writing
-description: Rules for java-profiler documentation under doc/ (naming, index, accuracy, stale sections). Use before creating, editing, renaming or deleting a file under doc/.
+description: Rules for java-profiler documentation under doc/ (naming, index, style, accuracy, stale sections). Use before creating, editing, renaming or deleting a file under doc/.
 ---
 
 # Documentation writing
@@ -11,9 +11,12 @@ description: Rules for java-profiler documentation under doc/ (naming, index, ac
 - **Index.** Every doc page is indexed in `doc/README.md`. CI (`qualityChecks`)
   enforces naming and indexing; design artifacts under `docs/sphinx/`, `.sphinx/` and
   similar scratch paths must never be tracked.
-- **Current state only.** Documentation never carries transient or historical notes,
-  and never claims what is not true of the code. Verify numbers before writing them
-  down.
+- **Style.** Write the text you add or rewrite in Simplified Technical English: short
+  declarative sentences, one idea per sentence. Leave the style of other text alone.
+- **Current state only.** Documentation never carries transient or historical notes.
+  It never claims what is not true of the code.
+- **Numbers.** Verify each number you add or change against its source: the code, a
+  reproducible measurement, or a named observation. Fix numbers your change makes stale.
 - **Remove finished work.** Preserved historical sections of landed design or handover
   docs ("Suggested next steps", unverified hypotheses, open items) are rewritten or
   deleted once the work they instruct is done: never point a reader at finished work.
