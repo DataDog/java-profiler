@@ -438,9 +438,13 @@ void parseElfBytes(const std::vector<char>& bytes) {
 // Releases a test mapping on every exit path, including the early returns
 // that gtest ASSERT macros perform.
 struct MappingGuard {
+    MappingGuard(void* mapping, size_t size) : addr(mapping), size(size) {}
+    ~MappingGuard() { munmap(addr, size); }
+    MappingGuard(const MappingGuard&) = delete;
+    MappingGuard& operator=(const MappingGuard&) = delete;
+
     void* addr;
     size_t size;
-    ~MappingGuard() { munmap(addr, size); }
 };
 
 }  // namespace
