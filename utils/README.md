@@ -232,6 +232,7 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 | `check-copyright.py` | Source files the branch adds or modifies since `--base` (default: the PR base in CI, else `origin/main`) follow the `AGENTS.md` copyright rule. |
 | `check-claude-md.py` | `CLAUDE.md` is the canonical redirect stub to `AGENTS.md`; `--write` restores it. |
 | `check-knowledgebase.py` | Every tracked `.knowledgebase/memories/` file carries cairn's required memory frontmatter. |
+| `check-skills.py` | Every tracked `.agents/skills/` skill has loadable frontmatter, `.claude/skills` links to it, and `AGENTS.md` names only existing skills. |
 
 `.githooks/pre-push` runs `check-copyright.py` and `check-claude-md.py` on every pushed branch commit, so a violation stops the push before CI sees it (see `review-marker.py` below for the trust model). Set `branch.<name>.gh-merge-base` for a branch stacked on another feature branch.
 

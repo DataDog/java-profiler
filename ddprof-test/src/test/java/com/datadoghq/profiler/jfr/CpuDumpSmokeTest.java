@@ -1,27 +1,28 @@
-package com.datadoghq.profiler.jfr;
+// Copyright 2026, Datadog, Inc.
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.params.provider.ValueSource;
-import org.junit.jupiter.api.TestTemplate;
+package com.datadoghq.profiler.jfr;
 
 import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.provider.ValueSource;
 
 public class CpuDumpSmokeTest extends JfrDumpTest {
-    public CpuDumpSmokeTest(@CStack String cstack) {
-        super(cstack);
-    }
-    @Override
-    protected String getProfilerCommand() {
-        return "cpu=1ms";
-    }
+  public CpuDumpSmokeTest(@CStack String cstack) {
+    super(cstack);
+  }
 
-    @RetryTest(3)
-    @Timeout(value = 60)
-    @TestTemplate
-    @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
-    public void test(@CStack String cstack) throws Exception {
-        runTest("datadog.ExecutionSample");
-    }
+  @Override
+  protected String getProfilerCommand() {
+    return "cpu=1ms";
+  }
+
+  @RetryTest(3)
+  @Timeout(value = 60)
+  @TestTemplate
+  @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
+  public void test(@CStack String cstack) throws Exception {
+    runTest("datadog.ExecutionSample");
+  }
 }

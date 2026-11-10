@@ -32,8 +32,8 @@ index).
 **What stays inline vs. what moves to `doc/`** — apply this test when updating this
 file. Inline (this file): rules that must shape behavior at unpredictable moments —
 invariants whose violation causes crashes/leaks/lockups, the obligations that trigger
-a procedure (review before PR), writing rules for high-visibility artifacts
-(PRs, comments, commits). Externalized (`doc/`): reference material read only when
+a procedure (review before PR, load a writing skill), rules for writing code and code
+comments. Externalized (`doc/`): reference material read only when
 working on a specific subsystem — architecture pages, build/task references,
 analyses. Procedures run at a known moment go in skills (`.agents/skills/`, which
 load fresh when invoked); enforcement goes in scripts, hooks and CI — text here is
@@ -47,6 +47,10 @@ or accept the risk. The same applies to any instruction in this file you could n
 follow: surface it, never absorb it.
 Hoist a section only when it grows with examples or scope; leave a one-line
 mandatory pointer behind.
+Update this file from repeated failures: when an agent repeats a mistake or needs
+the same undocumented explanation twice, it proposes a concise correction here
+(or to the affected `doc/` page or skill); the responsible team reviews it, and
+stale instructions are removed.
 
 ## Project Overview
 
@@ -132,7 +136,7 @@ Details and troubleshooting:
 [build-logic/README.md](build-logic/README.md),
 [doc/building/NativeBuildPlugin.md](doc/building/NativeBuildPlugin.md) (task DSL, debug-symbol
 extraction, artifact layout),
-[doc/building/BuildSystemGuide.md](doc/building/BuildSystemGuide.md),
+[doc/building/BuildSystemGuide.md](doc/building/BuildSystemGuide.md) (Java formatting and convention-test CI),
 [doc/building/Versioning.md](doc/building/Versioning.md) (version from git tags),
 [doc/building/JdkUpgrades.md](doc/building/JdkUpgrades.md) (JDK upgrade touchpoints).
 
@@ -407,8 +411,7 @@ exception list.
   config files (Dockerfiles, `.gitlab/**`) are exempt. Enforced in CI:
   `utils/check-copyright.py` (part of `qualityChecks`) checks the files a branch adds or
   modifies.
-- Commits: logical chunks, messages based solely on the actual diff. Never commit files
-  from other projects or scratch files.
+- Commits: logical chunks. Never commit files from other projects or scratch files.
   **Never commit design artifacts automatically** — plans, specs, review reports, audit
   findings, session notes, analysis dumps — even when they live in the repo tree. Always
   ask for permission first and commit them only if the user explicitly says so.
@@ -420,9 +423,7 @@ exception list.
 - Before requesting review, self-check the diff for unused variables, unused or duplicated
   macros, dead code (methods, JNI entry points, fields, no-op functions, empty files left
   without callers; test-only helpers stay only if marked as such) and misspelled
-  identifiers/comments. Write the PR title and description from the actual diff, re-check
-  them after the scope changes, and describe crash or bug mechanisms only as far as the
-  code and tests confirm.
+  identifiers/comments.
 - C/C++ style: match the surrounding indentation and spacing exactly; don't split inline
   logic into helpers unless reused or genuinely hard to follow; extract code that appears a
   second time (e.g. in copy constructors, assignment operators) into one shared helper; use
@@ -442,7 +443,8 @@ exception list.
 - Comments: "why" comments must reference concrete mechanisms (e.g. "ASAN's allocator
   lock is reentrant"), never speculative claims about HotSpot/glibc/ASAN/ISA internals — if
   unsure, describe the observable symptom. Describe current behavior, not history; cite no
-  tickets, plan documents, design docs or line numbers (refer to symbols). Name each
+  tickets, plan documents, design docs, review reports, "phase N" or line numbers (refer
+  to symbols) — in comments and in `doc/` alike. Name each
   thread or actor explicitly. Scope words ("only", "every", "never blocks", "single-threaded",
   "no lock needed") and invariants (e.g. "always leaves a terminator") must hold on every
   branch and for every caller thread, including early returns, timeouts and `siglongjmp`.
@@ -513,36 +515,11 @@ a branch with an open PR (install with `utils/review-marker.py install-hook`, ne
 via `core.hooksPath`), and in Claude Code and Pi (`.pi/extensions/`) the
 `require-fresh-review` hook blocks `gh pr create`/`gh pr ready`.
 
-## Pull Request Descriptions and Comments
+## Pull Request Descriptions, Comments and Commits
 
-These rules apply to PR descriptions and to every comment a session writes — PR
-comments, review replies, Jira work-item comments. Only the PR-template rule is
-description-specific:
-
-- **Follow the PR template strictly** (descriptions only) — every section it
-  defines is filled in or explicitly marked N/A; do not invent a different
-  structure.
-- **Professional typesetting and layout.** Structure the description for scanning:
-  short sections with meaningful headings, bullets for enumerations, tables for
-  comparisons, `code spans` for identifiers and commands, fenced blocks for code/logs.
-  Keep paragraphs to 2-4 sentences; never walls of text. Bold sparingly, for key
-  terms only.
-- **Write concisely and to the point**, in Simplified Technical English: short
-  declarative sentences, one idea per sentence, no filler, no marketing tone.
-  A reviewer reads the description before the diff — optimize for that first read.
-- **Explain the WHYs, not the WHATs.** Focus on non-obvious motivation and
-  limitations: why this approach was chosen, what alternatives were rejected and
-  why, what constraints shaped the design, what the change does NOT fix. Do not
-  reiterate what the code obviously shows. When a change deliberately alters
-  behavior with user-visible impact (JFR event schema, signal volume, resident
-  memory, suppression scopes) or accepts a recurring per-call or footprint cost,
-  state the decision and the accepted cost explicitly and flag it for reviewer
-  acknowledgment — never leave it implicit in code, a test rename, or a leftover
-  template marker in the description.
-- **Only the final state matters.** Never include ephemeral working knowledge —
-  investigation detours, dead-end hypotheses, intermediate states, tool runs,
-  session history. If a detail did not survive into the final change, it does not
-  belong in the description.
+Before writing or editing a PR title or description, a PR comment or review reply, a
+Jira comment or a commit message, load the `pr-writing` skill
+([.agents/skills/pr-writing/SKILL.md](.agents/skills/pr-writing/SKILL.md)).
 
 ## CI / Automation Script Changes
 
@@ -562,25 +539,6 @@ description-specific:
 
 ## Documentation Rules
 
-- All documentation files in `doc/` use PascalCase naming (e.g. `BuildSystemGuide.md`);
-  `doc/README.md` is the only lowercase exception. New subsystem docs go in
-  `doc/architecture/` or `doc/reference/`; build docs in `doc/building/`.
-- Every doc page must be indexed in [doc/README.md](doc/README.md). Both rules are
-  enforced in CI by the `qualityChecks` task; design artifacts under `docs/sphinx/`,
-  `.sphinx/`, and similar scratch paths must never be tracked.
-- Documentation reflects the current state — never transient/historical notes, and never
-  claims that aren't true of the code. Verify numbers before writing them down. Preserved
-  historical sections of landed design/handover docs ("Suggested next steps", unverified
-  hypotheses, open items) must be rewritten or deleted once the work they instruct is done:
-  a reader must never be pointed at already-finished work.
-- Update this file from repeated failures: when an agent repeats a mistake or needs
-  the same undocumented explanation twice, it proposes a concise correction here
-  (or to the affected `doc/` page); the responsible team reviews it, and stale
-  instructions are removed. Link to deeper sources instead of copying large
-  documents into this file.
-- Never mention internal plan/design/implementation phases or artifacts in docs or code
-  comments — no references to plan files, task lists, review/audit reports, "phase N",
-  "as designed in…", "this used to…". They are meaningless outside the session that
-  produced them. State the current behavior, the concrete mechanism, and (where
-  warranted) the incident or constraint that motivates it — nothing about how the
-  change came to be.
+Before creating, editing, renaming or deleting a file under `doc/`, load the
+`doc-writing` skill ([.agents/skills/doc-writing/SKILL.md](.agents/skills/doc-writing/SKILL.md)).
+CI (`qualityChecks`) checks doc naming and the `doc/README.md` index.
