@@ -479,7 +479,7 @@ public final class JavaProfiler {
      *
      * @param state native {@code OSThreadState} value for the blocked interval;
      *     currently {@code SLEEPING} and {@code OBJECT_WAIT} are armed
-     * @return an opaque token to pass to {@link #blockExit(long)}, or 0 if no state was armed
+     * @return an opaque token to pass to {@link #blockExit(long, long, long)}, or 0 if no state was armed
      */
     long blockEnter(int state) {
         Thread thread = Thread.currentThread();
