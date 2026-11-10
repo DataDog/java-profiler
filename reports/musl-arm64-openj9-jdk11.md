@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk11
 
 ## musl-arm64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-11-10 10:58:07 EST
+**Date:** 2026-11-10 11:01:17 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 123 |
-| Sample Rate | 2.05/sec |
-| Health Score | 128% |
-| Threads | 8 |
-| Allocations | 63 |
+| CPU Samples | 93 |
+| Sample Rate | 1.55/sec |
+| Health Score | 97% |
+| Threads | 10 |
+| Allocations | 68 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 23 |
-| Sample Rate | 0.38/sec |
-| Health Score | 24% |
-| Threads | 6 |
-| Allocations | 14 |
+| CPU Samples | 413 |
+| Sample Rate | 6.88/sec |
+| Health Score | 430% |
+| Threads | 11 |
+| Allocations | 127 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 43-48 cores)</summary>
 
 ```
-1794325933 48
-1794325938 48
-1794325943 43
-1794325948 43
-1794325953 43
-1794325959 43
-1794325964 43
-1794325969 43
-1794325974 43
-1794325979 43
-1794325984 43
-1794325989 43
-1794325994 43
-1794325999 43
-1794326004 43
-1794326009 43
-1794326014 43
-1794326019 43
-1794326024 48
-1794326029 48
+1794326107 48
+1794326112 48
+1794326117 48
+1794326122 48
+1794326127 48
+1794326132 48
+1794326137 48
+1794326142 48
+1794326147 48
+1794326152 48
+1794326157 48
+1794326162 48
+1794326167 48
+1794326172 48
+1794326177 43
+1794326182 43
+1794326187 43
+1794326192 43
+1794326197 43
+1794326202 43
 ```
 </details>
 
