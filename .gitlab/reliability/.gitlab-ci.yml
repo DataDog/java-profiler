@@ -29,6 +29,7 @@ variables:
     - .gitlab/reliability/run.sh "$RUNTIME" "$CONFIG" "$VARIANT" "$ALLOCATOR" "$ARCH" 2>err.log 1>out.log
     - REASON=$(cat err.log | grep "FAIL:" | cut -f2 -d':') || true
     - if [ -n "${REASON}" ]; then echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}X${VARIANT}=${REASON}" | tr '+' '_' >> build.env; exit 1; fi
+    - .gitlab/reliability/record_inconclusive.sh
   after_script:
     - |
       if [[ "$CI_JOB_STATUS" == "failed" ]]; then
@@ -125,7 +126,7 @@ notify-slack:
   stage: notify
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: on_failure
+      when: always
     - when: never
   image: registry.ddbuild.io/slack-notifier:v91289620-4ec922a-latest@sha256:06b24f392ccc383d371c72001520a254edef523bc0bfdc445f487106107b4202
   tags: [ "arch:amd64" ]
