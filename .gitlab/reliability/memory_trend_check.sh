@@ -87,18 +87,23 @@ release_probe_records() {
     local allocator=$1 pid=$2 log=$3 status out rss
     local proc_root=${MEMWATCH_PROC_ROOT:-/proc}
     local cgroup_root=${MEMWATCH_CGROUP_ROOT:-/sys/fs/cgroup}
-    local jcmd=${MEM_TREND_JCMD:-$(dirname "$(command -v java)")/jcmd}
+    # Derived from the java that launched the JVM, so the probe cannot
+    # drift to another JDK through a probe-time PATH lookup.
+    local jcmd=${MEM_TREND_JCMD:-$(dirname "$JAVA_BIN")/jcmd}
     if [ "$allocator" != "gmalloc" ]; then
         echo "release_probe=not-applicable allocator=${allocator}" >> "$log"
         return
     fi
     rss=$(probe_rss_kb "$proc_root" "$pid")
     echo "probe_before: rss_kb=${rss} $(collect_markers "$proc_root" "$cgroup_root" "$pid" $$)" >> "$log"
-    if out=$(timeout "$PROBE_TIMEOUT_SECONDS" "$jcmd" "$pid" System.trim_native_heap 2>/dev/null) && \
-       printf '%s\n' "$out" | grep -q 'Trim native heap:'; then
-        status=ok
-    else
-        status=failed
+    # An absent or non-executable jcmd fails the probe, which maps to
+    # inconclusive, exactly like a jcmd that errors or times out.
+    status=failed
+    if [ -x "$jcmd" ]; then
+        if out=$(timeout "$PROBE_TIMEOUT_SECONDS" "$jcmd" "$pid" System.trim_native_heap 2>/dev/null) && \
+           printf '%s\n' "$out" | grep -q 'Trim native heap:'; then
+            status=ok
+        fi
     fi
     echo "release_probe=jcmd status=${status}" >> "$log"
     rss=$(probe_rss_kb "$proc_root" "$pid")
@@ -129,11 +134,19 @@ emit_verdict() {
 }
 
 # Runs the trend check on log $1 with plot output $2 for allocator $3,
-# relays its output and maps its verdict to stderr.
+# relays its output and maps its verdict to stderr. A non-zero interpreter
+# exit is an infrastructure break, so it fails the job loudly instead of
+# degrading to an inconclusive row.
 run_trend_check() {
-    local log=$1 png=$2 allocator=$3 out verdict reason
-    out=$(python3 "${HERE}/memory_trend_check.py" --output "$png" --allocator "$allocator" "$log")
+    local log=$1 png=$2 allocator=$3 out verdict reason rc
+    local python_bin=${MEM_TREND_PYTHON:-python3}
+    out=$("$python_bin" "${HERE}/memory_trend_check.py" --output "$png" --allocator "$allocator" "$log")
+    rc=$?
     echo "$out"
+    if [ "$rc" -ne 0 ]; then
+        echo "FAIL:Trend check crashed" >&2
+        return
+    fi
     verdict=$(printf '%s\n' "$out" | grep -m1 '^VERDICT:' | cut -f2 -d':')
     reason=$(printf '%s\n' "$out" | grep -m1 '^VERDICT_REASON:' | sed 's/^VERDICT_REASON://')
     emit_verdict "$verdict" "$reason" "$allocator"
@@ -150,6 +163,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     source "/root/.sdkman/bin/sdkman-init.sh" 1>/dev/null 2>/dev/null
 
     sdk install java 21.0.3-tem 1>/dev/null 2>/dev/null
+
+    # Resolved once, before the JVM launch, so the probe jcmd comes from
+    # the JDK that actually runs the JVM.
+    JAVA_BIN=$(command -v java)
 
     DDPROF_JAR="/root/.m2/repository/com/datadoghq/ddprof/${CURRENT_VERSION}/ddprof-${CURRENT_VERSION}.jar"
     # Capture mvn's actual output (not just presence/absence of the jar) so a
@@ -197,10 +214,6 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 
     CONTROL_FILE=".running"
     touch $CONTROL_FILE
-    # shellcheck disable=SC2086  # preserved pre-existing sampler launch
-    sh ${HERE}/../benchmarks/steps/mem_watch.sh $CONTROL_FILE ${HERE}/../../memwatch.log &
-    SAMPLER_PID=$!
-
     case $CONFIG in
       profiler)
         echo "Running with profiler"
@@ -239,7 +252,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     echo "LD_PRELOAD=$LD_PRELOAD"
 
     # shellcheck disable=SC2086  # preserved pre-existing JVM invocation
-    java -javaagent:/var/lib/datadog/dd-java-agent.jar \
+    "$JAVA_BIN" -javaagent:/var/lib/datadog/dd-java-agent.jar \
          $ENABLEMENT \
          -Ddd.profiling.upload.period=5 \
          -Ddd.profiling.start-force-first=true \
@@ -256,6 +269,14 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
          -XX:ErrorFile=${HERE}/../../hs_err.log \
          -jar /var/lib/benchmarks/renaissance.jar akka-uct -t $((RUNTIME + PROBE_TAIL_SECONDS)) &
     JVM_PID=$!
+
+    # The launched JVM's authoritative pid replaces the sampler's ps text
+    # match, which can select a sibling process carrying the same tokens.
+    export MEMWATCH_TARGET_PID="${JVM_PID}"
+    # env -u keeps the allocator preload off the sampler's discovery pipeline
+    # shellcheck disable=SC2086  # preserved pre-existing sampler launch
+    env -u LD_PRELOAD sh ${HERE}/../benchmarks/steps/mem_watch.sh $CONTROL_FILE ${HERE}/../../memwatch.log &
+    SAMPLER_PID=$!
 
     close_measurement_window "${RUNTIME}" "${JVM_PID}" "${SAMPLER_PID}" "${CONTROL_FILE}"
     release_probe_records "$ALLOCATOR" "${JVM_PID}" "${HERE}/../../memwatch.log"

@@ -110,6 +110,10 @@ write("interleaved.log", interleaved + probe(400000, 250000))
 # Fewer than 5 samples.
 write("short.log", emit(growth(4)))
 
+# Exact window boundary: 5 samples reach the trend window, 4 stay short.
+write("boundary-5.log", emit(growth(5)) + ["release_probe=not-applicable allocator=jemalloc"])
+write("boundary-4.log", emit(growth(4)))
+
 # NA share: exactly half the samples lack a markers record, and more than
 # half carry NA in either gated field.
 write("na-at.log", emit(g10, missing=range(0, 10, 2)) + ["release_probe=not-applicable allocator=jemalloc"])
@@ -283,6 +287,12 @@ fi
 
 expect_verdict "fewer than 5 samples is inconclusive" inconclusive short.log gmalloc
 expect_no_trend "fewer than 5 samples prints no TREND line"
+
+expect_verdict "exactly window_size samples still get a trend verdict" fail boundary-5.log jemalloc
+expect_reason_is "window-size fail reason is the trend text" "Memory usage is trending up"
+expect_trend_up "exactly window_size samples run the trend window"
+expect_verdict "one sample below window_size stays inconclusive" inconclusive boundary-4.log gmalloc
+expect_reason_is "the short-window reason names the sample count" "Only 4 memory samples were recorded, at least 5 are needed"
 
 expect_verdict "NA share at the bound still gets a verdict" fail na-at.log jemalloc
 expect_reason_is "NA share at the bound is not an NA verdict" "Memory usage is trending up"

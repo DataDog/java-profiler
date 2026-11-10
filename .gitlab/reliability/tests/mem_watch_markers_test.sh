@@ -16,11 +16,12 @@ FAILED=0
 WORK=$(mktemp -d)
 JPID=
 SPID=
+XPID=
 CTL=".running"
 
 # shellcheck disable=SC2329  # cleanup runs through the EXIT trap
 cleanup() {
-  kill "${JPID:-}" "${SPID:-}" 2>/dev/null
+  kill "${JPID:-}" "${SPID:-}" "${XPID:-}" 2>/dev/null
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -66,6 +67,19 @@ EOF
   ( cd "$WORK" && exec sh ./javawatch "$CTL" ) & JPID=$!
 }
 
+# A sibling whose command line carries the same discovery tokens as the
+# fake JVM, so the ps text match alone cannot tell them apart.
+start_fake_sibling() {
+  cat > "$WORK/javasibling" <<'EOF'
+#!/bin/sh
+trap 'kill "$c" 2>/dev/null' EXIT
+sleep 600 &
+c=$!
+wait $c
+EOF
+  ( cd "$WORK" && exec sh ./javasibling "$CTL" ) & XPID=$!
+}
+
 start_sampler() { # $1 = shell to run the sampler with
   mkdir -p "$CASE_DIR"
   ln -sf "$STEPS/mem_watch.sh" "$CASE_DIR/memsampler.sh"
@@ -75,6 +89,7 @@ start_sampler() { # $1 = shell to run the sampler with
   : > "$CASE_DIR/sampler.stdout"
   (
     cd "$CASE_DIR" || exit 1
+    # shellcheck disable=SC2030  # the roots are local to the sampler's subshell
     export MEMWATCH_PROC_ROOT="$PROC" MEMWATCH_CGROUP_ROOT="$CG"
     exec "$1" ./memsampler.sh "$CTL" out.log
   ) > "$CASE_DIR/sampler.stdout" 2>&1 & SPID=$!
@@ -97,8 +112,8 @@ wait_markers() { # $1 = markers records to wait for; 25 s timeout
 stop_sampler() {
   rm -f "$CASE_DIR/$CTL"
   wait "$SPID" 2>/dev/null
-  kill "$JPID" 2>/dev/null
-  wait "$JPID" 2>/dev/null
+  kill "${JPID:-}" 2>/dev/null
+  wait "${JPID:-}" 2>/dev/null
 }
 
 line_n() { # $1 = 1-based line number of the sampler output
@@ -215,6 +230,59 @@ fi
 case_v2
 case_v1
 case_missing
+
+# MEMWATCH_TARGET_PID selects the launched JVM even when a sibling matches
+# the ps text discovery; unset, the discovery loop runs unchanged (the
+# cases above never set the override).
+case_override() {
+  CASE_DIR="$WORK/override"; PROC="$WORK/override/proc"; CG="$WORK/override/cgroup"
+  OUT="$CASE_DIR/out.log"
+  mkdir -p "$PROC/pressure" "$CG"
+  printf 'some avg10=0.50 avg60=0.50 avg300=0.50 total=10\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$PROC/pressure/cpu"
+  printf 'some avg10=0.75 avg60=0.75 avg300=0.75 total=20\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$PROC/pressure/memory"
+  printf '0.40 0.41 0.42 1/100 111\n' > "$PROC/loadavg"
+  printf 'cpu io memory\n' > "$CG/cgroup.controllers"
+  printf 'usage_usec 1\nnr_periods 10\nnr_throttled 1\nthrottled_usec 0\n' > "$CG/cpu.stat"
+  start_fake_java
+  start_fake_sibling
+  write_stat "$PROC" "$JPID" javawatch R 1
+  write_stat "$PROC" "$XPID" javasibling R 1
+  write_smaps "$PROC" "$JPID" 12345
+  write_smaps "$PROC" "$XPID" 54321
+  # shellcheck disable=SC2009  # replays the sampler's discovery pipeline verbatim
+  discovered=$(ps ax | grep 'java' | grep "$CTL" | grep -v 'grep' | grep -v 'time' | sed -e 's/^[[:space:]]*//' | cut -f1 -d' ')
+  if printf '%s\n' "$discovered" | grep -qx "$JPID" && printf '%s\n' "$discovered" | grep -qx "$XPID"; then
+    pass "the fixture's discovery matches both the JVM and the sibling"
+  else
+    fail "override: discovery does not see both processes [$discovered]"
+  fi
+  mkdir -p "$CASE_DIR"
+  ln -sf "$STEPS/mem_watch.sh" "$CASE_DIR/memsampler.sh"
+  ln -sf "$STEPS/collect_markers.sh" "$CASE_DIR/collect_markers.sh"
+  : > "$OUT"
+  : > "$CASE_DIR/$CTL"
+  : > "$CASE_DIR/sampler.stdout"
+  (
+    cd "$CASE_DIR" || exit 1
+    # shellcheck disable=SC2031  # the roots and override are local to the sampler's subshell
+    export MEMWATCH_PROC_ROOT="$PROC" MEMWATCH_CGROUP_ROOT="$CG"
+    export MEMWATCH_TARGET_PID="$JPID"
+    exec sh ./memsampler.sh "$CTL" out.log
+  ) > "$CASE_DIR/sampler.stdout" 2>&1 & SPID=$!
+  if ! wait_markers 1; then
+    fail "override: no markers record was written"
+    sed -n '1,10p' "$CASE_DIR/sampler.stdout" 2>/dev/null
+  fi
+  stop_sampler
+  kill "$XPID" 2>/dev/null
+  wait "$XPID" 2>/dev/null
+  assert_eq "override mem line reads the target JVM rss" "mem: 12345" "$(line_n 1)"
+  assert_eq "override markers exclude the target JVM from the census" \
+    "markers: psi_cpu_some_avg10=0.50 psi_memory_some_avg10=0.75 loadavg_1m=0.40 cpu_nr_throttled=1 cotenant_runnable=1" \
+    "$(line_n 2)"
+}
+
+case_override
 
 # Direct helper call against a nonexistent proc root: every source is
 # unavailable, so no token may fall back to 0 or empty

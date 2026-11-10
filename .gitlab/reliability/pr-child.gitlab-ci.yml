@@ -36,6 +36,9 @@ get-versions:
   script:
     - set +e
     - echo "runtime=${RUNTIME}, config=${CONFIG}, variant=${VARIANT}, allocator=${ALLOCATOR}, arch=${ARCH}"
+    # The image's global python3 lacks numpy and matplotlib; the stability
+    # venv carries both, so the memory trend check runs on it.
+    - export MEM_TREND_PYTHON=/app/bp-stability/venv/bin/python3
     - .gitlab/reliability/run.sh "$RUNTIME" "$CONFIG" "$VARIANT" "$ALLOCATOR" "$ARCH" 2>err.log 1>out.log
     - REASON=$(grep -m1 'FAIL:' err.log | cut -f2- -d':' | tr -d '\n') || true
     - if [ -n "${REASON}" ]; then _key=$(printf 'REASON_%s_%s_%sX%s' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${VARIANT}" | tr '+' '_'); echo "${_key}=${REASON}" >> build.env; exit 1; fi

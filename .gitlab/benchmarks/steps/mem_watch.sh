@@ -7,10 +7,17 @@ out=$2
 # Overridable roots let tests drive the sampler against fake trees
 markers_proc_root=${MEMWATCH_PROC_ROOT:-/proc}
 markers_cgroup_root=${MEMWATCH_CGROUP_ROOT:-/sys/fs/cgroup}
+# The harness exports the launched JVM's pid; the ps text match below can
+# otherwise select a sibling process carrying the same tokens.
+target_pid=${MEMWATCH_TARGET_PID:-}
 # shellcheck disable=SC2086  # preserved byte-identical from the original sampler
 while [ -f $ctl_file ]; do
-    # shellcheck disable=SC2009  # pid discovery is preserved byte-identical
-    pid=$(ps ax | grep 'java' | grep "${ctl_file}" | grep -v 'grep' | grep -v 'time' | sed -e 's/^[[:space:]]*//' | cut -f1 -d' ')
+    if [ -n "$target_pid" ]; then
+        pid=$target_pid
+    else
+        # shellcheck disable=SC2009  # pid discovery is preserved byte-identical
+        pid=$(ps ax | grep 'java' | grep "${ctl_file}" | grep -v 'grep' | grep -v 'time' | sed -e 's/^[[:space:]]*//' | cut -f1 -d' ')
+    fi
     if [ -n "${pid}" ]; then
         rss="$(cat "${markers_proc_root}"/"${pid}"/smaps_rollup | grep 'Rss:' | cut -f2 -d':' |  sed -e 's/^[[:space:]]*//' | cut -f1 -d' ' 2>/dev/null)"
         if [ -n "$rss" ]; then

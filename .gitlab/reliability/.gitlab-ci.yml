@@ -26,6 +26,9 @@ variables:
   script:
     - set +e
     - echo "runtime=${RUNTIME}, config=${CONFIG}, variant=${VARIANT}, allocator=${ALLOCATOR}, arch=${ARCH}"
+    # The image's global python3 lacks numpy and matplotlib; the stability
+    # venv carries both, so the memory trend check runs on it.
+    - export MEM_TREND_PYTHON=/app/bp-stability/venv/bin/python3
     - .gitlab/reliability/run.sh "$RUNTIME" "$CONFIG" "$VARIANT" "$ALLOCATOR" "$ARCH" 2>err.log 1>out.log
     - REASON=$(cat err.log | grep "FAIL:" | cut -f2 -d':') || true
     - if [ -n "${REASON}" ]; then echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}X${VARIANT}=${REASON}" | tr '+' '_' >> build.env; exit 1; fi
