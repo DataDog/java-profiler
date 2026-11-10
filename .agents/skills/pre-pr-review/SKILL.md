@@ -54,10 +54,13 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    Tell the reviewer to skip `.knowledgebase/`: its content is cairn's, and step 4
    checks only its frontmatter. The marker still covers it.
 
+   **Fresh context.** Run the reviewer without this session's conversation: inherited
+   knowledge and assumptions hide defects, and a long context costs more on every turn.
+   Sphinx's workers already get only their task material; run `/code-review` in a
+   subagent that does not inherit the conversation, or in a fresh session.
+
    **Cost.** Plan for about $20–30 of agentic review per PR; before a run that is likely
-   to exceed it, ask the user. A long orchestrating session re-reads its own context on
-   every turn, so run this skill for large reviews from a fresh session where the harness
-   allows; that session writes the marker. The session that hands off still does step 7.
+   to exceed it, ask the user.
 
 4. **Findings.** Fix Critical/High findings, or get the user's explicit waiver.
    Commit the fixes, including any correction made after the review, run the step 2
@@ -76,11 +79,13 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
      themselves. Fix those that are cheap to fix, review that last fix once, and list
      the rest in the report (step 6). A Critical or High finding from that review is
      fixed like any other.
+   - After two re-review rounds, stop whatever the severity: report the open findings
+     to the user, who decides whether another round runs.
 
 5. **Marker.** On the final commits, write the marker — also when the user ran
    the review manually and reports it back:
    `RM write --tool <reviewer> --session <id> --base <base>`, where `--session` names
-   the session that ran the review.
+   this session.
    Any later change to the branch's diff makes it stale. Then `.githooks/pre-push`
    refuses pushes to an open PR, and in Claude Code and Pi the `require-fresh-review`
    hook blocks `gh pr create`/`gh pr ready`, until this skill runs again. A rebase keeps
@@ -89,8 +94,7 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
 6. **Report.** State the reviewer, the outcome, and any waived or unfixed findings in
    the PR description or the reply to the review.
 
-7. **Repeated failures.** The session that implemented the change does this step; a
-   fresh review session skips it. Tell the user, in the session, each mistake you made twice
+7. **Repeated failures.** Tell the user, in the session, each mistake you made twice
    during this change and each point the user had to explain twice. Give each a
    proposed home: `AGENTS.md`, a `doc/` page, a skill, a hook or a CI check. Do not
    edit those files for it in this change; the user decides whether it becomes a ticket.
