@@ -57,7 +57,9 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    **Fresh context.** Run the reviewer without this session's conversation: inherited
    knowledge and assumptions hide defects, and a long context costs more on every turn.
    Sphinx's workers already get only their task material; run `/code-review` in a
-   subagent that does not inherit the conversation, or in a fresh session.
+   subagent that does not inherit the conversation, or in a fresh session. Give the
+   reviewer only the range, these instructions and the change's stated intent, never
+   your own conclusions about its correctness.
 
    **Cost.** Plan for about $20–30 of agentic review per PR; before a run that is likely
    to exceed it, ask the user.
@@ -79,8 +81,11 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
      themselves. Fix those that are cheap to fix, review that last fix once, and list
      the rest in the report (step 6). A Critical or High finding from that review is
      fixed like any other.
-   - After two re-review rounds, stop whatever the severity: report the open findings
-     to the user, who decides whether another round runs.
+   - After two re-review rounds on the PR, stop whatever the severity: report the open
+     findings to the user, who decides whether another round runs. The first review
+     does not count; the review of a last fix does. This limit takes precedence over
+     the rule above. No marker while a Critical or High finding is neither fixed nor
+     explicitly waived, and fixes made after the stop are reviewed or waived first.
 
 5. **Marker.** On the final commits, write the marker — also when the user ran
    the review manually and reports it back:
@@ -98,3 +103,4 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    during this change and each point the user had to explain twice. Give each a
    proposed home: `AGENTS.md`, a `doc/` page, a skill, a hook or a CI check. Do not
    edit those files for it in this change; the user decides whether it becomes a ticket.
+   If this session did not implement the change, say that it cannot report this.
