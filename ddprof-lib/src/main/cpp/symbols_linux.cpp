@@ -981,8 +981,8 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
     for (size_t off = 0; ent_size <= total_size - off; off += ent_size) {
         const char* sym = symbols + off;
         // Field copies instead of dereferencing a misaligned ElfSymbol*;
-        // dynamic-table entries are not extent-validated, so reads stay
-        // conditional to avoid reading past the mapped region.
+        // the DT_SYMTAB caller does not extent-validate, so each field is
+        // read only when the entry survives the earlier checks.
         uint32_t st_name = symbolNameAt(sym);
         if (st_name == 0) {
             continue;

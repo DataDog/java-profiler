@@ -34,20 +34,11 @@
 #include <cstdio>
 
 // Forward declaration for ElfParser functionality from symbols_linux.cpp
-// The actual implementation will be available through the patched upstream file
 class ElfParser {
 public:
     static bool parseFile(CodeCache* cc, const char* base, const char* file_name, bool use_debug);
     static void parseProgramHeaders(CodeCache* cc, const char* base, const char* end, bool relocate_dyn);
 };
-
-// parseLibraries() hands one heap CodeCache per library to the array and
-// nothing frees it (production arrays live for the process lifetime).
-static void freeCodeCacheArray(CodeCacheArray& libs) {
-    for (int i = 0; i < libs.count(); i++) {
-        delete libs[i];
-    }
-}
 
 // Test name for crash handler
 static constexpr char ELF_TEST_NAME[] = "ElfParserTest";
@@ -186,7 +177,7 @@ TEST_F(ElfTest, invalidElf) {
 
     // The binary's own mapping is always collected and parsed.
     ASSERT_GT(cc_array.count(), 0);
-    freeCodeCacheArray(cc_array);
+    cc_array.freeForTest();
 
     munmap(addr, 4096);
     unlink("/tmp/invalid_elf");
@@ -217,7 +208,7 @@ TEST_F(ElfTest, nonElfFile) {
     Symbols::parseLibraries(&cc_array, false);
 
     ASSERT_GT(cc_array.count(), 0);
-    freeCodeCacheArray(cc_array);
+    cc_array.freeForTest();
 
     // we could add checks here, though I am mainly relying on asan to crash
     // if something is wrong
@@ -248,7 +239,7 @@ TEST_F(ElfTest, invalidElfSmallMapping) {
     Symbols::parseLibraries(&cc_array, false);
 
     ASSERT_GT(cc_array.count(), 0);
-    freeCodeCacheArray(cc_array);
+    cc_array.freeForTest();
 
     munmap(addr, 16);
     unlink("/tmp/invalid_elf_small");
@@ -277,7 +268,7 @@ TEST_F(ElfTest, nonElfFileSmallMapping) {
     // Call the parsing function with the small non-ELF mapping
     Symbols::parseLibraries(&cc_array, false);
     ASSERT_GT(cc_array.count(), 0);
-    freeCodeCacheArray(cc_array);
+    cc_array.freeForTest();
     munmap(addr, contentSize);
     unlink("/tmp/non_elf_small");
 }
@@ -333,7 +324,7 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
     unmapper.join();
 
     ASSERT_GT(cc_array.count(), 0);
-    freeCodeCacheArray(cc_array);
+    cc_array.freeForTest();
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -379,7 +370,7 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
     unmapper.join();
 
     ASSERT_GT(cc_array.count(), 0);
-    freeCodeCacheArray(cc_array);
+    cc_array.freeForTest();
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -422,8 +413,8 @@ Elf64_Ehdr validEhdr() {
 }
 
 // Write the bytes to a unique temp file and run ElfParser::parseFile over it,
-// mirroring how Symbols::parseLibraries() parses an on-disk library. The
-// caller-visible CodeCache lets tests assert what the parser resolved.
+// mirroring an on-disk library parse. The caller-visible CodeCache lets tests
+// assert what the parser resolved.
 void parseElfBytes(const std::vector<char>& bytes, CodeCache* cc, bool use_debug) {
     char path[] = "/tmp/elf_regress_XXXXXX";
     int fd = mkstemp(path);
@@ -694,16 +685,14 @@ TEST_F(ElfTest, symbolTableMisalignedEntries) {
     EXPECT_NE(cc.findSymbol("mis_helper@plt"), nullptr);
 }
 
-// A dynamic symbol table (DT_SYMTAB) points into live mapped memory whose
-// extent is not validated by contentAt(); an entry may straddle the end of the
-// readable region. The entry with st_name == 0 must be skipped after the
-// st_name read alone: an unconditional full-entry copy faults on the PROT_NONE
-// page that follows the readable region.
+// A DT_SYMTAB entry may straddle the end of the readable region (the dynamic
+// path does not extent-validate). An entry with st_name == 0 must be dropped
+// after the st_name read alone: a full-entry copy faults on the PROT_NONE page.
 TEST_F(ElfTest, dynamicSymtabStraddlesReadableEnd) {
     const size_t page = sysconf(_SC_PAGESIZE);
     const size_t readable = 2 * page;
-    uint8_t* img = (uint8_t*)mmap(NULL, 3 * page, PROT_READ | PROT_WRITE,
-                                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    uint8_t* img = static_cast<uint8_t*>(mmap(NULL, 3 * page, PROT_READ | PROT_WRITE,
+                                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
     ASSERT_NE(img, MAP_FAILED);
     MappingGuard mapping{img, 3 * page};
     memset(img, 0, readable);
