@@ -19,7 +19,7 @@ while [ -f $ctl_file ]; do
         pid=$(ps ax | grep 'java' | grep "${ctl_file}" | grep -v 'grep' | grep -v 'time' | sed -e 's/^[[:space:]]*//' | cut -f1 -d' ')
     fi
     if [ -n "${pid}" ]; then
-        rss="$(cat "${markers_proc_root}"/"${pid}"/smaps_rollup | grep 'Rss:' | cut -f2 -d':' |  sed -e 's/^[[:space:]]*//' | cut -f1 -d' ' 2>/dev/null)"
+        rss="$(grep 'Rss:' "${markers_proc_root}/${pid}/smaps_rollup" 2>/dev/null | cut -f2 -d':' | sed -e 's/^[[:space:]]*//' | cut -f1 -d' ')"
         if [ -n "$rss" ]; then
             # shellcheck disable=SC2086  # preserved byte-identical from the original sampler
             echo "mem: $rss" | tee -a $out
