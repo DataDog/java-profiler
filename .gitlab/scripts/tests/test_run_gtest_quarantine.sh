@@ -41,14 +41,15 @@ make_bin() {
   chmod +x "${WORK}/repo/ddprof-lib/build/bin/gtest/release/${name}"
 }
 
-# Stub retry wrapper: records the exported flag; UNSET is the observable
-# form of "not exported" (the real wrapper's default-0 contract makes an
-# empty value indistinguishable from an unset one).
+# Stub retry wrapper: records the exported flag and the cell argument; UNSET
+# is the observable form of "not exported" (the real wrapper's default-0
+# contract makes an empty value indistinguishable from an unset one).
 setup_retry_stub() {
   mkdir -p "${WORK}/repo/.github/scripts"
   cat > "${WORK}/repo/.github/scripts/run_tests_with_retry.sh" <<'STUB'
 #!/usr/bin/env bash
 echo "RETRY=${RETRY_ON_NO_TEST_FAILURES-UNSET}"
+echo "CELL=${3-}"
 STUB
   chmod +x "${WORK}/repo/.github/scripts/run_tests_with_retry.sh"
 }
@@ -61,6 +62,22 @@ run_case() {
   OUT=$( cd "${WORK}/repo" && \
     env -u RETRY_ON_NO_TEST_FAILURES SANITIZER_LC="${cfg}" GTEST_ARCH=amd64 \
       bash .gitlab/scripts/run-gtest-quarantine.sh "${args[@]+"${args[@]}"}" \
+      2> "${STDERR_FILE}" )
+  RC=$?
+}
+
+# Runs the copied script with one variable unset; fills OUT, RC, STDERR_FILE.
+# $1 = name of the variable to unset (SANITIZER_LC or GTEST_ARCH).
+run_case_missing_var() {
+  local a filtered=()
+  for a in SANITIZER_LC=asan GTEST_ARCH=amd64; do
+    [ "${a%%=*}" = "${1}" ] && continue
+    filtered+=("${a}")
+  done
+  OUT=$( cd "${WORK}/repo" && \
+    env -u RETRY_ON_NO_TEST_FAILURES -u "${1}" \
+      env "${filtered[@]}" \
+      bash .gitlab/scripts/run-gtest-quarantine.sh \
       2> "${STDERR_FILE}" )
   RC=$?
 }
@@ -135,10 +152,34 @@ for cfg in asan tsan release; do
   esac
   run_case "${cfg}"
   assert_rc 0 "T6 ${cfg} wrapper propagates stub rc"
-  if [ "${OUT}" = "${expected}" ]; then
+  if [ "${OUT%%$'\n'*}" = "${expected}" ]; then
     pass "T6 ${cfg}: RETRY_ON_NO_TEST_FAILURES exported as expected"
   else
     fail "T6 ${cfg}: expected '${expected}', got '${OUT}'"
+  fi
+done
+
+# T7 — the wrapper must receive the exact cell string; dropping either
+# variable from the construction (or swapping the axes) fails this case.
+for cfg in asan tsan release; do
+  run_case "${cfg}"
+  if grep -q "CELL=glibc-${cfg}-amd64" <<< "${OUT}"; then
+    pass "T7 ${cfg}: wrapper called with cell glibc-${cfg}-amd64"
+  else
+    fail "T7 ${cfg}: expected cell glibc-${cfg}-amd64 in stub output, got: ${OUT}"
+  fi
+done
+
+# T8 — unset SANITIZER_LC or GTEST_ARCH fails the invocation instead of
+# building a truncated cell name (dropping the guard would call the wrapper
+# with cell 'glibc-asan-' or 'glibc--amd64').
+for var in SANITIZER_LC GTEST_ARCH; do
+  run_case_missing_var "${var}"
+  assert_rc 1 "T8 unset ${var} exits 1"
+  if grep -q "SANITIZER_LC and GTEST_ARCH must both be set" "${STDERR_FILE}"; then
+    pass "T8 unset ${var}: stderr names the missing variables"
+  else
+    fail "T8 unset ${var}: stderr missing the guard message, got: $(cat "${STDERR_FILE}")"
   fi
 done
 

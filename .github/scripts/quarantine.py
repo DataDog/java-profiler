@@ -91,10 +91,9 @@ SYNTHETIC_CELLS = tuple(
 # only (the quarantine.txt gtest section documents the shape). Without these
 # in the universe, cells_overlap() fails closed for every gtest glob and two
 # genuinely disjoint entries (asan vs tsan) read as duplicates.
-_SYNTHETIC_GTEST_CONFIGS = ("debug", "release", "asan", "tsan")
 SYNTHETIC_CELLS += tuple(
     "glibc-{}-{}".format(config, arch)
-    for config in _SYNTHETIC_GTEST_CONFIGS
+    for config in _SYNTHETIC_CONFIGS
     for arch in KNOWN_ARCHES
 )
 
