@@ -3543,6 +3543,23 @@ TEST_F(LivenessTrackerMockJvmTest, ReleaseWithoutAJniEnvDoesNotCrash) {
     tracker->setSubsampleRatioForTest(1.0);
 }
 
+// A second start() without a release() in between replaces the tracker's
+// checker instead of adding another: processTraces() would otherwise count the
+// live traces twice, and release() would leave the first one registered.
+TEST_F(LivenessTrackerMockJvmTest, SecondStartKeepsOneCheckerOfTheTracker) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    Profiler *profiler = Profiler::instance();
+    const size_t checkers = profiler->livenessCheckerCountForTest();
+    ASSERT_GE(checkers, 1u);
+
+    Arguments args;
+    ASSERT_FALSE(args.parse("generations=true"));
+    ASSERT_FALSE(tracker->start(args));
+    tracker->setSubsampleRatioForTest(1.0);
+
+    EXPECT_EQ(checkers, profiler->livenessCheckerCountForTest());
+}
+
 // Each sweep resolves the class of at most RESOLVE_BUDGET_PER_SWEEP (256,
 // livenessTracker.cpp) survivors. Survivors keep their table order across
 // compaction, so the budget must go to entries that have no cached class id

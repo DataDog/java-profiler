@@ -348,7 +348,8 @@ void Profiler::unregisterThreadInEngines(int tid) {
   // start() may replace the engine slots concurrently. Either engine is safe
   // to call: unregisterThread() releases only the exiting thread's own slot.
   // A NULL slot is skipped: the persistent hook is normally installed by the
-  // first start(), but a refresh after init() may install it earlier.
+  // first start(), but any Libraries::updateSymbols() ->
+  // LibraryPatcher::patch_libraries() after init() may install it earlier.
   Engine *cpu = __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE);
   Engine *wall = __atomic_load_n(&_instance->_wall_engine, __ATOMIC_ACQUIRE);
   if (cpu != NULL) {
@@ -2771,11 +2772,8 @@ int Profiler::resetRecordingState() {
 
   // Normally a no-op. A table still allocated must go before Counters::reset(),
   // or freeing it later drives the CALLTRACE_STORAGE_* counters negative.
-  {
-    // release() requires put() excluded; normally a no-op here.
-    AllStripesLock stripes(this);
-    _call_trace_storage.release();
-  }
+  // No lockAll(): see releaseRecordingMemory().
+  _call_trace_storage.release();
 
   Counters::reset();
   // Counters::reset() zeroes the dictionary memory gauges, but the dictionaries

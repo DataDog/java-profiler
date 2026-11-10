@@ -291,9 +291,10 @@ void MallocHooker::patchSlot(CodeCache* cc, void** location, void* hook_fn, void
             break;
         }
     }
-    // Something else re-patched a slot this recording hooked: leave its wrapper
-    // in place, as restoreSlot() does, rather than hooking over it.
-    if (!rehook && existing >= _kept_count) {
+    // Something else re-patched a slot this recording hooked in the same image:
+    // leave its wrapper in place, as restoreSlot() does. A reloaded image has a
+    // fresh GOT and is hooked again.
+    if (!rehook && existing >= _kept_count && _entries[existing]._lib == cc) {
         return;
     }
     if (rehook) {

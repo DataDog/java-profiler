@@ -2207,15 +2207,17 @@ Error LivenessTracker::start(Arguments &args) {
   }
   // Also while liveness is off: reference chains still read leak tags.
   prepareLeakTagPool(VM::jvmti(), VM::jni());
+  // A start() without a release() in between must not leave its checker behind.
+  if (_liveness_checker_token != 0) {
+    Profiler::instance()->unregisterLivenessChecker(_liveness_checker_token);
+    _liveness_checker_token = 0;
+  }
   if (!_enabled || _table == nullptr) {
     // disabled, or liveness tracking unavailable (no table)
     return Error::OK;
   }
   
   // Self-register with the profiler for liveness checking
-  if (_liveness_checker_token != 0) {
-    Profiler::instance()->unregisterLivenessChecker(_liveness_checker_token);
-  }
   _liveness_checker_token = Profiler::instance()->registerLivenessChecker(
       [this](CallTraceIdSet& buffer) { this->getLiveTraceIds(buffer); });
   

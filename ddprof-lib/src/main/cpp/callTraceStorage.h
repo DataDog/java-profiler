@@ -137,11 +137,9 @@ public:
     void clear();
 #endif
 
-    // Frees all three tables and the processTraces() collections. Callers must
-    // exclude put(): every put() runs under a stripe lock that
-    // releaseRecordingMemory() takes (and bumps _session under) first. The guard
-    // drain is defense in depth, not ABA protection. Not concurrent with
-    // processTraces() or acquire().
+    // Frees all three tables and the processTraces() collections. A concurrent
+    // put() drops its trace (each table is unpublished, drained, deleted); not
+    // concurrent with processTraces() or acquire().
     void release();
 
     // Allocates the tables again after release(); no-op if allocated.
