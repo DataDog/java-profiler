@@ -58,9 +58,9 @@ try:
 except json.JSONDecodeError:
     pr_info = {}
 
-def parse_build_env(base_dir):
-    """Parse build.env files for failure reasons."""
-    failures = []
+def parse_build_env(base_dir, prefix, pattern):
+    """Parse build.env files for rows whose key carries the given prefix."""
+    entries = []
 
     # Look for build.env in base directory and subdirectories
     for root, dirs, files in os.walk(base_dir):
@@ -70,15 +70,15 @@ def parse_build_env(base_dir):
                 with open(env_path, 'r') as f:
                     for line in f:
                         line = line.strip()
-                        if line.startswith('REASON_') and '=' in line:
+                        if line.startswith(prefix) and '=' in line:
                             # Parse: REASON_profiler_tcmalloc_amd64Xjit=Memory usage is trending up
                             key, value = line.split('=', 1)
                             # Extract config details from key
-                            # Format: REASON_{config}_{allocator}_{arch}X{variant}
-                            match = re.match(r'REASON_([^_]+)_([^_]+)_(\w+)X(\w+)', key)
+                            # Format: {prefix}{config}_{allocator}_{arch}X{variant}
+                            match = re.match(pattern, key)
                             if match:
                                 config, allocator, arch, variant = match.groups()
-                                failures.append({
+                                entries.append({
                                     "config": config,
                                     "allocator": allocator,
                                     "arch": arch,
@@ -86,33 +86,41 @@ def parse_build_env(base_dir):
                                     "reason": value
                                 })
                             else:
-                                failures.append({
+                                entries.append({
                                     "config": "unknown",
                                     "reason": f"{key}={value}"
                                 })
             except Exception:
                 pass
 
-    return failures
+    return entries
+
+def config_label(entry):
+    """Render the config-allocator-arch-variant label of a parsed row."""
+    if entry.get("config") != "unknown":
+        return f"{entry['config']}-{entry['allocator']}-{entry['arch']}-{entry['variant']}"
+    return entry.get("reason", "Unknown")
 
 def analyze_results(base_dir):
     """Analyze reliability test results."""
-    failures = parse_build_env(base_dir)
+    # INCONCLUSIVE_ keys split exactly the way REASON_ keys do, so both kinds
+    # of row land in fields with the same label shape.
+    failures = parse_build_env(base_dir, 'REASON_', r'REASON_([^_]+)_([^_]+)_(\w+)X(\w+)')
+    inconclusive = parse_build_env(base_dir, 'INCONCLUSIVE_', r'INCONCLUSIVE_([^_]+)_([^_]+)_(\w+)X(\w+)')
 
     results = {
         "total_configs": expected_configs,
-        "passed": expected_configs - len(failures),
+        "passed": expected_configs - len(failures) - len(inconclusive),
         "failed": len(failures),
+        "inconclusive": len(inconclusive),
         "failures": [],
+        "inconclusive_configs": [],
         "memory_trend_warnings": []
     }
 
     # Format failures for display
     for f in failures:
-        if f.get("config") != "unknown":
-            label = f"{f['config']}-{f['allocator']}-{f['arch']}-{f['variant']}"
-        else:
-            label = f.get("reason", "Unknown")
+        label = config_label(f)
 
         results["failures"].append(f"{label}: {f.get('reason', 'Unknown')}")
 
@@ -120,15 +128,18 @@ def analyze_results(base_dir):
         if 'memory' in f.get('reason', '').lower() or 'trending' in f.get('reason', '').lower():
             results["memory_trend_warnings"].append(label)
 
+    for f in inconclusive:
+        results["inconclusive_configs"].append(config_label(f))
+
     return results
 
 # Analyze results
 summary = analyze_results(artifacts_dir)
 
 # Determine overall status
-if summary["failed"] == 0:
+if summary["failed"] == 0 and summary["inconclusive"] == 0:
     status = "passed"
-elif summary["passed"] == 0:
+elif summary["failed"] > 0 and summary["passed"] == 0 and summary["inconclusive"] == 0:
     status = "failed"
 else:
     status = "partial"
