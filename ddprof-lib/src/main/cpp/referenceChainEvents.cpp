@@ -529,7 +529,7 @@ bool ReferenceChainTracker::replaceResolvedChain(jlong source_tag, ReferenceChai
   }
   it->second.event = std::move(event);
   it->second.source_tag = source_tag;
-  TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations rebuilt "
+  TEST_LOG("ReferenceChainTracker::replaceResolvedChain rebuilt "
            "source_tag=%lld depth=%u",
            (long long)source_tag, it->second.event._depth);
   return true;
@@ -607,21 +607,21 @@ void ReferenceChainTracker::deferResolvedChainInvalidation(
   if (!was_cached) {
     return;
   }
-  // Cache keys are frontier tags (>= 0), and the kind is encoded in-band (EVICT = tag,
-  // REBUILD = ~tag), which is unambiguous only for non-negative tags: EVICT(-t) would read as
-  // REBUILD(t - 1) and REBUILD(-t) as EVICT(t - 1), acting on another tag's cached chain. A
-  // negative tag is therefore never queued - a defined policy in every build type, not an assert.
-  if (source_tag < 0) {
-    TEST_LOG("ReferenceChainTracker::deferResolvedChainInvalidation ignored negative "
-             "source_tag=%lld",
-             (long long)source_tag);
-    return;
-  }
   queueChainInvalidation(source_tag, kind);
 }
 
 void ReferenceChainTracker::queueChainInvalidation(jlong source_tag,
                                                     ChainInvalidationKind kind) {
+  // Cache keys are frontier tags (>= 0), and the kind is encoded in-band (EVICT = tag,
+  // REBUILD = ~tag), which is unambiguous only for non-negative tags: EVICT(-t) would read as
+  // REBUILD(t - 1) and REBUILD(-t) as EVICT(t - 1), acting on another tag's cached chain. A
+  // negative tag is therefore never queued - a defined policy in every build type, not an assert.
+  if (source_tag < 0) {
+    TEST_LOG("ReferenceChainTracker::queueChainInvalidation ignored negative "
+             "source_tag=%lld",
+             (long long)source_tag);
+    return;
+  }
   const jlong evict = encodePendingChainInvalidation(source_tag, ChainInvalidationKind::EVICT);
   const jlong rebuild = encodePendingChainInvalidation(source_tag, ChainInvalidationKind::REBUILD);
 
@@ -639,17 +639,22 @@ void ReferenceChainTracker::queueChainInvalidation(jlong source_tag,
       return;
     }
   }
-  // Distinct pending tags stay <= MAX_PENDING_CHAIN_INVALIDATIONS (2 * MAX_RESOLVED_CHAINS):
-  // eligible tags come from one pre-traversal snapshot (<= MAX_RESOLVED_CHAINS; cache inserts are
-  // serialized with traversals on the engine thread and dumps only remove keys), and REBUILD
-  // entries left pending - by the dump drain, or requeued by applyPendingChainInvalidations() over
-  // its per-poll cap - are a subset of the cache at the last apply (another <= MAX_RESOLVED_CHAINS).
-  assert((int)_pending_chain_invalidations.size() <
-         MAX_PENDING_CHAIN_INVALIDATIONS);
+  // The buffer is hard-capped: a push over MAX_PENDING_CHAIN_INVALIDATIONS is dropped (logged
+  // below). Producers are bounded per drain interval - snapshot-filtered heap-callback deferrals
+  // and correlation rebuilds (each a subset of the cache, <= MAX_RESOLVED_CHAINS) plus the apply
+  // requeue (a subset of the cache at the last apply, another <= MAX_RESOLVED_CHAINS) - but the
+  // three sets are sampled at different times, so the sum is not a strict provenance bound: the
+  // cap, not arithmetic, is what keeps the buffer bounded.
   if ((int)_pending_chain_invalidations.size() <
       MAX_PENDING_CHAIN_INVALIDATIONS) {
     _pending_chain_invalidations.push_back(
         kind == ChainInvalidationKind::REBUILD ? rebuild : evict);
+  } else {
+    // A dropped EVICT leaves its chain to the next dump's dead-owner eviction; a dropped REBUILD
+    // leaves the stale cached identity until the next path change or correlation re-queues it.
+    TEST_LOG("ReferenceChainTracker::queueChainInvalidation dropped source_tag=%lld "
+             "(buffer full)",
+             (long long)source_tag);
   }
   _pending_chain_invalidations_lock.unlock();
 }

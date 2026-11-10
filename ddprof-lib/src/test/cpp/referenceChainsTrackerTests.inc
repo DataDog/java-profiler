@@ -632,6 +632,13 @@ TEST_F(ResolvedChainCacheTest, DeferredInvalidationNeverQueuesNegativeTag) {
         << "negative REBUILD aliased tag 1's EVICT";
     EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(0));
     EXPECT_EQ(2u, ReferenceChainsTestAccessor::resolvedChainCount());
+
+    // Tag 0 is a legal frontier tag (the encoding is unambiguous from 0 up): a deferral of the
+    // boundary value must still be queued, not silently dropped by the negative-tag guard.
+    snapshot.assign(1, 0);
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(0, snapshot, true);
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount())
+        << "tag 0 is a legal cache key and must survive the negative-tag guard";
 }
 
 TEST_F(ResolvedChainCacheTest, DeferredInvalidationIsBoundedByCacheAndKeepsCapacity) {
