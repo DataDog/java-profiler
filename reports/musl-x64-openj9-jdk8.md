@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk8
 
 ## musl-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-10 06:47:23 EST
+**Date:** 2026-11-10 06:59:43 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 191 |
-| Sample Rate | 3.18/sec |
-| Health Score | 199% |
-| Threads | 6 |
+| CPU Samples | 171 |
+| Sample Rate | 2.85/sec |
+| Health Score | 178% |
+| Threads | 5 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 237 |
-| Sample Rate | 3.95/sec |
-| Health Score | 247% |
-| Threads | 8 |
+| CPU Samples | 419 |
+| Sample Rate | 6.98/sec |
+| Health Score | 436% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1794310962 96
-1794310967 96
-1794310972 96
-1794310977 96
-1794310982 96
-1794310987 96
-1794310992 96
-1794310997 96
-1794311002 96
-1794311008 96
-1794311013 96
-1794311018 96
-1794311023 96
-1794311028 96
-1794311033 96
-1794311038 96
-1794311043 96
-1794311048 96
-1794311053 96
-1794311058 96
+1794311721 96
+1794311726 96
+1794311731 96
+1794311736 96
+1794311741 96
+1794311746 96
+1794311751 96
+1794311756 96
+1794311761 96
+1794311766 96
+1794311771 96
+1794311776 96
+1794311781 96
+1794311786 96
+1794311791 96
+1794311796 96
+1794311801 96
+1794311806 96
+1794311811 96
+1794311816 96
 ```
 </details>
 
