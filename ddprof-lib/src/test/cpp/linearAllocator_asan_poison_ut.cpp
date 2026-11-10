@@ -123,3 +123,12 @@ TEST_F(LinearAllocatorAsanPoisonTest, ReuseAfterClearIsUnpoisoned) {
 }
 
 #endif // ASAN_ENABLED
+
+#ifndef ASAN_ENABLED
+// The TU must reference the gtest runtime in every configuration: GNU ld
+// resolves libgtest.a members left-to-right, so an empty TU leaves
+// gtest_main.o's own testing:: references undefined.
+TEST(LinearAllocatorAsanPoison, RequiresAsanBuild) {
+  GTEST_SKIP() << "granule rounding is compiled only in ASan builds";
+}
+#endif
