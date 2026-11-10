@@ -167,6 +167,12 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     # Resolved once, before the JVM launch, so the probe jcmd comes from
     # the JDK that actually runs the JVM.
     JAVA_BIN=$(command -v java)
+    # A failed sdk install leaves JAVA_BIN empty; a loud infra failure is
+    # better than launching a bogus JVM and deriving jcmd from a blank path.
+    if [ -z "$JAVA_BIN" ] || [ ! -x "$JAVA_BIN" ]; then
+        echo "FAIL:java not found" >&2
+        exit 1
+    fi
 
     DDPROF_JAR="/root/.m2/repository/com/datadoghq/ddprof/${CURRENT_VERSION}/ddprof-${CURRENT_VERSION}.jar"
     # Capture mvn's actual output (not just presence/absence of the jar) so a
