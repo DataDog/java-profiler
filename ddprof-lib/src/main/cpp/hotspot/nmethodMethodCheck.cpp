@@ -21,6 +21,13 @@ struct ReadContext {
     jlong reads[MAX_READS * 3];
 };
 
+// Static storage: JVMTI's disable does not join a post that entered before
+// it, so a stalled poster can still write after readsForTest returns; every
+// such write lands in this buffer at a bounded slot instead of dead stack.
+// Single caller (the test child's main thread); concurrent readsForTest
+// calls are not supported.
+static ReadContext readContext;
+
 // Disposes the JVMTI environment on every exit path, including the early
 // returns after a failed JVMTI call.
 class JvmtiEnvOwner {
@@ -48,16 +55,22 @@ static void throwIllegalState(JNIEnv* jni, const char* what) {
 static void JNICALL onCompiledMethodLoad(jvmtiEnv* jvmti, jmethodID method, jint code_size,
                                          const void* code_addr, jint map_length,
                                          const jvmtiAddrLocationMap* map, const void* compile_info) {
-    ReadContext* ctx = nullptr;
-    if (jvmti->GetEnvironmentLocalStorage(reinterpret_cast<void**>(&ctx)) != JVMTI_ERROR_NONE ||
-        ctx == nullptr || method != ctx->target) {
+    // Never touches the env after entry: a post that survives past the
+    // env's disposal must not call back into freed JVMTI state.
+    ReadContext* ctx = &readContext;
+    if (method != ctx->target) {
         return;
     }
 
     // While the event is enabled, the ServiceThread can also post to this env
     // for a compile on another thread; the atomic claim with rollback keeps
-    // concurrent posters on distinct, bounded slots.
+    // concurrent posters on distinct, bounded slots. A reset racing an
+    // in-flight claim can drive count negative: such a slot is never written
+    // and must not be rolled back (that would push count lower still).
     int slot = __atomic_fetch_add(&ctx->count, 1, __ATOMIC_RELAXED);
+    if (slot < 0) {
+        return;
+    }
     if (slot >= MAX_READS) {
         __atomic_fetch_sub(&ctx->count, 1, __ATOMIC_RELAXED);
         return;
@@ -121,14 +134,11 @@ jlongArray NMethodMethodCheck::readsForTest(JNIEnv* jni, jobject method) {
         return nullptr;
     }
 
-    ReadContext ctx;
-    ctx.target = target;
-    ctx.count = 0;
-    ctx.done = 0;
-    if (jvmti->SetEnvironmentLocalStorage(&ctx) != JVMTI_ERROR_NONE) {
-        throwIllegalState(jni, "compiledMethodReadsForTest: SetEnvironmentLocalStorage failed");
-        return nullptr;
-    }
+    __atomic_store_n(&readContext.target, target, __ATOMIC_RELAXED);
+    // Atomic stores: a stalled poster from an earlier call can still be
+    // running; a plain reset racing its RMW on the same field is UB.
+    __atomic_store_n(&readContext.count, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&readContext.done, 0, __ATOMIC_RELAXED);
 
     // HotSpot queues these events only while some env has them enabled, and
     // posts them per env: enabled here only around GenerateEvents and disabled
@@ -153,10 +163,10 @@ jlongArray NMethodMethodCheck::readsForTest(JNIEnv* jni, jobject method) {
     // callback can still be claiming a slot, and transient claims exceed
     // MAX_READS until their rollback lands. Wait for the claim and write
     // phases to drain before reading count and the entries it bounds.
-    int count = __atomic_load_n(&ctx.count, __ATOMIC_ACQUIRE);
+    int count = __atomic_load_n(&readContext.count, __ATOMIC_ACQUIRE);
     for (int spin = 0; spin < 1000000 &&
-                    __atomic_load_n(&ctx.done, __ATOMIC_ACQUIRE) != count; spin++) {
-        count = __atomic_load_n(&ctx.count, __ATOMIC_ACQUIRE);
+                    __atomic_load_n(&readContext.done, __ATOMIC_ACQUIRE) < count; spin++) {
+        count = __atomic_load_n(&readContext.count, __ATOMIC_ACQUIRE);
     }
     // Only reachable if a post wedged mid-callback; over-capacity slots
     // were never written, so copy at most the drained prefix.
@@ -171,7 +181,7 @@ jlongArray NMethodMethodCheck::readsForTest(JNIEnv* jni, jobject method) {
     jlong targetValue = reinterpret_cast<jlong>(target);
     jni->SetLongArrayRegion(result, 0, 1, &targetValue);
     if (count > 0) {
-        jni->SetLongArrayRegion(result, 1, count * 3, ctx.reads);
+        jni->SetLongArrayRegion(result, 1, count * 3, readContext.reads);
     }
     return result;
 }
