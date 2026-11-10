@@ -312,6 +312,12 @@ public:
                     : ReferenceChainTracker::ChainInvalidationKind::EVICT);
     }
 
+    // The leak-tag binding step of tagLeakInstances() (correlation of a frontier entry).
+    static bool correlateAdmittedLeakTag(jlong frontier_tag, jlong leak_tag, u32 klass_id) {
+        return ReferenceChainTracker::instance()->correlateAdmittedLeakTag(
+            frontier_tag, leak_tag, klass_id);
+    }
+
     static size_t pendingChainInvalidationCount() {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         t->_pending_chain_invalidations_lock.lock();

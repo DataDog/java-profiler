@@ -1168,8 +1168,9 @@ private:
   // What a deferred invalidation does to the cached chain.
   // EVICT: the source was rejected (noise eviction) - the cached chain is erased, at dump time or
   // on the next poll, whichever drains first.
-  // REBUILD: the source is still live and its frontier entry intact, only its path changed
-  // (improveChain()/reparentToDurableRoot()/root-kind upgrade). Never erased at dump time: only
+  // REBUILD: the source is still live and its frontier entry intact, but the cached chain is stale:
+  // its path changed (improveChain()/reparentToDurableRoot()/root-kind upgrade) or the frontier
+  // entry just got its leak tag (correlateAdmittedLeakTag()). Never erased at dump time: only
   // the BFS-thread poll applies it, rebuilding the chain from the frontier and keeping the old one
   // if the rebuild fails (restartSearch()'s keep-across-restart contract). EVICT wins over
   // REBUILD for the same pending tag.
@@ -1192,6 +1193,11 @@ private:
                                       const jlong *resolved_chain_tags,
                                       int resolved_chain_tag_count,
                                       ChainInvalidationKind kind);
+
+  // Dedups and pushes one invalidation onto the pending queue (EVICT wins over a pending REBUILD
+  // for the same tag; a full buffer drops the entry). Takes only _pending_chain_invalidations_lock;
+  // never allocates.
+  void queueChainInvalidation(jlong source_tag, ChainInvalidationKind kind);
 
   // Dump-path drain: applies only the queued EVICT invalidations and leaves REBUILD entries
   // pending for the BFS thread (see ChainInvalidationKind). May overlap a traversal; the

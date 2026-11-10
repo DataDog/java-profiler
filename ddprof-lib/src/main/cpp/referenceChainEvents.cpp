@@ -617,6 +617,11 @@ void ReferenceChainTracker::deferResolvedChainInvalidation(
              (long long)source_tag);
     return;
   }
+  queueChainInvalidation(source_tag, kind);
+}
+
+void ReferenceChainTracker::queueChainInvalidation(jlong source_tag,
+                                                    ChainInvalidationKind kind) {
   const jlong evict = encodePendingChainInvalidation(source_tag, ChainInvalidationKind::EVICT);
   const jlong rebuild = encodePendingChainInvalidation(source_tag, ChainInvalidationKind::REBUILD);
 
@@ -969,6 +974,18 @@ bool ReferenceChainTracker::correlateAdmittedLeakTag(jlong frontier_tag,
            (long long)entry.parent_tag);
   recordDiscoveredInstance(klass_id, frontier_tag, true,
                            CacheInvalidationMode::SYNCHRONOUS, nullptr, 0);
+  // A chain cached for this frontier tag was built while entry.leak_tag was still 0, so its stored
+  // _target_tag is the frontier tag - no allocation-sample correlation. A REBUILD is bounded
+  // (deferred to the next poll; this call runs under LivenessTracker's shared _table_lock, so a
+  // synchronous heap walk here is not an option) and makes the next rebuild re-bind the cached
+  // chain to the leak tag; until then dumps keep re-emitting the frontier-tagged event.
+  {
+    ExclusiveLockGuard guard(&_resolved_chains_lock);
+    if (_resolved_chains.find(frontier_tag) == _resolved_chains.end()) {
+      return true;
+    }
+  }
+  queueChainInvalidation(frontier_tag, ChainInvalidationKind::REBUILD);
   return true;
 }
 

@@ -1800,6 +1800,99 @@ static bool cachePlainChainForTest(jlong tag, u32 depth, u64 search_ns) {
     return ReferenceChainsTestAccessor::cacheChain(tag, std::move(event), tag, search_ns);
 }
 
+// Correlating a leak tag to a frontier entry whose chain is already cached (built while the entry
+// was uncorrelated) must queue a REBUILD: the cached event's _target_tag is the frontier tag, and
+// no refresh path revisits a current-generation cache entry. Until the next poll's rebuild
+// re-binds the target, dumps keep emitting the frontier-tagged event - one poll of bounded
+// staleness, then the leak tag.
+TEST_F(ReferenceChainsBfsTest, CorrelationQueuesRebuildForUncorrelatedCachedChain) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const u64 kSearchNs = 4243;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    const jlong kLeakTag = ReferenceChainsTestAccessor::leakTagBase() + 11;
+    const u32 kStamp = LivenessTracker::instance()->leakTagIncarnation(kLeakTag);
+
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 105, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainEvent resolved;
+    ASSERT_TRUE(tracker->buildChainEvent(&mock_jvmti, &mock_jni, 105, &resolved));
+    ASSERT_EQ((u64)105, resolved._target_tag) << "uncorrelated chain must target the frontier tag";
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(105, std::move(resolved), 105,
+                                                         kSearchNs));
+
+    // Correlation binds the leak tag to the frontier entry and queues the rebuild.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::correlateAdmittedLeakTag(105, kLeakTag, 42));
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    // The dump before the rebuild still emits the stale frontier-tagged chain (one-poll window).
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(1u, dump.size());
+    EXPECT_EQ((u64)105, dump[0]._target_tag);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(105));
+
+    // The BFS-thread poll applies the REBUILD: the rebuilt chain re-binds to the leak tag.
+    pollOnceForTest(tracker, &mock_jvmti, &mock_jni);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    ASSERT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(105));
+    dump.clear();
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(1u, dump.size());
+    EXPECT_EQ((u64)kLeakTag, dump[0]._target_tag)
+        << "rebuild must re-bind the cached chain to the leak tag";
+    EXPECT_EQ(kStamp, dump[0]._leak_tag_incarnation);
+
+    tracker->stop();
+}
+
+// Correlation must not queue anything when no chain is cached for the frontier tag (the next
+// build reads the correlated entry directly), and a pending EVICT must keep winning over the
+// correlation REBUILD (the source was rejected - erase, don't rebuild).
+TEST_F(ReferenceChainsBfsTest, CorrelationRebuildYieldsToEvictAndSkipsUncached) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const u64 kSearchNs = 4244;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    const jlong kLeakTag = ReferenceChainsTestAccessor::leakTagBase() + 12;
+
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 106, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    // Uncached tag: correlation is a no-op for the pending queue.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::correlateAdmittedLeakTag(106, kLeakTag, 42));
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    // Cached tag with a pending EVICT: the EVICT wins, correlation adds nothing.
+    const u64 kEvictNs = 4245;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kEvictNs);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 107, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ASSERT_TRUE(cachePlainChainForTest(107, 0, kEvictNs));
+    std::vector<jlong> snapshot = ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(107, snapshot);  // EVICT
+    ASSERT_TRUE(ReferenceChainsTestAccessor::correlateAdmittedLeakTag(107, kLeakTag, 42));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount())
+        << "correlation REBUILD must not displace a pending EVICT";
+
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(107))
+        << "the EVICT must still erase the rejected chain";
+
+    tracker->stop();
+}
+
 // Per-poll rebuild budget: one poll performs at most MAX_CHAIN_REBUILDS_PER_POLL buildChainEvent()
 // heap walks; eligible REBUILD entries over the budget stay pending for later polls instead of being
 // dropped, and neither the requeue nor the swap reallocates the reserved buffers.
