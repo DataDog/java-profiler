@@ -20,6 +20,7 @@
 #include "nativeMem.h"
 #include "os.h"
 #include "common.h"
+#include <cstdint>
 #include <stdio.h>
 #ifdef TSAN_ENABLED
   #include <sys/mman.h>
@@ -201,6 +202,9 @@ void *LinearAllocator::alloc(size_t size) {
   // the unpoison) to the granule; ASan builds only, production layout is
   // unchanged. sizeof(Chunk) is 8-aligned and every bump is rounded, so all
   // offsets stay 8-aligned and every poisoned range is granule-aligned.
+  if (size > SIZE_MAX - 7) {
+    return nullptr;  // the rounded bump would wrap; no chunk can hold it
+  }
   size = (size + 7) & ~(size_t)7;
   #endif
 

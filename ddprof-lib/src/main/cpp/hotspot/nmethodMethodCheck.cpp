@@ -13,7 +13,11 @@ static constexpr int MAX_READS = 16;
 
 struct ReadContext {
     jmethodID target;
+    // Slots are claimed with a fetch_add on count; done counts the claims
+    // that wrote a triple (published with release, so the entries are
+    // visible to an acquire reader once done catches up with count).
     int count;
+    int done;
     jlong reads[MAX_READS * 3];
 };
 
@@ -72,6 +76,7 @@ static void JNICALL onCompiledMethodLoad(jvmtiEnv* jvmti, jmethodID method, jint
     ctx->reads[slot * 3] = reinterpret_cast<jlong>(code_addr);
     ctx->reads[slot * 3 + 1] = status;
     ctx->reads[slot * 3 + 2] = read;
+    __atomic_fetch_add(&ctx->done, 1, __ATOMIC_RELEASE);
 }
 
 // For CI only: NMethodMethodJvmtiValidationTest compares this with JVMTI's
@@ -119,6 +124,7 @@ jlongArray NMethodMethodCheck::readsForTest(JNIEnv* jni, jobject method) {
     ReadContext ctx;
     ctx.target = target;
     ctx.count = 0;
+    ctx.done = 0;
     if (jvmti->SetEnvironmentLocalStorage(&ctx) != JVMTI_ERROR_NONE) {
         throwIllegalState(jni, "compiledMethodReadsForTest: SetEnvironmentLocalStorage failed");
         return nullptr;
@@ -143,14 +149,29 @@ jlongArray NMethodMethodCheck::readsForTest(JNIEnv* jni, jobject method) {
         return nullptr;
     }
 
-    jlongArray result = jni->NewLongArray(1 + ctx.count * 3);
+    // JVMTI's disable does not join a post that entered before it: the
+    // callback can still be claiming a slot, and transient claims exceed
+    // MAX_READS until their rollback lands. Wait for the claim and write
+    // phases to drain before reading count and the entries it bounds.
+    int count = __atomic_load_n(&ctx.count, __ATOMIC_ACQUIRE);
+    for (int spin = 0; spin < 1000000 &&
+                    __atomic_load_n(&ctx.done, __ATOMIC_ACQUIRE) != count; spin++) {
+        count = __atomic_load_n(&ctx.count, __ATOMIC_ACQUIRE);
+    }
+    // Only reachable if a post wedged mid-callback; over-capacity slots
+    // were never written, so copy at most the drained prefix.
+    if (count < 0 || count > MAX_READS) {
+        count = count < 0 ? 0 : MAX_READS;
+    }
+
+    jlongArray result = jni->NewLongArray(1 + count * 3);
     if (result == nullptr) {
         return nullptr;  // pending OutOfMemoryError
     }
     jlong targetValue = reinterpret_cast<jlong>(target);
     jni->SetLongArrayRegion(result, 0, 1, &targetValue);
-    if (ctx.count > 0) {
-        jni->SetLongArrayRegion(result, 1, ctx.count * 3, ctx.reads);
+    if (count > 0) {
+        jni->SetLongArrayRegion(result, 1, count * 3, ctx.reads);
     }
     return result;
 }
