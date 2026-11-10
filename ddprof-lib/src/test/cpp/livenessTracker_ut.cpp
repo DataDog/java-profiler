@@ -3560,6 +3560,26 @@ TEST_F(LivenessTrackerMockJvmTest, SecondStartKeepsOneCheckerOfTheTracker) {
     EXPECT_EQ(checkers, profiler->livenessCheckerCountForTest());
 }
 
+// A start() with liveness off, after an enabled one and without a release(),
+// takes the early return in start(): it must still drop the earlier checker.
+TEST_F(LivenessTrackerMockJvmTest, LivenessOffStartDropsTheEarlierChecker) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    Profiler *profiler = Profiler::instance();
+    const size_t checkers = profiler->livenessCheckerCountForTest();
+    ASSERT_GE(checkers, 1u);
+
+    Arguments off;
+    ASSERT_FALSE(off.parse("generations=false"));
+    ASSERT_FALSE(tracker->start(off));
+    EXPECT_EQ(checkers - 1, profiler->livenessCheckerCountForTest());
+
+    // Leave the tracker started with liveness on, as the fixture's TearDown expects.
+    Arguments on;
+    ASSERT_FALSE(on.parse("generations=true"));
+    ASSERT_FALSE(tracker->start(on));
+    tracker->setSubsampleRatioForTest(1.0);
+}
+
 // Each sweep resolves the class of at most RESOLVE_BUDGET_PER_SWEEP (256,
 // livenessTracker.cpp) survivors. Survivors keep their table order across
 // compaction, so the budget must go to entries that have no cached class id

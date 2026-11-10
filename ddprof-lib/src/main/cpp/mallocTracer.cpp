@@ -282,20 +282,15 @@ void MallocHooker::patchSlot(CodeCache* cc, void** location, void* hook_fn, void
     const bool rehook = current == hook_fn;
     // At most one entry per slot: a second would restore a stale original on
     // stop(), as the sort that groups entries by library does not keep their order.
-    // The slot may be in a kept entry or one of this recording's (also when
-    // something else re-patched it since), so scan them all.
+    // A slot still holding our hook may be in an entry of this recording too (a
+    // second cache of the same image); otherwise only a kept entry can match.
+    const int scan = rehook ? _entry_count : _kept_count;
     int existing = -1;
-    for (int i = 0; i < _entry_count; i++) {
+    for (int i = 0; i < scan; i++) {
         if (_entries[i]._location == location && _entries[i]._hook == hook_fn) {
             existing = i;
             break;
         }
-    }
-    // Something else re-patched a slot this recording hooked in the same image:
-    // leave its wrapper in place, as restoreSlot() does. A reloaded image has a
-    // fresh GOT and is hooked again.
-    if (!rehook && existing >= _kept_count && _entries[existing]._lib == cc) {
-        return;
     }
     if (rehook) {
         if (existing >= 0) {

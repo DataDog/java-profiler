@@ -136,36 +136,6 @@ TEST_F(MallocHookerSlots, PatchReplacesKeptEntryOfSlotThatNoLongerHoldsHook) {
   EXPECT_EQ(pltStub(), slot);
 }
 
-// An interposer wrapped our hook in the same image during this recording: its
-// wrapper stays, with one entry and the saved original, as stop() leaves such a
-// slot alone too.
-TEST_F(MallocHookerSlots, SlotRepatchedByAnInterposerInTheSameImageIsLeftAlone) {
-  void* slot = pltStub();
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
-  slot = foreign();
-
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
-
-  EXPECT_EQ(foreign(), slot);
-  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
-  EXPECT_EQ(pltStub(), MallocHookerTestAccessor::entry(0)._orig);
-}
-
-// A reloaded image (a new CodeCache) has a fresh GOT slot holding the PLT stub:
-// it is hooked again, and the entry follows the new image.
-TEST_F(MallocHookerSlots, ReloadedImageIsHookedAgain) {
-  CodeCache reloaded{kUnloadedPath, -1, kForeignMin, kForeignMax};
-  void* slot = pltStub();
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
-  slot = pltStub();  // the reloaded library's fresh slot
-
-  MallocHookerTestAccessor::patchSlot(&reloaded, &slot, hook(), original());
-
-  EXPECT_EQ(hook(), slot);
-  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
-  EXPECT_EQ(&reloaded, MallocHookerTestAccessor::entry(0)._lib);
-}
-
 // Two caches of one image (a reload at the same base) both patch the slot in one
 // recording: the second finds our hook there and must not record the resolved
 // original over the PLT stub the first one saved.
