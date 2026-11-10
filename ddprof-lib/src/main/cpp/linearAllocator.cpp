@@ -216,6 +216,14 @@ void *LinearAllocator::alloc(size_t size) {
     return nullptr;
   }
 
+  // The fast-path check adds size to offs: a huge size would wrap the sum
+  // past SIZE_MAX, make the check pass, and hand out a pointer past the
+  // chunk's end. offs never exceeds _chunk_size, so rejecting any size above
+  // the chunk capacity keeps offs + size far below SIZE_MAX.
+  if (size > (size_t)_chunk_size) {
+    return nullptr;
+  }
+
   do {
     // Fast path: bump a pointer with CAS
     for (size_t offs = __atomic_load_n(&chunk->offs, __ATOMIC_ACQUIRE);

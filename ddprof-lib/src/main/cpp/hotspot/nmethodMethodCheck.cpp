@@ -224,7 +224,13 @@ jlongArray NMethodMethodCheck::readsForTest(JNIEnv* jni, jobject method) {
 
     jlongArray result = jni->NewLongArray(1 + claimed * 3);
     if (result == nullptr) {
-        return nullptr;  // pending OutOfMemoryError
+        // A null here means NewLongArray failed (pending OutOfMemoryError), not
+        // "seam unavailable": the Java caller's null handling treats null as a
+        // permanent unsupported case, so the transient OOM must surface as an
+        // exception instead, or the validation test would silently skip.
+        jni->ExceptionClear();
+        throwIllegalState(jni, "compiledMethodReadsForTest: NewLongArray failed");
+        return nullptr;
     }
     jlong targetValue = reinterpret_cast<jlong>(target);
     jni->SetLongArrayRegion(result, 0, 1, &targetValue);
