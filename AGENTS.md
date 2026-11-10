@@ -133,7 +133,8 @@ Two-JDK pattern: `JAVA_HOME` (build, JDK 17+, Gradle runs on 21 LTS) runs Gradle
 `--release 8`.
 
 The Spotless convention configures Java formatting in either Java-plugin application
-order; formatter runtime and Java bytecode target are independent (see
+order; formatter runtime and Java bytecode target are independent. CI's `build-logic-tests`
+job runs the convention tests on JDK 21 independently of formatting checks (see
 [BuildSystemGuide.md](doc/building/BuildSystemGuide.md#java-formatting)).
 
 Details and troubleshooting:

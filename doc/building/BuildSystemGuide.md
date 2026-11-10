@@ -36,6 +36,10 @@ Set `JAVA_HOME` to the build JDK to qualify; use `--rerun-tasks` when switching 
 The fixtures verify the test worker and nested build JVMs and compile formatted Java
 to class-file version 52 using `com.datadoghq.java-conventions`.
 
+CI's `build-logic-tests` job in `.github/workflows/ci.yml` runs `:conventions:test` on
+Ubuntu 22.04 with JDK 21, independently of `check-formatting`. It retains the duplicate-push
+guard and uploads root build logs and included-build test XML only on failure.
+
 ## Key Files and Their Purposes
 
 ```
