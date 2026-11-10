@@ -23,6 +23,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <vector>
+#include <memory>
 #include <elf.h>
 #include <chrono>
 #include <thread>
@@ -91,6 +92,8 @@ class ElfReladyn : public ::testing::Test {
         ASSERT_THAT(handle, ::testing::NotNull());
 
         _libs = Libraries::instance();
+        // Local-array parses also fill the global inode cache; rebuild the singleton independently.
+        Symbols::clearParsingCaches();
         _libs->updateSymbols(false);
         _libreladyn = _libs->findLibraryByName("libreladyn");
         ASSERT_THAT(_libreladyn, ::testing::NotNull());
@@ -101,8 +104,6 @@ class ElfReladyn : public ::testing::Test {
         if (_libs == nullptr) {
             return;  // SetUp skipped (missing resource): nothing was parsed
         }
-        // parseLibraries skips libraries already in _parsed_inodes, so the
-        // next SetUp can only reparse after clearing them.
         Symbols::clearParsingCaches();
         _libs->freeNativeLibsForTest();
     }
@@ -115,6 +116,31 @@ class ElfReladyn : public ::testing::Test {
 TEST_F(ElfReladyn, resolveFromRela_plt) {
     void* sym = libreladyn()->findImport(im_pthread_create);
     ASSERT_THAT(sym, ::testing::NotNull());
+}
+
+TEST_F(ElfReladyn, reinitializeAfterLocalLibraryParse) {
+    const u64 reladyn_file_id = libreladyn()->fileId();
+    TearDown();
+
+    {
+        CodeCacheArray local_libraries;
+        auto free_libraries = [](CodeCacheArray* libs) { libs->freeForTest(); };
+        std::unique_ptr<CodeCacheArray, decltype(free_libraries)> cleanup(&local_libraries, free_libraries);
+        Symbols::parseLibraries(&local_libraries, false);
+
+        bool parsed_reladyn = false;
+        for (int i = 0; i < local_libraries.count(); i++) {
+            CodeCache* lib = local_libraries[i];
+            if (lib != nullptr && lib->fileId() == reladyn_file_id) {
+                parsed_reladyn = true;
+                break;
+            }
+        }
+        ASSERT_TRUE(parsed_reladyn);
+    }
+
+    ASSERT_NO_FATAL_FAILURE(SetUp());
+    ASSERT_THAT(libreladyn()->findImport(im_pthread_create), ::testing::NotNull());
 }
 
 TEST_F(ElfReladyn, resolveFromRela_dyn_R_GLOB_DAT) {
