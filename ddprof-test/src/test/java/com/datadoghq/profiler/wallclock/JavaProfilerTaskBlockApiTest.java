@@ -254,8 +254,9 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     TaskBlockAssertions.assertNoCorrelationId(events);
   }
 
+  /** Dump rotation preserves the full interval until its single exit-time TaskBlock. */
   @Test
-  public void liveDumpPreservesTaskBlockAfterEntrySample() throws Exception {
+  public void liveDumpPreservesCompletedTaskBlockInterval() throws Exception {
     String workerName = "taskblock-live-dump";
     CountDownLatch armed = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
@@ -290,10 +291,8 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
             java.nio.file.Paths.get("/tmp/recordings"), "taskblock-live-dump-", ".jfr");
     try {
       dump(snapshot);
-      JfrEvents prefix = verifyEvents(snapshot, "datadog.TaskBlock", true);
-      assertEquals(1, TaskBlockAssertions.countEventsForThread(prefix, workerName));
-      TaskBlockAssertions.assertContainsStackTrace(prefix);
-      TaskBlockAssertions.assertNoCorrelationId(prefix);
+      JfrEvents prefix = verifyEvents(snapshot, "datadog.TaskBlock", false);
+      assertEquals(0, TaskBlockAssertions.countEventsForThread(prefix, workerName));
 
       Thread.sleep(150L);
       release.countDown();
@@ -308,20 +307,19 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
       TaskBlockAssertions.assertContainsStackTrace(suffix);
       TaskBlockAssertions.assertNoCorrelationId(suffix);
 
-      double segmentedDuration =
-          TaskBlockAssertions.durationNanosForThread(prefix, workerName)
-              + TaskBlockAssertions.durationNanosForThread(suffix, workerName);
+      TaskBlockAssertions.assertContains(suffix, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
+      double completedDuration = TaskBlockAssertions.durationNanosForThread(suffix, workerName);
       long logicalDuration = logicalEnd.get() - logicalStart.get();
       assertTrue(
-          segmentedDuration >= logicalDuration * 0.75,
-          "rotation lost TaskBlock duration: segmented="
-              + segmentedDuration
+          completedDuration >= logicalDuration * 0.75,
+          "rotation lost TaskBlock duration: completed="
+              + completedDuration
               + ", logical="
               + logicalDuration);
       assertTrue(
-          segmentedDuration <= logicalDuration * 1.25,
-          "rotation duplicated TaskBlock duration: segmented="
-              + segmentedDuration
+          completedDuration <= logicalDuration * 1.25,
+          "rotation duplicated TaskBlock duration: completed="
+              + completedDuration
               + ", logical="
               + logicalDuration);
     } finally {
