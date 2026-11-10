@@ -39,6 +39,12 @@ analyses. Procedures run at a known moment go in skills (`.agents/skills/`, whic
 load fresh when invoked); enforcement goes in scripts, hooks and CI — text here is
 advisory and cannot gate anything. Rules stay inline even when needed only once per
 task if that moment is end-of-task and no skill carries them.
+This layering and the work-tracking process follow the
+[Datadog AI Native SDLC Playbook](https://datadoghq.atlassian.net/wiki/spaces/ENG/pages/7376601403/Datadog+AI+Native+SDLC+Playbook),
+a Datadog-internal page and the one internal link allowed in this repo. Read it only
+when planning tracked work, changing the process, or changing the agent configuration
+(`AGENTS.md`, `.agents/skills/`, `.claude/`, `.pi/`, `.githooks/`). Agents read it
+through the Atlassian Confluence tools (page 7376601403); without Datadog access, skip it.
 Skipping a linked page silently is forbidden: if you touched code covered by a
 `doc/` page you did not read (context pressure, time), you MUST disclose it in the
 task summary with an explicit `SUBSYSTEM DOC NOT READ: <path>` line — the user,
@@ -498,12 +504,6 @@ it must be disclosed per the rule at the top of this file. These rules always ap
 Isolation, parallel sessions and the rest of the tracking contract are in
 [doc/WorkTracking.md](doc/WorkTracking.md) and enforced by review discipline. Existing
 production-change guidelines and review rules still apply in full.
-
-The process follows the [Datadog AI Native SDLC Playbook](https://datadoghq.atlassian.net/wiki/spaces/ENG/pages/7376601403/Datadog+AI+Native+SDLC+Playbook),
-a Datadog-internal page and the one internal link allowed in this repo. Read it only
-when planning tracked work, changing this process, or changing the agent configuration
-(`AGENTS.md`, `.agents/skills/`, `.claude/`, `.pi/`, `.githooks/`). Agents read it
-through the Atlassian Confluence tools (page 7376601403); without Datadog access, skip it.
 
 ## Agentic Code Review (mandatory before opening a PR)
 
