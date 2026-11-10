@@ -3,6 +3,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <gtest/gtest-spi.h>
 #include <cerrno>
 #include <cstddef>
 #include <functional>
@@ -438,6 +439,33 @@ protected:
 
 AsgctVtableReceiverTest::Block AsgctVtableReceiverTest::_blocks[2]{};
 
+static void expectSignalActionRestored(int signo, const struct sigaction& before) {
+    SCOPED_TRACE(signo);
+    struct sigaction after{};
+    ASSERT_EQ(0, sigaction(signo, nullptr, &after));
+    EXPECT_EQ(before.sa_flags, after.sa_flags);
+    if (before.sa_flags & SA_SIGINFO) {
+        EXPECT_EQ(before.sa_sigaction, after.sa_sigaction);
+    } else {
+        EXPECT_EQ(before.sa_handler, after.sa_handler);
+    }
+    for (int signal = 1; signal < NSIG; signal++) {
+        EXPECT_EQ(sigismember(&before.sa_mask, signal), sigismember(&after.sa_mask, signal)) << signal;
+    }
+}
+
+static void expectOriginalSignalActionRestored(int signo, const struct sigaction& before) {
+    // Default/ignored dispositions can expose different opaque masks through signal interceptors.
+    // Callable actions remain the full flags/mask preservation oracle.
+    if (before.sa_handler == SIG_DFL || before.sa_handler == SIG_IGN) {
+        struct sigaction after{};
+        ASSERT_EQ(0, sigaction(signo, nullptr, &after));
+        EXPECT_EQ(before.sa_handler, after.sa_handler);
+    } else {
+        expectSignalActionRestored(signo, before);
+    }
+}
+
 // Each member restores its own full action, including when a later install throws.
 class ReceiverReadSignalActionScope {
     int _signo;
@@ -450,9 +478,39 @@ public:
     }
     ~ReceiverReadSignalActionScope() {
         EXPECT_EQ(0, sigaction(_signo, &_old, nullptr));
+        expectOriginalSignalActionRestored(_signo, _old);
     }
     ReceiverReadSignalActionScope(const ReceiverReadSignalActionScope&) = delete;
     ReceiverReadSignalActionScope& operator=(const ReceiverReadSignalActionScope&) = delete;
+};
+
+class ReceiverReadBaselineScope {
+    ReceiverReadSignalActionScope _segv;
+    ReceiverReadSignalActionScope _bus;
+
+    static void handler(int signo) { _exit(128 + signo); }
+    static void siginfoHandler(int signo, siginfo_t*, void*) { _exit(128 + signo); }
+    static struct sigaction segvAction() {
+        struct sigaction action{};
+        action.sa_sigaction = siginfoHandler;
+        action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+        EXPECT_EQ(0, sigemptyset(&action.sa_mask));
+        EXPECT_EQ(0, sigaddset(&action.sa_mask, SIGUSR1));
+        return action;
+    }
+    static struct sigaction busAction() {
+        struct sigaction action{};
+        action.sa_handler = handler;
+        action.sa_flags = SA_RESTART;
+        EXPECT_EQ(0, sigemptyset(&action.sa_mask));
+        EXPECT_EQ(0, sigaddset(&action.sa_mask, SIGUSR2));
+        return action;
+    }
+
+public:
+    ReceiverReadBaselineScope() : _segv(SIGSEGV, segvAction()), _bus(SIGBUS, busAction()) {}
+    ReceiverReadBaselineScope(const ReceiverReadBaselineScope&) = delete;
+    ReceiverReadBaselineScope& operator=(const ReceiverReadBaselineScope&) = delete;
 };
 
 class ReceiverReadFaultScope {
@@ -507,64 +565,92 @@ volatile sig_atomic_t ReceiverReadFaultScope::_count = 0;
 volatile uintptr_t ReceiverReadFaultScope::_address = 0;
 volatile uintptr_t ReceiverReadFaultScope::_pc = 0;
 
-static void expectSignalActionRestored(int signo, const struct sigaction& before) {
-    SCOPED_TRACE(signo);
-    struct sigaction after{};
-    ASSERT_EQ(0, sigaction(signo, nullptr, &after));
-    EXPECT_EQ(before.sa_flags, after.sa_flags);
-    if (before.sa_flags & SA_SIGINFO) {
-        EXPECT_EQ(before.sa_sigaction, after.sa_sigaction);
-    } else {
-        EXPECT_EQ(before.sa_handler, after.sa_handler);
-    }
+TEST(ReceiverReadBaselineScopeTest, InstallsDistinctCallableActions) {
+    ReceiverReadBaselineScope baseline;
+    struct sigaction segv{}, bus{};
+    ASSERT_EQ(0, sigaction(SIGSEGV, nullptr, &segv));
+    ASSERT_EQ(0, sigaction(SIGBUS, nullptr, &bus));
+    constexpr int flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART | SA_NODEFER;
+    EXPECT_EQ(SA_SIGINFO | SA_ONSTACK, segv.sa_flags & flags);
+    EXPECT_EQ(SA_RESTART, bus.sa_flags & flags);
+    EXPECT_NE(SIG_DFL, segv.sa_handler);
+    EXPECT_NE(SIG_IGN, segv.sa_handler);
+    EXPECT_NE(SIG_DFL, bus.sa_handler);
+    EXPECT_NE(SIG_IGN, bus.sa_handler);
     for (int signal = 1; signal < NSIG; signal++) {
-        EXPECT_EQ(sigismember(&before.sa_mask, signal), sigismember(&after.sa_mask, signal)) << signal;
+        EXPECT_EQ(signal == SIGUSR1, sigismember(&segv.sa_mask, signal)) << signal;
+        EXPECT_EQ(signal == SIGUSR2, sigismember(&bus.sa_mask, signal)) << signal;
+    }
+}
+
+TEST(ReceiverReadBaselineScopeTest, SiginfoBaselineFailsSafelyOnUnexpectedSignal) {
+    EXPECT_EXIT({
+        ReceiverReadBaselineScope baseline;
+        raise(SIGSEGV);
+        _exit(0);
+    }, ::testing::ExitedWithCode(128 + SIGSEGV), "");
+}
+
+TEST(ReceiverReadBaselineScopeTest, OneArgumentBaselineFailsSafelyOnUnexpectedSignal) {
+    EXPECT_EXIT({
+        ReceiverReadBaselineScope baseline;
+        raise(SIGBUS);
+        _exit(0);
+    }, ::testing::ExitedWithCode(128 + SIGBUS), "");
+}
+
+TEST(ReceiverReadBaselineScopeTest, OriginalSentinelCleanupChecksDispositionNotOpaqueFields) {
+    ReceiverReadBaselineScope callable_originals;
+    for (auto disposition : {SIG_DFL, SIG_IGN}) {
+        SCOPED_TRACE(disposition == SIG_DFL ? "default" : "ignored");
+        struct sigaction sentinel{};
+        sentinel.sa_handler = disposition;
+        ASSERT_EQ(0, sigemptyset(&sentinel.sa_mask));
+        ReceiverReadSignalActionScope segv_scope(SIGSEGV, sentinel);
+        ReceiverReadSignalActionScope bus_scope(SIGBUS, sentinel);
+        {
+            ReceiverReadBaselineScope baseline;
+        }
+        // Deliberately vary opaque fields to verify they are not the sentinel cleanup oracle.
+        sentinel.sa_flags = SA_RESTART;
+        ASSERT_EQ(0, sigaddset(&sentinel.sa_mask, SIGUSR1));
+        expectOriginalSignalActionRestored(SIGSEGV, sentinel);
+        expectOriginalSignalActionRestored(SIGBUS, sentinel);
+        sentinel.sa_handler = disposition == SIG_DFL ? SIG_IGN : SIG_DFL;
+        EXPECT_NONFATAL_FAILURE(expectOriginalSignalActionRestored(SIGSEGV, sentinel), "sa_handler");
+        EXPECT_NONFATAL_FAILURE(expectOriginalSignalActionRestored(SIGBUS, sentinel), "sa_handler");
     }
 }
 
 TEST(ReceiverReadFaultScopeTest, RestoresDistinctFullActionsAcrossRepeatedScopes) {
-    struct sigaction original_segv{}, original_bus{};
-    ASSERT_EQ(0, sigaction(SIGSEGV, nullptr, &original_segv));
-    ASSERT_EQ(0, sigaction(SIGBUS, nullptr, &original_bus));
-    {
-        struct sigaction segv_action = original_segv;
-        segv_action.sa_flags = SA_SIGINFO | SA_ONSTACK;
-        ASSERT_EQ(0, sigaddset(&segv_action.sa_mask, SIGUSR1));
-        struct sigaction bus_action{};
-        bus_action.sa_handler = SIG_IGN;
-        bus_action.sa_flags = SA_RESTART;
-        ASSERT_EQ(0, sigemptyset(&bus_action.sa_mask));
-        ASSERT_EQ(0, sigaddset(&bus_action.sa_mask, SIGUSR2));
-        ReceiverReadSignalActionScope segv_scope(SIGSEGV, segv_action);
-        ReceiverReadSignalActionScope bus_scope(SIGBUS, bus_action);
-        struct sigaction before_segv{}, before_bus{};
-        ASSERT_EQ(0, sigaction(SIGSEGV, nullptr, &before_segv));
-        ASSERT_EQ(0, sigaction(SIGBUS, nullptr, &before_bus));
-        for (int repetition = 0; repetition < 2; repetition++) {
-            SCOPED_TRACE(repetition);
-            {
-                ReceiverReadFaultScope fault_scope;
-                for (int signo : {SIGSEGV, SIGBUS}) {
-                    struct sigaction installed{};
-                    ASSERT_EQ(0, sigaction(signo, nullptr, &installed));
-                    constexpr int fault_flags = SA_SIGINFO | SA_RESTART | SA_NODEFER;
-                    EXPECT_EQ(fault_flags, installed.sa_flags & fault_flags);
-                    EXPECT_NE(before_segv.sa_sigaction, installed.sa_sigaction);
-                    EXPECT_NE(SIG_IGN, installed.sa_handler);
-                    for (int signal = 1; signal < NSIG; signal++) {
-                        EXPECT_EQ(0, sigismember(&installed.sa_mask, signal)) << signal;
-                    }
+    ReceiverReadBaselineScope baseline;
+    struct sigaction before_segv{}, before_bus{};
+    ASSERT_EQ(0, sigaction(SIGSEGV, nullptr, &before_segv));
+    ASSERT_EQ(0, sigaction(SIGBUS, nullptr, &before_bus));
+    for (int repetition = 0; repetition < 2; repetition++) {
+        SCOPED_TRACE(repetition);
+        {
+            ReceiverReadFaultScope fault_scope;
+            for (int signo : {SIGSEGV, SIGBUS}) {
+                struct sigaction installed{};
+                ASSERT_EQ(0, sigaction(signo, nullptr, &installed));
+                constexpr int fault_flags = SA_SIGINFO | SA_RESTART | SA_NODEFER;
+                EXPECT_EQ(fault_flags, installed.sa_flags & fault_flags);
+                EXPECT_NE(before_segv.sa_sigaction, installed.sa_sigaction);
+                EXPECT_NE(before_bus.sa_handler, installed.sa_handler);
+                EXPECT_NE(SIG_IGN, installed.sa_handler);
+                for (int signal = 1; signal < NSIG; signal++) {
+                    EXPECT_EQ(0, sigismember(&installed.sa_mask, signal)) << signal;
                 }
             }
-            expectSignalActionRestored(SIGSEGV, before_segv);
-            expectSignalActionRestored(SIGBUS, before_bus);
         }
+        expectSignalActionRestored(SIGSEGV, before_segv);
+        expectSignalActionRestored(SIGBUS, before_bus);
     }
-    expectSignalActionRestored(SIGSEGV, original_segv);
-    expectSignalActionRestored(SIGBUS, original_bus);
 }
 
 TEST(ReceiverReadFaultScopeTest, RollsBackEarlierActionWhenLaterInstallationFails) {
+    ReceiverReadBaselineScope baseline;
     struct sigaction before_segv{}, before_bus{};
     ASSERT_EQ(0, sigaction(SIGSEGV, nullptr, &before_segv));
     ASSERT_EQ(0, sigaction(SIGBUS, nullptr, &before_bus));
@@ -686,6 +772,7 @@ TEST_P(AsgctVtableReceiverTest, ReceiverReadFaultRecoversThroughProductionUconte
     std::unique_ptr<void, decltype(unmap)> bad_page(
         mmap(nullptr, page_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0), unmap);
     ASSERT_NE(MAP_FAILED, bad_page.get());
+    ReceiverReadBaselineScope baseline;
     struct sigaction before_segv{}, before_bus{};
     ASSERT_EQ(0, sigaction(SIGSEGV, nullptr, &before_segv));
     ASSERT_EQ(0, sigaction(SIGBUS, nullptr, &before_bus));
