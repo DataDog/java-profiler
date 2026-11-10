@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk25
 
 ## glibc-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-11-10 03:44:15 EST
+**Date:** 2026-11-10 05:27:32 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 262 |
-| Sample Rate | 4.37/sec |
-| Health Score | 273% |
-| Threads | 11 |
-| Allocations | 175 |
+| CPU Samples | 90 |
+| Sample Rate | 1.50/sec |
+| Health Score | 94% |
+| Threads | 8 |
+| Allocations | 59 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 95 |
-| Sample Rate | 1.58/sec |
-| Health Score | 99% |
-| Threads | 13 |
-| Allocations | 42 |
+| CPU Samples | 730 |
+| Sample Rate | 12.17/sec |
+| Health Score | 761% |
+| Threads | 11 |
+| Allocations | 477 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1794300018 48
-1794300023 48
-1794300028 48
-1794300033 48
-1794300038 48
-1794300043 48
-1794300048 48
-1794300053 48
-1794300058 48
-1794300063 48
-1794300068 48
-1794300073 48
-1794300078 48
-1794300083 48
-1794300088 48
-1794300093 48
-1794300098 48
-1794300103 48
-1794300108 48
-1794300113 48
+1794306143 48
+1794306148 48
+1794306153 48
+1794306158 48
+1794306163 48
+1794306168 48
+1794306173 48
+1794306178 48
+1794306183 48
+1794306188 48
+1794306194 48
+1794306199 48
+1794306204 48
+1794306209 48
+1794306214 48
+1794306219 48
+1794306224 48
+1794306229 48
+1794306234 48
+1794306239 48
 ```
 </details>
 
