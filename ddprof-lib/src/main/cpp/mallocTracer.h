@@ -47,6 +47,9 @@ class MallocHooker {
     static const int MAX_ORPHAN_ENTRIES = MAX_MALLOC_ENTRIES / 8;
     static MallocPatchEntry _entries[MAX_MALLOC_ENTRIES];
     static int _entry_count;
+    // _entries[0, _kept_count) were kept by the last restore pass; later ones are
+    // this recording's.
+    static int _kept_count;
 
     static void detectNestedMalloc();
     static void patchImport(CodeCache* cc, ImportId id, void* hook_fn, void* orig_fn);

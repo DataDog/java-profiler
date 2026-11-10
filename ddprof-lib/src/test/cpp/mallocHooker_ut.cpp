@@ -34,6 +34,7 @@ public:
   static void clearEntries() {
     memset(MallocHooker::_entries, 0, sizeof(MallocHooker::_entries));
     MallocHooker::_entry_count = 0;
+    MallocHooker::_kept_count = 0;
   }
   static int maxEntries() { return MallocHooker::MAX_MALLOC_ENTRIES; }
   static int maxOrphanEntries() { return MallocHooker::MAX_ORPHAN_ENTRIES; }
@@ -124,6 +125,7 @@ TEST_F(MallocHookerSlots, PatchReplacesKeptEntryOfSlotThatNoLongerHoldsHook) {
   MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
   ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
   MallocHookerTestAccessor::setOrig(0, foreign());  // the original the kept entry saved
+  MallocHookerTestAccessor::keepUnrestoredEntries();
   slot = pltStub();                                 // the reloaded library's fresh slot
 
   MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());

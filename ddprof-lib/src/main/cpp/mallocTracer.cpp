@@ -97,6 +97,7 @@ int MallocHooker::_patched_libs = 0;
 bool MallocHooker::_initialized = false;
 MallocPatchEntry MallocHooker::_entries[MallocHooker::MAX_MALLOC_ENTRIES];
 int MallocHooker::_entry_count = 0;
+int MallocHooker::_kept_count = 0;
 // xoroshiro128+ PRNG state — shared, relaxed atomics.
 // Benign races are acceptable: occasional duplicate output is harmless
 // for a sampling PRNG and thread_local cannot be used on the malloc path.
@@ -277,8 +278,9 @@ void MallocHooker::patchSlot(CodeCache* cc, void** location, void* hook_fn, void
     const bool rehook = current == hook_fn;
     // At most one entry per slot: a second would restore a stale original on
     // stop(), as the sort that groups entries by library does not keep their order.
+    // Only a kept entry can match: this recording patches each slot once.
     int existing = -1;
-    for (int i = 0; i < _entry_count; i++) {
+    for (int i = 0; i < _kept_count; i++) {
         if (_entries[i]._location == location && _entries[i]._hook == hook_fn) {
             existing = i;
             break;
@@ -353,6 +355,7 @@ void MallocHooker::keepUnrestoredEntries() {
         count = MAX_ORPHAN_ENTRIES;
     }
     _entry_count = count;
+    _kept_count = count;
 }
 
 // Groups each library's entries into a single run, so that a library is
