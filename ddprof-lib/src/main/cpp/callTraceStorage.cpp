@@ -49,12 +49,8 @@ bool CallTraceStorage::allocateTables() {
     std::unique_ptr<CallTraceHashTable> active_table;
     std::unique_ptr<CallTraceHashTable> standby_table;
     std::unique_ptr<CallTraceHashTable> scratch_table;
+    bool ok = false;
     try {
-#ifdef UNIT_TEST
-        if (_fail_allocation_for_test) {
-            throw std::bad_alloc();
-        }
-#endif
         // Pre-allocate and pre-size collections with conservative load factor
         _traces_buffer.max_load_factor(0.75f);
         _traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
@@ -62,11 +58,22 @@ bool CallTraceStorage::allocateTables() {
         _preserve_set_buffer.max_load_factor(0.75f);
         _preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
 
+#ifdef UNIT_TEST
+        if (_fail_allocation_for_test) {
+            throw std::bad_alloc();
+        }
+#endif
         active_table = std::make_unique<CallTraceHashTable>();
         standby_table = std::make_unique<CallTraceHashTable>();
         scratch_table = std::make_unique<CallTraceHashTable>();
+        ok = active_table->usable() && standby_table->usable() && scratch_table->usable();
     } catch (const std::bad_alloc&) {
-        // Nothing was published: the storage stays idle and start() can fail.
+    }
+    if (!ok) {
+        // Nothing is published: the storage stays idle and start() can fail.
+        // Give the pre-sized bucket arrays back, as release() does.
+        CallTraceSet().swap(_traces_buffer);
+        CallTraceIdSet().swap(_preserve_set_buffer);
         return false;
     }
 

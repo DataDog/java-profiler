@@ -85,6 +85,10 @@ class CallTraceHashTable {
 public:
   static CallTrace _overflow_trace;
 
+  // False if the constructor could not allocate the first table (an mmap failure
+  // does not throw): every put() would then be dropped.
+  bool usable() const { return _table != nullptr; }
+
 private:
   // Pure, allocation-free helpers backing the expansion-overflow guard in
   // expandTableIfNeeded(); kept private and reached in tests only via

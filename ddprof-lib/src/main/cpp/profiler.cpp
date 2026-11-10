@@ -1879,7 +1879,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Storage stop() or the reset above released. After Counters::reset(), so
   // the storage counters count exactly this allocation.
   if (!acquireRecordingMemory()) {
-    return Error("Failed to allocate call trace storage");
+    return Error("Failed to allocate call trace storage; retry start()");
   }
   // Every failed start() from here on gives the recording memory back (and
   // closes the intern gate); disarmed once the recording runs.
