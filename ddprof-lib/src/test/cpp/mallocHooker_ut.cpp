@@ -136,6 +136,22 @@ TEST_F(MallocHookerSlots, PatchReplacesKeptEntryOfSlotThatNoLongerHoldsHook) {
   EXPECT_EQ(pltStub(), slot);
 }
 
+// Two caches of one image (a reload at the same base) both patch the slot in one
+// recording: the second finds our hook there and must not record the resolved
+// original over the PLT stub the first one saved.
+TEST_F(MallocHookerSlots, SecondCacheOfSameImageDoesNotReplaceSavedOriginal) {
+  CodeCache other{kUnloadedPath, -1, kForeignMin, kForeignMax};
+  void* slot = pltStub();
+  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+
+  MallocHookerTestAccessor::patchSlot(&other, &slot, hook(), original());
+
+  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
+  EXPECT_EQ(pltStub(), MallocHookerTestAccessor::entry(0)._orig);
+  MallocHookerTestAccessor::restoreSlot(0);
+  EXPECT_EQ(pltStub(), slot);
+}
+
 // Over the orphan cap, the entries dropped are those whose original patchSlot()
 // rebuilds anyway; another interposer's wrapper survives wherever it sits.
 TEST_F(MallocHookerSlots, KeepUnrestoredEntriesDropsRebuildableOnesFirst) {
