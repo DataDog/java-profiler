@@ -543,7 +543,8 @@ public final class JavaProfiler {
     public static native boolean testTlsPrimingAvailable();
 
     /**
-     * Test seam with no production caller. Present in release builds.
+     * Test seam with no production caller. Debug native builds only; a release
+     * build returns {@code null}.
      * <p>
      * On HotSpot, reports, for each compiled body of {@code method} that JVMTI
      * CompiledMethodLoad reports: the code address, the code-heap lookup status
@@ -551,8 +552,9 @@ public final class JavaProfiler {
      * {@code _method} field. Element 0 is the target's jmethodID, followed by up to 16
      * (code address, status, read) triples.
      * <p>
-     * Returns {@code null} when the JVM is not HotSpot or the profiler has no code heap,
-     * throws {@link IllegalArgumentException} when {@code method} is not a
+     * Returns {@code null} when the JVM is not HotSpot, the profiler has no code heap,
+     * or the native library is a release build; throws
+     * {@link IllegalArgumentException} when {@code method} is not a
      * {@link java.lang.reflect.Method}, and {@link IllegalStateException} when a JVMTI
      * call fails.
      */

@@ -57,11 +57,6 @@ static void throwIllegalState(JNIEnv* jni, const char* what) {
 static void JNICALL onCompiledMethodLoad(jvmtiEnv* jvmti, jmethodID method, jint code_size,
                                          const void* code_addr, jint map_length,
                                          const jvmtiAddrLocationMap* map, const void* compile_info) {
-    // The callback can land on a compiler or ServiceThread that never went
-    // through the profiler's thread hooks; the code-heap read below needs
-    // the profiler TLS those threads otherwise lack.
-    ProfiledThread::initCurrentThreadSignalSafe();
-
     // Never touches the env after entry: a post that survives past the
     // env's disposal must not call back into freed JVMTI state.
     ReadContext* ctx = &readContext;
@@ -70,6 +65,16 @@ static void JNICALL onCompiledMethodLoad(jvmtiEnv* jvmti, jmethodID method, jint
     if (method != __atomic_load_n(&ctx->target, __ATOMIC_ACQUIRE)) {
         return;
     }
+
+    // The callback can land on a compiler or ServiceThread that never went
+    // through the profiler's thread hooks; the code-heap read below needs
+    // the profiler TLS those threads otherwise lack. Events filtered out by
+    // the target compare above return without touching VM structures, so
+    // they skip the initialization cost. The initialization itself must stay
+    // before the live claim: it can allocate on first use for a thread, and
+    // a poster holding a live slot while doing it could outlast the reader's
+    // bounded drain wait and get its batch discarded.
+    ProfiledThread::initCurrentThreadSignalSafe();
 
     // The count precedes the claim so a reset that observes no live poster
     // can never race one that is about to claim a slot it would reuse; a
