@@ -354,14 +354,13 @@ class DelayedNativeBindings {
     // Records a binding. Returns false, dropping it, when the list is full or
     // closed by a drain.
     bool add(jmethodID method, void* address) {
-        _lock.lock();
+        ExclusiveLockGuard guard(&_lock);
         bool added = !_drained && _count < CAPACITY;
         if (added) {
             _bindings[_count].method = method;
             _bindings[_count].address = address;
             _count++;
         }
-        _lock.unlock();
         return added;
     }
 
@@ -370,12 +369,14 @@ class DelayedNativeBindings {
     // calls never write to it and reading it needs no lock.
     template <typename F>
     void drain(F f) {
-        _lock.lock();
-        int count = _drained ? 0 : _count;
-        if (count > 0) {
-            _drained = true;
+        int count;
+        {
+            ExclusiveLockGuard guard(&_lock);
+            count = _drained ? 0 : _count;
+            if (count > 0) {
+                _drained = true;
+            }
         }
-        _lock.unlock();
         for (int i = 0; i < count; i++) {
             f(_bindings[i].method, _bindings[i].address);
         }
