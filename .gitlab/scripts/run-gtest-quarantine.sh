@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Copyright 2026, Datadog, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# Run one GitLab sanitizer gtest configuration through the flake/quarantine
+# machinery shared with the Java cells (.github/scripts/run_tests_with_retry.sh
+# -> flake_report.py -> ddprof-test/quarantine.txt).
+#
+# Invoked from .gitlab/sanitizer-tests/.gitlab-ci.yml after
+# buildGtest${SANITIZER_CONFIG}. With --attempt it runs one attempt (every
+# binary of the configuration); that is the command the retry wrapper
+# re-executes, so the retry is a full re-run of the suite, never a filtered
+# replay of the failures.
+#
+# Required environment:
+#   SANITIZER_LC   binary selector and cell config token (asan, tsan, release)
+#   GTEST_ARCH     cell arch token: amd64 or aarch64 -- the quarantine cell
+#                  universe's spelling (KNOWN_ARCHES), not the GitLab runner
+#                  tag's "arm64"; a glob naming an arch CI never builds
+#                  quarantines nothing.
+#
+# Recognized environment:
+#   GTEST_DEATH_TEST_STYLE     inherited by the binaries (the tsan jobs set
+#                              threadsafe in their job definition)
+#   MAX_ATTEMPTS               retry budget (run_tests_with_retry.sh default: 2)
+#
+# Cell: glibc-<config>-<arch>. The gtest binaries never link a JDK, so the
+# Java cell's jdk axis is genuinely absent (see the gtest section of
+# ddprof-test/quarantine.txt).
+
+set -uo pipefail
+
+if [ -z "${SANITIZER_LC:-}" ] || [ -z "${GTEST_ARCH:-}" ]; then
+  echo "SANITIZER_LC and GTEST_ARCH must both be set (e.g. asan / aarch64)" >&2
+  exit 1
+fi
+
+HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+REPO_ROOT=$(cd "${HERE}/../.." && pwd)
+cd "${REPO_ROOT}" || exit 1
+
+RESULTS_DIR="ddprof-lib/build/test-results/gtest/${SANITIZER_LC}"
+
+if [ "${1:-}" = "--attempt" ]; then
+  mkdir -p "${RESULTS_DIR}"
+  # Run EVERY binary and aggregate instead of exiting at the first failure:
+  # a single quarantined failure must not hide the rest of the suite from the
+  # evidence (and the old first-failure exit did exactly that).
+  # find's status is taken alone, before filtering: with pipefail a pipeline
+  # status cannot tell a failed find from grep's zero-match exit 1.
+  # -perm -u+x, not GNU's -executable: both GNU and BSD find support the
+  # former, so the script also runs on macOS/BSD hosts.
+  all_binaries=$(find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -perm -u+x) || {
+    echo "find over ddprof-lib/build/bin/gtest failed (status $?); check the build output directory" >&2
+    exit 2
+  }
+  binaries=$(printf '%s\n' "${all_binaries}" | grep "/${SANITIZER_LC}_" | sort)
+  if [ -z "${binaries}" ]; then
+    echo "no gtest binaries matching /${SANITIZER_LC}_ under ddprof-lib/build/bin/gtest; the build produced nothing runnable"
+    exit 1
+  fi
+  first_rc=0
+  while IFS= read -r binary; do
+    echo ""
+    echo "=== $(basename "$binary") ==="
+    # One XML per binary, named TEST-*.xml: the name flake_report.py globs.
+    "$binary" --gtest_output="xml:${RESULTS_DIR}/TEST-$(basename "$binary").xml"
+    bin_rc=$?
+    if [ "${bin_rc}" -ne 0 ]; then
+      echo "FAILED: $(basename "$binary") exited ${bin_rc}"
+      # A signal death (128+N, which flake_report.py reads as a run cut
+      # short) outranks an earlier plain failure code; rc 128 counts as
+      # plain, matching flake_report.py's strict >128 check.
+      if [ "${first_rc}" -le 128 ] && [ "${bin_rc}" -gt 128 ]; then
+        first_rc=${bin_rc}
+      elif [ "${first_rc}" -eq 0 ]; then
+        first_rc=${bin_rc}
+      fi
+    fi
+  done <<< "${binaries}"
+  exit "${first_rc}"
+fi
+
+if [ "${SANITIZER_LC}" = "asan" ]; then
+  # ASan init can nondeterministically collide with the process's
+  # ASLR-influenced mmap layout (google/sanitizers#856): the binary aborts
+  # before any test runs, naming no test. Same setting the GitHub asan matrix
+  # uses for the same reason.
+  export RETRY_ON_NO_TEST_FAILURES=1
+fi
+
+CELL="glibc-${SANITIZER_LC}-${GTEST_ARCH}"
+RESULTS_DIR="${RESULTS_DIR}" \
+  .github/scripts/run_tests_with_retry.sh \
+  --list ddprof-test/quarantine.txt \
+  "${CELL}" -- \
+  bash .gitlab/scripts/run-gtest-quarantine.sh --attempt
