@@ -22,7 +22,7 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    commits, so uncommitted work is not covered.
 
 2. **Self-checks.** Before the review, check the range the marker will certify
-   (`git diff $(git merge-base refs/remotes/<base> HEAD)`) for unused variables,
+   (`git diff $MB HEAD`, with `MB` as in step 3) for unused variables,
    unused or duplicated macros, dead code (methods, JNI entry points, fields, no-op
    functions, empty files left without callers; test-only helpers stay only if marked
    as such) and misspelled identifiers or comments. Then check every comment, javadoc
@@ -43,8 +43,8 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    | The range changes | Reviewer |
    | --- | --- |
    | Gates and trust boundaries, including fixes to them: hooks, `review-marker.py`, the `utils/*-policy.py` files, CI checks, this skill, the AGENTS.md review rules | Sphinx (`/sphinx review range $MB..$(git rev-parse HEAD) --report-json <path>`), standard effort; at most one `--effort=deep` run per PR, on the final candidate |
-   | Other production code | Sphinx, standard effort |
    | Only fixes to a range already reviewed | `/code-review` medium on the fix range; the marker's `--tool` lists every review the final range had |
+   | Other production code | Sphinx, standard effort |
    | Only docs, skills or tests | `/code-review` medium; not low, which skips test files |
 
    Without Sphinx, use `/code-review` with the range as its target, at high effort for
@@ -57,7 +57,7 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    **Cost.** Plan for about $20–30 of agentic review per PR; before a run that is likely
    to exceed it, ask the user. A long orchestrating session re-reads its own context on
    every turn, so run this skill for large reviews from a fresh session where the harness
-   allows; that session writes the marker.
+   allows; that session writes the marker. The session that hands off still does step 7.
 
 4. **Findings.** Fix Critical/High findings, or get the user's explicit waiver.
    Commit the fixes, including any correction made after the review, run the step 2
