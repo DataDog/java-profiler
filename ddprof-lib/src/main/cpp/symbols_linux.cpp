@@ -324,7 +324,7 @@ static char _debuginfod_cache_buf[PATH_MAX] = {0};
 
 // Symbol-table addresses (file sh_offset or DT_SYMTAB) carry no alignment
 // guarantee; these copies avoid member access through a misaligned ElfSymbol*,
-// which is undefined behavior; UBSan's alignment check detects it.
+// which is undefined behavior.
 static uint32_t symbolNameAt(const void* sym) {
     uint32_t name;
     memcpy(&name, sym, sizeof(name));  // st_name sits at offset 0 of Elf64_Sym
