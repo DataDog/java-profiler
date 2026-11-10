@@ -548,7 +548,7 @@ public:
   // and string-label dictionaries once a recording is over (not the
   // context-value one). acquireRecordingMemory() reallocates the storage.
   void releaseRecordingMemory();
-  void acquireRecordingMemory();
+  bool acquireRecordingMemory();
   /**
    * Opens both thread-registration gates (see _engines_ready). A CPU engine
    * with a per-thread table calls it from its start() once the table is sized

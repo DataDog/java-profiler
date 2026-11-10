@@ -86,7 +86,10 @@ private:
     // Lazy initialization helper to avoid global constructor
     static u64 getNextInstanceId();
 
-    void allocateTables();
+    bool allocateTables();
+#ifdef UNIT_TEST
+    bool _fail_allocation_for_test = false;
+#endif
     // Swaps the three table pointers to nullptr and deletes the tables once
     // drained (a table still guarded after the timeout is leaked).
     void freeTables();
@@ -143,8 +146,14 @@ public:
     void release();
 
     // Allocates the tables again after release(); no-op if allocated.
-    // Requires put() to be excluded.
-    void acquire();
+    // Requires put() to be excluded. Returns false, with no table published,
+    // if memory ran out.
+    bool acquire();
+
+#ifdef UNIT_TEST
+    // Makes allocateTables() fail as if memory ran out.
+    void failAllocationForTest(bool fail) { _fail_allocation_for_test = fail; }
+#endif
 };
 
 #endif // _CALLTRACESTORAGE_H

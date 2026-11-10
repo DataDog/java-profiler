@@ -15,6 +15,7 @@
 #include "threadLocalData.h"
 #include <string.h>
 #include <algorithm>
+#include <new>
 #include <atomic>
 #include <utility>
 
@@ -44,36 +45,49 @@ CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storag
     Counters::set(CALLTRACE_STORAGE_TRACES, 0);
 }
 
-void CallTraceStorage::allocateTables() {
-    // Pre-allocate and pre-size collections with conservative load factor
-    _traces_buffer.max_load_factor(0.75f);
-    _traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
+bool CallTraceStorage::allocateTables() {
+    std::unique_ptr<CallTraceHashTable> active_table;
+    std::unique_ptr<CallTraceHashTable> standby_table;
+    std::unique_ptr<CallTraceHashTable> scratch_table;
+    try {
+#ifdef UNIT_TEST
+        if (_fail_allocation_for_test) {
+            throw std::bad_alloc();
+        }
+#endif
+        // Pre-allocate and pre-size collections with conservative load factor
+        _traces_buffer.max_load_factor(0.75f);
+        _traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
 
-    _preserve_set_buffer.max_load_factor(0.75f);
-    _preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
+        _preserve_set_buffer.max_load_factor(0.75f);
+        _preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
+
+        active_table = std::make_unique<CallTraceHashTable>();
+        standby_table = std::make_unique<CallTraceHashTable>();
+        scratch_table = std::make_unique<CallTraceHashTable>();
+    } catch (const std::bad_alloc&) {
+        // Nothing was published: the storage stays idle and start() can fail.
+        return false;
+    }
 
     // Initialize triple-buffered storage
-    auto active_table = std::make_unique<CallTraceHashTable>();
     active_table->setInstanceId(getNextInstanceId());
     active_table->setParentStorage(this);
-    __atomic_store_n(&_active_storage, active_table.release(), __ATOMIC_RELEASE);
-
-    auto standby_table = std::make_unique<CallTraceHashTable>();
     standby_table->setParentStorage(this);
     standby_table->setInstanceId(getNextInstanceId());
-    __atomic_store_n(&_standby_storage, standby_table.release(), __ATOMIC_RELEASE);
-    
-    auto scratch_table = std::make_unique<CallTraceHashTable>();
     scratch_table->setParentStorage(this);
     scratch_table->setInstanceId(getNextInstanceId());
+    __atomic_store_n(&_active_storage, active_table.release(), __ATOMIC_RELEASE);
+    __atomic_store_n(&_standby_storage, standby_table.release(), __ATOMIC_RELEASE);
     __atomic_store_n(&_scratch_storage, scratch_table.release(), __ATOMIC_RELEASE);
+    return true;
 }
 
-void CallTraceStorage::acquire() {
+bool CallTraceStorage::acquire() {
     if (__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE) != nullptr) {
-        return;
+        return true;
     }
-    allocateTables();
+    return allocateTables();
 }
 
 void CallTraceStorage::release() {

@@ -73,6 +73,23 @@ TEST_F(CallTraceStorageTest, BasicFunctionality) {
     EXPECT_TRUE(found_traces);
 }
 
+// When memory runs out, acquire() reports it and publishes no table, so a
+// later acquire() allocates all three from scratch instead of finding a
+// half-initialized storage.
+TEST(CallTraceStorageAcquireTest, AllocationFailureLeavesNoTablePublished) {
+    CallTraceStorage storage;
+    storage.release();
+
+    storage.failAllocationForTest(true);
+    EXPECT_FALSE(storage.acquire());
+    EXPECT_EQ(nullptr, storage.activeTableForTest());
+
+    storage.failAllocationForTest(false);
+    EXPECT_TRUE(storage.acquire());
+    EXPECT_NE(nullptr, storage.activeTableForTest());
+    EXPECT_TRUE(storage.acquire());  // idempotent once allocated
+}
+
 TEST_F(CallTraceStorageTest, LivenessCheckerRegistration) {
     ProfiledThread::initCurrentThreadSignalSafe();
 

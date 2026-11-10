@@ -1878,7 +1878,9 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   // Storage stop() or the reset above released. After Counters::reset(), so
   // the storage counters count exactly this allocation.
-  acquireRecordingMemory();
+  if (!acquireRecordingMemory()) {
+    return Error("Failed to allocate call trace storage");
+  }
   // Every failed start() from here on gives the recording memory back (and
   // closes the intern gate); disarmed once the recording runs.
   struct RecordingMemoryScope {
@@ -2749,11 +2751,11 @@ void Profiler::releaseRecordingMemory() {
   // constant pool, and only a fresh start's clearAll() resets it.
 }
 
-void Profiler::acquireRecordingMemory() {
+bool Profiler::acquireRecordingMemory() {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   // The dictionaries need nothing here: they allocate on demand.
   AllStripesLock stripes(this);
-  _call_trace_storage.acquire();
+  return _call_trace_storage.acquire();
 }
 
 int Profiler::resetRecordingState() {
