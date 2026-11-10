@@ -9,6 +9,8 @@
 
 #include <gtest/gtest.h>
 
+#include "counters.h"
+#include "jvmThread.h"
 #include "profiler.h"
 #include "vmEntry.h"
 
@@ -16,6 +18,13 @@ class VMTestAccessor {
  public:
   static jvmtiEnv* getJvmti() { return VM::_jvmti; }
   static void setJvmti(jvmtiEnv* jvmti) { VM::_jvmti = jvmti; }
+
+  static jvmtiExtensionFunction requestStackTrace() {
+    return __atomic_load_n(&VM::_request_stack_trace, __ATOMIC_ACQUIRE);
+  }
+  static void setRequestStackTrace(jvmtiExtensionFunction function) {
+    __atomic_store_n(&VM::_request_stack_trace, function, __ATOMIC_RELEASE);
+  }
 
   static bool nativeMonitorEventsAvailable() {
     return VM::_native_monitor_events_available;
@@ -42,6 +51,51 @@ class VMTestAccessor {
     VM::configureMonitorEvents(delegate_monitor_wait_events);
   }
 };
+
+class DelegatedStackAdmissionTest : public ::testing::Test {
+ protected:
+  inline static int extension_calls = 0;
+  jvmtiExtensionFunction original_function = nullptr;
+
+  static jvmtiError JNICALL requestStackTrace(jvmtiEnv*, ...) {
+    extension_calls++;
+    return JVMTI_ERROR_NONE;
+  }
+
+  void SetUp() override {
+    original_function = VMTestAccessor::requestStackTrace();
+    extension_calls = 0;
+    VMTestAccessor::setRequestStackTrace(&requestStackTrace);
+  }
+
+  void TearDown() override {
+    VMTestAccessor::setRequestStackTrace(original_function);
+  }
+};
+
+TEST_F(DelegatedStackAdmissionTest, NativeThreadDoesNotEnterExtension) {
+  ASSERT_FALSE(JVMThread::isInitialized());
+  [[maybe_unused]] long long dropped =
+      Counters::getCounter(JVMTI_STACKS_DROPPED_NON_JAVA);
+  [[maybe_unused]] long long requested =
+      Counters::getCounter(JVMTI_STACKS_REQUESTED);
+
+  EXPECT_EQ(JVMTI_ERROR_INVALID_THREAD, VM::requestStackTrace(nullptr, 1));
+  EXPECT_EQ(0, extension_calls);
+#ifdef COUNTERS
+  EXPECT_EQ(dropped + 1, Counters::getCounter(JVMTI_STACKS_DROPPED_NON_JAVA));
+  EXPECT_EQ(requested, Counters::getCounter(JVMTI_STACKS_REQUESTED));
+#endif
+}
+
+TEST_F(DelegatedStackAdmissionTest, MissingExtensionDoesNotCountAdmissionDrop) {
+  VMTestAccessor::setRequestStackTrace(nullptr);
+  long long dropped = Counters::getCounter(JVMTI_STACKS_DROPPED_NON_JAVA);
+
+  EXPECT_EQ(JVMTI_ERROR_NOT_AVAILABLE, VM::requestStackTrace(nullptr, 1));
+  EXPECT_EQ(0, extension_calls);
+  EXPECT_EQ(dropped, Counters::getCounter(JVMTI_STACKS_DROPPED_NON_JAVA));
+}
 
 class ProfilerTestAccessor {
  public:
@@ -469,10 +523,8 @@ TEST_F(NativeMonitorEventsTest,
   }
 }
 
-// Guards the "leaked JVMTI monitor events" defect: when the enable partially fails
-// *and* its own rollback fails, the events stay enabled with no consumer. The disable
-// path must therefore retry the teardown unconditionally instead of skipping it because
-// the monitor-events flag was already stored false.
+// Failed enablement and rollback leave events enabled with the admission flag false.
+// Disable must retry teardown even while that flag is false.
 TEST_F(NativeMonitorEventsTest, FailedRollbackIsRetriedOnDisable) {
   fail(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAIT);
   fail_all_disables = true;

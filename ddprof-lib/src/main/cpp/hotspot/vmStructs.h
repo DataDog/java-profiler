@@ -141,26 +141,15 @@ T* cast_or_null(const void* ptr) {
     f(VMSymbol,               MATCH_SYMBOLS("Symbol"))            \
     f(VMThread,               MATCH_SYMBOLS("Thread"))
 
-// ContinuationEntry type. Only exported via gHotSpotVMTypes starting in
-// JDK 27 (JDK-8378985); there is no mangled-symbol fallback for its size.
-// On JDK <27 type_size() stays 0 and any code that needs the layout
-// (contEntry(), parent()) bails out.
+// Optional ContinuationEntry metadata. Discover actual exports, including backports,
+// rather than assuming availability from the runtime major version. There is no
+// mangled-symbol fallback for its size; missing type_size() remains 0.
 #define DECLARE_V27_TYPES_DO(f) \
     f(VMContinuationEntry,    MATCH_SYMBOLS("ContinuationEntry"))
 
-// Fields for virtual-thread / continuation support, all added to
-// gHotSpotVMStructs / gHotSpotVMTypes in JDK 27 (JDK-8378985):
-//   - JavaThread::_cont_entry            -> _cont_entry_offset
-//   - StubRoutines::_cont_returnBarrier  -> _cont_return_barrier_addr
-//   - ContinuationEntry::_return_pc      -> _cont_entry_return_pc_addr
-//   - ContinuationEntry::_parent         -> _cont_entry_parent_offset
-// On JDK <27 these stay at their default (-1 / nullptr).  The two stub
-// *addresses* (_cont_return_barrier, _cont_entry_return_pc) are separately
-// resolved via Itanium-mangled symbol lookup in resolveOffsets() so the
-// cont_returnBarrier / cont_entry_return_pc frame-boundary checks still work
-// on JDK 21-26; the _offset fields have no such fallback.  All entries are
-// intentionally excluded from verify_offsets() so a missing entry causes
-// graceful degradation rather than SIGABRT.
+// Missing continuation exports keep -1/nullptr defaults and bypass verify_offsets().
+// resolveOffsets() also resolves the two stub addresses by Itanium-mangled symbol;
+// continuation offsets have no symbol fallback.
 #define DECLARE_V27_TYPE_FIELD_DO(type_begin, field, field_with_version, type_end) \
     type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread", "Thread"))                \
         field_with_version(_cont_entry_offset, offset, 27, MAX_VERSION, MATCH_SYMBOLS("_cont_entry")) \
@@ -773,16 +762,12 @@ DECLARE(VMJavaFrameAnchor)
 DECLARE_END
 
 DECLARE(VMContinuationEntry)
-    // Address of the enterSpecial frame's {saved_fp, return_addr} pair.
-    // Layout above this address: [saved_fp][return_addr_to_carrier][carrier_sp...]
-    // The ContinuationEntry struct is embedded on the carrier stack immediately
-    // below enterSpecial's saved-fp slot; its size() equals the JVM's
-    // ContinuationEntry::size() static method, confirmed at:
-    //   https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/continuationEntry.hpp
-    //   https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/continuationEntry.cpp
+    // HotSpot entry_fp() adds ContinuationEntry::size(), not the exported sizeof.
+    // Round to two machine words to reach the {saved_fp, return_addr} pair.
     uintptr_t entryFP() const {
         assert(type_size() > 0); // must not be called before ContinuationEntry is resolved
-        return (uintptr_t)this + type_size();
+        const uint64_t alignment = 2 * sizeof(uintptr_t);
+        return (uintptr_t)this + ((type_size() + alignment - 1) & ~(alignment - 1));
     }
 
     // Returns the enclosing ContinuationEntry when continuations are nested

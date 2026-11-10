@@ -462,6 +462,23 @@ bool VM::initializeRequestStackTrace() {
   return false;
 }
 
+jvmtiError VM::requestStackTrace(void* ucontext, jlong user_data) {
+  jvmtiExtensionFunction fn =
+      __atomic_load_n(&_request_stack_trace, __ATOMIC_ACQUIRE);
+  if (fn == nullptr) {
+    return JVMTI_ERROR_NOT_AVAILABLE;
+  }
+  // RequestStackTrace constructs a HandleMark from JavaThread::current().
+  // A native or non-Java VM thread cannot enter that extension safely.
+  if (!JVMThread::isInitialized() ||
+      !VMThread::isJavaThread(VMThread::current())) {
+    Counters::increment(JVMTI_STACKS_DROPPED_NON_JAVA);
+    return JVMTI_ERROR_INVALID_THREAD;
+  }
+  Counters::increment(JVMTI_STACKS_REQUESTED);
+  return fn(_jvmti, (jthread)nullptr, ucontext, user_data);
+}
+
 // JVMTI delivers ONE callback per event slot; both trackers need the
 // GarbageCollectionFinish signal (liveness GC epochs + reference-chain pass
 // scheduling), so this vmEntry-level forwarder fans the single slot out to

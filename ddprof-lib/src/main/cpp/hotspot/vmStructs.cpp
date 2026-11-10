@@ -179,7 +179,9 @@ void VMStructs::init_offsets_and_addresses() {
             continue;                                                   \
         }
 
-#define END_TYPE() continue; }
+// Supplemental continuation blocks reuse JavaThread/StubRoutines. Only a
+// matched field may consume the entry; an unmatched primary block must fall through.
+#define END_TYPE() }
         DECLARE_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
         DECLARE_V27_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
 #undef MATCH_TYPE_NAMES
@@ -278,22 +280,15 @@ void VMStructs::verify_offsets() {
         return;
     }
 
-// Verify type sizes
-// Note: DECLARE_V27_TYPES_DO (VMContinuationEntry) is intentionally excluded here.
-// ContinuationEntry is not exported in gHotSpotVMTypes before JDK 27 (added via JDK-8378985);
-// asserting type_size() > 0 would SIGABRT on any JDK 21-26 build.
+// ContinuationEntry is optional VM metadata, so DECLARE_V27_TYPES_DO is excluded:
+// asserting its type_size() > 0 would abort on supported builds without that export.
 #define VERIFY_TYPE_SIZE(name, names) assert(TYPE_SIZE_NAME(name) > 0);
     DECLARE_TYPES_DO(VERIFY_TYPE_SIZE);
 #undef VERIFY_TYPE_SIZE
 
 
-// Verify offsets and addresses
-// Note: DECLARE_V27_TYPE_FIELD_DO is intentionally excluded here.
-// Continuation-related fields (_cont_entry_offset, _cont_return_barrier_addr,
-// _cont_entry_return_pc_addr, _cont_entry_parent_offset) are absent from
-// gHotSpotVMStructs in all JDK 21-26 builds: ContinuationEntry was not
-// exported in the vmStructs table until JDK 27 (JDK-8378985). walkVM degrades
-// gracefully when they are missing.
+// DECLARE_V27_TYPE_FIELD_DO is excluded because continuation exports are optional.
+// walkVM degrades when fields are missing rather than asserting their presence.
 #define offset_value -1
 #define address_value nullptr
 

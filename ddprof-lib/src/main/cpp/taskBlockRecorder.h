@@ -31,14 +31,8 @@ bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
                            int start_depth, u64 block_token, u64 blocker,
                            u64 unblocking_span_id);
 
-// Completes block-run lifecycle cleanup for an already-exited producer and
-// records its event only when dump/stop rotation admits the recording work.
-// Cleanup is deliberately performed even when admission is rejected so an
-// application thread never waits for rotation and suppression cannot be left
-// armed.
-// 'end_ticks' lets a caller that already had to sample the clock (e.g. to decide
-// whether the interval is worth resolving a blocker identity for) share the exact
-// same end timestamp with the eligibility check; 0 means "sample it here".
+// Cleans up an exited producer even if dump/stop rotation rejects recording work.
+// end_ticks shares the caller's eligibility timestamp; zero samples the clock here.
 bool finishTaskBlockAtExit(ProfiledThread* current,
                            ThreadFilter* thread_filter,
                            WallClockBlockTracker* tracker, jthread thread,
@@ -57,11 +51,8 @@ void JNICALL MonitorWait(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
 void JNICALL MonitorWaited(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                            jobject object, jboolean timed_out);
 
-// Enables/disables the native monitor-contention/Object.wait JVMTI events that
-// back the MonitorContendedEnter/Entered/Wait/Waited callbacks above. Returns
-// whether the events ended up enabled after the attempt; callers use this to
-// gate their own admission flag rather than assuming success. Disabling is a
-// no-op when the capability was never enabled.
+// Returns actual native monitor-event enablement for the caller's admission flag.
+// Disabling is a no-op when the capability was never enabled.
 bool setNativeMonitorTaskBlockEventsEnabled(bool enabled);
 
 class TaskBlockActivity {

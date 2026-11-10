@@ -123,10 +123,25 @@ TEST_P(JvmSupportThreadClassificationTest, NullInputsFailClosed) {
     EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, nullptr));
 }
 
+TEST_P(JvmSupportThreadClassificationTest, MissingJniFunctionTableFailsClosed) {
+    EXPECT_EXIT({
+        JNIEnv missing_functions{};
+        _exit(JVMSupport::isPlatformThread(&missing_functions, thread) ? 1 : 0);
+    }, ::testing::ExitedWithCode(0), "");
+}
+
 TEST_P(JvmSupportThreadClassificationTest, InvalidJniVersionFailsClosed) {
     jni_version = 0;
     EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
     EXPECT_EQ(0, is_virtual_thread_calls);
+}
+
+TEST_P(JvmSupportThreadClassificationTest, NegativeJniVersionsFailBeforeVirtualLookup) {
+    for (jint version : {-1, static_cast<jint>(0x80000000u)}) {
+        jni_version = version;
+        EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
+        EXPECT_EQ(0, is_virtual_thread_calls);
+    }
 }
 
 TEST_P(JvmSupportThreadClassificationTest, PreJni19ThreadIsPlatform) {

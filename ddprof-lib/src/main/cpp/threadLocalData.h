@@ -89,10 +89,8 @@ private:
   u64 _call_trace_id;
   u32 _recording_epoch;
   volatile u32 _misc_flags;
-  // Shared payload for the blocked-interval state machines (park/generic
-  // task-block/monitor). Each machine owns a dedicated FLAG_* bit in
-  // _misc_flags that gates access to its slot; see blockSlotEnter()/
-  // blockSlotExit() below.
+  // Park, generic task-block and monitor machines gate their own payload slot
+  // with a dedicated FLAG_* bit in _misc_flags.
   struct BlockSlot {
     u64 start_ticks{0};
     Context context{};
@@ -536,11 +534,8 @@ public:
   Context snapshotContext(size_t numAttrs);
 
 private:
-  // Shared enter/exit for the blocked-interval state machines above. FLAG is
-  // the caller's dedicated bit in _misc_flags; expected_state == UNKNOWN in
-  // blockSlotExit() means "don't gate the clear on the stored state" (only
-  // monitorExit needs that gate, to avoid a nested contention callback
-  // clobbering an in-progress Object.wait interval).
+  // FLAG selects the caller's _misc_flags bit; UNKNOWN clears any stored state.
+  // monitorExit gates clearing by state so nested contention cannot clear Object.wait.
   template <u32 FLAG>
   inline bool blockSlotEnter(BlockSlot& slot, u64 start_ticks,
                              const Context& context, u64 blocker,

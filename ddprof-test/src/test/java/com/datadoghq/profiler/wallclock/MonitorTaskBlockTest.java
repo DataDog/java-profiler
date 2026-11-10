@@ -5,8 +5,14 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -14,13 +20,8 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import com.datadoghq.profiler.JfrEvents;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Assumptions;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Test;
 
 /** Verifies TaskBlock production from native JVMTI monitor callbacks. */
 public class MonitorTaskBlockTest extends AbstractProfilerTest {
@@ -29,16 +30,19 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     Object monitor = new Object();
     CountDownLatch entered = new CountDownLatch(1);
     AtomicReference<Throwable> failure = new AtomicReference<>();
-    Thread worker = new Thread(() -> {
-      try {
-        synchronized (monitor) {
-          entered.countDown();
-          monitor.wait(100);
-        }
-      } catch (Throwable t) {
-        failure.set(t);
-      }
-    }, "taskblock-object-wait");
+    Thread worker =
+        new Thread(
+            () -> {
+              try {
+                synchronized (monitor) {
+                  entered.countDown();
+                  monitor.wait(100);
+                }
+              } catch (Throwable t) {
+                failure.set(t);
+              }
+            },
+            "taskblock-object-wait");
 
     worker.start();
     assertTrue(entered.await(5, TimeUnit.SECONDS));
@@ -48,7 +52,8 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     JfrEvents events = verifyEvents("datadog.TaskBlock");
     assertTaskBlockStackReference(events);
     TaskBlockAssertions.assertContains(events, 0, 0, identityHash(monitor), 0);
-    TaskBlockAssertions.assertContainsObservedState(events, "WAITING");
+    assertExactMonitorEvent(
+        events, worker, monitor, "WAITING", "objectWaitEmitsTaskBlockOutsideContextWindow");
   }
 
   @Test
@@ -58,15 +63,18 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     AtomicReference<Throwable> failure = new AtomicReference<>();
     Thread worker;
     synchronized (monitor) {
-      worker = new Thread(() -> {
-        try {
-          attempting.countDown();
-          synchronized (monitor) {
-          }
-        } catch (Throwable t) {
-          failure.set(t);
-        }
-      }, "taskblock-monitor-contention");
+      worker =
+          new Thread(
+              () -> {
+                try {
+                  attempting.countDown();
+                  synchronized (monitor) {
+                  }
+                } catch (Throwable t) {
+                  failure.set(t);
+                }
+              },
+              "taskblock-monitor-contention");
       worker.start();
       assertTrue(attempting.await(5, TimeUnit.SECONDS));
       Thread.sleep(100);
@@ -78,7 +86,12 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     JfrEvents events = verifyEvents("datadog.TaskBlock");
     assertTaskBlockStackReference(events);
     TaskBlockAssertions.assertContains(events, 0, 0, identityHash(monitor), 0);
-    TaskBlockAssertions.assertContainsObservedState(events, "CONTENDED");
+    assertExactMonitorEvent(
+        events,
+        worker,
+        monitor,
+        "CONTENDED",
+        "monitorContentionEmitsTaskBlockOutsideContextWindow");
   }
 
   /** Verifies that repeated monitor contention leaves the producer able to record later blocks. */
@@ -95,18 +108,21 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     int[] counter = new int[1];
     Thread[] burst = new Thread[2];
     for (int i = 0; i < burst.length; i++) {
-      burst[i] = new Thread(() -> {
-        try {
-          assertTrue(start.await(5, TimeUnit.SECONDS));
-          for (int n = 0; n < 20_000; n++) {
-            synchronized (burstMonitor) {
-              counter[0]++;
-            }
-          }
-        } catch (Throwable t) {
-          burstFailure.set(t);
-        }
-      }, "taskblock-burst-contention-" + i);
+      burst[i] =
+          new Thread(
+              () -> {
+                try {
+                  assertTrue(start.await(5, TimeUnit.SECONDS));
+                  for (int n = 0; n < 20_000; n++) {
+                    synchronized (burstMonitor) {
+                      counter[0]++;
+                    }
+                  }
+                } catch (Throwable t) {
+                  burstFailure.set(t);
+                }
+              },
+              "taskblock-burst-contention-" + i);
       burst[i].start();
     }
     start.countDown();
@@ -120,15 +136,18 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     AtomicReference<Throwable> failure = new AtomicReference<>();
     Thread worker;
     synchronized (longMonitor) {
-      worker = new Thread(() -> {
-        try {
-          attempting.countDown();
-          synchronized (longMonitor) {
-          }
-        } catch (Throwable t) {
-          failure.set(t);
-        }
-      }, "taskblock-long-contention");
+      worker =
+          new Thread(
+              () -> {
+                try {
+                  attempting.countDown();
+                  synchronized (longMonitor) {
+                  }
+                } catch (Throwable t) {
+                  failure.set(t);
+                }
+              },
+              "taskblock-long-contention");
       worker.start();
       assertTrue(attempting.await(5, TimeUnit.SECONDS));
       Thread.sleep(100);
@@ -137,7 +156,8 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     stopProfiler();
 
     JfrEvents events = verifyEvents("datadog.TaskBlock");
-    assertTrue(TaskBlockAssertions.containsBlocker(events, identityHash(longMonitor)),
+    assertTrue(
+        TaskBlockAssertions.containsBlocker(events, identityHash(longMonitor)),
         "long contention was not emitted");
     assertTaskBlockStackReference(events);
   }
@@ -147,20 +167,23 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     Object monitor = new Object();
     Object controlMonitor = new Object();
     AtomicReference<Throwable> failure = new AtomicReference<>();
-    Thread worker = new Thread(() -> {
-      try {
-        registerCurrentThreadForWallClockProfiling();
-        profiler.setTraceContext(0x4400L, 0x4401L, 0L, 0x4401L, -1, null, -1, null);
-        synchronized (monitor) {
-          monitor.wait(100);
-        }
-      } catch (Throwable t) {
-        failure.set(t);
-      } finally {
-        profiler.clearTraceContext();
-        profiler.removeThread();
-      }
-    }, "taskblock-traced-object-wait");
+    Thread worker =
+        new Thread(
+            () -> {
+              try {
+                registerCurrentThreadForWallClockProfiling();
+                profiler.setTraceContext(0x4400L, 0x4401L, 0L, 0x4401L, -1, null, -1, null);
+                synchronized (monitor) {
+                  monitor.wait(100);
+                }
+              } catch (Throwable t) {
+                failure.set(t);
+              } finally {
+                profiler.clearTraceContext();
+                profiler.removeThread();
+              }
+            },
+            "taskblock-traced-object-wait");
 
     worker.start();
     assertCompleted(worker, failure);
@@ -168,24 +191,29 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     // Positive control: an untraced platform-thread wait in the same recording must be
     // produced, so this test also fails when the producer stops emitting anything at all.
     AtomicReference<Throwable> controlFailure = new AtomicReference<>();
-    Thread control = new Thread(() -> {
-      try {
-        synchronized (controlMonitor) {
-          controlMonitor.wait(100);
-        }
-      } catch (Throwable t) {
-        controlFailure.set(t);
-      }
-    }, "taskblock-control-object-wait");
+    Thread control =
+        new Thread(
+            () -> {
+              try {
+                synchronized (controlMonitor) {
+                  controlMonitor.wait(100);
+                }
+              } catch (Throwable t) {
+                controlFailure.set(t);
+              }
+            },
+            "taskblock-control-object-wait");
     control.start();
     assertCompleted(control, controlFailure);
 
     stopProfiler();
 
     JfrEvents events = verifyEvents("datadog.TaskBlock");
-    assertTrue(TaskBlockAssertions.containsBlocker(events, identityHash(controlMonitor)),
+    assertTrue(
+        TaskBlockAssertions.containsBlocker(events, identityHash(controlMonitor)),
         "control wait was not produced");
-    assertFalse(TaskBlockAssertions.containsBlocker(events, identityHash(monitor)),
+    assertFalse(
+        TaskBlockAssertions.containsBlocker(events, identityHash(monitor)),
         "traced wait was not suppressed");
   }
 
@@ -198,21 +226,24 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     CountDownLatch restartReady = new CountDownLatch(1);
     CountDownLatch attemptingContention = new CountDownLatch(1);
     AtomicReference<Throwable> failure = new AtomicReference<>();
-    Thread worker = new Thread(() -> {
-      try {
-        synchronized (waitMonitor) {
-          waiting.countDown();
-          waitMonitor.wait();
-        }
-        waitCompleted.countDown();
-        assertTrue(restartReady.await(5, TimeUnit.SECONDS));
-        attemptingContention.countDown();
-        synchronized (contentionMonitor) {
-        }
-      } catch (Throwable t) {
-        failure.set(t);
-      }
-    }, "taskblock-monitor-restart");
+    Thread worker =
+        new Thread(
+            () -> {
+              try {
+                synchronized (waitMonitor) {
+                  waiting.countDown();
+                  waitMonitor.wait();
+                }
+                waitCompleted.countDown();
+                assertTrue(restartReady.await(5, TimeUnit.SECONDS));
+                attemptingContention.countDown();
+                synchronized (contentionMonitor) {
+                }
+              } catch (Throwable t) {
+                failure.set(t);
+              }
+            },
+            "taskblock-monitor-restart");
 
     worker.start();
     assertTrue(waiting.await(5, TimeUnit.SECONDS));
@@ -228,8 +259,7 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     // Built from getProfilerCommand() so subclasses exercise their own configuration on the
     // restarted recording too, not just on the initial one.
     try {
-      profiler.execute("start," + getProfilerCommand() + ",jfr,file="
-          + recording.toAbsolutePath());
+      profiler.execute("start," + getProfilerCommand() + ",jfr,file=" + recording.toAbsolutePath());
       restarted = true;
       synchronized (contentionMonitor) {
         restartReady.countDown();
@@ -242,8 +272,7 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
 
       JfrEvents events = verifyEvents(recording, "datadog.TaskBlock", false);
       assertTaskBlockStackReference(events);
-      assertTrue(TaskBlockAssertions.containsBlocker(
-          events, identityHash(contentionMonitor)));
+      assertTrue(TaskBlockAssertions.containsBlocker(events, identityHash(contentionMonitor)));
       assertRestartedConfiguration(profiler.getDebugCounters());
     } finally {
       restartReady.countDown();
@@ -269,30 +298,40 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
 
     Object waitMonitor = new Object();
     AtomicReference<Throwable> failure = new AtomicReference<>();
-    Thread waiter = (Thread) startVirtualThread.invoke(null, (Runnable) () -> {
-      try {
-        synchronized (waitMonitor) {
-          waitMonitor.wait(100);
-        }
-      } catch (Throwable t) {
-        failure.set(t);
-      }
-    });
+    Thread waiter =
+        (Thread)
+            startVirtualThread.invoke(
+                null,
+                (Runnable)
+                    () -> {
+                      try {
+                        synchronized (waitMonitor) {
+                          waitMonitor.wait(100);
+                        }
+                      } catch (Throwable t) {
+                        failure.set(t);
+                      }
+                    });
     assertCompleted(waiter, failure);
 
     Object contentionMonitor = new Object();
     CountDownLatch attempting = new CountDownLatch(1);
     Thread contender;
     synchronized (contentionMonitor) {
-      contender = (Thread) startVirtualThread.invoke(null, (Runnable) () -> {
-        try {
-          attempting.countDown();
-          synchronized (contentionMonitor) {
-          }
-        } catch (Throwable t) {
-          failure.set(t);
-        }
-      });
+      contender =
+          (Thread)
+              startVirtualThread.invoke(
+                  null,
+                  (Runnable)
+                      () -> {
+                        try {
+                          attempting.countDown();
+                          synchronized (contentionMonitor) {
+                          }
+                        } catch (Throwable t) {
+                          failure.set(t);
+                        }
+                      });
       assertTrue(attempting.await(5, TimeUnit.SECONDS));
       Thread.sleep(100);
     }
@@ -300,15 +339,18 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
 
     Object platformWaitMonitor = new Object();
     AtomicReference<Throwable> platformFailure = new AtomicReference<>();
-    Thread platformWaiter = new Thread(() -> {
-      try {
-        synchronized (platformWaitMonitor) {
-          platformWaitMonitor.wait(100);
-        }
-      } catch (Throwable t) {
-        platformFailure.set(t);
-      }
-    }, "taskblock-control-object-wait");
+    Thread platformWaiter =
+        new Thread(
+            () -> {
+              try {
+                synchronized (platformWaitMonitor) {
+                  platformWaitMonitor.wait(100);
+                }
+              } catch (Throwable t) {
+                platformFailure.set(t);
+              }
+            },
+            "taskblock-control-object-wait");
     platformWaiter.start();
     assertCompleted(platformWaiter, platformFailure);
 
@@ -318,15 +360,18 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     CountDownLatch platformAttempting = new CountDownLatch(1);
     Thread platformContender;
     synchronized (platformMonitor) {
-      platformContender = new Thread(() -> {
-        try {
-          platformAttempting.countDown();
-          synchronized (platformMonitor) {
-          }
-        } catch (Throwable t) {
-          platformFailure.set(t);
-        }
-      }, "taskblock-control-monitor-contention");
+      platformContender =
+          new Thread(
+              () -> {
+                try {
+                  platformAttempting.countDown();
+                  synchronized (platformMonitor) {
+                  }
+                } catch (Throwable t) {
+                  platformFailure.set(t);
+                }
+              },
+              "taskblock-control-monitor-contention");
       platformContender.start();
       assertTrue(platformAttempting.await(5, TimeUnit.SECONDS));
       Thread.sleep(100);
@@ -338,10 +383,38 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     JfrEvents events = verifyEvents("datadog.TaskBlock");
     assertRecordedThread(events, platformWaitMonitor, platformWaiter);
     assertRecordedThread(events, platformMonitor, platformContender);
-    assertFalse(TaskBlockAssertions.containsBlocker(events, identityHash(waitMonitor)),
+    assertFalse(
+        TaskBlockAssertions.containsBlocker(events, identityHash(waitMonitor)),
         "virtual-thread wait was recorded as a carrier TaskBlock");
-    assertFalse(TaskBlockAssertions.containsBlocker(events, identityHash(contentionMonitor)),
+    assertFalse(
+        TaskBlockAssertions.containsBlocker(events, identityHash(contentionMonitor)),
         "virtual-thread contention was recorded as a carrier TaskBlock");
+  }
+
+  /** Verifies the callback worker, state, duration and workload stack together. */
+  private static void assertExactMonitorEvent(
+      JfrEvents events, Thread worker, Object monitor, String state, String workload) {
+    int matching = 0;
+    for (JfrEvent event : events) {
+      if (event.getLong("blocker", -1L) != identityHash(monitor)) continue;
+      assertTrue(event.get("eventThread") instanceof Map, "Missing resolved monitor worker");
+      assertEquals(worker.getName(), ((Map<?, ?>) event.get("eventThread")).get("javaName"));
+      assertEquals(Long.valueOf(worker.getId()), event.getThreadJavaId("eventThread"));
+      assertEquals(Long.valueOf(0L), event.getLong("spanId"));
+      assertEquals(Long.valueOf(0L), event.getLong("localRootSpanId"));
+      assertEquals(Long.valueOf(0L), event.getLong("unblockingSpanId"));
+      assertEquals(state, event.getString("observedBlockingState"));
+      assertNotNull(event.getLong("duration"));
+      assertTrue(event.getLong("duration") > 0);
+      assertNotNull(event.getStackTraceString());
+      assertTrue(
+          event.getStackTraceString().contains(workload),
+          "The callback must resolve its own workload stack");
+      matching++;
+    }
+    assertEquals(1, matching, "Exactly one event per completed monitor interval");
+    TaskBlockAssertions.assertNoAnchorFields(events);
+    TaskBlockAssertions.assertNoCorrelationId(events);
   }
 
   @Override
@@ -349,16 +422,8 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     return "wall=1ms,filter=,wallprecheck=true";
   }
 
-  /**
-   * Hook for subclasses to assert that the restarted recording ran under their own
-   * configuration. No-op here so the base class stays configuration-agnostic.
-   *
-   * <p>The restart's {@code start,...} command resets the native debug counters, so
-   * {@code counters} only accumulates over the restarted recording: subclasses can assert
-   * absolute values rather than deltas against a pre-restart baseline.
-   */
-  protected void assertRestartedConfiguration(Map<String, Long> counters) {
-  }
+  /** Receives counters reset by the restarted session, independent of the base configuration. */
+  protected void assertRestartedConfiguration(Map<String, Long> counters) {}
 
   protected void assertTaskBlockStackReference(JfrEvents events) {
     TaskBlockAssertions.assertContainsStackTrace(events);

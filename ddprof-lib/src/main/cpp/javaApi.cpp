@@ -718,6 +718,19 @@ Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
   return recorded ? JNI_TRUE : JNI_FALSE;
 }
 
+// Qualification probes use the live VM's JNI table without changing classifier semantics.
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_wallclock_RealVmThreadClassifierTest_jniVersion0(
+    JNIEnv *env, jclass unused) {
+  return env->GetVersion();
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_wallclock_RealVmThreadClassifierTest_isPlatformThread0(
+    JNIEnv *env, jclass unused, jthread thread) {
+  return JVMSupport::isPlatformThread(env, thread) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv *env,
                                                        jclass unused) {

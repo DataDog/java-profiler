@@ -5,15 +5,15 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.JfrFrame;
 import java.util.HashSet;
 import java.util.Set;
-
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Assertions for the synchronous {@code datadog.TaskBlock} event contract. */
 final class TaskBlockAssertions {
@@ -23,6 +23,39 @@ final class TaskBlockAssertions {
   private static final String SUPPRESSED_SAMPLE_COUNT = "suppressedSampleCount";
   private static final String OBSERVED_BLOCKING_STATE = "observedBlockingState";
   private static final String CORRELATION_ID = "correlationId";
+
+  /** Counts events with the expected blocker identity. */
+  static int countBlockerEvents(JfrEvents events, long blocker) {
+    int count = 0;
+    for (JfrEvent item : events) {
+      if (item.getLong(BLOCKER, Long.MIN_VALUE) == blocker) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /** Counts events attributed to the named worker. */
+  static int countEventsForThread(JfrEvents events, String threadName) {
+    int count = 0;
+    for (JfrEvent item : events) {
+      if (threadName.equals(item.getThreadName("eventThread"))) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /** Sums segment duration across rotations for the named worker. */
+  static double durationNanosForThread(JfrEvents events, String threadName) {
+    double durationNanos = 0;
+    for (JfrEvent item : events) {
+      if (threadName.equals(item.getThreadName("eventThread"))) {
+        durationNanos += item.getLong("duration", 0L);
+      }
+    }
+    return durationNanos;
+  }
 
   private TaskBlockAssertions() {}
 
@@ -35,8 +68,8 @@ final class TaskBlockAssertions {
     return false;
   }
 
-  static void assertContains(JfrEvents events, long rootSpanId, long spanId,
-      long blocker, long unblockingSpanId) {
+  static void assertContains(
+      JfrEvents events, long rootSpanId, long spanId, long blocker, long unblockingSpanId) {
     for (JfrEvent item : events) {
       if (item.getLong(AbstractProfilerTest.LOCAL_ROOT_SPAN_ID, Long.MIN_VALUE) == rootSpanId
           && item.getLong(AbstractProfilerTest.SPAN_ID, Long.MIN_VALUE) == spanId
@@ -45,8 +78,8 @@ final class TaskBlockAssertions {
         return;
       }
     }
-    throw new AssertionError("Expected TaskBlock blocker=" + blocker
-        + ", unblockingSpanId=" + unblockingSpanId);
+    throw new AssertionError(
+        "Expected TaskBlock blocker=" + blocker + ", unblockingSpanId=" + unblockingSpanId);
   }
 
   static void assertContainsObservedState(JfrEvents events, String expected) {

@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -28,8 +29,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   private static final int OSTHREAD_STATE_SLEEPING = 7;
   private static final long SLEEP_MILLIS = 300;
   private static final String PRE_EXISTING_THREAD_NAME = "unfiltered-precheck-existing";
-  private static final String SUPPRESSED_OWNED_BLOCK_COUNTER =
-      "wc_signals_suppressed_owned_block";
+  private static final String SUPPRESSED_OWNED_BLOCK_COUNTER = "wc_signals_suppressed_owned_block";
 
   private ExecutorService preExistingWorker;
   private Thread preExistingThread;
@@ -51,12 +51,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
     assertOwnedBlockSuppressionObserved(suppressedBefore);
   }
 
-  /**
-   * Verifies that entering the context window prevents owned-block suppression in an
-   * unfiltered recording.
-   *
-   * @throws Exception if the worker cannot complete
-   */
+  /** Context-window membership excludes owned-block suppression in an unfiltered recording. */
   @RetryingTest(3)
   public void sleepingThreadInsideContextWindowIsNotOverSuppressed() throws Exception {
     assertTrue(
@@ -77,8 +72,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
    * @throws Exception if the worker cannot complete
    */
   @RetryingTest(3)
-  public void parkedPreExistingThreadOutsideContextWindowIsOwnedBlockSuppressed()
-      throws Exception {
+  public void parkedPreExistingThreadOutsideContextWindowIsOwnedBlockSuppressed() throws Exception {
     long suppressedBefore = suppressedSignals();
     runPreExistingParkedWorker();
 
@@ -99,24 +93,61 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
         runPreExistingUnownedSleepingWorker() != 0,
         "Expected the setup block to register the worker");
 
+    boolean delegated = profiler.getStatus().contains("WallClock Engine : WallClock (JVMTI)");
     stopProfiler();
 
-    long sampleCount = 0;
-    long totalWeight = 0;
-    for (JfrEvent event : verifyEvents("datadog.MethodSample", false)) {
-      if (PRE_EXISTING_THREAD_NAME.equals(event.getThreadName("eventThread"))) {
-        sampleCount++;
-        totalWeight += event.getLong(WEIGHT, 0);
+    long samples = 0;
+    long weight = 0;
+    long sleepingWeight = 0;
+    for (JfrEvent sample : verifyEvents("datadog.MethodSample")) {
+      if (!PRE_EXISTING_THREAD_NAME.equals(sample.getThreadName("eventThread"))) continue;
+      assertEquals(Long.valueOf(preExistingThread.getId()), sample.getThreadJavaId("eventThread"));
+      assertNotNull(sample.getLong("weight"));
+      assertTrue(sample.getLong("weight") > 0);
+      samples++;
+      weight += sample.getLong("weight");
+      assertNotNull(sample.getEnumName(THREAD_STATE));
+      if (delegated) {
+        assertTrue(sample.getStackTrace().isEmpty(), "Delegated samples have no local stack");
+        assertTrue(
+            sample.getLong("correlationId", 0L) > 0,
+            "Delegated native samples must have a stack-request correlation ID");
+      } else {
+        String stack = sample.getStackTraceString();
+        // HotSpot 25 sleep_nanos uses OSThreadWaitState(false), reported as PARKED.
+        // Require the actual sleep workload, not a VM-version-dependent OS state name.
+        if (stack != null
+            && stack.contains("java.lang.Thread.sleep")
+            && stack.contains("runPreExistingUnownedSleepingWorker")) {
+          sleepingWeight += sample.getLong("weight");
+        }
       }
     }
+    // Weight counts received sampling signals, including coalesced unowned observations;
+    // it is not elapsed time divided by the requested interval (timers can deliver late).
+    assertTrue(samples > 0 && weight >= samples, "Missing positive-weight unowned samples");
     assertTrue(
-        totalWeight >= 10,
-        "Expected at least 10 represented observations for the unowned sleep, count="
-            + sampleCount + ", weight=" + totalWeight);
-    assertTrue(
-        totalWeight > sampleCount,
-        "Expected suppressed observations to be represented by weight, count="
-            + sampleCount + ", weight=" + totalWeight);
+        weight >= 10, "Expected ordinary MethodSample weight after owned exit, got: " + weight);
+    if (!delegated) {
+      assertTrue(
+          sleepingWeight >= 10,
+          "Expected resolved sleeping-workload sample weight after owned exit, got: "
+              + sleepingWeight);
+    }
+    System.out.println(
+        "UNOWNED_POPULATION workerJavaId="
+            + preExistingThread.getId()
+            + " samples="
+            + samples
+            + " weight="
+            + weight
+            + " sleepingWeight="
+            + sleepingWeight
+            + " stackEvidence="
+            + (delegated ? "native-request-only" : "resolved-local"));
+    if (profiler.getDebugCounters().getOrDefault("wc_unowned_blocked_recorded", 0L) > 0) {
+      assertTrue(weight > samples, "Coalesced unowned observations must retain their weight");
+    }
   }
 
   /**
@@ -243,8 +274,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
         .submit(
             () -> {
               assertSame(preExistingThread, Thread.currentThread());
-              long token =
-                  ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
+              long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
               ProfilerOwnedBlockHooks.blockExit(profiler, token);
               Thread.sleep(SLEEP_MILLIS);
               return token;
@@ -277,7 +307,8 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
               try {
                 long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(SLEEP_MILLIS);
                 while (System.nanoTime() < deadline) {
-                  // Keep the OS thread runnable so suppression must come from the owned park marker.
+                  // Keep the OS thread runnable so suppression must come from the owned park
+                  // marker.
                 }
               } finally {
                 ProfilerOwnedBlockHooks.parkExit(
@@ -302,9 +333,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
 
   private void assertSuppressedSamples(String threadName) {
     long sampleCount = samplesForThread(threadName);
-    assertTrue(
-        sampleCount >= 1,
-        "Expected the owned block's first MethodSample to be retained");
+    assertTrue(sampleCount >= 1, "Expected the owned block's first MethodSample to be retained");
     assertTrue(
         sampleCount < 10,
         "Expected samples after the first owned-block sample to be suppressed, got: "

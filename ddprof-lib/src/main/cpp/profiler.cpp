@@ -808,9 +808,11 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
   // JVM (as user_data) and to our own event.
   u64 correlation_id = atomicIncRelaxed(_sample_seq);
 
-  Counters::increment(JVMTI_STACKS_REQUESTED);
   jvmtiError rc = VM::requestStackTrace(ucontext, (jlong)correlation_id);
   if (rc != JVMTI_ERROR_NONE) {
+    if (rc == JVMTI_ERROR_INVALID_THREAD) {
+      return false; // The admission drop is counted by VM::requestStackTrace.
+    }
     if (rc == JVMTI_ERROR_WRONG_PHASE) {
       Counters::increment(JVMTI_STACKS_FAILED_WRONG_PHASE);
     } else {
@@ -1635,11 +1637,8 @@ void Profiler::setTaskBlockEnabled(bool enabled) {
   }
 
   _task_block_enabled.store(false, std::memory_order_release);
-  // Clear the admission flag first so no consumer can observe enabled events, then
-  // always attempt teardown. A previous enable whose setup AND rollback both failed
-  // left the flag false while JVMTI events stayed on; retrying unconditionally is the
-  // only way that leak is ever reclaimed. setNativeMonitorTaskBlockEventsEnabled(false) is
-  // documented as a no-op when the capability was never enabled.
+  // Clear callback admission before teardown. Failed setup and rollback can leave
+  // JVMTI events enabled while this flag is false, so teardown is unconditional.
   _task_block_monitor_events_enabled.exchange(false, std::memory_order_acq_rel);
   setNativeMonitorTaskBlockEventsEnabled(false);
 }
@@ -1785,6 +1784,16 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   _cpu_engine = selectCpuEngine(args);
   _wall_engine = selectWallEngine(args);
+
+  // Java API starts opt in after the bridge's startup-argument probe has run.
+  // Enable the extension before a selected delegated engine can request stacks.
+  if (args._jvmtistacks &&
+      (((_event_mask & EM_CPU) &&
+        (_cpu_engine == &ctimer_jvmti || _cpu_engine == &itimer_jvmti)) ||
+       ((_event_mask & EM_WALL) && _wall_engine == &wall_jvmti_engine)) &&
+      !VM::initializeRequestStackTrace()) {
+    return Error("Failed to initialize JVM delegated stack traces");
+  }
 
   const char *filter = args._filter != nullptr ? args._filter : "0";
   const bool track_unfiltered_wall =
@@ -2306,10 +2315,8 @@ Error Profiler::dump(const char *path, const int length) {
     updateNativeLibMemStats();
 
     Error err = Error::OK;
-    // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
-    // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
-    // the rotated buffers. StringDictionary's RefCountGuard protocol handles
-    // its own writer/reader coordination.
+    // rotateDictsAndRun fences ASGCT/JNI CallTraceStorage writers with lockAll().
+    // StringDictionary coordinates its own readers and writers with RefCountGuard.
     if (beginTaskBlockRotation()) {
       rotateDictsAndRun([&]{
         err = _jfr.dump(path, length);

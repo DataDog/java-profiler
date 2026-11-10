@@ -176,6 +176,7 @@
   /* Delegated stacks dropped at slot-lock. Rec-lock drops from all recording  \
    * paths (delegated and direct) go into SAMPLES_DROPPED_REC_LOCK. */         \
   X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
+  X(JVMTI_STACKS_DROPPED_NON_JAVA, "jvmti_stacks_dropped_non_java")           \
   X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")                     \
   X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \

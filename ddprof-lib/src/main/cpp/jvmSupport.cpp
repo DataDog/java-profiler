@@ -39,14 +39,13 @@ Mutex JVMSupport::_initialization_lock;
 // - JVMTI::VMInit() callback (vmEntry.cpp)
 // - JavaProfiler.getInstance() via JNI down call - JVM must have been initialized
 bool JVMSupport::isPlatformThread(JNIEnv* jni, jthread thread) {
-    if (jni == nullptr || thread == nullptr) return false;
+    if (jni == nullptr || thread == nullptr || jni->functions == nullptr) return false;
     jint jni_version = jni->GetVersion();
     if (jni_version <= 0) return false;
     if (jni_version < JNI_VERSION_19_VALUE) return true;
 
     const JniFunction* functions =
         reinterpret_cast<const JniFunction*>(jni->functions);
-    if (functions == nullptr) return false;
     IsVirtualThreadFunction is_virtual_thread =
         reinterpret_cast<IsVirtualThreadFunction>(
             functions[IS_VIRTUAL_THREAD_INDEX]);

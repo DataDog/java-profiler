@@ -645,13 +645,10 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
     event._thread_state = state;
     event._execution_mode = mode;
     event._weight = precheck.unowned_weight;
-    // Pass nullptr ucontext so the JVM uses safepoint-based stack walking.
-    // Passing the signal-frame PC causes the extension to reject samples where
-    // the thread is currently inside JVM-internal (non-Java) code.
-    // Unowned observations retain unit weight: this engine cannot replay a
-    // cached blocked stack to account for suppressed tail observations.
+    // RequestStackTrace needs ucontext when the thread has no last-Java-frame anchor.
+    // Unowned samples retain unit weight: this engine cannot replay a cached stack.
     bool recorded = Profiler::instance()->recordSampleDelegated(
-        nullptr, last_sample, tid, BCI_WALL, &event);
+        ucontext, last_sample, tid, BCI_WALL, &event);
     finishWallPrecheck(precheck, recorded);
   }
 }

@@ -91,12 +91,8 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
 
   ThreadFilter::SlotID slot_id = WallClockBlockTracker::tokenSlotId(block_token);
   u64 generation = WallClockBlockTracker::tokenGeneration(block_token);
-  // beginTaskBlock0 resolves its slot through ThreadFilter::ensureCurrentThreadSlot(),
-  // which self-heals a cached-but-stale slot_id (e.g. after a recording restart
-  // changed the epoch) back to this tid's real slot. The block duration between
-  // enter and exit can span such a restart, so re-validate here too instead of
-  // trusting the cached value directly - otherwise a stale cache makes the slot
-  // comparison below meaningless and silently drops the event uncounted.
+  // A block can span a recording restart, which invalidates the cached slot epoch.
+  // Re-resolve the exiting thread's slot before comparing it with the entry slot.
   ThreadFilter::SlotID current_slot = thread_filter->ensureCurrentThreadSlot(current);
   BlockRunSnapshot snapshot;
   bool exited = current_slot == slot_id &&
@@ -142,10 +138,8 @@ static u64 monitorBlockerHash(jvmtiEnv *jvmti, jobject object) {
   return static_cast<u64>(static_cast<uint32_t>(hash));
 }
 
-// Deliberately takes no jvmtiEnv: no JVMTI call may run on this hot path. The
-// blocker identity hash is resolved lazily in monitorBlockExit, and only for
-// intervals that pass the minimum-duration filter (GetObjectHashCode mutates the
-// object's mark word on HotSpot).
+// Entry takes no jvmtiEnv: monitorBlockExit resolves the blocker hash after filtering.
+// GetObjectHashCode mutates HotSpot's object mark word, so short intervals avoid it.
 static void monitorBlockEnter(JNIEnv *jni, jthread thread,
                               OSThreadState state) {
   Profiler *profiler = Profiler::instance();
@@ -220,13 +214,8 @@ static void monitorBlockExit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
     return;
   }
 
-  // Resolve the blocker identity hash only for intervals that will actually pass
-  // the eligibility filter. GetObjectHashCode mutates the object's mark word on
-  // HotSpot, so it must not run for short, high-frequency contention that gets
-  // discarded anyway. On older HotSpot versions with biased locking, assigning
-  // an identity hash also prevents the object from being biased again.
-  // These conditions mirror taskBlockPassesBasicEligibility, and the same
-  // end_ticks is handed down so there is no boundary drift.
+  // Filter before GetObjectHashCode can mutate the object's mark word.
+  // Share end_ticks with taskBlockPassesBasicEligibility to avoid boundary drift.
   u64 end_ticks = monitorTicks();
   if (profiler->taskBlockEnabled() && profiler->nativeMonitorTaskBlockEnabled() &&
       context.spanId == 0 && exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
