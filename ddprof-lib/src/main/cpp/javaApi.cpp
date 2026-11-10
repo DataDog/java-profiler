@@ -1113,6 +1113,17 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
 #include "referenceChains.h"
 #include <vector>
 
+// The seam mutates global JVMTI state (a fresh JVMTI environment per call,
+// AddCapabilities, a CompiledMethodLoad callback over the shared ReadContext,
+// JVM-wide enable/disable of CompiledMethodLoad), so like the seams below it
+// is DEBUG-only; release builds get a null-returning stub.
+extern "C" DLLEXPORT jlongArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_compiledMethodReadsForTest0(
+    JNIEnv* env, jclass unused, jobject method) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return JVMSupport::compiledMethodReadsForTest(env, method);
+}
+
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setGcGenerationsEnabled0(
     JNIEnv *env, jclass unused, jboolean enabled) {
@@ -1549,6 +1560,12 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setGcGenerationsEnabled0(
     JNIEnv *env, jclass unused, jboolean enabled) {
   return JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jlongArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_compiledMethodReadsForTest0(
+    JNIEnv *env, jclass unused, jobject method) {
+  return nullptr;
 }
 
 extern "C" DLLEXPORT void JNICALL

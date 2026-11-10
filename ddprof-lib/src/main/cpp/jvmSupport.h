@@ -99,6 +99,10 @@ public:
 
     // If a class is hidden class
     static inline bool isHidden(jint modifiers);
+
+    // Test seam: reads nmethod->_method for `method`'s compiled bodies;
+    // HotSpot only, nullptr elsewhere.
+    static jlongArray compiledMethodReadsForTest(JNIEnv* jni, jobject method);
 };
 
 #endif // _JVMSUPPORT_H

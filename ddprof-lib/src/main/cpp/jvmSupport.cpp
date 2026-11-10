@@ -16,6 +16,7 @@
 #include "vmEntry.h"
 
 #include "hotspot/hotspotSupport.h"
+#include "hotspot/nmethodMethodCheck.h"
 
 #include <jni.h>
 
@@ -251,4 +252,8 @@ bool JVMSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
     return true;
   }
   return false;
+}
+
+jlongArray JVMSupport::compiledMethodReadsForTest(JNIEnv* jni, jobject method) {
+    return VM::isHotspot() ? NMethodMethodCheck::readsForTest(jni, method) : nullptr;
 }
