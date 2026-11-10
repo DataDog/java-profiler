@@ -141,6 +141,15 @@ for tool in bash dirname; do
 done
 printf '#!/bin/sh\nexit 0\n' > "${GUARDBIN}/curl"
 chmod +x "${GUARDBIN}/curl"
+# The banner of the mvn retry loop only ever reaches maven-get.log, so the
+# guard ordering is pinned on that file: the guarded run must leave it
+# untouched (not even truncated), which fails once the loop runs first.
+MVNLOG="${HERE}/../../../maven-get.log"
+if [ -e "${MVNLOG}" ]; then
+  mvnlog_before=$(cat "${MVNLOG}")
+else
+  mvnlog_before='__absent__'
+fi
 GUARD_ERR="${WORK}/guard.err"
 GUARD_OUT="${WORK}/guard.out"
 : > "${GUARD_ERR}"
@@ -155,8 +164,40 @@ else
   fail_case "a PATH without java exits zero"
 fi
 assert_eq "a missing java emits the FAIL line" "FAIL:java not found" "$(grep -m1 '^FAIL:java not found' "${GUARD_ERR}")"
-assert_eq "the guard fires before the artifact fetch" "0" "$(grep -c 'mvn get attempt' "${GUARD_OUT}")"
+if [ "${mvnlog_before}" = '__absent__' ]; then
+  if [ -e "${MVNLOG}" ]; then
+    fail_case "the guard fires before the artifact fetch: maven-get.log was created"
+  else
+    pass "the guard fires before the artifact fetch"
+  fi
+else
+  assert_eq "the guard fires before the artifact fetch" "${mvnlog_before}" "$(cat "${MVNLOG}")"
+fi
 assert_eq "the guarded run writes no probe records" "0" "$(grep -c '^probe_' "${GUARD_OUT}")"
+
+# A PATH whose only java is a non-executable regular file must fail the
+# same guard: bash's command lookup needs the exec bit, so JAVA_BIN stays
+# empty and the gate fails before the fetch loop.
+NOEXBIN="${WORK}/noexbin"
+mkdir -p "${NOEXBIN}"
+for tool in bash dirname; do
+  ln -sf "$(command -v "$tool")" "${NOEXBIN}/$tool"
+done
+printf '#!/bin/sh\nexit 0\n' > "${NOEXBIN}/curl"
+chmod +x "${NOEXBIN}/curl"
+printf 'not a runnable java\n' > "${NOEXBIN}/java"
+chmod 644 "${NOEXBIN}/java"
+NOEX_ERR="${WORK}/noex.err"
+: > "${NOEX_ERR}"
+PATH="${NOEXBIN}" bash "${CHECK}" 1 > /dev/null 2> "${NOEX_ERR}"
+noex_rc=$?
+PATH="${saved_guard_path}"
+if [ "${noex_rc}" -ne 0 ]; then
+  pass "a non-executable java fails the gate"
+else
+  fail_case "a non-executable java exits zero"
+fi
+assert_eq "a non-executable java emits the FAIL line" "FAIL:java not found" "$(grep -m1 '^FAIL:java not found' "${NOEX_ERR}")"
 
 # --- fake trees and stubs -----------------------------------------------------
 
