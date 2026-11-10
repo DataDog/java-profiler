@@ -1,0 +1,232 @@
+#! /bin/bash
+# Copyright 2026, Datadog, Inc.
+#
+# Network-free tests for the memory sampler's load markers. The sampler is
+# driven against fake proc and cgroup trees through MEMWATCH_PROC_ROOT and
+# MEMWATCH_CGROUP_ROOT; the pid it discovers is a helper process whose
+# command line carries the control-file name, as the production JVM does.
+# Run with: bash .gitlab/reliability/tests/mem_watch_markers_test.sh
+
+set -uo pipefail
+
+HERE=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )
+STEPS="${HERE}/../../benchmarks/steps"
+
+FAILED=0
+WORK=$(mktemp -d)
+JPID=
+SPID=
+CTL=".running"
+
+# shellcheck disable=SC2329  # cleanup runs through the EXIT trap
+cleanup() {
+  kill "${JPID:-}" "${SPID:-}" 2>/dev/null
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+# pid discovery drops lines containing 'grep' or 'time', so the temp tree
+# must not contain either string
+case "$WORK" in
+  *time*|*grep*)
+    echo "FAIL: temp dir path is excluded by pid discovery: $WORK"
+    exit 1
+    ;;
+esac
+
+pass() { echo "PASS: $1"; }
+fail() { echo "FAIL: $1"; FAILED=1; }
+
+assert_eq() { # $1 what, $2 expected, $3 actual
+  if [ "$2" = "$3" ]; then
+    pass "$1"
+  else
+    fail "$1: expected [$2] got [$3]"
+  fi
+}
+
+write_stat() { # $1 proc root, $2 pid, $3 comm, $4 state, $5 ppid
+  mkdir -p "$1/$2"
+  printf '%s (%s) %s %s 1 1 1 0 -1 0\n' "$2" "$3" "$4" "$5" > "$1/$2/stat"
+}
+
+write_smaps() { # $1 proc root, $2 pid, $3 rss kB
+  mkdir -p "$1/$2"
+  printf 'Rss:        %s kB\n' "$3" > "$1/$2/smaps_rollup"
+}
+
+start_fake_java() {
+  cat > "$WORK/javawatch" <<'EOF'
+#!/bin/sh
+trap 'kill "$c" 2>/dev/null' EXIT
+sleep 600 &
+c=$!
+wait $c
+EOF
+  ( cd "$WORK" && exec sh ./javawatch "$CTL" ) & JPID=$!
+}
+
+start_sampler() { # $1 = shell to run the sampler with
+  mkdir -p "$CASE_DIR"
+  ln -sf "$STEPS/mem_watch.sh" "$CASE_DIR/memsampler.sh"
+  ln -sf "$STEPS/collect_markers.sh" "$CASE_DIR/collect_markers.sh"
+  : > "$OUT"
+  : > "$CASE_DIR/$CTL"
+  : > "$CASE_DIR/sampler.stdout"
+  (
+    cd "$CASE_DIR" || exit 1
+    export MEMWATCH_PROC_ROOT="$PROC" MEMWATCH_CGROUP_ROOT="$CG"
+    exec "$1" ./memsampler.sh "$CTL" out.log
+  ) > "$CASE_DIR/sampler.stdout" 2>&1 & SPID=$!
+}
+
+wait_markers() { # $1 = markers records to wait for; 25 s timeout
+  local count deadline
+  deadline=$(( $(date +%s) + 25 ))
+  while :; do
+    count=$(grep -c '^markers:' "$OUT" 2>/dev/null)
+    count=${count:-0}
+    [ "$count" -ge "$1" ] && return 0
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      return 1
+    fi
+    sleep 0.2
+  done
+}
+
+stop_sampler() {
+  rm -f "$CASE_DIR/$CTL"
+  wait "$SPID" 2>/dev/null
+  kill "$JPID" 2>/dev/null
+  wait "$JPID" 2>/dev/null
+}
+
+line_n() { # $1 = 1-based line number of the sampler output
+  sed -n "$1p" "$OUT"
+}
+
+no_markers() { # $1 = case name
+  fail "$1: no markers record was written"
+  sed -n '1,10p' "$CASE_DIR/sampler.stdout" 2>/dev/null
+  stop_sampler
+}
+
+case_v2() {
+  CASE_DIR="$WORK/v2"; PROC="$WORK/v2/proc"; CG="$WORK/v2/cgroup"
+  OUT="$CASE_DIR/out.log"
+  mkdir -p "$PROC/pressure" "$CG"
+  printf 'some avg10=1.25 avg60=2.50 avg300=3.75 total=123\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$PROC/pressure/cpu"
+  printf 'some avg10=4.75 avg60=5.00 avg300=5.25 total=500\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$PROC/pressure/memory"
+  printf '0.52 0.58 0.59 1/500 12345\n' > "$PROC/loadavg"
+  printf 'cpu io memory\n' > "$CG/cgroup.controllers"
+  printf 'usage_usec 1000\nnr_periods 100\nnr_throttled 42\nthrottled_usec 0\n' > "$CG/cpu.stat"
+  start_fake_java
+  write_stat "$PROC" "$JPID" javawatch R 1
+  write_stat "$PROC" 901 cotenant R 1
+  write_stat "$PROC" 902 cotenant R 1
+  write_stat "$PROC" 903 sleeper S 1
+  write_smaps "$PROC" "$JPID" 12345
+  start_sampler sh
+  wait_markers 1 || { no_markers v2; return; }
+  # changed sources between ticks prove each markers record is read in the
+  # same tick as the mem record that precedes it
+  printf '1.75 1.80 1.85 2/600 999\n' > "$PROC/loadavg"
+  printf 'usage_usec 2000\nnr_periods 200\nnr_throttled 43\nthrottled_usec 0\n' > "$CG/cpu.stat"
+  write_smaps "$PROC" "$JPID" 13000
+  write_stat "$PROC" 905 samplerchild R "$SPID"
+  write_stat "$PROC" 906 otherchild R 424242
+  wait_markers 2 || { no_markers v2; return; }
+  stop_sampler
+  assert_eq "v2 mem line format" "mem: 12345" "$(line_n 1)"
+  assert_eq "v2 tick1 markers (JVM pid excluded from census)" \
+    "markers: psi_cpu_some_avg10=1.25 psi_memory_some_avg10=4.75 loadavg_1m=0.52 cpu_nr_throttled=42 cotenant_runnable=2" \
+    "$(line_n 2)"
+  assert_eq "v2 tick2 mem line" "mem: 13000" "$(line_n 3)"
+  assert_eq "v2 tick2 markers (same tick, sampler child excluded)" \
+    "markers: psi_cpu_some_avg10=1.25 psi_memory_some_avg10=4.75 loadavg_1m=1.75 cpu_nr_throttled=43 cotenant_runnable=3" \
+    "$(line_n 4)"
+  assert_eq "v2 mem record count" 2 "$(grep -c '^mem:' "$OUT")"
+  assert_eq "v2 markers record count" 2 "$(grep -c '^markers:' "$OUT")"
+  assert_eq "v2 no other output lines" 4 "$(sed -n '$=' "$OUT")"
+}
+
+case_v1() {
+  CASE_DIR="$WORK/v1"; PROC="$WORK/v1/proc"; CG="$WORK/v1/cgroup"
+  OUT="$CASE_DIR/out.log"
+  mkdir -p "$PROC/pressure" "$CG/cpu,cpuacct" "$CG/cpu"
+  printf 'some avg10=2.25 avg60=2.00 avg300=1.75 total=10\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$PROC/pressure/cpu"
+  printf 'some avg10=3.50 avg60=3.00 avg300=2.50 total=20\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$PROC/pressure/memory"
+  printf '1.10 1.20 1.30 2/300 777\n' > "$PROC/loadavg"
+  printf 'nr_periods 50\nnr_throttled 7\nthrottled_time 0\n' > "$CG/cpu,cpuacct/cpu.stat"
+  printf 'nr_periods 60\nnr_throttled 9\nthrottled_time 0\n' > "$CG/cpu/cpu.stat"
+  start_fake_java
+  write_stat "$PROC" "$JPID" javawatch R 1
+  write_stat "$PROC" 510 cotenant R 1
+  write_stat "$PROC" 511 idle S 1
+  write_smaps "$PROC" "$JPID" 23456
+  start_sampler sh
+  wait_markers 1 || { no_markers v1; return; }
+  rm -rf "$CG/cpu,cpuacct"
+  wait_markers 2 || { no_markers v1; return; }
+  stop_sampler
+  assert_eq "v1 mem line format" "mem: 23456" "$(line_n 1)"
+  assert_eq "v1 tick1 markers (cpu,cpuacct root preferred)" \
+    "markers: psi_cpu_some_avg10=2.25 psi_memory_some_avg10=3.50 loadavg_1m=1.10 cpu_nr_throttled=7 cotenant_runnable=1" \
+    "$(line_n 2)"
+  assert_eq "v1 tick2 markers (fallback to cpu root)" \
+    "markers: psi_cpu_some_avg10=2.25 psi_memory_some_avg10=3.50 loadavg_1m=1.10 cpu_nr_throttled=9 cotenant_runnable=1" \
+    "$(line_n 4)"
+  assert_eq "v1 one markers record per mem record" \
+    "$(grep -c '^mem:' "$OUT")" "$(grep -c '^markers:' "$OUT")"
+}
+
+case_missing() {
+  CASE_DIR="$WORK/missing"; PROC="$WORK/missing/proc"; CG="$WORK/missing/cgroup"
+  OUT="$CASE_DIR/out.log"
+  mkdir -p "$PROC" "$CG"
+  printf '0.25 0.35 0.45 3/400 555\n' > "$PROC/loadavg"
+  printf 'cpu\n' > "$CG/cgroup.controllers"
+  printf 'nr_periods 80\nnr_throttled 4\nthrottled_usec 0\n' > "$CG/cpu.stat"
+  start_fake_java
+  write_stat "$PROC" "$JPID" javawatch R 1
+  write_stat "$PROC" 610 cotenant R 1
+  write_stat "$PROC" 611 idle S 1
+  write_smaps "$PROC" "$JPID" 34567
+  start_sampler "$POSIX_SH"
+  wait_markers 1 || { no_markers missing; return; }
+  rm -rf "$CG"
+  rm -f "$PROC/loadavg"
+  wait_markers 2 || { no_markers missing; return; }
+  stop_sampler
+  assert_eq "missing tick1 markers (PSI files absent yield NA)" \
+    "markers: psi_cpu_some_avg10=NA psi_memory_some_avg10=NA loadavg_1m=0.25 cpu_nr_throttled=4 cotenant_runnable=1" \
+    "$(line_n 2)"
+  assert_eq "missing tick2 markers (cgroup and loadavg absent yield NA)" \
+    "markers: psi_cpu_some_avg10=NA psi_memory_some_avg10=NA loadavg_1m=NA cpu_nr_throttled=NA cotenant_runnable=1" \
+    "$(line_n 4)"
+  assert_eq "missing mem line format" "mem: 34567" "$(line_n 1)"
+}
+
+POSIX_SH='sh'
+if [ -x /bin/dash ]; then
+  POSIX_SH=/bin/dash
+fi
+
+case_v2
+case_v1
+case_missing
+
+# Direct helper call against a nonexistent proc root: every source is
+# unavailable, so no token may fall back to 0 or empty
+# shellcheck disable=SC2016  # $1/$2 are sh -c positional args, not expansions
+absent=$(cd "$STEPS" && "$POSIX_SH" -c '. ./collect_markers.sh; collect_markers "$1" "$2" 1 2' sh "$WORK/noroot" "$WORK/noroot")
+assert_eq "absent roots yield NA in every token" \
+  "psi_cpu_some_avg10=NA psi_memory_some_avg10=NA loadavg_1m=NA cpu_nr_throttled=NA cotenant_runnable=NA" \
+  "$absent"
+
+if [ "$FAILED" -eq 0 ]; then
+  echo "All mem_watch markers tests passed"
+  exit 0
+fi
+echo "mem_watch markers tests failed"
+exit 1
