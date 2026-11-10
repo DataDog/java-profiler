@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk17
 
 ## musl-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-11-10 09:09:20 EST
+**Date:** 2026-11-10 09:12:48 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-openj9-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 51 |
-| CPU Cores (end) | 51 |
+| CPU Cores (start) | 28 |
+| CPU Cores (end) | 28 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 340 |
-| Sample Rate | 5.67/sec |
-| Health Score | 354% |
-| Threads | 8 |
-| Allocations | 165 |
+| CPU Samples | 557 |
+| Sample Rate | 9.28/sec |
+| Health Score | 580% |
+| Threads | 9 |
+| Allocations | 353 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 87 |
-| Sample Rate | 1.45/sec |
-| Health Score | 91% |
-| Threads | 10 |
-| Allocations | 46 |
+| CPU Samples | 89 |
+| Sample Rate | 1.48/sec |
+| Health Score | 92% |
+| Threads | 14 |
+| Allocations | 71 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 51-64 cores)</summary>
+<summary>CPU Timeline (1 unique values: 28-28 cores)</summary>
 
 ```
-1794319438 51
-1794319443 51
-1794319448 51
-1794319453 51
-1794319458 51
-1794319463 51
-1794319468 51
-1794319473 51
-1794319478 51
-1794319483 51
-1794319488 64
-1794319493 64
-1794319498 51
-1794319503 51
-1794319508 51
-1794319513 51
-1794319518 51
-1794319523 51
-1794319528 51
-1794319533 51
+1794319704 28
+1794319709 28
+1794319714 28
+1794319719 28
+1794319724 28
+1794319729 28
+1794319734 28
+1794319739 28
+1794319744 28
+1794319749 28
+1794319754 28
+1794319759 28
+1794319764 28
+1794319769 28
+1794319774 28
+1794319779 28
+1794319784 28
+1794319789 28
+1794319794 28
+1794319799 28
 ```
 </details>
 
