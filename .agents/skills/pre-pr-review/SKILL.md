@@ -58,8 +58,9 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    knowledge and assumptions hide defects, and a long context costs more on every turn.
    Sphinx's workers already get only their task material; run `/code-review` in a
    subagent that does not inherit the conversation, or in a fresh session. Give the
-   reviewer only the range, these instructions and the change's stated intent, never
-   your own conclusions about its correctness.
+   reviewer the range, the change's stated intent, the `.knowledgebase/` skip and, for
+   a fix range, the findings it addresses; never your own conclusions about its
+   correctness.
 
    **Cost.** Plan for about $20–30 of agentic review per PR; before a run that is likely
    to exceed it, ask the user.
@@ -81,11 +82,12 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
      themselves. Fix those that are cheap to fix, review that last fix once, and list
      the rest in the report (step 6). A Critical or High finding from that review is
      fixed like any other.
-   - After two re-review rounds on the PR, stop whatever the severity: report the open
-     findings to the user, who decides whether another round runs. The first review
-     does not count; the review of a last fix does. This limit takes precedence over
-     the rule above. No marker while a Critical or High finding is neither fixed nor
-     explicitly waived, and fixes made after the stop are reviewed or waived first.
+   - After two re-review rounds in one run of this skill, stop whatever the severity:
+     make no further fixes, report the open findings to the user, and let the user
+     decide whether another round runs. The first review does not count; the review of
+     a last fix does. This limit takes precedence over the Medium/Low stop rule. No
+     marker while a Critical or High finding is neither fixed nor waived by the user.
+     Every fix is reviewed before the marker; the user can waive findings, not reviews.
 
 5. **Marker.** On the final commits, write the marker — also when the user ran
    the review manually and reports it back:
