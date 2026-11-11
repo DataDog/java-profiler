@@ -546,15 +546,17 @@ size_t ReferenceChainTracker::evictOldestDurableAnchors() {
       _static_anchor_fresh_queue.end());
   // Positions shifted: the collector clamps out-of-range cursors; in-range ones only lose fairness
   // for one lap.
-  // Force the next pass's static-field sweep (runPassManualWalk() skips it while the loaded-class
-  // count is unchanged): static-only holders are invisible to root enumeration, so a re-discovery
-  // of their class -> field edges is the only path that re-enlists them. Backed off: when the live
-  // durable population sits above the cap, re-enlistment keeps re-crossing it, and an unconditional
-  // reset here would re-force the sweep on every pass (see DURABLE_SWEEP_REFORCE_BACKOFF).
+  // Request a full static sweep lap (see _durable_anchor_resweep_pending): static-only holders
+  // are invisible to root enumeration, so a re-discovery of their class -> field edges is the
+  // only path that re-enlists them, and the completing lap's behind-cursor classes were traversed
+  // before the eviction - the cursor restart is what makes the serving lap cover them. Backed off:
+  // when the live durable population sits above the cap, re-enlistment keeps re-crossing it, and
+  // an unpaced request would restart the cursor on every pass (see DURABLE_SWEEP_REFORCE_BACKOFF).
   if (_durable_sweep_reforce_backoff > 0) {
     _durable_sweep_reforce_backoff--;
   } else {
-    _last_static_field_class_count = -1;
+    _durable_anchor_resweep_pending = true;
+    _static_field_sweep_cursor = 0;
     _durable_sweep_reforce_backoff = DURABLE_SWEEP_REFORCE_BACKOFF;
   }
   return evicted.size();
