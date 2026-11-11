@@ -66,20 +66,20 @@ def growth(count, start=100000):
     return values
 
 
-def markers(psi="0.1", throttled="4"):
-    return (f"markers: psi_cpu_some_avg10={psi} psi_memory_some_avg10=0.05 "
+def markers(psi_cpu="0.1", psi_mem="0.05", throttled="4"):
+    return (f"markers: psi_cpu_some_avg10={psi_cpu} psi_memory_some_avg10={psi_mem} "
             f"loadavg_1m=1.5 cpu_nr_throttled={throttled} cotenant_runnable=2")
 
 
-def emit(values, psi="0.1", throttled="4", na_psi=0, na_thr=0, missing=()):
+def emit(values, psi_cpu="0.1", psi_mem="0.05", throttled="4", na_psi=0, na_thr=0, missing=()):
     lines = []
     for i, v in enumerate(values):
         lines.append(f"mem: {v}")
         if i in missing:
             continue
-        p = "NA" if i < na_psi else psi
+        p = "NA" if i < na_psi else psi_mem
         t = "NA" if i < na_thr else throttled
-        lines.append(markers(p, t))
+        lines.append(markers(psi_cpu, p, t))
     return lines
 
 
@@ -120,14 +120,16 @@ write("na-at.log", emit(g10, missing=range(0, 10, 2)) + ["release_probe=not-appl
 write("na-above-psi.log", emit(g10, na_psi=6))
 write("na-above-throttle.log", emit(g10, na_thr=6))
 
-# PSI median and throttle delta, exactly at the bound and one step past it.
-write("psi-at.log", emit(g24, psi="10.0") + ["release_probe=not-applicable allocator=jemalloc"])
-write("psi-above.log", emit(g24, psi="10.5"))
+# psi_memory median, exactly at the bound and one step past it; psi_cpu is
+# recorded only, so a high psi_cpu never turns a quiet row inconclusive.
+write("psi-at.log", emit(g24, psi_mem="5.0") + ["release_probe=not-applicable allocator=jemalloc"])
+write("psi-above.log", emit(g24, psi_mem="5.5"))
+write("psi-cpu-high.log", emit(flat, psi_cpu="40.0", psi_mem="0.0") + ["release_probe=not-applicable allocator=jemalloc"])
 thr_at = emit(g24)
-thr_at[-1] = markers("0.1", "12")
+thr_at[-1] = markers("0.1", "0.05", "12")
 write("throttle-at.log", thr_at + ["release_probe=not-applicable allocator=jemalloc"])
 thr_above = emit(g24)
-thr_above[-1] = markers("0.1", "13")
+thr_above[-1] = markers("0.1", "0.05", "13")
 write("throttle-above.log", thr_above)
 
 # gmalloc probe shape: missing, failed, and NA RSS on either probe record.
@@ -296,13 +298,14 @@ expect_reason_is "the short-window reason names the sample count" "Only 4 memory
 
 expect_verdict "NA share at the bound still gets a verdict" fail na-at.log jemalloc
 expect_reason_is "NA share at the bound is not an NA verdict" "Memory usage is trending up"
-expect_verdict "NA share above the bound is inconclusive (NA psi)" inconclusive na-above-psi.log gmalloc
+expect_verdict "NA share above the bound is inconclusive (NA psi_memory)" inconclusive na-above-psi.log gmalloc
 expect_reason "NA share above the bound names the count" "missing for 6 of 10"
 expect_verdict "NA share above the bound is inconclusive (NA throttle)" inconclusive na-above-throttle.log gmalloc
 
-expect_verdict "PSI median at the bound still gets a verdict" fail psi-at.log jemalloc
-expect_verdict "PSI median above the bound is inconclusive" inconclusive psi-above.log gmalloc
-expect_reason "PSI verdict names the median" "Median host CPU pressure 10.5"
+expect_verdict "psi_memory median at the bound still gets a verdict" fail psi-at.log jemalloc
+expect_verdict "psi_memory median above the bound is inconclusive" inconclusive psi-above.log gmalloc
+expect_reason "psi_memory verdict names the median" "Median host memory pressure 5.5"
+expect_verdict "high psi_cpu with quiet memory pressure still passes" pass psi-cpu-high.log jemalloc
 
 expect_verdict "throttle delta at the bound still gets a verdict" fail throttle-at.log jemalloc
 expect_verdict "throttle delta above the bound is inconclusive" inconclusive throttle-above.log gmalloc
@@ -338,7 +341,7 @@ expect_verdict "interleaved grow-then-release passes" pass interleaved.log gmall
 
 if "${PYTHON_BIN}" - "${SCRIPT}" <<'PYEOF'
 import sys
-names = ["NA_SHARE_MAX", "PSI_CPU_SOME_AVG10_MAX", "THROTTLE_EVENTS_MAX", "RELEASE_RECOVERY_SHARE"]
+names = ["NA_SHARE_MAX", "PSI_MEMORY_SOME_AVG10_MAX", "THROTTLE_EVENTS_MAX", "RELEASE_RECOVERY_SHARE"]
 lines = open(sys.argv[1]).read().splitlines()
 problems = []
 for name in names:

@@ -250,9 +250,11 @@ so probe-perturbed RSS never feeds the growth statistic. Other allocators record
   thread-arena RSS may still be releasable.
 - `inconclusive` — the host, not the change, is the likely cause: fewer than 5
   samples, load markers unavailable for more than half of the samples, a median
-  `psi_cpu_some_avg10` above 10.0, or a `cpu_nr_throttled` rise above 8 over the
-  window; on `gmalloc` also a missing, failed or unreadable probe. PSI memory,
-  load average and the co-tenant census are recorded but never gate.
+  `psi_memory_some_avg10` above 5.0, or a `cpu_nr_throttled` rise above 8 over
+  the window; on `gmalloc` also a missing, failed or unreadable probe.
+  `psi_cpu_some_avg10`, load average and the co-tenant census are recorded but
+  never gate: scheduler contention does not distort RSS trends, while memory
+  pressure does through reclaim.
 
 The numeric bounds are provisional, chosen from observed runner behavior.
 

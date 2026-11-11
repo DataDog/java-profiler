@@ -4,8 +4,12 @@ import matplotlib.pyplot as plt
 
 # Provisional bound; at most half of the samples may lack usable load markers.
 NA_SHARE_MAX = 0.5
-# Provisional bound; observed idle hosts sit at PSI cpu 0.0-0.2 while CPU-loaded ones reach 45-90.
-PSI_CPU_SOME_AVG10_MAX = 10.0
+# Provisional; a quiet container reads 0.00 (observed 2026-11-10) and
+# sustained values of a few percent mean reclaim is altering the RSS series.
+PSI_MEMORY_SOME_AVG10_MAX = 5.0
+# psi_cpu_some_avg10 is recorded only, never gating: scheduler contention
+# distorts latency verdicts, not RSS trends.
+
 # Provisional bound; a clean non-binding run rose 0->4 throttles, so twice that is allowed.
 THROTTLE_EVENTS_MAX = 8
 # Provisional bound; the release probe must give back at least half of the growth.
@@ -109,23 +113,23 @@ def compute_verdict(memory_log, sample_markers, probe, allocator):
         return "inconclusive", f"Only {len(memory_log)} memory samples were recorded, at least 5 are needed"
 
     na_count = 0
-    psi_values = []
+    psi_memory_values = []
     throttle_values = []
     for markers in sample_markers:
-        psi = marker_value(markers, "psi_cpu_some_avg10")
+        psi_memory = marker_value(markers, "psi_memory_some_avg10")
         throttled = marker_value(markers, "cpu_nr_throttled")
-        if psi is None or throttled is None:
+        if psi_memory is None or throttled is None:
             na_count += 1
         else:
-            psi_values.append(psi)
+            psi_memory_values.append(psi_memory)
             throttle_values.append(throttled)
 
     if na_count / len(memory_log) > NA_SHARE_MAX:
         return "inconclusive", f"Load markers were missing for {na_count} of {len(memory_log)} memory samples"
 
-    psi_median = float(np.median(psi_values))
-    if psi_median > PSI_CPU_SOME_AVG10_MAX:
-        return "inconclusive", f"Median host CPU pressure {psi_median:g} is above the provisional bound"
+    psi_memory_median = float(np.median(psi_memory_values))
+    if psi_memory_median > PSI_MEMORY_SOME_AVG10_MAX:
+        return "inconclusive", f"Median host memory pressure {psi_memory_median:g} is above the provisional bound"
 
     throttle_delta = throttle_values[-1] - throttle_values[0]
     if throttle_delta > THROTTLE_EVENTS_MAX:
