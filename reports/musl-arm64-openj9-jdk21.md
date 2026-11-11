@@ -3,9 +3,9 @@ layout: default
 title: musl-arm64-openj9-jdk21
 ---
 
-## musl-arm64-openj9-jdk21 - ✅ PASS
+## musl-arm64-openj9-jdk21 - ❌ FAIL
 
-**Date:** 2026-11-11 16:04:55 EST
+**Date:** 2026-11-11 16:06:31 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 89 |
-| Sample Rate | 1.48/sec |
-| Health Score | 92% |
-| Threads | 11 |
-| Allocations | 70 |
+| CPU Samples | 594 |
+| Sample Rate | 9.90/sec |
+| Health Score | 619% |
+| Threads | 9 |
+| Allocations | 341 |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 309 |
-| Sample Rate | 5.15/sec |
-| Health Score | 322% |
-| Threads | 13 |
-| Allocations | 179 |
+| Status | FAIL |
+| CPU Samples | 0 |
+| Sample Rate | 0.00/sec |
+| Health Score | 0% |
+| Threads | 0 |
+| Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 25-38 cores)</summary>
+<summary>CPU Timeline (1 unique values: 25-25 cores)</summary>
 
 ```
-1794430824 25
-1794430829 25
-1794430834 25
-1794430839 25
-1794430844 25
-1794430849 25
-1794430854 25
-1794430859 25
-1794430864 25
-1794430869 25
-1794430874 25
-1794430879 25
-1794430884 25
-1794430889 25
-1794430894 25
-1794430899 25
-1794430904 25
-1794430909 25
-1794430914 25
-1794430919 38
+1794430835 25
+1794430840 25
+1794430846 25
+1794430851 25
+1794430856 25
+1794430861 25
+1794430866 25
+1794430871 25
+1794430876 25
+1794430881 25
+1794430886 25
+1794430891 25
+1794430896 25
+1794430901 25
+1794430906 25
+1794430911 25
+1794430916 25
+1794430921 25
+1794430926 25
+1794430931 25
 ```
 </details>
 
