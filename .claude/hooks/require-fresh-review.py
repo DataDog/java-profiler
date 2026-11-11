@@ -82,16 +82,17 @@ def repo_flag(tokens):
 
 
 def ready_target(args, repo, cwd):
-    """Check arguments for the PR `gh pr ready` targets, from GitHub so the commits the
-    PR holds are checked; [] means the current branch, None that it cannot be resolved."""
+    """(PR number, check arguments) for the PR `gh pr ready` targets, from GitHub so the
+    commits the PR holds are checked; ("", []) means the current branch, None that it
+    cannot be resolved."""
     selector = pr_selector(args)
     out = gh_query(["pr", "view", *selector[:1], *(["-R", repo] if repo else []), "--json",
-                    "headRefName,headRefOid,baseRefName", "-q",
-                    '.headRefName + " " + .headRefOid + " " + .baseRefName'], cwd)
-    if not out or len(out.split()) != 3:
-        return None if selector else []
-    head, oid, base = out.split()
-    return ["--branch", head, "--commit", oid, "--base", origin(base)]
+                    "number,headRefName,headRefOid,baseRefName", "-q",
+                    '"\\(.number) \\(.headRefName) \\(.headRefOid) \\(.baseRefName)"'], cwd)
+    if not out or len(out.split()) != 4:
+        return None if selector else ("", [])
+    number, head, oid, base = out.split()
+    return number, ["--branch", head, "--commit", oid, "--base", origin(base)]
 
 
 # `gh pr create` flags that take a value, plus the global -R; short form -> long form.
@@ -241,14 +242,39 @@ def gh_time(text):
     return None if dt.tzinfo is None else dt
 
 
-def stale_description(args, repo, cwd):
+PR_TIMES_QUERY = ('query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){'
+                  'pullRequest(number:$p){lastEditedAt createdAt'
+                  ' commits(last:1){nodes{commit{committedDate}}}}}}')
+
+
+def pr_repo(repo, cwd):
+    """OWNER/NAME of the repository the PR belongs to: a full -R name as given, otherwise
+    resolved from the checkout (or gh's own resolution of a bare -R name). None when
+    unresolvable."""
+    if repo and re.fullmatch(r"[^/]+/[^/]+", repo):
+        return repo
+    return gh_query(["repo", "view", *(["-R", repo] if repo else []), "--json",
+                     "nameWithOwner", "-q", ".nameWithOwner"], cwd)
+
+
+def stale_description(number, repo, cwd):
     """True when the PR body was last edited before its head commit, so it may predate
-    the latest code. Comments also bump updatedAt, so a fresh value never blocks.
-    None (fail open) when gh fails, the PR has no commits, or a timestamp is unparseable."""
-    out = gh_query(["pr", "view", *pr_selector(args)[:1], *( ["-R", repo] if repo else [] ),
-                    "--json", "updatedAt,commits", "-q",
-                    ('.updatedAt + " " + (.commits | if length > 0 then .[-1].committedDate'
-                     + ' else "" end)')], cwd)
+    the latest code. GitHub's updatedAt also moves on comments and on pushed commits, so
+    it cannot date the description: the body's own timestamps are compared (lastEditedAt,
+    createdAt fallback). The head commit's date is fetched directly -- commits is a
+    paginated connection and only its first page is returned, so .[-1] over it can pick
+    a non-head commit. None (fail open) when gh fails, the PR has no commits, or a
+    timestamp is unparseable."""
+    full = pr_repo(repo, cwd)
+    if not full or "/" not in full or not number.isdigit():
+        return None
+    owner, _, name = full.partition("/")
+    out = gh_query(["api", "graphql", "-f", "query=" + PR_TIMES_QUERY,
+                    "-f", "o=" + owner, "-f", "n=" + name, "-F", "p=" + number,
+                    "--jq",
+                    '(.data.repository.pullRequest) as $p | '
+                    '(($p.lastEditedAt // $p.createdAt) // "") + " "'
+                    ' + ($p.commits.nodes[0].commit.committedDate // "")'], cwd)
     times = [gh_time(part) for part in (out or "").split()]
     if len(times) != 2 or None in times:
         return None
@@ -364,9 +390,10 @@ def evaluate(source, cwd, sub, args, command, match_text):
     """Return None to allow, else the reason to block."""
     if sub == "ready":
         # The repo flag may sit before `pr` (`gh -R o/r pr ready`), so read it from the whole match.
-        extra = ready_target(args, repo_flag(words(match_text)), cwd)
-        if extra is None:
+        target = ready_target(args, repo_flag(words(match_text)), cwd)
+        if target is None:
             return "cannot resolve the PR's head commit (gh failed); retry when gh works."
+        number, extra = target
     else:
         if HEAD_FLAG.search(command):
             return "--head names a branch other than the checkout's.\n" \
@@ -382,7 +409,7 @@ def evaluate(source, cwd, sub, args, command, match_text):
         if default:
             res = run_check(source, cwd, ["--base", default])
     if res.returncode == 0 and sub == "ready":
-        stale = stale_description(args, repo_flag(words(match_text)), cwd)
+        stale = stale_description(number, repo_flag(words(match_text)), cwd)
         if stale:
             return "the PR description was last edited before the PR's head commit and " \
                    "may not match the pushed code. Re-verify the title and description " \

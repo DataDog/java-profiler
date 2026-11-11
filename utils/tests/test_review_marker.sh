@@ -23,7 +23,7 @@ pass() { TESTS=$((TESTS + 1)); }
 fail() { TESTS=$((TESTS + 1)); FAILED=$((FAILED + 1)); echo "FAIL: $*" >&2; }
 
 # gh stub, logging each call to $GH_LOG: `pr list --head B` reports an open PR when
-# B is in $OPEN_PRS; `pr view <sel>` prints "$VIEW_HEAD $VIEW_OID $VIEW_BASE" unless
+# B is in $OPEN_PRS; `pr view <sel>` prints "$VIEW_NUMBER $VIEW_HEAD $VIEW_OID $VIEW_BASE" unless
 # <sel> looks like a repo (or $VIEW_REPO is set and not passed as -R); `repo view`
 # prints $DEFAULT_BRANCH; `api repos/<name>` prints the fork-network root, <name> unless
 # $NETWORK_ROOTS maps it ("name=root ..."), failing for $NAME_FAIL; $GH_FAIL fails all.
@@ -37,14 +37,16 @@ case "$1 $2" in
              echo 0; exit 0 ;;
   "pr view") case "$3" in */*) exit 1 ;; esac
              [ -z "$VIEW_REPO" ] || case " $* " in *" -R $VIEW_REPO "*) ;; *) exit 1 ;; esac
-             case "$*" in *updatedAt*) [ -n "$VIEW_UPDATED" ] && echo "$VIEW_UPDATED $VIEW_COMMIT" && exit 0
-                                        exit 1 ;; esac
-             [ -n "$VIEW_HEAD" ] && echo "$VIEW_HEAD $VIEW_OID $VIEW_BASE" && exit 0; exit 1 ;;
+             [ -n "$VIEW_HEAD" ] && echo "$VIEW_NUMBER $VIEW_HEAD $VIEW_OID $VIEW_BASE" && exit 0; exit 1 ;;
+  "api graphql") [ -n "$VIEW_GRAPHQL" ] && echo "$VIEW_GRAPHQL" && exit 0; exit 1 ;;
+  "repo view") case "$*" in
+                 *nameWithOwner*) [ -n "$OWNER_NAME" ] && echo "$OWNER_NAME" && exit 0; exit 1 ;;
+                 *) [ -n "$DEFAULT_BRANCH" ] && echo "$DEFAULT_BRANCH" && exit 0; exit 1 ;;
+               esac ;;
   "api repos/"*) name=${2#repos/}
                  [ "$name" = "$NAME_FAIL" ] && exit 1
                  for pair in $NETWORK_ROOTS; do [ "${pair%%=*}" = "$name" ] && name=${pair#*=}; done
                  echo "$name"; exit 0 ;;
-  "repo view") [ -n "$DEFAULT_BRANCH" ] && echo "$DEFAULT_BRANCH" && exit 0; exit 1 ;;
 esac
 exit 1
 EOF
@@ -61,7 +63,7 @@ done
 printf '#!/bin/sh\n' > "$TEMP_DIR/nogh/gh" && chmod -x "$TEMP_DIR/nogh/gh"
 export PATH="$TEMP_DIR/bin:$PATH" GH_LOG="$TEMP_DIR/gh.log"
 export OPEN_PRS="" VIEW_HEAD="" VIEW_OID="" VIEW_BASE="" VIEW_REPO="" GH_FAIL="" DEFAULT_BRANCH="" NAME_FAIL="" NETWORK_ROOTS=""
-export VIEW_UPDATED="" VIEW_COMMIT=""
+export VIEW_NUMBER="" VIEW_GRAPHQL="" OWNER_NAME=""
 
 # Repo whose origin/main carries the gate scripts (in a second commit, $PRE_GATE being
 # the first) and a feature branch holding one commit.
@@ -479,34 +481,34 @@ git tag origin/main "$PRE_GATE"
 expect "hook ignores a tag named origin/main" 2 "$STALE_MSG" hook "gh pr create --fill"
 git tag -d origin/main >/dev/null
 
-VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook allows ready of a reviewed PR head" 0 "" \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook allows ready of a reviewed PR head" 0 "" \
   hook "gh pr ready 12"
-VIEW_HEAD=wt VIEW_OID=$WT_STALE VIEW_BASE=main expect "hook checks the PR's remote head" 2 "is stale" \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_STALE VIEW_BASE=main expect "hook checks the PR's remote head" 2 "is stale" \
   hook "gh pr ready 12"
-VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past -R" 0 "" \
+VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past -R" 0 "" \
   hook "gh pr ready -R DataDog/java-profiler 12"
-VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past --repo" 0 "" \
+VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past --repo" 0 "" \
   hook "gh pr ready --repo DataDog/java-profiler 12"
-VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook keeps -R given before pr" 0 "" \
+VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook keeps -R given before pr" 0 "" \
   hook "gh -R DataDog/java-profiler pr ready 12"
-VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook keeps --repo=" 0 "" \
+VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook keeps --repo=" 0 "" \
   hook "gh pr ready 12 --repo=DataDog/java-profiler"
-VIEW_HEAD=wt VIEW_OID=1234567890123456789012345678901234567890 VIEW_BASE=main \
+VIEW_NUMBER=12 VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=1234567890123456789012345678901234567890 VIEW_BASE=main \
   expect "hook reports an unfetched PR head" 2 "Rerunning the review will not help" hook "gh pr ready 12"
-VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_UPDATED=2019-06-01T00:00:00Z VIEW_COMMIT=2020-01-01T00:00:00Z \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main OWNER_NAME=DataDog/java-profiler VIEW_GRAPHQL=2019-06-01T00:00:00Z\ 2020-01-01T00:00:00Z \
   expect "hook blocks ready when the description predates the head commit" 2 "last edited before" \
   hook "gh pr ready 12"
-VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_UPDATED=2020-01-01T00:00:00Z VIEW_COMMIT=2020-01-01T00:00:00Z \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main OWNER_NAME=DataDog/java-profiler VIEW_GRAPHQL=2020-01-01T00:00:00Z\ 2020-01-01T00:00:00Z \
   expect "hook allows ready when the description is as fresh as the head commit" 0 "" hook "gh pr ready 12"
-VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_UPDATED=2021-06-01T00:00:00Z VIEW_COMMIT=2020-01-01T00:00:00Z \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main OWNER_NAME=DataDog/java-profiler VIEW_GRAPHQL=2021-06-01T00:00:00Z\ 2020-01-01T00:00:00Z \
   expect "hook allows ready when the description postdates the head commit" 0 "" hook "gh pr ready 12"
-VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_UPDATED=2021-06-01T00:00:00 VIEW_COMMIT=2020-01-01T00:00:00Z \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main OWNER_NAME=DataDog/java-profiler VIEW_GRAPHQL=2021-06-01T00:00:00\ 2020-01-01T00:00:00Z \
   expect "hook fails open when the description timestamp lacks a UTC designator" 0 "" hook "gh pr ready 12"
-VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main OWNER_NAME=DataDog/java-profiler \
   expect "hook fails open when the description probe fails" 0 "" hook "gh pr ready 12"
-VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_UPDATED=not-a-date VIEW_COMMIT=2020-01-01T00:00:00Z \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main OWNER_NAME=DataDog/java-profiler VIEW_GRAPHQL=not-a-date\ 2020-01-01T00:00:00Z \
   expect "hook fails open when the description timestamp is unparseable" 0 "" hook "gh pr ready 12"
-VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_UPDATED=2019-06-01T00:00:00Z VIEW_COMMIT= \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main OWNER_NAME=DataDog/java-profiler VIEW_GRAPHQL=2019-06-01T00:00:00Z\  \
   expect "hook fails open when the PR has no commits" 0 "" hook "gh pr ready 12"
 GH_FAIL=1 expect "hook blocks ready of a PR it cannot resolve" 2 "cannot resolve the PR" \
   hook "gh pr ready 12"
