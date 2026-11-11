@@ -1776,7 +1776,12 @@ Error Profiler::init() {
 
     // Arms the persistent pthread_create patch (the first start() installs it).
     // After JVMSupport::initialize(): the hook needs ProfiledThread TLS.
-    LibraryPatcher::initialize_persistent();
+    // On glibc the hooked threads end with pthread_exit(), which loads libgcc_s
+    // lazily: do not arm the hook unless prewarmUnwinder() has loaded it, as
+    // checkState() requires before start() arms it.
+    if (prewarmUnwinder() || OS::isMusl()) {
+      LibraryPatcher::initialize_persistent();
+    }
 
     // The idle footprint before the first start().
     NativeMem::logLive("after init");
