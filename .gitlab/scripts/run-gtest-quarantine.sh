@@ -77,7 +77,13 @@ if [ "${1:-}" = "--attempt" ]; then
     echo "cannot clear ${RESULTS_DIR}; attempt evidence would not be this attempt's own" >&2
     exit 3
   }
-  mkdir -p "${RESULTS_DIR}"
+  # gtest cannot create the XML when the directory is missing, yet still runs
+  # the tests and can exit 0: an unchecked mkdir here yields a green-looking
+  # attempt with an empty evidence tree.
+  mkdir -p "${RESULTS_DIR}" || {
+    echo "cannot create ${RESULTS_DIR}; gtest would run without writing evidence" >&2
+    exit 3
+  }
   # Run EVERY binary and aggregate instead of exiting at the first failure:
   # a single quarantined failure must not hide the rest of the suite from the
   # evidence (and the old first-failure exit did exactly that).

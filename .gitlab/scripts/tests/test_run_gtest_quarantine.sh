@@ -280,6 +280,21 @@ else
   pass "T15 the stray asan-tree binary was not selected"
 fi
 
+# T16 — a failed mkdir after the rm -rf must fail the attempt (exit 3): gtest
+# cannot write its XML when the directory is missing yet still runs and can
+# exit 0, so an unchecked mkdir yields a green-looking empty-evidence run.
+# Point the results tree at a path whose parent is a regular file.
+setup_tree
+mkdir -p "${WORK}/repo/ddprof-lib/build/test-results"
+printf 'not a directory' > "${WORK}/repo/ddprof-lib/build/test-results/gtest"
+run_case release --attempt
+assert_rc 3 "T16 mkdir failure exits 3"
+if grep -q "cannot create" "${STDERR_FILE}"; then
+  pass "T16 stderr names the failed mkdir"
+else
+  fail "T16: stderr missing the mkdir failure message, got: $(cat "${STDERR_FILE}")"
+fi
+
 # T6 — the retry-flag guard exports RETRY_ON_NO_TEST_FAILURES=1 for the
 # asan cell only (ASan init aborting before any test runs); flipping the
 # config comparison fails this case. The stub records the exported value.

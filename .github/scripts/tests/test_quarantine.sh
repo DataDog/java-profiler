@@ -1241,16 +1241,27 @@ if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null 2>&1; the
 fi
 pass "overlapping gtest config globs are flagged as duplicates"
 
+# A decorated gtest class-wide entry ("MyInst/WobblySuite.*") is valid and
+# NARROWER than the bare-suite form: covers() matches it directly against the
+# decorated classname, muting only that instantiation. Both forms must stay
+# valid; pin the narrow one so a later "use the bare suite" cleanup cannot
+# silently widen existing entries.
 write_list "$LIST" "$(entry 'MyInst/WobblySuite.*' PROF-1 "$(day_offset 30)")"
-if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null 2>&1; then
-  fail "a decorated gtest suite name in a class-wide entry should be rejected"
-fi
-pass "a decorated gtest suite name in a class-wide entry is rejected"
-
-write_list "$LIST" "$(entry 'MyInst/WobblySuite.fails/0' PROF-1 "$(day_offset 30)")"
 python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null \
-  || fail "an exact decorated gtest id should stay valid"
-pass "an exact decorated gtest id stays valid"
+  || fail "a decorated gtest class-wide entry should be valid (it is the narrower form)"
+pass "a decorated gtest class-wide entry is valid"
+
+# covers() must not degenerate into prefix-matching beyond one method
+# segment: 'a.B.*' covers 'a.B.c' but not 'a.B.c.d' (a nested-class id).
+write_list "$LIST" "$(entry 'a.B.*' PROF-1 "$(day_offset 30)")"
+result=$(python3 -c "
+import sys; sys.path.insert(0, '$SCRIPTS')
+import quarantine
+entries = quarantine.load('$LIST')
+print('hit' if quarantine.find_entry(entries, 'a.B.c.d', 'any') else 'miss')
+")
+[ "$result" = "miss" ] || fail "a.B.* must not cover the nested id a.B.c.d, got: $result"
+pass "a class wildcard does not swallow nested-class ids"
 
 # End-to-end through flake_report.py on gtest-shaped evidence: the quarantined
 # suite failure is excused on its cell, and still gates on another cell.

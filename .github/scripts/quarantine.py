@@ -346,14 +346,10 @@ def cmd_validate(args):
             ).format(entry["test"]))
 
         # A decorated gtest suite name ("<inst>/<Suite>.*") in a class-wide
-        # entry can never match: covers() reduces ids to the bare suite, so
-        # the entry's decorated prefix compares against nothing.
-        if "/" in entry["test"][:-2] and entry["test"].endswith(".*"):
-            complain(line, (
-                "test pattern '{}' carries a decorated gtest suite name; "
-                "class-wide entries use the bare suite ('<Suite>.*') -- a "
-                "decorated prefix matches nothing"
-            ).format(entry["test"]))
+        # entry is valid and narrower than the bare-suite form: covers()
+        # matches it directly against the decorated classname, muting only
+        # that instantiation. No complaint - just do not claim it matches
+        # nothing.
 
         if _INVOCATION_INDEX_RE.match(entry["test"].rsplit(".", 1)[-1]):
             complain(line, (
