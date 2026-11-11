@@ -61,6 +61,10 @@ class BaseWallClock : public Engine {
     // already-sampled blocked run for this thread, so no signal is needed.
     static bool suppressAlreadySampled(const ThreadEntry& entry);
 
+#ifdef UNIT_TEST
+    virtual void observeEpochForTest(const WallClockEpochEvent& epoch) {}
+#endif
+
     template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc, typename CleanThreadFunc>
     void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads,
                          CleanThreadFunc cleanThreads, int reservoirSize, u64 interval,
@@ -115,17 +119,7 @@ class BaseWallClock : public Engine {
                             static_cast<long long>(sizeof(ThreadType)));
           accounted_capacity = capacity;
         }
-        // The epoch's samplePoolSize counts every candidate, including threads
-        // the precheck suppresses below, so it means the same in both precheck
-        // modes: lazy backfill only discovers suppression while visiting.
         const u32 num_samplable_threads = static_cast<u32>(threads.size());
-        if (precheck && !lazyBackfill) {
-          // Drop suppressed threads before reservoir sampling so they do not
-          // consume reservoir slots.
-          threads.erase(std::remove_if(threads.begin(), threads.end(),
-                                       suppressAlreadySampled),
-                        threads.end());
-        }
 
         int num_failures = 0;
         int threads_already_exited = 0;
@@ -161,7 +155,9 @@ class BaseWallClock : public Engine {
             WallClockCandidateOutcome outcome = sampleThreads(
                 thread, num_failures, threads_already_exited,
                 permission_denied, registry_lookups, false);
-            if (outcome == WallClockCandidateOutcome::SIGNAL_SENT) {
+            // Timer suppression replaces a signal that the handler would drop.
+            // It still consumes a reservoir selection for epoch upscaling.
+            if (outcome != WallClockCandidateOutcome::SIGNAL_FAILED) {
               num_successful_samples++;
             }
           }
@@ -176,6 +172,9 @@ class BaseWallClock : public Engine {
         epoch.addNumSuppressedSampledRun(WallClockCounters::drainSuppressedSampledRun());
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
+#ifdef UNIT_TEST
+        observeEpochForTest(epoch);
+#endif
         u64 endTime = TSC::ticks();
         u64 duration = TSC::ticks_to_millis(endTime - startTime);
         if (epoch.hasChanged() || duration >= 1000) {

@@ -9,9 +9,9 @@
  */
 package com.datadoghq.profiler.chaos;
 
-import com.datadoghq.profiler.JavaProfiler;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -23,17 +23,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 
 /**
- * Continuously spawns short-lived threads that block (Thread.sleep, LockSupport.parkNanos,
- * Object.wait, contended synchronized) and then die, some interrupted mid-block. Sleep and park
- * calls explicitly invoke the profiler's package-scoped hooks through bound method handles,
- * independently of tracer instrumentation. Object.wait and monitor contention remain unowned
- * blocking observations.
- *
- * <p>Targets: registry slot reuse racing an in-flight blocked-run generation token
- * (ThreadFilter::registerThread/unregisterThread vs.
- * WallClockBlockTracker::enterBlockedRun/exitBlockedRun), and timer lookups racing teardown and
- * slot reuse. Use the {@code testOwnedBlockPrecheck} Gradle task to require actual unfiltered
- * registry lookups and signal suppression, rather than just hook calls.
+ * Races short-lived blocking owners against registry retirement and slot reuse; sleep and park
+ * invoke native hooks explicitly, while waits and monitor contention remain unowned observations.
  */
 public final class ParkBlockChurnAntagonist implements Antagonist {
 
@@ -47,7 +38,8 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
   private final AtomicLong parkCalls = new AtomicLong();
   private final AtomicReference<Throwable> failure = new AtomicReference<>();
   private final Object monitor = new Object();
-  private JavaProfiler profiler;
+  private Object profiler;
+  private Method debugCounters;
   private MethodHandle blockEnter;
   private MethodHandle blockExit;
   private MethodHandle parkEnter;
@@ -74,7 +66,9 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
   @Override
   public void start() {
     try {
-      profiler = JavaProfiler.getInstance();
+      Class<?> profilerClass = resolveProfilerClass();
+      profiler = profilerClass.getMethod("getInstance").invoke(null);
+      debugCounters = profilerClass.getMethod("getDebugCounters");
       blockEnter = bindHook("blockEnter", int.class);
       blockExit = bindHook("blockExit", long.class);
       parkEnter = bindHook("parkEnter");
@@ -82,7 +76,7 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
     } catch (Exception e) {
       throw new IllegalStateException("Cannot bind profiler owned-block hooks", e);
     }
-    countersBefore = profiler.getDebugCounters();
+    countersBefore = readCounters();
     running = true;
     driver =
         new Thread(
@@ -146,17 +140,40 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
     }
   }
 
-  /** Resolves hooks on JavaProfiler's runtime class, including the injected agent's loader. */
+  /** Agent shared classdata is invisible to the application's class loader. */
+  private Class<?> resolveProfilerClass() throws ReflectiveOperationException {
+    ClassLoader loader = getClass().getClassLoader();
+    try {
+      Class<?> agent = Class.forName("datadog.trace.bootstrap.Agent", false, loader);
+      Field field = agent.getDeclaredField("AGENT_CLASSLOADER");
+      field.setAccessible(true);
+      loader = (ClassLoader) field.get(null);
+    } catch (ClassNotFoundException standalone) {
+      // Standalone native tests have no agent and expose the profiler on their own classpath.
+    }
+    return Class.forName("com.datadoghq.profiler.JavaProfiler", true, loader);
+  }
+
+  /** Binds hooks to the same private-loader instance that owns the native recording. */
   private MethodHandle bindHook(String name, Class<?>... parameterTypes)
       throws ReflectiveOperationException {
-    Method method = JavaProfiler.class.getDeclaredMethod(name, parameterTypes);
+    Method method = profiler.getClass().getDeclaredMethod(name, parameterTypes);
     method.setAccessible(true);
     return MethodHandles.lookup().unreflect(method).bindTo(profiler);
   }
 
+  @SuppressWarnings("unchecked")
+  private Map<String, Long> readCounters() {
+    try {
+      return (Map<String, Long>) debugCounters.invoke(profiler);
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalStateException("Cannot read profiler debug counters", e);
+    }
+  }
+
   private long counterDelta(String name) {
     long before = countersBefore.getOrDefault(name, -1L);
-    long after = profiler.getDebugCounters().getOrDefault(name, -1L);
+    long after = readCounters().getOrDefault(name, -1L);
     return before < 0 || after < 0 ? -1 : after - before;
   }
 

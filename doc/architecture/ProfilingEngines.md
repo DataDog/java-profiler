@@ -416,6 +416,14 @@ loop while _running:
   OS::sleep(normal(interval, interval/10)), clamped to [1, 2*interval-1] ns
 ```
 
+Context-filtered prechecks run after reservoir selection, so suppression visits at
+most the reservoir size. Timer-suppressed selections count in `numSuccessfulSamples`
+like signals suppressed by the handler; failed sends do not count.
+
+Unfiltered prechecks retain bounded candidate backfill. Their suppressed visits do
+not consume reservoir slots. `samplePoolSize` includes all collected candidates in
+both modes; `numSuppressedSampledRun` records suppression separately.
+
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
 (`SIGIO`, `os.h:23`), and joins it (`wallClock.cpp:330-339`).
 

@@ -145,11 +145,6 @@ public:
     // Clears per-recording membership and suppression state while keeping
     // native slot ownership intact. Threads must opt in again with add().
     void clearActive();
-    // Forwards to WallClockBlockTracker::resetSlot(). Not called from
-    // production code (registry-lifecycle paths call the tracker directly);
-    // only park_state_ut uses it.
-    void resetSlotRunState(SlotID slot_id);
-
     // Non-owning; wired up once by Profiler so ThreadFilter's own
     // registry-lifecycle resets (registerThread/unregisterThread/
     // refreshSlotForRecording/clearActive) also clear the tracker's
@@ -188,6 +183,7 @@ public:
     // Returns the slot owned by native thread `tid` (allocating one if needed),
     // or -1 if tid < 0, the registry is inactive, or it is full.
     SlotID registerThread(int tid);
+    // An expected TID re-resolves a stale slot cache before retiring ownership.
     void unregisterThread(SlotID slot_id, int expected_tid = -1);
     void unregisterThreadByTid(int tid);
     Slot* lookupByTid(int tid, SlotID* out_slot_id = nullptr) const;

@@ -75,7 +75,7 @@ void WallClockBlockTracker::resetAll() {
 
 void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id, OSThreadState state) {
     BlockState* s = slotForId(slot_id);
-    if (s != nullptr) {
+    if (s != nullptr && s->activeBlockOwner() != BlockRunOwner::NONE) {
         s->clearActiveBlockRun(state);
     }
 }

@@ -8,14 +8,23 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.JavaProfiler;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import javax.tools.ToolProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -49,6 +58,93 @@ class ParkBlockChurnAntagonistTest {
   void explicitHooksExerciseUnfilteredPrechecks() throws Exception {
     ParkBlockChurnAntagonist workload = runWorkload("wall=1ms,filter=,wallprecheck=true");
     workload.verifyPrecheckCoverage();
+  }
+
+  /** The application loader cannot link profiler classes stored in the agent's private loader. */
+  @Test
+  void privateAgentLoaderSuppliesHooksAndCounters(@TempDir Path directory) throws Exception {
+    try (URLClassLoader loader = isolatedAgentLoader(directory, true)) {
+      assertThrows(
+          ClassNotFoundException.class,
+          () -> loader.loadClass("com.datadoghq.profiler.JavaProfiler"));
+      profiler.execute("start,wall=1ms,filter=,wallprecheck=true,jfr,file=" + recording);
+      started = true;
+      Class<?> type = loader.loadClass(ParkBlockChurnAntagonist.class.getName());
+      Object workload = type.getConstructor(int.class, int.class).newInstance(12, 20);
+      type.getMethod("start").invoke(workload);
+      try {
+        Thread.sleep(1000);
+      } finally {
+        type.getMethod("stopGracefully", Duration.class).invoke(workload, Duration.ofSeconds(5));
+      }
+      type.getMethod("verifyPrecheckCoverage").invoke(workload);
+    }
+  }
+
+  /** An uninitialized agent must fail before launching any workers. */
+  @Test
+  void unavailableAgentLoaderFailsStartup(@TempDir Path directory) throws Exception {
+    try (URLClassLoader loader = isolatedAgentLoader(directory, false)) {
+      Class<?> type = loader.loadClass(ParkBlockChurnAntagonist.class.getName());
+      Object workload = type.getConstructor().newInstance();
+      InvocationTargetException failure =
+          assertThrows(
+              InvocationTargetException.class, () -> type.getMethod("start").invoke(workload));
+      assertTrue(failure.getCause() instanceof IllegalStateException, failure.toString());
+      assertTrue(
+          failure.getCause().getCause() instanceof ClassNotFoundException, failure.toString());
+    }
+  }
+
+  /** Models shared classdata visibility without putting JavaProfiler on the application path. */
+  private URLClassLoader isolatedAgentLoader(Path directory, boolean initialized) throws Exception {
+    Path source = directory.resolve("datadog/trace/bootstrap/Agent.java");
+    Files.createDirectories(source.getParent());
+    Files.write(
+        source,
+        ("package datadog.trace.bootstrap; public class Agent {"
+                + "private static ClassLoader AGENT_CLASSLOADER; }")
+            .getBytes(StandardCharsets.UTF_8));
+    int result = ToolProvider.getSystemJavaCompiler().run(null, null, null, source.toString());
+    org.junit.jupiter.api.Assertions.assertEquals(0, result, "Agent loader fixture compilation");
+    URLClassLoader loader =
+        new URLClassLoader(new URL[] {directory.toUri().toURL()}, getClass().getClassLoader()) {
+          @Override
+          protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+            if (name.equals("com.datadoghq.profiler.JavaProfiler")) {
+              throw new ClassNotFoundException(name);
+            }
+            if (name.equals(ParkBlockChurnAntagonist.class.getName())
+                || name.equals(Antagonist.class.getName())) {
+              Class<?> type = findLoadedClass(name);
+              if (type == null) {
+                String resource = name.replace('.', '/') + ".class";
+                try (InputStream input = getParent().getResourceAsStream(resource)) {
+                  if (input == null) throw new ClassNotFoundException(name);
+                  ByteArrayOutputStream output = new ByteArrayOutputStream();
+                  byte[] buffer = new byte[4096];
+                  for (int count; (count = input.read(buffer)) != -1; ) {
+                    output.write(buffer, 0, count);
+                  }
+                  byte[] bytes = output.toByteArray();
+                  type = defineClass(name, bytes, 0, bytes.length);
+                } catch (IOException e) {
+                  throw new ClassNotFoundException(name, e);
+                }
+              }
+              if (resolve) resolveClass(type);
+              return type;
+            }
+            return super.loadClass(name, resolve);
+          }
+        };
+    if (initialized) {
+      java.lang.reflect.Field field =
+          loader.loadClass("datadog.trace.bootstrap.Agent").getDeclaredField("AGENT_CLASSLOADER");
+      field.setAccessible(true);
+      field.set(null, JavaProfiler.class.getClassLoader());
+    }
+    return loader;
   }
 
   /** Calling hooks alone must not make disabled suppression appear to be covered. */

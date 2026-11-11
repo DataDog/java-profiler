@@ -195,3 +195,121 @@ TEST_F(WallClockCapacityTest, ExhaustionKeepsSendingSignalsAcrossRecordings) {
         registry.init("", true);
     }
 }
+
+// Exercise selection and epoch accounting in the production loop without kernel signals.
+class FilteredPrecheckWallClock : public BaseWallClock {
+public:
+    static constexpr int pool_size = 512;
+    static constexpr int reservoir_size = 16;
+    bool mixed_outcomes = false;
+    std::atomic<bool> observed{false};
+    u32 selected = 0;
+    u32 successful = 0;
+    u32 failures = 0;
+    u32 pool = 0;
+    u64 suppressed = 0;
+
+    const char* name() override { return "Filtered selection test timer"; }
+
+private:
+    u32 visits = 0;
+    void observeEpochForTest(const WallClockEpochEvent& epoch) override {
+        if (observed.load(std::memory_order_acquire)) return;
+        selected = visits;
+        successful = epoch._num_successful_samples;
+        failures = epoch._num_failed_samples;
+        pool = epoch._num_samplable_threads;
+        suppressed = epoch._num_suppressed_sampled_run;
+        observed.store(true, std::memory_order_release);
+    }
+
+    void timerLoop() override {
+        auto collect = [&](std::vector<ThreadEntry>& entries) {
+            visits = 0;
+            Profiler::instance()->threadFilter()->collect(entries);
+        };
+        auto sample = [&](ThreadEntry entry, int& failed, int&, int&, int&, bool) {
+            ++visits;
+            if (mixed_outcomes && visits % 4 == 0) {
+                ++failed;
+                return WallClockCandidateOutcome::SIGNAL_FAILED;
+            }
+            if (mixed_outcomes && visits % 2 == 0) {
+                return WallClockCandidateOutcome::SIGNAL_SENT;
+            }
+            if (suppressAlreadySampled(entry)) {
+                return WallClockCandidateOutcome::PRECHECK_REJECTED;
+            }
+            return WallClockCandidateOutcome::SIGNAL_SENT;
+        };
+        timerLoopCommon<ThreadEntry>(collect, sample, [] {}, reservoir_size, 1000000, true);
+    }
+};
+
+class WallClockFilteredSelectionTest : public ::testing::Test {
+protected:
+    FilteredPrecheckWallClock clock;
+    std::vector<int> slots;
+    using SignalHandler = void (*)(int);
+    SignalHandler previous_handler = SIG_DFL;
+
+    void SetUp() override {
+        previous_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
+        auto* registry = Profiler::instance()->threadFilter();
+        auto* tracker = Profiler::instance()->blockTracker();
+        registry->init("0");
+        WallClockCounters::drainSuppressedSampledRun();
+        for (int i = 0; i < FilteredPrecheckWallClock::pool_size; ++i) {
+            int tid = 3000000 + i;
+            int id = registry->registerThread(tid);
+            ASSERT_GE(id, 0);
+            slots.push_back(id);
+            ASSERT_TRUE(registry->add(tid, id));
+            ASSERT_NE(0u, tracker->enterBlockedRun(registry, id, OSThreadState::SLEEPING));
+            tracker->slotForId(id)->markSampledThisRun(OSThreadState::SLEEPING);
+        }
+        clock.enableEvents(true);
+    }
+
+    void TearDown() override {
+        clock.stop();
+        clock.enableEvents(false);
+        auto* registry = Profiler::instance()->threadFilter();
+        for (int id : slots) registry->unregisterThread(id);
+        registry->deactivateRecording();
+        WallClockCounters::drainSuppressedSampledRun();
+        std::signal(WAKEUP_SIGNAL, previous_handler);
+    }
+
+    void run() {
+        Arguments args;
+        args._wall = 1000000;
+        ASSERT_FALSE(clock.start(args));
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!clock.observed.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        ASSERT_TRUE(clock.observed.load(std::memory_order_acquire));
+        clock.stop();
+    }
+};
+
+TEST_F(WallClockFilteredSelectionTest, SuppressedSelectionsConsumeReservoirAndEpochCapacity) {
+    run();
+    EXPECT_EQ(512u, clock.pool);
+    EXPECT_EQ(16u, clock.selected);
+    EXPECT_EQ(16u, clock.successful);
+    EXPECT_EQ(0u, clock.failures);
+    EXPECT_EQ(16u, clock.suppressed);
+}
+
+TEST_F(WallClockFilteredSelectionTest, FailedSignalsDoNotCountAsSuccessfulSelections) {
+    clock.mixed_outcomes = true;
+    run();
+    EXPECT_EQ(512u, clock.pool);
+    EXPECT_EQ(16u, clock.selected);
+    EXPECT_EQ(12u, clock.successful);
+    EXPECT_EQ(4u, clock.failures);
+    EXPECT_EQ(8u, clock.suppressed);
+}
