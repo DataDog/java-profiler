@@ -122,7 +122,15 @@ run_gate "$d" "$CELL" "$ROOT/ddprof-test/quarantine.txt" \
 grep -q "no readable report" "$TEMP_DIR/out.txt" || fail "gate output does not report the unreadable report"
 pass "unparseable report gates instead of reading as a pass"
 
-# --- 6b. a binary that dies before writing any report gates -----------------
+# --- 6c. an <error> element counts as a failure, not a pass -----------------
+d="$TEMP_DIR/errorel"; setup_evidence "$d"
+printf '<?xml version="1.0"?>\n<testsuites><testsuite name="S"><testcase name="t" classname="S"><error message="segv"/></testcase></testsuite></testsuites>\n' > "$d/TEST-err_ut.xml"
+echo 1 > "$d/rc/err_ut"
+run_gate "$d" "$CELL" "$TEMP_DIR/unquarantined/list.txt" \
+  && fail "an <error> element was not counted as a failure" || true
+pass "<error> element counts as a failure"
+
+# --- 6d. a binary that dies before writing any report gates -----------------
 d="$TEMP_DIR/noreport"; setup_evidence "$d"
 echo 139 > "$d/rc/baz_ut"
 run_gate "$d" "$CELL" "$ROOT/ddprof-test/quarantine.txt" \
@@ -147,3 +155,58 @@ run_gate "$d" "$CELL" "$TEMP_DIR/does-not-exist.txt" \
 pass "missing quarantine list fails the job rather than gating on nothing"
 
 echo "test_gtest_quarantine_gate: $TESTS ok"
+
+# --- 9. runner smoke: rc propagation through run-gtests.sh ------------------
+# Hermetic staging of the repo layout the runner expects; a stub binary stands
+# in for gtest and honours --gtest_output=xml:<path>. This is the test that
+# fails if the runner stops recording real exit codes (writing a constant 0
+# would make a crashed binary's rc file read 0 and the gate would pass).
+STAGE=$(mktemp -d)
+mkdir -p "$STAGE/.gitlab/scripts" "$STAGE/.github/scripts" \
+  "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut" "$STAGE/ddprof-test"
+cp "$ROOT/.gitlab/scripts/run-gtests.sh" \
+   "$ROOT/.gitlab/scripts/gtest_quarantine_gate.py" "$STAGE/.gitlab/scripts/"
+cp "$ROOT/.github/scripts/quarantine.py" "$STAGE/.github/scripts/"
+# The staged list covers both arches: the real entry scopes glibc-gtest-*-amd64
+# (only amd64 cells have failed so far), but the smoke runs on whatever arch
+# the dev machine has, so the runner's derived cell must still match.
+cat > "$STAGE/ddprof-test/quarantine.txt" <<'EOF'
+NativeThreadNameRaceTest.threadDyingBetweenScansIsNeverNamed | PROF-16577 | 2026-11-11 | 2099-01-01 | glibc-gtest-* | fixture
+EOF
+make_stub() { # make_stub <exit-code> <testname> [message]
+  # $1/$2/$3 expand at creation time (the unquoted heredoc bakes the literals
+  # into the stub); the stub itself only ever receives --gtest_output=xml:<path>.
+  cat > "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut" <<STUB
+#!/bin/sh
+out=""
+for a in "\$@"; do case "\$a" in *=xml:*) out="\${a#*=xml:}";; esac; done
+printf '<?xml version="1.0"?>\n<testsuites><testsuite name="NativeThreadNameRaceTest"><testcase name="${2:-threadDyingBetweenScansIsNeverNamed}" classname="NativeThreadNameRaceTest"><failure message="${3:-boom}"/></testcase></testsuite></testsuites>\n' > "\$out"
+exit ${1}
+STUB
+  chmod +x "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut"
+}
+# macOS/BSD find lacks -executable; CI runners are Linux/GNU, the shim only
+# exists so this hermetic test can run on a dev Mac.
+mkdir "$STAGE/shim"
+cat > "$STAGE/shim/find" <<'EOF'
+#!/bin/sh
+args=""
+for a in "$@"; do [ "$a" = "-executable" ] || args="$args $a"; done
+exec /usr/bin/find $args
+EOF
+chmod +x "$STAGE/shim/find"
+
+# A failure the staged list does not name gates on any cell (the stub reports
+# a different test than the quarantined one).
+make_stub 1 someOtherTest
+( cd "$STAGE" && PATH="$STAGE/shim:$PATH" bash .gitlab/scripts/run-gtests.sh release ) > "$TEMP_DIR/runner.txt" 2>&1 \
+  && fail "runner smoke: an un-quarantined failure passed the gate"
+grep -q "not quarantined" "$TEMP_DIR/runner.txt" || fail "runner smoke: gate output missing"
+pass "runner propagates a failing binary's exit code to the gate"
+
+make_stub 1 threadDyingBetweenScansIsNeverNamed "expected equal"
+( cd "$STAGE" && PATH="$STAGE/shim:$PATH" bash .gitlab/scripts/run-gtests.sh release ) > "$TEMP_DIR/runner2.txt" 2>&1 \
+  || { cat "$TEMP_DIR/runner2.txt" >&2; fail "runner smoke: the quarantined failure gated anyway"; }
+grep -q "excused by quarantine" "$TEMP_DIR/runner2.txt" || fail "runner smoke: no excuse line"
+pass "runner + gate excuse the quarantined failure end to end"
+rm -rf "$STAGE"

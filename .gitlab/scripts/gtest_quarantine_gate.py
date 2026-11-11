@@ -13,9 +13,9 @@ gtest runner:
     the list can excuse, and an unreadable report must never read as a pass.
 
 The XML reports are only ever needed to excuse a failure, never to pass a
-run: a failing test makes gtest exit non-zero on its own, so a broken or
-missing report degrades to rc-based gating (fail-closed), not to silent
-green.
+run: a failing test makes gtest exit non-zero on its own, so the binary's
+recorded exit code decides, and a broken or missing report can never turn a
+passing run red -- it only removes the quarantine excuse from a failing one.
 """
 
 import argparse
@@ -58,6 +58,15 @@ def named_failures(xml_path):
     return failures
 
 
+def read_rc(evidence_dir, binary):
+    """The recorded exit code for binary, or None when no rc file exists."""
+    try:
+        with open(os.path.join(evidence_dir, "rc", binary)) as handle:
+            return handle.read().strip()
+    except OSError:
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence", required=True,
@@ -75,13 +84,23 @@ def main():
 
     unquarantined = []
     excused = []
+    gated_binaries = set()
     for xml_path in sorted(glob.glob(os.path.join(args.evidence, "TEST-*.xml"))):
         binary = os.path.basename(xml_path)[len("TEST-"):-len(".xml")]
         failures = named_failures(xml_path)
         if failures is None:
-            print("GATE: {} wrote no readable report; treating it as a "
-                  "failure the list cannot excuse".format(binary))
-            unquarantined.append((binary, "no readable report"))
+            # An unreadable report removes the quarantine excuse from a
+            # failing binary but must not turn a passing one red: the exit
+            # code decides, per the module contract above.
+            rc = read_rc(args.evidence, binary)
+            if rc == "0":
+                print("GATE: {} passed but wrote no readable report; the exit "
+                      "code decides".format(binary))
+            else:
+                print("GATE: {} wrote no readable report; treating it as a "
+                      "failure the list cannot excuse".format(binary))
+                unquarantined.append((binary, "no readable report"))
+                gated_binaries.add(binary)
             continue
         for test_id in sorted(failures):
             hit = quarantine.find_entry(entries, test_id, args.cell)
@@ -98,12 +117,15 @@ def main():
             binary, ticket, test_id))
 
     # A binary that exited non-zero without naming a test gates regardless of
-    # the XML verdicts above: the list excuses named tests, not crashes.
+    # the XML verdicts above: the list excuses named tests, not crashes. A
+    # binary already gated for an unreadable report is not counted twice.
     for rc_path in sorted(glob.glob(os.path.join(args.evidence, "rc", "*"))):
         binary = os.path.basename(rc_path)
+        if binary in gated_binaries:
+            continue
         with open(rc_path) as handle:
             rc = handle.read().strip()
-        if rc.isdigit() and int(rc) == 0:
+        if rc == "0":
             continue
         xml_path = os.path.join(args.evidence, "TEST-{}.xml".format(binary))
         failures = named_failures(xml_path)

@@ -45,6 +45,16 @@ find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
       fi
     done
 
+# A matching but non-executable binary is skipped by find -executable above;
+# running a subset of the suites must not read as a complete passing run.
+missing=$(find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f ! -executable \
+  2>/dev/null | grep "/${CONFIG_LC}_" || true)
+if [ -n "$missing" ]; then
+  echo "GATE: matching gtest binaries are not executable, refusing to run a subset:"
+  echo "$missing"
+  exit 1
+fi
+
 # pipefail: a non-zero pipeline status here means the binary set was empty
 # (grep matched nothing) or find itself failed — that is a broken job, not a
 # passing one; it must not reach the gate and read as a clean run.
