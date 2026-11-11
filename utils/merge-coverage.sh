@@ -11,7 +11,8 @@
 #
 # Requires java, python3 and a gcovr at least as new as the containers' (older ones
 # reject their tracefiles). The JaCoCo CLI is $JACOCO_CLI, else downloaded with curl.
-# Exits 2 after writing summary.md when gcovr rejected a tracefile.
+# Exits 2 after writing summary.md when the C++ report is incomplete or missing because
+# gcovr failed; the C++ column of summary.md says why for each cell.
 
 set -euo pipefail
 
@@ -23,7 +24,7 @@ OUT=""
 CELLS=()
 
 usage() {
-    awk 'NR >= 4 && NR <= 14 { sub(/^# ?/, ""); print }' "$0"
+    awk 'NR >= 4 && NR <= 15 { sub(/^# ?/, ""); print }' "$0"
     exit "${1:-0}"
 }
 
@@ -136,23 +137,40 @@ done
 cpp_args
 CPP_SUMMARY="(no C++ tracefiles)"
 if (( ${#tracefiles[@]} > 0 )); then
+    command -v gcovr >/dev/null || die "gcovr not found; it must be at least as new as the containers' gcovr"
     if ! merge_cpp "${tracefiles[@]}"; then
-        # Name the cells gcovr rejects on their own, then merge the rest.
         EXIT_CODE=2
+        # Name the cells gcovr rejects on their own, then merge the rest.
+        probed=0
+        rejected=0
         for i in "${!CELLS[@]}"; do
             [[ "${CELL_CPP[$i]}" == yes ]] || continue
+            probed=$((probed + 1))
             if ! gcovr --root "$CPP_SRC" --add-tracefile "${CELLS[$i]}/reports/cpp/coverage.json" \
-                    --json "$OUT/cpp/probe.json" >/dev/null; then
-                echo "Error: gcovr rejected the tracefile of ${CELLS[$i]}; it is left out of the C++ report" >&2
+                    --merge-mode-functions=separate --json "$OUT/cpp/probe.json" >/dev/null; then
+                rejected=$((rejected + 1))
                 CELL_CPP[$i]="no (gcovr rejected tracefile)"
             fi
         done
+        if (( rejected == probed )); then
+            echo "Error: gcovr rejected every tracefile; check the host gcovr ($(gcovr --version 2>&1 | head -1)) against the containers'" >&2
+        else
+            for i in "${!CELLS[@]}"; do
+                [[ "${CELL_CPP[$i]}" != "no (gcovr rejected tracefile)" ]] \
+                    || echo "Error: gcovr rejected the tracefile of ${CELLS[$i]}; it is left out of the C++ report" >&2
+            done
+        fi
         cpp_args
-        if (( ${#tracefiles[@]} == 0 )); then
+        merged=false
+        # With nothing rejected, the same merge would fail again.
+        if (( rejected > 0 && ${#tracefiles[@]} > 0 )) && merge_cpp "${tracefiles[@]}"; then
+            merged=true
+        fi
+        if ! $merged; then
             rm -rf "$OUT/cpp" && mkdir -p "$OUT/cpp"
-        elif ! merge_cpp "${tracefiles[@]}"; then
-            echo "Error: gcovr failed to merge the remaining tracefiles; no C++ report" >&2
-            rm -rf "$OUT/cpp" && mkdir -p "$OUT/cpp"
+            if (( ${#tracefiles[@]} > 0 )); then
+                echo "Error: gcovr failed to merge the tracefiles it accepts one by one; no C++ report" >&2
+            fi
             for i in "${!CELLS[@]}"; do
                 [[ "${CELL_CPP[$i]}" != yes ]] || CELL_CPP[$i]="no (gcovr merge failed)"
             done
@@ -305,5 +323,8 @@ done
     echo '```'
 } > "$OUT/summary.md"
 
-echo ">>> Merged coverage written to $OUT (summary.md, cpp/index.html, java/html/index.html)"
+written="summary.md"
+[[ ! -f "$OUT/cpp/index.html" ]] || written="$written, cpp/index.html"
+[[ ! -f "$OUT/java/html/index.html" ]] || written="$written, java/html/index.html"
+echo ">>> Merged coverage written to $OUT ($written)"
 exit "$EXIT_CODE"

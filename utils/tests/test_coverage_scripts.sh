@@ -479,6 +479,20 @@ expect_contains "failed merge summary" "$summary" "(gcovr failed:"
 expect_not_contains "failed merge has no cpp link" "$summary" "- C++ report:"
 expect_contains "failed merge keeps java report" "$summary" "- Java report:"
 
+# Every tracefile rejected points at the host gcovr, not at each cell.
+rc=0
+output=$(STUB_GCOVR_REJECT=reports/cpp "$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged14" \
+  "$TEMP_DIR/c1" "$TEMP_DIR/c2" 2>&1) || rc=$?
+[[ $rc -eq 2 ]] && pass || fail "all tracefiles rejected exited $rc, expected 2"
+expect_contains "all rejected blames host gcovr" "$output" "gcovr rejected every tracefile; check the host gcovr"
+expect_not_contains "all rejected names no cell" "$output" "rejected the tracefile of"
+expect_not_contains "all rejected lists no cpp report" "$output" "cpp/index.html"
+summary=$(cat "$TEMP_DIR/merged14/summary.md" 2>/dev/null || true)
+expect_contains "all rejected column" "$summary" "| 21 |  | 0 | no (gcovr rejected tracefile) | yes |"
+expect_contains "all rejected summary" "$summary" "(gcovr failed:"
+expect_not_contains "all rejected has no cpp link" "$summary" "- C++ report:"
+[[ -z "$(ls -A "$TEMP_DIR/merged14/cpp")" ]] && pass || fail "all rejected left files in cpp/: $(ls "$TEMP_DIR/merged14/cpp")"
+
 # --out must be empty or an earlier merge output.
 mkdir -p "$TEMP_DIR/notmerge/cpp"
 touch "$TEMP_DIR/notmerge/cpp/keep.cpp"

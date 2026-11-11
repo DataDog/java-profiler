@@ -81,7 +81,7 @@ Give each agent this brief, filled in:
 > in worktree `<RUN>/wt-<libc>-<arch>`. JDKs, in order: `<list>`. Runtime: `<RT>`.
 > For each JDK `<jdk>`, let `<cell>` be `<RUN>/cells/<libc>-<arch>-<jdk>` and `<log>`
 > be `<RUN>/logs/<libc>-<arch>-<jdk>.log` (absolute paths; `mkdir -p <RUN>/logs`).
-> Before every start, retries included, run `rm -f <cell>.exit` so the wait below
+> Before every start, retries included, run `rm -f <cell>.exit <cell>.status` so the wait below
 > cannot end on an earlier attempt's result. Do not delete `<cell>`: the script clears
 > an earlier attempt's export itself. Start the cell detached so no tool
 > timeout kills it:
@@ -103,8 +103,9 @@ Give each agent this brief, filled in:
 > print more than 30 log lines. Never put the word "gradlew" in a shell command, not
 > even in a grep pattern: a hook blocks it — search logs for `What went wrong` or
 > `FAILED` instead.
-> Report one line per cell: jdk, status, gradle_exit, failing task/tests or the
-> blocking error, log path.
+> After a cell's last attempt, write its status (`passed`, `failed` or `blocked`) to
+> `<cell>.status`. Report one line per cell: jdk, status, gradle_exit, failing
+> task/tests or the blocking error, log path.
 
 While they run, answer the user from their notifications only; if asked for
 progress, list which `$RUN/cells/*.exit` files exist.
@@ -126,13 +127,16 @@ including images created or rebuilt during step 3. Compare the newest version wi
 
 ```bash
 WT=$(ls -d "$RUN"/wt-* | head -1)   # any of the run's worktrees
-cells=("$RUN"/cells/<libc>-<arch>-<jdk> ...)   # the passed and failed cells
+cells=(); for s in "$RUN"/cells/*.status; do
+    case "$(cat "$s")" in passed|failed) cells+=("${s%.status}") ;; esac
+done
 "$WT/utils/merge-coverage.sh" --source-root="$WT" --out="$RUN/merged" "${cells[@]}"
 ```
 
-Exit 2 means gcovr rejected a tracefile. The script names the cell on stderr, leaves it
-out of the C++ report and still writes the Java report and `summary.md`. Report the
-gcovr error and the cell.
+Exit 2 means gcovr failed and the C++ report is incomplete or missing. The Java report
+and `summary.md` are still written, and the C++ column of `summary.md` gives the reason
+per cell. Report the gcovr errors from stderr. When gcovr rejected every tracefile, the
+host gcovr is the likely cause: recheck its version.
 
 ## 5. Report
 

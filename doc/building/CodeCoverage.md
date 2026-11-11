@@ -127,5 +127,8 @@ gcovr merges the `coverage.json` tracefiles, and the JaCoCo CLI merges the `.exe
 files and reports against one cell's classes. Every container builds with OpenJDK 21
 (Temurin on glibc, Liberica on musl), whose class files match in practice; the script warns when they differ. The host's
 gcovr must be at least as new as the containers': an older one rejects their
-tracefiles with "Wrong format version". The
+tracefiles with "Wrong format version". A cell whose Gradle was killed by a signal
+(`gradle_exit` 128 or more) holds partial data and is left out of both reports. When
+gcovr fails, the script leaves out the cells whose tracefile it rejects, merges the
+rest and still writes the Java report and `summary.md`. It then exits with 2. The
 `test-coverage` skill runs the full Linux matrix and merges it.
