@@ -68,6 +68,13 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   if (!__atomic_load_n(&_active, __ATOMIC_RELAXED)) {
     return;
   }
+  // check() rewrites these for the next recording, possibly while this late
+  // callback runs: read each once. The session check drops the stale sample.
+  const bool record_allocations = __atomic_load_n(&_record_allocations, __ATOMIC_RELAXED);
+  const bool record_liveness = __atomic_load_n(&_record_liveness, __ATOMIC_RELAXED);
+  const bool gc_generations = __atomic_load_n(&_gc_generations, __ATOMIC_RELAXED);
+  const bool disable_rate_limiting = __atomic_load_n(&_disable_rate_limiting, __ATOMIC_RELAXED);
+  const int interval = __atomic_load_n(&_interval, __ATOMIC_RELAXED);
 
   if (jvmti == NULL) {
     return;
@@ -121,21 +128,21 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   u64 call_trace_id = 0;
   // we do record the details and stacktraces only for when recording
   // allocations or liveness
-  if (_record_allocations || _record_liveness) {
+  if (record_allocations || record_liveness) {
     event._size = size;
-    event._weight = (float)((size == 0 || _interval == 0)
+    event._weight = (float)((size == 0 || interval == 0)
                                 ? 1
-                                : 1 / (1 - exp(-size / (double)_interval)));
+                                : 1 / (1 - exp(-size / (double)interval)));
 
     call_trace_id = profiler->recordJVMTISample(size, tid, thread, BCI_ALLOC, &event,
-                                                !_record_allocations, recording_session);
+                                                !record_allocations, recording_session);
 
     if (call_trace_id == 0) {
       return;
     }
   }
 
-  if (_record_allocations && !_disable_rate_limiting) {
+  if (record_allocations && !disable_rate_limiting) {
     u64 current_samples = __sync_add_and_fetch(&_alloc_event_count, 1);
     // in order to lower the number of atomic reads from the timestamp variable
     // the check will be performed only each N samples
@@ -164,16 +171,16 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
 
   // Either we are recording liveness or tracking GC generations (lightweight
   // liveness samples)
-  if (_gc_generations || _record_liveness) {
+  if (gc_generations || record_liveness) {
     LivenessTracker::instance()->track(jni, event, tid, object, call_trace_id,
                                        liveness_generation);
   }
 }
 
 void ObjectSampler::resetSession() {
-  _record_allocations = false;
-  _record_liveness = false;
-  _gc_generations = false;
+  __atomic_store_n(&_record_allocations, false, __ATOMIC_RELAXED);
+  __atomic_store_n(&_record_liveness, false, __ATOMIC_RELAXED);
+  __atomic_store_n(&_gc_generations, false, __ATOMIC_RELAXED);
 }
 
 Error ObjectSampler::check(Arguments &args) {
@@ -181,18 +188,21 @@ Error ObjectSampler::check(Arguments &args) {
     return Error("Allocation Sampling is not supported on this JVM");
   }
 
-  _interval =
-      std::max(args._memory,
-               static_cast<long>(
-                   256 * 1024)); // do not allow shorter interval than 256kiB
+  __atomic_store_n(&_interval,
+                   std::max(args._memory,
+                            static_cast<long>(
+                                256 * 1024)), // do not allow shorter interval than 256kiB
+                   __ATOMIC_RELAXED);
   _configured_interval = args._memory;
-  _record_allocations = args._record_allocations;
-  _record_liveness = args._record_liveness;
-  _gc_generations = args._gc_generations;
+  __atomic_store_n(&_record_allocations, args._record_allocations, __ATOMIC_RELAXED);
+  __atomic_store_n(&_record_liveness, args._record_liveness, __ATOMIC_RELAXED);
+  __atomic_store_n(&_gc_generations, args._gc_generations, __ATOMIC_RELAXED);
 
   // Test-only: Check environment variable to disable rate limiting
   const char* disable_rate_limit_env = getenv("DDPROF_TEST_DISABLE_RATE_LIMIT");
-  _disable_rate_limiting = (disable_rate_limit_env != nullptr && strcmp(disable_rate_limit_env, "1") == 0);
+  __atomic_store_n(&_disable_rate_limiting,
+                   disable_rate_limit_env != nullptr && strcmp(disable_rate_limit_env, "1") == 0,
+                   __ATOMIC_RELAXED);
 
   _max_stack_depth = Profiler::instance()->max_stack_depth();
 
@@ -270,8 +280,8 @@ Error ObjectSampler::updateConfiguration(u64 events, double time_coefficient) {
 
   if (new_interval != _interval) {
     // clamp the sampling interval to the max positive int value to avoid overflow
-    _interval = new_interval;
-    VM::jvmti()->SetHeapSamplingInterval(_interval);
+    __atomic_store_n(&_interval, static_cast<int>(new_interval), __ATOMIC_RELAXED);
+    VM::jvmti()->SetHeapSamplingInterval(static_cast<int>(new_interval));
   }
 
   return Error::OK;
