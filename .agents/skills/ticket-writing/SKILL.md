@@ -9,7 +9,8 @@ The ticket is the system of record: anyone must be able to pick the work up from
 without the conversation. The phases are in `doc/WorkTracking.md`; this skill covers how
 the ticket carries them.
 
-The `pr-writing` skill's style rules apply to every ticket text and comment.
+The `pr-writing` skill's style rules apply to every ticket text and comment. To assess
+whether an existing ticket still applies, use the `ticket-triage` skill.
 
 ## Creating a ticket
 
