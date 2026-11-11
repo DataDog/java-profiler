@@ -39,6 +39,11 @@ analyses. Procedures run at a known moment go in skills (`.agents/skills/`, whic
 load fresh when invoked); enforcement goes in scripts, hooks and CI — text here is
 advisory and cannot gate anything. Rules stay inline even when needed only once per
 task if that moment is end-of-task and no skill carries them.
+This layering and the work-tracking process follow the Datadog AI Native SDLC Playbook,
+a Datadog-internal Confluence page. Read it only when planning tracked work, changing
+the process, or changing the agent configuration (`AGENTS.md`, `.agents/skills/`,
+`.claude/`, `.pi/`, `.githooks/`). Agents find it with the Atlassian Confluence tools
+by its title; without Datadog access, skip it.
 Skipping a linked page silently is forbidden: if you touched code covered by a
 `doc/` page you did not read (context pressure, time), you MUST disclose it in the
 task summary with an explicit `SUBSYSTEM DOC NOT READ: <path>` line — the user,
@@ -513,7 +518,7 @@ harness has no review capability, say so and get explicit user sign-off — neve
 silently skip it. While the marker is stale, `.githooks/pre-push` refuses pushes to
 a branch with an open PR (install with `utils/review-marker.py install-hook`, never
 via `core.hooksPath`), and in Claude Code and Pi (`.pi/extensions/`) the
-`require-fresh-review` hook blocks `gh pr create`/`gh pr ready`.
+`require-fresh-review` hook blocks `gh pr create`/`gh pr ready` for this repository.
 
 ## Pull Request Descriptions, Comments and Commits
 
