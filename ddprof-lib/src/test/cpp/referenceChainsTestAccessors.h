@@ -599,6 +599,12 @@ public:
     static void setStaticFieldSweepMemoForTest(int count) {
         ReferenceChainTracker::instance()->_last_static_field_class_count = count;
     }
+    static int durableSweepReforceBackoffForTest() {
+        return ReferenceChainTracker::instance()->_durable_sweep_reforce_backoff;
+    }
+    static void setDurableSweepReforceBackoffForTest(int backoff) {
+        ReferenceChainTracker::instance()->_durable_sweep_reforce_backoff = backoff;
+    }
     static void setStaticFieldSweepCursorForTest(int cursor) {
         ReferenceChainTracker::instance()->_static_field_sweep_cursor = cursor;
     }
