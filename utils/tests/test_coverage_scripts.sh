@@ -137,7 +137,7 @@ expect_contains "export classes" "$log" "cp -r ddprof-lib/build/classes/java/mai
 expect_contains "gradle exit preserved" "$log" "|| rc=\$?;"
 expect_contains "export clears previous data" "$log" "rm -rf /coverage-out/reports /coverage-out/jacoco /coverage-out/classes /coverage-out/cell.properties"
 expect_not_contains "plain repo has no common-dir mount" "$log" "$COMMON_DIR:$COMMON_DIR"
-expect_contains "plain repo keeps narrow safe.directory" "$log" "safe.directory /source/.git"
+expect_contains "plain repo trusts only the mounted .git" "$log" "DDPROF_SAFE_DIRS=/source/.git"
 [[ -d "$out_dir" ]] && pass || fail "--coverage-out directory was not created"
 
 output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$out_dir" --tests=FooTest)
@@ -214,7 +214,25 @@ expect_not_contains "default has no export" "$log" "/coverage-out"
 output=$(run_script "$WORKTREE" --libc=musl --jdk=17 --coverage-out="$out_dir")
 log=$(cat "$STUB_LOG")
 expect_contains "worktree common-dir mount" "$log" "$COMMON_DIR:$COMMON_DIR:ro"
-expect_contains "worktree safe.directory" "$log" "safe.directory \"*\""
+expect_contains "worktree safe.directory list" "$log" "DDPROF_SAFE_DIRS=/source:/source/.git:"
+expect_contains "worktree trusts the common dir" "$log" ":$COMMON_DIR"
+expect_not_contains "worktree does not trust everything" "$log" 'safe.directory "*"'
+
+# A dirty tracked file and a colon in a mounted path are refused.
+git -C "$REPO" ls-files | head -1 > "$TEMP_DIR/tracked"
+tracked=$(cat "$TEMP_DIR/tracked")
+echo dirty >> "$REPO/$tracked"
+if output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$TEMP_DIR/dirty-out"); then
+  fail "a dirty tree was accepted"
+else
+  expect_contains "dirty tree rejected" "$output" "uncommitted changes"
+fi
+git -C "$REPO" checkout -q -- "$tracked"
+if output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$TEMP_DIR/a:b"); then
+  fail "a colon in --coverage-out was accepted"
+else
+  expect_contains "colon rejected" "$output" "must not contain a colon"
+fi
 
 # ---- run-containers-tests.sh: rejected combinations ----
 for bad in "--shell" "--mount" "--matrix" "--config=debug" "--gtest-task=foo_ut"; do
@@ -320,6 +338,12 @@ make_cell "$TEMP_DIR/c3" "$SRC_COMMIT" 17 other
 output=$("$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged3" "$TEMP_DIR/c1" "$TEMP_DIR/c3" 2>&1)
 expect_contains "differing classes warn" "$output" "classes in $TEMP_DIR/c3 differ"
 expect_contains "differing classes in summary" "$(cat "$TEMP_DIR/merged3/summary.md")" "| 17 |  | 0 | yes | partial (classes differ) |"
+
+# The reference is the classes most cells share, not the first cell's.
+output=$("$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged3b" "$TEMP_DIR/c3" "$TEMP_DIR/c1" "$TEMP_DIR/c2" 2>&1)
+expect_contains "majority classes are the reference" "$(cat "$STUB_LOG.java")" "$TEMP_DIR/c1/classes"
+expect_contains "outlier cell is partial" "$(cat "$TEMP_DIR/merged3b/summary.md")" "| 17 |  | 0 | yes | partial (classes differ) |"
+expect_contains "majority cell is complete" "$(cat "$TEMP_DIR/merged3b/summary.md")" "| 25-graal |  | 0 | yes | yes |"
 
 rm -f "$TEMP_DIR/c3/reports/cpp/coverage.json"
 output=$("$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged4" "$TEMP_DIR/c1" "$TEMP_DIR/c3" 2>&1)

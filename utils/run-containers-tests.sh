@@ -895,6 +895,15 @@ if [[ -n "$GTEST_TASK" && -n "$TESTS" ]]; then
     exit 1
 fi
 
+# A colon splits "host:container" in -v, and the safe.directory list below is colon-separated.
+reject_colon() {
+    if [[ "$2" == *:* ]]; then
+        echo "Error: $1 ($2) must not contain a colon" >&2
+        exit 1
+    fi
+}
+reject_colon "the project directory" "$PROJECT_ROOT"
+
 # The pattern reaches the container as an environment variable, never as command text,
 # so any character is safe except a newline, which would split a cell.properties line.
 if [[ "$TESTS" == *$'\n'* ]]; then
@@ -972,6 +981,14 @@ if [[ -n "$COVERAGE_OUT" ]]; then
     CONFIG="coverage"
     mkdir -p "$COVERAGE_OUT"
     COVERAGE_OUT="$(cd "$COVERAGE_OUT" && pwd)"
+    reject_colon "--coverage-out" "$COVERAGE_OUT"
+    # A cell builds the committed HEAD of a clone, so uncommitted edits would be silently
+    # missing while cell.properties still records HEAD.
+    if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=no)" ]]; then
+        echo "Error: tracked files have uncommitted changes; a coverage cell measures the committed HEAD." >&2
+        echo "Commit or stash them first." >&2
+        exit 1
+    fi
     # The directory is cleaned below and by the in-container export, so it must be empty
     # or an earlier export (--coverage-out=ddprof-lib/build must not wipe build output).
     if [[ -n "$(ls -A "$COVERAGE_OUT")" && ! -f "$COVERAGE_OUT/cell.properties" ]]; then
@@ -1373,6 +1390,7 @@ else
     GIT_COMMON_DIR=""
     if [[ -f "$PROJECT_ROOT/.git" ]]; then
         GIT_COMMON_DIR=$(cd "$PROJECT_ROOT" && cd "$(git rev-parse --git-common-dir)" && pwd)
+        reject_colon "the main checkout's git dir" "$GIT_COMMON_DIR"
         # Mounted at its host path, so it must not sit under a path the container
         # creates itself: /workspace is the clone destination and must stay empty,
         # and the others are mount points.
@@ -1385,7 +1403,6 @@ else
         esac
         printf -v CONTAINER_CMD '%s -v %q' "$CONTAINER_CMD" "${GIT_COMMON_DIR}:${GIT_COMMON_DIR}${CONTAINER_VOLUME_RO_OPTIONS}"
     fi
-    CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
 
     # Build clone and test command - clone from local mounted source.
     # With a rootful runtime (e.g. Docker) the container's root doesn't own the
@@ -1393,11 +1410,18 @@ else
     # Trust exactly the mounted .git; the container is discarded. Passing
     # "-c safe.directory=..." to git clone is not enough (tested with git 2.34.1
     # in the glibc image), unlike for the commands in utils/compute-version.sh.
-    SAFE_DIR_CMD="git config --global --add safe.directory /source/.git && "
+    # A worktree adds its checkout, its own gitdir and the common dir, which fail the
+    # same check. The list is passed as an environment variable (colon-separated, paths
+    # with a colon are rejected above) so no path is spliced into the command text.
+    SAFE_DIRS="/source/.git"
     if [[ -n "$GIT_COMMON_DIR" ]]; then
-        # The worktree's checkout and its gitdir both fail git's ownership check.
-        SAFE_DIR_CMD="git config --global --add safe.directory \"*\" && "
+        WORKTREE_GITDIR=$(cd "$PROJECT_ROOT" && cd "$(git rev-parse --absolute-git-dir)" && pwd)
+        reject_colon "the worktree's git dir" "$WORKTREE_GITDIR"
+        SAFE_DIRS="/source:/source/.git:$WORKTREE_GITDIR:$GIT_COMMON_DIR"
     fi
+    printf -v CONTAINER_CMD '%s -e %q' "$CONTAINER_CMD" "DDPROF_SAFE_DIRS=$SAFE_DIRS"
+    CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
+    SAFE_DIR_CMD="( IFS=:; set -f; for d in \$DDPROF_SAFE_DIRS; do git config --global --add safe.directory \"\$d\" || exit 1; done ) && "
     if $SHELL_MODE; then
         CLONE_CMD="${SAFE_DIR_CMD}git clone --depth 1 file:///source /workspace && cd /workspace && /bin/bash"
     else

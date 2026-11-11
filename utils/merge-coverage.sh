@@ -118,8 +118,35 @@ if (( ${#tracefiles[@]} > 0 )); then
 fi
 
 # ---- Java ----
+# Digest of a class tree (names and bytes), to find the classes most cells agree on.
+tree_digest() {
+    (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 cat \
+        && find . -type f | LC_ALL=C sort) | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-64
+}
 execs=()
 CLASSES=""
+# Reference classes: the tree most cells with JaCoCo data share, so one odd cell cannot
+# mark all the others partial. Ties go to the first cell.
+CELL_DIGEST=()
+for i in "${!CELLS[@]}"; do
+    cell=${CELLS[$i]}
+    CELL_DIGEST[$i]=""
+    [[ -d "$cell/classes" && -d "$cell/jacoco" ]] || continue
+    [[ -n "$(find "$cell/jacoco" -name '*.exec' -type f | head -1)" ]] || continue
+    CELL_DIGEST[$i]=$(tree_digest "$cell/classes")
+done
+best=0
+for i in "${!CELLS[@]}"; do
+    [[ -n "${CELL_DIGEST[$i]}" ]] || continue
+    n=0
+    for j in "${!CELLS[@]}"; do
+        [[ "${CELL_DIGEST[$j]}" != "${CELL_DIGEST[$i]}" ]] || n=$((n + 1))
+    done
+    if (( n > best )); then
+        best=$n
+        CLASSES="${CELLS[$i]}/classes"
+    fi
+done
 for i in "${!CELLS[@]}"; do
     cell=${CELLS[$i]}
     cell_execs=0
@@ -134,9 +161,6 @@ for i in "${!CELLS[@]}"; do
     elif [[ ! -d "$cell/classes" ]]; then
         # Nothing to compare: JaCoCo may drop this cell's data for classes that differ.
         CELL_JAVA[$i]="unverified (no classes)"
-    elif [[ -z "$CLASSES" ]]; then
-        CLASSES="$cell/classes"
-        CELL_JAVA[$i]=yes
     elif diff -rq "$CLASSES" "$cell/classes" >/dev/null; then
         CELL_JAVA[$i]=yes
     else
@@ -155,12 +179,14 @@ if (( ${#execs[@]} > 0 )) && [[ -z "$CLASSES" ]]; then
 fi
 if (( ${#execs[@]} > 0 )) && [[ -n "$CLASSES" ]]; then
     cli="${JACOCO_CLI:-}"
-    if [[ -z "$cli" ]]; then
+    if [[ -n "$cli" ]]; then
+        echo "Warning: using \$JACOCO_CLI=$cli unverified; the pinned $JACOCO_VERSION jar is checked only when downloaded" >&2
+    else
         cli="$OUT/tools/org.jacoco.cli-$JACOCO_VERSION-nodeps.jar"
         if [[ ! -f "$cli" ]]; then
             mkdir -p "$OUT/tools"
             url="https://repo1.maven.org/maven2/org/jacoco/org.jacoco.cli/$JACOCO_VERSION/org.jacoco.cli-$JACOCO_VERSION-nodeps.jar"
-            curl -fsSL -o "$cli.tmp" "$url"
+            curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 -o "$cli.tmp" "$url"
             actual=$( (shasum -a 256 "$cli.tmp" 2>/dev/null || sha256sum "$cli.tmp") | cut -c1-64)
             if [[ "$actual" != "$JACOCO_CLI_SHA256" ]]; then
                 rm -f "$cli.tmp"

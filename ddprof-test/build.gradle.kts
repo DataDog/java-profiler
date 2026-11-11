@@ -85,6 +85,7 @@ tasks.register("checkCoverageTestFailures") {
   val resultsDir = layout.buildDirectory.dir("test-results")
   val filtered = project.hasProperty("tests")
   val testsPattern = project.findProperty("tests")
+  val coverageTestTasks = tasks.matching { it.name in coverageTaskNames }
   doLast {
     val failed = markers.get().asFile.list()?.sorted().orEmpty()
     if (failed.isNotEmpty()) {
@@ -94,11 +95,16 @@ tasks.register("checkCoverageTestFailures") {
     // would otherwise end in a green run with no Java coverage. Skipped tests still count:
     // a valid pattern whose tests are all gated off on this JVM is not a typo, and a pattern
     // matching nothing produces no testsuite at all. Counted from the result XML, since jacocoTestReport is skipped (not failed) when no .exec file exists.
-    if (filtered) {
+    // Skipped when no coverage test task ran at all (the build died earlier, e.g. in
+    // gtestCoverage): the real error is already reported and "no tests" would mask it.
+    if (filtered && coverageTestTasks.any { it.state.executed && it.state.failure == null }) {
       fun attr(xml: String, name: String) = Regex("""<testsuite [^>]*\b$name="(\d+)"""").find(xml)?.groupValues?.get(1)?.toInt() ?: 0
       val ran = coverageTaskNames.sumOf { task ->
         resultsDir.get().dir(task).asFile.listFiles { f -> f.name.startsWith("TEST-") && f.name.endsWith(".xml") }
-          .orEmpty().sumOf { attr(it.readText(), "tests") }
+          .orEmpty().sumOf { f ->
+            // The first <testsuite> header sits in the file's first bytes; the rest is captured output.
+            attr(f.inputStream().use { String(it.readNBytes(8192), Charsets.UTF_8) }, "tests")
+          }
       }
       if (ran == 0) {
         throw GradleException("-Ptests=$testsPattern ran no tests in testCoverage or testSlowCoverage")
