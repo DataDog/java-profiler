@@ -699,10 +699,11 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
   int rebuild_count = 0;
   {
     ExclusiveLockGuard guard(&_resolved_chains_lock);
-    _pending_chain_invalidations_lock.lock();
-    assert(_draining_chain_invalidations.empty());
-    _pending_chain_invalidations.swap(_draining_chain_invalidations);
-    _pending_chain_invalidations_lock.unlock();
+    {
+      ExclusiveLockGuard pending_guard(&_pending_chain_invalidations_lock);
+      assert(_draining_chain_invalidations.empty());
+      _pending_chain_invalidations.swap(_draining_chain_invalidations);
+    }
 
     // Eligible REBUILD entries over the cap are packed in place at the front of the scratch
     // buffer: every write lands strictly behind the read cursor (deferred < i at each write,
@@ -733,8 +734,9 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
     }
     if (deferred > 0) {
       // Lock order: _resolved_chains_lock (held) before the pending lock.
-      _pending_chain_invalidations_lock.lock();
-      for (size_t i = 0; i < deferred; i++) {
+      {
+        ExclusiveLockGuard pending_guard(&_pending_chain_invalidations_lock);
+        for (size_t i = 0; i < deferred; i++) {
         const jlong pending = _draining_chain_invalidations[i];
         const jlong tag = pendingChainInvalidationTag(pending);
         const jlong evict =
@@ -761,8 +763,8 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
                    "keeping cached chain source_tag=%lld",
                    (long long)tag);
         }
+        }
       }
-      _pending_chain_invalidations_lock.unlock();
       TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations deferred=%zu rebuilds",
                deferred);
     }
@@ -792,8 +794,28 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
       // target waits for a later rebuild, cache-pressure eviction, or start()/stop()'s cache clear.
       continue;
     }
+    const bool leak_correlated = isLeakTag((jlong)event._target_tag);
     event._start_time = TSC::ticks();
-    replaceResolvedChain(tag, std::move(event), current_search_ns);
+    if (replaceResolvedChain(tag, std::move(event), current_search_ns) &&
+        leak_correlated) {
+      // A rebuilt leak chain for a discovered instance must keep its candidate marked found:
+      // buildDiscoveredInstanceChains() skips already-cached tags, so without this a rebuild
+      // after an improvePath would leave popcount(_candidate_found_bits) short and the search
+      // would keep hunting a candidate whose chain is already resolved. BFS thread, like every
+      // other _candidate_* writer.
+      for (int s = 0; s < _candidate_count; s++) {
+        if (_candidate_found_bits & (1ULL << s)) {
+          continue;
+        }
+        for (int d = 0; d < _candidate_discovered_count[s]; d++) {
+          if (_candidate_discovered_tags[s][d] == tag) {
+            _candidate_found_bits |= (1ULL << s);
+            _candidate_frontier_tags[s] = tag;
+            break;
+          }
+        }
+      }
+    }
   }
 }
 

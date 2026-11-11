@@ -239,6 +239,8 @@ drops the new chain and increments `REFERENCE_CHAIN_EVENTS_DROPPED`.
 
 `drainPendingChainEvents()` is a snapshot operation despite its name. It copies valid cached chains and keeps them for later dumps. Before emission, it checks the leak-tag incarnation and removes entries whose tag now belongs to another object.
 
+Deferred invalidations reach the cache as encoded EVICT or REBUILD requests in a bounded pending buffer. EVICT (noise eviction, event filter) erases the cached chain. REBUILD (improved path, root-kind change, a just-correlated leak tag) keeps the chain: the BFS-thread poll rebuilds it from the intact frontier entry and replaces the cache entry on success, at most 8 rebuilds per poll; entries over that budget stay pending for later polls. When the buffer is full, the new request is dropped and the cached chain is kept.
+
 The dump thread writes `datadog.ReferenceChain` events. The traversal thread does not write JFR events.
 
 ## Result semantics
