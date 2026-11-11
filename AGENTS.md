@@ -529,6 +529,8 @@ via `core.hooksPath`), and in Claude Code and Pi (`.pi/extensions/`) the
 Before writing or editing a PR title or description, a PR comment or review reply, a
 Jira comment or a commit message, load the `pr-writing` skill
 ([.agents/skills/pr-writing/SKILL.md](.agents/skills/pr-writing/SKILL.md)).
+After pushing commits to a branch with an open PR, re-verify the PR description
+against the new diff — the pre-push hook warns, the skill defines what to check.
 
 ## CI / Automation Script Changes
 

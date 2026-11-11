@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # Copyright 2026, Datadog, Inc.
 """Claude Code PreToolUse hook: block commands that mention `gh pr create|new|ready`
-while the branch's review marker is stale, and `gh pr create` whose title and body
-reference no ticket. A single plain `gh pr create|new|ready` call that certainly targets
+while the branch's review marker is stale, `gh pr create` whose title and body
+reference no ticket, and `gh pr ready` whose PR description was last edited before
+the PR's head commit. A single plain `gh pr create|new|ready` call that certainly targets
 another repository than this one is not gated. Pushes are gated by .githooks/pre-push."""
 
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 import re
 import shlex
 import subprocess
@@ -82,8 +84,7 @@ def repo_flag(tokens):
 def ready_target(args, repo, cwd):
     """Check arguments for the PR `gh pr ready` targets, from GitHub so the commits the
     PR holds are checked; [] means the current branch, None that it cannot be resolved."""
-    selector = [a for i, a in enumerate(args)
-                if not a.startswith("-") and (i == 0 or args[i - 1] not in ("-R", "--repo"))]
+    selector = pr_selector(args)
     out = gh_query(["pr", "view", *selector[:1], *(["-R", repo] if repo else []), "--json",
                     "headRefName,headRefOid,baseRefName", "-q",
                     '.headRefName + " " + .headRefOid + " " + .baseRefName'], cwd)
@@ -224,6 +225,36 @@ def foreign_target(command, top):
     return target
 
 
+def pr_selector(args):
+    """The positional PR selectors of a `gh pr` subcommand: words no flag ate."""
+    return [a for i, a in enumerate(args)
+            if not a.startswith("-") and (i == 0 or args[i - 1] not in ("-R", "--repo"))]
+
+
+def gh_time(text):
+    """gh's ISO 8601 timestamp ("...Z") as an aware datetime, or None when unparseable
+    or missing a UTC designator (a naive value would crash the aware-vs-aware comparison)."""
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return None if dt.tzinfo is None else dt
+
+
+def stale_description(args, repo, cwd):
+    """True when the PR body was last edited before its head commit, so it may predate
+    the latest code. Comments also bump updatedAt, so a fresh value never blocks.
+    None (fail open) when gh fails, the PR has no commits, or a timestamp is unparseable."""
+    out = gh_query(["pr", "view", *pr_selector(args)[:1], *( ["-R", repo] if repo else [] ),
+                    "--json", "updatedAt,commits", "-q",
+                    '.updatedAt + " " + (.commits | if length > 0 then .[-1].committedDate'
+                    ' else "" end)'], cwd)
+    times = [gh_time(part) for part in (out or "").split()]
+    if len(times) != 2 or None in times:
+        return None
+    return times[0] < times[1]
+
+
 def network_root(name, top):
     """OWNER/REPO, lowercase, of the root of `name`'s fork network as GitHub resolves it
     (the repository itself when it is not a fork); None when gh fails."""
@@ -350,6 +381,12 @@ def evaluate(source, cwd, sub, args, command, match_text):
         default = default_base(cwd)
         if default:
             res = run_check(source, cwd, ["--base", default])
+    if res.returncode == 0 and sub == "ready":
+        stale = stale_description(args, repo_flag(words(match_text)), cwd)
+        if stale:
+            return "the PR description was last edited before the PR's head commit and " \
+                   "may not match the pushed code. Re-verify the title and description " \
+                   "against the current diff, update or re-save it, then retry."
     if res.returncode == 0:
         return None
     reason = res.stderr.decode(errors="replace").strip()

@@ -234,7 +234,7 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 | `check-knowledgebase.py` | Every tracked `.knowledgebase/memories/` file carries cairn's required memory frontmatter. |
 | `check-skills.py` | Every tracked `.agents/skills/` skill has loadable frontmatter, `.claude/skills` links to it, and `AGENTS.md` names only existing skills. |
 
-`.githooks/pre-push` runs `check-copyright.py` and `check-claude-md.py` on every pushed branch commit, so a violation stops the push before CI sees it (see `review-marker.py` below for the trust model). Set `branch.<name>.gh-merge-base` for a branch stacked on another feature branch.
+`.githooks/pre-push` runs `check-copyright.py` and `check-claude-md.py` on every pushed branch commit, so a violation stops the push before CI sees it (see `review-marker.py` below for the trust model). Set `branch.<name>.gh-merge-base` for a branch stacked on another feature branch. A push to a branch with an open PR that passes those gates warns to re-verify the PR description against the pushed commits; the warning never blocks.
 
 **Usage:**
 ```bash
@@ -294,11 +294,13 @@ Records that the agentic pre-PR review covered a branch, and checks it. Used by 
 - `install-hook` writes a shim to `<git-common-dir>/hooks/pre-push` that runs `.githooks/pre-push` as of `refs/remotes/origin/main`, which loads `review-marker.py` from the same ref; the Claude Code hook loads it from there too. All run with `python3 -I`, so files in the checkout, which may be an untrusted branch (e.g. a fork PR), are not executed or imported. When that ref lacks the scripts (the gate is not merged yet, or there is no `origin` remote), both hooks allow everything. Out of scope: Claude Code runs `.claude/` hooks from the session's own checkout under its workspace-trust model. It never sets `core.hooksPath`, which would replace global hooks such as Datadog's secret scanner; those chain to `.git/hooks`.
 - The same shim also runs `check-copyright.py` and `check-claude-md.py` from that ref (see Source quality checks).
 - For `gh pr create`, the Claude Code hook also runs `.github/scripts/check_pr_ticket.py` from that ref on the PR title and body; a command it cannot judge passes, and the CI `PR ticket reference` workflow checks it.
+- For `gh pr ready`, after the marker check passes the hook also blocks when the PR description was last edited before the PR's head commit (one gh probe; comments also bump `updatedAt`, so a fresh value allows): the description may predate the latest code. The probe fails open.
 - Exit codes: 0 fresh, written or installed; 1 missing or stale; 2 usage or environment error (e.g. missing base ref, git older than 2.39).
 - Known limits, all accepted:
   - An edit moved between two places whose surrounding lines are identical keeps the same digest, because hunk positions are left out so that rebases stay fresh.
-  - A fresh marker skips the network, so `pre-push` does not notice an open PR retargeted to a base other than the marker's.
+  - A fresh marker still skips the marker check itself, and neither hook notices an open PR retargeted to a base other than the marker's; `pre-push` now probes gh for an open PR on every branch push, so a fresh marker no longer skips the network entirely.
   - A branch pushed under another name (`git push origin fix:topic`) is found by `pre-push` but not by `gh pr ready`, which blocks rather than allows.
+  - A rebase or `git push --force-with-lease` replay rewrites commit dates, so the head commit is newer than the description and `gh pr ready` blocks until the body is re-saved (a no-op edit clears it).
 
 **Usage:**
 ```bash
