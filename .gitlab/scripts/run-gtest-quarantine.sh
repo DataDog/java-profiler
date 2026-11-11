@@ -60,24 +60,37 @@ if [ "${1:-}" = "--attempt" ]; then
     exit 1
   fi
   first_rc=0
+  hard_rc=0
   while IFS= read -r binary; do
     echo ""
     echo "=== $(basename "$binary") ==="
     # One XML per binary, named TEST-*.xml: the name flake_report.py globs.
-    "$binary" --gtest_output="xml:${RESULTS_DIR}/TEST-$(basename "$binary").xml"
+    xml_path="${RESULTS_DIR}/TEST-$(basename "$binary").xml"
+    "$binary" --gtest_output="xml:${xml_path}"
     bin_rc=$?
     if [ "${bin_rc}" -ne 0 ]; then
       echo "FAILED: $(basename "$binary") exited ${bin_rc}"
-      # A signal death (128+N, which flake_report.py reads as a run cut
-      # short) outranks an earlier plain failure code; rc 128 counts as
-      # plain, matching flake_report.py's strict >128 check.
-      if [ "${first_rc}" -le 128 ] && [ "${bin_rc}" -gt 128 ]; then
-        first_rc=${bin_rc}
+      if ! [ -s "${xml_path}" ]; then
+        # gtest writes the XML at exit, so a binary aborted by a sanitizer
+        # diagnostic (ASan exit 1, TSan exit 66 -- no signal involved) leaves
+        # none. flake_report.py greps this marker from the attempt log and
+        # reads the run as cut short: the aborted binary's unrecorded tests
+        # must not be excused by another binary's quarantined failures.
+        echo "ABORTED: $(basename "$binary") exited ${bin_rc} without producing test results"
+        if [ "${hard_rc}" -eq 0 ]; then hard_rc=${bin_rc}; fi
+      elif [ "${bin_rc}" -gt 128 ]; then
+        # A signal death (128+N) is the same cut-short evidence, visible
+        # from the exit code alone; rc 128 counts as plain, matching
+        # flake_report.py's strict >128 check.
+        if [ "${hard_rc}" -eq 0 ]; then hard_rc=${bin_rc}; fi
       elif [ "${first_rc}" -eq 0 ]; then
         first_rc=${bin_rc}
       fi
     fi
   done <<< "${binaries}"
+  if [ "${hard_rc}" -ne 0 ]; then
+    exit "${hard_rc}"
+  fi
   exit "${first_rc}"
 fi
 

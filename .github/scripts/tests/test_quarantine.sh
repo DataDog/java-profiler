@@ -1344,5 +1344,47 @@ set -e
 [ "$rc" -ne 0 ] || fail "an un-quarantined gtest failure must fail the job (got exit $rc)"
 pass "an un-quarantined gtest failure fails the job"
 
+# A quarantine entry must name the id the gtest declaration actually
+# produces. validate() cannot catch a suite name that exists only in a
+# ticket title, and the failure mode is a mute that never matches -- so
+# pin the entry's test field to the id parsed from the source file.
+SRC_NATIVE_THREAD_NAME_RACE="$ROOT/ddprof-lib/src/test/cpp/nativeThreadNameRace_ut.cpp"
+declared_id=$(sed -n 's/^[[:space:]]*TEST(\([A-Za-z_][A-Za-z0-9_]*\),[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)).*/\1.\2/p' \
+  "$SRC_NATIVE_THREAD_NAME_RACE" | head -1)
+[ -n "$declared_id" ] || fail "could not parse a TEST(<suite>, <case>) id from nativeThreadNameRace_ut.cpp"
+entry_id=$(awk -F'|' '/PROF-16577/ {gsub(/[ \t]/, "", $1); print $1; exit}' \
+  "$ROOT/ddprof-test/quarantine.txt")
+[ "$entry_id" = "$declared_id" ] \
+  || fail "the PROF-16577 entry ('$entry_id') does not match the declared gtest id ('$declared_id')"
+pass "the PROF-16577 entry names the id the gtest declaration produces ($declared_id)"
+
+# Regression (PR review): a gtest binary aborted by a sanitizer diagnostic
+# exits 66 WITHOUT writing its XML -- no signal, so the >128 exit check
+# cannot see it, and both attempts miss the same tests, so neither can the
+# observed-shortfall check. The runner prints an ABORTED marker line instead;
+# the classifier must read it as a cut-short run and keep the job red even
+# though the only NAMED failure is quarantined.
+CASE="$TEMP_DIR/case-gtest-abort-not-excused"
+mkdir -p "$CASE"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+$(declare -f write_failure_xml)
+write_failure_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails" "got 2 samples, wanted 50"
+echo "ABORTED: sanitizer_beta_ut exited 66 without producing test results"
+exit 66
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+set +e
+output=$(cd "$CASE" && "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-tsan-amd64" -- ./suite.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a sanitizer abort with only quarantined named failures must not be excused (got exit $rc)"
+echo "$output" | grep -q "ABORTED: sanitizer_beta_ut exited 66" \
+  || fail "expected the ABORTED marker to be visible in the job output, got: $output"
+pass "a sanitizer abort is not excused by another binary's quarantined failures"
+
 echo
 echo "All $TESTS quarantine tests passed."

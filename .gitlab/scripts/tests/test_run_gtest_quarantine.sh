@@ -32,11 +32,28 @@ setup_tree() {
 }
 
 # Fake gtest binary: basename MUST start with release_ or the script's
-# grep "/${SANITIZER_LC}_" selector silently drops it.
+# grep "/${SANITIZER_LC}_" selector silently drops it. With xml=1 the fake
+# writes the JUnit XML a completing binary leaves behind -- a failing binary
+# with XML is a plain failure, without XML it is an abort (the marker path).
 make_bin() {
-  local name="$1" rc="$2"
+  local name="$1" rc="$2" xml="${3:-}"
   mkdir -p "${WORK}/repo/ddprof-lib/build/bin/gtest/release"
-  printf '#!/usr/bin/env bash\nexit %s\n' "${rc}" \
+  # Single-quoted format: $OUT must reach the generated script unexpanded.
+  # shellcheck disable=SC2016
+  printf '#!/usr/bin/env bash
+OUT=ddprof-lib/build/test-results/gtest/release
+if [ -n "%s" ]; then
+  cat > "$OUT/TEST-%s.xml" <<XMLEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="1" failures="%s">
+  <testsuite name="FakeSuite" tests="1" failures="%s">
+    <testcase name="fails" classname="FakeSuite" status="run">%s</testcase>
+  </testsuite>
+</testsuites>
+XMLEOF
+fi
+exit %s
+' "${xml}" "${name}" "$([ "${rc}" -ne 0 ] && echo 1 || echo 0)" "$([ "${rc}" -ne 0 ] && echo 1 || echo 0)" "$([ "${rc}" -ne 0 ] && echo '<failure message="boom" type="AssertionFailed"/>' || echo '')" "${rc}" \
     > "${WORK}/repo/ddprof-lib/build/bin/gtest/release/${name}"
   chmod +x "${WORK}/repo/ddprof-lib/build/bin/gtest/release/${name}"
 }
@@ -91,18 +108,19 @@ assert_rc() {
   fi
 }
 
-# T1 — first signal death beats a later plain failure (mutation killer for
+# T1 — a signal death beats a later plain failure (mutation killer for
 # the dropped-guard / always-overwrite mutations of the aggregation guard).
+# The plain failure writes XML; the signal death leaves none.
 setup_tree
 make_bin release_alpha 130
-make_bin release_beta 1
+make_bin release_beta 1 xml
 run_case release --attempt
 assert_rc 130 "T1 signal rc wins over later plain failure"
 
 # T2 — an earlier plain failure must NOT mask a later signal death
 # (bug-fix pin: the pre-fix script kept the first failure's rc, 1).
 setup_tree
-make_bin release_alpha 1
+make_bin release_alpha 1 xml
 make_bin release_beta 130
 run_case release --attempt
 assert_rc 130 "T2 signal rc outranks earlier plain failure"
@@ -110,10 +128,37 @@ assert_rc 130 "T2 signal rc outranks earlier plain failure"
 # T3 — a fully passing suite exits 0 (the precedence rule must not fire
 # on passes).
 setup_tree
-make_bin release_alpha 0
-make_bin release_beta 0
+make_bin release_alpha 0 xml
+make_bin release_beta 0 xml
 run_case release --attempt
 assert_rc 0 "T3 passing suite exits 0"
+
+# T9 — a sanitizer abort (exit 66, no signal) after another binary's
+# quarantined failure must surface the ABORTED marker and win the exit:
+# without it the classifier sees only quarantined XML and excuses the job.
+setup_tree
+make_bin release_alpha 1 xml
+make_bin release_beta 66
+run_case release --attempt
+assert_rc 66 "T9 sanitizer abort wins over earlier plain failure"
+if grep -q "ABORTED: release_beta exited 66 without producing test results" <<< "${OUT}"; then
+  pass "T9 output carries the ABORTED marker"
+else
+  fail "T9: output missing the ABORTED marker, got: ${OUT}"
+fi
+
+# T10 — an ASan-style abort (exit 1, no signal) is indistinguishable from a
+# plain failure by exit code alone; the ABORTED marker is the only evidence.
+setup_tree
+make_bin release_alpha 1 xml
+make_bin release_beta 1
+run_case release --attempt
+assert_rc 1 "T10 abort exit 1 propagates"
+if grep -q "ABORTED: release_beta exited 1 without producing test results" <<< "${OUT}"; then
+  pass "T10 output carries the ABORTED marker"
+else
+  fail "T10: output missing the ABORTED marker, got: ${OUT}"
+fi
 
 # T4 — a failed find is a build problem: exit 2 with a stderr message
 # naming the path (bug-fix pin: the pre-fix script exited 1 via the

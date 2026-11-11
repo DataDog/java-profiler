@@ -26,13 +26,22 @@ they require:
 `gtest-release-amd64`, `gtest-release-arm64`
 
 **Gradle tasks:** `:ddprof-lib:buildGtestAsan`, `:ddprof-lib:buildGtestTsan`,
-`:ddprof-lib:buildGtestRelease` (compile + link only). The CI job then runs each
-binary under `ddprof-lib/build/bin/gtest/<config>_<test>/` directly from the shell,
-because the Gradle daemon swallows child-process output when fd 1/2 are not a terminal.
+`:ddprof-lib:buildGtestRelease` (compile + link only). The CI job then runs the
+binaries under `ddprof-lib/build/bin/gtest/<config>_<test>/` directly from the shell
+via `.gitlab/scripts/run-gtest-quarantine.sh`, because the Gradle daemon swallows
+child-process output when fd 1/2 are not a terminal.
 
 **Runs on:** amd64 and aarch64, using the standard `BUILD_IMAGE_X64` / `BUILD_IMAGE_ARM64`
 images, on every branch push. Skipped for GitLab merge-request pipelines and for
 JDK-integration triggers (`JDK_VERSION`/`DEBUG_LEVEL`/`HASH`/`DOWNSTREAM` set).
+
+**Flake handling:** every attempt runs all binaries of the configuration, each with
+`--gtest_output=xml:` JUnit XML under `ddprof-lib/build/test-results/gtest/<config>/`.
+The run goes through the shared retry/quarantine machinery
+(`.github/scripts/run_tests_with_retry.sh`): two attempts, and a failing test only
+excuses the job when it is on `ddprof-test/quarantine.txt` for the cell
+`glibc-<config>-<arch>`. A binary that exits non-zero without producing its XML —
+sanitizer abort or signal — marks the run cut short and gates regardless of the list.
 
 The `release` jobs are not sanitizers: they are the only jobs that compile the gtests
 with optimisation, so they catch defects that only appear once the optimiser runs
