@@ -26,13 +26,22 @@ they require:
 `gtest-release-amd64`, `gtest-release-arm64`
 
 **Gradle tasks:** `:ddprof-lib:buildGtestAsan`, `:ddprof-lib:buildGtestTsan`,
-`:ddprof-lib:buildGtestRelease` (compile + link only). The CI job then runs each
-binary under `ddprof-lib/build/bin/gtest/<config>_<test>/` directly from the shell,
-because the Gradle daemon swallows child-process output when fd 1/2 are not a terminal.
+`:ddprof-lib:buildGtestRelease` (compile + link only). The CI job then runs the
+binaries under `ddprof-lib/build/bin/gtest/<config>_<test>/` directly from the shell
+via `.gitlab/scripts/run-gtest-quarantine.sh`, because the Gradle daemon swallows
+child-process output when fd 1/2 are not a terminal.
 
 **Runs on:** amd64 and aarch64, using the standard `BUILD_IMAGE_X64` / `BUILD_IMAGE_ARM64`
 images, on every branch push. Skipped for GitLab merge-request pipelines and for
 JDK-integration triggers (`JDK_VERSION`/`DEBUG_LEVEL`/`HASH`/`DOWNSTREAM` set).
+
+**Flake handling:** every attempt runs all binaries of the configuration, each with
+`--gtest_output=xml:` JUnit XML under `ddprof-lib/build/test-results/gtest/<config>/`.
+The run goes through the shared retry/quarantine machinery
+(`.github/scripts/run_tests_with_retry.sh`): two attempts, and a failing test only
+excuses the job when it is on `ddprof-test/quarantine.txt` for the cell
+`glibc-<config>-<arch>`. A binary that exits non-zero without producing its XML —
+sanitizer abort or signal — marks the run cut short and gates regardless of the list.
 
 The `release` jobs are not sanitizers: they are the only jobs that compile the gtests
 with optimisation, so they catch defects that only appear once the optimiser runs
@@ -51,8 +60,13 @@ directly, without a JVM. This makes both ASan and TSan effective:
 TSan is only viable at this tier. The JVM binary contains intentional unsynchronized
 patterns (lock-free GC internals, biased locking) that produce too many false
 positives in the Java functional tier. `gradle/sanitizers/tsan.supp` captures
-suppressions from earlier attempts. The CI jobs run the gtest binaries directly with no
-`TSAN_OPTIONS`, so it is not applied there. Running `:ddprof-lib:gtestTsan` through Gradle
+suppressions from earlier attempts. The CI jobs run the gtest binaries directly with
+no suppressions (`TSAN_OPTIONS` carries `halt_on_error=1`, set by the runner so
+the first race kills the binary before gtest writes a passing JUnit XML — see the
+flake-handling note above; any pre-existing `TSAN_OPTIONS` value is preserved, so
+an operator setting suppressions in the job would silently re-enable them), so the
+suppressions file is not applied there today. Running
+`:ddprof-lib:gtestTsan` through Gradle
 does pass the tsan config's `TSAN_OPTIONS` (including `suppressions=gradle/sanitizers/tsan.supp`)
 to the binaries.
 

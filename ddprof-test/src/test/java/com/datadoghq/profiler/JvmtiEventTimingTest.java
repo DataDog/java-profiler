@@ -41,7 +41,7 @@ public class JvmtiEventTimingTest extends AbstractProcessProfilerTest {
       "[TEST::INFO] NativeMethodBind: getMemoryUsage0 resolved";
 
   @BeforeEach
-  void requireDebugOpenJdkClassLibrary() {
+  void requireDebugBuildOnNonJ9() {
     assumeTrue(
         "debug".equals(System.getProperty("ddprof_test.config")), "needs [TEST::INFO] output");
     // The HotSpot stub names and the getMemoryUsage0 binding checked here do not exist on J9.
