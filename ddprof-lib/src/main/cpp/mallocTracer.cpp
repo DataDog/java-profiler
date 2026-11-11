@@ -420,6 +420,10 @@ bool MallocTracer::shouldSample(size_t size) {
 // (SIGPROF/SIGVTALRM) for the duration of recordMalloc; this is acceptable
 // because the window is short.
 void MallocTracer::maybeRecord(void* ret, size_t size) {
+    // Read before running(): a hook descheduled across a stop()/start() must not record
+    // into the next recording. recordSample() drops the sample under its stripe lock if the
+    // recording memory was released since.
+    const u32 session = Profiler::instance()->recordingSession();
     if (running() && ret && size) {
         // Even we are not in a signal handler, we cannot malloc or
         // we may get into indefinite loop
@@ -430,7 +434,7 @@ void MallocTracer::maybeRecord(void* ret, size_t size) {
         }
         CriticalSection cs(prof_thread);
         if (cs.entered() && shouldSample(size)) {
-            recordMalloc(ret, size, prof_thread->tid());
+            recordMalloc(ret, size, prof_thread->tid(), session);
         }
     }
 }
@@ -449,7 +453,7 @@ void MallocTracer::updateConfiguration(u64 events, double time_coefficient) {
 // run before this is reached so that unsampled allocations never pay for the
 // cost of recordMalloc itself. acquireCurrent()/CriticalSection are already
 // paid by then, since maybeRecord acquires them before checking shouldSample().
-void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
+void MallocTracer::recordMalloc(void* address, size_t size, int tid, u32 session) {
     // maybeRecord() has already applied the shouldSample() gate and holds the
     // CriticalSection, so every call here is a real sampled allocation. Distinct
     // from event._start_time below: that is the event's own timestamp, this
@@ -468,7 +472,8 @@ void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
         event._weight = (float)(1.0 / (1.0 - exp(-(double)size / (double)current_interval)));
     }
 
-    Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event);
+    Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event, nullptr,
+                                       &session);
 
     u64 current_samples = __atomic_add_fetch(&_sample_count, 1, __ATOMIC_RELAXED);
     if ((current_samples % TARGET_SAMPLES_PER_WINDOW) == 0) {

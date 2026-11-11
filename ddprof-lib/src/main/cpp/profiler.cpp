@@ -912,7 +912,8 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
 
 bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
                             jint event_type, u64 call_trace_id, Event *event,
-                            u64 *recorded_call_trace_id) {
+                            u64 *recorded_call_trace_id,
+                            const u32 *recording_session) {
   atomicIncRelaxed(_total_samples);
   auto drop = [&]() {
     atomicIncRelaxed(_failures[-ticks_skipped]);
@@ -929,6 +930,12 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     // Too many concurrent signals already
+    return drop();
+  }
+  // Checked under the stripe lock, which the bump in releaseRecordingMemory() excludes.
+  if (recording_session != nullptr &&
+      __atomic_load_n(&_session, __ATOMIC_RELAXED) != *recording_session) {
+    _locks[lock_index].unlock();
     return drop();
   }
 

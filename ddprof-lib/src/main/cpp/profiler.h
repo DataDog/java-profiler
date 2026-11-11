@@ -652,9 +652,12 @@ public:
   int convertNativeTrace(int native_frames, const void **callchain,
                          ASGCT_CallFrame *frames, int lock_index,
                          bool skip_hook_prefix);
+  // recording_session: if set, recordingSession() read before the caller started; the
+  // sample is dropped when the recording memory was released since.
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event,
-                    u64 *recorded_call_trace_id = nullptr);
+                    u64 *recorded_call_trace_id = nullptr,
+                    const u32 *recording_session = nullptr);
   // Delegated sample path: stack-walking is performed by the HotSpot JFR
   // RequestStackTrace extension (the JVM emits the stack trace into its own
   // JFR recording). We only emit the CPU/wall sample event with no

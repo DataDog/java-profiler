@@ -129,3 +129,35 @@ TEST(ProfilerNullCalltraceBufferTest, ReleaseRecordingMemoryInvalidatesEarlierEp
                                 session_after);
     EXPECT_EQ(skipped + 1, ProfilerTestAccessor::skipped());
 }
+
+// A malloc hook that read the session before a stop() must not record into the next
+// recording: recordSample() drops it under its stripe lock. With stacktraces omitted the
+// sample needs no buffer, so only the session check can drop it.
+TEST(ProfilerNullCalltraceBufferTest, RecordSampleDropsSampleOfEarlierSession) {
+    JNIInvokeInterface_ vm_table{};
+    vm_table.GetEnv = detachedGetEnv;
+    JavaVM vm{&vm_table};
+    struct Restore {
+        JavaVM* vm = VMTestAccessor::vm();
+        bool omit = ProfilerTestAccessor::omitStacktraces();
+        ~Restore() {
+            ProfilerTestAccessor::setOmitStacktraces(omit);
+            VMTestAccessor::setVm(vm);
+        }
+    } restore;
+    VMTestAccessor::setVm(&vm);
+    ProfilerTestAccessor::setOmitStacktraces(true);
+    Profiler* profiler = Profiler::instance();
+    u32 stale_session = profiler->recordingSession();
+
+    ProfilerTestAccessor::releaseRecordingMemory();
+    ASSERT_NE(stale_session, profiler->recordingSession());
+    u64 skipped = ProfilerTestAccessor::skipped();
+
+    EXPECT_FALSE(profiler->recordSample(
+        /*ucontext=*/nullptr, /*counter=*/1, /*tid=*/1, BCI_NATIVE_MALLOC,
+        /*call_trace_id=*/0, /*event=*/nullptr, /*recorded_call_trace_id=*/nullptr,
+        &stale_session));
+
+    EXPECT_EQ(skipped + 1, ProfilerTestAccessor::skipped()) << "a stale session must be dropped";
+}

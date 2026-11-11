@@ -358,7 +358,11 @@ static bool restoredBySlotWithFingerprint(LoadedImage& image, u64 fingerprint) {
   void* slot = original();
   MallocHookerTestAccessor::patchSlot(image.cc, &slot, hook(), original());
   MallocHookerTestAccessor::unpatchLibraries();
-  return slot == original();
+  const bool restored = slot == original();
+  // A rejected image keeps its entry, which points at this slot and cache: both are
+  // gone when the caller returns.
+  MallocHookerTestAccessor::clearEntries();
+  return restored;
 }
 
 TEST(MallocHookerCurrentImage, AcceptsImageWithRecordedUuid) {
