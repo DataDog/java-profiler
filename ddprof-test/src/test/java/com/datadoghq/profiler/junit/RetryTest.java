@@ -1,3 +1,5 @@
+// Copyright 2026, Datadog, Inc.
+
 package com.datadoghq.profiler.junit;
 
 import java.lang.annotation.ElementType;
@@ -8,5 +10,5 @@ import java.lang.annotation.Target;
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.RUNTIME)
 public @interface RetryTest {
-    int value() default 5;
+  int value() default 5;
 }

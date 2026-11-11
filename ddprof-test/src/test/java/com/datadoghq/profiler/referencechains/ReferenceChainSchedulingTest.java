@@ -5,36 +5,35 @@
 
 package com.datadoghq.profiler.referencechains;
 
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.assumeDebugBuild;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.ReferenceChainTestHooks;
+import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.Test;
 
-import java.util.function.BooleanSupplier;
-
-import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.assumeDebugBuild;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
-
 /**
- * Pins the two scheduling gates that bound the reference-chain tracker's JVMTI heap-walk
- * frequency on services with a high young-GC rate:
+ * Pins the two scheduling gates that bound the reference-chain tracker's JVMTI heap-walk frequency
+ * on services with a high young-GC rate:
+ *
  * <ul>
  *   <li><b>Minimum pass spacing</b> ({@code shouldRunPass()}): every authorization lane waits out
- *   {@code max(_effective_cadence_ns, MIN_PASS_SPACING_NS)} since the previous pass - a fixed
- *   floor independent of the pacing controller's output, with the OOM ramp as the only
- *   exemption. Passes run on a pure cadence; a completed GC neither bypasses the spacing nor
- *   earns an earlier pass.</li>
+ *       {@code max(_effective_cadence_ns, MIN_PASS_SPACING_NS)} since the previous pass - a fixed
+ *       floor independent of the pacing controller's output, with the OOM ramp as the only
+ *       exemption. Passes run on a pure cadence; a completed GC neither bypasses the spacing nor
+ *       earns an earlier pass.
  *   <li><b>Adaptive root-enumeration interval</b> ({@code shouldRunRootEnum()}): re-enumeration
- *   waits out {@code ROOT_ENUM_MIN_INTERVAL_NS} extended by the last attempt's measured
- *   in-safepoint cost.</li>
+ *       waits out {@code ROOT_ENUM_MIN_INTERVAL_NS} extended by the last attempt's measured
+ *       in-safepoint cost.
  * </ul>
+ *
  * The mechanisms these gates bound are documented on the constants in referenceChains.h.
  *
- * <p>Only runs under the debug native build - the backing native methods do not exist in a
- * release build, same pattern as {@link ReferenceChainTestSeamsTest}.
+ * <p>Only runs under the debug native build - the backing native methods do not exist in a release
+ * build, same pattern as {@link ReferenceChainTestSeamsTest}.
  */
 public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
 
@@ -59,14 +58,12 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
   // Seed ages either side of the base interval, and costs that extend / cap the floor.
   private static final long ROOT_ENUM_BEFORE_BASE_MS =
       ROOT_ENUM_MIN_INTERVAL_NS / NS_PER_MS - 1_000;
-  private static final long ROOT_ENUM_PAST_BASE_MS =
-      ROOT_ENUM_MIN_INTERVAL_NS / NS_PER_MS + 1_000;
+  private static final long ROOT_ENUM_PAST_BASE_MS = ROOT_ENUM_MIN_INTERVAL_NS / NS_PER_MS + 1_000;
   private static final long ROOT_ENUM_EXTENDING_COST_MS = 500;
   private static final long ROOT_ENUM_CAPPING_COST_MS = 5_000;
   // Seed age just past the cap: with the capping cost the floor is ROOT_ENUM_MAX_INTERVAL_NS, so
   // this age must open the gate (kills an uncapped floor).
-  private static final long ROOT_ENUM_PAST_CAP_MS =
-      ROOT_ENUM_MAX_INTERVAL_NS / NS_PER_MS + 1_000;
+  private static final long ROOT_ENUM_PAST_CAP_MS = ROOT_ENUM_MAX_INTERVAL_NS / NS_PER_MS + 1_000;
 
   @Override
   protected String getProfilerCommand() {
@@ -80,17 +77,15 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
 
   /**
    * Evaluates {@code probe} against re-seeded scheduling state, retrying while a concurrently
-   * passing BFS thread invalidates the seed: a real pass overwrites {@code _last_pass_ns}
-   * and the root-enumeration state with live values, and can
-   * drive the real search terminal, which can only ever flip a seeded-open gate to the closed
-   * reading - so a closed result is final and only an open/matching result needs the retry.
-   * The same real pass also produces the closed reading on its own, so a closed-direction probe
-   * (a negated gate reading) must be bracketed by a check that the seeded state is still in force
-   * (see {@link #rootEnumClosedWithSeedIntact(long, Runnable)}) - otherwise a closed result
-   * caused by a real pass would be accepted instead of retried.
+   * passing BFS thread invalidates the seed: a real pass overwrites {@code _last_pass_ns} and the
+   * root-enumeration state with live values, and can drive the real search terminal, which can only
+   * ever flip a seeded-open gate to the closed reading - so a closed result is final and only an
+   * open/matching result needs the retry. The same real pass also produces the closed reading on
+   * its own, so a closed-direction probe (a negated gate reading) must be bracketed by a check that
+   * the seeded state is still in force (see {@link #rootEnumClosedWithSeedIntact(long, Runnable)})
+   * - otherwise a closed result caused by a real pass would be accepted instead of retried.
    */
-  private static boolean eventuallyTrue(String message, Runnable seed,
-                                        BooleanSupplier probe)
+  private static boolean eventuallyTrue(String message, Runnable seed, BooleanSupplier probe)
       throws InterruptedException {
     for (int i = 0; i < 50; i++) {
       seed.run();
@@ -107,27 +102,27 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
    * Closed-direction root-enum probe (see eventuallyTrue): a closed gate counts only while the
    * seeded state is still in force, verified by a floor + pass-counter bracket around the gate
    * read. A concurrent real enumeration also closes the gate (it refreshes _last_root_enum_ns to
-   * "now"), so a bare closed reading cannot tell the seeded floor apart from that unrelated
-   * close - and a floor-only bracket is not enough either: a real enumeration measuring a cost
-   * that re-derives the same floor (e.g. ~0 ms on a small graph vs the seeded 0 cost) would
-   * reproduce the seeded floor while the closed reading was actually caused by that enumeration.
+   * "now"), so a bare closed reading cannot tell the seeded floor apart from that unrelated close -
+   * and a floor-only bracket is not enough either: a real enumeration measuring a cost that
+   * re-derives the same floor (e.g. ~0 ms on a small graph vs the seeded 0 cost) would reproduce
+   * the seeded floor while the closed reading was actually caused by that enumeration.
    *
-   * <p>The bracket is structurally airtight for pass-driven taint: real root enumeration runs
-   * ONLY inside a BFS pass ({@code runPassSerialized()} holds {@code _engine_lock} across the
-   * whole {@code runPass()}), and {@code _passes_run} increments only after the manual walk
-   * returns - so enumeration state and the pass counter flip together, and the probe's
-   * engine-lock-acquiring gate/floor reads can never observe one without the other: a completed
-   * pass always flips {@code p0 != p1}, and an enumeration whose measured cost shifts the floor
-   * flips {@code f1 != expectedFloorNs}. The probe also re-seeds immediately before reading,
-   * undoing any real enumeration that already completed and clobbered the seeded state, so only
-   * an enumeration landing DURING the read sequence can taint it - a microsecond window instead
-   * of the seed-to-probe gap. Premise: if a future change ever runs root enumeration outside a
-   * pass (outside {@code runPassSerialized()}'s lock hold), the pass-counter premise breaks and
-   * this bracket degrades to probabilistic - revisit it then.
+   * <p>The bracket is structurally airtight for pass-driven taint: real root enumeration runs ONLY
+   * inside a BFS pass ({@code runPassSerialized()} holds {@code _engine_lock} across the whole
+   * {@code runPass()}), and {@code _passes_run} increments only after the manual walk returns - so
+   * enumeration state and the pass counter flip together, and the probe's engine-lock-acquiring
+   * gate/floor reads can never observe one without the other: a completed pass always flips {@code
+   * p0 != p1}, and an enumeration whose measured cost shifts the floor flips {@code f1 !=
+   * expectedFloorNs}. The probe also re-seeds immediately before reading, undoing any real
+   * enumeration that already completed and clobbered the seeded state, so only an enumeration
+   * landing DURING the read sequence can taint it - a microsecond window instead of the
+   * seed-to-probe gap. Premise: if a future change ever runs root enumeration outside a pass
+   * (outside {@code runPassSerialized()}'s lock hold), the pass-counter premise breaks and this
+   * bracket degrades to probabilistic - revisit it then.
    */
   private static boolean rootEnumClosedWithSeedIntact(long expectedFloorNs, Runnable seed) {
     seed.run(); // re-seed immediately before reading: undoes any real enumeration that already
-                // completed and clobbered the seeded state.
+    // completed and clobbered the seeded state.
     int p0 = ReferenceChainTestHooks.referenceChainPassesRunForTest0();
     long f0 = ReferenceChainTestHooks.rootEnumIntervalFloorNsForTest0();
     boolean closed = !ReferenceChainTestHooks.shouldRunRootEnumForTest0(false);
@@ -141,11 +136,14 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
     long pastBaseNs = ROOT_ENUM_PAST_BASE_MS * NS_PER_MS;
     long extendedNs = ROOT_ENUM_EXTENDING_COST_MS * ROOT_ENUM_NS_PER_COST_MS;
     assertTrue(ROOT_ENUM_BEFORE_BASE_MS > 0, "before-base age must be positive");
-    assertTrue(pastBaseNs < extendedNs && extendedNs < ROOT_ENUM_MAX_INTERVAL_NS,
+    assertTrue(
+        pastBaseNs < extendedNs && extendedNs < ROOT_ENUM_MAX_INTERVAL_NS,
         "extending cost must land strictly between the past-base age and the cap");
-    assertTrue(ROOT_ENUM_CAPPING_COST_MS * ROOT_ENUM_NS_PER_COST_MS > ROOT_ENUM_MAX_INTERVAL_NS,
+    assertTrue(
+        ROOT_ENUM_CAPPING_COST_MS * ROOT_ENUM_NS_PER_COST_MS > ROOT_ENUM_MAX_INTERVAL_NS,
         "capping cost must exceed the cap");
-    assertTrue(ROOT_ENUM_PAST_CAP_MS * NS_PER_MS > ROOT_ENUM_MAX_INTERVAL_NS,
+    assertTrue(
+        ROOT_ENUM_PAST_CAP_MS * NS_PER_MS > ROOT_ENUM_MAX_INTERVAL_NS,
         "past-cap age must exceed the cap");
   }
 
@@ -161,9 +159,9 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
 
   /**
    * Pins the fixed 100ms pass-spacing floor (MIN_PASS_SPACING_NS): even when updatePacing()'s
-   * controller relaxes the effective cadence to 10ms, a pass less than 100ms after the previous
-   * one must stay held off - the controller paces each pass's pause LENGTH, not the pass rate.
-   * Once the fixed floor has elapsed (with the cadence still relaxed), the pass is authorized.
+   * controller relaxes the effective cadence to 10ms, a pass less than 100ms after the previous one
+   * must stay held off - the controller paces each pass's pause LENGTH, not the pass rate. Once the
+   * fixed floor has elapsed (with the cadence still relaxed), the pass is authorized.
    */
   @Test
   public void passSpacingHoldsAtFixedFloorEvenWithRelaxedCadence() throws InterruptedException {
@@ -178,12 +176,14 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
       // Seed a relaxed 10ms cadence (what updatePacing() can reach on cheap passes) with the
       // previous pass 50ms ago - inside the fixed floor but well past the relaxed cadence.
       ReferenceChainTestHooks.setReferenceChainPassSpacingForTest0(50, 10);
-      assertFalse(ReferenceChainTestHooks.shouldRunPassForTest0(),
+      assertFalse(
+          ReferenceChainTestHooks.shouldRunPassForTest0(),
           "A pass inside the fixed 100ms floor must stay held off even though the relaxed "
               + "10ms cadence has elapsed");
 
       // Past the fixed floor (500ms, cadence still relaxed to 10ms): the pass is authorized.
-      eventuallyTrue("A pass past the fixed floor must be authorized even with a relaxed cadence",
+      eventuallyTrue(
+          "A pass past the fixed floor must be authorized even with a relaxed cadence",
           () -> {
             seedRunningSearch();
             ReferenceChainTestHooks.setReferenceChainPassSpacingForTest0(500, 10);
@@ -195,10 +195,10 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
   }
 
   /**
-   * Kills the canary lane's unbounded back-to-back rate: a productive chase (backoff multiplier
-   * 1) would otherwise skip its spacing gate entirely, chaining passes with no gap and making
-   * every pass pay its JVM VM-operation cost. The minimum-pass-spacing gate must hold the chase
-   * off even on that lane.
+   * Kills the canary lane's unbounded back-to-back rate: a productive chase (backoff multiplier 1)
+   * would otherwise skip its spacing gate entirely, chaining passes with no gap and making every
+   * pass pay its JVM VM-operation cost. The minimum-pass-spacing gate must hold the chase off even
+   * on that lane.
    */
   @Test
   public void canaryBackToBackPassWaitsForMinimumPassSpacing() throws InterruptedException {
@@ -212,7 +212,8 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
       // Seeded after the quiesce so the BFS thread's per-iteration pollWatchedTargets() (which
       // overwrites the candidate set from real leak signals) cannot clobber it.
       ReferenceChainTestHooks.setReferenceChainCanaryStateForTest0(1, 0);
-      assertFalse(ReferenceChainTestHooks.shouldRunPassForTest0(),
+      assertFalse(
+          ReferenceChainTestHooks.shouldRunPassForTest0(),
           "A canary chase with fresh backoff (multiplier 1) must still wait out the minimum "
               + "pass spacing before starting the next pass");
     } finally {
@@ -220,15 +221,18 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
     }
   }
 
-  /** The canary floor must only defer the chase, not starve it: once the spacing has elapsed,
-   *  the chase resumes at multiplier-1 rate. */
+  /**
+   * The canary floor must only defer the chase, not starve it: once the spacing has elapsed, the
+   * chase resumes at multiplier-1 rate.
+   */
   @Test
   public void canaryPassRunsOnceSpacingElapses() throws InterruptedException {
     assumeDebugBuild();
     ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     try {
       seedRunningSearch();
-      eventuallyTrue("A canary chase with fresh backoff must run a pass once the minimum "
+      eventuallyTrue(
+          "A canary chase with fresh backoff must run a pass once the minimum "
               + "spacing has elapsed",
           () -> {
             seedRunningSearch();
@@ -243,11 +247,11 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
   }
 
   /**
-   * The reset contract (resetSearchStateForTest()): it zeroes {@code _last_pass_ns} along with
-   * the pass counter, so the minimum-spacing gate is open again right after a reset - a stale
+   * The reset contract (resetSearchStateForTest()): it zeroes {@code _last_pass_ns} along with the
+   * pass counter, so the minimum-spacing gate is open again right after a reset - a stale
    * previous-pass timestamp must not hold the next test's first pass off. A closed reading with
-   * zero passes run since the reset is definitive (no real pass refreshed the timestamp); a
-   * closed reading after a real pass is retried.
+   * zero passes run since the reset is definitive (no real pass refreshed the timestamp); a closed
+   * reading after a real pass is retried.
    */
   @Test
   public void resetReopensMinimumPassSpacingGate() throws InterruptedException {
@@ -262,7 +266,8 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
         if (ReferenceChainTestHooks.shouldRunPassForTest0()) {
           return;
         }
-        assertTrue(ReferenceChainTestHooks.referenceChainPassesRunForTest0() != 0,
+        assertTrue(
+            ReferenceChainTestHooks.referenceChainPassesRunForTest0() != 0,
             "the spacing gate must be open right after a reset - _last_pass_ns/"
                 + "_effective_cadence_ns were not reset");
         Thread.sleep(100);
@@ -280,9 +285,12 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
     assertRootEnumSeedAssumptions();
     ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     try {
-      Runnable seed = () -> ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
-          ROOT_ENUM_BEFORE_BASE_MS, 0);
-      eventuallyTrue("Re-enumeration must wait out the base interval since the last attempt",
+      Runnable seed =
+          () ->
+              ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
+                  ROOT_ENUM_BEFORE_BASE_MS, 0);
+      eventuallyTrue(
+          "Re-enumeration must wait out the base interval since the last attempt",
           seed,
           () -> rootEnumClosedWithSeedIntact(ROOT_ENUM_MIN_INTERVAL_NS, seed));
     } finally {
@@ -297,9 +305,11 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
     assertRootEnumSeedAssumptions();
     ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     try {
-      eventuallyTrue("Re-enumeration must run once the base interval has elapsed",
-          () -> ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
-              ROOT_ENUM_PAST_BASE_MS, 0),
+      eventuallyTrue(
+          "Re-enumeration must run once the base interval has elapsed",
+          () ->
+              ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
+                  ROOT_ENUM_PAST_BASE_MS, 0),
           () -> ReferenceChainTestHooks.shouldRunRootEnumForTest0(false));
     } finally {
       ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
@@ -307,8 +317,8 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
   }
 
   /**
-   * Pins the ROOT_ENUM_MIN_INTERVAL_NS mirror against the live library: with no measured cost
-   * the native floor is exactly the base interval.
+   * Pins the ROOT_ENUM_MIN_INTERVAL_NS mirror against the live library: with no measured cost the
+   * native floor is exactly the base interval.
    */
   @Test
   public void rootEnumBaseIntervalMatchesNative() throws InterruptedException {
@@ -316,21 +326,24 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
     assertRootEnumSeedAssumptions();
     ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     try {
-      eventuallyTrue("The base root-enumeration interval must match ROOT_ENUM_MIN_INTERVAL_NS",
-          () -> ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
-              ROOT_ENUM_PAST_BASE_MS, 0),
-          () -> ReferenceChainTestHooks.rootEnumIntervalFloorNsForTest0()
-              == ROOT_ENUM_MIN_INTERVAL_NS);
+      eventuallyTrue(
+          "The base root-enumeration interval must match ROOT_ENUM_MIN_INTERVAL_NS",
+          () ->
+              ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
+                  ROOT_ENUM_PAST_BASE_MS, 0),
+          () ->
+              ReferenceChainTestHooks.rootEnumIntervalFloorNsForTest0()
+                  == ROOT_ENUM_MIN_INTERVAL_NS);
     } finally {
       ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     }
   }
 
   /**
-   * Kills the fixed 2s interval: an attempt that held the VM at a safepoint for a known cost
-   * must push the next attempt out proportionally - on a busy service the cost recurs (the JVM
-   * re-creates frames with scalar-replaced locals continuously), so only a cost-scaled floor
-   * bounds the deopt-all rate.
+   * Kills the fixed 2s interval: an attempt that held the VM at a safepoint for a known cost must
+   * push the next attempt out proportionally - on a busy service the cost recurs (the JVM
+   * re-creates frames with scalar-replaced locals continuously), so only a cost-scaled floor bounds
+   * the deopt-all rate.
    */
   @Test
   public void rootEnumIntervalExtendsWithMeasuredSafepointCost() throws InterruptedException {
@@ -338,27 +351,36 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
     assertRootEnumSeedAssumptions();
     ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     try {
-      Runnable seed = () -> ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
-          ROOT_ENUM_PAST_BASE_MS, ROOT_ENUM_EXTENDING_COST_MS);
+      Runnable seed =
+          () ->
+              ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
+                  ROOT_ENUM_PAST_BASE_MS, ROOT_ENUM_EXTENDING_COST_MS);
       // Positive control: the past-base seed alone opens the gate, so the closed reading below
       // is attributable to the cost-extended floor.
-      eventuallyTrue("A past-base seed with no measured cost must open the gate",
-          () -> ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
-              ROOT_ENUM_PAST_BASE_MS, 0),
+      eventuallyTrue(
+          "A past-base seed with no measured cost must open the gate",
+          () ->
+              ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
+                  ROOT_ENUM_PAST_BASE_MS, 0),
           () -> ReferenceChainTestHooks.shouldRunRootEnumForTest0(false));
       // ROOT_ENUM_EXTENDING_COST_MS of measured in-safepoint cost: floor = max(MIN, cost x
       // PER_COST) - strictly between the past-base age and the cap.
-      eventuallyTrue("The interval floor must extend by ROOT_ENUM_INTERVAL_NS_PER_COST_MS per "
+      eventuallyTrue(
+          "The interval floor must extend by ROOT_ENUM_INTERVAL_NS_PER_COST_MS per "
               + "measured in-safepoint cost millisecond",
-          () -> ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
-              ROOT_ENUM_PAST_BASE_MS, ROOT_ENUM_EXTENDING_COST_MS),
-          () -> ReferenceChainTestHooks.rootEnumIntervalFloorNsForTest0()
-              == ROOT_ENUM_EXTENDING_COST_MS * ROOT_ENUM_NS_PER_COST_MS);
-      eventuallyTrue("Re-enumeration must wait out the cost-extended interval even though the "
+          () ->
+              ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
+                  ROOT_ENUM_PAST_BASE_MS, ROOT_ENUM_EXTENDING_COST_MS),
+          () ->
+              ReferenceChainTestHooks.rootEnumIntervalFloorNsForTest0()
+                  == ROOT_ENUM_EXTENDING_COST_MS * ROOT_ENUM_NS_PER_COST_MS);
+      eventuallyTrue(
+          "Re-enumeration must wait out the cost-extended interval even though the "
               + "base interval has elapsed",
           seed,
-          () -> rootEnumClosedWithSeedIntact(
-              ROOT_ENUM_EXTENDING_COST_MS * ROOT_ENUM_NS_PER_COST_MS, seed));
+          () ->
+              rootEnumClosedWithSeedIntact(
+                  ROOT_ENUM_EXTENDING_COST_MS * ROOT_ENUM_NS_PER_COST_MS, seed));
     } finally {
       ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     }
@@ -371,27 +393,37 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
     assertRootEnumSeedAssumptions();
     ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     try {
-      Runnable seed = () -> ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
-          ROOT_ENUM_PAST_BASE_MS, ROOT_ENUM_CAPPING_COST_MS);
+      Runnable seed =
+          () ->
+              ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
+                  ROOT_ENUM_PAST_BASE_MS, ROOT_ENUM_CAPPING_COST_MS);
       // Positive control, as in rootEnumIntervalExtendsWithMeasuredSafepointCost.
-      eventuallyTrue("A past-base seed with no measured cost must open the gate",
-          () -> ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
-              ROOT_ENUM_PAST_BASE_MS, 0),
+      eventuallyTrue(
+          "A past-base seed with no measured cost must open the gate",
+          () ->
+              ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
+                  ROOT_ENUM_PAST_BASE_MS, 0),
           () -> ReferenceChainTestHooks.shouldRunRootEnumForTest0(false));
       // ROOT_ENUM_CAPPING_COST_MS scales past ROOT_ENUM_MAX_INTERVAL_NS uncapped; the cap holds
       // it there.
-      eventuallyTrue("The cost-scaled interval must be capped at ROOT_ENUM_MAX_INTERVAL_NS",
-          () -> ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
-              ROOT_ENUM_PAST_BASE_MS, ROOT_ENUM_CAPPING_COST_MS),
-          () -> ReferenceChainTestHooks.rootEnumIntervalFloorNsForTest0()
-              == ROOT_ENUM_MAX_INTERVAL_NS);
-      eventuallyTrue("Re-enumeration must wait out the capped interval",
+      eventuallyTrue(
+          "The cost-scaled interval must be capped at ROOT_ENUM_MAX_INTERVAL_NS",
+          () ->
+              ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
+                  ROOT_ENUM_PAST_BASE_MS, ROOT_ENUM_CAPPING_COST_MS),
+          () ->
+              ReferenceChainTestHooks.rootEnumIntervalFloorNsForTest0()
+                  == ROOT_ENUM_MAX_INTERVAL_NS);
+      eventuallyTrue(
+          "Re-enumeration must wait out the capped interval",
           seed,
           () -> rootEnumClosedWithSeedIntact(ROOT_ENUM_MAX_INTERVAL_NS, seed));
       // An uncapped floor would still hold this age off.
-      eventuallyTrue("Re-enumeration must run once the capped interval has elapsed",
-          () -> ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
-              ROOT_ENUM_PAST_CAP_MS, ROOT_ENUM_CAPPING_COST_MS),
+      eventuallyTrue(
+          "Re-enumeration must run once the capped interval has elapsed",
+          () ->
+              ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(
+                  ROOT_ENUM_PAST_CAP_MS, ROOT_ENUM_CAPPING_COST_MS),
           () -> ReferenceChainTestHooks.shouldRunRootEnumForTest0(false));
     } finally {
       ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
@@ -408,7 +440,8 @@ public class ReferenceChainSchedulingTest extends AbstractProfilerTest {
       // Worst case: an attempt "just ran" at maximum measured cost - the first pass of a fresh
       // search must still enumerate.
       ReferenceChainTestHooks.setReferenceChainRootEnumStateForTest0(0, ROOT_ENUM_CAPPING_COST_MS);
-      assertTrue(ReferenceChainTestHooks.shouldRunRootEnumForTest0(true),
+      assertTrue(
+          ReferenceChainTestHooks.shouldRunRootEnumForTest0(true),
           "The search's first pass must always run root/stack-ref enumeration");
     } finally {
       ReferenceChainTestHooks.resetReferenceChainSearchForTest0();

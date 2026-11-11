@@ -242,13 +242,15 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 | `check-tracked-artifacts.py` | No tracked path under `docs/sphinx/` or `.sphinx/`, and no `*.scratch*` path. |
 | `check-copyright.py` | Source files the branch adds or modifies since `--base` (default: the PR base in CI, else `origin/main`) follow the `AGENTS.md` copyright rule. |
 | `check-claude-md.py` | `CLAUDE.md` is the canonical redirect stub to `AGENTS.md`; `--write` restores it. |
+| `check-knowledgebase.py` | Every tracked `.knowledgebase/memories/` file carries cairn's required memory frontmatter. |
+| `check-skills.py` | Every tracked `.agents/skills/` skill has loadable frontmatter, `.claude/skills` links to it, and `AGENTS.md` names only existing skills. |
 
 `.githooks/pre-push` runs `check-copyright.py` and `check-claude-md.py` on every pushed branch commit, so a violation stops the push before CI sees it (see `review-marker.py` below for the trust model). Set `branch.<name>.gh-merge-base` for a branch stacked on another feature branch.
 
 **Usage:**
 ```bash
 ./utils/check-doc-index.py                 # any one check
-./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all six; run by CI (ci.yml source-invariant-checks job)
+./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all seven; run by CI (ci.yml source-invariant-checks job)
 ```
 
 CI runs every `utils/tests/*.sh` suite in the `script-tests` job of `.github/workflows/ci.yml`, with Node.js 22 for the Pi adapter cases.
@@ -298,6 +300,7 @@ Core diff analysis and report generation for contribution candidate detection.
 Records that the agentic pre-PR review covered a branch, and checks it. Used by the `pre-pr-review` skill, `.githooks/pre-push` and the `require-fresh-review` hook, which runs in Claude Code (`.claude/hooks/`) and, through the thin adapter `.pi/extensions/require-fresh-review.ts`, in Pi. Pi loads project extensions only after project trust is granted.
 
 - The marker certifies commits: `write` refuses uncommitted tracked changes and records the `git patch-id --verbatim` (git 2.39+) of the diff from the merge base to `HEAD`. An advancing base or a clean rebase keeps it fresh, unless the base changed lines next to the branch's hunks (context lines anchor each hunk's position, so this errs toward stale). Any change to the branch's diff, whitespace or position included, makes it stale. Untracked files are ignored.
+- The hook gates only this repository's PRs. It lets through a command that, as typed, is one plain `gh [-R OWNER/REPO] pr create|new|ready` call made only of letters, digits, spaces and `._:/=@'",+-` (no expansion, operator, redirection, comment, line continuation or flag cluster), whose single `-R`/`--repo`, or for `ready` an `https://github.com/.../pull/N` URL, names a repository that shares neither owner/repo, repo name nor GitHub fork network with `DataDog/java-profiler` or any of the checkout's remotes (every fetch and push URL git uses, after `insteadOf`, all of which must be `github.com` URLs). Flags the hook does not know keep the command gated. Everything else, including `GH_REPO` and `cd`, stays gated.
 - Markers live in `<git-common-dir>/review-markers/` (one file per branch, named by hash), shared by all worktrees and never committed.
 - `install-hook` writes a shim to `<git-common-dir>/hooks/pre-push` that runs `.githooks/pre-push` as of `refs/remotes/origin/main`, which loads `review-marker.py` from the same ref; the Claude Code hook loads it from there too. All run with `python3 -I`, so files in the checkout, which may be an untrusted branch (e.g. a fork PR), are not executed or imported. When that ref lacks the scripts (the gate is not merged yet, or there is no `origin` remote), both hooks allow everything. Out of scope: Claude Code runs `.claude/` hooks from the session's own checkout under its workspace-trust model. It never sets `core.hooksPath`, which would replace global hooks such as Datadog's secret scanner; those chain to `.git/hooks`.
 - The same shim also runs `check-copyright.py` and `check-claude-md.py` from that ref (see Source quality checks).
@@ -330,6 +333,16 @@ Denies shell commands that run `gradlew` directly instead of through `.claude/co
 ```bash
 echo './gradlew build' | python3 utils/gradle-command-policy.py   # exit 2
 bash utils/tests/test_gradle_hook.sh                              # tests
+```
+
+### `knowledgebase-write-policy.py`
+
+Denies agent file-tool writes into `.knowledgebase/`, which only the cairn skills write. The `protect-knowledgebase` hook runs it in Claude Code (`.claude/hooks/`, for Edit, MultiEdit, Write and NotebookEdit) and, through `.pi/extensions/protect-knowledgebase.ts`, in Pi (edit and write). It loads from `refs/remotes/origin/main`, or from the checkout when that ref lacks it (a stale fork as `origin`). The hook itself runs from the checkout, so it guards against accidental agent writes, not a hostile branch. Shell writes are not covered; `check-knowledgebase.py` is the backstop.
+
+**Usage:**
+```bash
+echo .knowledgebase/memories/x.md | python3 utils/knowledgebase-write-policy.py   # exit 2
+bash utils/tests/test_knowledgebase_guard.sh                                     # tests
 ```
 
 ---

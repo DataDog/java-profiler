@@ -2,10 +2,12 @@
 # Copyright 2026, Datadog, Inc.
 """Claude Code PreToolUse hook: block commands that mention `gh pr create|new|ready`
 while the branch's review marker is stale, and `gh pr create` whose title and body
-reference no ticket. Pushes are gated by .githooks/pre-push."""
+reference no ticket. A single plain `gh pr create|new|ready` call that certainly targets
+another repository than this one is not gated. Pushes are gated by .githooks/pre-push."""
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 import re
 import shlex
 import subprocess
@@ -21,7 +23,18 @@ DIR_CHANGE = re.compile(r"(^|[\s;&|(){}])(cd|pushd|popd)(\s|$)|\bGIT_(DIR|WORK_T
 # would be judged on the pre-command state.
 GIT_STATE_CHANGE = re.compile(r"\bgit\b[^\n;&|]*?\s(commit|switch|checkout|rebase|reset|"
                               r"merge|cherry-pick|am|pull|revert|stash|restore)\b")
+# What an exempted command must spell its target as: no host aliases or other forms.
+OWNER_REPO = re.compile(r"[\w.-]+/[\w.-]+")
+PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/\d+/?")
+# Every character an exempted command may contain. Anything else (\r, \, expansions, operators)
+# might split differently in bash than in shell_words, so it keeps the command gated.
+PLAIN_COMMAND = re.compile(r"[A-Za-z0-9 ._:/=@'\",+-]+")
+# The repository this gate protects, whatever the checkout's remotes point at.
+PROTECTED_REPO = "datadog/java-profiler"
+REMOTE_URL = re.compile(r"(?:https://|ssh://git@|git@)github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?/?")
 TRUSTED_REF = "refs/remotes/origin/main"  # qualified: a tag named origin/main must not win
+# git_out and the trusted-ref loading are copied in require-fresh-review.py,
+# require-gradle-wrapper.py and protect-knowledgebase.py; change all three together.
 HEAD_FLAG = re.compile(r"(^|\s)(--head\b|-H)")
 BASE_FLAG = re.compile(r"(?:^|\s)(?:--base[= ]\s*|-B\s*)(['\"]?)([^\s'\"]+)\1")
 
@@ -142,17 +155,88 @@ def autofill(cwd, base, mode):
                                                   for s, b in commits)
 
 
+def shell_words(text):
+    """`text` split into shell words, with each unquoted operator, redirection and newline
+    as its own token; None when the quoting does not parse."""
+    try:
+        lexer = shlex.shlex(text, posix=True, punctuation_chars="();<>|&\n")
+        lexer.whitespace = " \t\r"
+        lexer.commenters = ""
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def foreign_target(command, top):
+    """OWNER/REPO, lowercase, of another repository that `command` (as typed) certainly
+    targets: one plain `gh [-R R] pr create|new|ready` call whose target and remotes are
+    spelled strictly (utils/README.md). None whenever that is not certain."""
+    if not PLAIN_COMMAND.fullmatch(command):
+        return None
+    tokens = shell_words(command)
+    # PLAIN_COMMAND already rules out operators, redirections and comments.
+    if not tokens or tokens[0] != "gh" or "--" in tokens or "" in tokens or \
+            any(re.match(r"-[^-]{2}", t) for t in tokens):
+        return None
+    values, positional, i = {}, [], 1
+    while i < len(tokens):
+        t = tokens[i]
+        name, eq, value = t.partition("=")
+        if not t.startswith("-"):
+            positional.append(t)
+        elif eq and name in VALUE_FLAGS.values():
+            values.setdefault(name, []).append(value)
+        elif (t in VALUE_FLAGS or t in VALUE_FLAGS.values()) and i + 1 < len(tokens):
+            i += 1
+            values.setdefault(VALUE_FLAGS.get(t, t), []).append(tokens[i])
+        elif t not in JUDGED_FLAGS:
+            return None  # a flag this list lacks might take the next word as its value
+        i += 1
+    if positional[:1] != ["pr"] or len(positional) < 2 or \
+            positional[1] not in ("create", "new", "ready"):
+        return None
+    selectors = positional[2:]
+    if positional[1] == "ready" and selectors and "/" in selectors[0]:
+        url = PR_URL.fullmatch(selectors[0]) if len(selectors) == 1 else None
+        target = url.group(1) if url else None  # gh takes a PR URL's repository over -R
+    else:
+        repos = values.get("--repo", [])
+        target = repos[0] if len(repos) == 1 and OWNER_REPO.fullmatch(repos[0]) else None
+    if target is None:
+        return None
+    # Every fetch and push URL git uses, after url.<base>.insteadOf/pushInsteadOf.
+    urls = [u for r in (git_out(["remote"], top) or "").split()
+            for args in (["--all"], ["--push", "--all"])
+            for u in (git_out(["remote", "get-url", *args, r], top) or "").splitlines()]
+    remotes = [REMOTE_URL.fullmatch(u) for u in urls]
+    if not remotes or not all(remotes):
+        return None
+    names = {m.group(1).lower() for m in remotes} | {PROTECTED_REPO}
+    target = target.lower()
+    if target in names or target.split("/")[1] in {n.split("/")[1] for n in names}:
+        return None
+    # A fork network shares its root (GitHub's `source`), also across renames and transfers.
+    with ThreadPoolExecutor() as pool:
+        roots = list(pool.map(lambda name: network_root(name, top), [target] + sorted(names)))
+    if not all(roots) or roots[0] in roots[1:]:
+        return None  # a failed lookup, or the same fork network
+    return target
+
+
+def network_root(name, top):
+    """OWNER/REPO, lowercase, of the root of `name`'s fork network as GitHub resolves it
+    (the repository itself when it is not a fork); None when gh fails."""
+    out = gh_query(["api", "repos/" + name, "--jq", '.source.full_name // .full_name'], top)
+    return out.lower() if out else None
+
+
 def pr_text(rest, cwd):
     """The title and body `gh pr create` will use, or None when unsure (CI checks those).
     Only a simple command with literal values is judged; as in gh, the last flag wins,
     --body-file beats --body, and explicit values beat a fill flag."""
-    try:
-        lexer = shlex.shlex(rest, posix=True, punctuation_chars="();<>|&\n")
-        lexer.whitespace = " \t\r"
-        lexer.commenters = ""
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
+    tokens = shell_words(rest)
+    if tokens is None:
         return None
     # The command ends at any unquoted operator, redirection, newline or comment. A quoted
     # value that looks like one also ends it, and parse_flags then reports the missing value.
@@ -280,7 +364,8 @@ def main():
     except ValueError:
         return 0
     # Join backslash-continued lines so `gh pr \<newline> create` is one line to the regexes.
-    command = payload.get("tool_input", {}).get("command", "").replace("\\\n", " ")
+    typed = payload.get("tool_input", {}).get("command", "")
+    command = typed.replace("\\\n", " ")
     matches = list(PR_CMD.finditer(command))
     if not matches:
         return 0
@@ -294,6 +379,8 @@ def main():
     source = git_out(["show", TRUSTED_REF + ":utils/review-marker.py"], top)
     if source is None:
         return 0  # the gate is not on the default branch yet
+    if foreign_target(typed, top):
+        return 0  # a PR in another repository: not this repo's policy
     for m in matches:
         sub = "create" if m.group(1) == "new" else m.group(1)
         args = words(m.group(2))
