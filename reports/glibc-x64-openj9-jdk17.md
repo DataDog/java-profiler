@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk17
 
 ## glibc-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-11-11 15:22:22 EST
+**Date:** 2026-11-11 15:27:12 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 467 |
-| Sample Rate | 7.78/sec |
-| Health Score | 486% |
+| CPU Samples | 398 |
+| Sample Rate | 6.63/sec |
+| Health Score | 414% |
 | Threads | 8 |
-| Allocations | 368 |
+| Allocations | 370 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 503 |
-| Sample Rate | 8.38/sec |
-| Health Score | 524% |
+| CPU Samples | 504 |
+| Sample Rate | 8.40/sec |
+| Health Score | 525% |
 | Threads | 9 |
-| Allocations | 489 |
+| Allocations | 457 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 29-29 cores)</summary>
 
 ```
-1794428210 29
-1794428215 29
-1794428220 29
-1794428225 29
-1794428230 29
-1794428235 29
-1794428240 29
-1794428245 29
-1794428250 29
-1794428255 29
-1794428260 29
-1794428265 29
-1794428270 29
-1794428275 29
-1794428280 29
-1794428285 29
-1794428290 29
-1794428295 29
-1794428300 29
-1794428305 29
+1794428556 29
+1794428561 29
+1794428566 29
+1794428571 29
+1794428576 29
+1794428581 29
+1794428586 29
+1794428591 29
+1794428596 29
+1794428601 29
+1794428606 29
+1794428611 29
+1794428616 29
+1794428621 29
+1794428626 29
+1794428631 29
+1794428636 29
+1794428641 29
+1794428646 29
+1794428651 29
 ```
 </details>
 
