@@ -539,12 +539,19 @@ private:
   // Eviction removes enough oldest entries to drop the share to cap - DURABLE_ANCHOR_EVICT_BATCH,
   // so one O(index) compaction is amortized over ~DURABLE_ANCHOR_EVICT_BATCH admissions.
   static constexpr size_t DURABLE_ANCHOR_EVICT_BATCH = 1024;
-  // Paces the sweep re-force: when the live durable population exceeds the cap, re-enlistment
-  // re-crosses the cap and would otherwise re-force the O(loaded-classes) static sweep on every
-  // pass, forever. The first eviction after the backoff runs out re-forces one lap; the next
-  // DURABLE_SWEEP_REFORCE_BACKOFF evictions skip the reset.
+  // Paces cursor-restarting resweep requests: when the live durable population exceeds the cap,
+  // re-enlistment keeps re-crossing it, and an unpaced request would restart the cursor on every
+  // pass. The first eviction after the backoff runs out requests a resweep; the next
+  // DURABLE_SWEEP_REFORCE_BACKOFF evictions skip the request.
   static constexpr int DURABLE_SWEEP_REFORCE_BACKOFF = 8;
   int _durable_sweep_reforce_backoff = 0;
+  // A requested-but-not-yet-served static sweep lap. Kept separate from the
+  // _last_static_field_class_count memo on purpose: a lap that completes after the eviction that
+  // requested the resweep would otherwise overwrite the request (the lap's behind-cursor classes
+  // were traversed before the eviction, so their holders are exactly the ones still lost). The
+  // request also restarts the sweep cursor, so the serving lap re-traverses the whole class list
+  // from class 0 and is cleared only by that lap's completion.
+  bool _durable_anchor_resweep_pending = false;
   // compactLocalAnchors() attempts to skip after one that removed nothing (local share full of
   // live containers): bounds the steady-state locked O(cap) scan to one in every
   // LOCAL_ANCHOR_COMPACT_BACKOFF + 1 at-cap resolve passes. While backing off, a container met at

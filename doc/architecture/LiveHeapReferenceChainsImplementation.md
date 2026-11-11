@@ -193,9 +193,11 @@ the only path that re-enlists an evicted anchor: an unchanged durable root kind 
 an already-admitted entry takes no fresh admission path, and static-only holders never appear in
 root enumeration at all. A live evicted anchor is therefore re-enlisted - with rotation
 eligibility and a fresh-lane first look - the next time its durable edge is traversed; a dead one
-is never reported again. The sweep re-force is paced (`DURABLE_SWEEP_REFORCE_BACKOFF`) so a live
-durable population above the cap cannot re-force it on every pass. Eviction and re-enlistment are
-pure index bookkeeping — no frontier lock — so both are legal from the heap-root callback. A local
+is never reported again. The resweep request is paced (`DURABLE_SWEEP_REFORCE_BACKOFF`) and kept
+separate from the sweep's own latched memo, so a lap completing after the eviction cannot consume
+it and a live durable population above the cap cannot re-force it on every pass. Eviction and
+re-enlistment are pure index bookkeeping — no frontier lock — so both are legal from the
+heap-root callback. A local
 holder that a durable root later attaches moves to the durable share and stops
 counting against the local cap. `restartSearch()` clears both shares and the pending buffer.
 

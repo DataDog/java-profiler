@@ -312,10 +312,12 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // IterateOverReachableObjects' root/stack-ref callbacks above - see admitStaticFieldRoots()'s own
   // comment - so this pass would otherwise never discover an object retained only that way.
   TEST_LOG_SUMMARY("ReferenceChainTracker::runPassManualWalk static_sweep_gate "
-           "resolved=%d swept=%d cursor=%d",
+           "resolved=%d swept=%d cursor=%d pending=%d",
            _last_resolved_class_count, _last_static_field_class_count,
-           _static_field_sweep_cursor);
-  if (_last_resolved_class_count != _last_static_field_class_count) {
+           _static_field_sweep_cursor,
+           _durable_anchor_resweep_pending ? 1 : 0);
+  if (_last_resolved_class_count != _last_static_field_class_count ||
+      _durable_anchor_resweep_pending) {
     int static_field_edges_admitted = 0;
     bool static_field_truncated = false;
     bool static_field_frontier_cap_hit = false;
@@ -342,8 +344,11 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       // The chunk cursor completed a full lap over the loaded-class list with no chunk truncating
       // along the way (possibly discovering nothing, if every static field seen was already
       // ALREADY_ADMITTED) - remember the class count it covered so a later pass with no new classes
-      // can skip re-running the sweep entirely.
+      // can skip re-running the sweep entirely. A pending resweep request is cleared only here -
+      // by the serving lap's own completion, which started from class 0 (the request restarts the
+      // cursor) and therefore re-traversed the classes behind the eviction point.
       _last_static_field_class_count = _last_resolved_class_count;
+      _durable_anchor_resweep_pending = false;
     }
   }
 
