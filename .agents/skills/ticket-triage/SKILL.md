@@ -33,8 +33,15 @@ report about behavior as an unverified claim.
    approval.
 
 6. **Priority.** Rate impact, likelihood and workaround as H, M or L, each with its
-   reason from the evidence. For workaround, H means there is none and L means an easy
-   one. Map the three ratings to a priority with the ILW matrix that JDK Mission Control
+   reason from the evidence:
+   - impact: H is a crash, a hang or lost data; M is wrong or missing profile data; L
+     is cosmetic or a small overhead;
+   - likelihood: H happens in a default or common setup; M needs a specific JVM,
+     platform or option; L needs a rare race or setup;
+   - workaround: H means no workaround exists; M means a workaround with a real cost;
+     L means an easy workaround exists.
+
+   Map the three ratings to a priority with the ILW matrix that JDK Mission Control
    uses ([ILW Prioritization](https://wiki.openjdk.org/spaces/jmc/pages/56526160/ILW+Prioritization),
    [matrix](https://hirt.se/images/openjdk/ilw.png)):
 
@@ -46,8 +53,12 @@ report about behavior as an unverified claim.
    | P4 | HLL, MLH, MML, MLM, LHH, LHM |
    | P5 | LMH, MLL, LMM, LHL, LLH, LML, LLM, LLL |
 
-   State your confidence and the remaining unknowns, then recommend that priority. Do
-   not set the priority field; the user decides.
+   In Jira, P1 to P5 are Highest, High, Medium, Low and Lowest; Top is the engineer's
+   choice only. The table above is the authoritative copy. If a rating cannot be
+   judged, say so and give the range of priorities that it allows. For a `stale`
+   ticket, recommend closing it instead of a priority. State your confidence and the
+   remaining unknowns, then recommend the priority. Do not set the priority field; the
+   user decides.
 
 Post the result on the ticket only when the user asks. The comment follows the
 `ticket-writing` skill. Its evidence table holds the reproducer with its commands and
