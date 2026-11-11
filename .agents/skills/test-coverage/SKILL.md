@@ -44,7 +44,7 @@ estimate before starting.
 ## 2. Worktrees
 
 ```bash
-git fetch origin main
+git fetch origin   # <ref> may be any branch; a stale remote-tracking ref would measure an old commit
 COMMIT=$(git rev-parse <ref>)
 RUN=$(pwd)/build/test-coverage/$(git rev-parse --short=12 $COMMIT)-$(date -u +%Y%m%dT%H%M%SZ)
 for c in glibc-x64 glibc-aarch64 musl-x64 musl-aarch64; do

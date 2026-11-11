@@ -972,6 +972,12 @@ if [[ -n "$COVERAGE_OUT" ]]; then
     CONFIG="coverage"
     mkdir -p "$COVERAGE_OUT"
     COVERAGE_OUT="$(cd "$COVERAGE_OUT" && pwd)"
+    # The directory is cleaned below and by the in-container export, so it must be empty
+    # or an earlier export (--coverage-out=ddprof-lib/build must not wipe build output).
+    if [[ -n "$(ls -A "$COVERAGE_OUT")" && ! -f "$COVERAGE_OUT/cell.properties" ]]; then
+        echo "Error: --coverage-out $COVERAGE_OUT is neither empty nor an earlier coverage export" >&2
+        exit 1
+    fi
     # A run that dies before the in-container export must not leave the previous one.
     # Best effort: a rootful container's files are root-owned, and its export, which
     # runs as root, clears them again.
@@ -1337,6 +1343,11 @@ fi
 
 if $MOUNT_MODE; then
     # Mount mode: use local repo directly (faster, but may have stale artifacts)
+    if [[ -f "$PROJECT_ROOT/.git" ]]; then
+        echo "Error: --mount does not work from a git worktree: its .git file names a host path the container lacks." >&2
+        echo "Run from the main checkout, or drop --mount to use clone mode." >&2
+        exit 1
+    fi
     printf -v CONTAINER_CMD '%s -v %q' "$CONTAINER_CMD" "${PROJECT_ROOT}:/workspace${CONTAINER_VOLUME_RW_OPTIONS}"
     CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
 
@@ -1358,7 +1369,7 @@ else
     # repository; mount that repository's git dir at the same path so the clone resolves.
     GIT_COMMON_DIR=""
     if [[ -f "$PROJECT_ROOT/.git" ]]; then
-        GIT_COMMON_DIR=$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir)
+        GIT_COMMON_DIR=$(cd "$PROJECT_ROOT" && cd "$(git rev-parse --git-common-dir)" && pwd)
         # Mounted at its host path, so it must not sit under a path the container
         # creates itself: /workspace is the clone destination and must stay empty,
         # and the others are mount points.

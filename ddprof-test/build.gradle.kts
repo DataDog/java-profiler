@@ -91,16 +91,14 @@ tasks.register("checkCoverageTestFailures") {
       throw GradleException("Coverage report generated, but tests failed in: ${failed.joinToString()}")
     }
     // -Ptests lets either coverage task match nothing, but not both: a typo'd pattern
-    // would otherwise end in a green run with no Java coverage. Counted from the result
-    // XML, since jacocoTestReport is skipped (not failed) when no .exec file exists.
+    // would otherwise end in a green run with no Java coverage. Skipped tests still count:
+    // a valid pattern whose tests are all gated off on this JVM is not a typo, and a pattern
+    // matching nothing produces no testsuite at all. Counted from the result XML, since jacocoTestReport is skipped (not failed) when no .exec file exists.
     if (filtered) {
       fun attr(xml: String, name: String) = Regex("""<testsuite [^>]*\b$name="(\d+)"""").find(xml)?.groupValues?.get(1)?.toInt() ?: 0
       val ran = coverageTaskNames.sumOf { task ->
         resultsDir.get().dir(task).asFile.listFiles { f -> f.name.startsWith("TEST-") && f.name.endsWith(".xml") }
-          .orEmpty().sumOf {
-            val xml = it.readText()
-            attr(xml, "tests") - attr(xml, "skipped")
-          }
+          .orEmpty().sumOf { attr(it.readText(), "tests") }
       }
       if (ran == 0) {
         throw GradleException("-Ptests=$testsPattern ran no tests in testCoverage or testSlowCoverage")

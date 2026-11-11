@@ -124,8 +124,8 @@ One run covers one libc, architecture and test JVM. Code that only runs on anoth
 platform (aarch64 stack walking, musl paths, J9 support) shows as not covered.
 `utils/merge-coverage.sh` merges `--coverage-out` directories built from one commit:
 gcovr merges the `coverage.json` tracefiles, and the JaCoCo CLI merges the `.exec`
-files and reports against one cell's classes. Every container builds with JDK 21, so
-the class files match across cells; the script warns when they differ. The host's
+files and reports against one cell's classes. Every container builds with OpenJDK 21
+(Temurin on glibc, Liberica on musl), whose class files match in practice; the script warns when they differ. The host's
 gcovr must be at least as new as the containers': an older one rejects their
 tracefiles with "Wrong format version". The
 `test-coverage` skill runs the full Linux matrix and merges it.

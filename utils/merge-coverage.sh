@@ -132,7 +132,8 @@ for i in "${!CELLS[@]}"; do
     if (( cell_execs == 0 )); then
         CELL_JAVA[$i]="no (no JaCoCo data)"
     elif [[ ! -d "$cell/classes" ]]; then
-        CELL_JAVA[$i]=yes
+        # Nothing to compare: JaCoCo may drop this cell's data for classes that differ.
+        CELL_JAVA[$i]="unverified (no classes)"
     elif [[ -z "$CLASSES" ]]; then
         CLASSES="$cell/classes"
         CELL_JAVA[$i]=yes
