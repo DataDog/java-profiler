@@ -44,6 +44,7 @@ find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
         echo "FAILED: ${name} exited ${rc}"
       fi
     done
+pipeline_rc=$?
 
 # A matching but non-executable binary is skipped by find -executable above;
 # running a subset of the suites must not read as a complete passing run.
@@ -57,8 +58,8 @@ fi
 
 # pipefail: a non-zero pipeline status here means the binary set was empty
 # (grep matched nothing) or find itself failed — that is a broken job, not a
-# passing one; it must not reach the gate and read as a clean run.
-pipeline_rc=$?
+# passing one; it must not reach the gate and read as a clean run. Captured
+# immediately after the pipeline: any intervening assignment would clobber $?.
 if [ "$pipeline_rc" -ne 0 ]; then
   echo "GATE: no gtest binaries found for ${CONFIG_LC} (pipeline exited ${pipeline_rc})"
   exit 1

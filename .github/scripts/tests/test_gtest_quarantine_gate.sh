@@ -123,14 +123,41 @@ grep -q "no readable report" "$TEMP_DIR/out.txt" || fail "gate output does not r
 pass "unparseable report gates instead of reading as a pass"
 
 # --- 6c. an <error> element counts as a failure, not a pass -----------------
+# rc 0 is what makes this pin real: with a failing rc the rc-fallback loop
+# would gate a mutant that ignores <error> elements, and the test could not
+# tell error-parsing from the fallback.
 d="$TEMP_DIR/errorel"; setup_evidence "$d"
 printf '<?xml version="1.0"?>\n<testsuites><testsuite name="S"><testcase name="t" classname="S"><error message="segv"/></testcase></testsuite></testsuites>\n' > "$d/TEST-err_ut.xml"
-echo 1 > "$d/rc/err_ut"
+echo 0 > "$d/rc/err_ut"
 run_gate "$d" "$CELL" "$TEMP_DIR/unquarantined/list.txt" \
   && fail "an <error> element was not counted as a failure" || true
 pass "<error> element counts as a failure"
 
-# --- 6d. a binary that dies before writing any report gates -----------------
+# --- 6d. a passing binary with an unreadable report is not gated ------------
+# Pins the rc-decides contract: the report only ever removes the excuse.
+d="$TEMP_DIR/passunreadable"; setup_evidence "$d"
+printf '<?xml version="1.0"?><testsuites><testsuite name="X">' > "$d/TEST-ok_ut.xml"
+echo 0 > "$d/rc/ok_ut"
+run_gate "$d" "$CELL" "$ROOT/ddprof-test/quarantine.txt" \
+  || fail "a passing binary with an unreadable report gated"
+grep -q "passed but wrote no readable report" "$TEMP_DIR/out.txt" \
+  || fail "pass-through branch not reported"
+pass "passing binary with unreadable report passes with a notice"
+
+# --- 6e. an unreadable report on a failing binary is counted exactly once ---
+# Pins the dedup guard: the xml loop and the rc loop must not both gate it.
+d="$TEMP_DIR/dedup"; setup_evidence "$d"
+printf '<?xml version="1.0"?><testsuites><testsuite name="X">' > "$d/TEST-baz_ut.xml"
+echo 1 > "$d/rc/baz_ut"
+run_gate "$d" "$CELL" "$ROOT/ddprof-test/quarantine.txt" \
+  && fail "an unreadable report on a failing binary did not gate" || true
+count=$(grep -c "wrote no readable report" "$TEMP_DIR/out.txt")
+[ "$count" -eq 1 ] || fail "unreadable report gated $count times, expected 1"
+[ -z "$(grep 'without naming a failing test' "$TEMP_DIR/out.txt")" ] \
+  || fail "rc loop double-counted a binary the xml loop already gated"
+pass "unreadable report counted exactly once (no rc-loop double gate)"
+
+# --- 6f. a binary that dies before writing any report gates -----------------
 d="$TEMP_DIR/noreport"; setup_evidence "$d"
 echo 139 > "$d/rc/baz_ut"
 run_gate "$d" "$CELL" "$ROOT/ddprof-test/quarantine.txt" \
@@ -186,12 +213,21 @@ STUB
   chmod +x "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut"
 }
 # macOS/BSD find lacks -executable; CI runners are Linux/GNU, the shim only
-# exists so this hermetic test can run on a dev Mac.
+# exists so this hermetic test can run on a dev Mac. It TRANSLATES the token
+# to the BSD-equivalent -perm -u+x rather than dropping it, so both the
+# runner's executable filter and its non-executable guard keep their
+# semantics during the smoke.
 mkdir "$STAGE/shim"
 cat > "$STAGE/shim/find" <<'EOF'
 #!/bin/sh
 args=""
-for a in "$@"; do [ "$a" = "-executable" ] || args="$args $a"; done
+for a in "$@"; do
+  if [ "$a" = "-executable" ]; then
+    args="$args -perm -u+x"
+  else
+    args="$args $a"
+  fi
+done
 exec /usr/bin/find $args
 EOF
 chmod +x "$STAGE/shim/find"
@@ -209,4 +245,38 @@ make_stub 1 threadDyingBetweenScansIsNeverNamed "expected equal"
   || { cat "$TEMP_DIR/runner2.txt" >&2; fail "runner smoke: the quarantined failure gated anyway"; }
 grep -q "excused by quarantine" "$TEMP_DIR/runner2.txt" || fail "runner smoke: no excuse line"
 pass "runner + gate excuse the quarantined failure end to end"
+
+# A stub that exits non-zero and writes NO report is the case that pins real
+# rc recording: with rc files written as constant 0, the rc loop would never
+# gate it and this smoke would pass on the mutant.
+make_crash_stub() {
+  cat > "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+  chmod +x "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut"
+}
+make_crash_stub
+( cd "$STAGE" && PATH="$STAGE/shim:$PATH" bash .gitlab/scripts/run-gtests.sh release ) > "$TEMP_DIR/runner3.txt" 2>&1 \
+  && fail "runner smoke: a binary that crashed without a report passed"
+grep -q "without naming a failing test" "$TEMP_DIR/runner3.txt" \
+  || fail "runner smoke: crash-without-report not gated"
+pass "runner records real exit codes: a crashed binary gates"
+
+# A matching but non-executable binary must abort the run, not be silently
+# skipped (which would read as a complete passing suite).
+mv "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut" \
+   "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut.bak"
+cp "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut.bak" \
+   "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut"
+chmod -x "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut"
+chmod +x "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut.bak"
+mv "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut.bak" \
+   "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut2"
+chmod +x "$STAGE/ddprof-lib/build/bin/gtest/release_stub_ut/stub_ut2"
+( cd "$STAGE" && PATH="$STAGE/shim:$PATH" bash .gitlab/scripts/run-gtests.sh release ) > "$TEMP_DIR/runner4.txt" 2>&1 \
+  && fail "runner smoke: a non-executable matching binary was silently skipped"
+grep -q "not executable" "$TEMP_DIR/runner4.txt" \
+  || fail "runner smoke: non-executable guard did not report"
+pass "runner refuses to run a subset when a matching binary is not executable"
 rm -rf "$STAGE"

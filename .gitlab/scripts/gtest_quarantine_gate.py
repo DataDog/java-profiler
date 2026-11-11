@@ -14,8 +14,9 @@ gtest runner:
 
 The XML reports are only ever needed to excuse a failure, never to pass a
 run: a failing test makes gtest exit non-zero on its own, so the binary's
-recorded exit code decides, and a broken or missing report can never turn a
-passing run red -- it only removes the quarantine excuse from a failing one.
+recorded exit code decides. A broken or missing report cannot turn a passing
+run red, and on a failing binary it removes the quarantine excuse: the run
+then gates, because there is nothing left the list could have excused.
 """
 
 import argparse
