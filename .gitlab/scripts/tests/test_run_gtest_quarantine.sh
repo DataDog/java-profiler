@@ -268,6 +268,20 @@ else
   pass "T14 the rejected value never touches the results path"
 fi
 
+# T18 — a miswired GTEST_ARCH (e.g. the runner tag's arm64) must fail loudly:
+# the cell string it would build matches no quarantine entry and mutes
+# nothing silently.
+OUT=$( cd "${WORK}/repo" && \
+  env SANITIZER_LC=asan GTEST_ARCH=arm64 \
+    bash .gitlab/scripts/run-gtest-quarantine.sh 2> "${STDERR_FILE}" )
+RC=$?
+assert_rc 1 "T18 GTEST_ARCH=arm64 exits 1"
+if grep -q "must be one of: amd64, aarch64" "${STDERR_FILE}"; then
+  pass "T18 stderr names the allowed arch spellings"
+else
+  fail "T18: stderr missing the arch message, got: $(cat "${STDERR_FILE}")"
+fi
+
 # T15 — the selector must anchor on the config directory: a "release_helper"
 # binary parked in an asan_other directory must not be swept into the
 # release cell. (The counterpart — an unprefixed binary inside a release_*

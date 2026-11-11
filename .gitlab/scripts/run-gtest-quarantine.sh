@@ -40,6 +40,12 @@ case "${SANITIZER_LC}" in
   asan|tsan|release) ;;
   *) echo "SANITIZER_LC must be one of: asan, tsan, release (got '${SANITIZER_LC}')" >&2; exit 1 ;;
 esac
+# GTEST_ARCH builds the quarantine cell string; a runner-tag spelling (arm64)
+# or typo would match no entry and silently mute nothing on that job.
+case "${GTEST_ARCH}" in
+  amd64|aarch64) ;;
+  *) echo "GTEST_ARCH must be one of: amd64, aarch64 (got '${GTEST_ARCH}')" >&2; exit 1 ;;
+esac
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 REPO_ROOT=$(cd "${HERE}/../.." && pwd)
