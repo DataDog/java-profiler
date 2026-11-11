@@ -148,7 +148,9 @@ JAVA_SUMMARY="(no JaCoCo execution data)"
 if (( ${#execs[@]} > 0 )) && [[ -z "$CLASSES" ]]; then
     JAVA_SUMMARY="(no cell exported classes)"
     for i in "${!CELLS[@]}"; do
-        [[ "${CELL_JAVA[$i]}" != yes ]] || CELL_JAVA[$i]="no (no classes in any cell)"
+        case "${CELL_JAVA[$i]}" in
+            yes|unverified*) CELL_JAVA[$i]="no (no classes in any cell)" ;;
+        esac
     done
 fi
 if (( ${#execs[@]} > 0 )) && [[ -n "$CLASSES" ]]; then

@@ -156,7 +156,12 @@ exec_cell() {
   STUB_EXEC=1 STUB_WS="$TEMP_DIR/ws" STUB_OUT="$exec_out" run_script "$REPO" --libc=glibc --jdk=21 \
     --coverage-out="$exec_out" "$@" >/dev/null
 }
+# A directory that is not an earlier export is refused, not wiped.
 mkdir -p "$exec_out/reports/stale"
+rc=0
+exec_cell --tests=FooTest 2>/dev/null || rc=$?
+[[ $rc -ne 0 && -d "$exec_out/reports/stale" ]] && pass || fail "--coverage-out accepted a directory that is not an export (rc=$rc)"
+touch "$exec_out/cell.properties"
 rc=0
 STUB_GRADLE_RC=3 exec_cell --tests=FooTest || rc=$?
 [[ $rc -eq 3 ]] && pass || fail "cell exit code $rc is not Gradle's 3"
