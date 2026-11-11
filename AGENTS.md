@@ -481,7 +481,7 @@ moving a Jira ticket, load the `ticket-writing` skill
 ([.agents/skills/ticket-writing/SKILL.md](.agents/skills/ticket-writing/SKILL.md)); before
 writing a design, acceptance criteria or a Build plan, load the `work-planning` skill
 ([.agents/skills/work-planning/SKILL.md](.agents/skills/work-planning/SKILL.md)); before
-triaging an existing ticket, load the `ticket-triage` skill
+triaging an existing PROF Jira ticket, load the `ticket-triage` skill
 ([.agents/skills/ticket-triage/SKILL.md](.agents/skills/ticket-triage/SKILL.md)). These
 rules always apply:
 
