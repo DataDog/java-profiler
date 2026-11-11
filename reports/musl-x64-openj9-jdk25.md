@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk25
 
 ## musl-x64-openj9-jdk25 - ❌ FAIL
 
-**Date:** 2026-11-11 16:24:36 EST
+**Date:** 2026-11-11 16:53:38 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-openj9-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 72 |
-| CPU Cores (end) | 91 |
+| CPU Cores (start) | 92 |
+| CPU Cores (end) | 94 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,23 +45,23 @@ title: musl-x64-openj9-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 72-91 cores)</summary>
+<summary>CPU Timeline (2 unique values: 92-94 cores)</summary>
 
 ```
-1794431660 72
-1794431665 72
-1794431670 72
-1794431675 72
-1794431680 72
-1794431685 72
-1794431690 91
-1794431695 91
-1794431700 91
-1794431705 91
-1794431710 91
-1794431716 91
-1794431721 91
-1794431726 91
+1794433716 92
+1794433721 92
+1794433726 92
+1794433731 92
+1794433737 94
+1794433742 94
+1794433747 94
+1794433752 94
+1794433757 94
+1794433762 94
+1794433767 94
+1794433772 94
+1794433777 94
+1794433782 94
 ```
 </details>
 
