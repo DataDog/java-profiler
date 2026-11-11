@@ -63,6 +63,14 @@ if [ "${SANITIZER_LC}" = "tsan" ]; then
 fi
 
 if [ "${1:-}" = "--attempt" ]; then
+  # A stale TEST-*.xml from a reused workspace or a failed earlier clear
+  # would satisfy the -s check below and defeat the ABORTED detection --
+  # the exact false-green this marker exists to prevent. The wrapper clears
+  # RESULTS_DIR between attempts; this also covers direct --attempt runs.
+  rm -rf "${RESULTS_DIR}" || {
+    echo "cannot clear ${RESULTS_DIR}; attempt evidence would not be this attempt's own" >&2
+    exit 3
+  }
   mkdir -p "${RESULTS_DIR}"
   # Run EVERY binary and aggregate instead of exiting at the first failure:
   # a single quarantined failure must not hide the rest of the suite from the

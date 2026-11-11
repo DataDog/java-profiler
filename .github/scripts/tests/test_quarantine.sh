@@ -1241,6 +1241,17 @@ if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null 2>&1; the
 fi
 pass "overlapping gtest config globs are flagged as duplicates"
 
+write_list "$LIST" "$(entry 'MyInst/WobblySuite.*' PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null 2>&1; then
+  fail "a decorated gtest suite name in a class-wide entry should be rejected"
+fi
+pass "a decorated gtest suite name in a class-wide entry is rejected"
+
+write_list "$LIST" "$(entry 'MyInst/WobblySuite.fails/0' PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null \
+  || fail "an exact decorated gtest id should stay valid"
+pass "an exact decorated gtest id stays valid"
+
 # End-to-end through flake_report.py on gtest-shaped evidence: the quarantined
 # suite failure is excused on its cell, and still gates on another cell.
 CASE="$TEMP_DIR/case-gtest-report"

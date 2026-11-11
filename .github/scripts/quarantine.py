@@ -345,6 +345,16 @@ def cmd_validate(args):
                 "normalises the report's id to that shape -- drop the '()'"
             ).format(entry["test"]))
 
+        # A decorated gtest suite name ("<inst>/<Suite>.*") in a class-wide
+        # entry can never match: covers() reduces ids to the bare suite, so
+        # the entry's decorated prefix compares against nothing.
+        if "/" in entry["test"][:-2] and entry["test"].endswith(".*"):
+            complain(line, (
+                "test pattern '{}' carries a decorated gtest suite name; "
+                "class-wide entries use the bare suite ('<Suite>.*') -- a "
+                "decorated prefix matches nothing"
+            ).format(entry["test"]))
+
         if _INVOCATION_INDEX_RE.match(entry["test"].rsplit(".", 1)[-1]):
             complain(line, (
                 "test '{}' names an invocation index. @ParameterizedTest and "

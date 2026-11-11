@@ -211,6 +211,22 @@ else
   fail "T11: binary did not receive halt_on_error=1, got: ${OUT}"
 fi
 
+# T12 — a stale TEST-*.xml from a reused workspace must not defeat the
+# ABORTED detection: the attempt clears the results dir before running, so
+# a planted XML disappears and the aborting binary is still marked.
+setup_tree
+make_bin release_alpha 66
+mkdir -p "${WORK}/repo/ddprof-lib/build/test-results/gtest/release"
+printf '<testsuites><testsuite name="Ghost"><testcase name="ghost" classname="Ghost"/></testsuite></testsuites>' \
+  > "${WORK}/repo/ddprof-lib/build/test-results/gtest/release/TEST-release_alpha.xml"
+run_case release --attempt
+assert_rc 66 "T12 aborting binary keeps its exit code"
+if grep -q "ABORTED: release_alpha exited 66 without producing test results" <<< "${OUT}"; then
+  pass "T12 planted stale XML does not defeat the ABORTED marker"
+else
+  fail "T12: stale XML suppressed the ABORTED marker, got: ${OUT}"
+fi
+
 # T6 — the retry-flag guard exports RETRY_ON_NO_TEST_FAILURES=1 for the
 # asan cell only (ASan init aborting before any test runs); flipping the
 # config comparison fails this case. The stub records the exported value.
