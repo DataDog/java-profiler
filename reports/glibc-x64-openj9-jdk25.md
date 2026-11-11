@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-11-11 07:51:58 EST
+**Date:** 2026-11-11 08:05:13 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 441 |
-| Sample Rate | 7.35/sec |
-| Health Score | 459% |
+| CPU Samples | 379 |
+| Sample Rate | 6.32/sec |
+| Health Score | 395% |
 | Threads | 9 |
-| Allocations | 376 |
+| Allocations | 429 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 535 |
-| Sample Rate | 8.92/sec |
-| Health Score | 557% |
-| Threads | 11 |
-| Allocations | 526 |
+| CPU Samples | 479 |
+| Sample Rate | 7.98/sec |
+| Health Score | 499% |
+| Threads | 10 |
+| Allocations | 524 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 52-54 cores)</summary>
+<summary>CPU Timeline (1 unique values: 52-52 cores)</summary>
 
 ```
-1794401180 52
-1794401185 52
-1794401190 54
-1794401195 54
-1794401200 54
-1794401205 54
-1794401210 54
-1794401215 54
-1794401220 54
-1794401225 54
-1794401230 54
-1794401235 54
-1794401240 54
-1794401245 54
-1794401250 54
-1794401255 54
-1794401260 52
-1794401265 52
-1794401270 52
-1794401275 52
+1794402117 52
+1794402122 52
+1794402127 52
+1794402132 52
+1794402137 52
+1794402142 52
+1794402147 52
+1794402152 52
+1794402157 52
+1794402162 52
+1794402167 52
+1794402172 52
+1794402177 52
+1794402182 52
+1794402187 52
+1794402192 52
+1794402197 52
+1794402202 52
+1794402207 52
+1794402212 52
 ```
 </details>
 
