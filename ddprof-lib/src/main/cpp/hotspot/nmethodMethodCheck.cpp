@@ -85,8 +85,17 @@ static void JNICALL onCompiledMethodLoad(jvmtiEnv* jvmti, jmethodID method, jint
 
     // While the event is enabled, the ServiceThread can also post to this env
     // for a compile on another thread; the atomic claim with rollback keeps
-    // concurrent posters on distinct, bounded slots.
-    int slot = __atomic_fetch_add(&ctx->count, 1, __ATOMIC_RELAXED);
+    // concurrent posters on distinct, bounded slots. The claim must be a
+    // RELEASE RMW: readsForTest snapshots count with an acquire load, and a
+    // relaxed increment publishes no prior writes, so that snapshot could
+    // observe the claim without the preceding live registration (arm64 is
+    // weakly ordered) — the reader would then pass its live == 0 drain wait
+    // and copy the slot while this poster is still writing it. The count
+    // rollback below stays relaxed: it publishes nothing, and its RMW reads
+    // the claim's own written value, keeping it in the claim's release
+    // sequence. The live decrements stay release: the drain wait pairs its
+    // acquire loads of live with them.
+    int slot = __atomic_fetch_add(&ctx->count, 1, __ATOMIC_RELEASE);
     if (slot < 0) {
         // A rollback racing the reset's store of count can drive it negative:
         // such a slot was never claimed, so it must be neither written nor
