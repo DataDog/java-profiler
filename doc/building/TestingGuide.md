@@ -61,9 +61,11 @@ TSan is only viable at this tier. The JVM binary contains intentional unsynchron
 patterns (lock-free GC internals, biased locking) that produce too many false
 positives in the Java functional tier. `gradle/sanitizers/tsan.supp` captures
 suppressions from earlier attempts. The CI jobs run the gtest binaries directly with
-no suppressions (`TSAN_OPTIONS` carries only `halt_on_error=1`, set by the runner so
+no suppressions (`TSAN_OPTIONS` carries `halt_on_error=1`, set by the runner so
 the first race kills the binary before gtest writes a passing JUnit XML — see the
-flake-handling note above), so the suppressions file is not applied there. Running
+flake-handling note above; any pre-existing `TSAN_OPTIONS` value is preserved, so
+an operator setting suppressions in the job would silently re-enable them), so the
+suppressions file is not applied there today. Running
 `:ddprof-lib:gtestTsan` through Gradle
 does pass the tsan config's `TSAN_OPTIONS` (including `suppressions=gradle/sanitizers/tsan.supp`)
 to the binaries.

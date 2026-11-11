@@ -1397,5 +1397,28 @@ echo "$output" | grep -q "ABORTED: sanitizer_beta_ut exited 66" \
   || fail "expected the ABORTED marker to be visible in the job output, got: $output"
 pass "a sanitizer abort is not excused by another binary's quarantined failures"
 
+# The musl cut-short pattern is a separate branch in flake_report.py's
+# cut_short_marker(); a sanitizer abort on a musl cell must gate exactly
+# like the glibc case above.
+CASE="$TEMP_DIR/case-gtest-abort-not-excused-musl"
+mkdir -p "$CASE"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+$(declare -f write_failure_xml)
+write_failure_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails" "got 2 samples, wanted 50"
+echo "ABORTED: sanitizer_beta_ut exited 66 without producing test results"
+exit 66
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+set +e
+(cd "$CASE" && "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "musl-11-debug-amd64" -- ./suite.sh >/dev/null 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a sanitizer abort must gate on a musl cell too (got exit $rc)"
+pass "a sanitizer abort is not excused on a musl cell"
+
 echo
 echo "All $TESTS quarantine tests passed."

@@ -227,6 +227,18 @@ else
   fail "T12: stale XML suppressed the ABORTED marker, got: ${OUT}"
 fi
 
+# T13 — rc 128 is a plain failure, not a signal death: flake_report.py's
+# cut-short check is strict >128, so the boundary must match exactly.
+setup_tree
+make_bin release_alpha 128 xml
+run_case release --attempt
+assert_rc 128 "T13 rc 128 stays a plain failure"
+if grep -q "ABORTED" <<< "${OUT}"; then
+  fail "T13: rc 128 must not produce the ABORTED marker, got: ${OUT}"
+else
+  pass "T13 rc 128 produces no ABORTED marker"
+fi
+
 # T6 — the retry-flag guard exports RETRY_ON_NO_TEST_FAILURES=1 for the
 # asan cell only (ASan init aborting before any test runs); flipping the
 # config comparison fails this case. The stub records the exported value.
