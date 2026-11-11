@@ -247,8 +247,8 @@ def stale_description(args, repo, cwd):
     None (fail open) when gh fails, the PR has no commits, or a timestamp is unparseable."""
     out = gh_query(["pr", "view", *pr_selector(args)[:1], *( ["-R", repo] if repo else [] ),
                     "--json", "updatedAt,commits", "-q",
-                    '.updatedAt + " " + (.commits | if length > 0 then .[-1].committedDate'
-                    ' else "" end)'], cwd)
+                    ('.updatedAt + " " + (.commits | if length > 0 then .[-1].committedDate'
+                     + ' else "" end)')], cwd)
     times = [gh_time(part) for part in (out or "").split()]
     if len(times) != 2 or None in times:
         return None
