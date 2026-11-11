@@ -545,14 +545,18 @@ private:
   // even when evictions stop; the first eviction at zero restarts the sweep cursor and re-arms it.
   static constexpr int DURABLE_SWEEP_REFORCE_BACKOFF = 8;
   int _durable_sweep_reforce_backoff = 0;
-  // A requested-but-not-yet-served static sweep lap. Set on every eviction that displaced indexed
-  // durable anchors - including during the restart cooldown - and cleared only when a sweep lap
-  // starts from class 0, which by re-traversing the whole class list serves it. Kept separate from
-  // the _last_static_field_class_count memo and never cleared at lap completion on purpose: the
-  // lap in flight when the eviction lands does not revisit the classes it already passed, so only
-  // a later fresh lap guarantees coverage (the eviction's own cursor restart is advisory - the
-  // chunk cursor save in admitStaticFieldRoots() overwrites a mid-chunk restart).
-  bool _durable_anchor_resweep_pending = false;
+  // Resweep requests as a generation counter: every eviction batch bumps
+  // _durable_anchor_resweep_gen, and a sweep lap serves exactly the generations requested before
+  // the lap started - a fresh lap (cursor 0) latches _static_field_sweep_lap_request_gen, and its
+  // completion publishes it as _static_field_sweep_served_gen. The gate runs the sweep while
+  // served != requested, so a request survives: laps in flight when the eviction lands (which do
+  // not revisit classes they already passed, and whose chunk save overwrites a mid-chunk cursor
+  // restart), first chunks that truncate, and cooldowns - all leave the generation unserved until
+  // a full lap from class 0 completes. Latching at lap start (not clearing at start or
+  // completion) is what makes a completion serve only the requests that predate the lap.
+  u64 _durable_anchor_resweep_gen = 0;
+  u64 _static_field_sweep_lap_request_gen = 0;
+  u64 _static_field_sweep_served_gen = 0;
   // compactLocalAnchors() attempts to skip after one that removed nothing (local share full of
   // live containers): bounds the steady-state locked O(cap) scan to one in every
   // LOCAL_ANCHOR_COMPACT_BACKOFF + 1 at-cap resolve passes. While backing off, a container met at

@@ -102,7 +102,9 @@ public:
         t->_pending_local_anchor_tags.clear();
         t->_local_compact_backoff = 0;
         t->_durable_sweep_reforce_backoff = 0;
-        t->_durable_anchor_resweep_pending = false;
+        t->_durable_anchor_resweep_gen = 0;
+        t->_static_field_sweep_lap_request_gen = 0;
+        t->_static_field_sweep_served_gen = 0;
         t->_pending_local_evict_cursor = 0;
         t->_anchor_container_cursor = 0;
         t->_anchor_other_cursor = 0;
@@ -547,7 +549,7 @@ public:
                t->_pending_local_anchor_tags.empty() &&
                t->_local_compact_backoff == 0 &&
                t->_durable_sweep_reforce_backoff == 0 &&
-               !t->_durable_anchor_resweep_pending &&
+               t->_durable_anchor_resweep_gen == t->_static_field_sweep_served_gen &&
                t->_pending_local_evict_cursor == 0;
     }
 
@@ -593,8 +595,14 @@ public:
     // The static sweep resweep request (set by durable-share eviction, served and cleared by a
     // full sweep lap): runPassManualWalk() runs admitStaticFieldRoots() while this is pending or
     // the class-count memo is stale.
-    static bool durableAnchorResweepPendingForTest() {
-        return ReferenceChainTracker::instance()->_durable_anchor_resweep_pending;
+    // The static sweep resweep-request state (see _durable_anchor_resweep_gen): runPassManualWalk()
+    // runs admitStaticFieldRoots() while a generation is unserved or the class-count memo is stale.
+    static bool durableAnchorResweepUnservedForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        return t->_static_field_sweep_served_gen != t->_durable_anchor_resweep_gen;
+    }
+    static u64 durableAnchorResweepGenForTest() {
+        return ReferenceChainTracker::instance()->_durable_anchor_resweep_gen;
     }
     static void setStaticFieldSweepMemoForTest(int count) {
         ReferenceChainTracker::instance()->_last_static_field_class_count = count;

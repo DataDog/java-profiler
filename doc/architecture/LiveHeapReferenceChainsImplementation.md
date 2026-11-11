@@ -193,11 +193,12 @@ the only path that re-enlists an evicted anchor: an unchanged durable root kind 
 an already-admitted entry takes no fresh admission path, and static-only holders never appear in
 root enumeration at all. A live evicted anchor is therefore re-enlisted - with rotation
 eligibility and a fresh-lane first look - the next time its durable edge is traversed; a dead one
-is never reported again. Eviction records a static resweep request unconditionally (a request
-during the restart cooldown must survive, or a displaced static-only holder is never re-swept);
-the request is cleared only when a sweep lap starts from class 0, which by re-traversing the whole
-class list serves it — a lap in flight when the eviction lands does not revisit the classes it
-already passed, so its completion must not consume the request. The cooldown
+is never reported again. Eviction bumps a resweep-request generation unconditionally (a request
+during the restart cooldown must survive, or a displaced static-only holder is never re-swept); a
+sweep lap serves exactly the generations requested before it started — it latches the generation
+at its start from class 0 and publishes it only on completing, so a lap in flight when the
+eviction lands, a truncated first chunk, or a cooldown all leave the generation unserved until a
+full lap actually re-traverses the whole class list. The cooldown
 (`DURABLE_SWEEP_REFORCE_BACKOFF`) paces only the cursor restart, advancing per sweep run.
 Eviction and re-enlistment are pure index bookkeeping — no frontier lock — so both are legal from
 the heap-root callback. A local
