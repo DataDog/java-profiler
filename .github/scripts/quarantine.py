@@ -86,6 +86,17 @@ SYNTHETIC_CELLS = tuple(
     for suffix in _SYNTHETIC_SUITE_SUFFIXES
 )
 
+# The GitLab sanitizer gtest jobs run native binaries that never link a JDK,
+# so their cells carry no jdk axis and no slow-suite suffix -- three tokens
+# only (the quarantine.txt gtest section documents the shape). Without these
+# in the universe, cells_overlap() fails closed for every gtest glob and two
+# genuinely disjoint entries (asan vs tsan) read as duplicates.
+SYNTHETIC_CELLS += tuple(
+    "glibc-{}-{}".format(config, arch)
+    for config in _SYNTHETIC_CONFIGS
+    for arch in KNOWN_ARCHES
+)
+
 
 def _matches_any_synthetic_cell(globs):
     return any(any(fnmatch.fnmatch(cell, g) for g in globs) for cell in SYNTHETIC_CELLS)
@@ -184,9 +195,31 @@ def covers(entry, test_id):
         # the merge gate for the entire repository from one validate-clean
         # line.
         prefix = pattern[:-1]
-        if not test_id.startswith(prefix):
+        if test_id.startswith(prefix):
+            # The remainder may carry a trailing "/0"-style suffix: Java
+            # writes none, but gtest value-parameterized cases are named
+            # "Case/0", and the Java rule's only real constraint is that the
+            # remainder holds no further class/case separator dot.
+            return "." not in test_id[len(prefix):]
+        # GoogleTest bakes its suite decorations into the XML classname, not
+        # into the entry: value-parameterized suites are "<inst>/<suite>"
+        # (the "/0" lands on the case name), typed suites "<suite>/<typeidx>",
+        # and combinations "<inst>/<suite>/<typeidx>". Reduce the classname to
+        # its bare suite -- drop a trailing all-digits segment, then take the
+        # last "/" segment -- and compare that. Java classnames never contain
+        # "/", so this branch is unreachable for a Java id.
+        cls, _, _ = test_id.rpartition(".")
+        if not cls or "/" not in cls:
             return False
-        return "." not in test_id[len(prefix):]
+        segments = cls.split("/")
+        if len(segments) > 1 and segments[-1].isdigit():
+            segments.pop()
+        if segments[-1] + "." == prefix:
+            return True
+        # A decorated entry ("MyInst/WobblySuite.*") also covers the typed
+        # variants of its own instantiation ("MyInst/WobblySuite/0.case"):
+        # the full undecorated classname must equal the prefix's suite too.
+        return "/".join(segments) + "." == prefix
     return test_id == pattern
 
 
@@ -316,6 +349,12 @@ def cmd_validate(args):
                 "entries are written as <class>.<method>, and covers() "
                 "normalises the report's id to that shape -- drop the '()'"
             ).format(entry["test"]))
+
+        # A decorated gtest suite name ("<inst>/<Suite>.*") in a class-wide
+        # entry is valid and narrower than the bare-suite form: covers()
+        # matches it directly against the decorated classname, muting only
+        # that instantiation. No complaint - just do not claim it matches
+        # nothing.
 
         if _INVOCATION_INDEX_RE.match(entry["test"].rsplit(".", 1)[-1]):
             complain(line, (

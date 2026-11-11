@@ -7,10 +7,6 @@ package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.ReferenceChainTestHooks;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.ItemFilters;
-import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
-
 import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
@@ -20,36 +16,40 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.item.ItemFilters;
+import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
 /**
  * Mimics the real leak shape found in the {@code prof-analyzer-hotdog-jb} pod's leak generator
  * ({@code ProfileAnalyzer}'s {@code LEAK_BUFFER}, profiling-backend repo, branch-local diff): a
- * {@code static final List<byte[]>} field whose *instance* is admitted exactly once by
- * {@code admitStaticFieldRoots()} (referenceChains.cpp) when the owning class first loads, and
- * which is then only ever mutated in place (elements appended) - never reassigned - for the rest
- * of the process's life. This is the "new elements added to an already-discovered collection"
- * shape, as opposed to {@code LeakingCacheScenario}'s local-variable cache (a stack-local GC
- * root, not a static field) - see this scenario's own use to confirm whether
- * {@code collectStaleExpandedEntriesForRotation()}'s rotation mechanism actually re-expands
- * {@link #LEAK_BUFFER} to pick up elements added after its one-time static-field sweep.
+ * {@code static final List<byte[]>} field whose *instance* is admitted exactly once by {@code
+ * admitStaticFieldRoots()} (referenceChains.cpp) when the owning class first loads, and which is
+ * then only ever mutated in place (elements appended) - never reassigned - for the rest of the
+ * process's life. This is the "new elements added to an already-discovered collection" shape, as
+ * opposed to {@code LeakingCacheScenario}'s local-variable cache (a stack-local GC root, not a
+ * static field) - see this scenario's own use to confirm whether {@code
+ * collectStaleExpandedEntriesForRotation()}'s rotation mechanism actually re-expands {@link
+ * #LEAK_BUFFER} to pick up elements added after its one-time static-field sweep.
  *
  * <p>Same seed-before-start rationale as {@code LeakingCacheScenario}'s own comment: {@link
  * #LEAK_BUFFER} is seeded with a few chunks before the profiler (and therefore {@code
- * ReferenceChainTracker}'s BFS thread) is even started, so the process's one-shot root-seeded
- * walk can never catch it empty.
+ * ReferenceChainTracker}'s BFS thread) is even started, so the process's one-shot root-seeded walk
+ * can never catch it empty.
  */
 public final class StaticFieldGrowingCollectionScenario {
   private StaticFieldGrowingCollectionScenario() {}
 
   /**
-   * Mirrors production's {@code ProfileAnalyzer.LEAK_BUFFER}: a static field holding a
-   * {@code synchronizedList<byte[]>}, appended to (never reassigned) for the process's whole
-   * life. The backing ArrayList is pre-sized so it never reallocates during the scenario: the
-   * elementData array checked as EXPANDED before lateChunk is appended is the very array that ends
-   * up holding lateChunk.
+   * Mirrors production's {@code ProfileAnalyzer.LEAK_BUFFER}: a static field holding a {@code
+   * synchronizedList<byte[]>}, appended to (never reassigned) for the process's whole life. The
+   * backing ArrayList is pre-sized so it never reallocates during the scenario: the elementData
+   * array checked as EXPANDED before lateChunk is appended is the very array that ends up holding
+   * lateChunk.
    */
   static final List<byte[]> LEAK_BUFFER =
-      Collections.synchronizedList(new ArrayList<>(StaticFieldGrowingCollectionScenario.LEAK_BUFFER_CAPACITY));
+      Collections.synchronizedList(
+          new ArrayList<>(StaticFieldGrowingCollectionScenario.LEAK_BUFFER_CAPACITY));
 
   // Arbitrary, scenario-chosen klass id - see LeakingCacheScenario.CACHED_PAYLOAD_TEST_KLASS_ID's
   // own comment; distinct from that scenario's id since both may run in the same suite (each in
@@ -79,14 +79,14 @@ public final class StaticFieldGrowingCollectionScenario {
 
   // Seeds + lateChunk + one per round + one per tail attempt (worst case), so LEAK_BUFFER's
   // elementData never reallocates.
-  private static final int LEAK_BUFFER_CAPACITY =
-      SEED_CHUNKS + 1 + TOTAL_ROUNDS + TAIL_ATTEMPTS;
+  private static final int LEAK_BUFFER_CAPACITY = SEED_CHUNKS + 1 + TOTAL_ROUNDS + TAIL_ATTEMPTS;
 
   // FrontierEntryState::EXPANDED (referenceChainFrontier.h), as reported by
   // ReferenceChainTestHooks.getReferenceChainFrontierStateForTest0().
   private static final int FRONTIER_STATE_EXPANDED = 1;
 
-  // ReferenceChainTestHooks.getReferenceChainFrontierStateForTest0()'s "no frontier entry" sentinel.
+  // ReferenceChainTestHooks.getReferenceChainFrontierStateForTest0()'s "no frontier entry"
+  // sentinel.
   private static final int FRONTIER_STATE_NONE = -1;
 
   /** Printed to stdout, followed by the matched leaf class's name, on success. */
@@ -102,13 +102,13 @@ public final class StaticFieldGrowingCollectionScenario {
   public static final String NOT_FOUND_MARKER = "[chain-not-found]";
 
   /**
-   * Seeds {@link #LEAK_BUFFER}, starts the profiler, then keeps appending new {@code byte[]}
-   * chunks to the same list instance - the exact shape implicated in the live hotdog-pod stall -
-   * watching specifically for a chain to a chunk appended *after* the static field's one-time
-   * sweep, until a {@code datadog.ReferenceChain} event for it appears or {@code TOTAL_ROUNDS} is
-   * exhausted.
+   * Seeds {@link #LEAK_BUFFER}, starts the profiler, then keeps appending new {@code byte[]} chunks
+   * to the same list instance - the exact shape implicated in the live hotdog-pod stall - watching
+   * specifically for a chain to a chunk appended *after* the static field's one-time sweep, until a
+   * {@code datadog.ReferenceChain} event for it appears or {@code TOTAL_ROUNDS} is exhausted.
    */
-  public static void run(JavaProfiler profiler, String startCommand, Path scratchDumpPath) throws Exception {
+  public static void run(JavaProfiler profiler, String startCommand, Path scratchDumpPath)
+      throws Exception {
     for (int i = 0; i < SEED_CHUNKS; i++) {
       LEAK_BUFFER.add(new byte[CHUNK_BYTES]);
     }
@@ -133,10 +133,14 @@ public final class StaticFieldGrowingCollectionScenario {
       // Pins the frontier-state seam's -1 sentinel: an untagged object (tag 0) has no frontier
       // entry. Probed before any seeding - no pass can run until shouldRunPass() sees a leak
       // signal - so the BFS root walk cannot have tagged the probe yet.
-      int untaggedState = ReferenceChainTestHooks.getReferenceChainFrontierStateForTest0(new Object());
+      int untaggedState =
+          ReferenceChainTestHooks.getReferenceChainFrontierStateForTest0(new Object());
       if (untaggedState != FRONTIER_STATE_NONE) {
-        throw new IllegalStateException("frontier-state seam returned " + untaggedState
-            + " for an untagged probe object, expected " + FRONTIER_STATE_NONE);
+        throw new IllegalStateException(
+            "frontier-state seam returned "
+                + untaggedState
+                + " for an untagged probe object, expected "
+                + FRONTIER_STATE_NONE);
       }
       // Wire a representative for the seeded klass BEFORE the seeds (set-representative-first
       // is the load-bearing order: klassPopulationSetRepresentativeForTest() re-keys the
@@ -163,8 +167,8 @@ public final class StaticFieldGrowingCollectionScenario {
       // 10/10 searches), so lateChunk's chain is rebuilt once per search generation regardless.
       // The seed chunk is held strongly by the static field, so the tracker's weak
       // representative ref stays live.
-      ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(LEAK_BUFFER_TEST_KLASS_ID,
-          LEAK_BUFFER.get(0));
+      ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
+          LEAK_BUFFER_TEST_KLASS_ID, LEAK_BUFFER.get(0));
       // Seed hysteresis-qualifying epochs so hasLeakSignal()/shouldRunPass() authorize the BFS
       // thread's first pass. Must precede the passesRun() wait below: a pass only runs once
       // shouldRunPass() sees a leak signal, so waiting first deadlocks. Per-(klass, tid) seeds
@@ -172,8 +176,10 @@ public final class StaticFieldGrowingCollectionScenario {
       // this thread allocates every LEAK_BUFFER chunk.
       leakTid = ReferenceChainTestHooks.getTid();
       for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
-        ReferenceChainTestHooks.seedKlassPopulationSample0(LEAK_BUFFER_TEST_KLASS_ID, epoch * 10, epoch);
-        ReferenceChainTestHooks.seedTidTrendSample0(LEAK_BUFFER_TEST_KLASS_ID, leakTid, epoch * 3, epoch);
+        ReferenceChainTestHooks.seedKlassPopulationSample0(
+            LEAK_BUFFER_TEST_KLASS_ID, epoch * 10, epoch);
+        ReferenceChainTestHooks.seedTidTrendSample0(
+            LEAK_BUFFER_TEST_KLASS_ID, leakTid, epoch * 3, epoch);
       }
       hysteresisEpoch = SEED_EPOCHS_FOR_HYSTERESIS;
     }
@@ -204,8 +210,10 @@ public final class StaticFieldGrowingCollectionScenario {
         elementDataField = ArrayList.class.getDeclaredField("elementData");
         elementDataField.setAccessible(true);
       } catch (ReflectiveOperationException | RuntimeException e) {
-        throw new IllegalStateException("cannot reach LEAK_BUFFER's backing ArrayList/elementData"
-            + " - run with --add-opens java.base/java.util=ALL-UNNAMED", e);
+        throw new IllegalStateException(
+            "cannot reach LEAK_BUFFER's backing ArrayList/elementData"
+                + " - run with --add-opens java.base/java.util=ALL-UNNAMED",
+            e);
       }
       // admitStaticFieldRoots() sweeps every loaded class - a cold external JVM's full
       // JUnit/JMC/Gradle-worker classpath (thousands of classes) can need several retries
@@ -218,8 +226,9 @@ public final class StaticFieldGrowingCollectionScenario {
       long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(45);
       boolean holdersExpanded = false;
       while (!holdersExpanded && System.nanoTime() < deadline) {
-        holdersExpanded = ReferenceChainTestHooks.referenceChainPassesRunForTest0() != initialPasses
-            && leakBufferHoldersExpanded(backingListField, elementDataField);
+        holdersExpanded =
+            ReferenceChainTestHooks.referenceChainPassesRunForTest0() != initialPasses
+                && leakBufferHoldersExpanded(backingListField, elementDataField);
         if (!holdersExpanded) {
           Thread.sleep(100);
         }
@@ -227,7 +236,9 @@ public final class StaticFieldGrowingCollectionScenario {
       if (!holdersExpanded) {
         throw new IllegalStateException(
             "LEAK_BUFFER's holders never all reached EXPANDED within 45s (passesRun="
-                + ReferenceChainTestHooks.referenceChainPassesRunForTest0() + ", initial=" + initialPasses
+                + ReferenceChainTestHooks.referenceChainPassesRunForTest0()
+                + ", initial="
+                + initialPasses
                 + ", frontier states [list, backing ArrayList, elementData]="
                 + describeHolderStates(backingListField, elementDataField)
                 + ") - cannot safely create the chunk this scenario is supposed to discover only "
@@ -239,7 +250,8 @@ public final class StaticFieldGrowingCollectionScenario {
     // Snapshotted right after the wait above confirms the holders are EXPANDED - any
     // later change (advance, or reset-to-lower via a restart) proves a walk that started strictly
     // after lateChunk existed.
-    int passesRunBeforeLateChunk = debugBuild ? ReferenceChainTestHooks.referenceChainPassesRunForTest0() : -1;
+    int passesRunBeforeLateChunk =
+        debugBuild ? ReferenceChainTestHooks.referenceChainPassesRunForTest0() : -1;
     // lateChunk is deliberately NOT held in a local: the main thread's stack is a root-walk root,
     // so a live local lets the root enumeration admit (and, once the canary candidate aliases to
     // byte[] and a GC runs tagLeakInstances(), leak-tag) lateChunk directly - the resulting
@@ -288,8 +300,8 @@ public final class StaticFieldGrowingCollectionScenario {
             LEAK_BUFFER_TEST_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
         ReferenceChainTestHooks.seedTidTrendSample0(
             LEAK_BUFFER_TEST_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
-        ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(LEAK_BUFFER_TEST_KLASS_ID,
-            LEAK_BUFFER.get(LATE_CHUNK_INDEX));
+        ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
+            LEAK_BUFFER_TEST_KLASS_ID, LEAK_BUFFER.get(LATE_CHUNK_INDEX));
         ReferenceChainTestHooks.pollReferenceChainTargets0();
 
         // Only TRUST a match once passesRun() has genuinely changed since the snapshot taken right
@@ -306,8 +318,9 @@ public final class StaticFieldGrowingCollectionScenario {
         // tag is read BEFORE dumping - the dump snapshots the same resolved-chain cache - and a
         // round where the current search has not resolved lateChunk's chain yet is skipped.
         if (ReferenceChainTestHooks.referenceChainPassesRunForTest0() != passesRunBeforeLateChunk) {
-          long lateChunkTargetTag = ReferenceChainTestHooks.getReferenceChainResolvedTargetTagForTest0(
-              LEAK_BUFFER.get(LATE_CHUNK_INDEX));
+          long lateChunkTargetTag =
+              ReferenceChainTestHooks.getReferenceChainResolvedTargetTagForTest0(
+                  LEAK_BUFFER.get(LATE_CHUNK_INDEX));
           if (lateChunkTargetTag != 0) {
             profiler.dump(scratchDumpPath);
             match = findMatch(scratchDumpPath, lateChunkTargetTag);
@@ -365,11 +378,12 @@ public final class StaticFieldGrowingCollectionScenario {
           attemptsOnWatchedChunk = 0;
         }
         attemptsOnWatchedChunk++;
-        ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(LEAK_BUFFER_TEST_KLASS_ID,
-            LEAK_BUFFER.get(watchedIndex));
+        ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
+            LEAK_BUFFER_TEST_KLASS_ID, LEAK_BUFFER.get(watchedIndex));
         ReferenceChainTestHooks.pollReferenceChainTargets0();
-        requiredTargetTag = ReferenceChainTestHooks.getReferenceChainResolvedTargetTagForTest0(
-            LEAK_BUFFER.get(watchedIndex));
+        requiredTargetTag =
+            ReferenceChainTestHooks.getReferenceChainResolvedTargetTagForTest0(
+                LEAK_BUFFER.get(watchedIndex));
         if (requiredTargetTag == 0) {
           continue;
         }
@@ -389,8 +403,8 @@ public final class StaticFieldGrowingCollectionScenario {
    * {@code requiredTargetTag == 0}: the first byte[] chain (class-only, non-debug builds).
    * Otherwise: only the byte[] chain whose targetTag identifies that one instance.
    */
-  private static ReferenceChainAssertions.ChainMatch findMatch(Path scratchDumpPath,
-      long requiredTargetTag) throws Exception {
+  private static ReferenceChainAssertions.ChainMatch findMatch(
+      Path scratchDumpPath, long requiredTargetTag) throws Exception {
     if (!Files.exists(scratchDumpPath)) {
       return null;
     }
@@ -406,8 +420,8 @@ public final class StaticFieldGrowingCollectionScenario {
   }
 
   /**
-   * Frontier states of LEAK_BUFFER, its backing ArrayList and that list's elementData array.
-   * The holders are fetched fresh on every call and never kept beyond it - a static field or a
+   * Frontier states of LEAK_BUFFER, its backing ArrayList and that list's elementData array. The
+   * holders are fetched fresh on every call and never kept beyond it - a static field or a
    * long-lived local would add a second root path to them.
    */
   private static int[] holderStates(Field backingListField, Field elementDataField)

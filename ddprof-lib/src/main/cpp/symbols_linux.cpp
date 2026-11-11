@@ -970,22 +970,26 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
     // to a small pointer that still compares <= end, walking off the image. The
     // `ent_size <= total_size - off` form keeps off <= total_size with no overflow.
     for (size_t off = 0; ent_size <= total_size - off; off += ent_size) {
-        ElfSymbol* sym = (ElfSymbol*)(symbols + off);
-        if (sym->st_name != 0 && sym->st_value != 0) {
+        // The section can start at any crafted file offset, so the entry address
+        // may violate Elf64_Sym's 8-byte alignment; copy the entry instead of
+        // aliasing mapped bytes through a typed pointer.
+        ElfSymbol entry;
+        memcpy(&entry, symbols + off, sizeof(entry));
+        if (entry.st_name != 0 && entry.st_value != 0) {
             // Resolve the name through the bounded string table; a bad st_name
             // offset (or unterminated string) drops the symbol instead of reading
             // out of bounds.
-            const char* sym_name = strAt(strings, strings_size, sym->st_name);
+            const char* sym_name = strAt(strings, strings_size, entry.st_name);
             if (sym_name == NULL) {
                 continue;
             }
             // Skip special AArch64 mapping symbols: $x and $d
-            if (sym->st_size != 0 || sym->st_info != 0 || sym_name[0] != '$') {
+            if (entry.st_size != 0 || entry.st_info != 0 || sym_name[0] != '$') {
                 const char* addr;
                 if (base != NULL) {
-                    // Check for overflow when adding sym->st_value to base
+                    // Check for overflow when adding entry.st_value to base
                     uintptr_t base_addr = (uintptr_t)base;
-                    uint64_t symbol_value = sym->st_value;
+                    uint64_t symbol_value = entry.st_value;
                     
                     // Skip this symbol if addition would overflow
                     // First check if symbol_value exceeds the address space
@@ -1000,9 +1004,9 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
                     // Perform addition using integer arithmetic to avoid pointer overflow
                     addr = (const char*)(base_addr + (uintptr_t)symbol_value);
                 } else {
-                    addr = (const char*)sym->st_value;
+                    addr = (const char*)entry.st_value;
                 }
-                _cc->add(addr, (int)sym->st_size, sym_name);
+                _cc->add(addr, (int)entry.st_size, sym_name);
             }
         }
     }

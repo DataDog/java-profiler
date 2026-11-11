@@ -25,7 +25,8 @@ fail() { TESTS=$((TESTS + 1)); FAILED=$((FAILED + 1)); echo "FAIL: $*" >&2; }
 # gh stub, logging each call to $GH_LOG: `pr list --head B` reports an open PR when
 # B is in $OPEN_PRS; `pr view <sel>` prints "$VIEW_HEAD $VIEW_OID $VIEW_BASE" unless
 # <sel> looks like a repo (or $VIEW_REPO is set and not passed as -R); `repo view`
-# prints $DEFAULT_BRANCH; $GH_FAIL fails all.
+# prints $DEFAULT_BRANCH; `api repos/<name>` prints the fork-network root, <name> unless
+# $NETWORK_ROOTS maps it ("name=root ..."), failing for $NAME_FAIL; $GH_FAIL fails all.
 mkdir -p "$TEMP_DIR/bin" "$TEMP_DIR/oldgit" "$TEMP_DIR/nogh"
 cat > "$TEMP_DIR/bin/gh" <<'EOF'
 #!/bin/sh
@@ -37,6 +38,10 @@ case "$1 $2" in
   "pr view") case "$3" in */*) exit 1 ;; esac
              [ -z "$VIEW_REPO" ] || case " $* " in *" -R $VIEW_REPO "*) ;; *) exit 1 ;; esac
              [ -n "$VIEW_HEAD" ] && echo "$VIEW_HEAD $VIEW_OID $VIEW_BASE" && exit 0; exit 1 ;;
+  "api repos/"*) name=${2#repos/}
+                 [ "$name" = "$NAME_FAIL" ] && exit 1
+                 for pair in $NETWORK_ROOTS; do [ "${pair%%=*}" = "$name" ] && name=${pair#*=}; done
+                 echo "$name"; exit 0 ;;
   "repo view") [ -n "$DEFAULT_BRANCH" ] && echo "$DEFAULT_BRANCH" && exit 0; exit 1 ;;
 esac
 exit 1
@@ -53,7 +58,7 @@ done
 # gh that cannot be executed, for the pre-push OSError fail-open path.
 printf '#!/bin/sh\n' > "$TEMP_DIR/nogh/gh" && chmod -x "$TEMP_DIR/nogh/gh"
 export PATH="$TEMP_DIR/bin:$PATH" GH_LOG="$TEMP_DIR/gh.log"
-export OPEN_PRS="" VIEW_HEAD="" VIEW_OID="" VIEW_BASE="" VIEW_REPO="" GH_FAIL="" DEFAULT_BRANCH=""
+export OPEN_PRS="" VIEW_HEAD="" VIEW_OID="" VIEW_BASE="" VIEW_REPO="" GH_FAIL="" DEFAULT_BRANCH="" NAME_FAIL="" NETWORK_ROOTS=""
 
 # Repo whose origin/main carries the gate scripts (in a second commit, $PRE_GATE being
 # the first) and a feature branch holding one commit.
@@ -355,6 +360,100 @@ expect "hook blocks pushd" 2 "another checkout" hook "pushd ../h-wt && gh pr cre
 expect "hook blocks GIT_DIR" 2 "another checkout" hook "GIT_DIR=../x/.git gh pr create"
 expect "hook blocks env -C" 2 "another checkout" hook "env -C ../h-wt gh pr create"
 expect "hook blocks env --chdir" 2 "another checkout" hook "env --chdir=../h-wt gh pr create --fill"
+# A plain gh pr call that certainly targets another repository is not this repo's policy.
+expect "hook gates --repo while a remote is not on GitHub" 2 "$STALE_MSG" \
+  hook "gh pr create --repo DataDog/speedlab --fill"
+git remote set-url origin https://github.com/DataDog/java-profiler.git
+expect "hook allows --repo naming another repository" 0 "" \
+  hook "gh pr create --repo DataDog/speedlab --head topic --fill"
+expect "hook allows -R before pr naming another repository" 0 "" hook "gh -R DataDog/speedlab pr ready 105"
+expect "hook allows ready by another repository's PR URL" 0 "" \
+  hook "gh pr ready https://github.com/DataDog/speedlab/pull/105"
+expect "hook gates --repo naming this repository" 2 "$STALE_MSG" hook "gh pr create --repo datadog/JAVA-profiler --fill"
+expect "hook gates a repository spelled other than OWNER/REPO" 2 "$STALE_MSG" \
+  hook "gh pr create --repo github.com/DataDog/speedlab --fill"
+expect "hook gates -R of an earlier command" 2 "$STALE_MSG" \
+  hook "gh repo view -R DataDog/speedlab && gh pr create --fill"
+expect "hook gates two repository flags" 2 "$STALE_MSG" \
+  hook "gh pr create -R DataDog/speedlab -R DataDog/java-profiler --fill"
+expect "hook gates an attached -R value" 2 "$STALE_MSG" \
+  hook "gh pr create --title -RDataDog/speedlab --body x"
+expect "hook does not read another flag's value as -R" 2 "$STALE_MSG" \
+  hook "gh pr create --title -R DataDog/speedlab --fill"
+expect "hook gates -R split off by carriage returns" 2 "$STALE_MSG" \
+  hook "$(printf 'gh pr create --title=x\r-R\rDataDog/speedlab --fill')"
+expect "hook gates -R split off by backslash-newlines" 2 "$STALE_MSG" \
+  hook "$(printf 'gh pr create --title=x\\\n-R\\\nDataDog/speedlab --fill')"
+NETWORK_ROOTS="datadog/old-profiler=datadog/java-profiler" \
+  expect "hook gates a renamed name of this repository" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/old-profiler --head topic --fill"
+GH_FAIL=1 expect "hook gates another repository it cannot resolve" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/speedlab --head topic --fill"
+NAME_FAIL=datadog/java-profiler expect "hook gates when a remote cannot be resolved" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/speedlab --head topic --fill"
+expect "hook gates a quoted --" 2 "cannot resolve the PR" hook "gh pr ready --repo DataDog/speedlab \"--\" 105"
+expect "hook gates a short-flag cluster" 2 "$STALE_MSG" hook "gh pr create -dt -RDataDog/speedlab --body x"
+expect "hook gates -R in a comment" 2 "$STALE_MSG" hook "gh pr create --fill # -R DataDog/speedlab"
+expect "hook gates -R as a redirection target" 2 "$STALE_MSG" \
+  hook "gh pr create --fill -R DataDog/speedlab 2> -RDataDog/x"
+expect "hook gates a process substitution" 2 "cannot resolve the PR" \
+  hook "gh pr ready https://github.com/DataDog/speedlab/pull/1 <(gh pr create --fill)"
+expect "hook gates GH_REPO" 2 "$STALE_MSG" hook "GH_REPO=DataDog/speedlab gh pr create --fill"
+expect "hook gates a variable" 2 "$STALE_MSG" hook 'gh pr create --repo $REPO --fill'
+expect "hook gates a scheme-less PR URL" 2 "cannot resolve the PR" \
+  hook "gh pr ready github.com/DataDog/speedlab/pull/1"
+expect "hook gates this repository's PR URL despite -R" 2 "cannot resolve the PR" \
+  hook "gh -R DataDog/speedlab pr ready https://github.com/DataDog/java-profiler/pull/9"
+expect "hook gates this repository's command next to another's" 2 "cannot resolve the PR" \
+  hook "gh pr ready 1 --repo DataDog/speedlab && gh pr create --fill"
+expect "hook still blocks a cd into another repository" 2 "another checkout" \
+  hook "cd $TEMP_DIR/elsewhere && gh pr create --repo DataDog/speedlab --fill"
+git remote set-url origin https://github.com/someone/java-profiler.git
+expect "hook gates upstream from a fork checkout" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/java-profiler --head someone:topic --fill"
+git remote set-url origin https://github.com/someone/my-fork.git
+NETWORK_ROOTS="someone/my-fork=datadog/java-profiler" \
+  expect "hook gates upstream from a differently named fork" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/java-profiler --head someone:topic --fill"
+NETWORK_ROOTS="someone/my-fork=datadog/java-profiler" \
+  expect "hook gates upstream's PR URL from a differently named fork" 2 "cannot resolve the PR" \
+  hook "gh pr ready https://github.com/DataDog/java-profiler/pull/9"
+git remote set-url origin https://github.com/someone/fork-of-fork.git
+NETWORK_ROOTS="someone/fork-of-fork=datadog/java-profiler" \
+  expect "hook gates upstream from a fork of a fork" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/java-profiler --head someone:topic --fill"
+git remote set-url origin https://github.com/acme/widget.git
+git config url.https://github.com/DataDog/java-profiler.git.insteadOf https://github.com/acme/widget.git
+expect "hook judges the URL git uses after insteadOf" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/java-profiler --head topic --fill"
+git config --unset url.https://github.com/DataDog/java-profiler.git.insteadOf
+git config remote.origin.pushurl https://github.com/DataDog/java-profiler.git
+expect "hook judges push URLs" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/java-profiler --head topic --fill"
+git config --unset remote.origin.pushurl
+git config --add remote.origin.url https://github.com/DataDog/java-profiler.git
+expect "hook judges every fetch URL" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/java-profiler --head topic --fill"
+git config --unset remote.origin.url https://github.com/DataDog/java-profiler.git
+git config url.https://github.com/DataDog/java-profiler.git.pushInsteadOf https://github.com/acme/widget.git
+expect "hook judges the push URL after pushInsteadOf" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/java-profiler --head topic --fill"
+git config --unset url.https://github.com/DataDog/java-profiler.git.pushInsteadOf
+expect "hook gates DataDog/java-profiler from a mirror-only checkout" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/java-profiler --head topic --fill"
+NETWORK_ROOTS="datadog/jp-renamed=datadog/java-profiler" \
+  expect "hook gates this repository's network from a mirror-only checkout" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/jp-renamed --head topic --fill"
+expect "hook gates an empty quoted argument" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/speedlab --head topic --title \"\" --fill"
+expect "hook gates an unknown flag" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/speedlab --head topic --no-maintainer-edit --fill"
+git remote set-url origin git@github-work:DataDog/java-profiler.git
+git remote add other https://github.com/someone/elsewhere.git
+expect "hook gates when a remote URL is not plainly GitHub's" 2 "--head names a branch" \
+  hook "gh pr create --repo DataDog/java-profiler --head topic --fill"
+git remote remove other
+git remote set-url origin "$TEMP_DIR/h-origin.git"
 expect "hook joins continuation inside gh pr" 2 "$STALE_MSG" hook "$(printf 'gh pr \\\n  create --fill')"
 expect "hook joins continuation after gh" 2 "$STALE_MSG" hook "$(printf 'gh \\\n  pr create --fill')"
 mkdir -p ../h-wt/sub

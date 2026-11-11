@@ -12,21 +12,21 @@ package com.datadoghq.profiler.chaos;
 import java.time.Duration;
 
 /**
- * A long-running workload that deliberately exercises a profiler failure surface
- * (thread teardown vs. signal, classloader unloading mid-walk, dlclose during
- * symbol resolution, calltrace storage contention, ...).
+ * A long-running workload that deliberately exercises a profiler failure surface (thread teardown
+ * vs. signal, classloader unloading mid-walk, dlclose during symbol resolution, calltrace storage
+ * contention, ...).
  *
- * <p>Implementations must be safe to start, run for an arbitrary duration, and
- * shut down on demand. They are NOT measured — the only failure signal is a JVM
- * crash (the harness exits non-zero via SIGSEGV/SIGABRT propagation).
+ * <p>Implementations must be safe to start, run for an arbitrary duration, and shut down on demand.
+ * They are NOT measured — the only failure signal is a JVM crash (the harness exits non-zero via
+ * SIGSEGV/SIGABRT propagation).
  */
 public interface Antagonist {
 
-    String name();
+  String name();
 
-    /** Spawn driver threads. Must return promptly. */
-    void start();
+  /** Spawn driver threads. Must return promptly. */
+  void start();
 
-    /** Signal driver threads to stop and wait up to {@code timeout}. */
-    void stopGracefully(Duration timeout);
+  /** Signal driver threads to stop and wait up to {@code timeout}. */
+  void stopGracefully(Duration timeout);
 }

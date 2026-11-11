@@ -1,3 +1,4 @@
+// Copyright 2026, Datadog, Inc
 #ifdef __linux__
 
 #include <gmock/gmock.h>
@@ -52,16 +53,41 @@ public:
 // Install global crash handler for all tests in this file
 static ElfParserGlobalSetup global_setup;
 
-TEST(Elf, readSymTable) {
-    char cwd[PATH_MAX - 64];
-    if (getcwd(cwd, sizeof(cwd)) == nullptr) {
-        exit(1);    
+// CodeCacheArray is process-lifetime storage with no destructor (the global
+// production array is never freed); a test-local array must delete its caches
+// explicitly or LeakSanitizer flags every parsed library.
+static void drainCodeCacheArray(CodeCacheArray& array) {
+    for (int i = 0; i < array.count(); ++i) {
+        delete array.at(i);
     }
+}
+
+// Resolve a path under ddprof-lib/build/test/resources. The Gradle test task
+// runs from the build directory, but the GitLab runner invokes binaries from
+// the repo root, so a cwd-based lookup misses there; derive it from the
+// executable, which is always three levels under ddprof-lib/build.
+static bool findTestResource(const char* relative, char* out, size_t outSize) {
+    char exe[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    // readlink truncates silently at the buffer bound; a truncated path could
+    // still resolve to a wrong existing directory, so refuse it.
+    if (len <= 0 || (size_t)len >= sizeof(exe) - 1) {
+        return false;
+    }
+    exe[len] = '\0';
+    char* slash = strrchr(exe, '/');
+    if (slash == nullptr) {
+        return false;
+    }
+    *slash = '\0';
+    int written = snprintf(out, outSize, "%s/../../../test/resources/%s", exe, relative);
+    return written > 0 && (size_t)written < outSize && access(out, R_OK) == 0;
+}
+
+TEST(Elf, readSymTable) {
     char path[PATH_MAX];
-    snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/native-libs/unresolved-functions/main", cwd);
-    if (access(path, R_OK) != 0) {
-        fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
-        exit(0);
+    if (!findTestResource("native-libs/unresolved-functions/main", path, sizeof(path))) {
+        GTEST_SKIP() << "Missing test resource native-libs/unresolved-functions/main";
     }
     CodeCache cc("test");
     ElfParser::parseFile(&cc, nullptr, path, false);
@@ -74,15 +100,9 @@ class ElfReladyn : public ::testing::Test {
 
     // This method is called before each test.
     void SetUp() override {
-        char cwd[PATH_MAX - 64];
-        if (getcwd(cwd, sizeof(cwd)) == nullptr) {
-            exit(1);
-        }
         char path[PATH_MAX];
-        snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/native-libs/reladyn-lib/libreladyn.so", cwd);
-        if (access(path, R_OK) != 0) {
-            fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
-            exit(0);
+        if (!findTestResource("native-libs/reladyn-lib/libreladyn.so", path, sizeof(path))) {
+            GTEST_SKIP() << "Missing test resource native-libs/reladyn-lib/libreladyn.so";
         }
         void* handle = dlopen(path, RTLD_NOW);
         ASSERT_THAT(handle, ::testing::NotNull());
@@ -169,6 +189,7 @@ TEST_F(ElfTest, invalidElf) {
 
     // Call the parsing function with the invalid ELF mapping
     Symbols::parseLibraries(&cc_array, false);
+    drainCodeCacheArray(cc_array);
 
     munmap(addr, 4096);
     unlink("/tmp/invalid_elf");
@@ -197,6 +218,7 @@ TEST_F(ElfTest, nonElfFile) {
 
     // Call the parsing function with the non-ELF mapping
     Symbols::parseLibraries(&cc_array, false);
+    drainCodeCacheArray(cc_array);
 
     // we could add checks here, though I am mainly relying on asan to crash
     // if something is wrong
@@ -225,6 +247,7 @@ TEST_F(ElfTest, invalidElfSmallMapping) {
 
     // Call the parsing function with the small invalid ELF mapping
     Symbols::parseLibraries(&cc_array, false);
+    drainCodeCacheArray(cc_array);
 
     munmap(addr, 16);
     unlink("/tmp/invalid_elf_small");
@@ -252,6 +275,7 @@ TEST_F(ElfTest, nonElfFileSmallMapping) {
 
     // Call the parsing function with the small non-ELF mapping
     Symbols::parseLibraries(&cc_array, false);
+    drainCodeCacheArray(cc_array);
     munmap(addr, contentSize);
     unlink("/tmp/non_elf_small");
 }
@@ -306,6 +330,7 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
 
     // Call the parsing function in the main thread
     Symbols::parseLibraries(&cc_array, false);
+    drainCodeCacheArray(cc_array);
 
     // Join the unmapper thread to ensure it has finished
     unmapper.join();
@@ -319,25 +344,18 @@ INSTANTIATE_TEST_SUITE_P(
 
 #else
 TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
-    char cwd[PATH_MAX - 64];
-    if (getcwd(cwd, sizeof(cwd)) == nullptr) {
-        exit(1);
+    char path[PATH_MAX];
+    if (!findTestResource("native-libs/small-lib/libsmall-lib.so", path, sizeof(path))) {
+        GTEST_SKIP() << "Missing test resource native-libs/small-lib/libsmall-lib.so";
     }
 
     // Configure logging (assuming Log is defined elsewhere)
     Log::open("stderr", "WARN");
 
-    // Construct the path to the test resource
-    char path[PATH_MAX];
-    snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/native-libs/small-lib/libsmall-lib.so", cwd);
-    if (access(path, R_OK) != 0) {
-        fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
-        exit(1);
-    }
     void* handle = dlopen(path, RTLD_NOW);
     if (!handle) {
-        fprintf(stderr, "dlopen failed: %s\n", dlerror());
-        exit(1);
+        ADD_FAILURE() << "dlopen failed: " << dlerror();
+        return;
     }
 
     CodeCacheArray cc_array;
@@ -353,6 +371,7 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
 
     // Call the parsing function in the main thread, this is where we can crash
     Symbols::parseLibraries(&cc_array, false);
+    drainCodeCacheArray(cc_array);
     unmapper.join();
 }
 

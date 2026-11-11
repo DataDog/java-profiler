@@ -7,21 +7,21 @@ package com.datadoghq.profiler;
 
 /** Test bridge for package-scoped owned blocking hooks. */
 public final class ProfilerOwnedBlockHooks {
-    private ProfilerOwnedBlockHooks() {}
+  private ProfilerOwnedBlockHooks() {}
 
-    public static void parkEnter(JavaProfiler profiler) {
-        profiler.parkEnter();
-    }
+  public static void parkEnter(JavaProfiler profiler) {
+    profiler.parkEnter();
+  }
 
-    public static void parkExit(JavaProfiler profiler, long blocker, long unblockingSpanId) {
-        profiler.parkExit(blocker, unblockingSpanId);
-    }
+  public static void parkExit(JavaProfiler profiler, long blocker, long unblockingSpanId) {
+    profiler.parkExit(blocker, unblockingSpanId);
+  }
 
-    public static long blockEnter(JavaProfiler profiler, int state) {
-        return profiler.blockEnter(state);
-    }
+  public static long blockEnter(JavaProfiler profiler, int state) {
+    return profiler.blockEnter(state);
+  }
 
-    public static void blockExit(JavaProfiler profiler, long token) {
-        profiler.blockExit(token);
-    }
+  public static void blockExit(JavaProfiler profiler, long token) {
+    profiler.blockExit(token);
+  }
 }

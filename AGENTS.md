@@ -39,6 +39,11 @@ analyses. Procedures run at a known moment go in skills (`.agents/skills/`, whic
 load fresh when invoked); enforcement goes in scripts, hooks and CI — text here is
 advisory and cannot gate anything. Rules stay inline even when needed only once per
 task if that moment is end-of-task and no skill carries them.
+This layering and the work-tracking process follow the Datadog AI Native SDLC Playbook,
+a Datadog-internal Confluence page. Read it only when planning tracked work, changing
+the process, or changing the agent configuration (`AGENTS.md`, `.agents/skills/`,
+`.claude/`, `.pi/`, `.githooks/`). Agents find it with the Atlassian Confluence tools
+by its title; without Datadog access, skip it.
 Skipping a linked page silently is forbidden: if you touched code covered by a
 `doc/` page you did not read (context pressure, time), you MUST disclose it in the
 task summary with an explicit `SUBSYSTEM DOC NOT READ: <path>` line — the user,
@@ -105,6 +110,9 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   `tasks --all`. Do not use the bare `assemble` task.
 - Single Java test: `-Ptests=ClassName` / `-Ptests=ClassName.methodName` / `-Ptests="*.Pattern"`
   — unified across glibc, macOS and musl platforms.
+- Flaky native gtests: the Tier 1 GitLab jobs gate through `ddprof-test/quarantine.txt`
+  with cell `glibc-<config>-<arch>` (see [doc/building/TestingGuide.md](doc/building/TestingGuide.md),
+  Tier 1) — a flaky gtest gets an entry with a PROF ticket, same as the Java cells.
 - Useful properties: `-Pskip-native`, `-Pskip-tests`, `-Pskip-gtest`, `-PkeepJFRs`,
   `-PenableFaultInjection`, `-PenableSamplerPerf` (the last two only affect
   release/debug builds). There is **no** `-Pskip-debug-extraction` property: debug-symbol
@@ -136,7 +144,7 @@ Details and troubleshooting:
 [build-logic/README.md](build-logic/README.md),
 [doc/building/NativeBuildPlugin.md](doc/building/NativeBuildPlugin.md) (task DSL, debug-symbol
 extraction, artifact layout),
-[doc/building/BuildSystemGuide.md](doc/building/BuildSystemGuide.md),
+[doc/building/BuildSystemGuide.md](doc/building/BuildSystemGuide.md) (Java formatting and convention-test CI),
 [doc/building/Versioning.md](doc/building/Versioning.md) (version from git tags),
 [doc/building/JdkUpgrades.md](doc/building/JdkUpgrades.md) (JDK upgrade touchpoints).
 
@@ -364,11 +372,10 @@ exception list.
 ## Development Guidelines
 
 - Never replace the code you work on with stubs. Never "fix" tests by testing constants
-  against constants. Never claim success until all affected tests pass: `testDebug` for
-  Java-visible behaviour, `:ddprof-lib:gtestDebug` for C++. For changes to
-  signal-handler paths, atomics, crash protection or thread lifecycle, also run the ASan
-  configuration where available (`gtestAsan`, `testAsan`) and, without arm64 hardware,
-  the aarch64 container (`./utils/run-containers-tests.sh --arch=aarch64`).
+  against constants. Never claim success until all affected tests pass; before claiming
+  it, load the `verify-profiler-change` skill
+  ([.agents/skills/verify-profiler-change/SKILL.md](.agents/skills/verify-profiler-change/SKILL.md)),
+  which says which builds and tests each kind of change needs.
   `assert()` is compiled out of release builds (`-DNDEBUG`): never rely on it for safety
   and never put side effects in it.
 - Platform-specific code goes in per-OS implementation files (`os_linux.cpp`,
@@ -420,10 +427,6 @@ exception list.
   not add code with no production caller (stage it in the PR that needs it), and do not
   delete passing tests without stating why. When a change alters behavior described in
   `doc/` or in comments, update those in the same PR.
-- Before requesting review, self-check the diff for unused variables, unused or duplicated
-  macros, dead code (methods, JNI entry points, fields, no-op functions, empty files left
-  without callers; test-only helpers stay only if marked as such) and misspelled
-  identifiers/comments.
 - C/C++ style: match the surrounding indentation and spacing exactly; don't split inline
   logic into helpers unless reused or genuinely hard to follow; extract code that appears a
   second time (e.g. in copy constructors, assignment operators) into one shared helper; use
@@ -514,13 +517,14 @@ No pull request is opened, marked ready, or updated with fixes until an agentic 
 review of the full change set has completed and its Critical/High findings are fixed
 or explicitly waived by the user. Run the `pre-pr-review` skill
 ([.agents/skills/pre-pr-review/SKILL.md](.agents/skills/pre-pr-review/SKILL.md)): it
-picks the reviewer, adds the judgment checks no tool can make (comment budget, no
-plan/spec references), and records the result with `utils/review-marker.py`. If the
+picks the reviewer and effort within a review budget, adds the self-checks (dead code,
+misspellings, comment budget, no plan/spec references), and records the result with
+`utils/review-marker.py`. If the
 harness has no review capability, say so and get explicit user sign-off — never
 silently skip it. While the marker is stale, `.githooks/pre-push` refuses pushes to
 a branch with an open PR (install with `utils/review-marker.py install-hook`, never
 via `core.hooksPath`), and in Claude Code and Pi (`.pi/extensions/`) the
-`require-fresh-review` hook blocks `gh pr create`/`gh pr ready`.
+`require-fresh-review` hook blocks `gh pr create`/`gh pr ready` for this repository.
 
 ## Pull Request Descriptions, Comments and Commits
 
@@ -530,19 +534,10 @@ Jira comment or a commit message, load the `pr-writing` skill
 
 ## CI / Automation Script Changes
 
-- Before rewriting or replacing a script invoked from `.gitlab-ci.yml`, `.gitlab/**/*.yml`,
-  `.github/workflows/*.yml`, or any CI job, run `git log -p -- <script>` (or diff against the
-  version being replaced) and enumerate every behavior branch it has — fallbacks,
-  env-var-driven paths, error exits. Preserve all of them unless explicitly asked to drop
-  one; do not silently narrow behavior while refactoring.
-- Grep the calling CI files for how the script is invoked (env vars set, exit codes expected)
-  and confirm the rewrite still satisfies every caller, not just the common/local case.
-- When removing an item from a default list or config (an antagonist, a test tag, a feature
-  flag) or deleting a script or file, grep the whole repo (including `.gitlab/**`) and cite
-  the exact file/line proving it is inert or unused in that context before removing it —
-  never remove based on assumption alone.
-- After changing a CI-invoked script, run a syntax check (e.g. `bash -n <script>`) and trace
-  through each CI job that calls it before considering the change complete.
+Before editing CI configuration (`.gitlab-ci.yml`, `.gitlab/**`, `.github/**`) or a
+script that CI, Gradle or a hook runs, and before deleting any tracked file or removing an
+entry from a default list or config, load the `ci-script-change` skill
+([.agents/skills/ci-script-change/SKILL.md](.agents/skills/ci-script-change/SKILL.md)).
 
 ## Documentation Rules
 

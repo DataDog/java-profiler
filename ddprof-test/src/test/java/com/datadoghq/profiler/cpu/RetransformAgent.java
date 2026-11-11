@@ -12,18 +12,18 @@ import java.lang.instrument.Instrumentation;
  * hands out the {@link Instrumentation} instance.
  */
 public final class RetransformAgent {
-    /** Set by {@link #agentmain} once the agent has been loaded. */
-    public static volatile Instrumentation instrumentation;
+  /** Set by {@link #agentmain} once the agent has been loaded. */
+  public static volatile Instrumentation instrumentation;
 
-    private RetransformAgent() {}
+  private RetransformAgent() {}
 
-    /**
-     * Agent entry point for dynamic loading.
-     *
-     * @param args ignored
-     * @param inst the instrumentation instance of this JVM
-     */
-    public static void agentmain(String args, Instrumentation inst) {
-        instrumentation = inst;
-    }
+  /**
+   * Agent entry point for dynamic loading.
+   *
+   * @param args ignored
+   * @param inst the instrumentation instance of this JVM
+   */
+  public static void agentmain(String args, Instrumentation inst) {
+    instrumentation = inst;
+  }
 }
