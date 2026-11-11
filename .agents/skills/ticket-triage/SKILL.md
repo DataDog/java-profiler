@@ -19,14 +19,14 @@ report about behavior as an unverified claim.
    behavior: `confirmed`, `partially applicable`, `stale` or `uncertain`. Cite the source
    paths and symbols behind the decision. Keep observed facts, inferences and open
    questions apart. Without a reproducer run, say that the classification comes from
-   reading the code only.
+   reading the code only, and lower your stated confidence in step 6 to match.
 
 4. **Reproducer.** Propose the smallest reproducer that proves or disproves the report:
    prerequisites, exact steps, expected and actual results. The `verify-profiler-change`
    skill names the builds and tests for the code concerned. Ask the user before you edit
-   a file or run a build or the reproducer. If the user approves, note `git status`
-   first, record the exact commands and results, and afterwards remove only the new
-   paths, unless the user wants to keep them.
+   a file or run a build or the reproducer. If the user approves, run it in a throwaway
+   worktree, record the exact commands and results, and remove the worktree afterwards,
+   unless the user wants to keep it.
 
 5. **Summary.** Name the likely affected code, its constraints, dependencies and risks,
    and the next steps. Do not implement a fix or commit without the user's separate
@@ -37,4 +37,5 @@ report about behavior as an unverified claim.
    priority. Do not set the priority field; the user decides.
 
 Post the result on the ticket only when the user asks. The comment follows the
-`ticket-writing` skill; a reproducer that did not run is `blocked` in its evidence table.
+`ticket-writing` skill. Its evidence table holds the reproducer with its commands and
+results, or as `blocked` if it did not run.
