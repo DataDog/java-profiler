@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk25
 
 ## glibc-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-11-11 06:07:51 EST
+**Date:** 2026-11-11 06:24:51 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 30 |
-| CPU Cores (end) | 30 |
+| CPU Cores (start) | 93 |
+| CPU Cores (end) | 90 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: glibc-x64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 506 |
-| Sample Rate | 8.43/sec |
-| Health Score | 527% |
-| Threads | 10 |
-| Allocations | 494 |
+| CPU Samples | 464 |
+| Sample Rate | 7.73/sec |
+| Health Score | 483% |
+| Threads | 11 |
+| Allocations | 524 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 30-30 cores)</summary>
+<summary>CPU Timeline (2 unique values: 90-93 cores)</summary>
 
 ```
-1794395012 30
-1794395017 30
-1794395022 30
-1794395027 30
-1794395032 30
-1794395037 30
-1794395042 30
-1794395047 30
-1794395052 30
-1794395057 30
-1794395062 30
-1794395067 30
-1794395072 30
-1794395077 30
-1794395082 30
-1794395087 30
-1794395092 30
-1794395097 30
-1794395102 30
-1794395107 30
+1794395974 93
+1794395979 93
+1794395984 90
+1794395989 90
+1794395994 90
+1794395999 90
+1794396004 90
+1794396009 90
+1794396014 90
+1794396019 90
+1794396024 90
+1794396029 90
+1794396034 90
+1794396039 90
+1794396044 90
+1794396049 90
+1794396054 90
+1794396059 90
+1794396064 90
+1794396069 90
 ```
 </details>
 
