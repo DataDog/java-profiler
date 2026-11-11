@@ -89,7 +89,10 @@ TEST_F(ReferenceChainsBfsTest, ContainerAnchorLeapsQueueAcrossLargeIndex) {
     ASSERT_FALSE(tracker->start(args));
     FrontierTable *frontier = tracker->frontierTable();
 
-    constexpr int kAnchorCount = 28000;
+    // Large-but-capped index (the durable share caps at 8192): containers only at positions
+    // 5000..5003 - outside the fresh queue's last-1024-admissions window (tags 6076..7099) and
+    // buried behind ~6k other-tier anchors under any admission-order cursor.
+    constexpr int kAnchorCount = 7000;
     for (int i = 0; i < kAnchorCount; i++) {
         jlong tag = 100 + i;
         jlong class_tag = 500000 + i;
@@ -98,9 +101,7 @@ TEST_F(ReferenceChainsBfsTest, ContainerAnchorLeapsQueueAcrossLargeIndex) {
             JVMTI_HEAP_REFERENCE_STATIC_FIELD));
         ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
             tag, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
-        // Containers only at late positions 24000..24003 - buried behind 24k other-tier anchors
-        // under any admission-order cursor.
-        bool container = (i >= 24000 && i <= 24003);
+        bool container = (i >= 5000 && i <= 5003);
         ReferenceChainsTestAccessor::primeClassShapeForTest(class_tag,
                                                              container);
     }
@@ -119,12 +120,12 @@ TEST_F(ReferenceChainsBfsTest, ContainerAnchorLeapsQueueAcrossLargeIndex) {
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
             16);
     ASSERT_EQ(16u, selected.size())
-        << "28k+5 eligible anchors at a 16 budget must fill the selection";
+        << "7000+1 eligible anchors at a 16 budget must fill the selection";
     EXPECT_EQ(leak_anchor, selected[0])
         << "the leak-tagged anchor (tier 0) must lead the walk order";
-    // The four container anchors are selected in this FIRST call despite positions 24000+ (tags
-    // 24100-24103).
-    for (jlong t : {24100, 24101, 24102, 24103}) {
+    // The four container anchors are selected in this FIRST call despite positions 5000+ (tags
+    // 5100-5103) - outside the fresh queue's window, so only the container tier can pick them.
+    for (jlong t : {5100, 5101, 5102, 5103}) {
         EXPECT_NE(std::find(selected.begin(), selected.end(), t), selected.end())
             << "container anchor " << t
             << " did not leap the other-tier queue";
@@ -979,6 +980,160 @@ TEST_F(ReferenceChainsBfsTest, DurableRootUpgradeReleasesLocalAnchorSlot) {
     ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
     ReferenceChainsTestAccessor::restartSearchForTest();
     EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexIsEmptyForTest());
+
+    tracker->stop();
+}
+
+// The durable share of the anchor index is capped: the admission that pushes it past
+// DURABLE_ANCHOR_INDEX_CAP evicts the oldest durable entries down to cap - DURABLE_ANCHOR_EVICT_BATCH,
+// dropping them from the index, the dedup set and the fresh queue, and keeping the parallel
+// class-tag vector length-consistent. Dead evicted anchors are never re-reported; live ones are
+// (covered by EvictedDurableAnchorIsReadmittedByRootEnumeration below).
+TEST_F(ReferenceChainsBfsTest, DurableAnchorIndexIsCappedAndEvictsOldest) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const size_t batch = ReferenceChainsTestAccessor::kDurableAnchorEvictBatch;
+    const jlong first_tag = 1001;
+    // The (cap+1)-th admission crosses the cap and evicts overflow + batch oldest entries.
+    for (size_t i = 0; i <= cap; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            first_tag + (jlong)i, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    EXPECT_EQ(cap - batch, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(cap - batch,
+              ReferenceChainsTestAccessor::anchorOwnClassTagsSizeForTest());
+    EXPECT_EQ(cap - batch,
+              ReferenceChainsTestAccessor::durableAnchorCountForTest());
+    for (size_t i = 0; i < batch + 1; i++) {
+        EXPECT_FALSE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(
+            first_tag + (jlong)i))
+            << "oldest entry " << i << " should be evicted";
+    }
+    EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(
+        first_tag + (jlong)(batch + 1)));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(
+        first_tag + (jlong)cap));
+    // The fresh queue drops every evicted tag and keeps recently admitted survivors.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        first_tag));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        first_tag + (jlong)cap));
+    EXPECT_LE(ReferenceChainsTestAccessor::freshAnchorQueueSizeForTest(), 1024u);
+
+    tracker->stop();
+}
+
+// FIFO eviction walks index positions but never takes a local-share slot: the local cap and its
+// compaction are owned by noteLocalRootHolder()/compactLocalAnchors(), so a local holder sitting at
+// the oldest positions survives a durable-share eviction untouched.
+TEST_F(ReferenceChainsBfsTest, DurableAnchorEvictionSparesLocalShare) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const jlong kContainer = -501;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kContainer, true);
+    const size_t kLocals = 4;
+    // Admitted first, so they occupy the oldest index positions.
+    for (size_t i = 0; i < kLocals; i++) {
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(500 + (jlong)i,
+                                                                kContainer);
+    }
+    ASSERT_EQ(kLocals,
+              ReferenceChainsTestAccessor::localAnchorCountForTest());
+    const jlong first_durable = 2001;
+    for (size_t i = 0; i <= cap; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            first_durable + (jlong)i, -900,
+            JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    }
+    EXPECT_EQ(kLocals,
+              ReferenceChainsTestAccessor::localAnchorCountForTest());
+    for (size_t i = 0; i < kLocals; i++) {
+        EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(
+            500 + (jlong)i))
+            << "local holder " << i << " must survive durable eviction";
+    }
+    // The durable share alone sits at cap - batch after the eviction.
+    EXPECT_EQ(cap - ReferenceChainsTestAccessor::kDurableAnchorEvictBatch,
+              ReferenceChainsTestAccessor::durableAnchorCountForTest());
+
+    tracker->stop();
+}
+
+// An evicted anchor that is still root-attached is re-reported by the next root enumeration and
+// re-admitted (fresh lane); the readmission lands at the back of the index.
+TEST_F(ReferenceChainsBfsTest, EvictedDurableAnchorIsReadmittedByRootEnumeration) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const size_t batch = ReferenceChainsTestAccessor::kDurableAnchorEvictBatch;
+    const jlong first_tag = 3001;
+    for (size_t i = 0; i <= cap; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            first_tag + (jlong)i, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    const jlong evicted = first_tag; // oldest position, evicted by the crossing admission
+    ASSERT_FALSE(
+        ReferenceChainsTestAccessor::anchorIndexContainsForTest(evicted));
+    const size_t size_before = ReferenceChainsTestAccessor::anchorIndexSizeForTest();
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        evicted, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(evicted));
+    EXPECT_EQ(size_before + 1,
+              ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(evicted,
+              ReferenceChainsTestAccessor::anchorIndexTagForTest(
+                  size_before)); // readmitted at the back
+
+    tracker->stop();
+}
+
+// A local-to-durable upgrade grows the durable share without an index push (the dedup in
+// indexAnchorForRotation() returns early), so only addToStaticAnchorIndex()'s own eviction call
+// can reclaim the share when the upgrade itself crosses the cap.
+TEST_F(ReferenceChainsBfsTest, DurableUpgradeAtCapTriggersEviction) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const size_t batch = ReferenceChainsTestAccessor::kDurableAnchorEvictBatch;
+    const jlong first_tag = 4001;
+    for (size_t i = 0; i < cap; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            first_tag + (jlong)i, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    ASSERT_EQ(cap,
+              ReferenceChainsTestAccessor::durableAnchorCountForTest());
+    // Admit a local holder (newest index position), then upgrade it: the upgrade alone pushes the
+    // durable share to cap + 1.
+    const jlong kContainer = -501;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kContainer, true);
+    const jlong upgraded = first_tag + (jlong)cap;
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(upgraded, kContainer);
+    ASSERT_EQ(1u,
+              ReferenceChainsTestAccessor::localAnchorCountForTest());
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        upgraded, kContainer, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    EXPECT_EQ(0u,
+              ReferenceChainsTestAccessor::localAnchorCountForTest());
+    // The upgrade's eviction reclaimed the share to cap - batch, and the upgraded tag - the
+    // newest entry, never among the FIFO-evicted oldest - is still indexed.
+    EXPECT_EQ(cap - batch,
+              ReferenceChainsTestAccessor::durableAnchorCountForTest());
+    EXPECT_TRUE(
+        ReferenceChainsTestAccessor::anchorIndexContainsForTest(upgraded));
 
     tracker->stop();
 }

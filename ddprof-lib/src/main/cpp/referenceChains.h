@@ -505,16 +505,19 @@ private:
   // eligible after reparenting, so replacing their storage is still observed. A stack/JNI-local
   // root is indexed only once its class is classified as a collection/map (see
   // noteLocalRootHolder()/resolvePendingLocalAnchors()); non-collection local holders are never
-  // indexed, and the local share of the index is capped at LOCAL_ANCHOR_INDEX_CAP.
-  // collectStaticFieldAnchorsForRotation() iterates these anchors rather than
-  // scanning the full frontier table.
+  // indexed. Both shares are capped: the local share at LOCAL_ANCHOR_INDEX_CAP (compacted by
+  // compactLocalAnchors()), the durable share at DURABLE_ANCHOR_INDEX_CAP (FIFO-evicted by
+  // evictOldestDurableAnchors(); a still-live evicted anchor is re-reported and re-admitted by
+  // the next root enumeration, a dead one never is). The caps bound
+  // collectStaticFieldAnchorsForRotation()'s per-pass scan, which iterates these anchors rather
+  // than scanning the full frontier table, to LOCAL_ANCHOR_INDEX_CAP + DURABLE_ANCHOR_INDEX_CAP
+  // entries under the shared frontier lock.
   std::vector<jlong> _static_anchor_index;
 
   // Parallel to _static_anchor_index: the runtime class tag of each indexed holder.
   std::vector<jlong> _static_anchor_own_class_tags;
 
-  // Dedup companion for _static_anchor_index (O(1) membership; the population is ~28k on a real JVM
-  // - see addToStaticAnchorIndex()'s own comment).
+  // Dedup companion for _static_anchor_index (O(1) membership).
   std::unordered_set<jlong> _static_anchor_index_tags;
 
   // Subset of _static_anchor_index_tags that were indexed as stack/JNI-local holders (not as
@@ -526,6 +529,17 @@ private:
   // (O(cap)) instead of scanning the whole, uncapped index.
   std::unordered_map<jlong, jlong> _local_anchor_tags;
   static constexpr size_t LOCAL_ANCHOR_INDEX_CAP = 4096;
+  // Durable-share cap (STATIC_FIELD / JNI_GLOBAL holders). Eviction is FIFO over index positions,
+  // excluding the local share, so dead durable holders cannot accumulate without bound and the
+  // selection scan above stays O(LOCAL_ANCHOR_INDEX_CAP + DURABLE_ANCHOR_INDEX_CAP).
+  static constexpr size_t DURABLE_ANCHOR_INDEX_CAP = 8192;
+  // Eviction runs only when the durable share exceeds its cap and removes enough oldest entries
+  // to drop it to cap - DURABLE_ANCHOR_EVICT_BATCH, so one O(index) compaction is amortized over
+  // ~DURABLE_ANCHOR_EVICT_BATCH admissions instead of paid per admission. An evicted anchor that
+  // is still root-attached is re-reported by the next root enumeration and re-admitted (fresh
+  // lane); a dead one is never reported again. Pure index bookkeeping - no frontier lock - so it
+  // is legal from the heap-root callback context.
+  static constexpr size_t DURABLE_ANCHOR_EVICT_BATCH = 1024;
   // compactLocalAnchors() attempts to skip after one that removed nothing (local share full of
   // live containers): bounds the steady-state locked O(cap) scan to one in every
   // LOCAL_ANCHOR_COMPACT_BACKOFF + 1 at-cap resolve passes. While backing off, a container met at
@@ -1129,6 +1143,13 @@ private:
   // per resolvePendingLocalAnchors() call, only when the local cap is reached and the backoff
   // (_local_compact_backoff) is not active. Returns the number of removed entries.
   size_t compactLocalAnchors();
+  // FIFO-evicts the oldest durable-share entries when the durable share exceeds
+  // DURABLE_ANCHOR_INDEX_CAP, down to cap - DURABLE_ANCHOR_EVICT_BATCH, keeping
+  // _static_anchor_fresh_queue a suffix of the index (stable compaction, queue tags removed
+  // alongside). Local-share entries are never evicted here. Pure index bookkeeping - no JNI,
+  // no frontier lock - so it is legal from the heap-root callback context. Returns the number
+  // of evicted entries.
+  size_t evictOldestDurableAnchors();
 
   // True iff `klass` implements java/util/Collection or java/util/Map, directly or transitively
   // (superclass chain + interfaces of every visited class, depth-bounded, visited set to survive

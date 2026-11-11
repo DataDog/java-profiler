@@ -175,13 +175,23 @@ reports it again.
 The local share is capped at 4096 entries (`LOCAL_ANCHOR_INDEX_CAP`). This keeps the per-pass
 index scan proportional to the durable share plus a constant, regardless of how many locals the
 application holds. When the cap is reached, `compactLocalAnchors()` removes local entries that
-are no longer selectable, such as entries whose object died, at most once per resolve call. It
-scans only the local share, so its cost does not grow with the durable share. If the share is
+are no longer selectable, such as entries whose object died, at most once per resolve call. Its
+frontier lookups scan only the local share, but its in-place compaction phase rewrites both
+parallel vectors, so one compaction costs O(durable share + local cap) — bounded by the two
+caps below, never by the live object population. If the share is
 still full of live collections, new local holders are not indexed until entries die or the search
 restarts. A compaction that removes nothing skips the next 8 at-cap compaction attempts
 (`LOCAL_ANCHOR_COMPACT_BACKOFF`), so a full share of live collections does not pay the scan on
-every pass. Dead entries can therefore keep their slots for up to 8 extra passes. A local holder that a durable root later attaches moves to the durable share and stops
-counting against the cap. `restartSearch()` clears both shares and the pending buffer.
+every pass. Dead entries can therefore keep their slots for up to 8 extra passes.
+
+The durable share (static fields and JNI globals) is capped at 8192 entries
+(`DURABLE_ANCHOR_INDEX_CAP`). The admission that pushes it past the cap FIFO-evicts the oldest
+1024 durable entries (`DURABLE_ANCHOR_EVICT_BATCH`) from the index, the dedup set and the fresh
+queue, so the per-pass selection scan stays bounded by the sum of the two caps. An evicted anchor
+that is still root-attached is reported again by the next root enumeration and re-admitted through
+the fresh lane; a dead one is never reported again. Eviction is pure index bookkeeping — no
+frontier lock — so it is legal from the heap-root callback. A local holder that a durable root later attaches moves to the durable share and stops
+counting against the local cap. `restartSearch()` clears both shares and the pending buffer.
 
 ## Search termination
 
