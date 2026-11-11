@@ -136,37 +136,37 @@ for i in "${!CELLS[@]}"; do
 done
 cpp_args
 CPP_SUMMARY="(no C++ tracefiles)"
-if (( ${#tracefiles[@]} > 0 )); then
-    command -v gcovr >/dev/null || die "gcovr not found; it must be at least as new as the containers' gcovr"
+if (( ${#tracefiles[@]} > 0 )) && ! command -v gcovr >/dev/null; then
+    echo "Error: gcovr not found; it must be at least as new as the containers' gcovr" >&2
+    EXIT_CODE=2
+    for i in "${!CELLS[@]}"; do
+        [[ "${CELL_CPP[$i]}" != yes ]] || CELL_CPP[$i]="no (gcovr not found)"
+    done
+    CPP_SUMMARY="(gcovr not found)"
+elif (( ${#tracefiles[@]} > 0 )); then
     if ! merge_cpp "${tracefiles[@]}"; then
         EXIT_CODE=2
         # Name the cells gcovr rejects on their own, then merge the rest.
         probed=0
-        rejected=0
+        rejected=()
         for i in "${!CELLS[@]}"; do
             [[ "${CELL_CPP[$i]}" == yes ]] || continue
             probed=$((probed + 1))
             if ! gcovr --root "$CPP_SRC" --add-tracefile "${CELLS[$i]}/reports/cpp/coverage.json" \
                     --merge-mode-functions=separate --json "$OUT/cpp/probe.json" >/dev/null; then
-                rejected=$((rejected + 1))
+                rejected+=("${CELLS[$i]}")
                 CELL_CPP[$i]="no (gcovr rejected tracefile)"
             fi
         done
-        if (( rejected == probed )); then
+        for cell in ${rejected[@]+"${rejected[@]}"}; do
+            echo "Error: gcovr rejected the tracefile of $cell; it is left out of the C++ report" >&2
+        done
+        if (( probed > 1 && ${#rejected[@]} == probed )); then
             echo "Error: gcovr rejected every tracefile; check the host gcovr ($(gcovr --version 2>&1 | head -1)) against the containers'" >&2
-        else
-            for i in "${!CELLS[@]}"; do
-                [[ "${CELL_CPP[$i]}" != "no (gcovr rejected tracefile)" ]] \
-                    || echo "Error: gcovr rejected the tracefile of ${CELLS[$i]}; it is left out of the C++ report" >&2
-            done
         fi
         cpp_args
-        merged=false
         # With nothing rejected, the same merge would fail again.
-        if (( rejected > 0 && ${#tracefiles[@]} > 0 )) && merge_cpp "${tracefiles[@]}"; then
-            merged=true
-        fi
-        if ! $merged; then
+        if (( ${#rejected[@]} == 0 || ${#tracefiles[@]} == 0 )) || ! merge_cpp "${tracefiles[@]}"; then
             rm -rf "$OUT/cpp" && mkdir -p "$OUT/cpp"
             if (( ${#tracefiles[@]} > 0 )); then
                 echo "Error: gcovr failed to merge the tracefiles it accepts one by one; no C++ report" >&2

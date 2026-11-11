@@ -485,13 +485,31 @@ output=$(STUB_GCOVR_REJECT=reports/cpp "$MERGE" --source-root="$SRC" --out="$TEM
   "$TEMP_DIR/c1" "$TEMP_DIR/c2" 2>&1) || rc=$?
 [[ $rc -eq 2 ]] && pass || fail "all tracefiles rejected exited $rc, expected 2"
 expect_contains "all rejected blames host gcovr" "$output" "gcovr rejected every tracefile; check the host gcovr"
-expect_not_contains "all rejected names no cell" "$output" "rejected the tracefile of"
+expect_contains "all rejected still names the cells" "$output" "rejected the tracefile of $TEMP_DIR/c2"
 expect_not_contains "all rejected lists no cpp report" "$output" "cpp/index.html"
 summary=$(cat "$TEMP_DIR/merged14/summary.md" 2>/dev/null || true)
 expect_contains "all rejected column" "$summary" "| 21 |  | 0 | no (gcovr rejected tracefile) | yes |"
 expect_contains "all rejected summary" "$summary" "(gcovr failed:"
 expect_not_contains "all rejected has no cpp link" "$summary" "- C++ report:"
 [[ -z "$(ls -A "$TEMP_DIR/merged14/cpp")" ]] && pass || fail "all rejected left files in cpp/: $(ls "$TEMP_DIR/merged14/cpp")"
+# One cell's rejected tracefile is that cell's problem, not the host gcovr's.
+output=$(STUB_GCOVR_REJECT=reports/cpp "$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged15" \
+  "$TEMP_DIR/c1" 2>&1) || true
+expect_contains "single rejected cell named" "$output" "rejected the tracefile of $TEMP_DIR/c1"
+expect_not_contains "single rejected cell does not blame host" "$output" "check the host gcovr"
+# Without gcovr the Java report and summary.md are still written.
+if [[ ! -x /usr/bin/gcovr && ! -x /bin/gcovr ]]; then
+  mv "$STUB_BIN/gcovr" "$STUB_BIN/gcovr.off"
+  rc=0
+  output=$(PATH="$STUB_BIN:/usr/bin:/bin" "$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged16" \
+    "$TEMP_DIR/c1" 2>&1) || rc=$?
+  mv "$STUB_BIN/gcovr.off" "$STUB_BIN/gcovr"
+  [[ $rc -eq 2 ]] && pass || fail "missing gcovr exited $rc, expected 2: $output"
+  expect_contains "missing gcovr reported" "$output" "gcovr not found"
+  summary=$(cat "$TEMP_DIR/merged16/summary.md" 2>/dev/null || true)
+  expect_contains "missing gcovr column" "$summary" "| 21 |  | 0 | no (gcovr not found) | yes |"
+  expect_contains "missing gcovr keeps java report" "$summary" "- Java report:"
+fi
 
 # --out must be empty or an earlier merge output.
 mkdir -p "$TEMP_DIR/notmerge/cpp"

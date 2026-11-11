@@ -127,11 +127,20 @@ including images created or rebuilt during step 3. Compare the newest version wi
 
 ```bash
 WT=$(ls -d "$RUN"/wt-* | head -1)   # any of the run's worktrees
-cells=(); for s in "$RUN"/cells/*.status; do
-    case "$(cat "$s")" in passed|failed) cells+=("${s%.status}") ;; esac
-done
+cells=()
+while IFS= read -r s; do
+    case "$(cat "$s")" in
+        passed|failed) cells+=("${s%.status}") ;;
+        blocked) ;;
+        *) echo "Unknown status in $s" >&2 ;;
+    esac
+done < <(find "$RUN/cells" -maxdepth 1 -name '*.status' | sort)
 "$WT/utils/merge-coverage.sh" --source-root="$WT" --out="$RUN/merged" "${cells[@]}"
 ```
+
+Every cell must have a `.status` file holding exactly `passed`, `failed` or `blocked`.
+Before merging, fix any cell the loop warns about or that has a `.exit` file but no
+`.status` file.
 
 Exit 2 means gcovr failed and the C++ report is incomplete or missing. The Java report
 and `summary.md` are still written, and the C++ column of `summary.md` gives the reason

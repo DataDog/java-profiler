@@ -129,6 +129,7 @@ files and reports against one cell's classes. Every container builds with OpenJD
 gcovr must be at least as new as the containers': an older one rejects their
 tracefiles with "Wrong format version". A cell whose Gradle was killed by a signal
 (`gradle_exit` 128 or more) holds partial data and is left out of both reports. When
-gcovr fails, the script leaves out the cells whose tracefile it rejects, merges the
-rest and still writes the Java report and `summary.md`. It then exits with 2. The
+gcovr fails, the script leaves out the cells whose tracefile it rejects and merges the
+rest. There is no C++ report when gcovr is missing or the rest still fails to merge.
+The script still writes the Java report and `summary.md`, then exits with 2. The
 `test-coverage` skill runs the full Linux matrix and merges it.
