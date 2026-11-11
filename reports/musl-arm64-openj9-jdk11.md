@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk11
 
 ## musl-arm64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-11-11 09:26:47 EST
+**Date:** 2026-11-11 09:36:30 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 370 |
-| Sample Rate | 6.17/sec |
-| Health Score | 386% |
-| Threads | 9 |
-| Allocations | 187 |
+| CPU Samples | 102 |
+| Sample Rate | 1.70/sec |
+| Health Score | 106% |
+| Threads | 11 |
+| Allocations | 59 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 964 |
-| Sample Rate | 16.07/sec |
-| Health Score | 1004% |
-| Threads | 10 |
-| Allocations | 493 |
+| CPU Samples | 480 |
+| Sample Rate | 8.00/sec |
+| Health Score | 500% |
+| Threads | 14 |
+| Allocations | 145 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 44-44 cores)</summary>
 
 ```
-1794406956 44
-1794406961 44
-1794406966 44
-1794406971 44
-1794406976 44
-1794406981 44
-1794406986 44
-1794406991 44
-1794406996 44
-1794407001 44
-1794407006 44
-1794407011 44
-1794407016 44
-1794407022 44
-1794407027 44
-1794407032 44
-1794407037 44
-1794407042 44
-1794407047 44
-1794407052 44
+1794407512 44
+1794407517 44
+1794407522 44
+1794407527 44
+1794407532 44
+1794407537 44
+1794407542 44
+1794407547 44
+1794407552 44
+1794407557 44
+1794407562 44
+1794407567 44
+1794407572 44
+1794407577 44
+1794407582 44
+1794407587 44
+1794407592 44
+1794407597 44
+1794407602 44
+1794407607 44
 ```
 </details>
 
