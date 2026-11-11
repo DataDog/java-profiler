@@ -34,6 +34,12 @@ if [ -z "${SANITIZER_LC:-}" ] || [ -z "${GTEST_ARCH:-}" ]; then
   echo "SANITIZER_LC and GTEST_ARCH must both be set (e.g. asan / aarch64)" >&2
   exit 1
 fi
+# SANITIZER_LC interpolates into the rm -rf path below; a stray '/', '..', or
+# whitespace from a miswired job variable must never reach it.
+case "${SANITIZER_LC}" in
+  asan|tsan|release) ;;
+  *) echo "SANITIZER_LC must be one of: asan, tsan, release (got '${SANITIZER_LC}')" >&2; exit 1 ;;
+esac
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 REPO_ROOT=$(cd "${HERE}/../.." && pwd)

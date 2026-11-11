@@ -239,6 +239,25 @@ else
   pass "T13 rc 128 produces no ABORTED marker"
 fi
 
+# T14 — a SANITIZER_LC outside the known set is rejected before the value
+# reaches the rm -rf path (the guard doubles as the injection guard).
+setup_tree
+OUT=$( cd "${WORK}/repo" && \
+  env SANITIZER_LC="../oops" GTEST_ARCH=amd64 \
+    bash .gitlab/scripts/run-gtest-quarantine.sh 2> "${STDERR_FILE}" )
+RC=$?
+assert_rc 1 "T14 unknown SANITIZER_LC exits 1"
+if grep -q "must be one of: asan, tsan, release" "${STDERR_FILE}"; then
+  pass "T14 stderr names the allowed values"
+else
+  fail "T14: stderr missing the allowed-values message, got: $(cat "${STDERR_FILE}")"
+fi
+if [ -d "${WORK}/repo/oops" ]; then
+  fail "T14: the unvalidated value reached the filesystem"
+else
+  pass "T14 the rejected value never touches the results path"
+fi
+
 # T6 — the retry-flag guard exports RETRY_ON_NO_TEST_FAILURES=1 for the
 # asan cell only (ASan init aborting before any test runs); flipping the
 # config comparison fails this case. The stub records the exported value.
