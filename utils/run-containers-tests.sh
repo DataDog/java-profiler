@@ -983,23 +983,32 @@ if [[ -n "$COVERAGE_OUT" ]]; then
     COVERAGE_OUT="$(cd "$COVERAGE_OUT" && pwd)"
     reject_colon "--coverage-out" "$COVERAGE_OUT"
     # A cell builds the committed HEAD of a clone, so uncommitted edits and new files would be silently
-    # missing while cell.properties still records HEAD.
-    if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain)" ]]; then
+    # missing while cell.properties still records HEAD. An output directory inside the checkout holds
+    # this script's own earlier export, which is not a source change.
+    COVERAGE_STATUS_PATHS=(.)
+    if [[ "$COVERAGE_OUT" == "$PROJECT_ROOT/"* ]]; then
+        COVERAGE_STATUS_PATHS+=(":(exclude,literal)${COVERAGE_OUT#"$PROJECT_ROOT/"}")
+    fi
+    if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain -- "${COVERAGE_STATUS_PATHS[@]}")" ]]; then
         echo "Error: the source tree has uncommitted or untracked files; a coverage cell measures the committed HEAD." >&2
         echo "Commit or stash them first." >&2
         exit 1
     fi
     # The directory is cleaned below and by the in-container export, so it must be empty
     # or an earlier export (--coverage-out=ddprof-lib/build must not wipe build output).
-    if [[ -n "$(ls -A "$COVERAGE_OUT")" && ! -f "$COVERAGE_OUT/cell.properties" ]]; then
+    # .coverage-cell marks an earlier export. Only the host creates it and nothing removes
+    # it, so it stays host-owned and survives a partial cleanup of root-owned files.
+    if [[ -n "$(ls -A "$COVERAGE_OUT")" && ! -f "$COVERAGE_OUT/.coverage-cell" ]]; then
         echo "Error: --coverage-out $COVERAGE_OUT is neither empty nor an earlier coverage export" >&2
         exit 1
     fi
+    touch "$COVERAGE_OUT/.coverage-cell"
     # A run that dies before the in-container export must not leave the previous one.
     # Best effort: a rootful container's files are root-owned, and its export, which
-    # runs as root, clears them again.
-    rm -rf "$COVERAGE_OUT/reports" "$COVERAGE_OUT/jacoco" "$COVERAGE_OUT/classes" \
-        "$COVERAGE_OUT/cell.properties" 2>/dev/null || true
+    # runs as root, clears them again. cell.properties goes first: it is the file that
+    # marks a complete export.
+    rm -f "$COVERAGE_OUT/cell.properties" "$COVERAGE_OUT/.cell.properties.tmp" 2>/dev/null || true
+    rm -rf "$COVERAGE_OUT/reports" "$COVERAGE_OUT/jacoco" "$COVERAGE_OUT/classes" 2>/dev/null || true
 fi
 
 # Parse JDK version and variant (e.g., "21-j9" -> version="21", variant="j9")
@@ -1314,11 +1323,12 @@ GRADLE_CMD="$GRADLE_CMD --no-daemon --parallel --build-cache --no-watch-fs"
 # and their classes, also after a Gradle failure (coverageReport writes both reports
 # first). No single quotes: the command runs through eval inside '...'.
 if [[ -n "$COVERAGE_OUT" ]]; then
-    COVERAGE_EXPORT="cd /workspace && rm -rf /coverage-out/reports /coverage-out/jacoco /coverage-out/classes /coverage-out/cell.properties && touch /coverage-out/cell.properties"
+    # cell.properties is written last, through a rename, so it exists only after a complete export.
+    COVERAGE_EXPORT="cd /workspace && rm -rf /coverage-out/cell.properties /coverage-out/.cell.properties.tmp /coverage-out/reports /coverage-out/jacoco /coverage-out/classes"
     COVERAGE_EXPORT="$COVERAGE_EXPORT && { [ ! -d ddprof-lib/build/reports/coverage ] || cp -r ddprof-lib/build/reports/coverage /coverage-out/reports; }"
     COVERAGE_EXPORT="$COVERAGE_EXPORT && { [ ! -d ddprof-test/build/jacoco ] || cp -r ddprof-test/build/jacoco /coverage-out/jacoco; }"
     COVERAGE_EXPORT="$COVERAGE_EXPORT && { [ ! -d ddprof-lib/build/classes/java/main ] || cp -r ddprof-lib/build/classes/java/main /coverage-out/classes; }"
-    COVERAGE_EXPORT="$COVERAGE_EXPORT && printf \"libc=%s\\narch=%s\\njdk=%s\\ntests=%s\\ncommit=%s\\ngradle_exit=%s\\n\" $LIBC $ARCH $JDK_VERSION \"\$TESTS_FILTER\" \"\$(git rev-parse HEAD)\" \$rc > /coverage-out/cell.properties"
+    COVERAGE_EXPORT="$COVERAGE_EXPORT && printf \"libc=%s\\narch=%s\\njdk=%s\\ntests=%s\\ncommit=%s\\ngradle_exit=%s\\n\" $LIBC $ARCH $JDK_VERSION \"\$TESTS_FILTER\" \"\$(git rev-parse HEAD)\" \$rc > /coverage-out/.cell.properties.tmp && mv -f /coverage-out/.cell.properties.tmp /coverage-out/cell.properties"
     # A failed export must not pass as a clean cell.
     GRADLE_CMD="{ rc=0; $GRADLE_CMD || rc=\$?; { $COVERAGE_EXPORT; } || { [ \$rc -ne 0 ] || rc=70; }; exit \$rc; }"
 fi

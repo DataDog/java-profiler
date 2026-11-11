@@ -103,6 +103,8 @@ cat > "$REPO/gradlew" <<'EOF'
 mkdir -p ddprof-lib/build/reports/coverage/cpp ddprof-test/build/jacoco ddprof-lib/build/classes/java/main
 echo '{}' > ddprof-lib/build/reports/coverage/cpp/coverage.json
 touch ddprof-test/build/jacoco/testCoverage.exec ddprof-lib/build/classes/java/main/A.class
+# An unreadable class file makes the export's copy of classes/ fail part-way.
+[[ -z "${STUB_UNREADABLE_CLASS:-}" ]] || chmod 000 ddprof-lib/build/classes/java/main/A.class
 exit "${STUB_GRADLE_RC:-0}"
 EOF
 chmod +x "$REPO/gradlew"
@@ -135,7 +137,8 @@ expect_contains "export reports" "$log" "cp -r ddprof-lib/build/reports/coverage
 expect_contains "export jacoco" "$log" "cp -r ddprof-test/build/jacoco /coverage-out/jacoco"
 expect_contains "export classes" "$log" "cp -r ddprof-lib/build/classes/java/main /coverage-out/classes"
 expect_contains "gradle exit preserved" "$log" "|| rc=\$?;"
-expect_contains "export clears previous data" "$log" "rm -rf /coverage-out/reports /coverage-out/jacoco /coverage-out/classes /coverage-out/cell.properties"
+expect_contains "export clears previous data" "$log" "rm -rf /coverage-out/cell.properties /coverage-out/.cell.properties.tmp /coverage-out/reports /coverage-out/jacoco /coverage-out/classes"
+expect_contains "export publishes properties last" "$log" "> /coverage-out/.cell.properties.tmp && mv -f /coverage-out/.cell.properties.tmp /coverage-out/cell.properties"
 expect_not_contains "plain repo has no common-dir mount" "$log" "$COMMON_DIR:$COMMON_DIR"
 expect_contains "plain repo trusts only the mounted .git" "$log" "DDPROF_SAFE_DIRS=/source/.git"
 [[ -d "$out_dir" ]] && pass || fail "--coverage-out directory was not created"
@@ -164,7 +167,7 @@ mkdir -p "$exec_out/reports/stale"
 rc=0
 exec_cell --tests=FooTest 2>/dev/null || rc=$?
 [[ $rc -ne 0 && -d "$exec_out/reports/stale" ]] && pass || fail "--coverage-out accepted a directory that is not an export (rc=$rc)"
-touch "$exec_out/cell.properties"
+touch "$exec_out/.coverage-cell"
 rc=0
 STUB_GRADLE_RC=3 exec_cell --tests=FooTest || rc=$?
 [[ $rc -eq 3 ]] && pass || fail "cell exit code $rc is not Gradle's 3"
@@ -190,6 +193,20 @@ STUB_EXEC=1 STUB_WS="$TEMP_DIR/ws" STUB_OUT="$TEMP_DIR/missing/out" run_script "
 STUB_RUN_RC=125 run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$exec_out" >/dev/null || true
 [[ ! -e "$exec_out/cell.properties" && ! -e "$exec_out/reports" ]] \
   && pass || fail "a failed run left the previous export: $(find "$exec_out" | sort)"
+[[ -f "$exec_out/.coverage-cell" ]] && pass || fail "a failed run removed the export marker"
+# A partial export publishes no cell.properties, so the cell is not merged.
+rc=0
+STUB_UNREADABLE_CLASS=1 exec_cell || rc=$?
+[[ $rc -eq 70 ]] && pass || fail "partial export exited $rc, expected 70"
+[[ ! -e "$exec_out/cell.properties" ]] && pass || fail "a partial export published cell.properties"
+chmod -R u+rwX "$TEMP_DIR/ws" "$exec_out" 2>/dev/null || true
+# Files a host cleanup could not remove (root-owned in a rootful container) do not block
+# a retry: the marker, not cell.properties, identifies the directory as an export.
+rm -rf "$exec_out"; mkdir -p "$exec_out/reports/stale"; touch "$exec_out/.coverage-cell"
+rc=0
+exec_cell || rc=$?
+[[ $rc -eq 0 && -f "$exec_out/cell.properties" && ! -e "$exec_out/reports/stale" ]] \
+  && pass || fail "a leftover export without cell.properties blocked the retry (rc=$rc)"
 for mode in --coverage-out="$exec_out" --gtest; do
   if output=$(run_script "$REPO" --libc=glibc --jdk=21 "$mode" --tests=$'A\nB'); then
     fail "--tests with a newline was accepted ($mode)"
@@ -228,6 +245,18 @@ else
   expect_contains "dirty tree rejected" "$output" "uncommitted or untracked files"
 fi
 git -C "$REPO" checkout -q -- "$tracked"
+# An earlier export inside the checkout is not a source change; other untracked files are.
+in_tree_out="$REPO/coverage-results"
+mkdir -p "$in_tree_out/reports"; touch "$in_tree_out/.coverage-cell" "$in_tree_out/cell.properties"
+output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$in_tree_out") \
+  && pass || fail "an earlier export inside the checkout was rejected: $output"
+touch "$REPO/stray"
+if output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$in_tree_out"); then
+  fail "an untracked file beside an in-tree --coverage-out was accepted"
+else
+  expect_contains "untracked file beside in-tree output" "$output" "uncommitted or untracked files"
+fi
+rm -rf "$REPO/stray" "$in_tree_out"
 if output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$TEMP_DIR/a:b"); then
   fail "a colon in --coverage-out was accepted"
 else
