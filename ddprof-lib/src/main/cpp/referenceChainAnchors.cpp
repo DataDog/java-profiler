@@ -333,13 +333,13 @@ void ReferenceChainTracker::addToStaticAnchorIndex(jlong tag,
       root_kind != (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
     return;
   }
-  // A local holder later attached by a durable root now belongs to the uncapped durable share;
+  // A local holder later attached by a durable root now belongs to the capped durable share;
   // release its slot in the local cap (it stays indexed - the dedup below is a no-op for it).
   _local_anchor_tags.erase(tag);
   // The upgrade grows the durable share without a new index push (the dedup in
   // indexAnchorForRotation() returns early), so the durable cap is checked here too. The just
-  // upgraded tag may itself be among the evicted oldest entries; the next root enumeration
-  // re-reports it and re-admits it.
+  // upgraded tag may itself be among the evicted oldest entries; the next traversal report of its
+  // durable edge re-enlists it (reenlistEvictedDurableAnchor()).
   evictOldestDurableAnchors();
   indexAnchorForRotation(tag, own_class_tag);
 }
@@ -546,7 +546,35 @@ size_t ReferenceChainTracker::evictOldestDurableAnchors() {
       _static_anchor_fresh_queue.end());
   // Positions shifted: the collector clamps out-of-range cursors; in-range ones only lose fairness
   // for one lap.
+  // Force the next pass's static-field sweep (runPassManualWalk() skips it while the loaded-class
+  // count is unchanged): static-only holders are invisible to root enumeration, so a re-discovery
+  // of their class -> field edges is the only path that re-enlists them. Backed off: when the live
+  // durable population sits above the cap, re-enlistment keeps re-crossing it, and an unconditional
+  // reset here would re-force the sweep on every pass (see DURABLE_SWEEP_REFORCE_BACKOFF).
+  if (_durable_sweep_reforce_backoff > 0) {
+    _durable_sweep_reforce_backoff--;
+  } else {
+    _last_static_field_class_count = -1;
+    _durable_sweep_reforce_backoff = DURABLE_SWEEP_REFORCE_BACKOFF;
+  }
   return evicted.size();
+}
+
+void ReferenceChainTracker::reenlistEvictedDurableAnchor(
+    FrontierTable *frontier, jlong tag, jlong class_tag) {
+  // O(1) fast path: fresh admissions, prior re-enlistments and never-evicted tags are all still
+  // indexed, and the traversal callbacks hit this for every rediscovered durable root - only the
+  // rare evicted tag pays the frontier lookup below.
+  if (_static_anchor_index_tags.count(tag) > 0) {
+    return;
+  }
+  FrontierEntry entry{};
+  if (!frontier->lookup(tag, &entry) || entry.parent_tag != 0) {
+    return; // gone from the frontier, or not root-attached (not an anchor candidate)
+  }
+  // Idempotent for every caller: a no-op for non-durable root kinds (the durable filter inside),
+  // and for an evicted durable anchor the re-index that restores its rotation eligibility.
+  addToStaticAnchorIndex(tag, class_tag, entry.root_kind);
 }
 
 bool ReferenceChainTracker::isSelectableAnchor(const FrontierEntry &entry,

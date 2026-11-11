@@ -493,16 +493,27 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
             *tag_ptr, ctx->resolved_chain_tags,
             ctx->resolved_chain_tag_count,
             ReferenceChainTracker::ChainInvalidationKind::REBUILD);
-      } else if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
-        // The upgrade refused (maybeUpgradeRootAttachedRootKind returns false for parent_tag != 0
-        // by design), so this STATIC_FIELD edge just proved an at-risk static attachment the anchor
-        // tier's parent_tag == 0 filter can never see: a holder already admitted as a non-root
-        // child (find-anchor-holder-eviction).
-        FrontierEntry entry{};
-        if (ctx->frontier->lookup(*tag_ptr, &entry) &&
-            entry.parent_tag != 0) {
-          ctx->tracker->pushAtRiskStaticAnchor(
-              *tag_ptr, ctx->tracker->classTags()->resolve(class_tag));
+      } else {
+        // An unchanged durable root never upgrades (and the static sweep's class -> field edge is
+        // the only traversal that re-reports a static-only holder), so this edge is an evicted
+        // durable anchor's only re-indexing path; the re-enlist filters non-durable kinds and
+        // non-root-attached entries itself, and is O(1) for still-indexed tags.
+        if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
+            reference_kind == JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
+          ctx->tracker->reenlistEvictedDurableAnchor(ctx->frontier, *tag_ptr,
+                                                     class_tag);
+        }
+        if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
+          // The upgrade refused (maybeUpgradeRootAttachedRootKind returns false for parent_tag != 0
+          // by design), so this STATIC_FIELD edge just proved an at-risk static attachment the anchor
+          // tier's parent_tag == 0 filter can never see: a holder already admitted as a non-root
+          // child (find-anchor-holder-eviction).
+          FrontierEntry entry{};
+          if (ctx->frontier->lookup(*tag_ptr, &entry) &&
+              entry.parent_tag != 0) {
+            ctx->tracker->pushAtRiskStaticAnchor(
+                *tag_ptr, ctx->tracker->classTags()->resolve(class_tag));
+          }
         }
       }
     }
