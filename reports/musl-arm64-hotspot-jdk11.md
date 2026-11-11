@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk11
 
 ## musl-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-11-11 10:44:47 EST
+**Date:** 2026-11-11 11:40:38 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 103 |
-| Sample Rate | 1.72/sec |
-| Health Score | 108% |
+| CPU Samples | 130 |
+| Sample Rate | 2.17/sec |
+| Health Score | 136% |
 | Threads | 8 |
-| Allocations | 68 |
+| Allocations | 66 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 122 |
-| Sample Rate | 2.03/sec |
-| Health Score | 127% |
+| CPU Samples | 47 |
+| Sample Rate | 0.78/sec |
+| Health Score | 49% |
 | Threads | 12 |
-| Allocations | 50 |
+| Allocations | 29 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
+<summary>CPU Timeline (2 unique values: 51-64 cores)</summary>
 
 ```
-1794411586 51
-1794411591 51
-1794411596 51
-1794411601 51
-1794411606 51
-1794411611 51
-1794411616 51
-1794411621 51
-1794411626 51
-1794411631 51
-1794411636 51
-1794411641 51
-1794411646 51
-1794411651 51
-1794411656 51
-1794411661 51
-1794411666 51
-1794411671 51
-1794411676 51
-1794411681 51
+1794414858 51
+1794414863 51
+1794414868 51
+1794414873 51
+1794414878 51
+1794414883 51
+1794414888 51
+1794414893 51
+1794414898 51
+1794414903 51
+1794414908 64
+1794414913 64
+1794414918 51
+1794414923 51
+1794414928 51
+1794414933 51
+1794414938 51
+1794414943 51
+1794414948 51
+1794414953 51
 ```
 </details>
 
