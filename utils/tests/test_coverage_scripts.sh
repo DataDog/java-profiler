@@ -195,11 +195,14 @@ STUB_RUN_RC=125 run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$exec_o
   && pass || fail "a failed run left the previous export: $(find "$exec_out" | sort)"
 [[ -f "$exec_out/.coverage-cell" ]] && pass || fail "a failed run removed the export marker"
 # A partial export publishes no cell.properties, so the cell is not merged.
-rc=0
-STUB_UNREADABLE_CLASS=1 exec_cell || rc=$?
-[[ $rc -eq 70 ]] && pass || fail "partial export exited $rc, expected 70"
-[[ ! -e "$exec_out/cell.properties" ]] && pass || fail "a partial export published cell.properties"
-chmod -R u+rwX "$TEMP_DIR/ws" "$exec_out" 2>/dev/null || true
+# root reads a mode-000 file, so the failing copy needs a non-root user.
+if [[ $(id -u) -ne 0 ]]; then
+  rc=0
+  STUB_UNREADABLE_CLASS=1 exec_cell || rc=$?
+  [[ $rc -eq 70 ]] && pass || fail "partial export exited $rc, expected 70"
+  [[ ! -e "$exec_out/cell.properties" ]] && pass || fail "a partial export published cell.properties"
+  chmod -R u+rwX "$TEMP_DIR/ws" "$exec_out" 2>/dev/null || true
+fi
 # Files a host cleanup could not remove (root-owned in a rootful container) do not block
 # a retry: the marker, not cell.properties, identifies the directory as an export.
 rm -rf "$exec_out"; mkdir -p "$exec_out/reports/stale"; touch "$exec_out/.coverage-cell"
@@ -256,7 +259,12 @@ if output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$in_tree_ou
 else
   expect_contains "untracked file beside in-tree output" "$output" "uncommitted or untracked files"
 fi
-rm -rf "$REPO/stray" "$in_tree_out"
+rm -f "$REPO/stray"
+# The same directory reached through a symlinked alias of the checkout is still excluded.
+ln -s "$REPO" "$TEMP_DIR/repo-alias"
+output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$TEMP_DIR/repo-alias/coverage-results") \
+  && pass || fail "an earlier export reached through a symlink was rejected: $output"
+rm -rf "$in_tree_out" "$TEMP_DIR/repo-alias"
 if output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$TEMP_DIR/a:b"); then
   fail "a colon in --coverage-out was accepted"
 else

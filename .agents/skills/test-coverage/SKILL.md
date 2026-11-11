@@ -81,8 +81,9 @@ Give each agent this brief, filled in:
 > in worktree `<RUN>/wt-<libc>-<arch>`. JDKs, in order: `<list>`. Runtime: `<RT>`.
 > For each JDK `<jdk>`, let `<cell>` be `<RUN>/cells/<libc>-<arch>-<jdk>` and `<log>`
 > be `<RUN>/logs/<libc>-<arch>-<jdk>.log` (absolute paths; `mkdir -p <RUN>/logs`).
-> Before every start, retries included, run `rm -rf <cell> <cell>.exit` so the wait
-> below cannot end on an earlier attempt's result. Start the cell detached so no tool
+> Before every start, retries included, run `rm -f <cell>.exit` so the wait below
+> cannot end on an earlier attempt's result. Do not delete `<cell>`: the script clears
+> an earlier attempt's export itself. Start the cell detached so no tool
 > timeout kills it:
 > `cd <wt> && nohup bash -c './utils/run-containers-tests.sh --container=<RT>
 > --libc=<libc> --arch=<arch> --jdk=<jdk> --coverage-out=<cell> [--tests=<pattern>];

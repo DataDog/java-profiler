@@ -986,8 +986,10 @@ if [[ -n "$COVERAGE_OUT" ]]; then
     # missing while cell.properties still records HEAD. An output directory inside the checkout holds
     # this script's own earlier export, which is not a source change.
     COVERAGE_STATUS_PATHS=(.)
-    if [[ "$COVERAGE_OUT" == "$PROJECT_ROOT/"* ]]; then
-        COVERAGE_STATUS_PATHS+=(":(exclude,literal)${COVERAGE_OUT#"$PROJECT_ROOT/"}")
+    coverage_out_physical="$(cd "$COVERAGE_OUT" && pwd -P)"
+    project_root_physical="$(cd "$PROJECT_ROOT" && pwd -P)"
+    if [[ "$coverage_out_physical" == "$project_root_physical/"* ]]; then
+        COVERAGE_STATUS_PATHS+=(":(exclude,literal)${coverage_out_physical#"$project_root_physical/"}")
     fi
     if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain -- "${COVERAGE_STATUS_PATHS[@]}")" ]]; then
         echo "Error: the source tree has uncommitted or untracked files; a coverage cell measures the committed HEAD." >&2
