@@ -546,17 +546,18 @@ size_t ReferenceChainTracker::evictOldestDurableAnchors() {
       _static_anchor_fresh_queue.end());
   // Positions shifted: the collector clamps out-of-range cursors; in-range ones only lose fairness
   // for one lap.
-  // Request a full static sweep lap (see _durable_anchor_resweep_pending): static-only holders
-  // are invisible to root enumeration, so a re-discovery of their class -> field edges is the
-  // only path that re-enlists them, and the completing lap's behind-cursor classes were traversed
-  // before the eviction - the cursor restart is what makes the serving lap cover them. Backed off:
-  // when the live durable population sits above the cap, re-enlistment keeps re-crossing it, and
-  // an unpaced request would restart the cursor on every pass (see DURABLE_SWEEP_REFORCE_BACKOFF).
-  if (_durable_sweep_reforce_backoff > 0) {
-    _durable_sweep_reforce_backoff--;
-  } else {
-    _durable_anchor_resweep_pending = true;
+  // Record a resweep request unconditionally (see _durable_anchor_resweep_pending): a request
+  // recorded during the restart cooldown must survive, or a holder displaced while admissions keep
+  // the population above the cap would never be re-swept once evictions stop. Only the cursor
+  // restart is paced - when the live durable population sits above the cap, re-enlistment keeps
+  // re-crossing it, and an unpaced restart would make every fresh lap start over from class 0
+  // (see DURABLE_SWEEP_REFORCE_BACKOFF). The restart is advisory anyway: the chunk cursor save in
+  // admitStaticFieldRoots() overwrites a mid-chunk restart, and the pending request is what
+  // guarantees the next lap from class 0 serves the eviction.
+  _durable_anchor_resweep_pending = true;
+  if (_durable_sweep_reforce_backoff == 0) {
     _static_field_sweep_cursor = 0;
+    _static_field_sweep_cycle_truncated = false;
     _durable_sweep_reforce_backoff = DURABLE_SWEEP_REFORCE_BACKOFF;
   }
   return evicted.size();

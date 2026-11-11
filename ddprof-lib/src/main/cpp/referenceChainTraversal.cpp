@@ -344,11 +344,12 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       // The chunk cursor completed a full lap over the loaded-class list with no chunk truncating
       // along the way (possibly discovering nothing, if every static field seen was already
       // ALREADY_ADMITTED) - remember the class count it covered so a later pass with no new classes
-      // can skip re-running the sweep entirely. A pending resweep request is cleared only here -
-      // by the serving lap's own completion, which started from class 0 (the request restarts the
-      // cursor) and therefore re-traversed the classes behind the eviction point.
+      // can skip re-running the sweep entirely. A pending resweep request is NOT cleared here:
+      // this lap may have started before the eviction that requested it (a mid-chunk eviction's
+      // cursor restart is overwritten by the chunk save), so only the next lap starting from
+      // class 0 - which re-traverses everything - serves the request (see the lap-start clear in
+      // admitStaticFieldRoots()).
       _last_static_field_class_count = _last_resolved_class_count;
-      _durable_anchor_resweep_pending = false;
     }
   }
 
@@ -860,6 +861,20 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
     _static_field_sweep_cycle_truncated = false;
   }
   jint chunk_start = _static_field_sweep_cursor;
+  // A lap starting at class 0 re-traverses the whole loaded-class list, so it serves any pending
+  // resweep request - including the classes behind the position where the evicting lap stood.
+  // Cleared here, at lap start, rather than at cycle completion: a request recorded mid-lap
+  // (eviction inside this chunk) must survive this lap's completion, because this lap will not
+  // revisit the classes it already passed - the next fresh lap serves it.
+  if (chunk_start == 0) {
+    _durable_anchor_resweep_pending = false;
+  }
+  // Advance the restart cooldown once per sweep run, independent of evictions: requests recorded
+  // during the cooldown are never dropped (see the eviction site), the cooldown only paces how
+  // often an eviction may also restart the cursor (see DURABLE_SWEEP_REFORCE_BACKOFF).
+  if (_durable_sweep_reforce_backoff > 0) {
+    _durable_sweep_reforce_backoff--;
+  }
   jint chunk_end =
       std::min(chunk_start + STATIC_FIELD_SWEEP_CHUNK_CLASSES, class_count);
   jint chunk_count = chunk_end - chunk_start;

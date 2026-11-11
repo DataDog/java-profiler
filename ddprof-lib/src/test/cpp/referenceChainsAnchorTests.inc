@@ -1195,10 +1195,11 @@ TEST_F(ReferenceChainsBfsTest, EvictedDurableAnchorIsReenlistedByTraversalReport
 
 // Eviction requests a full static sweep lap: static-only holders are invisible to root
 // enumeration, and the sweep is otherwise skipped while the loaded-class count is unchanged - an
-// evicted static-only anchor would never be re-reported. The request restarts the sweep cursor so
-// the serving lap covers the classes behind the eviction point, and it survives the lap-completion
-// memo overwrite (a lap that completes after the eviction must not consume the request - its
-// behind-cursor classes are exactly the ones still unserved).
+// evicted static-only anchor would never be re-reported. The request is recorded on EVERY
+// eviction, including during the restart cooldown (a request dropped there would leave the holder
+// unswept once evictions stop); only the cursor restart is paced. The request survives a
+// lap-completion memo overwrite - a lap in flight when the eviction lands does not revisit the
+// classes it already passed, so the next lap starting from class 0 serves the request.
 TEST_F(ReferenceChainsBfsTest, EvictionForcesStaticFieldSweepRerun) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -1215,17 +1216,33 @@ TEST_F(ReferenceChainsBfsTest, EvictionForcesStaticFieldSweepRerun) {
     // Simulate a mid-lap state: the sweep memo latched and the cursor part-way into a lap.
     ReferenceChainsTestAccessor::setStaticFieldSweepMemoForTest(12345);
     ReferenceChainsTestAccessor::setStaticFieldSweepCursorForTest(456);
-    // The cap-crossing admission evicts - and must request the resweep from class 0.
+    // The cap-crossing admission evicts - and must record the resweep request and restart the
+    // cursor (the cooldown is not armed at this point).
     ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
         9000 + (jlong)cap, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
     EXPECT_TRUE(
         ReferenceChainsTestAccessor::durableAnchorResweepPendingForTest());
     EXPECT_EQ(0, ReferenceChainsTestAccessor::staticFieldSweepCursorForTest());
-    // The serving lap completing (memo overwritten) must NOT consume the request: this lap's
+    EXPECT_EQ(8,
+              ReferenceChainsTestAccessor::durableSweepReforceBackoffForTest());
+    // The lap in flight completing (memo overwritten) must NOT consume the request: this lap's
     // behind-cursor classes were traversed before the eviction.
     ReferenceChainsTestAccessor::setStaticFieldSweepMemoForTest(12345);
     EXPECT_TRUE(
         ReferenceChainsTestAccessor::durableAnchorResweepPendingForTest());
+
+    // During the restart cooldown an eviction still records the request - only the cursor restart
+    // is paced, and the cooldown advances per sweep run, not per eviction.
+    ReferenceChainsTestAccessor::setDurableSweepReforceBackoffForTest(5);
+    ReferenceChainsTestAccessor::setStaticFieldSweepCursorForTest(789);
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        9000 + (jlong)cap + 1, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    EXPECT_TRUE(
+        ReferenceChainsTestAccessor::durableAnchorResweepPendingForTest());
+    EXPECT_EQ(789,
+              ReferenceChainsTestAccessor::staticFieldSweepCursorForTest());
+    EXPECT_EQ(5,
+              ReferenceChainsTestAccessor::durableSweepReforceBackoffForTest());
 
     tracker->stop();
 }
