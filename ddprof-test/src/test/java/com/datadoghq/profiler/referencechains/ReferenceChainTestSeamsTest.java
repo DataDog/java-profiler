@@ -5,31 +5,34 @@
 
 package com.datadoghq.profiler.referencechains;
 
+import static com.datadoghq.profiler.referencechains.ReferenceChainAssertions.assumeDebugBuild;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.ReferenceChainTestHooks;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
-
 /**
  * PROF-15341 follow-up: {@code ReferenceChainTrackingTest} drives slope detection and chain
- * reconstruction together and only passes when both happen to line up. This class decouples
- * them via the debug-build-only test seams on {@code JavaProfiler}, reached via
- * {@link ReferenceChainTestHooks} (backed by {@code LivenessTracker}'s existing
- * {@code *ForTest} seams and {@code ReferenceChainTracker::tagAsRootForTest()}, see javaApi.cpp):
+ * reconstruction together and only passes when both happen to line up. This class decouples them
+ * via the debug-build-only test seams on {@code JavaProfiler}, reached via {@link
+ * ReferenceChainTestHooks} (backed by {@code LivenessTracker}'s existing {@code *ForTest} seams and
+ * {@code ReferenceChainTracker::tagAsRootForTest()}, see javaApi.cpp):
+ *
  * <ul>
  *   <li>{@link #shouldSelectSeededKlassAsLeakCandidateOnPositiveSlope()} - slope signal from
- *   directly-seeded population history, no allocation sampling involved.</li>
+ *       directly-seeded population history, no allocation sampling involved.
  *   <li>{@link #shouldReconstructChainForDirectlyTaggedRoot()} - BFS/chain-reconstruction/
- *   event-emission for a directly-tagged, known live object, without depending on
- *   {@code selectLeakCandidates()} organically picking the right klass.</li>
+ *       event-emission for a directly-tagged, known live object, without depending on {@code
+ *       selectLeakCandidates()} organically picking the right klass.
  * </ul>
  *
- * <p>Only runs under the debug native build ({@code testdebug}) - the backing native methods do
- * not exist in a release build (see javaApi.cpp's {@code #ifdef DEBUG} guard), same pattern as
- * {@code JVMAccessTest}.
+ * <p>Only runs under the debug native build ({@code testdebug}) - the backing native methods do not
+ * exist in a release build (see javaApi.cpp's {@code #ifdef DEBUG} guard), same pattern as {@code
+ * JVMAccessTest}.
  */
 public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
 
@@ -39,6 +42,9 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
   // genuine history outranks the seeded ramp.
   private static final int SLOPE_TEST_KLASS_ID = 987001;
   private static final int CHAIN_TEST_KLASS_ID = 987002;
+  // Arbitrary non-zero burn-in stamp: LivenessTracker::initialize() only CASes the stamp from 0,
+  // so a non-zero value cannot be overwritten by a concurrent profiler start mid-test.
+  private static final long KNOWN_ACTIVATION_STAMP_NS = 42L;
 
   private static final class ChainTarget {}
 
@@ -63,13 +69,11 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
     return !(Platform.isJavaVersion(8) || Platform.isJ9() || Platform.isZing());
   }
 
-  private static void assumeDebugBuild() {
-    assumeTrue(ReferenceChainAssertions.isDebugInstrumentedBuild());
-  }
-
-  /** Seeds twenty epochs of strictly increasing population counts, then asserts
-   *  {@code selectLeakCandidates()} ranks the klass as a leak candidate - proving the ranking
-   *  logic works without the real JVMTI heap sampler ever surfacing this klass. */
+  /**
+   * Seeds twenty epochs of strictly increasing population counts, then asserts {@code
+   * selectLeakCandidates()} ranks the klass as a leak candidate - proving the ranking logic works
+   * without the real JVMTI heap sampler ever surfacing this klass.
+   */
   @Test
   public void shouldSelectSeededKlassAsLeakCandidateOnPositiveSlope() {
     assumeDebugBuild();
@@ -93,14 +97,19 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
         break;
       }
     }
-    assertTrue(found, "Expected klass id " + SLOPE_TEST_KLASS_ID
-        + " to be selected as a leak candidate after a seeded positive-slope population history");
+    assertTrue(
+        found,
+        "Expected klass id "
+            + SLOPE_TEST_KLASS_ID
+            + " to be selected as a leak candidate after a seeded positive-slope population history");
   }
 
-  /** Tags a live object directly as a frontier root (bypassing the normal root-seeded
-   *  discovery walk), wires it in as a seeded leak candidate's representative, then drives
-   *  pass/poll cycles synchronously - proving {@code runPass()}/{@code pollWatchedTargets()}/
-   *  {@code buildChainEvent()} produce a chain event for a target this test controls directly. */
+  /**
+   * Tags a live object directly as a frontier root (bypassing the normal root-seeded discovery
+   * walk), wires it in as a seeded leak candidate's representative, then drives pass/poll cycles
+   * synchronously - proving {@code runPass()}/{@code pollWatchedTargets()}/ {@code
+   * buildChainEvent()} produce a chain event for a target this test controls directly.
+   */
   @Test
   public void shouldReconstructChainForDirectlyTaggedRoot() {
     assumeDebugBuild();
@@ -147,16 +156,82 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
       int eventCount = 0;
       for (int pass = 0; pass < 40 && eventCount == 0; pass++) {
         boolean sawPassRun = ReferenceChainTestHooks.runReferenceChainPass0();
-        assertTrue(sawPassRun || pass > 0,
+        assertTrue(
+            sawPassRun || pass > 0,
             "Expected the first runReferenceChainPass0 to run (reference chains enabled)");
         ReferenceChainTestHooks.pollReferenceChainTargets0();
         eventCount = ReferenceChainTestHooks.drainReferenceChainEventCount0();
       }
-      assertTrue(eventCount > 0,
+      assertTrue(
+          eventCount > 0,
           "Expected pollWatchedTargets() to have queued at least one chain event for the "
               + "directly-tagged, seeded-representative target");
     } finally {
       chainTargetHolder = null; // shared-JVM hygiene
     }
+  }
+
+  /**
+   * The shared discovery-test failure fingerprint is empty on release builds (the gate lives in the
+   * helper) and, on debug builds, carries the canonical segments in the canonical order. Read only
+   * on the seams - no reset/seed calls.
+   */
+  @Test
+  public void failureDiagnosticsFingerprintHasCanonicalSegments() {
+    String d = ReferenceChainAssertions.referenceChainFailureDiagnostics(new Object(), null);
+    if (!ReferenceChainAssertions.isDebugInstrumentedBuild()) {
+      assertEquals("", d, "release builds must keep the plain failure message");
+      return;
+    }
+    assertTrue(d.startsWith(" [leak-signal candidates=["), d);
+    assertTrue(d.endsWith(", observedChain0s=[]]"), d);
+    String[] segments = {
+      "leak-signal candidates=",
+      ", bfsPassesRun=",
+      ", representativeFrontierState=",
+      " (-1=never admitted, 0=admitted pending expansion, 1=expanded, 3=abandoned)",
+      ", observedChain0s="
+    };
+    int previous = -1;
+    for (String segment : segments) {
+      int index = d.indexOf(segment);
+      assertTrue(index > previous, "segment '" + segment + "' missing or out of order in: " + d);
+      previous = index;
+    }
+    assertTrue(d.matches("(?s).*representativeFrontierState=-?\\d+ \\(-1=never admitted.*"), d);
+  }
+
+  /** observedChainHeads tolerates absent events: never throws, never returns null. */
+  @Test
+  public void observedChainHeadsIsEmptyForNoEvents() {
+    assertTrue(ReferenceChainAssertions.observedChainHeads(null).isEmpty());
+  }
+
+  /**
+   * Kills a dropped negative-argument guard in setLeakSignalActivatedNsForTest0 (javaApi.cpp):
+   * without it a negative jlong would be stored as a u64 near UINT64_MAX, which secondsToOOM()
+   * reads as burn-in-never-passed. Asserts the throw AND that the stored stamp is unchanged; the
+   * original stamp is restored on every exit path (shared, no-forkEvery JVM).
+   */
+  @Test
+  public void shouldRejectNegativeLeakSignalActivationStamp() {
+    assumeDebugBuild();
+    long savedActivationNs = ReferenceChainTestHooks.backdateLeakSignalActivationForTest0();
+    long observed;
+    try {
+      ReferenceChainTestHooks.setLeakSignalActivatedNsForTest0(KNOWN_ACTIVATION_STAMP_NS);
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> ReferenceChainTestHooks.setLeakSignalActivatedNsForTest0(-1L),
+          "A negative burn-in stamp must be rejected, not cast to a huge u64");
+      // Returns the current stamp (and backdates; the finally block restores the original).
+      observed = ReferenceChainTestHooks.backdateLeakSignalActivationForTest0();
+    } finally {
+      ReferenceChainTestHooks.setLeakSignalActivatedNsForTest0(savedActivationNs);
+    }
+    assertEquals(
+        KNOWN_ACTIVATION_STAMP_NS,
+        observed,
+        "A rejected negative stamp must leave the previous stamp in place");
   }
 }

@@ -33,12 +33,22 @@ pass() {
 }
 
 # A stub `gh` good enough for this script's two call sites: the jobs listing
-# and the ci-outcome artifact download. Real GitHub is never reached.
+# and the ci-outcome artifact download. Real GitHub is never reached. Like
+# GitHub, the listing fails with HTTP 502 unless it asks for fewer than 100
+# jobs per page (`gh api --paginate` asks for 100 by default), and its first
+# $GH_API_FAILURES calls fail regardless, to exercise the retry.
 STUB_BIN="$TEMP_DIR/stub-bin"
 mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/gh" <<'EOS'
 #!/usr/bin/env bash
 if [ "$1" = "api" ]; then
+  calls=$(( $(cat "$GH_API_CALLS" 2>/dev/null || echo 0) + 1 ))
+  echo "$calls" > "$GH_API_CALLS"
+  per_page=$(echo "$2" | sed -n 's/.*[?&]per_page=\([0-9]*\).*/\1/p')
+  if [ -z "$per_page" ] || [ "$per_page" -ge 100 ] || [ "$calls" -le "${GH_API_FAILURES:-0}" ]; then
+    echo "gh: Server Error (HTTP 502)" >&2
+    exit 1
+  fi
   cat "$GH_JOBS_FIXTURE"
   exit 0
 fi
@@ -59,6 +69,7 @@ EOS
 chmod +x "$STUB_BIN/gh"
 PATH="$STUB_BIN:$PATH"
 export PATH
+export GH_API_CALLS="$TEMP_DIR/gh-api-calls" SUMMARY_FETCH_RETRY_DELAY=0
 
 write_jobs_fixture() {
   # write_jobs_fixture <path> <conclusion>
@@ -145,6 +156,37 @@ fi
 echo "$summary" | grep -q "All 1 test jobs passed" \
   || fail "expected the all-passed banner, got: $summary"
 pass "an all-passing run prints no Failed Jobs section"
+
+# GitHub's 5xx on the job listing can be transient: two failed attempts are
+# retried, and the third succeeds.
+CASE="$TEMP_DIR/case-listing-retried"
+mkdir -p "$CASE/jobs" "$CASE/outcomes" "$CASE/work"
+write_jobs_fixture "$CASE/jobs/jobs.json" success
+rm -f "$GH_API_CALLS"
+(
+  cd "$CASE/work"
+  export GH_JOBS_FIXTURE="$CASE/jobs/jobs.json" GH_OUTCOME_FIXTURE_DIR="$CASE/outcomes" GH_API_FAILURES=2
+  export GITHUB_REPOSITORY="DataDog/java-profiler" GITHUB_SHA="deadbeefcafef00dfeedfacebeefcafebeefcafe"
+  "$SCRIPT" 12345 "$CASE/work/summary.md"
+) || fail "generate-test-summary.sh gave up on a job listing that succeeded on its third attempt"
+grep -q "All 1 test jobs passed" "$CASE/work/summary.md" \
+  || fail "expected the all-passed banner after the retried listing, got: $(cat "$CASE/work/summary.md")"
+pass "a job listing that fails twice is retried"
+
+# A listing that keeps failing still fails the script, as before the retry.
+CASE="$TEMP_DIR/case-listing-fails"
+mkdir -p "$CASE/jobs" "$CASE/outcomes" "$CASE/work"
+write_jobs_fixture "$CASE/jobs/jobs.json" success
+rm -f "$GH_API_CALLS"
+if (
+  cd "$CASE/work"
+  export GH_JOBS_FIXTURE="$CASE/jobs/jobs.json" GH_OUTCOME_FIXTURE_DIR="$CASE/outcomes" GH_API_FAILURES=3
+  export GITHUB_REPOSITORY="DataDog/java-profiler" GITHUB_SHA="deadbeefcafef00dfeedfacebeefcafebeefcafe"
+  "$SCRIPT" 12345 "$CASE/work/summary.md"
+) 2>/dev/null; then
+  fail "generate-test-summary.sh succeeded although every job listing attempt failed"
+fi
+pass "a job listing that keeps failing fails the script"
 
 # The job-name regex and test_workflow.yml's `name:` expressions are a contract
 # with no enforcement: a non-matching job is skipped silently, so a rename

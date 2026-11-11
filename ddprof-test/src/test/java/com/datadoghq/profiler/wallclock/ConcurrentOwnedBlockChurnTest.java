@@ -28,14 +28,14 @@ import org.junitpioneer.jupiter.RetryingTest;
 
 /**
  * Verifies owned-block once-per-run suppression stays correct under real thread churn, unlike
- * {@link UnfilteredWallPrecheckTest} and {@link UnfilteredWallPrecheckRestartTest}, which each
- * pin down one deterministic worker/interleaving. Many short-lived threads concurrently register
- * a registry slot, arm an owned SLEEPING block, block, and die (forcing JVMTI ThreadEnd / slot
- * reuse) while the wall-clock engine is sampling every thread ({@code filter=}), so this
- * specifically races {@code ThreadFilter} slot reuse against {@code WallClockBlockTracker}
- * enter/exit - the coupling introduced by splitting the tracker out of the registry. Unlike the
- * chaos {@code park-block-churn} antagonist, this asserts on actual sample counts and debug
- * counters, so it also catches silent over-/under-suppression regressions.
+ * {@link UnfilteredWallPrecheckTest} and {@link UnfilteredWallPrecheckRestartTest}, which each pin
+ * down one deterministic worker/interleaving. Many short-lived threads concurrently register a
+ * registry slot, arm an owned SLEEPING block, block, and die (forcing JVMTI ThreadEnd / slot reuse)
+ * while the wall-clock engine is sampling every thread ({@code filter=}), so this specifically
+ * races {@code ThreadFilter} slot reuse against {@code WallClockBlockTracker} enter/exit - the
+ * coupling introduced by splitting the tracker out of the registry. Unlike the chaos {@code
+ * park-block-churn} antagonist, this asserts on actual sample counts and debug counters, so it also
+ * catches silent over-/under-suppression regressions.
  */
 public class ConcurrentOwnedBlockChurnTest extends AbstractProfilerTest {
   private static final int OSTHREAD_STATE_SLEEPING = 7;
@@ -167,7 +167,8 @@ public class ConcurrentOwnedBlockChurnTest extends AbstractProfilerTest {
   /** Holds one owned interval; only stacks containing this method count as coverage. */
   private void runOwnedBlock() throws InterruptedException {
     long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
-    assertNotEquals(0L, token, "Worker failed to arm its block: " + Thread.currentThread().getName());
+    assertNotEquals(
+        0L, token, "Worker failed to arm its block: " + Thread.currentThread().getName());
     armedRuns.incrementAndGet();
     try {
       Thread.sleep(BLOCK_MILLIS);

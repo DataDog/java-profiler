@@ -5,17 +5,15 @@
 
 package com.datadoghq.profiler.alloc;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.Platform;
+import java.util.Random;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jol.info.GraphLayout;
-
-import java.util.Random;
-import java.util.concurrent.atomic.AtomicLong;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class AllocationProfilerTest extends AbstractProfilerTest {
 
@@ -45,15 +43,19 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
     // heap, so this reduces per-event in a single streaming pass instead.
     String intArrayName = int[].class.getName();
     String integerArrayName = Integer[].class.getName();
-    RecordedSizes recorded = reduceEvents("datadog.ObjectSample", RecordedSizes::new, (acc, item) -> {
-      acc.total++;
-      String className = item.getClassName("objectClass");
-      if (intArrayName.equals(className)) {
-        acc.intArray += (long) scaledSize(item);
-      } else if (integerArrayName.equals(className)) {
-        acc.integerArray += (long) scaledSize(item);
-      }
-    });
+    RecordedSizes recorded =
+        reduceEvents(
+            "datadog.ObjectSample",
+            RecordedSizes::new,
+            (acc, item) -> {
+              acc.total++;
+              String className = item.getClassName("objectClass");
+              if (intArrayName.equals(className)) {
+                acc.intArray += (long) scaledSize(item);
+              } else if (integerArrayName.equals(className)) {
+                acc.integerArray += (long) scaledSize(item);
+              }
+            });
     assertTrue(recorded.total > 0, "datadog.ObjectSample was empty");
 
     // FIXME when more tests are ported to this structure
@@ -70,15 +72,18 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
     long integerArray;
   }
 
-  private static void assertAllocations(long recorded, Class<?> clazz, AllocatingTarget... targets) {
+  private static void assertAllocations(
+      long recorded, Class<?> clazz, AllocatingTarget... targets) {
     long allocated = 0;
     for (AllocatingTarget target : targets) {
       allocated += target.getAllocated(clazz);
     }
     assertTrue(recorded > 0, "no allocation samples recorded for " + clazz.getCanonicalName());
-    double error = Math.abs(recorded - allocated) / (double)allocated;
-    assertTrue(error <= 0.50,
-        String.format("allocation samples should be within 10pct tolerance of allocated memory (recorded %d, allocated %d :: %4.2f)",
+    double error = Math.abs(recorded - allocated) / (double) allocated;
+    assertTrue(
+        error <= 0.50,
+        String.format(
+            "allocation samples should be within 10pct tolerance of allocated memory (recorded %d, allocated %d :: %4.2f)",
             recorded, allocated, error * 100));
   }
 
@@ -86,7 +91,6 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
   protected String getProfilerCommand() {
     return "memory=" + (256 * 1024) + ":a";
   }
-
 
   public static class AllocatingTarget extends ClassValue<AtomicLong> implements Runnable {
     public static volatile Object sink;

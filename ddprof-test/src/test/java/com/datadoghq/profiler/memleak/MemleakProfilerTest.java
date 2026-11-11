@@ -5,87 +5,82 @@
 
 package com.datadoghq.profiler.memleak;
 
-import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.AbstractProfilerTest;
-import org.junit.jupiter.api.Disabled;
-import org.junit.jupiter.api.Test;
-import org.junitpioneer.jupiter.RetryingTest;
-
+import com.datadoghq.profiler.Platform;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
-
-import org.junit.jupiter.api.Assumptions;
+import org.junitpioneer.jupiter.RetryingTest;
 
 public class MemleakProfilerTest extends AbstractProfilerTest {
-    @Override
-    protected String getProfilerCommand() {
-        return "memory=524288:L:0.5";
-    }
+  @Override
+  protected String getProfilerCommand() {
+    return "memory=524288:L:0.5";
+  }
+
+  @Override
+  protected boolean isPlatformSupported() {
+    return !(Platform.isJavaVersion(8) || Platform.isJ9() || Platform.isZing());
+  }
+
+  @RetryingTest(5)
+  public void shouldGetLiveObjectSamples() throws InterruptedException {
+    MemLeakTarget target1 = new MemLeakTarget();
+    MemLeakTarget target2 = new MemLeakTarget();
+    runTests(target1, target2);
+    // Every retained survivor is re-reported on each flush cycle for the rest of the run,
+    // which can drive the event count well past what's safe to hold fully resolved in
+    // memory, so only presence is checked, not materialized.
+    verifyEventPresent("datadog.HeapLiveObject");
+    // HeapUsage is a low-frequency periodic gauge event, unlike HeapLiveObject above, so
+    // materializing it is safe.
+    verifyEvents("datadog.HeapUsage");
+  }
+
+  public static class MemLeakTarget extends ClassValue<AtomicLong> implements Runnable {
+    private static byte[] leeway = new byte[32 * 1024 * 1024]; // 32MB to release on OOME
+    public static volatile List<Object> sink = new ArrayList<>();
 
     @Override
-    protected boolean isPlatformSupported() {
-        return !(Platform.isJavaVersion(8) || Platform.isJ9() || Platform.isZing());
+    public void run() {
+      ThreadLocalRandom random = ThreadLocalRandom.current();
+      try {
+        for (int i = 0; i < 100_000; i++) {
+          allocate(random, random.nextInt(256));
+        }
+      } catch (OutOfMemoryError e) {
+        leeway = null;
+        System.gc();
+      } finally {
+        sink.clear();
+      }
     }
 
-    @RetryingTest(5)
-    public void shouldGetLiveObjectSamples() throws InterruptedException {
-        MemLeakTarget target1 = new MemLeakTarget();
-        MemLeakTarget target2 = new MemLeakTarget();
-        runTests(target1, target2);
-        // Every retained survivor is re-reported on each flush cycle for the rest of the run,
-        // which can drive the event count well past what's safe to hold fully resolved in
-        // memory, so only presence is checked, not materialized.
-        verifyEventPresent("datadog.HeapLiveObject");
-        // HeapUsage is a low-frequency periodic gauge event, unlike HeapLiveObject above, so
-        // materializing it is safe.
-        verifyEvents("datadog.HeapUsage");
+    private static void allocate(ThreadLocalRandom random, int depth) {
+      if (depth > 0) {
+        allocate(random, depth - 1);
+        return;
+      }
+
+      Object obj;
+      if (random.nextBoolean()) {
+        obj = new int[random.nextInt(64, 192) * 1000];
+      } else {
+        obj = new Integer[random.nextInt(64, 192) * 1000];
+      }
+
+      if (random.nextInt(100) == 0 && sink.size() < 100_000) {
+        sink.add(obj);
+      }
+      if (random.nextInt(10000) == 0) {
+        System.gc();
+      }
     }
 
-    public static class MemLeakTarget extends ClassValue<AtomicLong> implements Runnable {
-        private static byte[] leeway = new byte[32 * 1024 * 1024]; // 32MB to release on OOME
-        public static volatile List<Object> sink = new ArrayList<>();
-
-        @Override
-        public void run() {
-            ThreadLocalRandom random = ThreadLocalRandom.current();
-            try {
-                for (int i = 0; i < 100_000; i++) {
-                    allocate(random, random.nextInt(256));
-                }
-            } catch (OutOfMemoryError e) {
-                leeway = null;
-                System.gc();
-            } finally {
-                sink.clear();
-            }
-        }
-
-        private static void allocate(ThreadLocalRandom random, int depth) {
-            if (depth > 0) {
-                allocate(random, depth - 1);
-                return;
-            }
-
-            Object obj;
-            if (random.nextBoolean()) {
-                obj = new int[random.nextInt(64, 192) * 1000];
-            } else {
-                obj = new Integer[random.nextInt(64, 192) * 1000];
-            }
-
-            if (random.nextInt(100) == 0 && sink.size() < 100_000) {
-                sink.add(obj);
-            }
-            if (random.nextInt(10000) == 0) {
-                System.gc();
-            }
-        }
-
-        @Override
-        protected AtomicLong computeValue(Class<?> type) {
-            return new AtomicLong();
-        }
+    @Override
+    protected AtomicLong computeValue(Class<?> type) {
+      return new AtomicLong();
     }
+  }
 }

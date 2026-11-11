@@ -53,8 +53,8 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   }
 
   /**
-   * Verifies that entering the context window prevents owned-block suppression in an
-   * unfiltered recording.
+   * Verifies that entering the context window prevents owned-block suppression in an unfiltered
+   * recording.
    *
    * @throws Exception if the worker cannot complete
    */
@@ -78,8 +78,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
    * @throws Exception if the worker cannot complete
    */
   @RetryingTest(3)
-  public void parkedPreExistingThreadOutsideContextWindowIsOwnedBlockSuppressed()
-      throws Exception {
+  public void parkedPreExistingThreadOutsideContextWindowIsOwnedBlockSuppressed() throws Exception {
     long suppressedBefore = suppressedSignals();
     runPreExistingParkedWorker();
 
@@ -235,8 +234,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
         .submit(
             () -> {
               assertSame(preExistingThread, Thread.currentThread());
-              long token =
-                  ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
+              long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
               ProfilerOwnedBlockHooks.blockExit(profiler, token);
               Thread.sleep(SLEEP_MILLIS);
               return token;
@@ -269,7 +267,8 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
               try {
                 long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(SLEEP_MILLIS);
                 while (System.nanoTime() < deadline) {
-                  // Keep the OS thread runnable so suppression must come from the owned park marker.
+                  // Keep the OS thread runnable so suppression must come from the owned park
+                  // marker.
                   // yield() (not onSpinWait(): --release 8) keeps the spin from starving others.
                   Thread.yield();
                 }

@@ -115,6 +115,11 @@ static const Multiplier UNIVERSAL[] = {
 //     cstack=MODE        - how to collect C stack frames in addition to Java
 //     stack
 //                          MODE is 'fp', 'dwarf', 'lbr', 'vm' or 'no'
+//     allocstack=MODE    - how allocation/live-heap samples capture their Java
+//                          stack: 'vm' (VM stack walker, the default on HotSpot
+//                          with cstack=vm/vmx), 'jvmti' (GetStackTrace) or
+//                          'verify' (vm, cross-checked against GetStackTrace);
+//                          either way the stacks are Java-only, also with vmx
 //     allkernel          - include only kernel-mode events
 //     alluser            - include only user-mode events
 //
@@ -304,8 +309,13 @@ Error Arguments::parse(const char *args) {
       if (value != nullptr) {
         if (strcmp(value, "false") == 0) {
           _force_jmethodID = false;
+          _lazy_jmethodID = false;
         } else if (strcmp(value, "true") == 0) {
           _force_jmethodID = true;
+          _lazy_jmethodID = false;
+        } else if (strcmp(value, "lazy") == 0) {
+          _force_jmethodID = false;
+          _lazy_jmethodID = true;
         } else {
           msg = "Invalid jmethodID creation value";
         }
@@ -360,6 +370,17 @@ Error Arguments::parse(const char *args) {
         } else {
           msg = "Invalid cstack value";
         }
+      }
+
+      CASE("allocstack")
+      if (value != NULL && strcmp(value, "vm") == 0) {
+        _alloc_stack = ALLOCSTACK_VM;
+      } else if (value != NULL && strcmp(value, "jvmti") == 0) {
+        _alloc_stack = ALLOCSTACK_JVMTI;
+      } else if (value != NULL && strcmp(value, "verify") == 0) {
+        _alloc_stack = ALLOCSTACK_VERIFY;
+      } else {
+        msg = "Invalid allocstack value";
       }
 
       CASE("attributes")

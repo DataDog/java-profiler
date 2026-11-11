@@ -17,7 +17,7 @@ import com.datadoghq.native.util.PlatformUtils
 
 plugins {
   java
-  id("me.champeau.jmh") version "0.7.3"
+  id("me.champeau.jmh") version "0.7.4"
   id("com.datadoghq.java-conventions")
 }
 
