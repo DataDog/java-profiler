@@ -32,9 +32,22 @@ report about behavior as an unverified claim.
    and the next steps. Do not implement a fix or commit without the user's separate
    approval.
 
-6. **Priority.** Rate impact, likelihood and workaround, each with its reason from the
-   evidence. State your confidence and the remaining unknowns, then recommend a Jira
-   priority. Do not set the priority field; the user decides.
+6. **Priority.** Rate impact, likelihood and workaround as H, M or L, each with its
+   reason from the evidence. For workaround, H means there is none and L means an easy
+   one. Map the three ratings to a priority with the ILW matrix that JDK Mission Control
+   uses ([ILW Prioritization](https://wiki.openjdk.org/spaces/jmc/pages/56526160/ILW+Prioritization),
+   [matrix](https://hirt.se/images/openjdk/ilw.png)):
+
+   | Priority | Impact, likelihood, workaround |
+   | --- | --- |
+   | P1 | HHH, HHM, HMH |
+   | P2 | MHH, HHL, HLH, HMM, HML |
+   | P3 | MHM, MMH, MHL, HLM, MMM |
+   | P4 | HLL, MLH, MML, MLM, LHH, LHM |
+   | P5 | LMH, MLL, LMM, LHL, LLH, LML, LLM, LLL |
+
+   State your confidence and the remaining unknowns, then recommend that priority. Do
+   not set the priority field; the user decides.
 
 Post the result on the ticket only when the user asks. The comment follows the
 `ticket-writing` skill. Its evidence table holds the reproducer with its commands and
