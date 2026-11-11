@@ -43,6 +43,8 @@ cat > "$STUB_BIN/podman" <<'EOF'
 case "$1 $2" in
   "run "*)
     printf '%s\n' "$@" > "$STUB_LOG"
+    prev=
+    for a in "$@"; do [[ $prev != -e ]] || export "$a"; prev=$a; done
     if [[ -n "${STUB_EXEC:-}" ]]; then
       cmd=${*: -1}
       cmd=${cmd//file:\/\/\/source/file://$STUB_SRC}
@@ -139,7 +141,8 @@ expect_contains "plain repo keeps narrow safe.directory" "$log" "safe.directory 
 [[ -d "$out_dir" ]] && pass || fail "--coverage-out directory was not created"
 
 output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$out_dir" --tests=FooTest)
-expect_contains "coverage honours --tests" "$(cat "$STUB_LOG")" ":ddprof-lib:coverageReport -Ptests=FooTest"
+expect_contains "coverage honours --tests" "$(cat "$STUB_LOG")" ":ddprof-lib:coverageReport -Ptests=\"\$TESTS_FILTER\""
+expect_contains "coverage passes the pattern as env" "$(cat "$STUB_LOG")" "TESTS_FILTER=FooTest"
 
 if STUB_RUN_RC=7 run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$out_dir" >/dev/null; then
   fail "container failure exit code was swallowed"
@@ -187,17 +190,19 @@ STUB_EXEC=1 STUB_WS="$TEMP_DIR/ws" STUB_OUT="$TEMP_DIR/missing/out" run_script "
 STUB_RUN_RC=125 run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$exec_out" >/dev/null || true
 [[ ! -e "$exec_out/cell.properties" && ! -e "$exec_out/reports" ]] \
   && pass || fail "a failed run left the previous export: $(find "$exec_out" | sort)"
-for bad in 'A$B' 'A"B' "A'B" 'A`B' 'A\B' 'A;B' 'A B' 'A|B' $'A\nB'; do
-  for mode in --coverage-out="$exec_out" --gtest; do
-    if output=$(run_script "$REPO" --libc=glibc --jdk=21 "$mode" --tests="$bad"); then
-      fail "--tests=$bad was accepted ($mode)"
-    else
-      expect_contains "--tests=$bad rejected ($mode)" "$output" "--tests may contain only"
-    fi
-  done
+for mode in --coverage-out="$exec_out" --gtest; do
+  if output=$(run_script "$REPO" --libc=glibc --jdk=21 "$mode" --tests=$'A\nB'); then
+    fail "--tests with a newline was accepted ($mode)"
+  else
+    expect_contains "--tests newline rejected ($mode)" "$output" "--tests must not contain a newline"
+  fi
 done
 output=$(run_script "$REPO" --libc=glibc --jdk=21 --tests='com.Foo*Test#run,Bar-1_x')
-expect_contains "test pattern characters accepted" "$(cat "$STUB_LOG")" "-Ptests=com.Foo*Test#run,Bar-1_x"
+expect_contains "test pattern passed as env" "$(cat "$STUB_LOG")" "TESTS_FILTER=com.Foo*Test#run,Bar-1_x"
+# Shell metacharacters stay literal: the pattern reaches Gradle and cell.properties intact.
+rm -rf "$exec_out"; mkdir -p "$exec_out"
+exec_cell --tests='Outer$Inner;x "y"' || true
+expect_contains "metacharacter pattern in cell.properties" "$(cat "$exec_out/cell.properties" 2>/dev/null)" 'tests=Outer$Inner;x "y"'
 
 # The non-coverage command is unchanged.
 output=$(run_script "$REPO" --libc=glibc --jdk=21)

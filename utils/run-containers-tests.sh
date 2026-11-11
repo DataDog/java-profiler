@@ -895,10 +895,10 @@ if [[ -n "$GTEST_TASK" && -n "$TESTS" ]]; then
     exit 1
 fi
 
-# The pattern is spliced unquoted into a command that the host evals and the container
-# shell runs again (and into cell.properties), so only test-pattern characters are safe.
-if [[ "$TESTS" =~ [^A-Za-z0-9_.*#,-] ]]; then
-    echo "Error: --tests may contain only letters, digits and _ . * # , -"
+# The pattern reaches the container as an environment variable, never as command text,
+# so any character is safe except a newline, which would split a cell.properties line.
+if [[ "$TESTS" == *$'\n'* ]]; then
+    echo "Error: --tests must not contain a newline"
     exit 1
 fi
 
@@ -1268,7 +1268,7 @@ CONFIG_CAPITALIZED="$(tr '[:lower:]' '[:upper:]' <<< ${CONFIG:0:1})${CONFIG:1}"
 if [[ -n "$COVERAGE_OUT" ]]; then
     GRADLE_CMD="./gradlew -PCI -PenableCoverage :ddprof-lib:coverageReport"
     if [[ -n "$TESTS" ]]; then
-        GRADLE_CMD="$GRADLE_CMD -Ptests=$TESTS"
+        GRADLE_CMD="$GRADLE_CMD -Ptests=\"\$TESTS_FILTER\""
     fi
 elif [[ -n "$GTEST_TASK" ]]; then
     if [[ "$GTEST_TASK" == :* ]]; then
@@ -1279,8 +1279,8 @@ elif [[ -n "$GTEST_TASK" ]]; then
 else
     GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG_CAPITALIZED}"
     if [[ -n "$TESTS" ]]; then
-        # No need for quotes around $TESTS - Gradle property values don't require quoting
-        GRADLE_CMD="$GRADLE_CMD -Ptests=$TESTS"
+        # Quoted for the container shell, which reads the pattern from $TESTS_FILTER.
+        GRADLE_CMD="$GRADLE_CMD -Ptests=\"\$TESTS_FILTER\""
     fi
     if ! $GTEST_ENABLED; then
         GRADLE_CMD="$GRADLE_CMD -Pskip-gtest"
@@ -1301,7 +1301,7 @@ if [[ -n "$COVERAGE_OUT" ]]; then
     COVERAGE_EXPORT="$COVERAGE_EXPORT && { [ ! -d ddprof-lib/build/reports/coverage ] || cp -r ddprof-lib/build/reports/coverage /coverage-out/reports; }"
     COVERAGE_EXPORT="$COVERAGE_EXPORT && { [ ! -d ddprof-test/build/jacoco ] || cp -r ddprof-test/build/jacoco /coverage-out/jacoco; }"
     COVERAGE_EXPORT="$COVERAGE_EXPORT && { [ ! -d ddprof-lib/build/classes/java/main ] || cp -r ddprof-lib/build/classes/java/main /coverage-out/classes; }"
-    COVERAGE_EXPORT="$COVERAGE_EXPORT && printf \"libc=%s\\narch=%s\\njdk=%s\\ntests=%s\\ncommit=%s\\ngradle_exit=%s\\n\" $LIBC $ARCH $JDK_VERSION \"$TESTS\" \"\$(git rev-parse HEAD)\" \$rc > /coverage-out/cell.properties"
+    COVERAGE_EXPORT="$COVERAGE_EXPORT && printf \"libc=%s\\narch=%s\\njdk=%s\\ntests=%s\\ncommit=%s\\ngradle_exit=%s\\n\" $LIBC $ARCH $JDK_VERSION \"\$TESTS_FILTER\" \"\$(git rev-parse HEAD)\" \$rc > /coverage-out/cell.properties"
     # A failed export must not pass as a clean cell.
     GRADLE_CMD="{ rc=0; $GRADLE_CMD || rc=\$?; { $COVERAGE_EXPORT; } || { [ \$rc -ne 0 ] || rc=70; }; exit \$rc; }"
 fi
@@ -1336,6 +1336,9 @@ CONTAINER_CMD="$CONTAINER_CMD -e LIBC=$LIBC"
 CONTAINER_CMD="$CONTAINER_CMD -e SANITIZER=$CONFIG"
 CONTAINER_CMD="$CONTAINER_CMD -e TEST_CONFIGURATION=$LIBC/${JDK_VERSION}-$CONFIG-$ARCH"
 CONTAINER_CMD="$CONTAINER_CMD -e GRADLE_USER_HOME=/gradle-cache"
+if [[ -n "$TESTS" ]]; then
+    printf -v CONTAINER_CMD '%s -e %q' "$CONTAINER_CMD" "TESTS_FILTER=$TESTS"
+fi
 if [[ -n "$COVERAGE_OUT" ]]; then
     # %q: the command is eval'd below, so a path with $, ` or " must stay literal.
     printf -v CONTAINER_CMD '%s -v %q' "$CONTAINER_CMD" "${COVERAGE_OUT}:/coverage-out${CONTAINER_VOLUME_RW_OPTIONS}"
