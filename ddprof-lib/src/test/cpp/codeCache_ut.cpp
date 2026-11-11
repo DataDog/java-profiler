@@ -109,6 +109,8 @@ TEST_F(CodeCacheArrayTest, ArrayMemoryUsageSumsLibraries) {
     EXPECT_EQ(expected, (long long)arr.memoryUsage());
 }
 
+// freeForTest() must restore the NM gauges to their pre-add baseline and
+// leave the array reusable for a later cycle.
 TEST_F(CodeCacheArrayTest, FreeForTestRestoresAccountingAndAllowsReuse) {
     const long long live_before = NativeMem::live(NM_NATIVE_SYMBOLS);
     const long long overhead_before = NativeMem::overhead(NM_NATIVE_SYMBOLS);

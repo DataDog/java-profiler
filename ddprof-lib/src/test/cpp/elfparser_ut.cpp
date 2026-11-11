@@ -104,6 +104,8 @@ class ElfReladyn : public ::testing::Test {
         if (_libs == nullptr) {
             return;  // SetUp skipped (missing resource): nothing was parsed
         }
+        // parseLibraries skips inodes already in _parsed_inodes; clearing here
+        // lets the next parse (a later SetUp or a local array) reparse them.
         Symbols::clearParsingCaches();
         _libs->freeNativeLibsForTest();
     }
@@ -118,6 +120,8 @@ TEST_F(ElfReladyn, resolveFromRela_plt) {
     ASSERT_THAT(sym, ::testing::NotNull());
 }
 
+// A local-array parse between fixture tests must not break the next SetUp
+// reparse of the global library array.
 TEST_F(ElfReladyn, reinitializeAfterLocalLibraryParse) {
     const u64 reladyn_file_id = libreladyn()->fileId();
     TearDown();
