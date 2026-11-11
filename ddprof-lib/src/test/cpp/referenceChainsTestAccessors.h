@@ -1100,6 +1100,18 @@ public:
                                                        context);
     }
 
+    // Direct heapReferenceCallback driver for the static sweep's class -> field rediscovery of an
+    // already-admitted holder: negative class-object referrer (treated as root-like), holder as
+    // tag_ptr.
+    static jint reportStaticFieldEdgeForTest(
+        jlong referrer_class_tag, jlong *tag, void *context) {
+        jlong rtag = referrer_class_tag;
+        return ReferenceChainTracker::heapReferenceCallback(
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*reference_info=*/nullptr,
+            /*class_tag=*/0, /*referrer_class_tag=*/0, /*size=*/0, tag, &rtag,
+            /*length=*/0, context);
+    }
+
     // Simulates a tag left in _priority_expand by a prior pass's truncated expandFrontier()
     // batch without a full expandFrontier()/JVMTI round-trip.
     static void pushPriorityExpand(jlong tag) {
