@@ -290,12 +290,18 @@ public:
   }
 };
 
-// A stop()/start() that completes while the callback is inside
-// GetClassSignature().
-static jvmtiError JNICALL mock_GetClassSignature_success_across_stop(
-    jvmtiEnv *env, jclass klass, char **signature_ptr, char **generic_ptr) {
+// A stop()/start() that completes while the callback is inside GetClassSignature(), which
+// returns a class no other test interns, so its presence in the class map is attributable.
+static char g_stale_session_class_name[] = "Lcom/dd/test/StaleSessionClass;";
+static const char kStaleSessionClassInMap[] = "com/dd/test/StaleSessionClass";
+
+static jvmtiError JNICALL mock_GetClassSignature_unique_class_across_stop(
+    jvmtiEnv * /*env*/, jclass /*klass*/, char **signature_ptr, char ** /*generic_ptr*/) {
   ProfilerTestAccessor::bumpSession();
-  return mock_GetClassSignature_success(env, klass, signature_ptr, generic_ptr);
+  if (signature_ptr) {
+    *signature_ptr = g_stale_session_class_name;
+  }
+  return JVMTI_ERROR_NONE;
 }
 
 class ObjectSamplerSessionTest : public ObjectSamplerDeallocateTest {
@@ -329,8 +335,16 @@ TEST_F(ObjectSamplerSessionTest, SampleWithinOneSessionIsRecorded) {
   EXPECT_EQ(0u, skippedAfter(mock_GetClassSignature_success));
 }
 
-// The allocation predates the stop, so its sample must be dropped even though
-// the class id it resolves afterwards belongs to the new recording.
+// The allocation predates the stop, so the callback must not intern its class
+// into the new recording's class map, and its sample is dropped before it is
+// recorded (so the skipped counter does not move).
 TEST_F(ObjectSamplerSessionTest, StopDuringClassLookupDropsSample) {
-  EXPECT_EQ(1u, skippedAfter(mock_GetClassSignature_success_across_stop));
+  ASSERT_EQ(0u, Profiler::instance()->classMap()->bounded_lookup(
+                    kStaleSessionClassInMap, strlen(kStaleSessionClassInMap)));
+
+  EXPECT_EQ(0u, skippedAfter(mock_GetClassSignature_unique_class_across_stop));
+
+  EXPECT_EQ(0u, Profiler::instance()->classMap()->bounded_lookup(
+                    kStaleSessionClassInMap, strlen(kStaleSessionClassInMap)))
+      << "a stale callback interned its class into the next recording's map";
 }

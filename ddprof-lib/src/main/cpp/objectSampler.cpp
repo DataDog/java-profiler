@@ -101,10 +101,14 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   int id = -1;
   // A callback that passed _active before stop() must not re-allocate the
   // class map stop() released: intern only through the open intern gate. The
-  // unlocked check keeps callbacks off the lock while it is closed.
+  // unlocked check keeps callbacks off the lock while it is closed. Under the
+  // lock the session is re-checked too, so a callback that stalled in
+  // GetClassSignature() across a stop()/start() does not fill the next
+  // recording's bounded class map.
   if (profiler->internOpen() && normalizeClassSignature(class_name, &name_slice, &name_len)) {
     OptionalSharedLockGuard intern(profiler->internLock(), SpinLock::NO_SPIN_BUDGET);
-    if (intern.ownsLock() && profiler->internOpen()) {
+    if (intern.ownsLock() && profiler->internOpen() &&
+        profiler->recordingSession() == recording_session) {
       id = profiler->lookupClass(name_slice, name_len);
     }
   }
