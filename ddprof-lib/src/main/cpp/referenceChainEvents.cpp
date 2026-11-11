@@ -750,14 +750,13 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
         if (queued) {
           continue;
         }
-        assert((int)_pending_chain_invalidations.size() <
-               MAX_PENDING_CHAIN_INVALIDATIONS);
-        if ((int)_pending_chain_invalidations.size() <
-            MAX_PENDING_CHAIN_INVALIDATIONS) {
+        if (_pending_chain_invalidations.size() <
+            (size_t)MAX_PENDING_CHAIN_INVALIDATIONS) {
           _pending_chain_invalidations.push_back(pending);
         } else {
-          // Reachable when producers outpace the drain (the cap, not arithmetic, bounds the
-          // buffer); the cached chain is kept and a later correlation or path change re-queues it.
+          // The buffer is full - reachable when producers outpace the drain (the cap, not
+          // arithmetic, bounds the buffer); the cached chain is kept and a later correlation
+          // or path change re-queues it.
           TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations requeue overflow, "
                    "keeping cached chain source_tag=%lld",
                    (long long)tag);
