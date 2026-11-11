@@ -8,6 +8,7 @@
 #if defined(__linux__)
 
 #include "context_api.h"
+#include "errnoGuard.h"
 #include "profiler.h"
 #include "taskBlockRecorder.h"
 #include "threadLocalData.h"
@@ -15,7 +16,6 @@
 #include "tsc.h"
 
 #include <atomic>
-#include <errno.h>
 
 #ifdef UNIT_TEST
 static std::atomic<NativeBlockScope::HookObserver> _native_block_observer{nullptr};
@@ -36,51 +36,44 @@ static void observeNativeBlockPhase(const char* phase, NativeBlockKind kind, int
 NativeBlockScope::NativeBlockScope(NativeBlockKind kind, int blocker_id,
                                    OSThreadState state)
     : _blocker(blocker(kind, blocker_id)), _state(state) {
-  int saved_errno = errno;
+  ErrnoGuard errno_guard;
 #ifdef UNIT_TEST
   observeNativeBlockPhase("enter", kind, blocker_id);
 #endif
 
   Profiler* profiler = Profiler::instance();
   if (!profiler->taskBlockEnabled()) {
-    errno = saved_errno;
     return;
   }
 
   ThreadFilter* thread_filter = profiler->threadFilter();
   if (!thread_filter->registryActive()) {
-    errno = saved_errno;
     return;
   }
 
   ProfiledThread* current = ProfiledThread::current();
   if (current == nullptr || current->threadType() != ProfiledThread::TYPE_JAVA_THREAD) {
-    errno = saved_errno;
     return;
   }
 
   if (current->isJvmInternalThread()) {
     Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
-    errno = saved_errno;
     return;
   }
 
   ThreadFilter::SlotID slot_id = current->filterSlotId();
   if (slot_id < 0) {
-    errno = saved_errno;
     return;
   }
 
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
     Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
-    errno = saved_errno;
     return;
   }
 
   u64 token = thread_filter->enterBlockedRun(slot_id, state, BlockRunOwner::NATIVE);
   if (token == 0) {
-    errno = saved_errno;
     return;
   }
 
@@ -96,10 +89,10 @@ NativeBlockScope::NativeBlockScope(NativeBlockKind kind, int blocker_id,
     thread_filter->exitBlockedRun(_slot_id, _generation);
     _active = false;
   }
-  errno = saved_errno;
 }
 
 NativeBlockScope::~NativeBlockScope() {
+  ErrnoGuard errno_guard;
 #ifdef UNIT_TEST
   observeNativeBlockPhase("exit", static_cast<NativeBlockKind>(_blocker >> 32),
                           static_cast<int>(_blocker & 0xffffffff));
@@ -107,9 +100,7 @@ NativeBlockScope::~NativeBlockScope() {
   if (!_active) {
     return;
   }
-  int saved_errno = errno;
   finish(TSC::ticks());
-  errno = saved_errno;
 }
 
 void NativeBlockScope::finish(u64 end_ticks) {

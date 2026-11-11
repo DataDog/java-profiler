@@ -19,6 +19,8 @@ public:
 
   bool isStreamSocket(int fd);
   bool isDatagramSocket(int fd);
+  bool revalidateStreamSocket(int fd);
+  bool revalidateDatagramSocket(int fd);
   void cacheNonSocket(int fd);
   void clearFdType(int fd);
   void clearFdTypeCache();
@@ -28,6 +30,7 @@ public:
   static void setProbeOverrideForTest(ProbeOverride probe);
   static uint64_t probeCountForTest();
   static void resetProbeCountForTest();
+  static uint64_t cacheAllocationCountForTest();
 #endif
 
 private:
@@ -46,18 +49,24 @@ private:
   static const uint8_t FD_TYPE_OTHER_SOCKET = 3;
   static const uint8_t FD_TYPE_NON_SOCKET = 4;
 
-  // A low-fd entry atomically couples its cached type to both the profiler
-  // cache epoch and that fd's lifecycle incarnation. A probe may publish only
-  // if close/dup has not changed the entry it observed before getsockopt().
-  std::atomic<uint32_t> _fd_cache_gen{1};
-  // Allocated lazily on first fd classification so an interposer/sampler
-  // instance that never actually classifies an fd (e.g. disabled at start,
-  // or a process with no matching native I/O) never pays the ~544 KiB RSS
-  // cost of these two tables.
+  static const uint64_t CACHE_BANK_EPOCHS = HIGH_FD_EPOCH_MASK + 1;
+  static const int CACHE_BANKS = 2;
+  static const uint64_t CACHE_EPOCH_LIMIT = CACHE_BANKS * CACHE_BANK_EPOCHS;
+
+  // Every publication and lifecycle invalidation advances the incarnation,
+  // including same-type observations, so an older probe cannot overwrite them.
+  // Never reuse a packed identity: epoch/incarnation exhaustion retires a bank.
+  // After both banks retire, probes continue without caching. The full epoch
+  // never wraps, and pending probes retain their original bank until returning.
+  std::atomic<uint64_t> _fd_cache_gen{1};
+  // Lazy, bounded 1088 KiB of entries. Lifecycle invalidation alone must not
+  // allocate, and an allocation failure falls back to uncached classification.
   std::once_flag _cache_alloc_once;
+  std::atomic<bool> _caches_allocated{false};
   std::atomic<uint64_t>* _fd_type_cache = nullptr;
   std::atomic<uint64_t>* _high_fd_type_cache = nullptr;
   void ensureCachesAllocated();
+  void retireCacheBank(uint64_t epoch);
 
   static uint8_t probeFdType(int fd);
   static uint64_t fdEntry(uint32_t epoch, uint64_t incarnation, uint8_t type);
@@ -71,13 +80,14 @@ private:
   static bool highFdEntryMatchesFd(uint64_t entry, int fd);
   static int highFdCacheIndex(int fd);
   void cacheFdType(int fd, uint8_t type);
-  uint8_t highFdType(int fd);
+  uint8_t highFdType(int fd, bool revalidate);
   void clearHighFdType(int fd);
-  uint8_t fdType(int fd);
+  uint8_t fdType(int fd, bool revalidate = false);
 
 #ifdef UNIT_TEST
   static std::atomic<ProbeOverride> _probe_override;
   static std::atomic<uint64_t> _probe_count;
+  static std::atomic<uint64_t> _cache_allocations;
 #endif
 };
 

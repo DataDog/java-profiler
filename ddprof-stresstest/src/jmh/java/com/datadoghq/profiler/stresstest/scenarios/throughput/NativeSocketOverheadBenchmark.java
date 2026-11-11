@@ -44,10 +44,10 @@ import org.openjdk.jmh.annotations.Warmup;
 /**
  * Measures overhead of the nativesocket PLT write/read hooks on:
  * <ul>
- *   <li><b>fileWrite</b> — write() to a regular file. After the first call the
- *       fd-type cache classifies it as non-socket (one atomic load per subsequent
- *       call). This is the worst-case overhead scenario for code that does heavy
- *       file I/O with nativesocket enabled.
+ *   <li><b>fileWrite</b> — write() to a regular file. If the JDK routes it through
+ *       a patched networking-library import, every active hook probes SO_TYPE,
+ *       including after a cached non-socket verdict. Unpatched file-library
+ *       imports bypass the hook; results must identify the exercised JDK path.
  *   <li><b>socketWrite</b> — write() to a TCP socket (blocking, PlainSocket).
  *   <li><b>nioSocketWrite</b> — write() via NIO SocketChannel (JDK11+ path).
  * </ul>
@@ -99,7 +99,7 @@ public class NativeSocketOverheadBenchmark {
             profiler.execute("start,natsock,jfr,file=" + jfr.toAbsolutePath());
         }
 
-        // File I/O: regular file, will be classified non-socket after first write
+        // Regular-file control; only patched networking-library imports classify it.
         tmpFile = Files.createTempFile("nativesocket-bench-file", ".bin");
         fileOut = Files.newOutputStream(tmpFile);
 
@@ -150,7 +150,7 @@ public class NativeSocketOverheadBenchmark {
         nioServer.close();
     }
 
-    /** write() to a regular file — measures fd-type-cache overhead on non-socket fds. */
+    /** write() to a regular file — a non-socket control whose hook coverage depends on the JDK. */
     @Benchmark
     public void fileWrite() throws IOException {
         fileOut.write(buf);

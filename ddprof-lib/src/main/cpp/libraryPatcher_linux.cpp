@@ -37,6 +37,10 @@ std::vector<SocketPatchEntry> LibraryPatcher::_socket_entries;
 std::vector<SocketPatchedLibrary> LibraryPatcher::_socket_libraries;
 const void* LibraryPatcher::_socket_bases[SOCKET_BASE_TABLE_SIZE] = {};
 std::atomic<bool> LibraryPatcher::_socket_active{false};
+#ifdef UNIT_TEST
+static std::atomic<LibraryPatcher::SocketImportFailureForTest>
+    socket_import_failure_for_test{nullptr};
+#endif
 
 static_assert(SOCKET_BASE_TABLE_SIZE > 0 &&
                   (SOCKET_BASE_TABLE_SIZE & (SOCKET_BASE_TABLE_SIZE - 1)) == 0,
@@ -922,6 +926,13 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
           size_t count = lib->importCount(import_id);
           for (size_t import_index = 0; import_index < count; import_index++) {
             void** location = lib->findImport(import_id, import_index);
+#ifdef UNIT_TEST
+            SocketImportFailureForTest failure =
+                socket_import_failure_for_test.load(std::memory_order_acquire);
+            if (failure != nullptr && failure(lib, import_id, import_index)) {
+              location = nullptr;
+            }
+#endif
             if (location == nullptr) {
               Log::warn("native I/O hooks disabled: missing import slot for "
                         "%s in %s", hooks[hook_index].name, lib->name());
@@ -978,6 +989,11 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
 }
 
 #ifdef UNIT_TEST
+LibraryPatcher::SocketImportFailureForTest
+LibraryPatcher::exchangeSocketImportFailureForTest(SocketImportFailureForTest failure) {
+  return socket_import_failure_for_test.exchange(failure, std::memory_order_acq_rel);
+}
+
 int LibraryPatcher::patch_socket_import_for_test(CodeCache* lib, ImportId import_id,
                                                  void* hook, const char* name,
                                                  bool retain_library) {

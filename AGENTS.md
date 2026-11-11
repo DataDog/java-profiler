@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 <!-- CLAUDE BOOTSTRAP INSTRUCTIONS
 If you are Claude and reading this file, check if CLAUDE.md exists in the same directory.
 If CLAUDE.md does not exist or only contains the redirect + Compact Instructions below, that
@@ -297,6 +299,10 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 - **Samplers**: Every sampler must set up the `ProfiledThread` TLS before sampling, and skip the sample if it isn't available. Signal-based or allocation-adjacent hooks sampler (e.g. malloc/free interceptors) must use `ProfiledThread::acquireCurrent()`; non-signal-based samplers use `ProfiledThread::initCurrentThreadSignalSafe()`.
 - **Samplers**: Every sampler must set up the `ProfiledThread` TLS before sampling, and skip the sample if it isn't available. Signal-based samplers and allocation-adjacent hooks (e.g. malloc/free interceptors) must use `ProfiledThread::acquireCurrent()`; non-signal-based samplers use `ProfiledThread::initCurrentThreadSignalSafe()`.
 - **JNI/JVMTI callbacks**: Use `ProfiledThread::initCurrentThreadSignalSafe()` to set up `ProfiledThread` for the thread.
+
+### Native I/O hooks
+- The interposer and bytes sampler are separate owners of shared import patches. Installed slots do not imply either owner is active: after both owners disable, entered stream hooks must forward without classification, clock reads or TaskBlock scope work.
+- Sampled socket revalidation must capture the classifier epoch/incarnation before probing and use its conditional publication. Never publish transient probe failures such as EBADF as a stable non-socket verdict. See [NativeIoHooks](doc/architecture/NativeIoHooks.md).
 
 ### Atomic Memory Ordering (Critical for arm64)
 arm64 has a weakly-ordered memory model (unlike x86 TSO). Incorrect ordering causes real lockups on arm64 that never reproduce on x86.

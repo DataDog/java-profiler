@@ -102,6 +102,11 @@ public:
   static void unpatch_socket_functions();
   static bool unpatch_socket_functions_if_inactive();
 #ifdef UNIT_TEST
+  // Called under _lock after lookup; must not reenter the patcher or loader.
+  // Return true to exercise production's missing-slot rollback.
+  using SocketImportFailureForTest = bool (*)(CodeCache*, ImportId, size_t);
+  static SocketImportFailureForTest exchangeSocketImportFailureForTest(
+      SocketImportFailureForTest failure);
   static int patch_socket_import_for_test(CodeCache* lib, ImportId import_id,
                                           void* hook, const char* name,
                                           bool retain_library = false);

@@ -95,6 +95,8 @@ public:
 
   bool isStreamSocket(int fd);
   bool isDatagramSocket(int fd);
+  bool revalidateStreamSocket(int fd);
+  bool revalidateDatagramSocket(int fd);
   void clearFdType(int fd);
   void clearFdTypeCache();
 

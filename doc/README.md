@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Java Profiler Documentation
 
 ## Directory Structure
@@ -16,6 +18,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 ## Quick Navigation
 
 ### Architecture
+- [NativeIoHooks](architecture/NativeIoHooks.md) - Native I/O hook ownership and FD classification/revalidation
 - [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer architecture for call traces
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, and rotation protocols

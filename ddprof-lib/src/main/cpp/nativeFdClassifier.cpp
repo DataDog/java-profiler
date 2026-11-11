@@ -9,11 +9,14 @@
 
 #include <errno.h>
 #include <stddef.h>
+#include <memory>
+#include <new>
 #include <sys/socket.h>
 
 #ifdef UNIT_TEST
 std::atomic<NativeFdClassifier::ProbeOverride> NativeFdClassifier::_probe_override{nullptr};
 std::atomic<uint64_t> NativeFdClassifier::_probe_count{0};
+std::atomic<uint64_t> NativeFdClassifier::_cache_allocations{0};
 #endif
 
 NativeFdClassifier::NativeFdClassifier() {}
@@ -24,21 +27,29 @@ NativeFdClassifier::~NativeFdClassifier() {
 }
 
 void NativeFdClassifier::ensureCachesAllocated() {
+  if (_fd_cache_gen.load(std::memory_order_acquire) >= CACHE_EPOCH_LIMIT) {
+    return;
+  }
   std::call_once(_cache_alloc_once, [this]() {
-    std::atomic<uint64_t>* fd_type_cache =
-        new std::atomic<uint64_t>[FD_TYPE_CACHE_SIZE];
-    std::atomic<uint64_t>* high_fd_type_cache =
-        new std::atomic<uint64_t>[HIGH_FD_TYPE_CACHE_SIZE];
-    for (int index = 0; index < FD_TYPE_CACHE_SIZE; index++) {
+    std::unique_ptr<std::atomic<uint64_t>[]> fd_type_cache(
+        new (std::nothrow) std::atomic<uint64_t>[CACHE_BANKS * FD_TYPE_CACHE_SIZE]);
+    std::unique_ptr<std::atomic<uint64_t>[]> high_fd_type_cache(
+        new (std::nothrow) std::atomic<uint64_t>[CACHE_BANKS * HIGH_FD_TYPE_CACHE_SIZE]);
+    if (!fd_type_cache || !high_fd_type_cache) {
+      return;
+    }
+    for (int index = 0; index < CACHE_BANKS * FD_TYPE_CACHE_SIZE; index++) {
       fd_type_cache[index].store(0, std::memory_order_relaxed);
     }
-    for (int index = 0; index < HIGH_FD_TYPE_CACHE_SIZE; index++) {
+    for (int index = 0; index < CACHE_BANKS * HIGH_FD_TYPE_CACHE_SIZE; index++) {
       high_fd_type_cache[index].store(0, std::memory_order_relaxed);
     }
-    // std::call_once establishes happens-before for every caller that
-    // observed it return, so a plain store is sufficient to publish these.
-    _fd_type_cache = fd_type_cache;
-    _high_fd_type_cache = high_fd_type_cache;
+    _fd_type_cache = fd_type_cache.release();
+    _high_fd_type_cache = high_fd_type_cache.release();
+#ifdef UNIT_TEST
+    _cache_allocations.fetch_add(1, std::memory_order_relaxed);
+#endif
+    _caches_allocated.store(true, std::memory_order_release);
   });
 }
 
@@ -53,6 +64,10 @@ uint64_t NativeFdClassifier::probeCountForTest() {
 
 void NativeFdClassifier::resetProbeCountForTest() {
   _probe_count.store(0, std::memory_order_release);
+}
+
+uint64_t NativeFdClassifier::cacheAllocationCountForTest() {
+  return _cache_allocations.load(std::memory_order_acquire);
 }
 #endif
 
@@ -108,19 +123,32 @@ void NativeFdClassifier::cacheFdType(int fd, uint8_t type) {
   if (fd < 0 || type == 0) {
     return;
   }
+  uint64_t epoch = _fd_cache_gen.load(std::memory_order_acquire);
+  if (!_caches_allocated.load(std::memory_order_acquire) || epoch >= CACHE_EPOCH_LIMIT) {
+    return;
+  }
+  size_t bank = epoch / CACHE_BANK_EPOCHS;
   if (static_cast<size_t>(fd) < static_cast<size_t>(FD_TYPE_CACHE_SIZE)) {
-    uint32_t epoch = _fd_cache_gen.load(std::memory_order_acquire);
-    uint64_t cached = _fd_type_cache[fd].load(std::memory_order_acquire);
-    uint64_t desired = fdEntry(epoch, fdEntryIncarnation(cached), type);
-    _fd_type_cache[fd].compare_exchange_strong(
+    auto& slot = _fd_type_cache[bank * FD_TYPE_CACHE_SIZE + fd];
+    uint64_t cached = slot.load(std::memory_order_acquire);
+    uint64_t incarnation = fdEntryIncarnation(cached);
+    if (incarnation == FD_TYPE_INCARNATION_MASK) {
+      retireCacheBank(epoch);
+      return;
+    }
+    uint64_t desired = fdEntry(epoch, incarnation + 1, type);
+    slot.compare_exchange_strong(
         cached, desired, std::memory_order_acq_rel, std::memory_order_acquire);
   } else {
-    uint32_t epoch = _fd_cache_gen.load(std::memory_order_acquire);
-    int index = highFdCacheIndex(fd);
-    uint64_t cached = _high_fd_type_cache[index].load(std::memory_order_acquire);
-    uint64_t desired = highFdEntry(fd, epoch, highFdEntryIncarnation(cached),
-                                   type);
-    _high_fd_type_cache[index].compare_exchange_strong(
+    auto& slot = _high_fd_type_cache[bank * HIGH_FD_TYPE_CACHE_SIZE + highFdCacheIndex(fd)];
+    uint64_t cached = slot.load(std::memory_order_acquire);
+    uint64_t incarnation = highFdEntryIncarnation(cached);
+    if (incarnation == HIGH_FD_INCARNATION_MASK) {
+      retireCacheBank(epoch);
+      return;
+    }
+    uint64_t desired = highFdEntry(fd, epoch, incarnation + 1, type);
+    slot.compare_exchange_strong(
         cached, desired, std::memory_order_acq_rel, std::memory_order_acquire);
   }
 }
@@ -166,11 +194,16 @@ int NativeFdClassifier::highFdCacheIndex(int fd) {
                           static_cast<uint32_t>(HIGH_FD_TYPE_CACHE_SIZE));
 }
 
-uint8_t NativeFdClassifier::highFdType(int fd) {
-  uint32_t epoch = _fd_cache_gen.load(std::memory_order_acquire);
-  int index = highFdCacheIndex(fd);
-  uint64_t cached = _high_fd_type_cache[index].load(std::memory_order_acquire);
-  if (highFdEntryMatches(cached, fd, epoch)) {
+uint8_t NativeFdClassifier::highFdType(int fd, bool revalidate) {
+  uint64_t epoch = _fd_cache_gen.load(std::memory_order_acquire);
+  if (epoch >= CACHE_EPOCH_LIMIT) {
+    uint8_t type = probeFdType(fd);
+    return _fd_cache_gen.load(std::memory_order_acquire) == epoch ? type : 0;
+  }
+  size_t bank = epoch / CACHE_BANK_EPOCHS;
+  auto& slot = _high_fd_type_cache[bank * HIGH_FD_TYPE_CACHE_SIZE + highFdCacheIndex(fd)];
+  uint64_t cached = slot.load(std::memory_order_acquire);
+  if (!revalidate && highFdEntryMatches(cached, fd, epoch)) {
     uint8_t type = static_cast<uint8_t>(cached & FD_TYPE_MASK);
     if (type != 0) {
       return type;
@@ -181,17 +214,20 @@ uint8_t NativeFdClassifier::highFdType(int fd) {
   // probeFdType() returns 0 for transient errors such as EBADF. Do not cache those:
   // the same fd number may later be reused for a socket.
   if (type != 0) {
-    uint64_t desired = highFdEntry(fd, epoch,
-                                   highFdEntryIncarnation(cached), type);
-    if (_high_fd_type_cache[index].compare_exchange_strong(
+    uint64_t incarnation = highFdEntryIncarnation(cached);
+    if (incarnation == HIGH_FD_INCARNATION_MASK) {
+      retireCacheBank(epoch);
+      return 0;
+    }
+    uint64_t desired = highFdEntry(fd, epoch, incarnation + 1, type);
+    if (slot.compare_exchange_strong(
             cached, desired, std::memory_order_acq_rel,
             std::memory_order_acquire)) {
-      return (_fd_cache_gen.load(std::memory_order_acquire)
-              & HIGH_FD_EPOCH_MASK) == (epoch & HIGH_FD_EPOCH_MASK)
-          ? type : 0;
+      return _fd_cache_gen.load(std::memory_order_acquire) == epoch ? type : 0;
     }
-    uint32_t current_epoch = _fd_cache_gen.load(std::memory_order_acquire);
-    if (highFdEntryMatches(cached, fd, current_epoch)) {
+    uint64_t current_epoch = _fd_cache_gen.load(std::memory_order_acquire);
+    if (current_epoch / CACHE_BANK_EPOCHS == bank &&
+        highFdEntryMatches(cached, fd, current_epoch)) {
       return static_cast<uint8_t>(cached & FD_TYPE_MASK);
     }
     return 0;
@@ -199,18 +235,24 @@ uint8_t NativeFdClassifier::highFdType(int fd) {
   return type;
 }
 
-uint8_t NativeFdClassifier::fdType(int fd) {
+uint8_t NativeFdClassifier::fdType(int fd, bool revalidate) {
   if (fd < 0) {
     return 0;
   }
 
+  uint64_t epoch = _fd_cache_gen.load(std::memory_order_acquire);
+  if (!_caches_allocated.load(std::memory_order_acquire) || epoch >= CACHE_EPOCH_LIMIT) {
+    uint8_t type = probeFdType(fd);
+    return _fd_cache_gen.load(std::memory_order_acquire) == epoch ? type : 0;
+  }
   if (static_cast<size_t>(fd) >= static_cast<size_t>(FD_TYPE_CACHE_SIZE)) {
-    return highFdType(fd);
+    return highFdType(fd, revalidate);
   }
 
-  uint32_t epoch = _fd_cache_gen.load(std::memory_order_acquire);
-  uint64_t cached = _fd_type_cache[fd].load(std::memory_order_acquire);
-  if (fdEntryEpoch(cached) == epoch) {
+  size_t bank = epoch / CACHE_BANK_EPOCHS;
+  auto& slot = _fd_type_cache[bank * FD_TYPE_CACHE_SIZE + fd];
+  uint64_t cached = slot.load(std::memory_order_acquire);
+  if (!revalidate && fdEntryEpoch(cached) == epoch) {
     uint8_t type = static_cast<uint8_t>(cached & FD_TYPE_MASK);
     if (type != 0) {
       return type;
@@ -221,14 +263,19 @@ uint8_t NativeFdClassifier::fdType(int fd) {
   // probeFdType() returns 0 for transient errors such as EBADF. Do not cache those:
   // the same fd number may later be reused for a socket.
   if (type != 0) {
-    uint64_t desired = fdEntry(epoch, fdEntryIncarnation(cached), type);
-    if (_fd_type_cache[fd].compare_exchange_strong(
+    uint64_t incarnation = fdEntryIncarnation(cached);
+    if (incarnation == FD_TYPE_INCARNATION_MASK) {
+      retireCacheBank(epoch);
+      return 0;
+    }
+    uint64_t desired = fdEntry(epoch, incarnation + 1, type);
+    if (slot.compare_exchange_strong(
             cached, desired, std::memory_order_acq_rel,
             std::memory_order_acquire)) {
       return _fd_cache_gen.load(std::memory_order_acquire) == epoch ? type : 0;
     }
-    uint32_t current_epoch = _fd_cache_gen.load(std::memory_order_acquire);
-    if (fdEntryEpoch(cached) == current_epoch) {
+    uint64_t current_epoch = _fd_cache_gen.load(std::memory_order_acquire);
+    if (current_epoch / CACHE_BANK_EPOCHS == bank && fdEntryEpoch(cached) == current_epoch) {
       return static_cast<uint8_t>(cached & FD_TYPE_MASK);
     }
     return 0;
@@ -237,11 +284,27 @@ uint8_t NativeFdClassifier::fdType(int fd) {
 }
 
 bool NativeFdClassifier::isStreamSocket(int fd) {
+  if (fd < 0) return false;
   ensureCachesAllocated();
   return fdType(fd) == FD_TYPE_STREAM_SOCKET;
 }
 
+bool NativeFdClassifier::revalidateStreamSocket(int fd) {
+  if (fd < 0) return false;
+  ensureCachesAllocated();
+  // Bypass a cached verdict, but retain the pre-probe epoch/incarnation CAS.
+  // A close/dup during getsockopt must prevent publishing the old fd's type.
+  return fdType(fd, true) == FD_TYPE_STREAM_SOCKET;
+}
+
+bool NativeFdClassifier::revalidateDatagramSocket(int fd) {
+  if (fd < 0) return false;
+  ensureCachesAllocated();
+  return fdType(fd, true) == FD_TYPE_DATAGRAM_SOCKET;
+}
+
 bool NativeFdClassifier::isDatagramSocket(int fd) {
+  if (fd < 0) return false;
   ensureCachesAllocated();
   return fdType(fd) == FD_TYPE_DATAGRAM_SOCKET;
 }
@@ -254,27 +317,40 @@ void NativeFdClassifier::cacheNonSocket(int fd) {
   cacheFdType(fd, FD_TYPE_NON_SOCKET);
 }
 
+void NativeFdClassifier::retireCacheBank(uint64_t epoch) {
+  // A competing epoch change already invalidates probes captured before this
+  // lifecycle operation. Never reset or reuse the retired bank's words.
+  uint64_t next_bank = (epoch / CACHE_BANK_EPOCHS + 1) * CACHE_BANK_EPOCHS;
+  _fd_cache_gen.compare_exchange_strong(
+      epoch, next_bank, std::memory_order_acq_rel, std::memory_order_acquire);
+}
+
 void NativeFdClassifier::clearHighFdType(int fd) {
   int index = highFdCacheIndex(fd);
-  uint32_t epoch = _fd_cache_gen.load(std::memory_order_acquire);
-  uint64_t cached = _high_fd_type_cache[index].load(std::memory_order_acquire);
+  uint64_t epoch = _fd_cache_gen.load(std::memory_order_acquire);
   for (;;) {
-    // Advance the direct-mapped slot even when it currently holds a colliding
-    // fd. This makes every probe that started before this lifecycle event lose
-    // its publication CAS without unnecessarily evicting the colliding type.
+    if (epoch >= CACHE_EPOCH_LIMIT) {
+      clearFdTypeCache();
+      return;
+    }
+    size_t bank = epoch / CACHE_BANK_EPOCHS;
+    auto& slot = _high_fd_type_cache[bank * HIGH_FD_TYPE_CACHE_SIZE + index];
+    uint64_t cached = slot.load(std::memory_order_acquire);
+    if (highFdEntryIncarnation(cached) == HIGH_FD_INCARNATION_MASK) {
+      retireCacheBank(epoch);
+      return;
+    }
+    // Colliding descriptors retain their verdict but not their publication word.
     uint64_t incarnation = highFdEntryIncarnation(cached) + 1;
-    bool current_entry = highFdEntryEpoch(cached) ==
-                         (epoch & HIGH_FD_EPOCH_MASK);
+    bool current_entry = highFdEntryEpoch(cached) == (epoch & HIGH_FD_EPOCH_MASK);
     int cached_fd = current_entry
-        ? static_cast<int>((cached >> HIGH_FD_TAG_SHIFT) *
-                           HIGH_FD_TYPE_CACHE_SIZE + index)
+        ? static_cast<int>((cached >> HIGH_FD_TAG_SHIFT) * HIGH_FD_TYPE_CACHE_SIZE + index)
         : fd;
     uint8_t type = current_entry && cached_fd != fd
         ? static_cast<uint8_t>(cached & FD_TYPE_MASK) : 0;
     uint64_t desired = highFdEntry(cached_fd, epoch, incarnation, type);
-    if (_high_fd_type_cache[index].compare_exchange_weak(
-            cached, desired, std::memory_order_acq_rel,
-            std::memory_order_acquire)) {
+    if (slot.compare_exchange_weak(cached, desired, std::memory_order_acq_rel,
+                                   std::memory_order_acquire)) {
       return;
     }
     epoch = _fd_cache_gen.load(std::memory_order_acquire);
@@ -285,15 +361,27 @@ void NativeFdClassifier::clearFdType(int fd) {
   if (fd < 0) {
     return;
   }
-  ensureCachesAllocated();
+  if (!_caches_allocated.load(std::memory_order_acquire)) {
+    clearFdTypeCache();
+    return;
+  }
   if (static_cast<size_t>(fd) < static_cast<size_t>(FD_TYPE_CACHE_SIZE)) {
-    uint32_t epoch = _fd_cache_gen.load(std::memory_order_acquire);
-    uint64_t cached = _fd_type_cache[fd].load(std::memory_order_acquire);
+    uint64_t epoch = _fd_cache_gen.load(std::memory_order_acquire);
     for (;;) {
+      if (epoch >= CACHE_EPOCH_LIMIT) {
+        clearFdTypeCache();
+        return;
+      }
+      size_t bank = epoch / CACHE_BANK_EPOCHS;
+      auto& slot = _fd_type_cache[bank * FD_TYPE_CACHE_SIZE + fd];
+      uint64_t cached = slot.load(std::memory_order_acquire);
+      if (fdEntryIncarnation(cached) == FD_TYPE_INCARNATION_MASK) {
+        retireCacheBank(epoch);
+        return;
+      }
       uint64_t desired = fdEntry(epoch, fdEntryIncarnation(cached) + 1, 0);
-      if (_fd_type_cache[fd].compare_exchange_weak(
-              cached, desired, std::memory_order_acq_rel,
-              std::memory_order_acquire)) {
+      if (slot.compare_exchange_weak(cached, desired, std::memory_order_acq_rel,
+                                     std::memory_order_acquire)) {
         return;
       }
       epoch = _fd_cache_gen.load(std::memory_order_acquire);
@@ -304,7 +392,10 @@ void NativeFdClassifier::clearFdType(int fd) {
 }
 
 void NativeFdClassifier::clearFdTypeCache() {
-  _fd_cache_gen.fetch_add(1, std::memory_order_acq_rel);
+  uint64_t epoch = _fd_cache_gen.load(std::memory_order_acquire);
+  while (epoch != UINT64_MAX && !_fd_cache_gen.compare_exchange_weak(
+      epoch, epoch + 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+  }
 }
 
 #endif // __linux__

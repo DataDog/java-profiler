@@ -8,32 +8,40 @@
 #if defined(__linux__)
 
 #include "counters.h"
+#include "errnoGuard.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
 #include "nativeSocketSampler.h"
+#include "safeAccess.h"
 #include "tsc.h"
+#include "vmEntry.h"
 
 #include <errno.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
-static inline bool nonZeroTimeval(const struct timeval* timeout) {
-  return timeout == nullptr || timeout->tv_sec != 0 || timeout->tv_usec != 0;
+// Only HotSpot/OpenJ9 install the crash handler that recovers safeCopy faults.
+// Other VMs must forward without reading application-owned timeout memory.
+// The original libc may itself read that memory; preserve its behavior, not
+// a synthetic EFAULT guarantee for every libc implementation.
+static NOINLINE bool nonZeroTimeval(const struct timeval* timeout) {
+  if (timeout == nullptr) return true;
+  if (!VM::isHotspot() && !VM::isOpenJ9()) return false;
+  ErrnoGuard errno_guard;
+  struct timeval value;
+  return SafeAccess::safeCopy(&value, timeout, sizeof(value)) &&
+      (value.tv_sec != 0 || value.tv_usec != 0);
 }
 
-static inline bool nonZeroTimespec(const struct timespec* timeout) {
-  return timeout == nullptr || timeout->tv_sec != 0 || timeout->tv_nsec != 0;
+static NOINLINE bool nonZeroTimespec(const struct timespec* timeout) {
+  if (timeout == nullptr) return true;
+  if (!VM::isHotspot() && !VM::isOpenJ9()) return false;
+  ErrnoGuard errno_guard;
+  struct timespec value;
+  return SafeAccess::safeCopy(&value, timeout, sizeof(value)) &&
+      (value.tv_sec != 0 || value.tv_nsec != 0);
 }
-
-class ErrnoGuard {
-public:
-  ErrnoGuard() : _saved(errno) {}
-  ~ErrnoGuard() { errno = _saved; }
-
-private:
-  int _saved;
-};
 
 template <typename Ret, typename Fn, typename Call>
 static inline Ret runNativeIoHook(bool eligible, NativeBlockKind kind, int fd,
@@ -61,15 +69,16 @@ static inline ssize_t runStreamSocketHook(int fd, Fn fn, u8 op,
   }
 
   bool sampler_active = NativeSocketSampler::active();
+  if (!NativeSocketInterposer::instance()->active() && !sampler_active) {
+    return call(fn);
+  }
 
-  // read/write are intentionally routed through the socket classifier because
-  // socket I/O often uses generic fd APIs. Non-socket fds are cached after the
-  // first stable ENOTSOCK probe; high or transiently failing fds may be probed
-  // again on later calls.
+  // Patched JDK imports cannot observe raw close/dup2 in other libraries.
+  // Revalidate both positive and negative admission on every active hook.
   bool eligible;
   {
     ErrnoGuard errno_guard;
-    eligible = NativeSocketInterposer::instance()->isStreamSocket(fd);
+    eligible = NativeSocketInterposer::instance()->revalidateStreamSocket(fd);
   }
   if (!eligible) {
     return call(fn);
@@ -79,8 +88,12 @@ static inline ssize_t runStreamSocketHook(int fd, Fn fn, u8 op,
   u64 t0, t1;
   {
     NativeBlockScope block(block_kind, fd);
-    t0 = TSC::ticks();
+    {
+      ErrnoGuard errno_guard;
+      t0 = TSC::ticks();
+    }
     ret = call(fn);
+    ErrnoGuard errno_guard;
     t1 = TSC::ticks();
   }
   if (sampler_active) {
@@ -102,7 +115,7 @@ static inline Ret runDatagramSocketHook(int fd, Fn fn, Call call) {
   bool eligible;
   {
     ErrnoGuard errno_guard;
-    eligible = NativeSocketInterposer::instance()->isDatagramSocket(fd);
+    eligible = NativeSocketInterposer::instance()->revalidateDatagramSocket(fd);
   }
   return runNativeIoHook<Ret>(eligible, NativeBlockKind::UDP_RECEIVE, fd, fn,
                               call);
@@ -302,6 +315,14 @@ bool NativeSocketInterposer::isDatagramSocket(int fd) {
   return _fd_classifier.isDatagramSocket(fd);
 }
 
+bool NativeSocketInterposer::revalidateStreamSocket(int fd) {
+  return _fd_classifier.revalidateStreamSocket(fd);
+}
+
+bool NativeSocketInterposer::revalidateDatagramSocket(int fd) {
+  return _fd_classifier.revalidateDatagramSocket(fd);
+}
+
 void NativeSocketInterposer::clearFdType(int fd) {
   _fd_classifier.clearFdType(fd);
 }
@@ -383,8 +404,10 @@ int NativeSocketInterposer::close_hook(int fd) {
   }
   {
     ErrnoGuard errno_guard;
-    NativeSocketInterposer::instance()->clearFdType(fd);
-    NativeSocketSampler::instance()->clearFdCacheEntry(fd);
+    if (NativeSocketInterposer::instance()->active() || NativeSocketSampler::active()) {
+      NativeSocketInterposer::instance()->clearFdType(fd);
+      NativeSocketSampler::instance()->clearFdCacheEntry(fd);
+    }
   }
   return ret;
 }
@@ -404,7 +427,7 @@ int NativeSocketInterposer::dup2_hook(int oldfd, int newfd) {
   }
   {
     ErrnoGuard errno_guard;
-    if (ret >= 0) {
+    if (ret >= 0 && (NativeSocketInterposer::instance()->active() || NativeSocketSampler::active())) {
       // dup2() implicitly closes newfd before reusing it, so clear stale fd
       // classification and address state for the target descriptor.
       NativeSocketInterposer::instance()->clearFdType(newfd);
@@ -429,7 +452,7 @@ int NativeSocketInterposer::dup3_hook(int oldfd, int newfd, int flags) {
   }
   {
     ErrnoGuard errno_guard;
-    if (ret >= 0) {
+    if (ret >= 0 && (NativeSocketInterposer::instance()->active() || NativeSocketSampler::active())) {
       // dup3() implicitly closes newfd before reusing it, so clear stale fd
       // classification and address state for the target descriptor.
       NativeSocketInterposer::instance()->clearFdType(newfd);
@@ -453,7 +476,7 @@ int NativeSocketInterposer::connect_hook(int fd, const struct sockaddr* addr,
   bool eligible;
   {
     ErrnoGuard errno_guard;
-    eligible = NativeSocketInterposer::instance()->isStreamSocket(fd);
+    eligible = NativeSocketInterposer::instance()->revalidateStreamSocket(fd);
   }
   return runNativeIoHook<int>(eligible, NativeBlockKind::CONNECT, fd, fn, call);
 }
@@ -472,7 +495,7 @@ int NativeSocketInterposer::accept_hook(int fd, struct sockaddr* addr,
   bool eligible;
   {
     ErrnoGuard errno_guard;
-    eligible = NativeSocketInterposer::instance()->isStreamSocket(fd);
+    eligible = NativeSocketInterposer::instance()->revalidateStreamSocket(fd);
   }
   return runNativeIoHook<int>(eligible, NativeBlockKind::ACCEPT, fd, fn, call);
 }
@@ -491,7 +514,7 @@ int NativeSocketInterposer::accept4_hook(int fd, struct sockaddr* addr,
   bool eligible;
   {
     ErrnoGuard errno_guard;
-    eligible = NativeSocketInterposer::instance()->isStreamSocket(fd);
+    eligible = NativeSocketInterposer::instance()->revalidateStreamSocket(fd);
   }
   return runNativeIoHook<int>(eligible, NativeBlockKind::ACCEPT, fd, fn, call);
 }
@@ -545,7 +568,8 @@ int NativeSocketInterposer::poll_hook(struct pollfd* fds, nfds_t nfds, int timeo
 int NativeSocketInterposer::ppoll_hook(struct pollfd* fds, nfds_t nfds,
                                        const struct timespec* timeout_ts,
                                        const sigset_t* sigmask) {
-  bool eligible = fds != nullptr && nfds > 0 && nonZeroTimespec(timeout_ts);
+  bool eligible = instance()->active() && fds != nullptr && nfds > 0 &&
+      nonZeroTimespec(timeout_ts);
   return runNativeIoHook<int>(eligible, NativeBlockKind::POLL, 0,
                               _orig_ppoll.load(std::memory_order_acquire),
                               [&](ppoll_fn fn) { return fn(fds, nfds, timeout_ts, sigmask); });
@@ -553,7 +577,7 @@ int NativeSocketInterposer::ppoll_hook(struct pollfd* fds, nfds_t nfds,
 
 int NativeSocketInterposer::select_hook(int nfds, fd_set* readfds, fd_set* writefds,
                                         fd_set* exceptfds, struct timeval* timeout) {
-  bool eligible = nfds > 0 && nonZeroTimeval(timeout);
+  bool eligible = instance()->active() && nfds > 0 && nonZeroTimeval(timeout);
   return runNativeIoHook<int>(eligible, NativeBlockKind::SELECT, 0,
                               _orig_select.load(std::memory_order_acquire),
                               [&](select_fn fn) {
@@ -565,7 +589,7 @@ int NativeSocketInterposer::pselect_hook(int nfds, fd_set* readfds, fd_set* writ
                                          fd_set* exceptfds,
                                          const struct timespec* timeout_ts,
                                          const sigset_t* sigmask) {
-  bool eligible = nfds > 0 && nonZeroTimespec(timeout_ts);
+  bool eligible = instance()->active() && nfds > 0 && nonZeroTimespec(timeout_ts);
   return runNativeIoHook<int>(eligible, NativeBlockKind::SELECT, 0,
                               _orig_pselect.load(std::memory_order_acquire),
                               [&](pselect_fn fn) {

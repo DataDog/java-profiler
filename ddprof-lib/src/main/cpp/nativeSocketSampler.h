@@ -14,6 +14,7 @@
 #if defined(__linux__)
 
 #include "nativeFdClassifier.h"
+#include "errnoGuard.h"
 #include "poissonSampler.h"
 #include "rateLimiter.h"
 #include <atomic>
@@ -38,10 +39,10 @@ class LibraryPatcher;
 //                         is idempotent in that case (first writer wins).
 //                         Address staleness is possible only after fd reuse
 //                         through unobserved lifecycle paths.
-// _fd_classifier        : lock-free fd-type classifier shared as code with the
-//                         native I/O interposer. A cached stream-socket verdict
-//                         is trusted on the hot path; sampled write/read events
-//                         revalidate before recording (revalidateSocket()).
+// _fd_classifier        : fd-type classifier shared as code with the native I/O
+//                         interposer. Hook admission always revalidates, including
+//                         cached negatives, to detect unpatched FD reuse. Sampled
+//                         results revalidate again before recording.
 // _rate_limiter         : RateLimiter — owns std::atomic interval, epoch, and
 //                         event count.  PID update races are resolved by CAS
 //                         inside RateLimiter::maybeUpdateInterval().
@@ -169,7 +170,7 @@ private:
     std::string resolveAddr(int fd);
 
     // Revalidates that fd is still a SOCK_STREAM socket; updates the type cache on
-    // mismatch.  Called from recordEvent() for write/read ops on sampled events only.
+    // mismatch. Called for hook admission and again before sampled recording.
     bool revalidateSocket(int fd);
 
     // Inserts or updates fd→addr in the LRU cache, evicting the LRU entry if full.
@@ -204,8 +205,7 @@ public:
 private:
 
     // Returns true if fd is a SOCK_STREAM socket (including AF_UNIX).
-    // Uses the fd classifier; calls getsockopt on first encounter per fd.
-    // Cached SOCKET verdicts are revalidated only on sampled write/read events.
+    // Direct cached lookup for diagnostics/tests; hooks use revalidateSocket().
     bool isSocket(int fd);
 
     // Decide whether to sample and compute weight.
@@ -222,13 +222,19 @@ private:
 
     // Records the event if ret > 0; returns ret unchanged.  Shared tail for all four hooks.
     static inline ssize_t record_if_positive(int fd, ssize_t ret, u64 t0, u64 t1, u8 op) {
-        if (ret > 0) _instance->recordEvent(fd, t0, t1, ret, op);
+        if (ret > 0) {
+            ErrnoGuard errno_guard;
+            _instance->recordEvent(fd, t0, t1, ret, op);
+        }
         return ret;
     }
 
     static inline ssize_t recordResultForHook(int fd, ssize_t ret, u64 t0, u64 t1, u8 op) {
 #ifdef UNIT_TEST
-        observeHookPhaseForTest("record", fd, op, ret);
+        {
+            ErrnoGuard errno_guard;
+            observeHookPhaseForTest("record", fd, op, ret);
+        }
 #endif
         return record_if_positive(fd, ret, t0, t1, op);
     }

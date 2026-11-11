@@ -111,6 +111,7 @@ std::string NativeSocketSampler::resolveAddr(int fd) {
 }
 
 bool NativeSocketSampler::isSocket(int fd) {
+    ErrnoGuard errno_guard;
     // Accepts any SOCK_STREAM socket (including AF_UNIX); AF_INET/AF_INET6 filtering
     // is deferred to resolveAddr() which is only called for sampled events. AF_UNIX
     // will produce an empty remoteAddress field in the JFR event.
@@ -148,13 +149,7 @@ void NativeSocketSampler::clearFdCacheEntry(int fd) {
 }
 
 bool NativeSocketSampler::revalidateSocket(int fd) {
-    int so_type;
-    socklen_t solen = sizeof(so_type);
-    int rc = getsockopt(fd, SOL_SOCKET, SO_TYPE, &so_type, &solen);
-    if (rc == 0 && so_type == SOCK_STREAM) return true;
-    // fd was reused for a non-socket or is already closed; update the type cache.
-    _fd_classifier.cacheNonSocket(fd);
-    return false;
+    return _fd_classifier.revalidateStreamSocket(fd);
 }
 
 bool NativeSocketSampler::shouldSample(u64 duration_ticks, int op, float &weight) {
@@ -186,10 +181,9 @@ void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 
 #endif
         return;
     }
-    // write/read hooks (op 2/3) call isSocket() which trusts the cached SOCKET verdict
-    // without re-probing, to avoid a getsockopt syscall on every I/O.  Revalidate here,
-    // on sampled events only, so a closed-and-reused fd is caught before we emit an event.
-    if ((op == 2 || op == 3) && !revalidateSocket(fd)) return;
+    // Admission cannot pin an application's open file description. Revalidate
+    // sampled results as well, including send/recv, before resolving the peer.
+    if (!revalidateSocket(fd)) return;
 #ifdef DEBUG
     {
         uint64_t n = _record_accept_calls.fetch_add(1, std::memory_order_relaxed);
@@ -253,79 +247,101 @@ ssize_t NativeSocketSampler::send_hook(int fd, const void* buf, size_t len, int 
     // called under _lock, so this branch is not exercised on the normal path.
     send_fn fn = _orig_send.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
-    if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len, flags);
-    NativeSocketSampler* self = _instance;
-    if (!self->isSocket(fd)) return fn(fd, buf, len, flags);
-#ifdef DEBUG
+    if (!active() || !LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len, flags);
+    bool is_socket;
+    u64 t0 = 0;
     {
-        uint64_t n = _send_hook_calls.fetch_add(1, std::memory_order_relaxed);
-        if (n < 3 || (n & 0x3FF) == 0) {
-            TEST_LOG("NativeSocketSampler::send_hook #%llu fd=%d len=%zu flags=0x%x",
-                     (unsigned long long)(n + 1), fd, len, flags);
+        ErrnoGuard errno_guard;
+        is_socket = _instance->revalidateSocket(fd);
+        if (is_socket) {
+#ifdef DEBUG
+            uint64_t n = _send_hook_calls.fetch_add(1, std::memory_order_relaxed);
+            if (n < 3 || (n & 0x3FF) == 0) {
+                TEST_LOG("NativeSocketSampler::send_hook #%llu fd=%d len=%zu flags=0x%x",
+                         (unsigned long long)(n + 1), fd, len, flags);
+            }
+#endif
+            t0 = TSC::ticks();
         }
     }
-#endif
-    u64 t0 = TSC::ticks();
-    return record_if_positive(fd, fn(fd, buf, len, flags), t0, TSC::ticks(), 0);
+    if (!is_socket) return fn(fd, buf, len, flags);
+    ssize_t ret = fn(fd, buf, len, flags);
+    ErrnoGuard errno_guard;
+    return record_if_positive(fd, ret, t0, TSC::ticks(), 0);
 }
 
 ssize_t NativeSocketSampler::recv_hook(int fd, void* buf, size_t len, int flags) {
     recv_fn fn = _orig_recv.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
-    if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len, flags);
-    NativeSocketSampler* self = _instance;
-    if (!self->isSocket(fd)) return fn(fd, buf, len, flags);
-#ifdef DEBUG
+    if (!active() || !LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len, flags);
+    bool is_socket;
+    u64 t0 = 0;
     {
-        uint64_t n = _recv_hook_calls.fetch_add(1, std::memory_order_relaxed);
-        if (n < 3 || (n & 0x3FF) == 0) {
-            TEST_LOG("NativeSocketSampler::recv_hook #%llu fd=%d len=%zu flags=0x%x",
-                     (unsigned long long)(n + 1), fd, len, flags);
+        ErrnoGuard errno_guard;
+        is_socket = _instance->revalidateSocket(fd);
+        if (is_socket) {
+#ifdef DEBUG
+            uint64_t n = _recv_hook_calls.fetch_add(1, std::memory_order_relaxed);
+            if (n < 3 || (n & 0x3FF) == 0) {
+                TEST_LOG("NativeSocketSampler::recv_hook #%llu fd=%d len=%zu flags=0x%x",
+                         (unsigned long long)(n + 1), fd, len, flags);
+            }
+#endif
+            t0 = TSC::ticks();
         }
     }
-#endif
-    u64 t0 = TSC::ticks();
-    return record_if_positive(fd, fn(fd, buf, len, flags), t0, TSC::ticks(), 1);
+    if (!is_socket) return fn(fd, buf, len, flags);
+    ssize_t ret = fn(fd, buf, len, flags);
+    ErrnoGuard errno_guard;
+    return record_if_positive(fd, ret, t0, TSC::ticks(), 1);
 }
 
 ssize_t NativeSocketSampler::write_hook(int fd, const void* buf, size_t len) {
     write_fn fn = _orig_write.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
-    if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len);
-    NativeSocketSampler* self = _instance;
-    bool is_socket = self->isSocket(fd);
-#ifdef DEBUG
+    if (!active() || !LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len);
+    bool is_socket;
+    u64 t0 = 0;
     {
+        ErrnoGuard errno_guard;
+        is_socket = _instance->revalidateSocket(fd);
+#ifdef DEBUG
         uint64_t n = _write_hook_calls.fetch_add(1, std::memory_order_relaxed);
         if (n < 3 || (n & 0x3FF) == 0) {
             TEST_LOG("NativeSocketSampler::write_hook #%llu fd=%d len=%zu is_socket=%d",
                      (unsigned long long)(n + 1), fd, len, (int)is_socket);
         }
-    }
 #endif
+        if (is_socket) t0 = TSC::ticks();
+    }
     if (!is_socket) return fn(fd, buf, len);
-    u64 t0 = TSC::ticks();
-    return record_if_positive(fd, fn(fd, buf, len), t0, TSC::ticks(), 2);
+    ssize_t ret = fn(fd, buf, len);
+    ErrnoGuard errno_guard;
+    return record_if_positive(fd, ret, t0, TSC::ticks(), 2);
 }
 
 ssize_t NativeSocketSampler::read_hook(int fd, void* buf, size_t len) {
     read_fn fn = _orig_read.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
-    if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len);
-    NativeSocketSampler* self = _instance;
-    bool is_socket = self->isSocket(fd);
-#ifdef DEBUG
+    if (!active() || !LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len);
+    bool is_socket;
+    u64 t0 = 0;
     {
+        ErrnoGuard errno_guard;
+        is_socket = _instance->revalidateSocket(fd);
+#ifdef DEBUG
         uint64_t n = _read_hook_calls.fetch_add(1, std::memory_order_relaxed);
         if (n < 3 || (n & 0x3FF) == 0) {
             TEST_LOG("NativeSocketSampler::read_hook #%llu fd=%d len=%zu is_socket=%d",
                      (unsigned long long)(n + 1), fd, len, (int)is_socket);
         }
-    }
 #endif
+        if (is_socket) t0 = TSC::ticks();
+    }
     if (!is_socket) return fn(fd, buf, len);
-    u64 t0 = TSC::ticks();
-    return record_if_positive(fd, fn(fd, buf, len), t0, TSC::ticks(), 3);
+    ssize_t ret = fn(fd, buf, len);
+    ErrnoGuard errno_guard;
+    return record_if_positive(fd, ret, t0, TSC::ticks(), 3);
 }
 
 Error NativeSocketSampler::check(Arguments &args) {
