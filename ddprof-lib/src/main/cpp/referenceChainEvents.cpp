@@ -705,7 +705,9 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
     _pending_chain_invalidations_lock.unlock();
 
     // Eligible REBUILD entries over the cap are packed in place at the front of the scratch
-    // buffer (deferred <= i), preserving their FIFO order.
+    // buffer: every write lands strictly behind the read cursor (deferred < i at each write,
+    // since the first MAX_CHAIN_REBUILDS_PER_POLL eligible entries never defer), so the loop
+    // only overwrites already-read slots and the vector never grows.
     size_t deferred = 0;
     for (size_t i = 0; i < _draining_chain_invalidations.size(); i++) {
       const jlong pending = _draining_chain_invalidations[i];
@@ -725,6 +727,7 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
       if (rebuild_count < MAX_CHAIN_REBUILDS_PER_POLL) {
         rebuild_tags[rebuild_count++] = tag;
       } else {
+        assert(deferred < i);  // compaction may only overwrite already-read slots
         _draining_chain_invalidations[deferred++] = pending;
       }
     }
