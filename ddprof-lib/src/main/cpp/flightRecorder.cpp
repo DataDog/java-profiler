@@ -2247,7 +2247,7 @@ void Recording::writeUnwindFailures(Buffer *buf) {
 #endif // DEBUG
 }
 
-void Recording::writeContextSnapshot(Buffer *buf, Context &context) {
+void Recording::writeContextSnapshot(Buffer *buf, const Context &context) {
   buf->putVar64(context.spanId);
   buf->putVar64(context.rootSpanId);
 
@@ -2297,7 +2297,7 @@ void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
 
 void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
                                    u64 correlation_id,
-                                   ExecutionEvent *event) {
+                                   ExecutionEvent *event, const Context *context) {
   int start = buf->skip(1);
   buf->putVar64(T_METHOD_SAMPLE);
   buf->putVar64(TSC::ticks());
@@ -2307,7 +2307,11 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
   buf->putVar64(correlation_id);
-  writeCurrentContext(buf);
+  if (context != nullptr) {
+    writeContextSnapshot(buf, *context);
+  } else {
+    writeCurrentContext(buf);
+  }
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -2829,6 +2833,22 @@ bool FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
     Counters::increment(SAMPLES_DROPPED_REC_LOCK);
   }
   return false;
+}
+
+bool FlightRecorder::recordWallSample(int lock_index, int tid, u64 call_trace_id,
+                                      ExecutionEvent *event, const Context &context) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (!locker.ownsLock()) {
+    Counters::increment(SAMPLES_DROPPED_REC_LOCK);
+    return false;
+  }
+  Recording* rec = _rec;
+  if (rec == nullptr) return false;
+  RecordingBuffer* buf = rec->buffer(lock_index);
+  rec->recordMethodSample(buf, tid, call_trace_id, 0, event, &context);
+  rec->flushIfNeeded(buf);
+  rec->addThread(lock_index, tid);
+  return true;
 }
 
 bool FlightRecorder::recordEventDelegated(int lock_index, int tid,

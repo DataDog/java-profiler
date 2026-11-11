@@ -22,6 +22,8 @@
 #include <cstdint>
 
 #include "arch.h"
+#include "callTraceHashTable.h"
+#include "context.h"
 #include "threadFilter.h"
 #include "threadState.h"
 
@@ -118,13 +120,18 @@ public:
             unowned_blocked_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
             unowned_blocked_call_trace_id.store(0, std::memory_order_release);
         }
-        inline bool shouldRecordUnownedBlockedSample() {
+        inline bool shouldRecordUnownedBlockedSample(bool force_record = false) {
             u64 decision = unowned_blocked_decision_count.fetch_add(1, std::memory_order_relaxed) + 1;
-            if ((decision % kUnownedBlockedFallbackRatio) == 1) {
+            if (force_record || (decision % kUnownedBlockedFallbackRatio) == 1) {
                 return true;
             }
             unowned_blocked_pending_weight.fetch_add(1, std::memory_order_relaxed);
             return false;
+        }
+        inline void clearUnownedBlockedTailKeepingCadence() {
+            unowned_blocked_pending_weight.store(0, std::memory_order_release);
+            unowned_blocked_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
+            unowned_blocked_call_trace_id.store(0, std::memory_order_release);
         }
         inline u64 consumeUnownedBlockedWeight() {
             return unowned_blocked_pending_weight.exchange(0, std::memory_order_relaxed) + 1;
@@ -152,6 +159,13 @@ public:
         // through the out-params and consumes nothing. Accepted residual: the
         // sampling cadence now carries across runs, so up to kRatio-1 units may
         // be attributed to an earlier run's stack/state.
+        inline bool peekUnownedBlockedTail(u64& call_trace_id, u64& weight,
+                                           OSThreadState& state) const {
+            call_trace_id = unowned_blocked_call_trace_id.load(std::memory_order_acquire);
+            weight = unowned_blocked_pending_weight.load(std::memory_order_relaxed);
+            state = unowned_blocked_state.load(std::memory_order_relaxed);
+            return call_trace_id != 0 && weight != 0 && state != OSThreadState::UNKNOWN;
+        }
         inline bool flushUnownedBlockedTail(u64& call_trace_id, u64& weight,
                                             OSThreadState& state) {
             // Acquire pairs with the release store in recordUnownedBlockedSample().
@@ -257,6 +271,22 @@ public:
     // stays inert and the allocation is retried on the next registration).
     bool ensureAllocated();
 
+    // Normal-only mode and backing preparation. The registry mutex serializes
+    // every cold allocator; published backing survives resets until destruction.
+    void setUnownedContextSnapshotsNeeded(bool needed);
+    bool ensureUnownedContextAllocated(ThreadFilter::SlotID slot_id);
+    bool readUnownedContext(ThreadFilter::SlotID slot_id, Context& context, u64& publication) const;
+    bool canPublishUnownedContext(ThreadFilter::SlotID slot_id) const;
+    // Publication requires a recording stripe (or a quiescent unit fixture).
+    bool publishUnownedTrace(ThreadFilter::SlotID slot_id, u64 trace_id, OSThreadState state,
+                             const Context& context);
+#ifdef UNIT_TEST
+    void publishUnownedTrace(ThreadFilter::SlotID slot_id, u64 trace_id, OSThreadState state);
+#endif
+    // Normal-thread callbacks; all recording stripes must exclude publication.
+    void collectLiveTraceIds(CallTraceIdSet& live);
+    void onUnpreservedTraceIds(const CallTraceIdSet& failed);
+
     // Returns nullptr if slot_id is out of range or storage is not yet
     // allocated (see ensureAllocated()).
     inline BlockState* slotForId(ThreadFilter::SlotID slot_id) const {
@@ -308,6 +338,21 @@ public:
     bool shouldSuppressOwnedBlock(ThreadFilter* registry, const ThreadEntry& entry) const;
 
 #ifdef UNIT_TEST
+    static size_t storageSize();
+    static size_t unownedContextChunkSizeForTest();
+    bool exchangeUnownedContextAllocationFailureForTest(bool fail);
+    void setUnownedContextPublicationForTest(ThreadFilter::SlotID slot_id, u64 publication);
+    using UnownedContextReadHook = void (*)(void*);
+    void setUnownedContextReadHookForTest(UnownedContextReadHook hook, void* arg) {
+        _context_read_hook = hook;
+        _context_read_hook_arg = arg;
+    }
+    using UnownedContextPublicationHook = void (*)(u32 words_written, void*);
+    void setUnownedContextPublicationHookForTest(UnownedContextPublicationHook hook, void* arg) {
+        _context_publication_hook = hook;
+        _context_publication_hook_arg = arg;
+    }
+
     // Pauses a JNI park/block hook after its caller resolved the registry slot,
     // before admission reads or changes that slot's block state.
     using BlockAdmissionHook = void (*)(void*);
@@ -324,14 +369,35 @@ public:
 #endif
 
 private:
+    struct alignas(DEFAULT_CACHE_LINE_SIZE) UnownedContextCell {
+        std::atomic<u64> words[7]{};
+        std::atomic<u64> publication{0};
+    };
+    struct UnownedContextChunk {
+        UnownedContextCell cells[ThreadFilter::kChunkSize];
+    };
+    static_assert(sizeof(UnownedContextCell) == 64, "Unowned context cell must be one cache line");
+    static_assert(alignof(UnownedContextCell) == 64, "Unowned context cell must be cache aligned");
+    static_assert(std::atomic<UnownedContextChunk*>::is_always_lock_free,
+                  "Signal context chunk lookup must be lock-free");
+    UnownedContextCell* unownedContextCell(ThreadFilter::SlotID slot_id) const;
+    std::atomic<UnownedContextChunk*> _context_chunks[ThreadFilter::kMaxChunks]{};
+    std::atomic<bool> _context_snapshots_needed{false};
+
     struct SlotStorage {
         std::array<BlockState, ThreadFilter::kMaxThreads> slots;
+        std::array<std::atomic<u64>, ThreadFilter::kMaxThreads / 64> roots{};
     };
     // Published once by ensureAllocated(); never freed before the destructor
     // (R-B2). Signal paths only load it, never allocate.
     std::atomic<SlotStorage*> _storage{nullptr};
 
 #ifdef UNIT_TEST
+    std::atomic<bool> _context_allocation_failure{false};
+    UnownedContextReadHook _context_read_hook = nullptr;
+    void* _context_read_hook_arg = nullptr;
+    UnownedContextPublicationHook _context_publication_hook = nullptr;
+    void* _context_publication_hook_arg = nullptr;
     BlockAdmissionHook _block_admission_hook = nullptr;
     void* _block_admission_hook_arg = nullptr;
     SuppressionSnapshotHook _suppression_snapshot_hook = nullptr;

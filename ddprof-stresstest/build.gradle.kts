@@ -113,6 +113,7 @@ tasks.register<Test>("testOwnedBlockPrecheck") {
   testClassesDirs = sourceSets["chaosTest"].output.classesDirs
   classpath = sourceSets["chaosTest"].runtimeClasspath
   setExecutable(PlatformUtils.testJavaExecutable())
+  systemProperty("ddprof_test.keep_jfrs", project.hasProperty("keepJFRs"))
   useJUnitPlatform()
 }
 

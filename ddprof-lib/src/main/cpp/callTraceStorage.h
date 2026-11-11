@@ -24,8 +24,9 @@
 class CallTraceHashTable;
 
 // Liveness checker function type
-// Fills the provided set with 64-bit call_trace_id values that should be preserved
-// Using reference parameter avoids malloc() for vector creation and copying
+// Fills a collector-local set with 64-bit call_trace_id values to preserve.
+// The checker may clear its output; storage unions independent checker results.
+// Using reference parameter reuses the set's bucket allocation
 typedef std::function<void(CallTraceIdSet&)> LivenessChecker;
 
 /**
@@ -75,7 +76,11 @@ private:
     
     // Liveness checkers - protected by simple spinlock during registration/clear
     // Using vector instead of unordered_set since std::function cannot be hashed
-    std::vector<LivenessChecker> _liveness_checkers;
+    struct LivenessRegistration {
+        LivenessChecker collect;
+        std::function<void(const CallTraceIdSet&)> complete;
+    };
+    std::vector<LivenessRegistration> _liveness_checkers;
     SpinLock _liveness_lock;  // Simple atomic lock for rare liveness operations
     
     // Static atomic for instance ID generation - avoids function-local static initialization issues
@@ -88,14 +93,21 @@ private:
     // Pre-allocated collections for processTraces (single-threaded operation)
     // These collections are reused to eliminate malloc/free cycles
     CallTraceSet _traces_buffer;           // All traces for JFR processing
-    CallTraceIdSet _preserve_set_buffer;           // Preserve set for current cycle
+    CallTraceIdSet _preserve_set_buffer;   // Union of roots for the current cycle
+    CallTraceIdSet _collector_set_buffer;  // Isolated, reusable checker output
     
 public:
     CallTraceStorage();
     ~CallTraceStorage();
 
-    // Register a liveness checker (rare operation - uses simple lock)
-    void registerLivenessChecker(LivenessChecker checker);
+    // Normal-thread registration. Each collector receives its own empty output.
+    // Completion receives the union of requests not
+    // confirmed copied after both source passes, before source reclamation.
+    // Neither callback may re-enter storage or liveness registration. Callers
+    // using roots outside the tables must exclude their publication/consumption
+    // through collection and completion (Profiler holds all recording stripes).
+    void registerLivenessChecker(LivenessChecker checker,
+        std::function<void(const CallTraceIdSet&)> completion = nullptr);
 
     // Clear liveness checkers (rare operation - uses simple lock)
     void clearLivenessCheckers();

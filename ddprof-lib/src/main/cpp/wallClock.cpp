@@ -23,11 +23,27 @@
 #include "samplerPerf.h"
 #include <cassert>
 #include <cerrno>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <algorithm> // For std::sort and std::binary_search
 
 std::atomic<bool> BaseWallClock::_enabled{false};
+#ifdef UNIT_TEST
+static std::atomic<BaseWallClock::ThreadStateReaderForTest> thread_state_reader_for_test{nullptr};
+static BaseWallClock::UnownedContextProbeHook unowned_context_probe_hook = nullptr;
+static void* unowned_context_probe_arg = nullptr;
+
+void BaseWallClock::setUnownedContextProbeHookForTest(UnownedContextProbeHook hook, void* arg) {
+  unowned_context_probe_hook = hook;
+  unowned_context_probe_arg = arg;
+}
+
+BaseWallClock::ThreadStateReaderForTest BaseWallClock::exchangeThreadStateReaderForTest(
+    ThreadStateReaderForTest reader) {
+  return thread_state_reader_for_test.exchange(reader, std::memory_order_acq_rel);
+}
+#endif
 #if defined(UNIT_TEST) || defined(DEBUG)
 std::atomic<bool> BaseWallClock::_force_start_failure_for_test{false};
 #endif
@@ -54,6 +70,7 @@ static inline bool hasKnownActiveTraceContext(ProfiledThread* thread) {
 }
 
 struct WallPrecheckResult {
+  WallSampleRequest transaction;
   bool suppress = false;
   WallClockBlockTracker::BlockState* slot_to_arm = nullptr;
   OSThreadState state_to_arm = OSThreadState::UNKNOWN;
@@ -83,8 +100,11 @@ bool BaseWallClock::suppressAlreadySampled(const ThreadEntry& entry) {
 }
 
 static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
-                                                     bool precheck) {
+                                                     bool precheck,
+                                                     bool transactional = false) {
   WallPrecheckResult result;
+  result.transaction.tid = current != nullptr ? current->tid() : -1;
+  result.transaction.trace_epoch = Profiler::instance()->recordingEpoch();
   if (current == nullptr || !precheck || hasKnownActiveTraceContext(current)) {
     return result;
   }
@@ -102,6 +122,10 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
   if (block_slot == nullptr) {
     return result;
   }
+
+  result.transaction.slot_id = slot_id;
+  result.transaction.lifecycle_generation = slot->lifecycleGeneration();
+  result.transaction.registry_epoch = registry->recordingEpoch();
 
   // In an unfiltered recording, context threads keep their normal MethodSample
   // stream. Only owned blocks that remain outside the context window may replace
@@ -129,6 +153,8 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     // instead of losing the only stack for this blocked run.
     result.slot_to_arm = block_slot;
     result.state_to_arm = active_block_state;
+    result.transaction.arm_state = active_block_state;
+    result.transaction.block_generation = block_slot->blockGeneration();
     return result;
   }
 
@@ -139,22 +165,76 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     return result;
   }
 
+#ifdef UNIT_TEST
+  auto reader = thread_state_reader_for_test.load(std::memory_order_acquire);
+  result.observed_state = reader != nullptr ? reader() : getOSThreadState();
+#else
   result.observed_state = getOSThreadState();
+#endif
   result.observed_state_valid = true;
+  bool force_ordinary = false;
+  if (transactional) {
+    result.transaction.context = ContextApi::snapshot();
+    result.transaction.context_captured = true;
+    Context origin{};
+    u64 publication = 0;
+    bool readable = tracker->readUnownedContext(slot_id, origin, publication);
+    bool publishable = tracker->canPublishUnownedContext(slot_id);
+    bool unavailable = !publishable ||
+        (block_slot->unowned_blocked_call_trace_id.load(std::memory_order_acquire) != 0 && !readable);
+    force_ordinary = !readable || !publishable || !origin.equals(result.transaction.context);
+    result.transaction.context_publication = publication;
+#ifdef UNIT_TEST
+    if (unowned_context_probe_hook != nullptr) unowned_context_probe_hook(unowned_context_probe_arg);
+#endif
+    if (readable) {
+      u64 confirmed = 0;
+      if (!tracker->readUnownedContext(slot_id, origin, confirmed) || confirmed != publication) {
+        force_ordinary = true;
+        unavailable = true;
+      }
+    }
+    // A rejected probe cannot justify suppression against a reused owner or a
+    // closed recording. Native ownership and recording eligibility are separate.
+    if (registry->activeSlotForId(slot_id, result.transaction.tid) != slot ||
+        slot->lifecycleGeneration() != result.transaction.lifecycle_generation ||
+        registry->recordingEpoch() != result.transaction.registry_epoch) {
+      return result;
+    }
+    if (unavailable) Counters::increment(WC_UNOWNED_CONTEXT_SNAPSHOT_UNAVAILABLE);
+    result.transaction.force_unowned_ordinary = force_ordinary;
+  }
   if (isPrecheckSuppressionState(result.observed_state)) {
-    if (!block_slot->shouldRecordUnownedBlockedSample()) {
+    if (!block_slot->shouldRecordUnownedBlockedSample(force_ordinary)) {
       Counters::increment(WC_UNOWNED_BLOCKED_SUPPRESSED);
       result.suppress = true;
       return result;
     }
-    result.unowned_weight_slot = block_slot;
-    result.unowned_weight = block_slot->consumeUnownedBlockedWeight();
+    result.transaction.unowned_sample = true;
+    result.transaction.observed_state = result.observed_state;
+    result.transaction.flush_tail = transactional && force_ordinary;
+    if (!transactional) {
+      result.unowned_weight_slot = block_slot;
+      result.unowned_weight = block_slot->consumeUnownedBlockedWeight();
+    }
+  } else if (transactional) {
+    // Only the ASGCT transaction may peek/write/commit a reusable real trace.
+    result.transaction.flush_tail = true;
   } else {
     result.flush_unowned_tail = block_slot->flushUnownedBlockedTail(
         result.flush_call_trace_id, result.flush_weight, result.flush_state);
   }
   return result;
 }
+
+#ifdef UNIT_TEST
+WallSampleRequest BaseWallClock::prepareWallSampleRequestForTest(ProfiledThread* current,
+                                                                bool& suppressed) {
+  WallPrecheckResult prepared = prepareWallPrecheck(current, true, true);
+  suppressed = prepared.suppress;
+  return prepared.transaction;
+}
+#endif
 
 static inline void finishWallPrecheck(const WallPrecheckResult& precheck,
                                       bool recorded,
@@ -172,24 +252,6 @@ static inline void finishWallPrecheck(const WallPrecheckResult& precheck,
   if (recorded && precheck.slot_to_arm != nullptr) {
     precheck.slot_to_arm->markSampledThisRun(precheck.state_to_arm);
   }
-}
-
-static inline void recordDeferredWallSample(int tid, u64 call_trace_id,
-                                            ExecutionEvent* event) {
-  Profiler::instance()->recordDeferredSample(tid, call_trace_id, BCI_WALL, event);
-}
-
-static inline void emitUnownedBlockedTailForWallPrecheck(
-    int tid, const WallPrecheckResult& precheck) {
-  if (!precheck.flush_unowned_tail || precheck.flush_call_trace_id == 0) {
-    return;
-  }
-
-  ExecutionEvent flush_event;
-  flush_event._thread_state = precheck.flush_state;
-  flush_event._execution_mode = ExecutionMode::UNKNOWN;
-  flush_event._weight = precheck.flush_weight;
-  recordDeferredWallSample(tid, precheck.flush_call_trace_id, &flush_event);
 }
 
 bool BaseWallClock::inSyscall(void *ucontext) {
@@ -269,7 +331,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   // one long sleep from several short sleeps separated by runnable gaps between
   // signals. Unowned blocked observations therefore use weighted fallback
   // sampling instead of arming sampled_this_run.
-  WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck);
+  WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck, true);
   if (precheck.suppress) {
     return;
   }
@@ -310,13 +372,8 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     event._thread_state = state;
     event._execution_mode = mode;
     event._weight = precheck.unowned_weight;
-    u64 recorded_call_trace_id = 0;
-    bool recorded = Profiler::instance()->recordSample(ucontext, last_sample, tid,
-                                                       BCI_WALL, call_trace_id,
-                                                       &event,
-                                                       &recorded_call_trace_id);
-    finishWallPrecheck(precheck, recorded, recorded_call_trace_id);
-    emitUnownedBlockedTailForWallPrecheck(tid, precheck);
+    Profiler::instance()->recordWallSample(ucontext, last_sample, call_trace_id,
+                                           &event, precheck.transaction);
   }
 }
 
@@ -348,6 +405,9 @@ Error BaseWallClock::start(Arguments &args) {
             args._wall_threads_per_tick : DEFAULT_WALL_THREADS_PER_TICK;
   initialize(args);
 
+  const char* diagnostics = getenv("DDPROF_WALL_TIMER_DIAGNOSTICS");
+  _timer_diagnostics = diagnostics != nullptr && strcmp(diagnostics, "1") == 0;
+  _timer_phases = TimerPhases{};
   _running = true;
 
   if (pthread_create(&_thread, NULL, threadEntry, this) != 0) {
@@ -384,6 +444,17 @@ void BaseWallClock::stop() {
     return;
   }
   _thread = 0;
+  if (_timer_diagnostics) {
+    const auto& p = _timer_phases;
+    fprintf(stderr, "WallClock timer phases: iterations=%llu empty=%llu single=%llu large=%llu "
+            "selected=%llu sent=%llu failed=%llu firstEligibleTicks=%llu lastEligibleTicks=%llu "
+            "firstSendTicks=%llu lastSendTicks=%llu frequency=%llu collectNs=%llu selectNs=%llu "
+            "sendNs=%llu finishNs=%llu requestedSleepNs=%llu actualSleepNs=%llu\n",
+            p.iterations, p.empty, p.single, p.large, p.selected, p.sent, p.failed,
+            p.first_eligible, p.last_eligible, p.first_send, p.last_send, TSC::frequency(),
+            p.collect_ns, p.select_ns, p.send_ns, p.finish_ns,
+            p.requested_sleep_ns, p.actual_sleep_ns);
+  }
 }
 
 bool BaseWallClock::isEnabled() const {

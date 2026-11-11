@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright 2026, Datadog, Inc.
 # Runs Gradle with the full output captured to a timestamped log so an agent
 # session never ingests a multi-thousand-line build log. Prints the status
 # line; on failure, extracts the "What went wrong" blocks and failing-test
@@ -17,12 +18,11 @@ ARGS=("$@")
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 LABEL="$(printf '%s' "${ARGS[0]}" | tr '/:' '__')"
-LOG="build/logs/${STAMP}-${LABEL}.log"
-mkdir -p "$(dirname "$LOG")"
+mkdir -p build/logs || exit 1
+LOG="$(mktemp "build/logs/${STAMP}-${LABEL}.log.XXXXXX")" || exit 1
 
-# One log per build, hundreds of KB each, and agent sessions generate many:
-# prune to the newest 20 so the directory stays bounded.
-ls -t build/logs/*.log 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null || true
+# Build logs are qualification evidence, including failed runs. Retention is
+# managed by the caller; never remove earlier evidence as a side effect of a build.
 
 echo "▶ ./gradlew ${ARGS[*]} -i --console=plain (full log: $LOG)"
 ./gradlew "${ARGS[@]}" -i --console=plain >"$LOG" 2>&1

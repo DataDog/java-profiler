@@ -7,11 +7,193 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
+#include <string>
 #include <thread>
 #include <vector>
 #include "arguments.h"
 #include "counters.h"
 #include "wallClock.h"
+
+TEST(WallClockTimerTest, WorkAndWakeLatenessDoNotAccumulate) {
+    WallClockTimer timer(1000000);
+    EXPECT_EQ(900000ULL, timer.nextSleep(1100000, 1000000));
+    // Wake 200us late and do another 100us of work. The next opportunity
+    // remains at 3ms, not 3.3ms as with a new relative sleep.
+    EXPECT_EQ(700000ULL, timer.nextSleep(2300000, 1000000));
+    EXPECT_EQ(850000ULL, timer.nextSleep(3150000, 1000000));
+}
+
+TEST(WallClockTimerTest, MissedDeadlineRestartsWithoutCatchUpBurst) {
+    WallClockTimer timer(1000000);
+    EXPECT_EQ(1000000ULL, timer.nextSleep(2000000, 1000000));
+    EXPECT_EQ(1000000ULL, timer.nextSleep(9000000, 1000000));
+    EXPECT_EQ(900000ULL, timer.nextSleep(10100000, 1000000));
+}
+
+TEST(WallClockTimerTest, DitheredPeriodsStayOnTheSameSchedule) {
+    WallClockTimer timer(1000000);
+    EXPECT_EQ(800000ULL, timer.nextSleep(1100000, 900000));
+    EXPECT_EQ(950000ULL, timer.nextSleep(2050000, 1100000));
+    EXPECT_EQ(750000ULL, timer.nextSleep(3050000, 800000));
+}
+
+// Exercise the production phase probes, not a second implementation of the
+// ledger. All expected totals are produced by the callbacks on the timer thread
+// and read only after stop() joins it.
+class PhaseLedgerWallClock : public BaseWallClock {
+public:
+    explicit PhaseLedgerWallClock(bool lazy) : lazy(lazy) {}
+    const char* name() override { return "Phase ledger test timer"; }
+    bool lazy;
+    u64 iterations = 0, empty = 0, single = 0, large = 0;
+    u64 selected = 0, sent = 0, failed = 0, rejected = 0;
+    std::atomic<int> completed{0};
+
+    bool awaitPasses(int passes) const {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (completed.load(std::memory_order_acquire) < passes) {
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+            std::this_thread::yield();
+        }
+        return true;
+    }
+
+private:
+    void timerLoop() override {
+        iterations = empty = single = large = selected = sent = failed = rejected = 0;
+        completed.store(0, std::memory_order_release);
+        auto collect = [&](std::vector<ThreadEntry>& entries) {
+            size_t count = iterations % 4 == 0 ? 0 : iterations % 4 == 1 ? 1 :
+                           iterations % 4 == 2 ? 17 : 2;
+            ++iterations;
+            empty += count == 0;
+            single += count == 1;
+            large += count > 16;
+            for (size_t tid = 1; tid <= count; ++tid) {
+                entries.push_back(ThreadEntry{static_cast<int>(tid), nullptr, -1, 0, 0});
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        };
+        auto sample = [&](ThreadEntry entry, int& failures, int&, int&, int&, bool) {
+            ++selected;
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            if (lazy && entry.tid % 3 == 0) {
+                ++rejected;
+                return WallClockCandidateOutcome::PRECHECK_REJECTED;
+            }
+            if (entry.tid % 2 == 0) {
+                ++failures;
+                ++failed;
+                return WallClockCandidateOutcome::SIGNAL_FAILED;
+            }
+            ++sent;
+            return WallClockCandidateOutcome::SIGNAL_SENT;
+        };
+        auto clean = [&] {
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            completed.store(static_cast<int>(iterations), std::memory_order_release);
+        };
+        timerLoopCommon<ThreadEntry>(collect, sample, clean, 16, 1000000, lazy, lazy);
+    }
+};
+
+class WallClockPhaseLedgerTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        const char* value = std::getenv("DDPROF_WALL_TIMER_DIAGNOSTICS");
+        had_environment = value != nullptr;
+        if (value != nullptr) saved_environment = value;
+        previous_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
+        args._wall = 1000000;
+    }
+
+    void TearDown() override {
+        if (had_environment) {
+            setenv("DDPROF_WALL_TIMER_DIAGNOSTICS", saved_environment.c_str(), 1);
+        } else {
+            unsetenv("DDPROF_WALL_TIMER_DIAGNOSTICS");
+        }
+        std::signal(WAKEUP_SIGNAL, previous_handler);
+    }
+
+    void run(PhaseLedgerWallClock& clock) {
+        clock.enableEvents(true);
+        clock.completed.store(0, std::memory_order_release);
+        bool started = !clock.start(args);
+        bool completed = started && clock.awaitPasses(16);
+        clock.stop();
+        clock.enableEvents(false);
+        ASSERT_TRUE(started);
+        ASSERT_TRUE(completed);
+    }
+
+    void expectEnabled(const PhaseLedgerWallClock& clock) {
+        const auto& phases = clock.timerPhasesForTest();
+        EXPECT_EQ(clock.iterations, phases.iterations);
+        EXPECT_EQ(clock.empty, phases.empty);
+        EXPECT_EQ(clock.single, phases.single);
+        EXPECT_EQ(clock.large, phases.large);
+        EXPECT_EQ(clock.selected, phases.selected);
+        EXPECT_EQ(clock.sent, phases.sent);
+        EXPECT_EQ(clock.failed, phases.failed);
+        EXPECT_EQ(clock.selected, clock.sent + clock.failed + clock.rejected);
+        EXPECT_GT(phases.empty, 0ULL);
+        EXPECT_GT(phases.single, 0ULL);
+        EXPECT_GT(phases.large, 0ULL);
+        EXPECT_GT(phases.collect_ns, 0ULL);
+        EXPECT_GT(phases.select_ns, 0ULL);
+        EXPECT_GT(phases.send_ns, 0ULL);
+        EXPECT_GT(phases.finish_ns, 0ULL);
+        EXPECT_GT(phases.requested_sleep_ns, 0ULL);
+        EXPECT_GT(phases.actual_sleep_ns, 0ULL);
+        EXPECT_GT(phases.first_eligible, 0ULL);
+        EXPECT_LE(phases.first_eligible, phases.first_send);
+        EXPECT_LE(phases.first_send, phases.last_send);
+        EXPECT_LE(phases.first_eligible, phases.last_eligible);
+        EXPECT_LE(phases.last_eligible, phases.last_send);
+    }
+
+    Arguments args;
+    bool had_environment = false;
+    std::string saved_environment;
+    using SignalHandler = void (*)(int);
+    SignalHandler previous_handler = SIG_DFL;
+};
+
+TEST_F(WallClockPhaseLedgerTest, OrdinaryPhasesCountCallbacksAndPoolSizes) {
+    setenv("DDPROF_WALL_TIMER_DIAGNOSTICS", "1", 1);
+    PhaseLedgerWallClock clock(false);
+    run(clock);
+    expectEnabled(clock);
+    EXPECT_EQ(0ULL, clock.rejected);
+}
+
+TEST_F(WallClockPhaseLedgerTest, LazyPhasesIncludeRejectedCandidatesButNotAsSends) {
+    setenv("DDPROF_WALL_TIMER_DIAGNOSTICS", "1", 1);
+    PhaseLedgerWallClock clock(true);
+    run(clock);
+    expectEnabled(clock);
+    EXPECT_GT(clock.rejected, 0ULL);
+}
+
+TEST_F(WallClockPhaseLedgerTest, DisabledRecordingClearsPreviousSnapshot) {
+    setenv("DDPROF_WALL_TIMER_DIAGNOSTICS", "1", 1);
+    PhaseLedgerWallClock clock(false);
+    run(clock);
+    expectEnabled(clock);
+    setenv("DDPROF_WALL_TIMER_DIAGNOSTICS", "0", 1);
+    run(clock);
+    const auto& phases = clock.timerPhasesForTest();
+    EXPECT_GT(clock.iterations, 0ULL);
+    EXPECT_EQ(0ULL, phases.iterations);
+    EXPECT_EQ(0ULL, phases.empty + phases.single + phases.large);
+    EXPECT_EQ(0ULL, phases.selected + phases.sent + phases.failed);
+    EXPECT_EQ(0ULL, phases.first_eligible + phases.last_eligible +
+                    phases.first_send + phases.last_send);
+    EXPECT_EQ(0ULL, phases.collect_ns + phases.select_ns + phases.send_ns + phases.finish_ns);
+    EXPECT_EQ(0ULL, phases.requested_sleep_ns + phases.actual_sleep_ns);
+}
 
 // profiler.cpp's Profiler::start() falls back to ThreadFilter::deactivateRecording()
 // when the wall engine fails to start. This proves BaseWallClock::start() can

@@ -27,6 +27,7 @@
 #include "threadState.h"
 
 struct ThreadEntry;  // defined after ThreadFilter; carries a pointer to a ThreadFilter::Slot
+class ProfiledThread;
 class WallClockBlockTracker;  // wall-clock owned/unowned block-run suppression state, see wallClockBlockTracker.h
 
 class ThreadFilter {
@@ -50,9 +51,10 @@ public:
     // only by ~ThreadFilter, which requires quiescence (see the destructor), so a
     // captured Slot* stays dereferenceable while the filter is in use.
     struct alignas(DEFAULT_CACHE_LINE_SIZE) Slot {
-        // Packed as (epoch << 1) | in_context_window so a transition and its
-        // epoch change are observed atomically by owned-block admission and by
-        // the wall-clock suppression check.
+        // Unfiltered recordings project the native owner's packed logical
+        // (version << 1) | membership source. Filtered recordings use the bit
+        // for explicit recording-local selection; restoring logical truth must
+        // not undo clearActive(). Both versions invalidate incompatible runs.
         std::atomic<u64>           context_window_state{0};
         std::atomic<u64>           lifecycle_generation{0};
         // Per-recording publication flag. A retained TID mapping is eligible for
@@ -101,18 +103,19 @@ public:
         // RMW into a plain store on every context-filtered enter/exit.
         //
         // Other writers of this field (R-A5):
-        // - refreshSlotForRecording(), unregisterThreadLocked() and
-        //   retireThreadByTid() reset it to 0 on the owner's own thread; the
-        //   latter two only after winning the tid CAS, so the slot has no live
-        //   owner afterwards.
-        // - registerThread() zeroes it before an owner exists.
+        // - refreshSlotForRecording() copies the owner's source snapshot only
+        //   after invalidating old recording payload. Normal owner context
+        //   hooks publish warm logical transitions without resetting tails.
+        // - unregisterThreadLocked()/retireThreadByTid() reset it only after
+        //   winning the tid CAS, so the slot has no live owner afterwards.
+        // - registerThread() initializes it before publishing native ownership.
         // - clearActive() is the only cross-thread writer while the owner is
         //   live, and it uses exitContextWindowFromNonOwner() (a CAS).
         // Why this is safe: only the owner sets bit 0. After the owner loads
         // bit 0 clear, nobody else can change the word before its store. After
         // it loads bit 0 set, the only overlapping write is clearActive()'s
         // identical current+1. Neither the bit nor the epoch is lost or moved
-        // backwards except by the deliberate resets to 0 above.
+        // backwards except by lifecycle resets or an owner's logical-word wrap.
         inline bool enterContextWindow() {
             u64 current = context_window_state.load(std::memory_order_relaxed);
             if ((current & 1) != 0) return false;
@@ -219,7 +222,20 @@ public:
 
     // Returns the slot owned by native thread `tid` (allocating one if needed),
     // or -1 if tid < 0, the registry is inactive, or it is full.
-    SlotID registerThread(int tid);
+    SlotID registerThread(int tid, u64 logical_window_state);
+    // Normal-owner JNI/context hooks only. No remote TLS lookup or signal-side
+    // registration. An inactive registry does not allocate or reserve a slot.
+    SlotID ensureOwnerSlot(ProfiledThread& owner);
+    void onContextWindowEnter(ProfiledThread& owner);
+    void onContextWindowExit(ProfiledThread& owner);
+#ifdef UNIT_TEST
+    // Synthetic legacy registry fixtures have no ProfiledThread. Production
+    // callers must supply the actual owner's explicit logical source instead.
+    SlotID registerThread(int tid) {
+        Slot* slot = lookupByTid(tid);
+        return registerThread(tid, slot != nullptr ? slot->rawContextWindowState() : 0);
+    }
+#endif
     void unregisterThread(SlotID slot_id, int expected_tid = -1);
     void unregisterThreadByTid(int tid);
     // Lock-free retirement for the pthread-key TLS destructor (never blocks).
@@ -331,7 +347,7 @@ private:
     //    outcome as the locked path.
     // 4. Consequently THREAD_REGISTRY_CAPACITY_EXHAUSTED counts genuine
     //    full-registry rejections; the caller retries on its next hook
-    //    (ensureCurrentThreadFilterSlot()).
+    //    (ensureOwnerSlot()).
     // 5. Pending retirements count as capacity, so a registry full of retired
     //    slots reaches the lock and drains them (starvation guard).
     // 6. Do not reorder the loads and do not take the lock here
@@ -353,7 +369,8 @@ private:
     void unindexSlot(SlotID slot_id, int tid);
     void rollbackFailedIndex(Slot& slot);
     bool indexOrRollback(Slot& slot, SlotID slot_id, int tid);
-    void refreshSlotForRecording(SlotID slot_id, Slot* slot, RecordingEpoch epoch);
+    void refreshSlotForRecording(SlotID slot_id, Slot* slot, RecordingEpoch epoch,
+                                  u64 logical_window_state);
     void ensureTidIndexLocked();
     void unregisterThreadLocked(SlotID slot_id, int expected_tid = -1);
     SlotID lookupSlotIdByTid(int tid) const;

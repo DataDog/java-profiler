@@ -18,12 +18,12 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 ## Quick Navigation
 
 ### Architecture
-- [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer architecture for call traces
+- [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer rotation, isolated liveness collectors, reusable unowned wall-stack roots and exact-copy failure handling
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
 - [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, and rotation protocols
-- [TLSContext](architecture/TLSContext.md) - Thread-local context for distributed tracing
+- [TLSContext](architecture/TLSContext.md) - JNI tracing context, native-owner membership and lazy original-context retention for unowned wall samples
 
 ### Build System
 - [BuildSystemGuide](build/BuildSystemGuide.md) - Comprehensive build system documentation
@@ -32,11 +32,11 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [TestingGuide](build/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, and local workflows
 
 ### Reference
-- [ProfilerMemoryRequirements](reference/ProfilerMemoryRequirements.md) - Memory usage and limits
+- [ProfilerMemoryRequirements](reference/ProfilerMemoryRequirements.md) - Memory components, embedded native owners, reserved pool and lazy retained-context backing
 - [EventTypeSystem](reference/EventTypeSystem.md) - Profiler event types
 - [RemoteSymbolication](reference/RemoteSymbolication.md) - Symbol resolution
 - [RemoteSymbolicationFrameTypes](reference/RemoteSymbolicationFrameTypes.md) - Frame type design for symbolication
-- [SamplerPerfCounters](reference/SamplerPerfCounters.md) - Opt-in per-sampler timing counters and the stop-time report
+- [SamplerPerfCounters](reference/SamplerPerfCounters.md) - Opt-in per-sampler timing, monotonic wall-timer cadence and joined phase diagnostics
 - [TestFlakinessAnalysis](reference/TestFlakinessAnalysis.md) - Test flakiness investigation results
 
 ### Design

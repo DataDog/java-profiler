@@ -9,7 +9,7 @@
  * Input bytes are consumed as a stream of operations against a small, fixed
  * tid domain (deliberately narrow so registration/reuse collisions are
  * frequent):
- *   op < 0x30: registerThread(tid)
+ *   op < 0x30: registerThread(tid, logical_window_state)
  *   op < 0x50: unregisterThread(slot_id) for a tracked tid
  *   op < 0x60: add(tid, slot_id) - context-window enter
  *   op < 0x70: remove(slot_id) - context-window exit
@@ -37,7 +37,8 @@
  *   I2. lookupByTid(tid) retains every live owner's identity. activeSlotForId()
  *       is non-null exactly when its owner has registered in the current epoch.
  *   I3. Restart makes old block state ineligible for suppression; registering
- *       a retained owner clears its block state and sampled-this-run marker.
+ *       a retained owner clears its block state and sampled-this-run marker,
+ *       but restores the owner's logical context-window word.
  *   I4. A generation-checked exitBlockedRun() called with a generation other
  *       than the block run's current one must return false and must not
  *       change that slot's active-block-state (a stale/forged token must
@@ -89,6 +90,9 @@ std::unordered_map<ThreadFilter::SlotID, u64> g_last_token;
 std::unordered_set<int> g_fresh;
 // Owners whose context window is currently entered (I5).
 std::unordered_set<int> g_in_window;
+// Synthetic owners retain their packed (version << 1) | membership source
+// across recording restarts, independently of the registry projection.
+u64 g_logical_window_state[kTidDomain + 1] = {};
 // Owners with an admitted, sampled owned block run and its state (I6).
 std::unordered_map<int, OSThreadState> g_armed;
 
@@ -113,7 +117,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     int tid = 1 + (nextByte() % kTidDomain);
 
     if (op < 0x30) {
-      ThreadFilter::SlotID slot_id = g_filter->registerThread(tid);
+      ThreadFilter::SlotID slot_id =
+          g_filter->registerThread(tid, g_logical_window_state[tid]);
       if (slot_id >= 0) {
         auto it = g_owner.find(tid);
         if (it != g_owner.end() && it->second != slot_id) {
@@ -128,9 +133,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         }
         g_owner[tid] = slot_id;
         if (g_fresh.insert(tid).second) {
-          // New slot, or a retained owner refreshed for this epoch: context
-          // state and block state are reset.
-          g_in_window.erase(tid);
+          // Recording payload is reset, but a retained owner's logical
+          // membership survives refresh into the new epoch.
           g_armed.erase(tid);
           auto* block = g_tracker->slotForId(slot_id);
           if (block->activeBlockState() != OSThreadState::UNKNOWN ||
@@ -149,6 +153,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         g_owner.erase(it);
         g_fresh.erase(tid);
         g_in_window.erase(tid);
+        g_logical_window_state[tid] = 0;
         g_armed.erase(tid);
       }
     } else if (op < 0x60) {
@@ -161,14 +166,18 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             b->activeBlockState() != OSThreadState::UNKNOWN || b->sampledThisRun()) {
           __builtin_trap();
         }
-        g_in_window.insert(tid);
+        if (g_in_window.insert(tid).second) {
+          g_logical_window_state[tid] += 3;
+        }
         g_armed.erase(tid);
       }
     } else if (op < 0x70) {
       auto it = g_owner.find(tid);
       if (it != g_owner.end()) {
         g_filter->remove(it->second);
-        g_in_window.erase(tid);
+        if (g_in_window.erase(tid) != 0) {
+          g_logical_window_state[tid] += 1;
+        }
       }
     } else if (op < 0x90) {
       auto it = g_owner.find(tid);
@@ -230,6 +239,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
       g_owner.erase(tid);
       g_fresh.erase(tid);
       g_in_window.erase(tid);
+      g_logical_window_state[tid] = 0;
       g_armed.erase(tid);
     } else {
       g_filter->init("", /*track_unfiltered_wall=*/true);
@@ -267,8 +277,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     for (auto& kv : g_owner) {
       auto* identity = g_filter->slotForId(kv.second);
-      // I5: context-window membership matches the shadow model.
-      if (identity->inContextWindow() != (g_in_window.count(kv.first) != 0)) {
+      // I5: membership and the retained owner word match the shadow model.
+      if (identity->inContextWindow() != (g_in_window.count(kv.first) != 0) ||
+          identity->rawContextWindowState() != g_logical_window_state[kv.first]) {
         __builtin_trap();
       }
       // I6: the suppression decision is two-sided.

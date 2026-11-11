@@ -24,6 +24,8 @@ one-line pointer (what was read/run and the conclusion) instead of retaining the
 
 # AGENTS.md
 
+<!-- Copyright 2026, Datadog, Inc. -->
+
 This file provides guidance to AI coding assistants when working with code in this repository.
 
 ## Project Overview
@@ -247,13 +249,62 @@ Version is computed from git tags at build time: see
 
 ## Core Architecture Components
 
-### Double-Buffered Call Trace Storage
-The profiler uses a sophisticated double-buffered storage system for call traces:
+### Triple-Buffered Call Trace Storage
+The profiler rotates active, standby and scratch tables for call traces:
 - **Active Storage**: Currently accepting new traces from profiling events
-- **Standby Storage**: Background storage for JFR serialization and trace preservation
+- **Standby Storage**: Preserved traces from the preceding rotation
+- **Scratch Storage**: Receives exact-ID preservation copies for the next rotation
 - **Instance-based Trace IDs**: 64-bit IDs combining instance ID (upper 32 bits) and slot (lower 32 bits)
 - **Liveness Checkers**: Functions that determine which traces to preserve across storage swaps
 - **Atomic Swapping**: Lock-free swap operations to minimize profiling overhead
+
+### Reusable Unowned Wall-Clock Stacks
+ASGCT wall sampling owns a recording stripe through stack collection, cached-root
+publication and deferred-tail serialization/commit. Do not publish a reusable ID
+after releasing its stripe, or consume a tail before a confirmed write. Ordinary
+and deferred writes have independent success results.
+
+The lazy block tracker indexes cached IDs with a 32-word atomic bitmap. Its
+once-per-profiler liveness collector includes zero-weight and out-of-context
+roots; context membership is not their lifetime. Storage unions isolated
+collector outputs: the heap collector clears its output even when disabled.
+Never share one mutable output set between collectors. Only collection under all
+recording stripes prunes zero-ID bits. A fresh recording clears IDs under those
+stripes; an ordinary dump does not reset them. Recoverable exact-copy failure
+marks only still-matching cached IDs as `DROPPED_TRACE_ID`, retains their weight,
+state and cadence, and increments `wc_unowned_blocked_trace_preservation_failed`.
+See [CallTraceStorage.md](doc/architecture/CallTraceStorage.md#reusable-unowned-wall-clock-roots).
+
+### Wall Timer Cadence
+The shared ASGCT/JVMTI timer advances a monotonic opportunity deadline by each
+unchanged dithered interval. Work and wake lateness reduce the next wait; a missed
+deadline restarts from now plus the interval without catch-up bursts. Ordinary
+stack-ID reuse still emits weight 1 with actual serialization timestamps, not
+elapsed-time compensation. `DDPROF_WALL_TIMER_DIAGNOSTICS=1` enables a fixed-size
+timer-local ledger emitted after join; see
+[SamplerPerfCounters.md](doc/reference/SamplerPerfCounters.md#wall-timer-cadence-and-phase-diagnostics).
+
+### Native Context-Window Membership
+`ProfiledThread` owns private logical membership/version across recordings;
+registry slots are validated per-recording projections. Normal owner add/remove
+updates truth even while inactive, without registry allocation. Span/tag writes
+are separate. Signal handlers and timers neither mutate this source nor walk
+remote TLS. Fresh binding resets old sampled payload and publishes its matching
+epoch last; warm context changes preserve unowned IDs, weight and cadence.
+Filtered selection requires explicit entry. Owner teardown/pool reuse resets
+membership; this is not a virtual-carrier transfer protocol or a new
+JavaCritical-safety guarantee. See [TLSContext.md](doc/architecture/TLSContext.md#context-window-membership).
+
+### Retained Unowned Context
+Unowned fallback retains original span/root IDs and configured tags with its
+stack, state and weight. A context boundary records the current tick separately;
+never serialize the old tail from live TLS or replace it after a failed write.
+Lazy sidecar backing is cold-registration-only; missing/unstable/exhausted
+publication fails open, never suppresses. See
+[TLSContext.md](doc/architecture/TLSContext.md#retained-unowned-wall-context).
+Owner context storage is embedded in `ProfiledThread`; retained cells are separately
+charged to `NM_WALLCLOCK`. Count reserved pool owners and tracker metadata separately;
+see [ProfilerMemoryRequirements.md](doc/reference/ProfilerMemoryRequirements.md#9-native-owners-and-retained-context-storage).
 
 ### JFR Integration Architecture
 - **FlightRecorder**: Central JFR event recording and buffer management

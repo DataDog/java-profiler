@@ -164,44 +164,6 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 
 // some duplication between add and remove, though we want to avoid having an extra branch in the hot path
 
-static ThreadFilter::SlotID ensureCurrentThreadFilterSlot(
-    ThreadFilter *thread_filter, ProfiledThread *current) {
-  int tid = current->tid();
-  if (unlikely(tid < 0)) {
-    return -1;
-  }
-
-  ThreadFilter::SlotID slot_id = current->filterSlotId();
-  if (likely(slot_id >= 0)) {
-    if (likely(thread_filter->activeSlotForId(slot_id, tid) != nullptr)) {
-      return slot_id;
-    }
-    current->setFilterSlotId(-1);
-  }
-
-  // Threads that existed before the recording started (and so never received
-  // a ThreadStart callback) bind their slot lazily here. If the tid is already
-  // indexed, registerThread(tid) returns that existing slot.
-  //
-  // This is the only place the filterThreadAdd0 (JavaCritical), parkEnter0
-  // and blockEnter0 hooks can block on _registry_lock. It's bounded to at
-  // most once per thread lifetime (cold TLS) plus once per recording-epoch
-  // transition this thread observes (stale cached slot) - not a per-call cost.
-  // A thread that cannot get a slot because the registry is full retries here
-  // on every call, but registerThread() rejects it without taking the lock.
-  // THREAD_REGISTRY_HOOK_REREGISTRATION counts every attempt, including those
-  // lock-free rejections (tracked separately by
-  // THREAD_REGISTRY_CAPACITY_EXHAUSTED). If it fires per call while
-  // THREAD_REGISTRY_CAPACITY_EXHAUSTED stays flat, the "provably rare"
-  // assumption has broken and these hooks should be revisited.
-  Counters::increment(THREAD_REGISTRY_HOOK_REREGISTRATION);
-  slot_id = thread_filter->registerThread(tid);
-  if (slot_id >= 0) {
-    current->setFilterSlotId(slot_id);
-  }
-  return slot_id;
-}
-
 // JavaCritical is faster JNI, but more restrictive - parameters and return value have to be
 // primitives or arrays of primitive types.
 // We direct corresponding JNI calls to JavaCritical to make sure the parameters/return value
@@ -219,21 +181,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  if (unlikely(!thread_filter->registryActive())) {
-    return;
-  }
-  
-  int slot_id = ensureCurrentThreadFilterSlot(thread_filter, current);
-  if (unlikely(slot_id < 0)) {
-    return;  // Failed to register thread
-  }
-  if (unlikely(!thread_filter->add(tid, slot_id))) {
-    // The cached slot_id no longer carries this thread's tid.
-    // Clear the cache so the next filterThreadAdd0()/parkEnter0()/blockEnter0()
-    // call re-runs ensureCurrentThreadFilterSlot()'s registerThread() path
-    // instead of leaving this thread permanently outside the context window.
-    current->setFilterSlotId(-1);
-  }
+  thread_filter->onContextWindowEnter(*current);
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -248,18 +196,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  if (unlikely(!thread_filter->registryActive())) {
-    return;
-  }
-
-  int slot_id = current->filterSlotId();
-  if (unlikely(slot_id == -1 ||
-               thread_filter->activeSlotForId(slot_id, tid) == nullptr)) {
-    // No slot yet, or a cached slot left over from an earlier recording -
-    // either way this thread is not in the context window, nothing to remove
-    return;
-  }
-  thread_filter->remove(slot_id);
+  thread_filter->onContextWindowExit(*current);
 }
 
 
@@ -454,7 +391,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
   bool first_park = current->parkEnter();
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (first_park && tf->registryActive()) {
-    ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
+    ThreadFilter::SlotID slot_id = tf->ensureOwnerSlot(*current);
     if (slot_id >= 0) {
       WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
       current->setParkBlockToken(
@@ -512,7 +449,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (!tf->registryActive()) {
     return 0;
   }
-  ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
+  ThreadFilter::SlotID slot_id = tf->ensureOwnerSlot(*current);
   if (slot_id < 0) {
     return 0;
   }

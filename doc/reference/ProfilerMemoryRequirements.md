@@ -1,6 +1,8 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Profiler Memory Requirements and Limitations
 
-**Last Updated:** 2026-01-13
+**Last Updated:** 2026-11-02
 
 ## Overview
 
@@ -232,39 +234,50 @@ Typical overhead:
 - Sweep phase: Increment age for unreferenced methods, remove if age >= 3
 - Conservative strategy: Methods must be unused for 3 consecutive chunks before removal
 
-### 9. Thread-Local Context Storage (Tracer Integration)
+### 9. Native Owners and Retained Context Storage
 
-**What it is:**
-- thread_local Context structures for APM tracer integration
-- Each thread has a cache-line aligned Context containing span IDs and tags
-- Pointer stored in ProfiledThread for signal-safe access
+Tracing storage is embedded in `ProfiledThread`: a 640-byte `OtelThreadContextRecord`,
+40 bytes of tag encodings and an 8-byte local-root ID form a contiguous 688-byte
+region. The initialization flag, private logical-membership word, remaining owner
+fields and alignment are additional. Do not charge this region again as a separate
+per-thread allocation. Context strings remain in the dictionary described in section 5.
 
-**Memory cost:**
-```
-Per thread Context:
-- spanId: 8 bytes
-- rootSpanId: 8 bytes
-- checksum: 8 bytes
-- tags array: 10 × 4 bytes = 40 bytes
-- Cache line alignment padding: ~0-8 bytes
-- Total per thread: 64 bytes (cache-line aligned)
+Let `S = sizeof(ProfiledThread)` for the selected production configuration and ABI,
+and `H` be the number of live separately allocated owners. Their `NM_THREAD_LOCAL`
+charge is `H × S`. Successful default pool backing adds `64 × S +
+sizeof(ThreadLocalDataPool)`, including all reserved owners, not just claimed ones.
+Pool backing has process lifetime; returning an owner resets its state without
+freeing the backing. Separately allocated owners are released at thread teardown.
 
-Typical overhead:
-- 100-500 threads: 6.4 KB - 32 KB
-- 1000+ threads: 64 KB+
-```
+`Context` is a normalized value containing two IDs and ten tag encodings, with
+56 bytes of fields and cache-line alignment. It has no checksum and is not the
+per-thread tracing allocation. Its actual object size must include ABI padding.
 
-**Growth patterns:**
-- Grows with thread count (one Context per thread)
-- Bounded by application thread count
-- Context values stored in _context_value_map Dictionary (see section 5)
+Retained unowned wall contexts use separate lazy tracker backing:
 
-**Lifecycle:**
-- Allocated lazily on first TLS access per thread
-- Persists throughout thread lifetime
-- Deallocated when thread terminates
+| Backing | Accounted bytes | Lifetime |
+|---------|-----------------|----------|
+| `SlotStorage` | `2048 × 64 + 32 × 8 = 131,328` | First cold registration to tracker destruction |
+| Context chunks | `C × 256 × 64 = C × 16,384`, with `0 ≤ C ≤ 8` | Cold registration in the enabled retention mode to tracker destruction |
 
-### Summary: Total Memory Overhead
+These allocations are charged to `NM_WALLCLOCK`. Recording resets retain backing;
+disabled retention does not allocate context chunks. Existing backing is released
+at tracker destruction. The eight chunk pointers, mode flag, storage pointer and
+ABI padding belong to the tracker object, not the chunk payload. Unit-test hooks
+are not production metadata.
+
+The maximum combined backing payload is 262,400 bytes. This excludes tracker and
+owner objects, allocator overhead, other profiler structures and RSS effects;
+it is not a whole-profiler memory limit or an accepted resource budget.
+`NativeMem::record()` tracks logical live bytes, not allocator overhead.
+See [TLSContext.md](../architecture/TLSContext.md) for publication and lifetime rules.
+
+### Summary: Memory Components
+
+The tables give component estimates, not aggregate profiler or RSS bounds. Include
+native owners, reserved pool backing and retained wall-context backing using
+section 9. Production object sizes depend on build configuration and ABI; component
+arithmetic does not establish an acceptable workload memory budget.
 
 **Typical Java Application (10K-100K classes, stable code paths):**
 ```
@@ -278,10 +291,9 @@ Dictionary instances (4x)          112 KB - 8 MB
 Recording buffers                  1.1 MB (fixed)
 ThreadIdTable arrays               32 KB (fixed)
 MethodMap                          104 KB - 1 MB
-Thread-local Contexts              6-64 KB (depends on thread count)
+Native owners/context             sizeof-based, including reserved pool owners
+Retained wall-context backing      0-131,072 bytes, plus lazy SlotStorage
 ─────────────────────────────────────────────────────
-TOTAL (excluding jmethodID):       ~14-56 MB
-TOTAL (including jmethodID):       24-206 MB
 ```
 
 **High Class Churn Application (1M+ classes):**
@@ -296,19 +308,18 @@ Dictionary instances (4x)          10-50 MB (more unique strings/contexts)
 Recording buffers                  1.1 MB (fixed)
 ThreadIdTable arrays               32 KB (fixed)
 MethodMap                          1-10 MB
-Thread-local Contexts              64-256 KB (high thread count)
+Native owners/context             sizeof-based, including reserved pool owners
+Retained wall-context backing      0-131,072 bytes, plus lazy SlotStorage
 ─────────────────────────────────────────────────────
-TOTAL (excluding jmethodID):       ~63-273 MB
-TOTAL (including jmethodID):       1+ GB (dominated by jmethodID)
 ```
 
 **Key observations:**
-- For normal applications: Total overhead is 24-206 MB (acceptable)
+- Whole-profiler overhead requires the workload's actual owner count and component measurements
 - For high class churn: jmethodID dominates memory usage (1+ GB)
 - Most non-jmethodID memory converges after warmup
 - Only jmethodID and CallTraceStorage can grow unbounded (jmethodID requires class unloading)
 - MethodMap now bounded by age-based cleanup (enabled by default)
-- Tracer context overhead is negligible (< 256 KB even with 1000+ threads)
+- Context cost includes embedded owners and reserved pool backing, not just normalized snapshot fields
 
 ## Limitations and Restrictions
 
@@ -382,17 +393,12 @@ If NMT Internal category grows beyond acceptable limits:
 - Typical web services, microservices
 - Batch processing jobs
 - Applications with well-defined class sets
-- Expected memory overhead: 24-206 MB total
-  - jmethodID: 10-150 MB
-  - Profiler data structures: 14-56 MB
-  - Tracer context: < 64 KB (negligible)
+- Size the workload from component measurements, including native owners and pool backing
+- Stable class count alone does not establish a memory bound
 
 **Moderate class churn:**
 - Applications loading 100K-1M classes total
-- Expected memory overhead: 100 MB - 1 GB total
-  - jmethodID: Dominant component (70-90% of total)
-  - Profiler data structures: 63-273 MB
-  - Tracer context: < 256 KB (negligible)
+- Account for class metadata growth separately from native owners and profiler backing
 - Monitor NMT Internal category to ensure convergence
 
 ### ⚠️ Caution Required
@@ -644,11 +650,12 @@ jcmd <pid> GC.class_histogram | head -1
 - Age-based cleanup removes methods unused for 3+ consecutive chunks
 - Cleanup logs LINE_NUMBER_TABLES counter value via TEST_LOG for observability
 
-**9. Thread-local Context storage:**
-- `ddprof-lib/src/main/cpp/context.h:32-40` - Context structure (cache-line aligned, 64 bytes)
-- `ddprof-lib/src/main/cpp/context.h:57` - thread_local context_tls_v1 declaration
-- `DD_TAGS_CAPACITY = 10` tags per context
-- Context values stored in _context_value_map Dictionary (profiler.h:122)
+**9. Native owners and retained context storage:**
+- `ddprof-lib/src/main/cpp/threadLocalData.h` - Embedded OTEL record, tag/root fields and private membership
+- `ddprof-lib/src/main/cpp/threadLocalDataPool.cpp` - Reserved owner backing and `NM_THREAD_LOCAL` accounting
+- `ddprof-lib/src/main/cpp/context.h` - Aligned normalized snapshot with ten tag encodings
+- `ddprof-lib/src/main/cpp/wallClockBlockTracker.{h,cpp}` - Lazy slot/context backing and `NM_WALLCLOCK` accounting
+- Context strings are stored in `_context_value_map`
 
 ### Known Issues Fixed
 

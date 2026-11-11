@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # CallTraceStorage Triple-Buffer Architecture
 
 ## Overview
@@ -553,6 +555,55 @@ registerLivenessChecker([](std::unordered_set<u64>& preserve_set) {
     preserve_set.insert(active_jfr_traces.begin(), active_jfr_traces.end());
 });
 ```
+
+### Reusable unowned wall-clock roots
+
+ASGCT wall sampling can reuse a blocked stack after the original event's chunk
+has been dumped. A cached ID remains a liveness root even when its pending weight
+is zero or the thread has left context membership. `WallClockBlockTracker`
+indexes these roots in 32 atomic 64-bit words inside its lazily allocated slot
+storage. `BlockState` remains one cache line; the bitmap adds 256 bytes of payload,
+not a bound on the memory retained by referenced traces.
+
+`Profiler::recordWallSample()` owns one nonblocking recording stripe through the
+ordinary write, successful root publication and deferred-tail write/commit.
+Publication sets the cached ID/state and bitmap bit before releasing the stripe.
+A runnable tail is only peeked until its write succeeds. Stripe exhaustion or a
+rejected write leaves its ID, weight, state and cadence available. Ordinary and
+deferred write results are independent. A failed blocked sample restores only
+previously suppressed weight; the failed current attempt remains a drop.
+
+The profiler registers root collection once in its constructor, alongside the
+existing heap-liveness registration. Each collector receives an empty reusable
+output set. Storage merges its nodes into the preservation union before calling
+the next collector. The heap collector clears its output even when disabled;
+isolation prevents it from erasing wall roots after an earlier heap recording.
+Duplicate nodes left after merging are released, while bucket allocations are
+reused. Both sets use the call-trace counting allocator, so their actual bucket
+and node allocations contribute to `NM_CALLTRACE`, not to the bitmap payload.
+Dump holds all recording stripes while collecting, copying and serializing. The collector enumerates indexed slots,
+including zero-weight roots, without consulting `ThreadFilter::collect()` or
+remote TLS. Lifecycle resets clear IDs but not concurrent bitmap bits; only the
+collector prunes a zero-ID bit while publication is excluded. A subsequent
+publisher sets its bit again. Fresh-recording reset clears cached state under
+all stripes; a chunk dump does not reset the sampling cadence.
+
+Exact-ID copying returns true only when the requested ID already exists or its
+frames were successfully copied. Each confirmed ID is removed from the shared
+preservation work set. After both source-table passes, optional completion
+callbacks receive the remaining requests, including IDs absent from both tables.
+The existing one-argument liveness-checker registration remains valid. These
+normal-thread callbacks must not re-enter storage or registration.
+
+Before recording stripes reopen, the wall completion callback replaces a
+still-matching unpreserved real ID with reserved `DROPPED_TRACE_ID`. Weight, state
+and cadence remain unchanged. The next deferred sample can reference the existing
+dropped-stack pool entry, and `wc_unowned_blocked_trace_preservation_failed`
+increments once per root replacement. This reports attribution loss, not
+successful stack preservation. Normal copies keep the original ID and frames.
+The bounded failure handling does not make generic container-allocation failure
+or fatal out-of-memory recovery safe. Delegated JVMTI correlation IDs do not
+participate in this reusable ASGCT-root protocol.
 
 ## 64-Bit Trace ID Architecture
 
