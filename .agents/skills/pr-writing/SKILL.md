@@ -40,6 +40,9 @@ or say they are from an earlier commit.
   scopes) or accepts a recurring per-call or footprint cost, state the decision and
   the accepted cost explicitly and flag it for reviewer acknowledgment — never leave
   it implicit in code, a test rename, or a leftover template marker.
+- **Human review** (descriptions only). Under Additional Notes, state whether human
+  review is required or recommended, and why, as the ticket's design records it. If the
+  ticket records none, state your own assessment.
 - **Only the final state matters.** Never include ephemeral working knowledge —
   investigation detours, dead-end hypotheses, intermediate states, tool runs,
   session history. If a detail did not survive into the final change, it does not
