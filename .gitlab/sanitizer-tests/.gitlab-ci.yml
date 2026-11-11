@@ -22,9 +22,10 @@
   stage: sanitizer
   extends: .cache-config
   needs: []
-  # Worst case is now the Gradle build plus two full sanitizer-instrumented
-  # passes (every binary, then the retry re-runs the suite) -- roughly twice
-  # the old build-plus-one-pass shape that 30m budgeted.
+  # The retry adds a second full pass. The build runs once, so the new worst
+  # case (build + two passes) stays inside twice the old 30m budget -- which
+  # itself had headroom over a single pass. Revisit against real cell
+  # durations if a timeout kill ever masks the quarantine classification.
   timeout: 60m
   variables:
     GRADLE_USER_HOME: .gradle
