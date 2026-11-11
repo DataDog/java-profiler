@@ -373,11 +373,10 @@ exception list.
 ## Development Guidelines
 
 - Never replace the code you work on with stubs. Never "fix" tests by testing constants
-  against constants. Never claim success until all affected tests pass: `testDebug` for
-  Java-visible behaviour, `:ddprof-lib:gtestDebug` for C++. For changes to
-  signal-handler paths, atomics, crash protection or thread lifecycle, also run the ASan
-  configuration where available (`gtestAsan`, `testAsan`) and, without arm64 hardware,
-  the aarch64 container (`./utils/run-containers-tests.sh --arch=aarch64`).
+  against constants. Never claim success until all affected tests pass; before claiming
+  it, load the `verify-profiler-change` skill
+  ([.agents/skills/verify-profiler-change/SKILL.md](.agents/skills/verify-profiler-change/SKILL.md)),
+  which says which builds and tests each kind of change needs.
   `assert()` is compiled out of release builds (`-DNDEBUG`): never rely on it for safety
   and never put side effects in it.
 - Platform-specific code goes in per-OS implementation files (`os_linux.cpp`,
@@ -429,10 +428,6 @@ exception list.
   not add code with no production caller (stage it in the PR that needs it), and do not
   delete passing tests without stating why. When a change alters behavior described in
   `doc/` or in comments, update those in the same PR.
-- Before requesting review, self-check the diff for unused variables, unused or duplicated
-  macros, dead code (methods, JNI entry points, fields, no-op functions, empty files left
-  without callers; test-only helpers stay only if marked as such) and misspelled
-  identifiers/comments.
 - C/C++ style: match the surrounding indentation and spacing exactly; don't split inline
   logic into helpers unless reused or genuinely hard to follow; extract code that appears a
   second time (e.g. in copy constructors, assignment operators) into one shared helper; use
@@ -485,7 +480,12 @@ Work runs in four phases — Intent → Design → Build and Test → Deploy —
 tracker ticket as the system of record: Jira (`PROF-<n>`) for Datadog engineers,
 GitHub issues for external contributors. **Read [doc/WorkTracking.md](doc/WorkTracking.md)
 before starting tracked work** — it is the phase-by-phase process reference; skipping
-it must be disclosed per the rule at the top of this file. These rules always apply:
+it must be disclosed per the rule at the top of this file. Before creating, updating or
+moving a Jira ticket, load the `ticket-writing` skill
+([.agents/skills/ticket-writing/SKILL.md](.agents/skills/ticket-writing/SKILL.md)); before
+writing a design, acceptance criteria or a Build plan, load the `work-planning` skill
+([.agents/skills/work-planning/SKILL.md](.agents/skills/work-planning/SKILL.md)). These
+rules always apply:
 
 - **Verification first.** No transition happens on claims: acceptance criteria before
   code, tests and review before merge, production verification before closure. **Fix
@@ -516,8 +516,9 @@ No pull request is opened, marked ready, or updated with fixes until an agentic 
 review of the full change set has completed and its Critical/High findings are fixed
 or explicitly waived by the user. Run the `pre-pr-review` skill
 ([.agents/skills/pre-pr-review/SKILL.md](.agents/skills/pre-pr-review/SKILL.md)): it
-picks the reviewer, adds the judgment checks no tool can make (comment budget, no
-plan/spec references), and records the result with `utils/review-marker.py`. If the
+picks the reviewer and effort within a review budget, adds the self-checks (dead code,
+misspellings, comment budget, no plan/spec references), and records the result with
+`utils/review-marker.py`. If the
 harness has no review capability, say so and get explicit user sign-off — never
 silently skip it. While the marker is stale, `.githooks/pre-push` refuses pushes to
 a branch with an open PR (install with `utils/review-marker.py install-hook`, never
@@ -532,19 +533,10 @@ Jira comment or a commit message, load the `pr-writing` skill
 
 ## CI / Automation Script Changes
 
-- Before rewriting or replacing a script invoked from `.gitlab-ci.yml`, `.gitlab/**/*.yml`,
-  `.github/workflows/*.yml`, or any CI job, run `git log -p -- <script>` (or diff against the
-  version being replaced) and enumerate every behavior branch it has — fallbacks,
-  env-var-driven paths, error exits. Preserve all of them unless explicitly asked to drop
-  one; do not silently narrow behavior while refactoring.
-- Grep the calling CI files for how the script is invoked (env vars set, exit codes expected)
-  and confirm the rewrite still satisfies every caller, not just the common/local case.
-- When removing an item from a default list or config (an antagonist, a test tag, a feature
-  flag) or deleting a script or file, grep the whole repo (including `.gitlab/**`) and cite
-  the exact file/line proving it is inert or unused in that context before removing it —
-  never remove based on assumption alone.
-- After changing a CI-invoked script, run a syntax check (e.g. `bash -n <script>`) and trace
-  through each CI job that calls it before considering the change complete.
+Before editing CI configuration (`.gitlab-ci.yml`, `.gitlab/**`, `.github/**`) or a
+script that CI, Gradle or a hook runs, and before deleting any tracked file or removing an
+entry from a default list or config, load the `ci-script-change` skill
+([.agents/skills/ci-script-change/SKILL.md](.agents/skills/ci-script-change/SKILL.md)).
 
 ## Documentation Rules
 
