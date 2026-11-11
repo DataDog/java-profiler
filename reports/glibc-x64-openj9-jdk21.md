@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk21
 
 ## glibc-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-11-10 19:00:15 EST
+**Date:** 2026-11-10 19:10:50 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 512 |
-| Sample Rate | 8.53/sec |
-| Health Score | 533% |
+| CPU Samples | 586 |
+| Sample Rate | 9.77/sec |
+| Health Score | 611% |
 | Threads | 8 |
-| Allocations | 349 |
+| Allocations | 364 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 630 |
-| Sample Rate | 10.50/sec |
-| Health Score | 656% |
+| CPU Samples | 586 |
+| Sample Rate | 9.77/sec |
+| Health Score | 611% |
 | Threads | 9 |
-| Allocations | 462 |
+| Allocations | 485 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 28-30 cores)</summary>
+<summary>CPU Timeline (2 unique values: 30-32 cores)</summary>
 
 ```
-1794354940 30
-1794354945 30
-1794354950 30
-1794354955 30
-1794354960 30
-1794354965 30
-1794354970 30
-1794354975 30
-1794354980 30
-1794354985 28
-1794354990 28
-1794354995 28
-1794355000 28
-1794355005 28
-1794355010 28
-1794355015 28
-1794355020 28
-1794355025 30
-1794355030 30
-1794355035 30
+1794355426 30
+1794355431 30
+1794355436 30
+1794355441 32
+1794355446 32
+1794355451 30
+1794355456 30
+1794355461 30
+1794355466 30
+1794355471 30
+1794355476 30
+1794355481 30
+1794355486 30
+1794355491 30
+1794355496 30
+1794355501 30
+1794355506 30
+1794355511 30
+1794355516 30
+1794355521 30
 ```
 </details>
 
