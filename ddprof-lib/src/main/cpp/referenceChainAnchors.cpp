@@ -336,6 +336,11 @@ void ReferenceChainTracker::addToStaticAnchorIndex(jlong tag,
   // A local holder later attached by a durable root now belongs to the uncapped durable share;
   // release its slot in the local cap (it stays indexed - the dedup below is a no-op for it).
   _local_anchor_tags.erase(tag);
+  // The upgrade grows the durable share without a new index push (the dedup in
+  // indexAnchorForRotation() returns early), so the durable cap is checked here too. The just
+  // upgraded tag may itself be among the evicted oldest entries; the next root enumeration
+  // re-reports it and re-admits it.
+  evictOldestDurableAnchors();
   indexAnchorForRotation(tag, own_class_tag);
 }
 
@@ -488,6 +493,62 @@ size_t ReferenceChainTracker::compactLocalAnchors() {
   return removed.size();
 }
 
+size_t ReferenceChainTracker::evictOldestDurableAnchors() {
+  // The local share is capped and self-compacting; only entries outside it count against the
+  // durable cap.
+  size_t durable = _static_anchor_index_tags.size() - _local_anchor_tags.size();
+  if (durable <= DURABLE_ANCHOR_INDEX_CAP) {
+    return 0;
+  }
+  // Evict enough oldest entries to drop the share to cap - DURABLE_ANCHOR_EVICT_BATCH, so one
+  // O(index) compaction amortizes over ~DURABLE_ANCHOR_EVICT_BATCH admissions instead of being
+  // paid per admission. to_evict <= durable always (DURABLE_ANCHOR_INDEX_CAP > batch).
+  size_t to_evict =
+      durable - DURABLE_ANCHOR_INDEX_CAP + DURABLE_ANCHOR_EVICT_BATCH;
+  // FIFO by index position (appends are at the back). Local-share entries keep their slots -
+  // their cap and compaction live in noteLocalRootHolder()/compactLocalAnchors().
+  std::unordered_set<jlong> evicted;
+  evicted.reserve(to_evict);
+  for (size_t i = 0;
+       i < _static_anchor_index.size() && evicted.size() < to_evict;
+       i++) {
+    jlong tag = _static_anchor_index[i];
+    if (_local_anchor_tags.count(tag) > 0) {
+      continue;
+    }
+    evicted.insert(tag);
+  }
+  // Stable in-place compaction of the two parallel vectors keeps relative order, so the fresh
+  // queue (a suffix of the index) stays a suffix once the same tags leave it too.
+  size_t out = 0;
+  for (size_t i = 0; i < _static_anchor_index.size(); i++) {
+    jlong tag = _static_anchor_index[i];
+    if (evicted.count(tag) > 0) {
+      continue;
+    }
+    _static_anchor_index[out] = tag;
+    if (i < _static_anchor_own_class_tags.size()) {
+      _static_anchor_own_class_tags[out] = _static_anchor_own_class_tags[i];
+    }
+    out++;
+  }
+  _static_anchor_index.resize(out);
+  if (_static_anchor_own_class_tags.size() > out) {
+    _static_anchor_own_class_tags.resize(out);
+  }
+  for (jlong tag : evicted) {
+    _static_anchor_index_tags.erase(tag);
+  }
+  _static_anchor_fresh_queue.erase(
+      std::remove_if(_static_anchor_fresh_queue.begin(),
+                     _static_anchor_fresh_queue.end(),
+                     [&](jlong tag) { return evicted.count(tag) > 0; }),
+      _static_anchor_fresh_queue.end());
+  // Positions shifted: the collector clamps out-of-range cursors; in-range ones only lose fairness
+  // for one lap.
+  return evicted.size();
+}
+
 bool ReferenceChainTracker::isSelectableAnchor(const FrontierEntry &entry,
                                                jlong own_class_tag) const {
   if (entry.parent_tag == 0 &&
@@ -506,6 +567,9 @@ void ReferenceChainTracker::indexAnchorForRotation(jlong tag,
   if (!_static_anchor_index_tags.insert(tag).second) {
     return;
   }
+  // Checked after the insert so the count includes the incoming tag; the batch evicts only the
+  // oldest positions, never the tag being admitted here.
+  evictOldestDurableAnchors();
   _static_anchor_index.push_back(tag);
   _static_anchor_own_class_tags.push_back(own_class_tag);
   // Walk newly admitted anchors before the fair cursors.

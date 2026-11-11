@@ -12,6 +12,7 @@
 #ifndef REFERENCE_CHAINS_TEST_ACCESSORS_H
 #define REFERENCE_CHAINS_TEST_ACCESSORS_H
 
+#include <algorithm>
 #include <deque>
 #include <cstring>
 #include <utility>
@@ -559,14 +560,38 @@ public:
     static size_t localAnchorCountForTest() {
         return ReferenceChainTracker::instance()->_local_anchor_tags.size();
     }
+    // Durable share: indexed tags minus the capped local share.
+    static size_t durableAnchorCountForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        return t->_static_anchor_index_tags.size() - t->_local_anchor_tags.size();
+    }
+    static bool anchorIndexContainsForTest(jlong tag) {
+        return ReferenceChainTracker::instance()->_static_anchor_index_tags.count(tag) > 0;
+    }
+    // Caller keeps idx < anchorIndexSizeForTest().
+    static jlong anchorIndexTagForTest(size_t idx) {
+        return ReferenceChainTracker::instance()->_static_anchor_index[idx];
+    }
+    static size_t anchorOwnClassTagsSizeForTest() {
+        return ReferenceChainTracker::instance()->_static_anchor_own_class_tags.size();
+    }
     static size_t pendingLocalAnchorCountForTest() {
         return ReferenceChainTracker::instance()->_pending_local_anchors.size();
     }
     static size_t freshAnchorQueueSizeForTest() {
         return ReferenceChainTracker::instance()->_static_anchor_fresh_queue.size();
     }
+    static bool freshAnchorQueueContainsForTest(jlong tag) {
+        const auto &queue =
+            ReferenceChainTracker::instance()->_static_anchor_fresh_queue;
+        return std::find(queue.begin(), queue.end(), tag) != queue.end();
+    }
     static constexpr size_t kLocalAnchorIndexCap =
         ReferenceChainTracker::LOCAL_ANCHOR_INDEX_CAP;
+    static constexpr size_t kDurableAnchorIndexCap =
+        ReferenceChainTracker::DURABLE_ANCHOR_INDEX_CAP;
+    static constexpr size_t kDurableAnchorEvictBatch =
+        ReferenceChainTracker::DURABLE_ANCHOR_EVICT_BATCH;
     static constexpr size_t kPendingLocalAnchorCap =
         ReferenceChainTracker::PENDING_LOCAL_ANCHOR_CAP;
     static constexpr int kLocalCompactBackoff =
