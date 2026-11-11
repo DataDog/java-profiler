@@ -41,6 +41,27 @@ cd "${REPO_ROOT}" || exit 1
 
 RESULTS_DIR="ddprof-lib/build/test-results/gtest/${SANITIZER_LC}"
 
+# Config-specific environment, set before the --attempt branch so it holds on
+# every path: the wrapper re-executes this script, and the attempt subprocess
+# must not depend on the main invocation having exported these.
+if [ "${SANITIZER_LC}" = "asan" ]; then
+  # ASan init can nondeterministically collide with the process's
+  # ASLR-influenced mmap layout (google/sanitizers#856): the binary aborts
+  # before any test runs, naming no test. Same setting the GitHub asan matrix
+  # uses for the same reason. Consumed by run_tests_with_retry.sh.
+  export RETRY_ON_NO_TEST_FAILURES=1
+fi
+
+if [ "${SANITIZER_LC}" = "tsan" ]; then
+  # TSan's defaults (halt_on_error=0, exitcode=66) report every race and
+  # exit 66 at process exit -- after gtest has written a passing JUnit XML,
+  # so neither the abort marker nor the >128 exit check would fire. Halting
+  # on the first race kills the binary before the XML is written and routes
+  # the failure through the ABORTED path; the race report itself still goes
+  # to the log first.
+  export TSAN_OPTIONS="${TSAN_OPTIONS:+${TSAN_OPTIONS}:}halt_on_error=1"
+fi
+
 if [ "${1:-}" = "--attempt" ]; then
   mkdir -p "${RESULTS_DIR}"
   # Run EVERY binary and aggregate instead of exiting at the first failure:
@@ -92,14 +113,6 @@ if [ "${1:-}" = "--attempt" ]; then
     exit "${hard_rc}"
   fi
   exit "${first_rc}"
-fi
-
-if [ "${SANITIZER_LC}" = "asan" ]; then
-  # ASan init can nondeterministically collide with the process's
-  # ASLR-influenced mmap layout (google/sanitizers#856): the binary aborts
-  # before any test runs, naming no test. Same setting the GitHub asan matrix
-  # uses for the same reason.
-  export RETRY_ON_NO_TEST_FAILURES=1
 fi
 
 CELL="glibc-${SANITIZER_LC}-${GTEST_ARCH}"

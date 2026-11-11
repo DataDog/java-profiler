@@ -185,6 +185,32 @@ else
   fail "T5: stdout '${OUT}' != expected message"
 fi
 
+# T11 — the tsan cell runs with TSAN_OPTIONS=halt_on_error=1: TSan's default
+# (halt_on_error=0, exitcode=66) lets gtest finish and write a passing XML
+# before exiting 66 at shutdown, which neither the ABORTED marker nor the
+# >128 check would catch. The fake binary only halts without XML when the
+# runner exported the flag; its stdout names the value it received.
+setup_tree
+mkdir -p "${WORK}/repo/ddprof-lib/build/bin/gtest/tsan"
+cat > "${WORK}/repo/ddprof-lib/build/bin/gtest/tsan/tsan_racy_ut" <<'FAKE'
+#!/usr/bin/env bash
+echo "TSAN_OPTIONS=${TSAN_OPTIONS-UNSET}"
+exit 66
+FAKE
+chmod +x "${WORK}/repo/ddprof-lib/build/bin/gtest/tsan/tsan_racy_ut"
+run_case tsan --attempt
+assert_rc 66 "T11 tsan race halt propagates exit 66"
+if grep -q "ABORTED: tsan_racy_ut exited 66 without producing test results" <<< "${OUT}"; then
+  pass "T11 tsan race halt carries the ABORTED marker"
+else
+  fail "T11: output missing the ABORTED marker, got: ${OUT}"
+fi
+if grep -q "TSAN_OPTIONS=.*halt_on_error=1" <<< "${OUT}"; then
+  pass "T11 runner exports TSAN_OPTIONS=halt_on_error=1"
+else
+  fail "T11: binary did not receive halt_on_error=1, got: ${OUT}"
+fi
+
 # T6 — the retry-flag guard exports RETRY_ON_NO_TEST_FAILURES=1 for the
 # asan cell only (ASan init aborting before any test runs); flipping the
 # config comparison fails this case. The stub records the exported value.
