@@ -87,11 +87,14 @@ jobs:
         run: |
           bash -n .github/scripts/run_tests_with_retry.sh
           bash -n .github/scripts/generate-test-summary.sh
+          bash -n .gitlab/scripts/run-gtests.sh
           python3 -m py_compile .github/scripts/quarantine.py \
                                 .github/scripts/flake_report.py \
-                                .github/scripts/flake_summary.py
+                                .github/scripts/flake_summary.py \
+                                .gitlab/scripts/gtest_quarantine_gate.py
           python3 .github/scripts/quarantine.py validate
           .github/scripts/tests/test_quarantine.sh
+          .github/scripts/tests/test_gtest_quarantine_gate.sh
           .github/scripts/tests/test_generate_test_summary.sh
           .github/scripts/tests/test_prepare_reports.sh
 

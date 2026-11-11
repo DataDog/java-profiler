@@ -86,3 +86,8 @@ com.datadoghq.profiler.referencechains.ReferenceChainTrackingTest.shouldReconstr
 com.datadoghq.profiler.referencechains.ReferenceChainTrackingTest.shouldReconstructReferrerChainToGcRoot | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Never observes a ChainLink chain[0]; 1 failing job (musl-11-debug-aarch64-slow) in nightly run 39893765385
 com.datadoghq.profiler.referencechains.ThreadLocalLeakReferenceChainTest.shouldCorrelateThreadLocalHeldLeakChain | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Child reports [tl-correlation-tag-out-of-pool]; 3 failing jobs in nightly run 39893765385
 com.datadoghq.profiler.referencechains.LeakTagCorrelationReferenceChainTest.shouldCorrelateLeakChainTargetTagWithLiveObjectLeakTag | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Child reports [correlation-tag-out-of-pool]; 1 failing job in nightly run 39893765385
+
+# PROF-16577 -- a C++ gtest (GitLab sanitizer/release jobs, gated by
+# .gitlab/scripts/run-gtests.sh). Those cells have no JDK axis: the jdk slot
+# names the runner kind, so the cells read glibc-gtest-<config>-<arch>.
+NativeThreadNameRaceTest.threadDyingBetweenScansIsNeverNamed | PROF-16577 | 2026-11-11 | 2027-02-09 | glibc-gtest-*-amd64 | Ephemeral-thread death-timing race fails ~daily on quiet gtest runners (release + tsan amd64); the death-timing window the test controls for is wider than assumed under CI scheduling, mechanism unpinned -- see ticket
