@@ -86,3 +86,9 @@ com.datadoghq.profiler.referencechains.ReferenceChainTrackingTest.shouldReconstr
 com.datadoghq.profiler.referencechains.ReferenceChainTrackingTest.shouldReconstructReferrerChainToGcRoot | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Never observes a ChainLink chain[0]; 1 failing job (musl-11-debug-aarch64-slow) in nightly run 39893765385
 com.datadoghq.profiler.referencechains.ThreadLocalLeakReferenceChainTest.shouldCorrelateThreadLocalHeldLeakChain | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Child reports [tl-correlation-tag-out-of-pool]; 3 failing jobs in nightly run 39893765385
 com.datadoghq.profiler.referencechains.LeakTagCorrelationReferenceChainTest.shouldCorrelateLeakChainTargetTagWithLiveObjectLeakTag | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Child reports [correlation-tag-out-of-pool]; 1 failing job in nightly run 39893765385
+
+# PROF-16583 -- the collapsing-sleep weight assertion is sensitive to shared-runner
+# load: a ~1s park loop under wall=~1ms sampling must accumulate > 700 weight, and a
+# loaded el7 runner can shrink it below the bar. Single observed failure; same-day
+# pass on an equivalent-code pipeline. Widen only with fresh evidence.
+com.datadoghq.profiler.wallclock.CollapsingSleepTest.testSleep | PROF-16583 | 2026-11-11 | 2027-02-09 | el7-8-release-amd64 | Weight assertion (totalWeight > 700) below the bar on a loaded runner; single failure, wall-clock paths untouched by the carrying PR
