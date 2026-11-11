@@ -1138,6 +1138,88 @@ TEST_F(ReferenceChainsBfsTest, DurableUpgradeAtCapTriggersEviction) {
     tracker->stop();
 }
 
+// A live evicted anchor has no fresh-admission path (its frontier entry is already ADMITTED) and
+// no upgrade path (an unchanged durable root kind never upgrades), so the traversal callbacks'
+// re-enlistment is its only route back into the rotation index. Non-durable root kinds and
+// non-root-attached entries are filtered.
+TEST_F(ReferenceChainsBfsTest, EvictedDurableAnchorIsReenlistedByTraversalReport) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const jlong kClass = -601;
+    const jlong target = 7001;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, target, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        target, kClass, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    // Cross the cap: `target` sits at the oldest position and is evicted.
+    for (size_t i = 0; i <= cap; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            8000 + (jlong)i, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    ASSERT_FALSE(
+        ReferenceChainsTestAccessor::anchorIndexContainsForTest(target));
+
+    // The traversal callbacks' re-enlistment on the next report of the holder's durable edge.
+    ReferenceChainsTestAccessor::reenlistEvictedDurableAnchorForTest(target,
+                                                                     kClass);
+    EXPECT_TRUE(
+        ReferenceChainsTestAccessor::anchorIndexContainsForTest(target));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        target));
+
+    // Negative controls: a non-root-attached entry and a transient root kind are not re-enlisted.
+    const jlong child = 7100, transient = 7101;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, child, 42, 1, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, transient, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ReferenceChainsTestAccessor::reenlistEvictedDurableAnchorForTest(child,
+                                                                     kClass);
+    ReferenceChainsTestAccessor::reenlistEvictedDurableAnchorForTest(transient,
+                                                                     kClass);
+    EXPECT_FALSE(
+        ReferenceChainsTestAccessor::anchorIndexContainsForTest(child));
+    EXPECT_FALSE(
+        ReferenceChainsTestAccessor::anchorIndexContainsForTest(transient));
+
+    tracker->stop();
+}
+
+// Eviction invalidates the static sweep memo so the next pass re-runs admitStaticFieldRoots():
+// static-only holders are invisible to root enumeration, and the sweep is otherwise skipped while
+// the loaded-class count is unchanged - an evicted static-only anchor would never be re-reported.
+TEST_F(ReferenceChainsBfsTest, EvictionForcesStaticFieldSweepRerun) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    for (size_t i = 0; i < cap; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            9000 + (jlong)i, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    ASSERT_EQ(cap,
+              ReferenceChainsTestAccessor::durableAnchorCountForTest());
+    // Simulate the steady state after a completed sweep lap (the gate then skips the sweep).
+    ReferenceChainsTestAccessor::setStaticFieldSweepMemoForTest(12345);
+    // The cap-crossing admission evicts - and must invalidate the sweep memo with it.
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        9000 + (jlong)cap, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    EXPECT_EQ(-1,
+              ReferenceChainsTestAccessor::staticFieldSweepMemoForTest());
+
+    tracker->stop();
+}
+
 // When the local share is at the cap and full of live containers, a compaction that removes nothing
 // arms a backoff: the next LOCAL_ANCHOR_COMPACT_BACKOFF at-cap resolves skip the locked scan (the
 // cap holds, the parked containers are dropped and re-reported). Dead locals are reclaimed by the

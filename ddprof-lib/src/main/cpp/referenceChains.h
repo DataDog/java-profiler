@@ -529,17 +529,22 @@ private:
   // (O(cap)) instead of scanning the whole, uncapped index.
   std::unordered_map<jlong, jlong> _local_anchor_tags;
   static constexpr size_t LOCAL_ANCHOR_INDEX_CAP = 4096;
-  // Durable-share cap (STATIC_FIELD / JNI_GLOBAL holders). Eviction is FIFO over index positions,
-  // excluding the local share, so dead durable holders cannot accumulate without bound and the
-  // selection scan above stays O(LOCAL_ANCHOR_INDEX_CAP + DURABLE_ANCHOR_INDEX_CAP).
+  // Durable-share cap (STATIC_FIELD / JNI_GLOBAL holders). A live evicted anchor is re-enlisted
+  // by reenlistEvictedDurableAnchor() when a traversal re-reports its durable edge - JNI_GLOBAL
+  // roots every root enumeration; for static-only holders eviction also invalidates the sweep
+  // memo so the next pass re-traverses their class -> field edges. A dead evicted anchor is never
+  // reported again. Pure index bookkeeping - no frontier lock - so it is legal from the heap-root
+  // callback context.
   static constexpr size_t DURABLE_ANCHOR_INDEX_CAP = 8192;
-  // Eviction runs only when the durable share exceeds its cap and removes enough oldest entries
-  // to drop it to cap - DURABLE_ANCHOR_EVICT_BATCH, so one O(index) compaction is amortized over
-  // ~DURABLE_ANCHOR_EVICT_BATCH admissions instead of paid per admission. An evicted anchor that
-  // is still root-attached is re-reported by the next root enumeration and re-admitted (fresh
-  // lane); a dead one is never reported again. Pure index bookkeeping - no frontier lock - so it
-  // is legal from the heap-root callback context.
+  // Eviction removes enough oldest entries to drop the share to cap - DURABLE_ANCHOR_EVICT_BATCH,
+  // so one O(index) compaction is amortized over ~DURABLE_ANCHOR_EVICT_BATCH admissions.
   static constexpr size_t DURABLE_ANCHOR_EVICT_BATCH = 1024;
+  // Paces the sweep re-force: when the live durable population exceeds the cap, re-enlistment
+  // re-crosses the cap and would otherwise re-force the O(loaded-classes) static sweep on every
+  // pass, forever. The first eviction after the backoff runs out re-forces one lap; the next
+  // DURABLE_SWEEP_REFORCE_BACKOFF evictions skip the reset.
+  static constexpr int DURABLE_SWEEP_REFORCE_BACKOFF = 8;
+  int _durable_sweep_reforce_backoff = 0;
   // compactLocalAnchors() attempts to skip after one that removed nothing (local share full of
   // live containers): bounds the steady-state locked O(cap) scan to one in every
   // LOCAL_ANCHOR_COMPACT_BACKOFF + 1 at-cap resolve passes. While backing off, a container met at
@@ -1150,6 +1155,15 @@ private:
   // no frontier lock - so it is legal from the heap-root callback context. Returns the number
   // of evicted entries.
   size_t evictOldestDurableAnchors();
+  // Re-indexes an evicted durable anchor when a traversal re-reports it: root enumeration never
+  // re-reports a static-field holder, an unchanged durable root kind never upgrades
+  // (maybeUpgradeRootAttachedRootKind() refuses), and an already-admitted entry takes no fresh
+  // admission path - so without this, a live evicted anchor would stay unindexed until
+  // restartSearch(). O(1) for still-indexed tags (the traversal callbacks call it on every
+  // durable-root rediscovery); the frontier lookup runs only for a tag missing from the index.
+  // No-op for non-durable root kinds and non-root-attached entries. BFS thread only.
+  void reenlistEvictedDurableAnchor(FrontierTable *frontier, jlong tag,
+                                    jlong class_tag);
 
   // True iff `klass` implements java/util/Collection or java/util/Map, directly or transitively
   // (superclass chain + interfaces of every visited class, depth-bounded, visited set to survive

@@ -131,6 +131,14 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
           *tag_ptr, ctx->resolved_chain_tags,
           ctx->resolved_chain_tag_count,
           ReferenceChainTracker::ChainInvalidationKind::REBUILD);
+    } else if (translated_root_kind ==
+               (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
+      // An unchanged durable root never upgrades: for an evicted anchor this re-discovery is the
+      // only re-indexing path. Static-field holders never appear here (root enumeration has no
+      // static-field root kind) - they re-enlist from the static sweep's edge path instead. The
+      // re-enlist filters non-root-attached entries itself and is O(1) for still-indexed tags.
+      ctx->tracker->reenlistEvictedDurableAnchor(ctx->frontier, *tag_ptr,
+                                                 class_tag);
     }
     break;
   default:

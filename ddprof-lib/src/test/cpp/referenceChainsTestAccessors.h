@@ -101,6 +101,7 @@ public:
         t->_pending_local_anchors.clear();
         t->_pending_local_anchor_tags.clear();
         t->_local_compact_backoff = 0;
+        t->_durable_sweep_reforce_backoff = 0;
         t->_pending_local_evict_cursor = 0;
         t->_anchor_container_cursor = 0;
         t->_anchor_other_cursor = 0;
@@ -544,6 +545,7 @@ public:
                t->_pending_local_anchors.empty() &&
                t->_pending_local_anchor_tags.empty() &&
                t->_local_compact_backoff == 0 &&
+               t->_durable_sweep_reforce_backoff == 0 &&
                t->_pending_local_evict_cursor == 0;
     }
 
@@ -585,6 +587,18 @@ public:
         const auto &queue =
             ReferenceChainTracker::instance()->_static_anchor_fresh_queue;
         return std::find(queue.begin(), queue.end(), tag) != queue.end();
+    }
+    // The static sweep gate memo: runPassManualWalk() runs admitStaticFieldRoots() only while this
+    // differs from the current loaded-class count; eviction resets it to force one sweep lap.
+    static int staticFieldSweepMemoForTest() {
+        return ReferenceChainTracker::instance()->_last_static_field_class_count;
+    }
+    static void setStaticFieldSweepMemoForTest(int count) {
+        ReferenceChainTracker::instance()->_last_static_field_class_count = count;
+    }
+    static void reenlistEvictedDurableAnchorForTest(jlong tag, jlong class_tag) {
+        ReferenceChainTracker::instance()->reenlistEvictedDurableAnchor(
+            ReferenceChainTracker::instance()->frontierTable(), tag, class_tag);
     }
     static constexpr size_t kLocalAnchorIndexCap =
         ReferenceChainTracker::LOCAL_ANCHOR_INDEX_CAP;

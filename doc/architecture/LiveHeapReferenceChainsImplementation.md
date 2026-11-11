@@ -187,10 +187,16 @@ every pass. Dead entries can therefore keep their slots for up to 8 extra passes
 The durable share (static fields and JNI globals) is capped at 8192 entries
 (`DURABLE_ANCHOR_INDEX_CAP`). The admission that pushes it past the cap FIFO-evicts the oldest
 1024 durable entries (`DURABLE_ANCHOR_EVICT_BATCH`) from the index, the dedup set and the fresh
-queue, so the per-pass selection scan stays bounded by the sum of the two caps. An evicted anchor
-that is still root-attached is reported again by the next root enumeration and re-admitted through
-the fresh lane; a dead one is never reported again. Eviction is pure index bookkeeping — no
-frontier lock — so it is legal from the heap-root callback. A local holder that a durable root later attaches moves to the durable share and stops
+queue, so the per-pass selection scan stays bounded by the sum of the two caps. Eviction also
+invalidates the static sweep memo, forcing one sweep lap, because a re-discovered durable edge is
+the only path that re-enlists an evicted anchor: an unchanged durable root kind never upgrades,
+an already-admitted entry takes no fresh admission path, and static-only holders never appear in
+root enumeration at all. A live evicted anchor is therefore re-enlisted - with rotation
+eligibility and a fresh-lane first look - the next time its durable edge is traversed; a dead one
+is never reported again. The sweep re-force is paced (`DURABLE_SWEEP_REFORCE_BACKOFF`) so a live
+durable population above the cap cannot re-force it on every pass. Eviction and re-enlistment are
+pure index bookkeeping — no frontier lock — so both are legal from the heap-root callback. A local
+holder that a durable root later attaches moves to the durable share and stops
 counting against the local cap. `restartSearch()` clears both shares and the pending buffer.
 
 ## Search termination
