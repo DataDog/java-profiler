@@ -5,47 +5,49 @@
 
 package com.datadoghq.profiler.nativesocket;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
-import org.junit.jupiter.api.Assumptions;
-import org.junitpioneer.jupiter.RetryingTest;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Assumptions;
+import org.junitpioneer.jupiter.RetryingTest;
 
 /**
- * Verifies that nativesocket profiling survives a stop/restart cycle.
- * Events must be recorded in the second profiling session, confirming
- * that lifecycle management (hook install/uninstall/reinstall) is correct.
+ * Verifies that nativesocket profiling survives a stop/restart cycle. Events must be recorded in
+ * the second profiling session, confirming that lifecycle management (hook
+ * install/uninstall/reinstall) is correct.
  */
 public class NativeSocketRestartTest extends NativeSocketTestBase {
 
-    @RetryingTest(3)
-    public void testNativeSocketProfilerRestart() throws Exception {
-        Assumptions.assumeTrue(Platform.isLinux(), "nativesocket tracking is Linux-only");
+  @RetryingTest(3)
+  public void testNativeSocketProfilerRestart() throws Exception {
+    Assumptions.assumeTrue(Platform.isLinux(), "nativesocket tracking is Linux-only");
 
-        // First session: framework already started the profiler in @BeforeEach.
-        doTcpTransfer(4096, 64);
-        stopProfiler();
+    // First session: framework already started the profiler in @BeforeEach.
+    doTcpTransfer(4096, 64);
+    stopProfiler();
 
-        // Second session: start manually with a fresh JFR file.
-        Files.createDirectories(Paths.get("/tmp/recordings"));
-        Path jfr2 = Files.createTempFile(Paths.get("/tmp/recordings"), "NativeSocketRestartTest_restart", ".jfr");
-        try {
-            profiler.execute("start,natsock=100us,jfr,file=" + jfr2.toAbsolutePath());
+    // Second session: start manually with a fresh JFR file.
+    Files.createDirectories(Paths.get("/tmp/recordings"));
+    Path jfr2 =
+        Files.createTempFile(
+            Paths.get("/tmp/recordings"), "NativeSocketRestartTest_restart", ".jfr");
+    try {
+      profiler.execute("start,natsock=100us,jfr,file=" + jfr2.toAbsolutePath());
 
-            doTcpTransfer(4096, 64);
+      doTcpTransfer(4096, 64);
 
-            profiler.stop();
+      profiler.stop();
 
-            JfrEvents events = verifyEvents(jfr2, "datadog.NativeSocketEvent", true);
-            assertTrue(events.hasItems(),
-                    "NativeSocketEvent events must be recorded in the second profiling session");
-        } finally {
-            Files.deleteIfExists(jfr2);
-        }
+      JfrEvents events = verifyEvents(jfr2, "datadog.NativeSocketEvent", true);
+      assertTrue(
+          events.hasItems(),
+          "NativeSocketEvent events must be recorded in the second profiling session");
+    } finally {
+      Files.deleteIfExists(jfr2);
     }
+  }
 }

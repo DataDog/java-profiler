@@ -1,7 +1,11 @@
+// Copyright 2026, Datadog, Inc.
+
 package com.datadoghq.profiler.shutdown;
 
-import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.fail;
 
+import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JavaProfiler;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -10,14 +14,9 @@ import java.util.Queue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
-
-import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.JavaProfiler;
-
-import static org.junit.jupiter.api.Assertions.fail;
+import org.junit.jupiter.api.Test;
 
 public class ShutdownTest {
-
 
   @Test
   public void testShutdownCpu() throws IOException {
@@ -43,8 +42,8 @@ public class ShutdownTest {
   }
 
   /**
-   * Stops the profiler, retrying the documented-retryable "did not drain" outcome per
-   * {@link AbstractProfilerTest#stopRetryingOnDrainTimeout}.
+   * Stops the profiler, retrying the documented-retryable "did not drain" outcome per {@link
+   * AbstractProfilerTest#stopRetryingOnDrainTimeout}.
    */
   private static void runTest(JavaProfiler profiler, String command) throws IOException {
     Path rootDir = Paths.get("/tmp/recordings");
@@ -54,26 +53,29 @@ public class ShutdownTest {
     ExecutorService executor = Executors.newSingleThreadExecutor();
     Queue<Throwable> errors = new LinkedBlockingQueue<>();
     try {
-      executor.submit(new Runnable() {
-        @Override
-        public void run() {
-          for (int i = 0; i < 100; i++) {
-            try {
-              profiler.execute(commandWithDump);
-              try {
-                Thread.sleep(20);
-              } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-              } finally {
-                AbstractProfilerTest.stopRetryingOnDrainTimeout(profiler);
-              }
-            } catch (Throwable error) {
-              errors.offer(error);
-              return;
-            }
-          }
-        }
-      }).get();
+      executor
+          .submit(
+              new Runnable() {
+                @Override
+                public void run() {
+                  for (int i = 0; i < 100; i++) {
+                    try {
+                      profiler.execute(commandWithDump);
+                      try {
+                        Thread.sleep(20);
+                      } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                      } finally {
+                        AbstractProfilerTest.stopRetryingOnDrainTimeout(profiler);
+                      }
+                    } catch (Throwable error) {
+                      errors.offer(error);
+                      return;
+                    }
+                  }
+                }
+              })
+          .get();
     } catch (Throwable t) {
       fail(t.getMessage());
     } finally {

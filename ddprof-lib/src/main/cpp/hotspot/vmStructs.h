@@ -17,6 +17,7 @@
 #include "faultInjection.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
+#include "spinLock.h"
 #include "threadState.h"
 #include "vmEntry.h"
 
@@ -342,6 +343,57 @@ typedef void* address;
     constant_with_version(markWord, klass_shift, 24, MAX_VERSION)   \
     constant_with_version(markWord, monitor_value, 24, MAX_VERSION)
 
+// (method, address) pairs that VMStructs::NativeMethodBind() sees before a
+// JNIEnv is available, replayed by the first call that has one.
+class DelayedNativeBindings {
+  public:
+    static const int CAPACITY = 512;
+
+    constexpr DelayedNativeBindings() : _lock(), _bindings(), _count(0), _drained(false) {}
+
+    // Records a binding. Returns false, dropping it, when the list is full or
+    // closed by a drain.
+    bool add(jmethodID method, void* address) {
+        ExclusiveLockGuard guard(&_lock);
+        bool added = !_drained && _count < CAPACITY;
+        if (added) {
+            _bindings[_count].method = method;
+            _bindings[_count].address = address;
+            _count++;
+        }
+        return added;
+    }
+
+    // Calls f(method, address) for each recorded binding, outside the lock.
+    // A drain that finds bindings closes the list for good, so later add()
+    // calls never write to it and reading it needs no lock.
+    template <typename F>
+    void drain(F f) {
+        int count;
+        {
+            ExclusiveLockGuard guard(&_lock);
+            count = _drained ? 0 : _count;
+            if (count > 0) {
+                _drained = true;
+            }
+        }
+        for (int i = 0; i < count; i++) {
+            f(_bindings[i].method, _bindings[i].address);
+        }
+    }
+
+  private:
+    struct Binding {
+        jmethodID method;
+        void* address;
+    };
+
+    SpinLock _lock;
+    Binding _bindings[CAPACITY];
+    int _count;
+    bool _drained;
+};
+
 class VMStructs {
   public:
     typedef bool (*IsValidMethodFunc)(void *);
@@ -580,6 +632,7 @@ class VMStructs {
 };
 
 class HeapUsage : VMStructs {
+    friend class HeapUsageTestAccessor; // test-only: heapUsage_ut.cpp
 private:
     static bool is_jmx_attempted;
     static bool is_jmx_supported; // default to not-supported
