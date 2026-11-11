@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk8
 
 ## musl-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-11 06:36:24 EST
+**Date:** 2026-11-11 06:37:21 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 117 |
-| Sample Rate | 1.95/sec |
-| Health Score | 122% |
-| Threads | 12 |
+| CPU Samples | 139 |
+| Sample Rate | 2.32/sec |
+| Health Score | 145% |
+| Threads | 5 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 126 |
-| Sample Rate | 2.10/sec |
-| Health Score | 131% |
-| Threads | 12 |
+| CPU Samples | 452 |
+| Sample Rate | 7.53/sec |
+| Health Score | 471% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1794396717 48
-1794396722 48
-1794396727 48
-1794396732 48
-1794396737 48
-1794396742 48
-1794396747 48
-1794396752 48
-1794396757 48
-1794396762 48
-1794396767 48
-1794396772 48
-1794396777 48
-1794396782 48
-1794396787 48
-1794396792 48
-1794396797 48
-1794396802 48
-1794396807 48
-1794396812 48
+1794396750 48
+1794396755 48
+1794396760 48
+1794396765 48
+1794396770 48
+1794396775 48
+1794396780 48
+1794396785 48
+1794396790 48
+1794396795 48
+1794396801 48
+1794396806 48
+1794396811 48
+1794396816 48
+1794396821 48
+1794396826 48
+1794396831 48
+1794396836 48
+1794396841 48
+1794396846 48
 ```
 </details>
 
