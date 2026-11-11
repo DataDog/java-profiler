@@ -210,7 +210,7 @@ done
     echo "|---|---|---|---|---|---|---|"
     for i in "${!CELLS[@]}"; do
         cell=${CELLS[$i]}
-        echo "| $(prop "$cell" libc) | $(prop "$cell" arch) | $(prop "$cell" jdk) | $(prop "$cell" tests) | $(prop "$cell" gradle_exit) | ${CELL_CPP[$i]} | ${CELL_JAVA[$i]} |"
+        echo "| $(prop "$cell" libc) | $(prop "$cell" arch) | $(prop "$cell" jdk) | $(t=$(prop "$cell" tests); echo "${t//|/\\|}") | $(prop "$cell" gradle_exit) | ${CELL_CPP[$i]} | ${CELL_JAVA[$i]} |"
     done
     echo
     echo "## C++ (debug build, cells marked in the C++ column)"

@@ -175,7 +175,7 @@ Runs tests in containers across various OS/libc/JDK combinations, mirroring the 
   --arch=x64|aarch64|all[,..]     (default: auto-detect)
   --config=debug|release|asan|tsan|all[,..] (default: debug)
   --container=podman|docker       (default: podman)
-  --tests="TestPattern"           (optional; letters, digits and _ . * # , -)
+  --tests="TestPattern"           (optional; any characters except a newline)
   --gtest                         (enable C++ gtests)
   --gtest-task=Task               (run one C++ gtest task)
   --shell                         (drop to shell instead of running tests)
