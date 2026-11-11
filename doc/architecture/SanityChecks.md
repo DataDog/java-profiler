@@ -17,13 +17,13 @@ flowchart TD
     start["Profiler::start(args)"] --> lock["MutexLocker ml(_state_lock)"]
     lock --> checkState["checkState()"]
     checkState -->|error| ret1["return error"]
-    checkState -->|ok| skip{"args._skip_sanity_checks?"}
-    skip -->|true| cap["checkJvmCapabilities()"]
-    skip -->|false| cached{"sanity_checked?"}
-    cached -->|"no: run once"| run["sanity_result = SanityChecker::runChecks(args)"]
-    run --> setflag["sanity_checked = true"]
-    setflag --> gate{"sanity_result?"}
-    cached -->|"yes: skip"| cap
+    checkState -->|ok| cached{"sanity_checked?"}
+    cached -->|"yes: skip"| cap["checkJvmCapabilities()"]
+    cached -->|"no"| setflag["sanity_checked = true"]
+    setflag --> skip{"args._skip_sanity_checks?"}
+    skip -->|true| cap
+    skip -->|false| run["sanity_result = SanityChecker::runChecks(args)"]
+    run --> gate{"sanity_result?"}
     gate -->|error| record["_sanity_check_failed = true; LOG_WARN(...)"]
     gate -->|ok| cap
     record --> cap
@@ -32,7 +32,10 @@ flowchart TD
 (`ddprof-lib/src/main/cpp/profiler.cpp`, `Profiler::start()`.) The check runs
 immediately after `checkState()` and before `checkJvmCapabilities()`, but a
 failing check does not return early — `Profiler::start()` always continues to
-`checkJvmCapabilities()` and the rest of startup.
+`checkJvmCapabilities()` and the rest of startup. `sanity_checked` is set before
+`_skip_sanity_checks` is tested, so the first `start()` decides for the whole
+process: a `nosanity` first start means the checks never run, even if a later
+start omits `nosanity`.
 
 ### One-time check
 
@@ -95,15 +98,13 @@ disables both checks. Parsed in `Arguments::parse()`
 
 ```cpp
 CASE("nosanity")
-if (value != NULL) {
-  if (!parseBoolOption(value, &_skip_sanity_checks)) {
-    msg = "Invalid nosanity value";
-  }
-} else {
-  // bare 'nosanity' with no value means skip checks
-  _skip_sanity_checks = true;
+// A bare 'nosanity' with no value skips the checks.
+if (!parseBoolOption(value, _skip_sanity_checks)) {
+  msg = "Invalid nosanity value";
 }
 ```
+
+`parseBoolOption()` treats a `NULL` value (bare keyword) as `true`.
 
 A bare `nosanity` keyword, or an explicit `nosanity=true`/`yes`/`1`/`t`/`y`, skips the
 checks; `nosanity=no`/`false`/`0`/`f`/`n` explicitly keep them enabled. Any other value
@@ -116,20 +117,24 @@ value against these known spellings, not just its first character.
 ## Checks performed
 
 `SanityChecker::runChecks()` gathers system info up front, then evaluates two
-independent conditions; either one failing produces a non-OK `Error`.
+independent conditions; either one failing produces a non-OK `Error`. The
+`args` parameter is unused.
 
 ### CPU check
 
 ```
-effective_cores = logical_cpus
+effective_cores = logical_cpus > 0 ? logical_cpus : -1     # -1 = unknown
 if cgroup_millicores > 0:
-    effective_cores = min(effective_cores, cgroup_millicores / 1000)
+    cgroup_cores = cgroup_millicores / 1000                # integer division
+    if effective_cores < 0 or cgroup_cores < effective_cores:
+        effective_cores = cgroup_cores
 
-cpu_fail = (effective_cores < 1)
+cpu_fail = (effective_cores >= 0 and effective_cores < 1)
 ```
 
 `logical_cpus` comes from `OS::getCpuCount()`; `cgroup_millicores` from
-`OS::getCgroupCpuMillicores()`.
+`OS::getCgroupCpuMillicores()`. An unknown core count never fails the check; a
+cgroup quota below 1000 millicores does.
 
 ### Memory check
 
@@ -138,18 +143,26 @@ upper = ram_size > 128MB ? (ram_size - 128MB) : 0
 if container_memory_limit > 0 and container_memory_limit < upper:
     upper = container_memory_limit
 
+hotspot = !OpenJ9 and !Zing
+if metaspace_max > upper:
+    metaspace_max = 256MB                      # unbounded flag is not a limit
+
 gc_overhead = heap_max * 30 / 100
 lower = heap_max + metaspace_max + codecache + gc_overhead
-        + (thread_count * stack_size) + 64MB   # PROFILER_OVERHEAD
+        + (thread_count * stack_size) + 64MB   # PROFILER_OVERHEAD; sums clamp at UINT64_MAX
 
-mem_fail = (upper > 0 and lower > upper)
+mem_fail = (hotspot and upper > 0 and lower > upper)
 ```
+
+The JVM sizes come from the HotSpot VMStructs flag table, which OpenJ9 and Zing
+do not have; on those runtimes the heap, metaspace, code cache and stack sizes
+are all 0 and the memory check never fails.
 
 `heap_max`, `metaspace_max`, `codecache`, and `stack_size` are read from the
 live JVM via `getVMSizeFlag()`, which looks up a `VMFlag` by name
 (`MaxHeapSize`, `MaxMetaspaceSize`, `ReservedCodeCacheSize`,
-`ThreadStackSize`) and falls back to a fixed default if the flag cannot be
-resolved:
+`ThreadStackSize`, which is in KB and multiplied by 1024) and falls back to a
+fixed default if the flag cannot be resolved:
 
 | Flag | Default if unresolved |
 |---|---|
@@ -183,21 +196,25 @@ static size_t getVMSizeFlag(const char* name, size_t default_val) {
 
 `OS::getCgroupCpuMillicores()` and `OS::getContainerMemoryLimit()`
 (`ddprof-lib/src/main/cpp/os_linux.cpp`) try cgroup v2 first, then fall back to
-v1:
+v1. Both resolve the process's own cgroup from `/proc/self/cgroup`
+(`getOwnCgroupPath()`), then walk from that cgroup up to the hierarchy mount
+root and apply the **smallest** limit found on the way, since a nested cgroup
+cannot be more permissive than a constrained ancestor:
 
-- **CPU v2**: reads `/sys/fs/cgroup/cpu.max` (`"<quota> <period>"`, or the
-  literal string `"max"` for unconstrained) and converts to millicores as
-  `quota * 1000 / period`.
-- **CPU v1**: reads `/sys/fs/cgroup/cpu/cpu.cfs_quota_us` and
-  `/sys/fs/cgroup/cpu/cpu.cfs_period_us` (defaulting the period to 100ms if
-  unreadable).
-- **Memory v2**: reads `/sys/fs/cgroup/memory.max` (`"max"` for unconstrained).
-- **Memory v1**: reads `/sys/fs/cgroup/memory/memory.limit_in_bytes`. A value
-  at or above `0x7ffffffffffff000` (the platform's effectively-unbounded
+- **CPU v2**: `<mount>/<own path>/cpu.max` and ancestors (`"<quota> <period>"`,
+  or `"max"` for unconstrained); millicores = `quota * 1000 / period`.
+- **CPU v1**: `/sys/fs/cgroup/cpu/<own path>/cpu.cfs_quota_us` and
+  `cpu.cfs_period_us` and ancestors (period defaults to 100ms if unreadable).
+  The `/sys/fs/cgroup/cpu` base assumes systemd's `cpu -> cpu,cpuacct` symlink.
+- **Memory v2**: `memory.max` in the own cgroup and ancestors (`"max"` for
+  unconstrained).
+- **Memory v1**: `/sys/fs/cgroup/memory/<own path>/memory.limit_in_bytes` and
+  ancestors. A value at or above `0x7ffffffffffff000` (the effectively-unbounded
   cgroup v1 limit) is treated as unconstrained.
 
-Any missing or unreadable file, or the `"max"` sentinel, causes these
-functions to return `-1`, which the memory/CPU formulas above treat as
+The memory limit is resolved once per process (function-local static in
+`getContainerMemoryLimit()`). When no level has a limit, or the files cannot be
+read, these functions return `-1`, which the memory/CPU formulas above treat as
 "unconstrained" (no cgroup ceiling applied). On macOS
 (`ddprof-lib/src/main/cpp/os_macos.cpp`) both functions unconditionally return
 `-1`, because there is no cgroup support on that platform.

@@ -1,0 +1,494 @@
+# Build System Maintenance Guide
+
+This document provides detailed guidance for maintaining and extending the Gradle build system.
+
+## Convention Plugins Overview
+
+All custom build logic lives in `build-logic/conventions/`. The plugins are:
+
+| Plugin ID | Class | Purpose |
+|-----------|-------|---------|
+| `com.datadoghq.native-build` | `NativeBuildPlugin` | Multi-config C++ compilation |
+| `com.datadoghq.native-root` | `RootProjectPlugin` | Root-level config discovery |
+| `com.datadoghq.gtest` | `GtestPlugin` | Google Test integration |
+| `com.datadoghq.simple-native-lib` | `SimpleNativeLibPlugin` | Simple single-library builds |
+| `com.datadoghq.profiler-test` | `ProfilerTestPlugin` | Multi-config Java test generation |
+| `com.datadoghq.java-conventions` | `JavaConventionsPlugin` | Java 8 compilation settings |
+| `com.datadoghq.versioned-sources` | `VersionedSourcesPlugin` | Java version-specific code |
+| `com.datadoghq.fuzz-targets` | `FuzzTargetsPlugin` | libFuzzer integration |
+| `com.datadoghq.scanbuild` | `ScanBuildPlugin` | Clang static analysis |
+| `com.datadoghq.spotless-convention` | `SpotlessConventionPlugin` | Code formatting |
+
+## Java Formatting
+
+`com.datadoghq.spotless-convention` configures Java formatting when the `java` plugin
+is applied, regardless of plugin order. Spotless runs Google Java Format 1.30.0
+on the build JVM; this does not change the Java 8 `--release` compilation target.
+
+Java formatting targets `src/**/*.java`, excludes `src/test/resources/**`, and
+honors `spotless:off` / `spotless:on` markers. `spotlessJavaCheck` feeds
+`spotlessCheck`, which is a dependency of `check`.
+
+Run the convention's TestKit regressions with
+`./.claude/commands/build-and-summarize -p build-logic :conventions:test --max-workers=2`.
+Set `JAVA_HOME` to the build JDK to qualify; use `--rerun-tasks` when switching JDKs.
+
+The fixtures verify the test worker and nested build JVMs and compile formatted Java
+to class-file version 52 using `com.datadoghq.java-conventions`.
+
+CI's `build-logic-tests` job in `.github/workflows/ci.yml` runs `:conventions:test` on
+Ubuntu 22.04 with JDK 21, independently of `check-formatting`. It retains the duplicate-push
+guard and uploads root build logs and included-build test XML only on failure.
+
+## Key Files and Their Purposes
+
+```
+build-logic/conventions/src/main/kotlin/com/datadoghq/
+├── native/
+│   ├── NativeBuildPlugin.kt         # Creates compile/link tasks per config
+│   ├── NativeBuildExtension.kt      # DSL: nativeBuild { ... }
+│   ├── RootProjectPlugin.kt         # Provides configs to all subprojects
+│   ├── SimpleNativeLibPlugin.kt     # Simplified single-lib builds
+│   ├── config/
+│   │   └── ConfigurationPresets.kt  # Defines release/debug/asan/tsan/fuzzer
+│   ├── model/
+│   │   ├── BuildConfiguration.kt    # Config model (platform, arch, flags)
+│   │   ├── Platform.kt              # LINUX, MACOS enum
+│   │   ├── Architecture.kt          # X64, ARM64, etc.
+│   │   ├── SourceSet.kt             # Per-source-set includes/excludes/flags
+│   │   ├── ErrorHandlingMode.kt     # Compile error handling (fail-fast / collect)
+│   │   └── LogLevel.kt              # Task logging verbosity
+│   ├── tasks/
+│   │   ├── NativeCompileTask.kt     # C++ compilation task
+│   │   ├── NativeLinkTask.kt        # Shared library linking
+│   │   └── NativeLinkExecutableTask.kt  # Executable linking
+│   ├── util/
+│   │   └── PlatformUtils.kt         # Platform detection, compiler finding
+│   ├── gtest/
+│   │   ├── GtestPlugin.kt           # Google Test task generation
+│   │   ├── GtestExtension.kt        # DSL: gtest { ... }
+│   │   └── GtestTaskBuilder.kt      # Per-test task creation
+│   ├── scanbuild/
+│   │   ├── ScanBuildPlugin.kt       # scanBuild task (Linux only)
+│   │   └── ScanBuildExtension.kt    # DSL: scanBuild { ... }
+│   └── fuzz/
+│       └── FuzzTargetsPlugin.kt     # Fuzz testing support
+├── profiler/
+│   ├── ProfilerTestPlugin.kt        # Multi-config test generation
+│   ├── JavaConventionsPlugin.kt     # Java 8 --release flag
+│   └── SpotlessConventionPlugin.kt  # Code formatting
+└── java/versionedsources/
+    └── VersionedSourcesPlugin.kt    # Java 9+ version-specific code
+```
+
+## How Build Configurations Work
+
+Build configurations (release, debug, asan, tsan, fuzzer, coverage) are defined in `ConfigurationPresets.kt`:
+
+1. **Registration**: `ConfigurationPresets.setupStandardConfigurations()` registers the configs in
+   the project's `nativeBuild` extension (`NativeBuildExtension.buildConfigurations`). Both
+   `RootProjectPlugin` and `NativeBuildPlugin` call it from their own `afterEvaluate`.
+2. **Activation**: Each config sets `active` based on what the host supports
+   (`BuildConfiguration.isActiveFor()` also requires matching platform/arch):
+   - release/debug: Always active
+   - asan: `PlatformUtils.hasAsan(compiler)` — not musl, and `locateLibasan()` finds a runtime
+     (`libclang_rt.asan-<arch>` for clang, otherwise `libasan`)
+   - tsan: `PlatformUtils.hasTsan(compiler)` — same pattern with the TSan runtime
+   - fuzzer: `PlatformUtils.hasFuzzer()` — not musl, and clang supports `-fsanitize=fuzzer`
+   - coverage: only with `-PenableCoverage` (see [CodeCoverage](CodeCoverage.md))
+3. **Discovery**: `NativeBuildPlugin` creates tasks for
+   `extension.getActiveConfigurations(currentPlatform, currentArch)` and logs
+   `Active configurations: ...`
+
+### Configuration Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    settings.gradle.kts                          │
+│  includeBuild("build-logic") ← loads convention plugins         │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     build.gradle.kts (root)                     │
+│  plugins { id("com.datadoghq.native-root") }                    │
+│  ↓                                                              │
+│  RootProjectPlugin creates root nativeBuild extension           │
+│  ↓                                                              │
+│  afterEvaluate: ConfigurationPresets.setupStandardConfigurations│
+│  → Registers: release, debug, asan, tsan, fuzzer, coverage      │
+│  → Checks availability via PlatformUtils                        │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  ddprof-lib/build.gradle.kts                    │
+│  plugins { id("com.datadoghq.native-build") }                   │
+│  ↓                                                              │
+│  afterEvaluate: setupStandardConfigurations on its own extension│
+│  → getActiveConfigurations(currentPlatform, currentArch)        │
+│  → Creates tasks: compileRelease, linkRelease, assembleRelease  │
+│  → Creates tasks: compileDebug, linkDebug, assembleDebug        │
+│  → (only for active configs on current platform)                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Adding a New Build Configuration
+
+The `coverage` configuration is a worked example of an opt-in configuration. It reuses
+an existing preset and only adds flags:
+
+### Step 1: Add to ConfigurationPresets.kt
+
+```kotlin
+// In setupStandardConfigurations()
+val enableCoverage = project.hasProperty("enableCoverage")
+extension.buildConfigurations.apply {
+    // ... existing configs ...
+    register("coverage") {
+        configureCoverage(this, currentPlatform, currentArch, version, enableCoverage)
+    }
+}
+
+fun configureCoverage(
+    config: BuildConfiguration,
+    platform: Platform,
+    architecture: Architecture,
+    version: String,
+    active: Boolean
+) {
+    configureDebug(config, platform, architecture, version)
+    config.active.set(active)          // Inactive configs get no tasks at all
+    config.publishable.set(false)      // JAR built only while active, never published
+    config.compilerArgs.addAll("--coverage", "-fprofile-update=atomic")
+    config.linkerArgs.add("--coverage")
+}
+```
+
+Gate `active` on a detection helper in `PlatformUtils` when the configuration needs a
+toolchain feature (see `configureAsan` / `configureFuzzer`), or on a project property
+when it must stay out of default builds (as `coverage` does).
+
+### Step 2: Build Script Wiring (only if needed)
+
+Configurations are discovered dynamically: compile/link/assemble, `gtest{Config}` and
+`test{Config}` tasks are created for every active configuration without build-script
+changes. Extra tasks that consume a configuration's output go in the build scripts —
+for `coverage`, `coverageReport` and its preflight check in `ddprof-lib/build.gradle.kts`
+and the JaCoCo wiring in `ddprof-test/build.gradle.kts` (see
+[CodeCoverage](CodeCoverage.md)).
+
+## Modifying Compiler/Linker Flags
+
+Flags are centralized in `ConfigurationPresets.kt`:
+
+| Function | Purpose |
+|----------|---------|
+| `commonLinuxCompilerArgs()` | Shared C++ flags for all Linux configs |
+| `commonLinuxLinkerArgs()` | Shared linker flags for Linux |
+| `commonMacosCompilerArgs()` | Shared C++ flags for macOS |
+| `configureRelease()` | Release-specific flags |
+| `configureDebug()` | Debug-specific flags |
+| `configureAsan()` | AddressSanitizer flags |
+| `configureTsan()` | ThreadSanitizer flags |
+| `configureFuzzer()` | libFuzzer flags |
+
+### Example: Adding a Flag to All Configs
+
+```kotlin
+private fun commonLinuxCompilerArgs(version: String): List<String> {
+    return mutableListOf(
+        "-fPIC",
+        "-fno-omit-frame-pointer",
+        "-momit-leaf-frame-pointer",
+        "-fvisibility=hidden",
+        "-fdata-sections",
+        "-ffunction-sections",
+        "-std=c++17",
+        // Add new flag here:
+        "-fstack-protector-strong",
+        "-DPROFILER_VERSION=\"$version\"",
+        "-DCOUNTERS"
+    )
+}
+```
+
+### Example: Adding a Flag to One Config
+
+```kotlin
+fun configureRelease(...) {
+    when (platform) {
+        Platform.LINUX -> {
+            config.compilerArgs.set(
+                listOf("-O3", "-DNDEBUG", "-g", "-flto") +  // Added -flto
+                commonLinuxCompilerArgs(version)
+            )
+        }
+    }
+}
+```
+
+## Creating a New Convention Plugin
+
+### Step 1: Create the Plugin Class
+
+Create in `build-logic/conventions/src/main/kotlin/com/datadoghq/example/`:
+
+```kotlin
+package com.datadoghq.example
+
+import org.gradle.api.Plugin
+import org.gradle.api.Project
+import org.gradle.api.provider.Property
+import javax.inject.Inject
+
+class MyPlugin : Plugin<Project> {
+    override fun apply(project: Project) {
+        // Create extension for DSL configuration
+        val extension = project.extensions.create(
+            "myPlugin",
+            MyExtension::class.java,
+            project
+        )
+
+        // Create configurations eagerly (so build scripts can reference them)
+        val myConfig = project.configurations.create("myConfiguration")
+
+        // Configure tasks in afterEvaluate (when extension values are set)
+        project.afterEvaluate {
+            if (extension.enabled.get()) {
+                createTasks(project, extension)
+            }
+        }
+    }
+
+    private fun createTasks(project: Project, extension: MyExtension) {
+        project.tasks.register("myTask") {
+            group = "my-group"
+            description = "Does something useful"
+            doLast {
+                println("Setting: ${extension.someSetting.get()}")
+            }
+        }
+    }
+}
+
+abstract class MyExtension @Inject constructor(project: Project) {
+    val enabled: Property<Boolean> = project.objects.property(Boolean::class.java)
+    val someSetting: Property<String> = project.objects.property(String::class.java)
+
+    init {
+        enabled.convention(true)
+        someSetting.convention("default-value")
+    }
+}
+```
+
+### Step 2: Register in build.gradle.kts
+
+Add to `build-logic/conventions/build.gradle.kts`:
+
+```kotlin
+gradlePlugin {
+    plugins {
+        // ... existing plugins ...
+        create("myPlugin") {
+            id = "com.datadoghq.my-plugin"
+            implementationClass = "com.datadoghq.example.MyPlugin"
+        }
+    }
+}
+```
+
+### Step 3: Use in Subproject
+
+```kotlin
+plugins {
+    id("com.datadoghq.my-plugin")
+}
+
+myPlugin {
+    enabled.set(true)
+    someSetting.set("custom-value")
+}
+```
+
+## Best Practices for Plugin Development
+
+### Prefer Lazy Configuration
+
+```kotlin
+// GOOD - lazy task registration
+project.tasks.register("myTask", MyTask::class.java) {
+    inputFile.set(extension.someFile)  // Evaluated when task executes
+}
+
+// AVOID - eager task creation
+project.tasks.create("myTask", MyTask::class.java) {
+    inputFile.set(extension.someFile)  // Evaluated immediately
+}
+```
+
+### Create Configurations Eagerly, Populate Lazily
+
+```kotlin
+override fun apply(project: Project) {
+    // Create configurations immediately (so build scripts can use them)
+    val myConfig = project.configurations.create("myConfiguration").apply {
+        isCanBeConsumed = true
+        isCanBeResolved = true
+    }
+
+    // Populate dependencies in afterEvaluate
+    project.afterEvaluate {
+        myConfig.dependencies.add(
+            project.dependencies.create("com.example:lib:1.0")
+        )
+    }
+}
+```
+
+### Use Lazy Task References
+
+```kotlin
+// GOOD - lazy reference, doesn't force task creation
+val linkTask = tasks.named("linkRelease")
+myTask.dependsOn(linkTask)
+
+// AVOID - forces immediate task creation/lookup
+val linkTask = tasks.getByName("linkRelease")
+```
+
+### Check Task Existence Safely
+
+```kotlin
+// GOOD - safe check
+if (tasks.names.contains("linkRelease")) {
+    dependsOn("linkRelease")
+}
+
+// AVOID - throws exception if not found
+dependsOn(tasks.getByName("linkRelease"))
+```
+
+## Testing Build Changes
+
+After modifying build-logic:
+
+```bash
+# Kill Gradle daemon to pick up plugin changes
+./gradlew --stop
+
+# Verify configuration loads without errors
+./.claude/commands/build-and-summarize tasks --group=build -q
+
+# Verify Java compilation
+./.claude/commands/build-and-summarize :ddprof-lib:compileJava :ddprof-test:compileJava -Pskip-native
+
+# Verify native compilation (on Linux)
+./.claude/commands/build-and-summarize assembleRelease
+
+# Verify tests can be configured
+./.claude/commands/build-and-summarize :ddprof-test:testRelease -Pskip-native
+
+# Verify all tasks are generated correctly
+./.claude/commands/build-and-summarize :ddprof-lib:tasks --all
+```
+
+## Gradle Properties Reference
+
+All configurable properties (see `gradle.properties.template` for full documentation):
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `skip-tests` | false | Skip Java test execution (also gates gtest/fuzz) |
+| `skip-native` | false | Skip C++ compilation |
+| `skip-gtest` | false | Skip Google Test execution |
+| `skip-fuzz` | false | Skip fuzz testing |
+| `fuzz-duration` | 60 | Seconds per fuzz target |
+| `tests` | - | Test filter for `test{Config}` tasks |
+| `enableFaultInjection` | false | Add `-D__FAULT_INJECTION__` to release/debug |
+| `enableSamplerPerf` | false | Add `-D__SAMPLER_PERF__` to release/debug |
+| `native.forceCompiler` | auto | Force specific C++ compiler path |
+| `ddprof_version` | computed from git tags | Override project version (see [Versioning](Versioning.md)) |
+| `with-libs` | - | Path to pre-built native libraries |
+| `keepJFRs` | false | Keep JFR recordings after tests |
+| `validatorArgs` | - | Arguments for UnwindingValidator |
+| `CI` | from env | CI environment flag |
+| `forceLocal` | false | Use local Nexus for testing |
+
+## Troubleshooting
+
+### "Configuration not found"
+
+Configurations are created in `afterEvaluate`. Ensure you're accessing them in `afterEvaluate` or later:
+
+```kotlin
+// WRONG - runs during configuration phase
+val cfg = configurations.getByName("testReleaseImplementation")  // May not exist yet
+
+// RIGHT - runs after all afterEvaluate blocks
+project.afterEvaluate {
+    val cfg = configurations.getByName("testReleaseImplementation")
+}
+
+// ALSO RIGHT - use gradle.projectsEvaluated for cross-project
+gradle.projectsEvaluated {
+    val cfg = configurations.getByName("testReleaseImplementation")
+}
+```
+
+### "Task not found"
+
+Tasks are created dynamically based on active configs. Verify:
+
+1. The config is active: Check `PlatformUtils` detection methods
+2. The plugin is applied: Check `plugins { }` block
+3. You're in the right phase: Use `afterEvaluate` or `gradle.projectsEvaluated`
+
+### Plugin Changes Not Taking Effect
+
+The Gradle daemon caches compiled plugins:
+
+```bash
+./gradlew --stop                    # Kill daemon
+./gradlew tasks --no-daemon         # Run without daemon
+```
+
+### Circular Dependencies
+
+Avoid cross-project `afterEvaluate` dependencies. Use `gradle.projectsEvaluated` instead:
+
+```kotlin
+// WRONG - may cause ordering issues
+project.afterEvaluate {
+    val otherProject = rootProject.findProject(":other")
+    otherProject?.afterEvaluate { ... }  // Nested afterEvaluate
+}
+
+// RIGHT - runs after ALL projects are evaluated
+gradle.projectsEvaluated {
+    val otherProject = rootProject.findProject(":other")
+    // Safe to access other project's tasks/configs
+}
+```
+
+### Debug Gradle Configuration
+
+```bash
+# Show task dependencies
+./gradlew :ddprof-lib:assembleRelease --dry-run
+
+# Show dependency resolution
+./gradlew :ddprof-test:dependencies --configuration testReleaseImplementation
+
+# Enable debug logging
+./gradlew build -d 2>&1 | head -500
+```
+
+## See Also
+
+- [GradleTasks](GradleTasks.md) - Task reference and workflows
+- [NativeBuildPlugin](NativeBuildPlugin.md) - Native compile/link task DSL
+- [build-logic/README.md](../../build-logic/README.md) - Plugin implementation details
+- [gradle.properties.template](../../gradle.properties.template) - All configurable properties

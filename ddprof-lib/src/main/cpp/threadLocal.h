@@ -187,6 +187,7 @@ class JVMThread;
  */
 template <>
 class ThreadLocal<JVMThread*> {
+    friend class JVMThreadTestAccessor;
 protected:
     pthread_key_t _key;
 

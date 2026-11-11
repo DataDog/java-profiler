@@ -9,62 +9,80 @@ import java.util.Map;
 
 /**
  * One frame of a {@link JfrStackTrace}, wrapping a resolved {@code jdk.types.StackFrame} map:
- * {@code {method: {type: {name: {string: ...}}, name: {string: ...}}, lineNumber, bytecodeIndex, type}}.
+ * {@code {method: {type: {name: {string: ...}}, name: {string: ...}}, lineNumber, bytecodeIndex,
+ * type}}.
  */
 public final class JfrFrame {
-    private final Map<String, Object> value;
+  private final Map<String, Object> value;
 
-    JfrFrame(Map<String, Object> value) {
-        this.value = value;
-    }
+  JfrFrame(Map<String, Object> value) {
+    this.value = value;
+  }
 
-    @SuppressWarnings("unchecked")
-    private static String symbolString(Object symbolOrMap) {
-        if (symbolOrMap instanceof Map) {
-            Object s = ((Map<String, Object>) symbolOrMap).get("string");
-            return s != null ? s.toString() : null;
-        }
-        return symbolOrMap != null ? symbolOrMap.toString() : null;
+  @SuppressWarnings("unchecked")
+  private static String symbolString(Object symbolOrMap) {
+    if (symbolOrMap instanceof Map) {
+      Object s = ((Map<String, Object>) symbolOrMap).get("string");
+      return s != null ? s.toString() : null;
     }
+    return symbolOrMap != null ? symbolOrMap.toString() : null;
+  }
 
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> method() {
-        Object m = value.get("method");
-        return m instanceof Map ? (Map<String, Object>) m : null;
-    }
+  @SuppressWarnings("unchecked")
+  private Map<String, Object> method() {
+    Object m = value.get("method");
+    return m instanceof Map ? (Map<String, Object>) m : null;
+  }
 
-    /** The frame's method name, or {@code null} if unavailable. */
-    public String methodName() {
-        Map<String, Object> method = method();
-        return method != null ? symbolString(method.get("name")) : null;
-    }
+  /** The frame's method name, or {@code null} if unavailable. */
+  public String methodName() {
+    Map<String, Object> method = method();
+    return method != null ? symbolString(method.get("name")) : null;
+  }
 
-    /** The method's descriptor (JVM signature string), or {@code null} if unavailable. */
-    public String methodDescriptor() {
-        Map<String, Object> method = method();
-        return method != null ? symbolString(method.get("descriptor")) : null;
-    }
+  /** The method's descriptor (JVM signature string), or {@code null} if unavailable. */
+  public String methodDescriptor() {
+    Map<String, Object> method = method();
+    return method != null ? symbolString(method.get("descriptor")) : null;
+  }
 
-    /**
-     * The frame's {@code jdk.types.FrameType} description (e.g. {@code "Native (remote)"}), or
-     * {@code null} if the frame type has no entry in the constant pool.
-     */
-    public String typeDescription() {
-        return symbolString(value.get("type"));
-    }
+  /** The frame's line number, or -1 if unavailable. */
+  public int lineNumber() {
+    return intField("lineNumber");
+  }
 
-    /** The full name (e.g. {@code java.lang.String}) of the method's declaring type, or {@code null}. */
-    @SuppressWarnings("unchecked")
-    public String className() {
-        Map<String, Object> method = method();
-        if (method == null) {
-            return null;
-        }
-        Object type = method.get("type");
-        if (!(type instanceof Map)) {
-            return null;
-        }
-        String name = symbolString(((Map<String, Object>) type).get("name"));
-        return name != null ? name.replace('/', '.') : null;
+  /** The frame's bytecode index, or -1 if unavailable. */
+  public int bytecodeIndex() {
+    return intField("bytecodeIndex");
+  }
+
+  private int intField(String name) {
+    Object v = value.get(name);
+    return v instanceof Number ? ((Number) v).intValue() : -1;
+  }
+
+  /**
+   * The frame's {@code jdk.types.FrameType} description (e.g. {@code "Native (remote)"}), or {@code
+   * null} if the frame type has no entry in the constant pool.
+   */
+  public String typeDescription() {
+    return symbolString(value.get("type"));
+  }
+
+  /**
+   * The full name (e.g. {@code java.lang.String}) of the method's declaring type, or {@code null}.
+   */
+  @SuppressWarnings("unchecked")
+  public String className() {
+    Map<String, Object> method = method();
+    if (method == null) {
+      return null;
     }
+    Object type = method.get("type");
+    if (!(type instanceof Map)) {
+      return null;
+    }
+    String name = symbolString(((Map<String, Object>) type).get("name"));
+    return name != null ? name.replace('/', '.') : null;
+  }
 }

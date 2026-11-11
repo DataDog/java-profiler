@@ -222,9 +222,17 @@ Time 2:  attach()
 ──────────────────────────────────────────────────────────────────
 ```
 
-`clearContextValue0` is the one exception: it preserves whatever `valid`
-value it found (removing a single attribute must not resurrect a record
-that a preceding `clearTraceContext0()` intentionally left detached).
+Two writers do not end with `attach()`:
+
+- `clearTraceContext0` zeros the trace/span IDs, tag encodings and LRS, and
+  leaves the record detached (`valid = 0`), because a cleared context is not
+  active.
+- `clearContextValue0` puts back whatever `valid` value it found, because
+  removing a single attribute must not resurrect a record that a preceding
+  `clearTraceContext0()` left detached.
+
+`setContextValue0`, by contrast, always attaches, so an attribute stays
+visible to the sampler even when no span is active.
 
 ### Reader: DD Signal Handler
 
@@ -237,7 +245,7 @@ void Recording::writeCurrentContext(Buffer *buf) {
     buf->putVar64(rootSpanId);
 
     size_t numAttrs = Profiler::instance()->numContextAttributes();
-    ProfiledThread* thrd = hasContext ? ProfiledThread::currentSignalSafe() : nullptr;
+    ProfiledThread* thrd = hasContext ? ProfiledThread::current() : nullptr;
     for (size_t i = 0; i < numAttrs; i++) {
         buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
     }
@@ -318,8 +326,8 @@ Dictionary-registration path). The read path uses a pre-initialized
 pointer:
 
 ```cpp
-// ProfiledThread::currentSignalSafe() — no allocation, no TLS lazy init
-ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+// ProfiledThread::current() — no allocation, no TLS lazy init
+ProfiledThread* thrd = ProfiledThread::current();
 if (thrd == nullptr || !thrd->isContextInitialized()) {
     return false;  // emit zeros
 }
@@ -355,7 +363,7 @@ rate is effectively 100%.
 reads context in bounded time with no allocation:
 
 1. `ContextApi::get(spanId, rootSpanId)`:
-   - `ProfiledThread::currentSignalSafe()` — cached pointer, no TLS
+   - `ProfiledThread::current()` — cached pointer, no TLS
      lazy init.
    - `__atomic_load_n(&record->valid, __ATOMIC_ACQUIRE)` — if 0, emit
      zeros (record is being mutated).

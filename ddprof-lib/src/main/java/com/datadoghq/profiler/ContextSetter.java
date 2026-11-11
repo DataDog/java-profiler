@@ -21,32 +21,32 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Resolves configured context attribute names to their fixed slot indices in the all-native
- * context record. Deduplicates and truncates the configured attribute list to {@link
+ * Resolves configured context attribute names to their fixed slot indices in the all-native context
+ * record. Deduplicates and truncates the configured attribute list to {@link
  * JavaProfiler#MAX_CONTEXT_SLOTS} slots; callers use {@link #offsetOf} to translate an attribute
  * name into the slot index passed to {@link JavaProfiler#setContextValue}.
  */
 public class ContextSetter {
 
-    private final List<String> attributes;
+  private final List<String> attributes;
 
-    public ContextSetter(JavaProfiler profiler, List<String> attributes) {
-        Set<String> unique = new HashSet<>(attributes);
-        this.attributes = new ArrayList<>(unique.size());
-        for (int i = 0; i < Math.min(attributes.size(), JavaProfiler.MAX_CONTEXT_SLOTS); i++) {
-            String attribute = attributes.get(i);
-            if (unique.remove(attribute)) {
-                this.attributes.add(attribute);
-            }
-        }
+  public ContextSetter(JavaProfiler profiler, List<String> attributes) {
+    Set<String> unique = new HashSet<>(attributes);
+    this.attributes = new ArrayList<>(unique.size());
+    for (int i = 0; i < Math.min(attributes.size(), JavaProfiler.MAX_CONTEXT_SLOTS); i++) {
+      String attribute = attributes.get(i);
+      if (unique.remove(attribute)) {
+        this.attributes.add(attribute);
+      }
     }
+  }
 
-    public int offsetOf(String attribute) {
-        return attributes.indexOf(attribute);
-    }
+  public int offsetOf(String attribute) {
+    return attributes.indexOf(attribute);
+  }
 
-    /** Number of (deduplicated, truncated) context attribute slots. */
-    public int size() {
-        return attributes.size();
-    }
+  /** Number of (deduplicated, truncated) context attribute slots. */
+  public int size() {
+    return attributes.size();
+  }
 }

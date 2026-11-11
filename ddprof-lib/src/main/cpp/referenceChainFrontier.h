@@ -47,6 +47,9 @@ constexpr u8 CANARY_STUCK = 3;
 // starts from a brand-new-search shape (release-then-restart, fresh TTL clock, no urgency
 // carry-over).
 constexpr u8 RECORDING_END = 4;
+// The root enumerator returned a JVMTI error on MAX_CONSECUTIVE_ENUM_ERRORS consecutive attempts -
+// the root picture is unusable and retrying is not making progress.
+constexpr u8 ROOT_ENUM_ERROR = 5;
 } // namespace SearchAbandonReason
 
 // Metadata for one tagged frontier object.
