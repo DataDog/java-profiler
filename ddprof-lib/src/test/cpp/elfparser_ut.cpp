@@ -53,6 +53,15 @@ public:
 // Install global crash handler for all tests in this file
 static ElfParserGlobalSetup global_setup;
 
+// CodeCacheArray is process-lifetime storage with no destructor (the global
+// production array is never freed); a test-local array must delete its caches
+// explicitly or LeakSanitizer flags every parsed library.
+static void drainCodeCacheArray(CodeCacheArray& array) {
+    for (int i = 0; i < array.count(); ++i) {
+        delete array.at(i);
+    }
+}
+
 // Resolve a path under ddprof-lib/build/test/resources. The Gradle test task
 // runs from the build directory, but the GitLab runner invokes binaries from
 // the repo root, so a cwd-based lookup misses there; derive it from the
@@ -180,6 +189,7 @@ TEST_F(ElfTest, invalidElf) {
 
     // Call the parsing function with the invalid ELF mapping
     Symbols::parseLibraries(&cc_array, false);
+    drainCodeCacheArray(cc_array);
 
     munmap(addr, 4096);
     unlink("/tmp/invalid_elf");
@@ -208,6 +218,7 @@ TEST_F(ElfTest, nonElfFile) {
 
     // Call the parsing function with the non-ELF mapping
     Symbols::parseLibraries(&cc_array, false);
+    drainCodeCacheArray(cc_array);
 
     // we could add checks here, though I am mainly relying on asan to crash
     // if something is wrong
@@ -236,6 +247,7 @@ TEST_F(ElfTest, invalidElfSmallMapping) {
 
     // Call the parsing function with the small invalid ELF mapping
     Symbols::parseLibraries(&cc_array, false);
+    drainCodeCacheArray(cc_array);
 
     munmap(addr, 16);
     unlink("/tmp/invalid_elf_small");
@@ -263,6 +275,7 @@ TEST_F(ElfTest, nonElfFileSmallMapping) {
 
     // Call the parsing function with the small non-ELF mapping
     Symbols::parseLibraries(&cc_array, false);
+    drainCodeCacheArray(cc_array);
     munmap(addr, contentSize);
     unlink("/tmp/non_elf_small");
 }
@@ -317,6 +330,7 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
 
     // Call the parsing function in the main thread
     Symbols::parseLibraries(&cc_array, false);
+    drainCodeCacheArray(cc_array);
 
     // Join the unmapper thread to ensure it has finished
     unmapper.join();
@@ -357,6 +371,7 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
 
     // Call the parsing function in the main thread, this is where we can crash
     Symbols::parseLibraries(&cc_array, false);
+    drainCodeCacheArray(cc_array);
     unmapper.join();
 }
 
