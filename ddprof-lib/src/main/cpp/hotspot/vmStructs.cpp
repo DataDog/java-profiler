@@ -589,46 +589,19 @@ bool VMStructs::isSafeToWalk(uintptr_t pc) {
 void JNICALL VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                          jmethodID method, void *address,
                                          void **new_address_ptr) {
-    static SpinLock _lock;
-    static int delayedCounter = 0;
-    static void **delayed = (void **)malloc(512 * sizeof(void *) * 2);
+    static DelayedNativeBindings delayed;
 
     ProfiledThread::initCurrentThreadSignalSafe();
 
     if (_memory_usage_func == NULL) {
         if (jvmti != NULL && jni != NULL) {
             checkNativeBinding(jvmti, jni, method, address);
-            void **tmpDelayed = NULL;
-            int tmpCounter = 0;
-            _lock.lock();
-            if (delayed != NULL && delayedCounter > 0) {
-                // in order to minimize the lock time, we copy the delayed list, free it
-                // and release the lock
-                tmpCounter = delayedCounter;
-                tmpDelayed = (void **)malloc(tmpCounter * sizeof(void *) * 2);
-                memcpy(tmpDelayed, delayed, tmpCounter * sizeof(void *) * 2);
-                delayedCounter = 0;
-                free(delayed);
-                delayed = NULL;
-            }
-            _lock.unlock();
-            // if there was a delayed list, we check it now, not blocking on the lock
-            if (tmpDelayed != NULL) {
-                for (int i = 0; i < tmpCounter; i += 2) {
-                    checkNativeBinding(jvmti, jni, (jmethodID)tmpDelayed[i],
-                                      tmpDelayed[i + 1]);
-                }
-                // don't forget to free the tmp list
-                free(tmpDelayed);
-            }
+            delayed.drain([&](jmethodID m, void *a) {
+                checkNativeBinding(jvmti, jni, m, a);
+            });
         } else {
-            _lock.lock();
-            if (delayed != NULL) {
-                delayed[delayedCounter] = method;
-                delayed[delayedCounter + 1] = address;
-                delayedCounter += 2;
-            }
-            _lock.unlock();
+            // Past the capacity a binding is dropped rather than overflowing.
+            delayed.add(method, address);
         }
     }
 }
@@ -1038,36 +1011,69 @@ JVMJavaThreadState VMThread::state() {
 bool HeapUsage::is_jmx_attempted = false;
 bool HeapUsage::is_jmx_supported = false; // default to not-supported
 
+namespace {
+// Deletes the JNI local references it was handed when it goes out of scope.
+class LocalRefs {
+    static const int CAPACITY = 4;
+    JNIEnv *_env;
+    jobject _refs[CAPACITY] = {};
+    int _count = 0;
+public:
+    explicit LocalRefs(JNIEnv *env) : _env(env) {}
+    LocalRefs(const LocalRefs &) = delete;
+    LocalRefs &operator=(const LocalRefs &) = delete;
+    ~LocalRefs() {
+        for (int i = 0; i < _count; i++) {
+            _env->DeleteLocalRef(_refs[i]);
+        }
+    }
+    template <typename T>
+    T add(T ref) {
+        if (ref != nullptr) {
+            assert(_count < CAPACITY);
+            if (_count < CAPACITY) {
+                _refs[_count++] = ref;
+            }
+        }
+        return ref;
+    }
+};
+} // namespace
+
 void HeapUsage::initJMXUsage(JNIEnv *env) {
-    if (is_jmx_attempted) {
-        // do not re-run the initialization
+    // Runs once. Without a JNIEnv the attempt is not used up, so a later call
+    // can still try.
+    if (env == nullptr || is_jmx_attempted) {
         return;
     }
     is_jmx_attempted = true;
-    jclass factory = env->FindClass("java/lang/management/ManagementFactory");
-    if (!jniExceptionCheck(env) || factory == nullptr) {
+    // jniExceptionCheck() is true when a call threw (and clears it): each step
+    // bails out on an exception or a null result.
+    LocalRefs refs(env);
+    jclass factory = refs.add(env->FindClass("java/lang/management/ManagementFactory"));
+    if (jniExceptionCheck(env) || factory == nullptr) {
         return;
     }
-    jclass memoryBeanClass = env->FindClass("java/lang/management/MemoryMXBean");
-    if (!jniExceptionCheck(env) || memoryBeanClass == nullptr) {
+    jclass memoryBeanClass = refs.add(env->FindClass("java/lang/management/MemoryMXBean"));
+    if (jniExceptionCheck(env) || memoryBeanClass == nullptr) {
         return;
     }
     jmethodID get_memory = env->GetStaticMethodID(
         factory, "getMemoryMXBean", "()Ljava/lang/management/MemoryMXBean;");
-    if (!jniExceptionCheck(env) || get_memory == nullptr) {
+    if (jniExceptionCheck(env) || get_memory == nullptr) {
         return;
     }
-    jobject memoryBean = env->CallStaticObjectMethod(factory, get_memory);
-    if (!jniExceptionCheck(env) || memoryBean == nullptr) {
+    jobject memoryBean = refs.add(env->CallStaticObjectMethod(factory, get_memory));
+    if (jniExceptionCheck(env) || memoryBean == nullptr) {
         return;
     }
     jmethodID get_heap = env->GetMethodID(memoryBeanClass, "getHeapMemoryUsage",
                                           "()Ljava/lang/management/MemoryUsage;");
-    if (!jniExceptionCheck(env) || get_heap == nullptr) {
+    if (jniExceptionCheck(env) || get_heap == nullptr) {
         return;
     }
-    env->CallObjectMethod(memoryBean, get_heap);
-    if (!jniExceptionCheck(env)) {
+    refs.add(env->CallObjectMethod(memoryBean, get_heap));
+    if (jniExceptionCheck(env)) {
         return;
     }
     // mark JMX as supported only after we were able to retrieve the memory usage
