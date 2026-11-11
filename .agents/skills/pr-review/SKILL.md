@@ -28,10 +28,13 @@ engineer's checkout or a checkout of `origin/main`, never from a worktree of the
    - **Merged PR.** If the state is `MERGED` and `<head>` is an ancestor of
      `refs/remotes/origin/<base>`, that merge base is `<head>` and the range is empty.
      Then use the `mergeCommit` oid, `<merge>`: fetch it with `git fetch origin <merge>`
-     if `git rev-parse --verify "<merge>^{commit}"` fails, and take
-     `MB=$(git merge-base "<merge>^1" <head>)`. If `<head>` is also an ancestor of
-     `refs/remotes/origin/main`, take `MM` the same way.
-   - **Config check.** Take `MM=$(git merge-base refs/remotes/origin/main <head>)`.
+     if `git rev-parse --verify "<merge>^{commit}"` fails. If `<merge>` has two parents
+     and `<merge>^2` is `<head>`, take `MB=$(git merge-base "<merge>^1" <head>)`.
+     Otherwise, for example after a fast-forward, the range cannot be recovered: say
+     so and ask the engineer for it.
+   - **Config check.** If `<head>` is an ancestor of `refs/remotes/origin/main`, the
+     PR's agent config is already main's: skip this check. Otherwise take
+     `MM=$(git merge-base refs/remotes/origin/main <head>)`.
      List the PR's agent-config changes: `git diff --name-only $MM <head> --
      AGENTS.md CLAUDE.md ':(glob)**/AGENTS.md' ':(glob)**/CLAUDE.md' .agents .claude
      .pi ':(glob)**/.agents/**' ':(glob)**/.claude/**' ':(glob)**/.pi/**' .githooks
