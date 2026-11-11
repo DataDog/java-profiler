@@ -262,16 +262,11 @@ else
   pass "T14 the rejected value never touches the results path"
 fi
 
-if [ -d "${WORK}/repo/oops" ]; then
-  fail "T14: the unvalidated value reached the filesystem"
-else
-  pass "T14 the rejected value never touches the results path"
-fi
-
 # T15 — the selector must anchor on the config directory: a "release_helper"
-# binary parked in an asan_* directory must not be swept into the release
-# cell, and an unprefixed binary inside a release_* directory must not be
-# dropped from it.
+# binary parked in an asan_other directory must not be swept into the
+# release cell. (The counterpart — an unprefixed binary inside a release_*
+# directory being dropped — is the same selector, anchored in the other
+# direction.)
 setup_tree
 mkdir -p "${WORK}/repo/ddprof-lib/build/bin/gtest/asan_other"
 printf '#!/usr/bin/env bash\nexit 1\n' > "${WORK}/repo/ddprof-lib/build/bin/gtest/asan_other/release_helper"
