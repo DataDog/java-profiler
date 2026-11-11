@@ -15,6 +15,14 @@
 #              no method name at all, so the index identifies neither the
 #              method nor a stable case. Quarantine those class-wide with
 #              "<class>.*"; CI's suggested line already does.
+#
+#              The C++ gtest suites (GitLab sanitizer jobs) use the same
+#              shape with the bare suite name: "SuiteName.test_name". gtest
+#              bakes its suite decorations into the id -- value-parameterized
+#              suites report "<instantiation>/<Suite>.<case>/0", typed suites
+#              "<Suite>/<type-index>.<case>" -- and a class-wide "<Suite>.*"
+#              covers every one of those variants, so parameterized gtests
+#              quarantine class-wide just like the Java invocations above.
 #   ticket     PROF-<number>. Required — a quarantine without a ticket is just
 #              a test nobody runs.
 #   added      YYYY-MM-DD, the day it went in.
@@ -28,6 +36,13 @@
 #              target only the slow suite. Leave as "-" to quarantine
 #              everywhere; prefer narrowing it, so the same test breaking
 #              elsewhere still gates.
+#
+#              The C++ gtest cells (GitLab sanitizer jobs, glibc-<config>-<arch>
+#              e.g. glibc-asan-aarch64) carry no jdk axis: the native binaries
+#              never link a JDK. Spell the arch "aarch64" as everywhere else,
+#              not the GitLab runner tag's "arm64" -- a glob naming an
+#              architecture CI never builds quarantines nothing, and validate
+#              rejects it.
 #   reason     Free text — what is unreliable and how often. Last field, so it
 #              may contain anything but "|".
 #
@@ -86,3 +101,9 @@ com.datadoghq.profiler.referencechains.ReferenceChainTrackingTest.shouldReconstr
 com.datadoghq.profiler.referencechains.ReferenceChainTrackingTest.shouldReconstructReferrerChainToGcRoot | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Never observes a ChainLink chain[0]; 1 failing job (musl-11-debug-aarch64-slow) in nightly run 39893765385
 com.datadoghq.profiler.referencechains.ThreadLocalLeakReferenceChainTest.shouldCorrelateThreadLocalHeldLeakChain | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Child reports [tl-correlation-tag-out-of-pool]; 3 failing jobs in nightly run 39893765385
 com.datadoghq.profiler.referencechains.LeakTagCorrelationReferenceChainTest.shouldCorrelateLeakChainTargetTagWithLiveObjectLeakTag | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Child reports [correlation-tag-out-of-pool]; 1 failing job in nightly run 39893765385
+
+# gtest suite `NativeThreadNameRaceTest` in nativeThreadNameRace_ut: the
+# scanner races thread death (pthread_getattr_np on an exiting thread
+# fails), so the test fails intermittently on quiet CI runners regardless
+# of config or arch -- hence quarantined everywhere.
+NativeThreadNameRaceTest.threadDyingBetweenScansIsNeverNamed | PROF-16577 | 2026-11-10 | 2027-02-08 | - | thread-death race in the name scanner; fails ~daily on quiet CI runners
