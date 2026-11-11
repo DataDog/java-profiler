@@ -982,10 +982,10 @@ if [[ -n "$COVERAGE_OUT" ]]; then
     mkdir -p "$COVERAGE_OUT"
     COVERAGE_OUT="$(cd "$COVERAGE_OUT" && pwd)"
     reject_colon "--coverage-out" "$COVERAGE_OUT"
-    # A cell builds the committed HEAD of a clone, so uncommitted edits would be silently
+    # A cell builds the committed HEAD of a clone, so uncommitted edits and new files would be silently
     # missing while cell.properties still records HEAD.
-    if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=no)" ]]; then
-        echo "Error: tracked files have uncommitted changes; a coverage cell measures the committed HEAD." >&2
+    if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain)" ]]; then
+        echo "Error: the source tree has uncommitted or untracked files; a coverage cell measures the committed HEAD." >&2
         echo "Commit or stash them first." >&2
         exit 1
     fi

@@ -225,7 +225,7 @@ echo dirty >> "$REPO/$tracked"
 if output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$TEMP_DIR/dirty-out"); then
   fail "a dirty tree was accepted"
 else
-  expect_contains "dirty tree rejected" "$output" "uncommitted changes"
+  expect_contains "dirty tree rejected" "$output" "uncommitted or untracked files"
 fi
 git -C "$REPO" checkout -q -- "$tracked"
 if output=$(run_script "$REPO" --libc=glibc --jdk=21 --coverage-out="$TEMP_DIR/a:b"); then
