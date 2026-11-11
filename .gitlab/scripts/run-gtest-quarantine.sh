@@ -89,7 +89,12 @@ if [ "${1:-}" = "--attempt" ]; then
     echo "find over ddprof-lib/build/bin/gtest failed (status $?); check the build output directory" >&2
     exit 2
   }
-  binaries=$(printf '%s\n' "${all_binaries}" | grep "/${SANITIZER_LC}_" | sort)
+  # Anchor the selector on the config directory component: the build emits
+  # bin/gtest/${config}_${target}/${binary}, so a bare substring grep would
+  # also sweep a "release_helper" binary sitting in an asan_* directory into
+  # the release cell, and silently drop an unprefixed binary from the right
+  # one.
+  binaries=$(printf '%s\n' "${all_binaries}" | grep "/gtest/${SANITIZER_LC}_" | sort)
   if [ -z "${binaries}" ]; then
     echo "no gtest binaries matching /${SANITIZER_LC}_ under ddprof-lib/build/bin/gtest; the build produced nothing runnable"
     exit 1

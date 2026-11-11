@@ -31,13 +31,14 @@ setup_tree() {
   cp "${SCRIPT_UNDER_TEST}" "${WORK}/repo/.gitlab/scripts/run-gtest-quarantine.sh"
 }
 
-# Fake gtest binary: basename MUST start with release_ or the script's
-# grep "/${SANITIZER_LC}_" selector silently drops it. With xml=1 the fake
-# writes the JUnit XML a completing binary leaves behind -- a failing binary
-# with XML is a plain failure, without XML it is an abort (the marker path).
+# Fake gtest binary in the real build layout: the directory carries the
+# <config>_<target> prefix, the binary the plain test name. With xml=1 the
+# fake writes the JUnit XML a completing binary leaves behind -- a failing
+# binary with XML is a plain failure, without XML it is an abort (the marker
+# path).
 make_bin() {
   local name="$1" rc="$2" xml="${3:-}"
-  mkdir -p "${WORK}/repo/ddprof-lib/build/bin/gtest/release"
+  mkdir -p "${WORK}/repo/ddprof-lib/build/bin/gtest/release_${name}_ut"
   # Single-quoted format: $OUT must reach the generated script unexpanded.
   # shellcheck disable=SC2016
   printf '#!/usr/bin/env bash
@@ -54,8 +55,8 @@ XMLEOF
 fi
 exit %s
 ' "${xml}" "${name}" "$([ "${rc}" -ne 0 ] && echo 1 || echo 0)" "$([ "${rc}" -ne 0 ] && echo 1 || echo 0)" "$([ "${rc}" -ne 0 ] && echo '<failure message="boom" type="AssertionFailed"/>' || echo '')" "${rc}" \
-    > "${WORK}/repo/ddprof-lib/build/bin/gtest/release/${name}"
-  chmod +x "${WORK}/repo/ddprof-lib/build/bin/gtest/release/${name}"
+    > "${WORK}/repo/ddprof-lib/build/bin/gtest/release_${name}_ut/${name}"
+  chmod +x "${WORK}/repo/ddprof-lib/build/bin/gtest/release_${name}_ut/${name}"
 }
 
 # Stub retry wrapper: records the exported flag and the cell argument; UNSET
@@ -173,9 +174,12 @@ else
 fi
 
 # T5 — a clean zero match stays a runner problem: exit 1 and the
-# byte-identical one-line stdout message.
+# byte-identical one-line stdout message. Only an asan_-prefixed directory
+# exists, so the release selector has nothing to anchor on.
 setup_tree
-make_bin other_beta 0
+mkdir -p "${WORK}/repo/ddprof-lib/build/bin/gtest/asan_other_ut"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${WORK}/repo/ddprof-lib/build/bin/gtest/asan_other_ut/other"
+chmod +x "${WORK}/repo/ddprof-lib/build/bin/gtest/asan_other_ut/other"
 run_case release --attempt
 assert_rc 1 "T5 clean zero match exits 1"
 EXPECTED_MSG="no gtest binaries matching /release_ under ddprof-lib/build/bin/gtest; the build produced nothing runnable"
@@ -191,13 +195,13 @@ fi
 # >128 check would catch. The fake binary only halts without XML when the
 # runner exported the flag; its stdout names the value it received.
 setup_tree
-mkdir -p "${WORK}/repo/ddprof-lib/build/bin/gtest/tsan"
-cat > "${WORK}/repo/ddprof-lib/build/bin/gtest/tsan/tsan_racy_ut" <<'FAKE'
+mkdir -p "${WORK}/repo/ddprof-lib/build/bin/gtest/tsan_racy_ut"
+cat > "${WORK}/repo/ddprof-lib/build/bin/gtest/tsan_racy_ut/tsan_racy_ut" <<'FAKE'
 #!/usr/bin/env bash
 echo "TSAN_OPTIONS=${TSAN_OPTIONS-UNSET}"
 exit 66
 FAKE
-chmod +x "${WORK}/repo/ddprof-lib/build/bin/gtest/tsan/tsan_racy_ut"
+chmod +x "${WORK}/repo/ddprof-lib/build/bin/gtest/tsan_racy_ut/tsan_racy_ut"
 run_case tsan --attempt
 assert_rc 66 "T11 tsan race halt propagates exit 66"
 if grep -q "ABORTED: tsan_racy_ut exited 66 without producing test results" <<< "${OUT}"; then
@@ -256,6 +260,29 @@ if [ -d "${WORK}/repo/oops" ]; then
   fail "T14: the unvalidated value reached the filesystem"
 else
   pass "T14 the rejected value never touches the results path"
+fi
+
+if [ -d "${WORK}/repo/oops" ]; then
+  fail "T14: the unvalidated value reached the filesystem"
+else
+  pass "T14 the rejected value never touches the results path"
+fi
+
+# T15 — the selector must anchor on the config directory: a "release_helper"
+# binary parked in an asan_* directory must not be swept into the release
+# cell, and an unprefixed binary inside a release_* directory must not be
+# dropped from it.
+setup_tree
+mkdir -p "${WORK}/repo/ddprof-lib/build/bin/gtest/asan_other"
+printf '#!/usr/bin/env bash\nexit 1\n' > "${WORK}/repo/ddprof-lib/build/bin/gtest/asan_other/release_helper"
+chmod +x "${WORK}/repo/ddprof-lib/build/bin/gtest/asan_other/release_helper"
+make_bin release_real 0 xml
+run_case release --attempt
+assert_rc 0 "T15 release cell runs only its own config's binaries"
+if grep -q "release_helper" <<< "${OUT}"; then
+  fail "T15: the stray asan-tree binary was selected, got: ${OUT}"
+else
+  pass "T15 the stray asan-tree binary was not selected"
 fi
 
 # T6 — the retry-flag guard exports RETRY_ON_NO_TEST_FAILURES=1 for the
