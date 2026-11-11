@@ -1,3 +1,5 @@
+// Copyright 2026, Datadog, Inc.
+
 package com.datadoghq.profiler;
 
 import java.util.Arrays;
@@ -7,26 +9,26 @@ import java.util.Set;
 
 /** A simple implementation to detect the current architecture */
 enum Arch {
-    x64("x86_64", "amd64", "k8"),
-    arm64("arm64", "aarch64"),
-    unknown();
-  
-    private final Set<String> identifiers;
-  
-    Arch(String... identifiers) {
-      this.identifiers = new HashSet<>(Arrays.asList(identifiers));
-    }
-  
-    public static Arch of(String identifier) {
-      for (Arch arch : EnumSet.allOf(Arch.class)) {
-        if (arch.identifiers.contains(identifier)) {
-          return arch;
-        }
-      }
-      return unknown;
-    }
-  
-    public static Arch current() {
-      return Arch.of(System.getProperty("os.arch"));
-    }
+  x64("x86_64", "amd64", "k8"),
+  arm64("arm64", "aarch64"),
+  unknown();
+
+  private final Set<String> identifiers;
+
+  Arch(String... identifiers) {
+    this.identifiers = new HashSet<>(Arrays.asList(identifiers));
   }
+
+  public static Arch of(String identifier) {
+    for (Arch arch : EnumSet.allOf(Arch.class)) {
+      if (arch.identifiers.contains(identifier)) {
+        return arch;
+      }
+    }
+    return unknown;
+  }
+
+  public static Arch current() {
+    return Arch.of(System.getProperty("os.arch"));
+  }
+}

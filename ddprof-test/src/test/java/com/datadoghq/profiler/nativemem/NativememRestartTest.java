@@ -5,114 +5,116 @@
 
 package com.datadoghq.profiler.nativemem;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junitpioneer.jupiter.RetryingTest;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
 /**
  * Verifies that native memory (malloc) profiling survives a stop/restart cycle.
  *
- * <p>Each of two sessions starts the profiler, allocates, and stops. The test only
- * asserts that malloc events are recorded in every session. That the hooks are
- * restored on stop is covered by the MallocHooker gtests (restoreSlot/unpatch).
+ * <p>Each of two sessions starts the profiler, allocates, and stops. The test only asserts that
+ * malloc events are recorded in every session. That the hooks are restored on stop is covered by
+ * the MallocHooker gtests (restoreSlot/unpatch).
  */
 public class NativememRestartTest extends AbstractProfilerTest {
 
-    @BeforeAll
-    static void preloadNativeLib() {
-        // Ensure libddproftest.so is loaded before the profiler starts in @BeforeEach.
-        // This matches the pattern in NativememProfilerTest.
-        NativeAllocHelper.nativeMalloc(0, 0);
+  @BeforeAll
+  static void preloadNativeLib() {
+    // Ensure libddproftest.so is loaded before the profiler starts in @BeforeEach.
+    // This matches the pattern in NativememProfilerTest.
+    NativeAllocHelper.nativeMalloc(0, 0);
+  }
+
+  @Override
+  protected String getProfilerCommand() {
+    return "nativemem=0"; // sample every allocation
+  }
+
+  @Override
+  protected boolean isPlatformSupported() {
+    return Platform.isLinux() && !Platform.isJ9() && !Platform.isZing();
+  }
+
+  @RetryingTest(3)
+  public void testNativememProfilerRestart() throws Exception {
+    // GOT patching conflicts with ASan/TSan interceptors
+    Assumptions.assumeFalse(isAsan() || isTsan());
+
+    // First session: framework already started the profiler in @BeforeEach.
+    triggerAllocations(500);
+    stopProfiler();
+
+    // Verify first session recorded events
+    JfrEvents firstSessionEvents = verifyEvents("datadog.NativeMemoryAllocation");
+    assertTrue(
+        firstSessionEvents.hasItems(),
+        "NativeMemoryAllocation events must be recorded in the first profiling session");
+    System.out.println("First session recorded " + firstSessionEvents.count() + " malloc events");
+
+    // Second session: start manually with a fresh JFR file.
+    Files.createDirectories(Paths.get("/tmp/recordings"));
+    Path jfr2 =
+        Files.createTempFile(Paths.get("/tmp/recordings"), "NativememRestartTest_restart", ".jfr");
+    try {
+      profiler.execute("start,nativemem=0,jfr,file=" + jfr2.toAbsolutePath());
+
+      triggerAllocations(500);
+
+      profiler.stop();
+
+      JfrEvents secondSessionEvents = verifyEvents(jfr2, "datadog.NativeMemoryAllocation", true);
+      assertTrue(
+          secondSessionEvents.hasItems(),
+          "NativeMemoryAllocation events must be recorded in the second profiling session");
+      System.out.println(
+          "Second session recorded " + secondSessionEvents.count() + " malloc events");
+    } finally {
+      Files.deleteIfExists(jfr2);
     }
+  }
 
-    @Override
-    protected String getProfilerCommand() {
-        return "nativemem=0"; // sample every allocation
-    }
+  @RetryingTest(3)
+  public void testMultipleRestartCycles() throws Exception {
+    // GOT patching conflicts with ASan/TSan interceptors
+    Assumptions.assumeFalse(isAsan() || isTsan());
 
-    @Override
-    protected boolean isPlatformSupported() {
-        return Platform.isLinux() && !Platform.isJ9() && !Platform.isZing();
-    }
+    // First session (started by framework)
+    triggerAllocations(200);
+    stopProfiler();
 
-    @RetryingTest(3)
-    public void testNativememProfilerRestart() throws Exception {
-        // GOT patching conflicts with ASan/TSan interceptors
-        Assumptions.assumeFalse(isAsan() || isTsan());
+    JfrEvents firstEvents = verifyEvents("datadog.NativeMemoryAllocation");
+    assertTrue(firstEvents.hasItems(), "First session must record events");
+    System.out.println("Cycle 1: " + firstEvents.count() + " events");
 
-        // First session: framework already started the profiler in @BeforeEach.
-        triggerAllocations(500);
-        stopProfiler();
-
-        // Verify first session recorded events
-        JfrEvents firstSessionEvents = verifyEvents("datadog.NativeMemoryAllocation");
-        assertTrue(firstSessionEvents.hasItems(),
-                "NativeMemoryAllocation events must be recorded in the first profiling session");
-        System.out.println("First session recorded " + firstSessionEvents.count() + " malloc events");
-
-        // Second session: start manually with a fresh JFR file.
-        Files.createDirectories(Paths.get("/tmp/recordings"));
-        Path jfr2 = Files.createTempFile(Paths.get("/tmp/recordings"), "NativememRestartTest_restart", ".jfr");
-        try {
-            profiler.execute("start,nativemem=0,jfr,file=" + jfr2.toAbsolutePath());
-
-            triggerAllocations(500);
-
-            profiler.stop();
-
-            JfrEvents secondSessionEvents = verifyEvents(jfr2, "datadog.NativeMemoryAllocation", true);
-            assertTrue(secondSessionEvents.hasItems(),
-                    "NativeMemoryAllocation events must be recorded in the second profiling session");
-            System.out.println("Second session recorded " + secondSessionEvents.count() + " malloc events");
-        } finally {
-            Files.deleteIfExists(jfr2);
-        }
-    }
-
-    @RetryingTest(3)
-    public void testMultipleRestartCycles() throws Exception {
-        // GOT patching conflicts with ASan/TSan interceptors
-        Assumptions.assumeFalse(isAsan() || isTsan());
-
-        // First session (started by framework)
+    // Multiple restart cycles to stress the unpatch/repatch logic
+    for (int cycle = 2; cycle <= 4; cycle++) {
+      Path jfrPath =
+          Files.createTempFile(
+              Paths.get("/tmp/recordings"), "NativememRestartTest_cycle" + cycle + "_", ".jfr");
+      try {
+        profiler.execute("start,nativemem=0,jfr,file=" + jfrPath.toAbsolutePath());
         triggerAllocations(200);
-        stopProfiler();
+        profiler.stop();
 
-        JfrEvents firstEvents = verifyEvents("datadog.NativeMemoryAllocation");
-        assertTrue(firstEvents.hasItems(), "First session must record events");
-        System.out.println("Cycle 1: " + firstEvents.count() + " events");
-
-        // Multiple restart cycles to stress the unpatch/repatch logic
-        for (int cycle = 2; cycle <= 4; cycle++) {
-            Path jfrPath = Files.createTempFile(
-                    Paths.get("/tmp/recordings"),
-                    "NativememRestartTest_cycle" + cycle + "_",
-                    ".jfr");
-            try {
-                profiler.execute("start,nativemem=0,jfr,file=" + jfrPath.toAbsolutePath());
-                triggerAllocations(200);
-                profiler.stop();
-
-                JfrEvents events = verifyEvents(jfrPath, "datadog.NativeMemoryAllocation", true);
-                assertTrue(events.hasItems(),
-                        "Cycle " + cycle + " must record NativeMemoryAllocation events");
-                System.out.println("Cycle " + cycle + ": " + events.count() + " events");
-            } finally {
-                Files.deleteIfExists(jfrPath);
-            }
-        }
+        JfrEvents events = verifyEvents(jfrPath, "datadog.NativeMemoryAllocation", true);
+        assertTrue(
+            events.hasItems(), "Cycle " + cycle + " must record NativeMemoryAllocation events");
+        System.out.println("Cycle " + cycle + ": " + events.count() + " events");
+      } finally {
+        Files.deleteIfExists(jfrPath);
+      }
     }
+  }
 
-    private static void triggerAllocations(int count) {
-        NativeAllocHelper.nativeMalloc(1024, count);
-    }
+  private static void triggerAllocations(int count) {
+    NativeAllocHelper.nativeMalloc(1024, count);
+  }
 }

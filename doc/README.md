@@ -33,7 +33,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [TLSContext](architecture/TLSContext.md) - Thread-local context for distributed tracing
 
 ### Build System
-- [BuildSystemGuide](building/BuildSystemGuide.md) - Comprehensive build system documentation
+- [BuildSystemGuide](building/BuildSystemGuide.md) - Build conventions, Java formatting, TestKit verification and independent JDK 21 build-logic CI
 - [CodeCoverage](building/CodeCoverage.md) - Opt-in C++ (gcovr) and Java (JaCoCo) coverage reports, prerequisites, debug-only scope
 - [GradleTasks](building/GradleTasks.md) - Available Gradle tasks reference
 - [JdkUpgrades](building/JdkUpgrades.md) - Two-JDK pattern and JDK upgrade touchpoints

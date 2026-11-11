@@ -26,13 +26,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
- * Drives {@link HttpLeakHandler} over a real in-process {@code jdk.httpserver}, the same
- * way the app serves its own traffic.
+ * Drives {@link HttpLeakHandler} over a real in-process {@code jdk.httpserver}, the same way the
+ * app serves its own traffic.
  *
- * <p>Each test asserts that every handled request retains exactly one state in the
- * leaking cache and answers 200 - so a handler that stops retaining, double-records, or
- * reuses an id across a {@link RequestCache#flush()} cycle (which makes {@code record}
- * throw and fails the exchange) fails one of these assertions.
+ * <p>Each test asserts that every handled request retains exactly one state in the leaking cache
+ * and answers 200 - so a handler that stops retaining, double-records, or reuses an id across a
+ * {@link RequestCache#flush()} cycle (which makes {@code record} throw and fails the exchange)
+ * fails one of these assertions.
  */
 @Timeout(value = 2, unit = TimeUnit.MINUTES)
 final class HttpLeakHandlerTest {
@@ -61,7 +61,8 @@ final class HttpLeakHandlerTest {
     server.start();
     client = HttpClient.newHttpClient();
     request =
-        HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/"))
+        HttpRequest.newBuilder(
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/"))
             .GET()
             .build();
   }
@@ -91,8 +92,7 @@ final class HttpLeakHandlerTest {
   @Test
   void requestIdsStayUniqueAcrossFlushCycles() throws Exception {
     for (int i = 0; i < 3; i++) {
-      assertEquals(
-          200, client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode());
+      assertEquals(200, client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode());
     }
     assertEquals(3, cache.retainedCount());
     assertEquals(3, cache.flush());

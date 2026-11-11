@@ -1,13 +1,14 @@
+// Copyright 2026, Datadog, Inc.
+
 package com.datadoghq.profiler.filter;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class ThreadFilterSmokeTest extends AbstractProfilerTest {
   private ExecutorService executorService;
@@ -36,16 +37,18 @@ public class ThreadFilterSmokeTest extends AbstractProfilerTest {
     Future<?>[] futures = new Future[1000];
     for (int i = 0; i < futures.length; i++) {
       int id = i;
-      futures[i] = executorService.submit(() -> {
-        profiler.addThread();
-        profiler.setTraceContext(42, id + 1, 0, id + 1, -1, null, -1, null);
-        try {
-          Thread.sleep(2);
-        } catch(InterruptedException e) {
-          Thread.currentThread().interrupt();
-        }
-        profiler.removeThread();
-      });
+      futures[i] =
+          executorService.submit(
+              () -> {
+                profiler.addThread();
+                profiler.setTraceContext(42, id + 1, 0, id + 1, -1, null, -1, null);
+                try {
+                  Thread.sleep(2);
+                } catch (InterruptedException e) {
+                  Thread.currentThread().interrupt();
+                }
+                profiler.removeThread();
+              });
     }
     for (Future<?> future : futures) {
       future.get();

@@ -5,73 +5,98 @@
 
 package com.datadoghq.profiler;
 
-import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import org.junit.jupiter.api.Test;
 
 public class JavaProfilerApiSurfaceTest {
-    @Test
-    public void nativeMemSeamsAreNotPublicApi() throws Exception {
-        for (String name : new String[] {"describeNativeMemCategories0", "getNativeMemLive0"}) {
-            Method m = JavaProfiler.class.getDeclaredMethod(name);
-            assertFalse(Modifier.isPublic(m.getModifiers()),
-                    name + " is a test seam; tests reach it via NativeMemTestHooks");
-        }
+  @Test
+  public void nativeMemSeamsAreNotPublicApi() throws Exception {
+    for (String name : new String[] {"describeNativeMemCategories0", "getNativeMemLive0"}) {
+      Method m = JavaProfiler.class.getDeclaredMethod(name);
+      assertFalse(
+          Modifier.isPublic(m.getModifiers()),
+          name + " is a test seam; tests reach it via NativeMemTestHooks");
     }
+  }
 
-    @Test
-    public void ownedBlockHooksAreNotPublicApiBeforeTaskBlockInstrumentation() throws Exception {
-        assertNotPublic(JavaProfiler.class.getDeclaredMethod("parkEnter"));
-        assertNotPublic(JavaProfiler.class.getDeclaredMethod(
-                "parkExit", long.class, long.class));
-        assertNotPublic(JavaProfiler.class.getDeclaredMethod("blockEnter", int.class));
-        assertNotPublic(JavaProfiler.class.getDeclaredMethod("blockExit", long.class));
+  @Test
+  public void ownedBlockHooksAreNotPublicApiBeforeTaskBlockInstrumentation() throws Exception {
+    assertNotPublic(JavaProfiler.class.getDeclaredMethod("parkEnter"));
+    assertNotPublic(JavaProfiler.class.getDeclaredMethod("parkExit", long.class, long.class));
+    assertNotPublic(JavaProfiler.class.getDeclaredMethod("blockEnter", int.class));
+    assertNotPublic(JavaProfiler.class.getDeclaredMethod("blockExit", long.class));
+  }
+
+  // State-mutating hooks into the process-wide profiler singleton: reachable from tests only
+  // through the test-source bridge ReferenceChainTestHooks, never from application code.
+  private static final Set<String> REFERENCE_CHAIN_TEST_SEAMS =
+      new HashSet<>(
+          Arrays.asList(
+              "getTid",
+              "setGcGenerationsEnabled0",
+              "seedKlassPopulationSample0",
+              "seedTidTrendSample0",
+              "setKlassPopulationRepresentativeForTest0",
+              "resetKlassPopulationForTest0",
+              "selectLeakCandidateKlassIds0",
+              "tagAsReferenceChainRoot0",
+              "runReferenceChainPass0",
+              "pollReferenceChainTargets0",
+              "drainReferenceChainEventCount0",
+              "resetReferenceChainSearchForTest0",
+              "getReferenceChainPendingPositionForTest0",
+              "getReferenceChainPendingSizeForTest0",
+              "getReferenceChainFrontierStateForTest0",
+              "getReferenceChainResolvedTargetTagForTest0",
+              "heapFloorRecordForTest0",
+              "setMaxHeapBytesForTest0",
+              "setHeapFloorRecordingForTest0",
+              "heapFloorResetForTest0",
+              "heapFloorRisingForTest0",
+              "shouldRunPassForTest0",
+              "referenceChainPassesRunForTest0",
+              "backdateLeakSignalActivationForTest0",
+              "setLeakSignalActivatedNsForTest0",
+              "secondsToOOMForTest0",
+              "urgentLatchedForTest0",
+              "isUrgentForTest0",
+              "setReferenceChainPassSpacingForTest0",
+              "setReferenceChainRootEnumStateForTest0",
+              "shouldRunRootEnumForTest0",
+              "rootEnumIntervalFloorNsForTest0",
+              "referenceChainGcFinishEpochForTest0",
+              "setReferenceChainCanaryStateForTest0",
+              "forceRunningReferenceChainSearchForTest0"));
+
+  @Test
+  public void referenceChainTestSeamsAreNotPublicApi() {
+    Set<String> found = new HashSet<>();
+    for (Method m : JavaProfiler.class.getDeclaredMethods()) {
+      if (REFERENCE_CHAIN_TEST_SEAMS.contains(m.getName())) {
+        found.add(m.getName());
+        assertFalse(
+            Modifier.isPublic(m.getModifiers()),
+            m.getName()
+                + " is a state-mutating test seam and must stay non-public; "
+                + "tests reach it via ReferenceChainTestHooks");
+      }
     }
+    assertEquals(
+        REFERENCE_CHAIN_TEST_SEAMS,
+        found,
+        "every listed reference-chain test seam must still exist on JavaProfiler");
+  }
 
-    // State-mutating hooks into the process-wide profiler singleton: reachable from tests only
-    // through the test-source bridge ReferenceChainTestHooks, never from application code.
-    private static final Set<String> REFERENCE_CHAIN_TEST_SEAMS = new HashSet<>(Arrays.asList(
-            "getTid", "setGcGenerationsEnabled0", "seedKlassPopulationSample0",
-            "seedTidTrendSample0", "setKlassPopulationRepresentativeForTest0",
-            "resetKlassPopulationForTest0", "selectLeakCandidateKlassIds0",
-            "tagAsReferenceChainRoot0", "runReferenceChainPass0", "pollReferenceChainTargets0",
-            "drainReferenceChainEventCount0", "resetReferenceChainSearchForTest0",
-            "getReferenceChainPendingPositionForTest0", "getReferenceChainPendingSizeForTest0",
-            "getReferenceChainFrontierStateForTest0", "getReferenceChainResolvedTargetTagForTest0",
-            "heapFloorRecordForTest0", "setMaxHeapBytesForTest0", "setHeapFloorRecordingForTest0",
-            "heapFloorResetForTest0", "heapFloorRisingForTest0",
-            "shouldRunPassForTest0", "referenceChainPassesRunForTest0",
-            "backdateLeakSignalActivationForTest0", "setLeakSignalActivatedNsForTest0",
-            "secondsToOOMForTest0", "urgentLatchedForTest0", "isUrgentForTest0",
-            "setReferenceChainPassSpacingForTest0",
-            "setReferenceChainRootEnumStateForTest0", "shouldRunRootEnumForTest0",
-            "rootEnumIntervalFloorNsForTest0", "referenceChainGcFinishEpochForTest0",
-            "setReferenceChainCanaryStateForTest0", "forceRunningReferenceChainSearchForTest0"));
-
-    @Test
-    public void referenceChainTestSeamsAreNotPublicApi() {
-        Set<String> found = new HashSet<>();
-        for (Method m : JavaProfiler.class.getDeclaredMethods()) {
-            if (REFERENCE_CHAIN_TEST_SEAMS.contains(m.getName())) {
-                found.add(m.getName());
-                assertFalse(Modifier.isPublic(m.getModifiers()),
-                        m.getName() + " is a state-mutating test seam and must stay non-public; "
-                                + "tests reach it via ReferenceChainTestHooks");
-            }
-        }
-        assertEquals(REFERENCE_CHAIN_TEST_SEAMS, found,
-                "every listed reference-chain test seam must still exist on JavaProfiler");
-    }
-
-    private static void assertNotPublic(Method method) {
-        assertFalse(Modifier.isPublic(method.getModifiers()),
-                method.getName() + " must remain non-public until PR2 wires TaskBlock instrumentation");
-    }
+  private static void assertNotPublic(Method method) {
+    assertFalse(
+        Modifier.isPublic(method.getModifiers()),
+        method.getName() + " must remain non-public until PR2 wires TaskBlock instrumentation");
+  }
 }

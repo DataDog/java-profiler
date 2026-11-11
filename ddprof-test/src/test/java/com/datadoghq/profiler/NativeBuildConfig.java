@@ -11,35 +11,35 @@ package com.datadoghq.profiler;
  * {@code debug}, {@code asan}, {@code coverage}).
  */
 public final class NativeBuildConfig {
-    private NativeBuildConfig() {}
+  private NativeBuildConfig() {}
 
-    /** The build configuration name, or {@code null} when the property is not set. */
-    public static String name() {
-        return System.getProperty("ddprof_test.config");
-    }
+  /** The build configuration name, or {@code null} when the property is not set. */
+  public static String name() {
+    return System.getProperty("ddprof_test.config");
+  }
 
-    /**
-     * Whether the library is an unoptimized {@code -O0 -DDEBUG} build without a sanitizer:
-     * {@code debug}, or {@code coverage} (the debug build with gcov instrumentation added).
-     * Debug-only code paths (e.g. {@code datadog.UnwindFailure} recording) are compiled in, and
-     * unwinding is several times slower than in the release build.
-     *
-     * <p>Not a gate for timing- or sample-distribution-sensitive assertions: the coverage build
-     * adds atomic gcov counter updates on every edge, signal handlers included. Key those on
-     * {@code "debug".equals(name())} instead.
-     */
-    public static boolean isDebug() {
-        String config = name();
-        return "debug".equals(config) || "coverage".equals(config);
-    }
+  /**
+   * Whether the library is an unoptimized {@code -O0 -DDEBUG} build without a sanitizer: {@code
+   * debug}, or {@code coverage} (the debug build with gcov instrumentation added). Debug-only code
+   * paths (e.g. {@code datadog.UnwindFailure} recording) are compiled in, and unwinding is several
+   * times slower than in the release build.
+   *
+   * <p>Not a gate for timing- or sample-distribution-sensitive assertions: the coverage build adds
+   * atomic gcov counter updates on every edge, signal handlers included. Key those on {@code
+   * "debug".equals(name())} instead.
+   */
+  public static boolean isDebug() {
+    String config = name();
+    return "debug".equals(config) || "coverage".equals(config);
+  }
 
-    /**
-     * Whether the library is built with {@code -DDEBUG}, which compiles in debug-only code paths
-     * like {@code javaApi.cpp}'s test seams and {@code datadog.UnwindFailure} recording. This
-     * includes {@link #isDebug()} builds (debug, coverage) plus sanitizer builds (asan, tsan).
-     */
-    public static boolean isDebugInstrumented() {
-        String config = name();
-        return isDebug() || (config != null && config.endsWith("san"));
-    }
+  /**
+   * Whether the library is built with {@code -DDEBUG}, which compiles in debug-only code paths like
+   * {@code javaApi.cpp}'s test seams and {@code datadog.UnwindFailure} recording. This includes
+   * {@link #isDebug()} builds (debug, coverage) plus sanitizer builds (asan, tsan).
+   */
+  public static boolean isDebugInstrumented() {
+    String config = name();
+    return isDebug() || (config != null && config.endsWith("san"));
+  }
 }
