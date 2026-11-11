@@ -39,12 +39,18 @@ setup_tree() {
 make_bin() {
   local name="$1" rc="$2" xml="${3:-}"
   mkdir -p "${WORK}/repo/ddprof-lib/build/bin/gtest/release_${name}_ut"
-  # Single-quoted format: $OUT must reach the generated script unexpanded.
+  # Single-quoted format: $xml_out must reach the generated script unexpanded.
+  # The fake HONORS --gtest_output=xml:<path> (writes exactly where the
+  # runner tells it), so a renamed or dropped runner argument fails the
+  # suite instead of silently decoupling the evidence.
   # shellcheck disable=SC2016
   printf '#!/usr/bin/env bash
-OUT=ddprof-lib/build/test-results/gtest/release
-if [ -n "%s" ]; then
-  cat > "$OUT/TEST-%s.xml" <<XMLEOF
+xml_out=""
+for a in "$@"; do
+  case "$a" in --gtest_output=xml:*) xml_out="${a#--gtest_output=xml:}" ;; esac
+done
+if [ -n "%s" ] && [ -n "$xml_out" ]; then
+  cat > "$xml_out" <<XMLEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites tests="1" failures="%s">
   <testsuite name="FakeSuite" tests="1" failures="%s">
@@ -54,7 +60,7 @@ if [ -n "%s" ]; then
 XMLEOF
 fi
 exit %s
-' "${xml}" "${name}" "$([ "${rc}" -ne 0 ] && echo 1 || echo 0)" "$([ "${rc}" -ne 0 ] && echo 1 || echo 0)" "$([ "${rc}" -ne 0 ] && echo '<failure message="boom" type="AssertionFailed"/>' || echo '')" "${rc}" \
+' "${xml}" "$([ "${rc}" -ne 0 ] && echo 1 || echo 0)" "$([ "${rc}" -ne 0 ] && echo 1 || echo 0)" "$([ "${rc}" -ne 0 ] && echo '<failure message="boom" type="AssertionFailed"/>' || echo '')" "${rc}" \
     > "${WORK}/repo/ddprof-lib/build/bin/gtest/release_${name}_ut/${name}"
   chmod +x "${WORK}/repo/ddprof-lib/build/bin/gtest/release_${name}_ut/${name}"
 }

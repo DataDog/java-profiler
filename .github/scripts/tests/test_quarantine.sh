@@ -1198,6 +1198,21 @@ print(','.join(gating) if gating else 'all-covered')
 [ "$result" = "all-covered" ] || fail "expected every gtest id shape covered by 'WobblySuite.*', gating: $result"
 pass "a gtest class wildcard covers plain, parameterized, and typed id shapes"
 
+# A DECORATED class-wide entry ("MyInst/WobblySuite.*") must also cover the
+# typed variants of its own instantiation ("MyInst/WobblySuite/0.case") --
+# and still not cover other instantiations' typed variants.
+write_list "$LIST" "$(entry 'MyInst/WobblySuite.*' PROF-1 "$(day_offset 30)")"
+result=$(python3 -c "
+import sys; sys.path.insert(0, '$SCRIPTS')
+import quarantine
+entries = quarantine.load('$LIST')
+covered = quarantine.find_entry(entries, 'MyInst/WobblySuite/0.test_baz', 'any') is not None
+other = quarantine.find_entry(entries, 'OtherInst/WobblySuite/0.test_baz', 'any') is not None
+print('ok' if covered and not other else 'covered=%s other=%s' % (covered, other))
+")
+[ "$result" = "ok" ] || fail "decorated entry typed-variant coverage wrong: $result"
+pass "a decorated entry covers its own instantiation's typed variants only"
+
 result=$(python3 -c "
 import sys; sys.path.insert(0, '$SCRIPTS')
 import quarantine

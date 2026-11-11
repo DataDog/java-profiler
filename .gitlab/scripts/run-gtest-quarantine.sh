@@ -114,17 +114,21 @@ if [ "${1:-}" = "--attempt" ]; then
     xml_path="${RESULTS_DIR}/TEST-$(basename "$binary").xml"
     "$binary" --gtest_output="xml:${xml_path}"
     bin_rc=$?
-    if [ "${bin_rc}" -ne 0 ]; then
+    if ! [ -s "${xml_path}" ]; then
+      # gtest writes the XML at exit, so a missing or empty file means the
+      # binary produced no evidence: aborted by a sanitizer diagnostic, killed
+      # by a signal, or exiting 0 without flushing its report. flake_report.py
+      # greps this marker from the attempt log and reads the run as cut short;
+      # the missing evidence must never read as a pass. A zero exit with no
+      # XML is hard too - the run proves nothing about that binary's tests.
+      echo "ABORTED: $(basename "$binary") exited ${bin_rc} without producing test results"
+      if [ "${bin_rc}" -eq 0 ]; then
+        bin_rc=1
+      fi
+      if [ "${hard_rc}" -eq 0 ]; then hard_rc=${bin_rc}; fi
+    elif [ "${bin_rc}" -ne 0 ]; then
       echo "FAILED: $(basename "$binary") exited ${bin_rc}"
-      if ! [ -s "${xml_path}" ]; then
-        # gtest writes the XML at exit, so a binary aborted by a sanitizer
-        # diagnostic (ASan exit 1, TSan exit 66 -- no signal involved) leaves
-        # none. flake_report.py greps this marker from the attempt log and
-        # reads the run as cut short: the aborted binary's unrecorded tests
-        # must not be excused by another binary's quarantined failures.
-        echo "ABORTED: $(basename "$binary") exited ${bin_rc} without producing test results"
-        if [ "${hard_rc}" -eq 0 ]; then hard_rc=${bin_rc}; fi
-      elif [ "${bin_rc}" -gt 128 ]; then
+      if [ "${bin_rc}" -gt 128 ]; then
         # A signal death (128+N) is the same cut-short evidence, visible
         # from the exit code alone; rc 128 counts as plain, matching
         # flake_report.py's strict >128 check.

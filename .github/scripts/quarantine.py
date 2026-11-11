@@ -214,7 +214,12 @@ def covers(entry, test_id):
         segments = cls.split("/")
         if len(segments) > 1 and segments[-1].isdigit():
             segments.pop()
-        return segments[-1] + "." == prefix
+        if segments[-1] + "." == prefix:
+            return True
+        # A decorated entry ("MyInst/WobblySuite.*") also covers the typed
+        # variants of its own instantiation ("MyInst/WobblySuite/0.case"):
+        # the full undecorated classname must equal the prefix's suite too.
+        return "/".join(segments) + "." == prefix
     return test_id == pattern
 
 
