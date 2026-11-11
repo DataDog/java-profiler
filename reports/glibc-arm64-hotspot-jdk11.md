@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk11
 
 ## glibc-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-11-11 15:02:13 EST
+**Date:** 2026-11-11 15:16:41 EST
 
 ### Configuration
 | Setting | Value |
@@ -32,42 +32,42 @@ title: glibc-arm64-hotspot-jdk11
 | Sample Rate | 1.72/sec |
 | Health Score | 108% |
 | Threads | 10 |
-| Allocations | 77 |
+| Allocations | 65 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 97 |
-| Sample Rate | 1.62/sec |
-| Health Score | 101% |
+| CPU Samples | 128 |
+| Sample Rate | 2.13/sec |
+| Health Score | 133% |
 | Threads | 12 |
-| Allocations | 39 |
+| Allocations | 58 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1794427045 48
-1794427050 48
-1794427055 48
-1794427060 48
-1794427065 48
-1794427070 48
-1794427075 48
-1794427080 48
-1794427085 48
-1794427090 48
-1794427095 48
-1794427100 48
-1794427105 48
-1794427110 48
-1794427115 48
-1794427120 48
-1794427125 48
-1794427130 48
-1794427135 48
-1794427140 48
+1794427968 48
+1794427973 48
+1794427978 48
+1794427983 48
+1794427988 48
+1794427993 48
+1794427998 48
+1794428003 48
+1794428008 48
+1794428013 48
+1794428018 48
+1794428023 48
+1794428028 48
+1794428033 48
+1794428038 48
+1794428043 48
+1794428048 48
+1794428053 48
+1794428058 48
+1794428063 48
 ```
 </details>
 
