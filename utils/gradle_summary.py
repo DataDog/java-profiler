@@ -86,6 +86,7 @@ def signal_process_group(group, sig):
     try:
         os.killpg(group, sig)
     except ProcessLookupError:
+        # The owned process group already exited; no signal remains to deliver.
         pass
     except PermissionError:
         # XNU's killpg1 filters zombies and returns EPERM when no eligible member remains.
@@ -125,7 +126,6 @@ def main(args):
             timer.start()
 
     previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGINT, signal.SIGTERM)}
-    status = 1
     try:
         with os.fdopen(os.open(str(log), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as output:
             try:
@@ -139,8 +139,8 @@ def main(args):
                     if PROGRESS.search(line) and not re.search(r" (SKIPPED|UP-TO-DATE|NO-SOURCE)\s*$", line):
                         print(line, end="", flush=True)
                 child.stdout.close()
-                status = child.wait()
-                status = 128 - status if status < 0 else status
+                wait_status = child.wait()
+                status = 128 - wait_status if wait_status < 0 else wait_status
             except OSError as error:
                 output.write("Gradle launcher failed: {}\n".format(error))
                 status = 127

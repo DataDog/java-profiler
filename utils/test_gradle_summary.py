@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import time
 import unittest
-from unittest import mock
+import unittest.mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,12 +107,12 @@ class GradleSummaryTest(unittest.TestCase):
     def test_signal_permission_error_requires_no_live_group_members(self):
         process = subprocess.Popen(["sleep", "120"], start_new_session=True)
         try:
-            with mock.patch.object(SUMMARY.os, "killpg", side_effect=PermissionError):
+            with unittest.mock.patch.object(SUMMARY.os, "killpg", side_effect=PermissionError):
                 with self.assertRaises(PermissionError):
                     SUMMARY.signal_process_group(process.pid, signal.SIGKILL)
             process.terminate()
             process.wait(timeout=5)
-            with mock.patch.object(SUMMARY.os, "killpg", side_effect=PermissionError):
+            with unittest.mock.patch.object(SUMMARY.os, "killpg", side_effect=PermissionError):
                 SUMMARY.signal_process_group(process.pid, signal.SIGKILL)
         finally:
             if process.poll() is None:
