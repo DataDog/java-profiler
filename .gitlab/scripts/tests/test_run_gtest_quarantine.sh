@@ -301,6 +301,19 @@ else
   fail "T16: stderr missing the mkdir failure message, got: $(cat "${STDERR_FILE}")"
 fi
 
+# T17 — a binary that exits 0 WITHOUT its XML is evidence loss, not a pass:
+# the runner must emit the ABORTED marker and fail the attempt (rc 1), so the
+# cut-short gate can fire instead of a green run with empty evidence.
+setup_tree
+make_bin release_alpha 0
+run_case release --attempt
+assert_rc 1 "T17 exit-0-without-XML fails the attempt"
+if grep -q "ABORTED: release_alpha exited 0 without producing test results" <<< "${OUT}"; then
+  pass "T17 output carries the ABORTED marker"
+else
+  fail "T17: output missing the ABORTED marker, got: ${OUT}"
+fi
+
 # T6 — the retry-flag guard exports RETRY_ON_NO_TEST_FAILURES=1 for the
 # asan cell only (ASan init aborting before any test runs); flipping the
 # config comparison fails this case. The stub records the exported value.
