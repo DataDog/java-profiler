@@ -111,8 +111,10 @@ progress, list which `$RUN/cells/*.exit` files exist.
 
 ## 4. Merge
 
-After all four agents send their final reports, merge every cell that has
-`cell.properties`. A `failed` cell still holds the Java coverage of the tests that ran,
+After all four agents send their final reports, merge the cells they reported
+`passed` or `failed`. Leave out `blocked` cells: a killed Gradle still exports partial
+data with `cell.properties`. `merge-coverage.sh` also leaves out any cell whose
+`gradle_exit` is 128 or more. A `failed` cell still holds the Java coverage of the tests that ran,
 but a failed gtest stops the build before the C++ report, so such a cell has no C++
 tracefile. `summary.md` marks, per cell, whether it is in each report.
 
@@ -124,12 +126,13 @@ including images created or rebuilt during step 3. Compare the newest version wi
 
 ```bash
 WT=$(ls -d "$RUN"/wt-* | head -1)   # any of the run's worktrees
-cells=(); for p in "$RUN"/cells/*/cell.properties; do cells+=("${p%/cell.properties}"); done
+cells=("$RUN"/cells/<libc>-<arch>-<jdk> ...)   # the passed and failed cells
 "$WT/utils/merge-coverage.sh" --source-root="$WT" --out="$RUN/merged" "${cells[@]}"
 ```
 
-If gcovr rejects a tracefile, report the gcovr error and the cell; do not drop the
-cell silently.
+Exit 2 means gcovr rejected a tracefile. The script names the cell on stderr, leaves it
+out of the C++ report and still writes the Java report and `summary.md`. Report the
+gcovr error and the cell.
 
 ## 5. Report
 
@@ -137,8 +140,8 @@ cell silently.
   failing tests or blocking error.
 - The merged totals from `$RUN/merged/summary.md`, and paths to
   `merged/cpp/index.html` and `merged/java/html/index.html`.
-- Which cells are missing from the merge or from one of its reports (the C++ and
-  Java columns of `summary.md`) and why, and that every `failed` or missing cell
+- Which cells are missing from the merge (`blocked` cells) or from one of its reports
+  (the C++ and Java columns of `summary.md`) and why, and that every `failed` or missing cell
   lowers the numbers. Say so when `tests=` filtered the run. The C++ report is the
   debug build only.
 

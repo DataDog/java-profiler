@@ -65,9 +65,21 @@ esac
 exit 0
 EOF
 # gcovr and java record their arguments; java's `report` writes a minimal jacoco.xml.
+# gcovr fails on a tracefile path containing $STUB_GCOVR_REJECT, and with
+# $STUB_GCOVR_FAIL_MERGE whenever it gets more than one tracefile.
 cat > "$STUB_BIN/gcovr" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$STUB_LOG.gcovr"
+n=0
+for a in "$@"; do
+  [[ "$a" != */reports/cpp/coverage.json ]] || n=$((n + 1))
+  if [[ -n "${STUB_GCOVR_REJECT:-}" && "$a" == *"$STUB_GCOVR_REJECT"* ]]; then
+    echo "gcovr: Wrong format version" >&2; exit 1
+  fi
+done
+if [[ -n "${STUB_GCOVR_FAIL_MERGE:-}" ]] && (( n > 1 )); then
+  echo "gcovr: merge conflict" >&2; exit 1
+fi
 while [[ $# -gt 0 ]]; do
   if [[ "$1" == "-o" ]]; then touch "$2"; fi
   shift
@@ -433,6 +445,39 @@ rm -rf "$TEMP_DIR/c10/classes"
 summary=$(cat "$TEMP_DIR/merged10/summary.md")
 expect_contains "no classes column" "$summary" "| 8 |  | 0 | yes | no (no classes in any cell) |"
 expect_contains "no classes summary" "$summary" "(no cell exported classes)"
+
+# A cell whose Gradle was killed is left out of both reports.
+make_cell "$TEMP_DIR/c11" "$SRC_COMMIT" 17
+sed -i.bak 's/^gradle_exit=0$/gradle_exit=137/' "$TEMP_DIR/c11/cell.properties"
+rm -f "$STUB_LOG.java"
+output=$("$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged11" "$TEMP_DIR/c1" "$TEMP_DIR/c11" 2>&1)
+expect_contains "killed cell warns" "$output" "Gradle was killed in $TEMP_DIR/c11 (exit 137)"
+expect_contains "killed cell column" "$(cat "$TEMP_DIR/merged11/summary.md")" \
+  "| 17 |  | 137 | no (Gradle killed, exit 137) | no (Gradle killed, exit 137) |"
+expect_not_contains "killed cell tracefile" "$(cat "$STUB_LOG.gcovr")" "$TEMP_DIR/c11/"
+expect_not_contains "killed cell exec" "$(cat "$STUB_LOG.java")" "$TEMP_DIR/c11/"
+
+# A tracefile gcovr rejects is named and left out; the rest and the Java report are still written.
+rc=0
+output=$(STUB_GCOVR_REJECT=c2/reports "$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged12" \
+  "$TEMP_DIR/c1" "$TEMP_DIR/c2" 2>&1) || rc=$?
+[[ $rc -eq 2 ]] && pass || fail "rejected tracefile exited $rc, expected 2"
+expect_contains "rejected tracefile named" "$output" "gcovr rejected the tracefile of $TEMP_DIR/c2"
+summary=$(cat "$TEMP_DIR/merged12/summary.md" 2>/dev/null || true)
+expect_contains "rejected tracefile column" "$summary" "| 25-graal |  | 0 | no (gcovr rejected tracefile) | yes |"
+expect_contains "other cell still in C++ report" "$summary" "| 21 |  | 0 | yes | yes |"
+expect_contains "rejected tracefile keeps cpp report" "$summary" "- C++ report:"
+expect_contains "rejected tracefile keeps java report" "$summary" "- Java report:"
+# Tracefiles gcovr accepts alone but cannot merge: no C++ report, Java still written.
+rc=0
+output=$(STUB_GCOVR_FAIL_MERGE=1 "$MERGE" --source-root="$SRC" --out="$TEMP_DIR/merged13" \
+  "$TEMP_DIR/c1" "$TEMP_DIR/c2" 2>&1) || rc=$?
+[[ $rc -eq 2 ]] && pass || fail "failed gcovr merge exited $rc, expected 2"
+summary=$(cat "$TEMP_DIR/merged13/summary.md" 2>/dev/null || true)
+expect_contains "failed merge column" "$summary" "| 21 |  | 0 | no (gcovr merge failed) | yes |"
+expect_contains "failed merge summary" "$summary" "(gcovr failed:"
+expect_not_contains "failed merge has no cpp link" "$summary" "- C++ report:"
+expect_contains "failed merge keeps java report" "$summary" "- Java report:"
 
 # --out must be empty or an earlier merge output.
 mkdir -p "$TEMP_DIR/notmerge/cpp"

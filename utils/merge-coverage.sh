@@ -11,6 +11,7 @@
 #
 # Requires java, python3 and a gcovr at least as new as the containers' (older ones
 # reject their tracefiles). The JaCoCo CLI is $JACOCO_CLI, else downloaded with curl.
+# Exits 2 after writing summary.md when gcovr rejected a tracefile.
 
 set -euo pipefail
 
@@ -22,7 +23,7 @@ OUT=""
 CELLS=()
 
 usage() {
-    awk 'NR >= 4 && NR <= 13 { sub(/^# ?/, ""); print }' "$0"
+    awk 'NR >= 4 && NR <= 14 { sub(/^# ?/, ""); print }' "$0"
     exit "${1:-0}"
 }
 
@@ -92,29 +93,76 @@ mkdir -p "$OUT/cpp" "$OUT/java"
 # Per-cell inclusion, indexed like CELLS (bash 3.2 has no associative arrays).
 CELL_CPP=()
 CELL_JAVA=()
+# A cell whose Gradle was killed by a signal flushed only part of its coverage data.
+CELL_KILLED=()
+for i in "${!CELLS[@]}"; do
+    rc=$(prop "${CELLS[$i]}" gradle_exit)
+    CELL_KILLED[$i]=""
+    if [[ "$rc" =~ ^[0-9]+$ ]] && (( rc >= 128 )); then
+        echo "Warning: Gradle was killed in ${CELLS[$i]} (exit $rc); it is left out of both reports" >&2
+        CELL_KILLED[$i]="no (Gradle killed, exit $rc)"
+    fi
+done
+EXIT_CODE=0
 
 # ---- C++ ----
-tracefiles=()
+# Compilers differ between cells (glibc vs musl toolchains), so a function can be
+# reported at different lines; keep those entries apart instead of failing.
+merge_cpp() {
+    rm -rf "$OUT/cpp" && mkdir -p "$OUT/cpp"
+    gcovr --root "$CPP_SRC" "$@" \
+        --merge-mode-functions=separate \
+        --html --html-details -o "$OUT/cpp/index.html" \
+        --json "$OUT/cpp/coverage.json" \
+        --print-summary | tee "$OUT/cpp/summary.txt"
+}
+cpp_args() {
+    tracefiles=()
+    for i in "${!CELLS[@]}"; do
+        [[ "${CELL_CPP[$i]}" != yes ]] || tracefiles+=(--add-tracefile "${CELLS[$i]}/reports/cpp/coverage.json")
+    done
+}
 for i in "${!CELLS[@]}"; do
     cell=${CELLS[$i]}
-    if [[ -f "$cell/reports/cpp/coverage.json" ]]; then
-        tracefiles+=(--add-tracefile "$cell/reports/cpp/coverage.json")
+    if [[ -n "${CELL_KILLED[$i]}" ]]; then
+        CELL_CPP[$i]=${CELL_KILLED[$i]}
+    elif [[ -f "$cell/reports/cpp/coverage.json" ]]; then
         CELL_CPP[$i]=yes
     else
         echo "Warning: $cell has no C++ tracefile; it is left out of the C++ report" >&2
         CELL_CPP[$i]="no (no tracefile)"
     fi
 done
+cpp_args
 CPP_SUMMARY="(no C++ tracefiles)"
 if (( ${#tracefiles[@]} > 0 )); then
-    # Compilers differ between cells (glibc vs musl toolchains), so a function can be
-    # reported at different lines; keep those entries apart instead of failing.
-    gcovr --root "$CPP_SRC" "${tracefiles[@]}" \
-        --merge-mode-functions=separate \
-        --html --html-details -o "$OUT/cpp/index.html" \
-        --json "$OUT/cpp/coverage.json" \
-        --print-summary | tee "$OUT/cpp/summary.txt"
-    CPP_SUMMARY=$(cat "$OUT/cpp/summary.txt")
+    if ! merge_cpp "${tracefiles[@]}"; then
+        # Name the cells gcovr rejects on their own, then merge the rest.
+        EXIT_CODE=2
+        for i in "${!CELLS[@]}"; do
+            [[ "${CELL_CPP[$i]}" == yes ]] || continue
+            if ! gcovr --root "$CPP_SRC" --add-tracefile "${CELLS[$i]}/reports/cpp/coverage.json" \
+                    --json "$OUT/cpp/probe.json" >/dev/null; then
+                echo "Error: gcovr rejected the tracefile of ${CELLS[$i]}; it is left out of the C++ report" >&2
+                CELL_CPP[$i]="no (gcovr rejected tracefile)"
+            fi
+        done
+        cpp_args
+        if (( ${#tracefiles[@]} == 0 )); then
+            rm -rf "$OUT/cpp" && mkdir -p "$OUT/cpp"
+        elif ! merge_cpp "${tracefiles[@]}"; then
+            echo "Error: gcovr failed to merge the remaining tracefiles; no C++ report" >&2
+            rm -rf "$OUT/cpp" && mkdir -p "$OUT/cpp"
+            for i in "${!CELLS[@]}"; do
+                [[ "${CELL_CPP[$i]}" != yes ]] || CELL_CPP[$i]="no (gcovr merge failed)"
+            done
+        fi
+    fi
+    if [[ -f "$OUT/cpp/summary.txt" ]]; then
+        CPP_SUMMARY=$(cat "$OUT/cpp/summary.txt")
+    else
+        CPP_SUMMARY="(gcovr failed: see the cells' C++ column and stderr)"
+    fi
 fi
 
 # ---- Java ----
@@ -131,6 +179,7 @@ CELL_DIGEST=()
 for i in "${!CELLS[@]}"; do
     cell=${CELLS[$i]}
     CELL_DIGEST[$i]=""
+    [[ -z "${CELL_KILLED[$i]}" ]] || continue
     [[ -d "$cell/classes" && -d "$cell/jacoco" ]] || continue
     [[ -n "$(find "$cell/jacoco" -name '*.exec' -type f | head -1)" ]] || continue
     CELL_DIGEST[$i]=$(tree_digest "$cell/classes")
@@ -149,6 +198,10 @@ for i in "${!CELLS[@]}"; do
 done
 for i in "${!CELLS[@]}"; do
     cell=${CELLS[$i]}
+    if [[ -n "${CELL_KILLED[$i]}" ]]; then
+        CELL_JAVA[$i]=${CELL_KILLED[$i]}
+        continue
+    fi
     cell_execs=0
     if [[ -d "$cell/jacoco" ]]; then
         while IFS= read -r f; do
@@ -253,3 +306,4 @@ done
 } > "$OUT/summary.md"
 
 echo ">>> Merged coverage written to $OUT (summary.md, cpp/index.html, java/html/index.html)"
+exit "$EXIT_CODE"

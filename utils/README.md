@@ -211,7 +211,7 @@ Single-value commands run one container test configuration immediately. When any
 
 ### `merge-coverage.sh`
 
-Merges `--coverage-out` directories from several cells into one C++ report (gcovr `--add-tracefile`) and one Java report (JaCoCo CLI `merge` + `report`), plus `summary.md`. All cells and `--source-root` must be at the same commit. Needs `java`, `python3` and a gcovr at least as new as the containers' (an older one rejects their tracefiles); the JaCoCo CLI comes from `$JACOCO_CLI` or is downloaded from Maven Central with `curl` and checked against a pinned SHA-256. `--out` is replaced on each run, and `summary.md` marks which cells each report includes. The `test-coverage` skill drives the full Linux matrix and this merge.
+Merges `--coverage-out` directories from several cells into one C++ report (gcovr `--add-tracefile`) and one Java report (JaCoCo CLI `merge` + `report`), plus `summary.md`. All cells and `--source-root` must be at the same commit. Needs `java`, `python3` and a gcovr at least as new as the containers' (an older one rejects their tracefiles); the JaCoCo CLI comes from `$JACOCO_CLI` or is downloaded from Maven Central with `curl` and checked against a pinned SHA-256. `--out` is replaced on each run, and `summary.md` marks which cells each report includes. A cell whose `gradle_exit` is 128 or more (Gradle killed by a signal) holds partial data and is left out of both reports. When gcovr rejects a tracefile, the script leaves that cell out of the C++ report, still writes the Java report and `summary.md`, and exits with 2. The `test-coverage` skill drives the full Linux matrix and this merge.
 
 ```bash
 ./utils/merge-coverage.sh --source-root=. --out=build/coverage-merged cells/glibc-x64-21 cells/musl-aarch64-17
