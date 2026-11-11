@@ -1220,6 +1220,95 @@ TEST_F(ReferenceChainsBfsTest, EvictionForcesStaticFieldSweepRerun) {
     tracker->stop();
 }
 
+// End-to-end wiring: the heap-root callback's re-enlist branch. An evicted JNI_GLOBAL root is
+// re-reported every root enumeration; the already-admitted rediscovery takes the upgrade-refused
+// path (an unchanged durable root kind never upgrades) and must restore the victim's index entry.
+TEST_F(ReferenceChainsBfsTest, HeapRootCallbackReenlistsEvictedDurableAnchor) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const jlong victim = 15001;
+    // The eviction removes only the index entry; the victim's frontier entry survives.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, victim, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        victim, -700, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    for (size_t i = 0; i < cap - 1; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            16000 + (jlong)i, -900, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    }
+    const jlong filler = 16000 + (jlong)cap;
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        filler, -900, JVMTI_HEAP_REFERENCE_JNI_GLOBAL); // crosses the cap
+    ASSERT_FALSE(
+        ReferenceChainsTestAccessor::anchorIndexContainsForTest(victim));
+
+    // The next root enumeration re-reports the victim: already admitted, unchanged durable kind,
+    // so the upgrade refuses and the re-enlist branch fires.
+    ReferenceChainPassContext ctx{};
+    ctx.tracker = tracker;
+    ctx.frontier = frontier;
+    ctx.hop_cap = 64;
+    ctx.budget = 1000;
+    jlong reported = victim;
+    ReferenceChainsTestAccessor::reportHeapRootForTest(
+        JVMTI_HEAP_ROOT_JNI_GLOBAL, -700, &reported, &ctx);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(victim));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        victim));
+
+    tracker->stop();
+}
+
+// End-to-end wiring: heapReferenceCallback's already-admitted root-edge branch. The static sweep's
+// class -> field edge is the only traversal that re-reports a static-only holder, whose re-enlist
+// must not depend on the root enumeration (which never reports static-field holders).
+TEST_F(ReferenceChainsBfsTest, HeapReferenceCallbackReenlistsEvictedDurableAnchor) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const jlong victim = 17001;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, victim, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        victim, -700, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    for (size_t i = 0; i < cap - 1; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            18000 + (jlong)i, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    const jlong filler = 18000 + (jlong)cap;
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        filler, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD); // crosses the cap
+    ASSERT_FALSE(
+        ReferenceChainsTestAccessor::anchorIndexContainsForTest(victim));
+
+    // The sweep re-reports the victim's class -> field edge: root-like negative class referrer,
+    // unchanged durable kind - upgrade refused, re-enlist fires.
+    ReferenceChainPassContext ctx{};
+    ctx.tracker = tracker;
+    ctx.frontier = frontier;
+    ctx.hop_cap = 64;
+    ctx.budget = 1000;
+    jlong reported = victim;
+    ReferenceChainsTestAccessor::reportStaticFieldEdgeForTest(
+        -555, &reported, &ctx);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(victim));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        victim));
+
+    tracker->stop();
+}
+
 // When the local share is at the cap and full of live containers, a compaction that removes nothing
 // arms a backoff: the next LOCAL_ANCHOR_COMPACT_BACKOFF at-cap resolves skip the locked scan (the
 // cap holds, the parked containers are dropped and re-reported). Dead locals are reclaimed by the
