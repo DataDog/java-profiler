@@ -427,10 +427,6 @@ exception list.
   not add code with no production caller (stage it in the PR that needs it), and do not
   delete passing tests without stating why. When a change alters behavior described in
   `doc/` or in comments, update those in the same PR.
-- Before requesting review, self-check the diff for unused variables, unused or duplicated
-  macros, dead code (methods, JNI entry points, fields, no-op functions, empty files left
-  without callers; test-only helpers stay only if marked as such) and misspelled
-  identifiers/comments.
 - C/C++ style: match the surrounding indentation and spacing exactly; don't split inline
   logic into helpers unless reused or genuinely hard to follow; extract code that appears a
   second time (e.g. in copy constructors, assignment operators) into one shared helper; use
@@ -519,8 +515,9 @@ No pull request is opened, marked ready, or updated with fixes until an agentic 
 review of the full change set has completed and its Critical/High findings are fixed
 or explicitly waived by the user. Run the `pre-pr-review` skill
 ([.agents/skills/pre-pr-review/SKILL.md](.agents/skills/pre-pr-review/SKILL.md)): it
-picks the reviewer, adds the judgment checks no tool can make (comment budget, no
-plan/spec references), and records the result with `utils/review-marker.py`. If the
+picks the reviewer and effort within a review budget, adds the self-checks (dead code,
+misspellings, comment budget, no plan/spec references), and records the result with
+`utils/review-marker.py`. If the
 harness has no review capability, say so and get explicit user sign-off — never
 silently skip it. While the marker is stale, `.githooks/pre-push` refuses pushes to
 a branch with an open PR (install with `utils/review-marker.py install-hook`, never
