@@ -48,20 +48,17 @@ import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
  * is a per-process resource, and a one-shot seeded ramp ages out of LivenessTracker's hysteresis
  * once real fold samples interleave).
  *
- * <p>Schedule shape (see {@link #FILLER}): every round appends one chunk to
- * the leak thread's ThreadLocal sink — the chunk supply must span the whole
- * window because the correlation needs the walk to intercept a leak-tagged
- * chunk inside the thread's ThreadLocalMap, and starving the tail rounds
- * starves that interception surface (observed as {@code tl-correlation-not-found}
- * on JDK 11 for the late-thread variant). The scale filler, in contrast, is
- * kept small: the first (root-enumeration) pass charges its whole
- * non-safepoint walk time to the tracker's CPU pain budget, and no further
- * pass runs until that debt is repaid; until then the only {@code byte[]}
- * chains are that first pass's out-of-pool discovered instances. A smaller
- * walked heap shortens the debt so the second pass - the one that builds the
- * in-pool chain - lands well inside the 25-round + 5-grace window on slow CI
- * cells (an ~8.5 s debt at 96,000 nodes was repaid only at about dump 25 of
- * 30 locally).
+ * <p>Schedule shape (see {@link #FILLER}): every round appends one chunk to the leak thread's
+ * ThreadLocal sink — the chunk supply must span the whole window because the correlation needs the
+ * walk to intercept a leak-tagged chunk inside the thread's ThreadLocalMap, and starving the tail
+ * rounds starves that interception surface (observed as {@code tl-correlation-not-found} on JDK 11
+ * for the late-thread variant). The scale filler, in contrast, is kept small: the first
+ * (root-enumeration) pass charges its whole non-safepoint walk time to the tracker's CPU pain
+ * budget, and no further pass runs until that debt is repaid; until then the only {@code byte[]}
+ * chains are that first pass's out-of-pool discovered instances. A smaller walked heap shortens the
+ * debt so the second pass - the one that builds the in-pool chain - lands well inside the 25-round
+ * + 5-grace window on slow CI cells (an ~8.5 s debt at 96,000 nodes was repaid only at about dump
+ * 25 of 30 locally).
  */
 public final class ThreadLocalLeakScenario {
   private ThreadLocalLeakScenario() {}
@@ -74,15 +71,13 @@ public final class ThreadLocalLeakScenario {
       ThreadLocal.withInitial(() -> new ArrayList<>());
 
   /**
-   * Scale ingredient - same rationale as LeakTagCorrelationScenario.FILLER,
-   * but a quarter of its size (375 x 64 = 24,000 nodes, not 96,000).
-   * Invariant: the filler is the bulk of the heap the first pass walks (the
-   * byte[] chunks are reference-free leaves), and that pass's non-safepoint
-   * time is the CPU pain-budget debt the second pass waits out - the one
-   * that builds the in-pool chain. The filler must stay small enough that the
-   * debt is repaid well inside the 25-round + 5-grace window on slow CI
-   * cells (an ~8.5 s debt at 96,000 nodes repaid only at about dump 25 of 30
-   * locally); it still gives the frontier and the tag map real depth.
+   * Scale ingredient - same rationale as LeakTagCorrelationScenario.FILLER, but a quarter of its
+   * size (375 x 64 = 24,000 nodes, not 96,000). Invariant: the filler is the bulk of the heap the
+   * first pass walks (the byte[] chunks are reference-free leaves), and that pass's non-safepoint
+   * time is the CPU pain-budget debt the second pass waits out - the one that builds the in-pool
+   * chain. The filler must stay small enough that the debt is repaid well inside the 25-round +
+   * 5-grace window on slow CI cells (an ~8.5 s debt at 96,000 nodes repaid only at about dump 25 of
+   * 30 locally); it still gives the frontier and the tag map real depth.
    */
   static final Object[][] FILLER = new Object[375][];
 

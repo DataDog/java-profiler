@@ -93,19 +93,20 @@ public final class LeakTagCorrelationScenario {
    * Growth schedule of run()'s 25-round loop (load-bearing, see the loop's own comment): the leak
    * grows by {@link #CHUNKS_PER_GROWTH_ROUND} chunks in each of rounds 1..GROWTH_ROUNDS, and only
    * by one chunk every {@link #QUIET_TOP_UP_EVERY}th round after that. Invariants:
+   *
    * <ul>
-   *   <li>Total leak = SEED_CHUNKS + GROWTH_ROUNDS * CHUNKS_PER_GROWTH_ROUND + (25 -
-   *   GROWTH_ROUNDS) / QUIET_TOP_UP_EVERY = 10 + 20 + 3 = 33 chunks, below the 35 of the earlier
-   *   one-chunk-every-round schedule - a smaller working set, never a larger one.</li>
+   *   <li>Total leak = SEED_CHUNKS + GROWTH_ROUNDS * CHUNKS_PER_GROWTH_ROUND + (25 - GROWTH_ROUNDS)
+   *       / QUIET_TOP_UP_EVERY = 10 + 20 + 3 = 33 chunks, below the 35 of the earlier
+   *       one-chunk-every-round schedule - a smaller working set, never a larger one.
    *   <li>Every {@link #LEAK_SINK} backing-array replacement (capacity 10 -> 15 -> 22 -> 33 at
-   *   sizes 11/16/23) happens inside the growth rounds, i.e. after the first-pass wait (so the
-   *   resize case LEAK_SINK exists for is still exercised) and before the tail; the tail
-   *   top-ups fill size 31..33 within the final capacity 33, so the tail never replaces
-   *   elementData again.</li>
+   *       sizes 11/16/23) happens inside the growth rounds, i.e. after the first-pass wait (so the
+   *       resize case LEAK_SINK exists for is still exercised) and before the tail; the tail
+   *       top-ups fill size 31..33 within the final capacity 33, so the tail never replaces
+   *       elementData again.
    *   <li>The growth rounds alone span 10 GC epochs (one System.gc() per round), i.e.
-   *   KLASS_POPULATION_MIN_FILL_FOR_TREND ring samples of real growth; the tail top-ups keep a
-   *   fresh surviving-age cohort arriving so the real fold's trend does not go flat, and
-   *   debug builds additionally push one seeded rising epoch every round.</li>
+   *       KLASS_POPULATION_MIN_FILL_FOR_TREND ring samples of real growth; the tail top-ups keep a
+   *       fresh surviving-age cohort arriving so the real fold's trend does not go flat, and debug
+   *       builds additionally push one seeded rising epoch every round.
    * </ul>
    */
   private static final int GROWTH_ROUNDS = 10;
@@ -351,9 +352,10 @@ public final class LeakTagCorrelationScenario {
     // requirement, and in debug builds the per-round seeded ramp below keeps both trends
     // qualifying through the quiet tail.
     for (int round = 1; round <= totalRounds; round++) {
-      int newChunks = round <= GROWTH_ROUNDS
-          ? CHUNKS_PER_GROWTH_ROUND
-          : (round % QUIET_TOP_UP_EVERY == 0 ? 1 : 0);
+      int newChunks =
+          round <= GROWTH_ROUNDS
+              ? CHUNKS_PER_GROWTH_ROUND
+              : (round % QUIET_TOP_UP_EVERY == 0 ? 1 : 0);
       for (int c = 0; c < newChunks; c++) {
         addChunk();
       }
