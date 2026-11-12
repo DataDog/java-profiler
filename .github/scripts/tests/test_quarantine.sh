@@ -1107,6 +1107,75 @@ python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null \
   || fail "the same test on disjoint cells should be allowed"
 pass "one test may have separate entries for separate cells"
 
+echo "== validate cross-checks gtest ids against the source declarations =="
+
+# Fixture tree with the same declaration shapes the real gtest suites use.
+GTEST_SRC="$TEMP_DIR/gtest-src"
+mkdir -p "$GTEST_SRC"
+cat > "$GTEST_SRC/suite.cpp" <<'EOS'
+TEST(WobblySuite, sometimesFails) { }
+TEST_F(WobblySuite, aFixtureCase) { }
+TEST_P(WobblySuite, aParameterizedCase) { }
+EOS
+
+GTEST_ARGS=(--gtest-src "$GTEST_SRC")
+
+write_list "$LIST" "$(entry WobblySuite.sometimesFails PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a gtest entry whose TEST declaration exists should be accepted"
+pass "a gtest entry matching a TEST declaration is accepted"
+
+write_list "$LIST" "$(entry WobblySuite.missingCase PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null 2>&1; then
+  fail "a gtest entry with no matching declaration should be rejected"
+fi
+pass "a gtest entry naming a case no source declares is rejected"
+
+write_list "$LIST" "$(entry WobblySuite.* PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a class-wide gtest entry whose suite is declared should be accepted"
+pass "a class-wide gtest entry for a declared suite is accepted"
+
+write_list "$LIST" "$(entry GhostSuite.* PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null 2>&1; then
+  fail "a class-wide gtest entry for an undeclared suite should be rejected"
+fi
+pass "a class-wide gtest entry for an undeclared suite is rejected"
+
+write_list "$LIST" "$(entry WobblySuite.aFixtureCase PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a gtest entry matching a TEST_F declaration should be accepted"
+pass "a gtest entry matching a TEST_F declaration is accepted"
+
+# Value-parameterized cases report as '<inst>/<Suite>.<case>/0'; the entry is
+# written bare and covers() reduces the classname, so validate must resolve
+# the declared name the same way.
+write_list "$LIST" "$(entry WobblySuite.aParameterizedCase PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a gtest entry matching a TEST_P declaration should be accepted"
+pass "a gtest entry matching a TEST_P declaration is accepted"
+
+write_list "$LIST" "$(entry MyInst/WobblySuite.* PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a decorated class-wide entry should resolve to the bare declared suite"
+pass "a decorated instantiation entry resolves to the bare declared suite"
+
+# Java ids always carry a package: with no declarations findable at all, they
+# must stay out of the C++ cross-check rather than fail it.
+mkdir -p "$TEMP_DIR/empty-gtest-src"
+write_list "$LIST" "$(entry a.B.c PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate --gtest-src "$TEMP_DIR/empty-gtest-src" >/dev/null \
+  || fail "a Java-shaped entry must not be checked against the C++ sources"
+pass "a Java-shaped entry skips the gtest declaration cross-check"
+
+# And a bare-suite id against an empty tree is exactly the mute that never
+# matches -- the failure mode this cross-check exists to catch.
+write_list "$LIST" "$(entry WobblySuite.sometimesFails PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate --gtest-src "$TEMP_DIR/empty-gtest-src" >/dev/null 2>&1; then
+  fail "a gtest entry against a tree declaring nothing should be rejected"
+fi
+pass "a gtest entry against a tree declaring nothing is rejected"
+
 echo "== flake_summary.py renders =="
 
 CASE="$TEMP_DIR/case-summary"
