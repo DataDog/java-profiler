@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk17
 
 ## musl-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-11-12 00:09:00 EST
+**Date:** 2026-11-12 04:59:14 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 576 |
-| Sample Rate | 9.60/sec |
-| Health Score | 600% |
+| CPU Samples | 519 |
+| Sample Rate | 8.65/sec |
+| Health Score | 541% |
 | Threads | 9 |
-| Allocations | 402 |
+| Allocations | 375 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 618 |
-| Sample Rate | 10.30/sec |
-| Health Score | 644% |
+| CPU Samples | 625 |
+| Sample Rate | 10.42/sec |
+| Health Score | 651% |
 | Threads | 11 |
-| Allocations | 503 |
+| Allocations | 478 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 71-73 cores)</summary>
 
 ```
-1794459753 71
-1794459758 71
-1794459763 71
-1794459768 71
-1794459773 71
-1794459778 71
-1794459783 71
-1794459788 73
-1794459793 73
-1794459798 73
-1794459803 73
-1794459808 73
-1794459813 73
-1794459818 73
-1794459823 73
-1794459828 73
-1794459834 73
-1794459839 73
-1794459844 73
-1794459849 73
+1794477197 71
+1794477202 71
+1794477207 71
+1794477212 71
+1794477217 71
+1794477222 71
+1794477227 71
+1794477232 71
+1794477237 71
+1794477242 71
+1794477247 71
+1794477252 71
+1794477257 71
+1794477262 71
+1794477267 71
+1794477272 71
+1794477277 71
+1794477282 71
+1794477287 71
+1794477292 73
 ```
 </details>
 
