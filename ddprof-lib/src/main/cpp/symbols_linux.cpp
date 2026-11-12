@@ -29,6 +29,7 @@
 #include "dwarf.h"
 #include "sframe.h"
 #include "fdtransferClient.h"
+#include "loadedImage_linux.h"
 #include "log.h"
 #include "os.h"
 #include "symbols_linux.h"
@@ -289,7 +290,6 @@ struct SharedLibrary {
 const unsigned char ELFCLASS_SUPPORTED = ELFCLASS64;
 typedef Elf64_Ehdr ElfHeader;
 typedef Elf64_Shdr ElfSection;
-typedef Elf64_Phdr ElfProgramHeader;
 typedef Elf64_Nhdr ElfNote;
 typedef Elf64_Sym  ElfSymbol;
 typedef Elf64_Rel  ElfRelocation;
@@ -1343,54 +1343,6 @@ static u64 fnv1a(const void* data, size_t size, u64 hash) {
     return hash;
 }
 
-namespace {
-
-// A loaded ELF image, described by its program headers. Only the file-backed
-// parts of its PT_LOAD segments are known to be mapped.
-class LoadedImage {
-  private:
-    const ElfProgramHeader* _ph;
-    int _phnum;
-    uintptr_t _load_bias;
-
-  public:
-    LoadedImage(const ElfProgramHeader* ph, int phnum, uintptr_t load_bias)
-        : _ph(ph), _phnum(phnum), _load_bias(load_bias) {}
-
-    uintptr_t address(uintptr_t vaddr) const { return _load_bias + vaddr; }
-
-    // True if [addr, addr + size) lies inside the file-backed part of a PT_LOAD.
-    bool readable(uintptr_t addr, size_t size) const {
-        for (int i = 0; i < _phnum; i++) {
-            if (_ph[i].p_type != PT_LOAD) continue;
-            uintptr_t start = address(_ph[i].p_vaddr);
-            if (addr >= start && addr - start <= _ph[i].p_filesz
-                && size <= _ph[i].p_filesz - (addr - start)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    const ElfProgramHeader* find(uint32_t type) const {
-        for (int i = 0; i < _phnum; i++) {
-            if (_ph[i].p_type == type) return &_ph[i];
-        }
-        return NULL;
-    }
-
-    // A pointer from the dynamic section. glibc relocates them in place, musl
-    // and the vDSO do not; an unrelocated one is a vaddr below the image. The
-    // same test as ElfParser::dyn_ptr().
-    uintptr_t dynamicPointer(uintptr_t d_ptr) const {
-        uintptr_t min_vaddr = UINTPTR_MAX;
-        for (int i = 0; i < _phnum; i++) {
-            if (_ph[i].p_type == PT_LOAD && _ph[i].p_vaddr < min_vaddr) min_vaddr = _ph[i].p_vaddr;
-        }
-        return d_ptr < address(min_vaddr & ~OS::page_mask) ? address(d_ptr) : d_ptr;
-    }
-};
-
 // Hashes every relocation in rel (size bytes, entries relent apart) that names
 // a symbol: its offset, type and symbol index, and the symbol's name. Returns
 // false if a symbol or its name lies outside the readable image. relent must be
@@ -1466,8 +1418,6 @@ bool hashImportLayout(const LoadedImage& image, u64& hash) {
     }
     return true;
 }
-
-}  // namespace
 
 u64 Symbols::imageFingerprint(const void* phdrs, int phnum, uintptr_t load_bias) {
     const ElfProgramHeader* ph = (const ElfProgramHeader*)phdrs;
