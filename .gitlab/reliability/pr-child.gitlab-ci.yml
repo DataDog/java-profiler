@@ -58,6 +58,7 @@ get-versions:
       - hs_err.log
       - err.log
       - out.log
+      - build.env
     reports:
       dotenv: build.env
     expire_in: 1 day
@@ -114,6 +115,7 @@ reliability-aarch64:
       - hs_err.log
       - err.log
       - out.log
+      - build.env
     reports:
       dotenv: build.env
     expire_in: 1 day

@@ -48,6 +48,7 @@ variables:
       - err.log
       - out.log
       - maven-get.log
+      - build.env
     reports:
       dotenv: build.env
     expire_in: 7 days
@@ -107,6 +108,7 @@ reliability-aarch64:
       - hs_err.log
       - err.log
       - out.log
+      - build.env
     reports:
       dotenv: build.env
     expire_in: 7 days
