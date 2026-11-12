@@ -687,6 +687,10 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
     _draining_chain_invalidations.clear();
   }
 
+  if (betweenInvalidationScanAndWritebackForTest != nullptr) {
+    betweenInvalidationScanAndWritebackForTest();
+  }
+
   for (int i = 0; i < rebuild_count; i++) {
     const jlong tag = rebuild_tags[i];
     ReferenceChainEvent event;

@@ -238,9 +238,10 @@ The local share is capped at 4096 entries (`LOCAL_ANCHOR_INDEX_CAP`). This keeps
 index scan proportional to the durable share plus a constant, regardless of how many locals the
 application holds. When the cap is reached, `compactLocalAnchors()` removes local entries that
 are no longer selectable, such as entries whose object died, at most once per resolve call. Its
-frontier lookups scan only the local share, but its in-place compaction phase rewrites both
-parallel vectors, so one compaction costs O(durable share + local cap) — bounded by the two
-caps below, never by the live object population. If the share is
+frontier lookups scan only the local share, but its in-place compaction phase rewrites the full
+anchor index, durable entries included. A productive compaction costs O(durable share + local
+cap), and may run on every at-cap resolve during steady local churn. The backoff below bounds only
+unproductive scans; both shares' caps bound the full compaction cost. If the share is
 still full of live collections, new local holders are not indexed until entries die or the search
 restarts. A compaction that removes nothing skips the next 8 at-cap compaction attempts
 (`LOCAL_ANCHOR_COMPACT_BACKOFF`), so a full share of live collections does not pay the scan on

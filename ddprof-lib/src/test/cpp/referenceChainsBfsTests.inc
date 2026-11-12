@@ -1908,3 +1908,182 @@ TEST_F(ReferenceChainsBfsTest, DumpDrainAppliesEvictAndLeavesRebuildToPoll) {
 
     tracker->stop();
 }
+
+// The pending-invalidation buffers encode the kind in-band: a REBUILD tag is stored complemented
+// (negative), an EVICT tag as itself. A NEGATIVE source tag's EVICT encoding therefore lands in
+// the REBUILD band and decodes to a different tag - the reason deferResolvedChainInvalidation()
+// refuses negative source tags (assert in debug builds, guard in release).
+TEST_F(ReferenceChainsBfsTest, PendingInvalidationEncodingAliasesNegativeSourceTags) {
+    EXPECT_EQ(42, ReferenceChainsTestAccessor::pendingChainInvalidationTag(
+                      ReferenceChainsTestAccessor::encodePendingChainInvalidationForTest(
+                          42, /*rebuild=*/false)));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::isPendingChainRebuild(
+                     ReferenceChainsTestAccessor::encodePendingChainInvalidationForTest(
+                         42, /*rebuild=*/false)));
+    jlong rebuild = ReferenceChainsTestAccessor::encodePendingChainInvalidationForTest(
+        42, /*rebuild=*/true);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isPendingChainRebuild(rebuild));
+    EXPECT_EQ(42, ReferenceChainsTestAccessor::pendingChainInvalidationTag(rebuild));
+
+    jlong negative = ReferenceChainsTestAccessor::encodePendingChainInvalidationForTest(
+        -1, /*rebuild=*/false);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isPendingChainRebuild(negative))
+        << "a negative source tag's EVICT encoding collides with the REBUILD band";
+    EXPECT_NE(-1, ReferenceChainsTestAccessor::pendingChainInvalidationTag(negative));
+}
+
+// A REBUILD queued for a chain cached by an EARLIER search generation must not be rebuilt:
+// restartSearch() reassigns tag numbers, so a same-numbered chain from a previous search
+// describes a different object, and a path change on the new object says nothing about it. The
+// stale chain must survive the poll intact - and must not be erased by a suppressed-shape rebuild
+// the scan was never supposed to run.
+TEST_F(ReferenceChainsBfsTest, RebuildScanLeavesStaleGenerationChainAlone) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const u64 kOldNs = 1000, kNewNs = 2000;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kOldNs);
+    ReferenceChainEvent stale;
+    stale._target_tag = (u64)2;
+    stale._depth = 3;
+    stale._root_kind = (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(2, std::move(stale), 2, kOldNs));
+
+    // The new generation's frontier holds a deeper STACK_LOCAL-rooted path under the same numeric
+    // tag: rebuilding it would produce a depth-1 transient-root event - a shape the discovered-
+    // chain gate suppresses, i.e. a rebuild here would ERASE the stale chain instead of replacing
+    // it. The scan's generation condition is what keeps that rebuild from running at all.
+    // (The rebuilt event's root kind is the chain's TERMINAL entry's, so the transient kind goes
+    // on the root entry 1.)
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kNewNs);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 1, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 2, 1, 1, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+
+    std::vector<jlong> snapshot = ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(2, snapshot, /*rebuild=*/true);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount())
+        << "stale-generation REBUILD must be dropped, not left pending";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(2))
+        << "stale-generation chain must not be erased by a suppressed-shape rebuild";
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(1u, dump.size());
+    EXPECT_EQ((u64)2, dump[0]._target_tag);
+    EXPECT_EQ(3u, dump[0]._depth) << "stale chain must be emitted unchanged";
+
+    tracker->stop();
+}
+
+// The write-back after a REBUILD scan is replace-only: a concurrent dump can evict the scanned
+// entry between the scan and the write-back, and the rebuild must never resurrect it. Driven via
+// the debug-only betweenInvalidationScanAndWritebackForTest hook, which evicts in exactly that
+// window.
+TEST_F(ReferenceChainsBfsTest, RebuildWritebackNeverResurrectsDumpEvictedEntry) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const u64 kSearchNs = 555;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    ReferenceChainEvent cached;
+    cached._target_tag = (u64)7;
+    cached._depth = 4;
+    cached._root_kind = (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(7, std::move(cached), 7, kSearchNs));
+    // Frontier entry intact and deep enough that the rebuilt event is not a suppressed shape -
+    // the write-back recheck, not suppression, is what must keep the evicted entry dead.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 7, 0, 4, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+
+    std::vector<jlong> snapshot = ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(7, snapshot, /*rebuild=*/true);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    ReferenceChainsTestAccessor::setBetweenInvalidationScanAndWritebackForTest([] {
+        ReferenceChainsTestAccessor::invalidateResolvedChainForTest(7);
+    });
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+    ReferenceChainsTestAccessor::setBetweenInvalidationScanAndWritebackForTest(nullptr);
+
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(7))
+        << "a rebuild must never resurrect an entry evicted after the scan";
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    EXPECT_EQ(0u, dump.size());
+
+    tracker->stop();
+}
+
+// heapRootCallback()'s local-holder guard: only a positive tag with a class tag may reach
+// noteLocalRootHolder(). A non-positive tag identifies no allocatable object; a leak tag can never
+// reach the guard at all (a successful frontier conversion rewrites *tag_ptr to the fresh frontier
+// tag, a failed one aborts the walk first), so the guard's leak-tag check is defense in depth.
+TEST_F(ReferenceChainsBfsTest, LocalRootHolderGuardRejectsLeakAndNonPositiveTags) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const jlong kClassTag = -301;
+    ReferenceChainPassContext ctx{};
+    ctx.tracker = tracker;
+    ctx.frontier = tracker->frontierTable();
+    ctx.hop_cap = 64;
+    ctx.budget = 1000;
+
+    // Non-positive tags: admitObject() treats any non-zero tag as already admitted, so these
+    // reach the guard with their original value.
+    jlong negative_tag = -5;
+    ReferenceChainsTestAccessor::reportHeapRootForTest(
+        JVMTI_HEAP_ROOT_STACK_LOCAL, kClassTag, &negative_tag, &ctx);
+    // No class tag: nothing to classify, so no holder to remember.
+    jlong classless_tag = tracker->nextTag();
+    ReferenceChainsTestAccessor::reportHeapRootForTest(
+        JVMTI_HEAP_ROOT_STACK_LOCAL, 0, &classless_tag, &ctx);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+
+    // Leak tag whose frontier conversion fails (frontier table disabled): the conversion-failure
+    // branch aborts the walk before the local-holder guard, so *tag_ptr keeps the leak tag and
+    // nothing is parked under it.
+    tracker->frontierTable()->resetCapacityForTest(0);
+    const jlong kLeakTag = ReferenceChainsTestAccessor::leakTagBase() + 3;
+    jlong leak_tag = kLeakTag;
+    ReferenceChainsTestAccessor::reportHeapRootForTest(
+        JVMTI_HEAP_ROOT_STACK_LOCAL, kClassTag, &leak_tag, &ctx);
+    EXPECT_EQ(kLeakTag, leak_tag) << "conversion must fail on a disabled frontier table";
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+
+    // Control: a positive, non-leak tag with a class tag is parked for classification. Fresh
+    // context: the aborted report above set ctx.truncated, which would abort every later report.
+    ctx.truncated = false;
+    tracker->frontierTable()->resetCapacityForTest(1024);
+    jlong plain_tag = tracker->nextTag();
+    ReferenceChainsTestAccessor::reportHeapRootForTest(
+        JVMTI_HEAP_ROOT_STACK_LOCAL, kClassTag, &plain_tag, &ctx);
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+
+    tracker->stop();
+}

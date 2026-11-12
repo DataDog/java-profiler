@@ -1110,6 +1110,38 @@ public:
         t->_table_lock.unlock();
     }
 
+    // Feeds one insertThreadGen() call into a caller-owned scratch, so a test can drive the
+    // at-capacity eviction scan directly and inspect the resulting per-slot state. The scratch
+    // type is private to LivenessTracker, so tests hold it through this void* handle pair.
+    static void *allocScratchForTest() {
+        return new LivenessTracker::KlassCountScratch{};
+    }
+
+    static void freeScratchForTest(void *scratch) {
+        delete (LivenessTracker::KlassCountScratch *)scratch;
+    }
+
+    static void insertThreadGenForTest(LivenessTracker *t, void *scratch,
+                                       jint tid, u32 age) {
+        t->insertThreadGen(*(LivenessTracker::KlassCountScratch *)scratch, tid, age);
+    }
+
+    static int scratchThreadCountForTest(void *scratch) {
+        return ((LivenessTracker::KlassCountScratch *)scratch)->thread_count;
+    }
+
+    static jint scratchTidForTest(void *scratch, int idx) {
+        return ((LivenessTracker::KlassCountScratch *)scratch)->threads[idx].tid;
+    }
+
+    static u32 scratchRetainedCountForTest(void *scratch, int idx) {
+        return ((LivenessTracker::KlassCountScratch *)scratch)->threads[idx].count;
+    }
+
+    static u32 scratchAgeCountForTest(void *scratch, int idx) {
+        return ((LivenessTracker::KlassCountScratch *)scratch)->threads[idx].age_count;
+    }
+
     // Runs one onGC() with the given _container_limit_resolved value and returns the
     // container usage it recorded. Restores the touched fields afterwards.
     static u64 containerUsageRecordedByOnGC(LivenessTracker *t, bool limit_resolved) {
@@ -1364,6 +1396,78 @@ TEST_F(SelectLeakCandidatesTest, ScratchOverflowPreservesStrongEarlyThreads) {
     for (int i = 0; i < out[0].qualifying_tid_count; i++) {
         EXPECT_LE(out[0].qualifying_tids[i], 16);
     }
+}
+
+// At KlassCountScratch capacity the eviction scan must pick the slot with the globally smallest
+// observed count, and among equal minima the earliest slot (strict <, not <=): both a later
+// minimum slot surviving the eviction of an earlier one and a larger-count slot being evicted
+// break the "replace the smallest observed retained set" contract without changing any count.
+TEST_F(SelectLeakCandidatesTest, ScratchEvictionPicksEarliestSmallestCountSlot) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    void *scratch = LivenessTrackerTestAccessor::allocScratchForTest();
+    // Slots 0 and 1 tie at the minimum count 1; slots 2-15 hold count 5.
+    LivenessTrackerTestAccessor::insertThreadGenForTest(tracker, scratch, 1, 1);
+    LivenessTrackerTestAccessor::insertThreadGenForTest(tracker, scratch, 2, 1);
+    for (jint tid = 3; tid <= 16; tid++) {
+        for (u32 i = 0; i < 5; i++) {
+            LivenessTrackerTestAccessor::insertThreadGenForTest(tracker, scratch, tid, 1);
+        }
+    }
+    ASSERT_EQ(16, LivenessTrackerTestAccessor::scratchThreadCountForTest(scratch));
+
+    // One tid over capacity: must evict slot 0 (count 1, earliest minimum), never slot 1 (the
+    // later equal-count minimum, only reachable with a <= scan) and never a count-5 slot
+    // (only reachable with an inverted comparison).
+    LivenessTrackerTestAccessor::insertThreadGenForTest(tracker, scratch, 100, 1);
+    ASSERT_EQ(16, LivenessTrackerTestAccessor::scratchThreadCountForTest(scratch));
+    EXPECT_EQ(100, LivenessTrackerTestAccessor::scratchTidForTest(scratch, 0));
+    EXPECT_EQ(1u, LivenessTrackerTestAccessor::scratchRetainedCountForTest(scratch, 0));
+    int tid2_slot = -1;
+    for (int i = 1; i < 16; i++) {
+        if (LivenessTrackerTestAccessor::scratchTidForTest(scratch, i) == 2) {
+            tid2_slot = i;
+        }
+        EXPECT_NE(100, LivenessTrackerTestAccessor::scratchTidForTest(scratch, i))
+            << "evicted a non-minimum slot";
+    }
+    EXPECT_GE(tid2_slot, 1) << "the later equal-count minimum slot must survive";
+    EXPECT_EQ(1u, LivenessTrackerTestAccessor::scratchRetainedCountForTest(scratch, tid2_slot));
+    LivenessTrackerTestAccessor::freeScratchForTest(scratch);
+}
+
+// The count-tie scan must break ties toward the FEWER distinct surviving ages (keep the tid whose
+// retained set is richer), not the other way round.
+TEST_F(SelectLeakCandidatesTest, ScratchEvictionTieKeepsThreadWithMoreDistinctAges) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    void *scratch = LivenessTrackerTestAccessor::allocScratchForTest();
+    // Slot 0: count 5 across two distinct ages. Every other slot: count 5, one age - so the
+    // first age-poorer slot is the correct victim.
+    const u32 two_ages[5] = {10, 11, 10, 11, 10};
+    for (u32 i = 0; i < 5; i++) {
+        LivenessTrackerTestAccessor::insertThreadGenForTest(tracker, scratch, 1, two_ages[i]);
+    }
+    for (jint tid = 2; tid <= 16; tid++) {
+        for (u32 i = 0; i < 5; i++) {
+            LivenessTrackerTestAccessor::insertThreadGenForTest(tracker, scratch, tid, 10);
+        }
+    }
+    ASSERT_EQ(16, LivenessTrackerTestAccessor::scratchThreadCountForTest(scratch));
+    EXPECT_EQ(2u, LivenessTrackerTestAccessor::scratchAgeCountForTest(scratch, 0));
+
+    LivenessTrackerTestAccessor::insertThreadGenForTest(tracker, scratch, 100, 1);
+    ASSERT_EQ(16, LivenessTrackerTestAccessor::scratchThreadCountForTest(scratch));
+    EXPECT_EQ(1, LivenessTrackerTestAccessor::scratchTidForTest(scratch, 0))
+        << "the tid with more distinct ages must survive";
+    EXPECT_EQ(2u, LivenessTrackerTestAccessor::scratchAgeCountForTest(scratch, 0));
+    EXPECT_EQ(100, LivenessTrackerTestAccessor::scratchTidForTest(scratch, 1))
+        << "victim must be an equal-count, age-poorer slot";
+    EXPECT_EQ(1u, LivenessTrackerTestAccessor::scratchAgeCountForTest(scratch, 1));
+    EXPECT_EQ(1u, LivenessTrackerTestAccessor::scratchRetainedCountForTest(scratch, 1))
+        << "replacement starts at its own count of 1, inheriting nothing from the victim";
+    for (int i = 2; i < 16; i++) {
+        EXPECT_NE(100, LivenessTrackerTestAccessor::scratchTidForTest(scratch, i));
+    }
+    LivenessTrackerTestAccessor::freeScratchForTest(scratch);
 }
 
 TEST(LivenessTrackerSessionTest, ResetSessionClearsOnlyRecordingGates) {

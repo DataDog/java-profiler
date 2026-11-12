@@ -1411,6 +1411,12 @@ public:
 
   // Test accessor for _passes_since_last_progress.
   int passesSinceLastProgressForTest() const { return _passes_since_last_progress; }
+
+  // Debug-only test hook, null outside gtests: runs between applyPendingChainInvalidations()'s
+  // REBUILD scan and its write-back loop, so a gtest can evict a scanned entry in that window and
+  // pin the write-back's replace-only recheck (a dump can evict there; never resurrect it). The
+  // hook runs on the caller's thread and must take _resolved_chains_lock itself.
+  void (*betweenInvalidationScanAndWritebackForTest)() = nullptr;
   // Canary-lane backoff state - see _canary_backoff_mult's own comment.
   int canaryBackoffMultForTest() const { return _canary_backoff_mult; }
   u64 canaryPassEmaMsForTest() const { return _canary_pass_ema_ms; }

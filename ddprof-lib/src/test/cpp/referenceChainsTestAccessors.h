@@ -125,6 +125,7 @@ public:
         t->_gotw_batch_size = 0;
         t->_pass_deadline_ns = 0;
         t->_expand_lane_prefer_priority = true;
+        t->betweenInvalidationScanAndWritebackForTest = nullptr;
     }
 
     static bool canAffordNewSearch(u64 now_ns) {
@@ -343,6 +344,32 @@ public:
 
     static void drainPendingChainInvalidations() {
         ReferenceChainTracker::instance()->drainPendingChainInvalidations();
+    }
+
+    static void invalidateResolvedChainForTest(jlong tag) {
+        ReferenceChainTracker::instance()->invalidateResolvedChain(tag);
+    }
+
+    // Raw pending-buffer encoding probes: lets a test pin the in-band kind encoding's negative-tag
+    // hazard (the reason deferResolvedChainInvalidation() refuses negative source tags).
+    static jlong encodePendingChainInvalidationForTest(jlong tag, bool rebuild) {
+        return ReferenceChainTracker::encodePendingChainInvalidation(
+            tag, rebuild ? ReferenceChainTracker::ChainInvalidationKind::REBUILD
+                         : ReferenceChainTracker::ChainInvalidationKind::EVICT);
+    }
+
+    static bool isPendingChainRebuild(jlong encoded) {
+        return ReferenceChainTracker::isPendingChainRebuild(encoded);
+    }
+
+    static jlong pendingChainInvalidationTag(jlong encoded) {
+        return ReferenceChainTracker::pendingChainInvalidationTag(encoded);
+    }
+
+    // Sets/clears the debug-only write-back recheck hook (see the member's comment).
+    static void setBetweenInvalidationScanAndWritebackForTest(
+        void (*hook)()) {
+        ReferenceChainTracker::instance()->betweenInvalidationScanAndWritebackForTest = hook;
     }
 
     static bool hasResolvedChainForTag(jlong tag) {

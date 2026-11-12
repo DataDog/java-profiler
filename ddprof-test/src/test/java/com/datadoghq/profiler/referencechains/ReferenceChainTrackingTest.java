@@ -525,7 +525,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
               + gcRootHolder.size()
               + " retained ChainLink instances across up to "
               + totalRounds
-              + " population-growth rounds plus a grace period"
+              + " allocator rounds plus a grace period"
               + failureDiagnostics
               + (match == null ? referenceChainDiagnostics(gcRootHolder.get(0), roundsRun) : ""));
       // chain[0] is the *target* object's own class, not its holder's: reconstructChain() appends
@@ -786,7 +786,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
               + cache.size()
               + " cached entries across up to "
               + totalRounds
-              + " population-growth rounds plus a grace period"
+              + " allocator rounds plus a grace period"
               + failureDiagnostics
               + (match == null ? referenceChainDiagnostics(cache.get(keys[0]), roundsRun) : ""));
       assertEquals(CachedPayload.class.getName(), match.chain.get(0));
