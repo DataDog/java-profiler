@@ -1196,10 +1196,10 @@ TEST_F(ReferenceChainsBfsTest, EvictedDurableAnchorIsReenlistedByTraversalReport
 // Eviction requests a full static sweep lap: static-only holders are invisible to root
 // enumeration, and the sweep is otherwise skipped while the loaded-class count is unchanged - an
 // evicted static-only anchor would never be re-reported. Every eviction bumps the request
-// generation, including during the restart cooldown (a dropped request would leave the holder
-// unswept once evictions stop); only the cursor restart is paced. The request survives a
-// lap-completion memo overwrite - a lap in flight when the eviction lands does not revisit the
-// classes it already passed, so only a later lap starting from class 0 serves the request.
+// generation, and the request survives a lap-completion overwrite - a lap in flight when the
+// eviction lands does not revisit the classes it already passed, so only a later lap starting
+// from class 0 serves the request. Eviction never touches the sweep cursor: a restart under
+// sustained above-cap churn would reset a mid-lap cursor every few runs and starve later classes.
 TEST_F(ReferenceChainsBfsTest, EvictionForcesStaticFieldSweepRerun) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -1216,25 +1216,25 @@ TEST_F(ReferenceChainsBfsTest, EvictionForcesStaticFieldSweepRerun) {
     // Simulate a mid-lap state: the sweep memo latched and the cursor part-way into a lap.
     ReferenceChainsTestAccessor::setStaticFieldSweepMemoForTest(12345);
     ReferenceChainsTestAccessor::setStaticFieldSweepCursorForTest(456);
-    // The cap-crossing admission evicts - and must record the resweep request and restart the
-    // cursor (the cooldown is not armed at this point).
+    // The cap-crossing admission evicts - and must record the resweep request WITHOUT resetting
+    // the in-flight cursor: a restart here would make laps over large class lists never complete
+    // under sustained churn.
     ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
         9000 + (jlong)cap, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
     EXPECT_TRUE(
         ReferenceChainsTestAccessor::durableAnchorResweepUnservedForTest());
-    EXPECT_EQ(0, ReferenceChainsTestAccessor::staticFieldSweepCursorForTest());
-    EXPECT_EQ(8,
-              ReferenceChainsTestAccessor::durableSweepReforceBackoffForTest());
+    EXPECT_EQ(456,
+              ReferenceChainsTestAccessor::staticFieldSweepCursorForTest());
     // The lap in flight completing (memo overwritten) must NOT consume the request: this lap's
     // behind-cursor classes were traversed before the eviction.
     ReferenceChainsTestAccessor::setStaticFieldSweepMemoForTest(12345);
     EXPECT_TRUE(
         ReferenceChainsTestAccessor::durableAnchorResweepUnservedForTest());
 
-    // During the restart cooldown an eviction still records the request - only the cursor restart
-    // is paced, and the cooldown advances per sweep run, not per eviction. Refill the durable
-    // share first: eviction drains it to cap - DURABLE_ANCHOR_EVICT_BATCH, so without the refill
-    // the next admission would not cross the cap and this phase would assert on a no-op.
+    // A second eviction under the same conditions still records the request and still preserves
+    // the cursor. Refill the durable share first: eviction drains it to
+    // cap - DURABLE_ANCHOR_EVICT_BATCH, so without the refill the next admission would not cross
+    // the cap and this phase would assert on a no-op.
     const u64 gen_after_first =
         ReferenceChainsTestAccessor::durableAnchorResweepGenForTest();
     ASSERT_LT(ReferenceChainsTestAccessor::durableAnchorCountForTest(), cap);
@@ -1246,7 +1246,6 @@ TEST_F(ReferenceChainsBfsTest, EvictionForcesStaticFieldSweepRerun) {
     }
     ASSERT_EQ(cap,
               ReferenceChainsTestAccessor::durableAnchorCountForTest());
-    ReferenceChainsTestAccessor::setDurableSweepReforceBackoffForTest(5);
     ReferenceChainsTestAccessor::setStaticFieldSweepCursorForTest(789);
     // A tag outside the refill range (20000..21023) - a colliding tag would dedup to a no-op
     // instead of crossing the cap.
@@ -1258,8 +1257,6 @@ TEST_F(ReferenceChainsBfsTest, EvictionForcesStaticFieldSweepRerun) {
         ReferenceChainsTestAccessor::durableAnchorResweepUnservedForTest());
     EXPECT_EQ(789,
               ReferenceChainsTestAccessor::staticFieldSweepCursorForTest());
-    EXPECT_EQ(5,
-              ReferenceChainsTestAccessor::durableSweepReforceBackoffForTest());
 
     tracker->stop();
 }

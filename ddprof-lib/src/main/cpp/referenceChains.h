@@ -539,21 +539,16 @@ private:
   // Eviction removes enough oldest entries to drop the share to cap - DURABLE_ANCHOR_EVICT_BATCH,
   // so one O(index) compaction is amortized over ~DURABLE_ANCHOR_EVICT_BATCH admissions.
   static constexpr size_t DURABLE_ANCHOR_EVICT_BATCH = 1024;
-  // Paces cursor-restarting resweep requests: when the live durable population exceeds the cap,
-  // re-enlistment keeps re-crossing it, and an unpaced restart would make every fresh lap start
-  // over from class 0. Decremented once per static sweep run (not per eviction), so it advances
-  // even when evictions stop; the first eviction at zero restarts the sweep cursor and re-arms it.
-  static constexpr int DURABLE_SWEEP_REFORCE_BACKOFF = 8;
-  int _durable_sweep_reforce_backoff = 0;
   // Resweep requests as a generation counter: every eviction batch bumps
   // _durable_anchor_resweep_gen, and a sweep lap serves exactly the generations requested before
   // the lap started - a fresh lap (cursor 0) latches _static_field_sweep_lap_request_gen, and its
   // completion publishes it as _static_field_sweep_served_gen. The gate runs the sweep while
   // served != requested, so a request survives: laps in flight when the eviction lands (which do
-  // not revisit classes they already passed, and whose chunk save overwrites a mid-chunk cursor
-  // restart), first chunks that truncate, and cooldowns - all leave the generation unserved until
-  // a full lap from class 0 completes. Latching at lap start (not clearing at start or
-  // completion) is what makes a completion serve only the requests that predate the lap.
+  // not revisit classes they already passed) and first chunks that truncate both leave the
+  // generation unserved until a full lap from class 0 completes. Latching at lap start (not
+  // clearing at start or completion) is what makes a completion serve only the requests that
+  // predate the lap. Eviction never restarts the cursor: a restart under sustained above-cap
+  // churn would reset a mid-lap cursor and starve later classes (PROF finding on PR #899).
   u64 _durable_anchor_resweep_gen = 0;
   u64 _static_field_sweep_lap_request_gen = 0;
   u64 _static_field_sweep_served_gen = 0;

@@ -101,7 +101,6 @@ public:
         t->_pending_local_anchors.clear();
         t->_pending_local_anchor_tags.clear();
         t->_local_compact_backoff = 0;
-        t->_durable_sweep_reforce_backoff = 0;
         t->_durable_anchor_resweep_gen = 0;
         t->_static_field_sweep_lap_request_gen = 0;
         t->_static_field_sweep_served_gen = 0;
@@ -548,7 +547,6 @@ public:
                t->_pending_local_anchors.empty() &&
                t->_pending_local_anchor_tags.empty() &&
                t->_local_compact_backoff == 0 &&
-               t->_durable_sweep_reforce_backoff == 0 &&
                t->_durable_anchor_resweep_gen == t->_static_field_sweep_served_gen &&
                t->_pending_local_evict_cursor == 0;
     }
@@ -606,12 +604,6 @@ public:
     }
     static void setStaticFieldSweepMemoForTest(int count) {
         ReferenceChainTracker::instance()->_last_static_field_class_count = count;
-    }
-    static int durableSweepReforceBackoffForTest() {
-        return ReferenceChainTracker::instance()->_durable_sweep_reforce_backoff;
-    }
-    static void setDurableSweepReforceBackoffForTest(int backoff) {
-        ReferenceChainTracker::instance()->_durable_sweep_reforce_backoff = backoff;
     }
     static void setStaticFieldSweepCursorForTest(int cursor) {
         ReferenceChainTracker::instance()->_static_field_sweep_cursor = cursor;

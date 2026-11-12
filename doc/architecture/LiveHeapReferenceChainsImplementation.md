@@ -193,13 +193,16 @@ the only path that re-enlists an evicted anchor: an unchanged durable root kind 
 an already-admitted entry takes no fresh admission path, and static-only holders never appear in
 root enumeration at all. A live evicted anchor is therefore re-enlisted - with rotation
 eligibility and a fresh-lane first look - the next time its durable edge is traversed; a dead one
-is never reported again. Eviction bumps a resweep-request generation unconditionally (a request
-during the restart cooldown must survive, or a displaced static-only holder is never re-swept); a
-sweep lap serves exactly the generations requested before it started — it latches the generation
-at its start from class 0 and publishes it only on completing, so a lap in flight when the
-eviction lands, a truncated first chunk, or a cooldown all leave the generation unserved until a
-full lap actually re-traverses the whole class list. The cooldown
-(`DURABLE_SWEEP_REFORCE_BACKOFF`) paces only the cursor restart, advancing per sweep run.
+is never reported again. Rotation eligibility is the shared admission contract
+(`isSelectableAnchor()`): root-attached durable kinds, or CONTAINER-shaped holders - reparented
+containers keep parent_tag set and a stale transient root_kind, so the re-enlist bypasses the
+root-kind filter and re-indexes directly. Eviction bumps a resweep-request generation
+unconditionally and never touches the sweep cursor; a sweep lap serves exactly the generations
+requested before it started — it latches the generation at its start from class 0 and publishes
+it only on completing, so a lap in flight when the eviction lands, or a truncated first chunk,
+leave the generation unserved until a full lap actually re-traverses the whole class list. A
+cursor restart on eviction would reset mid-lap progress under sustained above-cap churn and
+starve later classes, so there is none.
 Eviction and re-enlistment are pure index bookkeeping — no frontier lock — so both are legal from
 the heap-root callback. A local
 holder that a durable root later attaches moves to the durable share and stops

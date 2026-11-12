@@ -870,12 +870,6 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   if (chunk_start == 0) {
     _static_field_sweep_lap_request_gen = _durable_anchor_resweep_gen;
   }
-  // Advance the restart cooldown once per sweep run, independent of evictions: requests recorded
-  // during the cooldown are never dropped (see the eviction site), the cooldown only paces how
-  // often an eviction may also restart the cursor (see DURABLE_SWEEP_REFORCE_BACKOFF).
-  if (_durable_sweep_reforce_backoff > 0) {
-    _durable_sweep_reforce_backoff--;
-  }
   jint chunk_end =
       std::min(chunk_start + STATIC_FIELD_SWEEP_CHUNK_CLASSES, class_count);
   jint chunk_count = chunk_end - chunk_start;
