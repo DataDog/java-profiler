@@ -86,8 +86,8 @@ dependencies {
   // dd-trace-api: annotations only at compile time. The patched dd-java-agent
   // provides the (relocated) runtime classes and intercepts @Trace.
   "chaosCompileOnly"(libs.dd.trace.api)
-  // ddprof-lib public API: compile-only; the patched dd-java-agent provides the
-  // classes at runtime for antagonists that call JavaProfiler directly.
+  // ddprof-lib's API stays compile-only; the runner appends the selected jar to
+  // bootstrap so antagonists and the agent share one JavaProfiler singleton.
   "chaosCompileOnly"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
   "chaosTestImplementation"(libs.bundles.testing)
   "chaosTestImplementation"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))

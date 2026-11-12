@@ -267,8 +267,11 @@ echo "disk usage ($(dirname "${DDPROF_ROOT}")): $(df -h "$(dirname "${DDPROF_ROO
 # then a SIGSEGV with no hs_err.log at all — exit immediately on the first
 # OOME instead, so a failure is a single, diagnosable event.
 CHAOS_START=$(date +%s)
+# The agent's platform-parented loader and the app must share the same API singleton.
+# An app-only classpath would leave a second API copy in the agent's private loader.
 timeout "$((RUNTIME + 300))" \
 java -javaagent:"${PATCHED_AGENT}" \
+     -Xbootclasspath/a:"${DDPROF_JAR}" \
      --add-opens java.base/java.lang=ALL-UNNAMED \
      ${ENABLEMENT} \
      -Ddd.profiling.upload.period=10 \
