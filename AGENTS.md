@@ -31,13 +31,14 @@ index).
 
 **What stays inline vs. what moves to `doc/`** — apply this test when updating this
 file. Inline (this file): rules that must shape behavior at unpredictable moments —
-invariants whose violation causes crashes/leaks/lockups, the obligations that trigger
-a procedure (review before PR, load a writing skill), rules for writing code and code
+invariants whose violation causes crashes/leaks/lockups, rules for writing code and code
 comments. Externalized (`doc/`): reference material read only when
 working on a specific subsystem — architecture pages, build/task references,
 analyses. Procedures run at a known moment go in skills (`.agents/skills/`, which
 load fresh when invoked); enforcement goes in scripts, hooks and CI — text here is
-advisory and cannot gate anything. Rules stay inline even when needed only once per
+advisory and cannot gate anything. A skill's `description` carries the obligation to
+run it; this file points to a skill only when a test drive shows that the description
+alone does not load it. Rules stay inline even when needed only once per
 task if that moment is end-of-task and no skill carries them.
 This layering and the work-tracking process follow the Datadog AI Native SDLC Playbook,
 a Datadog-internal Confluence page. Read it only when planning tracked work, changing
@@ -50,8 +51,9 @@ task summary with an explicit `SUBSYSTEM DOC NOT READ: <path>` line — the user
 not you, decides whether to compact and redo the work with the rules in context,
 or accept the risk. The same applies to any instruction in this file you could not
 follow: surface it, never absorb it.
-Hoist a section only when it grows with examples or scope; leave a one-line
-mandatory pointer behind.
+Hoist a section only when it grows with examples or scope. Leave a one-line mandatory
+pointer behind when it moves to `doc/`; a section that moves into a skill follows the
+skill-pointer rule above.
 Update this file from repeated failures: when an agent repeats a mistake or needs
 the same undocumented explanation twice, it proposes a concise correction here
 (or to the affected `doc/` page or skill); the responsible team reviews it, and
@@ -438,8 +440,8 @@ exception list.
   mechanism, invariant, or consequence) the reader could not get from the code. A
   longer comment needs a reason a reviewer would accept; prefer cutting — a verbose
   comment is review surface, not safety. The same cut applies to `doc/` paragraphs and
-  PR descriptions. No tool enforces this, because it takes judgment; the agentic pre-PR
-  review checks it.
+  PR descriptions. No tool enforces this, because it takes judgment; the `pre-pr-review`
+  skill checks it.
 - Comments: "why" comments must reference concrete mechanisms (e.g. "ASAN's allocator
   lock is reentrant"), never speculative claims about HotSpot/glibc/ASAN/ISA internals — if
   unsure, describe the observable symptom. Describe current behavior, not history; cite no
