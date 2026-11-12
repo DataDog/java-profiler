@@ -65,7 +65,6 @@ jobs:
             .gitlab/scripts/check-abi-floor.sh \
             .gitlab/scripts/tests/check_abi_floor_test.sh \
             .gitlab/scripts/tests/includes_test.sh \
-            .gitlab/scripts/tests/includes_test.sh \
             .gitlab/scripts/tests/test_run_gtest_quarantine.sh \
             .gitlab/benchmarks/steps/mem_watch.sh \
             .gitlab/benchmarks/steps/collect_markers.sh \
@@ -99,9 +98,6 @@ jobs:
             .gitlab/reliability/tests/notify_channel_test.sh \
             .gitlab/reliability/tests/post_pr_comment_test.sh \
             .gitlab/reliability/tests/record_inconclusive_test.sh
-          bash .gitlab/scripts/tests/check_abi_floor_test.sh
-          bash .gitlab/scripts/tests/includes_test.sh
-          bash .gitlab/scripts/tests/test_run_gtest_quarantine.sh
           bash .gitlab/scripts/tests/check_abi_floor_test.sh
           bash .gitlab/scripts/tests/includes_test.sh
           bash .gitlab/scripts/tests/test_run_gtest_quarantine.sh
