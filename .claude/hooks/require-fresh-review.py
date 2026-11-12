@@ -409,7 +409,12 @@ def evaluate(source, cwd, sub, args, command, match_text):
         if default:
             res = run_check(source, cwd, ["--base", default])
     if res.returncode == 0 and sub == "ready":
-        stale = stale_description(number, repo_flag(words(match_text)), cwd)
+        # gh resolves a PR-URL selector's repository over -R (ready_target relies on the
+        # same order), so the description probe must query the URL's repo, not the flag's.
+        selectors = pr_selector(args)
+        url = PR_URL.fullmatch(selectors[0]) if selectors else None
+        repo = url.group(1) if url else repo_flag(words(match_text))
+        stale = stale_description(number, repo, cwd)
         if stale:
             return "the PR description was last edited before the PR's head commit and " \
                    "may not match the pushed code. Re-verify the title and description " \

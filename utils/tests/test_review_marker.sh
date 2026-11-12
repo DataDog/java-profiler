@@ -35,10 +35,24 @@ echo "$*" >> "$GH_LOG"
 case "$1 $2" in
   "pr list") for b in $OPEN_PRS; do [ "$b" = "$4" ] && { echo 1; exit 0; }; done
              echo 0; exit 0 ;;
-  "pr view") case "$3" in */*) exit 1 ;; esac
-             [ -z "$VIEW_REPO" ] || case " $* " in *" -R $VIEW_REPO "*) ;; *) exit 1 ;; esac
+  "pr view") url_repo=""
+             case "$3" in
+               https://github.com/*) url_repo=${3#https://github.com/}; url_repo=${url_repo%%/pull*} ;;
+               */*) exit 1 ;;
+             esac
+             if [ -n "$VIEW_REPO" ]; then
+               if [ -n "$url_repo" ]; then
+                 [ "$url_repo" = "$VIEW_REPO" ] || exit 1
+               else
+                 case " $* " in *" -R $VIEW_REPO "*) ;; *) exit 1 ;; esac
+               fi
+             fi
              [ -n "$VIEW_HEAD" ] && echo "$VIEW_NUMBER $VIEW_HEAD $VIEW_OID $VIEW_BASE" && exit 0; exit 1 ;;
-  "api graphql") [ -n "$VIEW_GRAPHQL" ] && echo "$VIEW_GRAPHQL" && exit 0; exit 1 ;;
+  "api graphql") [ -n "$VIEW_GRAPHQL" ] || exit 1
+                 if [ -n "$GRAPHQL_O" ]; then
+                   case "$*" in *"-f o=$GRAPHQL_O -f n=$GRAPHQL_N"*) ;; *) exit 1 ;; esac
+                 fi
+                 echo "$VIEW_GRAPHQL"; exit 0 ;;
   "repo view") case "$*" in
                  *nameWithOwner*) [ -n "$OWNER_NAME" ] && echo "$OWNER_NAME" && exit 0; exit 1 ;;
                  *) [ -n "$DEFAULT_BRANCH" ] && echo "$DEFAULT_BRANCH" && exit 0; exit 1 ;;
@@ -62,7 +76,7 @@ done
 # gh that cannot be executed, for the pre-push OSError fail-open path.
 printf '#!/bin/sh\n' > "$TEMP_DIR/nogh/gh" && chmod -x "$TEMP_DIR/nogh/gh"
 export PATH="$TEMP_DIR/bin:$PATH" GH_LOG="$TEMP_DIR/gh.log"
-export OPEN_PRS="" VIEW_HEAD="" VIEW_OID="" VIEW_BASE="" VIEW_REPO="" GH_FAIL="" DEFAULT_BRANCH="" NAME_FAIL="" NETWORK_ROOTS=""
+export OPEN_PRS="" VIEW_HEAD="" VIEW_OID="" VIEW_BASE="" VIEW_REPO="" GH_FAIL="" DEFAULT_BRANCH="" NAME_FAIL="" NETWORK_ROOTS="" GRAPHQL_O="" GRAPHQL_N=""
 export VIEW_NUMBER="" VIEW_GRAPHQL="" OWNER_NAME=""
 
 # Repo whose origin/main carries the gate scripts (in a second commit, $PRE_GATE being
@@ -510,6 +524,9 @@ VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=1234567890123456789012345678901234567890 VI
 VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main OWNER_NAME=DataDog/java-profiler VIEW_GRAPHQL=2019-06-01T00:00:00Z\ 2020-01-01T00:00:00Z \
   expect "hook blocks ready when the description predates the head commit" 2 "last edited before" \
   hook "gh pr ready 12"
+VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main GRAPHQL_O=DataDog GRAPHQL_N=java-profiler VIEW_GRAPHQL=2019-06-01T00:00:00Z\ 2020-01-01T00:00:00Z \
+  expect "hook checks the URL's repository, not -R's, for the description" 2 "last edited before" \
+  hook "gh -R DataDog/speedlab pr ready https://github.com/DataDog/java-profiler/pull/12"
 VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_STALE VIEW_BASE=main OWNER_NAME=DataDog/java-profiler VIEW_GRAPHQL=2019-06-01T00:00:00Z\ 2020-01-01T00:00:00Z \
   expect "hook reports the stale marker, not the description, when the check fails" 2 "$STALE_MSG" \
   hook "gh pr ready 12"
