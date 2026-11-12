@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-12 06:49:09 EST
+**Date:** 2026-11-12 06:55:45 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 177 |
-| Sample Rate | 2.95/sec |
-| Health Score | 184% |
+| CPU Samples | 192 |
+| Sample Rate | 3.20/sec |
+| Health Score | 200% |
 | Threads | 6 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 441 |
-| Sample Rate | 7.35/sec |
-| Health Score | 459% |
-| Threads | 11 |
+| CPU Samples | 216 |
+| Sample Rate | 3.60/sec |
+| Health Score | 225% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 72-74 cores)</summary>
+<summary>CPU Timeline (2 unique values: 70-72 cores)</summary>
 
 ```
-1794483856 72
-1794483861 72
-1794483866 72
-1794483871 72
-1794483876 72
-1794483881 74
-1794483886 74
-1794483891 72
-1794483896 72
-1794483901 72
-1794483906 72
-1794483911 72
-1794483916 72
-1794483921 72
-1794483926 72
-1794483931 72
-1794483936 72
-1794483941 72
-1794483946 72
-1794483951 72
+1794484068 72
+1794484073 72
+1794484079 72
+1794484084 72
+1794484089 72
+1794484094 72
+1794484099 72
+1794484104 70
+1794484109 70
+1794484114 70
+1794484119 70
+1794484124 70
+1794484129 70
+1794484134 72
+1794484139 72
+1794484144 72
+1794484149 72
+1794484154 72
+1794484159 72
+1794484164 72
 ```
 </details>
 
