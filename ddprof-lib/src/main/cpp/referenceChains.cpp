@@ -1098,7 +1098,6 @@ void ReferenceChainTracker::restartSearch() {
   _pending_local_anchor_tags.clear();
   _local_compact_backoff = 0;
   _pending_local_evict_cursor = 0;
-  _durable_sweep_reforce_backoff = 0;
   _durable_anchor_resweep_gen = 0;
   _static_field_sweep_lap_request_gen = 0;
   _static_field_sweep_served_gen = 0;
@@ -1193,7 +1192,6 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _pending_local_anchor_tags.clear();
   _local_compact_backoff = 0;
   _pending_local_evict_cursor = 0;
-  _durable_sweep_reforce_backoff = 0;
   _durable_anchor_resweep_gen = 0;
   _static_field_sweep_lap_request_gen = 0;
   _static_field_sweep_served_gen = 0;
