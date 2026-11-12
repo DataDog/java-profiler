@@ -45,10 +45,14 @@ markers_nr_throttled() {
 }
 
 # Prints the number of R-state stat entries under the proc root, skipping
-# the excluded pids and their direct children (the JVM, the sampler and
-# the sampler's ps/grep discovery pipeline). The cat|awk pipeline reads
-# every entry per tick: cat skips entries that vanish between glob
-# expansion and open, where a direct awk pass aborts fatally.
+# the excluded pids and all their descendants (the JVM, the sampler and the
+# sampler's ps/grep discovery pipeline). The census runs inside command
+# substitutions, so its own cat|awk collectors are grandchildren of the
+# sampler shell and a direct-parent check would count them; each runnable
+# entry is therefore kept only when no ancestor on its parent chain is
+# excluded. The cat|awk pipeline reads every entry per tick: cat skips entries
+# that vanish between glob expansion and open, where a direct awk pass aborts
+# fatally.
 markers_cotenant_runnable() {
     markers_root=$1
     shift
@@ -69,9 +73,19 @@ markers_cotenant_runnable() {
             # comm may hold spaces and ), so fields restart after the last )
             sub(/.*\)/, "", $0)
             split($0, f, " ")
-            if (f[1] == "R" && !ex[pid] && !ex[f[2]]) count++
+            parent[pid] = f[2]
+            if (f[1] == "R") runnable[pid] = 1
         }
-        END { if (seen) print count + 0; else print "NA" }
+        END {
+            if (!seen) { print "NA"; exit }
+            for (pid in runnable) {
+                ancestor = pid
+                while (ancestor && !ex[ancestor] && ancestor != parent[ancestor])
+                    ancestor = parent[ancestor]
+                if (!ex[ancestor]) count++
+            }
+            print count + 0
+        }
     ')
     if [ -n "$markers_count" ]; then
         printf '%s\n' "$markers_count"

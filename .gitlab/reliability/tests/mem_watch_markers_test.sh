@@ -150,6 +150,11 @@ case_v2() {
   write_smaps "$PROC" "$JPID" 13000
   write_stat "$PROC" 905 samplerchild R "$SPID"
   write_stat "$PROC" 906 otherchild R 424242
+  # grandchildren of the sampler (as the census's own cat|awk collectors are,
+  # through the command-substitution subshell) must not be counted: the
+  # exclusion walks the ancestor chain, not just the direct parent
+  write_stat "$PROC" 907 collector R 905
+  write_stat "$PROC" 908 collector2 R 907
   wait_markers 2 || { no_markers v2; return; }
   stop_sampler
   assert_eq "v2 mem line format" "mem: 12345" "$(line_n 1)"
@@ -157,7 +162,7 @@ case_v2() {
     "markers: psi_cpu_some_avg10=1.25 psi_memory_some_avg10=4.75 loadavg_1m=0.52 cpu_nr_throttled=42 cotenant_runnable=2" \
     "$(line_n 2)"
   assert_eq "v2 tick2 mem line" "mem: 13000" "$(line_n 3)"
-  assert_eq "v2 tick2 markers (same tick, sampler child excluded)" \
+  assert_eq "v2 tick2 markers (same tick, sampler descendants excluded, foreign child counted)" \
     "markers: psi_cpu_some_avg10=1.25 psi_memory_some_avg10=4.75 loadavg_1m=1.75 cpu_nr_throttled=43 cotenant_runnable=3" \
     "$(line_n 4)"
   assert_eq "v2 mem record count" 2 "$(grep -c '^mem:' "$OUT")"
