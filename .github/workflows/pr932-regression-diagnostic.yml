@@ -1,0 +1,101 @@
+name: PR932 native ELF TSan diagnostic
+
+on:
+  push:
+    branches:
+      - paul.fournillon/diagnose-pr932-regression
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  paired-native-elf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      BASE_SHA: 66f01812f2acfbe9d2f48aae80fad43cf924815e
+      CANDIDATE_SHA: 152d939c395a37142202e407e2860efc4515ef04
+      # Fixed before execution; a failure stops that source, not the other control.
+      ELF_REPETITIONS: '5'
+      LIBC: glibc
+      SANITIZER: tsan
+      KEEP_JFRS: 'true'
+      TEST_CONFIGURATION: glibc/17-tsan-amd64
+    steps:
+      - name: Checkout diagnostic driver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize paired results
+        id: initialize
+        shell: bash
+        run: |
+          mkdir -p diagnostic/base diagnostic/candidate
+          printf '{"expected_sha":"%s","status":"not_attempted"}\n' "$BASE_SHA" > diagnostic/base/result.json
+          printf '{"expected_sha":"%s","status":"not_attempted"}\n' "$CANDIDATE_SHA" > diagnostic/candidate/result.json
+          {
+            printf 'pair_host=same job, sequential sources\nrunner=%s\nimage=%s\nimage_version=%s\n' "$RUNNER_NAME" "$ImageOS" "$ImageVersion"
+            uname -a
+            cat /etc/os-release
+            grep -H . /proc/sys/kernel/randomize_va_space /proc/sys/vm/mmap_rnd_bits
+            grep -E '^(Seccomp|Seccomp_filters|NoNewPrivs):' /proc/self/status
+          } > diagnostic/host.txt
+      - name: Setup cached build JDK21 and test JDK17
+        id: java
+        uses: ./.github/actions/setup_cached_java
+        with:
+          version: '17'
+          arch: amd64
+      - name: Setup ordinary glibc dependencies
+        id: os
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev binutils gdb
+          sudo apt-get install -y libc6-dbg
+      - name: Record toolchain
+        id: toolchain
+        shell: bash
+        run: |
+          {
+            command -v clang++
+            clang++ --version
+            "$JAVA_HOME/bin/java" -version
+            "$JAVA_TEST_HOME/bin/java" -version
+          } > diagnostic/toolchain.txt 2>&1
+      - name: Checkout exact base
+        id: base_checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: sources/base
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build and execute base ELF directly
+        if: ${{ !cancelled() && steps.base_checkout.outcome == 'success' && steps.toolchain.outcome == 'success' }}
+        shell: bash
+        run: |
+          python3 .github/scripts/pr932_elf_diagnostic.py sources/base "$BASE_SHA" diagnostic/base "$ELF_REPETITIONS"
+      - name: Checkout exact candidate
+        id: candidate_checkout
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: sources/candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build and execute candidate ELF directly
+        if: ${{ !cancelled() && steps.candidate_checkout.outcome == 'success' && steps.toolchain.outcome == 'success' }}
+        shell: bash
+        run: |
+          python3 .github/scripts/pr932_elf_diagnostic.py sources/candidate "$CANDIDATE_SHA" diagnostic/candidate "$ELF_REPETITIONS"
+      - name: Retain paired diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr932-native-elf-tsan-${{ github.run_id }}
+          path: diagnostic/
+          if-no-files-found: error
+          retention-days: 14
