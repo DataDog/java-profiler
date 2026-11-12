@@ -1309,6 +1309,57 @@ TEST_F(ReferenceChainsBfsTest, HeapRootCallbackReenlistsEvictedDurableAnchor) {
     tracker->stop();
 }
 
+// A reparented confirmed container stays rotation-eligible after eviction: reparentToDurableRoot()
+// re-parents it under a durable root (parent_tag != 0) while leaving its stale transient root_kind,
+// so the pre-fix gate (parent_tag != 0) and the root-kind filter in addToStaticAnchorIndex() both
+// rejected every re-enlistment attempt - and a JNI-global-only holder has no static-edge FIFO
+// fallback, so its rotation eligibility was lost for good. isSelectableAnchor() is the admission
+// contract (root-attached durable kind OR CONTAINER shape) and must gate the re-index.
+TEST_F(ReferenceChainsBfsTest, ReparentedContainerReenlistsAfterEviction) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const jlong victim = 17001;
+    // Reparented holder: parent_tag points at a root-attached durable root, root_kind is the
+    // stale transient kind reparenting leaves behind. Shape reconciliation classifies it as a
+    // container (that is what made it an anchor in the first place).
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, victim, 17999, 1, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ReferenceChainsTestAccessor::primeClassShapeForTest(-800, true);
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        victim, -800, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    for (size_t i = 0; i < cap - 1; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            18000 + (jlong)i, -900, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    }
+    const jlong filler = 18000 + (jlong)cap;
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        filler, -900, JVMTI_HEAP_REFERENCE_JNI_GLOBAL); // crosses the cap
+    ASSERT_FALSE(
+        ReferenceChainsTestAccessor::anchorIndexContainsForTest(victim));
+
+    // The next traversal report re-discovers the victim through the heap-root callback; the
+    // re-enlist branch must restore it despite parent_tag != 0 and the stale root kind.
+    ReferenceChainPassContext ctx{};
+    ctx.tracker = tracker;
+    ctx.frontier = frontier;
+    ctx.hop_cap = 64;
+    ctx.budget = 1000;
+    jlong reported = victim;
+    ReferenceChainsTestAccessor::reportHeapRootForTest(
+        JVMTI_HEAP_ROOT_JNI_GLOBAL, -800, &reported, &ctx);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(victim));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        victim));
+
+    tracker->stop();
+}
+
 // End-to-end wiring: heapReferenceCallback's already-admitted root-edge branch. The static sweep's
 // class -> field edge is the only traversal that re-reports a static-only holder, whose re-enlist
 // must not depend on the root enumeration (which never reports static-field holders).
