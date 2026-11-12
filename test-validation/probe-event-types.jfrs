@@ -1,0 +1,37 @@
+#!/usr/bin/env jbang jfr-shell@btraceio script
+
+# Copyright 2026, Datadog, Inc
+
+# probe-event-types.jfrs - event-type presence probe for validate-jfr-conformance.sh
+#
+# Arguments:
+#   $1 - JFR recording file path
+#
+# For each tracked type, prints "HAS <type> <event count>" — but only if the
+# query succeeded. A type missing from the recording's metadata makes its `set`
+# fail ("Event type not found"), the variable stays undefined, and the
+# referencing echo prints nothing: the absence of the line IS the signal. The
+# caller greps this output; a line per type also carries the real event count.
+#
+# This runs on the same bundled parser as validate-jfr.jfrs's queries. The
+# backend-served `metadata` command must not be used here: when the pluggable
+# backend is unavailable it silently serves type names resolved through a
+# single chunk's type-id mapping, which relabels custom types on multi-chunk
+# recordings and makes registered types look absent.
+
+open $1
+
+set jdk_exec = events/jdk.ExecutionSample | count()
+echo "HAS jdk.ExecutionSample ${jdk_exec.count}"
+set dd_exec = events/datadog.ExecutionSample | count()
+echo "HAS datadog.ExecutionSample ${dd_exec.count}"
+set jdk_alloc = events/jdk.ObjectAllocationSample | count()
+echo "HAS jdk.ObjectAllocationSample ${jdk_alloc.count}"
+set dd_alloc = events/datadog.ObjectSample | count()
+echo "HAS datadog.ObjectSample ${dd_alloc.count}"
+set jdk_thread_alloc = events/jdk.ThreadAllocationStatistics | count()
+echo "HAS jdk.ThreadAllocationStatistics ${jdk_thread_alloc.count}"
+set dd_endpoint = events/datadog.Endpoint | count()
+echo "HAS datadog.Endpoint ${dd_endpoint.count}"
+
+echo "PROBE_COMPLETE"

@@ -296,13 +296,13 @@ log_info ""
 # returning a zero count when a type isn't in the recording's metadata at all
 # (e.g. JDK built-in CPU/allocation events are entirely absent from
 # ddprof-only recordings, or an event predates the JDK that produced the
-# file). Precompute presence with jfr-shell's own `metadata` command (the
-# jafar backend), which lists every registered event type unconditionally, so
-# the .jfrs script can skip queries for types that were never registered
-# instead of crashing. This must use the same jafar backend as the actual
-# validation query below - the stock JDK `jfr summary`/`jfr print` tools
-# misparse ddprof's multi-chunk recordings and silently report datadog.*
-# event types as absent even when they are present with real events.
+# file). Precompute presence by probing each type through the script engine
+# itself (probe-event-types.jfrs) -- the same bundled parser the validation
+# queries below run on, so the two views can never disagree. The backend-
+# served `metadata` command must NOT be used here: when the pluggable backend
+# is unavailable it silently serves type names resolved through a single
+# chunk's type-id mapping, which relabels custom types on multi-chunk ddprof
+# recordings and makes registered types look absent.
 
 # jfr-shell (jafar) requires Java 25 (class file version 69.0)
 # Always use --java 25 to let jbang download the correct JDK
@@ -317,17 +317,24 @@ if [ -n "${MAVEN_REPOSITORY_PROXY:-}" ]; then
   JBANG_REPOS_OPT="--repos=\"central=${MAVEN_REPOSITORY_PROXY}\""
 fi
 
-EVENT_METADATA=""
-if ! EVENT_METADATA=$(eval "jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio metadata \"${JFR_FILE}\"" 2>/dev/null); then
-  log_warn "Could not run 'jfr-shell metadata' on ${JFR_FILE}; assuming all event types are present"
-  EVENT_METADATA=""
+EVENT_PROBE=""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROBE_SCRIPT="${SCRIPT_DIR}/probe-event-types.jfrs"
+if [ ! -f "${PROBE_SCRIPT}" ]; then
+  log_warn "Probe script not found at ${PROBE_SCRIPT}; assuming all event types are present"
+elif ! EVENT_PROBE=$(eval "jbang --java 25 ${JBANG_REPOS_OPT} script \"${PROBE_SCRIPT}\" \"${JFR_FILE}\"" 2>/dev/null) \
+    || ! echo "${EVENT_PROBE}" | grep -q "PROBE_COMPLETE"; then
+  # An incomplete probe (recording unreadable, jfr-shell failure) must not
+  # gate real queries off: default to present, as when no probe ran at all.
+  log_warn "Event-type probe did not complete on ${JFR_FILE}; assuming all event types are present"
+  EVENT_PROBE=""
 fi
 
 has_event_type() {
   local type="$1"
-  if [ -z "${EVENT_METADATA}" ]; then
+  if [ -z "${EVENT_PROBE}" ]; then
     echo "true"
-  elif echo "${EVENT_METADATA}" | grep -qE -- "- ${type//./\\.}\$"; then
+  elif echo "${EVENT_PROBE}" | grep -qF -- "HAS ${type} "; then
     echo "true"
   else
     echo "false"
@@ -351,7 +358,6 @@ log_info "  datadog.Endpoint: ${HAS_DD_ENDPOINT}"
 log_info ""
 
 # Prepare validation command
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VALIDATION_SCRIPT="${SCRIPT_DIR}/validate-jfr.jfrs"
 
 if [ ! -f "${VALIDATION_SCRIPT}" ]; then
