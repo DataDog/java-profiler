@@ -80,7 +80,11 @@ markers_cotenant_runnable() {
             if (!seen) { print "NA"; exit }
             for (pid in runnable) {
                 ancestor = pid
-                while (ancestor && !ex[ancestor] && ancestor != parent[ancestor])
+                # pid reuse inside one census pass can in principle pair two
+                # stat entries into a ppid cycle; the step bound keeps the
+                # walk finite and counts an unresolvable entry (conservative)
+                steps = 0
+                while (ancestor && !ex[ancestor] && ancestor != parent[ancestor] && steps++ < 64)
                     ancestor = parent[ancestor]
                 if (!ex[ancestor]) count++
             }

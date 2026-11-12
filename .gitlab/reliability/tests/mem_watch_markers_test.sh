@@ -318,6 +318,31 @@ else
   fail "the census leaked stderr for the unreadable entry: $(cat "$UNRE_ERR")"
 fi
 
+# A ppid cycle (pid reuse can pair two entries) must not hang the census:
+# the ancestor walk is step-bounded and counts the unresolvable entries.
+# The direct call runs under a poll watchdog; a hang fails the case.
+CYCLE="$WORK/cycle"
+CYC_OUT="$WORK/cycle.out"
+mkdir -p "$CYCLE/960" "$CYCLE/961"
+printf '960 (cotenant) R 961 1 1 1 0 -1 0\n' > "$CYCLE/960/stat"
+printf '961 (cotenant) R 960 1 1 1 0 -1 0\n' > "$CYCLE/961/stat"
+# shellcheck disable=SC2016  # $1 is a sh -c positional arg, not an expansion
+(cd "$STEPS" && "$POSIX_SH" -c '. ./collect_markers.sh; markers_cotenant_runnable "$1" 999' sh "$CYCLE" > "$CYC_OUT" 2>/dev/null) &
+CYC_PID=$!
+CYC_TICKS=0
+# integer sleep: POSIX sh (musl/Alpine) rejects fractional operands
+while kill -0 "$CYC_PID" 2>/dev/null && [ "$CYC_TICKS" -lt 10 ]; do
+  sleep 1
+  CYC_TICKS=$((CYC_TICKS + 1))
+done
+if kill -0 "$CYC_PID" 2>/dev/null; then
+  kill -9 "$CYC_PID"
+  fail "the census hung on a ppid cycle (watchdog kill after 10s)"
+else
+  wait "$CYC_PID"
+  assert_eq "a ppid cycle terminates and counts both entries" "2" "$(cat "$CYC_OUT")"
+fi
+
 if [ "$FAILED" -eq 0 ]; then
   echo "All mem_watch markers tests passed"
   exit 0
