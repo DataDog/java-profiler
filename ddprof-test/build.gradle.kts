@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import com.datadoghq.native.util.PlatformUtils
 import com.datadoghq.profiler.ProfilerTestExtension
 import com.datadoghq.profiler.ProfilerTestPlugin
 import org.gradle.api.tasks.SourceSet
@@ -295,6 +296,12 @@ dependencies {
 // The plugin creates Test tasks on glibc/macOS and Exec tasks on musl
 // Both need the native test library to be built first
 val skipGtest = project.hasProperty("skip-gtest")
+// The native fixture gtest produces the delivery .jfr; it cannot run when
+// ddprof-lib's native build is skipped. Delegate to PlatformUtils.isNativeSkipped
+// so this gate and the producer use one parsing rule (-Pskip-native bare/TRUE/
+// false/project lists).
+val ddprofLibNativeSkipped = PlatformUtils.isNativeSkipped(rootProject.project(":ddprof-lib"))
+val nativeFixturesEnabled = !skipGtest && !ddprofLibNativeSkipped
 tasks.matching { it.name.startsWith("test") && it.name != "test" }.configureEach {
   // Ensure native test library is built before running tests
   dependsOn(":ddprof-test-native:linkLib")
@@ -309,8 +316,8 @@ tasks.matching { it.name.startsWith("test") && it.name != "test" }.configureEach
     .get()
     .asFile
   (this as? ProcessForkOptions)?.environment("DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR", jfr.absolutePath)
-  (this as? ProcessForkOptions)?.environment("DDPROF_NATIVE_FIXTURES_ENABLED", (!skipGtest).toString())
-  if (skipGtest) {
+  (this as? ProcessForkOptions)?.environment("DDPROF_NATIVE_FIXTURES_ENABLED", nativeFixturesEnabled.toString())
+  if (!nativeFixturesEnabled) {
     // The producing gtest does not run in this invocation: drop any file from an earlier one
     // so the parser test skips (Assumptions gate) instead of checking a stale recording.
     doFirst {
