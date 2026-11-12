@@ -36,10 +36,12 @@ jobs:
           printf '{"expected_sha":"%s","status":"not_attempted"}\n' "$CANDIDATE_SHA" > diagnostic/candidate/result.json
           {
             printf 'pair_host=same job, sequential sources\nrunner=%s\nimage=%s\nimage_version=%s\n' "$RUNNER_NAME" "$ImageOS" "$ImageVersion"
-            uname -a
-            cat /etc/os-release
-            grep -H . /proc/sys/kernel/randomize_va_space /proc/sys/vm/mmap_rnd_bits
-            grep -E '^(Seccomp|Seccomp_filters|NoNewPrivs):' /proc/self/status
+            uname -a || printf 'uname: unavailable/unverified\n'
+            cat /etc/os-release || printf '/etc/os-release: unavailable/unverified\n'
+            for path in /proc/sys/kernel/randomize_va_space /proc/sys/vm/mmap_rnd_bits; do
+              grep -H . "$path" || printf '%s: unavailable/unverified\n' "$path"
+            done
+            grep -E '^(Seccomp|Seccomp_filters|NoNewPrivs):' /proc/self/status || printf '/proc/self/status: unavailable/unverified\n'
           } > diagnostic/host.txt
       - name: Setup cached build JDK21 and test JDK17
         id: java

@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -286,6 +287,139 @@ sys.exit(1 if os.environ.get("MODE") == "readelf_failure" else 0)
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["log_collection_error"], "log copy failed")
         self.assertEqual(result["attempts"][0]["tests_passed"], 31)
+
+
+class PairedInitializationTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="paired initialization ")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.tools = self.root / "tools"
+        self.tools.mkdir()
+        self.runs = 0
+        workflow = SCRIPT.parents[1] / "workflows/pr932-regression-diagnostic.yml"
+        step = workflow.read_text().split("      - name: Initialize paired results\n", 1)[1]
+        step = step.split("\n      - name:", 1)[0]
+        self.initialization = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        for command in ("uname", "cat", "grep"):
+            ElfDiagnosticTest.executable(self.tools / command, r'''
+import os
+from pathlib import Path
+import re
+import sys
+command = Path(sys.argv[0]).name
+arguments = sys.argv[1:]
+paths = ["uname"] if command == "uname" else arguments[2:] if command == "grep" else arguments
+status = 0
+matched = False
+for path in paths:
+    with Path("reads.txt").open("a") as log:
+        log.write(path + "\n")
+    try:
+        if path == os.environ.get("DENIED_PATH"):
+            raise PermissionError("Permission denied: " + path)
+        value = (Path("metadata") / Path(path).name).read_text()
+    except OSError as error:
+        print(str(error), file=sys.stderr)
+        status = 2
+        continue
+    if command == "grep":
+        lines = [line for line in value.splitlines() if re.search(arguments[1], line)]
+        matched = matched or bool(lines)
+        for line in lines:
+            print(path + ":" + line if arguments[0] == "-H" else line)
+    else:
+        print(value, end="")
+sys.exit(status or int(command == "grep" and not matched))
+''')
+
+    def run_initialization(self, unavailable=None, failure="denied", blocked=None):
+        self.runs += 1
+        self.work = self.root / f"run-{self.runs}"
+        metadata = self.work / "metadata"
+        metadata.mkdir(parents=True)
+        values = {"uname": "fixture kernel\n", "os-release": "ID=fixture\n",
+                  "randomize_va_space": "2\n", "mmap_rnd_bits": "32\n",
+                  "status": "Seccomp:\t2\nSeccomp_filters:\t1\nNoNewPrivs:\t0\n"}
+        for name, value in values.items():
+            (metadata / name).write_text(value)
+        if unavailable and failure == "missing":
+            (metadata / Path(unavailable).name).unlink()
+        elif unavailable and failure == "empty":
+            (metadata / Path(unavailable).name).write_text("")
+        if blocked:
+            path = self.work / blocked
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if blocked == "diagnostic":
+                path.touch()
+            else:
+                path.mkdir()
+        environment = dict(os.environ, PATH=str(self.tools) + os.pathsep + os.environ["PATH"],
+                           BASE_SHA="b" * 40, CANDIDATE_SHA="c" * 40,
+                           RUNNER_NAME="fixture runner", ImageOS="fixture image", ImageVersion="fixture version",
+                           DENIED_PATH=unavailable if unavailable and failure == "denied" else "")
+        completed = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c",
+                                    self.initialization], cwd=self.work, env=environment,
+                                   text=True, capture_output=True)
+        self.reads = (self.work / "reads.txt").read_text().splitlines() if (self.work / "reads.txt").exists() else []
+        return completed
+
+    def assert_manifests(self):
+        for label, sha in (("base", "b" * 40), ("candidate", "c" * 40)):
+            self.assertEqual(json.loads((self.work / f"diagnostic/{label}/result.json").read_text()),
+                             {"expected_sha": sha, "status": "not_attempted"})
+
+    def test_readable_metadata_and_required_manifests_are_retained(self):
+        completed = self.run_initialization()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assert_manifests()
+        host = (self.work / "diagnostic/host.txt").read_text()
+        self.assertEqual(host, "pair_host=same job, sequential sources\nrunner=fixture runner\n"
+                         "image=fixture image\nimage_version=fixture version\nfixture kernel\nID=fixture\n"
+                         "/proc/sys/kernel/randomize_va_space:2\n/proc/sys/vm/mmap_rnd_bits:32\n"
+                         "Seccomp:\t2\nSeccomp_filters:\t1\nNoNewPrivs:\t0\n")
+
+    def test_unavailable_optional_reads_are_marked_and_later_reads_attempted(self):
+        paths = ("uname", "/etc/os-release", "/proc/sys/kernel/randomize_va_space",
+                 "/proc/sys/vm/mmap_rnd_bits", "/proc/self/status")
+        for path in paths:
+            for failure in ("denied", "missing"):
+                with self.subTest(path=path, failure=failure):
+                    completed = self.run_initialization(path, failure)
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    self.assert_manifests()
+                    self.assertEqual(self.reads, list(paths))
+                    host = (self.work / "diagnostic/host.txt").read_text()
+                    self.assertEqual(host.count("unavailable/unverified"), 1)
+                    self.assertIn(path + ": unavailable/unverified\n", host)
+                    if failure == "denied":
+                        self.assertIn("Permission denied: " + path, completed.stderr)
+                    else:
+                        self.assertIn("No such file", completed.stderr)
+                    if path == "/proc/sys/vm/mmap_rnd_bits":
+                        self.assertIn("/proc/sys/kernel/randomize_va_space:2\n", host)
+                        self.assertNotIn("/proc/sys/vm/mmap_rnd_bits:32", host)
+                        self.assertIn("NoNewPrivs:\t0\n", host)
+
+    def test_empty_grep_observations_are_unverified(self):
+        for path in ("/proc/sys/kernel/randomize_va_space", "/proc/sys/vm/mmap_rnd_bits", "/proc/self/status"):
+            with self.subTest(path=path):
+                completed = self.run_initialization(path, "empty")
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assert_manifests()
+                self.assertIn(path + ": unavailable/unverified\n", (self.work / "diagnostic/host.txt").read_text())
+                self.assertEqual(self.reads[-1], "/proc/self/status")
+
+    def test_required_artifact_and_manifest_failures_are_gating(self):
+        for blocked in ("diagnostic", "diagnostic/base/result.json", "diagnostic/candidate/result.json",
+                        "diagnostic/host.txt"):
+            with self.subTest(blocked=blocked):
+                completed = self.run_initialization("/proc/sys/vm/mmap_rnd_bits", blocked=blocked)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn("diagnostic", completed.stderr)
+                self.assertEqual(self.reads, [])
+                if blocked == "diagnostic/host.txt":
+                    self.assert_manifests()
 
 
 if __name__ == "__main__":
