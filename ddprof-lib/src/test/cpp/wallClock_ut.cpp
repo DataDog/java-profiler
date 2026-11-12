@@ -4,6 +4,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <gtest/gtest-spi.h>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -342,23 +343,44 @@ public:
     explicit ReservoirPrecheckWallClock(bool (*accept)(int tid)) : _accept(accept) {}
     const char* name() override { return "Reservoir precheck test timer"; }
 
-    bool awaitPasses(int passes) const {
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-        while (completed_passes.load(std::memory_order_acquire) < passes) {
+    bool awaitPasses(int passes, std::chrono::seconds timeout = std::chrono::seconds(20)) const {
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (completed_passes.load(std::memory_order_acquire) < passes ||
+               covered_threads.load(std::memory_order_acquire) < kPoolSize) {
             if (std::chrono::steady_clock::now() >= deadline) return false;
             std::this_thread::yield();
         }
         return true;
     }
 
+    // Call after stop/join: visited_tid is timer-owned. Name rejected tids too.
+    ::testing::AssertionResult coverageCompleted(bool completed) const {
+        if (completed) return ::testing::AssertionSuccess();
+        auto result = ::testing::AssertionFailure();
+        result << "passes=" << completed_passes.load(std::memory_order_acquire)
+               << ", covered=" << covered_threads.load(std::memory_order_acquire)
+               << "/" << kPoolSize << ", missing tids:";
+        bool missing = false;
+        for (int tid = 1; tid <= kPoolSize; ++tid) {
+            if (!visited_tid[tid]) {
+                result << " " << tid;
+                missing = true;
+            }
+        }
+        if (!missing) result << " none";
+        return result;
+    }
+
     // Written only by the timer thread; read after stop() has joined it.
     std::vector<Pass> passes;
     bool visited_tid[kPoolSize + 1] = {};
     std::atomic<int> completed_passes{0};
+    std::atomic<int> covered_threads{0};
 
 private:
     void timerLoop() override {
         Pass current;
+        int visited_count = 0;
         auto collect = [](std::vector<ThreadEntry>& entries) {
             for (int tid = 1; tid <= kPoolSize; ++tid) {
                 entries.push_back(ThreadEntry{tid, nullptr, -1, 0, 0});
@@ -367,7 +389,10 @@ private:
         auto sample = [&](ThreadEntry entry, int&, int&, int&, int& lookups, bool) {
             current.visited++;
             lookups++;
-            visited_tid[entry.tid] = true;
+            if (!visited_tid[entry.tid]) {
+                visited_tid[entry.tid] = true;
+                ++visited_count;
+            }
             if (!_accept(entry.tid)) {
                 current.rejected++;
                 return WallClockCandidateOutcome::PRECHECK_REJECTED;
@@ -378,6 +403,7 @@ private:
         auto clean = [&] {
             passes.push_back(current);
             current = Pass();
+            covered_threads.store(visited_count, std::memory_order_release);
             completed_passes.store(static_cast<int>(passes.size()), std::memory_order_release);
         };
         timerLoopCommon<ThreadEntry>(collect, sample, clean, kReservoir, 1000000,
@@ -432,7 +458,7 @@ TEST_F(WallClockReservoirPrecheckTest, RejectedCandidatesConsumeReservoirSlots) 
     bool completed = started && clock.awaitPasses(kPasses);
     clock.stop();  // joins the timer thread before any assertion reads its state
     ASSERT_TRUE(started);
-    ASSERT_TRUE(completed);
+    ASSERT_TRUE(clock.coverageCompleted(completed));
 
     for (size_t i = 0; i < clock.passes.size(); ++i) {
         const auto& pass = clock.passes[i];
@@ -454,6 +480,42 @@ TEST_F(WallClockReservoirPrecheckTest, RejectedCandidatesConsumeReservoirSlots) 
 #endif
 }
 
+TEST_F(WallClockReservoirPrecheckTest, PassCountWithoutCoverageDoesNotComplete) {
+    ReservoirPrecheckWallClock clock(+[](int) { return true; });
+    clock.completed_passes.store(100);
+    clock.covered_threads.store(ReservoirPrecheckWallClock::kPoolSize - 1);
+    EXPECT_FALSE(clock.awaitPasses(100, std::chrono::seconds(0)));
+    clock.covered_threads.store(ReservoirPrecheckWallClock::kPoolSize);
+    EXPECT_TRUE(clock.awaitPasses(100, std::chrono::seconds(0)));
+    clock.completed_passes.store(99);
+    EXPECT_FALSE(clock.awaitPasses(100, std::chrono::seconds(0)));
+}
+
+TEST_F(WallClockReservoirPrecheckTest, CoverageTimeoutNamesOmittedRejectedTidAndCounts) {
+    ReservoirPrecheckWallClock clock(+[](int tid) { return tid % 4 != 0; });
+    // No timer is running, so the omitted rejected tid cannot gain coverage.
+    for (int tid = 1; tid <= ReservoirPrecheckWallClock::kPoolSize; ++tid) {
+        clock.visited_tid[tid] = tid != 184;
+    }
+    clock.completed_passes.store(100);
+    clock.covered_threads.store(199);
+    bool completed = clock.awaitPasses(100, std::chrono::seconds(0));
+    ::testing::TestPartResultArray failures;
+    {
+        ::testing::ScopedFakeTestPartResultReporter reporter(
+            ::testing::ScopedFakeTestPartResultReporter::INTERCEPT_ONLY_CURRENT_THREAD, &failures);
+        auto require_completion = [&] { ASSERT_TRUE(clock.coverageCompleted(completed)); };
+        require_completion();
+    }
+    ASSERT_EQ(1, failures.size());
+    const auto& failure = failures.GetTestPartResult(0);
+    EXPECT_TRUE(failure.fatally_failed());
+    const std::string message = failure.message();
+    EXPECT_NE(std::string::npos, message.find("passes=100")) << message;
+    EXPECT_NE(std::string::npos, message.find("covered=199/200")) << message;
+    EXPECT_NE(std::string::npos, message.find("missing tids: 184")) << message;
+}
+
 // A sparse accepted population cannot expand visits beyond the reservoir.
 TEST_F(WallClockReservoirPrecheckTest, SparseAcceptedPoolStillVisitsOnlyReservoir) {
     constexpr int kPasses = 100;
@@ -462,7 +524,7 @@ TEST_F(WallClockReservoirPrecheckTest, SparseAcceptedPoolStillVisitsOnlyReservoi
     bool completed = started && clock.awaitPasses(kPasses);
     clock.stop();
     ASSERT_TRUE(started);
-    ASSERT_TRUE(completed);
+    ASSERT_TRUE(clock.coverageCompleted(completed));
 
     for (size_t i = 0; i < clock.passes.size(); ++i) {
         EXPECT_EQ(ReservoirPrecheckWallClock::kReservoir,
