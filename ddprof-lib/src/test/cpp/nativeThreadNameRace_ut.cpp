@@ -94,14 +94,7 @@ struct EphemeralThread {
 // the first scan that could have observed it is never named, by any pass --
 // not by the deferring refresher-style scan, and not by the dump-time scan,
 // which only sees threads still present in /proc/self/task.
-//
-// FLAKY: intermittently fails on quiet CI runners (~daily on unrelated main
-// SHAs). The death-timing window this test controls for is wider than assumed
-// under CI load; mechanism not yet pinned. Skipped until reproduced and fixed
-// on a Linux machine; do not re-enable without a reproduction.
 TEST(NativeThreadNameRaceTest, threadDyingBetweenScansIsNeverNamed) {
-    GTEST_SKIP() << "flaky on CI: join-death-vs-scan race, skipped until reproduced";
-
     // Refresher-style pass before the thread exists (the previous tick).
     Profiler::instance()->updateNativeThreadNames(/*defer_initializing=*/true);
 
