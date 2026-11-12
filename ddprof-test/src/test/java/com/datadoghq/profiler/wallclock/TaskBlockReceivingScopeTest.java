@@ -385,12 +385,12 @@ public class TaskBlockReceivingScopeTest extends AbstractProfilerTest {
 
   private static long compressed(byte[] bytes, int[] cursor) {
     long value = 0;
-    for (int i = 0; i < 9; i++) {
+    for (int i = 0; ; i++) {
+      if (i == 9) throw new AssertionError("Invalid compressed integer");
       int b = Byte.toUnsignedInt(bytes[cursor[0]++]);
       value |= (long) (i == 8 ? b : b & 127) << (i * 7);
       if (i == 8 || b < 128) return value;
     }
-    throw new AssertionError("Invalid compressed integer");
   }
 
   private static final class ThreadRow {
