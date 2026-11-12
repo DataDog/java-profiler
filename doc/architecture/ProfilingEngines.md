@@ -642,7 +642,8 @@ Each category is exported per chunk as
 consumers should match these counters by prefix rather than hard-code the
 category list. The `chunk_overhead` counter
 (`native_mem_chunk_overhead_bytes.<category>`) is per-object allocator accounting
--- usable size plus the probed chunk header -- never a resident or attributable
+-- the excess of usable size plus the probed chunk header over the requested
+bytes -- never a resident or attributable
 RSS figure.
 
 ## Counters by Engine
