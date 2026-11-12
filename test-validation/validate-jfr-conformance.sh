@@ -322,7 +322,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROBE_SCRIPT="${SCRIPT_DIR}/probe-event-types.jfrs"
 if [ ! -f "${PROBE_SCRIPT}" ]; then
   log_warn "Probe script not found at ${PROBE_SCRIPT}; assuming all event types are present"
-elif ! EVENT_PROBE=$(eval "jbang --java 25 ${JBANG_REPOS_OPT} script \"${PROBE_SCRIPT}\" \"${JFR_FILE}\"" 2>/dev/null) \
+elif ! EVENT_PROBE=$(eval "jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio script \"${PROBE_SCRIPT}\" \"${JFR_FILE}\"" 2>/dev/null) \
     || ! echo "${EVENT_PROBE}" | grep -q "PROBE_COMPLETE"; then
   # An incomplete probe (recording unreadable, jfr-shell failure) must not
   # gate real queries off: default to present, as when no probe ran at all.
