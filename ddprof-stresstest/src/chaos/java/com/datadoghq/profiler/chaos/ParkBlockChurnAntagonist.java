@@ -114,7 +114,7 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
             + " park_calls="
             + parkCalls.get()
             + " suppressed="
-            + counterDelta("wc_signals_suppressed_sampled_run"));
+            + counterDelta("wc_signals_suppressed_owned_block"));
   }
 
   /** Requires native hooks, unfiltered timer lookups, and timer-side suppression to run. */
@@ -126,7 +126,7 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
         new String[] {
           "wc_precheck_registry_lookups",
           "wc_precheck_candidates_rejected",
-          "wc_signals_suppressed_sampled_run"
+          "wc_signals_suppressed_owned_block"
         }) {
       long delta = counterDelta(counter);
       if (delta <= 0) {
@@ -227,12 +227,12 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
           sleepOwned(blockMillis);
           break;
         case 1:
-          parkEnter.invokeExact();
+          boolean ownsPark = (boolean) parkEnter.invokeExact();
           parkCalls.incrementAndGet();
           try {
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(blockMillis));
           } finally {
-            parkExit.invokeExact(0L, 0L);
+            if (ownsPark) parkExit.invokeExact(0L, 0L);
           }
           break;
         case 2:
