@@ -237,6 +237,24 @@ assert_eq "the nested inconclusive row never lands in failures" "4" \
 assert_eq "passed subtracts both kinds from the expected total" "31" \
   "$(summary_field "${JSON}" "s['passed']")"
 
+# --- YAML wiring: build.env must be downloadable as a regular artifact -------
+
+# The generator parses build.env files from the artifact download. GitLab only
+# makes a dotenv report available as a file to later jobs when it is also
+# listed in artifacts:paths, so each reliability template must list it in every
+# artifacts block it defines.
+SCHEDULED_YAML="${HERE}/../.gitlab-ci.yml"
+PR_YAML="${HERE}/../pr-child.gitlab-ci.yml"
+
+build_env_path_count() { # $1 yaml
+  sed -n '/^  artifacts:/,/^    reports:/p' "$1" | grep -cF -- 'build.env'
+}
+
+assert_eq "scheduled pipeline lists build.env in both artifacts paths" "2" \
+  "$(build_env_path_count "${SCHEDULED_YAML}")"
+assert_eq "PR child pipeline lists build.env in both artifacts paths" "2" \
+  "$(build_env_path_count "${PR_YAML}")"
+
 if [ "${FAILED}" -eq 0 ]; then
   echo "All generate_run_json tests passed"
   exit 0
