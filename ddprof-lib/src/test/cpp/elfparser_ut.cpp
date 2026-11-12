@@ -4,6 +4,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "arch.h"
 #include "codeCache.h"
 #include "libraries.h"
 #include "symbols.h"
@@ -636,6 +637,11 @@ TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
 // A .symtab misaligned by the 42-byte section-header string table (sh_offset
 // 490, not a multiple of alignof(Elf64_Sym)) must still resolve both symbols
 // and the PLT relocation name through loadSymbolTable()/addRelocationSymbols().
+//
+// The misaligned reads are only detected by -fsanitize=alignment (the asan
+// gtest config): with the alignment-safe copies reverted, that build aborts
+// with "member access within misaligned address", while the debug build still
+// passes because arm64 and x86-64 perform unaligned loads in hardware.
 TEST_F(ElfTest, symbolTableMisalignedEntries) {
     const uint16_t NSEC = 6;
     const uint64_t shoff = sizeof(Elf64_Ehdr);
@@ -655,6 +661,10 @@ TEST_F(ElfTest, symbolTableMisalignedEntries) {
     const uint64_t str_off = sym_off + sizeof(sym);
     const char strtab[] = "\0mis_main\0mis_helper\0";  // 22 bytes: names at 1 and 10
     const uint64_t rela_off = str_off + sizeof(strtab);
+    // ElfRelocation entries are still read through a cast pointer, so a
+    // misaligned .rela.plt would abort the asan build in addRelocationSymbols()
+    // before the symbol lookup under test; keep only .symtab misaligned.
+    ASSERT_EQ(rela_off % alignof(Elf64_Rela), 0u);
     Elf64_Rela rela;
     memset(&rela, 0, sizeof(rela));
     rela.r_offset = 0x4000;
@@ -711,8 +721,9 @@ TEST_F(ElfTest, symbolTableMisalignedEntries) {
     EXPECT_EQ(cc.findSymbol("mis_main"), (const void*)0x20000);
     EXPECT_EQ(cc.findSymbol("mis_helper"), (const void*)0x21000);
     // The PLT name came from the misaligned symbol-index lookup in
-    // addRelocationSymbols(): symbol 1 resolves to "mis_helper@plt".
-    EXPECT_NE(cc.findSymbol("mis_helper@plt"), nullptr);
+    // addRelocationSymbols(): symbol 1 resolves to "mis_helper@plt", placed at
+    // the first stub after the PLT header.
+    EXPECT_EQ(cc.findSymbol("mis_helper@plt"), (const void*)(0x3000 + PLT_HEADER_SIZE));
 }
 
 #endif //__linux__

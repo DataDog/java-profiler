@@ -99,6 +99,14 @@ class Libraries {
   // to addLibraryForTest(), so it must not be combined with caller-owned
   // caches in the same binary. Test teardown only (see
   // CodeCacheArray::freeForTest).
+  //
+  // LibraryPatcher's patch tables (_patched_entries, _sigaction_entries,
+  // _socket_entries) keep raw CodeCache pointers, and has_entry_for() matches
+  // them by address, so freeing would leave them dangling and let a later
+  // cache allocated at a reused address pass as already patched. Only call
+  // this in a binary that never patches: no LibraryPatcher::initialize()
+  // (patch_libraries() and patch_sigaction() return early without it), no
+  // install_socket_hooks(), and no refresher thread running.
   void freeNativeLibsForTest() { _native_libs.freeForTest(); }
 #endif
 
