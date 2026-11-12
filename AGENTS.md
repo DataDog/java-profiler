@@ -438,8 +438,8 @@ exception list.
   mechanism, invariant, or consequence) the reader could not get from the code. A
   longer comment needs a reason a reviewer would accept; prefer cutting — a verbose
   comment is review surface, not safety. The same cut applies to `doc/` paragraphs and
-  PR descriptions. No tool enforces this, because it takes judgment; the agentic review
-  checks it (see Agentic Code Review).
+  PR descriptions. No tool enforces this, because it takes judgment; the agentic pre-PR
+  review checks it.
 - Comments: "why" comments must reference concrete mechanisms (e.g. "ASAN's allocator
   lock is reentrant"), never speculative claims about HotSpot/glibc/ASAN/ISA internals — if
   unsure, describe the observable symptom. Describe current behavior, not history; cite no
@@ -500,8 +500,3 @@ of this file. These rules always apply:
 Isolation, parallel sessions and the rest of the tracking contract are in
 [doc/WorkTracking.md](doc/WorkTracking.md) and enforced by review discipline. Existing
 production-change guidelines and review rules still apply in full.
-
-## Agentic Code Review
-
-Every PR needs the agentic pre-PR review
-([`pre-pr-review`](.agents/skills/pre-pr-review/SKILL.md)); hooks enforce it.
