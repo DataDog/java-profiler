@@ -122,6 +122,11 @@ val compileEstimator = tasks.register<NativeCompileTask>("compileNativeMemEstima
     file("src/estimatorSupport_linux.cpp"),
     project(":ddprof-lib").file("src/main/cpp/nativeMem.cpp"),
   )
+  // NativeCompileTask does not scan headers, so the two directly included
+  // ones are tracked as inputs to keep a header edit from reusing a stale
+  // object file.
+  inputs.file(file("src/estimatorSupport.h"))
+  inputs.file(project(":ddprof-lib").file("src/main/cpp/nativeMem.h"))
   includes.from(project(":ddprof-lib").file("src/main/cpp"))
   objectFileDir.set(estimatorObjDir)
 }
@@ -146,10 +151,12 @@ tasks.register<Exec>("runNativeMemEstimator") {
 
   executable = estimatorBinary.absolutePath
 
-  // Add any additional arguments passed to the Gradle task
+  // Add any additional arguments passed to the Gradle task. A separate
+  // property keeps -Pargs for runBenchmark: the estimator rejects the
+  // benchmark's options (--iterations) and vice versa.
   doFirst {
-    if (project.hasProperty("args")) {
-      args(project.property("args").toString().split(" "))
+    if (project.hasProperty("estimatorArgs")) {
+      args(project.property("estimatorArgs").toString().split(" "))
     }
     println("Running estimator: ${estimatorBinary.absolutePath}")
   }
