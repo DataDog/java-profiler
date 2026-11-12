@@ -2,7 +2,9 @@
 # Copyright 2026, Datadog, Inc.
 """git pre-push hook: refuse to update a branch that has an open PR unless the
 pushed commits match its review marker (utils/review-marker.py as of origin/main),
-and refuse any branch push whose commit fails the copyright or CLAUDE.md check."""
+and refuse any branch push whose commit fails the copyright or CLAUDE.md check.
+A push to a branch with an open PR that passes those gates warns to re-verify the
+PR description against the pushed commits."""
 
 import subprocess
 import sys
@@ -101,11 +103,12 @@ def main():
         sys.stdin.read()
         return 0  # the gate is not on the default branch yet
     blocked = False
+    warnings = []
     for line in sys.stdin:
         parts = line.split()
         if len(parts) != 4:
             continue
-        local_ref, local_sha, remote_ref, _ = parts
+        local_ref, local_sha, remote_ref, remote_sha = parts
         if set(local_sha) == {"0"} or not remote_ref.startswith(HEADS):
             continue  # deletions (all-zero id, SHA-1 or SHA-256) and tags are not gated
         remote_branch = remote_ref[len(HEADS):]
@@ -118,19 +121,30 @@ def main():
         res = subprocess.run([sys.executable, "-I", "-c", source, "check", "--branch", branch,
                               "--commit", local_sha], stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE)
-        # The local check runs first so a fresh marker costs no network call.
-        if res.returncode == 0 or not has_open_pr(remote_branch):
-            continue
-        reason = res.stderr.decode(errors="replace").strip()
-        if res.returncode == 1:
-            print("pre-push: %s has an open PR and %s.\nRun the pre-pr-review skill "
-                  "(.agents/skills/pre-pr-review), then push again." % (remote_branch, reason),
-                  file=sys.stderr)
-        else:
-            print("pre-push: cannot check the review marker of %s: %s\nFix that, or "
-                  "after a manual review push with --no-verify." % (branch, reason),
-                  file=sys.stderr)
-        blocked = True
+        # The open-PR probe runs even for a fresh marker: it also drives the description
+        # warning below. Fails open (no warning, no block) like every gh call here. A
+        # remote ref still at the all-zero id is being created by this push and cannot
+        # have an open PR.
+        open_pr = False if set(remote_sha) == {"0"} else has_open_pr(remote_branch)
+        if res.returncode != 0 and open_pr:
+            reason = res.stderr.decode(errors="replace").strip()
+            if res.returncode == 1:
+                print("pre-push: %s has an open PR and %s.\nRun the pre-pr-review skill "
+                      "(.agents/skills/pre-pr-review), then push again." % (remote_branch, reason),
+                      file=sys.stderr)
+            else:
+                print("pre-push: cannot check the review marker of %s: %s\nFix that, or "
+                      "after a manual review push with --no-verify." % (branch, reason),
+                      file=sys.stderr)
+            blocked = True
+        elif open_pr:
+            # Deferred: a warning on one ref is noise when another ref blocks the push
+            # and nothing lands; it prints only when the push goes through.
+            warnings.append("pre-push: %s has an open PR; re-verify its title and description "
+                            "against the pushed commits (pr-writing skill)." % remote_branch)
+    if not blocked:
+        for warning in warnings:
+            print(warning, file=sys.stderr)
     return 1 if blocked else 0
 
 
