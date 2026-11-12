@@ -100,3 +100,11 @@ com.datadoghq.profiler.cpu.TlsPrimingTest.* | PROF-16281 | 2026-10-20 | 2027-01-
 # Scoped to the gtest tsan cells so a failure in the regular suite, in asan, or
 # on another arch still gates.
 LineNumberTableCopyTest.RejectsUnmappedSource | PROF-16621 | 2026-11-12 | 2027-02-10 | glibc-tsan-* | Failed on attempt 1 and passed the full-suite retry (job 2243650462); fault-recovery timing under TSan instrumentation, unrelated to the triggering change set
+
+# PROF-16632 -- TSan aborts the whole elfparser_ut binary: the test's unmap
+# thread dlclose()s the library concurrently with Symbols::parseLibraries(),
+# and the uninstrumented libc dlclose free() races verifyBaseAddress()'s
+# dlinfo/dladdr reads of loader-owned memory (symbols_linux.cpp). Timing
+# dependent: observed once on glibc-tsan-aarch64 (param /12), the same job on
+# main and a manual retry both passed all 12 params.
+ElfTestParam.invalidElfSmallMappingAfterUnmap | PROF-16632 | 2026-11-12 | 2027-02-10 | *tsan-* | dlclose on the unmap thread races verifyBaseAddress()'s loader-memory reads; TSan aborts the binary, run-gtest-quarantine.sh fails the job with no retry
