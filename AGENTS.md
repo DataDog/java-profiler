@@ -372,10 +372,7 @@ exception list.
 ## Development Guidelines
 
 - Never replace the code you work on with stubs. Never "fix" tests by testing constants
-  against constants. Never claim success until all affected tests pass; before claiming
-  it, load the `verify-profiler-change` skill
-  ([.agents/skills/verify-profiler-change/SKILL.md](.agents/skills/verify-profiler-change/SKILL.md)),
-  which says which builds and tests each kind of change needs.
+  against constants. Never claim success until all affected tests pass.
   `assert()` is compiled out of release builds (`-DNDEBUG`): never rely on it for safety
   and never put side effects in it.
 - Platform-specific code goes in per-OS implementation files (`os_linux.cpp`,
@@ -476,17 +473,10 @@ exception list.
 ## Work Tracking
 
 Work runs in four phases — Intent → Design → Build and Test → Deploy — with the
-tracker ticket as the system of record: Jira (`PROF-<n>`) for Datadog engineers,
-GitHub issues for external contributors. **Read [doc/WorkTracking.md](doc/WorkTracking.md)
-before starting tracked work** — it is the phase-by-phase process reference; skipping
-it must be disclosed per the rule at the top of this file. Before creating, updating or
-moving a Jira ticket, load the `ticket-writing` skill
-([.agents/skills/ticket-writing/SKILL.md](.agents/skills/ticket-writing/SKILL.md)); before
-writing a design, acceptance criteria or a Build plan, load the `work-planning` skill
-([.agents/skills/work-planning/SKILL.md](.agents/skills/work-planning/SKILL.md)); before
-triaging an existing PROF Jira ticket, load the `ticket-triage` skill
-([.agents/skills/ticket-triage/SKILL.md](.agents/skills/ticket-triage/SKILL.md)). These
-rules always apply:
+tracker ticket as the system of record: Jira (`PROF-<n>`). **Read
+[doc/WorkTracking.md](doc/WorkTracking.md) before starting tracked work** — it is the
+phase-by-phase process reference; skipping it must be disclosed per the rule at the top
+of this file. These rules always apply:
 
 - **Verification first.** No transition happens on claims: acceptance criteria before
   code, tests and review before merge, production verification before closure. **Fix
@@ -511,38 +501,7 @@ Isolation, parallel sessions and the rest of the tracking contract are in
 [doc/WorkTracking.md](doc/WorkTracking.md) and enforced by review discipline. Existing
 production-change guidelines and review rules still apply in full.
 
-## Agentic Code Review (mandatory before opening a PR)
+## Agentic Code Review
 
-No pull request is opened, marked ready, or updated with fixes until an agentic code
-review of the full change set has completed and its Critical/High findings are fixed
-or explicitly waived by the user. Run the `pre-pr-review` skill
-([.agents/skills/pre-pr-review/SKILL.md](.agents/skills/pre-pr-review/SKILL.md)): it
-picks the reviewer and effort within a review budget, adds the self-checks (dead code,
-misspellings, comment budget, no plan/spec references), and records the result with
-`utils/review-marker.py`. If the
-harness has no review capability, say so and get explicit user sign-off — never
-silently skip it. While the marker is stale, `.githooks/pre-push` refuses pushes to
-a branch with an open PR (install with `utils/review-marker.py install-hook`, never
-via `core.hooksPath`), and in Claude Code and Pi (`.pi/extensions/`) the
-`require-fresh-review` hook blocks `gh pr create`/`gh pr ready` for this repository.
-To review another engineer's PR, load the `pr-review` skill
-([.agents/skills/pr-review/SKILL.md](.agents/skills/pr-review/SKILL.md)).
-
-## Pull Request Descriptions, Comments and Commits
-
-Before writing or editing a PR title or description, a PR comment or review reply, a
-Jira comment or a commit message, load the `pr-writing` skill
-([.agents/skills/pr-writing/SKILL.md](.agents/skills/pr-writing/SKILL.md)).
-
-## CI / Automation Script Changes
-
-Before editing CI configuration (`.gitlab-ci.yml`, `.gitlab/**`, `.github/**`) or a
-script that CI, Gradle or a hook runs, and before deleting any tracked file or removing an
-entry from a default list or config, load the `ci-script-change` skill
-([.agents/skills/ci-script-change/SKILL.md](.agents/skills/ci-script-change/SKILL.md)).
-
-## Documentation Rules
-
-Before creating, editing, renaming or deleting a file under `doc/`, load the
-`doc-writing` skill ([.agents/skills/doc-writing/SKILL.md](.agents/skills/doc-writing/SKILL.md)).
-CI (`qualityChecks`) checks doc naming and the `doc/README.md` index.
+Every PR needs the agentic pre-PR review
+([`pre-pr-review`](.agents/skills/pre-pr-review/SKILL.md)); hooks enforce it.
