@@ -337,6 +337,17 @@ void Profiler::setTaskBlockRecordOverrideForTest(
     TaskBlockRecordOverride override) {
   g_test_task_block_record_override.store(override, std::memory_order_release);
 }
+
+static std::atomic<Profiler::TaskBlockActivityHook> g_test_task_block_activity_hook{nullptr};
+
+void Profiler::setTaskBlockActivityHookForTest(TaskBlockActivityHook hook) {
+  g_test_task_block_activity_hook.store(hook, std::memory_order_release);
+}
+
+void Profiler::runTaskBlockActivityHookForTest(TaskBlockActivityStage stage) {
+  TaskBlockActivityHook hook = g_test_task_block_activity_hook.load(std::memory_order_acquire);
+  if (hook != nullptr) hook(stage);
+}
 #endif
 
 void Profiler::unregisterThreadInEngines(int tid) {
@@ -1177,23 +1188,39 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
 }
 
 bool Profiler::tryEnterTaskBlockActivity() {
-  if (_task_block_rotation.load(std::memory_order_acquire)) return false;
-  _task_block_inflight.fetch_add(1, std::memory_order_acq_rel);
-  if (_task_block_rotation.load(std::memory_order_acquire)) {
-    _task_block_inflight.fetch_sub(1, std::memory_order_acq_rel);
-    return false;
+  u64 state = _task_block_activity_state.load(std::memory_order_acquire);
+  if (state & TASK_BLOCK_CLOSED) return false;
+#ifdef UNIT_TEST
+  runTaskBlockActivityHookForTest(TaskBlockActivityStage::BEFORE_RESERVATION);
+#endif
+  // Admission and closure share one atomic modification order. A successful
+  // CAS before closure contributes to the count rotation drains; a CAS after
+  // closure fails and cannot add a reservation while the closed bit is set.
+  bool admitted = false;
+  while (!(state & TASK_BLOCK_CLOSED)) {
+    if (_task_block_activity_state.compare_exchange_weak(
+            state, state + 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+      admitted = true;
+      break;
+    }
   }
-  return true;
+#ifdef UNIT_TEST
+  runTaskBlockActivityHookForTest(TaskBlockActivityStage::AFTER_RESERVATION);
+#endif
+  return admitted;
 }
 
 void Profiler::leaveTaskBlockActivity() {
-  _task_block_inflight.fetch_sub(1, std::memory_order_release);
+  _task_block_activity_state.fetch_sub(1, std::memory_order_release);
 }
 
 bool Profiler::beginTaskBlockRotation() {
   static const long TASK_BLOCK_ROTATION_TIMEOUT_NS = 200000000L; // 200ms, matches SignalInflight::drain()
-  _task_block_rotation.store(true, std::memory_order_release);
-  if (_task_block_inflight.load(std::memory_order_acquire) == 0) {
+  u64 state = _task_block_activity_state.fetch_or(TASK_BLOCK_CLOSED, std::memory_order_acq_rel);
+#ifdef UNIT_TEST
+  runTaskBlockActivityHookForTest(TaskBlockActivityStage::AFTER_CLOSURE);
+#endif
+  if ((state & ~TASK_BLOCK_CLOSED) == 0) {
     return true; // fast path: nothing in flight
   }
 
@@ -1201,7 +1228,7 @@ bool Profiler::beginTaskBlockRotation() {
   if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
     Log::error("Profiler::beginTaskBlockRotation: clock_gettime(CLOCK_MONOTONIC) failed "
                "(errno=%d). Skipping task-block rotation to avoid a stuck wait.", errno);
-    _task_block_rotation.store(false, std::memory_order_release);
+    _task_block_activity_state.fetch_and(~TASK_BLOCK_CLOSED, std::memory_order_release);
     return false;
   }
   deadline.tv_nsec += TASK_BLOCK_ROTATION_TIMEOUT_NS;
@@ -1210,24 +1237,26 @@ bool Profiler::beginTaskBlockRotation() {
     deadline.tv_nsec -= 1000000000L;
   }
 
-  while (_task_block_inflight.load(std::memory_order_acquire) != 0) {
+  // The acquire load of the drained count observes the recorders' release
+  // decrements before teardown. Timeout reopens admission without losing count.
+  while ((_task_block_activity_state.load(std::memory_order_acquire) & ~TASK_BLOCK_CLOSED) != 0) {
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
       Log::error("Profiler::beginTaskBlockRotation: clock_gettime(CLOCK_MONOTONIC) failed "
                  "(errno=%d). Skipping task-block rotation to avoid a stuck wait.", errno);
-      _task_block_rotation.store(false, std::memory_order_release);
+      _task_block_activity_state.fetch_and(~TASK_BLOCK_CLOSED, std::memory_order_release);
       return false;
     }
     if (now.tv_sec > deadline.tv_sec ||
         (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
-      u64 remaining = _task_block_inflight.load(std::memory_order_acquire);
+      u64 remaining = _task_block_activity_state.load(std::memory_order_acquire) & ~TASK_BLOCK_CLOSED;
       Log::error("Profiler::beginTaskBlockRotation: timed out after %ldms waiting for "
                  "%llu in-flight TaskBlock recording(s). Skipping task-block rotation; "
                  "this indicates a stuck TaskBlock record path.",
                  TASK_BLOCK_ROTATION_TIMEOUT_NS / 1000000L,
                  (unsigned long long)remaining);
       Counters::increment(TASK_BLOCK_ROTATION_TIMEOUT);
-      _task_block_rotation.store(false, std::memory_order_release);
+      _task_block_activity_state.fetch_and(~TASK_BLOCK_CLOSED, std::memory_order_release);
       return false;
     }
     std::this_thread::yield();
@@ -1236,7 +1265,7 @@ bool Profiler::beginTaskBlockRotation() {
 }
 
 void Profiler::endTaskBlockRotation() {
-  _task_block_rotation.store(false, std::memory_order_release);
+  _task_block_activity_state.fetch_and(~TASK_BLOCK_CLOSED, std::memory_order_release);
 }
 
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,

@@ -12,9 +12,36 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <thread>
+
+class ProfilerTestAccessor {
+public:
+  static bool exchangeTaskBlockEnabled(bool enabled) {
+    return Profiler::instance()->_task_block_enabled.exchange(enabled, std::memory_order_acq_rel);
+  }
+  static bool exchangeOmitStacktraces(bool omit) {
+    Profiler* profiler = Profiler::instance();
+    bool previous = profiler->_omit_stacktraces;
+    profiler->_omit_stacktraces = omit;
+    return previous;
+  }
+  static FlightRecorder& recorder() { return Profiler::instance()->_jfr; }
+  static int stripe(int tid) { return Profiler::instance()->getLockIndex(tid); }
+  static SpinLock& lock(int stripe) { return Profiler::instance()->_locks[stripe]; }
+};
+
+class FlightRecorderTestAccessor {
+public:
+  static Recording* exchangeRecording(FlightRecorder& recorder, Recording* recording) {
+    Recording* previous = recorder._rec;
+    recorder._rec = recording;
+    return previous;
+  }
+};
 
 namespace {
 
@@ -47,7 +74,10 @@ u64 minEligibleEndTicks(u64 start_ticks) {
 
 class TaskBlockRecorderTest : public ::testing::Test {
 protected:
+  bool previous_enabled;
+
   void SetUp() override {
+    previous_enabled = ProfilerTestAccessor::exchangeTaskBlockEnabled(false);
     Counters::reset();
     initializeTaskBlockDurationThreshold();
     g_record_result.store(Profiler::TaskBlockRecordResult::RECORDED,
@@ -57,7 +87,10 @@ protected:
   }
 
   void TearDown() override {
+    Profiler::setTaskBlockActivityHookForTest(nullptr);
     Profiler::setTaskBlockRecordOverrideForTest(nullptr);
+    ProfilerTestAccessor::exchangeTaskBlockEnabled(previous_enabled);
+    EXPECT_EQ(0, Profiler::instance()->taskBlockInflightForTest());
     Counters::reset();
   }
 };
@@ -296,4 +329,223 @@ TEST_F(TaskBlockRecorderTest, RecordFailureIsCountedAndActivityReleased) {
   EXPECT_EQ(0, Profiler::instance()->taskBlockInflightForTest());
   ASSERT_TRUE(Profiler::instance()->tryEnterTaskBlockActivity());
   Profiler::instance()->leaveTaskBlockActivity();
+}
+
+namespace {
+struct AdmissionBarrier {
+  std::mutex mutex;
+  std::condition_variable changed;
+  int reached = 0;
+  int resumed = 0;
+
+  void pause() {
+    std::unique_lock<std::mutex> lock(mutex);
+    int stage = ++reached;
+    changed.notify_all();
+    changed.wait(lock, [&] { return resumed >= stage; });
+  }
+  bool await(int stage) {
+    std::unique_lock<std::mutex> lock(mutex);
+    return changed.wait_for(lock, std::chrono::seconds(5), [&] { return reached >= stage; });
+  }
+  void resume(int stage) {
+    std::lock_guard<std::mutex> lock(mutex);
+    resumed = stage;
+    changed.notify_all();
+  }
+};
+AdmissionBarrier* admission_barrier = nullptr;
+void pauseAdmission(Profiler::TaskBlockActivityStage stage) {
+  if (stage == Profiler::TaskBlockActivityStage::BEFORE_RESERVATION ||
+      stage == Profiler::TaskBlockActivityStage::AFTER_RESERVATION) admission_barrier->pause();
+}
+void pauseReservationAndClosure(Profiler::TaskBlockActivityStage stage) {
+  if (stage == Profiler::TaskBlockActivityStage::AFTER_RESERVATION ||
+      stage == Profiler::TaskBlockActivityStage::AFTER_CLOSURE) admission_barrier->pause();
+}
+void pauseExitAcrossRestart(Profiler::TaskBlockActivityStage stage) {
+  if (stage == Profiler::TaskBlockActivityStage::BEFORE_RESERVATION ||
+      stage == Profiler::TaskBlockActivityStage::AFTER_EXIT) admission_barrier->pause();
+}
+} // namespace
+
+TEST_F(TaskBlockRecorderTest, ClosedAndDrainedRotationCannotGainAReservation) {
+  Profiler* profiler = Profiler::instance();
+  AdmissionBarrier barrier;
+  admission_barrier = &barrier;
+  Profiler::setTaskBlockActivityHookForTest(pauseAdmission);
+  bool entered = true;
+  std::thread recorder([&] {
+    entered = profiler->tryEnterTaskBlockActivity();
+    if (entered) profiler->leaveTaskBlockActivity();
+  });
+  EXPECT_TRUE(barrier.await(1));
+  EXPECT_TRUE(profiler->beginTaskBlockRotationForTest());
+  barrier.resume(1);
+  EXPECT_TRUE(barrier.await(2));
+  EXPECT_TRUE(profiler->taskBlockRotationActiveForTest());
+  EXPECT_EQ(0, profiler->taskBlockInflightForTest())
+      << "a closed and drained recording cannot gain a transient reservation";
+  barrier.resume(2);
+  recorder.join();
+  EXPECT_FALSE(entered);
+  profiler->endTaskBlockRotationForTest();
+  Profiler::setTaskBlockActivityHookForTest(nullptr);
+  admission_barrier = nullptr;
+}
+
+TEST_F(TaskBlockRecorderTest, ReservationBeforeClosureMustDrainBeforeRotationReturns) {
+  Profiler* profiler = Profiler::instance();
+  AdmissionBarrier barrier;
+  admission_barrier = &barrier;
+  Profiler::setTaskBlockActivityHookForTest(pauseReservationAndClosure);
+  bool entered = false;
+  std::thread recorder([&] {
+    entered = profiler->tryEnterTaskBlockActivity();
+    if (entered) profiler->leaveTaskBlockActivity();
+  });
+  EXPECT_TRUE(barrier.await(1));
+  std::atomic<bool> rotation_returned{false};
+  bool drained = false;
+  std::thread rotation([&] {
+    drained = profiler->beginTaskBlockRotationForTest();
+    rotation_returned.store(true, std::memory_order_release);
+  });
+  EXPECT_TRUE(barrier.await(2));
+  EXPECT_TRUE(profiler->taskBlockRotationActiveForTest());
+  EXPECT_EQ(1, profiler->taskBlockInflightForTest());
+  EXPECT_FALSE(rotation_returned.load(std::memory_order_acquire));
+  barrier.resume(1);
+  recorder.join();
+  EXPECT_TRUE(entered);
+  EXPECT_EQ(0, profiler->taskBlockInflightForTest());
+  barrier.resume(2);
+  rotation.join();
+  EXPECT_TRUE(drained);
+  profiler->endTaskBlockRotationForTest();
+  Profiler::setTaskBlockActivityHookForTest(nullptr);
+  admission_barrier = nullptr;
+}
+
+TEST_F(TaskBlockRecorderTest, ExitPausedBeforeAdmissionCannotRecordIntoNextRecording) {
+  constexpr int tid = 12345;
+  ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  filter.setBlockTracker(&tracker);
+  filter.init("", true);
+  ThreadFilter::SlotID slot_id = filter.registerThread(tid);
+  ASSERT_GE(slot_id, 0);
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+      ProfiledThread::forTid(tid), ProfiledThread::deleteForTest);
+  current->setFilterSlotId(slot_id);
+  u64 token = tracker.enterBlockedRun(
+      &filter, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+  ASSERT_NE(0ULL, token);
+  Context context{};
+  ASSERT_TRUE(exceedsMinTaskBlockDuration(1, TSC::ticks()));
+  ASSERT_TRUE(current->taskBlockEnter(token, 1, context));
+
+  Profiler* profiler = Profiler::instance();
+  ProfilerTestAccessor::exchangeTaskBlockEnabled(true);
+  AdmissionBarrier barrier;
+  admission_barrier = &barrier;
+  Profiler::setTaskBlockActivityHookForTest(pauseExitAcrossRestart);
+  bool recorded = true;
+  std::thread recorder([&] {
+    recorded = recordTaskBlockAtExit(
+        current.get(), &filter, &tracker, nullptr, 0, token, 0, 0);
+  });
+  EXPECT_TRUE(barrier.await(1));
+  // Exercise stop's enabled/drain/registry sequence without a live JVM.
+  ProfilerTestAccessor::exchangeTaskBlockEnabled(false);
+  EXPECT_TRUE(profiler->beginTaskBlockRotationForTest());
+  filter.deactivateRecording();
+  profiler->endTaskBlockRotationForTest();
+  EXPECT_EQ(0, filter.recordingEpoch());
+  barrier.resume(1);
+  EXPECT_TRUE(barrier.await(2));
+  EXPECT_EQ(BlockRunOwner::NONE, tracker.slotForId(slot_id)->activeBlockOwner());
+  filter.init("", true);
+  ProfilerTestAccessor::exchangeTaskBlockEnabled(true);
+  barrier.resume(2);
+  recorder.join();
+  Profiler::setTaskBlockActivityHookForTest(nullptr);
+  admission_barrier = nullptr;
+
+  EXPECT_FALSE(recorded);
+  EXPECT_EQ(0, g_record_calls.load(std::memory_order_acquire));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_EMITTED));
+  EXPECT_EQ(0, profiler->taskBlockInflightForTest());
+
+  slot_id = filter.registerThread(tid);
+  current->setFilterSlotId(slot_id);
+  token = tracker.enterBlockedRun(
+      &filter, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+  ASSERT_NE(0ULL, token);
+  ASSERT_TRUE(current->taskBlockEnter(token, 1, context));
+  EXPECT_TRUE(recordTaskBlockAtExit(
+      current.get(), &filter, &tracker, nullptr, 0, token, 0, 0));
+  EXPECT_EQ(1, g_record_calls.load(std::memory_order_acquire));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
+}
+
+class TaskBlockRecorderOverflowTest : public TaskBlockRecorderTest {
+protected:
+  std::unique_ptr<Recording> recording;
+  Recording* previous_recording = nullptr;
+  bool previous_omit = false;
+
+  void SetUp() override {
+    TaskBlockRecorderTest::SetUp();
+    recording = std::make_unique<Recording>();
+    Profiler::setTaskBlockRecordOverrideForTest(nullptr);
+    previous_omit = ProfilerTestAccessor::exchangeOmitStacktraces(true);
+    previous_recording = FlightRecorderTestAccessor::exchangeRecording(
+        ProfilerTestAccessor::recorder(), recording.get());
+  }
+
+  void TearDown() override {
+    if (recording) {
+      FlightRecorderTestAccessor::exchangeRecording(
+          ProfilerTestAccessor::recorder(), previous_recording);
+      ProfilerTestAccessor::exchangeOmitStacktraces(previous_omit);
+      recording.reset();
+    }
+    for (int stripe = 0; stripe < CONCURRENCY_LEVEL; ++stripe) {
+      bool acquired = ProfilerTestAccessor::lock(stripe).tryLock();
+      EXPECT_TRUE(acquired) << "leaked stripe " << stripe;
+      if (acquired) ProfilerTestAccessor::lock(stripe).unlock();
+    }
+    TaskBlockRecorderTest::TearDown();
+  }
+};
+
+TEST_F(TaskBlockRecorderOverflowTest, ThreadTableOverflowIsCountedBeforeSerialization) {
+  constexpr int tid = 123;
+  int stripe = ProfilerTestAccessor::stripe(tid);
+  FlightRecorder& recorder = ProfilerTestAccessor::recorder();
+  TaskBlockEvent event{};
+  event._start = 1;
+  event._end = 2;
+  int represented_tid = -1;
+  for (int existing = 1000; existing < 1256; ++existing) {
+    EXPECT_TRUE(recorder.recordTaskBlock(stripe, existing, &event));
+    if (ProfilerTestAccessor::stripe(existing) == stripe) represented_tid = existing;
+  }
+  ASSERT_GE(represented_tid, 0);
+  int before = recording->buffer(stripe)->offset();
+  Context context{};
+  u64 end = minEligibleEndTicks(1);
+  EXPECT_FALSE(recordTaskBlockIfEligible(
+      tid, nullptr, 0, 1, end, context, 0, 0, OSThreadState::SLEEPING));
+  EXPECT_EQ(before, recording->buffer(stripe)->offset());
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_EMITTED));
+  EXPECT_EQ(0, Profiler::instance()->taskBlockInflightForTest());
+
+  EXPECT_TRUE(recordTaskBlockIfEligible(
+      represented_tid, nullptr, 0, 1, end, context, 0, 0, OSThreadState::SLEEPING));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
+  EXPECT_GT(recording->buffer(stripe)->offset(), before);
 }

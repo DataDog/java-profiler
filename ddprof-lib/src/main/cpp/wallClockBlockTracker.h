@@ -231,14 +231,9 @@ public:
             enableUnownedBlockedFallback();
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
         }
-        // Drops an owned block run whose exit was missed (e.g. an exception
-        // path with no finally). A no-op when no run is owned, so the
-        // unowned-blocked sampling weight, which spans context-window
-        // entries/exits by design, is left untouched on every ordinary
-        // context entry. When a run is owned, tryPrepareActiveBlockRun()
-        // already disabled and cleared the unowned fallback, so resetSlot()
-        // loses no weight. block_generation is kept, so the stale token's
-        // eventual exit fails its generation check.
+        // Drops an owned run whose exit was missed. Context-boundary cleanup
+        // resets unowned sampling separately, including when no run is owned.
+        // block_generation is kept so a stale token cannot close a later run.
         //
         // TASK_BLOCK is exempt: beginTaskBlock0/endTaskBlock0 pair explicitly
         // around caller-controlled code, so the same thread calling
@@ -327,12 +322,10 @@ public:
     // THREAD_REGISTRY_UNREGISTER_ACTIVE_BLOCK_RUN).
     void resetSlotForReuse(ThreadFilter::SlotID slot_id);
     void resetAll();
-    // Drops a stuck owned block run (one whose exit was missed) without
-    // touching the unowned-blocked sampling weight. Called by
-    // ThreadFilter::add() on every context-window entry; see
-    // BlockState::clearActiveBlockRun() for why this is safe and why it
-    // leaves the weight alone.
-    void clearActiveBlockRun(ThreadFilter::SlotID slot_id);
+    // Discards unowned tails lacking original context attributes and clears
+    // missed instrumentation exits. TASK_BLOCK remains owned so its paired
+    // exit can detect a context crossing through the context epoch.
+    void resetSlotForContextBoundary(ThreadFilter::SlotID slot_id);
     bool hasActiveBlockRun(ThreadFilter::SlotID slot_id) const;
     // Liveness hook for CallTraceStorage::processTraces: a slot may cache a
     // call_trace_id for a still-blocked thread's weighted fallback tail

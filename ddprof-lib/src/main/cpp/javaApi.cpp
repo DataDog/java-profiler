@@ -221,15 +221,11 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  if (unlikely(!thread_filter->registryActive())) {
-    return;
-  }
-
   int slot_id = current->filterSlotId();
-  if (unlikely(slot_id == -1 ||
-               thread_filter->activeSlotForId(slot_id, tid) == nullptr)) {
-    // No slot yet, or a cached slot left over from an earlier recording -
-    // either way this thread is not in the context window, nothing to remove
+  ThreadFilter::Slot* slot = thread_filter->slotForId(slot_id);
+  // A matching exit must close logical membership even while stopped or stale.
+  // Native ownership lasts until teardown; never mutate a replacement owner.
+  if (slot == nullptr || slot->nativeTid() != tid) {
     return;
   }
   thread_filter->remove(slot_id);

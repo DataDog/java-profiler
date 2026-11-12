@@ -1003,6 +1003,9 @@ Recording::Recording(int fd, Arguments &args)
 }
 
 Recording::~Recording() {
+#ifdef UNIT_TEST
+  if (_fd == -1) return; // Buffer/table-only serializer fixture.
+#endif
   finishChunk(true);
   close(_fd);
 }
@@ -2729,9 +2732,9 @@ void Recording::recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
 }
 
 // assumption is that we hold the lock (with lock_index)
-void Recording::addThread(int lock_index, int tid) {
+bool Recording::addThread(int lock_index, int tid) {
     int active = _active_index.load(std::memory_order_acquire);
-    _thread_ids[lock_index][active].insert(tid);  // ThreadIdTable::insert is signal-safe (atomics only)
+    return _thread_ids[lock_index][active].insert(tid);  // ThreadIdTable::insert is signal-safe (atomics only)
 }
 
 Error FlightRecorder::start(Arguments &args, bool reset) {
@@ -2848,7 +2851,9 @@ bool FlightRecorder::recordTaskBlock(int lock_index, int tid,
     Recording* rec = _rec;
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
-      rec->addThread(lock_index, tid);
+      // Reject before serialization if eventThread cannot enter this chunk's
+      // constant pool. The TaskBlock caller counts false as RECORD_FAILED.
+      if (!rec->addThread(lock_index, tid)) return false;
       rec->recordTaskBlock(buf, tid, event);
       return true;
     }

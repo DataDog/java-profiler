@@ -215,8 +215,8 @@ private:
   // onThreadStart()/onThreadEnd() on JVMTI thread-lifecycle callbacks.
   std::atomic<bool> _reference_chains_active{false};
   std::atomic<bool> _task_block_enabled{false};
-  std::atomic<bool> _task_block_rotation{false};
-  std::atomic<u64> _task_block_inflight{0};
+  static constexpr u64 TASK_BLOCK_CLOSED = 1ULL << 63;
+  std::atomic<u64> _task_block_activity_state{0};
 
   SpinLock _locks[CONCURRENCY_LEVEL];
   CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
@@ -676,9 +676,17 @@ public:
       int tid, jthread thread, int start_depth, TaskBlockEvent *event);
   static void setTaskBlockRecordOverrideForTest(
       TaskBlockRecordOverride override);
+  enum class TaskBlockActivityStage {
+    BEFORE_RESERVATION, AFTER_RESERVATION, AFTER_CLOSURE, AFTER_EXIT
+  };
+  using TaskBlockActivityHook = void (*)(TaskBlockActivityStage stage);
+  static void setTaskBlockActivityHookForTest(TaskBlockActivityHook hook);
+  static void runTaskBlockActivityHookForTest(TaskBlockActivityStage stage);
 #endif
   bool tryEnterTaskBlockActivity();
   void leaveTaskBlockActivity();
+  bool omitStacktraces() const { return _omit_stacktraces; }
+
   bool taskBlockEnabled() const {
     return _task_block_enabled.load(std::memory_order_acquire);
   }
@@ -712,10 +720,10 @@ public:
   bool beginTaskBlockRotationForTest() { return beginTaskBlockRotation(); }
   void endTaskBlockRotationForTest() { endTaskBlockRotation(); }
   bool taskBlockRotationActiveForTest() const {
-    return _task_block_rotation.load(std::memory_order_acquire);
+    return (_task_block_activity_state.load(std::memory_order_acquire) & TASK_BLOCK_CLOSED) != 0;
   }
   int taskBlockInflightForTest() const {
-    return _task_block_inflight.load(std::memory_order_acquire);
+    return _task_block_activity_state.load(std::memory_order_acquire) & ~TASK_BLOCK_CLOSED;
   }
 
   // Returns the tid most recently passed to unregisterThread(), or -1 if it

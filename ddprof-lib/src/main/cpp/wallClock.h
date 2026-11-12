@@ -18,18 +18,20 @@
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
-#include "wallClockCandidateSelector.h"
 #include "wallClockCounters.h"
 #include "xorshift.h"
+
+enum class WallClockCandidateOutcome {
+    SIGNAL_SENT,
+    SIGNAL_FAILED,
+    PRECHECK_REJECTED,
+};
 
 class BaseWallClock : public Engine {
   private:
     static std::atomic<bool> _enabled;
     std::atomic<bool> _running;
   protected:
-    // Backfill rejected candidates without letting a population of already-
-    // suppressed blockers restore O(N) registry lookups on every wall tick.
-    static constexpr size_t PRECHECK_VISIT_BUDGET_MULTIPLIER = 4;
     long _interval;
     // Maximum number of threads sampled in one iteration. This limit serves as a
     // throttle when generating profiling signals. Otherwise applications with too
@@ -68,7 +70,7 @@ class BaseWallClock : public Engine {
     template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc, typename CleanThreadFunc>
     void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads,
                          CleanThreadFunc cleanThreads, int reservoirSize, u64 interval,
-                         bool precheck = false, bool lazyBackfill = false) {
+                         bool lookupRegistrySlot = false) {
       if (!_enabled.load(std::memory_order_acquire)) {
         return;
       }
@@ -78,12 +80,6 @@ class BaseWallClock : public Engine {
       // One generator for the life of the loop; the start tick varies the
       // stream between recordings without needing an entropy source.
       u64 rng = xorshift::seed((u64)(uintptr_t)this, TSC::ticks());
-
-      u64 candidate_generator = 0;
-      if (lazyBackfill) {
-        candidate_generator =
-            xorshift::seed((u64)(uintptr_t)&candidate_generator, TSC::ticks());
-      }
 
       std::vector<ThreadType> threads;
       threads.reserve(reservoirSize);
@@ -126,40 +122,18 @@ class BaseWallClock : public Engine {
         int permission_denied = 0;
         int registry_lookups = 0;
         u32 num_successful_samples = 0;
-        if (lazyBackfill) {
-          WallClockCandidateStats stats = selectWallClockCandidates(
-              threads,
-              static_cast<size_t>(reservoirSize),
-              static_cast<size_t>(reservoirSize) *
-                  PRECHECK_VISIT_BUDGET_MULTIPLIER,
-              candidate_generator,
-              [&](ThreadType thread) {
-                WallClockCandidateOutcome outcome = sampleThreads(
-                    thread, num_failures, threads_already_exited,
-                    permission_denied, registry_lookups, true);
-                if (outcome == WallClockCandidateOutcome::SIGNAL_SENT) {
-                  num_successful_samples++;
-                }
-                return outcome;
-              });
-          if (stats.precheck_rejected > 0) {
-            Counters::increment(WC_PRECHECK_CANDIDATES_REJECTED,
-                                stats.precheck_rejected);
+        std::vector<ThreadType> sample = reservoir.sample(threads);
+        for (ThreadType thread : sample) {
+          WallClockCandidateOutcome outcome = sampleThreads(
+              thread, num_failures, threads_already_exited,
+              permission_denied, registry_lookups, lookupRegistrySlot);
+          // Suppression replaces a selected signal, not a reservoir candidate.
+          // Count it for epoch upscaling just as a handler-suppressed signal.
+          if (outcome != WallClockCandidateOutcome::SIGNAL_FAILED) {
+            num_successful_samples++;
           }
-          if (stats.visit_limit_reached) {
-            Counters::increment(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED);
-          }
-        } else {
-          std::vector<ThreadType> sample = reservoir.sample(threads);
-          for (ThreadType thread : sample) {
-            WallClockCandidateOutcome outcome = sampleThreads(
-                thread, num_failures, threads_already_exited,
-                permission_denied, registry_lookups, false);
-            // Timer suppression replaces a signal that the handler would drop.
-            // It still consumes a reservoir selection for epoch upscaling.
-            if (outcome != WallClockCandidateOutcome::SIGNAL_FAILED) {
-              num_successful_samples++;
-            }
+          if (outcome == WallClockCandidateOutcome::PRECHECK_REJECTED) {
+            Counters::increment(WC_PRECHECK_CANDIDATES_REJECTED);
           }
         }
         if (registry_lookups > 0) {

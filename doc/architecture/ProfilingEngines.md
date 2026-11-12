@@ -408,7 +408,7 @@ loop while _running:
   collectThreads(threads)       ThreadFilter::collect() if the filter is on,
                                 else OS::listThreads() minus self and the
                                 Libraries refresher thread
-  NativeMem::setLive(NM_WALLCLOCK, capacity * sizeof(entry))
+  NativeMem::record(NM_WALLCLOCK, change_in_capacity * sizeof(entry))
   sample = ReservoirSampler(threads)     at most _reservoir_size threads
   for each: sampleThreads(t)    OS::sendSignalWithCookie(tid, SIGVTALRM,
                                 SignalCookie::wallclock())
@@ -416,13 +416,35 @@ loop while _running:
   OS::sleep(normal(interval, interval/10)), clamped to [1, 2*interval-1] ns
 ```
 
-Context-filtered prechecks run after reservoir selection, so suppression visits at
-most the reservoir size. Timer-suppressed selections count in `numSuccessfulSamples`
-like signals suppressed by the handler; failed sends do not count.
+Both context-filtered and unfiltered prechecks run **after** uniform reservoir
+selection, so timer suppression and registry lookups visit at most the reservoir
+size. Suppressed selections consume capacity and count in `numSuccessfulSamples`,
+just like signals suppressed by the handler; failed sends do not count. This keeps
+`samplePoolSize / numSuccessfulSamples` upscaling consistent with selection
+probability. `samplePoolSize` includes all collected candidates, and
+`numSuppressedOwnedBlock` reports owned suppression separately. There is no backfill.
 
-Unfiltered prechecks retain bounded candidate backfill. Their suppressed visits do
-not consume reservoir slots. `samplePoolSize` includes all collected candidates in
-both modes; `numSuppressedSampledRun` records suppression separately.
+Omitting `filter` defaults to context filtering (`filter=0`); an explicit empty
+`filter=` disables it. With empty `filter=`, an activated, supported wall engine,
+and `wallprecheck=true`, thread identities register lazily on their first context,
+park, or block hook, not eagerly at ThreadStart. Only already-sampled owned blocks
+that remain **outside** context windows can suppress signals in this mode.
+Context-scoped profiling never suppresses owned blocks. Unfiltered recordings keep
+ordinary sampling inside context windows. Stackful ASGCT uses weighted fallback
+for other unowned blocked observations. Delegated and `lightweight=true` sampling
+keep unit weight: neither publishes a reusable local trace ID for deferred tails.
+This bypass affects only unowned fallback, not owned-block decisions.
+
+Registry identity survives recording restarts until thread teardown. A new
+unfiltered epoch invalidates suppression state, which the owner resets lazily
+on its next hook; an open logical context survives that refresh, and matching
+context exits still work while stopped or stale. Context-filtered starts instead
+clear membership and eagerly reset all tracker slots. Context entry/exit drops
+unowned deferred tails: original context attributes are not retained with them.
+
+Timer backing capacity is accounted with allocation deltas and retracted on exit,
+not by replacing the shared `NM_WALLCLOCK` gauge. The tracker's eager slots array
+is accounted independently at construction/destruction even without prechecks.
 
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
 (`SIGIO`, `os.h:23`), and joins it (`wallClock.cpp:330-339`).
@@ -656,7 +678,7 @@ category list.
 |--------|-----------------------------------------------|--------------------|
 | CTimer / CTimerJvmti | `CTIMER_SIGNAL_OWN`, `CTIMER_SIGNAL_FOREIGN` | `SP_CPU` |
 | PerfEvents, ITimer, ITimerJvmti | none (the guard may increment `SAMPLES_DROPPED_THREAD_LOCAL`) | `SP_CPU` |
-| WallClockASGCT / WallClockJvmti | `WALLCLOCK_SIGNAL_OWN`, `WALLCLOCK_SIGNAL_FOREIGN`, `WC_SIGNAL_QUEUE_FULL`, `WC_SIGNAL_SUPPRESSED_SAMPLED_RUN`, `WC_UNOWNED_BLOCKED_SUPPRESSED`, `WC_UNOWNED_BLOCKED_RECORDED`, `SKIPPED_WALLCLOCK_UNWINDS` (ASGCT only) | `SP_WALL` |
+| WallClockASGCT / WallClockJvmti | `WALLCLOCK_SIGNAL_OWN`, `WALLCLOCK_SIGNAL_FOREIGN`, `WC_SIGNAL_QUEUE_FULL`, `WC_SIGNAL_SUPPRESSED_OWNED_BLOCK`, `WC_UNOWNED_BLOCKED_SUPPRESSED`, `WC_UNOWNED_BLOCKED_RECORDED`, `SKIPPED_WALLCLOCK_UNWINDS` (ASGCT only) | `SP_WALL` |
 | J9WallClock | none | `SP_CPU` and `SP_WALL` |
 | ObjectSampler | none | `SP_ALLOC` (includes `SP_LIVENESS`) |
 | LivenessTracker | `LIVENESS_URGENT_BOOST_ADMITS`, `LIVENESS_URGENT_BOOST_BACKED_OFF` | `SP_LIVENESS` |

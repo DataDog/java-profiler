@@ -104,9 +104,10 @@ void WallClockBlockTracker::resetAll() {
     }
 }
 
-void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id) {
+void WallClockBlockTracker::resetSlotForContextBoundary(ThreadFilter::SlotID slot_id) {
     BlockState* s = slotForId(slot_id);
     if (s != nullptr) {
+        s->resetUnownedBlockedSampling();
         s->clearActiveBlockRun();
     }
 }

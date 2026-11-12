@@ -282,6 +282,63 @@ TEST_F(WallClockPrecheckTest, UnownedFallbackStillAccumulatesWeightWhenEnabled) 
     EXPECT_EQ(9, Counters::getCounter(WC_UNOWNED_BLOCKED_SUPPRESSED));
 }
 
+TEST_F(WallClockPrecheckTest, ContextScopedUnownedFallbackResetsWeightAtBoundaries) {
+    filter->init("0", false);
+    slot_id = filter->registerThread(kTid);
+    ASSERT_GE(slot_id, 0);
+    current->setFilterSlotId(slot_id);
+    ASSERT_TRUE(filter->add(kTid, slot_id));
+    u64 weight = 0;
+    EXPECT_FALSE(BaseWallClock::wallPrecheckForTest(
+        current.get(), true, OSThreadState::SLEEPING, weight, true));
+    EXPECT_EQ(1ULL, weight);
+    for (int observation = 0; observation < 2; ++observation) {
+        EXPECT_TRUE(BaseWallClock::wallPrecheckForTest(
+            current.get(), true, OSThreadState::SLEEPING, weight));
+    }
+    EXPECT_EQ(2ULL, tracker->slotForId(slot_id)->unowned_blocked_pending_weight.load());
+    filter->remove(slot_id);
+    ASSERT_TRUE(filter->add(kTid, slot_id));
+    EXPECT_FALSE(BaseWallClock::wallPrecheckForTest(
+        current.get(), true, OSThreadState::SLEEPING, weight, true));
+    EXPECT_EQ(1ULL, weight);
+}
+
+TEST_F(WallClockPrecheckTest, UnfilteredContextWindowsDoNotSuppressUnownedObservations) {
+    ASSERT_TRUE(filter->add(kTid, slot_id));
+    for (int observation = 0; observation < 12; ++observation) {
+        u64 weight = 0;
+        EXPECT_FALSE(BaseWallClock::wallPrecheckForTest(
+            current.get(), true, OSThreadState::SLEEPING, weight, true));
+        EXPECT_EQ(1ULL, weight);
+    }
+    EXPECT_EQ(0, Counters::getCounter(WC_UNOWNED_BLOCKED_SUPPRESSED));
+    EXPECT_EQ(0ULL, tracker->slotForId(slot_id)->unowned_blocked_pending_weight.load());
+}
+
+TEST_F(WallClockPrecheckTest, ContextScopedOwnedBlocksAreNotSuppressed) {
+    filter->init("0", false);
+    slot_id = filter->registerThread(kTid);
+    ASSERT_GE(slot_id, 0);
+    current->setFilterSlotId(slot_id);
+    ASSERT_TRUE(filter->add(kTid, slot_id));
+    u64 token = tracker->enterBlockedRun(
+        filter, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+    ASSERT_NE(0ULL, token);
+    tracker->slotForId(slot_id)->markBlockGenerationSampled(
+        WallClockBlockTracker::tokenGeneration(token));
+    for (int observation = 0; observation < 3; ++observation) {
+        u64 weight = 0;
+        EXPECT_FALSE(BaseWallClock::wallPrecheckForTest(
+            current.get(), true, OSThreadState::SLEEPING, weight, true));
+        EXPECT_EQ(1ULL, weight);
+    }
+    EXPECT_EQ(0, Counters::getCounter(WC_SIGNAL_SUPPRESSED_OWNED_BLOCK));
+    EXPECT_EQ(0, Counters::getCounter(WC_UNOWNED_BLOCKED_SUPPRESSED));
+    EXPECT_TRUE(tracker->exitBlockedRun(
+        slot_id, WallClockBlockTracker::tokenGeneration(token)));
+}
+
 // Exercise selection and epoch accounting in the production loop without kernel signals.
 class OwnedPrecheckWallClock : public BaseWallClock {
 public:
@@ -335,7 +392,7 @@ private:
             }
             return WallClockCandidateOutcome::SIGNAL_SENT;
         };
-        timerLoopCommon<ThreadEntry>(collect, sample, [] {}, reservoir_size, 1000000, true);
+        timerLoopCommon<ThreadEntry>(collect, sample, [] {}, reservoir_size, 1000000);
     }
 };
 
@@ -426,4 +483,104 @@ TEST_F(WallClockOwnedSelectionTest, ContextScopedSelectionsAreNotSuppressed) {
     EXPECT_EQ(16u, clock.successful);
     EXPECT_EQ(0u, clock.failures);
     EXPECT_EQ(0u, clock.suppressed);
+}
+
+// Model a fixed unfiltered population through the production selection/epoch loop.
+class UnfilteredWeightWallClock : public BaseWallClock {
+public:
+    static constexpr int pool_size = 128;
+    static constexpr int reservoir_size = 16;
+    static constexpr int rounds = 2000;
+    int suppressed_population = 112;
+    std::atomic<bool> observed{false};
+    double effective_weight = 0;
+    u32 max_visits = 0;
+    u32 max_lookups = 0;
+    u64 rejected = 0;
+    const char* name() override { return "Unfiltered weighting test timer"; }
+private:
+    int completed = 0;
+    u32 visits = 0;
+    u32 signals = 0;
+    u32 lookups = 0;
+    void observeEpochForTest(const WallClockEpochEvent& epoch) override {
+        if (observed.load(std::memory_order_acquire)) return;
+        max_visits = std::max(max_visits, visits);
+        max_lookups = std::max(max_lookups, lookups);
+        if (epoch._num_successful_samples != 0) {
+            effective_weight += static_cast<double>(signals) *
+                epoch._num_samplable_threads / epoch._num_successful_samples;
+        }
+        if (++completed == rounds) observed.store(true, std::memory_order_release);
+    }
+    void timerLoop() override {
+        auto collect = [&](std::vector<int>& entries) {
+            visits = signals = lookups = 0;
+            for (int i = 0; i < pool_size; ++i) entries.push_back(i);
+        };
+        auto sample = [&](int candidate, int&, int&, int&, int& registry_lookups, bool lookup) {
+            ++visits;
+            if (lookup) { ++registry_lookups; ++lookups; }
+            if (candidate < suppressed_population) {
+                if (!observed.load(std::memory_order_acquire)) ++rejected;
+                return WallClockCandidateOutcome::PRECHECK_REJECTED;
+            }
+            ++signals;
+            return WallClockCandidateOutcome::SIGNAL_SENT;
+        };
+        timerLoopCommon<int>(collect, sample, [] {}, reservoir_size, 1000, true);
+    }
+};
+
+TEST(WallClockUnfilteredSelectionTest, MixedPopulationRetainsEffectiveWeightAndLookupBound) {
+    auto previous = std::signal(WAKEUP_SIGNAL, +[](int) {});
+    UnfilteredWeightWallClock clock;
+    clock.enableEvents(true);
+    Arguments args;
+    args._wall = 1000;
+    ASSERT_FALSE(clock.start(args));
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!clock.observed.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+    clock.stop();
+    clock.enableEvents(false);
+    std::signal(WAKEUP_SIGNAL, previous);
+    ASSERT_TRUE(clock.observed.load(std::memory_order_acquire));
+    double expected = (clock.pool_size - clock.suppressed_population) * clock.rounds;
+    EXPECT_NEAR(expected, clock.effective_weight, expected * 0.15);
+    EXPECT_LE(clock.max_visits, clock.reservoir_size);
+    EXPECT_LE(clock.max_lookups, clock.reservoir_size);
+    EXPECT_GT(clock.max_lookups, 0u);
+    EXPECT_GT(clock.rejected, 0u);
+}
+
+class ProfilerTestAccessor {
+public:
+    static void setOmitStacktraces(Profiler* profiler, bool omit) {
+        profiler->_omit_stacktraces = omit;
+    }
+};
+
+TEST_F(WallClockPrecheckTest, LightweightShortBurstsConserveEveryObservation) {
+    filter->remove(slot_id);
+    ASSERT_FALSE(filter->activeSlotForId(slot_id, kTid)->inContextWindow());
+    ASSERT_EQ(BlockRunOwner::NONE, tracker->slotForId(slot_id)->activeBlockOwner());
+    ASSERT_TRUE(tracker->slotForId(slot_id)->unownedBlockedFallbackEnabled());
+    bool previous = profiler->omitStacktraces();
+    ProfilerTestAccessor::setOmitStacktraces(profiler, true);
+    u64 emitted_weight = 0;
+    for (int burst = 0; burst < 3; ++burst) {
+        for (int observation = 0; observation < 7; ++observation) {
+            OSThreadState state = observation < 6 ? OSThreadState::SLEEPING
+                                                  : OSThreadState::RUNNABLE;
+            u64 weight = 0;
+            bool suppressed = BaseWallClock::wallPrecheckForTest(
+                current.get(), true, state, weight, true);
+            if (!suppressed) emitted_weight += weight;
+        }
+    }
+    ProfilerTestAccessor::setOmitStacktraces(profiler, previous);
+    EXPECT_EQ(21ULL, emitted_weight);
+    EXPECT_EQ(0ULL, tracker->slotForId(slot_id)->unowned_blocked_pending_weight.load());
+    EXPECT_EQ(0, Counters::getCounter(WC_UNOWNED_BLOCKED_SUPPRESSED));
 }

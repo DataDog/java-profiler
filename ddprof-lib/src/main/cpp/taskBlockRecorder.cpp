@@ -46,8 +46,8 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
                            const Context& context, u64 blocker,
                            u64 unblocking_span_id) {
   Profiler* profiler = Profiler::instance();
-  bool recording_enabled = profiler->taskBlockEnabled();
   TaskBlockActivity activity;
+  bool recording_enabled = profiler->taskBlockEnabled();
 
   ThreadFilter::SlotID slot_id = WallClockBlockTracker::tokenSlotId(block_token);
   u64 generation = WallClockBlockTracker::tokenGeneration(block_token);
@@ -62,6 +62,10 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   bool exited = current_slot == slot_id &&
       tracker->snapshotAndExitBlockedRun(thread_filter, slot_id, generation,
                                          &snapshot);
+#ifdef UNIT_TEST
+  Profiler::runTaskBlockActivityHookForTest(
+      Profiler::TaskBlockActivityStage::AFTER_EXIT);
+#endif
 
   if (!activity.active()) {
     // TaskBlockActivity's constructor already incremented TASK_BLOCK_DROPPED_ROTATION.

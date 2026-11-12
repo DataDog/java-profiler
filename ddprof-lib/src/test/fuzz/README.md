@@ -183,14 +183,19 @@ fixed tid domain so slot reuse and registration collisions are frequent. A
 shadow model tracks which tid should currently own which slot and traps on
 any divergence.
 
-**Expected bugs**: a still-live tid handed a second slot, two live tids
-sharing one slot (the single-owner invariant reviewers flagged as at risk
-from `add()`'s unchecked lazy-index fallback), a registry restart
-(`init()`) failing to clear a slot's block-run state via
-`WallClockBlockTracker::resetAll()`, a stale or forged generation token
-incorrectly clearing a newer block run, and any out-of-bounds/use-after-free
-in the lazy chunk allocation paths that slot reuse and registry resets
-exercise.
+**Expected bugs**: a still-live tid handed a second slot, two live tids sharing
+one slot, a new unfiltered recording epoch failing to invalidate stale suppression,
+owner re-registration failing to reset recording-local block state, a stale or
+forged generation token clearing a newer block run, and out-of-bounds/use-after-free
+in lazy chunk allocation and slot reuse. Unfiltered refresh preserves logical
+context membership; it does not call `resetAll()`. Context-filtered starts clear
+membership and eagerly reset tracker slots via `clearActive()`.
+
+The fuzzer activates the registry with `init("", true)`. In production this requires
+an explicit empty `filter=` and a supported, activated wall engine with precheck;
+omitting `filter` defaults to context filtering. Unfiltered identities register
+lazily on context/block/park hooks. Suppression there applies only to owned blocks
+that remain outside context windows, not arbitrary unowned blocked observations.
 
 ## Corpus
 
