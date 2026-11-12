@@ -52,7 +52,9 @@ function log_info() {
 # find -print -quit) can hand the validator a first-period snapshot holding
 # only a fraction of the events.
 newest_jfr() {
-  ls -t "${1}"/*.jfr 2>/dev/null | head -1
+  # || true: with an unexpanded glob ls exits 2 and pipefail would abort the
+  # caller's assignment under set -e; empty output drives the not-found branch.
+  ls -t "${1}"/*.jfr 2>/dev/null | head -1 || true
 }
 
 function log_warn() {

@@ -147,6 +147,8 @@ shell-unit-tests:
     - bash .gitlab/scripts/tests/test_run_gtest_quarantine.sh
     - bash .gitlab/jdk-integration/tests/select_test_jdk_test.sh
     - bash .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh
+    - bash .gitlab/dd-trace-integration/tests/newest_jfr_test.sh
+    - bash .gitlab/dd-trace-integration/tests/validate_conformance_probe_test.sh
 
 # Shared version detection used by benchmarks and reliability pipelines
 get-versions:
