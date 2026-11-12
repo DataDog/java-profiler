@@ -74,12 +74,16 @@ fi
 
 # 2. A probe that omits datadog.ExecutionSample must NOT abort the validation:
 #    the absent type is treated as zero events and the remaining checks decide.
+#    The flag log must also derive the false from the probe, not the fallback.
 install_stub_jbang 'HAS jdk.ExecutionSample 0\nHAS jdk.ObjectAllocationSample 0\nHAS jdk.ThreadAllocationStatistics 45\nPROBE_COMPLETE'
 if run_validate; then
   pass "an absent-type probe does not abort the validation"
 else
   fail "an absent-type probe should not abort the validation (exit $?)"
 fi
+grep -q "datadog.ExecutionSample: false" "${WORK}/stdout.log" \
+  || fail "the flag log should report datadog.ExecutionSample as false when the probe omits it"
+pass "an absent type is flagged false in the flag log"
 
 # 3. An incomplete probe (PROBE_COMPLETE missing) must fall back to "all types
 #    present" so the real queries still run -- the degraded-metadata case must
