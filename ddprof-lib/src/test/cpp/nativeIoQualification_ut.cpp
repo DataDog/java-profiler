@@ -16,6 +16,7 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -541,17 +542,61 @@ protected:
     }
   }
 
-  void expectPublishedOriginals() {
+  void expectPipeForwarding(NativeSocketInterposer::write_fn writer,
+                            NativeSocketInterposer::read_fn reader) {
+    int descriptors[2];
+    ASSERT_EQ(0, pipe(descriptors));
+    ScopedQualificationFd read_end(descriptors[0]);
+    ScopedQualificationFd write_end(descriptors[1]);
+    int flags = fcntl(descriptors[0], F_GETFL);
+    ASSERT_GE(flags, 0);
+    // A broken writer must fail the payload check rather than block the reader.
+    ASSERT_EQ(0, fcntl(descriptors[0], F_SETFL, flags | O_NONBLOCK));
+    const char payload[] = "rollback forwarding";
+    char received[sizeof(payload)] = {};
+    errno = E2BIG;
+    ssize_t written = writer(descriptors[1], payload, sizeof(payload));
+    int write_errno = errno;
+    EXPECT_EQ(static_cast<ssize_t>(sizeof(payload)), written);
+    EXPECT_EQ(E2BIG, write_errno);
+    errno = EINPROGRESS;
+    ssize_t read_bytes = reader(descriptors[0], received, sizeof(received));
+    int read_errno = errno;
+    EXPECT_EQ(static_cast<ssize_t>(sizeof(received)), read_bytes);
+    EXPECT_EQ(EINPROGRESS, read_errno);
+    EXPECT_EQ(0, std::memcmp(payload, received, sizeof(payload)));
+  }
+
+  void expectPublishedForwarders() {
     NativeSocketInterposer::send_fn current_send;
     NativeSocketInterposer::recv_fn current_recv;
-    NativeSocketInterposer::write_fn current_write;
-    NativeSocketInterposer::read_fn current_read;
-    NativeSocketInterposer::getOriginalFunctions(current_send, current_recv, current_write, current_read);
-    EXPECT_EQ(originals[0], reinterpret_cast<void*>(current_write));
-    EXPECT_EQ(originals[1], reinterpret_cast<void*>(current_read));
-    NativeSocketSampler::getOriginalFunctions(current_send, current_recv, current_write, current_read);
-    EXPECT_EQ(originals[0], reinterpret_cast<void*>(current_write));
-    EXPECT_EQ(originals[1], reinterpret_cast<void*>(current_read));
+    NativeSocketInterposer::write_fn interposer_write;
+    NativeSocketInterposer::read_fn interposer_read;
+    NativeSocketInterposer::write_fn sampler_current_write;
+    NativeSocketInterposer::read_fn sampler_current_read;
+    NativeSocketInterposer::getOriginalFunctions(current_send, current_recv,
+                                                 interposer_write, interposer_read);
+    NativeSocketSampler::getOriginalFunctions(current_send, current_recv,
+                                               sampler_current_write, sampler_current_read);
+    // GOT slots may bind executable sanitizer interceptors; forwarding targets
+    // come from the profiler DSO's RTLD_NEXT lookup, not those slot originals.
+    void* interposer_targets[] = {reinterpret_cast<void*>(interposer_write),
+                                 reinterpret_cast<void*>(interposer_read)};
+    void* sampler_targets[] = {reinterpret_cast<void*>(sampler_current_write),
+                              reinterpret_cast<void*>(sampler_current_read)};
+    void* sampler_hooks[] = {reinterpret_cast<void*>(NativeSocketSampler::write_hook),
+                            reinterpret_cast<void*>(NativeSocketSampler::read_hook)};
+    int hook_indices[] = {NativeSocketInterposer::HOOK_WRITE, NativeSocketInterposer::HOOK_READ};
+    const NativeSocketInterposer::NativeIoHookSpec* hooks = NativeSocketInterposer::hookSpecs();
+    for (int index = 0; index < 2; index++) {
+      ASSERT_NE(nullptr, interposer_targets[index]);
+      ASSERT_EQ(interposer_targets[index], sampler_targets[index]);
+      ASSERT_NE(hooks[hook_indices[index]].hook, interposer_targets[index]);
+      ASSERT_NE(hooks[hook_indices[index]].fork_safe_hook, interposer_targets[index]);
+      ASSERT_NE(sampler_hooks[index], interposer_targets[index]);
+    }
+    expectPipeForwarding(NativeSocketInterposer::write_hook, NativeSocketInterposer::read_hook);
+    expectPipeForwarding(NativeSocketSampler::write_hook, NativeSocketSampler::read_hook);
   }
 
   char directory[PATH_MAX] = {};
@@ -597,7 +642,7 @@ TEST_F(NativeIoRollbackQualificationTest, InitialAdmissionRollbackDisablesEither
     EXPECT_EQ(1, failure_calls);
     EXPECT_TRUE(partial_write_seen);
     expectSlots(false);
-    expectPublishedOriginals();
+    expectPublishedForwarders();
     EXPECT_EQ(0, LibraryPatcher::socket_patch_count_for_test());
     EXPECT_EQ(0, LibraryPatcher::socket_library_count_for_test());
     EXPECT_FALSE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
@@ -615,7 +660,7 @@ TEST_F(NativeIoRollbackQualificationTest, InitialAdmissionRollbackDisablesEither
     NativeSocketSampler::setActiveForTest((owners & 2) != 0);
     ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
     expectSlots(true);
-    expectPublishedOriginals();
+    expectPublishedForwarders();
     EXPECT_TRUE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
     EXPECT_EQ((owners & 1) != 0, NativeSocketInterposer::instance()->active());
     EXPECT_EQ((owners & 2) != 0, NativeSocketSampler::active());
