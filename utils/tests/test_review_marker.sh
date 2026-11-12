@@ -527,6 +527,9 @@ VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main OWNER_NAME=DataDog/j
 VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main GRAPHQL_O=DataDog GRAPHQL_N=java-profiler VIEW_GRAPHQL=2019-06-01T00:00:00Z\ 2020-01-01T00:00:00Z \
   expect "hook checks the URL's repository, not -R's, for the description" 2 "last edited before" \
   hook "gh -R DataDog/speedlab pr ready https://github.com/DataDog/java-profiler/pull/12"
+VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main GRAPHQL_O=DataDog GRAPHQL_N=java-profiler VIEW_GRAPHQL=2019-06-01T00:00:00Z\ 2020-01-01T00:00:00Z \
+  expect "hook checks the URL's repository past a URL path fragment" 2 "last edited before" \
+  hook "gh -R DataDog/speedlab pr ready https://github.com/DataDog/java-profiler/pull/12/files"
 VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_STALE VIEW_BASE=main OWNER_NAME=DataDog/java-profiler VIEW_GRAPHQL=2019-06-01T00:00:00Z\ 2020-01-01T00:00:00Z \
   expect "hook reports the stale marker, not the description, when the check fails" 2 "$STALE_MSG" \
   hook "gh pr ready 12"

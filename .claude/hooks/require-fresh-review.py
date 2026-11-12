@@ -411,8 +411,9 @@ def evaluate(source, cwd, sub, args, command, match_text):
     if res.returncode == 0 and sub == "ready":
         # gh resolves a PR-URL selector's repository over -R (ready_target relies on the
         # same order), so the description probe must query the URL's repo, not the flag's.
+        # match(), not fullmatch(): gh accepts URLs with trailing path fragments (/files).
         selectors = pr_selector(args)
-        url = PR_URL.fullmatch(selectors[0]) if selectors else None
+        url = PR_URL.match(selectors[0]) if selectors else None
         repo = url.group(1) if url else repo_flag(words(match_text))
         stale = stale_description(number, repo, cwd)
         if stale:
