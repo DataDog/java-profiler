@@ -1,3 +1,4 @@
+# Copyright 2026, Datadog, Inc.
 # C++ unit tests under ASan and TSan.
 #
 # These run on every branch push (not MR pipelines — GitHub Actions handles those).
@@ -21,6 +22,8 @@
     - when: on_success
   interruptible: true
   before_script:
+    # Bullseye security packages have moved to Debian's official archive.
+    - sed -i '/bullseye-security/s|http://deb\.debian\.org/debian-security|https://archive.debian.org/debian-security|' /etc/apt/sources.list
     - apt-get update -qq
     - apt-get install -y -qq cmake libgtest-dev libgmock-dev binutils libc6-dbg llvm
   script:

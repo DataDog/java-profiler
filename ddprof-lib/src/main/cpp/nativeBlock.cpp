@@ -122,6 +122,9 @@ void NativeBlockScope::finish(u64 end_ticks) {
   BlockRunSnapshot snapshot{};
   bool exited = thread_filter->snapshotAndExitBlockedRun(
       _slot_id, _generation, &snapshot);
+  u64 segment_start = activity
+      ? profiler->taskBlockSegmentStart(_slot_id, _generation)
+      : 0;
   profiler->completeTaskBlockRun(_slot_id, _generation, end_ticks, _blocker, 0);
 
   if (!activity) {
@@ -135,7 +138,6 @@ void NativeBlockScope::finish(u64 end_ticks) {
     return;
   }
 
-  u64 segment_start = profiler->taskBlockSegmentStart(_slot_id, _generation);
   if (segment_start == 0) segment_start = _start_ticks;
   recordTaskBlockIfEligible(_tid, nullptr, 0, segment_start, end_ticks,
                             _context, _blocker, 0,

@@ -186,6 +186,8 @@ int Profiler::registerThread(int tid) {
 static std::atomic<int> g_test_last_unregistered_tid{-1};
 static std::atomic<Profiler::TaskBlockRecordOverride>
     g_test_task_block_record_override{nullptr};
+static std::atomic<Profiler::TaskBlockCompletionObserver>
+    g_test_task_block_completion_observer{nullptr};
 
 int Profiler::lastUnregisteredTidForTest() {
     return g_test_last_unregistered_tid.load(std::memory_order_relaxed);
@@ -197,6 +199,11 @@ void Profiler::resetUnregisterObservableForTest() {
 void Profiler::setTaskBlockRecordOverrideForTest(
     TaskBlockRecordOverride override) {
   g_test_task_block_record_override.store(override, std::memory_order_release);
+}
+
+void Profiler::setTaskBlockCompletionObserverForTest(
+    TaskBlockCompletionObserver observer) {
+  g_test_task_block_completion_observer.store(observer, std::memory_order_release);
 }
 #endif
 
@@ -1010,6 +1017,11 @@ void Profiler::completeTaskBlockRun(ThreadFilter::SlotID slot_id,
   run.final_blocker.store(blocker, std::memory_order_relaxed);
   run.unblocking_span_id.store(unblocking_span_id, std::memory_order_relaxed);
   run.end_ticks.store(end_ticks, std::memory_order_release);
+#ifdef UNIT_TEST
+  TaskBlockCompletionObserver observer =
+      g_test_task_block_completion_observer.load(std::memory_order_acquire);
+  if (observer != nullptr) observer(slot_id, generation);
+#endif
 }
 
 u64 Profiler::taskBlockSegmentStart(ThreadFilter::SlotID slot_id,
@@ -1108,7 +1120,12 @@ void Profiler::flushCompletedTaskBlockRuns() {
     if (generation == 0 || generation == UINT64_MAX) continue;
     u64 end_ticks = run.end_ticks.load(std::memory_order_acquire);
     u64 segment_start = run.segment_start_ticks.load(std::memory_order_acquire);
-    if (end_ticks == 0 || end_ticks <= segment_start) continue;
+    if (end_ticks == 0) continue;
+    if (end_ticks <= segment_start) {
+      // Completed runs still need reclamation when boundary commit left no tail.
+      clearTaskBlockRun(slot_id, generation);
+      continue;
+    }
     if (!taskBlockPassesBasicEligibility(segment_start, end_ticks, run.context)) {
       clearTaskBlockRun(slot_id, generation);
       continue;

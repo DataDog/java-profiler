@@ -44,6 +44,7 @@ def reap_adopted_children():
                 try:
                     os.kill(pid, sig)
                 except ProcessLookupError:
+                    # The adopted child can exit between the snapshot and kill().
                     pass
                 signalled.add((pid, sig))
         time.sleep(0.02)
@@ -72,6 +73,7 @@ def main(args):
             try:
                 os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError:
+                # The launcher group may have exited before this signal handler ran.
                 pass
 
     previous = {sig: signal.signal(sig, interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
@@ -105,6 +107,7 @@ def main(args):
                     try:
                         os.killpg(process.pid, signal.SIGKILL)
                     except ProcessLookupError:
+                        # The owned process group may already have exited.
                         pass
                 if subreaper:
                     reap_adopted_children()

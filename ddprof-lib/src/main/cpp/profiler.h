@@ -514,6 +514,10 @@ public:
       int tid, jthread thread, int start_depth, TaskBlockEvent *event);
   static void setTaskBlockRecordOverrideForTest(
       TaskBlockRecordOverride override);
+  using TaskBlockCompletionObserver = void (*)(
+      ThreadFilter::SlotID slot_id, u64 generation);
+  static void setTaskBlockCompletionObserverForTest(
+      TaskBlockCompletionObserver observer);
   bool setTaskBlockEnabledForTest(bool enabled) {
     return _task_block_enabled.exchange(enabled, std::memory_order_acq_rel);
   }
@@ -528,6 +532,8 @@ public:
   void completeTaskBlockRun(ThreadFilter::SlotID slot_id, u64 generation,
                             u64 end_ticks, u64 blocker,
                             u64 unblocking_span_id);
+  // Admitted finishers must capture this before publishing completion: the
+  // post-rotation flusher can clear the generation even while activity is held.
   u64 taskBlockSegmentStart(ThreadFilter::SlotID slot_id,
                             u64 generation) const;
   void clearTaskBlockRun(ThreadFilter::SlotID slot_id, u64 generation);
@@ -588,6 +594,9 @@ public:
   }
   void commitTaskBlockBoundaryForTest(u64 boundary_ticks) {
     commitTaskBlockBoundary(boundary_ticks);
+  }
+  void flushCompletedTaskBlockRunsForTest() {
+    flushCompletedTaskBlockRuns();
   }
 
   // Returns the tid most recently passed to unregisterThread(), or -1 if it

@@ -58,12 +58,15 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   bool exited = current_slot == slot_id &&
       thread_filter->snapshotAndExitBlockedRun(slot_id, generation, &snapshot);
 
+  u64 segment_start = activity.active()
+      ? profiler->taskBlockSegmentStart(slot_id, generation)
+      : 0;
   profiler->completeTaskBlockRun(slot_id, generation, end_ticks, blocker,
                                  unblocking_span_id);
 
   if (!activity.active()) {
     // TaskBlockActivity's constructor already incremented TASK_BLOCK_DROPPED_ROTATION.
-    profiler->clearTaskBlockRun(slot_id, generation);
+    // Keep the completed run for boundary emission or the post-rotation flush.
     return false;
   }
   if (!recording_enabled || !exited) {
@@ -76,7 +79,6 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
     return false;
   }
 
-  u64 segment_start = profiler->taskBlockSegmentStart(slot_id, generation);
   if (segment_start == 0) segment_start = start_ticks;
   bool recorded = recordTaskBlockIfEligible(
       current->tid(), thread, start_depth, segment_start, end_ticks, context,

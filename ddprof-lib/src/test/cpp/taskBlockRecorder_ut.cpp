@@ -21,6 +21,13 @@ namespace {
 std::atomic<Profiler::TaskBlockRecordResult> g_record_result{
     Profiler::TaskBlockRecordResult::RECORDED};
 std::atomic<int> g_record_calls{0};
+std::atomic<std::promise<void>*> g_completion_published{nullptr};
+std::atomic<std::shared_future<void>*> g_completion_resume{nullptr};
+
+void pauseTaskBlockCompletionForTest(ThreadFilter::SlotID, u64) {
+  g_completion_published.load(std::memory_order_acquire)->set_value();
+  g_completion_resume.load(std::memory_order_acquire)->wait();
+}
 
 Profiler::TaskBlockRecordResult recordTaskBlockForTest(
     int tid, jthread thread, int start_depth, TaskBlockEvent* event) {
@@ -57,6 +64,9 @@ protected:
   }
 
   void TearDown() override {
+    Profiler::setTaskBlockCompletionObserverForTest(nullptr);
+    g_completion_published.store(nullptr, std::memory_order_release);
+    g_completion_resume.store(nullptr, std::memory_order_release);
     Profiler::setTaskBlockRecordOverrideForTest(nullptr);
     Counters::reset();
   }
@@ -249,6 +259,189 @@ TEST_F(TaskBlockRecorderTest, RotationRejectsEndWithoutStrandingLifecycle) {
   profiler->endTaskBlockRotationForTest();
   EXPECT_FALSE(result.get());
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+}
+
+TEST_F(TaskBlockRecorderTest, RotationRetainsJavaCompletionAcrossBoundaryCommit) {
+  Profiler* profiler = Profiler::instance();
+  bool previous = profiler->setTaskBlockEnabledForTest(true);
+
+  for (bool commit_before_exit : {false, true}) {
+    SCOPED_TRACE(commit_before_exit);
+    constexpr int tid = 12348;
+    ThreadFilter filter;
+    filter.init("", true);
+    ThreadFilter::SlotID slot_id = filter.registerThread(tid);
+    ASSERT_GE(slot_id, 0);
+    std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+        ProfiledThread::forTid(tid), ProfiledThread::deleteForTest);
+    current->setFilterSlotId(slot_id);
+    u64 token = filter.enterBlockedRun(
+        slot_id, OSThreadState::SLEEPING, BlockRunOwner::JAVA);
+    ASSERT_NE(0ULL, token);
+    u64 generation = ThreadFilter::tokenGeneration(token);
+    u64 start_ticks = TSC::ticks();
+    Context context{};
+    ASSERT_TRUE(current->taskBlockEnter(token, start_ticks, context));
+    ASSERT_TRUE(profiler->registerTaskBlockRun(
+        slot_id, generation, tid, start_ticks, context, 0,
+        OSThreadState::SLEEPING));
+    profiler->recordTaskBlockAnchor(slot_id, generation, 111, 0);
+
+    u64 boundary_ticks = profiler->beginTaskBlockRotationForTest();
+    if (commit_before_exit) {
+      profiler->commitTaskBlockBoundaryForTest(boundary_ticks);
+    }
+    u64 exit_start_ticks = 0;
+    Context exit_context{};
+    EXPECT_TRUE(current->taskBlockExit(token, exit_start_ticks, exit_context));
+    // Inject a next-segment end rather than relying on clock resolution.
+    u64 end_ticks = minEligibleEndTicks(boundary_ticks);
+    EXPECT_FALSE(finishTaskBlockAtExit(
+        current.get(), &filter, nullptr, 1, token, exit_start_ticks,
+        exit_context, 17, 19, end_ticks));
+
+    EXPECT_EQ(generation, profiler->taskBlockRunGenerationForTest(slot_id));
+    EXPECT_EQ(end_ticks, profiler->taskBlockRunEndForTest(slot_id));
+    EXPECT_EQ(commit_before_exit ? 0ULL : 111ULL,
+              profiler->taskBlockRunCallTraceForTest(slot_id));
+    EXPECT_EQ(BlockRunOwner::NONE, filter.slotForId(slot_id)->activeBlockOwner());
+    EXPECT_EQ(OSThreadState::UNKNOWN, filter.slotForId(slot_id)->activeBlockState());
+    u64 ignored_ticks = 0;
+    Context ignored_context{};
+    EXPECT_FALSE(current->taskBlockExit(token, ignored_ticks, ignored_context));
+    EXPECT_EQ(0, g_record_calls.load(std::memory_order_acquire));
+
+    if (!commit_before_exit) {
+      profiler->commitTaskBlockBoundaryForTest(boundary_ticks);
+    }
+    EXPECT_EQ(generation, profiler->taskBlockRunGenerationForTest(slot_id));
+    EXPECT_EQ(boundary_ticks, profiler->taskBlockRunSegmentStartForTest(slot_id));
+    profiler->endTaskBlockRotationForTest();
+    profiler->clearTaskBlockRun(slot_id, generation);
+  }
+  profiler->setTaskBlockEnabledForTest(previous);
+  EXPECT_EQ(2, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+  EXPECT_EQ(0ULL, profiler->taskBlockInflightForTest());
+}
+
+TEST_F(TaskBlockRecorderTest, RotationReclaimsCompletionAtCommittedBoundary) {
+  Profiler* profiler = Profiler::instance();
+  bool previous = profiler->setTaskBlockEnabledForTest(true);
+  constexpr int tid = 12349;
+  ThreadFilter filter;
+  filter.init("", true);
+  ThreadFilter::SlotID slot_id = filter.registerThread(tid);
+  ASSERT_GE(slot_id, 0);
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+      ProfiledThread::forTid(tid), ProfiledThread::deleteForTest);
+  current->setFilterSlotId(slot_id);
+  u64 token = filter.enterBlockedRun(
+      slot_id, OSThreadState::SLEEPING, BlockRunOwner::JAVA);
+  ASSERT_NE(0ULL, token);
+  u64 generation = ThreadFilter::tokenGeneration(token);
+  u64 start_ticks = TSC::ticks();
+  Context context{};
+  ASSERT_TRUE(current->taskBlockEnter(token, start_ticks, context));
+  ASSERT_TRUE(profiler->registerTaskBlockRun(
+      slot_id, generation, tid, start_ticks, context, 0,
+      OSThreadState::SLEEPING));
+
+  u64 boundary_ticks = profiler->beginTaskBlockRotationForTest();
+  profiler->commitTaskBlockBoundaryForTest(boundary_ticks);
+  u64 exit_start_ticks = 0;
+  Context exit_context{};
+  EXPECT_TRUE(current->taskBlockExit(token, exit_start_ticks, exit_context));
+  EXPECT_FALSE(finishTaskBlockAtExit(
+      current.get(), &filter, nullptr, 1, token, exit_start_ticks,
+      exit_context, 17, 19, boundary_ticks));
+  EXPECT_EQ(generation, profiler->taskBlockRunGenerationForTest(slot_id));
+  EXPECT_EQ(boundary_ticks, profiler->taskBlockRunEndForTest(slot_id));
+  EXPECT_EQ(BlockRunOwner::NONE, filter.slotForId(slot_id)->activeBlockOwner());
+  profiler->endTaskBlockRotationForTest();
+  profiler->flushCompletedTaskBlockRunsForTest();
+  EXPECT_EQ(0ULL, profiler->taskBlockRunGenerationForTest(slot_id));
+
+  u64 next_token = filter.enterBlockedRun(
+      slot_id, OSThreadState::SLEEPING, BlockRunOwner::JAVA);
+  EXPECT_NE(0ULL, next_token);
+  u64 next_generation = ThreadFilter::tokenGeneration(next_token);
+  EXPECT_NE(generation, next_generation);
+  u64 next_start_ticks = TSC::ticks();
+  bool registered = profiler->registerTaskBlockRun(
+      slot_id, next_generation, tid, next_start_ticks, context, 0,
+      OSThreadState::SLEEPING);
+  EXPECT_TRUE(registered);
+  if (registered) {
+    EXPECT_TRUE(current->taskBlockEnter(next_token, next_start_ticks, context));
+    profiler->flushCompletedTaskBlockRunsForTest();
+    EXPECT_EQ(next_generation, profiler->taskBlockRunGenerationForTest(slot_id));
+    EXPECT_TRUE(current->taskBlockExit(next_token, exit_start_ticks, exit_context));
+  }
+  EXPECT_TRUE(filter.exitBlockedRun(slot_id, next_generation));
+  profiler->clearTaskBlockRun(slot_id, generation);
+  profiler->clearTaskBlockRun(slot_id, next_generation);
+  profiler->setTaskBlockEnabledForTest(previous);
+  EXPECT_EQ(0, g_record_calls.load(std::memory_order_acquire));
+}
+
+TEST_F(TaskBlockRecorderTest,
+       AdmittedFinishKeepsCommittedBoundaryDuringReclamation) {
+  Profiler* profiler = Profiler::instance();
+  bool previous = profiler->setTaskBlockEnabledForTest(true);
+  constexpr int tid = 12350;
+  ThreadFilter filter;
+  filter.init("", true);
+  ThreadFilter::SlotID slot_id = filter.registerThread(tid);
+  ASSERT_GE(slot_id, 0);
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+      ProfiledThread::forTid(tid), ProfiledThread::deleteForTest);
+  current->setFilterSlotId(slot_id);
+  u64 token = filter.enterBlockedRun(
+      slot_id, OSThreadState::SLEEPING, BlockRunOwner::JAVA);
+  ASSERT_NE(0ULL, token);
+  u64 generation = ThreadFilter::tokenGeneration(token);
+  u64 start_ticks = TSC::ticks();
+  u64 end_ticks = minEligibleEndTicks(start_ticks);
+  Context context{};
+  ASSERT_TRUE(current->taskBlockEnter(token, start_ticks, context));
+  ASSERT_TRUE(profiler->registerTaskBlockRun(
+      slot_id, generation, tid, start_ticks, context, 0,
+      OSThreadState::SLEEPING));
+  profiler->beginTaskBlockRotationForTest();
+  profiler->commitTaskBlockBoundaryForTest(end_ticks);
+  profiler->endTaskBlockRotationForTest();
+
+  std::promise<void> completion_published;
+  std::future<void> published = completion_published.get_future();
+  std::promise<void> resume_finisher;
+  std::shared_future<void> resume = resume_finisher.get_future().share();
+  g_completion_published.store(&completion_published, std::memory_order_release);
+  g_completion_resume.store(&resume, std::memory_order_release);
+  Profiler::setTaskBlockCompletionObserverForTest(pauseTaskBlockCompletionForTest);
+  std::future<bool> result = std::async(std::launch::async, [&]() {
+    u64 exit_start_ticks = 0;
+    Context exit_context{};
+    if (!current->taskBlockExit(token, exit_start_ticks, exit_context)) return true;
+    return finishTaskBlockAtExit(
+        current.get(), &filter, nullptr, 1, token, exit_start_ticks,
+        exit_context, 17, 19, end_ticks);
+  });
+
+  std::future_status status = published.wait_for(std::chrono::seconds(5));
+  EXPECT_EQ(std::future_status::ready, status);
+  if (status == std::future_status::ready) {
+    EXPECT_EQ(1ULL, profiler->taskBlockInflightForTest());
+    EXPECT_EQ(generation, profiler->taskBlockRunGenerationForTest(slot_id));
+    EXPECT_EQ(end_ticks, profiler->taskBlockRunSegmentStartForTest(slot_id));
+    profiler->flushCompletedTaskBlockRunsForTest();
+    EXPECT_EQ(0ULL, profiler->taskBlockRunGenerationForTest(slot_id));
+  }
+  resume_finisher.set_value();
+  EXPECT_FALSE(result.get());
+  EXPECT_EQ(0, g_record_calls.load(std::memory_order_acquire));
+  EXPECT_EQ(0ULL, profiler->taskBlockInflightForTest());
+  profiler->clearTaskBlockRun(slot_id, generation);
+  profiler->setTaskBlockEnabledForTest(previous);
 }
 
 TEST_F(TaskBlockRecorderTest, RotationRejectsParkExitWithoutBlockingOrStranding) {

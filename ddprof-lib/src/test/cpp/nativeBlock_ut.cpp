@@ -27,6 +27,13 @@ int g_record_tid = -1;
 jthread g_record_thread = reinterpret_cast<jthread>(1);
 int g_record_start_depth = -1;
 TaskBlockEvent g_record_event{};
+std::atomic<std::promise<void>*> g_completion_published{nullptr};
+std::atomic<std::shared_future<void>*> g_completion_resume{nullptr};
+
+void pauseTaskBlockCompletionForTest(ThreadFilter::SlotID, u64) {
+  g_completion_published.load(std::memory_order_acquire)->set_value();
+  g_completion_resume.load(std::memory_order_acquire)->wait();
+}
 
 Profiler::TaskBlockRecordResult recordTaskBlockSuccessForTest(
     int tid, jthread thread, int start_depth, TaskBlockEvent* event) {
@@ -105,6 +112,9 @@ protected:
   }
 
   void TearDown() override {
+    Profiler::setTaskBlockCompletionObserverForTest(nullptr);
+    g_completion_published.store(nullptr, std::memory_order_release);
+    g_completion_resume.store(nullptr, std::memory_order_release);
     if (ProfiledThread::current() != nullptr) {
       ProfiledThread::release();
     }
@@ -344,6 +354,50 @@ TEST_F(NativeBlockScopeTest, RotationRejectsFinishWithoutBlockingOrStranding) {
   EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
   EXPECT_EQ(0, g_record_calls.load(std::memory_order_relaxed));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+}
+
+TEST_F(NativeBlockScopeTest,
+       AdmittedFinishKeepsCommittedBoundaryDuringReclamation) {
+  CurrentThreadScope current;
+  ScopedTaskBlockEnabled task_block_enabled(true);
+  int slot_id = registerCurrentJavaThread(current.thread());
+  Profiler* profiler = Profiler::instance();
+  NativeBlockScope scope(NativeBlockKind::STREAM_SOCKET, 17,
+                         OSThreadState::IO_WAIT);
+  ASSERT_TRUE(scope.active());
+  u64 generation = profiler->taskBlockRunGenerationForTest(slot_id);
+  u64 end_ticks = eligibleEndTicks(scope.startTicksForTest());
+  profiler->beginTaskBlockRotationForTest();
+  profiler->commitTaskBlockBoundaryForTest(end_ticks);
+  profiler->endTaskBlockRotationForTest();
+
+  std::promise<void> completion_published;
+  std::future<void> published = completion_published.get_future();
+  std::promise<void> resume_finisher;
+  std::shared_future<void> resume = resume_finisher.get_future().share();
+  g_completion_published.store(&completion_published, std::memory_order_release);
+  g_completion_resume.store(&resume, std::memory_order_release);
+  Profiler::setTaskBlockCompletionObserverForTest(pauseTaskBlockCompletionForTest);
+  std::future<void> result = std::async(std::launch::async, [&]() {
+    scope.finishForTest(end_ticks);
+  });
+
+  std::future_status status = published.wait_for(std::chrono::seconds(5));
+  EXPECT_EQ(std::future_status::ready, status);
+  if (status == std::future_status::ready) {
+    EXPECT_EQ(1ULL, profiler->taskBlockInflightForTest());
+    EXPECT_EQ(generation, profiler->taskBlockRunGenerationForTest(slot_id));
+    EXPECT_EQ(end_ticks, profiler->taskBlockRunSegmentStartForTest(slot_id));
+    profiler->flushCompletedTaskBlockRunsForTest();
+    EXPECT_EQ(0ULL, profiler->taskBlockRunGenerationForTest(slot_id));
+  }
+  resume_finisher.set_value();
+  result.get();
+  EXPECT_EQ(0, g_record_calls.load(std::memory_order_acquire));
+  EXPECT_EQ(0ULL, profiler->taskBlockInflightForTest());
+  EXPECT_EQ(BlockRunOwner::NONE,
+            profiler->threadFilter()->slotForId(slot_id)->activeBlockOwner());
+  profiler->clearTaskBlockRun(slot_id, generation);
 }
 
 TEST_F(NativeBlockScopeTest, ConcurrentScopeLifecyclePreservesSlotOwnership) {
