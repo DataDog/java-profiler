@@ -30,6 +30,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -1300,17 +1301,65 @@ protected:
     }
   }
 
-  void expectPublishedOriginals() {
-    NativeSocketInterposer::send_fn send;
-    NativeSocketInterposer::recv_fn recv;
-    NativeSocketInterposer::write_fn write;
-    NativeSocketInterposer::read_fn read;
-    NativeSocketInterposer::getOriginalFunctions(send, recv, write, read);
-    EXPECT_EQ(originals[0][0], reinterpret_cast<void*>(write));
-    EXPECT_EQ(originals[0][1], reinterpret_cast<void*>(read));
-    NativeSocketSampler::getOriginalFunctions(send, recv, write, read);
-    EXPECT_EQ(originals[0][0], reinterpret_cast<void*>(write));
-    EXPECT_EQ(originals[0][1], reinterpret_cast<void*>(read));
+  void expectPipeForwarding(NativeSocketInterposer::write_fn writer,
+                            NativeSocketInterposer::read_fn reader) {
+    int descriptors[2];
+    ASSERT_EQ(0, pipe(descriptors));
+    int flags = fcntl(descriptors[0], F_GETFL);
+    // A broken writer must fail the payload check rather than block the reader.
+    if (flags < 0 || fcntl(descriptors[0], F_SETFL, flags | O_NONBLOCK) < 0) {
+      int setup_errno = errno;
+      EXPECT_EQ(0, ::close(descriptors[0]));
+      EXPECT_EQ(0, ::close(descriptors[1]));
+      FAIL() << "Failed to make pipe reader nonblocking: " << setup_errno;
+    }
+    const char payload[] = "rollback forwarding";
+    char received[sizeof(payload)] = {};
+    errno = E2BIG;
+    ssize_t written = writer(descriptors[1], payload, sizeof(payload));
+    int write_errno = errno;
+    EXPECT_EQ(static_cast<ssize_t>(sizeof(payload)), written);
+    EXPECT_EQ(E2BIG, write_errno);
+    errno = EINPROGRESS;
+    ssize_t read_bytes = reader(descriptors[0], received, sizeof(received));
+    int read_errno = errno;
+    EXPECT_EQ(static_cast<ssize_t>(sizeof(received)), read_bytes);
+    EXPECT_EQ(EINPROGRESS, read_errno);
+    EXPECT_EQ(0, std::memcmp(payload, received, sizeof(payload)));
+    EXPECT_EQ(0, ::close(descriptors[0]));
+    EXPECT_EQ(0, ::close(descriptors[1]));
+  }
+
+  void expectPublishedForwarders() {
+    NativeSocketInterposer::send_fn current_send;
+    NativeSocketInterposer::recv_fn current_recv;
+    NativeSocketInterposer::write_fn interposer_write;
+    NativeSocketInterposer::read_fn interposer_read;
+    NativeSocketInterposer::write_fn sampler_current_write;
+    NativeSocketInterposer::read_fn sampler_current_read;
+    NativeSocketInterposer::getOriginalFunctions(current_send, current_recv,
+                                                 interposer_write, interposer_read);
+    NativeSocketSampler::getOriginalFunctions(current_send, current_recv,
+                                               sampler_current_write, sampler_current_read);
+    // GOT slots may bind executable sanitizer interceptors; forwarding targets
+    // come from the profiler DSO's RTLD_NEXT lookup, not those slot originals.
+    void* interposer_targets[] = {reinterpret_cast<void*>(interposer_write),
+                                 reinterpret_cast<void*>(interposer_read)};
+    void* sampler_targets[] = {reinterpret_cast<void*>(sampler_current_write),
+                              reinterpret_cast<void*>(sampler_current_read)};
+    void* sampler_hooks[] = {reinterpret_cast<void*>(NativeSocketSampler::write_hook),
+                            reinterpret_cast<void*>(NativeSocketSampler::read_hook)};
+    int hook_indices[] = {NativeSocketInterposer::HOOK_WRITE, NativeSocketInterposer::HOOK_READ};
+    const NativeSocketInterposer::NativeIoHookSpec* hooks = NativeSocketInterposer::hookSpecs();
+    for (int index = 0; index < 2; index++) {
+      ASSERT_NE(nullptr, interposer_targets[index]);
+      ASSERT_EQ(interposer_targets[index], sampler_targets[index]);
+      ASSERT_NE(hooks[hook_indices[index]].hook, interposer_targets[index]);
+      ASSERT_NE(hooks[hook_indices[index]].fork_safe_hook, interposer_targets[index]);
+      ASSERT_NE(sampler_hooks[index], interposer_targets[index]);
+    }
+    expectPipeForwarding(NativeSocketInterposer::write_hook, NativeSocketInterposer::read_hook);
+    expectPipeForwarding(NativeSocketSampler::write_hook, NativeSocketSampler::read_hook);
   }
 
   void expectImports(bool patched, int library_count) {
@@ -1358,7 +1407,7 @@ TEST_F(LibraryPatcherSocketTransactionTest,
   ASSERT_TRUE(NativeSocketInterposer::instance()->active());
   ASSERT_TRUE(NativeSocketSampler::active());
   expectImports(true, 1);
-  expectPublishedOriginals();
+  expectPublishedForwarders();
 
   loadNetworkLibrary(1, "libnio.so");
   ASSERT_FALSE(HasFatalFailure());
@@ -1380,7 +1429,7 @@ TEST_F(LibraryPatcherSocketTransactionTest,
   EXPECT_FALSE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
   EXPECT_FALSE(NativeSocketInterposer::instance()->active());
   EXPECT_FALSE(NativeSocketSampler::active());
-  expectPublishedOriginals();
+  expectPublishedForwarders();
 
   // Originals remain callable after disable/rollback, including errno behavior.
   char buffer = 0;
@@ -1402,6 +1451,7 @@ TEST_F(LibraryPatcherSocketTransactionTest,
   expectImports(true, 2);
   EXPECT_EQ(4, LibraryPatcher::socket_patch_count_for_test());
   EXPECT_EQ(2, LibraryPatcher::socket_library_count_for_test());
+  expectPublishedForwarders();
   LibraryPatcher::install_socket_hooks();
   EXPECT_EQ(4, LibraryPatcher::socket_patch_count_for_test());
   EXPECT_EQ(2, LibraryPatcher::socket_library_count_for_test());
