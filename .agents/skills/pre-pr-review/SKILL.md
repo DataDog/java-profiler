@@ -43,7 +43,7 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
 
    | The range changes | Reviewer |
    | --- | --- |
-   | Gates and trust boundaries, including fixes to them: hooks, `review-marker.py`, the `utils/*-policy.py` files, CI checks, this skill, the AGENTS.md review rules | Sphinx (`/sphinx review range $MB..$(git rev-parse HEAD) --report-json <path>`), standard effort; at most one `--effort=deep` run per PR, on the final candidate |
+   | Gates and trust boundaries, including fixes to them: hooks, `review-marker.py`, the `utils/*-policy.py` files, CI checks, this skill, any text in `AGENTS.md` or a skill that says when a review is required or which reviewer runs | Sphinx (`/sphinx review range $MB..$(git rev-parse HEAD) --report-json <path>`), standard effort; at most one `--effort=deep` run per PR, on the final candidate |
    | Only fixes to a range already reviewed | `/code-review` medium on the fix range; the marker's `--tool` lists every review the final range had |
    | Other production code | Sphinx, standard effort |
    | Only docs, skills or tests | `/code-review` medium; not low, which skips test files |

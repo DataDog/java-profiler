@@ -58,8 +58,8 @@ engineer's checkout or a checkout of `origin/main`, never from a worktree of the
 2. **Reviewer.** Take the reviewer from the first row of the `pre-pr-review`
    [reviewer table](../pre-pr-review/SKILL.md#reviewer-table) that matches the PR's
    files. Also apply its [no-Sphinx fallback](../pre-pr-review/SKILL.md#no-sphinx-fallback) and
-   its [Cost](../pre-pr-review/SKILL.md#review-cost) rule. In the table, "the AGENTS.md review rules" is the AGENTS.md
-   section that sets the review rules, not any change to AGENTS.md. Sphinx is
+   its [Cost](../pre-pr-review/SKILL.md#review-cost) rule. The table's gate row covers text that says when a review
+   is required or which reviewer runs, not every change to `AGENTS.md`. Sphinx is
    available only when its MCP review tools are present in the session. A listed
    Sphinx skill or slash command alone is not enough. Without the tools, use the
    table's no-Sphinx fallback, `/code-review` at the effort that it names, and do not
