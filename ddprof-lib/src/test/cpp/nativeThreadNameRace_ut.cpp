@@ -34,7 +34,9 @@
 
 #include <gtest/gtest.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <time.h>
+#include <unistd.h>
 #include <atomic>
 #include <string>
 #include "../../main/cpp/profiler.h"
@@ -107,6 +109,17 @@ TEST(NativeThreadNameRaceTest, threadDyingBetweenScansIsNeverNamed) {
     t.start();
     int tid = t.tid.load();
     t.join();
+
+    // pthread_join returns once the kernel clears clear_child_tid (exit_mm),
+    // but the tid stays listed under /proc/self/task until exit_notify unhashes
+    // it. Poll until the scans below cannot see the tid anymore; if the 30s
+    // bound is exceeded, fall through and let the EXPECT below diagnose it.
+    char task_dir[64];
+    snprintf(task_dir, sizeof(task_dir), "/proc/self/task/%d", tid);
+    for (int i = 0; i < 30000 && access(task_dir, F_OK) == 0; i++) {
+        struct timespec ts{0, 1000000};  // 1ms
+        nanosleep(&ts, nullptr);
+    }
 
     // Next refresher-style pass: the thread is already gone from
     // /proc/self/task, so the scan cannot record its name.

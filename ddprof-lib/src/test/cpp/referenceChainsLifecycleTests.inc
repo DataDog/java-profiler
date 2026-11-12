@@ -250,14 +250,41 @@ TEST_F(ReferenceChainsLifecycleTest, ChurnDuringConcurrentPassesStaysConsistent)
     EXPECT_GE(tracker->gcFinishEpoch(), gc_finish_before + 1);
     EXPECT_GE(tracker->gcStartEpoch(), tracker->gcFinishEpoch());
 
-    // Budget exhaustion without a terminal outcome (fast churn against the search's
-    // wall-clock enum floor, on CI runners and TSan alike) is runner timing, not a
-    // defect: skip. An early !ok exit keeps the budget below kMaxPasses and still fails.
+    // Under the non-TSan configs at least one search must reach a terminal
+    // outcome - otherwise the churn exercised nothing. Under TSan the
+    // instrumented passes plus the search's initial 1s cadence can burn the
+    // whole kMaxPasses budget inside the first search (observed: 1 failure in
+    // 50 shuffled repeats, no TSan report, no crash), so a budget exhaustion
+    // there is a documented skip, not a product failure. The same budget
+    // exhaustion happens on optimized non-TSan builds when the abort windows
+    // dominate the pass reads (measured: 19/50 on release, 0/30 on debug):
+    // passes run so fast relative to the windows that the root-enum retry is
+    // starved for the whole budget and no search terminates. Skipping needs
+    // the churn's own fingerprint - abort domination - so a genuine
+    // never-terminates bug (low aborted_passes) still gates.
+#if TSAN_ENABLED
     if (total_passes.load(std::memory_order_relaxed) >= kMaxPasses &&
         restarts.load(std::memory_order_relaxed) == 0) {
-        GTEST_SKIP() << "churn exhausted the pass budget before a search terminated";
+        GTEST_SKIP() << "TSan slowdown exhausted the pass budget before a search terminated";
     }
-    EXPECT_GE(restarts.load(), 1) << "no search ever reached a terminal outcome";
+#else
+    if (total_passes.load(std::memory_order_relaxed) >= kMaxPasses &&
+        restarts.load(std::memory_order_relaxed) == 0 &&
+        aborted_passes.load(std::memory_order_relaxed) >=
+            total_passes.load(std::memory_order_relaxed) / 2) {
+        GTEST_SKIP() << "abort windows starved the pass budget before any search terminated ("
+                     << "passes=" << total_passes.load(std::memory_order_relaxed)
+                     << " aborted=" << aborted_passes.load(std::memory_order_relaxed) << ")";
+    }
+#endif
+    EXPECT_GE(restarts.load(), 1)
+        << "no search ever reached a terminal outcome"
+        << " (total_passes=" << total_passes.load(std::memory_order_relaxed)
+        << " aborted_passes=" << aborted_passes.load(std::memory_order_relaxed)
+        << " search_state=" << (int)ReferenceChainsTestAccessor::searchStateForTest()
+        << " passes_run=" << ReferenceChainsTestAccessor::passesRunForTest()
+        << " root_enum_last_ns=" << ReferenceChainsTestAccessor::rootEnumRawStateForTest().first
+        << ")";
 
     // I2: the recording boundary clears the previous recording's resolved
     // chains. Inject one the way a finished search would have left it, then
