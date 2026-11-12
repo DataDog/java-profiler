@@ -81,14 +81,14 @@ def repo_flag(tokens):
 
 def ready_target(args, repo, cwd):
     """Check arguments for the PR `gh pr ready` targets, from GitHub so the commits the
-    PR holds are checked; [] means the current branch, None that it cannot be resolved."""
+    PR holds are checked; None means the PR cannot be resolved."""
     selector = [a for i, a in enumerate(args)
                 if not a.startswith("-") and (i == 0 or args[i - 1] not in ("-R", "--repo"))]
     out = gh_query(["pr", "view", *selector[:1], *(["-R", repo] if repo else []), "--json",
                     "headRefName,headRefOid,baseRefName", "-q",
                     '.headRefName + " " + .headRefOid + " " + .baseRefName'], cwd)
     if not out or len(out.split()) != 3:
-        return None if selector else []
+        return None
     head, oid, base = out.split()
     return ["--branch", head, "--commit", oid, "--base", origin(base)]
 

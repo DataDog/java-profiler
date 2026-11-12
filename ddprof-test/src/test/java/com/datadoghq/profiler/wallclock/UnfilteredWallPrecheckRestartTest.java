@@ -75,7 +75,11 @@ public class UnfilteredWallPrecheckRestartTest extends AbstractProfilerTest {
         stoppedGapWorker.shutdownNow();
       }
       if (recording != null) {
-        Files.deleteIfExists(recording);
+        if (Boolean.getBoolean("ddprof_test.keep_jfrs")) {
+          System.out.println("===> control recording: " + recording.toAbsolutePath());
+        } else {
+          Files.deleteIfExists(recording);
+        }
       }
     }
   }
@@ -88,6 +92,13 @@ public class UnfilteredWallPrecheckRestartTest extends AbstractProfilerTest {
   @Override
   protected boolean isPlatformSupported() {
     return !Platform.isJ9();
+  }
+
+  /** Establishes the outside-window owner required by unfiltered owned-block admission. */
+  @Override
+  protected void beforeProfilerStart() {
+    // Logical membership survives recording boundaries, including earlier tests.
+    profiler.removeThread();
   }
 
   private void assertOwnedBlockArmed() {
@@ -109,7 +120,11 @@ public class UnfilteredWallPrecheckRestartTest extends AbstractProfilerTest {
       }
     } finally {
       profiler.stop();
-      Files.deleteIfExists(recording);
+      if (Boolean.getBoolean("ddprof_test.keep_jfrs")) {
+        System.out.println("===> control recording: " + recording.toAbsolutePath());
+      } else {
+        Files.deleteIfExists(recording);
+      }
     }
   }
 

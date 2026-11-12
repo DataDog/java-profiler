@@ -80,6 +80,10 @@ the thread appears in the chunk's thread pool (`flightRecorder.cpp:2873-2906`).
 the JVM instead (HotSpot `RequestStackTrace`): it writes a stack-trace ID of 0
 and the correlation ID (`flightRecorder.cpp:2914-2943`, `flightRecorder.h:646-651`).
 
+ASGCT wall sampling keeps the stripe through cached-ID publication and tail commit.
+Ordinary and deferred writes return independent success results. A failed tail write
+must not consume its retained ID, context, state or weight.
+
 ### Buffer layout and thresholds
 
 | Constant | Value | Source |
@@ -141,6 +145,13 @@ attribute (`writeCurrentContext()`, `flightRecorder.cpp:2354-2368`). Liveness
 events write the context snapshot taken when the allocation was tracked
 (`writeContextSnapshot()`, `flightRecorder.cpp:2345-2352`,
 `livenessTracker.cpp:2411`).
+
+Retained unowned wall tails write their saved span/root IDs and tags, not live TLS.
+Each pending epoch segment also writes its original epoch-window start timestamp.
+Consumers must apply the scale of the window containing that timestamp, not the
+later serialization time. Ordinary unit samples keep serialization timestamps;
+the MethodSample schema is unchanged.
+See [TLSContext](TLSContext.md#retained-unowned-wall-context).
 
 ### Writers outside `recordEvent()`
 

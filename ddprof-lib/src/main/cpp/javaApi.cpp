@@ -164,32 +164,6 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 
 // some duplication between add and remove, though we want to avoid having an extra branch in the hot path
 
-static ThreadFilter::SlotID ensureCurrentThreadFilterSlot(
-    ThreadFilter *thread_filter, ProfiledThread *current) {
-  int tid = current->tid();
-  if (unlikely(tid < 0)) {
-    return -1;
-  }
-
-  ThreadFilter::SlotID slot_id = current->filterSlotId();
-  if (likely(slot_id >= 0)) {
-    if (likely(thread_filter->activeSlotForId(slot_id, tid) != nullptr)) {
-      return slot_id;
-    }
-    current->setFilterSlotId(-1);
-  }
-
-  // Cold or stale TLS registers lazily; existing TIDs retain their slots.
-  // The registry lock is taken once per observed epoch, not on every hook.
-  // Full registries reject unindexed TIDs lock-free and retry on later hooks.
-  Counters::increment(THREAD_REGISTRY_HOOK_REREGISTRATION);
-  slot_id = thread_filter->registerThread(tid);
-  if (slot_id >= 0) {
-    current->setFilterSlotId(slot_id);
-  }
-  return slot_id;
-}
-
 // JavaCritical is faster JNI, but more restrictive - parameters and return value have to be
 // primitives or arrays of primitive types.
 // We direct corresponding JNI calls to JavaCritical to make sure the parameters/return value
@@ -207,21 +181,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  if (unlikely(!thread_filter->registryActive())) {
-    return;
-  }
-  
-  int slot_id = ensureCurrentThreadFilterSlot(thread_filter, current);
-  if (unlikely(slot_id < 0)) {
-    return;  // Failed to register thread
-  }
-  if (unlikely(!thread_filter->add(tid, slot_id))) {
-    // The cached slot_id no longer carries this thread's tid.
-    // Clear the cache so the next filterThreadAdd0()/parkEnter0()/blockEnter0()
-    // call re-runs ensureCurrentThreadFilterSlot()'s registerThread() path
-    // instead of leaving this thread permanently outside the context window.
-    current->setFilterSlotId(-1);
-  }
+  thread_filter->onContextWindowEnter(*current);
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -236,14 +196,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  int slot_id = current->filterSlotId();
-  ThreadFilter::Slot* slot = thread_filter->slotForId(slot_id);
-  // A matching exit must close logical membership even while stopped or stale.
-  // Native ownership lasts until teardown; never mutate a replacement owner.
-  if (slot == nullptr || slot->nativeTid() != tid) {
-    return;
-  }
-  thread_filter->remove(slot_id);
+  thread_filter->onContextWindowExit(*current);
 }
 
 
@@ -329,7 +282,7 @@ Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfilerTestSupport_setForceWallStartFailureForTest0(
+Java_com_datadoghq_profiler_JavaProfiler_setForceWallStartFailureForTest0(
     JNIEnv *env, jclass unused, jboolean force) {
 #ifdef DEBUG
   BaseWallClock::setForceStartFailureForTest(force);
@@ -337,7 +290,7 @@ Java_com_datadoghq_profiler_JavaProfilerTestSupport_setForceWallStartFailureForT
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfilerTestSupport_isForceWallStartFailureArmedForTest0(
+Java_com_datadoghq_profiler_JavaProfiler_isForceWallStartFailureArmedForTest0(
     JNIEnv *env, jclass unused) {
 #ifdef DEBUG
   return BaseWallClock::isForceStartFailureForTest() ? JNI_TRUE : JNI_FALSE;
@@ -351,9 +304,14 @@ Java_com_datadoghq_profiler_JavaProfilerTestSupport_isForceWallStartFailureArmed
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfilerTestSupport_isThreadRegistryActiveForTest0(
+Java_com_datadoghq_profiler_JavaProfiler_isThreadRegistryActiveForTest0(
     JNIEnv *env, jclass unused) {
-  return Profiler::instance()->threadFilter()->registryActive();
+#ifdef DEBUG
+  return Profiler::instance()->threadFilter()->registryActive() ? JNI_TRUE : JNI_FALSE;
+#else
+  // Release: seam disabled. Callers gate on isForceWallStartFailureArmedForTest0().
+  return JNI_FALSE;
+#endif // DEBUG
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -433,7 +391,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
   bool first_park = current->parkEnter();
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (first_park && tf->registryActive()) {
-    ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
+    ThreadFilter::SlotID slot_id = tf->ensureOwnerSlot(*current);
     if (slot_id >= 0) {
       WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
       current->setParkBlockToken(
@@ -491,7 +449,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (!tf->registryActive()) {
     return 0;
   }
-  ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
+  ThreadFilter::SlotID slot_id = tf->ensureOwnerSlot(*current);
   if (slot_id < 0) {
     return 0;
   }

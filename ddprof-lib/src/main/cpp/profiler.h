@@ -94,6 +94,29 @@ class VM;
 
 enum State { NEW, IDLE, RUNNING, TERMINATED, ERROR };
 
+struct WallSampleRequest {
+  ThreadFilter::SlotID slot_id = -1;
+  int tid = -1;
+  u64 lifecycle_generation = 0;
+  ThreadFilter::RecordingEpoch registry_epoch = 0;
+  u32 trace_epoch = 0;
+  u64 sampling_epoch_start = 0;
+  u32 block_generation = 0;
+  OSThreadState observed_state = OSThreadState::UNKNOWN;
+  OSThreadState arm_state = OSThreadState::UNKNOWN;
+  bool unowned_sample = false;
+  bool flush_tail = false;
+  bool context_captured = false;
+  bool force_unowned_ordinary = false;
+  u64 context_publication = 0;
+  Context context{};
+};
+
+struct WallSampleResult {
+  bool ordinary_recorded = false;
+  bool tail_recorded = false;
+};
+
 // Aligned to satisfy SpinLock member alignment requirement (64 bytes)
 // Required because this class contains the _locks[] SpinLock array.
 class alignas(alignof(SpinLock)) Profiler {
@@ -214,6 +237,45 @@ private:
   // AND referencechains=true - see Profiler::start()). Atomic: also read by
   // onThreadStart()/onThreadEnd() on JVMTI thread-lifecycle callbacks.
   std::atomic<bool> _reference_chains_active{false};
+
+  // The walkers' sigsetjmp scopes are inside recordSampleLocked(), so their
+  // recovery returns through this owner rather than jumping past its destructor.
+  class RecordingStripe {
+    SpinLock* _locks;
+    u32 _index;
+    bool _owned;
+
+  public:
+    RecordingStripe(SpinLock* locks, u32 index) : _locks(locks), _index(index) {
+      _owned = _locks[_index].tryLock() ||
+          _locks[_index = (_index + 1) % CONCURRENCY_LEVEL].tryLock() ||
+          _locks[_index = (_index + 2) % CONCURRENCY_LEVEL].tryLock();
+    }
+    ~RecordingStripe() { if (_owned) _locks[_index].unlock(); }
+    RecordingStripe(const RecordingStripe&) = delete;
+    RecordingStripe& operator=(const RecordingStripe&) = delete;
+    bool owned() const { return _owned; }
+    u32 index() const { return _index; }
+  };
+
+  class RecordingLocks {
+    Profiler* _profiler;
+
+  public:
+    explicit RecordingLocks(Profiler* profiler) : _profiler(profiler) {
+      _profiler->lockAll();
+    }
+    ~RecordingLocks() { _profiler->unlockAll(); }
+    RecordingLocks(const RecordingLocks&) = delete;
+    RecordingLocks& operator=(const RecordingLocks&) = delete;
+  };
+
+  bool recordSampleLocked(u32 lock_index, void* ucontext, u64 counter, int tid,
+                          jint event_type, u64 call_trace_id, Event* event,
+                          u64* recorded_call_trace_id, const Context* context = nullptr);
+  bool writeSampleEvent(u32 lock_index, int tid, u64 trace_id, jint type, Event* event,
+                        const Context* context = nullptr);
+  WallClockBlockTracker::BlockState* wallSampleSlot(const WallSampleRequest& request);
 
   SpinLock _locks[CONCURRENCY_LEVEL];
   CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
@@ -396,11 +458,23 @@ public:
       _calltrace_buffer[i] = NULL;
     }
     _thread_filter.setBlockTracker(&_block_tracker);
+    _call_trace_storage.registerLivenessChecker(
+        [this](CallTraceIdSet& live) { _block_tracker.collectLiveTraceIds(live); },
+        [this](const CallTraceIdSet& failed) { _block_tracker.onUnpreservedTraceIds(failed); });
   }
 
   static inline Profiler *instance() {
     return _instance;
   }
+
+#ifdef UNIT_TEST
+  CallTraceStorage* callTraceStorageForTest() { return &_call_trace_storage; }
+  using SampleWriteHook = bool (*)(u32, u64, Event*, const Context*, void*);
+  SampleWriteHook sampleWriteHookForTest = nullptr;
+  void* sampleWriteHookArgForTest = nullptr;
+  RecordingLocks recordingLocksForTest() { return RecordingLocks(this); }
+  u32 exchangeNumContextAttributesForTest(u32 count);
+#endif
 
   // Resolve names of native (non-Java) threads from /proc. Idempotent and
   // allocation-light (no-op for already-named tids), so it is safe to call
@@ -607,6 +681,9 @@ public:
   int convertNativeTrace(int native_frames, const void **callchain,
                          ASGCT_CallFrame *frames, int lock_index,
                          bool skip_hook_prefix);
+  WallSampleResult recordWallSample(void* ucontext, u64 counter, u64 call_trace_id,
+                                    ExecutionEvent* event, const WallSampleRequest& request);
+
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event,
                     u64 *recorded_call_trace_id = nullptr);

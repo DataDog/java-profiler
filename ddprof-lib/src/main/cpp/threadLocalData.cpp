@@ -102,10 +102,12 @@ void ProfiledThread::freeValue(void* value) {
   // for every teardown route (including deleteForTest()) and not just this
   // call site.
   ProfiledThread* pt = reinterpret_cast<ProfiledThread*>(value);
-  // ThreadEnd notifications are disabled between recordings. Retire the
-  // identity before pool reuse also when this pthread-key destructor is the
-  // only cleanup callback; an already retired TID is a lock-free no-op.
-  Profiler::instance()->threadFilter()->unregisterThreadByTid(pt->tid());
+  // ThreadEnd notifications are disabled between recordings, so retire the
+  // identity here before pool reuse too. This runs in the pthread-key
+  // destructor and must never block: retirement is lock-free, and an unknown
+  // or already-unregistered TID is a no-op. The locked bookkeeping (index,
+  // free list) is deferred to the next _registry_lock holder.
+  Profiler::instance()->threadFilter()->retireThreadByTid(pt->tid());
   if (!ThreadLocalDataPool::release(pt)) {
     // Sole deletion site for a ProfiledThread (invoked by the ThreadLocal
     // destructor callback), so the THREAD_LOCAL decrement belongs here. Record
@@ -171,6 +173,7 @@ void ProfiledThread::unclaimAndReset() {
   _recording_epoch = 0;
   _park_block_token = 0;
   _filter_slot_id = -1;
+  _logical_context_window_state.store(0, std::memory_order_release);
   _init_window = 0;
   _signal_depth = 0;
   _in_critical_section = false;
