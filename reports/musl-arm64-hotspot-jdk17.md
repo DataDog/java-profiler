@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk17
 
 ## musl-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-11-12 05:45:41 EST
+**Date:** 2026-11-12 05:47:38 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 83 |
-| Sample Rate | 1.38/sec |
-| Health Score | 86% |
-| Threads | 10 |
-| Allocations | 66 |
+| CPU Samples | 503 |
+| Sample Rate | 8.38/sec |
+| Health Score | 524% |
+| Threads | 9 |
+| Allocations | 379 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 83 |
-| Sample Rate | 1.38/sec |
-| Health Score | 86% |
-| Threads | 11 |
+| CPU Samples | 86 |
+| Sample Rate | 1.43/sec |
+| Health Score | 89% |
+| Threads | 12 |
 | Allocations | 42 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1794480040 48
-1794480045 48
-1794480050 48
-1794480055 48
-1794480060 48
-1794480065 48
-1794480070 48
-1794480075 48
-1794480080 48
-1794480085 48
-1794480090 48
-1794480095 48
-1794480100 48
-1794480105 48
-1794480110 48
-1794480115 48
-1794480120 48
-1794480125 48
-1794480130 48
-1794480135 48
+1794480172 48
+1794480177 48
+1794480182 48
+1794480187 48
+1794480192 48
+1794480197 48
+1794480202 48
+1794480207 48
+1794480212 48
+1794480217 48
+1794480222 48
+1794480227 48
+1794480232 48
+1794480237 48
+1794480242 48
+1794480247 48
+1794480252 48
+1794480257 48
+1794480262 48
+1794480267 48
 ```
 </details>
 
