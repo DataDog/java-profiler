@@ -572,12 +572,17 @@ void ReferenceChainTracker::reenlistEvictedDurableAnchor(
     return;
   }
   FrontierEntry entry{};
-  if (!frontier->lookup(tag, &entry) || entry.parent_tag != 0) {
-    return; // gone from the frontier, or not root-attached (not an anchor candidate)
+  // isSelectableAnchor, not a root-attached-only gate: improveChain()/reparentToDurableRoot()
+  // re-parent confirmed containers under a durable root, so a rediscovered evicted anchor can
+  // legitimately carry parent_tag != 0 - and then also a stale transient root_kind, which the
+  // root-kind filter inside addToStaticAnchorIndex() would reject. Rotation eligibility (root-
+  // attached durable kind, or a CONTAINER-shaped holder) is the admission contract, and
+  // indexAnchorForRotation() is the unfiltered durable-share index push.
+  if (!frontier->lookup(tag, &entry) ||
+      !isSelectableAnchor(entry, class_tag)) {
+    return; // gone from the frontier, or no longer a rotation-eligible anchor
   }
-  // Idempotent for every caller: a no-op for non-durable root kinds (the durable filter inside),
-  // and for an evicted durable anchor the re-index that restores its rotation eligibility.
-  addToStaticAnchorIndex(tag, class_tag, entry.root_kind);
+  indexAnchorForRotation(tag, class_tag);
 }
 
 bool ReferenceChainTracker::isSelectableAnchor(const FrontierEntry &entry,
