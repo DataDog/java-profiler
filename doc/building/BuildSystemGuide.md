@@ -22,7 +22,7 @@ All custom build logic lives in `build-logic/conventions/`. The plugins are:
 ## Java Formatting
 
 `com.datadoghq.spotless-convention` configures Java formatting when the `java` plugin
-is applied, regardless of plugin order. Spotless runs Google Java Format 1.30.0
+is applied, regardless of plugin order. Spotless runs Google Java Format 1.36.1
 on the build JVM; this does not change the Java 8 `--release` compilation target.
 
 Java formatting targets `src/**/*.java`, excludes `src/test/resources/**`, and

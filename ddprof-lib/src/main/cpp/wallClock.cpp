@@ -216,25 +216,23 @@ struct WallPrecheckDumpTest {
   }
 };
 
-static inline bool recordAsgctWallSample(
+static inline bool recordAsgctWallSampleForTest(
     void* ucontext, u64 counter, int tid, u64 call_trace_id,
     ExecutionEvent* event, const WallPrecheckResult& precheck,
-    WallPrecheckDumpTest* dump_test = nullptr) {
-  if (dump_test != nullptr) {
-    if (precheck.flush_unowned_tail) dump_test->dumpAtBoundary(false);
-    if (precheck.flush_unowned_tail && dump_test->reset_before_tail) {
-      precheck.unowned_tail_slot->resetUnownedBlockedSampling();
-    }
-    // A synchronous JNI driver has no signal ucontext. Capture a real Java
-    // stack through JVMTI, then use recordSample's existing trace-reuse path.
-    call_trace_id = Profiler::instance()->recordJVMTISample(
-        counter, tid, dump_test->thread, BCI_WALL, event, true);
-    if (call_trace_id == 0) return false;
+    WallPrecheckDumpTest& dump_test) {
+  if (precheck.flush_unowned_tail) dump_test.dumpAtBoundary(false);
+  if (precheck.flush_unowned_tail && dump_test.reset_before_tail) {
+    precheck.unowned_tail_slot->resetUnownedBlockedSampling();
   }
+  // A synchronous JNI driver has no signal ucontext. Capture a real Java
+  // stack through JVMTI, then use recordSample's existing trace-reuse path.
+  call_trace_id = Profiler::instance()->recordJVMTISample(
+      counter, tid, dump_test.thread, BCI_WALL, event, true);
+  if (call_trace_id == 0) return false;
   bool recorded = Profiler::instance()->recordWallSample(
       ucontext, counter, tid, call_trace_id, event, precheck.unowned_weight_slot);
-  if (dump_test != nullptr && recorded && precheck.unowned_weight_slot != nullptr) {
-    dump_test->dumpAtBoundary(true);
+  if (recorded && precheck.unowned_weight_slot != nullptr) {
+    dump_test.dumpAtBoundary(true);
   }
   finishWallPrecheck(precheck, recorded);
   emitUnownedBlockedTailForWallPrecheck(tid, precheck);
@@ -261,7 +259,7 @@ bool BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
   event._execution_mode = ExecutionMode::JAVA;
   WallPrecheckResult first = prepareWallPrecheck(current, true, true, OSThreadState::SLEEPING);
   if (first.suppress || first.unowned_weight_slot != slot) return false;
-  if (!recordAsgctWallSample(nullptr, 1, current->tid(), 0, &event, first, &dump_test) ||
+  if (!recordAsgctWallSampleForTest(nullptr, 1, current->tid(), 0, &event, first, dump_test) ||
       dump_test.error) return false;
 
   // One further blocked observation contributes exactly one pending unit.
@@ -269,7 +267,7 @@ bool BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
   WallPrecheckResult tail = prepareWallPrecheck(current, true, true, OSThreadState::RUNNABLE);
   if (!tail.flush_unowned_tail || tail.flush_weight != 1) return false;
   event._thread_state = OSThreadState::RUNNABLE;
-  return recordAsgctWallSample(nullptr, 1, current->tid(), 0, &event, tail, &dump_test) &&
+  return recordAsgctWallSampleForTest(nullptr, 1, current->tid(), 0, &event, tail, dump_test) &&
       !dump_test.error;
 }
 
@@ -416,14 +414,10 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     event._thread_state = state;
     event._execution_mode = mode;
     event._weight = precheck.unowned_weight;
-#ifdef DEBUG
-    recordAsgctWallSample(ucontext, last_sample, tid, call_trace_id, &event, precheck);
-#else
     bool recorded = Profiler::instance()->recordWallSample(
         ucontext, last_sample, tid, call_trace_id, &event, precheck.unowned_weight_slot);
     finishWallPrecheck(precheck, recorded);
     emitUnownedBlockedTailForWallPrecheck(tid, precheck);
-#endif
   }
 }
 
