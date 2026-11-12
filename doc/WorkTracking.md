@@ -10,10 +10,10 @@ this page is the how.
 
 Work runs in four phases — Intent → Design → Build and Test → Deploy — with the
 tracker ticket as the system of record: decisions and evidence land there, so
-anyone can pick the work up without reconstructing a conversation. Work is
-tracked in Jira (`PROF-<n>`). How to write the ticket, the design and the Build
-plan is in the `ticket-writing` and `work-planning` agent skills
-(`.agents/skills/`).
+anyone can pick the work up without reconstructing a conversation. Datadog
+engineers track work in Jira (`PROF-<n>`); external contributors use GitHub
+issues. How to write the ticket, the design and the Build plan is in the
+`ticket-writing` and `work-planning` agent skills (`.agents/skills/`).
 
 ## Intent — what and why
 

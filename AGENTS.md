@@ -475,10 +475,10 @@ exception list.
 ## Work Tracking
 
 Work runs in four phases — Intent → Design → Build and Test → Deploy — with the
-tracker ticket as the system of record: Jira (`PROF-<n>`). **Read
-[doc/WorkTracking.md](doc/WorkTracking.md) before starting tracked work** — it is the
-phase-by-phase process reference; skipping it must be disclosed per the rule at the top
-of this file. These rules always apply:
+tracker ticket as the system of record: Jira (`PROF-<n>`) for Datadog engineers,
+GitHub issues for external contributors. **Read [doc/WorkTracking.md](doc/WorkTracking.md)
+before starting tracked work** — it is the phase-by-phase process reference; skipping
+it must be disclosed per the rule at the top of this file. These rules always apply:
 
 - **Verification first.** No transition happens on claims: acceptance criteria before
   code, tests and review before merge, production verification before closure. **Fix
