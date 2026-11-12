@@ -23,6 +23,10 @@ or say they are from an earlier commit.
   different structure.
 - **Write from the actual diff.** Re-check the title and description after the scope
   changes. Describe crash or bug mechanisms only as far as the code and tests confirm.
+- **Keep the description current as the branch evolves.** Whenever commits are added
+  to a branch with an open PR (review fixes, a rebase replay, a scope change),
+  re-verify the title and description against the new diff and update what no longer
+  holds — sections, accepted costs, measured numbers.
 - **Professional typesetting and layout.** Structure the description for scanning:
   short sections with meaningful headings, bullets for enumerations, tables for
   comparisons, `code spans` for identifiers and commands, fenced blocks for code/logs.
