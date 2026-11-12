@@ -1116,6 +1116,7 @@ cat > "$GTEST_SRC/suite.cpp" <<'EOS'
 TEST(WobblySuite, sometimesFails) { }
 TEST_F(WobblySuite, aFixtureCase) { }
 TEST_P(WobblySuite, aParameterizedCase) { }
+INSTANTIATE_TEST_SUITE_P(MyInst, WobblySuite, testing::Values(1))
 EOS
 
 GTEST_ARGS=(--gtest-src "$GTEST_SRC")
@@ -1147,13 +1148,38 @@ python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/de
   || fail "a gtest entry matching a TEST_F declaration should be accepted"
 pass "a gtest entry matching a TEST_F declaration is accepted"
 
-# Value-parameterized cases report as '<inst>/<Suite>.<case>/0'; the entry is
-# written bare and covers() reduces the classname, so validate must resolve
-# the declared name the same way.
+# Value-parameterized suites report '<inst>/<Suite>.<case>/<idx>'; covers()
+# compares an exact entry verbatim, so the bare form can never fire -- only
+# the class-wide form survives the classname reduction.
 write_list "$LIST" "$(entry WobblySuite.aParameterizedCase PROF-1 "$(day_offset 30)")"
-python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
-  || fail "a gtest entry matching a TEST_P declaration should be accepted"
-pass "a gtest entry matching a TEST_P declaration is accepted"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null 2>&1; then
+  fail "a bare exact id for a value-parameterized suite should be rejected"
+fi
+pass "a bare exact id for a value-parameterized suite is rejected"
+
+write_list "$LIST" "$(entry MyInst/WobblySuite.aParameterizedCase PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null 2>&1; then
+  fail "an exact id carrying instantiation decoration should be rejected"
+fi
+pass "an exact id carrying instantiation decoration is rejected"
+
+write_list "$LIST" "$(entry WobblySuite PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null 2>&1; then
+  fail "a caseless bare suite id should be rejected"
+fi
+pass "a caseless bare suite id is rejected"
+
+# A case with a '/<idx>' suffix is exact-decoration: covers() compares the
+# entry verbatim and the plain-TEST report id carries no index, so the
+# decoration check must reject it -- the declaration lookup stays out of the
+# way (its reduced id would misleadingly 'match').
+write_list "$LIST" "$(entry WobblySuite.sometimesFails/0 PROF-1 "$(day_offset 30)")"
+validate_out=$(python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" 2>&1 || true)
+echo "$validate_out" | grep -q "instantiation decoration" \
+  || fail "an indexed case must hit the decoration check, got: $validate_out"
+echo "$validate_out" | grep -q "matches no TEST declaration" \
+  && fail "the declaration cross-check must not flag an index-suffixed case"
+pass "an index-suffixed case hits the decoration check, not the declaration check"
 
 write_list "$LIST" "$(entry MyInst/WobblySuite.* PROF-1 "$(day_offset 30)")"
 python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
