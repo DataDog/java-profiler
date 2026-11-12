@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
@@ -155,41 +156,68 @@ public class MallocArenaCountersTest extends AbstractProfilerTest {
    * 2.35} or {@code ldd (GNU libc) 2.17}). The trailing token is required: distro package versions
    * elsewhere in the banner also contain {@code major.minor} pairs (Ubuntu's {@code
    * 2.31-0ubuntu9.16} ends with {@code 9.16}), and picking one of those misclassifies the glibc
-   * 2.33 gate. Returns {@code null} when the runtime is not glibc (musl prints a version without a
-   * GLIBC marker; the probe is not attempted at all on non-Linux platforms). stderr is merged into
-   * stdout (musl's ldd prints its banner to stderr), the child is reaped under a deadline before
-   * anything is read, and it is always destroyed, whatever the exit path.
+   * 2.33 gate. Returns {@code null} only when the runtime is genuinely not glibc (musl prints a
+   * version without a GLIBC marker; the probe is not attempted at all on non-Linux platforms). A
+   * probe failure (ldd missing, timeout, interrupted, unparsable banner) is inconclusive, not a
+   * negative: it skips the test via an assumption so it can never assert the counters-are-unset
+   * branch against a modern glibc by mistake. The oracle assumes the JVM was loaded against the
+   * system glibc -- the case in every supported test image; a bundled-sysroot environment is
+   * unsupported. stderr is merged into stdout (musl's ldd prints its banner to stderr), the child
+   * is reaped under a deadline before anything is read, and it is always destroyed, whatever the
+   * exit path.
    */
-  private static int[] runtimeGlibcVersion() throws Exception {
+  private static int[] runtimeGlibcVersion() {
     if (!System.getProperty("os.name", "").startsWith("Linux")) {
       return null;
     }
-    Process process = new ProcessBuilder("ldd", "--version").redirectErrorStream(true).start();
+    Process process;
+    try {
+      process = new ProcessBuilder("ldd", "--version").redirectErrorStream(true).start();
+    } catch (IOException e) {
+      // A missing ldd makes the probe inconclusive, not negative: skipping is the only
+      // outcome that can never mask a counter regression behind a wrong assertion.
+      return inconclusive("ldd could not be started", e);
+    }
     String firstLine;
     try {
       // Wait first, then read: the exit deadline also bounds the read. ldd's output is a few
       // lines, far below the pipe buffer, so it cannot block the child on a full pipe while
       // we wait. Reading first would block unboundedly on a child that prints nothing.
       if (!process.waitFor(10, TimeUnit.SECONDS)) {
-        return null;
+        return inconclusive("ldd did not exit within the deadline", null);
       }
       try (BufferedReader reader =
           new BufferedReader(new InputStreamReader(process.getInputStream()))) {
         firstLine = reader.readLine();
       }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return inconclusive("ldd probe interrupted", e);
+    } catch (IOException e) {
+      return inconclusive("ldd output could not be read", e);
     } finally {
       process.destroyForcibly();
     }
     if (firstLine == null) {
-      return null;
+      return inconclusive("ldd produced no output", null);
     }
     if (firstLine.contains("musl") || firstLine.contains("FreeBSD")) {
       return null;
     }
-    Matcher matcher = Pattern.compile("\\b(\\d+)\\.(\\d+)\\s*$").matcher(firstLine);
+    // The full-token boundary rejects three-component trailing versions such as a
+    // pre-release "2.38.9000": "38.9000" there is preceded by a dot, not a token boundary,
+    // so an ambiguous banner is inconclusive instead of parsing to a wrong version.
+    Matcher matcher = Pattern.compile("(?:^|\\s)(\\d+)\\.(\\d+)\\s*$").matcher(firstLine);
     if (!matcher.find()) {
-      return null;
+      return inconclusive("ldd banner has no trailing major.minor token: " + firstLine, null);
     }
     return new int[] {Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2))};
+  }
+
+  /** Fails the assumption, skipping the test: the probe outcome is unknown, not negative. */
+  private static int[] inconclusive(String reason, Exception cause) {
+    String message = reason + (cause == null ? "" : ": " + cause);
+    Assumptions.assumeTrue(false, message);
+    return null; // unreachable: assumeTrue(false) always aborts
   }
 }

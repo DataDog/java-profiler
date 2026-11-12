@@ -2133,14 +2133,22 @@ void Recording::writeLogLevels(Buffer *buf) {
 // mallinfo2(), which then reports all zeros. Neither runtime exports
 // mallctl/tc_malloc_size, so the dlsym probe alone would miss them.
 //
-// Not cached: called once per JFR chunk flush, so the dlsym() lookups (three
-// counting the mallinfo2 resolution in mallocInfo.cpp) are negligible.
+// Resolved once: the lookup result cannot change after process start, and the
+// loader lock is not worth taking on every chunk flush. The sentinel makes the
+// first call racily idempotent -- dlsym() is thread-safe and all threads store
+// the same verdict -- so no lock is needed. Flush path only, never signal
+// context, so plain statics are legal here.
 bool Recording::glibcMallocActive() {
 #if defined(ASAN_ENABLED) || defined(TSAN_ENABLED)
   return false;
 #else
-  return dlsym(RTLD_DEFAULT, "mallctl") == nullptr &&
-         dlsym(RTLD_DEFAULT, "tc_malloc_size") == nullptr;
+  static int cached = 0; // 0 = unresolved, 1 = active, 2 = inactive
+  if (cached == 0) {
+    bool active = dlsym(RTLD_DEFAULT, "mallctl") == nullptr &&
+                  dlsym(RTLD_DEFAULT, "tc_malloc_size") == nullptr;
+    cached = active ? 1 : 2;
+  }
+  return cached == 1;
 #endif
 }
 

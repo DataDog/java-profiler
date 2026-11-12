@@ -5,6 +5,14 @@
 
 #include "mallocInfo.h"
 #include <dlfcn.h>
+#if defined(__linux__)
+// The glibc guard below must see __GLIBC_PREREQ here, not via a transitive
+// include: if <dlfcn.h> ever stopped pulling in <features.h>, the guard would
+// silently turn false and the mirror pins would stop compiling on every
+// glibc build. <features.h> exists on musl too, so the include is unconditional
+// on Linux.
+#include <features.h>
+#endif
 
 // mallinfo2() replaced the int-based mallinfo() in glibc 2.33. The release
 // libraries are built against older glibc headers (the el8 image has 2.28),
@@ -70,13 +78,23 @@ struct Mallinfo2 {
 
 bool mallocArenaSnapshot(MallocArenaInfo *out) {
   typedef Mallinfo2 (*mallinfo2_fn)();
-  // Not cached: called once per JFR chunk flush, so the dlsym() lookup is
-  // negligible (same trade-off as glibcMallocActive()).
-  mallinfo2_fn fn = (mallinfo2_fn)dlsym(RTLD_DEFAULT, "mallinfo2");
-  if (fn == NULL) {
+  // Resolved once. The RTLD_DEFAULT lookup result cannot change after libc is
+  // loaded, and the loader lock is not worth taking on every chunk flush while
+  // application threads may be inside dlopen(). The pair is written racily but
+  // idempotently: dlsym() is thread-safe and every thread stores the same
+  // value, so no lock is needed; a thread that races the very first lookup can
+  // only see NULL for one flush (counters unset for that chunk, self-healing).
+  // Flush path only, never signal context, so plain statics are legal here.
+  static mallinfo2_fn cached_fn = NULL;
+  static bool resolved = false;
+  if (!resolved) {
+    cached_fn = (mallinfo2_fn)dlsym(RTLD_DEFAULT, "mallinfo2");
+    resolved = true;
+  }
+  if (cached_fn == NULL) {
     return false;
   }
-  Mallinfo2 mi = fn();
+  Mallinfo2 mi = cached_fn();
   out->arena = mi.arena;
   out->hblkhd = mi.hblkhd;
   out->uordblks = mi.uordblks;
