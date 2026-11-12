@@ -21,7 +21,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer architecture for call traces; recording-scoped (release/acquire)
 - [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
 - [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: recordings, buffers, metadata, constant pools
-- [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current implementation, including root-anchor indexing and rotation
+- [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation
 - [MallocArenaWarning](architecture/MallocArenaWarning.md) - glibc malloc arena detector: arena walk, rule, and JFR events
 - [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception (hooks installed per recording, restored on stop) and allocation sampling
 - [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, wall-clock, allocation, native-memory and liveness engines; gated thread registration; recording-scoped liveness; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
@@ -53,7 +53,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 ### Design
 
 - [BitsReviewMergeGateDesign](BitsReviewMergeGateDesign.md) - Bits PASS merge gate: policy, implementation, trusted status publisher, and enforcement proposal pending separate approval
-- [BitsReviewRedReviewRunbook](BitsReviewRedReviewRunbook.md) - Developer procedure for a red Bits review: what clears FAIL, what does not, and how to get a fresh review
+- [NativeMemoryProfilerExclusionDesign](NativeMemoryProfilerExclusionDesign.md) - Proposed admission check for conflicting native-memory profilers and its lifecycle limits
 - [ReferenceChainsCollectionSummary](ReferenceChainsCollectionSummary.md) - Short reference-chain overview and limits
 - [ReferenceChainsDesign](ReferenceChainsDesign.md) - Reference-chain design decision and trade-offs
 - [WorkTracking](WorkTracking.md) - Work-tracking phases: Intent, Design, Build and Test, Deploy
