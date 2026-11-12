@@ -248,6 +248,18 @@ echo more >> b.txt && git commit -qam more
 STALE=$(git rev-parse HEAD)
 expect "pre-push blocks unreviewed tip" 1 "is stale" \
   prepush "refs/heads/feature $STALE refs/heads/feature $Z"
+OPEN_PRS=""
+if prepush "refs/heads/feature $STALE refs/heads/feature $Z" 2>"$TEMP_DIR/err2"; then
+  pass
+else
+  fail "pre-push blocked a failing check without an open PR: $(cat "$TEMP_DIR/err2")"
+fi
+if grep -qF "has an open PR" "$TEMP_DIR/err2"; then
+  fail "pre-push blamed an open PR for a plain check failure: $(cat "$TEMP_DIR/err2")"
+else
+  pass
+fi
+export OPEN_PRS="feature"
 printf '%s' "$PAYLOAD" > utils/review-marker.py
 expect "pre-push uses origin/main's marker script" 1 "is stale" \
   prepush "refs/heads/feature $STALE refs/heads/feature $Z"
@@ -493,10 +505,13 @@ VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIE
   hook "gh -R DataDog/java-profiler pr ready 12"
 VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook keeps --repo=" 0 "" \
   hook "gh pr ready 12 --repo=DataDog/java-profiler"
-VIEW_NUMBER=12 VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=1234567890123456789012345678901234567890 VIEW_BASE=main \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=1234567890123456789012345678901234567890 VIEW_BASE=main \
   expect "hook reports an unfetched PR head" 2 "Rerunning the review will not help" hook "gh pr ready 12"
 VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main OWNER_NAME=DataDog/java-profiler VIEW_GRAPHQL=2019-06-01T00:00:00Z\ 2020-01-01T00:00:00Z \
   expect "hook blocks ready when the description predates the head commit" 2 "last edited before" \
+  hook "gh pr ready 12"
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_STALE VIEW_BASE=main OWNER_NAME=DataDog/java-profiler VIEW_GRAPHQL=2019-06-01T00:00:00Z\ 2020-01-01T00:00:00Z \
+  expect "hook reports the stale marker, not the description, when the check fails" 2 "$STALE_MSG" \
   hook "gh pr ready 12"
 VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main OWNER_NAME=DataDog/java-profiler VIEW_GRAPHQL=2020-01-01T00:00:00Z\ 2020-01-01T00:00:00Z \
   expect "hook allows ready when the description is as fresh as the head commit" 0 "" hook "gh pr ready 12"
