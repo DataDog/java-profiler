@@ -20,7 +20,7 @@
 // throwing may allocate: allocation freedom covers valid bookkeeping only.
 
 // Actors: the BFS thread writes before FollowReferences(); the callback on
-// the HotSpot VM thread reads and records completion during that synchronous
+// the JVM's VM thread reads and records completion during that synchronous
 // VM operation; the BFS thread reads the result after the call returns.
 class ReferenceChainBatchSet {
  public:
