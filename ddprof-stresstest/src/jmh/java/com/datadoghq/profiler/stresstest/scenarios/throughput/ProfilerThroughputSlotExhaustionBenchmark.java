@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc
+ * Copyright 2025, 2026, Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,16 +33,14 @@ import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
-import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 
 /**
  * Benchmark testing RefCountGuard slot allocation under extreme concurrency.
  *
- * <p>This benchmark stress-tests the slot allocation mechanism by creating
- * large numbers of concurrent threads, approaching or exceeding typical usage
- * patterns. Key metrics:
+ * <p>This benchmark stress-tests the slot allocation mechanism by creating large numbers of
+ * concurrent threads, approaching or exceeding typical usage patterns. Key metrics:
  *
  * <ul>
  *   <li>Slot allocation latency as occupancy increases
@@ -52,188 +50,190 @@ import org.openjdk.jmh.infra.Blackhole;
  * </ul>
  *
  * <p>The RefCountGuard::getThreadRefCountSlot() function uses prime probing with
- * MAX_PROBE_DISTANCE=32 attempts. Under high concurrency, probing distance
- * increases and may reach the limit, causing allocation failures.
+ * MAX_PROBE_DISTANCE=32 attempts. Under high concurrency, probing distance increases and may reach
+ * the limit, causing allocation failures.
  *
- * <p>Test scenarios:
- * - Burst thread creation: Spawn many threads simultaneously
- * - Wave pattern: Create threads in successive waves
- * - Sustained high concurrency: Maintain high thread count
+ * <p>Test scenarios: - Burst thread creation: Spawn many threads simultaneously - Wave pattern:
+ * Create threads in successive waves - Sustained high concurrency: Maintain high thread count
  */
 @State(Scope.Benchmark)
 public class ProfilerThroughputSlotExhaustionBenchmark {
 
-    @Param({"cpu=100us,wall=100us"})
-    public String command;
+  @Param({"cpu=100us,wall=100us"})
+  public String command;
 
-    @Param({"false"})
-    public String skipResults;
+  @Param({"false"})
+  public String skipResults;
 
-    @Param({"500", "1000", "2000", "4000"})
-    private int burstThreadCount;
+  @Param({"500", "1000", "2000", "4000"})
+  private int burstThreadCount;
 
-    @Param({"50", "100", "200"})
-    private int threadLifetimeMillis;
+  @Param({"50", "100", "200"})
+  private int threadLifetimeMillis;
 
-    private JavaProfiler profiler;
-    private final AtomicLong totalWork = new AtomicLong(0);
-    private final AtomicLong successfulSlots = new AtomicLong(0);
+  private JavaProfiler profiler;
+  private final AtomicLong totalWork = new AtomicLong(0);
+  private final AtomicLong successfulSlots = new AtomicLong(0);
 
-    @Setup(Level.Trial)
-    public void setup() throws IOException {
-        profiler = JavaProfiler.getInstance();
-        totalWork.set(0);
-        successfulSlots.set(0);
+  @Setup(Level.Trial)
+  public void setup() throws IOException {
+    profiler = JavaProfiler.getInstance();
+    totalWork.set(0);
+    successfulSlots.set(0);
+  }
+
+  /**
+   * Work performed by each thread during slot exhaustion test. Simulates real application work that
+   * would trigger profiling samples.
+   */
+  private long doWork(long seed, long durationMillis) {
+    long result = seed;
+    long endTime = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(durationMillis);
+
+    while (System.nanoTime() < endTime) {
+      for (int i = 0; i < 5000; i++) {
+        result = (result * 1103515245L + 12345L) & 0x7fffffffL;
+      }
     }
+    return result;
+  }
 
-    /**
-     * Work performed by each thread during slot exhaustion test.
-     * Simulates real application work that would trigger profiling samples.
-     */
-    private long doWork(long seed, long durationMillis) {
-        long result = seed;
-        long endTime = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(durationMillis);
+  /**
+   * Burst test: Creates many threads simultaneously to stress slot allocation. All threads start
+   * together and run for the specified lifetime.
+   *
+   * <p>This tests the worst-case scenario where slot allocation happens under maximum contention.
+   * High probe distances and potential allocation failures may occur if burstThreadCount approaches
+   * MAX_THREADS.
+   */
+  @Benchmark
+  @BenchmarkMode(Mode.SingleShotTime)
+  @Fork(value = 3, warmups = 0)
+  @Warmup(iterations = 2)
+  @Measurement(iterations = 5)
+  @OutputTimeUnit(TimeUnit.MILLISECONDS)
+  public void burstThreadCreation(Blackhole bh) throws InterruptedException {
+    CountDownLatch startLatch = new CountDownLatch(1);
+    CountDownLatch completionLatch = new CountDownLatch(burstThreadCount);
+    List<Thread> threads = new ArrayList<>(burstThreadCount);
 
-        while (System.nanoTime() < endTime) {
-            for (int i = 0; i < 5000; i++) {
-                result = (result * 1103515245L + 12345L) & 0x7fffffffL;
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Burst test: Creates many threads simultaneously to stress slot allocation.
-     * All threads start together and run for the specified lifetime.
-     *
-     * <p>This tests the worst-case scenario where slot allocation happens
-     * under maximum contention. High probe distances and potential allocation
-     * failures may occur if burstThreadCount approaches MAX_THREADS.
-     */
-    @Benchmark
-    @BenchmarkMode(Mode.SingleShotTime)
-    @Fork(value = 3, warmups = 0)
-    @Warmup(iterations = 2)
-    @Measurement(iterations = 5)
-    @OutputTimeUnit(TimeUnit.MILLISECONDS)
-    public void burstThreadCreation(Blackhole bh) throws InterruptedException {
-        CountDownLatch startLatch = new CountDownLatch(1);
-        CountDownLatch completionLatch = new CountDownLatch(burstThreadCount);
-        List<Thread> threads = new ArrayList<>(burstThreadCount);
-
-        // Create all threads first
-        for (int i = 0; i < burstThreadCount; i++) {
-            final long seed = System.nanoTime() + i;
-            Thread thread = new Thread(() -> {
+    // Create all threads first
+    for (int i = 0; i < burstThreadCount; i++) {
+      final long seed = System.nanoTime() + i;
+      Thread thread =
+          new Thread(
+              () -> {
                 try {
-                    // Wait for signal to start all threads simultaneously
-                    startLatch.await();
+                  // Wait for signal to start all threads simultaneously
+                  startLatch.await();
 
-                    long result = doWork(seed, threadLifetimeMillis);
-                    totalWork.addAndGet(result);
-                    successfulSlots.incrementAndGet();
+                  long result = doWork(seed, threadLifetimeMillis);
+                  totalWork.addAndGet(result);
+                  successfulSlots.incrementAndGet();
                 } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+                  Thread.currentThread().interrupt();
                 } finally {
-                    completionLatch.countDown();
+                  completionLatch.countDown();
                 }
-            });
-            threads.add(thread);
-            thread.start();
-        }
-
-        // Start all threads simultaneously
-        long startTime = System.nanoTime();
-        startLatch.countDown();
-
-        // Wait for all threads to complete
-        completionLatch.await();
-        long duration = System.nanoTime() - startTime;
-
-        bh.consume(totalWork.get());
-        bh.consume(successfulSlots.get());
-        bh.consume(duration);
+              });
+      threads.add(thread);
+      thread.start();
     }
 
-    /**
-     * Wave test: Creates threads in successive waves to test slot reuse.
-     * Tests whether slots from completed threads are efficiently reclaimed
-     * and reused by subsequent threads.
-     */
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 1)
-    @Warmup(iterations = 2, time = 2)
-    @Measurement(iterations = 5, time = 5)
-    @OutputTimeUnit(TimeUnit.SECONDS)
-    public void waveThreadCreation(Blackhole bh) throws InterruptedException {
-        int threadsPerWave = burstThreadCount / 4;
-        int waves = 4;
+    // Start all threads simultaneously
+    long startTime = System.nanoTime();
+    startLatch.countDown();
 
-        for (int wave = 0; wave < waves; wave++) {
-            List<Thread> threads = new ArrayList<>(threadsPerWave);
+    // Wait for all threads to complete
+    completionLatch.await();
+    long duration = System.nanoTime() - startTime;
 
-            for (int i = 0; i < threadsPerWave; i++) {
-                final long seed = System.nanoTime() + i;
-                Thread thread = new Thread(() -> {
-                    long result = doWork(seed, threadLifetimeMillis / 4);
-                    totalWork.addAndGet(result);
+    bh.consume(totalWork.get());
+    bh.consume(successfulSlots.get());
+    bh.consume(duration);
+  }
+
+  /**
+   * Wave test: Creates threads in successive waves to test slot reuse. Tests whether slots from
+   * completed threads are efficiently reclaimed and reused by subsequent threads.
+   */
+  @Benchmark
+  @BenchmarkMode(Mode.Throughput)
+  @Fork(value = 3, warmups = 1)
+  @Warmup(iterations = 2, time = 2)
+  @Measurement(iterations = 5, time = 5)
+  @OutputTimeUnit(TimeUnit.SECONDS)
+  public void waveThreadCreation(Blackhole bh) throws InterruptedException {
+    int threadsPerWave = burstThreadCount / 4;
+    int waves = 4;
+
+    for (int wave = 0; wave < waves; wave++) {
+      List<Thread> threads = new ArrayList<>(threadsPerWave);
+
+      for (int i = 0; i < threadsPerWave; i++) {
+        final long seed = System.nanoTime() + i;
+        Thread thread =
+            new Thread(
+                () -> {
+                  long result = doWork(seed, threadLifetimeMillis / 4);
+                  totalWork.addAndGet(result);
                 });
-                thread.start();
-                threads.add(thread);
-            }
+        thread.start();
+        threads.add(thread);
+      }
 
-            // Wait for this wave to complete before starting next
-            for (Thread thread : threads) {
-                thread.join();
-            }
-        }
-
-        bh.consume(totalWork.get());
+      // Wait for this wave to complete before starting next
+      for (Thread thread : threads) {
+        thread.join();
+      }
     }
 
-    /**
-     * Sustained concurrency test: Maintains high thread count continuously.
-     * Tests long-term stability under sustained high slot occupancy.
-     */
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 1)
-    @Warmup(iterations = 2, time = 2)
-    @Measurement(iterations = 5, time = 5)
-    @OutputTimeUnit(TimeUnit.SECONDS)
-    public void sustainedHighConcurrency(Blackhole bh) throws InterruptedException {
-        // Maintain constant high thread count by spawning replacement threads
-        int activeThreads = burstThreadCount / 2;
-        List<Thread> threads = new ArrayList<>(activeThreads);
+    bh.consume(totalWork.get());
+  }
 
-        // Initial thread pool
-        for (int i = 0; i < activeThreads; i++) {
-            Thread thread = createWorkThread(System.nanoTime() + i);
-            thread.start();
-            threads.add(thread);
-        }
+  /**
+   * Sustained concurrency test: Maintains high thread count continuously. Tests long-term stability
+   * under sustained high slot occupancy.
+   */
+  @Benchmark
+  @BenchmarkMode(Mode.Throughput)
+  @Fork(value = 3, warmups = 1)
+  @Warmup(iterations = 2, time = 2)
+  @Measurement(iterations = 5, time = 5)
+  @OutputTimeUnit(TimeUnit.SECONDS)
+  public void sustainedHighConcurrency(Blackhole bh) throws InterruptedException {
+    // Maintain constant high thread count by spawning replacement threads
+    int activeThreads = burstThreadCount / 2;
+    List<Thread> threads = new ArrayList<>(activeThreads);
 
-        // Replace completed threads to maintain high occupancy
-        for (int i = 0; i < activeThreads; i++) {
-            threads.get(i).join();
-            Thread replacement = createWorkThread(System.nanoTime() + activeThreads + i);
-            replacement.start();
-            threads.set(i, replacement);
-        }
-
-        // Wait for final batch
-        for (Thread thread : threads) {
-            thread.join();
-        }
-
-        bh.consume(totalWork.get());
+    // Initial thread pool
+    for (int i = 0; i < activeThreads; i++) {
+      Thread thread = createWorkThread(System.nanoTime() + i);
+      thread.start();
+      threads.add(thread);
     }
 
-    private Thread createWorkThread(long seed) {
-        return new Thread(() -> {
-            long result = doWork(seed, threadLifetimeMillis);
-            totalWork.addAndGet(result);
+    // Replace completed threads to maintain high occupancy
+    for (int i = 0; i < activeThreads; i++) {
+      threads.get(i).join();
+      Thread replacement = createWorkThread(System.nanoTime() + activeThreads + i);
+      replacement.start();
+      threads.set(i, replacement);
+    }
+
+    // Wait for final batch
+    for (Thread thread : threads) {
+      thread.join();
+    }
+
+    bh.consume(totalWork.get());
+  }
+
+  private Thread createWorkThread(long seed) {
+    return new Thread(
+        () -> {
+          long result = doWork(seed, threadLifetimeMillis);
+          totalWork.addAndGet(result);
         });
-    }
+  }
 }

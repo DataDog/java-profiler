@@ -5,17 +5,17 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvents;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import com.datadoghq.profiler.JfrEvents;
-
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Verifies TaskBlock TLS initialization for threads created before profiler startup. */
 public class JavaProfilerTaskBlockPreExistingThreadTest extends AbstractProfilerTest {
@@ -65,8 +65,7 @@ public class JavaProfilerTaskBlockPreExistingThreadTest extends AbstractProfiler
 
     JfrEvents events = verifyEvents("datadog.TaskBlock");
     TaskBlockAssertions.assertContainsStackTrace(events);
-    TaskBlockAssertions.assertContains(
-        events, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
+    TaskBlockAssertions.assertContains(events, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
   }
 
   @Override

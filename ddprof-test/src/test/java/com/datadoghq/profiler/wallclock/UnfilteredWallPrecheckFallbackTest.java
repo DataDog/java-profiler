@@ -13,10 +13,10 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
- * Regression test for the {@code Profiler::start()} fallback that closes thread-registry
- * admission when the wall engine fails to activate in unfiltered wall-precheck tracking mode, so
- * unrelated engines that did start successfully (e.g. {@code cpu=}) don't keep paying registry
- * overhead for the rest of the recording.
+ * Regression test for the {@code Profiler::start()} fallback that closes thread-registry admission
+ * when the wall engine fails to activate in unfiltered wall-precheck tracking mode, so unrelated
+ * engines that did start successfully (e.g. {@code cpu=}) don't keep paying registry overhead for
+ * the rest of the recording.
  */
 public class UnfilteredWallPrecheckFallbackTest extends AbstractProfilerTest {
 

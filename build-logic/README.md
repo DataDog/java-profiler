@@ -6,6 +6,12 @@ This directory contains a Gradle composite build that provides plugins for build
 - **`com.datadoghq.gtest`** - Google Test integration for C++ unit tests
 - **`com.datadoghq.scanbuild`** - Clang static analyzer integration
 
+Other plugins registered in `conventions/build.gradle.kts`: `com.datadoghq.native-root`
+(root project configs), `com.datadoghq.profiler-test` (Java test tasks per config),
+`com.datadoghq.fuzz-targets` (libFuzzer targets), `com.datadoghq.simple-native-lib`,
+`com.datadoghq.spotless-convention`, `com.datadoghq.java-conventions`,
+`com.datadoghq.versioned-sources`.
+
 > **📚 New to these plugins?** Check out [QUICKSTART.md](QUICKSTART.md) for practical examples, common workflows, tips and tricks, and troubleshooting guidance.
 
 ## Architecture
@@ -40,8 +46,8 @@ The plugin automatically creates standard configurations (release, debug, asan, 
 ## Standard Configurations
 
 ### Release
-- **Optimization**: `-O3 -DNDEBUG`
-- **Debug symbols**: Extracted to separate files (69% size reduction)
+- **Optimization**: `-O3 -DNDEBUG -g`
+- **Debug symbols**: Extracted to separate files (done inside `linkRelease`)
 - **Strip**: Yes (production binaries)
 - **Output**: Stripped library + .dSYM bundle (macOS) or .debug file (Linux)
 
@@ -52,16 +58,18 @@ The plugin automatically creates standard configurations (release, debug, asan, 
 - **Output**: Full debug library
 
 ### ASan (AddressSanitizer)
-- Conditionally active if libasan is available
+- Active on Linux when the ASan runtime is found for the compiler and libc is not musl
+  (`PlatformUtils.hasAsan()`); always inactive on macOS
 - Memory error detection
 
 ### TSan (ThreadSanitizer)
-- Conditionally active if libtsan is available
+- Active on Linux when the TSan runtime is found for the compiler and libc is not musl
+  (`PlatformUtils.hasTsan()`); always inactive on macOS
 - Thread safety validation
 
 ### Fuzzer
 - Fuzzing instrumentation
-- Requires libFuzzer
+- Requires libFuzzer (clang `-fsanitize=fuzzer`, not musl; `PlatformUtils.hasFuzzer()`)
 
 ## Compiler Detection
 
@@ -110,14 +118,14 @@ Release builds automatically extract debug symbols for optimal production deploy
 dsymutil library.dylib -o library.dylib.dSYM
 strip -S library.dylib
 ```
-- **Stripped library**: ~404KB (production)
+- **Stripped library**: ~404KB (production; approximate, drifts with code size)
 - **Debug bundle**: ~3.7MB (.dSYM)
 
 ### Linux
 ```
 objcopy --only-keep-debug library.so library.so.debug
-objcopy --strip-debug library.so
 objcopy --add-gnu-debuglink=library.so.debug library.so
+strip --strip-debug library.so
 ```
 - **Stripped library**: ~1.2MB (production)
 - **Debug file**: ~6MB (.debug)
@@ -207,21 +215,21 @@ tasks.register("linkLib", NativeLinkTask::class) {
 ## Task Dependencies
 
 ```
-compileConfig → linkConfig → assembleConfig
-                    ↓
-              extractDebugSymbols (release only)
-                    ↓
-              stripSymbols (release only)
-                    ↓
-              copyConfigLibs → assembleConfigJar
+compile{Config} → link{Config} → assemble{Config}
+                       ↓
+                 copy{Config}Libs → assemble{Config}Jar   (registered in ddprof-lib/build.gradle.kts)
 ```
+
+For release, `link{Config}` itself extracts debug info and strips the library
+(`NativeLinkTask` `extractDebugSymbols` / `stripSymbols`, enabled only for `release` in
+`NativeBuildPlugin.kt`). These are task properties, not separate tasks.
 
 ## Design Benefits
 
 The Kotlin-based build system provides:
 - ✅ Compile-time type checking via Kotlin DSL
 - ✅ Gradle idiomatic design (Property API, composite builds)
-- ✅ Automatic debug symbol extraction (69% size reduction)
+- ✅ Automatic debug symbol extraction for release builds
 - ✅ Clean builds work from scratch
 - ✅ Centralized configuration definitions
 
@@ -257,13 +265,17 @@ For each test file in `testSourceDir`, the plugin creates:
 
 | Task Pattern | Description |
 |--------------|-------------|
-| `compileGtest{Config}_{TestName}` | Compile main sources + test file |
+| `compileGtest{Config}_{TestName}` | Compile the test file only |
 | `linkGtest{Config}_{TestName}` | Link test executable with gtest libraries |
 | `gtest{Config}_{TestName}` | Execute the test |
 
+Per configuration, `compileGtestLibrary{Config}` compiles the main sources once and every
+test executable links against those objects.
+
 Aggregation tasks:
-- `gtest` - Run all tests across all configurations
+- `gtest` - Run all tests across all active configurations
 - `gtest{Config}` - Run all tests for a specific configuration (e.g., `gtestDebug`)
+- `buildGtest{Config}` - Compile + link all test executables for a configuration without running them
 
 ## Configuration Options
 
@@ -278,12 +290,14 @@ Aggregation tasks:
 | `failFast` | `Property<Boolean>` | `false` | Stop on first test failure |
 | `alwaysRun` | `Property<Boolean>` | `true` | Ignore up-to-date checks for tests |
 | `buildNativeLibs` | `Property<Boolean>` | `true` | Build native test support libraries (Linux) |
+| `nativeLibsSourceDir` | `DirectoryProperty` | - | Source dir of the native test support libraries |
+| `nativeLibsOutputDir` | `DirectoryProperty` | - | Output dir for the built support libraries |
 
 ## Platform Detection
 
 The plugin automatically detects Google Test installation:
 
-- **macOS**: `/opt/homebrew/opt/googletest` (Homebrew default)
+- **macOS**: `/opt/homebrew/opt/googletest` (Homebrew default), then `/usr/local/opt/googletest`
 - **Linux**: System includes (`/usr/include/gtest`)
 
 Override with `googleTestHome`:
@@ -306,8 +320,11 @@ GtestPlugin consumes configurations from NativeBuildPlugin:
 ```
 $ ./gradlew gtestDebug
 
+> Task :ddprof-lib:compileGtestLibraryDebug
+Compiling <N> C++ source files with clang++...
+
 > Task :ddprof-lib:compileGtestDebug_test_callTraceStorage
-Compiling 45 C++ source files with clang++...
+Compiling 1 C++ source file with clang++...
 
 > Task :ddprof-lib:linkGtestDebug_test_callTraceStorage
 Linking executable: test_callTraceStorage
@@ -344,6 +361,8 @@ BUILD SUCCESSFUL
   - `NativeBuildExtension.kt` - Native build DSL extension
   - `gtest/GtestPlugin.kt` - Google Test plugin
   - `gtest/GtestExtension.kt` - Google Test DSL extension
+  - `gtest/GtestTaskBuilder.kt` - Per-test compile/link/run task builder
+  - `fuzz/FuzzTargetsPlugin.kt` - libFuzzer target plugin
   - `scanbuild/ScanBuildPlugin.kt` - Static analysis plugin
   - `scanbuild/ScanBuildExtension.kt` - Static analysis DSL extension
   - `model/` - Type-safe configuration models

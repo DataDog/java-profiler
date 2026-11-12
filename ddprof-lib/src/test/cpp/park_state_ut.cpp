@@ -329,7 +329,8 @@ TEST(WallClockOncePerRunFilterTest, ResetClearsOwnedBlockOnSlotReuse) {
   slot->markBlockGenerationSampled(slot->blockGeneration());
   ASSERT_EQ(slot->blockGeneration(), slot->sampledBlockGeneration());
 
-  filter.resetSlotRunState(slot_id);
+  filter.unregisterThread(slot_id, 1234);
+  ASSERT_EQ(slot_id, filter.registerThread(5678));
 
   EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
   EXPECT_EQ(0ULL, slot->sampledBlockGeneration());

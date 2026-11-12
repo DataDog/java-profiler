@@ -28,8 +28,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   private static final int OSTHREAD_STATE_SLEEPING = 7;
   private static final long SLEEP_MILLIS = 300;
   private static final String PRE_EXISTING_THREAD_NAME = "unfiltered-precheck-existing";
-  private static final String SUPPRESSED_OWNED_BLOCK_COUNTER =
-      "wc_signals_suppressed_owned_block";
+  private static final String SUPPRESSED_OWNED_BLOCK_COUNTER = "wc_signals_suppressed_owned_block";
 
   private ExecutorService preExistingWorker;
   private Thread preExistingThread;
@@ -52,8 +51,8 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   }
 
   /**
-   * Verifies that entering the context window prevents owned-block suppression in an
-   * unfiltered recording.
+   * Verifies that entering the context window prevents owned-block suppression in an unfiltered
+   * recording.
    *
    * @throws Exception if the worker cannot complete
    */
@@ -77,8 +76,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
    * @throws Exception if the worker cannot complete
    */
   @RetryingTest(3)
-  public void parkedPreExistingThreadOutsideContextWindowIsOwnedBlockSuppressed()
-      throws Exception {
+  public void parkedPreExistingThreadOutsideContextWindowIsOwnedBlockSuppressed() throws Exception {
     long suppressedBefore = suppressedSignals();
     runPreExistingParkedWorker();
 
@@ -112,11 +110,15 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
     assertTrue(
         totalWeight >= 10,
         "Expected at least 10 represented observations for the unowned sleep, count="
-            + sampleCount + ", weight=" + totalWeight);
+            + sampleCount
+            + ", weight="
+            + totalWeight);
     assertTrue(
         totalWeight > sampleCount,
         "Expected suppressed observations to be represented by weight, count="
-            + sampleCount + ", weight=" + totalWeight);
+            + sampleCount
+            + ", weight="
+            + totalWeight);
   }
 
   /**
@@ -243,8 +245,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
         .submit(
             () -> {
               assertSame(preExistingThread, Thread.currentThread());
-              long token =
-                  ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
+              long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
               ProfilerOwnedBlockHooks.blockExit(profiler, token);
               Thread.sleep(SLEEP_MILLIS);
               return token;
@@ -277,7 +278,8 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
               try {
                 long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(SLEEP_MILLIS);
                 while (System.nanoTime() < deadline) {
-                  // Keep the OS thread runnable so suppression must come from the owned park marker.
+                  // Keep the OS thread runnable so suppression must come from the owned park
+                  // marker.
                 }
               } finally {
                 ProfilerOwnedBlockHooks.parkExit(
@@ -302,9 +304,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
 
   private void assertSuppressedSamples(String threadName) {
     long sampleCount = samplesForThread(threadName);
-    assertTrue(
-        sampleCount >= 1,
-        "Expected the owned block's first MethodSample to be retained");
+    assertTrue(sampleCount >= 1, "Expected the owned block's first MethodSample to be retained");
     assertTrue(
         sampleCount < 10,
         "Expected samples after the first owned-block sample to be suppressed, got: "

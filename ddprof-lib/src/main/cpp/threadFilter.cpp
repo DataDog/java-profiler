@@ -508,16 +508,9 @@ bool ThreadFilter::add(int tid, SlotID slot_id) {
         if (unlikely(tid < 0 || slot.nativeTid() != tid)) {
             return false;
         }
-        // A block/park run's exit can be missed (e.g. an exception path with
-        // no finally), leaving the slot "owned" forever and permanently
-        // suppressed. add() is only ever called by the slot's own thread
-        // (ensureCurrentThreadSlot() uses current->tid()), which cannot
-        // itself be inside a JAVA/JVMTI/NATIVE block run at this exact point,
-        // so it is always safe to drop a stuck one on every context entry.
-        // Only the active-run fields are cleared, not the unowned-blocked
-        // sampling weight -- see
-        // WallClockBlockTracker::BlockState::clearActiveBlockRun(), which
-        // also explains why a TASK_BLOCK run is exempt from this clear.
+        // The owner cannot still be blocked when it enters a context window.
+        // Clear missed JAVA/JVMTI/NATIVE exits; TASK_BLOCK retains its context
+        // epoch so its explicit exit can report a crossing.
         if (_block_tracker != nullptr) {
             _block_tracker->clearActiveBlockRun(slot_id);
         }
@@ -550,6 +543,13 @@ void ThreadFilter::remove(SlotID slot_id) {
 
 void ThreadFilter::unregisterThread(SlotID slot_id, int expected_tid) {
     std::lock_guard<std::mutex> lock(_registry_lock);
+    if (expected_tid >= 0) {
+        Slot* cached = slotForId(slot_id);
+        if (cached == nullptr || cached->nativeTid() != expected_tid) {
+            // A stale cache must not retire its new owner or strand the exiting TID.
+            slot_id = lookupSlotIdByTid(expected_tid);
+        }
+    }
     unregisterThreadLocked(slot_id, expected_tid);
 }
 
@@ -724,13 +724,6 @@ void ThreadFilter::clearActive() {
     if (_block_tracker != nullptr) {
         _block_tracker->resetAll();
     }
-}
-
-void ThreadFilter::resetSlotRunState(SlotID slot_id) {
-    if (slot_id < 0 || _block_tracker == nullptr) return;
-    // Clear stale suppression state so a new thread in this slot cannot inherit
-    // its predecessor's active block or sampled generation.
-    _block_tracker->resetSlot(slot_id);
 }
 
 void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
