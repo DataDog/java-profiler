@@ -1381,20 +1381,6 @@ set -e
 [ "$rc" -ne 0 ] || fail "an un-quarantined gtest failure must fail the job (got exit $rc)"
 pass "an un-quarantined gtest failure fails the job"
 
-# A quarantine entry must name the id the gtest declaration actually
-# produces. validate() cannot catch a suite name that exists only in a
-# ticket title, and the failure mode is a mute that never matches -- so
-# pin the entry's test field to the id parsed from the source file.
-SRC_NATIVE_THREAD_NAME_RACE="$ROOT/ddprof-lib/src/test/cpp/nativeThreadNameRace_ut.cpp"
-declared_id=$(sed -n 's/^[[:space:]]*TEST(\([A-Za-z_][A-Za-z0-9_]*\),[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)).*/\1.\2/p' \
-  "$SRC_NATIVE_THREAD_NAME_RACE" | head -1)
-[ -n "$declared_id" ] || fail "could not parse a TEST(<suite>, <case>) id from nativeThreadNameRace_ut.cpp"
-entry_id=$(awk -F'|' '/PROF-16577/ {gsub(/[ \t]/, "", $1); print $1; exit}' \
-  "$ROOT/ddprof-test/quarantine.txt")
-[ "$entry_id" = "$declared_id" ] \
-  || fail "the PROF-16577 entry ('$entry_id') does not match the declared gtest id ('$declared_id')"
-pass "the PROF-16577 entry names the id the gtest declaration produces ($declared_id)"
-
 # Regression (PR review): a gtest binary aborted by a sanitizer diagnostic
 # exits 66 WITHOUT writing its XML -- no signal, so the >128 exit check
 # cannot see it, and both attempts miss the same tests, so neither can the

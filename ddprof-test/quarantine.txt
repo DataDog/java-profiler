@@ -102,8 +102,3 @@ com.datadoghq.profiler.referencechains.ReferenceChainTrackingTest.shouldReconstr
 com.datadoghq.profiler.referencechains.ThreadLocalLeakReferenceChainTest.shouldCorrelateThreadLocalHeldLeakChain | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Child reports [tl-correlation-tag-out-of-pool]; 3 failing jobs in nightly run 39893765385
 com.datadoghq.profiler.referencechains.LeakTagCorrelationReferenceChainTest.shouldCorrelateLeakChainTargetTagWithLiveObjectLeakTag | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Child reports [correlation-tag-out-of-pool]; 1 failing job in nightly run 39893765385
 
-# gtest suite `NativeThreadNameRaceTest` in nativeThreadNameRace_ut: the
-# scanner races thread death (pthread_getattr_np on an exiting thread
-# fails), so the test fails intermittently on quiet CI runners regardless
-# of config or arch -- hence quarantined everywhere.
-NativeThreadNameRaceTest.threadDyingBetweenScansIsNeverNamed | PROF-16577 | 2026-11-10 | 2027-02-08 | - | thread-death race in the name scanner; fails ~daily on quiet CI runners
