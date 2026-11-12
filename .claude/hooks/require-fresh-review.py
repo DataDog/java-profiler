@@ -272,9 +272,9 @@ def stale_description(number, repo, cwd):
     out = gh_query(["api", "graphql", "-f", "query=" + PR_TIMES_QUERY,
                     "-f", "o=" + owner, "-f", "n=" + name, "-F", "p=" + number,
                     "--jq",
-                    '(.data.repository.pullRequest) as $p | '
-                    '(($p.lastEditedAt // $p.createdAt) // "") + " "'
-                    ' + ($p.commits.nodes[0].commit.committedDate // "")'], cwd)
+                    ('(.data.repository.pullRequest) as $p | '
+                     + '(($p.lastEditedAt // $p.createdAt) // "") + " "'
+                     + ' + ($p.commits.nodes[0].commit.committedDate // "")')], cwd)
     times = [gh_time(part) for part in (out or "").split()]
     if len(times) != 2 or None in times:
         return None
