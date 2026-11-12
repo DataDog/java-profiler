@@ -28,12 +28,12 @@
 # threshold logic and provides a single source of truth.
 #
 # The $14-$19 "registered in recording" flags are also calculated by the calling
-# script (via `jfr summary`), because jfr-shell's query engine hard-fails with
-# "Event type not found" instead of returning a zero count when a type isn't in
-# the recording's metadata at all (e.g. JDK built-in events are entirely absent
-# from ddprof-only recordings, or an event predates the JDK that produced the
-# file). Every query against one of these six types is guarded by its flag so a
-# missing type is treated as zero events instead of aborting the script.
+# script, by probing each type through this same script engine
+# (probe-event-types.jfrs), because a query against a type that isn't in the
+# recording's metadata at all fails with "Event type not found" instead of
+# returning a zero count. Every query against one of these six types is
+# guarded by its flag so a missing type is treated as zero events instead of
+# aborting the script.
 #
 # The script prints SUCCESS or VALIDATION_FAILED at the end.
 # The calling script should check for "VALIDATION_FAILED" in output.
