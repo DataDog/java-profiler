@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk11
 
 ## glibc-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-11-12 08:35:40 EST
+**Date:** 2026-11-12 08:53:41 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 485 |
-| Sample Rate | 8.08/sec |
-| Health Score | 505% |
+| CPU Samples | 519 |
+| Sample Rate | 8.65/sec |
+| Health Score | 541% |
 | Threads | 8 |
-| Allocations | 395 |
+| Allocations | 374 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 690 |
-| Sample Rate | 11.50/sec |
-| Health Score | 719% |
-| Threads | 10 |
-| Allocations | 514 |
+| CPU Samples | 653 |
+| Sample Rate | 10.88/sec |
+| Health Score | 680% |
+| Threads | 8 |
+| Allocations | 528 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1794490166 32
-1794490171 32
-1794490176 32
-1794490181 32
-1794490186 32
-1794490191 32
-1794490196 32
-1794490201 32
-1794490206 32
-1794490211 32
-1794490216 32
-1794490221 32
-1794490226 32
-1794490231 32
-1794490236 32
-1794490241 32
-1794490246 32
-1794490251 32
-1794490256 32
-1794490261 32
+1794491333 32
+1794491338 32
+1794491343 32
+1794491348 32
+1794491353 32
+1794491358 32
+1794491363 32
+1794491368 32
+1794491373 32
+1794491378 32
+1794491383 32
+1794491388 32
+1794491393 32
+1794491398 32
+1794491403 32
+1794491408 32
+1794491413 32
+1794491418 32
+1794491423 32
+1794491428 32
 ```
 </details>
 
