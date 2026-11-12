@@ -1118,6 +1118,13 @@ TEST_F(WobblySuite, aFixtureCase) { }
 TEST_P(WobblySuite, aParameterizedCase) { }
 INSTANTIATE_TEST_SUITE_P(MyInst, WobblySuite, testing::Values(1))
 EOS
+cat > "$GTEST_SRC/typed.cpp" <<'EOS'
+TYPED_TEST(WobblyTypedSuite, aTypedCase) { }
+EOS
+# A stray non-UTF-8 byte in a comment must not crash the scan.
+printf '// author: \xff\xfe note
+TEST(NonUtf8Suite, aCase) { }
+' > "$GTEST_SRC/nonutf8.cpp"
 
 GTEST_ARGS=(--gtest-src "$GTEST_SRC")
 
@@ -1164,10 +1171,27 @@ fi
 pass "an exact id carrying instantiation decoration is rejected"
 
 write_list "$LIST" "$(entry WobblySuite PROF-1 "$(day_offset 30)")"
+validate_out=$(python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" 2>&1 || true)
+echo "$validate_out" | grep -q "no case segment" \
+  || fail "a caseless bare suite id should hit the 'no case segment' complaint, got: $validate_out"
+pass "a caseless bare suite id is rejected with the 'no case segment' complaint"
+
+write_list "$LIST" "$(entry WobblySuite. PROF-1 "$(day_offset 30)")"
 if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null 2>&1; then
-  fail "a caseless bare suite id should be rejected"
+  fail "a trailing-dot id like 'WobblySuite.' should be rejected"
 fi
-pass "a caseless bare suite id is rejected"
+pass "a trailing-dot id is rejected"
+
+write_list "$LIST" "$(entry WobblyTypedSuite.aTypedCase PROF-1 "$(day_offset 30)")"
+validate_out=$(python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" 2>&1 || true)
+echo "$validate_out" | grep -q "TYPED_TEST" \
+  || fail "a bare exact id for a typed case should hit the TYPED_TEST rejection, got: $validate_out"
+pass "a bare exact id for a TYPED_TEST case is rejected"
+
+write_list "$LIST" "$(entry NonUtf8Suite.aCase PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a non-UTF-8 byte in a scanned source must not break the cross-check"
+pass "a non-UTF-8 byte in a scanned source does not break the cross-check"
 
 # A case with a '/<idx>' suffix is exact-decoration: covers() compares the
 # entry verbatim and the plain-TEST report id carries no index, so the
@@ -1193,6 +1217,14 @@ write_list "$LIST" "$(entry a.B.c PROF-1 "$(day_offset 30)")"
 python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate --gtest-src "$TEMP_DIR/empty-gtest-src" >/dev/null \
   || fail "a Java-shaped entry must not be checked against the C++ sources"
 pass "a Java-shaped entry skips the gtest declaration cross-check"
+
+# A list placed outside a repo layout has no derived gtest tree beside it:
+# the cross-check skips, and the skip must be visible as a warning.
+write_list "$TEMP_DIR/derived-list.txt" "$(entry a.B.c PROF-1 "$(day_offset 30)")"
+derived_out=$(python3 "$SCRIPTS/quarantine.py" --list "$TEMP_DIR/derived-list.txt" validate 2>&1 || true)
+echo "$derived_out" | grep -q "::warning::gtest sources not found" \
+  || fail "a skipped derived-default cross-check must print a warning, got: $derived_out"
+pass "a missing derived gtest tree prints a skip warning"
 
 # And a bare-suite id against an empty tree is exactly the mute that never
 # matches -- the failure mode this cross-check exists to catch.

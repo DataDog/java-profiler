@@ -295,12 +295,16 @@ def _declared_gtest_ids(src_dir):
     TEST_F cases report under the bare suite name.
     """
     decl_re = re.compile(
-        r"\b(TYPED_TEST_P|TYPED_TEST|TEST_P|TEST_F|TEST)\s*\(\s*"
+        r"\b(GTEST_TEST|TYPED_TEST_P|TYPED_TEST|TEST_P|TEST_F|TEST)\s*\(\s*"
         r"(\w+)\s*,\s*(\w+)\s*\)")
     ids, suites = {}, set()
     for dirpath, _, filenames in os.walk(src_dir):
         for filename in filenames:
-            if not filename.endswith(".cpp"):
+            # .h/.hpp too: a fixture's case list can live in a shared header.
+            # GTEST_TEST is the macro the others expand to; wrapper macros a
+            # project defines on top of it stay invisible -- a false 'matches
+            # no declaration' on one of those is the scan's known limit.
+            if not filename.endswith((".cpp", ".cc", ".h", ".hpp")):
                 continue
             with open(os.path.join(dirpath, filename),
                       encoding="utf-8", errors="replace") as handle:
@@ -361,13 +365,18 @@ def _gtest_decl_problems(entry, declared_ids, declared_suites):
                 "instead".format(test, _bare_gtest_suite(cls) if "/" in cls else cls)
             ]
         if not case or _INVOCATION_INDEX_RE.match(case):
-            return []  # already flagged by the dedicated checks above
+            return [
+                "test '{}' has no case segment after the last dot -- it is "
+                "neither an exact id nor a class-wide '<Suite>.*', so it "
+                "matches nothing".format(test)
+            ]
         kind = declared_ids.get("{}.{}".format(cls, case))
         if kind is None:
             return [
                 "gtest id '{}' matches no TEST declaration in the gtest "
                 "sources -- the mute would never fire; fix the id or delete "
-                "the entry".format(test)
+                "the entry. If this is a Java id in the default package, "
+                "spell its package explicitly".format(test)
             ]
         if kind != "TEST" and kind != "TEST_F":
             return [
