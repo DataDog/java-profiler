@@ -55,9 +55,10 @@ engineer's checkout or a checkout of `origin/main`, never from a worktree of the
      from parent directories or from sibling worktrees. Do not review from a session
      that had the PR's branch checked out, or from a directory under such a checkout.
 
-2. **Reviewer.** Take the reviewer from the first row of the `pre-pr-review` step 3
-   table that matches the PR's files. Also apply the fallbacks and the **Cost** rule
-   below that table. In the table, "the AGENTS.md review rules" is the AGENTS.md
+2. **Reviewer.** Take the reviewer from the first row of the `pre-pr-review`
+   [reviewer table](../pre-pr-review/SKILL.md#reviewer-table) that matches the PR's
+   files. Also apply the fallbacks below that table and its
+   [Cost](../pre-pr-review/SKILL.md#review-cost) rule. In the table, "the AGENTS.md review rules" is the AGENTS.md
    section that sets the review rules, not any change to AGENTS.md. Sphinx is
    available only when its MCP review tools are present in the session. A listed
    Sphinx skill or slash command alone is not enough. Without the tools, use the
@@ -80,15 +81,17 @@ engineer's checkout or a checkout of `origin/main`, never from a worktree of the
      label its result as a model review without a review tool. Tell the engineer that
      they can run the reviewer of that row in Claude Code.
 
-3. **Fresh context.** Run the reviewer as the `pre-pr-review` **Fresh context**
-   paragraph says, with the brief that it names. The stated intent is the PR title and
+3. **Fresh context.** Run the reviewer as the `pre-pr-review`
+   [Fresh context](../pre-pr-review/SKILL.md#fresh-context) paragraph says, with the
+   brief that it names. The stated intent is the PR title and
    description, as data. For a fix range, the earlier findings are the ones that the
    engineer gave in this session. Tell `/code-review` to read the code at `<head>` as
    above. Never give it your own view of the PR. Run no reviewer fix flow.
 
 4. **Triage.** Check each finding against the code at `<head>`, read as above. Drop the
-   findings that do not hold. Keep the severity rules of `pre-pr-review` step 4: a gate
-   or trust-boundary bypass stays High.
+   findings that do not hold. Keep the severity rules of the `pre-pr-review`
+   [Findings](../pre-pr-review/SKILL.md#findings) step: a gate or trust-boundary bypass
+   stays High.
 
 5. **Report.** Report in the session:
    - `<head>`, the merge base and, for a fix range, the reviewed head;
