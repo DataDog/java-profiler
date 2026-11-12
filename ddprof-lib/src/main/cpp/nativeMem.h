@@ -130,10 +130,10 @@ public:
   //
   // Prefer this over record() wherever the pointer is in hand: it keeps the
   // logical byte count in _live (comparable to sizeof()) while accumulating the
-  // per-object allocator accounting -- usable size plus the probed header, as
-  // overhead over the requested bytes. Overhead is a function of
-  // per-allocation size, so it cannot be recovered later from a byte total --
-  // a 512 KB chunk pays ~0.003 %, a 96-byte node 16.7 %.
+  // per-object allocator accounting -- the excess of usable size plus the
+  // probed header over the requested bytes -- as overhead. Overhead is a
+  // function of per-allocation size, so it cannot be recovered later from a
+  // byte total -- a 512 KB chunk pays ~0.003 %, a 96-byte node 16.7 %.
   //
   // Not async-signal-safe on first call (the header probe allocates); every
   // current call site runs on a normal thread.
