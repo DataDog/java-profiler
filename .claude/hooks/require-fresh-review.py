@@ -9,7 +9,7 @@ another repository than this one is not gated. Pushes are gated by .githooks/pre
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import re
 import shlex
 import subprocess
@@ -28,6 +28,9 @@ GIT_STATE_CHANGE = re.compile(r"\bgit\b[^\n;&|]*?\s(commit|switch|checkout|rebas
 # What an exempted command must spell its target as: no host aliases or other forms.
 OWNER_REPO = re.compile(r"[\w.-]+/[\w.-]+")
 PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/\d+/?")
+# A committer date further ahead than this is a broken clock, not a push from the future:
+# the description gate fails open because no description edit can ever postdate it.
+COMMIT_DATE_SKEW = timedelta(minutes=5)
 # Every character an exempted command may contain. Anything else (\r, \, expansions, operators)
 # might split differently in bash than in shell_words, so it keeps the command gated.
 PLAIN_COMMAND = re.compile(r"[A-Za-z0-9 ._:/=@'\",+-]+")
@@ -82,17 +85,17 @@ def repo_flag(tokens):
 
 
 def ready_target(args, repo, cwd):
-    """(PR number, check arguments) for the PR `gh pr ready` targets, from GitHub so the
-    commits the PR holds are checked; ("", []) means the current branch, None that it
-    cannot be resolved."""
+    """(PR number, node id, head oid, check arguments) for the PR the PR-ready subcommand
+    targets, from GitHub so the commits the PR holds are checked; ("", "", "", []) means
+    the current branch, None that it cannot be resolved."""
     selector = pr_selector(args)
     out = gh_query(["pr", "view", *selector[:1], *(["-R", repo] if repo else []), "--json",
-                    "number,headRefName,headRefOid,baseRefName", "-q",
-                    '"\\(.number) \\(.headRefName) \\(.headRefOid) \\(.baseRefName)"'], cwd)
-    if not out or len(out.split()) != 4:
-        return None if selector else ("", [])
-    number, head, oid, base = out.split()
-    return number, ["--branch", head, "--commit", oid, "--base", origin(base)]
+                    "id,number,headRefName,headRefOid,baseRefName", "-q",
+                    '"\\(.id) \\(.number) \\(.headRefName) \\(.headRefOid) \\(.baseRefName)"'], cwd)
+    if not out or len(out.split()) != 5:
+        return None if selector else ("", "", "", [])
+    pr_id, number, head, oid, base = out.split()
+    return number, pr_id, oid, ["--branch", head, "--commit", oid, "--base", origin(base)]
 
 
 # `gh pr create` flags that take a value, plus the global -R; short form -> long form.
@@ -242,41 +245,32 @@ def gh_time(text):
     return None if dt.tzinfo is None else dt
 
 
-PR_TIMES_QUERY = ('query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){'
-                  'pullRequest(number:$p){lastEditedAt createdAt'
-                  ' commits(last:1){nodes{commit{committedDate}}}}}}')
+PR_TIMES_QUERY = ('query($i:ID!){node(id:$i){... on PullRequest{lastEditedAt createdAt'
+                  ' headRefOid commits(last:1){nodes{commit{committedDate}}}}}}')
 
 
-def pr_repo(repo, cwd):
-    """OWNER/NAME of the repository the PR belongs to: a full -R name as given, otherwise
-    resolved from the checkout (or gh's own resolution of a bare -R name). None when
-    unresolvable."""
-    if repo and re.fullmatch(r"[^/]+/[^/]+", repo):
-        return repo
-    return gh_query(["repo", "view", *(["-R", repo] if repo else []), "--json",
-                     "nameWithOwner", "-q", ".nameWithOwner"], cwd)
-
-
-def stale_description(number, repo, cwd):
+def stale_description(pr_id, approved_oid, cwd):
     """True when the PR body was last edited before its head commit, so it may predate
     the latest code. GitHub's updatedAt also moves on comments and on pushed commits, so
     it cannot date the description: the body's own timestamps are compared (lastEditedAt,
-    createdAt fallback). The head commit's date is fetched directly -- commits is a
-    paginated connection and only its first page is returned, so .[-1] over it can pick
-    a non-head commit. None (fail open) when gh fails, the PR has no commits, or a
-    timestamp is unparseable."""
-    full = pr_repo(repo, cwd)
-    if not full or "/" not in full or not number.isdigit():
-        return None
-    owner, _, name = full.partition("/")
+    createdAt fallback). The query pins the commit by the PR's own headRefOid: a value
+    differing from the marker-approved oid means the PR moved between the two gh calls,
+    and a committer date in the future cannot be dated reliably. None (fail open) when
+    gh fails, the PR has no commits, a timestamp is unparseable, or either check fires."""
     out = gh_query(["api", "graphql", "-f", "query=" + PR_TIMES_QUERY,
-                    "-f", "o=" + owner, "-f", "n=" + name, "-F", "p=" + number,
+                    "-f", "i=" + pr_id,
                     "--jq",
-                    ('(.data.repository.pullRequest) as $p | '
+                    ('(.data.node) as $p | '
                      + '(($p.lastEditedAt // $p.createdAt) // "") + " "'
+                     + ' + ($p.headRefOid // "") + " "'
                      + ' + ($p.commits.nodes[0].commit.committedDate // "")')], cwd)
-    times = [gh_time(part) for part in (out or "").split()]
-    if len(times) != 2 or None in times:
+    parts = (out or "").split()
+    if len(parts) != 3 or parts[1] != approved_oid:
+        return None
+    times = [gh_time(part) for part in (parts[0], parts[2])]
+    if None in times:
+        return None
+    if times[1] > datetime.now(timezone.utc) + COMMIT_DATE_SKEW:
         return None
     return times[0] < times[1]
 
@@ -393,7 +387,7 @@ def evaluate(source, cwd, sub, args, command, match_text):
         target = ready_target(args, repo_flag(words(match_text)), cwd)
         if target is None:
             return "cannot resolve the PR's head commit (gh failed); retry when gh works."
-        number, extra = target
+        number, pr_id, approved_oid, extra = target
     else:
         if HEAD_FLAG.search(command):
             return "--head names a branch other than the checkout's.\n" \
@@ -409,13 +403,9 @@ def evaluate(source, cwd, sub, args, command, match_text):
         if default:
             res = run_check(source, cwd, ["--base", default])
     if res.returncode == 0 and sub == "ready":
-        # gh resolves a PR-URL selector's repository over -R (ready_target relies on the
-        # same order), so the description probe must query the URL's repo, not the flag's.
-        # match(), not fullmatch(): gh accepts URLs with trailing path fragments (/files).
-        selectors = pr_selector(args)
-        url = PR_URL.match(selectors[0]) if selectors else None
-        repo = url.group(1) if url else repo_flag(words(match_text))
-        stale = stale_description(number, repo, cwd)
+        # The probe reuses the PR gh itself resolved (ready_target's node id and the oid
+        # the marker check approved), so no second URL/flag parse can disagree with it.
+        stale = stale_description(pr_id, approved_oid, cwd)
         if stale:
             return "the PR description was last edited before the PR's head commit and " \
                    "may not match the pushed code. Re-verify the title and description " \

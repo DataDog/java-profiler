@@ -103,11 +103,12 @@ def main():
         sys.stdin.read()
         return 0  # the gate is not on the default branch yet
     blocked = False
+    warnings = []
     for line in sys.stdin:
         parts = line.split()
         if len(parts) != 4:
             continue
-        local_ref, local_sha, remote_ref, _ = parts
+        local_ref, local_sha, remote_ref, remote_sha = parts
         if set(local_sha) == {"0"} or not remote_ref.startswith(HEADS):
             continue  # deletions (all-zero id, SHA-1 or SHA-256) and tags are not gated
         remote_branch = remote_ref[len(HEADS):]
@@ -121,8 +122,10 @@ def main():
                               "--commit", local_sha], stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE)
         # The open-PR probe runs even for a fresh marker: it also drives the description
-        # warning below. Fails open (no warning, no block) like every gh call here.
-        open_pr = has_open_pr(remote_branch)
+        # warning below. Fails open (no warning, no block) like every gh call here. A
+        # remote ref still at the all-zero id is being created by this push and cannot
+        # have an open PR.
+        open_pr = False if set(remote_sha) == {"0"} else has_open_pr(remote_branch)
         if res.returncode != 0 and open_pr:
             reason = res.stderr.decode(errors="replace").strip()
             if res.returncode == 1:
@@ -135,9 +138,13 @@ def main():
                       file=sys.stderr)
             blocked = True
         elif open_pr:
-            print("pre-push: %s has an open PR; re-verify its title and description "
-                  "against the pushed commits (pr-writing skill)." % remote_branch,
-                  file=sys.stderr)
+            # Deferred: a warning on one ref is noise when another ref blocks the push
+            # and nothing lands; it prints only when the push goes through.
+            warnings.append("pre-push: %s has an open PR; re-verify its title and description "
+                            "against the pushed commits (pr-writing skill)." % remote_branch)
+    if not blocked:
+        for warning in warnings:
+            print(warning, file=sys.stderr)
     return 1 if blocked else 0
 
 
