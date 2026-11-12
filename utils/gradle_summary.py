@@ -126,33 +126,60 @@ def main(args):
             timer.start()
 
     previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGINT, signal.SIGTERM)}
+    status = 1
+    completed = False
+    stage = "Log sink"
     try:
         with os.fdopen(os.open(str(log), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as output:
-            try:
-                child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                         start_new_session=True, text=True, errors="replace", bufsize=1)
-                if interrupted is not None:
-                    kill_group(signal.SIGTERM)
-                for line in child.stdout:
-                    output.write(line)
-                    output.flush()
-                    if PROGRESS.search(line) and not re.search(r" (SKIPPED|UP-TO-DATE|NO-SOURCE)\s*$", line):
-                        print(line, end="", flush=True)
-                child.stdout.close()
-                wait_status = child.wait()
-                status = 128 - wait_status if wait_status < 0 else wait_status
-            except OSError as error:
-                output.write("Gradle launcher failed: {}\n".format(error))
-                status = 127
-        if interrupted is not None:
-            # A terminated launcher can leave descendants in its group. Reap the whole owned group.
-            kill_group(signal.SIGKILL)
-            status = 128 + interrupted
+            stage = "Gradle launcher"
+            child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     start_new_session=True, text=True, errors="replace", bufsize=1)
+            if interrupted is not None:
+                kill_group(signal.SIGTERM)
+            stream = iter(child.stdout)
+            while True:
+                stage = "Gradle stream"
+                try:
+                    line = next(stream)
+                except StopIteration:
+                    break
+                stage = "Log sink"
+                output.write(line)
+                output.flush()
+                if PROGRESS.search(line) and not re.search(r" (SKIPPED|UP-TO-DATE|NO-SOURCE)\s*$", line):
+                    stage = "Progress sink"
+                    print(line, end="", flush=True)
+            stage = "Gradle wait"
+            wait_status = child.wait()
+            status = 128 - wait_status if wait_status < 0 else wait_status
+            stage = "Log sink"
+        completed = True
+    except OSError as error:
+        # A failed sink cannot be used to report its own failure.
+        print("{} failed: {}".format(stage, error), file=sys.stderr)
+        status = 127 if child is None and stage == "Gradle launcher" else 1
     finally:
-        if timer is not None:
-            timer.cancel()
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)
+        try:
+            if child is not None:
+                # Exceptional exits also own descendants after their launcher exits.
+                try:
+                    if not completed or interrupted is not None:
+                        kill_group(signal.SIGKILL)
+                finally:
+                    try:
+                        child.stdout.close()
+                    except OSError as error:
+                        print("Gradle pipe close failed: {}".format(error), file=sys.stderr)
+                        status = status or 1
+                    finally:
+                        child.wait()
+        finally:
+            if timer is not None:
+                timer.cancel()
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+    if interrupted is not None:
+        status = 128 + interrupted
     try:
         summarize(log, status, time.monotonic() - started, command,
                   child.pid if child is not None else None, interrupted)

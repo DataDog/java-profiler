@@ -345,6 +345,8 @@ public class ExternalLauncher {
                 + (initial == reused)
                 + " "
                 + reused.isMonitorWaitEventsDelegated());
+      } else if (args[0].equals("profiler-delegated-object-wait")) {
+        com.datadoghq.profiler.wallclock.DelegatedObjectWaitScenario.record(args[1]);
       } else if (args[0].equals("profiler-delegation-conflict")) {
         String libraryPath = System.getProperty("ddprof.test.agent.path");
         try {

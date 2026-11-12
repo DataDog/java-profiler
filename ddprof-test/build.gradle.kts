@@ -309,10 +309,14 @@ tasks.matching { it.name.startsWith("test") && it.name != "test" }.configureEach
     .get()
     .asFile
   (this as? ProcessForkOptions)?.environment("DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR", jfr.absolutePath)
+  (this as? ProcessForkOptions)?.environment("DDPROF_NATIVE_FIXTURES_ENABLED", (!skipGtest).toString())
   if (skipGtest) {
     // The producing gtest does not run in this invocation: drop any file from an earlier one
     // so the parser test skips (Assumptions gate) instead of checking a stale recording.
-    doFirst { jfr.delete() }
+    doFirst {
+      jfr.delete()
+      jfr.resolveSibling("datadog_delivery_retry_roundtrip.jfr").delete()
+    }
   }
 }
 

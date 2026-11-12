@@ -1978,6 +1978,10 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (error) {
     return error;
   }
+  // Reject before resetRecordingState() can clear roots retained by failed output.
+  if (_jfr._rec != nullptr || _jfr._uncertain_create_fd >= 0) {
+    return Error("Previous recording output is still owned");
+  }
   _task_block_enabled.store(false, std::memory_order_release);
 
   // Sanity checks run at most once per process, across start and stop cycles.
@@ -2551,13 +2555,13 @@ Error Profiler::stop() {
   // correct counts in the recording
   _thread_info.reportCounters();
 
-  rotateDictsAndRun([&]{ _jfr.stop(); });
+  Error output_error = rotateDictsAndRun([&]{ return _jfr.stop(); });
   endTaskBlockRotation();
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
   // owned by library metadata, so we must keep library patches active until after serialization
-  LibraryPatcher::unpatch_libraries();
+  if (!output_error) LibraryPatcher::unpatch_libraries();
 
   if (!hooks_drained && _cpu_engine->keepsThreadStateAcrossStop()) {
     _state.store(ERROR, std::memory_order_release);
@@ -2567,7 +2571,7 @@ Error Profiler::stop() {
   if (!hooks_drained) {
     return Error("thread hook calls did not drain; the profiler is stopped");
   }
-  return Error::OK;
+  return output_error;
 }
 
 Error Profiler::check(Arguments &args) {
@@ -2693,9 +2697,10 @@ Error Profiler::dump(const char *path, const int length) {
     // rotateDictsAndRun fences ASGCT/JNI CallTraceStorage writers with lockAll().
     // StringDictionary coordinates its own readers and writers with RefCountGuard.
     if (beginTaskBlockRotation()) {
-      rotateDictsAndRun([&]{
-        err = _jfr.dump(path, length);
+      err = rotateDictsAndRun([&]{
+        Error delivered = _jfr.dump(path, length);
         __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+        return delivered;
       });
       endTaskBlockRotation();
     } else {
@@ -2705,7 +2710,7 @@ Error Profiler::dump(const char *path, const int length) {
       TEST_LOG("Profiler::dump _jfr.dump failed: %s", err.message());
     }
 
-    _thread_info.clearAll(thread_ids);
+    if (!err) _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
 
     // reset unwinding counters

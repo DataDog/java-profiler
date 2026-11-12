@@ -1132,18 +1132,22 @@ int OS::createMemoryFile(const char* name) {
     return syscall(__NR_memfd_create, name, 0);
 }
 
-void OS::copyFile(int src_fd, int dst_fd, off_t offset, size_t size) {
+bool OS::copyFile(int src_fd, int dst_fd, off_t offset, size_t size) {
     // copy_file_range() is probably better, but not supported on all kernels
     size_t requested = size;
+    unsigned interrupted = 0;
     while (size > 0) {
         ssize_t bytes = sendfile(dst_fd, src_fd, &offset, size);
+        if (bytes < 0 && errno == EINTR && ++interrupted <= 256) continue;
         if (bytes <= 0) {
             TEST_LOG("OS::copyFile sendfile returned %zd, errno=%d, remaining=%zu of requested=%zu",
                      bytes, errno, size, requested);
-            break;
+            return false;
         }
+        interrupted = 0;
         size -= (size_t)bytes;
     }
+    return true;
 }
 
 void OS::freePageCache(int fd, off_t start_offset) {

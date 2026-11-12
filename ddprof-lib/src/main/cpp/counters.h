@@ -342,6 +342,8 @@
    * almost all classes" — if this tracks the total class count per lap, \
    * the cap is too low; if it stays near zero, the cap is fine. */ \
   X(REFERENCE_CHAIN_STATIC_SWEEP_CLASSES_CAPPED, "reference_chain_static_sweep_classes_capped") \
+  X(JFR_OUTPUT_FAILURES, "jfr_output_failures") \
+  X(JFR_DELIVERIES_CERTIFIED, "jfr_deliveries_certified") \
   DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
   DD_COUNTER_TABLE_FI_DEBUG(X)                                                 \
   DD_COUNTER_TABLE_SAMPLER_PERF(X)                                             \

@@ -306,7 +306,7 @@ private:
   bool beginTaskBlockRotation();
   void endTaskBlockRotation();
 
-  // Rotate all three dictionaries, then run jfr_op under lockAll().
+  // Rotate dictionaries and run jfr_op under lockAll(); failed output retains roots.
   //
   // rotate() drains concurrent JNI readers itself (RefCountGuard), and
   // SignalBlocker prevents profiling signals on this thread from inserting
@@ -320,7 +320,7 @@ private:
   // Dictionary writers that bypass lockAll() (e.g. recordTrace0) are handled
   // by the dictionary's own RefCountGuard protocol, not by lockAll().
   template<typename F>
-  void rotateDictsAndRun(F jfr_op) {
+  Error rotateDictsAndRun(F jfr_op) {
     SignalBlocker blocker;
     if (!_class_map.rotate()) {
       reportDrainTimeout("Class map reused a standby buffer it could not clear");
@@ -332,8 +332,9 @@ private:
       reportDrainTimeout("Context value map reused a standby buffer it could not clear");
     }
     lockAll();
-    jfr_op();
+    Error error = jfr_op();
     unlockAll();
+    if (error) return error;
     if (!_class_map.clearStandby()) {
       reportDrainTimeout("Class map standby buffer not cleared");
     }
@@ -343,6 +344,7 @@ private:
     if (!_context_value_map.clearStandby()) {
       reportDrainTimeout("Context value map standby buffer not cleared");
     }
+    return Error::OK;
   }
 
   static int crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext);

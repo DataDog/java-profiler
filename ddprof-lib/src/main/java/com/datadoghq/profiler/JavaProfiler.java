@@ -18,7 +18,9 @@
 package com.datadoghq.profiler;
 
 import java.io.IOException;
-import java.lang.reflect.Method;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
@@ -38,27 +40,30 @@ public final class JavaProfiler {
 
   private static JavaProfiler instance;
 
-  // Thread.isVirtual() was added in JDK 21; resolved reflectively (once) so this class
-  // still compiles against a JDK 17 (or older) bootclasspath. null means the JVM this
-  // code is running on predates virtual threads, so no thread can ever be one.
-  private static final Method IS_VIRTUAL_METHOD = resolveIsVirtualMethod();
+  // Exact primitive invocation avoids reflection's varargs allocation on blocking hooks.
+  // A missing method means the runtime predates virtual threads.
+  private static final MethodHandle IS_VIRTUAL = resolveIsVirtual();
 
-  private static Method resolveIsVirtualMethod() {
+  private static MethodHandle resolveIsVirtual() {
     try {
-      return Thread.class.getMethod("isVirtual");
+      return MethodHandles.publicLookup()
+          .findVirtual(Thread.class, "isVirtual", MethodType.methodType(boolean.class));
     } catch (NoSuchMethodException e) {
       return null;
+    } catch (IllegalAccessException e) {
+      throw new ExceptionInInitializerError(e);
     }
   }
 
   private static boolean isVirtualThread(Thread thread) {
-    if (IS_VIRTUAL_METHOD == null) {
+    if (IS_VIRTUAL == null) {
       return false;
     }
     try {
-      return (Boolean) IS_VIRTUAL_METHOD.invoke(thread);
-    } catch (ReflectiveOperationException e) {
-      return false;
+      return (boolean) IS_VIRTUAL.invokeExact(thread);
+    } catch (Throwable error) {
+      throw new IllegalStateException(
+          "Cannot determine whether the blocking thread is virtual", error);
     }
   }
 

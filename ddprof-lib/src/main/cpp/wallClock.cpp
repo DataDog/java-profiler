@@ -639,7 +639,7 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
     event._thread_state = state;
     event._execution_mode = mode;
     event._weight = precheck.unowned_weight;
-    // RequestStackTrace needs ucontext when the thread has no last-Java-frame anchor.
+    // Pass the interrupted context for HotSpot's no-last-Java-frame path.
     // Unowned samples retain unit weight: this engine cannot replay a cached stack.
     bool recorded = Profiler::instance()->recordSampleDelegated(
         ucontext, last_sample, tid, BCI_WALL, &event);

@@ -31,6 +31,7 @@
 #include "log.h"
 #include "mutex.h"
 #include "objectSampler.h"
+#include "recordingOutput.h"
 #include "threadFilter.h"
 #include "threadIdTable.h"
 #include "vmEntry.h"
@@ -258,6 +259,7 @@ private:
 };
 
 class Recording {
+  friend class FlightRecorder;
   friend ObjectSampler;
   friend Profiler;
   friend Lookup;
@@ -297,6 +299,15 @@ private:
   std::atomic<int> _active_index{0};  // 0 or 1 globally
 
   int _fd;
+  RecordingOutput _output;
+  struct OutputFailure {};
+  bool _cold_io = true;
+  bool _chunk_open = true;
+  u64 _chunk_sequence = 1;
+  u64 _first_retained_chunk = 1;
+  off_t finishChunkContents(bool end_recording, bool do_cleanup);
+  void patch(Buffer* buf, size_t size, off_t offset);
+  RecordingOutput::Delivery closeOutput();
   off_t _chunk_start;
   MethodMap _method_map;
 
@@ -348,11 +359,14 @@ public:
   Recording(int fd, Arguments &args);
   ~Recording();
 
-  void copyTo(int target_fd);
+  bool copyTo(int target_fd);
   off_t finishChunk();
 
   off_t finishChunk(bool end_recording, bool do_cleanup = false);
-  void switchChunk(int fd);
+  // Consumes fd, retaining sealed source chunks on failed delivery.
+  RecordingOutput::Delivery switchChunk(int fd);
+  bool outputGood() const { return _output.good(); }
+  bool prepareDumpTarget(int fd) const { return _output.prepareTarget(fd); }
 
   void cpuMonitorCycle();
   void appendRecording(const char *target_file, size_t size);
@@ -362,7 +376,7 @@ public:
   bool parseAgentProperties();
 
   void flush(Buffer *buf);
-  void flushIfNeeded(Buffer *buf, int limit = JFR_EVENT_FLUSH_THRESHOLD);
+  bool flushIfNeeded(Buffer *buf, int limit = JFR_EVENT_FLUSH_THRESHOLD);
   void writeHeader(Buffer *buf);
 
   void writeMetadata(Buffer *buf);
@@ -629,6 +643,7 @@ public:
 };
 
 class FlightRecorder {
+  friend class FlightRecorderTestAccessor;
   friend Profiler;
 
 private:
@@ -637,13 +652,14 @@ private:
 
   SpinLock _rec_lock;
   Recording* _rec;
+  int _uncertain_create_fd = -1;
 
   Error newRecording(bool reset);
 
 public:
   FlightRecorder() : _rec(NULL) {}
   Error start(Arguments &args, bool reset);
-  void stop();
+  Error stop();
   Error dump(const char *filename, const int length);
   void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
