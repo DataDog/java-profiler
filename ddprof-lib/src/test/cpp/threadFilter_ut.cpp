@@ -1217,6 +1217,21 @@ TEST_F(ThreadRegistryTest, ExpectedTidProtectsReusedSlotDuringTeardown) {
     EXPECT_EQ(nullptr, registry.lookupByTid(6105));
 }
 
+TEST_F(ThreadRegistryTest, TeardownResolvesExpectedTidDespiteStaleCachedSlot) {
+    constexpr int retained_tid = 6201;
+    int retained = registry.registerThread(retained_tid);
+    ASSERT_GE(retained, 0);
+    for (int cached : {-1, ThreadFilter::kMaxThreads, retained}) {
+        constexpr int exiting_tid = 6202;
+        int exiting = registry.registerThread(exiting_tid);
+        ASSERT_GE(exiting, 0);
+        ASSERT_NE(retained, exiting);
+        registry.unregisterThread(cached, exiting_tid);
+        EXPECT_EQ(nullptr, registry.lookupByTid(exiting_tid));
+        EXPECT_EQ(registry.slotForId(retained), registry.lookupByTid(retained_tid));
+    }
+}
+
 TEST_F(ThreadRegistryTest, DeactivationMakesSlotsIneligibleWithoutClearingStorage) {
     constexpr int tid = 6106;
     int slot_id = registry.registerThread(tid);

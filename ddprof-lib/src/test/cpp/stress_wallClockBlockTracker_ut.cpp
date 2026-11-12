@@ -2,18 +2,8 @@
  * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  *
- * Sustained multithreaded churn for ThreadFilter / WallClockBlockTracker,
- * complementing the deterministic single-race gtests in threadFilter_ut.cpp
- * and wallClockBlockTracker_ut.cpp (which each pin down one exact
- * interleaving) and the single-threaded fuzz_threadFilter.cpp fuzzer (which
- * cannot exercise concurrency at all). Many real OS threads register,
- * context-enter, enter/exit a blocked run, then unregister in a tight loop
- * while a separate thread concurrently restarts the registry — the same
- * registry-to-tracker reset coupling flagged as a coordination risk with the
- * in-flight TaskBlock work. Run under ASan/TSan, the only failure signal is a
- * sanitizer report or crash; there is no useful single-threaded shadow model
- * to assert against here, matching the convention in
- * stress_threadLifecycle_ut.cpp.
+ * Churns registry ownership, context windows, and block runs during restarts.
+ * ASan/TSan detect invalid memory access and races under concurrent lifecycle hooks.
  */
 #include "gtest/gtest.h"
 

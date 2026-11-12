@@ -272,7 +272,7 @@ Retained unowned wall contexts use separate lazy tracker backing:
 | Backing | Accounted bytes | Lifetime |
 |---------|-----------------|----------|
 | `SlotStorage` | `2048 × 64 + 32 × 8 = 131,328` | First cold registration to tracker destruction |
-| Context chunks | `C × 256 × 64 = C × 16,384`, with `0 ≤ C ≤ 8` | Cold registration in the enabled retention mode to tracker destruction |
+| Context chunks | `C × 256 × 128 = C × 32,768`, with `0 ≤ C ≤ 8` | Cold registration in the enabled retention mode to tracker destruction |
 
 These allocations are charged to `NM_WALLCLOCK`. Recording resets retain backing;
 disabled retention does not allocate context chunks. Existing backing is released
@@ -305,7 +305,7 @@ Recording buffers                  1.1 MB (fixed)
 ThreadIdTable arrays               32 KB (fixed)
 MethodMap                          100 KB - 1 MB
 Native owners/context              sizeof-based, including reserved pool owners
-Retained wall-context backing      0-131,072 bytes, plus lazy SlotStorage
+Retained wall-context backing      0-262,144 bytes, plus lazy SlotStorage
 ─────────────────────────────────────────────────────
 ```
 
@@ -322,7 +322,7 @@ Recording buffers                  1.1 MB (fixed)
 ThreadIdTable arrays               32 KB (fixed)
 MethodMap                          1-10 MB
 Native owners/context              sizeof-based, including reserved pool owners
-Retained wall-context backing      0-131,072 bytes, plus lazy SlotStorage
+Retained wall-context backing      0-262,144 bytes, plus lazy SlotStorage
 ─────────────────────────────────────────────────────
 ```
 

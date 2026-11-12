@@ -172,7 +172,9 @@ selection, signal coalescing, end-of-recording boundaries and recording-stripe
 contention can still lose samples. Ordinary cached-stack reuse still writes
 weight 1, and neither elapsed time nor missed deadlines manufacture weight.
 Precheck suppression and its independent retained-tail conservation are unchanged.
-Event timestamps remain actual serializer timestamps, not scheduled deadlines.
+Ordinary unit timestamps remain actual serializer timestamps, not scheduled deadlines.
+Deferred wall-weight segments use their original sampling-epoch window start so
+consumers do not apply a later window's scale.
 
 Set `DDPROF_WALL_TIMER_DIAGNOSTICS=1` before starting a recording to collect a
 fixed-size timer-local phase ledger. Stop prints one `WallClock timer phases:`
@@ -180,17 +182,17 @@ line to stderr after joining the timer. The disabled path makes no diagnostic
 clock reads and there is no per-tick logging or handler instrumentation.
 `collectNs`, `selectNs`, `sendNs`, `finishNs`, `requestedSleepNs` and
 `actualSleepNs` are cumulative monotonic nanoseconds, including diagnostic probe
-cost. Lazy-backfill selection excludes time inside candidate callbacks from its
-selection total. `selected` counts candidate callbacks (including rejections),
+cost. Selection time covers reservoir sampling; callbacks count as send time.
+`selected` counts candidate callbacks (including rejections),
 `sent` counts successful signal sends, and `failed` counts callback-reported send
-failures, not handler or serializer failures. Empty/single/large count pool sizes
-after eager precheck filtering; large means above the reservoir limit. First/last
+failures, not handler or serializer failures. Empty/single/large count collected
+pool sizes before precheck rejection; large means above the reservoir limit. First/last
 eligible ticks are observed after collection; first/last send ticks are observed
 after the iteration's send phase. They use the reported TSC frequency, not Java's
 `nanoTime` origin. A final interrupted stop wait can make actual sleep shorter
 than requested. Join publication isolates the ledger from concurrent readers.
 
-`wallClock_ut.cpp` exercises the real timer-loop probes with ordinary and lazy
+`wallClock_ut.cpp` exercises the real timer-loop probes with ordinary and prechecked
 candidate callbacks, including empty/single/above-reservoir pools, failed sends
 and precheck rejections. It compares the joined ledger against independently
 counted callbacks and checks that a disabled recording clears an earlier enabled

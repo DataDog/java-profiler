@@ -155,8 +155,8 @@ before working on a subsystem.
 | Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation, reusable unowned wall-clock roots) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
 | String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
-| TLS context (thread-local tracing, owner context-window membership, retained unowned wall context) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
-| Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
+| TLS context (thread-local tracing, owner context-window membership, retained unowned wall context and sampling-epoch weight provenance) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
+| Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
 | Native memory profiling (malloc/free interception, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
@@ -320,7 +320,8 @@ unchanged. Events queued since the last `dump()` must be written before
 `stop()` discards them.
 
 **Reusable wall-clock roots.** Hold the recording stripe through capture, cached-ID publication and tail commit.
-Do not consume a deferred tail after a failed write. See [CallTraceStorage](doc/architecture/CallTraceStorage.md#reusable-unowned-wall-clock-roots).
+Do not consume a deferred segment after a failed write or apply a later sampling epoch's scale.
+Retained units serialize at their original epoch-window start. See [CallTraceStorage](doc/architecture/CallTraceStorage.md#reusable-unowned-wall-clock-roots).
 
 **Context-window membership.** Owner TLS is the logical source; registry slots are recording projections.
 Only owner-side entry/exit changes membership; signals and timers do not walk remote TLS.

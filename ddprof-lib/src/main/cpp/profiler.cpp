@@ -937,9 +937,12 @@ WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 cal
       _block_tracker.canPublishUnownedContext(request.slot_id);
   bool matching_periodic = request.unowned_sample && origin_readable && publishable &&
       !request.force_unowned_ordinary && publication == request.context_publication &&
-      origin.equals(request.context);
+      origin.equals(request.context) &&
+      _block_tracker.unownedWeightMatchesEpoch(request.slot_id, request.sampling_epoch_start);
   if (block != nullptr && request.unowned_sample) {
-    event->_weight = matching_periodic ? block->consumeUnownedBlockedWeight() : 1;
+    event->_weight = matching_periodic
+        ? block->unowned_blocked_pending_weight.load(std::memory_order_acquire) + 1 : 1;
+    if (matching_periodic) event->_sample_ticks = request.sampling_epoch_start;
   }
   // A dump can invalidate the ordinary collapsing cache before this stripe
   // is acquired. Preserved unowned roots, unlike that cache, survive a dump.
@@ -953,10 +956,10 @@ WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 cal
   if (block == nullptr || wallSampleSlot(request) != block) {
     return result;
   }
-  if (matching_periodic && !result.ordinary_recorded) {
-    // Only this path consumed weight. A boundary's current tick is independent
-    // of its old tail, and a rejected current tick is never restored into it.
-    block->restoreUnownedBlockedWeight(event->_weight);
+  if (matching_periodic && result.ordinary_recorded) {
+    // Pending provenance remains intact until the weighted write succeeds.
+    block->unowned_blocked_pending_weight.store(0, std::memory_order_release);
+    _block_tracker.clearUnownedWeightSegments(request.slot_id);
   }
   if (result.ordinary_recorded && request.arm_state != OSThreadState::UNKNOWN &&
       block->blockGeneration() == request.block_generation &&
@@ -969,14 +972,28 @@ WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 cal
   bool has_tail = block->peekUnownedBlockedTail(tail_id, tail_weight, tail_state);
   if (!matching_periodic && origin_readable && has_tail &&
       (request.flush_tail || request.unowned_sample)) {
-    ExecutionEvent deferred;
-    deferred._thread_state = tail_state;
-    deferred._execution_mode = ExecutionMode::UNKNOWN;
-    deferred._weight = tail_weight;
-    atomicIncRelaxed(_total_samples);
-    result.tail_recorded = writeSampleEvent(stripe.index(), request.tid, tail_id,
-                                           BCI_WALL, &deferred, &origin);
-    if (wallSampleSlot(request) != block) return result;
+    WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+    size_t count = _block_tracker.copyUnownedWeightSegments(request.slot_id, segments);
+    bool all_recorded = count != 0;
+    for (size_t i = 0; i < count; ++i) {
+      ExecutionEvent deferred;
+      deferred._thread_state = tail_state;
+      deferred._execution_mode = ExecutionMode::UNKNOWN;
+      deferred._weight = segments[i].weight;
+      deferred._sample_ticks = segments[i].epoch_start;
+      atomicIncRelaxed(_total_samples);
+      bool recorded = writeSampleEvent(stripe.index(), request.tid, tail_id,
+                                      BCI_WALL, &deferred, &origin);
+      if (wallSampleSlot(request) != block) return result;
+      if (recorded) {
+        _block_tracker.commitUnownedWeightSegment(request.slot_id, segments[i]);
+        Counters::increment(WC_UNOWNED_BLOCKED_TAIL_RECORDED);
+      } else {
+        all_recorded = false;
+      }
+    }
+    result.tail_recorded = all_recorded &&
+        block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0;
     if (result.tail_recorded) {
       if (request.unowned_sample) {
         block->clearUnownedBlockedTailKeepingCadence();

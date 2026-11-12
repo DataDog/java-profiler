@@ -142,10 +142,7 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
       long weight = sample.getLong(WEIGHT, 0);
       Long time = sample.getLong("startTime");
       assertNotNull(time, "Worker sample has no capture time");
-      if (time >= transitionStart.get()
-          && stack.contains("blockedOriginA")
-          && "PARKED".equals(state)
-          && weight > 1) {
+      if (stack.contains("blockedOriginA") && "PARKED".equals(state) && weight > 1) {
         originalTails++;
         System.out.println(
             "Deferred A: time="
@@ -160,6 +157,8 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
                 + sample.getString(TAG_2)
                 + ";"
                 + sample.getString(TAG_3));
+        assertTrue(
+            time < transitionStart.get(), "Deferred A must keep its original epoch timestamp");
         assertTags(sample, tagsA);
         assertEquals(0L, sample.getLong(SPAN_ID, -1));
         assertEquals(0L, sample.getLong(LOCAL_ROOT_SPAN_ID, -1));
@@ -176,6 +175,10 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
         originalTails > 0, "Coverage incomplete: no positive weighted A tail after transition");
     assertTrue(ordinaryTimes.size() >= 2, "No ordinary B samples at distinct capture times");
     Map<String, Long> after = profiler.getDebugCounters();
+    assertTrue(
+        after.getOrDefault("wc_unowned_blocked_tail_recorded", 0L)
+            > before.getOrDefault("wc_unowned_blocked_tail_recorded", 0L),
+        "No deferred epoch segment was actually serialized");
     assertEquals(0L, after.getOrDefault("jvmti_stacks_requested", 0L).longValue());
     assertEquals(
         before.getOrDefault("wc_unowned_blocked_trace_preservation_failed", 0L),
@@ -300,11 +303,12 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
           assertEquals(0L, sample.getLong(LOCAL_ROOT_SPAN_ID, -1));
           clearedTimes.add(time);
         }
-        if (time >= clearStart.get()
+        if (recording == recordings[3]
             && stack.contains("blockedOriginA")
             && "PARKED".equals(state)
             && weight > 1) {
           originalTails++;
+          assertTrue(time < clearStart.get(), "Deferred A must keep its original epoch timestamp");
           assertTags(sample, tagsA);
           assertEquals(0L, sample.getLong(SPAN_ID, -1));
           assertEquals(0L, sample.getLong(LOCAL_ROOT_SPAN_ID, -1));
@@ -315,6 +319,10 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     assertTrue(clearedTimes.size() >= 2, "No ordinary C samples at distinct capture times");
     assertTrue(originalTails > 0, "Coverage incomplete: no retained A tail after span clear");
     Map<String, Long> after = profiler.getDebugCounters();
+    assertTrue(
+        after.getOrDefault("wc_unowned_blocked_tail_recorded", 0L)
+            > before.getOrDefault("wc_unowned_blocked_tail_recorded", 0L),
+        "No deferred epoch segment was actually serialized");
     assertEquals(0L, after.getOrDefault("jvmti_stacks_requested", 0L).longValue());
     assertEquals(
         before.getOrDefault("wc_unowned_blocked_trace_preservation_failed", 0L),

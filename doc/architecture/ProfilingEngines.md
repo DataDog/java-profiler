@@ -413,7 +413,6 @@ loop while _running:
                                 else OS::listThreads() minus self and the
                                 Libraries refresher thread
   account vector-capacity changes in NM_WALLCLOCK
-  precheck candidates                  reject already-sampled owned blocked runs
   sample = ReservoirSampler(threads)   at most _reservoir_size threads
   for each: sampleThreads(t)    OS::sendSignalWithCookie(tid, SIGVTALRM,
                                 SignalCookie::wallclock())
@@ -422,17 +421,50 @@ loop while _running:
   OS::sleep(remaining time)             overdue deadline -> now + interval
 ```
 
-The unchanged dithered interval is clamped to `[1, 2*interval-1]` ns. Timer work
+The dithered interval is clamped to `[1, 2*interval-1]` ns. Timer work
 and wake lateness shorten the next wait; missed opportunities never cause catch-up
-bursts. Ordinary reused-stack events retain weight one and serialization timestamps.
-
-With `filter=` and supported prechecks, a randomized bounded prefix of the OS list
-backfills past suppressed candidates. Registry lookup never creates a slot. Filtered
-prechecks reject suppressed candidates before reservoir sampling, not after it.
-
-The epoch's `samplePoolSize` counts candidates before suppression. Optional fixed-size
-phase diagnostics are emitted after join; see
+bursts. Optional fixed-size phase diagnostics are emitted after join; see
 [SamplerPerfCounters](../reference/SamplerPerfCounters.md#wall-timer-cadence-and-phase-diagnostics).
+
+Both context-filtered and unfiltered prechecks run **after** uniform reservoir
+selection, so timer suppression and registry lookups visit at most the reservoir
+size. Suppressed selections consume capacity and count in `numSuccessfulSamples`,
+just like signals suppressed by the handler; failed sends do not count. This keeps
+`samplePoolSize / numSuccessfulSamples` upscaling consistent with selection
+probability. `samplePoolSize` includes all collected candidates, and
+`numSuppressedSampledRun` reports suppression separately. There is no backfill.
+Retained blocked units keep each epoch window's start tick and serialize at that
+tick. This requires consumers to scale by the sample timestamp's epoch, not flush
+time. Mixed-window tails serialize separately; same-window periodic weights can
+compact. See [TLSContext](TLSContext.md#retained-unowned-wall-context).
+
+A changed population closes the preceding window before dispatch. Changed send
+results close it with its prior statistics before installing the new counts.
+With unchanged population, failures discovered later in a pass can leave
+pass-straddling units coalesced under the prior success ratio. For example,
+16/16 to 16/14 gives the straddling units about 12.5% attribution error. The writer
+cannot split those already-coalesced units retroactively. Stable-window compaction
+is retained; epochs are not emitted unconditionally on every timer pass.
+`wc_unowned_blocked_tail_recorded` counts successful deferred-segment writes,
+not ordinary periodic samples or failed writes.
+
+Omitting `filter` defaults to context filtering (`filter=0`); an explicit empty
+`filter=` disables it. With empty `filter=`, an activated, supported wall engine,
+and `wallprecheck=true`, thread identities register lazily on their first context,
+park, or block hook, not eagerly at ThreadStart. Only already-sampled owned blocks
+that remain **outside** context windows can suppress signals in this mode;
+unowned observations and in-context threads keep ordinary sampling.
+
+Registry identity survives recording restarts until thread teardown. A new
+unfiltered epoch invalidates suppression state, which the owner resets lazily
+on its next hook; an open logical context survives that refresh, and matching
+context exits still work while stopped or stale. Context-filtered starts instead
+clear membership and eagerly reset all tracker slots. Same-recording context transitions retain unowned deferred tails with their
+original fields; see [TLSContext](TLSContext.md#retained-unowned-wall-context).
+
+Timer backing capacity is accounted with allocation deltas and retracted on exit,
+not by replacing the shared `NM_WALLCLOCK` gauge. The tracker's slots and context sidecars
+are allocated lazily and accounted independently.
 
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
 (`SIGIO`, `os.h`), and joins only a timer thread that was successfully created.

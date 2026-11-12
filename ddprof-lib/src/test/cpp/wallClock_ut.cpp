@@ -43,9 +43,9 @@ TEST(WallClockTimerTest, DitheredPeriodsStayOnTheSameSchedule) {
 // and read only after stop() joins it.
 class PhaseLedgerWallClock : public BaseWallClock {
 public:
-    explicit PhaseLedgerWallClock(bool lazy) : lazy(lazy) {}
+    explicit PhaseLedgerWallClock(bool precheck) : precheck(precheck) {}
     const char* name() override { return "Phase ledger test timer"; }
-    bool lazy;
+    bool precheck;
     u64 iterations = 0, empty = 0, single = 0, large = 0;
     u64 selected = 0, sent = 0, failed = 0, rejected = 0;
     std::atomic<int> completed{0};
@@ -60,6 +60,11 @@ public:
     }
 
 private:
+    void observeEpochForTest(const WallClockEpochEvent& epoch) override {
+        EXPECT_EQ(epoch._start_time, WallClockCounters::samplingEpochStart());
+        EXPECT_NE(0ULL, epoch._start_time);
+    }
+
     void timerLoop() override {
         iterations = empty = single = large = selected = sent = failed = rejected = 0;
         completed.store(0, std::memory_order_release);
@@ -78,7 +83,7 @@ private:
         auto sample = [&](ThreadEntry entry, int& failures, int&, int&, int&, bool) {
             ++selected;
             std::this_thread::sleep_for(std::chrono::microseconds(100));
-            if (lazy && entry.tid % 3 == 0) {
+            if (precheck && entry.tid % 3 == 0) {
                 ++rejected;
                 return WallClockCandidateOutcome::PRECHECK_REJECTED;
             }
@@ -94,7 +99,7 @@ private:
             std::this_thread::sleep_for(std::chrono::microseconds(100));
             completed.store(static_cast<int>(iterations), std::memory_order_release);
         };
-        timerLoopCommon<ThreadEntry>(collect, sample, clean, 16, 1000000, lazy, lazy);
+        timerLoopCommon<ThreadEntry>(collect, sample, clean, 16, 1000000, precheck);
     }
 };
 
@@ -169,7 +174,7 @@ TEST_F(WallClockPhaseLedgerTest, OrdinaryPhasesCountCallbacksAndPoolSizes) {
     EXPECT_EQ(0ULL, clock.rejected);
 }
 
-TEST_F(WallClockPhaseLedgerTest, LazyPhasesIncludeRejectedCandidatesButNotAsSends) {
+TEST_F(WallClockPhaseLedgerTest, PrecheckPhasesIncludeRejectedCandidatesButNotAsSends) {
     setenv("DDPROF_WALL_TIMER_DIAGNOSTICS", "1", 1);
     PhaseLedgerWallClock clock(true);
     run(clock);
@@ -321,16 +326,12 @@ TEST_F(WallClockAccountingTest, IndependentTimersBalanceGrowthAndShrink) {
     EXPECT_EQ(baseline, NativeMem::live(NM_WALLCLOCK));
 }
 
-// Drives the real lazy-backfill timer loop (precheck + lazyBackfill) over a
-// synthetic candidate pool, so the visit budget and the backfill of
-// precheck-rejected candidates are exercised end to end through
-// timerLoopCommon() rather than only through the selector in isolation.
-class LazyBackfillWallClock : public BaseWallClock {
+// Exercises bounded registry visits and candidate coverage through the real
+// reservoir loop, including sparse populations of unsuppressed threads.
+class ReservoirPrecheckWallClock : public BaseWallClock {
 public:
     static constexpr int kPoolSize = 200;
     static constexpr int kReservoir = 16;
-    static constexpr size_t kVisitBudget =
-        static_cast<size_t>(kReservoir) * PRECHECK_VISIT_BUDGET_MULTIPLIER;
 
     struct Pass {
         int visited = 0;
@@ -338,8 +339,8 @@ public:
         int rejected = 0;
     };
 
-    explicit LazyBackfillWallClock(bool (*accept)(int tid)) : _accept(accept) {}
-    const char* name() override { return "Lazy backfill test timer"; }
+    explicit ReservoirPrecheckWallClock(bool (*accept)(int tid)) : _accept(accept) {}
+    const char* name() override { return "Reservoir precheck test timer"; }
 
     bool awaitPasses(int passes) const {
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
@@ -380,13 +381,13 @@ private:
             completed_passes.store(static_cast<int>(passes.size()), std::memory_order_release);
         };
         timerLoopCommon<ThreadEntry>(collect, sample, clean, kReservoir, 1000000,
-                                     /*precheck=*/true, /*lazyBackfill=*/true);
+                                     /*lookupRegistrySlot=*/true);
     }
 
     bool (*_accept)(int tid);
 };
 
-class WallClockLazyBackfillTest : public ::testing::Test {
+class WallClockReservoirPrecheckTest : public ::testing::Test {
 protected:
     void SetUp() override {
         previous_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
@@ -402,18 +403,13 @@ protected:
     struct Totals {
         long long visited = 0;
         long long rejected = 0;
-        long long budget_exhausted = 0;
     };
 
-    static Totals totals(const LazyBackfillWallClock& clock) {
+    static Totals totals(const ReservoirPrecheckWallClock& clock) {
         Totals t;
         for (const auto& pass : clock.passes) {
             t.visited += pass.visited;
             t.rejected += pass.rejected;
-            if (pass.sent < LazyBackfillWallClock::kReservoir &&
-                static_cast<size_t>(pass.visited) == LazyBackfillWallClock::kVisitBudget) {
-                t.budget_exhausted++;
-            }
         }
         return t;
     }
@@ -424,16 +420,13 @@ protected:
     SignalHandler previous_handler = SIG_DFL;
 };
 
-// 25% of the pool is precheck-rejected: rejections are backfilled without
-// consuming reservoir slots, so every pass still sends a full reservoir, and
-// the walk stays within the visit budget.
-TEST_F(WallClockLazyBackfillTest, RejectedCandidatesAreBackfilledWithoutConsumingSlots) {
+// Rejections consume selected slots without additional visits or signals.
+TEST_F(WallClockReservoirPrecheckTest, RejectedCandidatesConsumeReservoirSlots) {
     constexpr int kPasses = 300;
-    LazyBackfillWallClock clock(+[](int tid) { return tid % 4 != 0; });
+    ReservoirPrecheckWallClock clock(+[](int tid) { return tid % 4 != 0; });
 #ifdef COUNTERS
     long long rejected_before = Counters::getCounter(WC_PRECHECK_CANDIDATES_REJECTED);
     long long lookups_before = Counters::getCounter(WC_PRECHECK_REGISTRY_LOOKUPS);
-    long long exhausted_before = Counters::getCounter(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED);
 #endif
     bool started = !clock.start(args);
     bool completed = started && clock.awaitPasses(kPasses);
@@ -443,12 +436,12 @@ TEST_F(WallClockLazyBackfillTest, RejectedCandidatesAreBackfilledWithoutConsumin
 
     for (size_t i = 0; i < clock.passes.size(); ++i) {
         const auto& pass = clock.passes[i];
-        EXPECT_EQ(LazyBackfillWallClock::kReservoir, pass.sent) << "pass " << i;
-        EXPECT_LE(static_cast<size_t>(pass.visited), LazyBackfillWallClock::kVisitBudget)
+        EXPECT_EQ(ReservoirPrecheckWallClock::kReservoir, pass.visited) << "pass " << i;
+        EXPECT_EQ(ReservoirPrecheckWallClock::kReservoir, pass.sent + pass.rejected)
             << "pass " << i;
         EXPECT_EQ(pass.visited, pass.sent + pass.rejected) << "pass " << i;
     }
-    for (int tid = 1; tid <= LazyBackfillWallClock::kPoolSize; ++tid) {
+    for (int tid = 1; tid <= ReservoirPrecheckWallClock::kPoolSize; ++tid) {
         if (tid % 4 != 0) {
             EXPECT_TRUE(clock.visited_tid[tid]) << "accepted tid " << tid << " never visited";
         }
@@ -458,19 +451,13 @@ TEST_F(WallClockLazyBackfillTest, RejectedCandidatesAreBackfilledWithoutConsumin
     EXPECT_EQ(rejected_before + t.rejected,
               Counters::getCounter(WC_PRECHECK_CANDIDATES_REJECTED));
     EXPECT_EQ(lookups_before + t.visited, Counters::getCounter(WC_PRECHECK_REGISTRY_LOOKUPS));
-    EXPECT_EQ(exhausted_before, Counters::getCounter(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED));
 #endif
 }
 
-// Only 8 of 200 candidates are accepted, so the reservoir can never fill and
-// every pass stops at the visit budget; the randomized prefix still reaches
-// the whole pool over time.
-TEST_F(WallClockLazyBackfillTest, VisitBudgetBindsWhenPoolCannotFillReservoir) {
+// A sparse accepted population cannot expand visits beyond the reservoir.
+TEST_F(WallClockReservoirPrecheckTest, SparseAcceptedPoolStillVisitsOnlyReservoir) {
     constexpr int kPasses = 100;
-    LazyBackfillWallClock clock(+[](int tid) { return tid % 25 == 0; });
-#ifdef COUNTERS
-    long long exhausted_before = Counters::getCounter(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED);
-#endif
+    ReservoirPrecheckWallClock clock(+[](int tid) { return tid % 25 == 0; });
     bool started = !clock.start(args);
     bool completed = started && clock.awaitPasses(kPasses);
     clock.stop();
@@ -478,16 +465,12 @@ TEST_F(WallClockLazyBackfillTest, VisitBudgetBindsWhenPoolCannotFillReservoir) {
     ASSERT_TRUE(completed);
 
     for (size_t i = 0; i < clock.passes.size(); ++i) {
-        EXPECT_EQ(static_cast<int>(LazyBackfillWallClock::kVisitBudget),
+        EXPECT_EQ(ReservoirPrecheckWallClock::kReservoir,
                   clock.passes[i].visited) << "pass " << i;
     }
-    for (int tid = 1; tid <= LazyBackfillWallClock::kPoolSize; ++tid) {
+    for (int tid = 1; tid <= ReservoirPrecheckWallClock::kPoolSize; ++tid) {
         EXPECT_TRUE(clock.visited_tid[tid]) << "tid " << tid << " never visited";
     }
-#ifdef COUNTERS
-    EXPECT_EQ(exhausted_before + static_cast<long long>(clock.passes.size()),
-              Counters::getCounter(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED));
-#endif
 }
 
 static volatile sig_atomic_t sampling_signal_received = 0;
@@ -549,4 +532,252 @@ TEST_F(WallClockCapacityTest, ExhaustionKeepsSendingSignalsAcrossRecordings) {
         registry.deactivateRecording();
         registry.init("", true);
     }
+}
+
+// Exercise selection and epoch accounting in the production loop without kernel signals.
+class FilteredPrecheckWallClock : public BaseWallClock {
+public:
+    static constexpr int pool_size = 512;
+    static constexpr int reservoir_size = 16;
+    bool mixed_outcomes = false;
+    std::atomic<bool> observed{false};
+    u32 selected = 0;
+    u32 successful = 0;
+    u32 failures = 0;
+    u32 pool = 0;
+    u64 suppressed = 0;
+
+    const char* name() override { return "Filtered selection test timer"; }
+
+private:
+    u32 visits = 0;
+    void observeEpochForTest(const WallClockEpochEvent& epoch) override {
+        if (observed.load(std::memory_order_acquire)) return;
+        selected = visits;
+        successful = epoch._num_successful_samples;
+        failures = epoch._num_failed_samples;
+        pool = epoch._num_samplable_threads;
+        suppressed = epoch._num_suppressed_sampled_run;
+        observed.store(true, std::memory_order_release);
+    }
+
+    void timerLoop() override {
+        auto collect = [&](std::vector<ThreadEntry>& entries) {
+            visits = 0;
+            Profiler::instance()->threadFilter()->collect(entries);
+        };
+        auto sample = [&](ThreadEntry entry, int& failed, int&, int&, int&, bool) {
+            ++visits;
+            if (mixed_outcomes && visits % 4 == 0) {
+                ++failed;
+                return WallClockCandidateOutcome::SIGNAL_FAILED;
+            }
+            if (mixed_outcomes && visits % 2 == 0) {
+                return WallClockCandidateOutcome::SIGNAL_SENT;
+            }
+            if (suppressAlreadySampled(entry)) {
+                return WallClockCandidateOutcome::PRECHECK_REJECTED;
+            }
+            return WallClockCandidateOutcome::SIGNAL_SENT;
+        };
+        timerLoopCommon<ThreadEntry>(collect, sample, [] {}, reservoir_size, 1000000);
+    }
+};
+
+class WallClockFilteredSelectionTest : public ::testing::Test {
+protected:
+    FilteredPrecheckWallClock clock;
+    std::vector<int> slots;
+    using SignalHandler = void (*)(int);
+    SignalHandler previous_handler = SIG_DFL;
+
+    void SetUp() override {
+        previous_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
+        auto* registry = Profiler::instance()->threadFilter();
+        auto* tracker = Profiler::instance()->blockTracker();
+        registry->init("0");
+        WallClockCounters::drainSuppressedSampledRun();
+        for (int i = 0; i < FilteredPrecheckWallClock::pool_size; ++i) {
+            int tid = 3000000 + i;
+            int id = registry->registerThread(tid);
+            ASSERT_GE(id, 0);
+            slots.push_back(id);
+            ASSERT_TRUE(registry->add(tid, id));
+            ASSERT_NE(0u, tracker->enterBlockedRun(registry, id, OSThreadState::SLEEPING));
+            tracker->slotForId(id)->markSampledThisRun(OSThreadState::SLEEPING);
+        }
+        clock.enableEvents(true);
+    }
+
+    void TearDown() override {
+        clock.stop();
+        clock.enableEvents(false);
+        auto* registry = Profiler::instance()->threadFilter();
+        for (int id : slots) registry->unregisterThread(id);
+        registry->deactivateRecording();
+        WallClockCounters::drainSuppressedSampledRun();
+        std::signal(WAKEUP_SIGNAL, previous_handler);
+    }
+
+    void run() {
+        Arguments args;
+        args._wall = 1000000;
+        ASSERT_FALSE(clock.start(args));
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!clock.observed.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        ASSERT_TRUE(clock.observed.load(std::memory_order_acquire));
+        clock.stop();
+    }
+};
+
+TEST_F(WallClockFilteredSelectionTest, SuppressedSelectionsConsumeReservoirAndEpochCapacity) {
+    run();
+    EXPECT_EQ(512u, clock.pool);
+    EXPECT_EQ(16u, clock.selected);
+    EXPECT_EQ(16u, clock.successful);
+    EXPECT_EQ(0u, clock.failures);
+    EXPECT_EQ(16u, clock.suppressed);
+}
+
+TEST_F(WallClockFilteredSelectionTest, FailedSignalsDoNotCountAsSuccessfulSelections) {
+    clock.mixed_outcomes = true;
+    run();
+    EXPECT_EQ(512u, clock.pool);
+    EXPECT_EQ(16u, clock.selected);
+    EXPECT_EQ(12u, clock.successful);
+    EXPECT_EQ(4u, clock.failures);
+    EXPECT_EQ(8u, clock.suppressed);
+}
+
+// Model a fixed unfiltered population through the production selection/epoch loop.
+class UnfilteredWeightWallClock : public BaseWallClock {
+public:
+    static constexpr int pool_size = 128;
+    static constexpr int reservoir_size = 16;
+    static constexpr int rounds = 2000;
+    int suppressed_population = 112;
+    std::atomic<bool> observed{false};
+    double effective_weight = 0;
+    u32 max_visits = 0;
+    u32 max_lookups = 0;
+    u64 rejected = 0;
+    const char* name() override { return "Unfiltered weighting test timer"; }
+private:
+    int completed = 0;
+    u32 visits = 0;
+    u32 signals = 0;
+    u32 lookups = 0;
+    void observeEpochForTest(const WallClockEpochEvent& epoch) override {
+        if (observed.load(std::memory_order_acquire)) return;
+        max_visits = std::max(max_visits, visits);
+        max_lookups = std::max(max_lookups, lookups);
+        if (epoch._num_successful_samples != 0) {
+            effective_weight += static_cast<double>(signals) *
+                epoch._num_samplable_threads / epoch._num_successful_samples;
+        }
+        if (++completed == rounds) observed.store(true, std::memory_order_release);
+    }
+    void timerLoop() override {
+        auto collect = [&](std::vector<int>& entries) {
+            visits = signals = lookups = 0;
+            for (int i = 0; i < pool_size; ++i) entries.push_back(i);
+        };
+        auto sample = [&](int candidate, int&, int&, int&, int& registry_lookups, bool lookup) {
+            ++visits;
+            if (lookup) { ++registry_lookups; ++lookups; }
+            if (candidate < suppressed_population) {
+                if (!observed.load(std::memory_order_acquire)) ++rejected;
+                return WallClockCandidateOutcome::PRECHECK_REJECTED;
+            }
+            ++signals;
+            return WallClockCandidateOutcome::SIGNAL_SENT;
+        };
+        timerLoopCommon<int>(collect, sample, [] {}, reservoir_size, 1000, true);
+    }
+};
+
+TEST(WallClockUnfilteredSelectionTest, MixedPopulationRetainsEffectiveWeightAndLookupBound) {
+    auto previous = std::signal(WAKEUP_SIGNAL, +[](int) {});
+    UnfilteredWeightWallClock clock;
+    clock.enableEvents(true);
+    Arguments args;
+    args._wall = 1000;
+    ASSERT_FALSE(clock.start(args));
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!clock.observed.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+    clock.stop();
+    clock.enableEvents(false);
+    std::signal(WAKEUP_SIGNAL, previous);
+    ASSERT_TRUE(clock.observed.load(std::memory_order_acquire));
+    double expected = (clock.pool_size - clock.suppressed_population) * clock.rounds;
+    EXPECT_NEAR(expected, clock.effective_weight, expected * 0.15);
+    EXPECT_LE(clock.max_visits, clock.reservoir_size);
+    EXPECT_LE(clock.max_lookups, clock.reservoir_size);
+    EXPECT_GT(clock.max_lookups, 0u);
+    EXPECT_GT(clock.rejected, 0u);
+}
+
+class EpochWindowBoundaryWallClock : public BaseWallClock {
+public:
+    int initial_pool = 16;
+    int later_pool = 160;
+    u64 origin_epoch = 0;
+    std::atomic<bool> completed{false};
+    std::vector<WallClockEpochEvent> closed;
+    const char* name() override { return "Epoch boundary test timer"; }
+
+private:
+    void observeClosedEpochForTest(const WallClockEpochEvent& epoch) override {
+        closed.push_back(epoch);
+    }
+    void timerLoop() override {
+        int pass = 0;
+        auto collect = [&](std::vector<int>& entries) {
+            if (pass == 1) origin_epoch = WallClockCounters::samplingEpochStart();
+            int population = pass < 10 ? initial_pool : later_pool;
+            for (int tid = 0; tid < population; ++tid) entries.push_back(tid);
+        };
+        auto sample = [](int, int&, int&, int&, int&, bool) {
+            return WallClockCandidateOutcome::SIGNAL_SENT;
+        };
+        auto clean = [&] {
+            if (++pass > 11) completed.store(true, std::memory_order_release);
+        };
+        timerLoopCommon<int>(collect, sample, clean, 16, 1000000);
+    }
+};
+
+TEST(WallClockSamplingEpochTest, PopulationBoundaryClosesWithPriorScaleInBothDirections) {
+    auto previous_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
+    for (const auto& pools : {std::pair<int, int>{16, 160}, {160, 16}}) {
+        EpochWindowBoundaryWallClock clock;
+        clock.initial_pool = pools.first;
+        clock.later_pool = pools.second;
+        clock.enableEvents(true);
+        Arguments args;
+        args._wall = 1000000;
+        bool started = !clock.start(args);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (started && !clock.completed.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+        clock.stop();
+        clock.enableEvents(false);
+        EXPECT_TRUE(started);
+        EXPECT_TRUE(clock.completed.load());
+        bool found = false;
+        for (const auto& epoch : clock.closed) {
+            if (epoch._start_time != clock.origin_epoch) continue;
+            found = true;
+            EXPECT_EQ(static_cast<u32>(pools.first), epoch._num_samplable_threads);
+            EXPECT_EQ(16u, epoch._num_successful_samples);
+            double effective = 9.0 * epoch._num_samplable_threads / epoch._num_successful_samples;
+            EXPECT_DOUBLE_EQ(9.0 * pools.first / 16, effective);
+        }
+        EXPECT_TRUE(found) << "The original sampling window was not closed";
+    }
+    std::signal(WAKEUP_SIGNAL, previous_handler);
 }

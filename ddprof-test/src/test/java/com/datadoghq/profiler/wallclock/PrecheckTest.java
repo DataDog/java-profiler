@@ -70,9 +70,9 @@ public class PrecheckTest extends AbstractProfilerTest {
 
   /**
    * Verifies that {@code samplePoolSize} in {@code datadog.WallClockSamplingEpoch} still counts
-   * threads whose owned blocked run is already suppressed. The timer drops those threads before
-   * reservoir sampling, but the pool size must be taken before that step so it keeps counting every
-   * candidate, as it does in unfiltered recordings.
+   * threads whose owned blocked run is already suppressed. Both filtered and unfiltered timers
+   * select their reservoir before precheck; a suppressed selection consumes capacity and counts as
+   * successful for epoch upscaling, while samplePoolSize counts every collected candidate.
    *
    * @throws InterruptedException if a worker is interrupted
    */

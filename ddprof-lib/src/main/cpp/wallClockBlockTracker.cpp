@@ -135,12 +135,6 @@ bool WallClockBlockTracker::shouldSuppressOwnedBlock(ThreadFilter* registry,
         }
     }
 
-#ifdef UNIT_TEST
-    if (_suppression_snapshot_hook != nullptr) {
-        _suppression_snapshot_hook(_suppression_snapshot_hook_arg);
-    }
-#endif
-
     u32 block_generation = slot->blockGeneration();
     BlockRunOwner owner = slot->activeBlockOwner();
     OSThreadState state = slot->activeBlockState();
@@ -155,13 +149,14 @@ bool WallClockBlockTracker::shouldSuppressOwnedBlock(ThreadFilter* registry,
         return false;
     }
 
-    // The payload is spread across independent atomics. Accept it only if the
-    // slot still represents the lifecycle and block run captured earlier in
-    // this wall-clock timer-thread pass, when `entry` was populated — either
-    // by ThreadFilter::collect() (inside timerLoop()'s collectThreads lambda)
-    // or by the lazy registry lookup at the top of sampleThreadCommon() —
-    // both in wallClock.cpp/.h (BaseWallClock::timerLoopCommon() itself is a
-    // template defined in wallClock.h).
+#ifdef UNIT_TEST
+    if (_suppression_snapshot_hook != nullptr) {
+        _suppression_snapshot_hook(_suppression_snapshot_hook_arg);
+    }
+#endif
+
+    // Independent atomics can describe different runs during an exit/re-entry.
+    // Reject a payload unless both the identity and block generation still match.
     if (slot->activeBlockOwner() != owner ||
         slot->blockGeneration() != block_generation ||
         identity_slot->nativeTid() != entry.tid ||
@@ -284,6 +279,70 @@ public:
     UnownedContextPublication& operator=(const UnownedContextPublication&) = delete;
 };
 
+bool WallClockBlockTracker::deferUnownedWeight(ThreadFilter::SlotID slot_id, u64 epoch_start) {
+    auto* cell = unownedContextCell(slot_id);
+    auto* block = slotForId(slot_id);
+    if (cell == nullptr || block == nullptr || epoch_start == 0) return false;
+    for (auto& segment : cell->segments) {
+        u64 weight = segment.weight.load(std::memory_order_acquire);
+        if (weight == 0 || segment.epoch_start.load(std::memory_order_acquire) == epoch_start) {
+            segment.epoch_start.store(epoch_start, std::memory_order_release);
+            segment.weight.store(weight + 1, std::memory_order_release);
+            block->unowned_blocked_pending_weight.fetch_add(1, std::memory_order_release);
+            return true;
+        }
+    }
+    return false;
+}
+
+size_t WallClockBlockTracker::copyUnownedWeightSegments(ThreadFilter::SlotID slot_id,
+                                                       WeightSegment* segments) const {
+    auto* cell = unownedContextCell(slot_id);
+    if (cell == nullptr) return 0;
+    size_t count = 0;
+    for (size_t i = 0; i < kMaxWeightSegments; ++i) {
+        u64 weight = cell->segments[i].weight.load(std::memory_order_acquire);
+        if (weight != 0) {
+            segments[count++] = {cell->segments[i].epoch_start.load(std::memory_order_acquire), weight, i};
+        }
+    }
+    return count;
+}
+
+bool WallClockBlockTracker::unownedWeightMatchesEpoch(ThreadFilter::SlotID slot_id,
+                                                     u64 epoch_start) const {
+    WeightSegment segments[kMaxWeightSegments];
+    size_t count = copyUnownedWeightSegments(slot_id, segments);
+    u64 weight = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (segments[i].epoch_start != epoch_start) return false;
+        weight += segments[i].weight;
+    }
+    auto* block = slotForId(slot_id);
+    return block != nullptr && weight == block->unowned_blocked_pending_weight.load(std::memory_order_acquire);
+}
+
+void WallClockBlockTracker::commitUnownedWeightSegment(ThreadFilter::SlotID slot_id,
+                                                      const WeightSegment& segment) {
+    auto* cell = unownedContextCell(slot_id);
+    auto* block = slotForId(slot_id);
+    if (cell == nullptr || block == nullptr) return;
+    auto& retained = cell->segments[segment.index];
+    if (retained.epoch_start.load(std::memory_order_acquire) == segment.epoch_start) {
+        u64 expected = segment.weight;
+        if (retained.weight.compare_exchange_strong(expected, 0, std::memory_order_acq_rel)) {
+            block->unowned_blocked_pending_weight.fetch_sub(segment.weight, std::memory_order_release);
+        }
+    }
+}
+
+void WallClockBlockTracker::clearUnownedWeightSegments(ThreadFilter::SlotID slot_id) {
+    auto* cell = unownedContextCell(slot_id);
+    if (cell != nullptr) {
+        for (auto& segment : cell->segments) segment.weight.store(0, std::memory_order_release);
+    }
+}
+
 bool WallClockBlockTracker::publishUnownedTrace(ThreadFilter::SlotID slot_id, u64 trace_id,
                                                 OSThreadState state, const Context& context) {
     SlotStorage* storage = _storage.load(std::memory_order_acquire);
@@ -292,6 +351,9 @@ bool WallClockBlockTracker::publishUnownedTrace(ThreadFilter::SlotID slot_id, u6
         !_context_snapshots_needed.load(std::memory_order_acquire)) return false;
     UnownedContextPublication publication(cell->publication);
     if (!publication.owned()) return false;
+    if (storage->slots[slot_id].unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0) {
+        clearUnownedWeightSegments(slot_id);
+    }
 #ifdef UNIT_TEST
     if (_context_publication_hook != nullptr) _context_publication_hook(0, _context_publication_hook_arg);
 #endif

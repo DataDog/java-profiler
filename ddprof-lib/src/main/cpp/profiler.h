@@ -100,6 +100,7 @@ struct WallSampleRequest {
   u64 lifecycle_generation = 0;
   ThreadFilter::RecordingEpoch registry_epoch = 0;
   u32 trace_epoch = 0;
+  u64 sampling_epoch_start = 0;
   u32 block_generation = 0;
   OSThreadState observed_state = OSThreadState::UNKNOWN;
   OSThreadState arm_state = OSThreadState::UNKNOWN;

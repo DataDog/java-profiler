@@ -18,8 +18,19 @@ static_assert(std::atomic<long long>::is_always_lock_free,
 class WallClockCounters {
 private:
   inline static std::atomic<long long> _suppressed_sampled_run{0};
+  inline static std::atomic<u64> _sampling_epoch_start{0};
 
 public:
+  // The timer publishes the same start tick it writes in WallClockSamplingEpoch.
+  // Retained observations use that window start, not their later flush time.
+  static void beginSamplingEpoch(u64 ticks) {
+    _sampling_epoch_start.store(ticks, std::memory_order_release);
+  }
+
+  static u64 samplingEpochStart() {
+    return _sampling_epoch_start.load(std::memory_order_acquire);
+  }
+
   static void incrementSuppressedSampledRun() {
     _suppressed_sampled_run.fetch_add(1, std::memory_order_relaxed);
   }
@@ -29,6 +40,7 @@ public:
   }
 
   static void reset() {
+    beginSamplingEpoch(0);
     _suppressed_sampled_run.store(0, std::memory_order_relaxed);
   }
 };

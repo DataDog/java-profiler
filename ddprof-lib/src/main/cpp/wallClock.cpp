@@ -105,6 +105,7 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
   WallPrecheckResult result;
   result.transaction.tid = current != nullptr ? current->tid() : -1;
   result.transaction.trace_epoch = Profiler::instance()->recordingEpoch();
+  result.transaction.sampling_epoch_start = WallClockCounters::samplingEpochStart();
   if (current == nullptr || !precheck || hasKnownActiveTraceContext(current)) {
     return result;
   }
@@ -205,7 +206,9 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     result.transaction.force_unowned_ordinary = force_ordinary;
   }
   if (isPrecheckSuppressionState(result.observed_state)) {
-    if (!block_slot->shouldRecordUnownedBlockedSample(force_ordinary)) {
+    bool record = block_slot->shouldRecordUnownedBlockedSample(force_ordinary, !transactional);
+    if (!record && (!transactional || tracker->deferUnownedWeight(
+            slot_id, result.transaction.sampling_epoch_start))) {
       Counters::increment(WC_UNOWNED_BLOCKED_SUPPRESSED);
       result.suppress = true;
       return result;
@@ -518,12 +521,12 @@ void WallClockASGCT::initialize(Arguments& args) {
 
 void WallClockASGCT::timerLoop() {
     ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
-    const bool lazy_backfill =
+    const bool lookup_registry_slot =
         _precheck && thread_filter->unfilteredWallTrackingActive();
     ThreadFilter::RecordingEpoch recording_epoch = 0;
     auto collectThreads = [&](std::vector<ThreadEntry>& entries) {
       // Re-read once per tick, before any sampleThreads.
-      recording_epoch = lazy_backfill ? thread_filter->recordingEpoch() : 0;
+      recording_epoch = lookup_registry_slot ? thread_filter->recordingEpoch() : 0;
       // Get thread IDs from the filter if it's enabled
       // Otherwise list all threads in the system
       if (thread_filter->enabled()) {
@@ -558,8 +561,7 @@ void WallClockASGCT::timerLoop() {
     };
 
     timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, doNothing,
-                                 _reservoir_size, _interval, _precheck,
-                                 lazy_backfill);
+                                 _reservoir_size, _interval, lookup_registry_slot);
 }
 
 // WallClockJvmti: mirrors WallClockASGCT's dispatch, but the signal handler
@@ -654,12 +656,12 @@ void WallClockJvmti::initialize(Arguments &args) {
 
 void WallClockJvmti::timerLoop() {
   ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
-  const bool lazy_backfill =
+  const bool lookup_registry_slot =
       _precheck && thread_filter->unfilteredWallTrackingActive();
   ThreadFilter::RecordingEpoch recording_epoch = 0;
   auto collectThreads = [&](std::vector<ThreadEntry> &entries) {
     // Re-read once per tick, before any sampleThreads.
-    recording_epoch = lazy_backfill ? thread_filter->recordingEpoch() : 0;
+    recording_epoch = lookup_registry_slot ? thread_filter->recordingEpoch() : 0;
     const int refresher_tid = Libraries::instance()->refresherTid();
     if (thread_filter->enabled()) {
       Profiler::instance()->threadFilter()->collect(entries);
@@ -689,6 +691,5 @@ void WallClockJvmti::timerLoop() {
   auto doNothing = []() {};
 
   timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, doNothing,
-                               _reservoir_size, _interval, _precheck,
-                               lazy_backfill);
+                               _reservoir_size, _interval, lookup_registry_slot);
 }

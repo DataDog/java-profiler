@@ -347,8 +347,7 @@ TEST(WallClockOncePerRunFilterTest, FilterHelpersManageActiveBlockState) {
   EXPECT_EQ(OSThreadState::RUNNABLE, slot->lastSampledState());
 }
 
-// Slot reuse: stale armed state from the previous owner must be cleared before
-// the new thread takes the slot (ThreadFilter::resetSlotRunState does this).
+// Registry teardown and reuse must clear the previous owner's armed state.
 TEST(WallClockOncePerRunFilterTest, ResetClearsArmedFlagOnSlotReuse) {
   ThreadFilter filter;
   WallClockBlockTracker tracker;
@@ -362,7 +361,8 @@ TEST(WallClockOncePerRunFilterTest, ResetClearsArmedFlagOnSlotReuse) {
   EXPECT_TRUE(slot->sampledThisRun());
   EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot->activeBlockState());
 
-  filter.resetSlotRunState(slot_id);
+  filter.unregisterThread(slot_id, 1234);
+  ASSERT_EQ(slot_id, filter.registerThread(5678));
 
   EXPECT_FALSE(slot->sampledThisRun());
   EXPECT_EQ(OSThreadState::UNKNOWN, slot->lastSampledState());

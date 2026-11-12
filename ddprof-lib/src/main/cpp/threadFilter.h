@@ -59,9 +59,8 @@ public:
         std::atomic<u64>           lifecycle_generation{0};
         // Per-recording publication flag. A retained TID mapping is eligible for
         // unfiltered suppression only when this value matches the registry's
-        // active recording epoch. The slot's context-window state and its
-        // WallClockBlockTracker::BlockState are reset before the epoch is
-        // release-published.
+        // active recording epoch. Its WallClockBlockTracker::BlockState is reset
+        // before the epoch is release-published; logical context membership survives.
         std::atomic<u64>           recording_epoch{0};
         // Native identity and context-window membership are independent so an
         // unfiltered wall recording can retain lifecycle metadata without
@@ -178,11 +177,6 @@ public:
     // Clears per-recording membership and suppression state while keeping
     // native slot ownership intact. Threads must opt in again with add().
     void clearActive();
-    // Forwards to WallClockBlockTracker::resetSlot(). Not called from
-    // production code (registry-lifecycle paths call the tracker directly);
-    // only park_state_ut uses it.
-    void resetSlotRunState(SlotID slot_id);
-
     // Non-owning; wired up once by Profiler so ThreadFilter's own
     // registry-lifecycle resets (registerThread/unregisterThread/
     // refreshSlotForRecording/clearActive) also clear the tracker's
@@ -236,6 +230,7 @@ public:
         return registerThread(tid, slot != nullptr ? slot->rawContextWindowState() : 0);
     }
 #endif
+    // An expected TID re-resolves a stale slot cache before retiring ownership.
     void unregisterThread(SlotID slot_id, int expected_tid = -1);
     void unregisterThreadByTid(int tid);
     // Lock-free retirement for the pthread-key TLS destructor (never blocks).

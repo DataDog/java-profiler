@@ -2373,18 +2373,23 @@ void Recording::writeEventSizePrefix(Buffer *buf, int start) {
   buf->put8(start, size);
 }
 
-void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
-                                      u64 correlation_id,
-                                      ExecutionEvent *event) {
-  int start = buf->skip(1);
-  buf->putVar64(T_EXECUTION_SAMPLE);
-  buf->putVar64(TSC::ticks());
+void Recording::writeSampleHeader(Buffer *buf, u64 type, int tid, u64 call_trace_id,
+                                  u64 correlation_id, ExecutionEvent *event) {
+  buf->putVar64(type);
+  buf->putVar64(event->_sample_ticks != 0 ? event->_sample_ticks : TSC::ticks());
   buf->putVar64(tid);
   buf->putVar64(call_trace_id);
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
   buf->putVar64(correlation_id);
+}
+
+void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
+                                      u64 correlation_id,
+                                      ExecutionEvent *event) {
+  int start = buf->skip(1);
+  writeSampleHeader(buf, T_EXECUTION_SAMPLE, tid, call_trace_id, correlation_id, event);
   writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
@@ -2394,14 +2399,7 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
                                    u64 correlation_id,
                                    ExecutionEvent *event, const Context *context) {
   int start = buf->skip(1);
-  buf->putVar64(T_METHOD_SAMPLE);
-  buf->putVar64(TSC::ticks());
-  buf->putVar64(tid);
-  buf->putVar64(call_trace_id);
-  buf->put8(static_cast<int>(event->_thread_state));
-  buf->put8(static_cast<int>(event->_execution_mode));
-  buf->putVar64(event->_weight);
-  buf->putVar64(correlation_id);
+  writeSampleHeader(buf, T_METHOD_SAMPLE, tid, call_trace_id, correlation_id, event);
   if (context != nullptr) {
     writeContextSnapshot(buf, *context);
   } else {

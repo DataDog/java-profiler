@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfilerTestSupport;
@@ -66,9 +67,10 @@ public class NeverActivatedEngineStopTest extends AbstractProfilerTest {
     JavaProfilerTestSupport.setForceWallStartFailureForTest(false);
     stopProfiler();
     Map<String, Long> counters = profiler.getDebugCounters();
+    assertTrue(counters.containsKey(COUNTER_NAME), "Missing required stop-counter key");
     assertEquals(
         0L,
-        counters.getOrDefault(COUNTER_NAME, 0L),
+        counters.get(COUNTER_NAME),
         "wall engine failed to activate in start(); Profiler::stop() must not call"
             + " BaseWallClock::stop() on an engine that never activated");
   }

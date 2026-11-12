@@ -173,10 +173,10 @@ ordinary serialization, cached-root publication and deferred-tail commit. It
 publishes the ID, state and bitmap bit before releasing the stripe.
 
 A runnable tail is only peeked until its write succeeds. Stripe exhaustion or a
-rejected write retains its ID, weight, state and cadence. Ordinary and deferred
+rejected write retains its ID, weight, state and cadence. Ordinary and per-epoch deferred
 writes have independent results; a failed current attempt remains a drop.
 
-A failed blocked write restores only previously suppressed weight. The profiler
+A failed blocked write leaves previously suppressed epoch segments intact. The profiler
 registers its wall-root collector once in its constructor; the heap tracker
 registers its own collector when heap tracking starts.
 

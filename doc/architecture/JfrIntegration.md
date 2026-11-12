@@ -147,6 +147,10 @@ events write the context snapshot taken when the allocation was tracked
 `livenessTracker.cpp:2411`).
 
 Retained unowned wall tails write their saved span/root IDs and tags, not live TLS.
+Each pending epoch segment also writes its original epoch-window start timestamp.
+Consumers must apply the scale of the window containing that timestamp, not the
+later serialization time. Ordinary unit samples keep serialization timestamps;
+the MethodSample schema is unchanged.
 See [TLSContext](TLSContext.md#retained-unowned-wall-context).
 
 ### Writers outside `recordEvent()`

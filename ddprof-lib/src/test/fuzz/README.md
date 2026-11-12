@@ -200,6 +200,12 @@ diverging (in either direction) from the shadow model; and any
 out-of-bounds/use-after-free in the lazy chunk allocation paths that slot
 reuse and registry resets exercise.
 
+The fuzzer activates the registry with `init("", true)`. In production this requires
+an explicit empty `filter=` and a supported, activated wall engine with precheck;
+omitting `filter` defaults to context filtering. Unfiltered identities register
+lazily on context/block/park hooks. Suppression there applies only to owned blocks
+that remain outside context windows, not arbitrary unowned blocked observations.
+
 ## Corpus
 
 Seed corpus files are in `corpus/<target_name>/`. These provide starting points

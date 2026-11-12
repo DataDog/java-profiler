@@ -188,11 +188,11 @@ unfiltered guards. Configured tag encodings, span ID and local root ID are value
 not pointers to a live owner's TLS. A valid tag-only context may have both IDs
 zero; an all-zero captured value is distinct from an unavailable retained value.
 
-The block tracker has lazy chunks of 256 coherent cells. Each 64-byte cell contains
-seven atomic 64-bit payload words and a publication word. Cold normal-owner
+The block tracker has lazy chunks of 256 coherent cells. Each 128-byte cell contains
+seven atomic payload words, a publication word and four pending-weight segments. Cold normal-owner
 registration allocates backing only for ASGCT wall precheck with a nonempty filter
 and real stacks. Warm lookup and signal handlers do not repair missing backing.
-Each chunk contributes 16,384 bytes to `NM_WALLCLOCK`; up to 8 chunks cover 2,048 slots,
+Each chunk contributes 32,768 bytes to `NM_WALLCLOCK`; up to 8 chunks cover 2,048 slots,
 excluding pointer metadata and allocator overhead. Backing survives recording
 resets and is released with the tracker.
 
@@ -209,6 +209,20 @@ sequence forces ordinary sampling and increments
 `wc_unowned_context_snapshot_unavailable`; normal first capture and an empty
 captured context are not failures. Known active spans bypass unowned accumulation
 without consuming the old origin.
+
+Pending units retain the start tick of their `WallClockSamplingEpoch` window.
+The timer publishes that same tick before dispatch and after closing each epoch.
+Population changes settle the old window first; unchanged-population send failures
+retain the [success-ratio boundary limitation](ProfilingEngines.md).
+Each origin has four bounded timestamp/weight segments. A full array records the
+current observation normally instead of losing provenance. A successful segment
+write alone commits its units; a failed write keeps them for retry.
+
+The serializer writes each segment at its saved epoch-window start. The consumer
+must scale samples by the epoch window containing the sample timestamp. A periodic
+lump combines pending and current units only within one window. Different windows
+stay separate even when context fields match. Ordinary unit samples keep actual
+serialization timestamps. No public JFR field or type changes.
 
 The recording stripe covers validation, ordinary collection, tail emission and
 commit. A context boundary emits the current ordinary tick with weight 1 and its

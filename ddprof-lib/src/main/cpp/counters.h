@@ -78,7 +78,6 @@
   X(THREAD_FILTER_BYTES, "thread_filter_bytes")                                \
   X(THREAD_REGISTRY_CAPACITY_EXHAUSTED, "thread_registry_capacity_exhausted")  \
   X(THREAD_REGISTRY_INDEX_FAILURES, "thread_registry_index_failures")          \
-  X(THREAD_REGISTRY_CONTEXT_RESET_RACE_DETECTED, "thread_registry_context_reset_race_detected") \
   X(THREAD_REGISTRY_HOOK_REREGISTRATION, "thread_registry_hook_reregistration") \
   X(JMETHODID_SKIPPED, "jmethodid_skipped_count")                              \
   X(CODECACHE_NATIVE_SIZE_BYTES, "codecache_native_size_bytes")                \
@@ -92,9 +91,9 @@
   X(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN, "wc_signals_suppressed_sampled_run")     \
   X(WC_PRECHECK_REGISTRY_LOOKUPS, "wc_precheck_registry_lookups")             \
   X(WC_PRECHECK_CANDIDATES_REJECTED, "wc_precheck_candidates_rejected")       \
-  X(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED, "wc_precheck_lookup_budget_exhausted") \
   X(WC_UNOWNED_BLOCKED_SUPPRESSED, "wc_unowned_blocked_suppressed")            \
   X(WC_UNOWNED_BLOCKED_TRACE_PRESERVATION_FAILED, "wc_unowned_blocked_trace_preservation_failed") \
+  X(WC_UNOWNED_BLOCKED_TAIL_RECORDED, "wc_unowned_blocked_tail_recorded") \
   X(WC_UNOWNED_BLOCKED_RECORDED, "wc_unowned_blocked_recorded")                \
   X(WC_UNOWNED_CONTEXT_SNAPSHOT_UNAVAILABLE, "wc_unowned_context_snapshot_unavailable") \
   X(WC_SIGNAL_QUEUE_FULL, "wc_signals_queue_full")                             \

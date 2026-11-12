@@ -120,12 +120,12 @@ public:
             unowned_blocked_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
             unowned_blocked_call_trace_id.store(0, std::memory_order_release);
         }
-        inline bool shouldRecordUnownedBlockedSample(bool force_record = false) {
+        inline bool shouldRecordUnownedBlockedSample(bool force_record = false, bool retain_weight = true) {
             u64 decision = unowned_blocked_decision_count.fetch_add(1, std::memory_order_relaxed) + 1;
             if (force_record || (decision % kUnownedBlockedFallbackRatio) == 1) {
                 return true;
             }
-            unowned_blocked_pending_weight.fetch_add(1, std::memory_order_relaxed);
+            if (retain_weight) unowned_blocked_pending_weight.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
         inline void clearUnownedBlockedTailKeepingCadence() {
@@ -151,8 +151,7 @@ public:
         //  (b) consumeUnownedBlockedWeight() at a recorded sample (weight only);
         //  (c) registry-lifecycle resetSlot()/resetAll() (registerThread,
         //      refreshSlotForRecording, unregisterThreadLocked,
-        //      retireThreadByTid, drainRetiredLocked, clearActive,
-        //      resetSlotRunState).
+        //      retireThreadByTid, drainRetiredLocked, clearActive).
         // The thread's own events - a failed flush, owned-run entry or
         // generation-checked exit, context-window entry - must not clear it.
         // Validate, then consume: an incomplete tail reports what was read
@@ -230,18 +229,8 @@ public:
             resetSampledRun(state);
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
         }
-        // Clears only the owned block-run fields (owner, active state, the
-        // once-per-run sampled marker), leaving the unowned-blocked
-        // statistical sampling weight untouched -- unlike resetSlot(), which
-        // is for registry-lifecycle events (slot reuse, epoch reset) where
-        // the predecessor's weight must not leak into the new owner. This
-        // narrower reset is for a context-window re-entry on the slot's own
-        // thread: it only needs to drop a block run whose exit was missed
-        // (e.g. an exception path with no finally), not disturb the
-        // amortized weight tracking, which spans context-window
-        // entries/exits by design. It is also the generation-checked
-        // exitBlockedRun()'s reset, so an owned run's exit preserves an earlier
-        // unowned tail (R-B1). Keep the order: state UNKNOWN before owner NONE.
+        // End owned suppression without discarding an unowned origin's retained
+        // context, trace or weight. Publish UNKNOWN before releasing ownership.
         inline void clearActiveBlockRun(OSThreadState state) {
             active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
@@ -277,6 +266,20 @@ public:
     bool ensureUnownedContextAllocated(ThreadFilter::SlotID slot_id);
     bool readUnownedContext(ThreadFilter::SlotID slot_id, Context& context, u64& publication) const;
     bool canPublishUnownedContext(ThreadFilter::SlotID slot_id) const;
+    static constexpr size_t kMaxWeightSegments = 4;
+    struct WeightSegment {
+        u64 epoch_start = 0;
+        u64 weight = 0;
+        size_t index = 0;
+    };
+    // The sampled owner alone accumulates; stripe-held serialization commits.
+    // A full/unavailable array fails open without discarding older units.
+    // Epoch-window starts preserve scaling when serialization is deferred.
+    bool deferUnownedWeight(ThreadFilter::SlotID slot_id, u64 epoch_start);
+    size_t copyUnownedWeightSegments(ThreadFilter::SlotID slot_id, WeightSegment* segments) const;
+    bool unownedWeightMatchesEpoch(ThreadFilter::SlotID slot_id, u64 epoch_start) const;
+    void commitUnownedWeightSegment(ThreadFilter::SlotID slot_id, const WeightSegment& segment);
+    void clearUnownedWeightSegments(ThreadFilter::SlotID slot_id);
     // Publication requires a recording stripe (or a quiescent unit fixture).
     bool publishUnownedTrace(ThreadFilter::SlotID slot_id, u64 trace_id, OSThreadState state,
                              const Context& context);
@@ -327,11 +330,6 @@ public:
     // ThreadFilter at its own registry-lifecycle decision points.
     void resetSlot(ThreadFilter::SlotID slot_id, OSThreadState state);
     void resetAll();
-    // Drops a stuck owned block run (one whose exit was missed) without
-    // touching the unowned-blocked sampling weight. Called by
-    // ThreadFilter::add() on every context-window entry; see
-    // BlockState::clearActiveBlockRun() for why this is safe and why it
-    // leaves the weight alone.
     void clearActiveBlockRun(ThreadFilter::SlotID slot_id, OSThreadState state);
     // Reads the complete timer-side suppression payload and rejects it if slot
     // identity or block lifecycle changes before final validation.
@@ -372,11 +370,15 @@ private:
     struct alignas(DEFAULT_CACHE_LINE_SIZE) UnownedContextCell {
         std::atomic<u64> words[7]{};
         std::atomic<u64> publication{0};
+        struct {
+            std::atomic<u64> epoch_start{0};
+            std::atomic<u64> weight{0};
+        } segments[kMaxWeightSegments];
     };
     struct UnownedContextChunk {
         UnownedContextCell cells[ThreadFilter::kChunkSize];
     };
-    static_assert(sizeof(UnownedContextCell) == 64, "Unowned context cell must be one cache line");
+    static_assert(sizeof(UnownedContextCell) == 128, "Unowned context and provenance must fit two cache lines");
     static_assert(alignof(UnownedContextCell) == 64, "Unowned context cell must be cache aligned");
     static_assert(std::atomic<UnownedContextChunk*>::is_always_lock_free,
                   "Signal context chunk lookup must be lock-free");

@@ -190,14 +190,7 @@ TEST_F(WallClockBlockTrackerTest, ClearActiveResetsBlockState) {
     EXPECT_FALSE(block_slot->sampledThisRun());
 }
 
-// If a block/park run's matching exit is missed (e.g. an exception path with
-// no finally/blockExit0), the slot stays "owned" forever and
-// shouldSuppressOwnedBlock() keeps skipping the thread in every later
-// context window. ThreadFilter::add() must clear a stuck active block run on
-// every context-window entry, but must NOT reset the unrelated
-// unowned-blocked sampling weight, which is meant to survive across
-// context-window entries/exits to keep its amortized sampling ratio
-// meaningful.
+// Re-entry clears missed owned exits without losing an unowned origin's fields.
 TEST_F(WallClockBlockTrackerTest, ContextEntryClearsStuckActiveBlockRunButPreservesUnownedWeight) {
     constexpr int tid = 7001;
     int slot_id = filter->registerThread(tid);
@@ -423,6 +416,43 @@ public:
     ScopedUnownedContextAllocationFailure& operator=(const ScopedUnownedContextAllocationFailure&) = delete;
 };
 
+TEST_F(UnownedContextSidecarTest, ContextBoundariesRetainOriginalUnownedTailFields) {
+    for (int transition = 0; transition < 3; ++transition) {
+        SCOPED_TRACE(transition);
+        const int tid = 7800 + transition;
+        int id = filter->registerThread(tid);
+        ASSERT_GE(id, 0);
+        auto* block = tracker->slotForId(id);
+        if (transition == 2) ASSERT_TRUE(filter->add(tid, id));
+        if (transition == 0) {
+            ASSERT_NE(0ULL, tracker->enterBlockedRun(filter.get(), id, OSThreadState::SLEEPING));
+            block->markSampledThisRun(OSThreadState::SLEEPING);
+        }
+        CallTraceStorage traces;
+        u64 root = realTrace(traces);
+        ASSERT_GT(root >> 32, 0ULL);
+        Context original = context(0xA100 + transition);
+        ASSERT_TRUE(block->shouldRecordUnownedBlockedSample());
+        ASSERT_TRUE(tracker->publishUnownedTrace(id, root, OSThreadState::CONDVAR_WAIT, original));
+        ASSERT_FALSE(block->shouldRecordUnownedBlockedSample());
+        ASSERT_FALSE(block->shouldRecordUnownedBlockedSample());
+        if (transition == 2) filter->remove(id);
+        else ASSERT_TRUE(filter->add(tid, id));
+        EXPECT_EQ(BlockRunOwner::NONE, block->activeBlockOwner());
+        EXPECT_FALSE(block->sampledThisRun());
+        Context retained{};
+        u64 publication = 0;
+        ASSERT_TRUE(tracker->readUnownedContext(id, retained, publication));
+        expectContext(original, retained);
+        u64 trace = 0, weight = 0;
+        OSThreadState state = OSThreadState::UNKNOWN;
+        ASSERT_TRUE(block->flushUnownedBlockedTail(trace, weight, state));
+        EXPECT_EQ(root, trace);
+        EXPECT_EQ(2ULL, weight);
+        EXPECT_EQ(OSThreadState::CONDVAR_WAIT, state);
+    }
+}
+
 TEST_F(UnownedContextSidecarTest, RoundTripAllTenTags) {
     int id = filter->registerThread(7751);
     ASSERT_GE(id, 0);
@@ -540,7 +570,7 @@ TEST_F(UnownedContextSidecarTest, NormalColdAllocationBalancesMemory) {
         ASSERT_GE(registry.registerThread(7753), 0);
         const long long total = WallClockBlockTracker::storageSize() +
                                WallClockBlockTracker::unownedContextChunkSizeForTest();
-        EXPECT_EQ(16384U, WallClockBlockTracker::unownedContextChunkSizeForTest());
+        EXPECT_EQ(32768U, WallClockBlockTracker::unownedContextChunkSizeForTest());
         EXPECT_EQ(before + total, NativeMem::live(NM_WALLCLOCK));
         ASSERT_GE(registry.registerThread(7754), 0);
         local.resetAll();
@@ -554,7 +584,7 @@ TEST_F(UnownedContextSidecarTest, NormalColdAllocationBalancesMemory) {
 TEST_F(UnownedContextSidecarTest, ContextChunksAccountOnceAcrossBoundaries) {
     const long long before = NativeMem::live(NM_WALLCLOCK);
     const long long storage_bytes = static_cast<long long>(WallClockBlockTracker::storageSize());
-    const long long chunk_bytes = 16384;
+    const long long chunk_bytes = 32768;
     {
         WallClockBlockTracker local;
         local.setUnownedContextSnapshotsNeeded(true);
@@ -587,7 +617,7 @@ TEST_F(UnownedContextSidecarTest, AllocatedBackingSurvivesModeToggle) {
     ASSERT_GE(id, 0);
     ASSERT_LT(id, ThreadFilter::kChunkSize);
     const long long allocated = before + static_cast<long long>(
-        WallClockBlockTracker::storageSize()) + 16384;
+        WallClockBlockTracker::storageSize()) + 32768;
     ASSERT_EQ(allocated, NativeMem::live(NM_WALLCLOCK));
     CallTraceStorage traces;
     u64 root = realTrace(traces);
@@ -679,7 +709,7 @@ TEST_F(UnownedContextSidecarTest, AllocationFailureRetainsNativeOwner) {
         EXPECT_EQ(id, filter->registerThread(owner.tid(), logical));
         EXPECT_TRUE(tracker->canPublishUnownedContext(id));
         EXPECT_EQ(logical, owner.logicalContextWindowState());
-        const long long allocated = before + storage_bytes + 16384;
+        const long long allocated = before + storage_bytes + 32768;
         EXPECT_EQ(allocated, NativeMem::live(NM_WALLCLOCK));
         {
             ScopedUnownedContextAllocationFailure failure(*tracker);
@@ -825,7 +855,9 @@ public:
           previous_attributes(profiler->exchangeNumContextAttributesForTest(1)),
           previous_reader(BaseWallClock::exchangeThreadStateReaderForTest(sleeping)),
           previous_write(profiler->sampleWriteHookForTest),
-          previous_write_arg(profiler->sampleWriteHookArgForTest) {
+          previous_write_arg(profiler->sampleWriteHookArgForTest),
+          previous_sampling_epoch(WallClockCounters::samplingEpochStart()) {
+        WallClockCounters::beginSamplingEpoch(TSC::ticks());
         profiler->blockTracker()->setUnownedContextSnapshotsNeeded(true);
         profiler->threadFilter()->init("0");
         if (owner != nullptr) {
@@ -837,6 +869,7 @@ public:
     }
 
     ~ScopedUnownedAttributionOwner() {
+        WallClockCounters::beginSamplingEpoch(previous_sampling_epoch);
         BaseWallClock::setUnownedContextProbeHookForTest(nullptr, nullptr);
         profiler->sampleWriteHookForTest = previous_write;
         profiler->sampleWriteHookArgForTest = previous_write_arg;
@@ -899,6 +932,7 @@ private:
     BaseWallClock::ThreadStateReaderForTest previous_reader;
     Profiler::SampleWriteHook previous_write;
     void* previous_write_arg;
+    u64 previous_sampling_epoch;
     static OSThreadState sleeping() { return OSThreadState::SLEEPING; }
     static bool acceptWrite(u32, u64, Event*, const Context*, void*) { return true; }
 };
@@ -1056,6 +1090,8 @@ TEST(UnownedWallAttributionTest, MatchingPeriodicConsumesNineOldUnitsOnce) {
                                                      const Context* context, void* arg) {
             ++static_cast<Writes*>(arg)->count;
             EXPECT_EQ(10ULL, static_cast<ExecutionEvent*>(event)->_weight);
+            EXPECT_EQ(WallClockCounters::samplingEpochStart(),
+                      static_cast<ExecutionEvent*>(event)->_sample_ticks);
             EXPECT_NE(nullptr, context);
             if (context != nullptr) EXPECT_EQ(113U, context->getTag(0));
             return true;
@@ -1276,6 +1312,7 @@ public:
         request.lifecycle_generation = identity->lifecycleGeneration();
         request.registry_epoch = registry->recordingEpoch();
         request.trace_epoch = profiler->recordingEpoch();
+        request.sampling_epoch_start = TSC::ticks();
         request.flush_tail = true;
         request.context_captured = true;
         ASGCT_CallFrame frame{};
@@ -1288,8 +1325,12 @@ public:
             request.slot_id, retained, request.context_publication));
         auto* block = profiler->blockTracker()->slotForId(request.slot_id);
         ASSERT_TRUE(block->shouldRecordUnownedBlockedSample());
-        ASSERT_FALSE(block->shouldRecordUnownedBlockedSample());
-        ASSERT_FALSE(block->shouldRecordUnownedBlockedSample());
+        ASSERT_FALSE(block->shouldRecordUnownedBlockedSample(false, false));
+        ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(
+            request.slot_id, request.sampling_epoch_start));
+        ASSERT_FALSE(block->shouldRecordUnownedBlockedSample(false, false));
+        ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(
+            request.slot_id, request.sampling_epoch_start));
         profiler->sampleWriteHookForTest = write;
         profiler->sampleWriteHookArgForTest = this;
     }
@@ -1356,7 +1397,9 @@ public:
         ASSERT_TRUE(tracker->publishUnownedTrace(
             request.slot_id, id, OSThreadState::SLEEPING, origin));
         for (int observation = 1; observation < observations; ++observation) {
-            ASSERT_FALSE(block()->shouldRecordUnownedBlockedSample());
+            ASSERT_FALSE(block()->shouldRecordUnownedBlockedSample(false, false));
+        ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(
+            request.slot_id, request.sampling_epoch_start));
         }
         Context retained{};
         ASSERT_TRUE(tracker->readUnownedContext(
@@ -1438,7 +1481,9 @@ TEST_F(UnownedAttributionRotationTest, ZeroWeightOriginKeepsFieldsAcrossThreeRot
         EXPECT_EQ(origin_publication, publication);
         expectFields(retained, ORIGIN_TAGS);
     }
-    ASSERT_FALSE(block()->shouldRecordUnownedBlockedSample());
+    ASSERT_FALSE(block()->shouldRecordUnownedBlockedSample(false, false));
+        ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(
+            request.slot_id, request.sampling_epoch_start));
     EXPECT_EQ(1ULL, block()->unowned_blocked_pending_weight.load());
     EXPECT_EQ(2ULL, block()->unowned_blocked_decision_count.load());
     expected_tail_weight = 1;
@@ -1593,7 +1638,9 @@ public:
         original.setTag(0, 113);
         ASSERT_TRUE(profiler->blockTracker()->publishUnownedTrace(
             request.slot_id, id, OSThreadState::SLEEPING, original));
-        ASSERT_FALSE(block()->shouldRecordUnownedBlockedSample());
+        ASSERT_FALSE(block()->shouldRecordUnownedBlockedSample(false, false));
+        ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(
+            request.slot_id, request.sampling_epoch_start));
         ASSERT_EQ(3ULL, block()->unowned_blocked_pending_weight.load());
         request.unowned_sample = true;
         request.observed_state = OSThreadState::CONDVAR_WAIT;
@@ -1699,7 +1746,9 @@ TEST_F(WallClockSampleTransactionTest, StaleIdentityCannotConsumeOrPublish) {
     ASSERT_EQ(request.slot_id, profiler->threadFilter()->registerThread(request.tid + 1));
     profiler->blockTracker()->publishUnownedTrace(request.slot_id, id, OSThreadState::SLEEPING);
     ASSERT_TRUE(block()->shouldRecordUnownedBlockedSample());
-    ASSERT_FALSE(block()->shouldRecordUnownedBlockedSample());
+    ASSERT_FALSE(block()->shouldRecordUnownedBlockedSample(false, false));
+        ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(
+            request.slot_id, request.sampling_epoch_start));
     const auto result = sample();
     EXPECT_TRUE(result.ordinary_recorded);
     EXPECT_FALSE(result.tail_recorded);
@@ -1796,4 +1845,189 @@ TEST_F(WallClockSampleTransactionTest, DumpExcludesDeferredConsumeAndEmission) {
     EXPECT_EQ(0ULL, block()->unowned_blocked_call_trace_id.load());
     EXPECT_FALSE(sample().tail_recorded);
     EXPECT_EQ(2ULL, emitted_weight);
+}
+
+TEST_F(WallClockBlockTrackerTest, SameIdentityExitAndReentryInvalidatesFinalValidation) {
+    int slot_id = filter->registerThread(8001);
+    u64 token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0u, token);
+    auto* block = tracker->slotForId(slot_id);
+    block->markSampledThisRun(OSThreadState::SLEEPING);
+    auto* identity = filter->slotForId(slot_id);
+    ThreadEntry entry{8001, identity, slot_id, identity->lifecycleGeneration(),
+                      identity->recordingEpoch()};
+    ASSERT_TRUE(tracker->shouldSuppressOwnedBlock(filter.get(), entry));
+    struct Reentry {
+        ThreadFilter* registry;
+        WallClockBlockTracker* tracker;
+        int slot_id;
+        u64 token;
+        static void replace(void* arg) {
+            auto* self = static_cast<Reentry*>(arg);
+            EXPECT_TRUE(self->tracker->exitBlockedRun(
+                self->slot_id, WallClockBlockTracker::tokenGeneration(self->token)));
+            self->token = self->tracker->enterBlockedRun(
+                self->registry, self->slot_id, OSThreadState::SLEEPING);
+            self->tracker->slotForId(self->slot_id)->markSampledThisRun(OSThreadState::SLEEPING);
+        }
+    } reentry{filter.get(), tracker.get(), slot_id, token};
+    tracker->setSuppressionSnapshotHookForTest(Reentry::replace, &reentry);
+    EXPECT_FALSE(tracker->shouldSuppressOwnedBlock(filter.get(), entry));
+    tracker->setSuppressionSnapshotHookForTest(nullptr, nullptr);
+    EXPECT_NE(token, reentry.token);
+    EXPECT_EQ(identity->lifecycleGeneration(), entry.lifecycle_generation);
+    EXPECT_TRUE(tracker->shouldSuppressOwnedBlock(filter.get(), entry));
+}
+
+// Derive each scale from the actual filtered population and production reservoir.
+TEST(UnownedWallAttributionTest, RetainedTailKeepsEffectiveWeightAcrossPopulationChanges) {
+    for (const auto& pools : {std::pair<int, int>{16, 160}, {160, 16}}) {
+        auto worker = std::async(std::launch::async, [pools] {
+            ScopedUnownedAttributionOwner scoped;
+            auto* registry = scoped.profiler->threadFilter();
+            std::vector<int> extras;
+            auto populate = [&](int count) {
+                for (int id : extras) registry->unregisterThread(id);
+                extras.clear();
+                for (int i = 1; i < count; ++i) {
+                    int tid = 9000000 + i;
+                    int id = registry->registerThread(tid);
+                    ASSERT_GE(id, 0);
+                    ASSERT_TRUE(registry->add(tid, id));
+                    extras.push_back(id);
+                }
+            };
+            auto scale = [&] {
+                std::vector<ThreadEntry> entries;
+                registry->collect(entries);
+                ReservoirSampler<ThreadEntry> reservoir(16, 1);
+                return static_cast<double>(entries.size()) / reservoir.sample(entries).size();
+            };
+            populate(pools.first);
+            double original_scale = scale();
+            const u64 original_time = TSC::ticks();
+            WallClockCounters::beginSamplingEpoch(original_time);
+            u64 id = 0;
+            ASSERT_NO_FATAL_FAILURE(scoped.primeOrigin(113, id, 10));
+            registry->onContextWindowExit(*scoped.owner);
+            populate(pools.second);
+            registry->onContextWindowEnter(*scoped.owner);
+            scoped.setTag(227);
+            const u64 boundary = TSC::ticks();
+            WallClockCounters::beginSamplingEpoch(boundary);
+            ASSERT_GT(boundary, original_time);
+            double later_scale = scale();
+            struct Writes {
+                u64 boundary;
+                double original_scale, later_scale, effective = 0;
+                int tails = 0;
+            } writes{boundary, original_scale, later_scale};
+            scoped.profiler->sampleWriteHookArgForTest = &writes;
+            scoped.profiler->sampleWriteHookForTest = +[](u32, u64, Event* raw,
+                                                         const Context* context, void* arg) {
+                auto* sample = static_cast<ExecutionEvent*>(raw);
+                auto* writes = static_cast<Writes*>(arg);
+                if (sample->_thread_state != OSThreadState::SLEEPING) return true;
+                ++writes->tails;
+                EXPECT_NE(nullptr, context);
+                if (context != nullptr) EXPECT_EQ(113U, context->getTag(0));
+                u64 timestamp = sample->_sample_ticks != 0 ? sample->_sample_ticks : TSC::ticks();
+                EXPECT_LT(timestamp, writes->boundary) << "Tail must retain its original epoch timestamp";
+                writes->effective += sample->_weight * (timestamp < writes->boundary
+                    ? writes->original_scale : writes->later_scale);
+                return true;
+            };
+            bool suppressed = false;
+            auto request = scoped.clock.prepareWallSampleRequestForTest(scoped.owner, suppressed);
+            request.unowned_sample = false;
+            request.flush_tail = true;
+            ExecutionEvent event;
+            event._thread_state = OSThreadState::RUNNABLE;
+            auto result = scoped.profiler->recordWallSample(nullptr, 1, id, &event, request);
+            EXPECT_TRUE(result.tail_recorded);
+            EXPECT_EQ(1, writes.tails);
+            EXPECT_DOUBLE_EQ(9 * original_scale, writes.effective)
+                << "pool " << pools.first << " -> " << pools.second;
+            for (int extra : extras) registry->unregisterThread(extra);
+        });
+        worker.get();
+    }
+}
+
+TEST(UnownedWallAttributionTest, BoundedEpochSegmentsFailOpenAndCommitOnlySuccessfulWrites) {
+    auto worker = std::async(std::launch::async, [] {
+        ScopedUnownedAttributionOwner scoped;
+        u64 id = 0;
+        ASSERT_NO_FATAL_FAILURE(scoped.primeOrigin(113, id));
+        u64 epochs[WallClockBlockTracker::kMaxWeightSegments];
+        epochs[0] = WallClockCounters::samplingEpochStart();
+        bool suppressed = false;
+        for (size_t i = 1; i < WallClockBlockTracker::kMaxWeightSegments; ++i) {
+            epochs[i] = TSC::ticks();
+            ASSERT_GT(epochs[i], epochs[i - 1]);
+            WallClockCounters::beginSamplingEpoch(epochs[i]);
+            scoped.clock.prepareWallSampleRequestForTest(scoped.owner, suppressed);
+            ASSERT_TRUE(suppressed);
+        }
+        WallClockCounters::beginSamplingEpoch(TSC::ticks());
+        auto request = scoped.clock.prepareWallSampleRequestForTest(scoped.owner, suppressed);
+        ASSERT_FALSE(suppressed) << "Full provenance storage must record the current observation";
+        auto* block = scoped.profiler->blockTracker()->slotForId(scoped.owner->filterSlotId());
+        ASSERT_EQ(6ULL, block->unowned_blocked_pending_weight.load());
+        const u64 recorded_before = Counters::getCounter(WC_UNOWNED_BLOCKED_TAIL_RECORDED);
+        struct Writes { u64 rejected; bool fail = true; u64 emitted = 0; int tails = 0; } writes{epochs[1]};
+        scoped.profiler->sampleWriteHookArgForTest = &writes;
+        scoped.profiler->sampleWriteHookForTest = +[](u32, u64, Event* raw, const Context* context, void* arg) {
+            auto* writes = static_cast<Writes*>(arg);
+            auto* event = static_cast<ExecutionEvent*>(raw);
+            if (event->_execution_mode != ExecutionMode::UNKNOWN) {
+                EXPECT_EQ(1ULL, event->_weight);
+                return true;
+            }
+            ++writes->tails;
+            EXPECT_NE(0ULL, event->_sample_ticks);
+            EXPECT_NE(nullptr, context);
+            if (context != nullptr) EXPECT_EQ(113U, context->getTag(0));
+            if (writes->fail && event->_sample_ticks == writes->rejected) return false;
+            writes->emitted += event->_weight;
+            return true;
+        };
+        ExecutionEvent event;
+        event._thread_state = OSThreadState::SLEEPING;
+        event._execution_mode = ExecutionMode::JAVA;
+        auto result = scoped.profiler->recordWallSample(nullptr, 1, id, &event, request);
+        EXPECT_TRUE(result.ordinary_recorded);
+        EXPECT_FALSE(result.tail_recorded);
+        EXPECT_EQ(4, writes.tails);
+        EXPECT_EQ(5ULL, writes.emitted);
+        EXPECT_EQ(recorded_before + 3, Counters::getCounter(WC_UNOWNED_BLOCKED_TAIL_RECORDED));
+        EXPECT_EQ(1ULL, block->unowned_blocked_pending_weight.load());
+        scoped.setTag(227);
+        request = scoped.clock.prepareWallSampleRequestForTest(scoped.owner, suppressed);
+        ASSERT_FALSE(suppressed);
+        writes.fail = false;
+        result = scoped.profiler->recordWallSample(nullptr, 1, id, &event, request);
+        EXPECT_TRUE(result.tail_recorded);
+        EXPECT_EQ(5, writes.tails) << "Already committed segments must not be written again";
+        EXPECT_EQ(6ULL, writes.emitted);
+        EXPECT_EQ(recorded_before + 4, Counters::getCounter(WC_UNOWNED_BLOCKED_TAIL_RECORDED));
+        EXPECT_EQ(0ULL, block->unowned_blocked_pending_weight.load());
+    });
+    worker.get();
+}
+
+TEST(UnownedWallAttributionTest, MissingSamplingEpochCannotAccumulateUnscaledWeight) {
+    auto worker = std::async(std::launch::async, [] {
+        ScopedUnownedAttributionOwner scoped;
+        u64 id = 0;
+        ASSERT_NO_FATAL_FAILURE(scoped.primeOrigin(113, id, 1));
+        WallClockCounters::beginSamplingEpoch(0);
+        bool suppressed = true;
+        auto request = scoped.clock.prepareWallSampleRequestForTest(scoped.owner, suppressed);
+        EXPECT_FALSE(suppressed);
+        EXPECT_TRUE(request.unowned_sample);
+        auto* block = scoped.profiler->blockTracker()->slotForId(scoped.owner->filterSlotId());
+        EXPECT_EQ(0ULL, block->unowned_blocked_pending_weight.load());
+    });
+    worker.get();
 }
