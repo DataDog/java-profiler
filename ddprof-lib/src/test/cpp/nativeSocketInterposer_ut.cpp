@@ -26,9 +26,12 @@
 #include "nativeSocketSampler.h"
 #include "os.h"
 #include "profiler.h"
+#include "vmEntry.h"
 
 #include <atomic>
 #include <cerrno>
+#include <chrono>
+#include <future>
 #include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
@@ -48,6 +51,16 @@
 #include <unistd.h>
 #include <thread>
 #include <vector>
+
+// Unit-only dispatch control, not evidence of a running JVM.
+class VMTestAccessor {
+public:
+  static bool exchangeHotspot(bool value) {
+    bool saved = VM::_hotspot;
+    VM::_hotspot = value;
+    return saved;
+  }
+};
 
 namespace {
 
@@ -1235,9 +1248,74 @@ private:
 
 ScopedSocketImportFailure* ScopedSocketImportFailure::_current = nullptr;
 
+// Only the refresh thread pauses: the test thread must be able to reinstall.
+class PausedSocketRefresh {
+public:
+  PausedSocketRefresh() {
+    _current = this;
+    LibraryPatcher::setSocketPatchObserverForTest(observe);
+    _worker = std::async(std::launch::async, []() {
+      _refresh_thread = true;
+      LibraryPatcher::install_socket_hooks();
+      _refresh_thread = false;
+    });
+  }
+
+  ~PausedSocketRefresh() {
+    resumeCommit();
+    resumeResult();
+    _worker.get();
+    LibraryPatcher::setSocketPatchObserverForTest(nullptr);
+    _current = nullptr;
+  }
+
+  bool committed() const { return _committed; }
+  bool waitCommit() {
+    return _commit.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+  }
+  bool waitResult() {
+    return _result.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+  }
+  void resumeCommit() {
+    if (!_commit_resumed) { _commit_resumed = true; _resume_commit.set_value(); }
+  }
+  void resumeResult() {
+    if (!_result_resumed) { _result_resumed = true; _resume_result.set_value(); }
+  }
+
+private:
+  static void observe(const char* phase) {
+    if (!_refresh_thread) return;
+    if (strcmp(phase, "committed") == 0) {
+      _current->_committed = true;
+    } else if (strcmp(phase, "before_commit") == 0) {
+      _current->_at_commit.set_value();
+      _current->_resume_commit.get_future().wait();
+    } else if (strcmp(phase, "refresh_result") == 0) {
+      _current->_at_result.set_value();
+      _current->_resume_result.get_future().wait();
+    }
+  }
+  static PausedSocketRefresh* _current;
+  static thread_local bool _refresh_thread;
+  std::promise<void> _at_commit, _at_result, _resume_commit, _resume_result;
+  std::future<void> _commit = _at_commit.get_future();
+  std::future<void> _result = _at_result.get_future();
+  std::future<void> _worker;
+  bool _commit_resumed = false, _result_resumed = false;
+  bool _committed = false;
+};
+
+PausedSocketRefresh* PausedSocketRefresh::_current = nullptr;
+thread_local bool PausedSocketRefresh::_refresh_thread = false;
+
 class LibraryPatcherSocketTransactionTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  // The parser caches inodes in an append-only library array. Run each unload/
+  // reload scenario in a child so a prior test's CodeCache cannot alias a DSO.
+  void initializeFixture() {
+    // Bound a broken barrier/lock interleaving to this child, not the CI job.
+    alarm(30);
     ASSERT_EQ(0, LibraryPatcher::socket_patch_count_for_test());
     ASSERT_EQ(0, LibraryPatcher::socket_library_count_for_test());
     ASSERT_FALSE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
@@ -1397,84 +1475,210 @@ protected:
 // original publication, writes and rollback through the production refresh path.
 TEST_F(LibraryPatcherSocketTransactionTest,
        FailedRefreshRestoresEarlierInstallAndPartialLibrary) {
-  ScopedNativeSocketInterposerActive interposer_active(true);
-  ScopedNativeSocketSamplerActive sampler_active(true);
-  ScopedHookOwnerPid owner(getpid());
-  ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
-  ASSERT_EQ(2, LibraryPatcher::socket_patch_count_for_test());
-  ASSERT_EQ(1, LibraryPatcher::socket_library_count_for_test());
-  ASSERT_TRUE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
-  ASSERT_TRUE(NativeSocketInterposer::instance()->active());
-  ASSERT_TRUE(NativeSocketSampler::active());
-  expectImports(true, 1);
-  expectPublishedForwarders();
+  ASSERT_EXIT({
+    initializeFixture();
+    if (HasFatalFailure()) _exit(1);
+    ScopedNativeSocketInterposerActive interposer_active(true);
+    ScopedNativeSocketSamplerActive sampler_active(true);
+    ScopedHookOwnerPid owner(getpid());
+    ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+    ASSERT_EQ(2, LibraryPatcher::socket_patch_count_for_test());
+    ASSERT_EQ(1, LibraryPatcher::socket_library_count_for_test());
+    ASSERT_TRUE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+    ASSERT_TRUE(NativeSocketInterposer::instance()->active());
+    ASSERT_TRUE(NativeSocketSampler::active());
+    expectImports(true, 1);
+    expectPublishedForwarders();
 
-  loadNetworkLibrary(1, "libnio.so");
-  ASSERT_FALSE(HasFatalFailure());
-  // Discovery alone must not install or disturb the previously installed DSO.
-  expectImports(true, 1);
-  ASSERT_EQ(2, LibraryPatcher::socket_patch_count_for_test());
-  ASSERT_EQ(originals[1][0], __atomic_load_n(slots[1][0], __ATOMIC_ACQUIRE));
-  ASSERT_EQ(originals[1][1], __atomic_load_n(slots[1][1], __ATOMIC_ACQUIRE));
+    loadNetworkLibrary(1, "libnio.so");
+    ASSERT_FALSE(HasFatalFailure());
+    // Discovery alone must not install or disturb the previously installed DSO.
+    expectImports(true, 1);
+    ASSERT_EQ(2, LibraryPatcher::socket_patch_count_for_test());
+    ASSERT_EQ(originals[1][0], __atomic_load_n(slots[1][0], __ATOMIC_ACQUIRE));
+    ASSERT_EQ(originals[1][1], __atomic_load_n(slots[1][1], __ATOMIC_ACQUIRE));
 
-  {
-    ScopedSocketImportFailure failure(libraries[1], slots[1][0]);
-    LibraryPatcher::install_socket_hooks();
-    EXPECT_EQ(1, failure.calls);
-    EXPECT_TRUE(failure.saw_partial_write);
-  }
-  expectImports(false, 2);
-  EXPECT_EQ(0, LibraryPatcher::socket_patch_count_for_test());
-  EXPECT_EQ(0, LibraryPatcher::socket_library_count_for_test());
-  EXPECT_FALSE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
-  EXPECT_FALSE(NativeSocketInterposer::instance()->active());
-  EXPECT_FALSE(NativeSocketSampler::active());
-  expectPublishedForwarders();
-
-  // Originals remain callable after disable/rollback, including errno behavior.
-  char buffer = 0;
-  errno = 0;
-  EXPECT_EQ(-1, NativeSocketInterposer::read_hook(-1, &buffer, 1));
-  EXPECT_EQ(EBADF, errno);
-  errno = 0;
-  EXPECT_EQ(-1, NativeSocketSampler::read_hook(-1, &buffer, 1));
-  EXPECT_EQ(EBADF, errno);
-  LibraryPatcher::install_socket_hooks();
-  expectImports(false, 2);
-  EXPECT_EQ(0, LibraryPatcher::socket_patch_count_for_test());
-
-  // Removing the fault permits a real reinstall; stale base bookkeeping or
-  // restoring hooks instead of pre-install values would break these controls.
-  NativeSocketInterposer::instance()->setActiveForTest(true);
-  NativeSocketSampler::setActiveForTest(true);
-  ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
-  expectImports(true, 2);
-  EXPECT_EQ(4, LibraryPatcher::socket_patch_count_for_test());
-  EXPECT_EQ(2, LibraryPatcher::socket_library_count_for_test());
-  expectPublishedForwarders();
-  LibraryPatcher::install_socket_hooks();
-  EXPECT_EQ(4, LibraryPatcher::socket_patch_count_for_test());
-  EXPECT_EQ(2, LibraryPatcher::socket_library_count_for_test());
-
-  NativeSocketInterposer::instance()->stop();
-  expectImports(true, 2);
-  EXPECT_TRUE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
-  NativeSocketSampler::instance()->stop();
-  expectImports(false, 2);
-  EXPECT_FALSE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
-  EXPECT_EQ(0, LibraryPatcher::socket_patch_count_for_test());
-  EXPECT_EQ(0, LibraryPatcher::socket_library_count_for_test());
-
-  // A leaked completed-library or partial-candidate handle from either pass
-  // keeps the DSO mapped after the last external reference is closed on glibc.
-  for (int index = 0; index < 2; index++) {
-    ASSERT_EQ(0, dlclose(handles[index + 1]));
-    handles[index + 1] = nullptr;
-    Dl_info info;
-    if (!OS::isMusl()) {
-      EXPECT_EQ(0, dladdr(symbols[index], &info));
+    {
+      ScopedSocketImportFailure failure(libraries[1], slots[1][0]);
+      LibraryPatcher::install_socket_hooks();
+      EXPECT_EQ(1, failure.calls);
+      EXPECT_TRUE(failure.saw_partial_write);
     }
-  }
+    expectImports(false, 2);
+    EXPECT_EQ(0, LibraryPatcher::socket_patch_count_for_test());
+    EXPECT_EQ(0, LibraryPatcher::socket_library_count_for_test());
+    EXPECT_FALSE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+    EXPECT_FALSE(NativeSocketInterposer::instance()->active());
+    EXPECT_FALSE(NativeSocketSampler::active());
+    expectPublishedForwarders();
+
+    // Originals remain callable after disable/rollback, including errno behavior.
+    char buffer = 0;
+    errno = 0;
+    EXPECT_EQ(-1, NativeSocketInterposer::read_hook(-1, &buffer, 1));
+    EXPECT_EQ(EBADF, errno);
+    errno = 0;
+    EXPECT_EQ(-1, NativeSocketSampler::read_hook(-1, &buffer, 1));
+    EXPECT_EQ(EBADF, errno);
+    LibraryPatcher::install_socket_hooks();
+    expectImports(false, 2);
+    EXPECT_EQ(0, LibraryPatcher::socket_patch_count_for_test());
+
+    // Removing the fault permits a real reinstall; stale base bookkeeping or
+    // restoring hooks instead of pre-install values would break these controls.
+    NativeSocketInterposer::instance()->setActiveForTest(true);
+    NativeSocketSampler::setActiveForTest(true);
+    ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+    expectImports(true, 2);
+    EXPECT_EQ(4, LibraryPatcher::socket_patch_count_for_test());
+    EXPECT_EQ(2, LibraryPatcher::socket_library_count_for_test());
+    expectPublishedForwarders();
+    LibraryPatcher::install_socket_hooks();
+    EXPECT_EQ(4, LibraryPatcher::socket_patch_count_for_test());
+    EXPECT_EQ(2, LibraryPatcher::socket_library_count_for_test());
+
+    NativeSocketInterposer::instance()->stop();
+    expectImports(true, 2);
+    EXPECT_TRUE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+    NativeSocketSampler::instance()->stop();
+    expectImports(false, 2);
+    EXPECT_FALSE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+    EXPECT_EQ(0, LibraryPatcher::socket_patch_count_for_test());
+    EXPECT_EQ(0, LibraryPatcher::socket_library_count_for_test());
+
+    // A leaked completed-library or partial-candidate handle from either pass
+    // keeps the DSO mapped after the last external reference is closed on glibc.
+    for (int index = 0; index < 2; index++) {
+      ASSERT_EQ(0, dlclose(handles[index + 1]));
+      handles[index + 1] = nullptr;
+      Dl_info info;
+      if (!OS::isMusl()) {
+        EXPECT_EQ(0, dladdr(symbols[index], &info));
+      }
+    }
+    TearDown();
+    _exit(HasFailure() ? 1 : 0);
+  }, ::testing::ExitedWithCode(0), "");
+}
+
+TEST_F(LibraryPatcherSocketTransactionTest,
+       CancelledRefreshCannotDisableRestartedOwners) {
+  ASSERT_EXIT({
+    initializeFixture();
+    if (HasFatalFailure()) _exit(1);
+    ScopedNativeSocketInterposerActive interposer_active(true);
+    ScopedNativeSocketSamplerActive sampler_active(true);
+    ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+    {
+      PausedSocketRefresh refresh;
+      ASSERT_TRUE(refresh.waitCommit());
+      NativeSocketInterposer::instance()->stop();
+      NativeSocketSampler::instance()->stop();
+      expectImports(false, 1);
+      refresh.resumeCommit();
+      ASSERT_TRUE(refresh.waitResult());
+      NativeSocketInterposer::instance()->setActiveForTest(true);
+      NativeSocketSampler::setActiveForTest(true);
+      ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+      expectImports(true, 1);
+      refresh.resumeResult();
+    }
+    EXPECT_TRUE(NativeSocketInterposer::instance()->active());
+    EXPECT_TRUE(NativeSocketSampler::active());
+    EXPECT_TRUE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+    EXPECT_EQ(2, LibraryPatcher::socket_patch_count_for_test());
+    expectImports(true, 1);
+    TearDown();
+    _exit(HasFailure() ? 1 : 0);
+  }, ::testing::ExitedWithCode(0), "");
+}
+
+TEST_F(LibraryPatcherSocketTransactionTest,
+       PreviousGenerationRefreshCannotRollBackRestartedOwners) {
+  ASSERT_EXIT({
+    initializeFixture();
+    if (HasFatalFailure()) _exit(1);
+    ScopedNativeSocketInterposerActive interposer_active(true);
+    ScopedNativeSocketSamplerActive sampler_active(true);
+    ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+    {
+      PausedSocketRefresh refresh;
+      ASSERT_TRUE(refresh.waitCommit());
+      NativeSocketInterposer::instance()->stop();
+      NativeSocketSampler::instance()->stop();
+      NativeSocketInterposer::instance()->setActiveForTest(true);
+      NativeSocketSampler::setActiveForTest(true);
+      ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+      // A new DSO is not part of the old refresh's discovery snapshot.
+      loadNetworkLibrary(1, "libnio.so");
+      ASSERT_FALSE(HasFatalFailure());
+      refresh.resumeCommit();
+      ASSERT_TRUE(refresh.waitResult());
+      EXPECT_FALSE(refresh.committed());
+      refresh.resumeResult();
+    }
+    EXPECT_TRUE(NativeSocketInterposer::instance()->active());
+    EXPECT_TRUE(NativeSocketSampler::active());
+    EXPECT_EQ(2, LibraryPatcher::socket_patch_count_for_test());
+    EXPECT_EQ(originals[1][0], __atomic_load_n(slots[1][0], __ATOMIC_ACQUIRE));
+    LibraryPatcher::install_socket_hooks();
+    EXPECT_EQ(4, LibraryPatcher::socket_patch_count_for_test());
+    expectImports(true, 2);
+    // Starting the other owner can reinstall without a full unpatch. That
+    // successful installation must also supersede an older discovery.
+    {
+      PausedSocketRefresh refresh;
+      ASSERT_TRUE(refresh.waitCommit());
+      ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+      refresh.resumeCommit();
+      ASSERT_TRUE(refresh.waitResult());
+      EXPECT_FALSE(refresh.committed());
+      refresh.resumeResult();
+    }
+    EXPECT_TRUE(NativeSocketInterposer::instance()->active());
+    EXPECT_TRUE(NativeSocketSampler::active());
+    expectImports(true, 2);
+    TearDown();
+    _exit(HasFailure() ? 1 : 0);
+  }, ::testing::ExitedWithCode(0), "");
+}
+
+TEST_F(LibraryPatcherSocketTransactionTest,
+       FailedRefreshCannotDisableRestartedOwners) {
+  ASSERT_EXIT({
+    initializeFixture();
+    if (HasFatalFailure()) _exit(1);
+    ScopedNativeSocketInterposerActive interposer_active(true);
+    ScopedNativeSocketSamplerActive sampler_active(true);
+    ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+    loadNetworkLibrary(1, "libnio.so");
+    ASSERT_FALSE(HasFatalFailure());
+    {
+      PausedSocketRefresh refresh;
+      ASSERT_TRUE(refresh.waitCommit());
+      {
+        ScopedSocketImportFailure failure(libraries[1], slots[1][0]);
+        refresh.resumeCommit();
+        ASSERT_TRUE(refresh.waitResult());
+        EXPECT_EQ(1, failure.calls);
+        EXPECT_TRUE(failure.saw_partial_write);
+      }
+      expectImports(false, 2);
+      EXPECT_FALSE(NativeSocketInterposer::instance()->active());
+      EXPECT_FALSE(NativeSocketSampler::active());
+      NativeSocketInterposer::instance()->setActiveForTest(true);
+      NativeSocketSampler::setActiveForTest(true);
+      ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+      refresh.resumeResult();
+    }
+    EXPECT_TRUE(NativeSocketInterposer::instance()->active());
+    EXPECT_TRUE(NativeSocketSampler::active());
+    EXPECT_TRUE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+    EXPECT_EQ(4, LibraryPatcher::socket_patch_count_for_test());
+    expectImports(true, 2);
+    TearDown();
+    _exit(HasFailure() ? 1 : 0);
+  }, ::testing::ExitedWithCode(0), "");
 }
 
 TEST(LibraryPatcherDsoLifetimeTest, RetainsPatchedLibraryUntilImportsAreRestored) {
@@ -1732,6 +1936,90 @@ TEST_F(NativeSocketInterposerHookTest, ActiveSelectPositiveAndNullTimeoutEligibl
   EXPECT_EQ(E2BIG, errno);
   EXPECT_EQ(1, g_select_calls.load());
   EXPECT_EQ(1, g_pselect_calls.load());
+}
+
+TEST_F(NativeSocketInterposerHookTest, ReadinessScopeEligibilityAndBlockKindTable) {
+  enum Operation { EPOLL_WAIT, EPOLL_PWAIT, POLL, PPOLL, SELECT, PSELECT };
+  enum Timeout { ZERO, POSITIVE, NEGATIVE, FRACTIONAL, INFINITE };
+  struct Case {
+    Operation operation;
+    NativeBlockKind kind;
+  };
+  const Case cases[] = {
+      {EPOLL_WAIT, NativeBlockKind::EPOLL_WAIT},
+      {EPOLL_PWAIT, NativeBlockKind::EPOLL_WAIT},
+      {POLL, NativeBlockKind::POLL},
+      {PPOLL, NativeBlockKind::POLL},
+      {SELECT, NativeBlockKind::SELECT},
+      {PSELECT, NativeBlockKind::SELECT},
+  };
+  struct ScopedHotspot {
+    bool saved = VMTestAccessor::exchangeHotspot(true);
+    ~ScopedHotspot() { VMTestAccessor::exchangeHotspot(saved); }
+  } hotspot;
+  NativeBlockScope::setHookObserverForTest(native_block_observer);
+  g_epoll_wait_ret = g_epoll_pwait_ret = g_poll_ret = g_ppoll_ret =
+      g_select_ret = g_pselect_ret = 7;
+  for (const Case& test : cases) {
+    for (bool active : {false, true}) {
+      ScopedNativeSocketInterposerActive owner(active);
+      for (int count : {0, 1}) {
+        for (Timeout timeout : {ZERO, POSITIVE, NEGATIVE, FRACTIONAL, INFINITE}) {
+          for (bool null_fds : {false, true}) {
+            SCOPED_TRACE(::testing::Message() << "operation=" << test.operation
+                         << " active=" << active << " count=" << count
+                         << " timeout=" << timeout << " null_fds=" << null_fds);
+            int integer_timeout = timeout == ZERO ? 0 : timeout == NEGATIVE || timeout == INFINITE ? -1 : 1;
+            timespec ts = {timeout == POSITIVE ? 1 : timeout == NEGATIVE ? -1 : 0,
+                           timeout == FRACTIONAL ? 1 : 0};
+            timeval tv = {ts.tv_sec, ts.tv_nsec};
+            pollfd fd = {0, POLLIN, 0};
+            epoll_event event = {};
+            g_taskblock_enter_sequence = g_taskblock_exit_sequence = g_taskblock_kind = 0;
+            int calls_before = g_epoll_wait_calls + g_epoll_pwait_calls + g_poll_calls +
+                g_ppoll_calls + g_select_calls + g_pselect_calls;
+            errno = E2BIG;
+            int result = -1;
+            switch (test.operation) {
+              case EPOLL_WAIT:
+                result = NativeSocketInterposer::epoll_wait_hook(31, &event, count, integer_timeout);
+                break;
+              case EPOLL_PWAIT:
+                result = NativeSocketInterposer::epoll_pwait_hook(31, &event, count, integer_timeout, nullptr);
+                break;
+              case POLL:
+                result = NativeSocketInterposer::poll_hook(null_fds ? nullptr : &fd, count, integer_timeout);
+                break;
+              case PPOLL:
+                result = NativeSocketInterposer::ppoll_hook(null_fds ? nullptr : &fd, count,
+                    timeout == INFINITE ? nullptr : &ts, nullptr);
+                break;
+              case SELECT:
+                result = NativeSocketInterposer::select_hook(count, nullptr, nullptr, nullptr,
+                    timeout == INFINITE ? nullptr : &tv);
+                break;
+              case PSELECT:
+                result = NativeSocketInterposer::pselect_hook(count, nullptr, nullptr, nullptr,
+                    timeout == INFINITE ? nullptr : &ts, nullptr);
+                break;
+            }
+            EXPECT_EQ(7, result);
+            EXPECT_EQ(E2BIG, errno);
+            EXPECT_EQ(calls_before + 1, g_epoll_wait_calls + g_epoll_pwait_calls + g_poll_calls +
+                g_ppoll_calls + g_select_calls + g_pselect_calls);
+            bool eligible = active && count > 0 && timeout != ZERO &&
+                (!null_fds || (test.operation != POLL && test.operation != PPOLL));
+            EXPECT_EQ(eligible, g_taskblock_enter_sequence.load() != 0);
+            EXPECT_EQ(eligible, g_taskblock_exit_sequence.load() != 0);
+            if (eligible) {
+              EXPECT_EQ(static_cast<u32>(test.kind), g_taskblock_kind.load());
+              EXPECT_LT(g_taskblock_enter_sequence.load(), g_taskblock_exit_sequence.load());
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 TEST(NativeBlockScopeTest, EncodesKindAndBlockerId) {

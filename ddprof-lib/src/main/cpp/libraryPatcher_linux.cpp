@@ -33,6 +33,7 @@ PatchEntry LibraryPatcher::_patched_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_size = 0;
 PatchEntry LibraryPatcher::_sigaction_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_sigaction_size = 0;
+u64 LibraryPatcher::_socket_generation = 0;
 std::vector<SocketPatchEntry> LibraryPatcher::_socket_entries;
 std::vector<SocketPatchedLibrary> LibraryPatcher::_socket_libraries;
 const void* LibraryPatcher::_socket_bases[SOCKET_BASE_TABLE_SIZE] = {};
@@ -714,11 +715,42 @@ static bool mappingMatches(const CodeCache* lib) {
          info.dli_fbase == lib->imageBase();
 }
 
+#ifdef UNIT_TEST
+static std::atomic<LibraryPatcher::SocketPatchObserverForTest> socket_patch_observer{nullptr};
+
+void LibraryPatcher::setSocketPatchObserverForTest(SocketPatchObserverForTest observer) {
+  socket_patch_observer.store(observer, std::memory_order_release);
+}
+
+static void observeSocketPatchForTest(const char* phase) {
+  auto observer = socket_patch_observer.load(std::memory_order_acquire);
+  if (observer != nullptr) observer(phase);
+}
+#endif
+
 bool LibraryPatcher::patch_socket_functions(bool require_active) {
-  auto disable_and_unpatch = []() {
-    NativeSocketInterposer::instance()->disableAfterPatchFailure();
-    NativeSocketSampler::disableAfterPatchFailure();
-    LibraryPatcher::unpatch_socket_functions();
+  u64 generation;
+  {
+    ExclusiveLockGuard locker(&_lock);
+    if (require_active && !_socket_active.load(std::memory_order_relaxed)) {
+      return false;
+    }
+    generation = _socket_generation;
+  }
+  auto disable_and_unpatch = [generation, require_active]() {
+    std::vector<SocketPatchedLibrary> libraries_to_release;
+    {
+      ExclusiveLockGuard locker(&_lock);
+      // Discovery may outlive stop/restart. Only its own installation may fail.
+      if (_socket_generation != generation ||
+          (require_active && !_socket_active.load(std::memory_order_relaxed))) {
+        return false;
+      }
+      NativeSocketInterposer::instance()->disableAfterPatchFailure();
+      NativeSocketSampler::disableAfterPatchFailure();
+      unpatch_socket_functions_unlocked(libraries_to_release);
+    }
+    release_socket_libraries(libraries_to_release);
     return false;
   };
 
@@ -872,14 +904,18 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
     }
   }
 
+#ifdef UNIT_TEST
+  observeSocketPatchForTest("before_commit");
+#endif
   std::vector<SocketPatchedLibrary> libraries_to_release;
   bool success = true;
   size_t standard_slots_patched = 0;
   size_t ibm_bridge_slots_patched = 0;
+  size_t total_slots_patched = 0;
   {
     ExclusiveLockGuard locker(&_lock);
-    if (require_active &&
-        !_socket_active.load(std::memory_order_relaxed)) {
+    if (_socket_generation != generation ||
+        (require_active && !_socket_active.load(std::memory_order_relaxed))) {
       return false;
     }
 
@@ -961,19 +997,22 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
         remember_socket_library_unlocked(lib->imageBase());
       }
       if (success) {
+        if (!require_active) _socket_generation++;
         _socket_active.store(true, std::memory_order_release);
-      } else {
-        unpatch_socket_functions_unlocked(libraries_to_release);
       }
-    } else {
+    }
+    if (!success) {
+      // Keep owner disable and restoration in the same installation generation.
+      // Releasing DSO handles below must not disable owners installed afterward.
+      NativeSocketInterposer::instance()->disableAfterPatchFailure();
+      NativeSocketSampler::disableAfterPatchFailure();
       unpatch_socket_functions_unlocked(libraries_to_release);
     }
+    total_slots_patched = _socket_entries.size();
   }
 
   release_socket_libraries(libraries_to_release);
   if (!success) {
-    NativeSocketInterposer::instance()->disableAfterPatchFailure();
-    NativeSocketSampler::disableAfterPatchFailure();
     return false;
   }
 
@@ -983,8 +1022,11 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
                       ibm_bridge_slots_patched);
   TEST_LOG("patch_socket_functions DONE total_slots=%zu standard_new=%zu "
            "ibm_bridge_new=%zu num_libs_scanned=%d",
-           _socket_entries.size(), standard_slots_patched,
+           total_slots_patched, standard_slots_patched,
            ibm_bridge_slots_patched, capped);
+#ifdef UNIT_TEST
+  observeSocketPatchForTest("committed");
+#endif
   return true;
 }
 
@@ -1079,6 +1121,7 @@ void LibraryPatcher::unpatch_socket_functions_unlocked(
   // Hooks that already entered the hook body before this store are benign: they
   // hold no lock and will complete normally using the still-valid orig pointers.
   _socket_active.store(false, std::memory_order_release);
+  _socket_generation++;
   TEST_LOG("unpatch_socket_functions restoring %zu slot(s)", _socket_entries.size());
   for (const SocketPatchEntry& entry : _socket_entries) {
     __atomic_store_n(entry._location, entry._func,
@@ -1131,11 +1174,13 @@ bool LibraryPatcher::unpatch_socket_functions_if_inactive() {
 }
 
 void LibraryPatcher::install_socket_hooks() {
-  if (_socket_active.load(std::memory_order_acquire) &&
-      !patch_socket_functions(true)) {
-    NativeSocketInterposer::instance()->disableAfterPatchFailure();
-    NativeSocketSampler::disableAfterPatchFailure();
-  }
+  if (!_socket_active.load(std::memory_order_acquire)) return;
+  // patch_socket_functions owns generation-checked failure cleanup. A cancelled
+  // refresh must never disable owners published by a later start.
+  patch_socket_functions(true);
+#ifdef UNIT_TEST
+  observeSocketPatchForTest("refresh_result");
+#endif
 }
 
 #endif // __linux__

@@ -203,6 +203,61 @@ TEST_F(NativeBlockScopeTest, MissingSlotGateLeavesScopeInactiveAndPreservesErrno
   EXPECT_EQ(E2BIG, errno);
 }
 
+TEST_F(NativeBlockScopeTest, InactiveRegistryGateLeavesSlotUntouchedAndPreservesErrno) {
+  CurrentThreadScope current;
+  ScopedTaskBlockEnabled task_block_enabled(true);
+  int slot_id = registerCurrentJavaThread(current.thread());
+  ThreadFilter* filter = Profiler::instance()->threadFilter();
+  filter->init(nullptr);
+  ASSERT_FALSE(filter->registryActive());
+  ThreadFilter::Slot* slot = filter->slotForId(slot_id);
+  ASSERT_NE(nullptr, slot);
+  u64 generation = slot->blockGeneration();
+  errno = E2BIG;
+  {
+    NativeBlockScope scope(NativeBlockKind::STREAM_SOCKET, 17);
+    EXPECT_FALSE(scope.active());
+    EXPECT_EQ(E2BIG, errno);
+  }
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_EQ(generation, slot->blockGeneration());
+  EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
+  EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+  EXPECT_EQ(0ULL, Profiler::instance()->taskBlockRunGenerationForTest(slot_id));
+  EXPECT_EQ(0, g_record_calls.load());
+}
+
+TEST_F(NativeBlockScopeTest, RegistrationFailureAfterEntryReleasesSlotAndPreservesErrno) {
+  CurrentThreadScope current;
+  ScopedTaskBlockEnabled task_block_enabled(true);
+  int slot_id = registerCurrentJavaThread(current.thread());
+  Profiler* profiler = Profiler::instance();
+  ThreadFilter::Slot* slot = profiler->threadFilter()->slotForId(slot_id);
+  ASSERT_NE(nullptr, slot);
+  u64 generation = slot->blockGeneration();
+  // Rotation rejects registerTaskBlockRun after enterBlockedRun has succeeded.
+  profiler->beginTaskBlockRotationForTest();
+  errno = E2BIG;
+  {
+    NativeBlockScope scope(NativeBlockKind::STREAM_SOCKET, 17);
+    EXPECT_FALSE(scope.active());
+    EXPECT_EQ(E2BIG, errno);
+    EXPECT_EQ(generation + 1, slot->blockGeneration());
+    EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
+    EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+  }
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_EQ(0ULL, profiler->taskBlockRunGenerationForTest(slot_id));
+  EXPECT_EQ(0ULL, profiler->taskBlockInflightForTest());
+  EXPECT_EQ(0, g_record_calls.load());
+  profiler->endTaskBlockRotationForTest();
+  // A failed registration must not prevent the next scope from owning the slot.
+  NativeBlockScope next(NativeBlockKind::STREAM_SOCKET, 17);
+  EXPECT_TRUE(next.active());
+  next.finishForTest(eligibleEndTicks(next.startTicksForTest()));
+  EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
+}
+
 TEST_F(NativeBlockScopeTest, AllThreadRegistryWorksWithoutLegacyContextFilter) {
   CurrentThreadScope current;
   ScopedTaskBlockEnabled task_block_enabled(true);

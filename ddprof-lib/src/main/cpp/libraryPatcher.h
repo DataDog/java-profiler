@@ -66,6 +66,8 @@ private:
 
   // Separate tracking for native I/O patches.
   // Each library can contribute any number of retained import slots per I/O hook.
+  // Protected by _lock; installs and restorations invalidate older discoveries.
+  static u64 _socket_generation;
   static std::vector<SocketPatchEntry> _socket_entries;
   static std::vector<SocketPatchedLibrary> _socket_libraries;
   static const void* _socket_bases[SOCKET_BASE_TABLE_SIZE];
@@ -102,6 +104,9 @@ public:
   static void unpatch_socket_functions();
   static bool unpatch_socket_functions_if_inactive();
 #ifdef UNIT_TEST
+  // Runs outside _lock at discovery/refresh boundaries for deterministic races.
+  using SocketPatchObserverForTest = void (*)(const char* phase);
+  static void setSocketPatchObserverForTest(SocketPatchObserverForTest observer);
   // Called under _lock after lookup; must not reenter the patcher or loader.
   // Return true to exercise production's missing-slot rollback.
   using SocketImportFailureForTest = bool (*)(CodeCache*, ImportId, size_t);
