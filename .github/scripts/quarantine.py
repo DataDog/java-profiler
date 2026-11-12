@@ -422,9 +422,10 @@ def cmd_validate(args):
 
     # Where the gtest sources live: explicit --gtest-src wins; otherwise
     # derive the repo root from the list path (the list is <root>/ddprof-test/
-    # quarantine.txt) and scan from there. A missing tree skips the check:
-    # hermetic callers pass scratch lists with no source tree beside them, and
-    # CI always runs validate from the repo root, where the tree exists.
+    # quarantine.txt) and scan from there. A missing tree skips the check
+    # with a warning either way: a vanished derived default (validate run
+    # outside a repo layout) or a vanished explicit path (a typo, a failed
+    # checkout) would otherwise silently no-op the whole cross-check.
     if args.gtest_src:
         gtest_src = args.gtest_src
     else:
@@ -433,12 +434,8 @@ def cmd_validate(args):
     if os.path.isdir(gtest_src):
         declared_ids, declared_suites = _declared_gtest_ids(gtest_src)
     else:
-        if not args.gtest_src:
-            # Hermetic callers pass --gtest-src with a fixture and expect the
-            # skip; the derived default vanishing under CI is a silent
-            # no-op of the whole check and must be visible in the log.
-            print("::warning::gtest sources not found at '{}'; skipping the "
-                  "gtest declaration cross-check".format(gtest_src))
+        print("::warning::gtest sources not found at '{}'; skipping the "
+              "gtest declaration cross-check".format(gtest_src))
         declared_ids, declared_suites = None, None
 
     def complain(line, message):

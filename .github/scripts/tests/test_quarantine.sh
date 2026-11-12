@@ -1257,6 +1257,31 @@ echo "$derived_out" | grep -q "::warning::gtest sources not found" \
   || fail "a skipped derived-default cross-check must print a warning, got: $derived_out"
 pass "a missing derived gtest tree prints a skip warning"
 
+# The derived default is the path CI relies on, so it must be exercised
+# positively too: a repo-shaped tree with no --gtest-src runs the
+# cross-check and a declared id passes while an undeclared one fails.
+DERIVED_REPO="$TEMP_DIR/derived-repo"
+mkdir -p "$DERIVED_REPO/ddprof-lib/src/test/cpp" "$DERIVED_REPO/ddprof-test"
+printf 'TEST(DerivedSuite, aDerivedCase) { }\n' > "$DERIVED_REPO/ddprof-lib/src/test/cpp/derived.cpp"
+write_list "$DERIVED_REPO/ddprof-test/quarantine.txt" "$(entry DerivedSuite.aDerivedCase PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$DERIVED_REPO/ddprof-test/quarantine.txt" validate >/dev/null \
+  || fail "a declared id found via the derived gtest tree should be accepted"
+pass "the derived gtest tree drives the cross-check without --gtest-src"
+write_list "$DERIVED_REPO/ddprof-test/quarantine.txt" "$(entry DerivedSuite.missingCase PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$DERIVED_REPO/ddprof-test/quarantine.txt" validate >/dev/null 2>&1; then
+  fail "an undeclared id must be rejected when the tree is found via the derived default"
+fi
+pass "the derived gtest tree cross-check rejects an undeclared id"
+
+# An explicit --gtest-src that does not exist is a silent no-op of the
+# whole cross-check unless it warns: a typo or a failed checkout would
+# otherwise turn the gate off invisibly.
+write_list "$LIST" "$(entry WobblySuite.sometimesFails PROF-1 "$(day_offset 30)")"
+explicit_out=$(python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate --gtest-src "$TEMP_DIR/no-such-tree" 2>&1 || true)
+echo "$explicit_out" | grep -q "::warning::gtest sources not found" \
+  || fail "a missing explicit --gtest-src must print a warning, got: $explicit_out"
+pass "a missing explicit gtest tree prints a skip warning"
+
 # And a bare-suite id against an empty tree is exactly the mute that never
 # matches -- the failure mode this cross-check exists to catch.
 write_list "$LIST" "$(entry WobblySuite.sometimesFails PROF-1 "$(day_offset 30)")"
