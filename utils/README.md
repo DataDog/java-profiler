@@ -298,7 +298,7 @@ Records that the agentic pre-PR review covered a branch, and checks it. Used by 
 - Exit codes: 0 fresh, written or installed; 1 missing or stale; 2 usage or environment error (e.g. missing base ref, git older than 2.39).
 - Known limits, all accepted:
   - An edit moved between two places whose surrounding lines are identical keeps the same digest, because hunk positions are left out so that rebases stay fresh.
-  - A fresh marker still skips the marker check itself, and neither hook notices an open PR retargeted to a base other than the marker's; `pre-push` now probes gh for an open PR on every branch push, so a fresh marker no longer skips the network entirely.
+  - The marker check itself always runs on every gated push and every gated ready command; a fresh marker only avoids the block. Neither hook notices an open PR retargeted to a base other than the marker's; `pre-push` probes gh for an open PR on every branch push, so a fresh marker no longer skips the network entirely.
   - A branch pushed under another name (`git push origin fix:topic`) is found by `pre-push` but not by `gh pr ready`, which blocks rather than allows.
   - A rebase or `git push --force-with-lease` replay rewrites commit dates, so the head commit is newer than the description and `gh pr ready` blocks until the body is re-saved (a no-op edit clears it).
   - The description gate dates the head commit by its committer timestamp, which is backdatable (`GIT_COMMITTER_DATE`) and old when an existing older commit is force-pushed as head; such a head passes the freshness gate even though the pushed code predates the description edit.
