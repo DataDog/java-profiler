@@ -12,16 +12,10 @@ permissions:
 jobs:
   paired-native-elf:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 45
     env:
       BASE_SHA: 66f01812f2acfbe9d2f48aae80fad43cf924815e
       CANDIDATE_SHA: 152d939c395a37142202e407e2860efc4515ef04
-      # Fixed before execution; a failure stops that source, not the other control.
-      ELF_REPETITIONS: '5'
-      LIBC: glibc
-      SANITIZER: tsan
-      KEEP_JFRS: 'true'
-      TEST_CONFIGURATION: glibc/17-tsan-amd64
     steps:
       - name: Checkout diagnostic driver
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,56 +37,35 @@ jobs:
             done
             grep -E '^(Seccomp|Seccomp_filters|NoNewPrivs):' /proc/self/status || printf '/proc/self/status: unavailable/unverified\n'
           } > diagnostic/host.txt
-      - name: Setup cached build JDK21 and test JDK17
-        id: java
-        uses: ./.github/actions/setup_cached_java
-        with:
-          version: '17'
-          arch: amd64
-      - name: Setup ordinary glibc dependencies
-        id: os
+      - name: Download immutable producer artifact
+        timeout-minutes: 10
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/DataDog/java-profiler/actions/artifacts/13965627960 > diagnostic/producer-metadata.json
+          gh api repos/DataDog/java-profiler/actions/artifacts/13965627960/zip > diagnostic/producer.zip
+      - name: Setup ordinary glibc debug dependencies
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev binutils gdb
+          sudo apt-get install -y binutils gdb
           sudo apt-get install -y libc6-dbg
-      - name: Record toolchain
-        id: toolchain
+      - name: Record current replay runtime
         shell: bash
         run: |
-          {
-            command -v clang++
-            clang++ --version
-            "$JAVA_HOME/bin/java" -version
-            "$JAVA_TEST_HOME/bin/java" -version
-          } > diagnostic/toolchain.txt 2>&1
-      - name: Checkout exact base
-        id: base_checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.BASE_SHA }}
-          path: sources/base
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Build and execute base ELF directly
-        if: ${{ !cancelled() && steps.base_checkout.outcome == 'success' && steps.toolchain.outcome == 'success' }}
+          exec > diagnostic/replay-runtime.txt 2>&1
+          printf 'observation=current replay runtime after dependency setup; producer metadata is separate\n'
+          for package in libc6 libc6-dbg libstdc++6 libgcc-s1; do
+            dpkg-query -W -f='${binary:Package}=${Version} architecture=${Architecture} source=${source:Package} source-version=${source:Version}\n' "$package" || printf 'package %s: unavailable/unverified\n' "$package"
+          done
+          ldd --version || printf 'ldd version: unavailable/unverified\n'
+          readelf -n /lib64/ld-linux-x86-64.so.2 || printf 'loader notes/build ID: unavailable/unverified\n'
+          sha256sum /lib64/ld-linux-x86-64.so.2 || printf 'loader SHA256: unavailable/unverified\n'
+      - name: Replay retained ELF suites in fixed counterbalanced order
         shell: bash
         run: |
-          python3 .github/scripts/pr932_elf_diagnostic.py sources/base "$BASE_SHA" diagnostic/base "$ELF_REPETITIONS"
-      - name: Checkout exact candidate
-        id: candidate_checkout
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.CANDIDATE_SHA }}
-          path: sources/candidate
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Build and execute candidate ELF directly
-        if: ${{ !cancelled() && steps.candidate_checkout.outcome == 'success' && steps.toolchain.outcome == 'success' }}
-        shell: bash
-        run: |
-          python3 .github/scripts/pr932_elf_diagnostic.py sources/candidate "$CANDIDATE_SHA" diagnostic/candidate "$ELF_REPETITIONS"
+          python3 .github/scripts/pr932_elf_replay.py diagnostic/producer.zip diagnostic/producer-metadata.json diagnostic/replay
       - name: Retain paired diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
