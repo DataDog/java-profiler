@@ -525,6 +525,8 @@ silently skip it. While the marker is stale, `.githooks/pre-push` refuses pushes
 a branch with an open PR (install with `utils/review-marker.py install-hook`, never
 via `core.hooksPath`), and in Claude Code and Pi (`.pi/extensions/`) the
 `require-fresh-review` hook blocks `gh pr create`/`gh pr ready` for this repository.
+To review another engineer's PR, load the `pr-review` skill
+([.agents/skills/pr-review/SKILL.md](.agents/skills/pr-review/SKILL.md)).
 
 ## Pull Request Descriptions, Comments and Commits
 
