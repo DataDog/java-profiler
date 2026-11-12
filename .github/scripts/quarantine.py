@@ -291,8 +291,8 @@ def _declared_gtest_ids(src_dir):
 
     The kind records whether the case's report id carries instantiation
     decoration: TEST_P and TYPED_TEST cases report as
-    '<inst>/<Suite>.<case>/<idx>' and '<Suite>/<idx>.<case>', while TEST and
-    TEST_F cases report under the bare suite name.
+    '<inst>/<Suite>.<case>/<idx>' and '<Suite>/<idx>.<case>', while TEST,
+    TEST_F and GTEST_TEST cases report under the bare suite name.
     """
     decl_re = re.compile(
         r"\b(GTEST_TEST|TYPED_TEST_P|TYPED_TEST|TEST_P|TEST_F|TEST)\s*\(\s*"
@@ -300,11 +300,13 @@ def _declared_gtest_ids(src_dir):
     ids, suites = {}, set()
     for dirpath, _, filenames in os.walk(src_dir):
         for filename in filenames:
-            # .h/.hpp too: a fixture's case list can live in a shared header.
-            # GTEST_TEST is the macro the others expand to; wrapper macros a
-            # project defines on top of it stay invisible -- a false 'matches
-            # no declaration' on one of those is the scan's known limit.
-            if not filename.endswith((".cpp", ".cc", ".h", ".hpp")):
+            # .h/.hpp too: a fixture's case list can live in a shared header;
+            # .inc: the referenceChains suites declare their cases in .inc
+            # files the suite .cpp includes. GTEST_TEST is the macro the
+            # others expand to; wrapper macros a project defines on top of it
+            # stay invisible -- a false 'matches no declaration' on one of
+            # those is the scan's known limit.
+            if not filename.endswith((".cpp", ".cc", ".h", ".hpp", ".inc")):
                 continue
             with open(os.path.join(dirpath, filename),
                       encoding="utf-8", errors="replace") as handle:
@@ -344,16 +346,22 @@ def _gtest_decl_problems(entry, declared_ids, declared_suites):
     test = entry["test"]
     class_wide = test.endswith(".*")
     stem = test[:-2] if class_wide else test
-    cls, sep, case = stem.rpartition(".")
-    if sep and "." in cls:
-        return []  # Java-shaped: the class part carries a package
-    if not sep:
-        if not class_wide:
+    if class_wide:
+        # A class-wide entry's classname is the whole stem: splitting it
+        # would reduce 'a.B.*' to suite 'a' and lose the package dot that
+        # marks the entry Java-shaped.
+        if "." in stem:
+            return []  # Java-shaped: the class part carries a package
+        cls, case = stem, ""
+    else:
+        cls, sep, case = stem.rpartition(".")
+        if sep and "." in cls:
+            return []  # Java-shaped: the class part carries a package
+        if not sep:
             return [
                 "test '{}' has no case segment -- it is neither an exact id "
                 "nor a class-wide '<Suite>.*', so it matches nothing".format(test)
             ]
-        cls, case = stem, ""
     if not class_wide:
         # Only covers()'s class-wide path reduces a decorated classname; an
         # exact entry is compared verbatim and a report id always carries the
@@ -378,7 +386,9 @@ def _gtest_decl_problems(entry, declared_ids, declared_suites):
                 "the entry. If this is a Java id in the default package, "
                 "spell its package explicitly".format(test)
             ]
-        if kind != "TEST" and kind != "TEST_F":
+        # GTEST_TEST declares an ordinary test reporting the bare id, like
+        # TEST and TEST_F; only TEST_P/TYPED_TEST shapes decorate the report id.
+        if kind not in ("TEST", "TEST_F", "GTEST_TEST"):
             return [
                 "gtest case '{}' is declared with {}: its report id carries "
                 "instantiation decoration ('<inst>/<Suite>.<case>/<idx>' or "

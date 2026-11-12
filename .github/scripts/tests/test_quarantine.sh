@@ -1116,10 +1116,15 @@ cat > "$GTEST_SRC/suite.cpp" <<'EOS'
 TEST(WobblySuite, sometimesFails) { }
 TEST_F(WobblySuite, aFixtureCase) { }
 TEST_P(WobblySuite, aParameterizedCase) { }
+GTEST_TEST(PlainSuite, plainCase) { }
 INSTANTIATE_TEST_SUITE_P(MyInst, WobblySuite, testing::Values(1))
 EOS
 cat > "$GTEST_SRC/typed.cpp" <<'EOS'
 TYPED_TEST(WobblyTypedSuite, aTypedCase) { }
+EOS
+# Suites can declare their cases in .inc files the suite .cpp includes.
+cat > "$GTEST_SRC/includedCases.inc" <<'EOS'
+TEST(IncSuite, anIncludedCase) { }
 EOS
 # A stray non-UTF-8 byte in a comment must not crash the scan.
 printf '// author: \xff\xfe note
@@ -1154,6 +1159,25 @@ write_list "$LIST" "$(entry WobblySuite.aFixtureCase PROF-1 "$(day_offset 30)")"
 python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
   || fail "a gtest entry matching a TEST_F declaration should be accepted"
 pass "a gtest entry matching a TEST_F declaration is accepted"
+
+# GTEST_TEST declares an ordinary test with an undecorated report id, so
+# the exact entry matches covers().
+write_list "$LIST" "$(entry PlainSuite.plainCase PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a gtest entry matching a GTEST_TEST declaration should be accepted"
+pass "a gtest entry matching a GTEST_TEST declaration is accepted"
+
+# A case declared in an .inc file the suite includes is as real as one in the
+# .cpp: the scan must find it or valid quarantines get rejected.
+write_list "$LIST" "$(entry IncSuite.anIncludedCase PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a gtest entry declared in an .inc file should be accepted"
+pass "a gtest entry declared in an .inc file is accepted"
+
+write_list "$LIST" "$(entry IncSuite.* PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a class-wide gtest entry for an .inc-declared suite should be accepted"
+pass "a class-wide gtest entry for an .inc-declared suite is accepted"
 
 # Value-parameterized suites report '<inst>/<Suite>.<case>/<idx>'; covers()
 # compares an exact entry verbatim, so the bare form can never fire -- only
@@ -1211,12 +1235,19 @@ python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/de
 pass "a decorated instantiation entry resolves to the bare declared suite"
 
 # Java ids always carry a package: with no declarations findable at all, they
-# must stay out of the C++ cross-check rather than fail it.
+# must stay out of the C++ cross-check rather than fail it. A class-wide Java
+# entry keeps its whole classname -- splitting 'a.B.*' at the last dot would
+# reduce the suite to 'a' and read it as gtest-shaped.
 mkdir -p "$TEMP_DIR/empty-gtest-src"
 write_list "$LIST" "$(entry a.B.c PROF-1 "$(day_offset 30)")"
 python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate --gtest-src "$TEMP_DIR/empty-gtest-src" >/dev/null \
   || fail "a Java-shaped entry must not be checked against the C++ sources"
 pass "a Java-shaped entry skips the gtest declaration cross-check"
+
+write_list "$LIST" "$(entry a.B.* PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate --gtest-src "$TEMP_DIR/empty-gtest-src" >/dev/null \
+  || fail "a class-wide Java entry must not be read as a gtest suite 'a'"
+pass "a class-wide Java entry skips the gtest declaration cross-check"
 
 # A list placed outside a repo layout has no derived gtest tree beside it:
 # the cross-check skips, and the skip must be visible as a warning.
