@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk25
 
 ## musl-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-11-12 08:53:43 EST
+**Date:** 2026-11-12 09:02:20 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 422 |
-| Sample Rate | 7.03/sec |
-| Health Score | 439% |
+| CPU Samples | 445 |
+| Sample Rate | 7.42/sec |
+| Health Score | 464% |
 | Threads | 8 |
-| Allocations | 430 |
+| Allocations | 405 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 531 |
-| Sample Rate | 8.85/sec |
-| Health Score | 553% |
-| Threads | 9 |
-| Allocations | 498 |
+| CPU Samples | 548 |
+| Sample Rate | 9.13/sec |
+| Health Score | 571% |
+| Threads | 8 |
+| Allocations | 503 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 30-32 cores)</summary>
+<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1794491325 32
-1794491330 32
-1794491335 32
-1794491340 32
-1794491345 32
-1794491350 32
-1794491355 32
-1794491360 32
-1794491365 30
-1794491370 30
-1794491375 30
-1794491380 30
-1794491385 30
-1794491390 30
-1794491395 30
-1794491400 30
-1794491405 32
-1794491410 32
-1794491415 32
-1794491420 32
+1794491708 32
+1794491713 32
+1794491718 32
+1794491723 32
+1794491728 32
+1794491733 32
+1794491738 32
+1794491743 32
+1794491748 32
+1794491753 32
+1794491758 32
+1794491763 32
+1794491768 32
+1794491773 32
+1794491778 32
+1794491783 32
+1794491788 32
+1794491793 32
+1794491798 32
+1794491803 32
 ```
 </details>
 
