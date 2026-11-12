@@ -9,13 +9,16 @@ import { join } from "node:path";
 export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "bash") return undefined;
-    const hook = join(ctx.cwd, ".claude", "hooks", "require-fresh-review.py");
+    // Pi may run in a subdirectory: the hook lives at the checkout's top level.
+    const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: ctx.cwd, encoding: "utf8" });
+    const root = top.status === 0 ? top.stdout.trim() : ctx.cwd;
+    const hook = join(root, ".claude", "hooks", "require-fresh-review.py");
     if (!existsSync(hook)) return undefined; // a checkout from before the gate
     const payload = JSON.stringify({ cwd: ctx.cwd, tool_input: { command: String(event.input.command ?? "") } });
     const res = spawnSync("python3", [hook], {
       input: payload,
       encoding: "utf8",
-      env: { ...process.env, CLAUDE_PROJECT_DIR: ctx.cwd },
+      env: { ...process.env, CLAUDE_PROJECT_DIR: root },
       timeout: 60_000,
     });
     return res.status === 2 ? { block: true, reason: res.stderr.trim() } : undefined;

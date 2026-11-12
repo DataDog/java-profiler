@@ -138,6 +138,11 @@ EOF
   expect "pi adapter ignores other tools" 0 "" pi_hook read "./gradlew build"
   expect "pi adapter allows unrelated bash" 0 "" pi_hook bash "ls -la"
   expect "pi adapter denies direct gradlew" 2 "$BLOCK_MSG" pi_hook bash "./gradlew build"
+  mkdir -p ddprof-lib
+  expect "pi adapter denies direct gradlew from a subdirectory" 2 "$BLOCK_MSG" \
+    pi_hook bash "./gradlew build" "$PWD/ddprof-lib"
+  expect "pi adapter allows gradlew --stop from a subdirectory" 0 "" \
+    pi_hook bash "./gradlew --stop" "$PWD/ddprof-lib"
   expect "pi adapter allows a checkout without the hook" 0 "" pi_hook bash "./gradlew build" "$TEMP_DIR/nohook"
 else
   echo "SKIP: pi adapter tests (node with --experimental-strip-types not found)"

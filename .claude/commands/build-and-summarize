@@ -16,10 +16,11 @@ set -u
 ARGS=("$@")
 [ "${#ARGS[@]}" -eq 0 ] && ARGS=(build)
 
-STAMP="$(date +%Y%m%d-%H%M%S)"
+STAMP="$(date +%Y%m%d-%H%M%S)-$$"
 LABEL="$(printf '%s' "${ARGS[0]}" | tr '/:' '__')"
 mkdir -p build/logs || exit 1
-LOG="$(mktemp "build/logs/${STAMP}-${LABEL}.log.XXXXXX")" || exit 1
+LOG="build/logs/${STAMP}-${LABEL}.log"
+(umask 077; set -C; : > "$LOG") || exit 1
 
 # Build logs are qualification evidence, including failed runs. Retention is
 # managed by the caller; never remove earlier evidence as a side effect of a build.
