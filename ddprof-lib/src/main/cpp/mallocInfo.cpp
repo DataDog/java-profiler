@@ -80,21 +80,23 @@ bool mallocArenaSnapshot(MallocArenaInfo *out) {
   typedef Mallinfo2 (*mallinfo2_fn)();
   // Resolved once. The RTLD_DEFAULT lookup result cannot change after libc is
   // loaded, and the loader lock is not worth taking on every chunk flush while
-  // application threads may be inside dlopen(). The pair is written racily but
-  // idempotently: dlsym() is thread-safe and every thread stores the same
-  // value, so no lock is needed; a thread that races the very first lookup can
-  // only see NULL for one flush (counters unset for that chunk, self-healing).
-  // Flush path only, never signal context, so plain statics are legal here.
+  // application threads may be inside dlopen(). The statics are zero-
+  // initialized (no dynamic-init guard), and the handoff is published with
+  // release/acquire: dlsym() is thread-safe, so racing first callers compute
+  // the same value; a concurrent reader can only repeat the lookup once.
+  // Flush path only, never signal context.
   static mallinfo2_fn cached_fn = NULL;
-  static bool resolved = false;
-  if (!resolved) {
-    cached_fn = (mallinfo2_fn)dlsym(RTLD_DEFAULT, "mallinfo2");
-    resolved = true;
+  static int resolved = 0;
+  if (__atomic_load_n(&resolved, __ATOMIC_ACQUIRE) == 0) {
+    __atomic_store_n(&cached_fn, (mallinfo2_fn)dlsym(RTLD_DEFAULT, "mallinfo2"),
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&resolved, 1, __ATOMIC_RELEASE);
   }
-  if (cached_fn == NULL) {
+  mallinfo2_fn fn = __atomic_load_n(&cached_fn, __ATOMIC_ACQUIRE);
+  if (fn == NULL) {
     return false;
   }
-  Mallinfo2 mi = cached_fn();
+  Mallinfo2 mi = fn();
   out->arena = mi.arena;
   out->hblkhd = mi.hblkhd;
   out->uordblks = mi.uordblks;
