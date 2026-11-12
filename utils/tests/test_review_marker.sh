@@ -593,7 +593,7 @@ VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main \
   expect "hook fails open when the description probe fails" 0 "" hook "gh pr ready 12"
 VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_GRAPHQL="$(gq not-a-date $WT_TIP 2020-01-01T00:00:00Z)" \
   expect "hook fails open when the description timestamp is unparseable" 0 "" hook "gh pr ready 12"
-VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_GRAPHQL='{"data":{"node":{"lastEditedAt":"2019-06-01T00:00:00Z","createdAt":"2018-01-01T00:00:00Z","headRefOid":"$WT_TIP","commits":{"nodes":[]}}}}' \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_GRAPHQL="{\"data\":{\"node\":{\"lastEditedAt\":\"2019-06-01T00:00:00Z\",\"createdAt\":\"2018-01-01T00:00:00Z\",\"headRefOid\":\"$WT_TIP\",\"commits\":{\"nodes\":[]}}}}" \
   expect "hook fails open when the PR has no commits" 0 "" hook "gh pr ready 12"
 GH_FAIL=1 expect "hook blocks ready of a PR it cannot resolve" 2 "cannot resolve the PR" \
   hook "gh pr ready 12"
