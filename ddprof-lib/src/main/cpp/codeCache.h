@@ -483,8 +483,9 @@ public:
   }
 
 #ifdef UNIT_TEST
-  // Deletes every registered CodeCache and resets the array to empty. Test
-  // teardown only: production arrays are append-only for process lifetime.
+  // Test teardown only: deletes every CodeCache and empties the array.
+  // Must not race add(): a publisher would spin on _count after the reset
+  // or store its pointer past the memset.
   void freeForTest() {
     for (int i = 0; i < count(); i++) {
       CodeCache *lib = at(i);

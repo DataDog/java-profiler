@@ -329,7 +329,7 @@ static char _debuginfod_cache_buf[PATH_MAX] = {0};
 static_assert(offsetof(ElfSymbol, st_name) == 0, "symbolNameAt() reads st_name at offset 0");
 static uint32_t symbolNameAt(const void* sym) {
     uint32_t name;
-    memcpy(&name, sym, sizeof(name));  // st_name sits at offset 0 of Elf64_Sym
+    memcpy(&name, sym, sizeof(name));
     return name;
 }
 
