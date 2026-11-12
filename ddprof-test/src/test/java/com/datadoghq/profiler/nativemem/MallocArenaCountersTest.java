@@ -150,12 +150,15 @@ public class MallocArenaCountersTest extends AbstractProfilerTest {
   }
 
   /**
-   * Detects the runtime glibc version by running {@code ldd --version} and taking the last {@code
-   * major.minor} pair from its first line (e.g. {@code ldd (Ubuntu GLIBC 2.35-0ubuntu3.10) 2.35} or
-   * {@code ldd (GNU libc) 2.17}). Returns {@code null} when the runtime is not glibc (musl prints a
-   * version without a GLIBC marker; the probe is not attempted at all on non-Linux platforms).
-   * stderr is merged into stdout (musl's ldd prints its banner to stderr), the wait is bounded, and
-   * the child is always destroyed, whatever the exit path.
+   * Detects the runtime glibc version by running {@code ldd --version} and taking the trailing
+   * {@code major.minor} token from its first line (e.g. {@code ldd (Ubuntu GLIBC 2.35-0ubuntu3.10)
+   * 2.35} or {@code ldd (GNU libc) 2.17}). The trailing token is required: distro package versions
+   * elsewhere in the banner also contain {@code major.minor} pairs (Ubuntu's {@code
+   * 2.31-0ubuntu9.16} ends with {@code 9.16}), and picking one of those misclassifies the glibc
+   * 2.33 gate. Returns {@code null} when the runtime is not glibc (musl prints a version without a
+   * GLIBC marker; the probe is not attempted at all on non-Linux platforms). stderr is merged into
+   * stdout (musl's ldd prints its banner to stderr), the child is reaped under a deadline before
+   * anything is read, and it is always destroyed, whatever the exit path.
    */
   private static int[] runtimeGlibcVersion() throws Exception {
     if (!System.getProperty("os.name", "").startsWith("Linux")) {
@@ -164,11 +167,16 @@ public class MallocArenaCountersTest extends AbstractProfilerTest {
     Process process = new ProcessBuilder("ldd", "--version").redirectErrorStream(true).start();
     String firstLine;
     try {
+      // Wait first, then read: the exit deadline also bounds the read. ldd's output is a few
+      // lines, far below the pipe buffer, so it cannot block the child on a full pipe while
+      // we wait. Reading first would block unboundedly on a child that prints nothing.
+      if (!process.waitFor(10, TimeUnit.SECONDS)) {
+        return null;
+      }
       try (BufferedReader reader =
           new BufferedReader(new InputStreamReader(process.getInputStream()))) {
         firstLine = reader.readLine();
       }
-      process.waitFor(10, TimeUnit.SECONDS); // result ignored; finally reaps it either way
     } finally {
       process.destroyForcibly();
     }
@@ -178,11 +186,10 @@ public class MallocArenaCountersTest extends AbstractProfilerTest {
     if (firstLine.contains("musl") || firstLine.contains("FreeBSD")) {
       return null;
     }
-    Matcher matcher = Pattern.compile("(\\d+)\\.(\\d+)").matcher(firstLine);
-    int[] version = null;
-    while (matcher.find()) {
-      version = new int[] {Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2))};
+    Matcher matcher = Pattern.compile("\\b(\\d+)\\.(\\d+)\\s*$").matcher(firstLine);
+    if (!matcher.find()) {
+      return null;
     }
-    return version;
+    return new int[] {Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2))};
   }
 }
