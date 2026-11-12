@@ -132,9 +132,10 @@ static inline WallPrecheckResult prepareWallPrecheck(
     result.owned_block_generation = block_generation;
     return result;
   }
-  // Delegated samples have no reusable local trace ID for replaying a weighted
-  // tail. Bypass only the unowned fallback when the engine cannot emit it.
-  if (!unowned_fallback || !block_slot->unownedBlockedFallbackEnabled()) {
+  // Delegated and lightweight samples have no reusable local trace ID for
+  // replaying a weighted tail. Keep unit-weight sampling for unowned blocks.
+  if (!unowned_fallback || Profiler::instance()->omitStacktraces() ||
+      !block_slot->unownedBlockedFallbackEnabled()) {
     return result;
   }
 

@@ -9,9 +9,12 @@
 #include "profiler.h"
 #include "taskBlockRecorder.h"
 #include "tsc.h"
+#include "vmEntry.h"
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <future>
 #include <memory>
 #include <thread>
@@ -62,6 +65,7 @@ protected:
   }
 
   void TearDown() override {
+    Profiler::setTaskBlockActivityHookForTest(nullptr);
     Profiler::setTaskBlockRecordOverrideForTest(nullptr);
     setTaskBlockFrequencySourceForTest(nullptr);
     initializeTaskBlockDurationThreshold();
@@ -465,4 +469,243 @@ TEST_F(TaskBlockRecorderTest, RecordFailureIsCountedAndActivityReleased) {
   EXPECT_EQ(0, Profiler::instance()->taskBlockInflightForTest());
   ASSERT_TRUE(Profiler::instance()->tryEnterTaskBlockActivity());
   Profiler::instance()->leaveTaskBlockActivity();
+}
+
+namespace {
+struct AdmissionBarrier {
+  std::mutex mutex;
+  std::condition_variable changed;
+  int reached = 0;
+  int resumed = 0;
+
+  void pause() {
+    std::unique_lock<std::mutex> lock(mutex);
+    int stage = ++reached;
+    changed.notify_all();
+    changed.wait(lock, [&] { return resumed >= stage; });
+  }
+  bool await(int stage) {
+    std::unique_lock<std::mutex> lock(mutex);
+    return changed.wait_for(lock, std::chrono::seconds(5), [&] { return reached >= stage; });
+  }
+  void resume(int stage) {
+    std::lock_guard<std::mutex> lock(mutex);
+    resumed = stage;
+    changed.notify_all();
+  }
+};
+AdmissionBarrier* admission_barrier = nullptr;
+void pauseAdmission(Profiler::TaskBlockActivityStage stage) {
+  if (stage != Profiler::TaskBlockActivityStage::AFTER_CLOSURE) admission_barrier->pause();
+}
+void pauseReservationAndClosure(Profiler::TaskBlockActivityStage stage) {
+  if (stage != Profiler::TaskBlockActivityStage::BEFORE_RESERVATION) admission_barrier->pause();
+}
+} // namespace
+
+TEST_F(TaskBlockRecorderTest, ClosedAndDrainedRotationCannotGainAReservation) {
+  Profiler* profiler = Profiler::instance();
+  AdmissionBarrier barrier;
+  admission_barrier = &barrier;
+  Profiler::setTaskBlockActivityHookForTest(pauseAdmission);
+  bool entered = true;
+  std::thread recorder([&] {
+    entered = profiler->tryEnterTaskBlockActivity();
+    if (entered) profiler->leaveTaskBlockActivity();
+  });
+  bool before_reservation = barrier.await(1);
+  EXPECT_TRUE(before_reservation);
+  bool drained = profiler->beginTaskBlockRotationForTest();
+  EXPECT_TRUE(drained);
+  barrier.resume(1);
+  bool after_reservation = barrier.await(2);
+  EXPECT_TRUE(after_reservation);
+  EXPECT_TRUE(profiler->taskBlockRotationActiveForTest());
+  EXPECT_EQ(0, profiler->taskBlockInflightForTest())
+      << "a drained, closed recording must not acquire even a transient reservation";
+  barrier.resume(2);
+  recorder.join();
+  EXPECT_FALSE(entered);
+  profiler->endTaskBlockRotationForTest();
+  Profiler::setTaskBlockActivityHookForTest(nullptr);
+  admission_barrier = nullptr;
+}
+
+// Access only configuration and locks; failure tests execute recordTaskBlock(),
+// captureJVMTIFrames(), and FlightRecorder's real rejection paths.
+class ProfilerTestAccessor {
+public:
+  static bool omit(Profiler* p) { return p->_omit_stacktraces; }
+  static void setOmit(Profiler* p, bool omit) { p->_omit_stacktraces = omit; }
+  static int depth(Profiler* p) { return p->_max_stack_depth; }
+  static void setDepth(Profiler* p, int depth) { p->_max_stack_depth = depth; }
+  static int stripe(Profiler* p, int tid) { return p->getLockIndex(tid); }
+  static CallTraceBuffer* exchangeBuffer(Profiler* p, int stripe, CallTraceBuffer* buffer) {
+    CallTraceBuffer* previous = p->_calltrace_buffer[stripe];
+    p->_calltrace_buffer[stripe] = buffer;
+    return previous;
+  }
+  static SpinLock& lock(Profiler* p, int stripe) { return p->_locks[stripe]; }
+  static FlightRecorder& recorder(Profiler* p) { return p->_jfr; }
+};
+
+class FlightRecorderTestAccessor {
+public:
+  static SpinLock& lock(FlightRecorder& recorder) { return recorder._rec_lock; }
+  static void setRecording(FlightRecorder& recorder, Recording* recording) { recorder._rec = recording; }
+};
+
+class VMTestAccessor {
+public:
+  static jvmtiEnv* exchangeJvmti(jvmtiEnv* env) {
+    jvmtiEnv* previous = VM::_jvmti;
+    VM::_jvmti = env;
+    return previous;
+  }
+};
+
+class TaskBlockRealRecorderTest : public ::testing::Test {
+protected:
+  static constexpr int kTid = 123;
+  Profiler* profiler = Profiler::instance();
+  bool previous_omit;
+  int previous_depth;
+  CallTraceBuffer buffer{};
+  CallTraceBuffer* previous_buffer;
+  int stripe;
+
+  void SetUp() override {
+    Counters::reset();
+    initializeTaskBlockDurationThreshold();
+    Profiler::setTaskBlockRecordOverrideForTest(nullptr);
+    previous_omit = ProfilerTestAccessor::omit(profiler);
+    previous_depth = ProfilerTestAccessor::depth(profiler);
+    stripe = ProfilerTestAccessor::stripe(profiler, kTid);
+    previous_buffer = ProfilerTestAccessor::exchangeBuffer(profiler, stripe, &buffer);
+    ProfilerTestAccessor::setDepth(profiler, 1);
+    ProfilerTestAccessor::setOmit(profiler, false);
+  }
+
+  void TearDown() override {
+    ProfilerTestAccessor::setOmit(profiler, previous_omit);
+    ProfilerTestAccessor::setDepth(profiler, previous_depth);
+    ProfilerTestAccessor::exchangeBuffer(profiler, stripe, previous_buffer);
+    EXPECT_EQ(0, profiler->taskBlockInflightForTest());
+    // Assert every stripe, including fallback stripes, is released by failure.
+    for (int index = 0; index < CONCURRENCY_LEVEL; ++index) {
+      bool acquired = ProfilerTestAccessor::lock(profiler, index).tryLock();
+      EXPECT_TRUE(acquired) << "leaked stripe " << index;
+      if (acquired) ProfilerTestAccessor::lock(profiler, index).unlock();
+    }
+    Counters::reset();
+  }
+
+  bool record() {
+    Context context{};
+    u64 start = TSC::ticks();
+    return recordTaskBlockIfEligible(kTid, nullptr, 0, start, minEligibleEndTicks(start),
+                                     context, 0, 0, OSThreadState::SLEEPING);
+  }
+};
+
+TEST_F(TaskBlockRealRecorderTest, JvmtiStackFailureReleasesStripeAndCountsExactlyOnce) {
+  jvmtiInterface_1_ functions{};
+  functions.GetStackTrace = [](jvmtiEnv*, jthread, jint, jint, jvmtiFrameInfo*, jint*) -> jvmtiError {
+    return JVMTI_ERROR_INTERNAL;
+  };
+  jvmtiEnv env{&functions};
+  jvmtiEnv* previous = VMTestAccessor::exchangeJvmti(&env);
+  EXPECT_FALSE(record());
+  VMTestAccessor::exchangeJvmti(previous);
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_STACK_CAPTURE_FAILED));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_EMITTED));
+}
+
+TEST_F(TaskBlockRealRecorderTest, MissingStackBufferReleasesStripeAndCountsExactlyOnce) {
+  ProfilerTestAccessor::exchangeBuffer(profiler, stripe, nullptr);
+  EXPECT_FALSE(record());
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_STACK_CAPTURE_FAILED));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
+}
+
+TEST_F(TaskBlockRealRecorderTest, ContendedStripesFailWithoutCapturingStack) {
+  for (int index = 0; index < CONCURRENCY_LEVEL; ++index) {
+    ProfilerTestAccessor::lock(profiler, index).lock();
+  }
+  EXPECT_FALSE(record());
+  for (int index = 0; index < CONCURRENCY_LEVEL; ++index) {
+    ProfilerTestAccessor::lock(profiler, index).unlock();
+  }
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_STACK_CAPTURE_FAILED));
+}
+
+TEST_F(TaskBlockRealRecorderTest, InactiveRecorderReleasesStripeAndCountsExactlyOnce) {
+  ProfilerTestAccessor::setOmit(profiler, true);
+  EXPECT_FALSE(record());
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_STACK_CAPTURE_FAILED));
+}
+
+TEST_F(TaskBlockRealRecorderTest, ContendedRecorderReleasesStripeAndCountsExactlyOnce) {
+  ProfilerTestAccessor::setOmit(profiler, true);
+  SpinLock& lock = FlightRecorderTestAccessor::lock(ProfilerTestAccessor::recorder(profiler));
+  lock.lock();
+  EXPECT_FALSE(record());
+  lock.unlock();
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_STACK_CAPTURE_FAILED));
+}
+
+TEST_F(TaskBlockRealRecorderTest, ThreadTableOverflowIsCountedBeforeSerialization) {
+  auto recording = std::make_unique<Recording>();
+  FlightRecorder& recorder = ProfilerTestAccessor::recorder(profiler);
+  FlightRecorderTestAccessor::setRecording(recorder, recording.get());
+  TaskBlockEvent event{};
+  event._start = 1;
+  event._end = 2;
+  for (int tid = 1000; tid < 1256; ++tid) {
+    EXPECT_TRUE(recorder.recordTaskBlock(stripe, tid, &event));
+  }
+  int before = recording->buffer(stripe)->offset();
+  ProfilerTestAccessor::setOmit(profiler, true);
+  EXPECT_FALSE(record()); // kTid is not one of the 256 represented IDs.
+  EXPECT_EQ(before, recording->buffer(stripe)->offset());
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_EMITTED));
+  FlightRecorderTestAccessor::setRecording(recorder, nullptr);
+}
+
+TEST_F(TaskBlockRecorderTest, ReservationBeforeClosureMustDrainBeforeRotationReturns) {
+  Profiler* profiler = Profiler::instance();
+  AdmissionBarrier barrier;
+  admission_barrier = &barrier;
+  Profiler::setTaskBlockActivityHookForTest(pauseReservationAndClosure);
+  bool entered = false;
+  std::thread recorder([&] {
+    entered = profiler->tryEnterTaskBlockActivity();
+    if (entered) profiler->leaveTaskBlockActivity();
+  });
+  EXPECT_TRUE(barrier.await(1)); // Reservation is held; recorder has not returned.
+  std::atomic<bool> rotation_returned{false};
+  bool drained = false;
+  std::thread rotation([&] {
+    drained = profiler->beginTaskBlockRotationForTest();
+    rotation_returned.store(true, std::memory_order_release);
+  });
+  EXPECT_TRUE(barrier.await(2)); // Closure is published, before the drain check.
+  EXPECT_TRUE(profiler->taskBlockRotationActiveForTest());
+  EXPECT_EQ(1, profiler->taskBlockInflightForTest());
+  EXPECT_FALSE(rotation_returned.load(std::memory_order_acquire));
+  barrier.resume(1);
+  recorder.join();
+  EXPECT_TRUE(entered);
+  EXPECT_EQ(0, profiler->taskBlockInflightForTest());
+  barrier.resume(2);
+  rotation.join();
+  EXPECT_TRUE(drained);
+  profiler->endTaskBlockRotationForTest();
+  Profiler::setTaskBlockActivityHookForTest(nullptr);
+  admission_barrier = nullptr;
 }

@@ -310,6 +310,10 @@ private:
 
 public:
   Recording(int fd, Arguments &args);
+#ifdef UNIT_TEST
+  // Buffer/table-only recording for serializer tests without a live JVM.
+  Recording() : _fd(-1), _bytes_written(0) {}
+#endif
   ~Recording();
 
   void copyTo(int target_fd);
@@ -445,7 +449,7 @@ public:
   void recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
                      float machine_total);
 
-  void addThread(int lock_index, int tid);
+  bool addThread(int lock_index, int tid);
 
 private:
   void cleanupUnreferencedMethods();
@@ -555,6 +559,9 @@ public:
 
 class FlightRecorder {
   friend Profiler;
+#ifdef UNIT_TEST
+  friend class FlightRecorderTestAccessor;
+#endif
 
 private:
   std::string _filename;

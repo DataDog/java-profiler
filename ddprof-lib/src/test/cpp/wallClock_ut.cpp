@@ -281,3 +281,30 @@ TEST_F(WallClockPrecheckTest, UnownedFallbackStillAccumulatesWeightWhenEnabled) 
     EXPECT_EQ(10ULL, weight);
     EXPECT_EQ(9, Counters::getCounter(WC_UNOWNED_BLOCKED_SUPPRESSED));
 }
+
+class ProfilerTestAccessor {
+public:
+    static void setOmitStacktraces(Profiler* profiler, bool omit) {
+        profiler->_omit_stacktraces = omit;
+    }
+};
+
+TEST_F(WallClockPrecheckTest, LightweightShortBurstsConserveEveryObservation) {
+    bool previous = profiler->omitStacktraces();
+    ProfilerTestAccessor::setOmitStacktraces(profiler, true);
+    u64 emitted_weight = 0;
+    for (int burst = 0; burst < 3; ++burst) {
+        for (int observation = 0; observation < 7; ++observation) {
+            OSThreadState state = observation < 6 ? OSThreadState::SLEEPING
+                                                  : OSThreadState::RUNNABLE;
+            u64 weight = 0;
+            bool suppressed = BaseWallClock::wallPrecheckForTest(
+                current.get(), true, state, weight, true);
+            if (!suppressed) emitted_weight += weight;
+        }
+    }
+    ProfilerTestAccessor::setOmitStacktraces(profiler, previous);
+    EXPECT_EQ(21ULL, emitted_weight);
+    EXPECT_EQ(0ULL, tracker->slotForId(slot_id)->unowned_blocked_pending_weight.load());
+    EXPECT_EQ(0, Counters::getCounter(WC_UNOWNED_BLOCKED_SUPPRESSED));
+}
