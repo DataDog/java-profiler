@@ -48,7 +48,8 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    | Other production code | Sphinx, standard effort |
    | Only docs, skills or tests | `/code-review` medium; not low, which skips test files |
 
-   Without Sphinx, use `/code-review` with the range as its target, at high effort for
+   <a id="review-fallback"></a>Without Sphinx, use `/code-review` with the range as its
+   target, at high effort for
    the first row and medium otherwise. Report only — run no
    reviewer fix flow; step 4 does the triage and fixes. If no reviewer is
    available, say so and get explicit user sign-off; do not write a marker then.
