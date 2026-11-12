@@ -95,19 +95,9 @@ class Libraries {
   // reading the loaded libraries; compiled only into gtest binaries.
   bool addLibraryForTest(CodeCache *lib) { return _native_libs.add(lib); }
 
-  // Deletes every CodeCache in the process-wide array, including any passed
-  // to addLibraryForTest(), so it must not be combined with caller-owned
-  // caches in the same binary. Test teardown only (see
-  // CodeCacheArray::freeForTest).
-  //
-  // LibraryPatcher's patch tables (_patched_entries, _sigaction_entries,
-  // _socket_entries) keep raw CodeCache pointers, matched by address
-  // (has_entry_for() and the socket-entry scans), so freeing would leave them
-  // dangling and let a later cache allocated at a reused address pass as
-  // already patched. Only call this in a binary that never patches: no
-  // LibraryPatcher::initialize() (patch_libraries() and patch_sigaction()
-  // return early without it), no install_socket_hooks(), and no refresher
-  // thread running.
+  // Test teardown only; also deletes caches passed to addLibraryForTest().
+  // LibraryPatcher's tables and updateBuildIds()' set match caches by address,
+  // so call it only in a binary that never patches nor updates build ids.
   void freeNativeLibsForTest() { _native_libs.freeForTest(); }
 #endif
 

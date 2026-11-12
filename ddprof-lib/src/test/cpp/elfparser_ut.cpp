@@ -34,6 +34,7 @@
 // Forward declaration for ElfParser functionality from symbols_linux.cpp
 class ElfParser {
 public:
+    static void parseProgramHeaders(CodeCache* cc, const char* base, const char* end, bool relocate_dyn);
     static bool parseFile(CodeCache* cc, const char* base, const char* file_name, bool use_debug);
 };
 
@@ -116,6 +117,7 @@ class ElfReladyn : public ::testing::Test {
         // lets the next parse (a later SetUp or a local array) reparse them.
         Symbols::clearParsingCaches();
         _libs->freeNativeLibsForTest();
+        _libreladyn = nullptr;  // freed above; a mid-test TearDown() must not leave it dangling
     }
 
     CodeCache* libreladyn() {
@@ -634,14 +636,9 @@ TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
     parseElfBytes(b);  // must not crash: strAt() rejects st_name == strtab_size
 }
 
-// A .symtab misaligned by the 42-byte section-header string table (sh_offset
-// 490, not a multiple of alignof(Elf64_Sym)) must still resolve both symbols
-// and the PLT relocation name through loadSymbolTable()/addRelocationSymbols().
-//
-// The misaligned reads are only detected by -fsanitize=alignment (the asan
-// gtest config): with the alignment-safe copies reverted, that build aborts
-// with "member access within misaligned address", while the debug build still
-// passes because arm64 and x86-64 perform unaligned loads in hardware.
+// Misaligned .symtab and .rela.plt must still resolve symbols and the PLT name.
+// Only -fsanitize=alignment (asan config) catches a regression: arm64 and
+// x86-64 perform the unaligned loads in hardware.
 TEST_F(ElfTest, symbolTableMisalignedEntries) {
     const uint16_t NSEC = 6;
     const uint64_t shoff = sizeof(Elf64_Ehdr);
@@ -660,11 +657,11 @@ TEST_F(ElfTest, symbolTableMisalignedEntries) {
     sym[1].st_size = 4;
     const uint64_t str_off = sym_off + sizeof(sym);
     const char strtab[] = "\0mis_main\0mis_helper\0";  // 22 bytes: names at 1 and 10
-    const uint64_t rela_off = str_off + sizeof(strtab);
-    // ElfRelocation entries are still read through a cast pointer, so a
-    // misaligned .rela.plt would abort the asan build in addRelocationSymbols()
-    // before the symbol lookup under test; keep only .symtab misaligned.
-    ASSERT_EQ(rela_off % alignof(Elf64_Rela), 0u);
+    // 4 pad bytes push .rela.plt off its natural alignment too, so the
+    // relocation entry read in addRelocationSymbols() is misaligned as well.
+    const char rela_pad[4] = {0, 0, 0, 0};
+    const uint64_t rela_off = str_off + sizeof(strtab) + sizeof(rela_pad);
+    ASSERT_NE(rela_off % alignof(Elf64_Rela), 0u);
     Elf64_Rela rela;
     memset(&rela, 0, sizeof(rela));
     rela.r_offset = 0x4000;
@@ -713,10 +710,11 @@ TEST_F(ElfTest, symbolTableMisalignedEntries) {
     app(shstrtab, sizeof(shstrtab));
     app(sym, sizeof(sym));
     app(strtab, sizeof(strtab));
+    app(rela_pad, sizeof(rela_pad));
     app(&rela, sizeof(rela));
 
     CodeCache cc("regress");
-    parseElfBytes(b, &cc, /*use_debug=*/true);
+    ASSERT_NO_FATAL_FAILURE(parseElfBytes(b, &cc, /*use_debug=*/true));
     // Both misaligned .symtab entries resolved at their st_value addresses.
     EXPECT_EQ(cc.findSymbol("mis_main"), (const void*)0x20000);
     EXPECT_EQ(cc.findSymbol("mis_helper"), (const void*)0x21000);
@@ -724,6 +722,253 @@ TEST_F(ElfTest, symbolTableMisalignedEntries) {
     // addRelocationSymbols(): symbol 1 resolves to "mis_helper@plt", placed at
     // the first stub after the PLT header.
     EXPECT_EQ(cc.findSymbol("mis_helper@plt"), (const void*)(0x3000 + PLT_HEADER_SIZE));
+}
+
+// Loaded image with misaligned .dynsym, .rela.plt and .rela.dyn: both imports
+// must resolve and both relocation tables must be hashed into the fingerprint.
+// As above, only the asan config catches an alignment regression.
+TEST_F(ElfTest, dynamicSectionMisalignedEntries) {
+#if defined(__x86_64__)
+    const uint32_t glob_dat = R_X86_64_GLOB_DAT;
+#elif defined(__aarch64__)
+    const uint32_t glob_dat = R_AARCH64_GLOB_DAT;
+#else
+    GTEST_SKIP() << "R_GLOB_DAT imports are only recorded on x86-64 and aarch64";
+    const uint32_t glob_dat = 0;
+#endif
+    const size_t IMAGE_SIZE = 4096;
+    const uint64_t GOT_PLT_SLOT = 0x800;
+    const uint64_t GOT_DAT_SLOT = 0x808;
+    const int NPH = 2;
+    const int NDYN = 10;
+
+    const uint64_t ph_off = sizeof(Elf64_Ehdr);
+    const uint64_t dyn_off = ph_off + NPH * sizeof(Elf64_Phdr);  // ElfDyn stays aligned
+    const char strtab[] = "\0pthread_create\0pthread_setspecific";  // names at 1 and 16
+    const uint64_t str_off = dyn_off + NDYN * sizeof(Elf64_Dyn);
+    const uint64_t sym_off = str_off + sizeof(strtab);
+    const uint64_t jmprel_off = sym_off + 3 * sizeof(Elf64_Sym);
+    const uint64_t rela_off = jmprel_off + sizeof(Elf64_Rela);
+    ASSERT_LE(rela_off + sizeof(Elf64_Rela), GOT_PLT_SLOT);
+    // Layout must stay misaligned for every table under test.
+    ASSERT_NE(sym_off % alignof(Elf64_Sym), 0u);
+    ASSERT_NE(jmprel_off % alignof(Elf64_Rela), 0u);
+    ASSERT_NE(rela_off % alignof(Elf64_Rela), 0u);
+
+    // The image itself must be aligned so only the table offsets misalign.
+    std::unique_ptr<void, decltype(&free)> mem(aligned_alloc(IMAGE_SIZE, IMAGE_SIZE), &free);
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+    memset(image, 0, IMAGE_SIZE);
+
+    Elf64_Ehdr e = validEhdr();
+    e.e_phoff = ph_off;
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = NPH;
+    memcpy(image, &e, sizeof(e));
+
+    Elf64_Phdr ph[NPH];
+    memset(ph, 0, sizeof(ph));
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_filesz = IMAGE_SIZE;
+    ph[0].p_memsz = IMAGE_SIZE;
+    ph[1].p_type = PT_DYNAMIC;
+    ph[1].p_vaddr = dyn_off;
+    ph[1].p_offset = dyn_off;
+    ph[1].p_filesz = NDYN * sizeof(Elf64_Dyn);
+    ph[1].p_memsz = NDYN * sizeof(Elf64_Dyn);
+    memcpy(image + ph_off, ph, sizeof(ph));
+
+    // Unrelocated (vaddr) d_ptr values, as musl leaves them; both parsers
+    // rebase pointers that fall below the image.
+    const Elf64_Dyn dyn[NDYN] = {
+        {DT_SYMTAB, {sym_off}},
+        {DT_STRTAB, {str_off}},
+        {DT_SYMENT, {sizeof(Elf64_Sym)}},
+        {DT_STRSZ, {sizeof(strtab)}},
+        {DT_JMPREL, {jmprel_off}},
+        {DT_PLTRELSZ, {sizeof(Elf64_Rela)}},
+        {DT_RELA, {rela_off}},
+        {DT_RELASZ, {sizeof(Elf64_Rela)}},
+        {DT_RELAENT, {sizeof(Elf64_Rela)}},
+        {DT_NULL, {0}},
+    };
+    memcpy(image + dyn_off, dyn, sizeof(dyn));
+    memcpy(image + str_off, strtab, sizeof(strtab));
+
+    Elf64_Sym sym[3];
+    memset(sym, 0, sizeof(sym));
+    sym[1].st_name = 1;   // "pthread_create"
+    sym[2].st_name = 16;  // "pthread_setspecific"
+    memcpy(image + sym_off, sym, sizeof(sym));
+
+    Elf64_Rela jmprel;
+    memset(&jmprel, 0, sizeof(jmprel));
+    jmprel.r_offset = GOT_PLT_SLOT;
+    jmprel.r_info = ELF64_R_INFO(1, 0);  // .rela.plt entries are not type-checked
+    memcpy(image + jmprel_off, &jmprel, sizeof(jmprel));
+
+    Elf64_Rela rela;
+    memset(&rela, 0, sizeof(rela));
+    rela.r_offset = GOT_DAT_SLOT;
+    rela.r_info = ELF64_R_INFO(2, glob_dat);
+    memcpy(image + rela_off, &rela, sizeof(rela));
+
+    CodeCache cc("inmem");
+    ElfParser::parseProgramHeaders(&cc, image, image + IMAGE_SIZE, /*relocate_dyn=*/false);
+
+    // parseDynamicSection(): both misaligned relocations resolved their
+    // misaligned symbols and recorded the GOT slot they name.
+    EXPECT_EQ(cc.peekImport(im_pthread_create), (void**)(image + GOT_PLT_SLOT));
+    EXPECT_EQ(cc.peekImport(im_pthread_setspecific), (void**)(image + GOT_DAT_SLOT));
+
+    // hashSymbolRelocations(): a fingerprint of 0 means a table was rejected.
+    const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + ph_off);
+    const u64 fingerprint = Symbols::imageFingerprint(phdrs, NPH, (uintptr_t)image);
+    EXPECT_NE(fingerprint, 0u);
+    EXPECT_EQ(cc.imageFingerprint(), fingerprint);
+
+    // Both misaligned relocation tables are part of the hash: moving either
+    // entry's GOT slot must change the fingerprint.
+    jmprel.r_offset = GOT_PLT_SLOT + 2 * sizeof(void*);
+    memcpy(image + jmprel_off, &jmprel, sizeof(jmprel));
+    const u64 plt_moved = Symbols::imageFingerprint(phdrs, NPH, (uintptr_t)image);
+    EXPECT_NE(plt_moved, 0u);
+    EXPECT_NE(plt_moved, fingerprint);
+
+    rela.r_offset = GOT_DAT_SLOT + 2 * sizeof(void*);
+    memcpy(image + rela_off, &rela, sizeof(rela));
+    const u64 both_moved = Symbols::imageFingerprint(phdrs, NPH, (uintptr_t)image);
+    EXPECT_NE(both_moved, 0u);
+    EXPECT_NE(both_moved, plt_moved);
+
+    // DT_RELASZ ends 8 bytes into a second entry whose GLOB_DAT r_info lies past
+    // the table; the in-table entry is not a GLOB_DAT, so any recorded import
+    // means the walk read past DT_RELASZ.
+    const int RELASZ_INDEX = 7;
+    ASSERT_EQ(dyn[RELASZ_INDEX].d_tag, DT_RELASZ);
+    ASSERT_LE(rela_off + sizeof(Elf64_Rela) + sizeof(Elf64_Rel), GOT_PLT_SLOT);
+    Elf64_Dyn truncated = {DT_RELASZ, {sizeof(Elf64_Rela) + sizeof(uint64_t)}};
+    memcpy(image + dyn_off + RELASZ_INDEX * sizeof(Elf64_Dyn), &truncated, sizeof(truncated));
+    rela.r_info = 0;
+    memcpy(image + rela_off, &rela, sizeof(rela));
+    Elf64_Rel stray;
+    stray.r_offset = GOT_DAT_SLOT;
+    stray.r_info = ELF64_R_INFO(2, glob_dat);
+    memcpy(image + rela_off + sizeof(Elf64_Rela), &stray, sizeof(stray));
+    CodeCache truncated_cc("truncated");
+    ElfParser::parseProgramHeaders(&truncated_cc, image, image + IMAGE_SIZE, /*relocate_dyn=*/false);
+    EXPECT_EQ(truncated_cc.peekImport(im_pthread_setspecific), nullptr);
+}
+
+// An undersized, a near-SIZE_MAX, and a table-truncating DT_RELAENT/PLTRELSZ:
+// no walk may read an entry that does not fit in the table, record imports the
+// fingerprint skips, or wrap its offset back before the table.
+TEST_F(ElfTest, dynamicSectionInvalidRelocationEntrySize) {
+    const size_t IMAGE_SIZE = 4096;
+    const uint64_t GOT_PLT_SLOT = 0x800;
+    const int NPH = 2;
+    const int NDYN = 8;
+
+    const uint64_t ph_off = sizeof(Elf64_Ehdr);
+    const uint64_t dyn_off = ph_off + NPH * sizeof(Elf64_Phdr);
+    const char strtab[] = "\0pthread_create";
+    const uint64_t str_off = dyn_off + NDYN * sizeof(Elf64_Dyn);
+    const uint64_t sym_off = (str_off + sizeof(strtab) + 7) & ~(uint64_t)7;
+    const uint64_t jmprel_off = sym_off + 2 * sizeof(Elf64_Sym);
+    // Room for a full entry plus the 16 bytes the truncated-table case reads.
+    ASSERT_LE(jmprel_off + sizeof(Elf64_Rela) + sizeof(Elf64_Rel), GOT_PLT_SLOT);
+
+    std::unique_ptr<void, decltype(&free)> mem(aligned_alloc(IMAGE_SIZE, IMAGE_SIZE), &free);
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+    memset(image, 0, IMAGE_SIZE);
+
+    Elf64_Ehdr e = validEhdr();
+    e.e_phoff = ph_off;
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = NPH;
+    memcpy(image, &e, sizeof(e));
+
+    Elf64_Phdr ph[NPH];
+    memset(ph, 0, sizeof(ph));
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_filesz = IMAGE_SIZE;
+    ph[0].p_memsz = IMAGE_SIZE;
+    ph[1].p_type = PT_DYNAMIC;
+    ph[1].p_vaddr = dyn_off;
+    ph[1].p_offset = dyn_off;
+    ph[1].p_filesz = NDYN * sizeof(Elf64_Dyn);
+    ph[1].p_memsz = NDYN * sizeof(Elf64_Dyn);
+    memcpy(image + ph_off, ph, sizeof(ph));
+
+    const int PLTRELSZ_INDEX = 5;
+    const int RELAENT_INDEX = 6;
+    const Elf64_Dyn dyn[NDYN] = {
+        {DT_SYMTAB, {sym_off}},
+        {DT_STRTAB, {str_off}},
+        {DT_SYMENT, {sizeof(Elf64_Sym)}},
+        {DT_STRSZ, {sizeof(strtab)}},
+        {DT_JMPREL, {jmprel_off}},
+        {DT_PLTRELSZ, {sizeof(Elf64_Rela)}},  // PLTRELSZ_INDEX
+        {DT_RELAENT, {8}},  // RELAENT_INDEX: half an Elf64_Rel
+        {DT_NULL, {0}},
+    };
+    memcpy(image + dyn_off, dyn, sizeof(dyn));
+    memcpy(image + str_off, strtab, sizeof(strtab));
+
+    Elf64_Sym sym[2];
+    memset(sym, 0, sizeof(sym));
+    sym[1].st_name = 1;  // "pthread_create"
+    // The last 8 bytes before .rela.plt. Read as an r_info by a relocation walk
+    // that wraps back before the table, they name symbol 0xffffffff, which lies
+    // outside the image (see the huge-stride case below).
+    sym[1].st_size = 0xffffffff00000000ULL;
+    memcpy(image + sym_off, sym, sizeof(sym));
+
+    // A well-formed entry: with the 8-byte stride the first iteration still
+    // reads it whole, so only the entry-size check keeps it out.
+    Elf64_Rela jmprel;
+    memset(&jmprel, 0, sizeof(jmprel));
+    jmprel.r_offset = GOT_PLT_SLOT;
+    jmprel.r_info = ELF64_R_INFO(1, 0);
+    memcpy(image + jmprel_off, &jmprel, sizeof(jmprel));
+
+    {
+        CodeCache cc("undersized");
+        ElfParser::parseProgramHeaders(&cc, image, image + IMAGE_SIZE, /*relocate_dyn=*/false);
+        EXPECT_EQ(cc.peekImport(im_pthread_create), nullptr);
+    }
+
+    // No entry fits, so nothing is recorded. A walk that wraps back before the
+    // table meets the index planted in sym[1].st_size and yields fingerprint 0.
+    Elf64_Dyn huge_relent = {DT_RELAENT, {SIZE_MAX - 7}};
+    memcpy(image + dyn_off + RELAENT_INDEX * sizeof(Elf64_Dyn), &huge_relent, sizeof(huge_relent));
+    {
+        CodeCache cc("huge");
+        ElfParser::parseProgramHeaders(&cc, image, image + IMAGE_SIZE, /*relocate_dyn=*/false);
+        EXPECT_EQ(cc.peekImport(im_pthread_create), nullptr);
+        EXPECT_NE(cc.imageFingerprint(), 0u);
+    }
+
+    // DT_PLTRELSZ ends 8 bytes into a second entry whose r_info lies past the
+    // table; the in-table entry names no symbol, so any recorded import means
+    // the walk read past DT_PLTRELSZ.
+    Elf64_Dyn relaent = {DT_RELAENT, {sizeof(Elf64_Rela)}};
+    Elf64_Dyn truncated = {DT_PLTRELSZ, {sizeof(Elf64_Rela) + sizeof(uint64_t)}};
+    memcpy(image + dyn_off + RELAENT_INDEX * sizeof(Elf64_Dyn), &relaent, sizeof(relaent));
+    memcpy(image + dyn_off + PLTRELSZ_INDEX * sizeof(Elf64_Dyn), &truncated, sizeof(truncated));
+    jmprel.r_info = 0;
+    memcpy(image + jmprel_off, &jmprel, sizeof(jmprel));
+    Elf64_Rel stray;
+    stray.r_offset = GOT_PLT_SLOT;
+    stray.r_info = ELF64_R_INFO(1, 0);
+    memcpy(image + jmprel_off + sizeof(Elf64_Rela), &stray, sizeof(stray));
+    {
+        CodeCache cc("truncated");
+        ElfParser::parseProgramHeaders(&cc, image, image + IMAGE_SIZE, /*relocate_dyn=*/false);
+        EXPECT_EQ(cc.peekImport(im_pthread_create), nullptr);
+    }
 }
 
 #endif //__linux__

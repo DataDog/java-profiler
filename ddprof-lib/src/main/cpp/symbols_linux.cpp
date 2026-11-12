@@ -323,14 +323,22 @@ typedef Elf64_Dyn  ElfDyn;
 
 static char _debuginfod_cache_buf[PATH_MAX] = {0};
 
-// Symbol-table addresses (file sh_offset or DT_SYMTAB) carry no alignment
-// guarantee; this copy avoids member access through a misaligned ElfSymbol*,
-// which is undefined behavior.
+// Nothing checks the alignment of sh_offset or DT_SYMTAB, so a crafted image can
+// misalign the table; copying avoids UB from a misaligned ElfSymbol* access.
 static_assert(offsetof(ElfSymbol, st_name) == 0, "symbolNameAt() reads st_name at offset 0");
 static uint32_t symbolNameAt(const void* sym) {
     uint32_t name;
     memcpy(&name, sym, sizeof(name));
     return name;
+}
+
+// Same for relocation tables (sh_offset, DT_JMPREL, DT_RELA/DT_REL). Copies the
+// Elf64_Rel prefix, so it also serves Elf64_Rela; the caller must ensure
+// sizeof(ElfRelocation) bytes remain in the table.
+static ElfRelocation relocationAt(const void* rel) {
+    ElfRelocation r;
+    memcpy(&r, rel, sizeof(r));
+    return r;
 }
 
 class ElfParser {
@@ -686,37 +694,43 @@ void ElfParser::parseDynamicSection() {
             loadSymbolTable(symtab, syment * nsyms, syment, strtab, strsz);
         }
 
-        // base() is NULL for ET_EXEC (non-PIE) images - adding r->r_offset to it
-        // via pointer arithmetic is UB (base + r->r_offset on a null base), even
+        // base() is NULL for ET_EXEC (non-PIE) images - adding r.r_offset to it
+        // via pointer arithmetic is UB (base + r.r_offset on a null base), even
         // though the intent is just "sym addresses are already absolute". Do the
         // addition in integer space, same fix as the .plt case above.
         uintptr_t base_addr = (uintptr_t)this->base();
-        if (jmprel != NULL && pltrelsz != 0) {
+        // Smaller entries cannot hold r_offset and r_info (hashImportLayout()
+        // skips them too). Walking only while a whole entry fits keeps offs
+        // within the table, so offs += relent cannot wrap.
+        if (jmprel != NULL && pltrelsz != 0 && relent >= sizeof(ElfRelocation)) {
             // Parse .rela.plt table
-            for (size_t offs = 0; offs < pltrelsz; offs += relent) {
-                ElfRelocation* r = (ElfRelocation*)(jmprel + offs);
-                uint32_t st_name = symbolNameAt(symtab + ELF_R_SYM(r->r_info) * syment);
+            for (size_t offs = 0; relent <= pltrelsz - offs; offs += relent) {
+                ElfRelocation r = relocationAt(jmprel + offs);
+                uint32_t st_name = symbolNameAt(symtab + ELF_R_SYM(r.r_info) * syment);
                 if (st_name != 0) {
                     const char* sym_name = strAt(strtab, strsz, st_name);
                     if (sym_name != NULL) {
-                        _cc->addImport((void**)(base_addr + r->r_offset), sym_name);
+                        _cc->addImport((void**)(base_addr + r.r_offset), sym_name);
                     }
                 }
             }
         }
 
-        if (rel != NULL && relsz != 0) {
+        if (rel != NULL && relsz != 0 && relent >= sizeof(ElfRelocation)) {
             // Relocation entries for imports can be found in .rela.dyn, for example
             // if a shared library is built without PLT (-fno-plt). However, if both
             // entries exist, addImport saves them both.
-            for (size_t offs = relcount * relent; offs < relsz; offs += relent) {
-                ElfRelocation* r = (ElfRelocation*)(rel + offs);
-                if (ELF_R_TYPE(r->r_info) == R_GLOB_DAT || ELF_R_TYPE(r->r_info) == R_ABS64) {
-                    uint32_t st_name = symbolNameAt(symtab + ELF_R_SYM(r->r_info) * syment);
+            // The leading DT_RELACOUNT entries are relative relocations, without
+            // a symbol; clamp the start as hashImportLayout() does.
+            size_t start = relcount * relent < relsz ? relcount * relent : relsz;
+            for (size_t offs = start; relent <= relsz - offs; offs += relent) {
+                ElfRelocation r = relocationAt(rel + offs);
+                if (ELF_R_TYPE(r.r_info) == R_GLOB_DAT || ELF_R_TYPE(r.r_info) == R_ABS64) {
+                    uint32_t st_name = symbolNameAt(symtab + ELF_R_SYM(r.r_info) * syment);
                     if (st_name != 0) {
                         const char* sym_name = strAt(strtab, strsz, st_name);
                         if (sym_name != NULL) {
-                            _cc->addImport((void**)(base_addr + r->r_offset), sym_name);
+                            _cc->addImport((void**)(base_addr + r.r_offset), sym_name);
                         }
                     }
                 }
@@ -1054,11 +1068,11 @@ void ElfParser::addRelocationSymbols(ElfSection* reltab, const char* plt) {
     // Offset-based iteration (see loadSymbolTable) so a huge rel_ent cannot
     // overflow the relocation pointer past the section end.
     for (size_t off = 0; rel_ent <= reltab_size - off; off += rel_ent, plt += PLT_ENTRY_SIZE) {
-        ElfRelocation* r = (ElfRelocation*)(relocations + off);
-        if (ELF_R_SYM(r->r_info) > max_sym_index) {
+        ElfRelocation r = relocationAt(relocations + off);
+        if (ELF_R_SYM(r.r_info) > max_sym_index) {
             continue;
         }
-        uint32_t st_name = symbolNameAt(symbols + (size_t)ELF_R_SYM(r->r_info) * sym_ent);
+        uint32_t st_name = symbolNameAt(symbols + (size_t)ELF_R_SYM(r.r_info) * sym_ent);
 
         char name[256];
         if (st_name == 0) {
@@ -1353,21 +1367,23 @@ class LoadedImage {
 
 // Hashes every relocation in rel (size bytes, entries relent apart) that names
 // a symbol: its offset, type and symbol index, and the symbol's name. Returns
-// false if a symbol or its name lies outside the readable image.
+// false if a symbol or its name lies outside the readable image. relent must be
+// at least sizeof(ElfRelocation) (hashImportLayout() checks it), so every entry
+// the walk visits holds a whole r_offset and r_info and the walk advances.
 bool hashSymbolRelocations(const LoadedImage& image, uintptr_t rel, size_t size, size_t relent,
                            uintptr_t symtab, size_t syment, uintptr_t strtab, size_t strsz,
                            u64& hash) {
-    for (size_t offs = 0; offs + sizeof(ElfRelocation) <= size; offs += relent) {
-        const ElfRelocation* r = (const ElfRelocation*)(rel + offs);
-        size_t index = ELF_R_SYM(r->r_info);
+    for (size_t offs = 0; relent <= size - offs; offs += relent) {
+        ElfRelocation r = relocationAt(reinterpret_cast<const void*>(rel + offs));
+        size_t index = ELF_R_SYM(r.r_info);
         if (index == 0) continue;  // e.g. R_*_RELATIVE: no import
         uintptr_t sym = symtab + index * syment;
         if (!image.readable(sym, sizeof(ElfSymbol))) return false;
         size_t name = symbolNameAt(reinterpret_cast<const void*>(sym));
         if (name >= strsz) return false;
         const char* str = (const char*)(strtab + name);
-        hash = fnv1a(&r->r_offset, sizeof(r->r_offset), hash);
-        hash = fnv1a(&r->r_info, sizeof(r->r_info), hash);
+        hash = fnv1a(&r.r_offset, sizeof(r.r_offset), hash);
+        hash = fnv1a(&r.r_info, sizeof(r.r_info), hash);
         // Including the terminating NUL keeps adjacent names apart.
         hash = fnv1a(str, strnlen(str, strsz - name - 1) + 1, hash);
     }
