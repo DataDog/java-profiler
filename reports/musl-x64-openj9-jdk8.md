@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk8
 
 ## musl-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-12 13:08:10 EST
+**Date:** 2026-11-12 13:09:27 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 146 |
-| Sample Rate | 2.43/sec |
-| Health Score | 152% |
-| Threads | 10 |
+| CPU Samples | 276 |
+| Sample Rate | 4.60/sec |
+| Health Score | 287% |
+| Threads | 7 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 139 |
-| Sample Rate | 2.32/sec |
-| Health Score | 145% |
-| Threads | 11 |
+| CPU Samples | 183 |
+| Sample Rate | 3.05/sec |
+| Health Score | 191% |
+| Threads | 7 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 49-69 cores)</summary>
 
 ```
-1794506556 49
-1794506561 49
-1794506566 49
-1794506571 49
-1794506576 49
-1794506581 49
-1794506586 49
-1794506591 49
-1794506596 49
-1794506601 49
-1794506606 49
-1794506611 49
-1794506616 49
-1794506621 49
-1794506626 69
-1794506631 69
-1794506636 69
-1794506641 69
-1794506646 69
-1794506651 69
+1794506595 49
+1794506600 49
+1794506605 49
+1794506610 49
+1794506615 49
+1794506620 49
+1794506625 49
+1794506630 69
+1794506635 69
+1794506640 69
+1794506645 69
+1794506650 69
+1794506655 69
+1794506660 69
+1794506665 69
+1794506670 69
+1794506675 69
+1794506680 69
+1794506685 69
+1794506690 69
 ```
 </details>
 
