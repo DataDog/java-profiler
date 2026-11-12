@@ -1157,5 +1157,280 @@ print('ok')
 " | grep -q '^ok$' || fail "a cells_glob() proposal did not fnmatch the cells it was derived from"
 pass "every cells_glob() proposal fnmatches the cells it was derived from"
 
+echo "== gtest quarantine (GitLab sanitizer jobs) =="
+
+# gtest JUnit XML: <testsuites>/<testsuite>/<testcase classname="<suite>"
+# name="<case>" ...>, with the suite decorations gtest bakes into the
+# classname (value-parameterized "<inst>/<Suite>", typed "<Suite>/<idx>").
+write_gtest_xml() {
+  # write_gtest_xml <dir> <classname> <name> [status] [failure-message]
+  mkdir -p "$1"
+  local status_attr=""
+  local failure=""
+  [ -n "${4:-}" ] && status_attr=" status=\"$4\""
+  if [ -n "${5:-}" ]; then
+    failure="    <failure message=\"$5\" type=\"AssertionFailed\"/>\n"
+  fi
+  cat > "$1/TEST-Suite.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="1" failures="$( [ -n "${5:-}" ] && echo 1 || echo 0 )">
+  <testsuite name="$2" tests="1" failures="$( [ -n "${5:-}" ] && echo 1 || echo 0 )">
+    <testcase name="$3" classname="$2"$status_attr>
+$failure    </testcase>
+  </testsuite>
+</testsuites>
+EOF
+}
+
+write_list "$LIST" "$(entry 'WobblySuite.*' PROF-1 "$(day_offset 30)" 'glibc-asan-*')"
+result=$(python3 -c "
+import sys; sys.path.insert(0, '$SCRIPTS')
+import quarantine
+entries = quarantine.load('$LIST')
+# gtest id shapes: plain, value-parameterized (inst prefix, /0 on the case),
+# typed (type index inside the classname), and their combination.
+covered = ['WobblySuite.test_foo', 'MyInst/WobblySuite.test_foo/0',
+           'WobblySuite/0.test_bar', 'MyInst/WobblySuite/0.test_baz']
+gating = [t for t in covered
+          if quarantine.find_entry(entries, t, 'glibc-asan-amd64') is None]
+print(','.join(gating) if gating else 'all-covered')
+")
+[ "$result" = "all-covered" ] || fail "expected every gtest id shape covered by 'WobblySuite.*', gating: $result"
+pass "a gtest class wildcard covers plain, parameterized, and typed id shapes"
+
+# A DECORATED class-wide entry ("MyInst/WobblySuite.*") must also cover the
+# typed variants of its own instantiation ("MyInst/WobblySuite/0.case") --
+# and still not cover other instantiations' typed variants.
+write_list "$LIST" "$(entry 'MyInst/WobblySuite.*' PROF-1 "$(day_offset 30)")"
+result=$(python3 -c "
+import sys; sys.path.insert(0, '$SCRIPTS')
+import quarantine
+entries = quarantine.load('$LIST')
+covered = quarantine.find_entry(entries, 'MyInst/WobblySuite/0.test_baz', 'any') is not None
+other = quarantine.find_entry(entries, 'OtherInst/WobblySuite/0.test_baz', 'any') is not None
+print('ok' if covered and not other else 'covered=%s other=%s' % (covered, other))
+")
+[ "$result" = "ok" ] || fail "decorated entry typed-variant coverage wrong: $result"
+pass "a decorated entry covers its own instantiation's typed variants only"
+
+result=$(python3 -c "
+import sys; sys.path.insert(0, '$SCRIPTS')
+import quarantine
+entries = quarantine.load('$LIST')
+# A different suite, a longer suite name, and another instantiation's own
+# suite must stay gating -- the wildcard is one suite, not a prefix.
+uncovered = [t for t in ['OtherSuite.test_foo', 'WobblySuiteNested.test_foo']
+             if quarantine.find_entry(entries, t, 'glibc-asan-amd64') is None]
+print('ok' if len(uncovered) == 2 else 'overcovered: %s' % uncovered)
+")
+[ "$result" = "ok" ] || fail "$result"
+pass "a gtest class wildcard does not swallow other suites or name prefixes"
+
+# The gtest cells are three tokens (no jdk axis); the arch is spelled aarch64
+# like every other cell, and validation must reject the runner tag's arm64.
+write_list "$LIST" "$(entry 'WobblySuite.*' PROF-1 "$(day_offset 30)" 'glibc-asan-*')"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null \
+  || fail "a gtest 3-token cell glob should be valid"
+pass "a glibc-<config>-<arch> gtest cell glob is valid"
+
+write_list "$LIST" "$(entry 'WobblySuite.*' PROF-1 "$(day_offset 30)" 'glibc-asan-arm64')"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null 2>&1; then
+  fail "a cell glob naming arm64 (CI builds aarch64) should be rejected"
+fi
+pass "the GitLab runner tag's arm64 spelling is rejected as a cell glob"
+
+# Two entries for one suite on genuinely disjoint gtest configs are not
+# duplicates; on the same config they are (find_entry honours the first).
+write_list "$LIST" \
+  "$(entry 'WobblySuite.*' PROF-1 "$(day_offset 30)" 'glibc-asan-*')" \
+  "$(entry 'WobblySuite.*' PROF-2 "$(day_offset 30)" 'glibc-tsan-*')"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null \
+  || fail "disjoint gtest configs should not read as duplicate entries"
+pass "disjoint gtest config globs are not flagged as duplicates"
+
+write_list "$LIST" \
+  "$(entry 'WobblySuite.*' PROF-1 "$(day_offset 30)" 'glibc-asan-*')" \
+  "$(entry 'WobblySuite.*' PROF-2 "$(day_offset 30)" 'glibc-asan-amd64')"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null 2>&1; then
+  fail "overlapping gtest cells should read as duplicate entries"
+fi
+pass "overlapping gtest config globs are flagged as duplicates"
+
+# A decorated gtest class-wide entry ("MyInst/WobblySuite.*") is valid and
+# NARROWER than the bare-suite form: covers() matches it directly against the
+# decorated classname, muting only that instantiation. Both forms must stay
+# valid; pin the narrow one so a later "use the bare suite" cleanup cannot
+# silently widen existing entries.
+write_list "$LIST" "$(entry 'MyInst/WobblySuite.*' PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null \
+  || fail "a decorated gtest class-wide entry should be valid (it is the narrower form)"
+pass "a decorated gtest class-wide entry is valid"
+
+# covers() must not degenerate into prefix-matching beyond one method
+# segment: 'a.B.*' covers 'a.B.c' but not 'a.B.c.d' (a nested-class id).
+write_list "$LIST" "$(entry 'a.B.*' PROF-1 "$(day_offset 30)")"
+result=$(python3 -c "
+import sys; sys.path.insert(0, '$SCRIPTS')
+import quarantine
+entries = quarantine.load('$LIST')
+print('hit' if quarantine.find_entry(entries, 'a.B.c.d', 'any') else 'miss')
+")
+[ "$result" = "miss" ] || fail "a.B.* must not cover the nested id a.B.c.d, got: $result"
+pass "a class wildcard does not swallow nested-class ids"
+
+# End-to-end through flake_report.py on gtest-shaped evidence: the quarantined
+# suite failure is excused on its cell, and still gates on another cell.
+CASE="$TEMP_DIR/case-gtest-report"
+EV="$CASE/evidence"
+mkdir -p "$EV/attempt-1"
+write_gtest_xml "$EV/attempt-1" "MyInst/WobblySuite" "fails/0" "" "Expected 2 samples, got 0"
+write_list "$CASE/list.txt" "$(entry 'WobblySuite.*' PROF-1 "$(day_offset 30)" 'glibc-asan-*')"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell glibc-asan-amd64 --evidence-dir "$EV" --final-attempt 1 \
+  --out "$CASE/out.json" --final-attempt-exit-code 1 >/dev/null \
+  || fail "flake_report.py must classify gtest evidence without error"
+python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d['gates'] is False, d
+assert d['quarantined'][0]['test'] == 'MyInst/WobblySuite.fails/0', d
+assert d['quarantined'][0]['ticket'] == 'PROF-1', d
+" "$CASE/out.json" \
+  || fail "a quarantined gtest failure must be excused on its own cell"
+pass "a quarantined gtest failure is excused on glibc-asan-amd64"
+
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell glibc-tsan-amd64 --evidence-dir "$EV" --final-attempt 1 \
+  --out "$CASE/out-tsan.json" --final-attempt-exit-code 1 >/dev/null
+python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d['gates'] is True, d
+" "$CASE/out-tsan.json" \
+  || fail "a gtest failure quarantined for asan must still gate on tsan"
+pass "a gtest failure quarantined for asan still gates on the tsan cell"
+
+# gtest marks a test that never ran (DISABLED_) with status="notrun". It is
+# not evidence it passed: a failure from another attempt must not read as
+# flaky just because a notrun record for the same id showed up elsewhere.
+CASE="$TEMP_DIR/case-gtest-notrun"
+EV="$CASE/evidence"
+mkdir -p "$EV/attempt-1" "$EV/attempt-2"
+write_gtest_xml "$EV/attempt-1" "WobblySuite" "sometimes_fails" "" "boom"
+write_gtest_xml "$EV/attempt-2" "WobblySuite" "sometimes_fails" "notrun"
+write_list "$CASE/list.txt"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell glibc-asan-amd64 --evidence-dir "$EV" --final-attempt 2 \
+  --out "$CASE/out.json" --final-attempt-exit-code 1 >/dev/null
+python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert not d['flaky'], d
+assert d['gates'] is True, d
+" "$CASE/out.json" \
+  || fail "a status=notrun record must not turn a persistent gtest failure flaky"
+pass "gtest status=notrun is not read as a pass on retry"
+
+# The full runner, pointed at a gtest results dir: one failing binary, all
+# quarantined -- green. Without the RESULTS_DIR override the wrapper would
+# classify an empty Java results tree instead of the gtest XML.
+CASE="$TEMP_DIR/case-gtest-runner"
+mkdir -p "$CASE"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+OUT=ddprof-lib/build/test-results/gtest/asan
+mkdir -p "\$OUT"
+$(declare -f write_gtest_xml)
+write_gtest_xml "\$OUT" "MyInst/WobblySuite" "fails/0" "" "Expected 2 samples, got 0"
+exit 1
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt" "$(entry 'WobblySuite.*' PROF-1 "$(day_offset 30)" 'glibc-asan-*')"
+set +e
+(cd "$CASE" && RESULTS_DIR=ddprof-lib/build/test-results/gtest/asan \
+  "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-asan-amd64" -- ./suite.sh >/dev/null 2>&1)
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "a quarantined gtest failure must not fail the job (got exit $rc)"
+python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d['gates'] is False and d['quarantined'][0]['test'] == 'MyInst/WobblySuite.fails/0', d
+" "$CASE/ci-outcome/glibc-asan-amd64.json" \
+  || fail "the gtest cell's outcome JSON must record the quarantined gtest id"
+pass "run_tests_with_retry.sh classifies gtest XML via the RESULTS_DIR override"
+
+# Same shape, not quarantined: the job stays red.
+CASE="$TEMP_DIR/case-gtest-runner-gating"
+mkdir -p "$CASE"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+OUT=ddprof-lib/build/test-results/gtest/asan
+mkdir -p "\$OUT"
+$(declare -f write_gtest_xml)
+write_gtest_xml "\$OUT" "MyInst/WobblySuite" "fails/0" "" "Expected 2 samples, got 0"
+exit 1
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt"
+set +e
+(cd "$CASE" && RESULTS_DIR=ddprof-lib/build/test-results/gtest/asan \
+  "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-asan-amd64" -- ./suite.sh >/dev/null 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "an un-quarantined gtest failure must fail the job (got exit $rc)"
+pass "an un-quarantined gtest failure fails the job"
+
+# Regression (PR review): a gtest binary aborted by a sanitizer diagnostic
+# exits 66 WITHOUT writing its XML -- no signal, so the >128 exit check
+# cannot see it, and both attempts miss the same tests, so neither can the
+# observed-shortfall check. The runner prints an ABORTED marker line instead;
+# the classifier must read it as a cut-short run and keep the job red even
+# though the only NAMED failure is quarantined.
+CASE="$TEMP_DIR/case-gtest-abort-not-excused"
+mkdir -p "$CASE"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+$(declare -f write_failure_xml)
+write_failure_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails" "got 2 samples, wanted 50"
+echo "ABORTED: sanitizer_beta_ut exited 66 without producing test results"
+exit 66
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+set +e
+output=$(cd "$CASE" && "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-tsan-amd64" -- ./suite.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a sanitizer abort with only quarantined named failures must not be excused (got exit $rc)"
+echo "$output" | grep -q "ABORTED: sanitizer_beta_ut exited 66" \
+  || fail "expected the ABORTED marker to be visible in the job output, got: $output"
+pass "a sanitizer abort is not excused by another binary's quarantined failures"
+
+# The musl cut-short pattern is a separate branch in flake_report.py's
+# cut_short_marker(); a sanitizer abort on a musl cell must gate exactly
+# like the glibc case above.
+CASE="$TEMP_DIR/case-gtest-abort-not-excused-musl"
+mkdir -p "$CASE"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+$(declare -f write_failure_xml)
+write_failure_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails" "got 2 samples, wanted 50"
+echo "ABORTED: sanitizer_beta_ut exited 66 without producing test results"
+exit 66
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+set +e
+(cd "$CASE" && "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "musl-11-debug-amd64" -- ./suite.sh >/dev/null 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a sanitizer abort must gate on a musl cell too (got exit $rc)"
+pass "a sanitizer abort is not excused on a musl cell"
+
 echo
 echo "All $TESTS quarantine tests passed."

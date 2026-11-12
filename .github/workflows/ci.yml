@@ -64,12 +64,15 @@ jobs:
             .gitlab/scripts/build.sh \
             .gitlab/scripts/check-abi-floor.sh \
             .gitlab/scripts/tests/check_abi_floor_test.sh \
-            .gitlab/scripts/tests/includes_test.sh
+            .gitlab/scripts/tests/includes_test.sh \
+            .gitlab/scripts/tests/test_run_gtest_quarantine.sh
           shellcheck \
             .gitlab/scripts/check-abi-floor.sh \
-            .gitlab/scripts/tests/check_abi_floor_test.sh
+            .gitlab/scripts/tests/check_abi_floor_test.sh \
+            .gitlab/scripts/tests/test_run_gtest_quarantine.sh
           bash .gitlab/scripts/tests/check_abi_floor_test.sh
           bash .gitlab/scripts/tests/includes_test.sh
+          bash .gitlab/scripts/tests/test_run_gtest_quarantine.sh
 
   # Fails when a quarantine entry is malformed, ticketless, or past its
   # review_by date. Without this the list only ever grows, and a quarantine
@@ -184,6 +187,38 @@ jobs:
       - name: Check
         run: |
           ./gradlew spotlessCheck --no-daemon --parallel --build-cache --no-watch-fs
+
+  build-logic-tests:
+    runs-on: ubuntu-22.04
+    needs: check-for-pr
+    if: needs.check-for-pr.outputs.skip != 'true'
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Java
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Test build conventions
+        run: |
+          ./.claude/commands/build-and-summarize -p build-logic :conventions:test --max-workers=2 --no-build-cache --no-daemon --no-watch-fs
+
+      - name: Upload build logic failure reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-logic-test-failures
+          path: |
+            build/logs/
+            build-logic/conventions/build/test-results/test/*.xml
+          if-no-files-found: warn
 
   source-invariant-checks:
     runs-on: ubuntu-22.04
