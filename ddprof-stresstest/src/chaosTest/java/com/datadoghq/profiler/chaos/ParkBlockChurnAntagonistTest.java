@@ -4,6 +4,7 @@
  */
 package com.datadoghq.profiler.chaos;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -113,7 +114,10 @@ class ParkBlockChurnAntagonistTest {
               InvocationTargetException.class, () -> type.getMethod("start").invoke(workload));
       assertTrue(failure.getCause() instanceof IllegalStateException, failure.toString());
       assertTrue(
-          failure.getCause().getCause() instanceof ClassNotFoundException, failure.toString());
+          failure.getCause().getCause() instanceof IllegalStateException, failure.toString());
+      assertEquals(
+          "Datadog agent class loader is not initialized",
+          failure.getCause().getCause().getMessage());
     }
   }
 
