@@ -1335,6 +1335,14 @@ public:
         return t->_heap_floor_sample_seq;
     }
 };
+// RAII handle for the accessor-owned KlassCountScratch: frees on every exit, an ASSERT_*
+// early return included. Converts to the accessor's void* handle implicitly.
+struct ScratchGuard {
+    void *p;
+    ~ScratchGuard() { LivenessTrackerTestAccessor::freeScratchForTest(p); }
+    operator void *() const { return p; }
+};
+
 
 TEST_F(SelectLeakCandidatesTest, LateAllocatingThreadCanQualifyAfterScratchFills) {
     LivenessTracker *tracker = LivenessTracker::instance();
@@ -1404,7 +1412,7 @@ TEST_F(SelectLeakCandidatesTest, ScratchOverflowPreservesStrongEarlyThreads) {
 // break the "replace the smallest observed retained set" contract without changing any count.
 TEST_F(SelectLeakCandidatesTest, ScratchEvictionPicksEarliestSmallestCountSlot) {
     LivenessTracker *tracker = LivenessTracker::instance();
-    void *scratch = LivenessTrackerTestAccessor::allocScratchForTest();
+    ScratchGuard scratch{LivenessTrackerTestAccessor::allocScratchForTest()};
     // Slots 0 and 1 tie at the minimum count 1; slots 2-15 hold count 5.
     LivenessTrackerTestAccessor::insertThreadGenForTest(tracker, scratch, 1, 1);
     LivenessTrackerTestAccessor::insertThreadGenForTest(tracker, scratch, 2, 1);
@@ -1432,14 +1440,13 @@ TEST_F(SelectLeakCandidatesTest, ScratchEvictionPicksEarliestSmallestCountSlot) 
     }
     EXPECT_GE(tid2_slot, 1) << "the later equal-count minimum slot must survive";
     EXPECT_EQ(1u, LivenessTrackerTestAccessor::scratchRetainedCountForTest(scratch, tid2_slot));
-    LivenessTrackerTestAccessor::freeScratchForTest(scratch);
 }
 
 // The count-tie scan must break ties toward the FEWER distinct surviving ages (keep the tid whose
 // retained set is richer), not the other way round.
 TEST_F(SelectLeakCandidatesTest, ScratchEvictionTieKeepsThreadWithMoreDistinctAges) {
     LivenessTracker *tracker = LivenessTracker::instance();
-    void *scratch = LivenessTrackerTestAccessor::allocScratchForTest();
+    ScratchGuard scratch{LivenessTrackerTestAccessor::allocScratchForTest()};
     // Slot 0: count 5 across two distinct ages. Every other slot: count 5, one age - so the
     // first age-poorer slot is the correct victim.
     const u32 two_ages[5] = {10, 11, 10, 11, 10};
@@ -1467,7 +1474,6 @@ TEST_F(SelectLeakCandidatesTest, ScratchEvictionTieKeepsThreadWithMoreDistinctAg
     for (int i = 2; i < 16; i++) {
         EXPECT_NE(100, LivenessTrackerTestAccessor::scratchTidForTest(scratch, i));
     }
-    LivenessTrackerTestAccessor::freeScratchForTest(scratch);
 }
 
 TEST(LivenessTrackerSessionTest, ResetSessionClearsOnlyRecordingGates) {
