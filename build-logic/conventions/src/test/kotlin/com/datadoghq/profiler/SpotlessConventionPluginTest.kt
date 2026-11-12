@@ -64,8 +64,10 @@ class SpotlessConventionPluginTest {
     singleProject(javaFirst = false, javaConventions = true)
     write("src/main/java/Java8Fixture.java", JAVA8)
     val before = read("src/main/java/Java8Fixture.java")
-    formattingFailure(run("check", fails = true))
-    assertEquals(before, read("src/main/java/Java8Fixture.java"))
+    for (task in listOf("spotlessJavaCheck", "spotlessCheck", "check")) {
+      formattingFailure(run(task, fails = true))
+      assertEquals(before, read("src/main/java/Java8Fixture.java"))
+    }
     assertEquals(TaskOutcome.SUCCESS, run("spotlessJavaApply").task(":spotlessJavaApply")?.outcome)
     val formatted = read("src/main/java/Java8Fixture.java")
     assertNotEquals(before, formatted)
@@ -86,6 +88,8 @@ class SpotlessConventionPluginTest {
     assertTrue(formatted.contains("default String name()"), formatted)
     val checked = run("check", "verifyJava8Options")
     assertEquals(TaskOutcome.SUCCESS, checked.task(":spotlessJavaCheck")?.outcome)
+    assertEquals(TaskOutcome.SUCCESS, checked.task(":spotlessCheck")?.outcome)
+    assertEquals(TaskOutcome.SUCCESS, checked.task(":check")?.outcome)
     assertEquals(TaskOutcome.SUCCESS, checked.task(":compileJava")?.outcome)
     assertEquals(TaskOutcome.SUCCESS, checked.task(":verifyJava8Options")?.outcome)
     val classfile = Files.readAllBytes(root.resolve("build/classes/java/main/Java8Fixture.class"))
@@ -199,6 +203,8 @@ class SpotlessConventionPluginTest {
 
   /** Optional cache/offline controls let the same real plugin tests run in isolated matrix cells. */
   private fun run(vararg arguments: String, fails: Boolean = false): BuildResult {
+    val javaHome = File(System.getProperty("java.home")).canonicalPath
+    System.getenv("JAVA_HOME")?.let { assertEquals(File(it).canonicalPath, javaHome) }
     val expected = System.getenv("FORMATTER_EXPECTED_BUILD_JVM") ?: System.getProperty("java.specification.version")
     require(expected.toInt() >= 21) { "The formatter requires a build JDK of 21 or newer" }
     val testKitDir = System.getenv("FORMATTER_TESTKIT_DIR")
@@ -206,7 +212,7 @@ class SpotlessConventionPluginTest {
     write("jvm-receipt.init.gradle", """
       gradle.settingsEvaluated {
         println('FORMATTER_BUILD_JVM=' + System.getProperty('java.specification.version'))
-        println('FORMATTER_JAVA_HOME=' + System.getProperty('java.home'))
+        println('FORMATTER_JAVA_HOME=' + new File(System.getProperty('java.home')).canonicalPath)
         println('FORMATTER_GRADLE=' + gradle.gradleVersion)
         println('FORMATTER_GRADLE_USER_HOME=' + gradle.gradleUserHomeDir)
       }
@@ -217,11 +223,12 @@ class SpotlessConventionPluginTest {
       .forwardOutput()
       .withArguments(arguments.toList() + offline + listOf(
         "--stacktrace", "--no-build-cache", "--rerun-tasks", "--no-configuration-cache",
-        "--max-workers=1", "--init-script", "jvm-receipt.init.gradle"
+        "--max-workers=1", "--init-script", "jvm-receipt.init.gradle", "-Dorg.gradle.java.home=$javaHome"
       ))
     if (testKitDir != null) runner.withTestKitDir(File(testKitDir))
     val result = if (fails) runner.buildAndFail() else runner.build()
     assertTrue(result.output.lineSequence().any { it == "FORMATTER_BUILD_JVM=$expected" }, result.output)
+    assertTrue(result.output.lineSequence().any { it == "FORMATTER_JAVA_HOME=$javaHome" }, result.output)
     return result
   }
 

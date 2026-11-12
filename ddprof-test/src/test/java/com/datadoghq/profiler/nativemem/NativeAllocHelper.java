@@ -5,11 +5,11 @@
 package com.datadoghq.profiler.nativemem;
 
 final class NativeAllocHelper {
-    static {
-        System.loadLibrary("ddproftest");
-    }
+  static {
+    System.loadLibrary("ddproftest");
+  }
 
-    static native void nativeMalloc(long size, int count);
+  static native void nativeMalloc(long size, int count);
 
-    private NativeAllocHelper() {}
+  private NativeAllocHelper() {}
 }

@@ -63,8 +63,25 @@ status_emoji() {
 }
 
 # --- Fetch job data ---
+# `gh api --paginate` asks for 100 items per page unless the URL sets
+# per_page, and GitHub answers that page of a large run's job list (e.g. once
+# a job has been re-run) with HTTP 502; 50 per page works. A failed listing
+# is also retried, since GitHub's 5xx can be transient.
+JOBS_PER_PAGE=50
+FETCH_ATTEMPTS=3
+FETCH_RETRY_DELAY="${SUMMARY_FETCH_RETRY_DELAY:-10}"
 log "Fetching job data for run $RUN_ID..."
-jobs_json=$(gh api "/repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate -q '.jobs')
+for attempt in $(seq 1 "$FETCH_ATTEMPTS"); do
+    if jobs_json=$(gh api "/repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=$JOBS_PER_PAGE" --paginate -q '.jobs'); then
+        break
+    fi
+    if [ "$attempt" -eq "$FETCH_ATTEMPTS" ]; then
+        log "Could not list the jobs of run $RUN_ID after $FETCH_ATTEMPTS attempts"
+        exit 1
+    fi
+    log "Listing jobs failed (attempt $attempt of $FETCH_ATTEMPTS); retrying in ${FETCH_RETRY_DELAY}s"
+    sleep "$FETCH_RETRY_DELAY"
+done
 
 # --- Parse test jobs ---
 log "Parsing test job statuses..."

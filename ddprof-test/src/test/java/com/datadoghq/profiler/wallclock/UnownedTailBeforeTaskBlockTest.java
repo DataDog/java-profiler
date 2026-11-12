@@ -5,6 +5,9 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfilerTestSupport;
 import com.datadoghq.profiler.JfrEvent;
@@ -13,9 +16,6 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Verifies that entering an owned block preserves the preceding weighted wall-clock tail. */
 public class UnownedTailBeforeTaskBlockTest extends AbstractProfilerTest {
@@ -27,8 +27,9 @@ public class UnownedTailBeforeTaskBlockTest extends AbstractProfilerTest {
     long threadId = Thread.currentThread().getId();
     Path snapshot = Files.createTempFile("unowned-before-taskblock-", ".jfr");
     try {
-      assertTrue(JavaProfilerTestSupport.recordUnownedWallTailBeforeOwnedBlockForTest(
-          snapshot.toString(), producer));
+      assertTrue(
+          JavaProfilerTestSupport.recordUnownedWallTailBeforeOwnedBlockForTest(
+              snapshot.toString(), producer));
       stopProfiler();
       long tailWeight = 0;
       for (JfrEvent event : verifyEvents("datadog.MethodSample")) {
@@ -37,7 +38,8 @@ public class UnownedTailBeforeTaskBlockTest extends AbstractProfilerTest {
             && "UNKNOWN".equals(event.getString("mode"))) {
           tailWeight += event.getLong(WEIGHT, 0);
           String stack = event.getStackTraceString();
-          assertTrue(stack != null && stack.contains("UnownedTailBeforeTaskBlockTest"),
+          assertTrue(
+              stack != null && stack.contains("UnownedTailBeforeTaskBlockTest"),
               "The replayed tail must retain its stack across chunk rotation");
         }
       }

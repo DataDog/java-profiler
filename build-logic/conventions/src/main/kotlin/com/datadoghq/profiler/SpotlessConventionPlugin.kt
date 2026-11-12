@@ -1,4 +1,5 @@
 // Copyright 2026, Datadog, Inc.
+
 package com.datadoghq.profiler
 
 import com.diffplug.gradle.spotless.SpotlessExtension
@@ -16,8 +17,8 @@ class SpotlessConventionPlugin : Plugin<Project> {
     val configPath = project.rootProject.file("gradle").absolutePath
     val spotless = project.extensions.getByType(SpotlessExtension::class.java)
 
-    // The root applies this convention before child projects apply Java.
-    project.plugins.withId("java") {
+    // The root project can apply this convention before a subproject applies Java.
+    project.pluginManager.withPlugin("java") {
       spotless.java {
         toggleOffOn()
         target("src/**/*.java")

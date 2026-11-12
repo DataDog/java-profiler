@@ -360,8 +360,8 @@ public class PrecheckTest extends AbstractProfilerTest {
 
   @Override
   protected String getProfilerCommand() {
-    // Owned-block suppression needs unfiltered scope and no active context window.
-    // addThread() callers leave the context window through removeThread().
+    // Owned-block suppression requires unfiltered sampling outside context
+    // windows; addThread() registrations must leave their window before blocking.
     return "wall=1ms,filter=,wallprecheck=true";
   }
 

@@ -547,7 +547,11 @@ TEST_F(WallClockBlockTrackerTest, ContextEntryWithoutActiveBlockRunPreservesUnow
 
     WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
     ASSERT_NE(nullptr, block_slot);
-    EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
+    u64 token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0u, token);
+    ASSERT_TRUE(tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(token)));
+    ASSERT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
+    ASSERT_EQ(0ULL, block_slot->sampledBlockGeneration());
 
     EXPECT_TRUE(block_slot->shouldRecordUnownedBlockedSample());
     block_slot->recordUnownedBlockedSample(0xABCDULL, OSThreadState::CONDVAR_WAIT);

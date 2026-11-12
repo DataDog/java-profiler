@@ -19,6 +19,7 @@
 #include "arguments.h"
 #include "counters.h"
 #include "objectSampler.h"
+#include "os.h"
 #include "profiler.h"
 #include "referenceChainsTestAccessors.h"
 #include "vmEntry.h"
@@ -1180,14 +1181,82 @@ public:
         return t->_last_gc_epoch;
     }
 
+    // Mirrors the generations value into the effective leak-signal flag, so it
+    // CANNOT model a liveheap-only session (generations off, signal on). Use
+    // initializeGatesOnlyForTest() (real initialize() derivation) or
+    // LivenessTracker::setLeakSignalSourcesForTest() for that.
     static void setSessionGatesForTest(LivenessTracker *t, bool enabled,
                                        bool generations) {
         t->_enabled = enabled;
         t->_gc_generations.store(generations, std::memory_order_relaxed);
+        t->_leak_signal_enabled.store(generations, std::memory_order_relaxed);
     }
 
     static bool enabledForTest(LivenessTracker *t) {
         return t->_enabled;
+    }
+
+    static bool initializedForTest(LivenessTracker *t) {
+        return t->_initialized;
+    }
+
+    static u64 leakSignalActivatedNsForTest(LivenessTracker *t) {
+        return t->_leak_signal_activated_ns.load(std::memory_order_acquire);
+    }
+
+    // Runs the real (private) initialize() with _initialized forced true, so it
+    // takes the early return right after deriving the session gates - no
+    // VM/JNI/table init and no persistent _initialized flip on the singleton.
+    // Restores every other field initialize() touches ahead of that guard
+    // (_initialized, _enabled, _record_heap_usage, _watched_tid_count,
+    // _urgent_tracking and the burn-in stamp); only _gc_generations and
+    // _leak_signal_enabled keep the values initialize() derived.
+    static void initializeGatesOnlyForTest(LivenessTracker *t, Arguments &args) {
+        bool saved_initialized = t->_initialized;
+        bool saved_enabled = t->_enabled;
+        bool saved_heap_usage = t->_record_heap_usage;
+        int saved_watched = __atomic_load_n(&t->_watched_tid_count, __ATOMIC_ACQUIRE);
+        bool saved_urgent = __atomic_load_n(&t->_urgent_tracking, __ATOMIC_ACQUIRE);
+        u64 saved_stamp = t->_leak_signal_activated_ns.load(std::memory_order_acquire);
+        t->_initialized = true;
+        // Returns _stored_error from any prior real start - not under test.
+        Error ignored = t->initialize(args);
+        (void)ignored;
+        t->_initialized = saved_initialized;
+        t->_enabled = saved_enabled;
+        t->_record_heap_usage = saved_heap_usage;
+        __atomic_store_n(&t->_watched_tid_count, saved_watched, __ATOMIC_RELEASE);
+        __atomic_store_n(&t->_urgent_tracking, saved_urgent, __ATOMIC_RELEASE);
+        t->_leak_signal_activated_ns.store(saved_stamp, std::memory_order_release);
+    }
+
+    // Like initializeGatesOnlyForTest(), but presets the burn-in stamp to
+    // `preset`, runs initialize() (with _initialized forced true, so it reaches
+    // the burn-in CAS and then takes the early return), returns the stamp
+    // initialize() left behind, and restores every field it touched - the stamp
+    // included - so the singleton is unchanged afterwards (only
+    // _gc_generations and _leak_signal_enabled keep the derived values, as in
+    // initializeGatesOnlyForTest()).
+    static u64 stampAfterInitializeForTest(LivenessTracker *t, Arguments &args, u64 preset) {
+        bool saved_initialized = t->_initialized;
+        bool saved_enabled = t->_enabled;
+        bool saved_heap_usage = t->_record_heap_usage;
+        int saved_watched = __atomic_load_n(&t->_watched_tid_count, __ATOMIC_ACQUIRE);
+        bool saved_urgent = __atomic_load_n(&t->_urgent_tracking, __ATOMIC_ACQUIRE);
+        u64 saved_stamp = t->_leak_signal_activated_ns.load(std::memory_order_acquire);
+        t->_leak_signal_activated_ns.store(preset, std::memory_order_release);
+        t->_initialized = true;
+        // Returns _stored_error from any prior real start - not under test.
+        Error ignored = t->initialize(args);
+        (void)ignored;
+        u64 result = t->_leak_signal_activated_ns.load(std::memory_order_acquire);
+        t->_initialized = saved_initialized;
+        t->_enabled = saved_enabled;
+        t->_record_heap_usage = saved_heap_usage;
+        __atomic_store_n(&t->_watched_tid_count, saved_watched, __ATOMIC_RELEASE);
+        __atomic_store_n(&t->_urgent_tracking, saved_urgent, __ATOMIC_RELEASE);
+        t->_leak_signal_activated_ns.store(saved_stamp, std::memory_order_release);
+        return result;
     }
 
     static bool entryAgeAndAdmissionForTest(LivenessTracker *t, u32 idx,
@@ -1200,6 +1269,40 @@ public:
         *age = t->_table[idx].age;
         *admission_epoch = t->_table[idx].admission_epoch;
         return true;
+    }
+
+    // Swaps the newest slot's ((head + ring - 1) % ring) seqlock word for
+    // `value` and returns the previous value - the same slot the reader
+    // validates in newestHeapFloorSample().
+    static u64 swapHeapFloorNewestSeqForTest(LivenessTracker *t, u64 value) {
+        constexpr int ring = LivenessTracker::KLASS_POPULATION_RING_SIZE;
+        u8 newest = (u8)((t->_heap_floor_ring_head + ring - 1) % ring);
+        u64 prev = t->_heap_floor_seq_ring[newest];
+        t->_heap_floor_seq_ring[newest] = value;
+        return prev;
+    }
+
+    // Stores `value` into seq slot `idx` and returns the previous value.
+    static u64 swapHeapFloorSeqAtForTest(LivenessTracker *t, u8 idx, u64 value) {
+        u64 prev = t->_heap_floor_seq_ring[idx];
+        t->_heap_floor_seq_ring[idx] = value;
+        return prev;
+    }
+
+    static u8 heapFloorWindowHeadForTest(LivenessTracker *t, u8 head, u8 *fill) {
+        return t->heapFloorWindowHead(head, fill);
+    }
+
+    static u8 heapFloorRingHeadForTest(LivenessTracker *t) {
+        return t->_heap_floor_ring_head;
+    }
+
+    static u8 heapFloorRingFillForTest(LivenessTracker *t) {
+        return t->_heap_floor_ring_fill;
+    }
+
+    static u64 heapFloorSampleSeqForTest(LivenessTracker *t) {
+        return t->_heap_floor_sample_seq;
     }
 };
 
@@ -1267,6 +1370,241 @@ TEST(LivenessTrackerSessionTest, ResetSessionClearsOnlyRecordingGates) {
     tracker->resetSession();
     EXPECT_FALSE(LivenessTrackerTestAccessor::enabledForTest(tracker));
     EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_FALSE(tracker->leakSignalEnabled());
+}
+
+// hasLeakSignal() must never authorize a search without a leak-signal source:
+// with neither generations nor liveheap+referencechains active, the population
+// table and heap-floor ring never fill, and searching would run whole-heap BFS
+// passes with zero candidates, growing the frontier table to its cap while
+// emitting nothing.
+TEST(LivenessTrackerSessionTest, LeakSignalRequiresGenerationsOrLiveness) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/false, /*generations=*/false);
+    EXPECT_FALSE(tracker->leakSignalEnabled());
+
+    // Liveheap plus referencechains is a sufficient source: driven through the
+    // real initialize() derivation from parsed arguments, which
+    // setSessionGatesForTest cannot model.
+    Arguments live;
+    ASSERT_FALSE(live.parse("memory=1048576:l,referencechains=true"));
+    ASSERT_TRUE(live._record_liveness);
+    ASSERT_TRUE(live._reference_chains);
+    ASSERT_FALSE(live._gc_generations);
+    u64 stamp_before = LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker);
+    bool initialized_before = LivenessTrackerTestAccessor::initializedForTest(tracker);
+    bool enabled_before = LivenessTrackerTestAccessor::enabledForTest(tracker);
+    LivenessTrackerTestAccessor::initializeGatesOnlyForTest(tracker, live);
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_TRUE(tracker->leakSignalEnabled())
+        << "initialize() must derive the leak signal from generations || (liveheap && referencechains)";
+    // The helper restores every non-gate field it touched.
+    EXPECT_EQ(stamp_before, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker));
+    EXPECT_EQ(initialized_before, LivenessTrackerTestAccessor::initializedForTest(tracker));
+    EXPECT_EQ(enabled_before, LivenessTrackerTestAccessor::enabledForTest(tracker));
+
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/false, /*generations=*/false);
+}
+
+// initialize() derives the gates: gcGenerationsEnabled() == generations,
+// leakSignalEnabled() == generations || (liveheap && referencechains). The
+// collector is the signal's only consumer, so liveheap alone must not arm it.
+TEST(LivenessTrackerSessionTest, LeakSignalDerivedByInitialize) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    struct Row {
+        const char *spec;
+        bool liveness;
+        bool generations;
+        bool refchains;
+        bool expect_signal;
+    };
+    const Row rows[] = {
+        {"memory=1048576:l", true, false, false, false},
+        {"memory=1048576:l,referencechains=true", true, false, true, true},
+        {"generations=true", false, true, false, true},
+        {"generations=true,memory=1048576:l", true, true, false, true},
+        {"memory=1048576:a", false, false, false, false},
+    };
+    for (const Row &row : rows) {
+        Arguments args;
+        ASSERT_FALSE(args.parse(row.spec)) << "row " << row.spec;
+        ASSERT_EQ(row.liveness, args._record_liveness) << "row " << row.spec;
+        ASSERT_EQ(row.generations, args._gc_generations) << "row " << row.spec;
+        ASSERT_EQ(row.refchains, args._reference_chains) << "row " << row.spec;
+        bool initialized_before = LivenessTrackerTestAccessor::initializedForTest(tracker);
+        bool enabled_before = LivenessTrackerTestAccessor::enabledForTest(tracker);
+        u64 stamp_before = LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker);
+        LivenessTrackerTestAccessor::initializeGatesOnlyForTest(tracker, args);
+        EXPECT_EQ(row.generations, tracker->gcGenerationsEnabled()) << "row " << row.spec;
+        EXPECT_EQ(row.expect_signal, tracker->leakSignalEnabled()) << "row " << row.spec;
+        EXPECT_EQ(initialized_before, LivenessTrackerTestAccessor::initializedForTest(tracker))
+            << "row " << row.spec;
+        EXPECT_EQ(enabled_before, LivenessTrackerTestAccessor::enabledForTest(tracker))
+            << "row " << row.spec;
+        EXPECT_EQ(stamp_before, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+            << "row " << row.spec;
+    }
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/false, /*generations=*/false);
+    EXPECT_FALSE(tracker->leakSignalEnabled());
+}
+
+// The burn-in stamp (_leak_signal_activated_ns) marks the first EFFECTIVE
+// leak-signal activation: initialize() must gate its CAS on the derived leak
+// signal (generations || (liveheap && referencechains)), not on the coarser
+// _enabled (generations || liveheap). A plain liveheap start stamping it would
+// let a later reference-chain recording inherit an already-expired burn-in.
+// A pre-existing stamp is never overwritten. Every row runs with _initialized
+// forced true, so a stamp proves the CAS sits ahead of the early return.
+TEST(LivenessTrackerSessionTest, BurnInStampFollowsEffectiveLeakSignal) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    constexpr u64 SENTINEL = 0x1234ULL;
+    struct Row {
+        const char *spec;
+        u64 preset;
+        bool expect_fresh_stamp; // true: non-zero, != preset; false: == preset
+    };
+    const Row rows[] = {
+        {"memory=1048576:l", 0, false},
+        {"memory=1048576:l,referencechains=true", 0, true},
+        {"generations=true", 0, true},
+        {"generations=true,memory=1048576:l", 0, true},
+        {"memory=1048576:a", 0, false},
+        {"memory=1048576:l,referencechains=true", SENTINEL, false},
+        {"generations=true", SENTINEL, false},
+        {"memory=1048576:l", SENTINEL, false},
+    };
+    for (const Row &row : rows) {
+        Arguments args;
+        ASSERT_FALSE(args.parse(row.spec)) << "row " << row.spec;
+        u64 stamp_before = LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker);
+        u64 stamp = LivenessTrackerTestAccessor::stampAfterInitializeForTest(tracker, args,
+                                                                             row.preset);
+        if (row.expect_fresh_stamp) {
+            EXPECT_NE(0u, stamp) << "row " << row.spec << " preset " << row.preset
+                                 << ": a leak-signal start must stamp the burn-in clock";
+        } else {
+            EXPECT_EQ(row.preset, stamp)
+                << "row " << row.spec << " preset " << row.preset
+                << ": the stamp must be left alone (no leak signal, or already stamped)";
+        }
+        EXPECT_EQ(stamp_before, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+            << "row " << row.spec << ": the accessor must restore the stamp";
+    }
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/false, /*generations=*/false);
+}
+
+// Reviewer scenario: a first plain liveheap recording followed (later) by a
+// liveheap + referencechains recording. The burn-in must start at the second
+// (first leak-signal) start, not at the plain liveheap start.
+TEST(LivenessTrackerSessionTest, PlainLiveheapStartDoesNotConsumeBurnIn) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    Arguments plain;
+    ASSERT_FALSE(plain.parse("memory=1048576:l"));
+    Arguments chains;
+    ASSERT_FALSE(chains.parse("memory=1048576:l,referencechains=true"));
+
+    u64 s = LivenessTrackerTestAccessor::stampAfterInitializeForTest(tracker, plain, 0);
+    EXPECT_EQ(0u, s) << "a plain liveheap start must not stamp the burn-in clock";
+
+    u64 before_second = OS::nanotime();
+    u64 s2 = LivenessTrackerTestAccessor::stampAfterInitializeForTest(tracker, chains, s);
+    EXPECT_NE(0u, s2) << "the first leak-signal start must stamp the burn-in clock";
+    EXPECT_GE(s2, before_second)
+        << "the burn-in must start at the first leak-signal start, not the plain liveheap start";
+
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/false, /*generations=*/false);
+}
+
+// setLeakSignalSourcesForTest() applies initialize()'s derivation, and
+// setGcGenerationsForTest(v) keeps setting BOTH flags to v (existing callers
+// depend on it).
+TEST(LivenessTrackerSessionTest, LeakSignalSourcesSeamMatchesDerivation) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setLeakSignalSourcesForTest(/*generations=*/false, /*liveness=*/true);
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_TRUE(tracker->leakSignalEnabled());
+    tracker->setLeakSignalSourcesForTest(/*generations=*/true, /*liveness=*/false);
+    EXPECT_TRUE(tracker->gcGenerationsEnabled());
+    EXPECT_TRUE(tracker->leakSignalEnabled());
+    tracker->setLeakSignalSourcesForTest(/*generations=*/false, /*liveness=*/false);
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_FALSE(tracker->leakSignalEnabled());
+    tracker->setGcGenerationsForTest(true);
+    EXPECT_TRUE(tracker->gcGenerationsEnabled());
+    EXPECT_TRUE(tracker->leakSignalEnabled());
+    tracker->setGcGenerationsForTest(false);
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_FALSE(tracker->leakSignalEnabled());
+}
+
+// Profiler::start() calls disableChainOnlyLeakSignal() whenever referencechains was requested but
+// the chain tracker did not activate (alloc engine not activated, or tracker start failed). It
+// must clear ONLY the chain-only leg: the flag and the burn-in stamp go when chains armed the
+// signal without a consumer, and both survive untouched when generations keeps its own consumer.
+// The SENTINEL is set AFTER initializeGatesOnlyForTest() because that seam restores the burn-in
+// stamp (but keeps the derived session gates).
+TEST(LivenessTrackerSessionTest, DisableChainOnlyLeakSignalClearsOnlyChainLeg) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    constexpr u64 SENTINEL = 0x5678ULL;
+    u64 saved_stamp = LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker);
+
+    // Row 1 - chain-only via the real initialize() derivation: liveheap + referencechains arms
+    // the signal without generations; the call must clear both the flag and the burn-in stamp.
+    {
+        Arguments args;
+        ASSERT_FALSE(args.parse("memory=1048576:l,referencechains=true"));
+        LivenessTrackerTestAccessor::initializeGatesOnlyForTest(tracker, args);
+        ASSERT_FALSE(tracker->gcGenerationsEnabled());
+        ASSERT_TRUE(tracker->leakSignalEnabled());
+        tracker->setLeakSignalActivatedNsForTest(SENTINEL);
+        tracker->disableChainOnlyLeakSignal();
+        EXPECT_FALSE(tracker->gcGenerationsEnabled());
+        EXPECT_FALSE(tracker->leakSignalEnabled())
+            << "a chain-only leak signal must be cleared when chains did not activate";
+        EXPECT_EQ(0u, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+            << "the burn-in stamp must be unstamped so a later chains start re-stamps";
+    }
+
+    // Row 2 - generations on: the generations leg keeps its own consumer, so the early-return
+    // guard must leave BOTH the flag and the stamp alone.
+    {
+        Arguments args;
+        ASSERT_FALSE(args.parse("generations=true,referencechains=true"));
+        LivenessTrackerTestAccessor::initializeGatesOnlyForTest(tracker, args);
+        ASSERT_TRUE(tracker->gcGenerationsEnabled());
+        ASSERT_TRUE(tracker->leakSignalEnabled());
+        tracker->setLeakSignalActivatedNsForTest(SENTINEL);
+        tracker->disableChainOnlyLeakSignal();
+        EXPECT_TRUE(tracker->gcGenerationsEnabled());
+        EXPECT_TRUE(tracker->leakSignalEnabled())
+            << "the generations leg must keep its leak signal";
+        EXPECT_EQ(SENTINEL, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+            << "the generations burn-in stamp must be preserved";
+    }
+
+    // Row 3 - unarmed / resetSession() state (alloc engine never started LivenessTracker): the
+    // call is idempotent and still clears a stale stamp left from an earlier start.
+    {
+        tracker->resetSession();
+        ASSERT_FALSE(tracker->leakSignalEnabled());
+        tracker->setLeakSignalActivatedNsForTest(SENTINEL);
+        tracker->disableChainOnlyLeakSignal();
+        EXPECT_FALSE(tracker->leakSignalEnabled());
+        EXPECT_EQ(0u, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+            << "a stale burn-in stamp must not survive a chains-less session";
+    }
+
+    // Restore the entry stamp and reset the session gates (singleton hygiene).
+    tracker->setLeakSignalActivatedNsForTest(saved_stamp);
+    LivenessTrackerTestAccessor::setSessionGatesForTest(
+        tracker, /*enabled=*/false, /*generations=*/false);
+    EXPECT_FALSE(tracker->leakSignalEnabled());
 }
 
 // cleanup_table() calls VM::jni(), so install a fake JavaVM.
@@ -1389,13 +1727,22 @@ protected:
         installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
         LivenessTracker::instance()->klassPopulationResetForTest();
         LivenessTracker::instance()->setGcGenerationsForTest(true);
+        // Past the burn-in (gtest never runs initialize(), so nothing stamps it).
+        LivenessTracker::instance()->setLeakSignalActivatedNsForTest(backdatedStamp());
     }
 
     void TearDown() override {
         LivenessTracker::instance()->klassPopulationResetForTest();
         LivenessTracker::instance()->setGcGenerationsForTest(false);
         LivenessTracker::instance()->setMaxHeapBytesForTest(-1);
+        // 0 = "never activated"; the next start() re-stamps it through the CAS from 0.
+        LivenessTracker::instance()->setLeakSignalActivatedNsForTest(0);
         restoreDefaultSignalHandlers();
+    }
+
+    // A burn-in stamp one second past OOM_PROJECTION_BURN_IN_NS (modular u64).
+    static u64 backdatedStamp() {
+        return OS::nanotime() - LivenessTracker::OOM_PROJECTION_BURN_IN_NS - SEC_NS;
     }
 
     // Ten samples, one second apart, growing by 100MiB each: earliest third
@@ -1535,6 +1882,451 @@ TEST_F(SecondsToOOMTest, FloorAtMaxHeapReturnsZero) {
 
     EXPECT_EQ(tracker->secondsToOOM(), 0.0);
 }
+
+// Within OOM_PROJECTION_BURN_IN_NS of activation no projection is offered, even
+// for a history that projects cleanly once the burn-in has passed.
+TEST_F(SecondsToOOMTest, BurnInWithholdsProjection) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setLeakSignalActivatedNsForTest(OS::nanotime());
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    seedRisingFloor(tracker);
+    EXPECT_LT(tracker->secondsToOOM(), 0.0) << "projection must be withheld during burn-in";
+
+    tracker->setLeakSignalActivatedNsForTest(backdatedStamp());
+    EXPECT_NEAR(tracker->secondsToOOM(), 9.0, 1e-6);
+}
+
+// A 0 stamp means "never activated", not "activated at the epoch" (which would
+// make the modular age equal nanotime() and usually exceed the burn-in).
+TEST_F(SecondsToOOMTest, NeverActivatedWithholdsProjection) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setLeakSignalActivatedNsForTest(0);
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    seedRisingFloor(tracker);
+    EXPECT_LT(tracker->secondsToOOM(), 0.0);
+}
+
+// The burn-in stamp is per process: neither the ring resets nor
+// resetSession() may zero or re-stamp it.
+TEST_F(SecondsToOOMTest, StampSurvivesResetSeams) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    bool enabled_before = LivenessTrackerTestAccessor::enabledForTest(tracker);
+    u64 stamp = LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker);
+    ASSERT_NE(0u, stamp);
+
+    tracker->klassPopulationResetForTest();
+#ifdef DEBUG
+    tracker->setHeapFloorRecordingForTest(false);
+    tracker->heapFloorResetForTest();
+    tracker->setHeapFloorRecordingForTest(true);
+#endif
+    tracker->resetSession();
+    // resetSession() clears _enabled and both gates; re-arm the signal and
+    // restore _enabled in one call so neither leaks into later tests.
+    LivenessTrackerTestAccessor::setSessionGatesForTest(tracker, enabled_before,
+                                                       /*generations=*/true);
+    EXPECT_EQ(stamp, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker));
+
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    seedRisingFloor(tracker);
+    EXPECT_NEAR(tracker->secondsToOOM(), 9.0, 1e-6);
+}
+
+// onGC() records heap-floor samples whenever the effective leak signal is on -
+// a liveheap-only session (generations off) must still feed secondsToOOM().
+TEST_F(SecondsToOOMTest, OnGCRecordsHeapFloorWithLiveheapOnlySource) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setLeakSignalSourcesForTest(/*generations=*/false, /*liveness=*/true);
+    ASSERT_FALSE(tracker->gcGenerationsEnabled());
+    ASSERT_TRUE(tracker->leakSignalEnabled());
+    // The helper EXPECTs that onGC() grew the heap-floor ring by one sample.
+    (void)LivenessTrackerTestAccessor::containerUsageRecordedByOnGC(tracker,
+                                                                    /*limit_resolved=*/false);
+}
+
+#ifdef DEBUG
+// ---------------------------------------------------------------------------
+// Heap-floor seqlock: newestHeapFloorSample() coherence
+// ---------------------------------------------------------------------------
+// The read hook fires inside the production reader between its payload
+// load and its seq validation, reproducing the writer-wraps-the-ring race
+// deterministically (a probabilistic stress loop cannot).
+struct HeapFloorWrapHook {
+    LivenessTracker *lt;
+    int calls;
+    bool fire_once;
+
+    static void invoke(void *p) {
+        HeapFloorWrapHook *h = static_cast<HeapFloorWrapHook *>(p);
+        h->calls++;
+        if (h->fire_once) {
+            LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr);
+        }
+        for (int i = 0; i < LivenessTracker::heapFloorRingSizeForTest();
+             i++) {
+            h->lt->heapFloorRecordForTest(2000 + (u64)i, 0);
+        }
+    }
+};
+
+// Clears the read hook on every exit path, including ASSERT/EXPECT failures.
+struct HeapFloorReadHookGuard {
+    ~HeapFloorReadHookGuard() {
+        LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr);
+    }
+};
+
+class HeapFloorSeqlockTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
+        LivenessTracker::instance()->setHeapFloorRecordingForTest(false);
+        LivenessTracker::instance()->heapFloorResetForTest();
+    }
+
+    void TearDown() override {
+        LivenessTracker::instance()->heapFloorResetForTest();
+        LivenessTracker::instance()->setHeapFloorRecordingForTest(true);
+        restoreDefaultSignalHandlers();
+    }
+};
+
+// The reader must never pair one sample's used value with another sample's
+// seq, even when the writer wraps the whole 30-slot ring while the reader is
+// between its two slot loads.
+TEST_F(HeapFloorSeqlockTest, NewestSampleCoherentAcrossRingWrap) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    HeapFloorReadHookGuard hook_guard;
+    lt->heapFloorRecordForTest(1000, 1);
+    u64 s0 = 0;
+    ASSERT_EQ(1000u, lt->newestHeapFloorSample(&s0));
+    ASSERT_NE(0u, s0);
+
+    HeapFloorWrapHook hook{lt, 0, /*fire_once=*/true};
+    LivenessTracker::setHeapFloorReadHookForTest(&HeapFloorWrapHook::invoke,
+                                                  &hook);
+    u64 seq = 0;
+    u64 used = lt->newestHeapFloorSample(&seq);
+    constexpr int ring = LivenessTracker::heapFloorRingSizeForTest();
+    // The interleaving really happened: the writer advanced a full ring (30
+    // samples) past the read slot while the reader was between its two loads.
+    EXPECT_EQ(1, hook.calls) << "the read hook never fired - no interleaving";
+    EXPECT_EQ((u64)ring, seq - s0) << "the writer's ring wrap never reached the read slot";
+    // Coherent pair: used must be the seq's own recorded value.
+    EXPECT_EQ(2000u + (seq - s0 - 1), used)
+        << "used and seq belong to different recorded samples";
+}
+
+// When every attempt finds the slot rewritten mid-read, the reader gives up
+// after HEAP_FLOOR_READ_ATTEMPTS tries and reports "no consistent sample"
+// (0 + HEAP_FLOOR_SEQ_UNSTABLE) instead of a torn pair. Each exhausted read
+// - and only an exhausted read - bumps HEAP_FLOOR_READ_UNSTABLE exactly once,
+// whether or not the caller asked for the seq.
+TEST_F(HeapFloorSeqlockTest, NewestSampleReportsUnstableAfterRetryBound) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    HeapFloorReadHookGuard hook_guard;
+
+    // Empty ring (SetUp reset it): 0/0, not an unstable read.
+    long long unstable = Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE);
+    u64 empty_seq = 1;
+    EXPECT_EQ(0u, lt->newestHeapFloorSample(&empty_seq));
+    EXPECT_EQ(0u, empty_seq);
+    EXPECT_EQ(unstable, Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE))
+        << "the empty-ring return must not count as an unstable read";
+
+    lt->heapFloorRecordForTest(1000, 1);
+    u64 ok_seq = 0;
+    EXPECT_EQ(1000u, lt->newestHeapFloorSample(&ok_seq));
+    EXPECT_EQ(unstable, Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE))
+        << "a successful read must not count as an unstable read";
+
+    HeapFloorWrapHook hook{lt, 0, /*fire_once=*/false};
+    LivenessTracker::setHeapFloorReadHookForTest(&HeapFloorWrapHook::invoke,
+                                                  &hook);
+    u64 seq = 0;
+    EXPECT_EQ(0u, lt->newestHeapFloorSample(&seq));
+    EXPECT_EQ(LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE, seq);
+    EXPECT_EQ(LivenessTracker::HEAP_FLOOR_READ_ATTEMPTS, hook.calls);
+    EXPECT_EQ(unstable + 1, Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE))
+        << "an exhausted read must be counted once, not per attempt";
+
+    // Same exhaustion without a seq_out (the emergency-band baseline seed's
+    // call shape) must count too.
+    unstable = Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE);
+    EXPECT_EQ(0u, lt->newestHeapFloorSample(nullptr));
+    EXPECT_EQ(unstable + 1, Counters::getCounter(HEAP_FLOOR_READ_UNSTABLE))
+        << "an exhausted read with seq_out == nullptr must be counted";
+}
+
+// A slot pinned at the sentinel models a lapped writer still mid-write on
+// the slot the current claim targets (RING_SIZE concurrent writers - the
+// only way the seq-claim guard can fail under the claim-first order). The
+// writer drops its sample (fill and the sample counter unchanged) but the
+// head claim has already advanced past the sentinel slot, which stays
+// pinned until the ring wraps back around; window reads step over it
+// (heapFloorWindowHead()).
+// heapFloorWindowHead(): a published newest slot leaves head and fill alone;
+// an in-flight newest slot (seq sentinel) steps the window end back one slot
+// and, on a full ring only, clamps fill to RING_SIZE-1 - otherwise the
+// window would start at the in-flight slot and read it as the oldest sample.
+TEST_F(HeapFloorSeqlockTest, WindowHeadExcludesInFlightSlot) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    const int ring = LivenessTracker::heapFloorRingSizeForTest();
+    struct NewestSeqRestore {
+        LivenessTracker *t;
+        bool armed;
+        u64 saved;
+        ~NewestSeqRestore() {
+            if (armed) {
+                LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(t, saved);
+            }
+        }
+    } pin{lt, false, 0};
+
+    // Non-full ring.
+    for (int i = 0; i < 5; i++) {
+        lt->heapFloorRecordForTest(1000 + (u64)i, (u64)i + 1);
+    }
+    u8 head = LivenessTrackerTestAccessor::heapFloorRingHeadForTest(lt);
+    u8 fill = LivenessTrackerTestAccessor::heapFloorRingFillForTest(lt);
+    ASSERT_EQ(5, fill);
+    u8 f = fill;
+    EXPECT_EQ(head, LivenessTrackerTestAccessor::heapFloorWindowHeadForTest(lt, head, &f))
+        << "a published newest slot must leave the window end at head";
+    EXPECT_EQ(fill, f);
+
+    pin.saved = LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(
+        lt, LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE);
+    pin.armed = true;
+    u8 newest = (u8)((head + ring - 1) % ring);
+    f = fill;
+    EXPECT_EQ(newest, LivenessTrackerTestAccessor::heapFloorWindowHeadForTest(lt, head, &f))
+        << "an in-flight newest slot must step the window end back one slot";
+    EXPECT_EQ(fill, f) << "a non-full fill never counts the in-flight slot - no clamp";
+    LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(lt, pin.saved);
+    pin.armed = false;
+
+    // Full ring.
+    for (int i = 5; i < ring + 3; i++) {
+        lt->heapFloorRecordForTest(1000 + (u64)i, (u64)i + 1);
+    }
+    head = LivenessTrackerTestAccessor::heapFloorRingHeadForTest(lt);
+    fill = LivenessTrackerTestAccessor::heapFloorRingFillForTest(lt);
+    ASSERT_EQ(ring, fill);
+    f = fill;
+    EXPECT_EQ(head, LivenessTrackerTestAccessor::heapFloorWindowHeadForTest(lt, head, &f));
+    EXPECT_EQ(fill, f) << "a published full ring keeps the full window";
+
+    pin.saved = LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(
+        lt, LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE);
+    pin.armed = true;
+    newest = (u8)((head + ring - 1) % ring);
+    f = fill;
+    EXPECT_EQ(newest, LivenessTrackerTestAccessor::heapFloorWindowHeadForTest(lt, head, &f));
+    EXPECT_EQ(ring - 1, f)
+        << "a full ring's stepped-back window must drop one slot, or it starts at the "
+           "in-flight slot";
+}
+
+// Overlapping writers (a single-writer contract violation) must each get a
+// distinct slot and a counted fill: with fewer samples than ring slots, fill
+// ends at exactly the number of samples recorded, every seq is unique, and
+// nothing is dropped. A plain load/store fill bump loses increments here.
+TEST_F(HeapFloorSeqlockTest, OverlappingWritersKeepFillAndSeqExact) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    const int ring = LivenessTracker::heapFloorRingSizeForTest();
+    constexpr int kThreads = 4;
+    const int per_thread = (ring - 1) / kThreads;
+    const int total = kThreads * per_thread;
+    ASSERT_LT(total, ring) << "the ring must not saturate fill";
+
+    // The sample counter is never reset, so compare deltas.
+    u64 seq_before = LivenessTrackerTestAccessor::heapFloorSampleSeqForTest(lt);
+    long long dropped = Counters::getCounter(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP);
+    constexpr int kRounds = 200;
+    for (int round = 0; round < kRounds; round++) {
+        lt->heapFloorResetForTest();
+        std::atomic<int> ready{0};
+        std::atomic<bool> go{false};
+        std::vector<std::thread> threads;
+        for (int t = 0; t < kThreads; t++) {
+            threads.emplace_back([&, t]() {
+                ready.fetch_add(1);
+                while (!go.load(std::memory_order_acquire)) {
+                }
+                for (int i = 0; i < per_thread; i++) {
+                    lt->heapFloorRecordForTest(1000 + (u64)t, (u64)(t * per_thread + i) + 1);
+                }
+            });
+        }
+        while (ready.load() < kThreads) {
+        }
+        go.store(true, std::memory_order_release);
+        for (auto &th : threads) {
+            th.join();
+        }
+        ASSERT_EQ(total, LivenessTrackerTestAccessor::heapFloorRingFillForTest(lt))
+            << "round " << round << ": an overlapping writer lost a fill increment";
+        ASSERT_EQ((u8)(total % ring), LivenessTrackerTestAccessor::heapFloorRingHeadForTest(lt))
+            << "round " << round << ": every sample must claim its own slot";
+    }
+    EXPECT_EQ(seq_before + (u64)kRounds * total,
+              LivenessTrackerTestAccessor::heapFloorSampleSeqForTest(lt))
+        << "every sample must consume exactly one seq";
+    EXPECT_EQ(dropped, Counters::getCounter(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP))
+        << "writers that do not lap the ring must never drop";
+}
+
+TEST_F(HeapFloorSeqlockTest, LapOverlapDropsSampleWithoutDuplicateSeq) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    HeapFloorReadHookGuard hook_guard;
+    lt->heapFloorRecordForTest(1000, 1);
+    u64 prev_seq = 0;
+    ASSERT_EQ(1000u, lt->newestHeapFloorSample(&prev_seq));
+
+    u8 head = LivenessTrackerTestAccessor::heapFloorRingHeadForTest(lt);
+    u8 fill = LivenessTrackerTestAccessor::heapFloorRingFillForTest(lt);
+    u64 sample_seq = LivenessTrackerTestAccessor::heapFloorSampleSeqForTest(lt);
+    // Pin the head slot at the sentinel for the rest of the test: under the
+    // claim-first order the drop consumes the head claim, so the slot stays
+    // pinned while the lapped writer is (simulated as) still mid-write. The
+    // ring resets do not touch the seq ring, so the guard restores the slot
+    // on every exit - a leaked sentinel makes later tests drop samples there.
+    struct SeqSlotRestore {
+        LivenessTracker *t;
+        u8 idx;
+        u64 saved;
+        ~SeqSlotRestore() {
+            LivenessTrackerTestAccessor::swapHeapFloorSeqAtForTest(t, idx, saved);
+        }
+    } pin{lt, head,
+          LivenessTrackerTestAccessor::swapHeapFloorSeqAtForTest(
+              lt, head, LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE)};
+
+    long long dropped = Counters::getCounter(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP);
+    lt->heapFloorRecordForTest(1100, 2);
+    EXPECT_EQ(dropped + 1, Counters::getCounter(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP))
+        << "a dropped sample must be counted";
+    EXPECT_EQ((u8)((head + 1) % LivenessTracker::heapFloorRingSizeForTest()),
+              LivenessTrackerTestAccessor::heapFloorRingHeadForTest(lt))
+        << "the head claim settles before the seq claim, so a dropped sample\n"
+           "leaves head advanced past the pinned slot";
+    EXPECT_EQ(fill, LivenessTrackerTestAccessor::heapFloorRingFillForTest(lt))
+        << "a dropped sample must not change the fill";
+    EXPECT_EQ(sample_seq, LivenessTrackerTestAccessor::heapFloorSampleSeqForTest(lt))
+        << "a dropped sample must not consume a sequence number";
+
+    // The pinned slot degrades the newest read until the ring wraps onto it:
+    // the read retries on the sentinel, exhausts, and reports the sentinel
+    // seq (counted as READ_UNSTABLE) - the documented cost of the lap drop.
+    u64 seq = 0xdeadbeef;
+    EXPECT_EQ(0u, lt->newestHeapFloorSample(&seq));
+    EXPECT_EQ(LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE, seq);
+
+    // A following accepted sample takes the very next seq - no gap, no
+    // duplicate - and the newest read recovers (it targets the next slot;
+    // the pinned slot stays sentinel until the ring wraps onto it).
+    lt->heapFloorRecordForTest(1100, 2);
+    EXPECT_EQ(dropped + 1, Counters::getCounter(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP))
+        << "an accepted sample must not be counted as dropped";
+    EXPECT_EQ(1100u, lt->newestHeapFloorSample(&seq));
+    EXPECT_EQ(prev_seq + 1, seq)
+        << "the dropped writer must leave neither a gap nor a duplicate";
+}
+
+// Counting-only hook: observes whether the reader reached its payload/hook
+// path without perturbing the ring.
+struct HeapFloorCountHook {
+    int calls;
+    static void invoke(void *p) { static_cast<HeapFloorCountHook *>(p)->calls++; }
+};
+
+// Restores the newest slot's seq word pinned by the enclosing scope, on
+// every exit path including ASSERT failures.
+struct HeapFloorNewestPinGuard {
+    LivenessTracker *lt;
+    u64 saved;
+    explicit HeapFloorNewestPinGuard(LivenessTracker *t)
+        : lt(t),
+          saved(LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(
+              t, LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE)) {}
+    ~HeapFloorNewestPinGuard() {
+        LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(lt, saved);
+    }
+};
+
+// Fire-once hook that pins the newest slot's seq word to the sentinel
+// between the reader's payload load and its validating re-load, forcing the
+// next attempt into the reader's sentinel short-circuit. saved/pinned let
+// the test restore the slot after the read returns.
+struct HeapFloorPinNewestHook {
+    LivenessTracker *lt;
+    int calls;
+    u64 saved;
+    bool pinned;
+
+    static void invoke(void *p) {
+        HeapFloorPinNewestHook *h = static_cast<HeapFloorPinNewestHook *>(p);
+        h->calls++;
+        LivenessTracker::setHeapFloorReadHookForTest(nullptr, nullptr);
+        h->saved = LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(
+            h->lt, LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE);
+        h->pinned = true;
+    }
+};
+
+// A newest slot already at the sentinel (a writer mid-claim) must never be
+// consumed as a sample seq: the reader retries past it and, with no writer
+// to finish the claim, reports the documented unstable pair. hook.calls ==
+// 0 pins the sentinel short-circuit to happen before the payload read and
+// the validation hook.
+TEST_F(HeapFloorSeqlockTest, NewestSlotPinnedAtSentinelShortCircuitsPayloadAndHook) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    HeapFloorReadHookGuard hook_guard;
+    lt->heapFloorRecordForTest(1000, 1);
+    HeapFloorCountHook hook{0};
+    LivenessTracker::setHeapFloorReadHookForTest(&HeapFloorCountHook::invoke,
+                                                  &hook);
+    u64 seq = 0;
+    u64 used = 0;
+    {
+        HeapFloorNewestPinGuard pin_guard(lt);
+        used = lt->newestHeapFloorSample(&seq);
+    }
+    EXPECT_EQ(0u, used);
+    EXPECT_EQ(LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE, seq)
+        << "the pinned slot must be retried past, not consumed as a seq";
+    EXPECT_EQ(0, hook.calls)
+        << "the sentinel short-circuit must skip the payload read and the hook";
+}
+
+// A sentinel pinned only mid-retry (between the reader's payload load and
+// its validating re-load) forces the retry; the next attempt then sees the
+// sentinel at seq_before and takes the short-circuit. hook.calls == 1 is
+// deterministic: the hook uninstalls itself after its first call, and
+// attempt 1 always reaches it because the slot is valid until that call
+// pins it - no writer runs to unpublish or rewrite the slot in between.
+TEST_F(HeapFloorSeqlockTest, SentinelPinnedMidRetryTakesShortCircuitNextAttempt) {
+    LivenessTracker *lt = LivenessTracker::instance();
+    HeapFloorReadHookGuard hook_guard;
+    lt->heapFloorRecordForTest(1000, 1);
+    HeapFloorPinNewestHook hook{lt, 0, 0, false};
+    LivenessTracker::setHeapFloorReadHookForTest(&HeapFloorPinNewestHook::invoke,
+                                                  &hook);
+    u64 seq = 0;
+    u64 used = lt->newestHeapFloorSample(&seq);
+    // Restore before any ASSERT: an early exit must never leak the sentinel.
+    if (hook.pinned) {
+        LivenessTrackerTestAccessor::swapHeapFloorNewestSeqForTest(lt,
+                                                                    hook.saved);
+    }
+    ASSERT_EQ(1, hook.calls) << "attempt 1 never reached the mid-read hook";
+    // Never a torn pair: the pinned slot yields the documented unstable
+    // pair, not (payload, sentinel) or (payload, stale seq).
+    EXPECT_EQ(0u, used);
+    EXPECT_EQ(LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE, seq);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Leak tag pool (design A: direct tagging of leaking objects)
@@ -2582,6 +3374,8 @@ protected:
         tracker->admissionResetForTest();
         tracker->setSubsampleRatioForTest(0.1);
         tracker->setGcGenerationsForTest(false);
+        // 0 = "never activated"; the next start() re-stamps it through the CAS from 0.
+        tracker->setLeakSignalActivatedNsForTest(0);
         // start() resolved the heap limits from the mock JVM.
         tracker->heapLimitsResetForTest();
         VMTestAccessor::setVm(saved_vm);
@@ -3010,4 +3804,96 @@ TEST_F(LivenessTrackerMockJvmTest, SlotsPastTableSizeAreClearedAfterCompaction) 
             EXPECT_EQ(0u, cached) << "slot " << i;
         }
     }
+}
+
+// The leak signal's only consumer is the reference-chain collector: a plain
+// liveheap session must keep the signal and its consumers disarmed through
+// the real start() -> initialize() path, and liveheap + referencechains must
+// arm them. The other fixtures arm the gate only through seams, so they
+// cannot tell the two flags apart.
+TEST_F(LivenessTrackerMockJvmTest, LiveheapLeakSignalArmingRequiresReferenceChainConsumer) {
+    constexpr u64 SEC_NS = 1000000000ULL;
+    constexpr u64 MiB = 1ULL << 20;
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    // 1. Liveheap-only: the gate stores (and the burn-in CAS) precede
+    // initialize()'s _initialized guard, so a repeated start() re-derives them.
+    tracker->setLeakSignalActivatedNsForTest(0);
+    Arguments args;
+    ASSERT_FALSE(args.parse("memory=1048576:l"));
+    ASSERT_TRUE(args._record_liveness);
+    ASSERT_FALSE(args._gc_generations);
+    ASSERT_FALSE(args._reference_chains);
+    ASSERT_FALSE(tracker->start(args));
+    tracker->setSubsampleRatioForTest(1.0);
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_FALSE(tracker->leakSignalEnabled())
+        << "a plain liveheap session has no signal consumer - the gate must stay off";
+    EXPECT_EQ(0u, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+        << "a plain liveheap start() must not consume the burn-in stamp";
+
+    // The consumers keyed on the gate stay idle: no projection even with a
+    // rising ring, and no forced sweep folding the population.
+    tracker->klassPopulationResetForTest(); // also clears the heap-floor ring
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    for (int i = 0; i < 10; i++) {
+        tracker->heapFloorRecordForTest(1000 * MiB + (u64)i * 100 * MiB, (u64)i * SEC_NS);
+    }
+    EXPECT_LT(tracker->secondsToOOM(), 0.0)
+        << "secondsToOOM() must not project in a plain liveheap session";
+    tracker->klassPopulationResetForTest();
+    tracker->setMaxHeapBytesForTest(-1);
+
+    u32 retained_id = classIdOf(kRetainedSignature);
+    ASSERT_NE(0u, retained_id);
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    KlassPopulationEntry entry{};
+    ASSERT_FALSE(tracker->klassPopulationLookupForTest(retained_id, &entry));
+    sweep(); // GarbageCollectionFinish + maybeForceCleanup(fake_now_ns)
+    EXPECT_FALSE(tracker->klassPopulationLookupForTest(retained_id, &entry))
+        << "maybeForceCleanup() must not fold the population in a plain liveheap session";
+
+    // 2. Restart as liveheap + referencechains: the collector will run, so
+    // the same derivation arms the signal.
+    ASSERT_FALSE(args.parse("memory=1048576:l,referencechains=true"));
+    ASSERT_TRUE(args._reference_chains);
+    ASSERT_FALSE(tracker->start(args));
+    EXPECT_FALSE(tracker->gcGenerationsEnabled());
+    EXPECT_TRUE(tracker->leakSignalEnabled())
+        << "liveheap with referencechains must arm the leak signal";
+
+    // 3. Burn-in stamp lifecycle: start() stamps it from 0 and never re-stamps.
+    EXPECT_NE(0u, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+        << "the first enabled start() must stamp the burn-in clock";
+    u64 backdated = OS::nanotime() - LivenessTracker::OOM_PROJECTION_BURN_IN_NS - SEC_NS;
+    tracker->setLeakSignalActivatedNsForTest(backdated);
+    ASSERT_FALSE(tracker->start(args));
+    EXPECT_EQ(backdated, LivenessTrackerTestAccessor::leakSignalActivatedNsForTest(tracker))
+        << "a later start() must not re-stamp the burn-in clock";
+
+    // 4. secondsToOOM() projects in the armed session. Runs before any
+    // sweep(): onGC() records real-clock floor samples while the signal is on.
+    tracker->klassPopulationResetForTest(); // also clears the heap-floor ring
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    for (int i = 0; i < 10; i++) {
+        tracker->heapFloorRecordForTest(1000 * MiB + (u64)i * 100 * MiB, (u64)i * SEC_NS);
+    }
+    // GE rather than NEAR: start() resolved the real container limit.
+    EXPECT_GE(tracker->secondsToOOM(), 0.0)
+        << "secondsToOOM() must project once the signal is armed";
+    tracker->klassPopulationResetForTest(); // drop the seeded ring before the sweep
+    tracker->setMaxHeapBytesForTest(-1);
+
+    // 5. maybeForceCleanup() sweeps and folds the population. track() never
+    // folds, so the only route to a population entry is that sweep.
+    retained_id = classIdOf(kRetainedSignature);
+    ASSERT_NE(0u, retained_id);
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    ASSERT_FALSE(tracker->klassPopulationLookupForTest(retained_id, &entry));
+    sweep(); // GarbageCollectionFinish + maybeForceCleanup(fake_now_ns)
+    EXPECT_TRUE(tracker->klassPopulationLookupForTest(retained_id, &entry))
+        << "maybeForceCleanup() must sweep and fold the population once the signal is armed";
+
+    // 6. TearDown clears the gates via setGcGenerationsForTest(false).
+    tracker->setLeakSignalActivatedNsForTest(0);
 }

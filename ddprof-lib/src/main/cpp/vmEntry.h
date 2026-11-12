@@ -89,6 +89,9 @@ typedef struct RemoteFrameInfo {
 #endif
 } RemoteFrameInfo;
 
+// A Java frame whose VM method metadata could not be resolved.
+#define JMETHODID_NOT_WALKABLE reinterpret_cast<jmethodID>(~uintptr_t(0))
+
 typedef struct _asgct_callframe {
     jint bci;
     LP64_ONLY(jint padding;)

@@ -5,7 +5,9 @@
 
 package com.datadoghq.profiler;
 
-import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -18,380 +20,442 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.LockSupport;
 import java.util.function.Function;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import org.junit.jupiter.api.Test;
 
 public class JavaProfilerTest extends AbstractProcessProfilerTest {
-    /** Extracts the packaged native library so a child JVM can load it through {@code -agentpath}. */
-    private static Path extractProfilerLibrary() throws Exception {
-        OperatingSystem os = OperatingSystem.current();
-        String extension = os == OperatingSystem.macos ? "dylib" : "so";
-        String qualifier = os == OperatingSystem.linux && os.isMusl() ? "-musl" : "";
-        String resource = "/META-INF/native-libs/" + os.name().toLowerCase() + "-"
-                + Arch.current().name().toLowerCase() + qualifier + "/libjavaProfiler." + extension;
-        Path library = Files.createTempFile("libjavaProfiler-agent-", "." + extension);
-        try (InputStream input = JavaProfiler.class.getResourceAsStream(resource)) {
-            assertNotNull(input, "Profiler library resource not found: " + resource);
-            Files.copy(input, library, StandardCopyOption.REPLACE_EXISTING);
-        }
-        return library;
+  /** Extracts the packaged native library so a child JVM can load it through {@code -agentpath}. */
+  private static Path extractProfilerLibrary() throws Exception {
+    OperatingSystem os = OperatingSystem.current();
+    String extension = os == OperatingSystem.macos ? "dylib" : "so";
+    String qualifier = os == OperatingSystem.linux && os.isMusl() ? "-musl" : "";
+    String resource =
+        "/META-INF/native-libs/"
+            + os.name().toLowerCase()
+            + "-"
+            + Arch.current().name().toLowerCase()
+            + qualifier
+            + "/libjavaProfiler."
+            + extension;
+    Path library = Files.createTempFile("libjavaProfiler-agent-", "." + extension);
+    try (InputStream input = JavaProfiler.class.getResourceAsStream(resource)) {
+      assertNotNull(input, "Profiler library resource not found: " + resource);
+      Files.copy(input, library, StandardCopyOption.REPLACE_EXISTING);
+    }
+    return library;
+  }
+
+  /** Launches a child JVM whose profiler bridge is initialized before Java application startup. */
+  private LaunchResult launchWithProfilerAgent(
+      String target, Function<String, LineConsumerResult> onStdoutLine) throws Exception {
+    Path library = extractProfilerLibrary();
+    Path recording = Files.createTempFile("agent-initialization-", ".jfr");
+    try {
+      List<String> jvmArgs = new ArrayList<>();
+      jvmArgs.add(
+          "-agentpath:"
+              + library.toAbsolutePath()
+              + "=start,wall=10ms,filter=,wallprecheck=true,jfr,file="
+              + recording.toAbsolutePath());
+      jvmArgs.add("-Dddprof.test.agent.path=" + library.toAbsolutePath());
+      return launch(target, jvmArgs, "", onStdoutLine, null);
+    } finally {
+      Files.deleteIfExists(recording);
+      Files.deleteIfExists(library);
+    }
+  }
+
+  @Test
+  void sanityInitailizationTest() throws Exception {
+    assumeTrue(NativeBuildConfig.isDebug());
+
+    AtomicInteger initFlag = new AtomicInteger(0);
+    boolean val =
+        launch(
+                "profiler",
+                Collections.emptyList(),
+                "",
+                l -> {
+                  if (l.contains("[TEST::INFO] VM::initLibrary")) {
+                    initFlag.set(initFlag.get() | 1);
+                  } else if (l.contains("[TEST::INFO] VM::initProfilerBridge")) {
+                    initFlag.set(initFlag.get() | 2);
+                  }
+                  // found both expected sections; can terminate the test now
+                  return initFlag.get() != 3
+                      ? LineConsumerResult.CONTINUE
+                      : LineConsumerResult.STOP;
+                },
+                null)
+            .inTime;
+
+    assertTrue(val);
+  }
+
+  @Test
+  void testJ9DefaultSanity() throws Exception {
+    assumeTrue(NativeBuildConfig.isDebug());
+    assumeFalse(Platform.isMac()); // crashy on mac
+    assumeTrue(Platform.isJ9());
+
+    Path jfr = Files.createTempFile("j9", ".jfr");
+    jfr.toFile().deleteOnExit();
+
+    // ASGCT re-enabled for versions containing the OpenJ9 0.51 fix (eclipse-openj9/openj9#20577)
+    String sampler = "jvmti";
+    if (Platform.isJavaVersion(8) && Platform.isJavaVersionAtLeast(8, 0, 451)) {
+      sampler = "asgct";
+    } else if (Platform.isJavaVersion(11) && Platform.isJavaVersionAtLeast(11, 0, 27)) {
+      sampler = "asgct";
+    } else if (Platform.isJavaVersion(17) && Platform.isJavaVersionAtLeast(17, 0, 15)) {
+      sampler = "asgct";
+    } else if (Platform.isJavaVersion(21) && Platform.isJavaVersionAtLeast(21, 0, 7)) {
+      sampler = "asgct";
     }
 
-    /** Launches a child JVM whose profiler bridge is initialized before Java application startup. */
-    private LaunchResult launchWithProfilerAgent(
-            String target, Function<String, LineConsumerResult> onStdoutLine) throws Exception {
-        Path library = extractProfilerLibrary();
-        Path recording = Files.createTempFile("agent-initialization-", ".jfr");
-        try {
-            List<String> jvmArgs = new ArrayList<>();
-            jvmArgs.add("-agentpath:" + library.toAbsolutePath()
-                    + "=start,wall=10ms,filter=,wallprecheck=true,jfr,file="
-                    + recording.toAbsolutePath());
-            jvmArgs.add("-Dddprof.test.agent.path=" + library.toAbsolutePath());
-            return launch(target, jvmArgs, "", onStdoutLine, null);
-        } finally {
-            Files.deleteIfExists(recording);
-            Files.deleteIfExists(library);
-        }
-    }
-
-    @Test
-    void sanityInitailizationTest() throws Exception {
-        String config = System.getProperty("ddprof_test.config");
-        assumeTrue("debug".equals(config));
-
-        AtomicInteger initFlag = new AtomicInteger(0);
-        boolean val = launch("profiler", Collections.emptyList(), "", l -> {
-            if (l.contains("[TEST::INFO] VM::initLibrary")) {
-                initFlag.set(initFlag.get() | 1);
-            } else if (l.contains("[TEST::INFO] VM::initProfilerBridge")) {
-                initFlag.set(initFlag.get() | 2);
-            }
-            // found both expected sections; can terminate the test now
-            return initFlag.get() != 3 ? LineConsumerResult.CONTINUE : LineConsumerResult.STOP;
-        }, null).inTime;
-
-        assertTrue(val);
-    }
-
-    @Test
-    void testJ9DefaultSanity() throws Exception {
-        String config = System.getProperty("ddprof_test.config");
-        assumeTrue("debug".equals(config));
-        assumeFalse(Platform.isMac()); // crashy on mac
-        assumeTrue(Platform.isJ9());
-
-        Path jfr = Files.createTempFile("j9", ".jfr");
-        jfr.toFile().deleteOnExit();
-
-        // ASGCT re-enabled for versions containing the OpenJ9 0.51 fix (eclipse-openj9/openj9#20577)
-        String sampler = "jvmti";
-        if (Platform.isJavaVersion(8) && Platform.isJavaVersionAtLeast(8, 0, 451)) {
-            sampler = "asgct";
-        } else if (Platform.isJavaVersion(11) && Platform.isJavaVersionAtLeast(11, 0, 27)) {
-            sampler = "asgct";
-        } else if (Platform.isJavaVersion(17) && Platform.isJavaVersionAtLeast(17, 0, 15)) {
-            sampler = "asgct";
-        } else if (Platform.isJavaVersion(21) && Platform.isJavaVersionAtLeast(21, 0, 7)) {
-            sampler = "asgct";
-        }
-
-        AtomicReference<String> usedSampler = new AtomicReference<>("");
-        AtomicBoolean hasWall = new AtomicBoolean(false);
-        boolean val = launch("profiler", Collections.emptyList(), "start,cpu,file=" + jfr, l -> {
-            if (l.contains("J9[cpu]")) {
-                usedSampler.set(l.split("=")[1]);
-                return LineConsumerResult.STOP;
-            } else if (l.contains("J9[wall]")) {
-                hasWall.set(true);
-                return LineConsumerResult.STOP;
-            }
-            return LineConsumerResult.CONTINUE;
-        }, null).inTime;
-        assertTrue(val);
-        assertEquals(sampler, usedSampler.get());
-        assertFalse(hasWall.get());
-    }
-
-    @Test
-    void testJ9ForceJvmtiSanity() throws Exception {
-        String config = System.getProperty("ddprof_test.config");
-        assumeTrue("debug".equals(config));
-        assumeFalse(Platform.isMac()); // crashy on mac
-        assumeTrue(Platform.isJ9());
-
-        Path jfr = Files.createTempFile("j9", ".jfr");
-        jfr.toFile().deleteOnExit();
-
-        String sampler = "jvmti";
-
-        AtomicReference<String> usedSampler = new AtomicReference<>("");
-        AtomicBoolean hasWall = new AtomicBoolean(false);
-        List<String> args = new ArrayList<>();
-        args.add("-XX:+KeepJNIIDs");
-        args.add("-Ddd.profiling.ddprof.j9.sampler=jvmti");
-        boolean val = launch("profiler", args, "start,cpu,file=" + jfr, l -> {
-            if (l.contains("J9[cpu]")) {
-                usedSampler.set(l.split("=")[1]);
-                return LineConsumerResult.STOP;
-            } else if (l.contains("J9[wall]")) {
-                hasWall.set(true);
-                return LineConsumerResult.STOP;
-            }
-            return LineConsumerResult.CONTINUE;
-        }, null).inTime;
-        assertTrue(val);
-        assertEquals(sampler, usedSampler.get());
-        assertFalse(hasWall.get());
-    }
-
-    @Test
-    void getInstanceFromVirtualThreadThrowsIOException() throws Exception {
-        assumeTrue(Platform.isJavaVersionAtLeast(21));
-
-        AtomicReference<String> attemptLine = new AtomicReference<>();
-        AtomicReference<String> recoveryLine = new AtomicReference<>();
-        boolean val = launch("profiler-virtual-thread", Collections.emptyList(), "", l -> {
-            if (l.startsWith("[virtual-thread-")) {
-                if (l.startsWith("[virtual-thread-recovery]")) {
-                    recoveryLine.set(l);
+    AtomicReference<String> usedSampler = new AtomicReference<>("");
+    AtomicBoolean hasWall = new AtomicBoolean(false);
+    boolean val =
+        launch(
+                "profiler",
+                Collections.emptyList(),
+                "start,cpu,file=" + jfr,
+                l -> {
+                  if (l.contains("J9[cpu]")) {
+                    usedSampler.set(l.split("=")[1]);
                     return LineConsumerResult.STOP;
-                }
-                attemptLine.set(l);
-                return LineConsumerResult.CONTINUE;
-            }
-            return LineConsumerResult.CONTINUE;
-        }, null).inTime;
+                  } else if (l.contains("J9[wall]")) {
+                    hasWall.set(true);
+                    return LineConsumerResult.STOP;
+                  }
+                  return LineConsumerResult.CONTINUE;
+                },
+                null)
+            .inTime;
+    assertTrue(val);
+    assertEquals(sampler, usedSampler.get());
+    assertFalse(hasWall.get());
+  }
 
-        assertTrue(val);
-        String result = attemptLine.get();
-        assertNotNull(result, "getInstance() did not report a result from the virtual thread");
-        assertTrue(result.startsWith("[virtual-thread-ioexception]"),
-                "Expected IOException from getInstance() on a virtual thread, got: " + result);
-        assertEquals("[virtual-thread-recovery] true false", recoveryLine.get());
-    }
+  @Test
+  void testJ9ForceJvmtiSanity() throws Exception {
+    assumeTrue(NativeBuildConfig.isDebug());
+    assumeFalse(Platform.isMac()); // crashy on mac
+    assumeTrue(Platform.isJ9());
 
-    @Test
-    void compatibleLateJavaInitializationReusesAgentBridge() throws Exception {
-        AtomicReference<String> resultLine = new AtomicReference<>();
-        LaunchResult result = launchWithProfilerAgent("profiler-agent-compatible", line -> {
-            if (line.startsWith("[agent-compatible]")) {
+    Path jfr = Files.createTempFile("j9", ".jfr");
+    jfr.toFile().deleteOnExit();
+
+    String sampler = "jvmti";
+
+    AtomicReference<String> usedSampler = new AtomicReference<>("");
+    AtomicBoolean hasWall = new AtomicBoolean(false);
+    List<String> args = new ArrayList<>();
+    args.add("-XX:+KeepJNIIDs");
+    args.add("-Ddd.profiling.ddprof.j9.sampler=jvmti");
+    boolean val =
+        launch(
+                "profiler",
+                args,
+                "start,cpu,file=" + jfr,
+                l -> {
+                  if (l.contains("J9[cpu]")) {
+                    usedSampler.set(l.split("=")[1]);
+                    return LineConsumerResult.STOP;
+                  } else if (l.contains("J9[wall]")) {
+                    hasWall.set(true);
+                    return LineConsumerResult.STOP;
+                  }
+                  return LineConsumerResult.CONTINUE;
+                },
+                null)
+            .inTime;
+    assertTrue(val);
+    assertEquals(sampler, usedSampler.get());
+    assertFalse(hasWall.get());
+  }
+
+  @Test
+  void getInstanceFromVirtualThreadThrowsIOException() throws Exception {
+    assumeTrue(Platform.isJavaVersionAtLeast(21));
+
+    AtomicReference<String> attemptLine = new AtomicReference<>();
+    AtomicReference<String> recoveryLine = new AtomicReference<>();
+    boolean val =
+        launch(
+                "profiler-virtual-thread",
+                Collections.emptyList(),
+                "",
+                l -> {
+                  if (l.startsWith("[virtual-thread-")) {
+                    if (l.startsWith("[virtual-thread-recovery]")) {
+                      recoveryLine.set(l);
+                      return LineConsumerResult.STOP;
+                    }
+                    attemptLine.set(l);
+                    return LineConsumerResult.CONTINUE;
+                  }
+                  return LineConsumerResult.CONTINUE;
+                },
+                null)
+            .inTime;
+
+    assertTrue(val);
+    String result = attemptLine.get();
+    assertNotNull(result, "getInstance() did not report a result from the virtual thread");
+    assertTrue(
+        result.startsWith("[virtual-thread-ioexception]"),
+        "Expected IOException from getInstance() on a virtual thread, got: " + result);
+    assertEquals("[virtual-thread-recovery] true false", recoveryLine.get());
+  }
+
+  @Test
+  void compatibleLateJavaInitializationReusesAgentBridge() throws Exception {
+    AtomicReference<String> resultLine = new AtomicReference<>();
+    LaunchResult result =
+        launchWithProfilerAgent(
+            "profiler-agent-compatible",
+            line -> {
+              if (line.startsWith("[agent-compatible]")) {
                 resultLine.set(line);
                 return LineConsumerResult.STOP;
-            }
-            return LineConsumerResult.CONTINUE;
-        });
+              }
+              return LineConsumerResult.CONTINUE;
+            });
 
-        assertTrue(result.inTime);
-        assertEquals(0, result.exitCode);
-        assertEquals("[agent-compatible] false", resultLine.get());
-    }
+    assertTrue(result.inTime);
+    assertEquals(0, result.exitCode);
+    assertEquals("[agent-compatible] false", resultLine.get());
+  }
 
-    @Test
-    void conflictingLateMonitorDelegationIsRejected() throws Exception {
-        AtomicReference<String> resultLine = new AtomicReference<>();
-        LaunchResult result = launchWithProfilerAgent("profiler-delegation-conflict", line -> {
-            if (line.startsWith("[delegation-conflict")) {
+  @Test
+  void conflictingLateMonitorDelegationIsRejected() throws Exception {
+    AtomicReference<String> resultLine = new AtomicReference<>();
+    LaunchResult result =
+        launchWithProfilerAgent(
+            "profiler-delegation-conflict",
+            line -> {
+              if (line.startsWith("[delegation-conflict")) {
                 resultLine.set(line);
                 return LineConsumerResult.STOP;
-            }
-            return LineConsumerResult.CONTINUE;
-        });
+              }
+              return LineConsumerResult.CONTINUE;
+            });
 
-        assertTrue(result.inTime);
-        assertEquals(0, result.exitCode);
-        assertEquals("[delegation-conflict] false", resultLine.get());
-    }
+    assertTrue(result.inTime);
+    assertEquals(0, result.exitCode);
+    assertEquals("[delegation-conflict] false", resultLine.get());
+  }
 
-    @Test
-    void defaultJavaSingletonMonitorDelegationIsReused() throws Exception {
-        assertJavaDelegationScenario(
-                "profiler-java-default-delegation-reuse",
-                "[java-default-delegation-reuse]",
-                "[java-default-delegation-reuse] true false");
-    }
+  @Test
+  void defaultJavaSingletonMonitorDelegationIsReused() throws Exception {
+    assertJavaDelegationScenario(
+        "profiler-java-default-delegation-reuse",
+        "[java-default-delegation-reuse]",
+        "[java-default-delegation-reuse] true false");
+  }
 
-    @Test
-    void conflictingDefaultJavaSingletonMonitorDelegationDoesNotPoisonInstance()
-            throws Exception {
-        assertJavaDelegationScenario(
-                "profiler-java-default-delegation-conflict",
-                "[java-default-delegation-conflict",
-                "[java-default-delegation-conflict] true false");
-    }
+  @Test
+  void conflictingDefaultJavaSingletonMonitorDelegationDoesNotPoisonInstance() throws Exception {
+    assertJavaDelegationScenario(
+        "profiler-java-default-delegation-conflict",
+        "[java-default-delegation-conflict",
+        "[java-default-delegation-conflict] true false");
+  }
 
-    @Test
-    void conflictingJavaSingletonMonitorDelegationIsRejected() throws Exception {
-        assertJavaSingletonDelegationConflict(false, true);
-        assertJavaSingletonDelegationConflict(true, false);
-    }
+  @Test
+  void conflictingJavaSingletonMonitorDelegationIsRejected() throws Exception {
+    assertJavaSingletonDelegationConflict(false, true);
+    assertJavaSingletonDelegationConflict(true, false);
+  }
 
-    @Test
-    void compatibleJavaSingletonMonitorDelegationIsReused() throws Exception {
-        assertJavaSingletonDelegationReuse(false);
-        assertJavaSingletonDelegationReuse(true);
-    }
+  @Test
+  void compatibleJavaSingletonMonitorDelegationIsReused() throws Exception {
+    assertJavaSingletonDelegationReuse(false);
+    assertJavaSingletonDelegationReuse(true);
+  }
 
-    @Test
-    void legacyGetInstanceOverloadsReuseAnyExistingSingleton() throws Exception {
-        // A legacy overload expresses no preference about monitor-event ownership, so it must
-        // return the existing singleton instead of throwing - including when that singleton was
-        // initialized with delegateMonitorWaitEvents=true.
-        assertJavaSingletonLegacyReuse(true);
-        assertJavaSingletonLegacyReuse(false);
-    }
+  @Test
+  void legacyGetInstanceOverloadsReuseAnyExistingSingleton() throws Exception {
+    // A legacy overload expresses no preference about monitor-event ownership, so it must
+    // return the existing singleton instead of throwing - including when that singleton was
+    // initialized with delegateMonitorWaitEvents=true.
+    assertJavaSingletonLegacyReuse(true);
+    assertJavaSingletonLegacyReuse(false);
+  }
 
-    /** Launches a fresh JVM and verifies the legacy overloads never conflict with the singleton. */
-    private void assertJavaSingletonLegacyReuse(boolean initialDelegation) throws Exception {
-        AtomicReference<String> resultLine = new AtomicReference<>();
-        LaunchResult result = launch(
-                "profiler-java-delegation-legacy-reuse:" + initialDelegation,
-                Collections.emptyList(), "", line -> {
-                    if (line.startsWith("[java-delegation-legacy-reuse]")) {
-                        resultLine.set(line);
-                        return LineConsumerResult.STOP;
-                    }
-                    return LineConsumerResult.CONTINUE;
-                }, null);
+  /** Launches a fresh JVM and verifies the legacy overloads never conflict with the singleton. */
+  private void assertJavaSingletonLegacyReuse(boolean initialDelegation) throws Exception {
+    AtomicReference<String> resultLine = new AtomicReference<>();
+    LaunchResult result =
+        launch(
+            "profiler-java-delegation-legacy-reuse:" + initialDelegation,
+            Collections.emptyList(),
+            "",
+            line -> {
+              if (line.startsWith("[java-delegation-legacy-reuse]")) {
+                resultLine.set(line);
+                return LineConsumerResult.STOP;
+              }
+              return LineConsumerResult.CONTINUE;
+            },
+            null);
 
-        assertTrue(result.inTime);
-        // An IllegalStateException escaping the launcher shows up here as a non-zero exit,
-        // distinguishing a thrown exception from a missing-output flake.
-        assertEquals(0, result.exitCode);
-        assertEquals("[java-delegation-legacy-reuse] true true " + initialDelegation,
-                resultLine.get());
-    }
+    assertTrue(result.inTime);
+    // An IllegalStateException escaping the launcher shows up here as a non-zero exit,
+    // distinguishing a thrown exception from a missing-output flake.
+    assertEquals(0, result.exitCode);
+    assertEquals("[java-delegation-legacy-reuse] true true " + initialDelegation, resultLine.get());
+  }
 
-    /** Launches a fresh JVM and verifies that repeated ownership returns the same singleton. */
-    private void assertJavaSingletonDelegationReuse(boolean delegated) throws Exception {
-        AtomicReference<String> resultLine = new AtomicReference<>();
-        LaunchResult result = launch(
-                "profiler-java-delegation-reuse:" + delegated,
-                Collections.emptyList(), "", line -> {
-                    if (line.startsWith("[java-delegation-reuse]")) {
-                        resultLine.set(line);
-                        return LineConsumerResult.STOP;
-                    }
-                    return LineConsumerResult.CONTINUE;
-                }, null);
+  /** Launches a fresh JVM and verifies that repeated ownership returns the same singleton. */
+  private void assertJavaSingletonDelegationReuse(boolean delegated) throws Exception {
+    AtomicReference<String> resultLine = new AtomicReference<>();
+    LaunchResult result =
+        launch(
+            "profiler-java-delegation-reuse:" + delegated,
+            Collections.emptyList(),
+            "",
+            line -> {
+              if (line.startsWith("[java-delegation-reuse]")) {
+                resultLine.set(line);
+                return LineConsumerResult.STOP;
+              }
+              return LineConsumerResult.CONTINUE;
+            },
+            null);
 
-        assertTrue(result.inTime);
-        assertEquals(0, result.exitCode);
-        assertEquals("[java-delegation-reuse] true " + delegated, resultLine.get());
-    }
+    assertTrue(result.inTime);
+    assertEquals(0, result.exitCode);
+    assertEquals("[java-delegation-reuse] true " + delegated, resultLine.get());
+  }
 
-    /** Launches a fresh JVM and verifies that a second ownership mode is rejected. */
-    private void assertJavaSingletonDelegationConflict(boolean initialDelegation,
-            boolean requestedDelegation) throws Exception {
-        AtomicReference<String> resultLine = new AtomicReference<>();
-        LaunchResult result = launch(
-                "profiler-java-delegation-conflict:" + initialDelegation + ":" + requestedDelegation,
-                Collections.emptyList(), "", line -> {
-                    if (line.startsWith("[java-delegation-conflict")) {
-                        resultLine.set(line);
-                        return LineConsumerResult.STOP;
-                    }
-                    return LineConsumerResult.CONTINUE;
-                }, null);
+  /** Launches a fresh JVM and verifies that a second ownership mode is rejected. */
+  private void assertJavaSingletonDelegationConflict(
+      boolean initialDelegation, boolean requestedDelegation) throws Exception {
+    AtomicReference<String> resultLine = new AtomicReference<>();
+    LaunchResult result =
+        launch(
+            "profiler-java-delegation-conflict:" + initialDelegation + ":" + requestedDelegation,
+            Collections.emptyList(),
+            "",
+            line -> {
+              if (line.startsWith("[java-delegation-conflict")) {
+                resultLine.set(line);
+                return LineConsumerResult.STOP;
+              }
+              return LineConsumerResult.CONTINUE;
+            },
+            null);
 
-        assertTrue(result.inTime);
-        assertEquals(0, result.exitCode);
-        assertEquals(
-                "[java-delegation-conflict] true " + initialDelegation,
-                resultLine.get());
-    }
+    assertTrue(result.inTime);
+    assertEquals(0, result.exitCode);
+    assertEquals("[java-delegation-conflict] true " + initialDelegation, resultLine.get());
+  }
 
-    /** Launches a fresh JVM and verifies the exact output of a delegation scenario. */
-    private void assertJavaDelegationScenario(
-            String target, String marker, String expected) throws Exception {
-        AtomicReference<String> resultLine = new AtomicReference<>();
-        LaunchResult result = launch(
-                target, Collections.emptyList(), "", line -> {
-                    if (line.startsWith(marker)) {
-                        resultLine.set(line);
-                        return LineConsumerResult.STOP;
-                    }
-                    return LineConsumerResult.CONTINUE;
-                }, null);
+  /** Launches a fresh JVM and verifies the exact output of a delegation scenario. */
+  private void assertJavaDelegationScenario(String target, String marker, String expected)
+      throws Exception {
+    AtomicReference<String> resultLine = new AtomicReference<>();
+    LaunchResult result =
+        launch(
+            target,
+            Collections.emptyList(),
+            "",
+            line -> {
+              if (line.startsWith(marker)) {
+                resultLine.set(line);
+                return LineConsumerResult.STOP;
+              }
+              return LineConsumerResult.CONTINUE;
+            },
+            null);
 
-        assertTrue(result.inTime);
-        assertEquals(0, result.exitCode);
-        assertEquals(expected, resultLine.get());
-    }
+    assertTrue(result.inTime);
+    assertEquals(0, result.exitCode);
+    assertEquals(expected, resultLine.get());
+  }
 
-    @Test
-    void preExistingThreadObjectWaitUsesNativeMonitorCallbacks() throws Exception {
-        assertPreExistingMonitorCallback("profiler-preexisting-monitor-wait", "WAITING");
-    }
+  @Test
+  void preExistingThreadObjectWaitUsesNativeMonitorCallbacks() throws Exception {
+    assertPreExistingMonitorCallback("profiler-preexisting-monitor-wait", "WAITING");
+  }
 
-    @Test
-    void preExistingThreadContentionUsesNativeMonitorCallbacks() throws Exception {
-        assertPreExistingMonitorCallback("profiler-preexisting-monitor-contention", "CONTENDED");
-    }
+  @Test
+  void preExistingThreadContentionUsesNativeMonitorCallbacks() throws Exception {
+    assertPreExistingMonitorCallback("profiler-preexisting-monitor-contention", "CONTENDED");
+  }
 
-    /** Verifies that a pre-JNI-load worker emits a TaskBlock through its first monitor callback. */
-    private void assertPreExistingMonitorCallback(String target, String expectedState) throws Exception {
-        Path recording = Files.createTempFile("preexisting-monitor-callback-", ".jfr");
-        try {
-            AtomicReference<String> resultLine = new AtomicReference<>();
-            LaunchResult result = launch(target, Collections.emptyList(),
-                    recording.toAbsolutePath().toString(), line -> {
+  /** Verifies that a pre-JNI-load worker emits a TaskBlock through its first monitor callback. */
+  private void assertPreExistingMonitorCallback(String target, String expectedState)
+      throws Exception {
+    Path recording = Files.createTempFile("preexisting-monitor-callback-", ".jfr");
+    try {
+      AtomicReference<String> resultLine = new AtomicReference<>();
+      LaunchResult result =
+          launch(
+              target,
+              Collections.emptyList(),
+              recording.toAbsolutePath().toString(),
+              line -> {
                 if (line.startsWith("[preexisting-monitor] ")) {
-                    resultLine.set(line);
-                    return LineConsumerResult.STOP;
+                  resultLine.set(line);
+                  return LineConsumerResult.STOP;
                 }
                 return LineConsumerResult.CONTINUE;
-            }, null);
+              },
+              null);
 
-            assertTrue(result.inTime);
-            assertEquals(0, result.exitCode);
-            assertNotNull(resultLine.get(), "Pre-existing monitor callback did not report its identity");
-            String[] identity = resultLine.get().substring("[preexisting-monitor] ".length()).split(" ");
-            assertEquals(2, identity.length);
-            long threadId = Long.parseLong(identity[0]);
-            long blocker = Long.parseLong(identity[1]);
-            boolean found = false;
-            for (JfrEvent event : JfrEvents.load(recording, "datadog.TaskBlock")) {
-                if (event.getLong("blocker", Long.MIN_VALUE) == blocker) {
-                    assertEquals(Long.valueOf(threadId), event.getThreadJavaId("eventThread"));
-                    assertEquals("preexisting-monitor-callback", event.getThreadName("eventThread"));
-                    assertEquals(expectedState, event.getString("observedBlockingState"));
-                    found = true;
-                }
-            }
-            assertTrue(found, "No TaskBlock matched the pre-existing worker's monitor");
-        } finally {
-            Files.deleteIfExists(recording);
+      assertTrue(result.inTime);
+      assertEquals(0, result.exitCode);
+      assertNotNull(resultLine.get(), "Pre-existing monitor callback did not report its identity");
+      String[] identity = resultLine.get().substring("[preexisting-monitor] ".length()).split(" ");
+      assertEquals(2, identity.length);
+      long threadId = Long.parseLong(identity[0]);
+      long blocker = Long.parseLong(identity[1]);
+      boolean found = false;
+      for (JfrEvent event : JfrEvents.load(recording, "datadog.TaskBlock")) {
+        if (event.getLong("blocker", Long.MIN_VALUE) == blocker) {
+          assertEquals(Long.valueOf(threadId), event.getThreadJavaId("eventThread"));
+          assertEquals("preexisting-monitor-callback", event.getThreadName("eventThread"));
+          assertEquals(expectedState, event.getString("observedBlockingState"));
+          found = true;
         }
+      }
+      assertTrue(found, "No TaskBlock matched the pre-existing worker's monitor");
+    } finally {
+      Files.deleteIfExists(recording);
     }
+  }
 
-    @Test
-    void vmStackwalkerCrashRecoveryTest() throws Exception {
-        assumeFalse(Platform.isJ9() || Platform.isZing()); // J9 and Zing do not support vmstructs
-        String config = System.getProperty("ddprof_test.config");
-        assumeTrue("debug".equals(config));
+  @Test
+  void vmStackwalkerCrashRecoveryTest() throws Exception {
+    assumeFalse(Platform.isJ9() || Platform.isZing()); // J9 and Zing do not support vmstructs
+    assumeTrue(NativeBuildConfig.isDebug());
 
-        Path jfr = Files.createTempFile("work", ".jfr");
-        jfr.toFile().deleteOnExit();
+    Path jfr = Files.createTempFile("work", ".jfr");
+    jfr.toFile().deleteOnExit();
 
-        Map<String, String> env = Collections.singletonMap("DDPROF_FORCE_STACKWALK_CRASH", "1");
-        // run the profiled process and generate at least 50ms of cpu activity
-        LaunchResult rslt = launch("profiler-work:50", Collections.emptyList(), "start,cpu=1ms,cstack=vm,file=" + jfr, env, l -> {
-            if (l.contains("[ready]")) {
+    Map<String, String> env = Collections.singletonMap("DDPROF_FORCE_STACKWALK_CRASH", "1");
+    // run the profiled process and generate at least 50ms of cpu activity
+    LaunchResult rslt =
+        launch(
+            "profiler-work:50",
+            Collections.emptyList(),
+            "start,cpu=1ms,cstack=vm,file=" + jfr,
+            env,
+            l -> {
+              if (l.contains("[ready]")) {
                 return LineConsumerResult.IGNORE;
-            }
-            if (l.contains("[working]")) {
+              }
+              if (l.contains("[working]")) {
                 return LineConsumerResult.STOP;
-            }
-            return LineConsumerResult.CONTINUE;
-        }, null);
+              }
+              return LineConsumerResult.CONTINUE;
+            },
+            null);
 
-        assertTrue(rslt.inTime);
-        assertEquals(0, rslt.exitCode, "exit code should be 0");
-    }
+    assertTrue(rslt.inTime);
+    assertEquals(0, rslt.exitCode, "exit code should be 0");
+  }
 }

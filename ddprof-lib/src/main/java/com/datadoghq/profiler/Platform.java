@@ -1,9 +1,10 @@
+// Copyright 2026, Datadog, Inc.
+
 package com.datadoghq.profiler;
 
 import java.io.IOException;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
-
 import java.util.ArrayList;
 import java.util.List;
 

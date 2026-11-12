@@ -50,8 +50,7 @@ public class UnfilteredWallPrecheckRestartTest extends AbstractProfilerTest {
       assertEquals(0L, enterBlock(stoppedGapWorker));
 
       recording = Files.createTempFile("unfiltered-wall-worker-restart-", ".jfr");
-      profiler.execute(
-          "start," + getProfilerCommand() + ",jfr,file=" + recording.toAbsolutePath());
+      profiler.execute("start," + getProfilerCommand() + ",jfr,file=" + recording.toAbsolutePath());
       restarted = true;
 
       long newToken = enterBlock(survivingWorker);
@@ -116,8 +115,7 @@ public class UnfilteredWallPrecheckRestartTest extends AbstractProfilerTest {
 
   private long enterBlock(ExecutorService worker) throws Exception {
     Future<Long> result =
-        worker.submit(
-            () -> ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING));
+        worker.submit(() -> ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING));
     return result.get();
   }
 

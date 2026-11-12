@@ -5,10 +5,10 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Test;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /** Verifies that TaskBlock does not change legacy/context wall-clock scope. */
 public class JavaProfilerTaskBlockDisabledTest extends AbstractProfilerTest {

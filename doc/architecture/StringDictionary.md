@@ -18,24 +18,29 @@ These are independent. Neither implies the other.
 
 ### Key string ownership — the arena
 
-Each `StringDictionaryBuffer` owns a `StringArena`: a lock-free bump allocator backed by a
-single `malloc`'d block. All key strings are allocated from this arena instead of
-individual `malloc` calls. Overflow `SBTable` chain nodes remain heap-allocated.
+Each `StringDictionaryBuffer` owns a `StringArena`: an auto-growing bump allocator made of
+a linked list of 512 KB `calloc`'d chunks. `alloc()` is one atomic `fetch_add` on the
+current chunk; when it fills, `grow()` creates the next chunk under a CAS spinlock. All
+key strings are allocated from this arena instead of individual `malloc` calls. Overflow
+`SBTable` chain nodes remain heap-allocated (`calloc`).
 
 Consequences:
 
-- **`clear()` is O(number-of-overflow-nodes)** rather than O(number-of-entries). The arena
-  is reset with a single atomic store; no per-key `free()` is needed.
+- **`clear()` is O(overflow nodes + extra arena chunks)** rather than O(number-of-entries).
+  It frees the overflow nodes, `memset`s the root table and resets the arena, which frees
+  every chunk after the first and rewinds the first; no per-key `free()` is needed.
+- **A lost insert CAS wastes its arena allocation** until the next `clear()`; the waste is
+  counted in `DICTIONARY_ARENA_WASTE_BYTES`.
 - **The arena does not make a stale reader safe.** `clear()` keeps only the root table
   and the first arena chunk; overflow nodes and further chunks are freed. A caller whose
   guard `clearAll()`'s drain missed (the TOCTOU gap between the `_accepting` acquire-load
   and `RefCountGuard::count++`) is stopped by the seq_cst `_accepting` recheck after guard
   creation, before it touches buffer data; and if the drain times out, `clearAll()`
   resets nothing (see "The seq_cst recheck after guard creation" and "clearAll() Protocol").
-- **Arena capacity is sized per dictionary** (configured in `Profiler`):
-  `_class_map` 4 MB per buffer (class names accumulate across rotations);
-  `_string_label_map` and `_context_value_map` 512 KB per buffer (bounded by `size_limit`).
-  On exhaustion `insert_with_id` returns 0, the same behaviour as a `malloc` failure.
+- **The arena has no fixed capacity**; growth is bounded by the callers' size limits
+  (see Caller Map). If a chunk allocation fails, `alloc()` returns `nullptr` and
+  `insert_with_id` returns 0 (one warning per arena until the next `reset()`); a later
+  `clear()` makes the arena usable again.
 
 ---
 
@@ -69,24 +74,34 @@ Different callers reach the dictionary under different locking contexts:
                         ┌────────────────────────────────────────┐
                         │           StringDictionary             │
                         │                                        │
-  Signal handler ───────┼──→ bounded_lookup(key, len)           │
-  (SIGPROF/SIGVTALRM)   │    read-only, signal-safe              │
-                        │                                        │
   JNI: recordTrace0 ────┼──→ bounded_lookup(key, len, limit)    │
   JNI: registerConst0 ──┼──→ bounded_lookup(key, len, limit)    │
-  (no shard lock held)  │    insert-capable, NOT signal-safe     │
+  Profiler::lookupClass ┼──→ bounded_lookup(key, len,           │
+  (no shard lock held)  │        MAX_CLASS_MAP_SIZE)             │
+                        │    insert-capable, NOT signal-safe     │
                         │                                        │
-  JNI: lookupClass ─────┼──→ lookup(key, len)                   │
-  (no shard lock held)  │    insert + malloc, NOT signal-safe    │
-                        │                                        │
-  Dump thread ──────────┼──→ lookupDuringDump(key, len)         │
+  Dump thread ──────────┼──→ lookupDuringDump(key, len, limit)  │
   (inside jfr_op,       │    reads dump then active; may insert  │
    lockAll() held)      │    NOT signal-safe, single-threaded    │
                         │                                        │
+  writeCpool() ─────────┼──→ standby()->collect()               │
+                        │    reads the dump buffer               │
+                        │                                        │
   Profiler::start() ────┼──→ clearAll()                         │
-  (no lock held)        │    resets all three buffers            │
+  (_state_lock held)    │    resets all three buffers            │
                         └────────────────────────────────────────┘
 ```
+
+Size limits per dictionary:
+
+| Dictionary | Writers | Limit |
+|------------|---------|-------|
+| `_class_map` | `Profiler::lookupClass()` (JNI `dictionarizeClassName`, `ObjectSampler`, `LivenessTracker`, reference chains); `lookupDuringDump()` from `FlightRecorder` | `MAX_CLASS_MAP_SIZE` = 2^18 entries; a drop at capacity counts `CLASS_MAP_AT_CAPACITY` |
+| `_string_label_map` | JNI `recordTrace0` (endpoint) | `sizeLimit` passed from Java |
+| `_context_value_map` | JNI `recordTrace0` (operation), `ContextValueCache.registerConstant0` | 2^16 entries |
+
+The unbounded `lookup(key, len)` and the signal-safe, read-only
+`bounded_lookup(key, len)` exist but have no production caller.
 
 **Key point**: `lockAll()` gates `CallTraceStorage` writers, not dictionary writers.
 `recordTrace0` and `registerConstant0` reach `bounded_lookup` before any shard lock
@@ -117,12 +132,15 @@ Caller                        clearAll() / rotate()
 4. guard.isActive()? → probe
    slot failure? return 0
 
-5. _rot.active() == active?
+5. load _accepting (seq_cst)
+   → false? return 0            ← see below
+
+6. _rot.active() == active?
    → changed? continue loop
 
-6. ... read/write buffer ...
+7. ... read/write buffer ...
 
-7. ~RefCountGuard()
+8. ~RefCountGuard()
    → count-- (release)
    → clear active_ptr (release)
 
@@ -178,17 +196,19 @@ clearAll() -> bool
          without clearing would reissue ids existing entries use.
   3. _a.clear(); _b.clear(); _c.clear()
        ↳ frees overflow nodes and extra arena chunks, memsets root table
-  4. _rot.reset()
+  4. _rot.reset(); forget any uncleared standby buffer
   5. _next_id.store(1, relaxed)
-  6. reset counters, bump generation()
+  6. reset DICTIONARY_KEYS counters, bump generation()
   7. _accepting.store(true, release)
        ↳ callers can create new guards again
   8. return true
 ```
 
-`clearAll()` is self-contained: no external lock is required. It only reports the
-result; `Profiler::start()` (`resetRecordingState()`) calls it without `lockAll()`,
-and for a dictionary that was not reset increments `DICTIONARY_DRAIN_TIMEOUTS` and
+`clearAll()` needs no lock against `lookup` / `bounded_lookup` callers, but it must not
+run concurrently with `rotate()` or `clearStandby()` on the same dictionary; `Profiler`
+serialises all three with `_state_lock`. It only reports the result:
+`Profiler::start()` calls it through `resetRecordingState()` (on a reset or the first
+start) without `lockAll()`, and for a dictionary that was not reset increments `DICTIONARY_DRAIN_TIMEOUTS` and
 logs a warning after `Counters::reset()`, then continues. An unreset dictionary stays
 consistent (ids valid, generation unchanged), and the Java `ContextValueCache` is only
 invalidated when the context-value dictionary was actually reset.
@@ -198,10 +218,18 @@ invalidated when the context-value dictionary was actually reset.
 ## rotate() Protocol
 
 `rotate()` is called inside `rotateDictsAndRun()` under a `SignalBlocker` but
-**before** `lockAll()`. It is safe without an external lock.
+**before** `lockAll()`. It needs no lock against dictionary readers and writers; it
+must not run concurrently with another `rotate()`, `clearStandby()` or `clearAll()`
+on the same dictionary, which callers ensure with `_state_lock`. It returns `false`
+when it had to reuse an uncleared standby buffer (see below).
 
 ```
-rotate()  [SignalBlocker active, no external mutex]
+rotate()  [SignalBlocker active, _state_lock held by caller]
+
+Retry:
+  retryUnclearedTarget()
+       ↳ if the last clearStandby() skipped the clear target, retry the
+         clear with a short non-waiting scan
 
 Phase 1:
   old_active = _rot.active()
@@ -216,6 +244,8 @@ Drain:
   RefCountGuard::waitForRefCountToClear(old_active)
        ↳ wait for any JNI thread still holding a guard on old_active
          (signal handlers on THIS thread cannot fire: SignalBlocker)
+       ↳ timeout (~500ms): counts DICTIONARY_DRAIN_TIMEOUTS and logs;
+         aborts in debug builds, continues in release builds
 
 Phase 2:
   _rot.active()->copyFrom(*old_active)
@@ -333,6 +363,23 @@ lossless; both require a thread stuck in a guarded insert for a whole dump cycle
   not `lockAll()`.
 - `jfr_op()` needs `lockAll()` (to exclude concurrent `CallTraceStorage` writes)
   but rotation is already complete before it runs.
+
+---
+
+## Ids, Generation and Counters
+
+- Ids start at 1; 0 means "no entry" (miss, size limit reached, allocation failure,
+  or `_accepting` false). `nextId()` skips 0 when the `u32` counter wraps.
+- `generation()` is bumped only by a successful `clearAll()`. Caches keyed by class-map
+  ids (`LivenessTracker`, `ReferenceChainTracker`) compare it to detect that the id
+  namespace was reset.
+- The constructor argument (1, 2, 3 for the class, string-label and context-value maps)
+  is an offset into the per-dictionary `DICTIONARY_*` counter rows (`counters.h`):
+  `DICTIONARY_BYTES` / `DICTIONARY_PAGES` track storage, `DICTIONARY_KEYS` /
+  `DICTIONARY_KEYS_BYTES` count keys newly assigned an id since the last
+  `clearStandby()`. `DICTIONARY_DRAIN_TIMEOUTS` and `DICTIONARY_ID_CONFLICTS` are
+  shared. After `Counters::reset()`, `resetRecordingState()` calls `reseedCounters()`
+  so the storage gauges do not go negative.
 
 ---
 

@@ -48,14 +48,12 @@ doc/temp/
 # Bytecode from the CI scripts, left by running them or their tests locally
 __pycache__/
 
-# CLAUDE.md is auto-generated from AGENTS.md bootstrap instructions
-CLAUDE.md
-
 # OS/editor cruft
 .DS_Store
 
 # AI review/agent tooling scratch state
 .sphinx/
+/.scratch/
 .skill-builder-temp/
 .claude/scheduled_tasks.lock
 
@@ -64,3 +62,4 @@ CLAUDE.md
 
 # AI investigation scratch state (never committed)
 .investigations/
+/notes/

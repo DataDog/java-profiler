@@ -5,6 +5,9 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
@@ -16,9 +19,6 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Verifies producer compatibility with retained identities and context-window transitions. */
 public class TaskBlockProducerCompatibilityTest extends AbstractProfilerTest {
@@ -40,21 +40,25 @@ public class TaskBlockProducerCompatibilityTest extends AbstractProfilerTest {
       stopProfiler();
       profiler.execute("start," + getProfilerCommand() + ",jfr,file=" + recording);
       started = true;
-      worker.submit(() -> {
-        // Refresh through a different hook first: producer TLS must independently
-        // notice the recording epoch even if registry membership is already current.
-        profiler.addThread();
-        profiler.removeThread();
-        long token = enter(producer);
-        assertTrue(token != 0, "An abandoned interval must not strand producer TLS");
-        if ("paired".equals(producer)) {
-          assertFalse(profiler.endTaskBlock(oldToken, BLOCKER, UNBLOCKING_SPAN_ID),
-              "The previous recording's token must not close the new interval");
-        }
-        Thread.sleep(30L);
-        exit(producer, token);
-        return null;
-      }).get(5, TimeUnit.SECONDS);
+      worker
+          .submit(
+              () -> {
+                // Refresh through a different hook first: producer TLS must independently
+                // notice the recording epoch even if registry membership is already current.
+                profiler.addThread();
+                profiler.removeThread();
+                long token = enter(producer);
+                assertTrue(token != 0, "An abandoned interval must not strand producer TLS");
+                if ("paired".equals(producer)) {
+                  assertFalse(
+                      profiler.endTaskBlock(oldToken, BLOCKER, UNBLOCKING_SPAN_ID),
+                      "The previous recording's token must not close the new interval");
+                }
+                Thread.sleep(30L);
+                exit(producer, token);
+                return null;
+              })
+          .get(5, TimeUnit.SECONDS);
       profiler.stop();
       started = false;
 
@@ -75,16 +79,19 @@ public class TaskBlockProducerCompatibilityTest extends AbstractProfilerTest {
   public void pairedApiRecoversAfterAbandonedGenericHookCrossesContextWindow() throws Exception {
     ExecutorService worker = Executors.newSingleThreadExecutor();
     try {
-      worker.submit(() -> {
-        assertTrue(ProfilerOwnedBlockHooks.blockEnter(profiler, SLEEPING) != 0);
-        profiler.addThread();
-        profiler.removeThread();
-        long token = profiler.beginTaskBlock();
-        assertTrue(token != 0, "The registry retired the old generic run on context entry");
-        Thread.sleep(30L);
-        assertTrue(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
-        return null;
-      }).get(5, TimeUnit.SECONDS);
+      worker
+          .submit(
+              () -> {
+                assertTrue(ProfilerOwnedBlockHooks.blockEnter(profiler, SLEEPING) != 0);
+                profiler.addThread();
+                profiler.removeThread();
+                long token = profiler.beginTaskBlock();
+                assertTrue(token != 0, "The registry retired the old generic run on context entry");
+                Thread.sleep(30L);
+                assertTrue(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+                return null;
+              })
+          .get(5, TimeUnit.SECONDS);
     } finally {
       worker.shutdownNow();
       worker.awaitTermination(5, TimeUnit.SECONDS);
