@@ -155,13 +155,29 @@ int countRunnableCotenants() {
 }
 
 // musl has no version API; the loader banner carries the version line. Any
-// failure (no musl mapping, unreadable banner) means NA.
+// failure (no musl loader mapping, unreadable banner) means NA.
 std::string probeMuslVersion() {
     std::string maps;
     if (!readFile("/proc/self/maps", maps)) {
         return "";
     }
-    size_t p = maps.find("musl");
+    // Match the loader's own filename, not any mapping path containing "musl":
+    // an arbitrary match (e.g. the estimator sitting in a directory named
+    // musl) runs the wrong binary and can recurse into itself.
+    size_t p = 0;
+    while ((p = maps.find("musl", p)) != std::string::npos) {
+        size_t end = maps.find('\n', p);
+        end = end == std::string::npos ? maps.size() : end;
+        size_t lineStart = maps.rfind('\n', p);
+        lineStart = lineStart == std::string::npos ? 0 : lineStart + 1;
+        size_t slash = maps.rfind('/', end - 1);
+        std::string name = slash == std::string::npos || slash < lineStart
+            ? "" : maps.substr(slash + 1, end - slash - 1);
+        if (name.rfind("ld-musl-", 0) == 0 || name.rfind("libc.musl-", 0) == 0) {
+            break;
+        }
+        p = end;
+    }
     if (p == std::string::npos) {
         return "";
     }
