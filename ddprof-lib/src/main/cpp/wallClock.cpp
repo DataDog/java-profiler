@@ -432,10 +432,10 @@ void WallClockASGCT::initialize(Arguments& args) {
 
 void WallClockASGCT::timerLoop() {
     ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
-    const bool lazy_backfill =
+    const bool lookup_registry_slot =
         _precheck && thread_filter->unfilteredWallTrackingActive();
     const ThreadFilter::RecordingEpoch recording_epoch =
-        lazy_backfill ? thread_filter->recordingEpoch() : 0;
+        lookup_registry_slot ? thread_filter->recordingEpoch() : 0;
     auto collectThreads = [&](std::vector<ThreadEntry>& entries) {
       // Get thread IDs from the filter if it's enabled
       // Otherwise list all threads in the system
@@ -471,8 +471,7 @@ void WallClockASGCT::timerLoop() {
     };
 
     timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, doNothing,
-                                 _reservoir_size, _interval, _precheck,
-                                 lazy_backfill);
+                                 _reservoir_size, _interval, lookup_registry_slot);
 }
 
 // WallClockJvmti: mirrors WallClockASGCT's dispatch, but the signal handler
@@ -567,10 +566,10 @@ void WallClockJvmti::initialize(Arguments &args) {
 
 void WallClockJvmti::timerLoop() {
   ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
-  const bool lazy_backfill =
+  const bool lookup_registry_slot =
       _precheck && thread_filter->unfilteredWallTrackingActive();
   const ThreadFilter::RecordingEpoch recording_epoch =
-      lazy_backfill ? thread_filter->recordingEpoch() : 0;
+      lookup_registry_slot ? thread_filter->recordingEpoch() : 0;
   auto collectThreads = [&](std::vector<ThreadEntry> &entries) {
     const int refresher_tid = Libraries::instance()->refresherTid();
     if (thread_filter->enabled()) {
@@ -601,6 +600,5 @@ void WallClockJvmti::timerLoop() {
   auto doNothing = []() {};
 
   timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, doNothing,
-                               _reservoir_size, _interval, _precheck,
-                               lazy_backfill);
+                               _reservoir_size, _interval, lookup_registry_slot);
 }

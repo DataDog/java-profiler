@@ -185,22 +185,6 @@ public:
             resetSampledRun(state);
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
         }
-        // Clears only the owned block-run fields (owner, active state, the
-        // once-per-run sampled marker), leaving the unowned-blocked
-        // statistical sampling weight untouched -- unlike resetSlot(), which
-        // is for registry-lifecycle events (slot reuse, epoch reset) where
-        // the predecessor's weight must not leak into the new owner. This
-        // narrower reset is for a context-window re-entry on the slot's own
-        // thread: it only needs to drop a block run whose exit was missed
-        // (e.g. an exception path with no finally), not disturb the
-        // amortized weight tracking, which spans context-window
-        // entries/exits by design.
-        inline void clearActiveBlockRun(OSThreadState state) {
-            active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
-            active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
-            last_sampled_state.store(state, std::memory_order_relaxed);
-            sampled_this_run.store(false, std::memory_order_release);
-        }
         // identity_slot supplies the context-window state, which lives on
         // ThreadFilter::Slot. See ThreadFilter::Slot::rawContextWindowState().
         inline bool activeBlockRemainedOutsideContextWindow(ThreadFilter::Slot* identity_slot) const {
@@ -251,12 +235,6 @@ public:
     // ThreadFilter at its own registry-lifecycle decision points.
     void resetSlot(ThreadFilter::SlotID slot_id, OSThreadState state);
     void resetAll();
-    // Drops a stuck owned block run (one whose exit was missed) without
-    // touching the unowned-blocked sampling weight. Called by
-    // ThreadFilter::add() on every context-window entry; see
-    // BlockState::clearActiveBlockRun() for why this is safe and why it
-    // leaves the weight alone.
-    void clearActiveBlockRun(ThreadFilter::SlotID slot_id, OSThreadState state);
     // Reads the complete timer-side suppression payload and rejects it if slot
     // identity or block lifecycle changes before final validation.
     bool shouldSuppressOwnedBlock(ThreadFilter* registry, const ThreadEntry& entry) const;

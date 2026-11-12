@@ -76,8 +76,8 @@ tasks.named<Jar>("jmhJar") {
 sourceSets {
   create("chaos")
   create("chaosTest") {
-    compileClasspath += sourceSets["chaos"].output
-    runtimeClasspath += sourceSets["chaos"].output
+    compileClasspath += sourceSets["chaos"].output + sourceSets["jmh"].output
+    runtimeClasspath += sourceSets["chaos"].output + sourceSets["jmh"].output
   }
 }
 

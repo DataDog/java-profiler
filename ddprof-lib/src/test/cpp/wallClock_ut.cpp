@@ -242,7 +242,7 @@ private:
             }
             return WallClockCandidateOutcome::SIGNAL_SENT;
         };
-        timerLoopCommon<ThreadEntry>(collect, sample, [] {}, reservoir_size, 1000000, true);
+        timerLoopCommon<ThreadEntry>(collect, sample, [] {}, reservoir_size, 1000000);
     }
 };
 
@@ -312,4 +312,73 @@ TEST_F(WallClockFilteredSelectionTest, FailedSignalsDoNotCountAsSuccessfulSelect
     EXPECT_EQ(12u, clock.successful);
     EXPECT_EQ(4u, clock.failures);
     EXPECT_EQ(8u, clock.suppressed);
+}
+
+// Model a fixed unfiltered population through the production selection/epoch loop.
+class UnfilteredWeightWallClock : public BaseWallClock {
+public:
+    static constexpr int pool_size = 128;
+    static constexpr int reservoir_size = 16;
+    static constexpr int rounds = 2000;
+    int suppressed_population = 112;
+    std::atomic<bool> observed{false};
+    double effective_weight = 0;
+    u32 max_visits = 0;
+    u32 max_lookups = 0;
+    u64 rejected = 0;
+    const char* name() override { return "Unfiltered weighting test timer"; }
+private:
+    int completed = 0;
+    u32 visits = 0;
+    u32 signals = 0;
+    u32 lookups = 0;
+    void observeEpochForTest(const WallClockEpochEvent& epoch) override {
+        if (observed.load(std::memory_order_acquire)) return;
+        max_visits = std::max(max_visits, visits);
+        max_lookups = std::max(max_lookups, lookups);
+        if (epoch._num_successful_samples != 0) {
+            effective_weight += static_cast<double>(signals) *
+                epoch._num_samplable_threads / epoch._num_successful_samples;
+        }
+        if (++completed == rounds) observed.store(true, std::memory_order_release);
+    }
+    void timerLoop() override {
+        auto collect = [&](std::vector<int>& entries) {
+            visits = signals = lookups = 0;
+            for (int i = 0; i < pool_size; ++i) entries.push_back(i);
+        };
+        auto sample = [&](int candidate, int&, int&, int&, int& registry_lookups, bool lookup) {
+            ++visits;
+            if (lookup) { ++registry_lookups; ++lookups; }
+            if (candidate < suppressed_population) {
+                if (!observed.load(std::memory_order_acquire)) ++rejected;
+                return WallClockCandidateOutcome::PRECHECK_REJECTED;
+            }
+            ++signals;
+            return WallClockCandidateOutcome::SIGNAL_SENT;
+        };
+        timerLoopCommon<int>(collect, sample, [] {}, reservoir_size, 1000, true);
+    }
+};
+
+TEST(WallClockUnfilteredSelectionTest, MixedPopulationRetainsEffectiveWeightAndLookupBound) {
+    auto previous = std::signal(WAKEUP_SIGNAL, +[](int) {});
+    UnfilteredWeightWallClock clock;
+    clock.enableEvents(true);
+    Arguments args;
+    args._wall = 1000;
+    ASSERT_FALSE(clock.start(args));
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!clock.observed.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+    clock.stop();
+    clock.enableEvents(false);
+    std::signal(WAKEUP_SIGNAL, previous);
+    ASSERT_TRUE(clock.observed.load(std::memory_order_acquire));
+    double expected = (clock.pool_size - clock.suppressed_population) * clock.rounds;
+    EXPECT_NEAR(expected, clock.effective_weight, expected * 0.15);
+    EXPECT_LE(clock.max_visits, clock.reservoir_size);
+    EXPECT_LE(clock.max_lookups, clock.reservoir_size);
+    EXPECT_GT(clock.max_lookups, 0u);
+    EXPECT_GT(clock.rejected, 0u);
 }

@@ -179,21 +179,9 @@ static ThreadFilter::SlotID ensureCurrentThreadFilterSlot(
     current->setFilterSlotId(-1);
   }
 
-  // Threads that existed before the recording started (and so never received
-  // a ThreadStart callback) bind their slot lazily here. If the tid is already
-  // indexed, registerThread(tid) returns that existing slot.
-  //
-  // This is the only place the filterThreadAdd0 (JavaCritical), parkEnter0
-  // and blockEnter0 hooks can block on _registry_lock. It's bounded to at
-  // most once per thread lifetime (cold TLS) plus once per recording-epoch
-  // transition this thread observes (stale cached slot) - not a per-call cost.
-  // A thread that cannot get a slot because the registry is full retries here
-  // on every call, but registerThread() rejects it without taking the lock.
-  // THREAD_REGISTRY_HOOK_REREGISTRATION counts every attempt, including those
-  // lock-free rejections (tracked separately by
-  // THREAD_REGISTRY_CAPACITY_EXHAUSTED). If it fires per call while
-  // THREAD_REGISTRY_CAPACITY_EXHAUSTED stays flat, the "provably rare"
-  // assumption has broken and these hooks should be revisited.
+  // Cold or stale TLS registers lazily; existing TIDs retain their slots.
+  // The registry lock is taken once per observed epoch, not on every hook.
+  // Full registries reject unindexed TIDs lock-free and retry on later hooks.
   Counters::increment(THREAD_REGISTRY_HOOK_REREGISTRATION);
   slot_id = thread_filter->registerThread(tid);
   if (slot_id >= 0) {
@@ -248,15 +236,11 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  if (unlikely(!thread_filter->registryActive())) {
-    return;
-  }
-
   int slot_id = current->filterSlotId();
-  if (unlikely(slot_id == -1 ||
-               thread_filter->activeSlotForId(slot_id, tid) == nullptr)) {
-    // No slot yet, or a cached slot left over from an earlier recording -
-    // either way this thread is not in the context window, nothing to remove
+  ThreadFilter::Slot* slot = thread_filter->slotForId(slot_id);
+  // A matching exit must close logical membership even while stopped or stale.
+  // Native ownership lasts until teardown; never mutate a replacement owner.
+  if (slot == nullptr || slot->nativeTid() != tid) {
     return;
   }
   thread_filter->remove(slot_id);

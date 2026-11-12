@@ -233,21 +233,8 @@ void ThreadFilter::refreshSlotForRecording(SlotID slot_id, Slot* slot, Recording
     // payload, then publish the new epoch only after the reset is complete.
     slot->recording_epoch.store(0, std::memory_order_release);
 
-    // add()/remove() only ever act on the calling thread's own slot
-    // (ensureCurrentThreadFilterSlot uses current->tid()), and this method is
-    // only reached via registerThread() re-registering the calling thread's
-    // own tid, so no other thread can be transitioning this slot's context
-    // window concurrently. The CAS (instead of a plain store) is defensive:
-    // it retries and counts each lost race via
-    // THREAD_REGISTRY_CONTEXT_RESET_RACE_DETECTED rather than silently
-    // clobbering a concurrent transition if that invariant is ever broken.
-    u64 current = slot->context_window_state.load(std::memory_order_acquire);
-    while (current != 0 &&
-           !slot->context_window_state.compare_exchange_weak(
-               current, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
-        Counters::increment(THREAD_REGISTRY_CONTEXT_RESET_RACE_DETECTED);
-    }
-
+    // Context membership belongs to the live thread, not the recording.
+    // Only suppression payload is recording-local; an open context survives refresh.
     if (_block_tracker != nullptr) {
         _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
     }
@@ -465,11 +452,10 @@ bool ThreadFilter::add(int tid, SlotID slot_id) {
         if (unlikely(tid < 0 || slot.nativeTid() != tid)) {
             return false;
         }
-        // The owner cannot still be blocked when it enters a context window.
-        // Clear a missed exit without dirtying an idle block-state cache line;
-        // unowned weight is independent of owned-run cleanup.
+        // Deferred tails carry a stack but no original context attributes.
+        // Drop them at the boundary rather than serializing a later context.
         if (_block_tracker != nullptr) {
-            _block_tracker->clearActiveBlockRun(slot_id, OSThreadState::UNKNOWN);
+            _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
         }
         slot.enterContextWindow();
         return true;
@@ -495,7 +481,9 @@ void ThreadFilter::remove(SlotID slot_id) {
         return;
     }
 
-    chunk->slots[slot_idx].exitContextWindow();
+    if (chunk->slots[slot_idx].exitContextWindow() && _block_tracker != nullptr) {
+        _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
+    }
 }
 
 void ThreadFilter::unregisterThread(SlotID slot_id, int expected_tid) {

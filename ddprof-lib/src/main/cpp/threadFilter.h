@@ -56,9 +56,8 @@ public:
         std::atomic<u64>           lifecycle_generation{0};
         // Per-recording publication flag. A retained TID mapping is eligible for
         // unfiltered suppression only when this value matches the registry's
-        // active recording epoch. The slot's context-window state and its
-        // WallClockBlockTracker::BlockState are reset before the epoch is
-        // release-published.
+        // active recording epoch. Its WallClockBlockTracker::BlockState is reset
+        // before the epoch is release-published; logical context membership survives.
         std::atomic<u64>           recording_epoch{0};
         // Native identity and context-window membership are independent so an
         // unfiltered wall recording can retain lifecycle metadata without

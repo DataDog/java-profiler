@@ -73,13 +73,6 @@ void WallClockBlockTracker::resetAll() {
     }
 }
 
-void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id, OSThreadState state) {
-    BlockState* s = slotForId(slot_id);
-    if (s != nullptr && s->activeBlockOwner() != BlockRunOwner::NONE) {
-        s->clearActiveBlockRun(state);
-    }
-}
-
 bool WallClockBlockTracker::shouldSuppressOwnedBlock(ThreadFilter* registry,
                                                      const ThreadEntry& entry) const {
     ThreadFilter::Slot* identity_slot = entry.slot;
@@ -102,12 +95,6 @@ bool WallClockBlockTracker::shouldSuppressOwnedBlock(ThreadFilter* registry,
         }
     }
 
-#ifdef UNIT_TEST
-    if (_suppression_snapshot_hook != nullptr) {
-        _suppression_snapshot_hook(_suppression_snapshot_hook_arg);
-    }
-#endif
-
     u32 block_generation = slot->blockGeneration();
     BlockRunOwner owner = slot->activeBlockOwner();
     OSThreadState state = slot->activeBlockState();
@@ -122,13 +109,14 @@ bool WallClockBlockTracker::shouldSuppressOwnedBlock(ThreadFilter* registry,
         return false;
     }
 
-    // The payload is spread across independent atomics. Accept it only if the
-    // slot still represents the lifecycle and block run captured earlier in
-    // this wall-clock timer-thread pass, when `entry` was populated — either
-    // by ThreadFilter::collect() (inside timerLoop()'s collectThreads lambda)
-    // or by the lazy registry lookup at the top of sampleThreadCommon() —
-    // both in wallClock.cpp/.h (BaseWallClock::timerLoopCommon() itself is a
-    // template defined in wallClock.h).
+#ifdef UNIT_TEST
+    if (_suppression_snapshot_hook != nullptr) {
+        _suppression_snapshot_hook(_suppression_snapshot_hook_arg);
+    }
+#endif
+
+    // Independent atomics can describe different runs during an exit/re-entry.
+    // Reject a payload unless both the identity and block generation still match.
     if (slot->activeBlockOwner() != owner ||
         slot->blockGeneration() != block_generation ||
         identity_slot->nativeTid() != entry.tid ||
