@@ -497,6 +497,7 @@ public:
     memset(_libs, 0, sizeof(_libs));
     _reserved = 0;
     _count = 0;
+    _overflow_reported = false;
   }
 #endif
 };

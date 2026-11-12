@@ -95,8 +95,10 @@ class Libraries {
   // reading the loaded libraries; compiled only into gtest binaries.
   bool addLibraryForTest(CodeCache *lib) { return _native_libs.add(lib); }
 
-  // Frees every CodeCache published into the process-wide array by
-  // updateSymbols(). Test teardown only (see CodeCacheArray::freeForTest).
+  // Deletes every CodeCache in the process-wide array, including any passed
+  // to addLibraryForTest(), so it must not be combined with caller-owned
+  // caches in the same binary. Test teardown only (see
+  // CodeCacheArray::freeForTest).
   void freeNativeLibsForTest() { _native_libs.freeForTest(); }
 #endif
 

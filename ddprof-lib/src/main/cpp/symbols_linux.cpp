@@ -7,6 +7,7 @@
 #ifdef __linux__
 
 #include <dlfcn.h>
+#include <stddef.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <stdio.h>
@@ -325,6 +326,7 @@ static char _debuginfod_cache_buf[PATH_MAX] = {0};
 // Symbol-table addresses (file sh_offset or DT_SYMTAB) carry no alignment
 // guarantee; this copy avoids member access through a misaligned ElfSymbol*,
 // which is undefined behavior.
+static_assert(offsetof(ElfSymbol, st_name) == 0, "symbolNameAt() reads st_name at offset 0");
 static uint32_t symbolNameAt(const void* sym) {
     uint32_t name;
     memcpy(&name, sym, sizeof(name));  // st_name sits at offset 0 of Elf64_Sym

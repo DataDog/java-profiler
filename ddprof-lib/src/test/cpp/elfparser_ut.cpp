@@ -213,8 +213,9 @@ TEST_F(ElfTest, invalidElf) {
     Symbols::parseLibraries(&cc_array, false);
 
     // The binary's own mapping is always collected and parsed.
-    ASSERT_GT(cc_array.count(), 0);
+    const int parsed = cc_array.count();
     cc_array.freeForTest();
+    EXPECT_GT(parsed, 0);
 
     munmap(addr, 4096);
     unlink("/tmp/invalid_elf");
@@ -244,8 +245,9 @@ TEST_F(ElfTest, nonElfFile) {
     // Call the parsing function with the non-ELF mapping
     Symbols::parseLibraries(&cc_array, false);
 
-    ASSERT_GT(cc_array.count(), 0);
+    const int parsed = cc_array.count();
     cc_array.freeForTest();
+    EXPECT_GT(parsed, 0);
 
     // we could add checks here, though I am mainly relying on asan to crash
     // if something is wrong
@@ -275,8 +277,9 @@ TEST_F(ElfTest, invalidElfSmallMapping) {
     // Call the parsing function with the small invalid ELF mapping
     Symbols::parseLibraries(&cc_array, false);
 
-    ASSERT_GT(cc_array.count(), 0);
+    const int parsed = cc_array.count();
     cc_array.freeForTest();
+    EXPECT_GT(parsed, 0);
 
     munmap(addr, 16);
     unlink("/tmp/invalid_elf_small");
@@ -304,8 +307,9 @@ TEST_F(ElfTest, nonElfFileSmallMapping) {
 
     // Call the parsing function with the small non-ELF mapping
     Symbols::parseLibraries(&cc_array, false);
-    ASSERT_GT(cc_array.count(), 0);
+    const int parsed = cc_array.count();
     cc_array.freeForTest();
+    EXPECT_GT(parsed, 0);
     munmap(addr, contentSize);
     unlink("/tmp/non_elf_small");
 }
@@ -360,8 +364,9 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
     // Join the unmapper thread to ensure it has finished
     unmapper.join();
 
-    ASSERT_GT(cc_array.count(), 0);
+    const int parsed = cc_array.count();
     cc_array.freeForTest();
+    EXPECT_GT(parsed, 0);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -401,8 +406,9 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
     Symbols::parseLibraries(&cc_array, false);
     unmapper.join();
 
-    ASSERT_GT(cc_array.count(), 0);
+    const int parsed = cc_array.count();
     cc_array.freeForTest();
+    EXPECT_GT(parsed, 0);
 }
 
 INSTANTIATE_TEST_SUITE_P(
