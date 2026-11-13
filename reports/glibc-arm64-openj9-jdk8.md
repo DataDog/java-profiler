@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-13 13:24:50 EST
+**Date:** 2026-11-13 13:36:36 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 48 |
-| CPU Cores (end) | 48 |
+| CPU Cores (start) | 51 |
+| CPU Cores (end) | 51 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 111 |
-| Sample Rate | 1.85/sec |
-| Health Score | 116% |
+| CPU Samples | 99 |
+| Sample Rate | 1.65/sec |
+| Health Score | 103% |
 | Threads | 12 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
+<summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1794594008 48
-1794594013 48
-1794594018 48
-1794594023 48
-1794594028 48
-1794594033 48
-1794594038 48
-1794594043 48
-1794594048 48
-1794594053 48
-1794594058 48
-1794594063 48
-1794594068 48
-1794594073 48
-1794594078 48
-1794594083 48
-1794594088 48
-1794594093 48
-1794594098 48
-1794594103 48
+1794594674 51
+1794594679 51
+1794594684 51
+1794594689 51
+1794594694 51
+1794594699 51
+1794594704 51
+1794594710 51
+1794594715 51
+1794594720 51
+1794594725 51
+1794594730 51
+1794594735 51
+1794594740 51
+1794594745 51
+1794594750 51
+1794594755 51
+1794594760 51
+1794594765 51
+1794594770 51
 ```
 </details>
 
