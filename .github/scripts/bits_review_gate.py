@@ -290,7 +290,9 @@ class GitHubClient:
             document = json.loads(body)
         except ValueError as error:
             raise ApiError("malformed GraphQL response for PR %s" % (number,)) from error
-        if not isinstance(document, dict) or document.get("errors"):
+        if not isinstance(document, dict):
+            raise ApiError("malformed GraphQL response for PR %s" % (number,))
+        if document.get("errors"):
             raise ApiError("GraphQL errors for PR %s: %r" % (number, document.get("errors")))
         reviews = document
         for key in ("data", "repository", "pullRequest", "reviews"):

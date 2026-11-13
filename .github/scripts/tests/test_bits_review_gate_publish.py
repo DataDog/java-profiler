@@ -560,6 +560,23 @@ class RateLimitPublishTest(PublishTestCase):
     """Rate-limited reads failing past the honor cap publish diagnosable
     error decisions: the description names the rate-limit flag."""
 
+    def test_null_graphql_root_publishes_the_blocking_error_status(self):
+        # A JSON `null` root must fail closed through ApiError into an
+        # error decision that is published — not crash the publisher with
+        # AttributeError before the blocking status is written.
+        null_root = FakeResponse(200, b"null")
+        script = snapshot_script([member()], {968: null_root})
+        code, transport = self.run_publish(publish_script(
+            script, [FakeResponse(200, [])], FakeResponse(201, {})))
+        self.assertEqual(code, 1)
+        posts = self.post_calls(transport)
+        self.assertEqual(len(posts), 1)
+        payload = json.loads(posts[0].data)
+        self.assertEqual(payload["state"], "error")
+        self.assertEqual(payload["description"],
+                         "Bits review api-error on PR #968: pr-968/reviews")
+        self.assert_write_tokens(transport)
+
     def test_rate_limited_reviews_read_names_the_rate_limit_in_the_description(self):
         # A reviews read failing past the honor cap flags the member as
         # pr-<n>/reviews:rate-limit; the published description names it.

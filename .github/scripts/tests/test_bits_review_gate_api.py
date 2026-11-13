@@ -580,6 +580,20 @@ class GraphqlFailClosedTest(unittest.TestCase):
             make_client(transport).fetch_reviews(985)
         self.assertEqual(len(transport.calls), 1)
 
+    def test_non_object_root_fails_with_api_error_not_attribute_error(self):
+        # A JSON `null` or `[]` root must raise ApiError itself: the old
+        # message expression called document.get on the non-dict it had
+        # just detected and crashed with AttributeError instead.
+        for root in (None, []):
+            with self.subTest(root=root):
+                transport = testlib.FakeTransport(
+                    [FakeResponse(200, json.dumps(root).encode("utf-8"))])
+                with self.assertRaises(gate.ApiError) as raised:
+                    make_client(transport).fetch_reviews(985)
+                self.assertIn("malformed GraphQL response for PR 985",
+                              str(raised.exception))
+                self.assertEqual(len(transport.calls), 1)
+
     def test_missing_response_structure_fails(self):
         def drop_reviews(page):
             page["data"]["repository"]["pullRequest"].pop("reviews")
