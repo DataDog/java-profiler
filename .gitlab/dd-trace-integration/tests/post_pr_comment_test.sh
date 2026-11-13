@@ -28,7 +28,29 @@ trap 'rm -rf "${WORK}"' EXIT
 # list unless a test builds its own.
 : > "${WORK}/empty-quarantine.txt"
 
+# Freeze the clock for this suite and every child script: the fixtures below
+# pin added 2026-11-12 and review_by 2027-02-10, so a real wall-clock read
+# past that date would expire them; keep FROZEN_DATE strictly between the two.
+FROZEN_DATE="2026-11-13"
+date() {
+  if [ "$#" -eq 1 ] && [ "$1" = '+%Y-%m-%d' ]; then
+    printf '%s\n' "${FROZEN_DATE}"
+  else
+    command date "$@"
+  fi
+}
+export -f date
+export FROZEN_DATE
+
 TODAY="$(TZ=UTC date '+%Y-%m-%d')"
+
+# The freeze must reach both this shell and the child gate process; a silent
+# re-read of the real clock would fail the suite only months later.
+if [ "${TODAY}" != "${FROZEN_DATE}" ] \
+   || [ "$(bash -c 'TZ=UTC date "+%Y-%m-%d"')" != "${FROZEN_DATE}" ]; then
+  echo "FAIL: clock freeze not in effect (parent and child must both see ${FROZEN_DATE})"
+  exit 1
+fi
 
 # Writes one config directory whose two validation logs say pass or fail.
 write_config() {
@@ -240,6 +262,21 @@ assert_body_contains "the gating failure is marked in the matrix" ":x:"
 assert_body_contains "the failure details name the failing scenario" "**Tracer+profiler:**"
 assert_body_lacks "a quarantined scenario of a gating cell is not reported as excused" "### Quarantined failures"
 
+# --- a quarantined scenario sharing a cell with a plain failure keeps its details ---
+#
+# Both scenarios fail: the cell gates (:x:, failure details) and the
+# quarantined scenario's ticket, expiry, and reason still reach the comment.
+
+build_matrix "${WORK}/mixed-cell" "fail:glibc-x64-openj9-jdk25"
+write_cell "${WORK}/mixed-cell" "glibc-x64-openj9-jdk25" fail fail
+run_script "${WORK}/mixed-cell" "${Q}"
+assert_exit "a quarantined failure next to a plain failure still gates" 1
+assert_body_contains "the mixed gating cell is marked in the matrix" ":x:"
+assert_body_contains "the quarantined details survive the plain failure" "### Quarantined failures"
+# shellcheck disable=SC2016
+assert_body_contains "the quarantined entry is still listed" '`glibc-x64-openj9-jdk25/profiler-only` — PROF-16618, review_by 2027-02-10'
+assert_body_contains "the plain failure details are still reported" "### Failure Details"
+
 # --- an expired entry never excuses a failure ---
 
 Q_EXPIRED="${WORK}/q-expired.txt"
@@ -270,6 +307,8 @@ rm "${WORK}/quarantined-plus-unknown/musl-arm64-openj9-jdk25/tracer-profiler-mus
 run_script "${WORK}/quarantined-plus-unknown" "${Q2}"
 assert_exit "a quarantined failure next to a missing log still fails the pipeline" 1
 assert_body_contains "the missing log is still reported" "**1** without a result"
+assert_body_contains "the quarantined details survive the missing log" "### Quarantined failures"
+assert_body_contains "the quarantined entry survives the missing log" "PROF-16618"
 
 # --- a glob entry quarantines every cell it matches, and only those ---
 

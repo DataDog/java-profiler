@@ -187,7 +187,7 @@ quarantine_known_cells() {
 
 # Days since 1970-01-01 for a YYYY-MM-DD date, pure bash (civil-days formula,
 # leap-year aware) so the validator's 120-day review window behaves
-# identically on GNU and BSD hosts.
+# identically on GNU and BSD hosts; leap days count as cumulative L(yy) - L(1969).
 quarantine_days_since_epoch() {
   local d="$1"
   local y=${d%%-*} m=$((10#${d:5:2})) day=$((10#${d:8:2}))
@@ -197,7 +197,7 @@ quarantine_days_since_epoch() {
   if [ "${m}" -gt 2 ] && [ $((y % 4)) -eq 0 ] && { [ $((y % 100)) -ne 0 ] || [ $((y % 400)) -eq 0 ]; }; then
     dm=$((dm + 1))
   fi
-  printf '%d\n' $(( (yy - 1969) * 365 + (yy - 1969) / 4 - (yy - 1969) / 100 + (yy - 1969) / 400 + dm + day - 1 ))
+  printf '%d\n' $(( (yy - 1969) * 365 + (yy / 4 - yy / 100 + yy / 400) - (1969 / 4 - 1969 / 100 + 1969 / 400) + dm + day - 1 ))
 }
 
 # Can one known cell match both globs? Two entries that share a reachable

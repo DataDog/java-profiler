@@ -170,11 +170,15 @@ for config_dir in "${RESULTS_DIR}"/*; do
   elif [ "${s1_status}" = "quarantined" ] || [ "${s2_status}" = "quarantined" ]; then
     result_set "${config_name}" "quarantined"
     TOTAL_QUARANTINED=$((TOTAL_QUARANTINED + 1))
-    QUARANTINED_ENTRIES+="${QUAR_CFG_ENTRIES}"
   else
     result_set "${config_name}" "pass"
     TOTAL_PASS=$((TOTAL_PASS + 1))
   fi
+  # Quarantined details are reported whatever the cell's gating outcome; the
+  # cell still gates. QUAR_CFG_ENTRIES is empty unless a failing scenario
+  # matched an unexpired entry, so pass cells append nothing; unknown and
+  # gating cells append the matched scenario's bullet.
+  QUARANTINED_ENTRIES+="${QUAR_CFG_ENTRIES}"
 done
 
 # Quarantined cells are real observed results, so a run whose failures are
@@ -316,9 +320,10 @@ see its log in the pipeline.
     COMMENT_BODY="${COMMENT_BODY}
 
 ### Quarantined failures
-These scenarios failed but are quarantined in \`.gitlab/dd-trace-integration/quarantine.txt\`,
-so they do not turn this pipeline red. Each quarantine expires on its review_by date;
-the intended exit is a fix and a deleted line.
+These scenarios failed and are quarantined in \`.gitlab/dd-trace-integration/quarantine.txt\`.
+A quarantined scenario does not turn this pipeline red by itself; a cell still
+gates when its other scenario fails or produced no result. Each quarantine
+expires on its review_by date; the intended exit is a fix and a deleted line.
 "
     COMMENT_BODY="${COMMENT_BODY}${QUARANTINED_ENTRIES}"
   fi
