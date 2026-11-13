@@ -472,6 +472,7 @@ TEST_F(ReferenceChainsBfsTest, StaticFieldCollectionRemainsIndexedAfterFirstLook
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
     int parent = addNode();
     int holder = addNode();
     int table = addNode();
@@ -536,7 +537,6 @@ TEST_F(ReferenceChainsBfsTest, StaticFieldCollectionRemainsIndexedAfterFirstLook
     ASSERT_TRUE(frontier->lookup(node_tags[holder], &holder_entry));
     EXPECT_EQ(node_tags[parent], holder_entry.parent_tag);
     EXPECT_EQ(1u, holder_entry.depth);
-    tracker->stop();
 }
 
 TEST_F(ReferenceChainsBfsTest, GlobalRootsIndexNewAndPreviouslyDiscoveredCollections) {
@@ -544,6 +544,7 @@ TEST_F(ReferenceChainsBfsTest, GlobalRootsIndexNewAndPreviouslyDiscoveredCollect
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
     int parent = addNode();
     int new_holder = addNode();
     int old_holder = addNode();
@@ -579,7 +580,110 @@ TEST_F(ReferenceChainsBfsTest, GlobalRootsIndexNewAndPreviouslyDiscoveredCollect
     FrontierEntry old_entry{};
     ASSERT_TRUE(frontier->lookup(node_tags[old_holder], &old_entry));
     EXPECT_EQ(node_tags[parent], old_entry.parent_tag);
-    tracker->stop();
+}
+
+// A durable root first reported before its class was tagged (class_tag == 0) stays indexed with a
+// 0 own-class tag; the STATIC_FIELD edge that later delivers the resolved tag must upgrade the
+// stored value, or the container-shape fallback can never select the reparented holder.
+TEST_F(ReferenceChainsBfsTest, StaticEdgeRefreshesUnknownClassOfIndexedHolder) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    int parent = addNode();
+    int holder = addNode();
+    node_tags[parent] = tracker->nextTag();
+    FrontierTable *frontier = tracker->frontierTable();
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, node_tags[parent], 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    // The holder starts ROOT-attached (transient attribution) and arrives as a JNI_GLOBAL root
+    // with class_tag 0: the durable-root indexing path stores the untagged 0 own-class value.
+    const jlong holder_tag = tracker->nextTag();
+    node_tags[holder] = (int)holder_tag;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, holder_tag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    const jlong resolved_class_tag = -103;
+    ReferenceChainPassContext ctx{};
+    ctx.tracker = tracker;
+    ctx.frontier = frontier;
+    ctx.hop_cap = 64;
+    ctx.budget = 1000;
+    jlong zero_class_tag = 0;
+    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+              ReferenceChainsTestAccessor::reportHeapRootForTest(
+                  JVMTI_HEAP_ROOT_JNI_GLOBAL, zero_class_tag, &node_tags[holder], &ctx));
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest().size());
+
+    // Reparented - the durable-root tier's parent_tag == 0 branch can never select it again.
+    ASSERT_TRUE(tracker->frontierTable()->improveChain(
+        holder_tag, node_tags[parent], 0, 1, 0));
+
+    // Classification is outside heap callbacks: prime the resolved class as a container, then
+    // deliver the STATIC_FIELD edge the static-field sweep reports (the class object as referrer
+    // with its negative tag - a root-like edge). The index must upgrade 0 -> resolved tag.
+    ReferenceChainsTestAccessor::primeClassShapeForTest(resolved_class_tag, true);
+    jlong class_object_referrer = resolved_class_tag;
+    ASSERT_EQ(JVMTI_VISIT_OBJECTS,
+              ReferenceChainsTestAccessor::reportHeapReferenceForTest(
+                  JVMTI_HEAP_REFERENCE_STATIC_FIELD, resolved_class_tag,
+                  &node_tags[holder], &class_object_referrer, &ctx));
+    ReferenceChainsTestAccessor::clearPriorityExpand();
+    auto selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
+    ASSERT_EQ(std::vector<jlong>{node_tags[holder]}, selected);
+}
+
+// Indexed holders whose frontier entries died are pruned from the rotation index by the next
+// collection, instead of accumulating for the tracker's lifetime (released tags get re-minted,
+// so the same holder would otherwise re-index under its fresh tag every pass).
+TEST_F(ReferenceChainsBfsTest, DeadAnchorIndexEntriesArePruned) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    int holderA = addNode();
+    int holderB = addNode();
+    node_tags[holderA] = tracker->nextTag();
+    node_tags[holderB] = tracker->nextTag();
+    const jlong unknown_class_tag = -106;
+    ReferenceChainPassContext ctx{};
+    ctx.tracker = tracker;
+    ctx.frontier = tracker->frontierTable();
+    ctx.hop_cap = 64;
+    ctx.budget = 1000;
+    for (int holder : {holderA, holderB}) {
+        ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+                  ReferenceChainsTestAccessor::reportHeapRootForTest(
+                      JVMTI_HEAP_ROOT_STACK_LOCAL, unknown_class_tag,
+                      &node_tags[holder], &ctx));
+    }
+    ASSERT_EQ(2u, ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest().size());
+
+    // Every frontier entry dies (frontier tags are released and re-minted between passes).
+    tracker->frontierTable()->clear(node_tags[holderA]);
+    tracker->frontierTable()->clear(node_tags[holderB]);
+    ASSERT_TRUE(
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4).empty());
+    ASSERT_TRUE(ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest().empty());
+}
+
+// The combined rotation selection keeps each drained at-risk anchor once: flipping the dedup
+// comparison would drop every drained anchor, removing the dedup would walk reparented
+// collections twice in one pass.
+TEST(ReferenceChainsMergeAtRiskTest, MergedAnchorsAppearOnce) {
+    std::vector<jlong> selection = {101, 102};
+    std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> drained = {
+        {102, 7U}, {103, 7U}, {101, 7U}};
+    ReferenceChainsTestAccessor::mergeAtRiskAnchorsForTest(selection, drained);
+    ASSERT_EQ((std::vector<jlong>{101, 102, 103}), selection);
+
+    std::vector<jlong> empty_selection;
+    ReferenceChainsTestAccessor::mergeAtRiskAnchorsForTest(empty_selection, drained);
+    ASSERT_EQ((std::vector<jlong>{102, 103, 101}), empty_selection);
 }
 
 // At-risk FIFO mechanics: a chain-attached holder drained from the at-risk FIFO is descend-walked and
