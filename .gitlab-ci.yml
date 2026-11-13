@@ -136,7 +136,8 @@ create_key:
       - pubkeys
 
 # Unit tests for shared helpers in .gitlab/scripts/includes.sh (e.g. the
-# snapshot-staleness check deploy.sh relies on to poll Sonatype).
+# snapshot-staleness check deploy.sh relies on to poll Sonatype) and for the
+# reliability memory-gate scripts (.gitlab/reliability/tests/).
 shell-unit-tests:
   stage: prepare
   needs: []
@@ -147,6 +148,16 @@ shell-unit-tests:
     - bash .gitlab/scripts/tests/test_run_gtest_quarantine.sh
     - bash .gitlab/jdk-integration/tests/select_test_jdk_test.sh
     - bash .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh
+    - bash .gitlab/reliability/tests/mem_watch_markers_test.sh
+    # The image's global python3 (pyenv 3.9.15) has no numpy/matplotlib; the
+    # stability venv does. A missing venv fails the import loudly by design.
+    - export PYTHON_BIN=/app/bp-stability/venv/bin/python3
+    - bash .gitlab/reliability/tests/memory_probe_test.sh
+    - bash .gitlab/reliability/tests/memory_trend_verdict_test.sh
+    - bash .gitlab/reliability/tests/record_inconclusive_test.sh
+    - bash .gitlab/reliability/tests/notify_channel_test.sh
+    - bash .gitlab/reliability/tests/post_pr_comment_test.sh
+    - bash .gitlab/reliability/tests/generate_run_json_test.sh
 
 # Shared version detection used by benchmarks and reliability pipelines
 get-versions:

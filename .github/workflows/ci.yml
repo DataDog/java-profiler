@@ -65,11 +65,39 @@ jobs:
             .gitlab/scripts/check-abi-floor.sh \
             .gitlab/scripts/tests/check_abi_floor_test.sh \
             .gitlab/scripts/tests/includes_test.sh \
-            .gitlab/scripts/tests/test_run_gtest_quarantine.sh
+            .gitlab/scripts/tests/test_run_gtest_quarantine.sh \
+            .gitlab/benchmarks/steps/mem_watch.sh \
+            .gitlab/benchmarks/steps/collect_markers.sh \
+            .gitlab/reliability/memory_trend_check.sh \
+            .gitlab/reliability/post-pr-comment.sh \
+            .gitlab/reliability/notify_channel.sh \
+            .gitlab/reliability/generate-run-json.sh \
+            .gitlab/reliability/record_inconclusive.sh \
+            .gitlab/reliability/tests/generate_run_json_test.sh \
+            .gitlab/reliability/tests/mem_watch_markers_test.sh \
+            .gitlab/reliability/tests/memory_probe_test.sh \
+            .gitlab/reliability/tests/memory_trend_verdict_test.sh \
+            .gitlab/reliability/tests/notify_channel_test.sh \
+            .gitlab/reliability/tests/post_pr_comment_test.sh \
+            .gitlab/reliability/tests/record_inconclusive_test.sh
           shellcheck \
             .gitlab/scripts/check-abi-floor.sh \
             .gitlab/scripts/tests/check_abi_floor_test.sh \
-            .gitlab/scripts/tests/test_run_gtest_quarantine.sh
+            .gitlab/scripts/tests/test_run_gtest_quarantine.sh \
+            .gitlab/benchmarks/steps/mem_watch.sh \
+            .gitlab/benchmarks/steps/collect_markers.sh \
+            .gitlab/reliability/memory_trend_check.sh \
+            .gitlab/reliability/post-pr-comment.sh \
+            .gitlab/reliability/notify_channel.sh \
+            .gitlab/reliability/generate-run-json.sh \
+            .gitlab/reliability/record_inconclusive.sh \
+            .gitlab/reliability/tests/generate_run_json_test.sh \
+            .gitlab/reliability/tests/mem_watch_markers_test.sh \
+            .gitlab/reliability/tests/memory_probe_test.sh \
+            .gitlab/reliability/tests/memory_trend_verdict_test.sh \
+            .gitlab/reliability/tests/notify_channel_test.sh \
+            .gitlab/reliability/tests/post_pr_comment_test.sh \
+            .gitlab/reliability/tests/record_inconclusive_test.sh
           bash .gitlab/scripts/tests/check_abi_floor_test.sh
           bash .gitlab/scripts/tests/includes_test.sh
           bash .gitlab/scripts/tests/test_run_gtest_quarantine.sh

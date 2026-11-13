@@ -225,6 +225,44 @@ churn and GC pressure to manifest.
 The `memory` variant additionally monitors RSS over time (via `memwatch.log`) and
 runs `memory_trend_check.py` to detect upward memory trends.
 
+**Load markers.** Each 5 s RSS sample is followed by a `markers:` record from the
+same tick with five fields: `psi_cpu_some_avg10` and `psi_memory_some_avg10`
+(the `some avg10=` values of `/proc/pressure/cpu` and `/proc/pressure/memory`),
+`loadavg_1m` (field 1 of `/proc/loadavg`), `cpu_nr_throttled` (`nr_throttled`
+from the cgroup `cpu.stat`), and `cotenant_runnable` (runnable processes under
+`/proc`, excluding the JVM, the sampler and their direct children). A missing or
+unreadable source yields the literal `NA`. The co-tenant census sees only processes
+visible inside the container; it cannot see other containers on the same VM.
+
+**Release probe.** On `gmalloc` rows the JVM runs 30 s longer than the measured
+window, the window closes before the probe runs, and the harness (not the
+profiler) attaches with `jcmd <pid> System.trim_native_heap`, capped at 20 s,
+recording RSS before and after. Probe records are never written as `mem:` lines,
+so probe-perturbed RSS never feeds the growth statistic. Other allocators record
+`release_probe=not-applicable`.
+
+**Verdicts.** The memory gate classifies each row as one of three verdicts:
+
+- `pass` — no persistent growth, or on `gmalloc` growth the probe released at
+  least half of.
+- `fail` — persistent growth without a qualifying release; on `gmalloc` the
+  reason notes that `malloc_trim` shrinks only the main arena's top, so retained
+  thread-arena RSS may still be releasable.
+- `inconclusive` — the host, not the change, is the likely cause: fewer than 5
+  samples, load markers unavailable for more than half of the samples, a median
+  `psi_memory_some_avg10` above 5.0, or a `cpu_nr_throttled` rise above 8 over
+  the window; on `gmalloc` also a missing, failed or unreadable probe.
+  `psi_cpu_some_avg10`, load average and the co-tenant census are recorded but
+  never gate: scheduler contention does not distort RSS trends, while memory
+  pressure does through reclaim.
+
+The numeric bounds are provisional, chosen from observed runner behavior.
+
+An `inconclusive` verdict does not fail the job: the row is reported as a ⚠️
+entry in the PR comment, a distinct Slack notice, and `inconclusive` counts in
+the run JSON (whose status then becomes `partial`). A single `fail` row should
+be rerun before it is treated as a regression.
+
 ### Chaos variant
 
 `.gitlab/reliability/chaos_check.sh` is a thin CI wrapper around
