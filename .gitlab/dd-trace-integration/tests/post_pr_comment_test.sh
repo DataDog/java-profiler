@@ -316,12 +316,12 @@ assert_body_contains "the quarantined entry survives the missing log" "PROF-1661
 # TOTAL stays 0 (an unknown cell is not a quarantined result), but the
 # observed quarantined failure must still render instead of the
 # "no results were produced" branch; the pipeline still gates.
-Q5="${WORK}/q5.txt"
-: > "${Q5}"
-add_quarantine "${Q5}" "glibc-x64-openj9-jdk25/profiler-only" "PROF-16618" "2027-02-10" "flake"
+Q_ALLINC="${WORK}/q-all-incomplete.txt"
+: > "${Q_ALLINC}"
+add_quarantine "${Q_ALLINC}" "glibc-x64-openj9-jdk25/profiler-only" "PROF-16618" "2027-02-10" "flake"
 mkdir -p "${WORK}/all-incomplete/glibc-x64-openj9-jdk25"
 echo "VALIDATION_FAILED whatever" > "${WORK}/all-incomplete/glibc-x64-openj9-jdk25/profiler-only-glibc-x64-openj9-jdk25.log"
-run_script "${WORK}/all-incomplete" "${Q5}"
+run_script "${WORK}/all-incomplete" "${Q_ALLINC}"
 assert_exit "an all-incomplete matrix with a quarantined failure still gates" 1
 assert_body_lacks "the no-results branch is not taken over quarantine details" "no results were produced"
 assert_body_contains "the quarantined section renders on an all-incomplete matrix" "### Quarantined failures"
