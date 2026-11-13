@@ -26,6 +26,7 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <link.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -40,6 +41,10 @@
 #endif
 
 extern "C" void* malloc_hook(size_t);
+extern "C" void* calloc_hook(size_t, size_t);
+extern "C" void* realloc_hook(void*, size_t);
+extern "C" int posix_memalign_hook(void**, size_t, size_t);
+extern "C" void* aligned_alloc_hook(size_t, size_t);
 
 namespace {
 
@@ -57,6 +62,8 @@ enum ChildExit {
   CHILD_ORIG_DIRTY = 16,        // a saved pointer was written on rejection
   CHILD_STATE_DIRTY = 17,       // initialized/patched/running/patchable written
   CHILD_SLOT_DIRTY = 18,        // a fixture GOT slot changed on rejection
+  CHILD_DEADLOCK = 19,          // the concurrent loader loop hit the alarm
+  CHILD_UNLOADABLE = 21,        // dlclose did not unmap the fixture
 };
 
 char g_fixture_path[PATH_MAX];
@@ -64,6 +71,17 @@ char g_fixture_path[PATH_MAX];
 const char* const DDPROF_LITERAL =
     "Native-memory profiling was not started: an allocation target points to a ddprof hook. "
     "Enable only one native-memory allocation profiler for this process.";
+const char* const INDETERMINATE_LITERAL =
+    "Native-memory profiling was not started: allocation-target ownership could not be determined.";
+const char* const RESOLUTION_LITERAL = "Failed to resolve malloc symbols; native memory profiling unavailable";
+
+// Skips unless dlclose() really unmaps the fixture (it never does on musl).
+void requireUnloadableFixture() {
+  void* handle = dlopen(g_fixture_path, RTLD_NOW | RTLD_LOCAL);
+  if (handle == NULL) _exit(CHILD_DLOPEN_FAILED);
+  dlclose(handle);
+  if (dlopen(g_fixture_path, RTLD_NOLOAD | RTLD_LAZY) != NULL) _exit(CHILD_UNLOADABLE);
+}
 
 // Resolves the ddprof-marker fixture relative to the test binary. A missing
 // fixture is a build problem: fail, never skip.
@@ -116,6 +134,28 @@ void* loadFixtureHook(const char* symbol) {
   return sym;
 }
 
+void* loadFixtureHandle() {
+  void* handle = dlopen(g_fixture_path, RTLD_NOW | RTLD_LOCAL);
+  if (handle == NULL) _exit(CHILD_DLOPEN_FAILED);
+  return handle;
+}
+
+// True when no saved pointer equals one of the profiler's own hooks.
+bool noOrigIsOwnHook() {
+  const void* hooks[5] = {(const void*)malloc_hook, (const void*)calloc_hook, (const void*)realloc_hook,
+                          (const void*)posix_memalign_hook, (const void*)aligned_alloc_hook};
+  const void* origs[5] = {
+      MallocHookerTestAccessor::origMalloc(), MallocHookerTestAccessor::origCalloc(),
+      MallocHookerTestAccessor::origRealloc(), MallocHookerTestAccessor::origPosixMemalign(),
+      MallocHookerTestAccessor::origAlignedAlloc()};
+  for (int i = 0; i < 5; i++) {
+    for (int j = 0; j < 5; j++) {
+      if (origs[i] == hooks[j]) return false;
+    }
+  }
+  return true;
+}
+
 template <typename Scenario>
 void runInChild(Scenario scenario) {
   fflush(stdout);
@@ -135,6 +175,9 @@ void runInChild(Scenario scenario) {
   int code = WEXITSTATUS(status);
   if (code == CHILD_SKIP) {
     GTEST_SKIP() << "own image has no allocation import in this sanitizer configuration";
+  }
+  if (code == CHILD_UNLOADABLE) {
+    GTEST_SKIP() << "dlclose does not unmap the fixture on this libc (musl)";
   }
   ASSERT_EQ(code, CHILD_OK) << "admission scenario failed in the child, exit code " << code;
 }
@@ -290,4 +333,284 @@ TEST(MallocHookerAdmissionTest, SavedAllocatorWithFixtureHookInSlotRejects) {
   });
 }
 
+// A rejected cached attempt changes nothing and leaves no saved pointer
+// equal to an own hook (AC-8 gtest part): the Java hooks are never copied
+// into saved forwarding state.
+TEST(MallocHookerAdmissionTest, RejectedCachedAttemptChangesNothing) {
+  resolveFixturePath();
+  runInChild([]() {
+    CodeCache* own = findOwnLibrary();
+    if (own == NULL) _exit(CHILD_NO_OWN_LIB);
+    MallocHookerTestAccessor::setInitialized(false);
+
+    // The real allocator the own malloc slot forwards to; the slot is bound
+    // (the test binary has allocated long before this runs).
+    void** slot = own->peekImport(im_malloc, PRIMARY);
+    if (slot == NULL || *slot == NULL) _exit(CHILD_NO_IMPORT);
+    void* allocator = *slot;
+    // Clean saved state: every operation forwards to the real allocator.
+    MallocHookerTestAccessor::seedOrigMalloc(allocator);
+    MallocHookerTestAccessor::seedOrigCalloc(allocator);
+    MallocHookerTestAccessor::seedOrigRealloc(allocator);
+    MallocHookerTestAccessor::seedOrigPosixMemalign(allocator);
+    MallocHookerTestAccessor::seedOrigAlignedAlloc(allocator);
+    MallocHookerTestAccessor::setInitialized(true);
+
+    // The other profiler installs its hook in the own slot after the saved
+    // session: the cached re-evaluation must reject without writing.
+    void* fixture = loadFixtureHook("fixture_malloc_hook");
+    int exit_code = CHILD_OK;
+    writeOwnSlot(own, im_malloc, fixture, &exit_code);
+    if (exit_code != CHILD_OK) _exit(exit_code);
+
+    void* origs_before[5] = {
+        MallocHookerTestAccessor::origMalloc(), MallocHookerTestAccessor::origCalloc(),
+        MallocHookerTestAccessor::origRealloc(), MallocHookerTestAccessor::origPosixMemalign(),
+        MallocHookerTestAccessor::origAlignedAlloc()};
+
+    Error e = MallocHooker::initialize();
+    if (!e) _exit(CHILD_START_UNEXPECTED);
+    if (strcmp(e.message(), DDPROF_LITERAL) != 0) _exit(CHILD_FAIL);
+
+    const void* origs_after[5] = {
+        MallocHookerTestAccessor::origMalloc(), MallocHookerTestAccessor::origCalloc(),
+        MallocHookerTestAccessor::origRealloc(), MallocHookerTestAccessor::origPosixMemalign(),
+        MallocHookerTestAccessor::origAlignedAlloc()};
+    for (int i = 0; i < 5; i++) {
+      if (origs_after[i] != origs_before[i]) _exit(CHILD_ORIG_DIRTY);
+    }
+    // In particular no saved pointer is an own hook: the rejection did not
+    // copy the Java hook into saved forwarding state.
+    if (!noOrigIsOwnHook()) _exit(CHILD_ORIG_DIRTY);
+    _exit(CHILD_OK);
+  });
+}
+
+// The cached resolution-failure state wins over any ddprof target (AC-18):
+// _initialized true with _orig_malloc NULL returns the resolution literal and
+// emits no admission TEST_LOG line.
+TEST(MallocHookerAdmissionTest, CachedResolutionFailureWinsOverFixtureHook) {
+  resolveFixturePath();
+  runInChild([]() {
+    CodeCache* own = findOwnLibrary();
+    if (own == NULL) _exit(CHILD_NO_OWN_LIB);
+    MallocHookerTestAccessor::setInitialized(false);
+
+    void* fixture = loadFixtureHook("fixture_malloc_hook");
+    int exit_code = CHILD_OK;
+    writeOwnSlot(own, im_malloc, fixture, &exit_code);
+    if (exit_code != CHILD_OK) _exit(exit_code);
+    // Cached resolution failure: initialized, nothing resolved.
+    MallocHookerTestAccessor::setInitialized(true);
+
+    // Capture the process output: the admission line must not appear.
+    char log_path[] = "/tmp/ddprof-admission-log-XXXXXX";
+    int log_fd = mkstemp(log_path);
+    if (log_fd < 0) _exit(CHILD_FAIL);
+    int saved_stdout = dup(STDOUT_FILENO);
+    fflush(stdout);
+    dup2(log_fd, STDOUT_FILENO);
+
+    Error e = MallocHooker::initialize();
+
+    fflush(stdout);
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+
+    if (!e) _exit(CHILD_FAIL);
+    if (strcmp(e.message(), RESOLUTION_LITERAL) != 0) _exit(CHILD_FAIL);
+    if (MallocHookerTestAccessor::origMalloc() != NULL) _exit(CHILD_ORIG_DIRTY);
+    if (MallocHookerTestAccessor::initialized() != true) _exit(CHILD_STATE_DIRTY);
+
+    char buf[4096];
+    ssize_t n = pread(log_fd, buf, sizeof(buf) - 1, 0);
+    close(log_fd);
+    unlink(log_path);
+    if (n < 0) n = 0;
+    buf[n] = '\0';
+    if (strstr(buf, "MallocAdmission:") != NULL) _exit(CHILD_FAIL);
+    _exit(CHILD_OK);
+  });
+}
+
+// A target in anonymous executable memory has no owning object (AC-10).
+TEST(MallocHookerAdmissionTest, AnonymousExecutableMemoryIsNoOwner) {
+  resolveFixturePath();
+  void* anon = mmap(NULL, 4096, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(anon, MAP_FAILED);
+
+  void* cell = NULL;
+  CodeCache lib("/test/libhookeradmission.so", -1, (const void*)0x1000, (const void*)0x2000, NULL,
+                /* imports_patchable */ false);
+  lib.addImport(&cell, "malloc");
+  cell = anon;
+
+  const void* hooks[5] = {(const void*)malloc_hook, (const void*)calloc_hook, (const void*)realloc_hook,
+                          (const void*)posix_memalign_hook, (const void*)aligned_alloc_hook};
+  MallocAdmissionInput in;
+  for (int op = 0; op < 5; op++) {
+    for (int type = 0; type < NUM_IMPORT_TYPES; type++) in.current[op][type] = NULL;
+    in.forwarding[op] = NULL;
+    in.own_hooks[op] = hooks[op];
+  }
+  const void* current[5][NUM_IMPORT_TYPES];
+  MallocAdmission::readImports(&lib, current);
+  in.current[0][PRIMARY] = current[0][PRIMARY];
+
+  MallocAdmissionResult out;
+  MallocAdmission::evaluate(in, out);
+  EXPECT_EQ(out.verdict.outcome, INDETERMINATE);
+  EXPECT_EQ(out.verdict.reason, NO_OWNER);
+  EXPECT_EQ(out.target_count, 1);
+  EXPECT_EQ(out.target_verdicts[0].reason, NO_OWNER);
+  munmap(anon, 4096);
+}
+
+namespace {
+
+struct BiasQuery {
+  uintptr_t bias;
+  bool found;
+};
+
+int findBias(struct dl_phdr_info* info, size_t, void* data) {
+  BiasQuery* query = (BiasQuery*)data;
+  if ((uintptr_t)info->dlpi_addr == query->bias) {
+    query->found = true;
+    return 1;
+  }
+  return 0;
+}
+
+} // namespace
+
+// A target inside a fixture that was dlclose'd and unmapped before the walk
+// has no owning object (AC-10). Skipped where dlclose never unmaps (musl).
+TEST(MallocHookerAdmissionTest, UnmappedFixtureTargetIsNoOwner) {
+  resolveFixturePath();
+  void* handle = loadFixtureHandle();
+  void* sym = dlsym(handle, "ddprof_start_profiling");
+  ASSERT_NE(sym, nullptr);
+  struct link_map* map = NULL;
+  ASSERT_EQ(dlinfo(handle, RTLD_DI_LINKMAP, &map), 0);
+  uintptr_t bias = (uintptr_t)map->l_addr;
+  dlclose(handle);
+  // The loader's own reporting is what the owner walk sees: if the object is
+  // still reported (musl) or the range was reused, the scenario cannot run.
+  BiasQuery query = {bias, false};
+  dl_iterate_phdr(findBias, &query);
+  if (query.found) {
+    GTEST_SKIP() << "dlclose did not unmap the fixture (musl) or the range was reused";
+  }
+
+  void* cell = NULL;
+  CodeCache lib("/test/libhookeradmission.so", -1, (const void*)0x1000, (const void*)0x2000, NULL,
+                /* imports_patchable */ false);
+  lib.addImport(&cell, "malloc");
+  cell = sym;
+
+  MallocAdmissionInput in;
+  for (int op = 0; op < 5; op++) {
+    for (int type = 0; type < NUM_IMPORT_TYPES; type++) in.current[op][type] = NULL;
+    in.forwarding[op] = NULL;
+    in.own_hooks[op] = (const void*)malloc_hook;
+  }
+  const void* current[5][NUM_IMPORT_TYPES];
+  MallocAdmission::readImports(&lib, current);
+  in.current[0][PRIMARY] = current[0][PRIMARY];
+
+  MallocAdmissionResult out;
+  MallocAdmission::evaluate(in, out);
+  EXPECT_EQ(out.verdict.outcome, INDETERMINATE);
+  EXPECT_EQ(out.verdict.reason, NO_OWNER);
+}
+
+namespace {
+
+volatile sig_atomic_t g_loader_loop_stop = 0;
+
+void* loaderLoop(void* arg) {
+  int iterations = *(int*)arg;
+  for (int i = 0; i < iterations && !g_loader_loop_stop; i++) {
+    void* handle = dlopen(g_fixture_path, RTLD_NOW | RTLD_LOCAL);
+    if (handle == NULL) return (void*)1;
+    dlclose(handle);
+  }
+  return NULL;
+}
+
+} // namespace
+
+// Admission repeats while another thread loads and unloads a fixture image:
+// the walk finishes under a timeout with no deadlock (AC-10). glibc only:
+// the scenario needs dlclose to unmap (musl keeps the mapping).
+TEST(MallocHookerAdmissionTest, AdmissionConcurrentWithDlopenLoop) {
+  resolveFixturePath();
+  runInChild([]() {
+    requireUnloadableFixture();
+    alarm(120);  // a hang surfaces as SIGALRM, reported as a crashed child
+
+    void* handle = loadFixtureHandle();
+    void* fixture = dlsym(handle, "fixture_malloc_hook");
+    if (fixture == NULL) _exit(CHILD_FAIL);
+    CodeCache* own = findOwnLibrary();
+    if (own == NULL) _exit(CHILD_NO_OWN_LIB);
+    MallocHookerTestAccessor::setInitialized(false);
+    int exit_code = CHILD_OK;
+    writeOwnSlot(own, im_malloc, fixture, &exit_code);
+    if (exit_code != CHILD_OK) _exit(exit_code);
+
+    pthread_t thread;
+    int iterations = 200;
+    if (pthread_create(&thread, NULL, loaderLoop, &iterations) != 0) _exit(CHILD_FAIL);
+    for (int i = 0; i < 100; i++) {
+      MallocHookerTestAccessor::setInitialized(false);
+      Error e = MallocHooker::initialize();
+      if (!e) _exit(CHILD_START_UNEXPECTED);
+      if (strcmp(e.message(), DDPROF_LITERAL) != 0) _exit(CHILD_FAIL);
+    }
+    g_loader_loop_stop = 1;
+    void* thread_result = NULL;
+    pthread_join(thread, &thread_result);
+    if (thread_result != NULL) _exit(CHILD_FAIL);
+    alarm(0);
+    _exit(CHILD_OK);
+  });
+}
+
+// The exact INDETERMINATE literal surfaces through the start chain (AC-9
+// gtest part): a fresh start over an own slot holding the Java hook with no
+// saved forwarding state is indeterminate, not a ddprof claim.
+TEST(MallocHookerAdmissionTest, IndeterminateLiteralThroughStart) {
+  resolveFixturePath();
+  runInChild([]() {
+    CodeCache* own = findOwnLibrary();
+    if (own == NULL) _exit(CHILD_NO_OWN_LIB);
+    MallocHookerTestAccessor::setInitialized(false);
+
+    // Seed the saved state with the real allocator, as a previously
+    // initialized process would carry: resolveMallocSymbols() runs before
+    // admission, and with the own slot holding malloc_hook the probe
+    // allocates through the hook, which forwards to the saved value.
+    void** slot = own->peekImport(im_malloc, PRIMARY);
+    if (slot == NULL || *slot == NULL) _exit(CHILD_NO_IMPORT);
+    void* allocator = *slot;
+    MallocHookerTestAccessor::seedOrigMalloc(allocator);
+    MallocHookerTestAccessor::seedOrigCalloc(allocator);
+    MallocHookerTestAccessor::seedOrigRealloc(allocator);
+    MallocHookerTestAccessor::seedOrigPosixMemalign(allocator);
+    MallocHookerTestAccessor::seedOrigAlignedAlloc(allocator);
+    int exit_code = CHILD_OK;
+    writeOwnSlot(own, im_malloc, (void*)malloc_hook, &exit_code);
+    if (exit_code != CHILD_OK) _exit(exit_code);
+
+    Arguments args;
+    MallocTracer tracer;
+    Error e = tracer.start(args);
+    if (!e) _exit(CHILD_START_UNEXPECTED);
+    if (strcmp(e.message(), INDETERMINATE_LITERAL) != 0) _exit(CHILD_FAIL);
+    if (MallocTracer::running()) _exit(CHILD_STATE_DIRTY);
+    _exit(CHILD_OK);
+  });
+}
 #endif // __linux__

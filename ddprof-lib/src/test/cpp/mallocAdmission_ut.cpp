@@ -17,9 +17,17 @@
 
 #include <gtest/gtest.h>
 
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include "libraries.h"
+#include "mallocTracer.h"
+
 #include "codeCache.h"
 #include "mallocAdmission.h"
-#include "mallocTracer.h"
 
 // The hook functions MallocTracer.cpp defines and patchLibraries() writes.
 // Declared here (not via a production header) because the admission input
@@ -259,3 +267,71 @@ TEST_F(AdmissionsTest, ErrorLiteralsAreExact) {
 }
 
 } // namespace
+
+namespace {
+
+// Child exit codes for the forked own-image scenarios.
+enum AdmissionsChildExit {
+  ADMISSIONS_CHILD_OK = 0,
+  ADMISSIONS_CHILD_FAIL = 20,
+  ADMISSIONS_CHILD_NO_OWN_LIB = 10,
+};
+
+// The forked own-image scenarios run the production initialize(), which
+// commits global resolver state, so they must not run in the test process.
+template <typename Scenario>
+void runInChild(Scenario scenario) {
+  fflush(stdout);
+  fflush(stderr);
+  pid_t pid = fork();
+  ASSERT_NE(pid, -1) << strerror(errno);
+  if (pid == 0) {
+    scenario();
+    _exit(ADMISSIONS_CHILD_OK);
+  }
+  int status = 0;
+  ASSERT_EQ(waitpid(pid, &status, 0), pid);
+  ASSERT_TRUE(WIFEXITED(status)) << "child crashed with signal "
+                                 << (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+  ASSERT_EQ(WEXITSTATUS(status), ADMISSIONS_CHILD_OK) << "forked own-image scenario failed, exit code "
+                                                      << WEXITSTATUS(status);
+}
+
+} // namespace
+
+// The production fresh initialize() over the real own image admits and
+// commits the saved forwarding state; the cached re-evaluation admits again
+// and writes nothing (AC-19, INV-2). On Linux this exercises the real owner
+// walk over libc; on macOS the non-Linux classifier stub.
+TEST_F(AdmissionsTest, ForkedFreshAndCachedInitializeOnOwnImageAdmits) {
+  static const char* names[5] = {"malloc", "calloc", "realloc", "posix_memalign", "aligned_alloc"};
+  CodeCache lib = makeCache(names, 5);
+  (void)lib;
+
+  runInChild([]() {
+    Libraries::instance()->updateSymbols(false);
+    MallocHookerTestAccessor::setInitialized(false);
+    Error e = MallocHooker::initialize();
+    if (e) _exit(ADMISSIONS_CHILD_FAIL);
+    // The fresh commit saved real allocator addresses, none of them an own
+    // hook.
+    void* orig_malloc = MallocHookerTestAccessor::origMalloc();
+    if (orig_malloc == NULL) _exit(ADMISSIONS_CHILD_FAIL);
+    if (orig_malloc == (void*)malloc_hook) _exit(ADMISSIONS_CHILD_FAIL);
+    if (!MallocHookerTestAccessor::initialized()) _exit(ADMISSIONS_CHILD_FAIL);
+
+    // Cached path: re-evaluated, admitted, nothing rewritten.
+    void* before[5] = {MallocHookerTestAccessor::origMalloc(), MallocHookerTestAccessor::origCalloc(),
+                       MallocHookerTestAccessor::origRealloc(), MallocHookerTestAccessor::origPosixMemalign(),
+                       MallocHookerTestAccessor::origAlignedAlloc()};
+    Error e2 = MallocHooker::initialize();
+    if (e2) _exit(ADMISSIONS_CHILD_FAIL);
+    void* after[5] = {MallocHookerTestAccessor::origMalloc(), MallocHookerTestAccessor::origCalloc(),
+                      MallocHookerTestAccessor::origRealloc(), MallocHookerTestAccessor::origPosixMemalign(),
+                      MallocHookerTestAccessor::origAlignedAlloc()};
+    for (int i = 0; i < 5; i++) {
+      if (after[i] != before[i]) _exit(ADMISSIONS_CHILD_FAIL);
+    }
+    _exit(ADMISSIONS_CHILD_OK);
+  });
+}
