@@ -330,10 +330,13 @@ class GitHubClient:
         rate-limit window beyond the honor cap fails fast instead of
         retrying. Returns (body_bytes, link_header)."""
         failure = None
-        rate_limited_last = False
         for attempt in range(1, MAX_ATTEMPTS + 1):
             request = self._build_request(url, payload, token)
             window = None
+            # The flag names the last attempt's classification: a mixed
+            # retry sequence must never report a rate limit its final
+            # failure did not have.
+            rate_limited_last = False
             status = None
             headers = {}
             try:

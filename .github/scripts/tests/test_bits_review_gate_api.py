@@ -435,6 +435,27 @@ class RetryPolicyTest(unittest.TestCase):
                       str(caught.exception))
         self.assertEqual(len(transport.calls), 3)
 
+    def test_mixed_sequence_ending_plain_reports_a_plain_api_error(self):
+        # The rate-limit classification names the LAST attempt: a run that
+        # started rate-limited but ended in plain 5xx failures is a
+        # transport failure, not a rate limit.
+        transport = testlib.FakeTransport([
+            FakeStatusResponse(429, {"Retry-After": "0"}),
+            FakeResponse(500), FakeResponse(500)])
+        with self.assertRaises(gate.ApiError) as caught:
+            make_client(transport).list_open_main_prs()
+        self.assertNotIsInstance(caught.exception, gate.RateLimitError)
+        self.assertEqual(len(transport.calls), 3)
+
+    def test_mixed_sequence_ending_rate_limited_reports_rate_limit_error(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(500),
+            FakeStatusResponse(429, {"Retry-After": "0"}),
+            FakeStatusResponse(429, {"Retry-After": "0"})])
+        with self.assertRaises(gate.RateLimitError):
+            make_client(transport).list_open_main_prs()
+        self.assertEqual(len(transport.calls), 3)
+
     def test_non_integer_retry_after_falls_back_to_default_backoff(self):
         with unittest.mock.patch.object(gate.time, "sleep") as slept:
             transport = testlib.FakeTransport([
