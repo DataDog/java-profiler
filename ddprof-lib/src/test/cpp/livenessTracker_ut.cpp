@@ -1094,6 +1094,35 @@ TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountEmptyTableReturnsZer
 // Reaches the private state onGC()'s container-usage gate depends on.
 class LivenessTrackerTestAccessor {
 public:
+    // Fold one surviving cohort through the same path as a real GC, excluding
+    // representative resolution because these tests have no live JVM.
+    static void foldClassCohort(LivenessTracker *t, u32 klass_id, jint tid,
+                                u64 epoch) {
+        t->_table_lock.lock();
+        t->_klass_count_scratch_size = 0;
+        for (int i = 0; i < 12; i++) {
+            t->accumulateKlassCount(klass_id, epoch, nullptr, tid);
+        }
+        t->foldKlassCountsLocked(nullptr, epoch, false);
+        t->_table_lock.unlock();
+    }
+
+    // Exercise the production per-thread accumulator and fold without synthetic
+    // tid histories. Each pair describes a one-cohort allocating thread.
+    static void recordThreadCohorts(
+        LivenessTracker *t, int slot,
+        const std::vector<std::pair<jint, u32>> &cohorts) {
+        LivenessTracker::KlassCountScratch scratch{};
+        for (const auto &cohort : cohorts) {
+            for (u32 i = 0; i < cohort.second; i++) {
+                t->insertThreadGen(scratch, cohort.first, /*age=*/1);
+            }
+        }
+        t->_table_lock.lock();
+        t->recordTidTrendSamplesLocked(slot, scratch);
+        t->_table_lock.unlock();
+    }
+
     // Runs one onGC() with the given _container_limit_resolved value and returns the
     // container usage it recorded. Restores the touched fields afterwards.
     static u64 containerUsageRecordedByOnGC(LivenessTracker *t, bool limit_resolved) {
@@ -1287,6 +1316,193 @@ public:
         return t->_heap_floor_sample_seq;
     }
 };
+
+#ifdef DEBUG
+TEST_F(SelectLeakCandidatesTest, SeededClassHistorySurvivesRealGcFolds) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        tracker->seedKlassPopulationSampleForTest(1, epoch * 10, epoch);
+        tracker->tidTrendRecordForTest(1, 7, epoch * 3, epoch);
+    }
+    KlassCandidate out[5];
+    ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    for (int epoch = 21; epoch <= 30; epoch++) {
+        LivenessTrackerTestAccessor::foldClassCohort(tracker, 1, 7, epoch);
+    }
+    EXPECT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    // A fold containing only another class must also preserve the seed when
+    // the zero-sample pass visits classes absent from the GC scratch table.
+    LivenessTrackerTestAccessor::foldClassCohort(tracker, 2, 8, 31);
+    EXPECT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    KlassPopulationEntry entry;
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(1, &entry));
+    EXPECT_EQ(31u, entry.last_updated_epoch);
+}
+
+TEST_F(SelectLeakCandidatesTest, SeededClassHistoryAcceptsExplicitUpdatesAfterGc) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        tracker->seedKlassPopulationSampleForTest(1, epoch * 10, epoch);
+        tracker->tidTrendRecordForTest(1, 7, epoch * 3, epoch);
+    }
+    KlassCandidate out[5];
+    ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    LivenessTrackerTestAccessor::foldClassCohort(tracker, 1, 7, 21);
+    // Protection excludes GC updates, but must not freeze subsequent explicit
+    // fixture input or bypass the normal qualification calculation.
+    for (int epoch = 22; epoch <= 51; epoch++) {
+        tracker->seedKlassPopulationSampleForTest(1, 0, epoch);
+    }
+    EXPECT_EQ(0, tracker->selectLeakCandidates(out, 5));
+}
+#endif
+
+TEST_F(SelectLeakCandidatesTest, OrdinaryClassHistoryStillDecaysAfterGrowthStops) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(1, epoch * 10, epoch, &slot, &created);
+        tracker->tidTrendRecordForTest(1, 7, epoch * 3, epoch);
+    }
+    KlassCandidate out[5];
+    ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    for (int epoch = 21; epoch <= 30; epoch++) {
+        LivenessTrackerTestAccessor::foldClassCohort(tracker, 1, 7, epoch);
+    }
+    EXPECT_EQ(0, tracker->selectLeakCandidates(out, 5));
+}
+
+TEST_F(SelectLeakCandidatesTest, LateAllocatingThreadCanQualifyAfterScratchFills) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    std::vector<std::pair<jint, u32>> cohorts;
+    for (int tid = 1; tid <= 16; tid++) {
+        cohorts.emplace_back(tid, 1);
+    }
+    // The larger, later worker must not be permanently hidden behind the first
+    // 16 workers. All its objects share one GC age, as in the external cache test.
+    cohorts.emplace_back(99, 12);
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(1, epoch, epoch, &slot, &created);
+        LivenessTrackerTestAccessor::recordThreadCohorts(tracker, slot, cohorts);
+    }
+    KlassCandidate out[5];
+    ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    ASSERT_EQ(1, out[0].qualifying_tid_count);
+    EXPECT_EQ(99, out[0].qualifying_tids[0]);
+}
+
+TEST_F(SelectLeakCandidatesTest, ScratchOverflowDoesNotInventRetainedInstances) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    std::vector<std::pair<jint, u32>> cohorts;
+    for (int tid = 1; tid <= 40; tid++) {
+        // Below the retained-count bar, with a flat one-age history: replacing
+        // another tid must never transfer its counts to the incoming worker.
+        cohorts.emplace_back(tid, 7);
+    }
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(1, epoch, epoch, &slot, &created);
+        LivenessTrackerTestAccessor::recordThreadCohorts(tracker, slot, cohorts);
+    }
+    KlassCandidate out[5];
+    EXPECT_EQ(0, tracker->selectLeakCandidates(out, 5));
+}
+
+TEST_F(SelectLeakCandidatesTest, ScratchOverflowPreservesStrongEarlyThreads) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    std::vector<std::pair<jint, u32>> cohorts;
+    for (int tid = 1; tid <= 16; tid++) {
+        cohorts.emplace_back(tid, 12);
+    }
+    for (int tid = 17; tid <= 40; tid++) {
+        cohorts.emplace_back(tid, 1);
+    }
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(1, epoch, epoch, &slot, &created);
+        LivenessTrackerTestAccessor::recordThreadCohorts(tracker, slot, cohorts);
+    }
+    KlassCandidate out[5];
+    ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    ASSERT_GT(out[0].qualifying_tid_count, 0);
+    for (int i = 0; i < out[0].qualifying_tid_count; i++) {
+        EXPECT_LE(out[0].qualifying_tids[i], 16);
+    }
+}
+
+// Victim selection among equal retained sets must keep the FIRST minimal slot (strictly-less
+// comparison): flipping it to <= evicts the last minimal thread instead. Thread 2 is the first
+// minimal slot and thread 1 ties with it at the same count - thread 2 must lose its history
+// (absent from the fold every epoch) while thread 1's survives.
+TEST_F(SelectLeakCandidatesTest, ScratchOverflowEvictsFirstMinimalSlot) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    std::vector<std::pair<jint, u32>> cohorts;
+    cohorts.emplace_back(1, 12);
+    cohorts.emplace_back(2, 12);
+    for (int tid = 3; tid <= 16; tid++) {
+        cohorts.emplace_back(tid, 13);
+    }
+    cohorts.emplace_back(17, 1);
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(1, epoch, epoch, &slot, &created);
+        LivenessTrackerTestAccessor::recordThreadCohorts(tracker, slot, cohorts);
+    }
+    KlassCandidate out[5];
+    ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    auto contains_tid = [&out](jint tid) {
+        for (int i = 0; i < out[0].qualifying_tid_count; i++) {
+            if (out[0].qualifying_tids[i] == tid) {
+                return true;
+            }
+        }
+        return false;
+    };
+    // Thread 1 ties with thread 2 at the global minimum count: the scan keeps the first minimal
+    // slot, so thread 1 is evicted by the overflow thread every epoch and never reaches the fold,
+    // while thread 2's history qualifies.
+    EXPECT_TRUE(contains_tid(2));
+    EXPECT_FALSE(contains_tid(1));
+}
+
+// The victim scan must consider slot 0 a candidate: the global minimum (thread 1, the only count
+// that clears the bar here) sits at slot 0, and the scan evicts it on every overflow arrival, so
+// its history never reaches the fold. (Pins the scan's min-selection; comparing slot 0 with
+// itself at a loop start of 0 is a no-op, so no mutation of the start index is observable.)
+TEST_F(SelectLeakCandidatesTest, ScratchOverflowEvictsTheGlobalMinimumThread) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    std::vector<std::pair<jint, u32>> cohorts;
+    cohorts.emplace_back(1, 8);
+    for (int tid = 2; tid <= 16; tid++) {
+        cohorts.emplace_back(tid, 9);
+    }
+    cohorts.emplace_back(17, 1);
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(1, epoch, epoch, &slot, &created);
+        LivenessTrackerTestAccessor::recordThreadCohorts(tracker, slot, cohorts);
+    }
+    KlassCandidate out[5];
+    ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    auto contains_tid = [&out](jint tid) {
+        for (int i = 0; i < out[0].qualifying_tid_count; i++) {
+            if (out[0].qualifying_tids[i] == tid) {
+                return true;
+            }
+        }
+        return false;
+    };
+    EXPECT_FALSE(contains_tid(1));
+    // Thread 1's history is evicted on every overflow arrival and never reaches the fold; the
+    // qualifying threads are the 9-count threads the scan never minimizes onto.
+}
 
 TEST(LivenessTrackerSessionTest, ResetSessionClearsOnlyRecordingGates) {
     LivenessTracker *tracker = LivenessTracker::instance();

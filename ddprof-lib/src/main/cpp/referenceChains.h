@@ -480,10 +480,8 @@ private:
     }
   } _priority_expand_set;
 
-  // A static holder richly referenced from the running graph is EXCLUDED from the static-anchor tier forever once its
-  // frontier entry is chain-attached (first admitted via a non-root path, or demoted by
-  // improveChain) - maybeUpgradeRootAttachedRootKind() refuses entries with parent_tag != 0 by
-  // design, so collectStaticFieldAnchorsForRotation() (parent_tag == 0 filter) can never select it.
+  // Chain-attached holders without a known collection shape need a first
+  // descend walk when a static edge or reparenting removes their root eligibility.
   struct AtRiskAnchor {
     jlong tag;
     u32 klass_id;
@@ -503,18 +501,18 @@ private:
   std::unordered_map<u32, u32> _static_anchor_fifo_klass_counts;
   static constexpr u32 STATIC_ANCHOR_ATRISK_PER_KLASS_CAP = 64;
 
-  // Index of root-attached STATIC_FIELD/JNI_GLOBAL frontier entries, so
-  // collectStaticFieldAnchorsForRotation() iterates O(anchors) instead of scanning the full
-  // frontier table O(frontier_size).
+  // Index of holders observed at durable root edges or local roots. Known collections remain
+  // eligible after reparenting, so replacing their storage is still observed.
+  // Non-collection local holders are excluded after classification.
+  // collectStaticFieldAnchorsForRotation() iterates these anchors rather than
+  // scanning the full frontier table.
   std::vector<jlong> _static_anchor_index;
 
-  // Parallel to _static_anchor_index: the OWN class tag of each anchor object (the class of the
-  // static field's VALUE, not the holder class).
-  std::vector<jlong> _static_anchor_own_class_tags;
-
-  // Dedup companion for _static_anchor_index (O(1) membership; the population is ~28k on a real JVM
-  // - see addToStaticAnchorIndex()'s own comment).
-  std::unordered_set<jlong> _static_anchor_index_tags;
+  // Own class tag per indexed holder (the runtime class tag of the holder), keyed by the holder's
+  // frontier tag. A holder first seen before its class was tagged is stored with 0 and refreshed
+  // by the next callback reporting the resolved class tag - the value is the sole input of the
+  // container-shape fallback in isSelectableAnchor() for reparented holders.
+  std::unordered_map<jlong, jlong> _static_anchor_index_class_tags;
 
   // Shape of a class as an anchor candidate: does the class implement java/util/Collection or
   // java/util/Map (directly or via superclasses/ interfaces)?
@@ -1062,14 +1060,21 @@ private:
                                  int *edges_admitted, bool *truncated,
                                  bool *frontier_cap_hit, u64 *safepoint_ns);
 
-  // Selects root-attached durable entries with a tiered cursor: leak-tagged, fresh, container-shaped,
-  // then everything else fairly.
+  // Selects durable roots and indexed collections (including reparented ones)
+  // with a tiered cursor: leak-tagged, fresh, containers, then other roots fairly.
   std::vector<jlong> collectStaticFieldAnchorsForRotation(int max_count);
+  bool isSelectableAnchor(const FrontierEntry &entry, jlong own_class_tag) const;
   // At-risk anchor push: deduped, capped, and quota-limited per klass.
   void pushAtRiskStaticAnchor(jlong tag, u32 klass_id);
   // Add `tag` to _static_anchor_index if its root_kind is a durable anchor-tier kind (STATIC_FIELD
   // or JNI_GLOBAL).
   void addToStaticAnchorIndex(jlong tag, jlong own_class_tag, u8 root_kind);
+  // Shared deduplicated index insertion for durable roots and local holders.
+  void indexAnchorForRotation(jlong tag, jlong own_class_tag);
+  // Appends the drained at-risk anchors to the combined static-anchor selection, skipping tags the
+  // persistent tiers already selected. Static: no member state, exposed for the dedup test.
+  static void mergeAtRiskAnchors(std::vector<jlong> &selection,
+                                 const std::vector<AtRiskAnchor> &drained);
 
   // True iff `klass` implements java/util/Collection or java/util/Map, directly or transitively
   // (superclass chain + interfaces of every visited class, depth-bounded, visited set to survive
@@ -1081,10 +1086,10 @@ private:
   // cannot be resolved yet (leaves them at -1 so the next call retries).
   bool resolveContainerInterfaceTags(jvmtiEnv *jvmti, JNIEnv *jni);
 
-  // Lazy shape reconciliation for the anchor index: scans _static_anchor_own_class_tags for class
-  // tags not yet in _class_shape_cache, resolves up to ANCHOR_SHAPE_RECONCILE_BUDGET of them per
-  // pass via one GetObjectsWithTags call (class objects are tagged with their class tags) and
-  // classifies each.
+  // Lazy shape reconciliation for the anchor index: scans the anchor index's class tags
+  // (_static_anchor_index_class_tags) for class tags not yet in _class_shape_cache, resolves up to
+  // ANCHOR_SHAPE_RECONCILE_BUDGET of them per pass via one GetObjectsWithTags call (class objects
+  // are tagged with their class tags) and classifies each.
   void reconcileAnchorClassShapes(jvmtiEnv *jvmti, JNIEnv *jni);
   // Pops up to max_count AtRiskAnchor entries off _static_anchor_fifo's front into `out`
   // (appending), decrementing each popped entry's class occupancy in

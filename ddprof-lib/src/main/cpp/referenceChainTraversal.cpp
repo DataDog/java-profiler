@@ -135,6 +135,24 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   default:
     break;
   }
+  // Record durable roots even when the holder already had a frontier entry:
+  // neither first admission nor a retained chain path may skip the index.
+  if (*tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
+    ctx->tracker->addToStaticAnchorIndex(*tag_ptr, class_tag,
+                                         translated_root_kind);
+  }
+  // Remember local holders before expansion can reparent them into a deeper
+  // chain. Known collections still need bounded descend walks after that change
+  // to observe replacement backing storage. Classification runs outside this
+  // callback; unknown types are indexed but do not qualify for a walk yet.
+  if (isTransientRootKind(translated_root_kind) && class_tag != 0 &&
+      *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
+    auto shape = ctx->tracker->_class_shape_cache.find(class_tag);
+    if (shape == ctx->tracker->_class_shape_cache.end() ||
+        shape->second == (u8)AnchorClassShape::CONTAINER) {
+      ctx->tracker->indexAnchorForRotation(*tag_ptr, class_tag);
+    }
+  }
   return JVMTI_ITERATION_CONTINUE;
 }
 
@@ -146,6 +164,19 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::stackRefCallback(
   // richer shape, but FrontierEntry has nowhere to record it (depth/method/slot are not part of the
   // record) - admission is otherwise identical to heapRootCallback() above, so this just forwards.
   return heapRootCallback(root_kind, class_tag, size, tag_ptr, user_data);
+}
+
+void ReferenceChainTracker::mergeAtRiskAnchors(
+    std::vector<jlong> &selection,
+    const std::vector<AtRiskAnchor> &drained) {
+  for (const AtRiskAnchor &at_risk : drained) {
+    // A reparented collection can also have been selected by the persistent
+    // container tier. The combined selection is bounded by 48 + 16 entries.
+    if (std::find(selection.begin(), selection.end(), at_risk.tag) ==
+        selection.end()) {
+      selection.push_back(at_risk.tag);
+    }
+  }
 }
 
 void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
@@ -379,9 +410,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       collectStaticFieldAnchorsForRotation(STATIC_ANCHOR_ROTATION_BUDGET);
   std::vector<AtRiskAnchor> static_anchor_fifo_drained;
   drainStaticAnchorFifo(STATIC_ANCHOR_FIFO_DRAIN, static_anchor_fifo_drained);
-  for (const AtRiskAnchor &at_risk : static_anchor_fifo_drained) {
-    static_anchor_tags.push_back(at_risk.tag);
-  }
+  mergeAtRiskAnchors(static_anchor_tags, static_anchor_fifo_drained);
   if (rotation_tags.empty() && leak_accumulation_tags.empty() &&
       stale_expanded_tags.empty() && static_anchor_tags.empty()) {
     return;
@@ -1061,6 +1090,11 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   if (manual_first_pass) {
     _search_started = true;
     store(_search_start_ns, OS::nanotime());
+    // Register the candidates that triggered this search before walking. The
+    // first pass can drain the frontier; without a watched klass it would then
+    // complete and release its tags before the loop's post-pass poll can
+    // reconstruct any chain or schedule candidate-scoped walks.
+    pollWatchedTargets(jvmti, jni);
   }
 
   // Root/stack-ref enumeration alone never discovers a root's transitive children

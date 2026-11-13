@@ -446,9 +446,9 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       // This new path is deeper - replace the shallow root-attached entry with the deeper
       // chain-attached entry.
       u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
-      // Pre-read the CURRENT shape: if improveChain() below succeeds, this root-attached durable
-      // entry is about to be replaced with a deeper chain-attached one - i.e. it is leaving the
-      // population collectStaticFieldAnchorsForRotation() can select, at exactly this moment.
+      // Pre-read the CURRENT shape: improveChain() can remove this entry's
+      // durable-root eligibility. A known collection remains in the container
+      // tier; other holders need the FIFO's first look below.
       FrontierEntry pre_improve_entry{};
       bool was_root_attached_durable =
           ctx->frontier->lookup(*tag_ptr, &pre_improve_entry) &&
@@ -464,8 +464,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
             *tag_ptr, ctx->resolved_chain_tags,
             ctx->resolved_chain_tag_count);
         if (was_root_attached_durable) {
-          // Demotion push: the replaced entry's static/JNI-global attribution was its only
-          // anchor-tier eligibility, and it is gone now.
+          // Ensure a first look even when class-shape reconciliation has not
+          // yet classified this reparented holder as a collection.
           ctx->tracker->pushAtRiskStaticAnchor(
               *tag_ptr, ctx->tracker->classTags()->resolve(class_tag));
         }
@@ -491,13 +491,14 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
             *tag_ptr, ctx->resolved_chain_tags,
             ctx->resolved_chain_tag_count);
       } else if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
-        // The upgrade refused (maybeUpgradeRootAttachedRootKind returns false for parent_tag != 0
-        // by design), so this STATIC_FIELD edge just proved an at-risk static attachment the anchor
-        // tier's parent_tag == 0 filter can never see: a holder already admitted as a non-root
-        // child (find-anchor-holder-eviction).
+        // The sweep reached a holder first admitted through another object.
+        // Keep its static attachment indexed: confirmed collections must remain
+        // eligible after the FIFO's one-time descend walk has been consumed.
         FrontierEntry entry{};
         if (ctx->frontier->lookup(*tag_ptr, &entry) &&
             entry.parent_tag != 0) {
+          ctx->tracker->addToStaticAnchorIndex(
+              *tag_ptr, class_tag, (u8)reference_kind);
           ctx->tracker->pushAtRiskStaticAnchor(
               *tag_ptr, ctx->tracker->classTags()->resolve(class_tag));
         }

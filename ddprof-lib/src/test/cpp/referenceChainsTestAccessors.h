@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "classTagAllocator.h"
+#include "livenessTracker.h"
 #include "referenceChains.h"
 #include "vmEntry.h"
 
@@ -37,6 +38,30 @@ public:
 
 class ReferenceChainsTestAccessor {
 public:
+    // Failure-safe teardown for tests that start the tracker: a gtest ASSERT_* failure returns from
+    // the test body immediately and skips a trailing stop(), leaving the singleton started with a
+    // populated frontier/index and (optionally) LivenessTracker's GC-generation machinery enabled -
+    // exactly the cross-test state this suite's negative controls depend on being empty. Owns the
+    // teardown instead of the trailing lines; its stop() is a no-op once already stopped.
+    class TrackerStopGuard {
+    public:
+        explicit TrackerStopGuard(bool reset_liveness = false)
+            : _reset_liveness(reset_liveness) {}
+        ~TrackerStopGuard() {
+            if (_reset_liveness) {
+                LivenessTracker *liveness = LivenessTracker::instance();
+                liveness->klassPopulationResetForTest();
+                liveness->setGcGenerationsForTest(false);
+            }
+            ReferenceChainTracker::instance()->stop();
+        }
+        TrackerStopGuard(const TrackerStopGuard &) = delete;
+        TrackerStopGuard &operator=(const TrackerStopGuard &) = delete;
+
+    private:
+        bool _reset_liveness;
+    };
+
     static void reset() {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         delete t->_frontier;
@@ -94,8 +119,7 @@ public:
         t->_root_kind_rotation_cursor = 1;
         t->_stale_expanded_rotation_cursor = 1;
         t->_static_anchor_index.clear();
-        t->_static_anchor_own_class_tags.clear();
-        t->_static_anchor_index_tags.clear();
+        t->_static_anchor_index_class_tags.clear();
         t->_anchor_container_cursor = 0;
         t->_anchor_other_cursor = 0;
         t->_class_shape_cache.clear();
@@ -528,8 +552,19 @@ public:
     static bool anchorIndexIsEmptyForTest() {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         return t->_static_anchor_index.empty() &&
-               t->_static_anchor_own_class_tags.empty() &&
-               t->_static_anchor_index_tags.empty();
+               t->_static_anchor_index_class_tags.empty();
+    }
+
+    // Copy of the indexed holder tags, so a test can observe pruning and
+    // admission of the persistent rotation index without reaching into it.
+    static std::vector<jlong> staticAnchorIndexTagsForTest() {
+        return ReferenceChainTracker::instance()->_static_anchor_index;
+    }
+
+    static void mergeAtRiskAnchorsForTest(
+            std::vector<jlong> &selection,
+            const std::vector<ReferenceChainTracker::AtRiskAnchor> &drained) {
+        ReferenceChainTracker::mergeAtRiskAnchors(selection, drained);
     }
 
     static jlong discoveredTagForTest(int slot, int idx) {
@@ -989,6 +1024,22 @@ public:
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         return std::vector<jlong>(t->_priority_expand.begin(),
                                    t->_priority_expand.end());
+    }
+
+    // Report a root without running a whole pass, so its scheduling effect can
+    // be checked independently of the ordinary rotation collectors.
+    static jvmtiIterationControl reportHeapRootForTest(
+        jvmtiHeapRootKind kind, jlong class_tag, jlong *tag, void *context) {
+        return ReferenceChainTracker::heapRootCallback(kind, class_tag, 0, tag,
+                                                       context);
+    }
+
+    // Deliver an observed edge through the production heap callback.
+    static jint reportHeapReferenceForTest(jvmtiHeapReferenceKind kind,
+                                          jlong class_tag, jlong *tag,
+                                          jlong *referrer_tag, void *context) {
+        return ReferenceChainTracker::heapReferenceCallback(
+            kind, nullptr, class_tag, 0, 0, tag, referrer_tag, -1, context);
     }
 
     // Simulates a tag left in _priority_expand by a prior pass's truncated expandFrontier()
