@@ -332,6 +332,8 @@ class GitHubClient:
         for attempt in range(1, MAX_ATTEMPTS + 1):
             request = self._build_request(url, payload, token)
             window = None
+            status = None
+            headers = {}
             try:
                 response = self._transport(request)
                 try:
@@ -349,6 +351,13 @@ class GitHubClient:
                     rate_limited_last = True
                     window = _rate_limit_window_seconds(error.headers)
             except Exception as error:  # any transport failure retries
+                if (status is not None
+                        and not (200 <= status < 300 or status >= 500
+                                 or _is_rate_limited(status, headers))):
+                    # The status was already read as a non-retryable
+                    # non-2xx; retrying a failed body read of it would
+                    # break the one-attempt contract.
+                    raise ApiError("HTTP %s for %s" % (status, url)) from error
                 failure = error
             else:
                 if 200 <= status < 300:

@@ -477,6 +477,32 @@ class BodyReadRetryTest(unittest.TestCase):
             make_client(transport).read_statuses(SHA)
         self.assertEqual(len(transport.calls), 3)
 
+    def test_non_retryable_4xx_body_read_failure_gets_exactly_one_attempt(self):
+        class FailingRead(FakeResponse):
+            def __init__(self, status):
+                super().__init__(status, [])
+
+            def read(self):
+                raise OSError("connection reset during body read")
+
+        transport = testlib.FakeTransport([FailingRead(404)])
+        with self.assertRaises(gate.ApiError):
+            make_client(transport).list_open_main_prs()
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_retryable_5xx_body_read_failure_keeps_retrying(self):
+        class FailingRead(FakeResponse):
+            def __init__(self, status):
+                super().__init__(status, [])
+
+            def read(self):
+                raise OSError("connection reset during body read")
+
+        transport = testlib.FakeTransport([FailingRead(503)] * 3)
+        with self.assertRaises(gate.ApiError):
+            make_client(transport).list_open_main_prs()
+        self.assertEqual(len(transport.calls), 3)
+
 
 class ResponseClosingTest(unittest.TestCase):
     """Every response opened in _fetch is closed on every exit path."""

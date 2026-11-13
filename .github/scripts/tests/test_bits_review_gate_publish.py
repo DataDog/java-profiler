@@ -428,6 +428,19 @@ class FingerprintChangeLoopTest(SeamTestCase):
         self.assertEqual((result[0], result[1]["state"], result[1]["reason"]),
                          ("stable", "failure", "edited-summary"))
 
+    def test_flickering_input_returns_the_last_revalidated_decision(self):
+        """S1 pass, S2 edited, S3 and S4 pass again: every iteration
+        recomputes — the returned success is the final matched pair's,
+        never the intermediate edited failure nor a frozen earlier read."""
+        edited = testlib.fixture_node("pr968", lastEditedAt="2026-11-12T13:00:00Z")
+        pass_script = snapshot_script([member()], {968: [pass_node()]})
+        edited_script = snapshot_script([member()], {968: [edited]})
+        result, transport = self.run_seam(pass_script, edited_script,
+                                          pass_script, pass_script)
+        self.assertEqual((result[0], result[1]["state"], result[1]["reason"]),
+                         ("stable", "success", "pass"))
+        self.assertEqual(len(transport.calls), 8)
+
     def test_member_head_moving_away_empties_the_snapshot(self):
         """The member's head no longer matches the published SHA: the
         changed snapshot is an empty P(H), returned after two reads."""
