@@ -21,7 +21,6 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import bits_review_gate as gate  # noqa: E402
-import bits_review_gate_policy as policy  # noqa: E402
 
 import bits_review_gate_testlib as testlib  # noqa: E402
 
@@ -176,10 +175,10 @@ def statuses_read_url(sha=HEAD):
 
 
 def publish_script(decision_snapshot, status_pages=(), post_response=None):
-    """The transport queue of one full publish run: the decision's single
-    snapshot, then every status page, then the POST response when a write
-    is expected."""
-    responses = decision_snapshot[0] + list(status_pages)
+    """The transport queue of one full publish run: the decision's
+    revalidated snapshot pair, then every status page, then the POST
+    response when a write is expected."""
+    responses = decision_snapshot[0] + decision_snapshot[0] + list(status_pages)
     if post_response is not None:
         responses.append(post_response)
     return responses
@@ -219,11 +218,13 @@ class EmptySnapshotTest(SeamTestCase):
 
 
 class StableDecisionTest(SeamTestCase):
-    """Snapshots return the exact decision payload of the single read;
-    D is asserted exactly and the one-snapshot read is pinned."""
+    """A stable snapshot pair returns the exact decision payload of the
+    revalidated read; D is asserted exactly and the two-snapshot read is
+    pinned."""
 
     def test_stable_snapshot_returns_the_exact_success_payload(self):
-        result, _ = self.run_seam(snapshot_script([member()], {968: [pass_node()]}))
+        script = snapshot_script([member()], {968: [pass_node()]})
+        result, _ = self.run_seam(script, script)
         self.assertEqual(result[0], "stable")
         self.assertEqual(result[1], {
             "state": "success",
@@ -240,13 +241,15 @@ class StableDecisionTest(SeamTestCase):
         changed = member()
         changed["title"] = "renamed after the read"
         changed["draft"] = True
-        result, transport = self.run_seam(snapshot_script([changed], {968: [pass_node()]}))
+        result, transport = self.run_seam(snapshot_script([changed], {968: [pass_node()]}),
+                                          snapshot_script([changed], {968: [pass_node()]}))
         self.assertEqual(result[0], "stable")
         self.assertEqual(result[1]["state"], "success")
-        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(len(transport.calls), 4)
 
     def test_stable_fail_payload_names_the_governing_review(self):
-        result, _ = self.run_seam(snapshot_script([member(985)], {985: [fail_node()]}))
+        script = snapshot_script([member(985)], {985: [fail_node()]})
+        result, _ = self.run_seam(script, script)
         self.assertEqual(result[0], "stable")
         self.assertEqual(result[1], {
             "state": "failure",
@@ -260,7 +263,8 @@ class StableDecisionTest(SeamTestCase):
     def test_shared_head_pair_with_one_pass_and_one_missing_is_pending(self):
         prs = [member(968), member(969)]
         reviews = {968: [pass_node()], 969: []}
-        result, _ = self.run_seam(snapshot_script(prs, reviews))
+        script = snapshot_script(prs, reviews)
+        result, _ = self.run_seam(script, script)
         self.assertEqual(result[0], "stable")
         self.assertEqual(result[1], {
             "state": "pending",
@@ -275,12 +279,14 @@ class StableDecisionTest(SeamTestCase):
         both_pass = [member(968), member(969)]
         reviews = {968: [pass_node()],
                    969: [testlib.fixture_node("pr968", databaseId=PASS_REVIEW_ID + 1)]}
-        result, _ = self.run_seam(snapshot_script(both_pass, reviews))
+        script = snapshot_script(both_pass, reviews)
+        result, _ = self.run_seam(script, script)
         self.assertEqual((result[0], result[1]["state"]), ("stable", "success"))
         self.assertEqual(result[1]["governing_pr"], 968)
         pass_and_fail = [member(968), member(985)]
         reviews = {968: [pass_node()], 985: [fail_node()]}
-        result, _ = self.run_seam(snapshot_script(pass_and_fail, reviews))
+        script = snapshot_script(pass_and_fail, reviews)
+        result, _ = self.run_seam(script, script)
         self.assertEqual(result[1]["state"], "failure")
         self.assertNotEqual(result[1]["reason"], "pass")
 
@@ -295,7 +301,8 @@ class ErrorDecisionTest(SeamTestCase):
             databaseId=5873000001, submittedAt="2026-11-12T12:00:00Z",
             commit={"oid": HEAD}, body=marked_body, lastEditedAt="not-a-timestamp")
         reviews = {968: [pass_node(), broken]}
-        result, _ = self.run_seam(snapshot_script([member()], reviews))
+        script = snapshot_script([member()], reviews)
+        result, _ = self.run_seam(script, script)
         self.assertEqual((result[0], result[1]["state"], result[1]["reason"]),
                          ("stable", "error", "invalid-input"))
         self.assertEqual(result[1]["description"],
@@ -305,20 +312,21 @@ class ErrorDecisionTest(SeamTestCase):
         malformed = testlib.build_pr_record(number=7, sha="not-hex")
         prs = [member(), malformed]
         reviews = {968: [pass_node()]}
-        result, transport = self.run_seam(snapshot_script(prs, reviews))
+        script = snapshot_script(prs, reviews)
+        result, transport = self.run_seam(script, script)
         self.assertEqual((result[0], result[1]["state"], result[1]["reason"]),
                          ("stable", "error", "invalid-input"))
         self.assertEqual(result[1]["governing_pr"], 968)
         self.assertEqual(result[1]["description"],
                          "Bits review invalid-input on PR #968: pr-record:head.sha")
         self.assertEqual(result[1]["target_url"], PR968_URL)
-        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(len(transport.calls), 4)
 
     def test_failed_pulls_read_gives_a_stable_member_less_error_decision(self):
         """No PR could be scoped at all: the decision is still an error —
         never empty (the read did not succeed) — and, with no API PR
         number in the snapshot, description and target URL stay None."""
-        result, transport = self.run_seam(failed_pulls_script())
+        result, transport = self.run_seam(failed_pulls_script(), failed_pulls_script())
         self.assertEqual(result[0], "stable")
         self.assertEqual(result[1], {
             "state": "error",
@@ -328,7 +336,7 @@ class ErrorDecisionTest(SeamTestCase):
             "target_url": None,
             "context": "bits-review/head",
         })
-        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(len(transport.calls), 2)
 
     def test_pr_record_level_flag_outranks_a_member_api_error_in_reason_attribution(self):
         # The reason names the class of the flag that forced the level: a
@@ -337,7 +345,7 @@ class ErrorDecisionTest(SeamTestCase):
         malformed = testlib.build_pr_record(number=7, sha="not-hex")
         prs = [member(), malformed]
         script = snapshot_script(prs, {968: failed_reviews_page()})
-        result, _ = self.run_seam(script)
+        result, _ = self.run_seam(script, script)
         self.assertEqual((result[0], result[1]["state"], result[1]["reason"]),
                          ("stable", "error", "invalid-input"))
         self.assertEqual(result[1]["governing_pr"], 968)
@@ -345,12 +353,148 @@ class ErrorDecisionTest(SeamTestCase):
                          "Bits review invalid-input on PR #968: pr-record:head.sha")
 
 
+class FingerprintChangeLoopTest(SeamTestCase):
+    """Every decision-input class changed between S(i) and S(i+1) forces a
+    third snapshot read and never returns the stale D(i): the returned
+    decision is recomputed from the changed snapshot."""
+
+    def loop_result(self, first, changed):
+        """S1, the changed S2 twice: three snapshots, six reads."""
+        return self.run_seam(first, changed, changed)
+
+    def loop_cases(self):
+        """(name, S2 open_prs, S2 reviews, expected decision asserts):
+        every fingerprint input class mutated away from the pass
+        snapshot."""
+        edited_pass = testlib.fixture_node("pr968",
+                                           lastEditedAt="2026-11-12T13:00:00Z")
+        dismissed_pass = testlib.fixture_node("pr968", state="DISMISSED")
+        unlisted_author = testlib.fixture_node("pr968", author={
+            "__typename": "Bot", "login": "other[bot]", "databaseId": 123456})
+        user_author = testlib.fixture_node("pr968", author={
+            "__typename": "User", "login": "human", "databaseId": 88084959})
+        changed_login = testlib.fixture_node("pr968", author={
+            "__typename": "Bot", "login": "renamed[bot]", "databaseId": 88084959})
+        changed_commit = testlib.fixture_node("pr968", commit={"oid": "2" * 40})
+        changed_submitted = testlib.fixture_node(
+            "pr968", submittedAt="2026-11-12T10:31:55Z")
+        new_review_id = testlib.fixture_node("pr968", databaseId=PASS_REVIEW_ID + 1)
+        return [
+            ("base-ref", [member(base_ref="develop")], {968: [pass_node()]},
+             ("success", 968)),
+            ("pr-state", [member(state="closed")], {968: [pass_node()]},
+             ("success", 968)),
+            ("new-fail-review", [member()], {968: [fail_node()]},
+             ("failure", 968)),
+            ("edited-pass", [member()], {968: [edited_pass]},
+             ("failure", 968)),
+            ("dismissed-pass", [member()], {968: [dismissed_pass]},
+             ("failure", 968)),
+            ("unlisted-author", [member()], {968: [unlisted_author]},
+             ("failure", 968)),
+            ("user-author", [member()], {968: [user_author]},
+             ("pending", 968)),
+            ("author-login", [member()], {968: [changed_login]},
+             ("success", 968)),
+            ("commit-oid", [member()], {968: [changed_commit]},
+             ("pending", 968)),
+            ("submitted-at", [member()], {968: [changed_submitted]},
+             ("success", 968)),
+            ("new-review-id", [member()], {968: [new_review_id]},
+             ("success", 968)),
+        ]
+
+    def test_every_input_class_loops_and_never_returns_the_stale_decision(self):
+        first = snapshot_script([member()], {968: [pass_node()]})
+        for name, prs, reviews, (state, governing) in self.loop_cases():
+            with self.subTest(case=name):
+                changed = snapshot_script(prs, reviews)
+                result, transport = self.loop_result(first, changed)
+                self.assertEqual(result[0], "stable")
+                self.assertEqual(result[1]["state"], state)
+                if governing is not None:
+                    self.assertEqual(result[1]["governing_pr"], governing)
+                # Three snapshots: the stale S1 never survives as the
+                # decision, and the loop revalidated S2 against S3.
+                self.assertEqual(len(transport.calls), 6)
+
+    def test_edited_pass_never_publishes_a_stale_success(self):
+        """The gate's own threat: an edit landing between S1 and S2 turns
+        the published decision into the edited-summary failure."""
+        edited = testlib.fixture_node("pr968", lastEditedAt="2026-11-12T13:00:00Z")
+        first = snapshot_script([member()], {968: [pass_node()]})
+        changed = snapshot_script([member()], {968: [edited]})
+        result, _ = self.loop_result(first, changed)
+        self.assertEqual((result[0], result[1]["state"], result[1]["reason"]),
+                         ("stable", "failure", "edited-summary"))
+
+    def test_member_head_moving_away_empties_the_snapshot(self):
+        """The member's head no longer matches the published SHA: the
+        changed snapshot is an empty P(H), returned after two reads."""
+        first = snapshot_script([member()], {968: [pass_node()]})
+        moved = snapshot_script([member(sha=OTHER_HEAD)], {})
+        result, transport = self.run_seam(first, moved)
+        self.assertEqual(result, ("empty", None))
+        self.assertEqual(len(transport.calls), 3)
+
+    def test_membership_added_loops_and_conjoins_the_new_member(self):
+        """A second PR sharing the head appears in S2: the decision is
+        recomputed over both members, never the single-member stale D."""
+        first = snapshot_script([member()], {968: [pass_node()]})
+        both = [member(968), member(969)]
+        changed = snapshot_script(both, {968: [pass_node()], 969: []})
+        result, transport = self.loop_result(first, changed)
+        self.assertEqual((result[0], result[1]["state"], result[1]["reason"]),
+                         ("stable", "pending", "missing"))
+        self.assertEqual(result[1]["governing_pr"], 969)
+        # S1 reads one member (2 calls); S2 and S3 read two (3 calls each).
+        self.assertEqual(len(transport.calls), 8)
+
+    def test_api_error_appearing_in_s2_loops_to_the_error_decision(self):
+        first = snapshot_script([member()], {968: [pass_node()]})
+        changed = snapshot_script([member()], {968: failed_reviews_page()})
+        result, _ = self.loop_result(first, changed)
+        self.assertEqual((result[0], result[1]["state"]), ("stable", "error"))
+
+    def test_invalid_input_appearing_in_s2_loops_to_the_error_decision(self):
+        broken = testlib.build_review_node(
+            databaseId=5873000001, submittedAt="2026-11-12T12:00:00Z",
+            commit={"oid": HEAD}, body=testlib.load_review_fixture("pr985")["body"],
+            lastEditedAt="not-a-timestamp")
+        first = snapshot_script([member()], {968: [pass_node()]})
+        changed = snapshot_script([member()], {968: [broken]})
+        result, _ = self.loop_result(first, changed)
+        self.assertEqual((result[0], result[1]["state"], result[1]["reason"]),
+                         ("stable", "error", "invalid-input"))
+
+
+class UnstableSnapshotTest(SeamTestCase):
+    """Three consecutive fingerprint mismatches give up: (\"unstable\",
+    None) after exactly four snapshot reads."""
+
+    def test_three_mismatches_return_unstable_after_four_snapshots(self):
+        edited = testlib.fixture_node("pr968", lastEditedAt="2026-11-12T13:00:00Z")
+        dismissed = testlib.fixture_node("pr968", state="DISMISSED")
+        unlisted = testlib.fixture_node("pr968", author={
+            "__typename": "Bot", "login": "other[bot]", "databaseId": 123456})
+        scripts = [snapshot_script([member()], {968: [pass_node()]}),
+                   snapshot_script([member()], {968: [edited]}),
+                   snapshot_script([member()], {968: [dismissed]}),
+                   snapshot_script([member()], {968: [unlisted]})]
+        result, transport = self.run_seam(*scripts)
+        self.assertEqual(result, ("unstable", None))
+        self.assertEqual(len(transport.calls), 8)
+        for call in transport.calls:
+            self.assertNotIn("/statuses", call.full_url)
+
+
 class ZeroWriteAttemptTest(SeamTestCase):
     """The seam itself never reads or writes commit statuses: it returns
     values only, and every transport call stays on the two read URLs."""
 
     def test_no_case_ever_touches_the_statuses_endpoint(self):
-        _, transport = self.run_seam(snapshot_script([member()], {968: [pass_node()]}))
+        script = snapshot_script([member()], {968: [pass_node()]})
+        _, transport = self.run_seam(script, script)
         self.assertTrue(transport.calls)
         for call in transport.calls:
             self.assertNotIn("/statuses", call.full_url)
@@ -434,14 +578,33 @@ class RateLimitPublishTest(PublishTestCase):
         self.assert_write_tokens(transport)
 
 class SeamExitMappingTest(PublishTestCase):
-    """The seam's empty return maps to exit 0 with zero write calls — and
-    no status read at all."""
+    """The seam's empty return maps to exit 0 and its unstable return to
+    exit 1, both with zero write calls — and no status read at all."""
 
     def test_empty_p_h_exits_0_with_no_status_read_or_write(self):
         script = snapshot_script([member(969, sha=OTHER_HEAD)], {})[0]
         code, transport = self.run_publish(script)
         self.assertEqual(code, 0)
         self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(self.post_calls(transport), [])
+        for call in transport.calls:
+            self.assertNotIn("/statuses", call.full_url)
+
+    def test_unstable_snapshots_exit_1_with_no_status_read_or_write(self):
+        edited = testlib.fixture_node("pr968", lastEditedAt="2026-11-12T13:00:00Z")
+        dismissed = testlib.fixture_node("pr968", state="DISMISSED")
+        unlisted = testlib.fixture_node("pr968", author={
+            "__typename": "Bot", "login": "other[bot]", "databaseId": 123456})
+        snapshots = [snapshot_script([member()], {968: [pass_node()]}),
+                     snapshot_script([member()], {968: [edited]}),
+                     snapshot_script([member()], {968: [dismissed]}),
+                     snapshot_script([member()], {968: [unlisted]})]
+        responses = []
+        for responses_part, _ in snapshots:
+            responses.extend(responses_part)
+        code, transport = self.run_publish(responses)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(transport.calls), 8)
         self.assertEqual(self.post_calls(transport), [])
         for call in transport.calls:
             self.assertNotIn("/statuses", call.full_url)
@@ -456,7 +619,7 @@ class SuppressionTest(PublishTestCase):
             pass_snapshot(), [FakeResponse(200, [status_record()])]))
         self.assertEqual(code, 0)
         self.assertEqual(self.post_calls(transport), [])
-        self.assertEqual(len(transport.calls), 3)
+        self.assertEqual(len(transport.calls), 5)
 
     def test_unchanged_error_skips_the_post_and_still_exits_1(self):
         statuses = FakeResponse(200, [status_record(

@@ -13,9 +13,11 @@ On top of the client, ``normalize_review`` maps GraphQL review nodes to
 the policy's record shape and ``read_sha_snapshot`` wires the policy
 validators into the fetch path, recording api-error and invalid-input
 flags instead of skipping or truncating malformed input.
-``revalidated_decision`` composes the decision on that seam: it reads one
-snapshot and computes the decision with the policy — return values only:
-no status is read or written there. The ``publish --sha H``
+``revalidated_decision`` composes the decision on that seam: it
+reads a snapshot, computes the decision with the policy, then re-reads
+the snapshot and compares full decision-input fingerprints until they
+match — return values only: no status is read or written there. The
+``publish --sha H``
 subcommand consumes the seam's decision: it suppresses the write when
 the newest ``bits-review/head`` status created by ``dd-octo-sts[bot]``
 already equals the decision, else POSTs it with ``STATUS_TOKEN`` only;
@@ -51,6 +53,10 @@ MAX_RESOLVE_SHAS = 256
 #: Pages one paginated read (GraphQL reviews, REST lists) may follow; more
 #: is an error, never a truncation.
 MAX_FETCH_PAGES = 20
+#: Unstable fingerprint comparisons one decision may survive; after the
+#: third nothing is written — a still-changing review set is not a
+#: publishable state.
+MAX_UNSTABLE_COMPARISONS = 3
 #: Upper bound for honoring a server-provided rate-limit window
 #: (Retry-After, else x-ratelimit-reset), so a primary limit cannot stall
 #: the workflow run.
@@ -548,20 +554,34 @@ def revalidated_decision(sha, client):
     """The validated decision for one head SHA: the contract's snapshot
     algorithm minus the write step.
 
-    Reads one snapshot through ``read_sha_snapshot`` (P(H) plus the
-    normalized reviews and error flags) and computes the decision with
-    the policy. Return values only, no side effects: no status is read
+    Reads S(i) through ``read_sha_snapshot`` (P(H) plus the normalized
+    reviews and error flags), computes D(i) with the policy, then reads
+    S(i+1) and compares ``policy.fingerprint`` over every decision
+    input. A mismatch discards D(i) — the loop restarts from the new
+    snapshot — and after ``MAX_UNSTABLE_COMPARISONS`` consecutive
+    mismatches returns ``("unstable", None)``: nothing may be
+    published. Return values only, no side effects: no status is read
     or written here — ``_publish_status`` does that on the returned
     decision.
 
-    - ``("empty", None)`` — P(H) was read successfully and is empty.
-    - ``("stable", D)`` — D is the decision of the snapshot.
+    - ``("empty", None)`` — P(H) was read successfully and is empty;
+      no second snapshot is read.
+    - ``("stable", D)`` — D is the decision of the revalidated
+      snapshot.
+    - ``("unstable", None)`` — the snapshot kept changing under the
+      reads.
     """
     snapshot = read_sha_snapshot(sha, client)
-    decision = _decision_payload(snapshot, client.repo)
-    if decision is None:
-        return ("empty", None)
-    return ("stable", decision)
+    for _ in range(MAX_UNSTABLE_COMPARISONS):
+        decision = _decision_payload(snapshot, client.repo)
+        if decision is None:
+            return ("empty", None)
+        expected = policy.fingerprint(snapshot)
+        confirmed = read_sha_snapshot(sha, client)
+        if policy.fingerprint(confirmed) == expected:
+            return ("stable", decision)
+        snapshot = confirmed
+    return ("unstable", None)
 
 
 def _selected_app_status(statuses):
@@ -621,8 +641,10 @@ def _publish_status(sha, client, status_token):
     """Publish the validated decision for one head SHA and return the
     process exit code.
 
-    The seam's ``empty`` return exits 0 without a write. For a decision
-    the latest app status is
+    The seam's ``empty`` return exits 0 without a write and its
+    ``unstable`` return exits 1 without a write — a still-changing
+    review set is never published. For a stable decision the latest app
+    status is
     selected and compared: an exact match skips the POST (exit 0 for a
     non-error decision — an ``error`` decision still exits 1 even though
     its POST is suppressed), and a failed status read never suppresses
@@ -634,6 +656,8 @@ def _publish_status(sha, client, status_token):
     kind, decision = revalidated_decision(sha, client)
     if kind == "empty":
         return 0
+    if kind == "unstable":
+        return 1
     try:
         statuses = client.read_statuses(sha)
     except ApiError:
