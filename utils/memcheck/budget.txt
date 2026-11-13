@@ -1,0 +1,48 @@
+# Memory budget for the memcheck PR check (utils/memcheck, PROF-16186).
+#
+# Over a limit fails the check. Either fix the regression, or raise the limit
+# in the same PR and say why in the PR description; this file is reviewed like
+# code. Format: scenario metric limit measured [key=value...], see the javadoc
+# of utils/memcheck/src/Evaluate.java. 'measured' is the value when the limit
+# was last set, so the report can show growth that stays below the limit.
+#
+# Set 2026-10-22 from GitLab runs at 34948dde4 (5 jobs) and 45aea50a7 (PR job),
+# -XX:+UseG1GC -XX:ActiveProcessorCount=4, JDK 21.0.3. limit = measured +
+# max(256 KiB, 4 * largest within-job SD), rounded up to 0.05 MiB. classesM
+# counters are corrected for sampling coverage to ref_methods methods seen,
+# at per_method bytes each (regression over the 5-job run).
+
+threads   native_mem_live_bytes  22.40MiB  22.13MiB   # SD 7 KiB
+threads   native_mem_max_bytes   23.45MiB  23.16MiB   # SD 13 KiB
+threads   nmt.class              0.40MiB  0.11MiB   # SD 0 KiB, per-job spread 0 KiB
+threads   nmt.internal           0.45MiB  0.16MiB   # SD 4 KiB, per-job spread 4 KiB
+
+traces    native_mem_live_bytes  23.55MiB  23.29MiB   # SD 42 KiB
+traces    native_mem_max_bytes   25.25MiB  24.97MiB   # SD 44 KiB
+traces    nmt.class              0.75MiB  0.46MiB   # SD 1 KiB, per-job spread 0 KiB
+traces    nmt.internal           0.90MiB  0.60MiB   # SD 4 KiB, per-job spread 15 KiB
+
+classesM  native_mem_live_bytes  26.55MiB  26.30MiB  per_method=242 ref_methods=6300   # SD 45 KiB
+classesM  native_mem_max_bytes   28.45MiB  28.17MiB  per_method=446 ref_methods=6300   # SD 26 KiB
+classesM  nmt.class              3.20MiB  2.94MiB   # SD 1 KiB, per-job spread 1 KiB
+classesM  nmt.internal           3.50MiB  3.20MiB   # SD 19 KiB, per-job spread 15 KiB
+
+allocs    native_mem_live_bytes  25.00MiB  24.72MiB   # SD 18 KiB
+allocs    native_mem_max_bytes   26.15MiB  25.89MiB   # SD 28 KiB
+allocs    nmt.class              0.55MiB  0.30MiB   # SD 1 KiB, per-job spread 2 KiB
+allocs    nmt.internal           0.65MiB  0.36MiB   # SD 10 KiB, per-job spread 7 KiB
+
+mixed     native_mem_live_bytes  26.55MiB  26.18MiB   # SD 93 KiB
+mixed     native_mem_max_bytes   27.95MiB  27.67MiB   # SD 26 KiB
+mixed     nmt.class              0.55MiB  0.30MiB   # SD 1 KiB, per-job spread 3 KiB
+mixed     nmt.internal           0.70MiB  0.40MiB   # SD 4 KiB, per-job spread 8 KiB
+
+# Tripwire: ddprof standalone allocates nothing under NMT's Tracing category.
+*         nmt.tracing            absent   -
+
+# Report only: too noisy on the shared runners to gate (see HANDOVER.md).
+*         nmt.code               -        -
+*         nmt.gc                 -        -
+*         nmt.total              -        -
+*         proc.VmRSS             -        -
+*         proc.RssAnon           -        -
