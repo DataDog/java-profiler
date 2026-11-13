@@ -5,7 +5,6 @@
 
 #include <gtest/gtest.h>
 #include <cstdint>
-#include <stdexcept>
 #include "referenceChainBatchSet.h"
 
 TEST(ReferenceChainBatchSetTest, ResetClearsMembershipAndCompletion) {
@@ -84,22 +83,20 @@ TEST(ReferenceChainBatchSetTest, CompletionIsPerTagAndAnyCompletedTracksIt) {
   EXPECT_FALSE(set.anyCompleted());
 }
 
-// An unresolved tag is a caller-contract violation: both markers throw in
-// every build, and the failed calls change no size or completion state.
-// Valid calls throw nothing.
-TEST(ReferenceChainBatchSetTest, MarkUnresolvedTagThrowsAndLeavesStateUnchanged) {
+// An unresolved tag is a caller-contract violation: both markers abort (assert
+// in debug builds) instead of corrupting the set, and the death of the process
+// is observable in both configurations.
+TEST(ReferenceChainBatchSetDeathTest, MarkUnresolvedTagAborts) {
   ReferenceChainBatchSet set;
   set.reset();
   set.addResolved(7);
   set.markMember(7);
-  EXPECT_THROW(set.markMember(8), std::logic_error);
-  EXPECT_THROW(set.markCompleted(9), std::logic_error);
+  EXPECT_DEATH(set.markMember(8), "");
+  EXPECT_DEATH(set.markCompleted(9), "");
   EXPECT_EQ(1u, set.size());
-  EXPECT_FALSE(set.anyCompleted()); // the failed markCompleted counted nothing
   EXPECT_TRUE(set.isMember(7));
   EXPECT_FALSE(set.isMember(8));
   EXPECT_FALSE(set.isCompleted(9));
-  EXPECT_NO_THROW(set.markMember(7));
   EXPECT_NO_THROW(set.markCompleted(7));
   EXPECT_TRUE(set.isCompleted(7));
   EXPECT_TRUE(set.anyCompleted());
