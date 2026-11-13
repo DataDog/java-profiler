@@ -605,10 +605,13 @@ private:
   // FIFO of newly admitted anchors awaiting their first walk.
   std::deque<jlong> _static_anchor_fresh_queue;
 
-  // Cap for _static_anchor_fresh_queue. The queue normally holds only ~one pass of sweep admits
-  // (admits happen in passes, the collector drains every pass, and the drain DROPS everything it
-  // does not keep, so the queue empties each call); the cap only guards a pathological burst (e.g.
-  // a pass admitting thousands) from growing it unbounded in native memory.
+  // Cap for _static_anchor_fresh_queue. The queue carries its OLDEST unserved entries across
+  // collects (a cross-pass FIFO: the oldest first looks go first); the cap bounds that carry -
+  // overflow entries are dropped and fall back to the fair tiers at their index positions, the
+  // same treatment the force-drain gave them. Without the carry, a stable anchor population above
+  // the durable cap re-enlists a wave larger than one collect's budget every pass and the drain's
+  // window would always hold the same wave tail - re-selecting the same anchors every pass and
+  // starving everything else (8968 of 9000 holders got zero selections in 20 passes).
   static constexpr size_t STATIC_ANCHOR_FRESH_CAP = 1024;
 
   // java/lang/Object jclass cache for expandFrontier()'s and admitStaticFieldRoots()'s holder-array
@@ -1155,6 +1158,17 @@ private:
   // per resolvePendingLocalAnchors() call, only when the local cap is reached and the backoff
   // (_local_compact_backoff) is not active. Returns the number of removed entries.
   size_t compactLocalAnchors();
+  // Removes tags absent from walkStaticFieldAnchors()'s GetObjectsWithTags() resolution - a
+  // collected anchor can never be walked again, so its slot is reclaimed instead of waiting for
+  // FIFO eviction (and a dead local container would otherwise keep its selectable EXPANDED
+  // frontier record until a search restart cleared the frontier).
+  void removeMissingAnchors(const std::vector<jlong> &missing);
+  // Shared tail of the three anchor-removal paths above: stable in-place compaction of the two
+  // parallel vectors (relative order preserved, so the fresh queue - a suffix of the index -
+  // stays a suffix), then removal from the membership set, the local-share map and the fresh
+  // queue. Positions shift: the collector clamps out-of-range cursors; in-range ones only lose
+  // fairness for one lap.
+  void eraseAnchorEntries(const std::unordered_set<jlong> &removed);
   // FIFO-evicts the oldest durable-share entries when the durable share exceeds
   // DURABLE_ANCHOR_INDEX_CAP, down to cap - DURABLE_ANCHOR_EVICT_BATCH, keeping
   // _static_anchor_fresh_queue a suffix of the index (stable compaction, queue tags removed

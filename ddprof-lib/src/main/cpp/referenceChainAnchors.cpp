@@ -173,16 +173,31 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
         other_picks.push_back(TierPick{i, tag});
       }
     }
-    // Fresh-lane drain. Every queue entry is popped (its ONE first look is spent either way): kept
-    // if eligible AND (container-shaped OR not-yet-classified) AND room remains in the budget;
-    // dropped otherwise.
-    int fresh_room = max_count - (int)leak_picks.size();
+    // Fresh-lane drain. FIFO across passes: entries the budget cannot serve stay queued (the
+    // oldest unserved first looks go first, and no anchor loses its turn to a later admission -
+    // under above-cap churn the re-enlistment wave re-forms every pass, so a force-drain here
+    // would re-select the same wave tail every pass and starve everything else). Every popped
+    // entry spends its ONE first look either way: kept if eligible AND (container-shaped OR
+    // not-yet-classified) AND room remains in the budget; dropped otherwise (it keeps its fair-
+    // tier coverage at its index position).
+    // The fresh lane is capped at half the post-leak budget: under above-cap churn the
+    // re-enlistment wave refills the queue every pass, and an uncapped drain would spend the
+    // whole budget on the wave's tail every pass - the fair cursors (the only coverage for
+    // everyone outside the wave) would never advance. The cap must bound the DRAIN's room: pops
+    // beyond it would drop entries from the queue without selecting them.
+    int fresh_room =
+        (max_count - (int)leak_picks.size()) -
+        (max_count - (int)leak_picks.size()) / 2;
     size_t drain_pos = fresh_queue_len <= idx_size ? idx_size - fresh_queue_len : 0;
     while (!_static_anchor_fresh_queue.empty()) {
       if (fresh_room <= 0) {
-        // Budget exhausted before the queue drained: everything remaining spends its first look now
-        // and falls back to the fair tiers at its index position (covered, not urgent).
-        _static_anchor_fresh_queue.clear();
+        // Budget exhausted: the unserved head keeps its queue position for the next collect (a
+        // cross-pass FIFO - the oldest first looks go first). Overflow beyond the cap drops the
+        // NEWEST pushes: they fall back to the fair tiers at their index positions, the same
+        // treatment the force-drain gave them.
+        while (_static_anchor_fresh_queue.size() > STATIC_ANCHOR_FRESH_CAP) {
+          _static_anchor_fresh_queue.pop_front();
+        }
         break;
       }
       jlong tag = _static_anchor_fresh_queue.front();
@@ -286,8 +301,8 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
     budget_left--;
   }
   // Fresh lane: queue order (admission order) so a burst larger than the budget spends the oldest
-  // first looks first and nothing jumps the queue; outranked fresh anchors fall back to the fair
-  // tiers at their positions (the drain already dropped them from the queue).
+  // first looks first and nothing jumps the queue; outranked fresh anchors stay queued for their
+  // FIFO turn (the drain's room cap bounds how many are popped per collect).
   for (const TierPick &p : fresh_picks) {
     if (budget_left <= 0) {
       break;
@@ -300,6 +315,17 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   // The other tier is the last consumer of the budget - its leftover has no further reader, so
   // don't accumulate it back into budget_left (a dead store clang scan-build flags).
   consume_tier_fair(other_picks, _anchor_other_cursor, budget_left);
+  // A selected anchor has had its look: whether it came from the fresh lane or a fair tier, it
+  // must leave the queue, or the next collect's fresh lane would re-serve anchors the fair tiers
+  // already covered (the queue's FIFO turn is for anchors still awaiting their first look).
+  if (!selected.empty()) {
+    std::unordered_set<jlong> served(selected.begin(), selected.end());
+    _static_anchor_fresh_queue.erase(
+        std::remove_if(_static_anchor_fresh_queue.begin(),
+                       _static_anchor_fresh_queue.end(),
+                       [&](jlong tag) { return served.count(tag) > 0; }),
+        _static_anchor_fresh_queue.end());
+  }
   return selected;
 }
 
@@ -461,35 +487,7 @@ size_t ReferenceChainTracker::compactLocalAnchors() {
   if (removed.empty()) {
     return 0;
   }
-  // Stable in-place compaction of the two parallel vectors keeps relative order, so the fresh
-  // queue (a suffix of the index) stays a suffix once the same tags leave it too.
-  size_t out = 0;
-  for (size_t i = 0; i < _static_anchor_index.size(); i++) {
-    jlong tag = _static_anchor_index[i];
-    if (removed.count(tag) > 0) {
-      continue;
-    }
-    _static_anchor_index[out] = tag;
-    if (i < _static_anchor_own_class_tags.size()) {
-      _static_anchor_own_class_tags[out] = _static_anchor_own_class_tags[i];
-    }
-    out++;
-  }
-  _static_anchor_index.resize(out);
-  if (_static_anchor_own_class_tags.size() > out) {
-    _static_anchor_own_class_tags.resize(out);
-  }
-  for (jlong tag : removed) {
-    _static_anchor_index_tags.erase(tag);
-    _local_anchor_tags.erase(tag);
-  }
-  _static_anchor_fresh_queue.erase(
-      std::remove_if(_static_anchor_fresh_queue.begin(),
-                     _static_anchor_fresh_queue.end(),
-                     [&](jlong tag) { return removed.count(tag) > 0; }),
-      _static_anchor_fresh_queue.end());
-  // Positions shifted: the collector clamps out-of-range cursors; in-range ones only lose fairness
-  // for one lap.
+  eraseAnchorEntries(removed);
   return removed.size();
 }
 
@@ -518,12 +516,41 @@ size_t ReferenceChainTracker::evictOldestDurableAnchors() {
     }
     evicted.insert(tag);
   }
+  eraseAnchorEntries(evicted);
+  // Record a resweep request unconditionally (see _durable_anchor_resweep_gen): a holder
+  // displaced while admissions keep the population above the cap must be re-swept even when
+  // evictions stop. No cursor restart here: with churn above the cap an eviction fires every
+  // pass, and an unpaced cursor restart on each eviction would reset a mid-lap cursor so laps
+  // over large class lists never complete (later static fields never visited). The unserved generation alone is the scheduling contract - the lap in flight
+  // finishes, then the next fresh lap from class 0 serves the request.
+  _durable_anchor_resweep_gen++;
+  return evicted.size();
+}
+
+// See the declaration in referenceChains.h.
+void ReferenceChainTracker::removeMissingAnchors(
+    const std::vector<jlong> &missing) {
+  if (missing.empty()) {
+    return;
+  }
+  eraseAnchorEntries(
+      std::unordered_set<jlong>(missing.begin(), missing.end()));
+}
+
+// See the declaration in referenceChains.h.
+void ReferenceChainTracker::eraseAnchorEntries(
+    const std::unordered_set<jlong> &removed) {
+  if (removed.empty()) {
+    return;
+  }
   // Stable in-place compaction of the two parallel vectors keeps relative order, so the fresh
-  // queue (a suffix of the index) stays a suffix once the same tags leave it too.
+  // queue (a suffix of the index) stays a suffix once the same tags leave it too. Positions
+  // shift: the collector clamps out-of-range cursors; in-range ones only lose fairness for one
+  // lap.
   size_t out = 0;
   for (size_t i = 0; i < _static_anchor_index.size(); i++) {
     jlong tag = _static_anchor_index[i];
-    if (evicted.count(tag) > 0) {
+    if (removed.count(tag) > 0) {
       continue;
     }
     _static_anchor_index[out] = tag;
@@ -536,24 +563,15 @@ size_t ReferenceChainTracker::evictOldestDurableAnchors() {
   if (_static_anchor_own_class_tags.size() > out) {
     _static_anchor_own_class_tags.resize(out);
   }
-  for (jlong tag : evicted) {
+  for (jlong tag : removed) {
     _static_anchor_index_tags.erase(tag);
+    _local_anchor_tags.erase(tag);
   }
   _static_anchor_fresh_queue.erase(
       std::remove_if(_static_anchor_fresh_queue.begin(),
                      _static_anchor_fresh_queue.end(),
-                     [&](jlong tag) { return evicted.count(tag) > 0; }),
+                     [&](jlong tag) { return removed.count(tag) > 0; }),
       _static_anchor_fresh_queue.end());
-  // Positions shifted: the collector clamps out-of-range cursors; in-range ones only lose fairness
-  // for one lap.
-  // Record a resweep request unconditionally (see _durable_anchor_resweep_gen): a holder
-  // displaced while admissions keep the population above the cap must be re-swept even when
-  // evictions stop. No cursor restart here: with churn above the cap an eviction fires every
-  // pass, and an unpaced cursor restart on each eviction would reset a mid-lap cursor so laps
-  // over large class lists never complete (later static fields never visited). The unserved generation alone is the scheduling contract - the lap in flight
-  // finishes, then the next fresh lap from class 0 serves the request.
-  _durable_anchor_resweep_gen++;
-  return evicted.size();
 }
 
 void ReferenceChainTracker::reenlistEvictedDurableAnchor(
@@ -874,6 +892,23 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
                               &resolved_count, &objects,
                               &resolved_tags) != JVMTI_ERROR_NONE) {
     return;
+  }
+  if ((jint)anchor_tags.size() > resolved_count) {
+    // Anchors absent from the resolution are collected: they can never be walked again, so their
+    // index slots are pure capacity waste - and a dead local container's frontier record stays
+    // selectable (EXPANDED), so compaction alone would keep rejecting replacement live containers
+    // until a search restart cleared the frontier. Reclaim the slots here; the frontier record
+    // itself stays - release machinery owns dead-entry cleanup.
+    std::unordered_set<jlong> resolved(resolved_tags,
+                                       resolved_tags + resolved_count);
+    std::vector<jlong> missing;
+    missing.reserve(anchor_tags.size() - resolved.size());
+    for (jlong tag : anchor_tags) {
+      if (resolved.count(tag) == 0) {
+        missing.push_back(tag);
+      }
+    }
+    removeMissingAnchors(missing);
   }
   int walked = 0;
   // First index the walk did NOT consume (breaks before an anchor's walk report i, breaks after

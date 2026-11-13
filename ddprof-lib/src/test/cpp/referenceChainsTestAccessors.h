@@ -590,6 +590,12 @@ public:
             ReferenceChainTracker::instance()->_static_anchor_fresh_queue;
         return std::find(queue.begin(), queue.end(), tag) != queue.end();
     }
+    // Snapshot of the fresh queue in FIFO order (front first) - pins the cross-pass service order.
+    static std::vector<jlong> freshQueueTagsForTest() {
+        const auto &queue =
+            ReferenceChainTracker::instance()->_static_anchor_fresh_queue;
+        return std::vector<jlong>(queue.begin(), queue.end());
+    }
     // The static sweep resweep request (set by durable-share eviction, served and cleared by a
     // full sweep lap): runPassManualWalk() runs admitStaticFieldRoots() while this is pending or
     // the class-count memo is stale.
