@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """The quarantine list: which failing tests do not turn CI red.
 
-Its `validate` subcommand enforces the format, the ticket, and the review_by
-date. The gating decision itself (find_entry(), covers(), applies_to()) is a
-library used in-process by flake_report.py -- there is no CLI for it, so the
-rule CI actually runs cannot drift from a separate CLI wrapper.
+Its `validate` subcommand enforces the format, the ticket, the review_by
+date, and -- for the GitLab gtest jobs -- that every bare-suite entry's id
+matches a TEST(...) declaration in the gtest sources, so a mistyped or
+stale mute fails the PR instead of quarantining nothing. The gating decision
+itself (find_entry(), covers(), applies_to()) is a library used in-process by
+flake_report.py -- there is no CLI for it, so the rule CI actually runs cannot
+drift from a separate CLI wrapper.
 
 The paste-ready entry a PR comment proposes for a flaky test is rendered by
 flake_summary.py's own call to format_entry() below, not by this module's CLI.
@@ -274,6 +277,136 @@ def format_entry(test, ticket, added, review_by, cells, reason):
     return " | ".join([test, ticket, added, review_by, ",".join(cells) or "-", reason])
 
 
+def _declared_gtest_ids(src_dir):
+    """({Suite.Case: kind}, {Suite}) from the gtest sources.
+
+    A textual whole-file scan on purpose: validate() runs before any build,
+    and the declarations sit behind platform #ifdefs (nativeThreadNameRace_ut
+    is Linux-only) that a compile-time check cannot see. A false positive
+    from a comment over-permits one id; a missed declaration would wrongly
+    reject a real entry, so the scan errs towards finding MORE declarations,
+    not fewer -- hence the whole-file scan (a TEST( wrapped across lines is
+    still a declaration) and errors='replace' (a stray non-UTF-8 byte in a
+    comment must not crash the validator).
+
+    The kind records whether the case's report id carries instantiation
+    decoration: TEST_P and TYPED_TEST cases report as
+    '<inst>/<Suite>.<case>/<idx>' and '<Suite>/<idx>.<case>', while TEST,
+    TEST_F and GTEST_TEST cases report under the bare suite name.
+    """
+    decl_re = re.compile(
+        r"\b(GTEST_TEST|TYPED_TEST_P|TYPED_TEST|TEST_P|TEST_F|TEST)\s*\(\s*"
+        r"(\w+)\s*,\s*(\w+)\s*\)")
+    ids, suites = {}, set()
+    for dirpath, _, filenames in os.walk(src_dir):
+        for filename in filenames:
+            # .h/.hpp too: a fixture's case list can live in a shared header;
+            # .inc: the referenceChains suites declare their cases in .inc
+            # files the suite .cpp includes. GTEST_TEST is the macro the
+            # others expand to; wrapper macros a project defines on top of it
+            # stay invisible -- a false 'matches no declaration' on one of
+            # those is the scan's known limit.
+            if not filename.endswith((".cpp", ".cc", ".h", ".hpp", ".inc")):
+                continue
+            with open(os.path.join(dirpath, filename),
+                      encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+            for match in decl_re.finditer(text):
+                ids["{}.{}".format(match.group(2), match.group(3))] = match.group(1)
+                suites.add(match.group(2))
+    return ids, suites
+
+
+def _bare_gtest_suite(class_part):
+    """A gtest classname reduced to its declared suite name.
+
+    Mirrors covers(): value-parameterized suites are '<inst>/<Suite>' (a
+    trailing all-digits segment is an instantiation index), typed suites
+    '<Suite>/<typeidx>'. The declared name is the last non-index segment.
+    """
+    segments = class_part.split("/")
+    if len(segments) > 1 and segments[-1].isdigit():
+        segments.pop()
+    return segments[-1]
+
+
+def _gtest_decl_problems(entry, declared_ids, declared_suites):
+    """Complaints for a gtest entry whose id no source file can produce.
+
+    A Java id always carries a package, so the class part contains a dot; a
+    bare gtest suite's does not. Java ids are out of scope here -- their
+    lifecycle (rename, delete) is invisible to a C++ source scan.
+
+    The check mirrors covers(), not wishes: an exact entry matches the report
+    id verbatim, so a bare id for a value-parameterized suite (whose runtime
+    id is '<inst>/<Suite>.<case>/<idx>') or any id carrying instantiation
+    decoration can never fire -- only the class-wide '<Suite>.*' form
+    survives covers()'s classname reduction for those.
+    """
+    test = entry["test"]
+    class_wide = test.endswith(".*")
+    stem = test[:-2] if class_wide else test
+    if class_wide:
+        # A class-wide entry's classname is the whole stem: splitting it
+        # would reduce 'a.B.*' to suite 'a' and lose the package dot that
+        # marks the entry Java-shaped.
+        if "." in stem:
+            return []  # Java-shaped: the class part carries a package
+        cls, case = stem, ""
+    else:
+        cls, sep, case = stem.rpartition(".")
+        if sep and "." in cls:
+            return []  # Java-shaped: the class part carries a package
+        if not sep:
+            return [
+                "test '{}' has no case segment -- it is neither an exact id "
+                "nor a class-wide '<Suite>.*', so it matches nothing".format(test)
+            ]
+    if not class_wide:
+        # Only covers()'s class-wide path reduces a decorated classname; an
+        # exact entry is compared verbatim and a report id always carries the
+        # '/<idx>' suffix an entry cannot predict.
+        if "/" in cls or "/" in case:
+            return [
+                "gtest id '{}' carries instantiation decoration, which an exact "
+                "entry can never match -- quarantine the suite with '{}.*' "
+                "instead".format(test, _bare_gtest_suite(cls) if "/" in cls else cls)
+            ]
+        if not case or _INVOCATION_INDEX_RE.match(case):
+            return [
+                "test '{}' has no case segment after the last dot -- it is "
+                "neither an exact id nor a class-wide '<Suite>.*', so it "
+                "matches nothing".format(test)
+            ]
+        kind = declared_ids.get("{}.{}".format(cls, case))
+        if kind is None:
+            return [
+                "gtest id '{}' matches no TEST declaration in the gtest "
+                "sources -- the mute would never fire; fix the id or delete "
+                "the entry. If this is a Java id in the default package, "
+                "spell its package explicitly".format(test)
+            ]
+        # GTEST_TEST declares an ordinary test reporting the bare id, like
+        # TEST and TEST_F; only TEST_P/TYPED_TEST shapes decorate the report id.
+        if kind not in ("TEST", "TEST_F", "GTEST_TEST"):
+            return [
+                "gtest case '{}' is declared with {}: its report id carries "
+                "instantiation decoration ('<inst>/<Suite>.<case>/<idx>' or "
+                "'<Suite>/<idx>.<case>'), which the exact id '{}' never "
+                "equals -- quarantine the suite with '{}.*' instead"
+                .format("{}.{}".format(cls, case), kind, test, cls)
+            ]
+    elif "/" in cls:
+        cls = _bare_gtest_suite(cls)
+    if cls not in declared_suites:
+        return [
+            "gtest suite '{}' is declared in no gtest source -- the entry "
+            "quarantines nothing; fix the suite name or delete the entry"
+            .format(cls)
+        ]
+    return []
+
+
 def cmd_validate(args):
     # parse() tolerates a missing file so that matching still works before the
     # first entry lands. Validation must not: "0 quarantined test(s), all
@@ -286,6 +419,24 @@ def cmd_validate(args):
     entries, problems = parse(args.list)
     today = datetime.date.today()
     seen_by_name = []
+
+    # Where the gtest sources live: explicit --gtest-src wins; otherwise
+    # derive the repo root from the list path (the list is <root>/ddprof-test/
+    # quarantine.txt) and scan from there. A missing tree skips the check
+    # with a warning either way: a vanished derived default (validate run
+    # outside a repo layout) or a vanished explicit path (a typo, a failed
+    # checkout) would otherwise silently no-op the whole cross-check.
+    if args.gtest_src:
+        gtest_src = args.gtest_src
+    else:
+        list_dir = os.path.dirname(os.path.abspath(args.list))
+        gtest_src = os.path.join(os.path.dirname(list_dir), "ddprof-lib", "src", "test", "cpp")
+    if os.path.isdir(gtest_src):
+        declared_ids, declared_suites = _declared_gtest_ids(gtest_src)
+    else:
+        print("::warning::gtest sources not found at '{}'; skipping the "
+              "gtest declaration cross-check".format(gtest_src))
+        declared_ids, declared_suites = None, None
 
     def complain(line, message):
         problems.append((line, message))
@@ -322,6 +473,10 @@ def cmd_validate(args):
         for field in ("added", "review_by"):
             if entry[field] and not DATE_RE.match(entry[field]):
                 complain(line, "{} '{}' is not YYYY-MM-DD".format(field, entry[field]))
+
+        if declared_ids is not None:
+            for message in _gtest_decl_problems(entry, declared_ids, declared_suites):
+                complain(line, message)
 
         stem = entry["test"][:-2] if entry["test"].endswith(".*") else entry["test"]
         if entry["test"] and (not stem or BAD_TEST_WILDCARD_RE.search(stem)):
@@ -431,6 +586,10 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     validate = sub.add_parser("validate", help="check the list's format and review dates")
+    validate.add_argument(
+        "--gtest-src", metavar="DIR", default=None,
+        help="gtest source tree to cross-check bare-suite ids against "
+             "(default: ddprof-lib/src/test/cpp beside the list's repo root)")
     validate.set_defaults(func=cmd_validate)
 
     args = parser.parse_args()
