@@ -219,8 +219,8 @@ emitted for this reason.
 The base candidate-stall limit is 30 passes. Consecutive `CANARY_STUCK` restarts can double this limit, up to eight doublings. Other terminal outcomes reset that escalation.
 
 Abandonments use a separate queue of at most 16 events. Dump drains it once per occurrence;
-queue overflow increments `REFERENCE_CHAIN_EVENTS_DROPPED`. The current JFR writer maps
-`ROOT_ENUM_ERROR` to `unknown`, rather than a distinct reason string.
+queue overflow increments `REFERENCE_CHAIN_EVENTS_DROPPED`. The JFR writer maps
+`ROOT_ENUM_ERROR` to the reason string `root_enum_error`.
 
 ## Cost control
 

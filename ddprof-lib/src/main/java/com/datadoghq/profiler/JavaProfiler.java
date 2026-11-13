@@ -668,6 +668,18 @@ public final class JavaProfiler {
   static native boolean runReferenceChainPass0();
 
   /**
+   * Test seam (debug native builds only): when {@code enabled}, forces every reference-chain
+   * root/stack-ref enumeration attempt ({@code IterateOverReachableObjects}) to fail with a JVMTI
+   * error, without touching the real JVMTI call. With the injection active the tracker counts
+   * consecutive failed attempts and abandons with the {@code ROOT_ENUM_ERROR} reason after {@code
+   * MAX_CONSECUTIVE_ENUM_ERRORS} attempts, so a test can drive the {@code
+   * datadog.ReferenceChainAbandoned} event's {@code root_enum_error} reason deterministically.
+   * Restore with {@code enabled = false} before the next test in this shared JVM: the flag is
+   * process-wide singleton state.
+   */
+  static native void setRootEnumErrorInjection0(boolean enabled);
+
+  /**
    * Test seam (debug native builds only): runs one poll of ReferenceChainTracker's
    * LivenessTracker-to-chain-reconstruction bridging step synchronously - for each current leak
    * candidate already discovered by a prior {@link #runReferenceChainPass0()} walk, reconstructs
