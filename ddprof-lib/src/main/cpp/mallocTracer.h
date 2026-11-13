@@ -8,6 +8,7 @@
 #define _MALLOCTRACER_H
 
 #include <stdint.h>
+#include "arguments.h"
 #include "codeCache.h"
 #include "engine.h"
 #include "event.h"
@@ -69,8 +70,11 @@ class MallocHooker {
     static void keepUnrestoredEntries();
 
   public:
-    // Returns true if symbols were successfully resolved.
-    static bool initialize();
+    // Resolves the allocation symbols and runs the native-memory admission
+    // check; returns the rejection, resolution or indeterminacy error, or
+    // Error::OK. Idempotent: a second call evaluates the cached state and
+    // writes nothing either way.
+    static Error initialize();
     static void patchLibraries();
     static void unpatchLibraries();
     static void installHooks();

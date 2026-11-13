@@ -19,17 +19,12 @@
 #include "os.h"
 #include "pidController.h"
 #include "profiler.h"
+#include "mallocAdmission.h"
 #include "samplerPerf.h"
 #include "symbols.h"
 #include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "vmEntry.h"
-
-#define SAVE_IMPORT(FUNC) \
-    do { \
-        void** _entry = lib->findImport(im_##FUNC); \
-        if (_entry != NULL) _orig_##FUNC = (decltype(_orig_##FUNC))*_entry; \
-    } while (0)
 
 static void* (*_orig_malloc)(size_t);
 static void* (*_orig_calloc)(size_t, size_t);
@@ -196,22 +191,111 @@ static void splitmix64_seed(u64 seed) {
     __atomic_store_n(&_xo_state[1], seed ^ (seed >> 31), __ATOMIC_RELAXED);
 }
 
-bool MallocHooker::initialize() {
-    if (_initialized) return _orig_malloc != NULL;
+// UNIT_TEST-only seam for the admission gtests: read and seed the resolver
+// state. Only gtest configurations define UNIT_TEST; normal builds compile
+// none of this.
+#ifdef UNIT_TEST
+class MallocHookerTestAccessor {
+  public:
+    static void* origMalloc();
+    static void* origCalloc();
+    static void* origRealloc();
+    static void* origPosixMemalign();
+    static void* origAlignedAlloc();
+    static bool initialized();
+    static int patchedLibs();
+    static void seedOrigMalloc(void* fn);
+    static void seedOrigCalloc(void* fn);
+    static void seedOrigRealloc(void* fn);
+    static void seedOrigPosixMemalign(void* fn);
+    static void seedOrigAlignedAlloc(void* fn);
+    static void resetInitialized();
+};
+#endif
+
+Error MallocHooker::initialize() {
+    static const char* const RESOLUTION_ERROR =
+        "Failed to resolve malloc symbols; native memory profiling unavailable";
+
+    if (_initialized) {
+        // Cached path: the admission state is re-evaluated on every request,
+        // nothing is written either way (an outcome is never cached).
+        if (_orig_malloc == NULL) return Error(RESOLUTION_ERROR);
+        CodeCache* lib = Libraries::instance()->findLibraryByAddress((void*)MallocTracer::recordMalloc);
+        if (lib == NULL) {
+            // Defensive: CodeCacheArray is append-only, so a once-found own
+            // library cannot disappear; treat as indeterminate, not crash.
+            return Error(MallocAdmission::errorMessage(INDETERMINATE));
+        }
+        MallocAdmissionInput in;
+        MallocAdmission::readImports(lib, in.current);
+        in.forwarding[0] = (const void*)_orig_malloc;
+        in.forwarding[1] = (const void*)_orig_calloc;
+        in.forwarding[2] = (const void*)_orig_realloc;
+        in.forwarding[3] = (const void*)_orig_posix_memalign;
+        in.forwarding[4] = (const void*)_orig_aligned_alloc;
+        in.own_hooks[0] = (const void*)malloc_hook;
+        in.own_hooks[1] = (const void*)calloc_hook;
+        in.own_hooks[2] = (const void*)realloc_hook;
+        in.own_hooks[3] = (const void*)posix_memalign_hook;
+        in.own_hooks[4] = (const void*)aligned_alloc_hook;
+        MallocAdmissionResult result;
+        MallocAdmission::evaluate(in, result);
+        if (result.verdict.outcome == NOT_RECOGNIZED) return Error::OK;
+        return Error(MallocAdmission::errorMessage(result.verdict.outcome));
+    }
 
     CodeCache* lib = Libraries::instance()->findLibraryByAddress((void*)MallocTracer::recordMalloc);
     if (lib == NULL) {
         _initialized = true;
-        return false;
+        return Error(RESOLUTION_ERROR);
     }
 
     resolveMallocSymbols();
 
-    SAVE_IMPORT(malloc);
-    SAVE_IMPORT(calloc);
-    SAVE_IMPORT(realloc);
-    SAVE_IMPORT(posix_memalign);
-    SAVE_IMPORT(aligned_alloc);
+    // Capture the current slot values read-only: candidate[op] is exactly
+    // what the removed SAVE_IMPORT stored, without making the GOT writable.
+    const void* current[5][NUM_IMPORT_TYPES];
+    MallocAdmission::readImports(lib, current);
+    const void* candidate[5];
+    for (int op = 0; op < 5; op++) candidate[op] = current[op][PRIMARY];
+
+    if (candidate[0] == NULL) {
+        // Required-resolution failure: same caching as before, but return
+        // before any commit, probe, mark or seed. With _orig_malloc NULL,
+        // patchLibraries() returns at its first line and the cached path
+        // returns the resolution error forever, so no later code reads the
+        // other saved pointers, the marks or the PRNG seed. In particular
+        // the nested probe no longer runs here: its temporary write can land
+        // in the image that owns the posix_memalign target, which can be a
+        // ddprof hook image.
+        _initialized = true;
+        return Error(RESOLUTION_ERROR);
+    }
+
+    // Admission runs before any _orig_* write: a rejected start leaves every
+    // resolver field, the marks and the seed untouched.
+    MallocAdmissionInput in;
+    for (int op = 0; op < 5; op++) {
+        for (int type = 0; type < NUM_IMPORT_TYPES; type++) in.current[op][type] = current[op][type];
+        in.forwarding[op] = candidate[op];
+    }
+    in.own_hooks[0] = (const void*)malloc_hook;
+    in.own_hooks[1] = (const void*)calloc_hook;
+    in.own_hooks[2] = (const void*)realloc_hook;
+    in.own_hooks[3] = (const void*)posix_memalign_hook;
+    in.own_hooks[4] = (const void*)aligned_alloc_hook;
+    MallocAdmissionResult result;
+    MallocAdmission::evaluate(in, result);
+    if (result.verdict.outcome != NOT_RECOGNIZED) {
+        return Error(MallocAdmission::errorMessage(result.verdict.outcome));
+    }
+
+    _orig_malloc = reinterpret_cast<void* (*)(size_t)>(const_cast<void*>(candidate[0]));
+    _orig_calloc = reinterpret_cast<void* (*)(size_t, size_t)>(const_cast<void*>(candidate[1]));
+    _orig_realloc = reinterpret_cast<void* (*)(void*, size_t)>(const_cast<void*>(candidate[2]));
+    _orig_posix_memalign = reinterpret_cast<int (*)(void**, size_t, size_t)>(const_cast<void*>(candidate[3]));
+    _orig_aligned_alloc = reinterpret_cast<void* (*)(size_t, size_t)>(const_cast<void*>(candidate[4]));
 
     detectNestedMalloc();
 
@@ -227,7 +311,7 @@ bool MallocHooker::initialize() {
 
     splitmix64_seed(TSC::ticks());
     _initialized = true;
-    return _orig_malloc != NULL;
+    return Error::OK;
 }
 
 // Patches one library's malloc-family imports. The caller holds the lock that
@@ -258,6 +342,26 @@ void MallocHooker::patchLibrary(CodeCache* cc) {
         }
     }
 }
+
+#ifdef UNIT_TEST
+void* MallocHookerTestAccessor::origMalloc() { return (void*)_orig_malloc; }
+void* MallocHookerTestAccessor::origCalloc() { return (void*)_orig_calloc; }
+void* MallocHookerTestAccessor::origRealloc() { return (void*)_orig_realloc; }
+void* MallocHookerTestAccessor::origPosixMemalign() { return (void*)_orig_posix_memalign; }
+void* MallocHookerTestAccessor::origAlignedAlloc() { return (void*)_orig_aligned_alloc; }
+bool MallocHookerTestAccessor::initialized() { return MallocHooker::_initialized; }
+int MallocHookerTestAccessor::patchedLibs() { return MallocHooker::_patched_libs; }
+void MallocHookerTestAccessor::seedOrigMalloc(void* fn) { _orig_malloc = reinterpret_cast<void* (*)(size_t)>(fn); }
+void MallocHookerTestAccessor::seedOrigCalloc(void* fn) { _orig_calloc = reinterpret_cast<void* (*)(size_t, size_t)>(fn); }
+void MallocHookerTestAccessor::seedOrigRealloc(void* fn) { _orig_realloc = reinterpret_cast<void* (*)(void*, size_t)>(fn); }
+void MallocHookerTestAccessor::seedOrigPosixMemalign(void* fn) {
+    _orig_posix_memalign = reinterpret_cast<int (*)(void**, size_t, size_t)>(fn);
+}
+void MallocHookerTestAccessor::seedOrigAlignedAlloc(void* fn) {
+    _orig_aligned_alloc = reinterpret_cast<void* (*)(size_t, size_t)>(fn);
+}
+void MallocHookerTestAccessor::resetInitialized() { MallocHooker::_initialized = false; }
+#endif
 
 void MallocHooker::installHooks() {
     patchLibraries();
@@ -504,10 +608,11 @@ Error MallocTracer::start(Arguments& args) {
     _pid.reset();
     __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
 
-    // initialize() is idempotent and returns false when symbol resolution fails.
-    if (!MallocHooker::initialize()) {
-        return Error("Failed to resolve malloc symbols; native memory profiling unavailable");
-    }
+    // initialize() propagates the admission rejection, the indeterminacy
+    // error or the resolution failure; only an admitted (or admitted cached)
+    // start reaches the _running store.
+    Error error = MallocHooker::initialize();
+    if (error) return error;
 
     // Enable recording before patching so a concurrent dlopen() during patchLibraries()
     // sees running()==true and patches the new library via installHooks().
