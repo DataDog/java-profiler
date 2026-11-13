@@ -4,118 +4,178 @@
 
 ## Purpose
 
-Reference-chain collection helps explain why a sampled object remains live. It records a bounded chain of referrer classes from a GC root to a sampled object. It does not replace a heap dump or compute an exact retained set.
+Reference-chain collection helps explain why a sampled object remains live. It records a
+chain of referrer classes from a GC root to a sampled object. It does not replace a heap
+dump or compute an exact retained set.
 
-The profiler disables this feature by default. Enable generation tracking or liveheap tracking
-(either supplies the leak signal; liveheap requires `referencechains=true` in the same command)
-together with reference-chain collection, e.g. `generations=true,referencechains=true`. The bare
-`referencechains=true` option does not activate the allocation engine that supplies candidates,
-and without a signal source the collector stays idle: it never starts a search.
+The feature is disabled by default. It requires an active allocation sampler and a leak
+signal from generations tracking or chain-enabled liveheap tracking. Example options are
+`generations=true,referencechains=true` or `memory=4m:l,referencechains=true`.
+
+The bare `referencechains=true` option does not activate the allocation engine or supply
+candidates. Without a signal source, the collector cannot start a search.
+
+The [Reference Chain Collection wiki](https://datadoghq.atlassian.net/wiki/spaces/~5d4b47deba36300d23e5053d/pages/6973555518/Reference+Chain+Collection)
+provides the end-to-end overview. This summary links to the detailed repository references.
 
 ## Data flow
 
-1. `LivenessTracker` counts sampled live objects by class across GC epochs.
-2. It selects classes whose sampled population has sustained growth.
-3. It assigns leak tags to tracked instances of those classes.
+1. `LivenessTracker` groups surviving tracked samples by class and distinct GC age.
+2. It selects classes with sustained growth and qualifying allocating-thread evidence.
+3. It assigns leak tags to tracked instances in those class/thread groups.
 4. `ReferenceChainTracker` walks from roots toward those tagged instances.
-5. The tracker stores its frontier as JVMTI object tags and resumes it in later passes.
-6. When the walk reaches a tagged instance, the tracker reconstructs its chain.
-7. The dump path writes the chain as a `datadog.ReferenceChain` JFR event.
+5. The tracker preserves frontier tags, parent links, and pending queues between passes.
+6. Candidate polling reconstructs chains and stores them in a resolved-chain cache.
+7. The dump and stop paths write cached chains as `datadog.ReferenceChain` events.
 
-In this document, *class* means the Java class. Source identifiers use the existing `klass` spelling.
+In this document, *class* means the Java class. Source identifiers use the existing
+`klass` spelling.
 
 ## Candidate selection
 
-`LivenessTracker` keeps a fixed-size population table. Each entry has a ring of 30 GC-epoch samples. The tracker requires at least 10 samples before it evaluates a trend.
+Each class-history value counts distinct GC ages among surviving tracked instances, not
+raw live-instance counts. The table holds at most 256 classes, each with a 30-value ring.
+The tracker requires at least 10 values before evaluating a class trend.
 
-A class must show sustained growth. The base hysteresis is five qualifying epochs. It decreases to three epochs when the post-GC heap floor also rises. The tracker returns at most five candidate classes.
+A linear regression must show fitted endpoint growth of at least the larger of 15% of
+its fitted starting value and one distinct age. The rise need not be strictly monotonic.
+Five consecutive qualifying folds are required, or three when heap-floor growth corroborates it.
 
-The population table has at most 256 entries. A linear scan is therefore bounded and occurs outside the allocation hot path. The existing table lock protects the population data.
+At least one allocating thread must also qualify for the class. A thread qualifies through
+its surviving-age trend or at least eight retained tracked instances. Its consecutive
+qualification must meet the same hysteresis threshold. At most five classes are selected.
 
-Candidate selection uses sampled objects. It can miss a leak when sampling does not retain enough representative objects or when the population does not satisfy the trend gates.
+Cleanup folds a value for the latest processed GC epoch; intervening epochs can be
+coalesced. Allocation-path overflow cleanup only reaps. Dump/stop cleanup and periodic
+background cleanup perform the trend fold under the existing table lock.
+
+Candidate selection uses sampled objects. Sampling, incomplete history, and the class/thread
+gates can prevent a leak from producing a candidate.
 
 ## Resumable walk
 
-`ReferenceChainTracker` owns a background thread and a persistent frontier. The frontier contains positive JVMTI tags. JVMTI preserves tag identity when the GC moves an object. A tag does not keep an object live.
+`ReferenceChainTracker` owns a background thread and a persistent frontier. The frontier
+contains positive JVMTI tags. A tag does not keep an object live; lookup can stop returning
+an object after it is collected.
 
 Each pass can perform these operations:
 
-1. Enumerate roots and stack references. The first pass always does this. Later passes wait at least two seconds since the last attempt - extended by the last attempt's measured in-safepoint cost - truncated attempts included; a pass whose enumeration truncated ends after the enumeration.
-2. Walk candidate thread objects when the candidate data identifies qualifying threads.
-3. Scan static fields in chunks when the loaded-class count changes.
-4. Expand a batch of frontier entries.
+1. Enumerate roots and stack references on the first pass or when the retry interval permits.
+2. Walk candidate thread objects when qualifying thread data is available.
+3. Continue a pending static-field sweep in loaded-class chunks.
+4. Expand batches of frontier entries through a shared object-array holder.
 5. Revisit selected entries whose references can change after their first expansion.
 
-The walk records parent tags, class identifiers, depth, root kind, admitting-edge identity (field index and reference kind), and leak-tag data in the frontier table. These records let the tracker reconstruct a chain after the walk reaches a candidate instance.
+Root-enumeration attempts wait at least two seconds after the previous attempt, with a
+cost-based extension capped at 30 seconds. Truncated attempts use the same interval and
+end that pass's traversal phases. Later passes can expand already-admitted roots.
 
-The walk is best effort. The heap can change between passes. A recorded chain is therefore historical evidence from several observations, not a single consistent heap snapshot.
+The walk records parent tags, classes, depth, root kind, edge identity, and leak-tag
+ownership. These records can combine observations from different passes. They do not
+form a consistent heap snapshot.
 
 ## Candidate correlation
 
-`LivenessTracker::tagLeakInstances()` assigns positive leak tags from a fixed pool. The heap walk correlates a leak tag with a frontier entry when it reaches that object. The tracker can keep up to eight discovered instances for each watched class.
+`tagLeakInstances()` uses a pool of 256 positive leak tags. It tags instances from qualifying
+class/thread groups, or correlates their existing frontier entries without overwriting
+frontier tags. The collector keeps up to eight discovered instances per watched class.
 
-The implementation does not pre-tag candidate representatives with negative marker tags. Older design material that describes marker tags is obsolete.
+Representatives are weak references, not artificial traversal seeds. The collector must
+discover a root-to-instance path before reconstructing that instance's chain.
 
-While a candidate search is active, `LivenessTracker` admits allocations from qualifying threads at 100 percent. Other allocations still use the configured liveness-sampling ratio. This admission increase improves correlation for small per-thread populations.
+Allocation sampling and liveness admission are separate stages:
+
+```mermaid
+flowchart TB
+    allocations["All Java allocations"] --> sampler["Allocation sampler"]
+    sampler -->|"Not selected"| omitted["Unavailable for liveness tracking"]
+    sampler -->|"Selected allocation callbacks"| watched{"Allocating thread watched<br/>for a candidate?"}
+    watched -->|"Yes: bypass liveness subsampling"| track["Attempt tracking<br/>with a weak reference"]
+    watched -->|"No"| lottery{"Liveness subsampling"}
+    lottery -->|"Accepted"| track
+    lottery -->|"Rejected"| dropped["Not tracked"]
+```
+
+The diagram shows normal admission. Near projected memory exhaustion, a separate global
+boost can also bypass liveness subsampling. Neither boost bypasses the allocation sampler,
+tracking-table limits, or lock-contention drops.
+
+Tracking is not allocation-free: `track()` creates a weak global reference and can grow
+the tracking table. The expensive class-history fold is kept off that callback path.
 
 ## Mutable-container coverage
 
-A one-time breadth-first walk cannot observe references that appear after the first expansion of an object. This matters for a long-lived collection that receives new elements.
-
-The tracker addresses this case with bounded rotation:
-
-- Leak-accumulation rotation selects parent objects that receive instances of watched classes.
-- Stale-entry rotation revisits older expanded entries.
-- Root-kind rotation revisits entries with transient root attribution.
-- Static-anchor rotation descends from selected objects held by static fields.
-
-Rotation improves coverage. It does not guarantee that the tracker observes every mutation.
+A long-lived collection can receive references after its first expansion. Bounded rotation
+revisits leak-accumulating parents, stale expanded entries, transient-root entries, and static
+anchors. This adds opportunities to discover changed references, not complete mutation coverage.
 
 ## Cost controls
 
-The implementation uses several independent controls:
+The controls have different scopes; they are not independent hard latency guarantees:
 
-- An edge-admission budget limits work admitted by callbacks.
-- A pause target guides a PID controller that adjusts the edge budget and fallback cadence.
-- A safepoint-cost budget gates the start of a later search.
-- A CPU-cost budget gates passes in a running search.
-- A frontier cap limits metadata growth.
-- A search TTL and no-progress checks stop searches that do not converge.
+- Ordinary edge-admission gates count new objects, not all callbacks or elapsed time.
+- Callback deadlines apply to selected traversal phases, not root enumeration.
+- A PID controller adjusts edge budget and cadence from measured heap-walk-call time.
+- Running-search spacing is normally at least `max(effective cadence, 100 ms)`.
+- Safepoint-cost debt delays a later search; it does not cap the running search's total cost.
+- CPU-cost debt gates running-search passes using a manual-walk wall-time proxy.
+- Frontier and hop caps restrict metadata and admission depth; the hop cap only prunes branches.
 
-Most traversal work is resumable. A callback asks JVMTI to stop when it observes the
-pause deadline, and a later pass continues from the saved frontier. The operation can
-still exceed the target because the JVM can work between callbacks.
+Several traversal phases receive separate deadlines. JVM work and callback granularity can
+cause overshoot. Neither the pause target nor the admission budget bounds a whole pass's
+application pause time.
 
-Root enumeration is the main exception. JVMTI does not expose a cursor for resuming
-`IterateOverReachableObjects()`, and the edge budget counts admitted roots rather than
-all examined roots. For this release, a root-enumeration pause is acceptable if it is
-shorter than three seconds. This is an acceptance threshold, not the desired latency or
-a hard real-time guarantee. [PROF-16284](https://datadoghq.atlassian.net/browse/PROF-16284)
-tracks measurement and improvement of this phase.
+Root enumeration does not use the deadline, and its admission budget does not count every
+examined root. For this release, a root-enumeration pause is acceptable if it is shorter
+than three seconds. This is an acceptance threshold, not a hard real-time guarantee.
 
-`stopThread()` requests cooperative cancellation. The heap callback checks the request on each invocation. Cancellation therefore depends on the JVM reaching another callback; it is not instantaneous.
+See [root discovery](architecture/LiveHeapReferenceChainsImplementation.md#root-discovery)
+for the enumeration controls and limitations.
+
+After a five-minute process-first-signal burn-in, usable heap/container projections can
+increase work below a 30-minute exhaustion horizon. Below five minutes, an urgent latch
+suppresses ordinary no-progress abandonment. Urgency never substitutes for a leak candidate.
+
+`stopThread()` requests cooperative cancellation. Root and reference callbacks check the
+request; shutdown still depends on callback progress.
 
 ## Completion and abandonment
 
-A search completes when all current candidates have chains, or when no work remains and no class remains under watch.
+Completion requires a completed root enumeration and either all current candidates found
+or no pending work and no class under watch. Incomplete enumeration defers TTL and ordinary
+no-progress abandonment; the configured TTL is not a hard search-lifetime bound.
 
-A search can stop with one of these abandonment reasons:
+The abandonment reasons are:
 
-- `FRONTIER_CAP`: the frontier table cannot admit more entries.
-- `TTL`: the configured lifetime expired, or the ordinary frontier made no progress for 30 passes.
-- `CANARY_STUCK`: candidate discovery and frontier growth both remained stalled for the configured checks. The ordinary no-progress `TTL` check runs first, so this reason appears only while the OOM-urgent latch is active.
+- `FRONTIER_CAP`: the frontier cannot admit another entry.
+- `TTL`: lifetime expired or 30 prior passes made no frontier progress, subject to the deferrals.
+- `ROOT_ENUM_ERROR`: three consecutive root-enumeration attempts returned JVMTI errors.
+- `CANARY_STUCK`: both frontier and candidate progress met their stall limits. This can occur
+  during urgency or when incomplete enumeration suppresses the earlier no-progress exit.
 
-The tracker reports abandonment through `datadog.ReferenceChainAbandoned`. It releases search-owned tags before a restart. A restart also requires a current leak signal and sufficient safepoint-cost budget.
+Abandonment events use a separate queue. The current writer maps `ROOT_ENUM_ERROR` to
+`unknown`. Recording stop does not enqueue a `RECORDING_END` abandonment event.
+
+A restart requires released search tags, cleared safepoint-cost debt, the root-enumeration
+interval, and a current leak candidate. A running search does not restart itself.
 
 ## Output and limits
 
-The resolved-chain cache holds at most 128 entries. The dump path copies valid cached chains without clearing the cache, so a live sample can appear in later JFR chunks. The cache removes a chain when the leak-tag ownership no longer matches the recorded instance.
+The resolved-chain cache holds at most 128 entries. Dump snapshots keep eligible entries
+for later chunks; they do not guarantee a chain for every live sample in every chunk.
+Leak-tag incarnation checks reject chains for former owners of reused tags.
 
-The output has these limits:
+Chains and edge labels use leaf-to-root order. Shallow stack-local/JNI-local chains are
+suppressed. A separate serializer hop cap can truncate output; compare `totalHops` with
+the emitted array length. Correlate leak-tagged targets using both tag and incarnation.
 
-- It contains referrer classes and selected edge metadata, not a complete object graph.
-- It can omit paths because of sampling, hop limits, budgets, mutation, or abandonment.
-- It can describe observations from different points in time.
-- It does not prove that a reported path is the shortest path or the only retaining path.
+Callbacks queue bounded invalidations under a spin lock, not a lock-free protocol. Candidate
+polling and dump snapshots drain them; a dump can drain during traversal. Cache pressure
+and abandonment-queue overflow can also drop events.
 
-For implementation details, see [LiveHeapReferenceChainsImplementation.md](architecture/LiveHeapReferenceChainsImplementation.md). For scheduling details, see [ReferenceChainsSignalsExplained.md](architecture/ReferenceChainsSignalsExplained.md).
+The output is diagnostic history, not a complete object graph, an exact retained set,
+or proof of the shortest or only retaining path.
+
+See [LiveHeapReferenceChainsImplementation.md](architecture/LiveHeapReferenceChainsImplementation.md)
+for traversal and output, and
+[ReferenceChainsSignalsExplained.md](architecture/ReferenceChainsSignalsExplained.md) for scheduling.
