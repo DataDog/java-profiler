@@ -90,6 +90,21 @@ TEST(CallTraceStorageAcquireTest, AllocationFailureLeavesNoTablePublished) {
     EXPECT_TRUE(storage.acquire());  // idempotent once allocated
 }
 
+// A table whose constructor could not allocate its first table does not throw.
+// acquire() must still fail and publish none of the three tables.
+TEST(CallTraceStorageAcquireTest, UnusableTableLeavesNoTablePublished) {
+    CallTraceStorage storage;
+    storage.release();
+
+    storage.unusableTableForTest(true);
+    EXPECT_FALSE(storage.acquire());
+    EXPECT_EQ(nullptr, storage.activeTableForTest());
+
+    storage.unusableTableForTest(false);
+    EXPECT_TRUE(storage.acquire());
+    EXPECT_NE(nullptr, storage.activeTableForTest());
+}
+
 TEST_F(CallTraceStorageTest, LivenessCheckerRegistration) {
     ProfiledThread::initCurrentThreadSignalSafe();
 

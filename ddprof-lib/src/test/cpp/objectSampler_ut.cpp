@@ -348,3 +348,30 @@ TEST_F(ObjectSamplerSessionTest, StopDuringClassLookupDropsSample) {
                     kStaleSessionClassInMap, strlen(kStaleSessionClassInMap)))
       << "a stale callback interned its class into the next recording's map";
 }
+
+// Returns a class no other test interns, with the session left unchanged.
+static char g_gate_closed_class_name[] = "Lcom/dd/test/GateClosedClass;";
+static const char kGateClosedClassInMap[] = "com/dd/test/GateClosedClass";
+
+static jvmtiError JNICALL mock_GetClassSignature_unique_class_same_session(
+    jvmtiEnv * /*env*/, jclass /*klass*/, char **signature_ptr, char ** /*generic_ptr*/) {
+  if (signature_ptr) {
+    *signature_ptr = g_gate_closed_class_name;
+  }
+  return JVMTI_ERROR_NONE;
+}
+
+// A callback that passed _active before stop() sees the intern gate closed but
+// the session unchanged: only the gate keeps it from re-allocating the class
+// map stop() released.
+TEST_F(ObjectSamplerSessionTest, ClosedInternGateDoesNotInternClass) {
+  ProfilerTestAccessor::setInternOpen(false);
+  ASSERT_EQ(0u, Profiler::instance()->classMap()->bounded_lookup(
+                    kGateClosedClassInMap, strlen(kGateClosedClassInMap)));
+
+  runAndExpect(mock_GetClassSignature_unique_class_same_session, true, 1);
+
+  EXPECT_EQ(0u, Profiler::instance()->classMap()->bounded_lookup(
+                    kGateClosedClassInMap, strlen(kGateClosedClassInMap)))
+      << "a callback interned its class through a closed intern gate";
+}

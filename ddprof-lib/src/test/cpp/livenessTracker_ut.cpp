@@ -3543,6 +3543,110 @@ TEST_F(LivenessTrackerMockJvmTest, ReleaseWithoutAJniEnvDoesNotCrash) {
     tracker->setSubsampleRatioForTest(1.0);
 }
 
+namespace {
+
+int g_get_objects_with_tags_calls = 0;
+
+jint JNICALL mockPushLocalFrame(JNIEnv *, jint) { return JNI_OK; }
+jobject JNICALL mockPopLocalFrame(JNIEnv *, jobject result) { return result; }
+
+// Hands back every mock object whose tag is one of `tags`, in JVMTI-allocated
+// arrays that mockDeallocate() frees.
+jvmtiError JNICALL mockGetObjectsWithTags(jvmtiEnv *, jint tag_count, const jlong *tags,
+                                          jint *count, jobject **objects, jlong **found) {
+    g_get_objects_with_tags_calls++;
+    std::vector<std::pair<const void *, jlong>> hits;
+    for (const auto &entry : g_mock_jvm->tags) {
+        for (jint i = 0; i < tag_count; i++) {
+            if (entry.second != 0 && entry.second == tags[i]) {
+                hits.push_back(entry);
+                break;
+            }
+        }
+    }
+    *count = (jint)hits.size();
+    *objects = (jobject *)malloc(sizeof(jobject) * (hits.size() + 1));
+    *found = (jlong *)malloc(sizeof(jlong) * (hits.size() + 1));
+    for (size_t i = 0; i < hits.size(); i++) {
+        (*objects)[i] = reinterpret_cast<jobject>(const_cast<void *>(hits[i].first));
+        (*found)[i] = hits[i].second;
+    }
+    return JVMTI_ERROR_NONE;
+}
+
+jvmtiError JNICALL mockFailingGetObjectsWithTags(jvmtiEnv *, jint, const jlong *, jint *,
+                                                 jobject **, jlong **) {
+    g_get_objects_with_tags_calls++;
+    return JVMTI_ERROR_OUT_OF_MEMORY;
+}
+
+} // namespace
+
+class LivenessTrackerReleaseLeakTagTest : public LivenessTrackerMockJvmTest {
+protected:
+    void SetUp() override {
+        LivenessTrackerMockJvmTest::SetUp();
+        jvm.jni_tbl.PushLocalFrame = &mockPushLocalFrame;
+        jvm.jni_tbl.PopLocalFrame = &mockPopLocalFrame;
+        g_get_objects_with_tags_calls = 0;
+    }
+
+    // Puts a pool tag on a live object, as tagLeakInstances() does.
+    jobject tagWithLeakTag() {
+        LivenessTracker *tracker = LivenessTracker::instance();
+        jlong tag = tracker->acquireLeakTagForTest();
+        EXPECT_NE(0, tag);
+        jobject obj = jvm.newObject(&jvm.retained_class);
+        jvm.tags[obj] = tag;
+        return obj;
+    }
+
+    // Leaves the tracker started, as the fixture's TearDown expects.
+    void restart() {
+        Arguments args;
+        ASSERT_FALSE(args.parse("generations=true"));
+        ASSERT_FALSE(LivenessTracker::instance()->start(args));
+        LivenessTracker::instance()->setSubsampleRatioForTest(1.0);
+    }
+};
+
+// A pool tag is out and the last clear succeeded: release() still clears the
+// tag on the object, so the next recording's owner of that slot does not
+// collide with it.
+TEST_F(LivenessTrackerReleaseLeakTagTest, ReleaseClearsLeakTagHandedOut) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jvm.jvmti_tbl.GetObjectsWithTags = &mockGetObjectsWithTags;
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    jobject obj = tagWithLeakTag();
+    ASSERT_FALSE(tracker->leakTagClearPendingForTest());
+
+    tracker->release(&jvm.jni);
+
+    EXPECT_EQ(1, g_get_objects_with_tags_calls);
+    EXPECT_EQ(0, jvm.tags[obj]) << "release() left a pool tag on a live object";
+    EXPECT_FALSE(tracker->leakTagClearPendingForTest());
+    restart();
+}
+
+// The clear fails at release(): the flag stays set so start() retries the
+// clear, and a successful retry clears the flag again.
+TEST_F(LivenessTrackerReleaseLeakTagTest, FailedClearAtReleaseIsRetriedAtStart) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jvm.jvmti_tbl.GetObjectsWithTags = &mockFailingGetObjectsWithTags;
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    jobject obj = tagWithLeakTag();
+
+    tracker->release(&jvm.jni);
+    EXPECT_EQ(1, g_get_objects_with_tags_calls);
+    EXPECT_TRUE(tracker->leakTagClearPendingForTest());
+
+    jvm.jvmti_tbl.GetObjectsWithTags = &mockGetObjectsWithTags;
+    restart();
+    EXPECT_EQ(2, g_get_objects_with_tags_calls);
+    EXPECT_FALSE(tracker->leakTagClearPendingForTest());
+    EXPECT_EQ(0, jvm.tags[obj]);
+}
+
 // A second start() without a release() in between replaces the tracker's
 // checker instead of adding another: processTraces() would otherwise count the
 // live traces twice, and release() would leave the first one registered.

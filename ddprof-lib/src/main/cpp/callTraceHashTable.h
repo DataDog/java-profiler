@@ -89,6 +89,11 @@ public:
   // does not throw): every put() would then be dropped.
   bool usable() const { return _table != nullptr; }
 
+#ifdef UNIT_TEST
+  // Leaves the table as the constructor does when its first allocation fails.
+  void dropTableForTest() { _table = nullptr; }
+#endif
+
 private:
   // Pure, allocation-free helpers backing the expansion-overflow guard in
   // expandTableIfNeeded(); kept private and reached in tests only via
