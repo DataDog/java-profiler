@@ -42,7 +42,10 @@
 #              never link a JDK. Spell the arch "aarch64" as everywhere else,
 #              not the GitLab runner tag's "arm64" -- a glob naming an
 #              architecture CI never builds quarantines nothing, and validate
-#              rejects it.
+#              rejects it. validate also cross-checks every bare-suite gtest
+#              id against the TEST(...) declarations in
+#              ddprof-lib/src/test/cpp, so an id no source declares fails the
+#              PR instead of quarantining nothing.
 #   reason     Free text — what is unreliable and how often. Last field, so it
 #              may contain anything but "|".
 #
@@ -102,13 +105,15 @@ com.datadoghq.profiler.referencechains.ReferenceChainTrackingTest.shouldReconstr
 com.datadoghq.profiler.referencechains.ThreadLocalLeakReferenceChainTest.shouldCorrelateThreadLocalHeldLeakChain | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Child reports [tl-correlation-tag-out-of-pool]; 3 failing jobs in nightly run 39893765385
 com.datadoghq.profiler.referencechains.LeakTagCorrelationReferenceChainTest.shouldCorrelateLeakChainTargetTagWithLiveObjectLeakTag | PROF-16305 | 2026-10-23 | 2027-01-21 | *-slow | Child reports [correlation-tag-out-of-pool]; 1 failing job in nightly run 39893765385
 
-# gtest suite `NativeThreadNameRaceTest` in nativeThreadNameRace_ut: the
-# scanner races thread death (pthread_getattr_np on an exiting thread
-# fails), so the test fails intermittently on quiet CI runners regardless
-# of config or arch -- hence quarantined everywhere.
-NativeThreadNameRaceTest.threadDyingBetweenScansIsNeverNamed | PROF-16577 | 2026-11-10 | 2027-02-08 | - | thread-death race in the name scanner; fails ~daily on quiet CI runners
 # PROF-16583 -- the collapsing-sleep weight assertion is sensitive to shared-runner
 # load: a ~1s park loop under wall=~1ms sampling must accumulate > 700 weight, and a
 # loaded el7 runner can shrink it below the bar. Single observed failure; same-day
 # pass on an equivalent-code pipeline. Widen only with fresh evidence.
 com.datadoghq.profiler.wallclock.CollapsingSleepTest.testSleep | PROF-16583 | 2026-11-11 | 2027-02-09 | el7-8-release-amd64 | Weight assertion (totalWeight > 700) below the bar on a loaded runner; single failure, wall-clock paths untouched by the carrying PR
+
+# PROF-16621 -- TSan timing flake in the line-number-table fault-recovery test:
+# failed attempt 1 in glibc-tsan-amd64 (GitLab job 2243650462, PR #918 pipeline,
+# head efb2a4e5e) and passed the full-suite retry with an identical binary.
+# Scoped to the gtest tsan cells so a failure in the regular suite, in asan, or
+# on another arch still gates.
+LineNumberTableCopyTest.RejectsUnmappedSource | PROF-16621 | 2026-11-12 | 2027-02-10 | glibc-tsan-* | Failed on attempt 1 and passed the full-suite retry (job 2243650462); fault-recovery timing under TSan instrumentation, unrelated to the triggering change set

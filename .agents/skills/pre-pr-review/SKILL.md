@@ -38,23 +38,26 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    `MB=$(git merge-base refs/remotes/<base> HEAD)` to `HEAD`, named explicitly — without
    a range, reviewers default to unpushed or last-commit changes; the full ref keeps a
    tag named like the base from changing the range. Pick the reviewer from the first row
-   that matches the range, top to bottom:
+   that matches the range, top to bottom, in the <a id="reviewer-table"></a>reviewer
+   table:
 
    | The range changes | Reviewer |
    | --- | --- |
-   | Gates and trust boundaries, including fixes to them: hooks, `review-marker.py`, the `utils/*-policy.py` files, CI checks, this skill, the AGENTS.md review rules | Sphinx (`/sphinx review range $MB..$(git rev-parse HEAD) --report-json <path>`), standard effort; at most one `--effort=deep` run per PR, on the final candidate |
+   | Gates and trust boundaries, including fixes to them: hooks, `review-marker.py`, the `utils/*-policy.py` files, CI checks, this skill, any text in `AGENTS.md` or a skill that says when a review is required or which reviewer runs | Sphinx (`/sphinx review range $MB..$(git rev-parse HEAD) --report-json <path>`), standard effort; at most one `--effort=deep` run per PR, on the final candidate |
    | Only fixes to a range already reviewed | `/code-review` medium on the fix range; the marker's `--tool` lists every review the final range had |
    | Other production code | Sphinx, standard effort |
    | Only docs, skills or tests | `/code-review` medium; not low, which skips test files |
 
-   Without Sphinx, use `/code-review` with the range as its target, at high effort for
-   the first row and medium otherwise. Report only — run no
-   reviewer fix flow; step 4 does the triage and fixes. If no reviewer is
-   available, say so and get explicit user sign-off; do not write a marker then.
-   Tell the reviewer to skip `.knowledgebase/`: its content is cairn's, and step 4
+   <a id="no-sphinx-fallback"></a>Without Sphinx, use `/code-review` with the range as
+   its target, at high effort for the first row and medium otherwise.
+
+   Report only — run no reviewer fix flow; step 4 does the triage and fixes. If no
+   reviewer is available, say so and get explicit user sign-off; do not write a marker
+   then. Tell the reviewer to skip `.knowledgebase/`: its content is cairn's, and step 4
    checks only its frontmatter. The marker still covers it.
 
-   **Fresh context.** Run the reviewer without this session's conversation: inherited
+   <a id="fresh-context"></a>**Fresh context.** Run the reviewer without this session's
+   conversation: inherited
    knowledge and assumptions hide defects, and a long context costs more on every turn.
    Sphinx's workers already get only their task material; run `/code-review` in a
    subagent that does not inherit the conversation, or in a fresh session. Give the
@@ -63,10 +66,12 @@ Only when that `git show` fails (the gate is not on `origin/main` yet) use
    correctness. Sphinx takes no brief: after a Sphinx fix review, check its report
    against the addressed findings yourself.
 
-   **Cost.** Plan for about $20–30 of agentic review per PR; before a run that is likely
+   <a id="review-cost"></a>**Cost.** Plan for about $20–30 of agentic review per PR;
+   before a run that is likely
    to exceed it, ask the user.
 
-4. **Findings.** Fix Critical/High findings, or get the user's explicit waiver.
+4. <a id="findings"></a>**Findings.** Fix Critical/High findings, or get the user's
+   explicit waiver.
    Commit the fixes, including any correction made after the review, run the step 2
    self-checks on them, and re-review them with the first matching row in step 3: a fix
    to a gate stays in the gate row. Code written by a review tool's fix flow gets the

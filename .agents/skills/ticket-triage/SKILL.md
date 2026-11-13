@@ -1,0 +1,65 @@
+---
+name: ticket-triage
+description: Triage an existing java-profiler PROF Jira ticket against the current code, then classify it, propose a reproducer and recommend a priority. Use when asked to triage, assess or re-check a ticket, or to say whether the problem a ticket reports still applies.
+---
+
+# Ticket triage
+
+Triage the report against the repository as it is now. Treat every statement in the
+report about behavior as an unverified claim.
+
+1. **Read.** Read the full ticket, its comments and linked tickets. Then read the
+   current production control flow, data flow, configuration and tests that the report
+   concerns.
+
+2. **Dedupe.** Search the PROF project for tickets on the same problem, with the terms
+   from the title and the symptoms. Name each match with its status.
+
+3. **Classify.** Decide whether the report still applies to the current code and runtime
+   behavior: `confirmed`, `partially applicable`, `stale` or `uncertain`. Cite the source
+   paths and symbols behind the decision. Keep observed facts, inferences and open
+   questions apart. Without a reproducer run, say that the classification comes from
+   reading the code only, and lower your stated confidence in step 6 to match.
+
+4. **Reproducer.** Propose the smallest reproducer that proves or disproves the report:
+   prerequisites, exact steps, expected and actual results. The `verify-profiler-change`
+   skill names the builds and tests for the code concerned. Ask the user before you edit
+   a file or run a build or the reproducer. If the user approves, run it in a throwaway
+   worktree, record the exact commands and results, and remove the worktree afterwards,
+   unless the user wants to keep it.
+
+5. **Summary.** Name the likely affected code, its constraints, dependencies and risks,
+   and the next steps. Do not implement a fix or commit without the user's separate
+   approval.
+
+6. **Priority.** Rate impact, likelihood and workaround as H, M or L, each with its
+   reason from the evidence:
+   - impact: H is a crash, a hang or lost data; M is wrong or missing profile data; L
+     is cosmetic or a small overhead;
+   - likelihood: H happens in a default or common setup; M needs a specific JVM,
+     platform or option; L needs a rare race or setup;
+   - workaround: H means no workaround exists; M means a workaround with a real cost;
+     L means an easy workaround exists.
+
+   Map the three ratings to a priority with the ILW matrix that JDK Mission Control
+   uses ([ILW Prioritization](https://wiki.openjdk.org/spaces/jmc/pages/56526160/ILW+Prioritization),
+   [matrix](https://hirt.se/images/openjdk/ilw.png)):
+
+   | Priority | Impact, likelihood, workaround |
+   | --- | --- |
+   | P1 | HHH, HHM, HMH |
+   | P2 | MHH, HHL, HLH, HMM, HML |
+   | P3 | MHM, MMH, MHL, HLM, MMM |
+   | P4 | HLL, MLH, MML, MLM, LHH, LHM |
+   | P5 | LMH, MLL, LMM, LHL, LLH, LML, LLM, LLL |
+
+   In Jira, P1 to P5 are Highest, High, Medium, Low and Lowest; Top is the engineer's
+   choice only. The table above is the authoritative copy. If a rating cannot be
+   judged, say so and give the range of priorities that it allows. For a `stale`
+   ticket, recommend closing it instead of a priority. State your confidence and the
+   remaining unknowns, then recommend the priority. Do not set the priority field; the
+   user decides.
+
+Post the result on the ticket only when the user asks. The comment follows the
+`ticket-writing` skill. Its evidence table holds the reproducer with its commands and
+results, or as `blocked` if it did not run.
