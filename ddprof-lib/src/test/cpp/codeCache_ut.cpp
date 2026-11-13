@@ -10,7 +10,6 @@
 #include <stdio.h>
 #include <type_traits>
 
-// A hand-written operator= must release every blob name the target owns.
 static_assert(!std::is_copy_assignable<CodeCache>::value,
               "CodeCache must not be copy-assignable");
 
