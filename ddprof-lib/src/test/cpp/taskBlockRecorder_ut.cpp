@@ -30,7 +30,6 @@ public:
     return previous;
   }
   static FlightRecorder& recorder() { return Profiler::instance()->_jfr; }
-  static int stripe(int tid) { return Profiler::instance()->getLockIndex(tid); }
   static SpinLock& lock(int stripe) { return Profiler::instance()->_locks[stripe]; }
 };
 
@@ -522,23 +521,27 @@ protected:
 
 TEST_F(TaskBlockRecorderOverflowTest, ThreadTableOverflowIsCountedBeforeSerialization) {
   constexpr int tid = 123;
-  int stripe = ProfilerTestAccessor::stripe(tid);
+  constexpr int represented_tid = 1000;
   FlightRecorder& recorder = ProfilerTestAccessor::recorder();
   TaskBlockEvent event{};
   event._start = 1;
   event._end = 2;
-  int represented_tid = -1;
-  for (int existing = 1000; existing < 1256; ++existing) {
-    EXPECT_TRUE(recorder.recordTaskBlock(stripe, existing, &event));
-    if (ProfilerTestAccessor::stripe(existing) == stripe) represented_tid = existing;
+  int before[CONCURRENCY_LEVEL];
+  int total_before = 0;
+  for (int stripe = 0; stripe < CONCURRENCY_LEVEL; ++stripe) {
+    for (int existing = represented_tid; existing < represented_tid + 256; ++existing) {
+      EXPECT_TRUE(recorder.recordTaskBlock(stripe, existing, &event));
+    }
+    before[stripe] = recording->buffer(stripe)->offset();
+    total_before += before[stripe];
   }
-  ASSERT_GE(represented_tid, 0);
-  int before = recording->buffer(stripe)->offset();
   Context context{};
   u64 end = minEligibleEndTicks(1);
   EXPECT_FALSE(recordTaskBlockIfEligible(
       tid, nullptr, 0, 1, end, context, 0, 0, OSThreadState::SLEEPING));
-  EXPECT_EQ(before, recording->buffer(stripe)->offset());
+  for (int stripe = 0; stripe < CONCURRENCY_LEVEL; ++stripe) {
+    EXPECT_EQ(before[stripe], recording->buffer(stripe)->offset()) << "stripe " << stripe;
+  }
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
   EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_EMITTED));
   EXPECT_EQ(0, Profiler::instance()->taskBlockInflightForTest());
@@ -547,5 +550,13 @@ TEST_F(TaskBlockRecorderOverflowTest, ThreadTableOverflowIsCountedBeforeSerializ
       represented_tid, nullptr, 0, 1, end, context, 0, 0, OSThreadState::SLEEPING));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
-  EXPECT_GT(recording->buffer(stripe)->offset(), before);
+  int total_after = 0;
+  int changed_stripes = 0;
+  for (int stripe = 0; stripe < CONCURRENCY_LEVEL; ++stripe) {
+    int after = recording->buffer(stripe)->offset();
+    total_after += after;
+    if (after != before[stripe]) ++changed_stripes;
+  }
+  EXPECT_EQ(1, changed_stripes);
+  EXPECT_GT(total_after, total_before);
 }

@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -33,6 +34,14 @@ public class UnownedBlockedTailDumpTest extends AbstractProfilerTest {
     long threadId = Thread.currentThread().getId();
     Path snapshot = Files.createTempFile("unowned-tail-before-", ".jfr");
     try {
+      // A reused test thread can retain logical membership after its trace context is cleared.
+      profiler.addThread();
+      profiler.clearTraceContext();
+      assertFalse(
+          JavaProfilerTestSupport.recordUnownedWallTailAcrossDumpForTest(
+              snapshot.toAbsolutePath().toString(), beforePublication, resetBeforeTail),
+          "An active logical context must bypass unowned fallback");
+      profiler.removeThread();
       assertTrue(
           JavaProfilerTestSupport.recordUnownedWallTailAcrossDumpForTest(
               snapshot.toAbsolutePath().toString(), beforePublication, resetBeforeTail),

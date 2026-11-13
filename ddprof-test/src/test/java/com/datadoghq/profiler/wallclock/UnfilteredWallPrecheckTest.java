@@ -86,8 +86,8 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   }
 
   /**
-   * Verifies that an unowned sleep after an owned block preserves sampling weight. The fallback
-   * combines suppressed observations into weighted events, so event count is not coverage.
+   * Verifies represented observations after an owned block. Stackful ASGCT combines suppressed
+   * observations into weighted events; delegated collection retains one unit per event.
    *
    * @throws Exception if the worker cannot complete
    */
@@ -101,10 +101,15 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
 
     long sampleCount = 0;
     long totalWeight = 0;
+    boolean weighted = usesWeightedUnownedFallback();
     for (JfrEvent event : verifyEvents("datadog.MethodSample", false)) {
       if (PRE_EXISTING_THREAD_NAME.equals(event.getThreadName("eventThread"))) {
         sampleCount++;
-        totalWeight += event.getLong(WEIGHT, 0);
+        long weight = event.getLong(WEIGHT, 0);
+        totalWeight += weight;
+        if (!weighted) {
+          assertEquals(1L, weight, "Delegated observations must retain unit weight");
+        }
       }
     }
     assertTrue(
@@ -113,12 +118,21 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
             + sampleCount
             + ", weight="
             + totalWeight);
-    assertTrue(
-        totalWeight > sampleCount,
-        "Expected suppressed observations to be represented by weight, count="
-            + sampleCount
-            + ", weight="
-            + totalWeight);
+    if (weighted) {
+      assertTrue(
+          totalWeight > sampleCount,
+          "Expected suppressed observations to be represented by weight, count="
+              + sampleCount
+              + ", weight="
+              + totalWeight);
+    } else {
+      assertEquals(sampleCount, totalWeight, "Delegated observations must not aggregate weight");
+    }
+  }
+
+  /** Whether this engine combines suppressed unowned observations into weighted events. */
+  protected boolean usesWeightedUnownedFallback() {
+    return true;
   }
 
   /**
