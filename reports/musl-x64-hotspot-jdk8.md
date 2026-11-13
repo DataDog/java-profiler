@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk8
 
 ## musl-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-11-13 16:17:05 EST
+**Date:** 2026-11-13 16:21:56 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 72 |
-| CPU Cores (end) | 76 |
+| CPU Cores (start) | 83 |
+| CPU Cores (end) | 81 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 199 |
-| Sample Rate | 3.32/sec |
-| Health Score | 207% |
-| Threads | 8 |
+| CPU Samples | 421 |
+| Sample Rate | 7.02/sec |
+| Health Score | 439% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (3 unique values: 72-76 cores)</summary>
+<summary>CPU Timeline (4 unique values: 83-89 cores)</summary>
 
 ```
-1794604354 72
-1794604359 72
-1794604364 72
-1794604369 72
-1794604374 72
-1794604379 72
-1794604384 72
-1794604389 72
-1794604394 72
-1794604399 72
-1794604404 74
-1794604409 74
-1794604414 74
-1794604419 74
-1794604424 76
-1794604429 76
-1794604434 76
-1794604439 76
-1794604444 76
-1794604449 76
+1794604671 83
+1794604676 83
+1794604681 83
+1794604686 83
+1794604691 83
+1794604696 83
+1794604701 83
+1794604706 83
+1794604711 83
+1794604716 83
+1794604721 83
+1794604726 83
+1794604731 83
+1794604736 83
+1794604741 83
+1794604746 83
+1794604751 83
+1794604756 83
+1794604761 83
+1794604766 85
 ```
 </details>
 
