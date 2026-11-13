@@ -15,6 +15,7 @@ they require:
 | **Java functional tests** | GitHub Actions | Every PR/push (debug); nightly (ASan, slow tests) | ASan (nightly or `test:asan` label) | Correctness + memory errors in JVMTI paths |
 | **dd-trace integration** | GitLab | Every branch push (not `release/*`) | None | Compatibility with the tracer agent |
 | **Chaos / reliability** | GitLab | Scheduled pipelines; PRs with `test:reliability` label | None | Long-duration stability and probabilistic crash detection |
+| **Memory gate** | GitLab → speedlab | Manual (`memory-gate` job) on branch pipelines | None | Memory overhead of the branch's build against `main`'s |
 
 ---
 
@@ -275,6 +276,25 @@ several JDKs in the image the selector prefers the one whose path contains
 `JDK_VERSION` and fails instead of guessing. The job echoes `java -version` for both
 JVMs, so the selected JDK is visible in the job log; shell tests for the selector
 run in the `shell-unit-tests` job.
+
+---
+
+## Memory Gate (speedlab, Manual)
+
+**Pipeline:** `.gitlab/memory-gate/.gitlab-ci.yml`, `benchmarks` stage
+
+`deploy-artifact` records the snapshot build it published and verified
+(`MEMORY_GATE_CANDIDATE`, a dotenv report written by `deploy.sh`). The manual
+`memory-gate` job then triggers speedlab (`DataDog/apm-reliability/speedlab`)
+with that build. Two pushes to one branch that publish at nearly the same time
+can make it record the other push's build. There, spring-petclinic runs six
+interleaved pairs with this build and `main`'s, in a low-noise allocator
+setting. Speedlab posts a warn-only verdict on the PR: a regression is a 95%
+interval above zero with a mean of at least 3 MiB. It catches about 5 MiB
+reliably; changes in retained free memory show only in part. Setting,
+calibration and limits are in speedlab's `docs/memory-gate.md`. The job skips
+the cases the benchmarks jobs skip (merge queue, `release/*`, schedules), plus
+`main` and tags; without an open PR there is no candidate to compare.
 
 ---
 

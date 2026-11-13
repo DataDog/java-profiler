@@ -1,0 +1,34 @@
+# Memory gate: speedlab (DataDog/apm-reliability/speedlab, docs/memory-gate.md)
+# compares spring-petclinic's memory with this branch's java-profiler build against
+# main's, and posts a warn-only verdict on the PR. Manual: play `memory-gate`.
+# The candidate is the snapshot build deploy-artifact published and verified
+# (MEMORY_GATE_CANDIDATE, its dotenv report), not whatever is newest at run time.
+memory-gate:
+  stage: benchmarks
+  needs:
+    - job: deploy-artifact
+      artifacts: true
+  # As the benchmarks jobs, plus main (against itself it measures nothing). Rules
+  # cannot see prepare.sh's CANCELLED (a dotenv variable): without an open PR the
+  # job is offered but has no candidate, and speedlab rejects the run.
+  rules:
+    - !reference [.benchmarks-skip-rules, rules]
+    - if: '$CI_COMMIT_TAG || $CI_COMMIT_REF_NAME == "main"'
+      when: never
+    - when: manual
+      allow_failure: true
+  # Only the variables below reach speedlab: its jobs read ours, and upstream
+  # variables would override their own settings.
+  inherit:
+    variables: false
+  variables:
+    SPEEDLAB_TRIGGER: java-profiler-memory-gate
+    PROFILER_CANDIDATE: $MEMORY_GATE_CANDIDATE
+    PROFILER_BASELINE: branch:main
+    UPSTREAM_PROJECT_NAME: java-profiler
+    UPSTREAM_BRANCH: $CI_COMMIT_REF_NAME
+    UPSTREAM_COMMIT_SHA: $CI_COMMIT_SHA
+  trigger:
+    project: DataDog/apm-reliability/speedlab
+    # speedlab's trigger rules are on this branch until DataDog/speedlab#109 merges.
+    branch: rkennke/memory-gate-trigger
