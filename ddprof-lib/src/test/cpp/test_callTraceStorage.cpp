@@ -96,11 +96,13 @@ TEST(CallTraceStorageAcquireTest, UnusableTableLeavesNoTablePublished) {
     CallTraceStorage storage;
     storage.release();
 
-    storage.unusableTableForTest(true);
-    EXPECT_FALSE(storage.acquire());
-    EXPECT_EQ(nullptr, storage.activeTableForTest());
+    for (int index = 0; index < 3; index++) {
+        storage.unusableTableForTest(index);
+        EXPECT_FALSE(storage.acquire()) << "unusable table " << index;
+        EXPECT_EQ(nullptr, storage.activeTableForTest()) << "unusable table " << index;
+    }
 
-    storage.unusableTableForTest(false);
+    storage.unusableTableForTest(-1);
     EXPECT_TRUE(storage.acquire());
     EXPECT_NE(nullptr, storage.activeTableForTest());
 }

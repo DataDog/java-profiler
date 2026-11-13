@@ -89,7 +89,7 @@ private:
     bool allocateTables();
 #ifdef UNIT_TEST
     bool _fail_allocation_for_test = false;
-    bool _unusable_table_for_test = false;
+    int _unusable_table_for_test = -1;
 #endif
     // Swaps the three table pointers to nullptr and deletes the tables once
     // drained (a table still guarded after the timeout is leaked).
@@ -154,8 +154,9 @@ public:
 #ifdef UNIT_TEST
     // Makes allocateTables() fail as if memory ran out.
     void failAllocationForTest(bool fail) { _fail_allocation_for_test = fail; }
-    // Makes allocateTables() build one table whose first allocation failed.
-    void unusableTableForTest(bool unusable) { _unusable_table_for_test = unusable; }
+    // Makes allocateTables() build table `index` (0 active, 1 standby, 2 scratch)
+    // as if its first allocation failed; -1 builds all three usable.
+    void unusableTableForTest(int index) { _unusable_table_for_test = index; }
 #endif
 };
 
